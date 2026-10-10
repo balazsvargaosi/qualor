@@ -12,7 +12,7 @@ import { isUrl, type QualorConfig } from '@qualor/shared';
 import { parseAllDocuments } from 'yaml';
 import { MAX_ANALYZED_BYTES } from '../discovery/discover';
 import { real, staysInside, within } from './binary';
-import { withFileLock } from './file-lock';
+import { type FileLockOptions, withFileLock } from './file-lock';
 import { deadProxyEnv } from './offline';
 import { shown } from './reason';
 import type { Analyzer, AnalyzerContext, Preparation } from './types';
@@ -72,9 +72,10 @@ export function isOpengrepVariable(name: string): boolean {
 export const OPENGREP_GROUP = 'opengrep';
 
 /**
- * The cache root OpenGrep's launcher unpacks into (`<root>/v<version>/`): `$XDG_CACHE_HOME/opengrep`
- * when that is an absolute path, else `$HOME/.cache/opengrep`; on Windows `%LOCALAPPDATA%\opengrep`.
- * Null without one.
+ * The cache root OpenGrep's launcher unpacks into (`<root>/v<version>/`): Nuitka's `{CACHE_DIR}`
+ * (its onefile bootstrap, HelpersFilesystemPaths.c) is `$XDG_CACHE_HOME` when that starts with
+ * `/`, else `$HOME/.cache`, on Linux and macOS alike (not `~/Library/Caches`), and the local
+ * application data folder on Windows. Null without one (the lock is then skipped).
  */
 export function opengrepCacheDir(
   env: Readonly<Record<string, string | undefined>>,
@@ -99,28 +100,55 @@ export const OPENGREP_WARM_ARGS: readonly string[] = ['--version', '--disable-ve
 /** Unpacking takes a few seconds; well below the lock's stale age (`withFileLock`). */
 export const OPENGREP_WARM_TIMEOUT_MS = 120_000;
 
+const WARM_FAILED = "OpenGrep's first launch, which unpacks it,";
+
+/** Why the warm-up launch failed, as a fixed text (never the tool's own output), or null. */
+function warmFailure(result: { exitCode: number | null; timedOut: boolean }): string | null {
+  if (result.timedOut) return `timed out after ${OPENGREP_WARM_TIMEOUT_MS / 1000} s`;
+  return result.exitCode === 0 ? null : `exited with code ${result.exitCode ?? 'null'}`;
+}
+
 /**
  * Plan 6B-6: unpacks OpenGrep's cache before an engine's scan, one `qualor scan` process at a time.
  * `OPENGREP_GROUP` keeps the two engines of one scan apart, but separate `qualor scan` processes
  * sharing one cold cache (parallel jobs on one CI runner) still crashed: 10 of 40 scans in a
  * fresh qualor/scanner container, four at a time. Each process holds the lock file
- * `.qualor-unpack.lock` in the cache root while its launcher runs `--version`, so only one
- * launcher ever unpacks; the scan that follows finds the cache complete and writes nothing to it.
- * A failed launch is not an error here: the scan's own launch reports it.
+ * `.qualor-unpack.lock` in the cache root while its launcher runs `--version` (in the work
+ * directory, never the checkout), so only one launcher ever unpacks; the scan that follows finds
+ * the cache complete and writes nothing to it. Never fails: a failed launch is a warning, and the
+ * scan's own launch reports what goes wrong there. `lock` is for tests.
  */
-export async function warmOpengrep(ctx: AnalyzerContext, command: string): Promise<void> {
+export async function warmOpengrep(
+  ctx: AnalyzerContext,
+  command: string,
+  lock: FileLockOptions = {},
+): Promise<void> {
   const dir = opengrepCacheDir(ctx.env);
   if (dir === null) return;
-  await withFileLock(path.join(dir, '.qualor-unpack.lock'), async () => {
-    const result = await ctx.exec(command, OPENGREP_WARM_ARGS, {
-      env: deadProxyEnv(),
-      dropEnv: isOpengrepVariable,
-      timeoutMs: OPENGREP_WARM_TIMEOUT_MS,
-    });
-    if (result.exitCode !== 0) {
-      ctx.log.debug(`${command} ${OPENGREP_WARM_ARGS.join(' ')} exited ${result.exitCode}`);
-    }
-  });
+  const file = path.join(dir, '.qualor-unpack.lock');
+  let failure: string | null;
+  try {
+    failure = await withFileLock(
+      file,
+      async () =>
+        warmFailure(
+          await ctx.exec(command, OPENGREP_WARM_ARGS, {
+            cwd: ctx.workDir,
+            env: deadProxyEnv(),
+            dropEnv: isOpengrepVariable,
+            timeoutMs: OPENGREP_WARM_TIMEOUT_MS,
+          }),
+        ),
+      {
+        ...lock,
+        onWait: () => ctx.log.info(`waiting for another qualor scan to unpack OpenGrep (${file})`),
+      },
+    );
+  } catch (err) {
+    ctx.log.debug(`${command} ${OPENGREP_WARM_ARGS.join(' ')}: ${String(err)}`);
+    failure = 'could not run';
+  }
+  if (failure !== null) ctx.log.warn(`${WARM_FAILED} ${failure}; the scans run anyway`);
 }
 
 /** A config path, `null` for a `qualor-default` that holds no rules, or why none can be used. */

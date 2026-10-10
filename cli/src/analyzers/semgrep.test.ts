@@ -1,5 +1,13 @@
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import path from 'node:path';
 import { parseConfig, reportSchema } from '@qualor/shared';
@@ -440,6 +448,8 @@ describe("OpenGrep's self-unpacking cache across qualor scan processes", () => {
       {
         args: OPENGREP_WARM_ARGS,
         options: {
+          // Never in the checkout: nothing there may configure the launch.
+          cwd: ctx.workDir,
           env: deadProxyEnv(),
           dropEnv: isOpengrepVariable,
           timeoutMs: OPENGREP_WARM_TIMEOUT_MS,
@@ -454,8 +464,12 @@ describe("OpenGrep's self-unpacking cache across qualor scan processes", () => {
     const root = tmp();
     const home = tmp();
     const log: string[] = [];
+    const warnings: string[] = [];
     let n = 0;
-    const ctx = fakeContext(root, { binaries: { opengrep: '/o' }, env: cacheEnv(home) });
+    const ctx = {
+      ...fakeContext(root, { binaries: { opengrep: '/o' }, env: cacheEnv(home) }),
+      log: { ...silentLogger, warn: (m: string) => warnings.push(m) },
+    };
     ctx.exec = async () => {
       const me = ++n;
       log.push(`start ${me}`);
@@ -463,8 +477,49 @@ describe("OpenGrep's self-unpacking cache across qualor scan processes", () => {
       log.push(`end ${me}`);
       return { ...ok, exitCode: me === 1 ? 135 : 0 };
     };
-    await Promise.all([warmOpengrep(ctx, '/o'), warmOpengrep(ctx, '/o'), warmOpengrep(ctx, '/o')]);
+    const fast = { pollMs: 5 };
+    await Promise.all([
+      warmOpengrep(ctx, '/o', fast),
+      warmOpengrep(ctx, '/o', fast),
+      warmOpengrep(ctx, '/o', fast),
+    ]);
     expect(log).toEqual(['start 1', 'end 1', 'start 2', 'end 2', 'start 3', 'end 3']);
+    // Diagnosable when it happens again, without the tool's own output.
+    expect(warnings).toEqual([
+      "OpenGrep's first launch, which unpacks it, exited with code 135; the scans run anyway",
+    ]);
+  });
+
+  it('warns when the launch times out or cannot start, and never fails the scan', async () => {
+    const warnings: string[] = [];
+    const ctx = {
+      ...fakeContext(tmp(), { binaries: { opengrep: '/o' }, env: cacheEnv(tmp()) }),
+      log: { ...silentLogger, warn: (m: string) => warnings.push(m) },
+    };
+    ctx.exec = () => Promise.resolve({ ...ok, exitCode: null, timedOut: true });
+    await warmOpengrep(ctx, '/o');
+    ctx.exec = () => Promise.reject(new Error('spawn failed'));
+    await expect(warmOpengrep(ctx, '/o')).resolves.toBeUndefined();
+    expect(warnings).toEqual([
+      `OpenGrep's first launch, which unpacks it, timed out after ${OPENGREP_WARM_TIMEOUT_MS / 1000} s; the scans run anyway`,
+      "OpenGrep's first launch, which unpacks it, could not run; the scans run anyway",
+    ]);
+  });
+
+  it('says once, at info, that it waits for another qualor scan', async () => {
+    const home = tmp();
+    const infos: string[] = [];
+    const ctx = {
+      ...fakeContext(tmp(), { binaries: { opengrep: '/o' }, env: cacheEnv(home) }),
+      log: { ...silentLogger, info: (m: string) => infos.push(m) },
+    };
+    mkdirSync(path.dirname(lockOf(home)), { recursive: true });
+    writeFileSync(lockOf(home), 'another qualor scan');
+    const warmed = warmOpengrep(ctx, '/o', { pollMs: 5, noticeMs: 20 });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    rmSync(lockOf(home));
+    await warmed;
+    expect(infos).toEqual([`waiting for another qualor scan to unpack OpenGrep (${lockOf(home)})`]);
   });
 
   it('does nothing without a cache root (no HOME)', async () => {
