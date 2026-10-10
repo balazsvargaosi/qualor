@@ -20,6 +20,7 @@ import {
   MAX_RULE_FILE_BYTES,
   offlineFlags,
   OPENGREP_GROUP,
+  warmOpengrep,
 } from './semgrep';
 import type { Analyzer, AnalyzerContext, Preparation } from './types';
 
@@ -322,7 +323,12 @@ export function createQualorAnalyzer(
     languages: QUALOR_LANGUAGES,
     // The rules apply to these languages only (report-format §5), so language profiles govern them.
     ruleLanguages: QUALOR_LANGUAGES,
-    prepare: (ctx) => Promise.resolve(prepare(ctx)),
+    prepare: async (ctx) => {
+      const prep = prepare(ctx);
+      // Plan 6B-6: never unpacking OpenGrep at the same time as another qualor scan.
+      if ('run' in prep) await warmOpengrep(ctx, prep.run.command);
+      return prep;
+    },
   };
 }
 

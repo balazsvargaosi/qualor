@@ -12,6 +12,7 @@ import { isUrl, type QualorConfig } from '@qualor/shared';
 import { parseAllDocuments } from 'yaml';
 import { MAX_ANALYZED_BYTES } from '../discovery/discover';
 import { real, staysInside, within } from './binary';
+import { withFileLock } from './file-lock';
 import { deadProxyEnv } from './offline';
 import { shown } from './reason';
 import type { Analyzer, AnalyzerContext, Preparation } from './types';
@@ -65,9 +66,62 @@ export function isOpengrepVariable(name: string): boolean {
  * engines. OpenGrep 1.30.0 is a self-extracting launcher that unpacks about 250 MB into
  * `$HOME/.cache/opengrep/<version>/` on its first run; launchers unpacking there at the same time
  * crash with SIGBUS (probed in a fresh qualor/scanner container: 3 or 4 at once fail in most
- * containers). One at a time, the first unpacks and the next finds the cache complete.
+ * containers). One at a time, the first unpacks and the next finds the cache complete. This keeps
+ * the runs of one scan apart; `warmOpengrep` keeps separate `qualor scan` processes apart.
  */
 export const OPENGREP_GROUP = 'opengrep';
+
+/**
+ * The cache root OpenGrep's launcher unpacks into (`<root>/v<version>/`): `$XDG_CACHE_HOME/opengrep`
+ * when that is an absolute path, else `$HOME/.cache/opengrep`; on Windows `%LOCALAPPDATA%\opengrep`.
+ * Null without one.
+ */
+export function opengrepCacheDir(
+  env: Readonly<Record<string, string | undefined>>,
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  const absolute = (name: string): string | null => {
+    const value = env[name];
+    return value !== undefined && path.isAbsolute(value) ? value : null;
+  };
+  if (platform === 'win32') {
+    const local = absolute('LOCALAPPDATA');
+    return local === null ? null : path.join(local, 'opengrep');
+  }
+  const xdg = absolute('XDG_CACHE_HOME');
+  if (xdg !== null) return path.join(xdg, 'opengrep');
+  const home = absolute('HOME');
+  return home === null ? null : path.join(home, '.cache', 'opengrep');
+}
+
+/** A launch that unpacks the cache when it is cold, and finds it complete when it is warm. */
+export const OPENGREP_WARM_ARGS: readonly string[] = ['--version', '--disable-version-check'];
+/** Unpacking takes a few seconds; well below the lock's stale age (`withFileLock`). */
+export const OPENGREP_WARM_TIMEOUT_MS = 120_000;
+
+/**
+ * Plan 6B-6: unpacks OpenGrep's cache before an engine's scan, one `qualor scan` process at a time.
+ * `OPENGREP_GROUP` keeps the two engines of one scan apart, but separate `qualor scan` processes
+ * sharing one cold cache (parallel jobs on one CI runner) still crashed: 10 of 40 scans in a
+ * fresh qualor/scanner container, four at a time. Each process holds the lock file
+ * `.qualor-unpack.lock` in the cache root while its launcher runs `--version`, so only one
+ * launcher ever unpacks; the scan that follows finds the cache complete and writes nothing to it.
+ * A failed launch is not an error here: the scan's own launch reports it.
+ */
+export async function warmOpengrep(ctx: AnalyzerContext, command: string): Promise<void> {
+  const dir = opengrepCacheDir(ctx.env);
+  if (dir === null) return;
+  await withFileLock(path.join(dir, '.qualor-unpack.lock'), async () => {
+    const result = await ctx.exec(command, OPENGREP_WARM_ARGS, {
+      env: deadProxyEnv(),
+      dropEnv: isOpengrepVariable,
+      timeoutMs: OPENGREP_WARM_TIMEOUT_MS,
+    });
+    if (result.exitCode !== 0) {
+      ctx.log.debug(`${command} ${OPENGREP_WARM_ARGS.join(' ')} exited ${result.exitCode}`);
+    }
+  });
+}
 
 /** A config path, `null` for a `qualor-default` that holds no rules, or why none can be used. */
 type Resolved = string | null | { skip: string } | { error: string };
@@ -320,24 +374,25 @@ function findBinary(ctx: AnalyzerContext): { command: string; flavour: Flavour }
 }
 
 export function createSemgrepAnalyzer(defaultRulesDir = DEFAULT_SEMGREP_RULES_DIR): Analyzer {
-  const prepare = (ctx: AnalyzerContext): Promise<Preparation> => {
+  const prepare = async (ctx: AnalyzerContext): Promise<Preparation> => {
     // `qualor scan` stops with exit 2 on these before any analyzer runs (checkConfig); this is
     // the same check for any other caller of the runner.
     const problem = checkSemgrepConfig(ctx.root, ctx.config);
-    if (problem !== null) return Promise.resolve({ skip: problem });
+    if (problem !== null) return { skip: problem };
     const configs = resolveConfigs(ctx.root, ctx.config.analyzers.semgrep.configs, defaultRulesDir);
     if (!Array.isArray(configs)) {
-      return Promise.resolve('skip' in configs ? configs : { skip: configs.error });
+      return 'skip' in configs ? configs : { skip: configs.error };
     }
     const binary = findBinary(ctx);
     if (binary === null) {
       const wanted = ctx.config.analyzers.semgrep.binary;
-      return Promise.resolve({
+      return {
         unavailable: `${wanted === 'auto' ? 'OpenGrep or Semgrep' : wanted} is not installed`,
-      });
+      };
     }
+    if (binary.flavour === 'opengrep') await warmOpengrep(ctx, binary.command);
     const out = path.join(ctx.workDir, 'semgrep.sarif');
-    return Promise.resolve({
+    return {
       run: {
         command: binary.command,
         args: [
@@ -361,7 +416,7 @@ export function createSemgrepAnalyzer(defaultRulesDir = DEFAULT_SEMGREP_RULES_DI
         okExitCodes: [0],
         version: null,
       },
-    });
+    };
   };
   // Languages: [] — rules can target any language (and config files), so it always runs under auto.
   return { id: 'semgrep', languages: [], prepare, checkConfig: checkSemgrepConfig };

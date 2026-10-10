@@ -83,7 +83,8 @@ export interface AnalyzerCommand {
   /**
    * Runs naming the same group never overlap within one scan: each waits for the other's process
    * to end. OpenGrep (`OPENGREP_GROUP`) unpacks itself into `$HOME/.cache/opengrep` on its first
-   * run, and launchers unpacking at the same time crash each other (SIGBUS).
+   * run, and launchers unpacking at the same time crash each other (SIGBUS); across `qualor scan`
+   * processes, `warmOpengrep` (semgrep.ts) keeps them apart.
    */
   exclusive?: string;
   /**

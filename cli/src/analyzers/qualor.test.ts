@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { QualorManifest } from '@qualor/shared';
 import { describe, expect, it } from 'vitest';
@@ -17,7 +17,12 @@ import {
   qualorAnalyzer,
   withQualorRules,
 } from './qualor';
-import { isOpengrepVariable, OPENGREP_GROUP } from './semgrep';
+import {
+  isOpengrepVariable,
+  OPENGREP_GROUP,
+  OPENGREP_WARM_ARGS,
+  opengrepCacheDir,
+} from './semgrep';
 import type { AnalyzerContext } from './types';
 
 const tmp = useTempDirs();
@@ -270,6 +275,31 @@ describe('qualorAnalyzer.prepare (config.md §6, plan 6B-1)', () => {
     );
     if (!('run' in fromEnv)) throw new Error(JSON.stringify(fromEnv));
     expect(fromEnv.run.args.slice(1, 3)).toEqual(['--config', path.join(other, 'rules')]);
+  });
+
+  it("unpacks OpenGrep's cache first, under the lock every qualor scan sharing the cache takes", async () => {
+    const root = tmp();
+    const home = tmp();
+    const env = { HOME: home, LOCALAPPDATA: home };
+    const lock = path.join(opengrepCacheDir(env) ?? '', '.qualor-unpack.lock');
+    const calls: { command: string; args: readonly string[]; locked: boolean }[] = [];
+    const ctx: AnalyzerContext = {
+      ...context(root, { env }),
+      exec: (command, args) => {
+        calls.push({ command, args, locked: existsSync(lock) });
+        return Promise.resolve({
+          exitCode: 0,
+          timedOut: false,
+          durationMs: 1,
+          stdout: '',
+          stderr: '',
+        });
+      },
+    };
+    const prep = await createQualorAnalyzer({ defaultDir: writePack(tmp()) }).prepare(ctx);
+    expect('run' in prep).toBe(true);
+    expect(calls).toEqual([{ command: OPENGREP, args: OPENGREP_WARM_ARGS, locked: true }]);
+    expect(existsSync(lock)).toBe(false);
   });
 
   it('counts the pointer of each argument (8 bytes) as well as its length and terminator', async () => {

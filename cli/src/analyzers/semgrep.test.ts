@@ -36,11 +36,22 @@ import {
   MAX_SEMGREP_CONFIGS,
   offlineFlags,
   OPENGREP_GROUP,
+  OPENGREP_WARM_ARGS,
+  OPENGREP_WARM_TIMEOUT_MS,
+  opengrepCacheDir,
   resolveConfigs,
   semgrepAnalyzer,
+  warmOpengrep,
 } from './semgrep';
+import type { ExecOptions } from './types';
 
 const tmp = useTempDirs();
+
+/** A cache root at `home` on every platform. */
+const cacheEnv = (home: string) => ({ HOME: home, LOCALAPPDATA: home });
+/** The lock every `qualor scan` sharing that cache takes before OpenGrep may unpack there. */
+const lockOf = (home: string) =>
+  path.join(opengrepCacheDir(cacheEnv(home)) ?? '', '.qualor-unpack.lock');
 
 const RULE = (id: string, extra = '') =>
   `rules:\n  - id: ${id}\n    pattern: eval(...)\n    message: m\n    languages: [javascript]\n    severity: ERROR\n${extra}`;
@@ -360,6 +371,114 @@ describe('semgrepAnalyzer.prepare', () => {
       ),
     ).toEqual({ skip: 'config ../x.yml is outside the repository' });
     expect(semgrepAnalyzer.checkConfig).toBe(checkSemgrepConfig);
+  });
+
+  it("unpacks OpenGrep's cache first, under the cache's lock, and never for Semgrep", async () => {
+    const root = setup();
+    const home = tmp();
+    const calls: { command: string; args: readonly string[]; locked: boolean }[] = [];
+    const exec = (command: string, args: readonly string[]) => {
+      calls.push({ command, args, locked: existsSync(lockOf(home)) });
+      return { exitCode: 0, timedOut: false, durationMs: 1, stdout: '1.30.0\n', stderr: '' };
+    };
+    const binaries = { opengrep: '/o', semgrep: '/s' };
+    const opengrep = await semgrepAnalyzer.prepare(
+      fakeContext(root, { config, binaries, exec, env: cacheEnv(home) }),
+    );
+    expect('run' in opengrep).toBe(true);
+    expect(calls).toEqual([{ command: '/o', args: OPENGREP_WARM_ARGS, locked: true }]);
+    const semgrep = await semgrepAnalyzer.prepare(
+      fakeContext(root, {
+        config: { analyzers: { semgrep: { configs: ['rules.yml'], binary: 'semgrep' } } },
+        binaries,
+        exec,
+        env: cacheEnv(home),
+      }),
+    );
+    expect('run' in semgrep).toBe(true);
+    expect(calls).toHaveLength(1);
+  });
+});
+
+describe("OpenGrep's self-unpacking cache across qualor scan processes", () => {
+  const ok = { exitCode: 0, timedOut: false, durationMs: 1, stdout: '', stderr: '' };
+
+  it('locks the cache root OpenGrep unpacks into: XDG_CACHE_HOME, else ~/.cache', () => {
+    const home = path.resolve('/home/node');
+    const xdg = path.resolve('/var/cache/ci');
+    expect(opengrepCacheDir({ HOME: home }, 'linux')).toBe(path.join(home, '.cache', 'opengrep'));
+    expect(opengrepCacheDir({ HOME: home, XDG_CACHE_HOME: xdg }, 'linux')).toBe(
+      path.join(xdg, 'opengrep'),
+    );
+    // A relative XDG_CACHE_HOME is invalid (XDG Base Directory specification) and ignored.
+    expect(opengrepCacheDir({ HOME: home, XDG_CACHE_HOME: 'rel' }, 'linux')).toBe(
+      path.join(home, '.cache', 'opengrep'),
+    );
+    const local = path.resolve('/Users/me/AppData/Local');
+    expect(opengrepCacheDir({ HOME: home, LOCALAPPDATA: local }, 'win32')).toBe(
+      path.join(local, 'opengrep'),
+    );
+    expect(opengrepCacheDir({}, 'linux')).toBeNull();
+    expect(opengrepCacheDir({ HOME: 'relative' }, 'linux')).toBeNull();
+  });
+
+  it('runs OpenGrep --version offline, without SEMGREP_/OPENGREP_ variables, holding the lock', async () => {
+    const root = tmp();
+    const home = tmp();
+    const seen: { args: readonly string[]; options: ExecOptions; locked: boolean }[] = [];
+    const ctx = fakeContext(root, {
+      binaries: { opengrep: '/o' },
+      env: cacheEnv(home),
+      exec: (_command, args, options) => {
+        seen.push({ args, options, locked: existsSync(lockOf(home)) });
+        return ok;
+      },
+    });
+    await warmOpengrep(ctx, '/o');
+    expect(OPENGREP_WARM_ARGS).toEqual(['--version', '--disable-version-check']);
+    expect(seen).toEqual([
+      {
+        args: OPENGREP_WARM_ARGS,
+        options: {
+          env: deadProxyEnv(),
+          dropEnv: isOpengrepVariable,
+          timeoutMs: OPENGREP_WARM_TIMEOUT_MS,
+        },
+        locked: true,
+      },
+    ]);
+    expect(existsSync(lockOf(home))).toBe(false);
+  });
+
+  it('lets one process unpack at a time, and leaves a failed launch to the scan itself', async () => {
+    const root = tmp();
+    const home = tmp();
+    const log: string[] = [];
+    let n = 0;
+    const ctx = fakeContext(root, { binaries: { opengrep: '/o' }, env: cacheEnv(home) });
+    ctx.exec = async () => {
+      const me = ++n;
+      log.push(`start ${me}`);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      log.push(`end ${me}`);
+      return { ...ok, exitCode: me === 1 ? 135 : 0 };
+    };
+    await Promise.all([warmOpengrep(ctx, '/o'), warmOpengrep(ctx, '/o'), warmOpengrep(ctx, '/o')]);
+    expect(log).toEqual(['start 1', 'end 1', 'start 2', 'end 2', 'start 3', 'end 3']);
+  });
+
+  it('does nothing without a cache root (no HOME)', async () => {
+    let ran = false;
+    const ctx = fakeContext(tmp(), {
+      binaries: { opengrep: '/o' },
+      env: {},
+      exec: () => {
+        ran = true;
+        return ok;
+      },
+    });
+    await warmOpengrep(ctx, '/o');
+    expect(ran).toBe(false);
   });
 });
 

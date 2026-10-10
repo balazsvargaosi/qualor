@@ -6,6 +6,13 @@ All notable changes to Qualor are listed here, newest first. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Several `qualor scan` runs started at the same time on one machine (parallel jobs on one CI
+  runner) could fail Qualor's security rules or the OpenGrep analyzer with `exited with code null`
+  on a fresh home directory. OpenGrep unpacks itself on its first run, and those runs now take
+  turns at that step only.
+
 ## [0.7.0] - 2026-10-07
 
 ### Added
