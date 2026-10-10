@@ -506,6 +506,26 @@ describe("OpenGrep's self-unpacking cache across qualor scan processes", () => {
     ]);
   });
 
+  it('warns when it unpacks without the lock, and says why', async () => {
+    const home = tmp();
+    const warnings: string[] = [];
+    let ran = 0;
+    const ctx = {
+      ...fakeContext(tmp(), { binaries: { opengrep: '/o' }, env: cacheEnv(home) }),
+      log: { ...silentLogger, warn: (m: string) => warnings.push(m) },
+    };
+    ctx.exec = () => {
+      ran += 1;
+      return Promise.resolve(ok);
+    };
+    mkdirSync(lockOf(home), { recursive: true });
+    await warmOpengrep(ctx, '/o');
+    expect(ran).toBe(1);
+    expect(warnings).toEqual([
+      `OpenGrep's first launch, which unpacks it, runs without the lock: ${lockOf(home)} is not a lock file`,
+    ]);
+  });
+
   it('says once, at info, that it waits for another qualor scan', async () => {
     const home = tmp();
     const infos: string[] = [];

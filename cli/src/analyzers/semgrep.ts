@@ -142,6 +142,7 @@ export async function warmOpengrep(
       {
         ...lock,
         onWait: () => ctx.log.info(`waiting for another qualor scan to unpack OpenGrep (${file})`),
+        onUnlocked: (why) => ctx.log.warn(`${WARM_FAILED} runs without the lock: ${why}`),
       },
     );
   } catch (err) {

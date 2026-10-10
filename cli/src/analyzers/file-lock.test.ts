@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
+  linkSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -13,7 +14,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { useTempDirs } from '../../test/tmp';
-import { withFileLock } from './file-lock';
+import { claimOf, takeOverStale, withFileLock } from './file-lock';
 
 const tmp = useTempDirs();
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -219,7 +220,7 @@ describe('withFileLock (the OpenGrep cache across qualor scan processes)', () =>
           await withFileLock(file, () => Promise.resolve('ran'), {
             pollMs: 5,
             staleMs: 1_000,
-            maxWaitMs: 100,
+            maxWaitMs: 60_000,
           }),
         ).toBe('ran');
         expect(readFileSync(file, 'utf8')).toBe('another user');
@@ -228,6 +229,77 @@ describe('withFileLock (the OpenGrep cache across qualor scan processes)', () =>
       }
     },
   );
+
+  it('leaves alone a fresh lock that holds the content it judged stale (re-checked on the claim)', () => {
+    const dir = tmp();
+    const file = path.join(dir, '.lock');
+    // Between the age check and the read, another waiter took the stale lock over and wrote a
+    // fresh one: the content read is the fresh lock's.
+    writeFileSync(file, 'token of a fresh lock');
+    expect(takeOverStale(file, 'token of a fresh lock', 30_000)).toBe('wait');
+    expect(readFileSync(file, 'utf8')).toBe('token of a fresh lock');
+    expect(readdirSync(dir)).toEqual(['.lock']);
+  });
+
+  it('takes over a stale lock through its claim, and leaves nothing behind', () => {
+    const dir = tmp();
+    const file = path.join(dir, '.lock');
+    writeFileSync(file, 'dead holder');
+    age(file);
+    expect(takeOverStale(file, 'dead holder', 30_000)).toBe('retry');
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
+  it('runs unlocked at once where hard links cannot be made, and says why', () => {
+    const file = path.join(tmp(), '.lock');
+    writeFileSync(file, 'dead holder');
+    age(file);
+    const fail = (code: string) => () => {
+      throw Object.assign(new Error(code), { code });
+    };
+    for (const code of ['ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV']) {
+      expect(takeOverStale(file, 'dead holder', 30_000, fail(code)), code).toEqual({
+        unusable: `no hard link can be made next to ${file} (${code})`,
+      });
+    }
+    // The lock went away meanwhile: try again; on Windows it may be pending deletion: wait.
+    expect(takeOverStale(file, 'dead holder', 30_000, fail('ENOENT'))).toBe('retry');
+    if (process.platform === 'win32') {
+      expect(takeOverStale(file, 'dead holder', 30_000, fail('EPERM'))).toBe('wait');
+    }
+    expect(readFileSync(file, 'utf8')).toBe('dead holder');
+  });
+
+  it('runs unlocked at once, and names both files, when a dead claimer left its claim', async () => {
+    const dir = tmp();
+    const file = path.join(dir, '.lock');
+    writeFileSync(file, 'dead holder');
+    age(file);
+    const found: string[] = [];
+    const run = (staleMs: number, maxWaitMs: number) =>
+      withFileLock(file, () => Promise.resolve('ran'), {
+        pollMs: 5,
+        staleMs,
+        maxWaitMs,
+        onUnlocked: (why) => found.push(why),
+      });
+    // A claimer killed between its claim and its cleanup.
+    linkSync(file, claimOf(file, 'dead holder'));
+    // A young claim belongs to a live claimer: wait for it.
+    const started = Date.now();
+    expect(await run(30_000, 150)).toBe('ran');
+    expect(Date.now() - started).toBeGreaterThanOrEqual(150);
+    expect(found).toEqual([`waited 0.15 s for ${file}`]);
+    await pause(120);
+    found.length = 0;
+    const again = Date.now();
+    expect(await run(100, 60_000)).toBe('ran');
+    expect(Date.now() - again).toBeLessThan(5_000);
+    expect(found).toEqual([
+      `${claimOf(file, 'dead holder')} is left from a process that died while it took over ${file}; remove both`,
+    ]);
+    expect(readFileSync(file, 'utf8')).toBe('dead holder');
+  });
 
   it('releases the lock when the work fails', async () => {
     const file = path.join(tmp(), '.lock');
