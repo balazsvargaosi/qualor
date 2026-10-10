@@ -863,23 +863,16 @@ describe('the qualor rules pack (plan 6B-1)', () => {
     expect(installer).not.toMatch(/^(QUALOR_RULES_(VERSION|SHA256|URL)|OPENGREP_VERSION)=/m);
   });
 
-  /**
-   * The `opengrep` field of each qualor-rules release's manifest.json: the OpenGrep its rules are
-   * tested with. Recorded here so that the check runs without downloading the pack.
-   */
-  const PACK_OPENGREP: Record<string, string> = {
-    '2026.10.0': '1.30.0',
-    '2026.10.1': '1.30.0',
-    '2026.10.2': '1.30.0',
-    '2026.10.3': '1.30.0',
-  };
-
   it('installs the OpenGrep the pinned pack is made for (bump OpenGrep only with a pack that names it)', () => {
-    const pins = qualorRulesPins(script);
-    expect(
-      PACK_OPENGREP[pins.version],
-      `qualor-rules ${pins.version} must name OpenGrep ${pins.opengrep}: bump the pack's opengrep and re-run its opengrep --test first, then record it here`,
-    ).toBe(pins.opengrep);
+    // No record of each pack's OpenGrep here: the pack is published (QUALOR_RULES_URL), so every
+    // job that installs the analyzers downloads the pinned pack (see "runs in every job that
+    // requires the analyzers" below), and the installer fails it when the pack's manifest names
+    // another OpenGrep than install.sh's OPENGREP_VERSION.
+    expect(qualorRulesPins(script).url).toBe(RULES_URL);
+    expect(qualorRulesPins(script).opengrep).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(installer).toContain(
+      'grep -qxF "  \\"opengrep\\": \\"$OPENGREP_VERSION\\"," "$TMP/pack/manifest.json"',
+    );
   });
 
   /** The text of one entry of a gzipped ustar archive, or null. */
@@ -901,12 +894,13 @@ describe('the qualor rules pack (plan 6B-1)', () => {
 
   const dropped = `tools/analyzers/qualor-rules/qualor-rules-${qualorRulesPins(script).version}.tar.gz`;
   it.runIf(existsSync(dropped))(
-    'records the OpenGrep that the pinned pack in the drop directory names',
+    'installs the OpenGrep that the pinned pack in the drop directory names',
     () => {
       const manifest = tarEntry(readFileSync(dropped), 'manifest.json');
       expect(manifest).not.toBeNull();
       const { version, opengrep } = JSON.parse(manifest!) as { version: string; opengrep: string };
-      expect(PACK_OPENGREP[version]).toBe(opengrep);
+      expect(version).toBe(qualorRulesPins(script).version);
+      expect(opengrep).toBe(qualorRulesPins(script).opengrep);
     },
   );
 
