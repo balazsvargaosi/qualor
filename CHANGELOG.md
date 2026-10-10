@@ -19,6 +19,8 @@ All notable changes to Qualor are listed here, newest first. The format follows
   runner) could fail Qualor's security rules or the OpenGrep analyzer with `exited with code null`
   on a fresh home directory. OpenGrep unpacks itself on its first run, and those runs now take
   turns at that step only.
+- `qualor/scanner`: the HTML and CSS linters use source-map-js 1.2.2 (was 1.2.1;
+  GHSA-68fv-2mgg-jv7q).
 
 ## [0.7.0] - 2026-10-07
 
