@@ -121,6 +121,7 @@ const PUBLIC_REPOSITORIES: ReadonlySet<string> = new Set([
   'tssecurity',
   'javasecurity',
   'pythonsecurity',
+  'gosecurity',
   'phpsecurity',
   'roslyn.sonaranalyzer.security.cs',
   'external_eslint_repo',

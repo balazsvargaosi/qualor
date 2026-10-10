@@ -6,6 +6,13 @@ All notable changes to Qualor are listed here, newest first. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `qualor import sonarqube` maps SonarQube's taint rules (`javasecurity`, `jssecurity`,
+  `tssecurity`, `pythonsecurity`, `gosecurity`) to Qualor's own security rules of the same kind,
+  such as `javasecurity:S3649` to `qualor:java/sql-injection`. The mappings are pending review, so
+  they carry issue statuses (false positive, accepted) and leave profiles unchanged.
+
 ### Fixed
 
 - Several `qualor scan` runs started at the same time on one machine (parallel jobs on one CI

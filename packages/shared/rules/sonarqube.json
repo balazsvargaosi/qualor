@@ -1,17 +1,17 @@
 {
-  "$comment": "SonarQube rule keys to Qualor rule keys. MIT. Keys, relations, review flags and our own one-line reasons only: never SonarSource rule titles, descriptions or examples, and nothing generated from SonarSource sources. python:S#### rows were compared against both rules' public documentation (SonarSource's public sonar-python repository rule descriptions and Ruff's docs) by an automated review on the maintainer's instruction on 2026-10-01; keys only, no SonarSource text. A curated entry stays reviewed:false until it has been compared that way; unreviewed entries are used for issue statuses only, never for profiles. C#: external_roslyn maps to roslyn for issue statuses, and (Phase 8) csharpsquid maps to roslyn one to one, restricted to the keys the bundled SonarAnalyzer.CSharp 9.32.0.97167 actually has. javascript and typescript (Phase 8) map to sonarjs one to one, restricted to the keys the bundled eslint-plugin-sonarjs 2.0.4 actually has; a key either bundled package lacks (e.g. javascript:S1440, csharpsquid:S9999) gets no repository target and stays unmapped unless the curated table below still covers it. Python (Phase 8C): external_ruff maps to ruff one to one for the codes of the pinned Ruff (ruff-keys.json); python:S#### rows are curated, keys only, each compared against both rules' public documentation; external_bandit is not mapped yet. Swift (Phase 8F): external_swiftlint maps to swiftlint one to one, since SwiftLint issues imported into SonarQube keep SwiftLint's rule identifiers; SonarSource's own swift:S#### rules are not mapped, so a Swift profile is classified and skipped as having no mapped rules. PHP (Phase 9A): php:S#### rows are curated, keys only, each compared against both rules' public documentation and sources (SonarSource's public sonar-php repository, PHPStan's docs and source; committed reviewed, as the python rows), each target a PHPStan identifier that fires at Qualor's default level; SonarQube imports PHPStan reports as the single rule external_phpstan:phpstan.finding, which cannot be mapped; external_psalm and phpsecurity are not mapped. Ruby (Phase 9B): external_rubocop maps to rubocop one to one for the cops of the pinned RuboCop (rubocop-keys.json); ruby:S#### rows are curated, keys only, each compared against both rules' public documentation; rubydre is SonarQube's newer repository for the same RSPEC ids (rubydre-only rules: public name and parameters only; kept as overlap). Go (Phase 9C): external_govet maps to govet one to one; go:S#### rows are curated (keys and our own reasons only); the rows whose SonarQube rule has a public description (SonarSource's public sonar-go repository) were compared against it and the pinned tool's sources by an automated review on 2026-10-01 and are reviewed, and a row is equivalent only where both scopes match at default settings, otherwise overlap; the rest (the gosec rows, known by rule name only) stay reviewed:false overlap and import issue statuses only until a person compares both rules' documentation; external_golangci-lint keys are linter names and are not mapped. C and C++ (Phase 9D): c:S#### and cpp:S#### rows are curated, keys only, `reviewed: false` until compared against both rules' public documentation; SonarQube has no repository of imported cppcheck or clang-tidy issues, and MISRA keys (`c:M23_…`) are not mapped. Java security (Phase 6A): java:S#### rows to SpotBugs' bundled FindSecBugs patterns (and core SpotBugs rules) were compared against both rules' public descriptions (SonarSource's public sonar-java repository; FindSecBugs' bugs.htm, messages.xml and detector sources) on 2026-10-03 and are reviewed; equivalent only where both detect the same API use, otherwise overlap. javasecurity:S#### (SonarQube's commercial taint rules) are not mapped: their descriptions are not public.",
+  "$comment": "SonarQube rule keys to Qualor rule keys. MIT. Keys, relations, review flags and our own one-line reasons only: never SonarSource rule titles, descriptions or examples, and nothing generated from SonarSource sources. python:S#### rows were compared against both rules' public documentation (SonarSource's public sonar-python repository rule descriptions and Ruff's docs) by an automated review on the maintainer's instruction on 2026-10-01; keys only, no SonarSource text. A curated entry stays reviewed:false until it has been compared that way; unreviewed entries are used for issue statuses only, never for profiles. C#: external_roslyn maps to roslyn for issue statuses, and (Phase 8) csharpsquid maps to roslyn one to one, restricted to the keys the bundled SonarAnalyzer.CSharp 9.32.0.97167 actually has. javascript and typescript (Phase 8) map to sonarjs one to one, restricted to the keys the bundled eslint-plugin-sonarjs 2.0.4 actually has; a key either bundled package lacks (e.g. javascript:S1440, csharpsquid:S9999) gets no repository target and stays unmapped unless the curated table below still covers it. Python (Phase 8C): external_ruff maps to ruff one to one for the codes of the pinned Ruff (ruff-keys.json); python:S#### rows are curated, keys only, each compared against both rules' public documentation; external_bandit is not mapped yet. Swift (Phase 8F): external_swiftlint maps to swiftlint one to one, since SwiftLint issues imported into SonarQube keep SwiftLint's rule identifiers; SonarSource's own swift:S#### rules are not mapped, so a Swift profile is classified and skipped as having no mapped rules. PHP (Phase 9A): php:S#### rows are curated, keys only, each compared against both rules' public documentation and sources (SonarSource's public sonar-php repository, PHPStan's docs and source; committed reviewed, as the python rows), each target a PHPStan identifier that fires at Qualor's default level; SonarQube imports PHPStan reports as the single rule external_phpstan:phpstan.finding, which cannot be mapped; external_psalm and phpsecurity are not mapped. Ruby (Phase 9B): external_rubocop maps to rubocop one to one for the cops of the pinned RuboCop (rubocop-keys.json); ruby:S#### rows are curated, keys only, each compared against both rules' public documentation; rubydre is SonarQube's newer repository for the same RSPEC ids (rubydre-only rules: public name and parameters only; kept as overlap). Go (Phase 9C): external_govet maps to govet one to one; go:S#### rows are curated (keys and our own reasons only); the rows whose SonarQube rule has a public description (SonarSource's public sonar-go repository) were compared against it and the pinned tool's sources by an automated review on 2026-10-01 and are reviewed, and a row is equivalent only where both scopes match at default settings, otherwise overlap; the rest (the gosec rows, known by rule name only) stay reviewed:false overlap and import issue statuses only until a person compares both rules' documentation; external_golangci-lint keys are linter names and are not mapped. C and C++ (Phase 9D): c:S#### and cpp:S#### rows are curated, keys only, `reviewed: false` until compared against both rules' public documentation; SonarQube has no repository of imported cppcheck or clang-tidy issues, and MISRA keys (`c:M23_…`) are not mapped. Java security (Phase 6A): java:S#### rows to SpotBugs' bundled FindSecBugs patterns (and core SpotBugs rules) were compared against both rules' public descriptions (SonarSource's public sonar-java repository; FindSecBugs' bugs.htm, messages.xml and detector sources) on 2026-10-03 and are reviewed; equivalent only where both detect the same API use, otherwise overlap. Qualor's security rules (plan 6B-6): javasecurity:, jssecurity:/tssecurity:, pythonsecurity: and gosecurity: S#### rows (SonarQube's commercial taint rules, whose descriptions are not public) map to the qualor:<lang>/<name> rule of the same vulnerability class, matched by SonarQube rule key, rule name and CWE id only (read with the Web API's f=name, never a description); each is overlap and reviewed:false, so they import issue statuses only, until a person compares both rules. A taint rule of a class Qualor has no rule for in that language (log injection, argument injection, DOM XSS, LLM data and the like) is not mapped, nor is any rule mapped to a Qualor hotspot; phpsecurity and roslyn.sonaranalyzer.security.cs are not mapped.",
   "languages": {
     "js": {
       "language": "javascript",
-      "engines": ["eslint", "sonarjs"]
+      "engines": ["eslint", "sonarjs", "qualor"]
     },
     "ts": {
       "language": "typescript",
-      "engines": ["eslint", "sonarjs"]
+      "engines": ["eslint", "sonarjs", "qualor"]
     },
     "java": {
       "language": "java",
-      "engines": ["pmd", "spotbugs"]
+      "engines": ["pmd", "spotbugs", "qualor"]
     },
     "cs": {
       "language": "csharp",
@@ -19,7 +19,7 @@
     },
     "py": {
       "language": "python",
-      "engines": ["ruff"]
+      "engines": ["ruff", "qualor"]
     },
     "swift": {
       "language": "swift",
@@ -35,7 +35,7 @@
     },
     "go": {
       "language": "go",
-      "engines": ["staticcheck", "govet", "gosec"]
+      "engines": ["staticcheck", "govet", "gosec", "qualor"]
     },
     "c": {
       "language": "c",
@@ -1782,6 +1782,314 @@
       "relation": "equivalent",
       "reviewed": true,
       "reason": "Both flag Jackson default typing and class-name type ids, which open deserialization attacks."
+    },
+    {
+      "sonar": ["javasecurity:S2076"],
+      "qualor": ["qualor:java/command-injection"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report an OS command built from untrusted request data."
+    },
+    {
+      "sonar": ["javasecurity:S2078"],
+      "qualor": ["qualor:java/ldap-injection"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report an LDAP search filter built from untrusted request data."
+    },
+    {
+      "sonar": ["javasecurity:S2083"],
+      "qualor": ["qualor:java/path-traversal"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report a file path built from untrusted request data."
+    },
+    {
+      "sonar": ["javasecurity:S2091"],
+      "qualor": ["qualor:java/xpath-injection"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report an XPath expression built from untrusted request data."
+    },
+    {
+      "sonar": ["javasecurity:S2631"],
+      "qualor": ["qualor:java/regex-injection"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report a regular expression built from untrusted request data (ReDoS)."
+    },
+    {
+      "sonar": ["javasecurity:S3649"],
+      "qualor": ["qualor:java/sql-injection"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report an SQL query built from untrusted request data."
+    },
+    {
+      "sonar": ["javasecurity:S5131"],
+      "qualor": ["qualor:java/xss"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report an HTML response built from untrusted request data (reflected XSS)."
+    },
+    {
+      "sonar": ["javasecurity:S5135"],
+      "qualor": ["qualor:java/unsafe-deserialization"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report untrusted request data deserialized into objects."
+    },
+    {
+      "sonar": ["javasecurity:S5144"],
+      "qualor": ["qualor:java/ssrf"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report a server-side request to a URL built from untrusted request data."
+    },
+    {
+      "sonar": ["javasecurity:S5146"],
+      "qualor": ["qualor:java/open-redirect"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report a redirect to a URL taken from untrusted request data."
+    },
+    {
+      "sonar": ["javasecurity:S5334"],
+      "qualor": ["qualor:java/expression-injection"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report code or an expression-language string evaluated from untrusted request data."
+    },
+    {
+      "sonar": ["javasecurity:S5496"],
+      "qualor": ["qualor:java/template-injection"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report template source built from untrusted request data (SSTI)."
+    },
+    {
+      "sonar": ["javasecurity:S6096"],
+      "qualor": ["qualor:java/zip-slip"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report an archive entry name used as an extraction path (zip slip)."
+    },
+    {
+      "sonar": ["javasecurity:S7044"],
+      "qualor": ["qualor:java/ssrf"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report a server-side request whose URL takes untrusted request data, here in its path."
+    },
+    {
+      "sonar": ["jssecurity:S2076", "tssecurity:S2076"],
+      "qualor": ["qualor:js/command-injection"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report an OS command built from untrusted request data."
+    },
+    {
+      "sonar": ["jssecurity:S2083", "tssecurity:S2083"],
+      "qualor": ["qualor:js/path-traversal"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report a file path built from untrusted request data."
+    },
+    {
+      "sonar": ["jssecurity:S2631", "tssecurity:S2631"],
+      "qualor": ["qualor:js/regex-injection"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report a regular expression built from untrusted request data (ReDoS)."
+    },
+    {
+      "sonar": ["jssecurity:S3649", "tssecurity:S3649"],
+      "qualor": ["qualor:js/sql-injection"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report an SQL query built from untrusted request data."
+    },
+    {
+      "sonar": ["jssecurity:S5131", "tssecurity:S5131"],
+      "qualor": ["qualor:js/xss"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report an HTML response built from untrusted request data (reflected XSS)."
+    },
+    {
+      "sonar": ["jssecurity:S5144", "tssecurity:S5144"],
+      "qualor": ["qualor:js/ssrf"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report a server-side request to a URL built from untrusted request data."
+    },
+    {
+      "sonar": ["jssecurity:S5146", "tssecurity:S5146"],
+      "qualor": ["qualor:js/open-redirect"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report a redirect to a URL taken from untrusted request data."
+    },
+    {
+      "sonar": ["jssecurity:S5147", "tssecurity:S5147"],
+      "qualor": ["qualor:js/nosql-injection"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report a NoSQL (MongoDB) query built from untrusted request data."
+    },
+    {
+      "sonar": ["jssecurity:S5334", "tssecurity:S5334"],
+      "qualor": ["qualor:js/code-injection"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report code evaluated from untrusted request data."
+    },
+    {
+      "sonar": ["jssecurity:S5496", "tssecurity:S5496"],
+      "qualor": ["qualor:js/template-injection"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report template source built from untrusted request data (SSTI)."
+    },
+    {
+      "sonar": ["jssecurity:S6109", "tssecurity:S6109"],
+      "qualor": ["qualor:js/prototype-pollution"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report object keys from untrusted request data that can pollute a prototype."
+    },
+    {
+      "sonar": ["jssecurity:S7044", "tssecurity:S7044"],
+      "qualor": ["qualor:js/ssrf"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report a server-side request whose URL takes untrusted request data, here in its path."
+    },
+    {
+      "sonar": ["pythonsecurity:S2076"],
+      "qualor": ["qualor:python/command-injection"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report an OS command built from untrusted request data."
+    },
+    {
+      "sonar": ["pythonsecurity:S2083"],
+      "qualor": ["qualor:python/path-traversal"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report a file path built from untrusted request data."
+    },
+    {
+      "sonar": ["pythonsecurity:S2091"],
+      "qualor": ["qualor:python/xpath-injection"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report an XPath expression built from untrusted request data."
+    },
+    {
+      "sonar": ["pythonsecurity:S2631"],
+      "qualor": ["qualor:python/regex-injection"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report a regular expression built from untrusted request data (ReDoS)."
+    },
+    {
+      "sonar": ["pythonsecurity:S3649"],
+      "qualor": ["qualor:python/sql-injection"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report an SQL query built from untrusted request data."
+    },
+    {
+      "sonar": ["pythonsecurity:S5131"],
+      "qualor": ["qualor:python/xss"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report an HTML response built from untrusted request data (reflected XSS)."
+    },
+    {
+      "sonar": ["pythonsecurity:S5135"],
+      "qualor": ["qualor:python/unsafe-deserialization"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report untrusted request data deserialized into objects."
+    },
+    {
+      "sonar": ["pythonsecurity:S5144"],
+      "qualor": ["qualor:python/ssrf"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report a server-side request to a URL built from untrusted request data."
+    },
+    {
+      "sonar": ["pythonsecurity:S5146"],
+      "qualor": ["qualor:python/open-redirect"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report a redirect to a URL taken from untrusted request data."
+    },
+    {
+      "sonar": ["pythonsecurity:S5334"],
+      "qualor": ["qualor:python/code-injection"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report code evaluated from untrusted request data."
+    },
+    {
+      "sonar": ["pythonsecurity:S5496"],
+      "qualor": ["qualor:python/template-injection"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report template source built from untrusted request data (SSTI)."
+    },
+    {
+      "sonar": ["pythonsecurity:S7044"],
+      "qualor": ["qualor:python/ssrf"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report a server-side request whose URL takes untrusted request data, here in its path."
+    },
+    {
+      "sonar": ["gosecurity:S2076"],
+      "qualor": ["qualor:go/command-injection"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report an OS command built from untrusted request data."
+    },
+    {
+      "sonar": ["gosecurity:S2083"],
+      "qualor": ["qualor:go/path-traversal"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report a file path built from untrusted request data."
+    },
+    {
+      "sonar": ["gosecurity:S3649"],
+      "qualor": ["qualor:go/sql-injection"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report an SQL query built from untrusted request data."
+    },
+    {
+      "sonar": ["gosecurity:S5144"],
+      "qualor": ["qualor:go/ssrf"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report a server-side request to a URL built from untrusted request data."
+    },
+    {
+      "sonar": ["gosecurity:S5146"],
+      "qualor": ["qualor:go/open-redirect"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report a redirect to a URL taken from untrusted request data."
+    },
+    {
+      "sonar": ["gosecurity:S6096"],
+      "qualor": ["qualor:go/zip-slip"],
+      "relation": "overlap",
+      "reviewed": false,
+      "reason": "Both report an archive entry name used as an extraction path (zip slip)."
     }
   ]
 }

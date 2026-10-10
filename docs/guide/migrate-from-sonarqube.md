@@ -44,9 +44,19 @@ Issues SonarQube imported from Bandit (`external_bandit`) are not mapped yet.
 24 of SonarQube's Java security rules have a SpotBugs or FindSecBugs counterpart. Three of them map
 one to one and are activated in the imported Java profile: the client's session id (S2254),
 unauthenticated LDAP (S4433) and Jackson default typing (S4544). The others cover more or less than
-their counterpart, so they import issue statuses only. SonarQube's taint rules of its commercial
-editions are not mapped. Qualor's own security rules (see Languages and analyzers) cover some of
-the same ground; the import does not map SonarQube's security rules to them yet.
+their counterpart, so they import issue statuses only.
+
+SonarQube's taint rules of its commercial editions (`javasecurity`, `jssecurity`, `tssecurity`,
+`pythonsecurity` and `gosecurity`) map to Qualor's own security rules (see Languages and
+analyzers) where both find the same kind of vulnerability: SQL, NoSQL, OS command, LDAP, XPath,
+code, expression-language and template injection, path traversal, zip slip, XSS, SSRF, open
+redirects, regular expressions built from request data, unsafe deserialization and prototype
+pollution. For example, `javasecurity:S3649` maps to `qualor:java/sql-injection` and
+`pythonsecurity:S2076` to `qualor:python/command-injection`. These mappings are pending review:
+they carry the issue statuses (false positive, accepted) onto the matching Qualor issue, by file
+and line, and do not change your profiles. Taint rules of a kind Qualor has no rule for in that
+language (log injection, for example) are not mapped, and neither are `phpsecurity` and the C#
+security rules.
 
 Qualor runs these bundled rules with their default configuration: eslint-plugin-sonarjs's
 `recommended` set, the SonarAnalyzer.CSharp rules enabled by default, and Ruff's own
@@ -56,7 +66,7 @@ no issue comes from it, and the summary and the `--output` plan count such rules
 not run by the bundled configuration** (`mappedNotRun`); turn one on with `analyzers.ruff.select`.
 
 Not imported, and reported instead: rule parameters, SonarSource rules without an ESLint, PMD,
-SpotBugs, SonarQube-compatible-rules or Ruff counterpart, gate conditions on metrics Qualor lacks,
+SpotBugs, SonarQube-compatible-rules, Ruff or Qualor security-rule counterpart, gate conditions on metrics Qualor lacks,
 security hotspot reviews, branches other than main, users and permissions, history, and new-code
 definitions.
 

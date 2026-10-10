@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import phpstanIdentifiers from '../../../rules/phpstan-identifiers.json' with { type: 'json' };
 import ruffKeys from '../../../rules/ruff-keys.json' with { type: 'json' };
@@ -26,9 +27,9 @@ describe('the SonarQube mapping table (import-sonarqube.md §6)', () => {
   it('loads the shipped table', () => {
     expect(SONAR_MAPPING.language('ts')).toEqual({
       language: 'typescript',
-      engines: ['eslint', 'sonarjs'],
+      engines: ['eslint', 'sonarjs', 'qualor'],
     });
-    expect(SONAR_MAPPING.language('java')?.engines).toEqual(['pmd', 'spotbugs']);
+    expect(SONAR_MAPPING.language('java')?.engines).toEqual(['pmd', 'spotbugs', 'qualor']);
   });
 
   it('knows no language it does not list', () => {
@@ -36,7 +37,10 @@ describe('the SonarQube mapping table (import-sonarqube.md §6)', () => {
   });
 
   it('maps py to the python profile, governed by ruff (plan 8C)', () => {
-    expect(SONAR_MAPPING.language('py')).toEqual({ language: 'python', engines: ['ruff'] });
+    expect(SONAR_MAPPING.language('py')).toEqual({
+      language: 'python',
+      engines: ['ruff', 'qualor'],
+    });
   });
 
   it('maps the swift language and the statuses of SwiftLint issues SonarQube imported (plan 8F)', () => {
@@ -50,7 +54,7 @@ describe('the SonarQube mapping table (import-sonarqube.md §6)', () => {
   it('maps the go language, and the statuses of go vet issues SonarQube imported (plan 9C)', () => {
     expect(SONAR_MAPPING.language('go')).toEqual({
       language: 'go',
-      engines: ['staticcheck', 'govet', 'gosec'],
+      engines: ['staticcheck', 'govet', 'gosec', 'qualor'],
     });
     expect(SONAR_MAPPING.targets('external_govet:printf')).toEqual([
       { key: 'govet:printf', relation: 'equivalent', reviewed: true, source: 'repository' },
@@ -501,8 +505,6 @@ describe('the SonarQube mapping table (import-sonarqube.md §6)', () => {
     expect(SONAR_MAPPING.targets('java:S2245')).toEqual([
       { key: 'spotbugs:PREDICTABLE_RANDOM', relation: 'overlap', reviewed: true, source: 'table' },
     ]);
-    // SonarQube's commercial taint rules are not mapped.
-    expect(SONAR_MAPPING.targets('javasecurity:S3649')).toEqual([]);
   });
 
   it('ships every python, php and ruby entry, the compared go entries and the FindSecBugs java rows reviewed, and every other curated entry unreviewed', () => {
@@ -522,6 +524,115 @@ describe('the SonarQube mapping table (import-sonarqube.md §6)', () => {
     }
   });
 
+  /**
+   * Plan 6B-6: SonarQube's taint rules of its commercial editions, known by key, name and CWE ids
+   * only, mapped to the Qualor security rule of the same vulnerability class.
+   */
+  const TAINT_ROWS: Record<string, readonly string[]> = {
+    java: ['S2076', 'S2078', 'S2083', 'S2091', 'S2631', 'S3649', 'S5131', 'S5135', 'S5144'],
+    js: ['S2076', 'S2083', 'S2631', 'S3649', 'S5131', 'S5144', 'S5146', 'S5147', 'S5334'],
+    python: ['S2076', 'S2083', 'S2091', 'S2631', 'S3649', 'S5131', 'S5135', 'S5144', 'S5146'],
+    go: ['S2076', 'S2083', 'S3649', 'S5144', 'S5146', 'S6096'],
+  };
+  const TAINT_TARGET: Record<string, string> = {
+    S2076: 'command-injection',
+    S2078: 'ldap-injection',
+    S2083: 'path-traversal',
+    S2091: 'xpath-injection',
+    S2631: 'regex-injection',
+    S3649: 'sql-injection',
+    S5131: 'xss',
+    S5135: 'unsafe-deserialization',
+    S5144: 'ssrf',
+    S5146: 'open-redirect',
+    S5147: 'nosql-injection',
+    S5334: 'code-injection',
+    S6096: 'zip-slip',
+  };
+  const TAINT_REPOSITORIES: Record<string, readonly string[]> = {
+    java: ['javasecurity'],
+    js: ['jssecurity', 'tssecurity'],
+    python: ['pythonsecurity'],
+    go: ['gosecurity'],
+  };
+  const overlap = (key: string) => [{ key, relation: 'overlap', reviewed: false, source: 'table' }];
+
+  it("maps SonarQube's taint rules to Qualor's security rule of the same class, pending review (plan 6B-6)", () => {
+    for (const [lang, ids] of Object.entries(TAINT_ROWS)) {
+      for (const id of ids) {
+        for (const repository of TAINT_REPOSITORIES[lang] ?? []) {
+          const key = `${repository}:${id}`;
+          expect(SONAR_MAPPING.targets(key), key).toEqual(
+            overlap(`qualor:${lang}/${TAINT_TARGET[id] ?? ''}`),
+          );
+        }
+      }
+    }
+    // The same class under another name on Qualor's side, or a second rule of the same class.
+    const more: [string, string][] = [
+      ['javasecurity:S5146', 'qualor:java/open-redirect'],
+      ['javasecurity:S5334', 'qualor:java/expression-injection'],
+      ['javasecurity:S5496', 'qualor:java/template-injection'],
+      ['javasecurity:S6096', 'qualor:java/zip-slip'],
+      ['javasecurity:S7044', 'qualor:java/ssrf'],
+      ['jssecurity:S5496', 'qualor:js/template-injection'],
+      ['tssecurity:S5496', 'qualor:js/template-injection'],
+      ['jssecurity:S6109', 'qualor:js/prototype-pollution'],
+      ['tssecurity:S6109', 'qualor:js/prototype-pollution'],
+      ['jssecurity:S7044', 'qualor:js/ssrf'],
+      ['tssecurity:S7044', 'qualor:js/ssrf'],
+      ['pythonsecurity:S5334', 'qualor:python/code-injection'],
+      ['pythonsecurity:S5496', 'qualor:python/template-injection'],
+      ['pythonsecurity:S7044', 'qualor:python/ssrf'],
+    ];
+    for (const [sonar, q] of more) expect(SONAR_MAPPING.targets(sonar), sonar).toEqual(overlap(q));
+    const rows = raw.rules.filter((r) => r.qualor.some((q) => q.startsWith('qualor:')));
+    expect(rows).toHaveLength(44);
+    for (const row of rows) {
+      expect(row.qualor, row.sonar.join()).toHaveLength(1);
+      expect(
+        row.sonar.every((s) => /^(java|js|ts|python|go)security:S\d+$/.test(s)),
+        row.sonar.join(),
+      ).toBe(true);
+    }
+  });
+
+  it.each([
+    'javasecurity:S5145', // log injection
+    'javasecurity:S5147', // NoSQL in Java
+    'javasecurity:S5883', // argument injection (CWE-88), not command injection
+    'javasecurity:S6549', // a file-existence oracle
+    'jssecurity:S2078', // LDAP in JavaScript
+    'jssecurity:S5696', // DOM XSS in the browser, not a server response
+    'tssecurity:S6105', // a redirect in the browser
+    'jssecurity:S6096', // zip slip in JavaScript
+    'jssecurity:S8701', // data from an LLM, not from a request
+    'pythonsecurity:S2078',
+    'pythonsecurity:S6096',
+    'gosecurity:S2091',
+    'gosecurity:S5135',
+    'roslyn.sonaranalyzer.security.cs:S3649', // C# comes later
+    'phpsecurity:S3649',
+  ])('leaves %s unmapped: no Qualor rule of its class in that language', (key) => {
+    expect(SONAR_MAPPING.targets(key)).toEqual([]);
+  });
+
+  it("targets only issue rules of the pinned pack (the guide's list of Qualor's security rules)", () => {
+    const guide = readFileSync(
+      new URL('../../../../../docs/guide/languages-and-analyzers.md', import.meta.url),
+      'utf8',
+    );
+    const rows = [...guide.matchAll(/^\| `(qualor:[a-z]+\/[a-z-]+)`( \(hotspot\))? \|/gm)];
+    expect(rows.length).toBeGreaterThanOrEqual(57);
+    // SonarQube's taint rules report vulnerabilities: never mapped to a hotspot to review.
+    const issues = new Set(rows.filter((m) => m[2] === undefined).map((m) => m[1]));
+    for (const row of raw.rules) {
+      for (const q of row.qualor.filter((k) => k.startsWith('qualor:'))) {
+        expect(issues.has(q), q).toBe(true);
+      }
+    }
+  });
+
   it('maps the unit-test PMD rules and the JSP Find Security Bugs patterns', () => {
     expect(SONAR_MAPPING.targets('pmd-unit-tests:JUnitTestsShouldIncludeAssert')[0]?.key).toBe(
       'pmd:JUnitTestsShouldIncludeAssert',
@@ -536,7 +647,12 @@ describe('the SonarQube mapping table (import-sonarqube.md §6)', () => {
   const REPOSITORY_LANGUAGE: Record<string, string> = {
     javascript: 'js',
     typescript: 'ts',
+    jssecurity: 'js',
+    tssecurity: 'ts',
     java: 'java',
+    javasecurity: 'java',
+    pythonsecurity: 'py',
+    gosecurity: 'go',
     squid: 'java',
     csharpsquid: 'cs',
     python: 'py',
