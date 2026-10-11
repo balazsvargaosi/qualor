@@ -282,6 +282,8 @@ export function createQualorAnalyzer(
           'scan',
           '--config',
           path.join(pack.dir, 'rules'),
+          // Taint followed through the file's own functions, as the pack is tested (plan 6B-6).
+          ...(pack.manifest.taintIntrafile === true ? ['--taint-intrafile'] : []),
           '--sarif',
           '--output',
           out,

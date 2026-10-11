@@ -302,6 +302,29 @@ describe('qualorAnalyzer.prepare (config.md §6, plan 6B-1)', () => {
     expect(existsSync(lock)).toBe(false);
   });
 
+  it('runs taint rules across functions of a file when the pack says it is tested that way', async () => {
+    const root = tmp();
+    const args = async (edit?: (m: Record<string, unknown>) => unknown) => {
+      const pack = writePack(tmp(), undefined, edit);
+      const prep = await createQualorAnalyzer({ defaultDir: pack }).prepare(context(root));
+      if (!('run' in prep)) throw new Error(JSON.stringify(prep));
+      return { pack, args: prep.run.args };
+    };
+    const on = await args((m) => ({ ...m, taintIntrafile: true }));
+    expect(on.args.slice(0, 4)).toEqual([
+      'scan',
+      '--config',
+      path.join(on.pack, 'rules'),
+      '--taint-intrafile',
+    ]);
+    for (const edit of [
+      undefined,
+      (m: Record<string, unknown>) => ({ ...m, taintIntrafile: false }),
+    ]) {
+      expect((await args(edit)).args).not.toContain('--taint-intrafile');
+    }
+  });
+
   it('counts the pointer of each argument (8 bytes) as well as its length and terminator', async () => {
     const root = tmp();
     const analyze = async (maxTargetArgBytes: number) => {

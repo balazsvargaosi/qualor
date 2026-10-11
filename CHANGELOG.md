@@ -13,6 +13,12 @@ All notable changes to Qualor are listed here, newest first. The format follows
   such as `javasecurity:S3649` to `qualor:java/sql-injection`. The mappings are pending review, so
   they carry issue statuses (false positive, accepted) and leave profiles unchanged.
 
+### Changed
+
+- Qualor's taint rules follow request data through the functions of one file: a value that goes
+  into a helper function in the same file and comes back out is still followed. The scanner runs
+  them this way whenever the rules release says it was tested that way.
+
 ### Fixed
 
 - Several `qualor scan` runs started at the same time on one machine (parallel jobs on one CI

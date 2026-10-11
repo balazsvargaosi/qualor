@@ -60,6 +60,14 @@ describe('qualorManifestSchema (plan 6B-1)', () => {
     expect(parsed.rules[0]).toEqual(entry({ frameworks: ['jdbc'] }));
   });
 
+  it('reads taintIntrafile, the pack being tested with OpenGrep --taint-intrafile (plan 6B-6)', () => {
+    expect(qualorManifestSchema.parse(manifest({ taintIntrafile: true })).taintIntrafile).toBe(
+      true,
+    );
+    expect(qualorManifestSchema.parse(manifest()).taintIntrafile).toBeUndefined();
+    expect(qualorManifestSchema.safeParse(manifest({ taintIntrafile: 'yes' })).success).toBe(false);
+  });
+
   it('refuses what the CLI could not trust', () => {
     const bad = [
       manifest({ version: '2026.01.0' }),

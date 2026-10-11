@@ -47,6 +47,8 @@ export const qualorManifestSchema = z
   .looseObject({
     version: z.string().regex(QUALOR_PACK_VERSION),
     opengrep: z.string().regex(/^\d+\.\d+\.\d+$/),
+    /** The rules are tested with OpenGrep `--taint-intrafile`, so they run that way (plan 6B-6). */
+    taintIntrafile: z.boolean().optional(),
     rules: z.array(manifestRule).min(1).max(2_000),
   })
   .superRefine((m, ctx) => {

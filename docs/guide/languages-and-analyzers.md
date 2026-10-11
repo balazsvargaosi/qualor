@@ -806,8 +806,9 @@ request and pull request comments.
 
 - The engine's version in a scan names the rules release, for example
   `1.30.0 + qualor-rules 2026.10.3`.
-- Taint rules follow data **within one function of a file**. A value that passes through another
-  function or another file is not followed yet.
+- Taint rules follow data **through the functions of one file**: a value that goes into a helper
+  function in the same file and comes back out of it is still followed. A value that passes
+  through another file is not followed yet.
 - Issues (from taint and misuse rules) are Security issues and count in the quality gate.
   Hotspots are **security hotspots**: listed, never counted. Where another analyzer reports the
   same problem on the same line, Qualor's issue is the one shown and the other is its duplicate.
