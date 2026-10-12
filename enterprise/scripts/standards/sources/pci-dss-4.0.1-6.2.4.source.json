@@ -5,41 +5,43 @@
   "title": "PCI DSS 4.0.1 requirement 6.2.4",
   "source": "Qualor's own mapping of CWE ids to the attack categories of PCI DSS v4.0.1 requirement 6.2.4 (category titles paraphrased)",
   "licence": "LicenseRef-Qualor-Enterprise",
+  "notes": "For the next curator: path traversal (CWE-22, 23, 36, 73) sits under 6.2.4-2, attacks on data and data structures, as manipulation of input data; information exposure (CWE-200, 209, 359, 497, 538) sits under 6.2.4-5, attacks on access control mechanisms. This field stays in the source; the generated data file does not carry it.",
   "categories": [
     {
       "id": "6.2.4-1",
       "title": "Injection attacks",
       "cwe": [
-        74, 77, 78, 88, 89, 90, 91, 93, 94, 95, 96, 97, 113, 116, 502, 611, 643, 652, 917, 943, 1336
+        74, 77, 78, 88, 89, 90, 91, 93, 94, 95, 96, 97, 98, 99, 113, 116, 117, 470, 502, 564, 611,
+        643, 652, 917, 943, 1336
       ]
     },
     {
       "id": "6.2.4-2",
       "title": "Attacks on data and data structures",
       "cwe": [
-        22, 23, 36, 73, 119, 120, 121, 122, 125, 126, 127, 131, 134, 170, 190, 191, 362, 367, 415,
-        416, 476, 787, 788, 805, 822, 823, 824, 825
+        20, 22, 23, 36, 73, 119, 120, 121, 122, 125, 126, 127, 129, 131, 134, 170, 190, 191, 362,
+        367, 415, 416, 476, 787, 788, 805, 822, 823, 824, 825, 1321
       ]
     },
     {
       "id": "6.2.4-3",
       "title": "Attacks on cryptography usage",
       "cwe": [
-        261, 295, 296, 297, 310, 311, 312, 319, 321, 322, 323, 324, 325, 326, 327, 328, 329, 330,
-        331, 335, 336, 337, 338, 347, 757, 759, 760, 780, 916
+        261, 295, 296, 297, 310, 311, 312, 319, 320, 321, 322, 323, 324, 325, 326, 327, 328, 329,
+        330, 331, 335, 336, 337, 338, 347, 353, 757, 759, 760, 780, 916, 1204
       ]
     },
     {
       "id": "6.2.4-4",
       "title": "Attacks on business logic, including XSS and CSRF",
-      "cwe": [79, 80, 83, 87, 345, 346, 352, 384, 434, 601, 918, 1021]
+      "cwe": [79, 80, 83, 87, 345, 346, 352, 434, 601, 602, 614, 918, 942, 1004, 1021, 1275]
     },
     {
       "id": "6.2.4-5",
       "title": "Attacks on access control mechanisms",
       "cwe": [
-        200, 255, 256, 259, 284, 285, 287, 288, 290, 294, 306, 307, 359, 521, 522, 523, 532, 613,
-        620, 639, 640, 798, 862, 863, 915, 1390, 1391
+        200, 209, 250, 255, 256, 259, 269, 276, 284, 285, 287, 288, 290, 294, 306, 307, 359, 384,
+        425, 497, 521, 522, 523, 538, 613, 620, 639, 640, 732, 798, 862, 863, 915, 1390, 1391
       ]
     },
     {
