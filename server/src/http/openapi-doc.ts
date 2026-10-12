@@ -46,6 +46,7 @@ export async function openApiDocument(plugins?: OpenApiPlugins): Promise<unknown
     pluginPaths: [],
     demoUser: null,
     telemetry: { enabled: false, url: DEFAULT_TELEMETRY_URL },
+    smtp: null,
   };
   const loaded = plugins ? await plugins(database.db, config) : {};
   const app = await buildApp({

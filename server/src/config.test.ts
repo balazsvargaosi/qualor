@@ -43,6 +43,7 @@ describe('loadConfig', () => {
       pluginPaths: [],
       demoUser: null,
       telemetry: { enabled: true, url: 'https://qualor.dev/api/telemetry' },
+      smtp: null,
     });
   });
 
@@ -334,5 +335,103 @@ describe('QUALOR_DEMO_USER', () => {
     expect(() => loadConfig({ ...base, QUALOR_DEMO_USER: 'admin' })).toThrow(
       /QUALOR_DEMO_USER: must not be the bootstrap administrator/,
     );
+  });
+});
+
+describe('QUALOR_SMTP_URL, QUALOR_SMTP_FROM, QUALOR_SMTP_REPLY_TO (E1 spec)', () => {
+  // Built from parts, so no scanner mistakes a test value for a real credential.
+  const PASSWORD = ['smtp', 'config', 'pass', '9Q'].join('-');
+  const FROM = { QUALOR_SMTP_FROM: 'Qualor <qualor@example.com>' };
+  const smtp = (url: string, extra: Record<string, string> = {}) =>
+    loadConfig({ ...base, ...FROM, QUALOR_SMTP_URL: url, ...extra }).smtp;
+
+  it('is off when unset or blank, and QUALOR_SMTP_FROM alone changes nothing', () => {
+    expect(loadConfig(base).smtp).toBeNull();
+    expect(loadConfig({ ...base, QUALOR_SMTP_URL: '  ' }).smtp).toBeNull();
+    expect(loadConfig({ ...base, ...FROM }).smtp).toBeNull();
+  });
+
+  it('reads smtp:// as STARTTLS on 587, smtps:// as TLS on 465, and ?security=none', () => {
+    expect(smtp('smtp://Mail.Example.com')).toEqual({
+      host: 'mail.example.com',
+      port: 587,
+      security: 'starttls',
+      username: null,
+      password: null,
+      fromName: 'Qualor',
+      fromAddress: 'qualor@example.com',
+      replyTo: null,
+    });
+    expect(smtp('smtps://mail.example.com')).toMatchObject({ port: 465, security: 'tls' });
+    expect(smtp('smtp://relay.lan:25?security=none')).toMatchObject({
+      host: 'relay.lan',
+      port: 25,
+      security: 'none',
+    });
+    expect(smtp('smtp://[fd00::5]:2525/')).toMatchObject({ host: 'fd00::5', port: 2525 });
+  });
+
+  it('URL-decodes the user name and the password', () => {
+    const encoded = encodeURIComponent(`${PASSWORD}:@/%`);
+    expect(smtp(`smtp://qualor%40example.com:${encoded}@smtp.example.com:587`)).toMatchObject({
+      username: 'qualor@example.com',
+      password: `${PASSWORD}:@/%`,
+    });
+    expect(smtp('smtp://apikey@smtp.example.com')).toMatchObject({
+      username: 'apikey',
+      password: null,
+    });
+  });
+
+  it('takes a bare sender address, and a reply-to address', () => {
+    expect(
+      smtp('smtp://h.example', {
+        QUALOR_SMTP_FROM: 'alerts@example.com',
+        QUALOR_SMTP_REPLY_TO: ' help@example.com ',
+      }),
+    ).toMatchObject({
+      fromName: 'Qualor',
+      fromAddress: 'alerts@example.com',
+      replyTo: 'help@example.com',
+    });
+  });
+
+  it.each([
+    `http://u:${PASSWORD}@h.example`,
+    `smtp://u:${PASSWORD}@h.example/path`,
+    `smtp://u:${PASSWORD}@h.example?security=tls`,
+    `smtps://u:${PASSWORD}@h.example?security=none`,
+    `smtp://u:${PASSWORD}@h.example?security=none&x=1`,
+    `smtp://u:${PASSWORD}@h.example#frag`,
+    `smtp://:${PASSWORD}@h.example`,
+    `smtp://u:${PASSWORD}%ZZ@h.example`,
+    `smtp://u:${PASSWORD}@bad_host`,
+    `smtp://u:${PASSWORD}@h.example:0`,
+    `not a url ${PASSWORD}`,
+  ])('refuses %s, naming the variable and never the password', (url) => {
+    const found = problems({ ...base, ...FROM, QUALOR_SMTP_URL: url });
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatch(/^QUALOR_SMTP_URL: /);
+    expect(found.join('\n')).not.toContain(PASSWORD);
+  });
+
+  it('needs QUALOR_SMTP_FROM with QUALOR_SMTP_URL', () => {
+    expect(problems({ ...base, QUALOR_SMTP_URL: 'smtp://h.example' })).toEqual([
+      'QUALOR_SMTP_FROM: required when QUALOR_SMTP_URL is set',
+    ]);
+  });
+
+  it('refuses a sender or reply-to that is no address', () => {
+    expect(
+      problems({ ...base, QUALOR_SMTP_URL: 'smtp://h.example', QUALOR_SMTP_FROM: 'nobody' }),
+    ).toEqual(['QUALOR_SMTP_FROM: must be an address or Name <address>']);
+    expect(
+      problems({
+        ...base,
+        ...FROM,
+        QUALOR_SMTP_URL: 'smtp://h.example',
+        QUALOR_SMTP_REPLY_TO: 'nope',
+      }),
+    ).toEqual(['QUALOR_SMTP_REPLY_TO: must be an email address']);
   });
 });

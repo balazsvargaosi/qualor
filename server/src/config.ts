@@ -2,6 +2,7 @@ import { isIP } from 'node:net';
 import { isAbsolute, resolve } from 'node:path';
 import { z } from 'zod';
 import { LOG_LEVELS, type LogLevel } from './http/logger';
+import { isEmailAddress, isHostName, isOneLine, parseMailbox } from './mail/address';
 import { USERNAME_PATTERN } from './patterns';
 import { parseInternalHosts } from './scm/url';
 
@@ -160,6 +161,77 @@ const telemetryUrlSchema = z
     return url.href;
   });
 
+/** E1 spec: how a message reaches the SMTP server. */
+export const SMTP_SECURITIES = ['starttls', 'tls', 'none'] as const;
+export type SmtpSecurity = (typeof SMTP_SECURITIES)[number];
+
+/** The SMTP server of QUALOR_SMTP_URL with QUALOR_SMTP_FROM and QUALOR_SMTP_REPLY_TO (email.md). */
+export interface SmtpConfig {
+  host: string;
+  port: number;
+  security: SmtpSecurity;
+  username: string | null;
+  password: string | null;
+  fromName: string;
+  fromAddress: string;
+  replyTo: string | null;
+}
+
+export type SmtpUrlParts = Pick<SmtpConfig, 'host' | 'port' | 'security' | 'username' | 'password'>;
+
+const SMTP_URL_FORM =
+  'must be smtp://[user[:password]@]host[:port] or smtps://…, optionally with ?security=none';
+
+/**
+ * E1 spec: `smtp://` (STARTTLS required, port 587), `smtps://` (implicit TLS, 465), `?security=none`
+ * on smtp:// for a relay without TLS; user and password URL-decoded. Every message names the rule,
+ * never the value: the URL holds a password.
+ */
+export function parseSmtpUrl(
+  raw: string,
+): { ok: true; server: SmtpUrlParts } | { ok: false; message: string } {
+  const fail = (message: string) => ({ ok: false as const, message });
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return fail(SMTP_URL_FORM);
+  }
+  const scheme = url.protocol;
+  if (scheme !== 'smtp:' && scheme !== 'smtps:') return fail(SMTP_URL_FORM);
+  if ((url.pathname !== '' && url.pathname !== '/') || url.hash !== '' || raw.includes('#')) {
+    return fail(SMTP_URL_FORM);
+  }
+  let security: SmtpSecurity = scheme === 'smtps:' ? 'tls' : 'starttls';
+  if (url.search !== '') {
+    const params = [...url.searchParams.entries()];
+    const only = params.length === 1 ? params[0] : undefined;
+    if (scheme !== 'smtp:' || only?.[0] !== 'security' || only[1] !== 'none') {
+      return fail('the only query it takes is ?security=none, on smtp://');
+    }
+    security = 'none';
+  }
+  let host = url.hostname.toLowerCase();
+  if (host.startsWith('[') && host.endsWith(']')) host = host.slice(1, -1);
+  if (!isHostName(host)) return fail('must name a host');
+  const port = url.port === '' ? (scheme === 'smtps:' ? 465 : 587) : Number(url.port);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535)
+    return fail('the port must be 1 to 65535');
+  let username: string | null;
+  let password: string | null;
+  try {
+    username = url.username === '' ? null : decodeURIComponent(url.username);
+    password = url.password === '' ? null : decodeURIComponent(url.password);
+  } catch {
+    return fail('the user name and password must be URL-encoded');
+  }
+  if (password !== null && username === null) return fail('a password needs a user name');
+  if ((username !== null && !isOneLine(username)) || (password !== null && !isOneLine(password))) {
+    return fail('the user name and password must not contain line breaks');
+  }
+  return { ok: true, server: { host, port, security, username, password } };
+}
+
 const envSchema = z
   .object({
     // embedded-postgres.md §2: unset or empty starts the PostgreSQL the image carries.
@@ -239,6 +311,32 @@ const envSchema = z
       )
       .transform((v) => !(v === 'false' || v === '0' || v === 'off' || v === 'no')),
     QUALOR_TELEMETRY_URL: telemetryUrlSchema,
+    // E1 spec (email.md): the SMTP server; overrides the one saved in Settings → Email.
+    QUALOR_SMTP_URL: z
+      .string()
+      .optional()
+      .transform((raw, ctx): SmtpUrlParts | null => {
+        const value = raw?.trim() ?? '';
+        if (value === '') return null;
+        const parsed = parseSmtpUrl(value);
+        if (parsed.ok) return parsed.server;
+        ctx.addIssue({ code: 'custom', message: parsed.message });
+        return z.NEVER;
+      }),
+    QUALOR_SMTP_FROM: z
+      .string()
+      .optional()
+      .transform((raw, ctx): { name: string; address: string } | null => {
+        const value = raw?.trim() ?? '';
+        if (value === '') return null;
+        const mailbox = parseMailbox(value);
+        if (mailbox) return mailbox;
+        ctx.addIssue({ code: 'custom', message: 'must be an address or Name <address>' });
+        return z.NEVER;
+      }),
+    QUALOR_SMTP_REPLY_TO: optionalText.refine((v) => v === null || isEmailAddress(v), {
+      message: 'must be an email address',
+    }),
   })
   .superRefine((e, ctx) => {
     // Names both variables, never the key text (enterprise.md §6).
@@ -254,6 +352,13 @@ const envSchema = z
         code: 'custom',
         path: ['QUALOR_DEMO_USER'],
         message: 'must not be the bootstrap administrator',
+      });
+    }
+    if (e.QUALOR_SMTP_URL !== null && e.QUALOR_SMTP_FROM === null) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['QUALOR_SMTP_FROM'],
+        message: 'required when QUALOR_SMTP_URL is set',
       });
     }
   });
@@ -307,6 +412,8 @@ export interface Config {
   demoUser: string | null;
   /** telemetry.md: QUALOR_TELEMETRY (default on) and QUALOR_TELEMETRY_URL. */
   telemetry: { enabled: boolean; url: string };
+  /** E1 spec: QUALOR_SMTP_URL with its sender, or null (Settings → Email decides). */
+  smtp: SmtpConfig | null;
 }
 
 export class ConfigError extends Error {
@@ -361,5 +468,14 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     pluginPaths: e.QUALOR_PLUGIN_PATHS,
     demoUser: e.QUALOR_DEMO_USER,
     telemetry: { enabled: e.QUALOR_TELEMETRY, url: e.QUALOR_TELEMETRY_URL },
+    smtp:
+      e.QUALOR_SMTP_URL === null || e.QUALOR_SMTP_FROM === null
+        ? null
+        : {
+            ...e.QUALOR_SMTP_URL,
+            fromName: e.QUALOR_SMTP_FROM.name,
+            fromAddress: e.QUALOR_SMTP_FROM.address,
+            replyTo: e.QUALOR_SMTP_REPLY_TO,
+          },
   };
 }
