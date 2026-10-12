@@ -323,6 +323,46 @@ describe('StagedPlugin (ruling EE4)', () => {
     await expect(ctx.enqueue('analysis', {})).rejects.toThrow(PluginError);
     await expect(ctx.enqueue('ee.other', {})).rejects.toThrow(PluginError);
   });
+
+  it('queues a job with an ee. concurrency key and at most five attempts, none by default (4E-1 §2.4)', async () => {
+    const inserted: Record<string, unknown>[] = [];
+    const db = {
+      insert: () => ({
+        values: (values: Record<string, unknown>) => {
+          inserted.push(values);
+          return { returning: async () => [{ id: `job-${inserted.length}` }] };
+        },
+      }),
+    };
+    const registry = emptyRegistry();
+    const staged = new StagedPlugin(plugin(), registry);
+    const ctx = staged.context({ ...base, db: db as never }, registry);
+    ctx.jobs('fixture.echo', { 'ee.fixture': async () => {} });
+    staged.commit(registry);
+    expect(await ctx.enqueue('ee.fixture', { n: 1 })).toBe('job-1');
+    expect(
+      await ctx.enqueue('ee.fixture', { n: 2 }, { concurrencyKey: 'ee.fixture', maxAttempts: 1 }),
+    ).toBe('job-2');
+    expect(inserted).toEqual([
+      { queue: 'ee.fixture', payload: { n: 1 }, concurrencyKey: null, maxAttempts: 5 },
+      { queue: 'ee.fixture', payload: { n: 2 }, concurrencyKey: 'ee.fixture', maxAttempts: 1 },
+    ]);
+    for (const options of [
+      { concurrencyKey: 'analysis' },
+      { concurrencyKey: 'analysis-project-1' },
+      { concurrencyKey: 42 },
+      { maxAttempts: 0 },
+      { maxAttempts: 6 },
+      { maxAttempts: 1.5 },
+      null,
+    ]) {
+      await expect(
+        ctx.enqueue('ee.fixture', {}, options as never),
+        JSON.stringify(options),
+      ).rejects.toThrow(PluginError);
+    }
+    expect(inserted).toHaveLength(2);
+  });
 });
 
 const licensed: LicenseState = {

@@ -223,8 +223,17 @@ describe('Qualor Enterprise: audit-log, and the grant routes in core (rbac-audit
       {
         name: 'qualor-enterprise',
         state: 'loaded',
-        // The plugin declares sso, sso.multi and scim too; this key does not list them.
-        features: ['llm.fix-quota', 'audit-log', 'audit-log.stream', 'sso', 'sso.multi', 'scim'],
+        // The plugin declares sso, sso.multi, scim and compliance-export too; this key does not
+        // list them.
+        features: [
+          'llm.fix-quota',
+          'audit-log',
+          'audit-log.stream',
+          'sso',
+          'sso.multi',
+          'scim',
+          'compliance-export',
+        ],
         error: null,
       },
     ]);
@@ -234,6 +243,13 @@ describe('Qualor Enterprise: audit-log, and the grant routes in core (rbac-audit
         feature: 'audit-log.stream',
         queue: 'ee.audit.stream',
         everySeconds: 10,
+      },
+      // 4E-1 §2.4: skipped while compliance-export is unlicensed, as here.
+      {
+        plugin: 'qualor-enterprise',
+        feature: 'compliance-export',
+        queue: 'ee.compliance.housekeeping',
+        everySeconds: 3_600,
       },
     ]);
     const info = (await req('GET', '/system/info', admin)).json() as {

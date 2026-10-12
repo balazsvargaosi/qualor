@@ -2897,6 +2897,689 @@ export interface paths {
         };
         trace?: never;
     };
+    "/api/v0/ee/compliance/reports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** An organisation's reports (an organisation-level member) or a project's (project.read), newest first */
+        get: {
+            parameters: {
+                query?: {
+                    organizationId?: string;
+                    projectId?: string;
+                    limit?: number;
+                    cursor?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items: {
+                                id: string;
+                                /** @enum {string} */
+                                scope: "project" | "organization";
+                                organization: {
+                                    id: string;
+                                    key: string;
+                                    name: string;
+                                };
+                                project: {
+                                    id: string;
+                                    key: string;
+                                    name: string;
+                                } | null;
+                                branch: {
+                                    id: string;
+                                    name: string;
+                                } | null;
+                                /** @enum {string} */
+                                status: "pending" | "ready" | "failed";
+                                createdBy: string;
+                                createdAt: string;
+                                completedAt: string | null;
+                                standards: {
+                                    id: string;
+                                    version: string;
+                                    sourceSha256: string;
+                                }[];
+                                sha256: string | null;
+                                sizeBytes: number | null;
+                                error: string | null;
+                                summary: {
+                                    findings: {
+                                        total: number;
+                                        bySeverity: {
+                                            blocker: number;
+                                            high: number;
+                                            medium: number;
+                                            low: number;
+                                            info: number;
+                                        };
+                                        inNewCode: number;
+                                    };
+                                    standards: {
+                                        id: string;
+                                        categories: {
+                                            id: string;
+                                            title: string;
+                                            open: number;
+                                            bySeverity: {
+                                                blocker: number;
+                                                high: number;
+                                                medium: number;
+                                                low: number;
+                                                info: number;
+                                            };
+                                            inNewCode: number;
+                                            rules: number;
+                                            oldestFirstSeenAt: string | null;
+                                        }[];
+                                        notMapped: {
+                                            open: number;
+                                            bySeverity: {
+                                                blocker: number;
+                                                high: number;
+                                                medium: number;
+                                                low: number;
+                                                info: number;
+                                            };
+                                            inNewCode: number;
+                                            rules: number;
+                                        };
+                                        distinctTotal: number;
+                                    }[];
+                                    secrets: {
+                                        open: number;
+                                    };
+                                    dependencies: {
+                                        open: number;
+                                        bySeverity: {
+                                            blocker: number;
+                                            high: number;
+                                            medium: number;
+                                            low: number;
+                                            info: number;
+                                        };
+                                    };
+                                    triage: {
+                                        falsePositive: number;
+                                        wontFix: number;
+                                    };
+                                    truncated: boolean;
+                                } | null;
+                                canDelete: boolean;
+                            }[];
+                            nextCursor: string | null;
+                        };
+                    };
+                };
+                /** @description Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS) */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Authenticated but not allowed (FORBIDDEN, INSUFFICIENT_SCOPE, TOKEN_NOT_ALLOWED, SESSION_REQUIRED, CSRF_FAILED, PASSWORD_CHANGE_REQUIRED) */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description The organisation or the project is not visible to the caller */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Validation failed (VALIDATION_FAILED; errors[] names each field) */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /** Create a compliance report of an organisation (org.compliance.manage) or of a project branch (project.compliance.create); it is built in the background */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        organizationId: string;
+                    } | {
+                        /** Format: uuid */
+                        projectId: string;
+                        /** Format: uuid */
+                        branchId?: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            id: string;
+                            /** @enum {string} */
+                            scope: "project" | "organization";
+                            organization: {
+                                id: string;
+                                key: string;
+                                name: string;
+                            };
+                            project: {
+                                id: string;
+                                key: string;
+                                name: string;
+                            } | null;
+                            branch: {
+                                id: string;
+                                name: string;
+                            } | null;
+                            /** @enum {string} */
+                            status: "pending" | "ready" | "failed";
+                            createdBy: string;
+                            createdAt: string;
+                            completedAt: string | null;
+                            standards: {
+                                id: string;
+                                version: string;
+                                sourceSha256: string;
+                            }[];
+                            sha256: string | null;
+                            sizeBytes: number | null;
+                            error: string | null;
+                            summary: {
+                                findings: {
+                                    total: number;
+                                    bySeverity: {
+                                        blocker: number;
+                                        high: number;
+                                        medium: number;
+                                        low: number;
+                                        info: number;
+                                    };
+                                    inNewCode: number;
+                                };
+                                standards: {
+                                    id: string;
+                                    categories: {
+                                        id: string;
+                                        title: string;
+                                        open: number;
+                                        bySeverity: {
+                                            blocker: number;
+                                            high: number;
+                                            medium: number;
+                                            low: number;
+                                            info: number;
+                                        };
+                                        inNewCode: number;
+                                        rules: number;
+                                        oldestFirstSeenAt: string | null;
+                                    }[];
+                                    notMapped: {
+                                        open: number;
+                                        bySeverity: {
+                                            blocker: number;
+                                            high: number;
+                                            medium: number;
+                                            low: number;
+                                            info: number;
+                                        };
+                                        inNewCode: number;
+                                        rules: number;
+                                    };
+                                    distinctTotal: number;
+                                }[];
+                                secrets: {
+                                    open: number;
+                                };
+                                dependencies: {
+                                    open: number;
+                                    bySeverity: {
+                                        blocker: number;
+                                        high: number;
+                                        medium: number;
+                                        low: number;
+                                        info: number;
+                                    };
+                                };
+                                triage: {
+                                    falsePositive: number;
+                                    wontFix: number;
+                                };
+                                truncated: boolean;
+                            } | null;
+                            canDelete: boolean;
+                        };
+                    };
+                };
+                /** @description Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS) */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Authenticated but not allowed (FORBIDDEN, INSUFFICIENT_SCOPE, TOKEN_NOT_ALLOWED, SESSION_REQUIRED, CSRF_FAILED, PASSWORD_CHANGE_REQUIRED) */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description The organisation, the project or the branch is not visible to the caller */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description REPORT_PENDING (a report for this scope is being built); NO_ANALYSIS (the branch has no successful analysis); AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed; an administrator must restore it */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Validation failed (VALIDATION_FAILED; errors[] names each field) */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v0/ee/compliance/reports/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A compliance report: its state and summary */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            id: string;
+                            /** @enum {string} */
+                            scope: "project" | "organization";
+                            organization: {
+                                id: string;
+                                key: string;
+                                name: string;
+                            };
+                            project: {
+                                id: string;
+                                key: string;
+                                name: string;
+                            } | null;
+                            branch: {
+                                id: string;
+                                name: string;
+                            } | null;
+                            /** @enum {string} */
+                            status: "pending" | "ready" | "failed";
+                            createdBy: string;
+                            createdAt: string;
+                            completedAt: string | null;
+                            standards: {
+                                id: string;
+                                version: string;
+                                sourceSha256: string;
+                            }[];
+                            sha256: string | null;
+                            sizeBytes: number | null;
+                            error: string | null;
+                            summary: {
+                                findings: {
+                                    total: number;
+                                    bySeverity: {
+                                        blocker: number;
+                                        high: number;
+                                        medium: number;
+                                        low: number;
+                                        info: number;
+                                    };
+                                    inNewCode: number;
+                                };
+                                standards: {
+                                    id: string;
+                                    categories: {
+                                        id: string;
+                                        title: string;
+                                        open: number;
+                                        bySeverity: {
+                                            blocker: number;
+                                            high: number;
+                                            medium: number;
+                                            low: number;
+                                            info: number;
+                                        };
+                                        inNewCode: number;
+                                        rules: number;
+                                        oldestFirstSeenAt: string | null;
+                                    }[];
+                                    notMapped: {
+                                        open: number;
+                                        bySeverity: {
+                                            blocker: number;
+                                            high: number;
+                                            medium: number;
+                                            low: number;
+                                            info: number;
+                                        };
+                                        inNewCode: number;
+                                        rules: number;
+                                    };
+                                    distinctTotal: number;
+                                }[];
+                                secrets: {
+                                    open: number;
+                                };
+                                dependencies: {
+                                    open: number;
+                                    bySeverity: {
+                                        blocker: number;
+                                        high: number;
+                                        medium: number;
+                                        low: number;
+                                        info: number;
+                                    };
+                                };
+                                triage: {
+                                    falsePositive: number;
+                                    wontFix: number;
+                                };
+                                truncated: boolean;
+                            } | null;
+                            canDelete: boolean;
+                        };
+                    };
+                };
+                /** @description Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS) */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Authenticated but not allowed (FORBIDDEN, INSUFFICIENT_SCOPE, TOKEN_NOT_ALLOWED, SESSION_REQUIRED, CSRF_FAILED, PASSWORD_CHANGE_REQUIRED) */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Not found, or not visible to the caller */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Validation failed (VALIDATION_FAILED; errors[] names each field) */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        /** Delete a ready or failed report (org.compliance.manage) */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Deleted */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS) */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Authenticated but not allowed (FORBIDDEN, INSUFFICIENT_SCOPE, TOKEN_NOT_ALLOWED, SESSION_REQUIRED, CSRF_FAILED, PASSWORD_CHANGE_REQUIRED) */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Not found, or not visible to the caller */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description REPORT_PENDING (a report that is being built cannot be deleted); AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed; an administrator must restore it */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Validation failed (VALIDATION_FAILED; errors[] names each field) */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v0/ee/compliance/reports/{id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download a ready report as its canonical JSON, as CSV, or as PDF; the download is recorded */
+        get: {
+            parameters: {
+                query: {
+                    format: "json" | "csv" | "pdf";
+                };
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The file, as an attachment: the canonical JSON (its SHA-256 is the report sha256), the CSV (UTF-8 with a BOM) or the PDF */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": string;
+                        "text/csv": string;
+                        "application/pdf": string;
+                    };
+                };
+                /** @description Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS) */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Authenticated but not allowed (FORBIDDEN, INSUFFICIENT_SCOPE, TOKEN_NOT_ALLOWED, SESSION_REQUIRED, CSRF_FAILED, PASSWORD_CHANGE_REQUIRED) */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Not found, or not visible to the caller */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description REPORT_NOT_READY (the report is pending or failed); AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed; an administrator must restore it */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Validation failed (VALIDATION_FAILED; errors[] names each field) */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description A download is already running for you (RATE_LIMITED) */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description REPORT_RENDER_TIMEOUT (the PDF took longer than 60 seconds to render) */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {

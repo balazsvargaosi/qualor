@@ -6,6 +6,7 @@
  */
 import type { QualorPlugin } from '@qualor/server/plugin-contract';
 import { auditRoutes, auditStreamRoutes } from './audit-routes';
+import { complianceJobs, complianceRoutes, HOUSEKEEPING_QUEUE } from './compliance-routes';
 import { scimRoutes } from './scim-routes';
 import { ssoRoutes } from './sso-routes';
 
@@ -13,13 +14,24 @@ import { ssoRoutes } from './sso-routes';
 const MAX_FIX_PER_DAY = 100_000;
 /** rbac-audit.md §14.2: the SIEM stream runs every 10 seconds. */
 const STREAM_EVERY_SECONDS = 10;
+/** 4E-1 §2.4 step 5: the compliance housekeeping runs hourly. */
+const COMPLIANCE_HOUSEKEEPING_SECONDS = 3_600;
 
 const plugin: QualorPlugin = {
   name: 'qualor-enterprise',
   apiVersion: 1,
   // enterprise.md §1.4, §7.1: rbac is retired in 5B; roles and project grants are community.
   // 5D (§1.7): audit-log.stream needs audit-log, sso.multi needs sso (core's prerequisite table).
-  features: ['llm.fix-quota', 'audit-log', 'audit-log.stream', 'sso', 'sso.multi', 'scim'],
+  // 4E-1: compliance-export has no prerequisite.
+  features: [
+    'llm.fix-quota',
+    'audit-log',
+    'audit-log.stream',
+    'sso',
+    'sso.multi',
+    'scim',
+    'compliance-export',
+  ],
   register(ctx) {
     ctx.limits('llm.fix-quota', { llm: { maxFixPerOrganizationPerDay: MAX_FIX_PER_DAY } });
     // rbac-audit.md §13: mounted under /api/v0/ee, 403 while the feature is inactive. The grant
@@ -38,6 +50,10 @@ const plugin: QualorPlugin = {
       },
     });
     ctx.schedule('audit-log.stream', 'ee.audit.stream', STREAM_EVERY_SECONDS);
+    // 4E-1: compliance exports, Enterprise; the database work is core's ctx.compliance.
+    ctx.routes('compliance-export', complianceRoutes(ctx));
+    ctx.jobs('compliance-export', complianceJobs(ctx));
+    ctx.schedule('compliance-export', HOUSEKEEPING_QUEUE, COMPLIANCE_HOUSEKEEPING_SECONDS);
     ctx.ui('audit-log', {
       point: 'settings.nav',
       id: 'audit-log',
@@ -71,6 +87,20 @@ const plugin: QualorPlugin = {
       path: '/settings/ee/linked-accounts',
     });
     ctx.ui('scim', { point: 'settings.nav', id: 'scim', label: 'SCIM', path: '/settings/ee/scim' });
+    // 4E-1 §4: the project's Compliance tab, and the organisation reports under Settings. Both
+    // use the id `compliance`; the UI tells them apart by point.
+    ctx.ui('compliance-export', {
+      point: 'project.tab',
+      id: 'compliance',
+      label: 'Compliance',
+      path: 'compliance',
+    });
+    ctx.ui('compliance-export', {
+      point: 'settings.nav',
+      id: 'compliance',
+      label: 'Compliance reports',
+      path: '/settings/ee/compliance',
+    });
     // No licensee name or licence id: the boot line leaves them out too (enterprise.md §6).
     ctx.logger.info('Qualor Enterprise registered');
   },

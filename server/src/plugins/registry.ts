@@ -3,13 +3,14 @@ import type { Db } from '../db/client';
 import type { EditionPlugins } from '../license/edition';
 import { FEATURE_PATTERN, type LicensePayload } from '../license/token';
 import { ENTERPRISE_MAX_FIX_PER_DAY, type LlmLimits, type PluginLimitOverride } from '../limits';
-import { enqueue } from '../queue/queue';
+import { DEFAULT_MAX_ATTEMPTS, enqueue, type EnqueueOptions } from '../queue/queue';
 import {
   PLUGIN_API_VERSION,
   type PluginAccess,
   type PluginAudit,
   type PluginCompliance,
   type PluginContext,
+  type PluginEnqueueOptions,
   type PluginJobHandler,
   type PluginLogger,
   type PluginReport,
@@ -299,6 +300,39 @@ export const MISSING_COMPLIANCE: PluginCompliance = Object.freeze({
 });
 
 /**
+ * 4E-1 §2.4: a plugin's enqueue options, read once into a plain copy. The concurrency key is an
+ * `ee.` name, so a plugin can never hold back a core queue's key.
+ */
+function validateEnqueueOptions(
+  options: PluginEnqueueOptions | undefined,
+): Pick<EnqueueOptions, 'concurrencyKey' | 'maxAttempts'> {
+  if (options === undefined) return {};
+  if (typeof options !== 'object' || options === null) {
+    throw new PluginError('enqueue options must be an object');
+  }
+  const { concurrencyKey, maxAttempts } = options;
+  if (
+    concurrencyKey !== undefined &&
+    (typeof concurrencyKey !== 'string' || !PLUGIN_QUEUE_PATTERN.test(concurrencyKey))
+  ) {
+    throw new PluginError(`concurrency key ${String(concurrencyKey)} must match ee.<name>`);
+  }
+  if (
+    maxAttempts !== undefined &&
+    (typeof maxAttempts !== 'number' ||
+      !Number.isInteger(maxAttempts) ||
+      maxAttempts < 1 ||
+      maxAttempts > DEFAULT_MAX_ATTEMPTS)
+  ) {
+    throw new PluginError(`maxAttempts must be a whole number from 1 to ${DEFAULT_MAX_ATTEMPTS}`);
+  }
+  return {
+    ...(concurrencyKey === undefined ? {} : { concurrencyKey }),
+    ...(maxAttempts === undefined ? {} : { maxAttempts }),
+  };
+}
+
+/**
  * Ruling EE4: everything a plugin registers is validated when it is registered, staged here as a
  * plain copy, and applied only by `commit`. After `commit` or `discard` the registration methods
  * refuse, so a plugin that keeps calling after its `register` timed out or failed changes nothing.
@@ -385,7 +419,7 @@ export class StagedPlugin {
         }
         this.jobCalls.push(...staged);
       },
-      enqueue: async (queue: string, payload: unknown) => {
+      enqueue: async (queue: string, payload: unknown, options?: PluginEnqueueOptions) => {
         // Ownership is this instance's committed registration, never a name: a failed or
         // discarded plugin enqueues nothing, even under the name of a loaded one.
         // A registration dropped later (a route that failed to mount, ruling R-MOUNT) no longer
@@ -395,7 +429,7 @@ export class StagedPlugin {
           (this.committedTo?.jobs.some((j) => j.queue === queue && j.owner === this.token) ??
             false);
         if (!own) throw new PluginError(`${name} may not enqueue on ${String(queue)}`);
-        return enqueue(base.db, { queue, payload });
+        return enqueue(base.db, { queue, payload, ...validateEnqueueOptions(options) });
       },
       limits: (feature: string, override: PluginLimitOverride) => {
         const f = this.feature(feature);

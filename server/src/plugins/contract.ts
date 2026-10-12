@@ -107,6 +107,16 @@ export interface PluginJob {
 export type PluginJobHandler = (job: PluginJob) => Promise<void>;
 
 /**
+ * 4E-1 §2.4 (additive): how a job is queued. `concurrencyKey` (`ee.<name>`, as a queue name): no
+ * two jobs with the same key run at once, across workers and replicas; none by default.
+ * `maxAttempts`: 1 to 5 (the default); a failed attempt is retried with a backoff.
+ */
+export interface PluginEnqueueOptions {
+  concurrencyKey?: string;
+  maxAttempts?: number;
+}
+
+/**
  * enterprise.md §10.4: an entry shown while its feature is active. `settings.nav`: a navigation
  * entry under Settings, `path` = `/settings/ee/<id>`. `project.tab` (4E-1 §4): a tab of the
  * project page, `path` a relative tab path (`^[a-z][a-z0-9-]{0,31}$`).
@@ -138,7 +148,7 @@ export interface PluginContext {
   /** Queue names `^ee\.[a-z0-9][a-z0-9.-]{0,62}$`; skipped while the feature is inactive. */
   jobs(feature: string, handlers: Readonly<Record<string, PluginJobHandler>>): void;
   /** Only queues this plugin registered. */
-  enqueue(queue: string, payload: unknown): Promise<string>;
+  enqueue(queue: string, payload: unknown, options?: PluginEnqueueOptions): Promise<string>;
   limits(feature: string, override: PluginLimitOverride): void;
   ui(feature: string, extension: UiExtension): void;
   /** rbac-audit.md §15 (4C, additive): the route checks core routes use. */
