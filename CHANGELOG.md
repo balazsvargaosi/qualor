@@ -6,6 +6,17 @@ All notable changes to Qualor are listed here, newest first. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Compliance reports (Enterprise): OWASP Top 10 2021 and 2025, CWE Top 25 2025, OWASP ASVS 4.0.3
+  and PCI DSS 4.0.1 §6.2.4, for a project branch or an organisation, as JSON, CSV and PDF, kept
+  for a year with a SHA-256 to verify them. Create them on a project's **Compliance** tab or in
+  **Settings → Compliance reports**, or through `/api/v0/ee/compliance`. They need a licence key
+  listing the new feature `compliance-export`. Project admins and organisation admins create a
+  project's reports (the permission `project.compliance.create`); organisation admins create the
+  organisation's and delete reports (`org.compliance.manage`). The audit log records each report
+  created, downloaded or deleted. See [Compliance reports](docs/guide/compliance-reports.md).
+
 ## [0.7.1] - 2026-10-12
 
 ### Added

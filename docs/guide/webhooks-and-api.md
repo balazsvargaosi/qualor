@@ -104,6 +104,7 @@ q "$QUALOR_URL/api/v0/issues?branchId=<id>&severity=blocker&severity=high&inNewC
 | Single sign-on (enterprise) | `/ee/sso/connections…`, `/ee/sso/settings`, `/ee/sso/me/identities`, `/ee/sso/users/{userId}/identities` ([below](#single-sign-on-and-scim-enterprise)) |
 | SCIM (enterprise) | `GET/POST /ee/scim/tokens`, `DELETE /ee/scim/tokens/{id}`, and the SCIM 2.0 service under `/ee/scim/v2` ([below](#single-sign-on-and-scim-enterprise)) |
 | Audit log (enterprise) | `GET /ee/audit/events`, `GET /ee/audit/export`, `GET /ee/audit/head`, `GET /ee/audit/verify`, `GET/PUT /ee/audit/settings`, `POST /ee/audit/settings/stream/{regenerate-secret,test}` ([Roles and the audit log](./roles-and-audit.md)). The two stream routes, and a `PUT` with a `stream` object, need `audit-log.stream` too (403 `FEATURE_NOT_LICENSED` without it; retention alone and `"stream": null` need only `audit-log`) |
+| Compliance reports (enterprise) | `GET/POST /ee/compliance/reports`, `GET/DELETE /ee/compliance/reports/{id}`, `GET /ee/compliance/reports/{id}/download` (`?format=json`, `csv` or `pdf`) ([Compliance reports](./compliance-reports.md#the-api)) |
 
 Errors are `application/problem+json` with a stable `code`, such as `PROJECT_NOT_FOUND`,
 `INSUFFICIENT_SCOPE`, `INVALID_TRANSITION` or `AI_QUOTA_EXCEEDED`. The API answers 404 for resources you cannot see, and 403

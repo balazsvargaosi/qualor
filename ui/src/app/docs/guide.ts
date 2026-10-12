@@ -8,6 +8,7 @@ const PAGES: Readonly<Record<string, () => Promise<{ default: string }>>> = {
   'ai-assistant': () => import('../../../../docs/guide/ai-assistant.md'),
   'ai-prompts': () => import('../../../../docs/guide/ai-prompts.md'),
   cli: () => import('../../../../docs/guide/cli.md'),
+  'compliance-reports': () => import('../../../../docs/guide/compliance-reports.md'),
   configuration: () => import('../../../../docs/guide/configuration.md'),
   // The guide's page about the enterprise edition (Markdown text), not the enterprise/ package.
   // eslint-disable-next-line no-restricted-syntax

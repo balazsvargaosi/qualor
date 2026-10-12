@@ -19,6 +19,9 @@ This page covers two things:
 | Change project settings (except its GitLab/GitHub mapping), manage its analysis tokens, delete branches and merge requests, run the SonarQube status import | ✓ | ✓ | | |
 | Manage the organisation: members, project-level roles, projects, quality gates and profiles, webhooks, GitLab/GitHub connections and each project's mapping to a repository, the audit log (with `audit-log`) | ✓ | | | |
 | Delete the project | ✓ | | | |
+| Read and download compliance reports (with `compliance-export`): the project's, and the organisation's for a role in the organisation | ✓ | ✓ | ✓ | ✓ |
+| Create a compliance report of the project (with `compliance-export`, permission `project.compliance.create`) | ✓ | ✓ | | |
+| Create organisation compliance reports, delete any compliance report (with `compliance-export`, permission `org.compliance.manage`) | ✓ | | | |
 
 - In the API the roles are `admin` (Organization admin), `project_admin`, `member` (Maintainer)
   and `viewer`.
@@ -122,6 +125,10 @@ prefix ending in `.*`, for example `issue.*`):
   key), a request sent to the provider, a fix suggestion queued to post.
 - **The audit log itself:** its retention or SIEM stream settings changed, the stream's secret
   regenerated, an export started, and retention's own removal of old events.
+- **Compliance reports** (with `compliance-export`, [Compliance reports](./compliance-reports.md)):
+  a report created (`compliance.report.created`), downloaded (`compliance.report.downloaded`, with
+  the format and the report's SHA-256) or deleted by hand (`compliance.report.deleted`). Each
+  event belongs to the report's organisation. Reports removed after their year are not recorded.
 
 A **failed sign-in never stores the name that was typed** — only when it happens to match an
 existing user's name is that user's id and name stored, so a person who mistypes their password
@@ -133,9 +140,10 @@ answer; nor an OIDC client secret, a SAML service provider key, a SCIM token, an
 token, an authorization code, a SAML response or assertion, or what the identity provider says
 about a person at sign-in. A SCIM change of a user records the old and new user name, display name,
 email and external id, as an admin's change of a user records its fields. Also not recorded:
-analysis uploads and their processing, every *read* except an export, a refused request other
-than a sign-in attempt, an issue change Qualor itself makes (closing, reopening or mirroring
-during ingestion, a gate re-evaluation), and GitHub's own webhook deliveries to Qualor.
+analysis uploads and their processing, every *read* except an export or a compliance report
+download, a refused request other than a sign-in attempt, an issue change Qualor itself makes
+(closing, reopening or mirroring during ingestion, a gate re-evaluation), and GitHub's own webhook
+deliveries to Qualor.
 
 Each event also keeps the caller's **IP address and browser** (cut to 256 characters) for as long
 as retention keeps the event — worth knowing for your own privacy notice.

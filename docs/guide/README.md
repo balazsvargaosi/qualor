@@ -49,10 +49,12 @@ release: **Docs** in the top bar, at `/docs` on your server, for signed-in users
     edition), and the security audit log with its export, verification and SIEM stream.
 16. [Single sign-on and SCIM](./sso-and-scim.md): OIDC and SAML sign-in, group mapping,
     break-glass admins, and SCIM provisioning.
-17. [Troubleshooting](./troubleshooting.md): what common errors mean and how to fix them.
-18. [AI prompts](./ai-prompts.md): ready-made prompts that let an AI agent roll Qualor out in your
+17. [Compliance reports](./compliance-reports.md): OWASP Top 10, CWE Top 25, OWASP ASVS and
+    PCI DSS reports of a project or an organisation, as JSON, CSV and PDF, and how to verify them.
+18. [Troubleshooting](./troubleshooting.md): what common errors mean and how to fix them.
+19. [AI prompts](./ai-prompts.md): ready-made prompts that let an AI agent roll Qualor out in your
     company.
-19. [Telemetry](./telemetry.md): the anonymous usage statistics the server sends, and how to turn
+20. [Telemetry](./telemetry.md): the anonymous usage statistics the server sends, and how to turn
     them off.
 
 ## How Qualor works
