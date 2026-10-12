@@ -1158,3 +1158,56 @@ export const ssoStates = pgTable(
   ],
 );
 export type SsoStateRow = typeof ssoStates.$inferSelect;
+
+// ─── 4.10 Mail (E1 spec, migration 0007_mail) ───────────────────────────────
+
+export const MAIL_STATUSES = ['pending', 'sent', 'failed'] as const;
+export type MailStatus = (typeof MAIL_STATUSES)[number];
+
+/**
+ * One message to one recipient: the outbox while `pending`, then the delivery log. The rendered
+ * body is kept encrypted (`payload_enc`, AAD `mail_messages.payload:<id>`) only while pending.
+ */
+export const mailMessages = pgTable(
+  'mail_messages',
+  {
+    // queueMail makes the id first: the payload's AAD names it.
+    id: id(),
+    kind: text('kind').notNull(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
+    toAddress: citext('to_address').notNull(),
+    subject: text('subject').notNull(),
+    status: text('status').notNull().default('pending').$type<MailStatus>(),
+    attempts: integer('attempts').notNull().default(0),
+    lastError: text('last_error'),
+    smtpResponse: text('smtp_response'),
+    payloadEnc: jsonb('payload_enc').$type<EncryptedValue>(),
+    dedupeKey: text('dedupe_key'),
+    nextAttemptAt: at('next_attempt_at'),
+    sentAt: at('sent_at'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    // The delivery log and housekeeping's retention.
+    index('mail_messages_log_idx').on(t.createdAt.desc(), t.id.desc()),
+    index('mail_messages_dedupe_idx')
+      .on(t.dedupeKey, t.createdAt)
+      .where(sql`dedupe_key IS NOT NULL`),
+    index('mail_messages_pending_idx')
+      .on(t.status)
+      .where(sql`status = 'pending'`),
+    // The user FK's index (§2).
+    index('mail_messages_user_idx')
+      .on(t.userId)
+      .where(sql`user_id IS NOT NULL`),
+    check('mail_messages_kind_check', sql`kind ~ '^[a-z0-9.-]{1,64}$'`),
+    check('mail_messages_status_check', sql`status IN ('pending','sent','failed')`),
+    check('mail_messages_subject_length', sql`char_length(subject) <= 300`),
+    check('mail_messages_last_error_length', sql`octet_length(last_error) <= 1024`),
+    check('mail_messages_smtp_response_length', sql`octet_length(smtp_response) <= 1024`),
+    check('mail_messages_dedupe_key_length', sql`char_length(dedupe_key) <= 200`),
+    check('mail_messages_payload_check', sql`payload_enc IS NULL OR status = 'pending'`),
+  ],
+);
+export type MailMessageRow = typeof mailMessages.$inferSelect;

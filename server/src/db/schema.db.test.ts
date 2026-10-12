@@ -30,6 +30,7 @@ const TABLES = [
   'issues',
   'jobs',
   'llm_requests',
+  'mail_messages',
   'measures',
   'memberships',
   'organizations',
