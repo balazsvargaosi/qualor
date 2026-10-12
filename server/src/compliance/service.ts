@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { and, desc, eq, inArray, lt, sql, type SQL } from 'drizzle-orm';
 import type { FastifyRequest } from 'fastify';
@@ -431,17 +432,21 @@ export function createComplianceService(deps: {
   };
 
   /**
-   * A summary over 64 KiB fails the row instead and answers false: nothing was completed. The
-   * column's check counts the stored jsonb text, which can be longer than JSON.stringify's, so
-   * its violation is the same refusal.
+   * A summary over 64 KiB, or a `sha256` that is not the SHA-256 of the canonical bytes, fails the
+   * row instead and answers false: nothing was completed. The column's check counts the stored
+   * jsonb text, which can be longer than JSON.stringify's, so its violation is the same refusal.
+   * Core stores the SHA-256 it computed itself.
    */
   const complete: PluginCompliance['complete'] = async (id, result) => {
     gate();
     if (typeof id !== 'string' || !UUID.test(id)) return false;
-    const tooLarge = async (): Promise<false> => {
-      await fail(id, 'the report summary is too large');
+    const refuse = async (reason: string): Promise<false> => {
+      await fail(id, reason);
       return false;
     };
+    const tooLarge = () => refuse('the report summary is too large');
+    const sha256 = createHash('sha256').update(result.canonical).digest('hex');
+    if (result.sha256 !== sha256) return refuse('the report hash does not match');
     if (Buffer.byteLength(JSON.stringify(result.summary) ?? '') > SUMMARY_MAX) return tooLarge();
     try {
       const changed = await db
@@ -449,9 +454,20 @@ export function createComplianceService(deps: {
         .set({
           status: 'ready',
           data: gzipSync(result.canonical),
-          sha256: result.sha256,
+          sha256,
           sizeBytes: result.canonical.length,
           summary: result.summary,
+          // The refs the build used: after a rolling upgrade they can differ from the
+          // ones stored at creation, and the row must agree with the JSON.
+          ...(result.standards === undefined
+            ? {}
+            : {
+                standards: result.standards.map((s) => ({
+                  id: s.id,
+                  version: s.version,
+                  sourceSha256: s.sourceSha256,
+                })),
+              }),
           completedAt: sql`now()`,
         })
         .where(and(eq(complianceReports.id, id), eq(complianceReports.status, 'pending')))

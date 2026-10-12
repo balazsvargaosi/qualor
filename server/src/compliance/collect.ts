@@ -58,6 +58,7 @@ export async function collectCompliance(
     async (tx) => {
       const [report] = await tx
         .select({
+          status: complianceReports.status,
           scope: complianceReports.scope,
           organizationId: complianceReports.organizationId,
           projectId: complianceReports.projectId,
@@ -68,6 +69,10 @@ export async function collectCompliance(
         .from(complianceReports)
         .where(eq(complianceReports.id, reportId));
       if (!report) throw new ComplianceCollectError('the report no longer exists');
+      // A job that starts after housekeeping failed its row does no work.
+      if (report.status !== 'pending') {
+        throw new ComplianceCollectError('the report is no longer pending');
+      }
       const [org] = await tx
         .select({ id: organizations.id, key: organizations.key, name: organizations.name })
         .from(organizations)

@@ -295,6 +295,16 @@ describe('collectCompliance (4E-1 §2.1, §2.3)', () => {
     ).rejects.toBeInstanceOf(ComplianceCollectError);
   });
 
+  it('refuses a report that is no longer pending, before any work', async () => {
+    const id = await newReport({});
+    await ctx.db.execute(
+      sql`UPDATE compliance_reports SET status = 'failed', error = 'the build did not finish' WHERE id = ${id}`,
+    );
+    const refused = collectCompliance(ctx.db, id, { limit: 1 });
+    await expect(refused).rejects.toBeInstanceOf(ComplianceCollectError);
+    await expect(refused).rejects.toThrow('the report is no longer pending');
+  });
+
   it('stops when aborted', async () => {
     const id = await newReport({});
     const ac = new AbortController();

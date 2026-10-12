@@ -320,10 +320,19 @@ export interface PluginCompliance {
   remove(request: FastifyRequest, id: string): Promise<void>;
   /** A known build failure rejects with a problem of code REPORT_BUILD_FAILED and a `detail`. */
   collect(id: string, options: { limit: number; signal?: AbortSignal }): Promise<ComplianceSource>;
-  /** False when the row is gone or no longer pending (nothing written). */
+  /**
+   * False when the row is gone or no longer pending (nothing written), or when core failed it
+   * (a summary over 64 KiB, or a `sha256` that is not the SHA-256 of `canonical`). `standards`,
+   * the refs the build used, replace the ones stored at creation, so the row and the JSON agree.
+   */
   complete(
     id: string,
-    result: { canonical: Buffer; sha256: string; summary: unknown },
+    result: {
+      canonical: Buffer;
+      sha256: string;
+      summary: unknown;
+      standards?: readonly ComplianceStandardRef[];
+    },
   ): Promise<boolean>;
   fail(id: string, error: string): Promise<boolean>;
   housekeeping(): Promise<{ deleted: number; failed: number }>;

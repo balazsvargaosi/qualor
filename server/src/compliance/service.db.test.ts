@@ -256,7 +256,14 @@ describe('ctx.compliance (4E-1 §1.1, §2.4, §3)', () => {
       .select()
       .from(complianceReports)
       .where(eq(complianceReports.id, orgReport));
-    expect(row).toMatchObject({ status: 'ready', sha256: SHA, sizeBytes: 7, summary: { s: 1 } });
+    expect(row).toMatchObject({
+      status: 'ready',
+      sha256: SHA,
+      sizeBytes: 7,
+      summary: { s: 1 },
+      // Without `standards`, the refs stored at creation stay.
+      standards: STANDARDS,
+    });
     expect(row!.completedAt).toBeInstanceOf(Date);
     await expect(complete(orgReport)).resolves.toBe(false);
     await expect(compliance.fail(orgReport, 'late')).resolves.toBe(false);
@@ -441,6 +448,50 @@ describe('ctx.compliance (4E-1 §1.1, §2.4, §3)', () => {
     expect(left.map((r) => r.id).sort()).toEqual(
       [pendingOrg, oversized, stale, (again.json() as ComplianceReportView).id].sort(),
     );
+  });
+
+  it('fails a report whose sha256 is not the hash of its bytes, and stores the build standards', async () => {
+    const hashed = await createProject(ctx, root, { organizationId: org, key: 'hashed' });
+    await succeededAnalysis(hashed.id);
+    const create = async () => {
+      const res = await post(projAdmin, { projectId: hashed.id });
+      expect(res.statusCode, res.body).toBe(202);
+      return (res.json() as ComplianceReportView).id;
+    };
+    const mismatched = await create();
+    await expect(
+      compliance.complete(mismatched, {
+        canonical: Buffer.from(CANONICAL),
+        sha256: 'f'.repeat(64),
+        summary: { s: 1 },
+      }),
+    ).resolves.toBe(false);
+    expect(await statusOf(mismatched)).toEqual({
+      status: 'failed',
+      error: 'the report hash does not match',
+    });
+    // A job that starts after its row failed does no work.
+    await expect(compliance.collect(mismatched, { limit: 10 })).rejects.toMatchObject({
+      status: 422,
+      code: 'REPORT_BUILD_FAILED',
+      detail: 'the report is no longer pending',
+    });
+    // After a rolling upgrade, the build's standards replace the ones stored at creation.
+    const upgraded = await create();
+    const built = [{ id: 'cwe-top25-2025', version: '2025', sourceSha256: 'b'.repeat(64) }];
+    await expect(
+      compliance.complete(upgraded, {
+        canonical: Buffer.from(CANONICAL),
+        sha256: SHA,
+        summary: { s: 1 },
+        standards: built.map((s) => ({ ...s, extra: 'dropped' })),
+      }),
+    ).resolves.toBe(true);
+    const [row] = await ctx.db
+      .select({ sha256: complianceReports.sha256, standards: complianceReports.standards })
+      .from(complianceReports)
+      .where(eq(complianceReports.id, upgraded));
+    expect(row).toEqual({ sha256: SHA, standards: built });
   });
 
   it('answers 403 FEATURE_NOT_LICENSED everywhere after the grace period', async () => {
