@@ -50,6 +50,13 @@
       "when": 1790548925424,
       "tag": "0006_sso_scim",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1791834406323,
+      "tag": "0007_compliance_reports",
+      "breakpoints": true
     }
   ]
 }

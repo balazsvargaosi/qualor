@@ -923,6 +923,70 @@ export const auditEvents = pgTable(
 );
 export type AuditEventRow = typeof auditEvents.$inferSelect;
 
+// ─── 4E-1 Compliance reports (feature compliance-export; empty without a licence) ───────────
+
+export type ComplianceReportScope = 'project' | 'organization';
+export type ComplianceReportStatus = 'pending' | 'ready' | 'failed';
+export interface ComplianceStandardRef {
+  id: string;
+  version: string;
+  sourceSha256: string;
+}
+
+const NIL_UUID = sql`'00000000-0000-0000-0000-000000000000'::uuid`;
+
+export const complianceReports = pgTable(
+  'compliance_reports',
+  {
+    id: id(),
+    organizationId: uuid('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
+    projectId: uuid('project_id').references(() => projects.id, { onDelete: 'cascade' }),
+    branchId: uuid('branch_id').references(() => branches.id, { onDelete: 'set null' }),
+    scope: text('scope').notNull().$type<ComplianceReportScope>(),
+    status: text('status').notNull().default('pending').$type<ComplianceReportStatus>(),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    createdByName: text('created_by_name').notNull(),
+    createdAt: createdAt(),
+    completedAt: at('completed_at'),
+    standards: jsonb('standards').notNull().$type<ComplianceStandardRef[]>(),
+    summary: jsonb('summary').$type<unknown>(),
+    data: bytea('data'),
+    sha256: char('sha256', { length: 64 }),
+    sizeBytes: integer('size_bytes'),
+    error: text('error'),
+  },
+  (t) => [
+    index('compliance_reports_organization_idx').on(t.organizationId, t.id),
+    index('compliance_reports_project_idx')
+      .on(t.projectId, t.id)
+      .where(sql`project_id IS NOT NULL`),
+    index('compliance_reports_branch_idx')
+      .on(t.branchId)
+      .where(sql`branch_id IS NOT NULL`),
+    index('compliance_reports_created_by_idx')
+      .on(t.createdBy)
+      .where(sql`created_by IS NOT NULL`),
+    uniqueIndex('compliance_reports_pending_key')
+      .on(t.organizationId, sql`coalesce(project_id, ${NIL_UUID})`)
+      .where(sql`status = 'pending'`),
+    check(
+      'compliance_reports_scope_check',
+      sql`(scope = 'project' AND project_id IS NOT NULL) OR (scope = 'organization' AND project_id IS NULL)`,
+    ),
+    check('compliance_reports_status_check', sql`status IN ('pending','ready','failed')`),
+    check(
+      'compliance_reports_ready_check',
+      sql`status <> 'ready' OR (data IS NOT NULL AND sha256 IS NOT NULL AND summary IS NOT NULL AND completed_at IS NOT NULL AND size_bytes IS NOT NULL)`,
+    ),
+    check('compliance_reports_sha256_format', sql`sha256 ~ '^[0-9a-f]{64}$'`),
+    check('compliance_reports_summary_size', sql`octet_length(summary::text) <= 65536`),
+    check('compliance_reports_error_length', sql`char_length(error) <= 500`),
+    check('compliance_reports_name_length', sql`char_length(created_by_name) <= 255`),
+  ],
+);
+
 // ─── 4.9 Single sign-on and SCIM (Phase 4D, sso-scim.md §13) ────────────────
 
 export const SSO_PROTOCOLS = ['oidc', 'saml'] as const;
