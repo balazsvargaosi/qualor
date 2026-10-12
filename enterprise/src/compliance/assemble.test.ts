@@ -239,4 +239,148 @@ describe('assembleReport (4E-1 §2.2, §2.3)', () => {
       'comment',
     ]);
   });
+
+  const richProjects = (reversed: boolean): ComplianceSource['projects'] => {
+    const analysis = {
+      id: 'an1',
+      date: '2026-10-11T00:00:00.000Z',
+      revision: 'abc',
+      versionLabel: '1.0',
+    };
+    const cond = { metric: 'security_issues', op: 'gt' as const, threshold: 0, actual: 2 };
+    const trend = {
+      analysisId: 'an1',
+      date: '2026-10-11T00:00:00.000Z',
+      security_issues: 2,
+      security_rating: 3,
+    };
+    const rev = <T extends object>(o: T): T => Object.fromEntries(Object.entries(o).reverse()) as T;
+    const make = <T extends object>(o: T): T => (reversed ? rev(o) : o);
+    return [
+      {
+        id: 'p',
+        key: 'alpha',
+        name: 'Alpha',
+        branch: { id: 'b', name: 'main' },
+        analysis: make(analysis),
+        gate: make({ status: 'failed' as const, failedConditions: [make(cond)] }),
+        trend: [make(trend)],
+      },
+    ];
+  };
+  const build = (reversed: boolean) =>
+    assembleReport({
+      id: 'r',
+      generatedBy: 'Ann',
+      serverVersion: '0.8.0',
+      source: source({ projects: richProjects(reversed) }),
+      standards: [STD],
+    });
+
+  it('is independent of the key order of the input (analysis, gate, trend)', () => {
+    expect(build(true).canonical.equals(build(false).canonical)).toBe(true);
+  });
+
+  it('writes every nested object in the key order of spec 2.3', () => {
+    const shape = (v: unknown): unknown => {
+      if (Array.isArray(v)) return v.length > 0 ? [shape(v[0])] : [];
+      if (v !== null && typeof v === 'object')
+        return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, shape(x)]));
+      return null;
+    };
+    const sev = { blocker: null, high: null, medium: null, low: null, info: null };
+    const expected = {
+      schemaVersion: null,
+      id: null,
+      generatedAt: null,
+      generatedBy: null,
+      server: { version: null },
+      scope: {
+        kind: null,
+        organization: { id: null, name: null },
+        project: { id: null, key: null, name: null },
+        branch: { id: null, name: null },
+      },
+      standards: [
+        { id: null, version: null, title: null, source: null, licence: null, sourceSha256: null },
+      ],
+      projects: [
+        {
+          id: null,
+          key: null,
+          name: null,
+          branch: null,
+          analysis: { id: null, date: null, revision: null, versionLabel: null },
+          gate: {
+            status: null,
+            failedConditions: [{ metric: null, op: null, threshold: null, actual: null }],
+          },
+          trend: [{ analysisId: null, date: null, security_issues: null, security_rating: null }],
+        },
+      ],
+      summary: {
+        findings: { total: null, bySeverity: sev, inNewCode: null },
+        standards: [
+          {
+            id: null,
+            categories: [
+              {
+                id: null,
+                title: null,
+                open: null,
+                bySeverity: sev,
+                inNewCode: null,
+                rules: null,
+                oldestFirstSeenAt: null,
+              },
+            ],
+            notMapped: { open: null, bySeverity: sev, inNewCode: null, rules: null },
+            distinctTotal: null,
+          },
+        ],
+        secrets: { open: null },
+        dependencies: { open: null, bySeverity: sev },
+        triage: { falsePositive: null, wontFix: null },
+        truncated: null,
+      },
+      findings: [
+        {
+          id: null,
+          project: null,
+          path: null,
+          line: null,
+          rule: null,
+          ruleName: null,
+          engine: null,
+          severity: null,
+          kind: null,
+          cwe: [null],
+          message: null,
+          categories: { s: [null] },
+          inNewCode: null,
+          firstSeenAt: null,
+          section: null,
+        },
+      ],
+      triage: [
+        {
+          id: null,
+          project: null,
+          path: null,
+          line: null,
+          rule: null,
+          severity: null,
+          cwe: [null],
+          categories: { s: [null] },
+          status: null,
+          section: null,
+          by: null,
+          at: null,
+          comment: null,
+        },
+      ],
+    };
+    const parsed: unknown = JSON.parse(build(true).canonical.toString('utf8'));
+    expect(JSON.stringify(shape(parsed))).toBe(JSON.stringify(expected));
+  });
 });

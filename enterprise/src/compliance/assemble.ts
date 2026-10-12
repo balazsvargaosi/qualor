@@ -166,9 +166,31 @@ export function assembleReport(input: {
       key: p.key,
       name: p.name,
       branch: p.branch ? p.branch.name : null,
-      analysis: p.analysis,
-      gate: p.gate,
-      trend: p.trend,
+      analysis: p.analysis
+        ? {
+            id: p.analysis.id,
+            date: p.analysis.date,
+            revision: p.analysis.revision,
+            versionLabel: p.analysis.versionLabel,
+          }
+        : null,
+      gate: p.gate
+        ? {
+            status: p.gate.status,
+            failedConditions: p.gate.failedConditions.map((c) => ({
+              metric: c.metric,
+              op: c.op,
+              threshold: c.threshold,
+              actual: c.actual,
+            })),
+          }
+        : null,
+      trend: p.trend.map((t) => ({
+        analysisId: t.analysisId,
+        date: t.date,
+        security_issues: t.security_issues,
+        security_rating: t.security_rating,
+      })),
     })),
     summary,
     findings: source.findings.slice(0, limit).map((f) => ({
@@ -181,7 +203,7 @@ export function assembleReport(input: {
       engine: f.engine,
       severity: f.severity,
       kind: f.kind,
-      cwe: f.cwe,
+      cwe: [...f.cwe],
       message: f.message,
       categories: categoryMap(f.cwe, f.severity),
       inNewCode: f.inNewCode,
@@ -195,7 +217,7 @@ export function assembleReport(input: {
       line: t.line,
       rule: t.rule,
       severity: t.severity,
-      cwe: t.cwe,
+      cwe: [...t.cwe],
       categories: categoryMap(t.cwe, t.severity),
       status: t.status,
       section: t.section,
