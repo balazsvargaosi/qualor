@@ -98,9 +98,10 @@ hour after it was created is marked failed with "the build did not finish".
 
 Each report in the list shows when it was created, by whom, the branch, its status, the number of
 open findings and the start of its SHA-256, with **Copy** for the full value. **Summary** shows the
-report on the page: the category table of each standard (pick it under **Standard**), then the
-secrets, the vulnerable dependencies and the triage decisions. The gate of each project is in the
-PDF and the JSON.
+report on the page: the category table of each standard (pick it under **Standard**), then only
+the counts of the open findings, the findings in new code, the secrets, the vulnerable dependencies
+and the triage decisions (false positive and won't fix), not their lists. The lists are in the
+PDF, the CSV and the JSON; the gate of each project is in the PDF and the JSON.
 
 A report holds at most **50 000** findings and **50 000** triage decisions. Above that, the lists
 stop and the counts stay exact; the page, the PDF and the JSON (`summary.truncated`) say so.
@@ -136,7 +137,15 @@ Every report downloads as **JSON**, **CSV** and **PDF** (the links next to it). 
   5. the triage decisions: the **2 000** newest;
   6. the findings: the first **2 000**, by severity.
 
-  A list cut at 2 000 ends with "The full list is in the CSV and JSON exports."
+  A list cut at 2 000 ends with "The full list is in the CSV and JSON exports." In a report that
+  holds only the first 50 000 findings or triage decisions, it ends with "The JSON and CSV exports
+  list the first 50 000; all counts are exact." instead: the "first n of m" and "newest n of m"
+  lines give the exact totals, and the secrets and dependencies tables, rule by rule, cover only
+  the listed findings ("Rules among the listed findings").
+
+  In the executive summary, a project's **Security issues** is the `security_issues` measure of
+  its last analysis, while the report's findings are the open security findings when the report
+  was built (see [Which findings count](#which-findings-count)), so the two can differ.
 
   The PDF uses the Noto Sans font, which covers **Latin, Cyrillic and Greek**. Text in other
   scripts (Chinese, Japanese, Korean, Arabic, Hebrew and others) prints as the font's missing-glyph

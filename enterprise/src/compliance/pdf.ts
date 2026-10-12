@@ -4,11 +4,16 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import PDFDocument from 'pdfkit';
+import { DETAIL_LIMIT } from './assemble';
 import { SEVERITIES, type ReportJson, type SeverityCounts } from './report';
 
 /** 4E-1 §2.5: the findings list, and the triage table, of the PDF hold at most this many rows. */
 export const PDF_FINDINGS_MAX = 2_000;
 const FULL_LIST = 'The full list is in the CSV and JSON exports.';
+/** 50000 as "50 000". */
+const grouped = (n: number): string => String(n).replace(/\B(?=(\d{3})+$)/g, ' ');
+/** In a truncated snapshot (`summary.truncated`) the exports do not hold the full lists either. */
+const TRUNCATED_LIST = `The JSON and CSV exports list the first ${grouped(DETAIL_LIMIT)}; all counts are exact.`;
 /** 4E-1 §2.5: the render budget. */
 const RENDER_BUDGET_MS = 60_000;
 const MESSAGE_MAX = 300;
@@ -389,6 +394,10 @@ async function standards(layout: Layout, report: ReportJson): Promise<void> {
       layout.text(`Source: ${standard.source} · Licence: ${standard.licence}`, COLOR.muted);
     }
     layout.text(`Open findings in at least one category or not mapped: ${s.distinctTotal}`);
+    layout.text(
+      'A finding can count in more than one category; the total counts each finding once.',
+      COLOR.muted,
+    );
     const fixed = 44 + 32 + 5 * 38 + 28 + 30 + 52;
     await layout.table(
       [
@@ -428,7 +437,10 @@ async function standards(layout: Layout, report: ReportJson): Promise<void> {
   }
 }
 
-/** One row per rule of a section's findings: severity, open count, oldest first seen. */
+/**
+ * One row per rule of a section's listed findings: severity, open count, oldest first seen. In a
+ * truncated snapshot the list holds only part of the findings, and so do these rows.
+ */
 function byRule(report: ReportJson, section: 'secret' | 'dependency'): string[][] {
   const rules = new Map<string, { name: string; severity: string; open: number; oldest: string }>();
   for (const f of report.findings) {
@@ -458,16 +470,23 @@ async function secretsAndDependencies(layout: Layout, report: ReportJson): Promi
     { header: 'Open', width: 50, align: 'right' },
     { header: 'Oldest', width: 60, align: 'right' },
   ];
+  const rulesTable = async (rows: string[][]): Promise<void> => {
+    if (rows.length === 0) return;
+    if (report.summary.truncated) layout.text('Rules among the listed findings', COLOR.muted);
+    await layout.table(columns, rows);
+  };
   layout.page();
   layout.heading('Secrets');
   layout.text(`Open secrets: ${report.summary.secrets.open}`);
-  const secrets = byRule(report, 'secret');
-  if (secrets.length > 0) await layout.table(columns, secrets);
+  await rulesTable(byRule(report, 'secret'));
   layout.heading('Dependencies');
   layout.text(`Open dependency findings: ${report.summary.dependencies.open}`);
-  const dependencies = byRule(report, 'dependency');
-  if (dependencies.length > 0) await layout.table(columns, dependencies);
+  await rulesTable(byRule(report, 'dependency'));
 }
+
+/** The note under a list the PDF cuts: where the rest is, or, in a truncated snapshot, is not. */
+const restNote = (report: ReportJson): string =>
+  report.summary.truncated ? TRUNCATED_LIST : FULL_LIST;
 
 async function triage(layout: Layout, report: ReportJson): Promise<void> {
   const { summary } = report;
@@ -476,10 +495,11 @@ async function triage(layout: Layout, report: ReportJson): Promise<void> {
   layout.text(
     `False positive: ${summary.triage.falsePositive} · Won't fix: ${summary.triage.wontFix}`,
   );
-  const total = report.triage.length;
-  if (total === 0) return;
+  if (report.triage.length === 0) return;
+  // Exact, even when the snapshot lists only part of the decisions.
+  const total = summary.triage.falsePositive + summary.triage.wontFix;
   // The newest decisions first, as the report lists them (4E-1 §2.3).
-  const shown = Math.min(total, PDF_FINDINGS_MAX);
+  const shown = Math.min(report.triage.length, PDF_FINDINGS_MAX);
   if (shown < total) layout.text(`The newest ${shown} of ${total} decisions.`);
   await layout.table(
     [
@@ -509,12 +529,13 @@ async function triage(layout: Layout, report: ReportJson): Promise<void> {
       }
     })(),
   );
-  if (shown < total) layout.text(FULL_LIST);
+  if (shown < total) layout.text(restNote(report));
 }
 
 async function findings(layout: Layout, report: ReportJson): Promise<void> {
-  const total = report.findings.length;
-  const shown = Math.min(total, PDF_FINDINGS_MAX);
+  // Exact, even when the snapshot lists only part of the findings.
+  const total = report.summary.findings.total;
+  const shown = Math.min(report.findings.length, PDF_FINDINGS_MAX);
   layout.page();
   layout.heading('Findings');
   layout.text(
@@ -549,7 +570,7 @@ async function findings(layout: Layout, report: ReportJson): Promise<void> {
     );
   }
   if (shown < total || report.summary.truncated) {
-    layout.text(FULL_LIST);
+    layout.text(restNote(report));
   }
 }
 

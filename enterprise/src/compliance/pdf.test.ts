@@ -64,7 +64,11 @@ describe('renderPdf (4E-1 §2.5)', () => {
       path: `finding-${i}.ts`,
       line: i + 1,
     }));
+    report.summary.findings.total = report.findings.length;
     const text = await textOf(await renderPdf(report));
+    expect(text).toContain(
+      `The first ${PDF_FINDINGS_MAX} of ${PDF_FINDINGS_MAX + 5} open findings`,
+    );
     expect(text).toContain('The full list is in the CSV and JSON exports');
     // Rows 1 to 2 000 are listed; the 2 001st is not.
     expect(text).toContain(`finding-${PDF_FINDINGS_MAX - 1}.ts`);
@@ -79,6 +83,7 @@ describe('renderPdf (4E-1 §2.5)', () => {
       id: `t${i}`,
       path: `decision-${i}.ts`,
     }));
+    report.summary.triage.falsePositive = report.triage.length;
     const text = await textOf(await renderPdf(report));
     const note = 'The full list is in the CSV and JSON exports';
     expect(text).toContain(`decision-${PDF_FINDINGS_MAX - 1}.ts`);
@@ -89,6 +94,33 @@ describe('renderPdf (4E-1 §2.5)', () => {
     expect(at).toBeLessThan(text.indexOf('open findings, by severity'));
     expect(text.indexOf(note, at + 1)).toBe(-1);
   }, 60_000);
+
+  it('gives the exact totals of a truncated snapshot and says the exports are cut too', async () => {
+    const report = sampleReport();
+    report.findings[1]!.section = 'secret';
+    report.summary.truncated = true;
+    report.summary.findings.total = 123_456;
+    report.summary.triage = { falsePositive: 60_000, wontFix: 7 };
+    const text = await textOf(await renderPdf(report));
+    expect(text).toContain('The first 2 of 123456 open findings, by severity.');
+    expect(text).toContain('The newest 1 of 60007 decisions.');
+    const note = 'The JSON and CSV exports list the first 50 000; all counts are exact.';
+    // Under the triage table and under the findings list.
+    expect(text.split(note)).toHaveLength(3);
+    expect(text).not.toContain('The full list is in the CSV and JSON exports.');
+    // The per-rule tables are built from the listed findings only.
+    expect(text).toContain('Rules among the listed findings');
+  });
+
+  it('says on each standard page that a finding can count in more than one category', async () => {
+    const text = await textOf(await renderPdf(sampleReport()));
+    expect(text).toContain(
+      'A finding can count in more than one category; the total counts each finding once.',
+    );
+    // Not truncated: no label on the per-rule tables, no truncated note.
+    expect(text).not.toContain('Rules among the listed findings');
+    expect(text).not.toContain('all counts are exact');
+  });
 
   it('prints the stored sha256 when the caller gives it (ruling R9)', async () => {
     const report = sampleReport();
