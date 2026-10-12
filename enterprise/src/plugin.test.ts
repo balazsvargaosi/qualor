@@ -124,8 +124,10 @@ describe('qualor-enterprise', () => {
       };
     const ee = read('../package.json').dependencies ?? {};
     const server = read('../../server/package.json').dependencies ?? {};
-    // rbac-audit.md (Global Constraints): zod is the one runtime dependency, external in the bundle.
-    expect(Object.keys(ee)).toEqual(['zod']);
+    // rbac-audit.md (Global Constraints): zod, and since 4E-1 (spec C9) pdfkit, pinned exactly;
+    // both external in the bundle.
+    expect(Object.keys(ee)).toEqual(['pdfkit', 'zod']);
+    expect(ee.pdfkit).toBe('0.20.2');
     for (const [name, range] of Object.entries(ee)) expect(server[name], name).toBe(range);
   });
 });

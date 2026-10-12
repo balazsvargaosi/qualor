@@ -5,14 +5,15 @@ on the distroless base `gcr.io/distroless/cc-debian12` (pinned by digest in
 `deploy/server/Dockerfile`), and carries the Qualor Enterprise plugin, which is not MIT (below).
 Its parts are under their own licences:
 
-| Component                                                                                         | Version                   | Licence                                                                                                                | Source                                       |
-| ------------------------------------------------------------------------------------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
-| Qualor server and web UI                                                                          | this release              | MIT (`/app/LICENSE`)                                                                                                   | this repository                              |
-| Qualor Enterprise (`/app/enterprise`), inert without a licence key                                | this release              | source-available, Qualor Enterprise Licence (`/app/enterprise/LICENSE`)                                                | this repository, `enterprise/`               |
-| npm packages of the server and the web UI                                                         | as `pnpm-lock.yaml` locks | MIT, ISC, BSD-3-Clause, Apache-2.0, 0BSD, BlueOak-1.0.0, CC-BY-4.0 (server: each licence file in `/app/node_modules/`) | https://www.npmjs.com/                       |
-| PostgreSQL (`/opt/postgresql`), the embedded database, with its `citext` and `pg_trgm` extensions | 18.6                      | PostgreSQL Licence (`/opt/postgresql/COPYRIGHT`)                                                                       | https://ftp.postgresql.org/pub/source/v18.6/ |
-| Node.js (`/usr/local/bin/node`)                                                                   | 22.23.3                   | MIT, with the bundled libraries below (`/app/NODE-LICENSE.txt`)                                                        | https://github.com/nodejs/node/tree/v22.23.3 |
-| Debian packages of the base (below)                                                               | bookworm, as installed    | per package, `/usr/share/doc/<package>/copyright`                                                                      | `qualor/server-sources:<same tag>`           |
+| Component                                                                                         | Version                   | Licence                                                                                                                | Source                                            |
+| ------------------------------------------------------------------------------------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| Qualor server and web UI                                                                          | this release              | MIT (`/app/LICENSE`)                                                                                                   | this repository                                   |
+| Qualor Enterprise (`/app/enterprise`), inert without a licence key                                | this release              | source-available, Qualor Enterprise Licence (`/app/enterprise/LICENSE`)                                                | this repository, `enterprise/`                    |
+| Noto Sans Regular and Bold (`/app/enterprise/fonts`), embedded in the compliance report PDF       | 2.015                     | SIL Open Font License 1.1 (`/app/enterprise/fonts/OFL.txt`)                                                            | https://github.com/notofonts/latin-greek-cyrillic |
+| npm packages of the server and the web UI                                                         | as `pnpm-lock.yaml` locks | MIT, ISC, BSD-3-Clause, Apache-2.0, 0BSD, BlueOak-1.0.0, CC-BY-4.0 (server: each licence file in `/app/node_modules/`) | https://www.npmjs.com/                            |
+| PostgreSQL (`/opt/postgresql`), the embedded database, with its `citext` and `pg_trgm` extensions | 18.6                      | PostgreSQL Licence (`/opt/postgresql/COPYRIGHT`)                                                                       | https://ftp.postgresql.org/pub/source/v18.6/      |
+| Node.js (`/usr/local/bin/node`)                                                                   | 22.23.3                   | MIT, with the bundled libraries below (`/app/NODE-LICENSE.txt`)                                                        | https://github.com/nodejs/node/tree/v22.23.3      |
+| Debian packages of the base (below)                                                               | bookworm, as installed    | per package, `/usr/share/doc/<package>/copyright`                                                                      | `qualor/server-sources:<same tag>`                |
 
 Named individually, because they read the untrusted OIDC and SAML bytes of single sign-on: `openid-client` 6.8.8 (Filip Skokan), `jose` 6.2.12, `oauth4webapi` 3.8.8, `@node-saml/node-saml`
 5.1.0, `xml-crypto` 6.3.2, `@xmldom/xmldom` 0.8.15, `xml-encryption` 3.1.0, `xml2js` 0.6.2,
@@ -37,6 +38,50 @@ the blanket npm-packages row above; this paragraph only names them.
 | `ms`                   | 2.1.3          | MIT           | https://www.npmjs.com/package/ms                   |
 | `escape-html`          | 1.0.3          | MIT           | https://www.npmjs.com/package/escape-html          |
 | `@xmldom/is-dom-node`  | 1.0.1          | MIT           | https://www.npmjs.com/package/@xmldom/is-dom-node  |
+
+Named individually, because the enterprise plugin writes the compliance report PDF with them:
+`pdfkit` 0.20.2 and the packages it loads. They are covered by the blanket npm-packages row above.
+`fontkit`, `brotli` and `dfa` ship no licence file of their own; each declares MIT in its
+`package.json`, by Devon Govett, under the same MIT terms as `pdfkit`'s `LICENSE`.
+
+| Component            | Version      | Licence    | Source                                           |
+| -------------------- | ------------ | ---------- | ------------------------------------------------ |
+| `pdfkit`             | 0.20.2       | MIT        | https://www.npmjs.com/package/pdfkit             |
+| `fontkit`            | 2.0.4        | MIT        | https://www.npmjs.com/package/fontkit            |
+| `linebreak`          | 1.1.0        | MIT        | https://www.npmjs.com/package/linebreak          |
+| `png-js`             | 2.0.0        | MIT        | https://www.npmjs.com/package/png-js             |
+| `fflate`             | 0.8.3        | MIT        | https://www.npmjs.com/package/fflate             |
+| `@noble/hashes`      | 1.8.0        | MIT        | https://www.npmjs.com/package/@noble/hashes      |
+| `@noble/ciphers`     | 1.3.0        | MIT        | https://www.npmjs.com/package/@noble/ciphers     |
+| `@swc/helpers`       | 0.5.23       | Apache-2.0 | https://www.npmjs.com/package/@swc/helpers       |
+| `tslib`              | 2.8.1        | 0BSD       | https://www.npmjs.com/package/tslib              |
+| `brotli`             | 1.3.3        | MIT        | https://www.npmjs.com/package/brotli             |
+| `clone`              | 2.1.2        | MIT        | https://www.npmjs.com/package/clone              |
+| `dfa`                | 1.2.0        | MIT        | https://www.npmjs.com/package/dfa                |
+| `fast-deep-equal`    | 3.1.3        | MIT        | https://www.npmjs.com/package/fast-deep-equal    |
+| `restructure`        | 3.0.2        | MIT        | https://www.npmjs.com/package/restructure        |
+| `tiny-inflate`       | 1.0.3        | MIT        | https://www.npmjs.com/package/tiny-inflate       |
+| `unicode-properties` | 1.4.1        | MIT        | https://www.npmjs.com/package/unicode-properties |
+| `unicode-trie`       | 2.0.0        | MIT        | https://www.npmjs.com/package/unicode-trie       |
+| `base64-js`          | 0.0.8, 1.5.1 | MIT        | https://www.npmjs.com/package/base64-js          |
+| `pako`               | 0.2.9        | MIT        | https://www.npmjs.com/package/pako               |
+
+The compliance report PDF embeds subsets of Noto Sans Regular and Bold (Copyright 2022 The Noto
+Project Authors), under the SIL Open Font License 1.1, whose text is `/app/enterprise/fonts/OFL.txt`.
+
+The compliance reports map findings to security standards. The enterprise plugin carries, for each,
+the category ids and titles and the CWE ids each category lists:
+
+- **OWASP Top 10 2021 and 2025, and the OWASP Application Security Verification Standard 4.0.3**,
+  by the OWASP Foundation (https://owasp.org/Top10/, https://github.com/OWASP/ASVS), licensed under
+  Creative Commons Attribution-ShareAlike 4.0 (CC BY-SA 4.0,
+  https://creativecommons.org/licenses/by-sa/4.0/). The data is extracted from the published lists
+  (the ASVS requirements grouped by chapter) and is shared under the same licence.
+- **CWE Top 25 2025** and the CWE ids, from MITRE's Common Weakness Enumeration
+  (https://cwe.mitre.org/), used under the CWE Terms of Use
+  (https://cwe.mitre.org/about/termsofuse.html). CWE™ is a trademark of The MITRE Corporation.
+  Copyright © 2006–2026, The MITRE Corporation. CWE, CWSS, CWRAF, and the CWE logo are trademarks
+  of The MITRE Corporation.
 
 The enterprise plugin is not MIT. The server loads it only while a valid licence key is
 configured, including the key's 14-day grace period after it expires; without one the server
