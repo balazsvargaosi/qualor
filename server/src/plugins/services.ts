@@ -16,21 +16,32 @@ import {
   type AccessContext,
   type AccessScope,
 } from '../auth/access';
+import { createComplianceService } from '../compliance/service';
 import type { Config } from '../config';
 import type { Db } from '../db/client';
 import { ProblemError, validationFailed } from '../http/problem';
 import type { Edition } from '../license/edition';
 import { projectForUser } from '../projects/access';
 import { createScimService, createSsoService } from '../sso/service';
-import type { PluginAccess, PluginAudit, PluginScim, PluginSso } from './contract';
+import type {
+  PluginAccess,
+  PluginAudit,
+  PluginCompliance,
+  PluginScim,
+  PluginSso,
+} from './contract';
 import { MISSING_SCIM, MISSING_SSO, PluginError } from './registry';
 
-/** rbac-audit.md §15, sso-scim.md §17.1: what core passes to a plugin's context, besides 4B's. */
+/**
+ * rbac-audit.md §15, sso-scim.md §17.1, 4E-1 §1.1: what core passes to a plugin's context,
+ * besides 4B's.
+ */
 export interface PluginServices {
   readonly access: PluginAccess;
   readonly audit: PluginAudit;
   readonly sso: PluginSso;
   readonly scim: PluginScim;
+  readonly compliance: PluginCompliance;
 }
 
 /**
@@ -172,5 +183,12 @@ export function createPluginServices(
   const sso: PluginSso = ssoDeps ? createSsoService(ssoDeps) : MISSING_SSO;
   const scim: PluginScim = ssoDeps ? createScimService(ssoDeps) : MISSING_SCIM;
 
-  return Object.freeze({ access, audit, sso, scim });
+  // 4E-1 §1.1: the report rows, their checks and their audit events, through the one recorder.
+  const compliance = createComplianceService({
+    db,
+    isFeatureActive: deps.isFeatureActive,
+    recorder,
+  });
+
+  return Object.freeze({ access, audit, sso, scim, compliance });
 }

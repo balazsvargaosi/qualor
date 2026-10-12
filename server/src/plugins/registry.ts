@@ -8,6 +8,7 @@ import {
   PLUGIN_API_VERSION,
   type PluginAccess,
   type PluginAudit,
+  type PluginCompliance,
   type PluginContext,
   type PluginJobHandler,
   type PluginLogger,
@@ -23,6 +24,8 @@ import type { PluginServices } from './services';
 export const PLUGIN_NAME_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
 export const PLUGIN_QUEUE_PATTERN = /^ee\.[a-z0-9][a-z0-9.-]{0,62}$/;
 export const EXTENSION_ID_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
+/** 4E-1 §4: a `project.tab` extension's path, relative to the project page. */
+export const PROJECT_TAB_PATH_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
 /** A plugin declares at most this many features; each name is at most 64 characters (token.ts). */
 const MAX_FEATURES = 64;
 const MAX_FEATURE_LENGTH = 64;
@@ -183,22 +186,28 @@ function validateOverride(value: unknown): PluginLimitOverride {
   return Object.freeze({ llm: Object.freeze(llm) });
 }
 
-/** enterprise.md §10.4. */
+/**
+ * enterprise.md §10.4, 4E-1 §4: a `settings.nav` path is `/settings/ee/<id>`; a `project.tab`
+ * path is a relative tab path under the project page.
+ */
 function validateExtension(value: unknown): UiExtension {
   const e = snapshot(value, 'a UI extension');
   const { point, id, label, path } = e;
   const valid =
     Object.keys(e).every((k) => k === 'point' || k === 'id' || k === 'label' || k === 'path') &&
-    point === 'settings.nav' &&
+    (point === 'settings.nav' || point === 'project.tab') &&
     typeof id === 'string' &&
     EXTENSION_ID_PATTERN.test(id) &&
     typeof label === 'string' &&
     label.trim().length >= 1 &&
     label.length <= 40 &&
-    path === `/settings/ee/${id}`;
+    typeof path === 'string' &&
+    (point === 'settings.nav'
+      ? path === `/settings/ee/${id}`
+      : PROJECT_TAB_PATH_PATTERN.test(path));
   if (!valid) throw new PluginError('invalid UI extension');
   return Object.freeze({
-    point: 'settings.nav',
+    point: point as UiExtension['point'],
     id: id as string,
     label: label as string,
     path: path as string,
@@ -211,7 +220,7 @@ export interface ContextBase {
   logger: PluginLogger;
   license: LicensePayload;
   /**
-   * rbac-audit.md §15, sso-scim.md §17.1: the access, audit, sso and scim services, built
+   * rbac-audit.md §15, sso-scim.md §17.1, 4E-1 §1.1: the access, audit, sso, scim and compliance services, built
    * by core (bootEnterprise). A context without them (core tests that load a plugin) gives the
    * plugin stand-ins that throw, naming the missing service.
    */
@@ -274,6 +283,19 @@ export const MISSING_SCIM: PluginScim = Object.freeze({
   listTokens: unavailable('scim'),
   createToken: unavailable('scim'),
   revokeToken: unavailable('scim'),
+});
+
+/** 4E-1 §1.1: what a context without the compliance service gets. */
+export const MISSING_COMPLIANCE: PluginCompliance = Object.freeze({
+  create: unavailable('compliance'),
+  list: unavailable('compliance'),
+  get: unavailable('compliance'),
+  download: unavailable('compliance'),
+  remove: unavailable('compliance'),
+  collect: unavailable('compliance'),
+  complete: unavailable('compliance'),
+  fail: unavailable('compliance'),
+  housekeeping: unavailable('compliance'),
 });
 
 /**
@@ -387,6 +409,7 @@ export class StagedPlugin {
       audit: base.services?.audit ?? MISSING_AUDIT,
       sso: base.services?.sso ?? MISSING_SSO,
       scim: base.services?.scim ?? MISSING_SCIM,
+      compliance: base.services?.compliance ?? MISSING_COMPLIANCE,
       schedule: (feature: string, queue: string, everySeconds: number) => {
         const f = this.feature(feature);
         if (typeof queue !== 'string' || !PLUGIN_QUEUE_PATTERN.test(queue)) {

@@ -9,6 +9,7 @@ import {
   organizations,
   projects,
 } from '../db/schema';
+import { cut } from './text';
 import {
   MAX_ORGANIZATION_PROJECTS,
   TREND_POINTS,
@@ -35,12 +36,6 @@ function sectionOf(engineId: string): FindingSection {
   if (engineId === 'gitleaks') return 'secret';
   if (engineId === 'trivy') return 'dependency';
   return 'code';
-}
-
-function cut(text: string | null, max: number): string | null {
-  if (text === null) return null;
-  const points = [...text];
-  return points.length <= max ? text : points.slice(0, max).join('');
 }
 
 function abortCheck(signal: AbortSignal | undefined): void {

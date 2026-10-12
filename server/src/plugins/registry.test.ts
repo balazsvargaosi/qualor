@@ -219,6 +219,42 @@ describe('StagedPlugin (ruling EE4)', () => {
     expect(reads).toBe(1);
   });
 
+  it('accepts a project.tab extension with a relative path and refuses an absolute one', () => {
+    const registry = emptyRegistry();
+    const staged = new StagedPlugin(plugin(), registry);
+    const ctx = staged.context(base, registry);
+    ctx.ui('fixture.echo', {
+      point: 'project.tab',
+      id: 'compliance',
+      label: 'Compliance',
+      path: 'compliance',
+    });
+    expect(() =>
+      ctx.ui('fixture.echo', { point: 'project.tab', id: 'x', label: 'X', path: '/settings/ee/x' }),
+    ).toThrow(PluginError);
+    staged.commit(registry);
+    expect(registry.extensions).toEqual([
+      {
+        feature: 'fixture.echo',
+        extension: {
+          point: 'project.tab',
+          id: 'compliance',
+          label: 'Compliance',
+          path: 'compliance',
+        },
+      },
+    ]);
+  });
+
+  it('gives a context without services a compliance stand-in that throws', () => {
+    const registry = emptyRegistry();
+    const ctx = new StagedPlugin(plugin(), registry).context(base, registry);
+    expect(Object.isFrozen(ctx.compliance)).toBe(true);
+    expect(() => ctx.compliance.housekeeping()).toThrow(
+      'the compliance service is not available in this context',
+    );
+  });
+
   it('refuses a second plugin with the same name or feature', () => {
     const registry = emptyRegistry();
     new StagedPlugin(plugin(), registry).commit(registry);

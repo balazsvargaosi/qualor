@@ -73,7 +73,7 @@ export const systemRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (a
             features: z.array(z.string()),
             extensions: z.array(
               z.object({
-                point: z.literal('settings.nav'),
+                point: z.enum(['settings.nav', 'project.tab']),
                 id: z.string(),
                 label: z.string(),
                 path: z.string(),

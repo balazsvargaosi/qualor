@@ -10,6 +10,18 @@ import type { AuditActorContext, AuditEventInput } from '../audit/recorder';
 import type { AuditSettingsInput, AuditSettingsView } from '../audit/settings';
 import type { AuditHead, AuditVerification } from '../audit/verify';
 import type { OrganizationAccess } from '../auth/access';
+import type {
+  ComplianceFindingGroup,
+  ComplianceFindingRow,
+  ComplianceProjectSource,
+  ComplianceReportScope,
+  ComplianceReportStatus,
+  ComplianceSource,
+  ComplianceStandardRef,
+  ComplianceTriageRow,
+  FindingSection,
+  Severity,
+} from '../compliance/types';
 import type { OrganizationPermission, ProjectPermission } from '../auth/policy';
 import type { UserPrincipal } from '../auth/principal';
 import type { Db } from '../db/client';
@@ -48,6 +60,20 @@ export type {
   SsoTestResult,
 };
 
+/** The core types the 4E-1 compliance service uses (4E-1 §1.1), for the plugin's `import type`. */
+export type {
+  ComplianceFindingGroup,
+  ComplianceFindingRow,
+  ComplianceProjectSource,
+  ComplianceReportScope,
+  ComplianceReportStatus,
+  ComplianceSource,
+  ComplianceStandardRef,
+  ComplianceTriageRow,
+  FindingSection,
+  Severity,
+};
+
 /** The core types the 4C services use, for the plugin to import with `import type`. */
 export type {
   AuditActorContext,
@@ -80,9 +106,13 @@ export interface PluginJob {
 
 export type PluginJobHandler = (job: PluginJob) => Promise<void>;
 
-/** enterprise.md §10.4: a navigation entry under Settings, shown while its feature is active. */
+/**
+ * enterprise.md §10.4: an entry shown while its feature is active. `settings.nav`: a navigation
+ * entry under Settings, `path` = `/settings/ee/<id>`. `project.tab` (4E-1 §4): a tab of the
+ * project page, `path` a relative tab path (`^[a-z][a-z0-9-]{0,31}$`).
+ */
 export interface UiExtension {
-  point: 'settings.nav';
+  point: 'settings.nav' | 'project.tab';
   id: string;
   label: string;
   path: string;
@@ -124,6 +154,8 @@ export interface PluginContext {
   readonly sso: PluginSso;
   /** sso-scim.md §17.1 (4D, additive): the SCIM protocol and its tokens. */
   readonly scim: PluginScim;
+  /** 4E-1 §1.1 (additive): compliance reports, with core's permission checks. */
+  readonly compliance: PluginCompliance;
 }
 
 export type PluginPage<T> = { items: T[]; nextCursor: string | null };
@@ -223,6 +255,68 @@ export interface PluginScim {
     input: ScimTokenInput,
   ): Promise<{ view: ScimTokenView; token: string }>;
   revokeToken(actor: AuditActorContext, id: string): Promise<void>;
+}
+
+export type ComplianceDownloadFormat = 'json' | 'csv' | 'pdf';
+
+/** 4E-1 §3: a report as the API shows it; never its data. */
+export interface ComplianceReportView {
+  id: string;
+  scope: ComplianceReportScope;
+  organization: { id: string; key: string; name: string };
+  project: { id: string; key: string; name: string } | null;
+  branch: { id: string; name: string } | null;
+  status: ComplianceReportStatus;
+  createdBy: string;
+  createdAt: string;
+  completedAt: string | null;
+  standards: ComplianceStandardRef[];
+  sha256: string | null;
+  sizeBytes: number | null;
+  error: string | null;
+  summary: unknown | null;
+  /** The caller may delete it (org.compliance.manage on its organisation). */
+  canDelete: boolean;
+}
+
+export type ComplianceCreateInput =
+  { organizationId: string } | { projectId: string; branchId?: string };
+export type ComplianceListFilter = { organizationId: string } | { projectId: string };
+
+/**
+ * 4E-1 §1.1: built by core. Every member except `housekeeping` answers 403 FEATURE_NOT_LICENSED
+ * while `compliance-export` is inactive. The members that take the request check the caller
+ * themselves (a report it cannot read is a 404) and write their audit events; the job-side
+ * members take no caller.
+ */
+export interface PluginCompliance {
+  create(
+    request: FastifyRequest,
+    input: ComplianceCreateInput,
+    standards: readonly ComplianceStandardRef[],
+  ): Promise<ComplianceReportView>;
+  list(
+    request: FastifyRequest,
+    filter: ComplianceListFilter,
+    page: { limit: number; cursor?: string },
+  ): Promise<PluginPage<ComplianceReportView>>;
+  get(request: FastifyRequest, id: string): Promise<ComplianceReportView>;
+  /** The view and the gunzipped canonical JSON; records `compliance.report.downloaded`. */
+  download(
+    request: FastifyRequest,
+    id: string,
+    format: ComplianceDownloadFormat,
+  ): Promise<{ view: ComplianceReportView; canonical: Buffer }>;
+  remove(request: FastifyRequest, id: string): Promise<void>;
+  /** A known build failure rejects with a problem of code REPORT_BUILD_FAILED and a `detail`. */
+  collect(id: string, options: { limit: number; signal?: AbortSignal }): Promise<ComplianceSource>;
+  /** False when the row is gone or no longer pending (nothing written). */
+  complete(
+    id: string,
+    result: { canonical: Buffer; sha256: string; summary: unknown },
+  ): Promise<boolean>;
+  fail(id: string, error: string): Promise<boolean>;
+  housekeeping(): Promise<{ deleted: number; failed: number }>;
 }
 
 export interface PluginReport {

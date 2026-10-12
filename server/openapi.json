@@ -178,7 +178,8 @@
                           "point": {
                             "type": "string",
                             "enum": [
-                              "settings.nav"
+                              "settings.nav",
+                              "project.tab"
                             ]
                           },
                           "id": {
