@@ -61,11 +61,44 @@ describe('renderPdf (4E-1 §2.5)', () => {
     report.findings = Array.from({ length: PDF_FINDINGS_MAX + 5 }, (_, i) => ({
       ...base,
       id: `f${i}`,
+      path: `finding-${i}.ts`,
       line: i + 1,
     }));
     const text = await textOf(await renderPdf(report));
     expect(text).toContain('The full list is in the CSV and JSON exports');
+    // Rows 1 to 2 000 are listed; the 2 001st is not.
+    expect(text).toContain(`finding-${PDF_FINDINGS_MAX - 1}.ts`);
+    expect(text).not.toContain(`finding-${PDF_FINDINGS_MAX}.ts`);
   }, 60_000);
+
+  it('caps the triage table at the newest decisions and says where the rest is (ruling R8)', async () => {
+    const report = sampleReport();
+    const base = report.triage[0]!;
+    report.triage = Array.from({ length: PDF_FINDINGS_MAX + 5 }, (_, i) => ({
+      ...base,
+      id: `t${i}`,
+      path: `decision-${i}.ts`,
+    }));
+    const text = await textOf(await renderPdf(report));
+    const note = 'The full list is in the CSV and JSON exports';
+    expect(text).toContain(`decision-${PDF_FINDINGS_MAX - 1}.ts`);
+    expect(text).not.toContain(`decision-${PDF_FINDINGS_MAX}.ts`);
+    // The note follows the triage table, before the findings section (2 findings: no note there).
+    const at = text.indexOf(note);
+    expect(at).toBeGreaterThan(text.indexOf(`decision-${PDF_FINDINGS_MAX - 1}.ts`));
+    expect(at).toBeLessThan(text.indexOf('open findings, by severity'));
+    expect(text.indexOf(note, at + 1)).toBe(-1);
+  }, 60_000);
+
+  it('prints the stored sha256 when the caller gives it (ruling R9)', async () => {
+    const report = sampleReport();
+    const sha256 = 'ab'.repeat(32);
+    const pdf = await renderPdf(report, { sha256 });
+    const text = await textOf(pdf);
+    expect(text).toContain(sha256);
+    expect(text).not.toContain(createHash('sha256').update(JSON.stringify(report)).digest('hex'));
+    expect(pdf.toString('latin1')).toContain(`SHA-256 ${sha256}`);
+  });
 
   it('stops at the deadline', async () => {
     await expect(renderPdf(sampleReport(), { deadline: Date.now() - 1 })).rejects.toBeInstanceOf(

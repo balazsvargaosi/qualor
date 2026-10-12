@@ -6,8 +6,9 @@ import { fileURLToPath } from 'node:url';
 import PDFDocument from 'pdfkit';
 import { SEVERITIES, type ReportJson, type SeverityCounts } from './report';
 
-/** 4E-1 §2.5: the findings list of the PDF holds at most this many rows. */
+/** 4E-1 §2.5: the findings list, and the triage table, of the PDF hold at most this many rows. */
 export const PDF_FINDINGS_MAX = 2_000;
+const FULL_LIST = 'The full list is in the CSV and JSON exports.';
 /** 4E-1 §2.5: the render budget. */
 const RENDER_BUDGET_MS = 60_000;
 const MESSAGE_MAX = 300;
@@ -475,7 +476,11 @@ async function triage(layout: Layout, report: ReportJson): Promise<void> {
   layout.text(
     `False positive: ${summary.triage.falsePositive} · Won't fix: ${summary.triage.wontFix}`,
   );
-  if (report.triage.length === 0) return;
+  const total = report.triage.length;
+  if (total === 0) return;
+  // The newest decisions first, as the report lists them (4E-1 §2.3).
+  const shown = Math.min(total, PDF_FINDINGS_MAX);
+  if (shown < total) layout.text(`The newest ${shown} of ${total} decisions.`);
   await layout.table(
     [
       { header: 'Project', width: 44 },
@@ -489,7 +494,7 @@ async function triage(layout: Layout, report: ReportJson): Promise<void> {
       { header: 'Comment', width: layout.width - 420 },
     ],
     (function* () {
-      for (const t of report.triage) {
+      for (const t of report.triage.slice(0, shown)) {
         yield [
           cut(t.project, CELL_MAX),
           cut(dash(t.path), CELL_MAX),
@@ -504,6 +509,7 @@ async function triage(layout: Layout, report: ReportJson): Promise<void> {
       }
     })(),
   );
+  if (shown < total) layout.text(FULL_LIST);
 }
 
 async function findings(layout: Layout, report: ReportJson): Promise<void> {
@@ -543,7 +549,7 @@ async function findings(layout: Layout, report: ReportJson): Promise<void> {
     );
   }
   if (shown < total || report.summary.truncated) {
-    layout.text('The full list is in the CSV and JSON exports.');
+    layout.text(FULL_LIST);
   }
 }
 
@@ -552,14 +558,17 @@ async function findings(layout: Layout, report: ReportJson): Promise<void> {
  * pdfkit 0.20.2 puts no time or random value in the file: the dates come from `info`, the file
  * /ID is the MD5 of `info` (which names the report's SHA-256), and the font subset tags derive
  * from the font ids (F1, F2), not from Math.random. The byte-identity test guards this.
+ * `sha256` is the stored SHA-256 of the canonical JSON; without it, the report is re-serialised
+ * (its canonical form, as parsed from the snapshot) and hashed.
  */
 export async function renderPdf(
   report: ReportJson,
-  options: { fontsDir?: string; deadline?: number } = {},
+  options: { fontsDir?: string; deadline?: number; sha256?: string } = {},
 ): Promise<Buffer> {
   const fontsDir = options.fontsDir ?? defaultFontsDir();
   const deadline = options.deadline ?? Date.now() + RENDER_BUDGET_MS;
-  const sha256 = createHash('sha256').update(JSON.stringify(report)).digest('hex');
+  const sha256 =
+    options.sha256 ?? createHash('sha256').update(JSON.stringify(report)).digest('hex');
   const generatedAt = new Date(report.generatedAt);
   const body = path.join(fontsDir, FONT_FILES.body);
   const doc = new PDFDocument({
@@ -568,8 +577,9 @@ export async function renderPdf(
     bufferPages: true,
     autoFirstPage: false,
     compress: true,
-    // The default font, so the built-in Helvetica (no Cyrillic) is never loaded.
-    font: body,
+    // No default font: the built-in Helvetica (no Cyrillic) is never loaded. (A path here would be
+    // cached under the path, and every doc.font('body') would re-open and re-parse the file.)
+    font: null as unknown as string,
     info: {
       Title: 'Qualor compliance report',
       Author: report.generatedBy,
@@ -582,6 +592,7 @@ export async function renderPdf(
   });
   doc.registerFont('body', body);
   doc.registerFont('bold', path.join(fontsDir, FONT_FILES.bold));
+  doc.font('body');
   const layout = new Layout(doc, deadline);
   await cover(layout, report, sha256);
   await executiveSummary(layout, report);
