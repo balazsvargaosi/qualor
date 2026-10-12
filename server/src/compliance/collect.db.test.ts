@@ -8,7 +8,7 @@ import {
   type TestContext,
 } from '../../test/app';
 import { mainBranchId, seedIssue, seedRule } from '../../test/issues';
-import { analyses, complianceReports, issueChanges, measures, users } from '../db/schema';
+import { analyses, branches, complianceReports, issueChanges, measures, users } from '../db/schema';
 import { collectCompliance, ComplianceCollectError } from './collect';
 
 describe('collectCompliance (4E-1 §2.1, §2.3)', () => {
@@ -17,6 +17,9 @@ describe('collectCompliance (4E-1 §2.1, §2.3)', () => {
   let alpha: { id: string; key: string };
   let beta: { id: string; key: string };
   let alphaMain: string;
+  let alphaOther: string;
+  let userB: string;
+  let multiTriage: string;
   let sqli: string, secret: string, dep: string, lint: string, hotspot: string;
 
   /** Inserts a pending report; the previous pending rows are finished first (one per scope). */
@@ -101,6 +104,11 @@ describe('collectCompliance (4E-1 §2.1, §2.3)', () => {
         sql`UPDATE branches SET last_analysis_id = ${a!.id} WHERE id = ${alphaMain}`,
       );
     }
+    const [other] = await ctx.db
+      .insert(branches)
+      .values({ projectId: alpha.id, kind: 'branch', name: 'feature' })
+      .returning({ id: branches.id });
+    alphaOther = other!.id;
     sqli = await seedRule(ctx.db, { key: 'semgrep:sqli', cwe: [89], quality: 'security' });
     secret = await seedRule(ctx.db, { key: 'gitleaks:aws-key', quality: 'security' }); // cwe [] → 798 by engine
     dep = await seedRule(ctx.db, { key: 'trivy:CVE-2026-1', cwe: [502], quality: 'security' });
@@ -140,6 +148,17 @@ describe('collectCompliance (4E-1 §2.1, §2.3)', () => {
     });
     await seedIssue(ctx.db, { ...b, ruleId: lint, severity: 'low' });
     await seedIssue(ctx.db, { ...b, ruleId: hotspot, kind: 'hotspot', severity: 'medium' });
+    // CWE-only relevance: a CWE rule, but rule and issue quality are maintainability.
+    const traversal = await seedRule(ctx.db, { key: 'semgrep:path-traversal', cwe: [22] });
+    await seedIssue(ctx.db, { ...b, ruleId: traversal, severity: 'low', path: 'src/z.ts' });
+    // The same kind of finding on another branch is out of scope for a main-branch report.
+    await seedIssue(ctx.db, {
+      projectId: alpha.id,
+      branchId: alphaOther,
+      ruleId: sqli,
+      quality: 'security',
+      severity: 'blocker',
+    });
     await seedIssue(ctx.db, { ...b, ruleId: sqli, status: 'resolved' });
     const fp = await seedIssue(ctx.db, {
       ...b,
@@ -151,17 +170,51 @@ describe('collectCompliance (4E-1 §2.1, §2.3)', () => {
       .select()
       .from(users)
       .where(sql`username = 'admin'`);
+    await ctx.db.insert(issueChanges).values([
+      {
+        issueId: fp,
+        userId: admin_!.id,
+        field: 'status',
+        oldValue: 'open',
+        newValue: 'false_positive',
+        comment: 'x'.repeat(1500),
+      },
+    ]);
+    // Attribution: the newest change with field = status and new_value = the current status.
+    const [ub] = await ctx.db
+      .insert(users)
+      .values({ username: 'bob', displayName: null })
+      .returning({ id: users.id });
+    userB = ub!.id;
+    multiTriage = await seedIssue(ctx.db, {
+      ...b,
+      ruleId: sqli,
+      status: 'false_positive',
+      severity: 'low',
+      quality: 'security',
+    });
+    const change = (
+      userId: string,
+      field: 'status' | 'comment',
+      newValue: string,
+      comment: string,
+      at: string,
+    ) => ({
+      issueId: multiTriage,
+      userId,
+      field,
+      oldValue: null,
+      newValue,
+      comment,
+      createdAt: new Date(at),
+    });
     await ctx.db
       .insert(issueChanges)
       .values([
-        {
-          issueId: fp,
-          userId: admin_!.id,
-          field: 'status',
-          oldValue: 'open',
-          newValue: 'false_positive',
-          comment: 'x'.repeat(1500),
-        },
+        change(admin_!.id, 'status', 'false_positive', 'old', '2026-01-01T00:00:00Z'),
+        change(userB, 'status', 'false_positive', 'new', '2026-01-02T00:00:00Z'),
+        change(admin_!.id, 'comment', 'false_positive', 'later comment', '2026-01-03T00:00:00Z'),
+        change(admin_!.id, 'status', 'open', 'reopened?', '2026-01-04T00:00:00Z'),
       ]);
   });
   afterAll(() => ctx.close());
@@ -179,14 +232,15 @@ describe('collectCompliance (4E-1 §2.1, §2.3)', () => {
     });
     expect(a.trend.map((t) => t.security_rating)).toEqual([3, 4]);
     expect(s.projects[1]).toMatchObject({ analysis: null, gate: null, trend: [] });
-    expect(beta.key).toBe('beta');
-    // open: sqli (dup excluded), secret, dep, hotspot; not lint, not resolved.
+    expect(s.projects[1]).toMatchObject({ id: beta.id, branch: { name: 'main' }, analysis: null });
+    // open: sqli (dup excluded), secret, dep, hotspot, CWE-only traversal; not lint, not resolved.
     // Order: severity rank, project key, path NULLS FIRST, line, id.
     expect(s.findings.map((f) => f.rule)).toEqual([
       'gitleaks:aws-key',
       'semgrep:sqli',
       'trivy:CVE-2026-1',
       'spotbugs:SPRING_ENDPOINT',
+      'semgrep:path-traversal',
     ]);
     expect(s.findings.find((f) => f.rule === 'gitleaks:aws-key')).toMatchObject({
       section: 'secret',
@@ -196,22 +250,29 @@ describe('collectCompliance (4E-1 §2.1, §2.3)', () => {
       section: 'dependency',
       line: null,
     });
-    expect(s.triage).toHaveLength(1);
+    expect(s.triage).toHaveLength(2);
     expect(s.triage[0]).toMatchObject({
       status: 'false_positive',
       section: 'code',
       by: 'Administrator',
     });
     expect([...s.triage[0]!.comment!].length).toBe(1000);
+    // the newest matching status change decides by / at / comment
+    const multi = s.triage.find((t) => t.id === multiTriage);
+    expect(multi).toMatchObject({
+      by: 'bob',
+      at: '2026-01-02T00:00:00.000Z',
+      comment: 'new',
+    });
     const open = s.groups.filter((g) => g.status === 'open').reduce((n, g) => n + g.count, 0);
-    expect(open).toBe(4);
+    expect(open).toBe(5);
   });
 
   it('truncates the detail lists at limit + 1 while the groups stay exact', async () => {
     const id = await newReport({});
     const s = await collectCompliance(ctx.db, id, { limit: 1 });
     expect(s.findings).toHaveLength(2);
-    expect(s.groups.filter((g) => g.status === 'open').reduce((n, g) => n + g.count, 0)).toBe(4);
+    expect(s.groups.filter((g) => g.status === 'open').reduce((n, g) => n + g.count, 0)).toBe(5);
   });
 
   it('reads a project scope on its branch', async () => {
@@ -220,6 +281,12 @@ describe('collectCompliance (4E-1 §2.1, §2.3)', () => {
     expect(s.projects).toHaveLength(1);
     expect(s.scope.project?.key).toBe('alpha');
     expect(s.scope.branch?.name).toBe('main');
+    // the feature-branch blocker is not in the report
+    expect(s.findings.some((f) => f.severity === 'blocker' && f.rule === 'semgrep:sqli')).toBe(
+      false,
+    );
+    expect(s.groups.some((g) => g.severity === 'blocker' && g.rule === 'semgrep:sqli')).toBe(false);
+    expect(s.groups.filter((g) => g.status === 'open').reduce((n, g) => n + g.count, 0)).toBe(5);
   });
 
   it('fails cleanly for a report that no longer exists', async () => {
