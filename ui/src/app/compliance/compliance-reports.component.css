@@ -1,0 +1,74 @@
+/* Compliance reports (4E-1 §4): the create control, the list and a report's summary, as panels. */
+:host {
+  display: grid;
+  /* A definite column: the tables scroll in their panels instead of widening the page. */
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+}
+:host > *,
+.compliance-status .alert,
+.compliance-create .alert {
+  margin: 0;
+}
+.compliance-create {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 12px;
+}
+.compliance-create .field {
+  margin: 0;
+}
+.compliance-create select {
+  min-width: 12rem;
+  max-width: 100%;
+}
+.compliance-create-hint,
+.compliance-create .alert {
+  flex-basis: 100%;
+  margin: 0;
+}
+.compliance-status:empty {
+  display: none;
+}
+.compliance-status {
+  display: grid;
+  gap: 8px;
+}
+.compliance-error {
+  max-width: 24rem;
+  margin-top: 4px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.compliance-downloads a {
+  text-decoration: none;
+}
+.compliance-downloads a:not([href]) {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.compliance-downloads a:not([href]):hover {
+  background: none;
+}
+tr.selected {
+  background: var(--surface-2);
+}
+.compliance-preview .panel-head h3 {
+  margin: 0;
+}
+.compliance-preview .segmented {
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+.compliance-category {
+  min-width: 12rem;
+  font-weight: 500;
+  white-space: normal;
+}
+.compliance-not-mapped > * {
+  color: var(--text-muted);
+}
+.compliance-counts {
+  margin: 0;
+}

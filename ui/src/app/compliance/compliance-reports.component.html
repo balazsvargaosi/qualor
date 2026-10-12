@@ -1,0 +1,337 @@
+@if (listError(); as message) {
+  <p class="alert alert-error" role="alert">{{ message }}</p>
+} @else {
+  @if (canCreate()) {
+    <div class="compliance-create">
+      @if (projectScope()) {
+        <div class="field">
+          <label for="compliance-branch" i18n="@@compliance.branch">Branch</label>
+          <select id="compliance-branch" (change)="setBranch($event)">
+            @for (b of branches(); track b.id) {
+              <option [value]="b.id" [selected]="branchId() === b.id">{{ b.name }}</option>
+            }
+          </select>
+        </div>
+      }
+      <button
+        type="button"
+        class="btn btn-primary"
+        [attr.aria-disabled]="creating() ? true : null"
+        (click)="create()"
+        i18n="@@compliance.create"
+      >
+        Create report
+      </button>
+      <p class="hint compliance-create-hint" i18n="@@compliance.createHint">
+        A report counts the open security findings of the last analysis, by OWASP Top 10, CWE Top
+        25, OWASP ASVS and PCI DSS, and is kept as a snapshot with its SHA-256.
+      </p>
+      @if (createError(); as message) {
+        <p class="alert alert-error" role="alert">{{ message }}</p>
+      }
+    </div>
+  }
+
+  <div class="compliance-status" role="status">
+    @if (announcement(); as message) {
+      <p class="alert alert-success">{{ message }}</p>
+    }
+    @if (copied(); as c) {
+      @if (c.ok) {
+        <p class="alert alert-success" i18n="@@compliance.copied">The full SHA-256 was copied.</p>
+      } @else {
+        <p class="alert alert-error" i18n="@@compliance.copyFailed">
+          Copying failed. Select the SHA-256 and copy it yourself:
+          <code class="prose-text">{{ c.hash }}</code>
+        </p>
+      }
+    }
+  </div>
+
+  @if (loaded() && reports().length === 0) {
+    <div class="card empty-state">
+      <p i18n="@@compliance.empty">No compliance reports yet.</p>
+    </div>
+  } @else if (loaded()) {
+    <section class="card panel compliance-list" aria-labelledby="compliance-caption">
+      <div class="panel-scroll">
+        <table>
+          <caption id="compliance-caption" class="visually-hidden" i18n="@@compliance.caption">
+            Compliance reports, newest first
+          </caption>
+          <thead>
+            <tr>
+              <th scope="col" i18n="@@compliance.col.created">Created</th>
+              <th scope="col" i18n="@@compliance.col.by">By</th>
+              @if (projectScope()) {
+                <th scope="col" i18n="@@compliance.col.branch">Branch</th>
+              }
+              <th scope="col" i18n="@@compliance.col.status">Status</th>
+              <th scope="col" class="num" i18n="@@compliance.col.findings">Findings</th>
+              <th scope="col" i18n="@@compliance.col.sha256">SHA-256</th>
+              <th scope="col" i18n="@@compliance.col.downloads">Downloads</th>
+              <th scope="col" class="actions-col">
+                <span class="visually-hidden" i18n="@@compliance.col.actions">Actions</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (r of reports(); track r.id) {
+              <tr [attr.data-key]="r.id" [class.selected]="selectedId() === r.id">
+                <td class="nowrap">{{ r.createdAt | dateTime }}</td>
+                <td>{{ r.createdBy }}</td>
+                @if (projectScope()) {
+                  <td>{{ r.branch?.name }}</td>
+                }
+                <td>
+                  @switch (r.status) {
+                    @case ('pending') {
+                      <span class="badge badge-tag" i18n="@@compliance.status.pending"
+                        >Pending</span
+                      >
+                    }
+                    @case ('ready') {
+                      <span class="badge badge-passed" i18n="@@compliance.status.ready">Ready</span>
+                    }
+                    @default {
+                      <span class="badge badge-failed" i18n="@@compliance.status.failed"
+                        >Failed</span
+                      >
+                    }
+                  }
+                  @if (r.status === 'failed' && r.error) {
+                    <div class="muted compliance-error">{{ r.error }}</div>
+                  }
+                </td>
+                <td class="num compliance-total">{{ r.summary?.findings?.total }}</td>
+                <td class="nowrap">
+                  @if (r.sha256; as hash) {
+                    <code [title]="hash">{{ hashStart(hash) }}…</code>
+                    <button
+                      type="button"
+                      class="btn-quiet"
+                      [attr.aria-label]="copyLabel(r)"
+                      (click)="copyHash(r)"
+                      i18n="@@compliance.copy"
+                    >
+                      Copy
+                    </button>
+                  }
+                </td>
+                <td>
+                  <div class="row-actions compliance-downloads">
+                    @for (f of formats; track f) {
+                      <a
+                        class="btn-quiet"
+                        download
+                        [attr.href]="download(r, f)"
+                        [attr.aria-disabled]="r.status === 'ready' ? null : true"
+                        [attr.aria-label]="downloadLabel(r, f)"
+                        >{{ formatLabel(f) }}</a
+                      >
+                    }
+                  </div>
+                </td>
+                <td class="actions-col">
+                  <div class="row-actions">
+                    @if (r.status === 'ready' && r.summary) {
+                      <button
+                        type="button"
+                        class="btn-quiet"
+                        [attr.aria-expanded]="selectedId() === r.id"
+                        [attr.aria-label]="summaryLabel(r)"
+                        aria-controls="compliance-preview"
+                        (click)="toggleSummary(r)"
+                        i18n="@@compliance.summary"
+                      >
+                        Summary
+                      </button>
+                    }
+                    @if (r.canDelete && r.status !== 'pending') {
+                      <button
+                        type="button"
+                        class="btn-quiet danger row-delete"
+                        [attr.aria-label]="deleteLabel(r)"
+                        [attr.aria-disabled]="deleting() ? true : null"
+                        (click)="askDelete(r)"
+                        i18n="@@compliance.delete"
+                      >
+                        Delete
+                      </button>
+                    }
+                  </div>
+                </td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+      @if (nextCursor()) {
+        <p class="panel-foot">
+          <button
+            type="button"
+            class="btn"
+            [attr.aria-disabled]="loadingMore() ? true : null"
+            (click)="more()"
+            i18n="@@list.more"
+          >
+            Load more
+          </button>
+        </p>
+      }
+    </section>
+    @if (moreError(); as message) {
+      <p class="alert alert-error" role="alert">{{ message }}</p>
+    }
+  }
+
+  @if (selected(); as report) {
+    @if (summary(); as s) {
+      <section
+        id="compliance-preview"
+        class="card panel compliance-preview"
+        aria-labelledby="compliance-preview-title"
+      >
+        <div class="panel-head">
+          <div>
+            <h3 id="compliance-preview-title" i18n="@@compliance.preview.title">Summary</h3>
+            <span class="panel-sub" i18n="@@compliance.preview.of"
+              >Report of {{ report.createdAt | dateTime }}</span
+            >
+          </div>
+          <div
+            class="segmented"
+            role="group"
+            aria-label="Standard"
+            i18n-aria-label="@@compliance.preview.standard"
+          >
+            @for (st of s.standards; track st.id) {
+              <button
+                type="button"
+                [attr.aria-pressed]="standard()?.id === st.id"
+                (click)="standardId.set(st.id)"
+              >
+                {{ standardTitle(st.id) }}
+              </button>
+            }
+          </div>
+        </div>
+        @if (s.truncated) {
+          <p
+            class="alert alert-warn panel-alert compliance-truncated"
+            i18n="@@compliance.truncated"
+          >
+            This report holds the first 50 000 findings and the first 50 000 triage decisions. The
+            counts here cover all of them.
+          </p>
+        }
+        @if (standard(); as st) {
+          <div class="panel-scroll">
+            <table class="compliance-categories">
+              <caption class="visually-hidden" i18n="@@compliance.preview.caption">
+                Open findings by category of
+                {{
+                  standardTitle(st.id)
+                }}
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col" i18n="@@compliance.preview.col.id">Category</th>
+                  <th scope="col" i18n="@@compliance.preview.col.title">Title</th>
+                  <th scope="col" class="num" i18n="@@compliance.preview.col.open">Open</th>
+                  @for (sev of severities; track sev) {
+                    <th scope="col" class="num">{{ severityLabel(sev) }}</th>
+                  }
+                  <th scope="col" class="num" i18n="@@compliance.preview.col.newCode">New code</th>
+                  <th scope="col" class="num" i18n="@@compliance.preview.col.rules">Rules</th>
+                  <th scope="col" i18n="@@compliance.preview.col.oldest">Oldest</th>
+                </tr>
+              </thead>
+              <tbody>
+                @for (c of st.categories; track c.id) {
+                  <tr>
+                    <td class="nowrap">
+                      <code>{{ c.id }}</code>
+                    </td>
+                    <th scope="row" class="compliance-category">{{ c.title }}</th>
+                    <td class="num">{{ c.open }}</td>
+                    @for (sev of severities; track sev) {
+                      <td class="num">{{ c.bySeverity[sev] }}</td>
+                    }
+                    <td class="num">{{ c.inNewCode }}</td>
+                    <td class="num">{{ c.rules }}</td>
+                    <td class="nowrap">{{ c.oldestFirstSeenAt | dateTime: 'date' }}</td>
+                  </tr>
+                }
+                <tr class="compliance-not-mapped">
+                  <td></td>
+                  <th scope="row" i18n="@@compliance.preview.notMapped">Not mapped</th>
+                  <td class="num">{{ st.notMapped.open }}</td>
+                  @for (sev of severities; track sev) {
+                    <td class="num">{{ st.notMapped.bySeverity[sev] }}</td>
+                  }
+                  <td class="num">{{ st.notMapped.inNewCode }}</td>
+                  <td class="num">{{ st.notMapped.rules }}</td>
+                  <td></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        }
+        <div class="panel-body">
+          <dl class="facts compliance-counts">
+            <dt i18n="@@compliance.preview.findings">Open findings</dt>
+            <dd>{{ s.findings.total }}</dd>
+            <dt i18n="@@compliance.preview.inNewCode">In new code</dt>
+            <dd>{{ s.findings.inNewCode }}</dd>
+            <dt i18n="@@compliance.preview.secrets">Secrets</dt>
+            <dd>{{ s.secrets.open }}</dd>
+            <dt i18n="@@compliance.preview.dependencies">Vulnerable dependencies</dt>
+            <dd>{{ s.dependencies.open }}</dd>
+            <dt i18n="@@compliance.preview.falsePositive">Marked false positive</dt>
+            <dd>{{ s.triage.falsePositive }}</dd>
+            <dt i18n="@@compliance.preview.wontFix">Marked won't fix</dt>
+            <dd>{{ s.triage.wontFix }}</dd>
+          </dl>
+        </div>
+      </section>
+    }
+  }
+
+  @if (deletable()) {
+    <dialog
+      #deleteDialog
+      class="dialog"
+      aria-labelledby="compliance-delete-title"
+      aria-describedby="compliance-delete-text"
+    >
+      <div class="dialog-head">
+        <h2 id="compliance-delete-title" i18n="@@compliance.deleteTitle">Delete this report?</h2>
+      </div>
+      <div class="dialog-body">
+        @if (deleteError(); as message) {
+          <p class="alert alert-error" role="alert">{{ message }}</p>
+        }
+        @if (toDelete(); as r) {
+          <p id="compliance-delete-text" i18n="@@compliance.deleteText">
+            The report of {{ rowName(r) }} and its downloads are deleted. This cannot be undone.
+          </p>
+        }
+      </div>
+      <div class="dialog-actions">
+        <button type="button" class="btn" autofocus (click)="closeDelete()" i18n="@@dialog.cancel">
+          Cancel
+        </button>
+        <button
+          type="button"
+          class="btn btn-danger-solid"
+          [attr.aria-disabled]="deleting() ? true : null"
+          (click)="confirmDelete()"
+          i18n="@@compliance.deleteConfirm"
+        >
+          Delete
+        </button>
+      </div>
+    </dialog>
+  }
+}

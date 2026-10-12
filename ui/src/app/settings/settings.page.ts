@@ -13,6 +13,7 @@ const KNOWN_EXTENSIONS = new Set([
   'sso',
   'sign-in',
   'scim',
+  'compliance',
 ]);
 
 /**
@@ -20,11 +21,13 @@ const KNOWN_EXTENSIONS = new Set([
  * for those whose role lists `org.members.read` (rbac-audit.md §17), webhooks and SCM connections
  * (plan 2A, scm.md §2) for those whose role manages them; the licence and the plugins' entries
  * (enterprise.md §10.4, §11) for instance admins. The audit log (feature `audit-log`) is also
- * listed for org admins, whose role has `org.audit.read`; the entries the UI knows carry its own
- * labels. Linked accounts (feature `sso`, sso-scim.md §18) are listed for every user. The
- * navigation only hides what a user cannot use; each page checks the role again and the server
- * decides. Its entries sit under Your account, Organization and Instance (UI redesign spec §7.8);
- * a group with nothing to show is left out.
+ * listed for org admins, whose role has `org.audit.read`, and the compliance reports (feature
+ * `compliance-export`, 4E-1 §4) for the organisation's members; the entries the UI knows carry its
+ * own labels. Only `settings.nav` entries are listed here, never a plugin's project tab. Linked
+ * accounts (feature `sso`, sso-scim.md §18) are listed for every user. The navigation only hides
+ * what a user cannot use; each page checks the role again and the server decides. Its entries
+ * sit under Your account, Organization and Instance (UI redesign spec §7.8); a group with nothing
+ * to show is left out.
  */
 @Component({
   selector: 'q-settings-page',
@@ -52,13 +55,24 @@ export class SettingsPage {
   protected readonly sso = computed(() => this.ids().has('sso') && this.instanceAdmin());
   protected readonly signIn = computed(() => this.ids().has('sign-in') && this.instanceAdmin());
   protected readonly scim = computed(() => this.ids().has('scim') && this.instanceAdmin());
-  /** The organization's entries: members, webhooks, the SCM connections and the audit log. */
+  /**
+   * The organisation's compliance reports (4E-1 §4): for its members (an organisation role, which
+   * always holds `org.read`) and instance admins, while `compliance-export` is active.
+   */
+  protected readonly compliance = computed(
+    () => this.ids().has('compliance') && this.org.can('org.read'),
+  );
+  /**
+   * The organization's entries: members, webhooks, the SCM connections, the audit log and the
+   * compliance reports.
+   */
   protected readonly organization = computed(
     () =>
       this.org.can('org.members.read') ||
       this.org.can('org.webhooks.manage') ||
       this.org.can('org.scm.manage') ||
-      this.auditLog(),
+      this.auditLog() ||
+      this.compliance(),
   );
   /** The entries of plugins the UI has no screen for (enterprise.md §10.4). */
   protected readonly otherExtensions = computed(() =>

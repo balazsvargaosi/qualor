@@ -5,6 +5,7 @@ import { SessionStore } from '../auth/session';
 import { GateBadge } from '../shared/gate-badge';
 import { Icon } from '../shared/icon';
 import { type Crumb, PageHeader } from '../shared/page-header';
+import { SystemInfo } from '../shell/system-info';
 import { mergeRequestLink, notFound } from './branches';
 import { CurrentProject } from './current-project';
 import { settingsVisible } from './settings/settings-visibility';
@@ -13,9 +14,9 @@ import { settingsVisible } from './settings/settings-visibility';
  * A project's frame on the ink page band (spec §7.1): its name with the main branch's gate, the
  * key and the main branch (or those of the branch or merge request an overview shows), and tabs
  * for the overview, branches and issues, plus
- * Access for organisation admins, in every edition. The project (and the caller's `permissions` on
- * it, which the tabs use to hide what the caller may not do, rbac-audit.md §17) is read through
- * `CurrentProject`.
+ * Access for organisation admins, in every edition, and the plugins' project tabs (Compliance,
+ * 4E-1 §4). The project (and the caller's `permissions` on it, which the tabs use to hide what the
+ * caller may not do, rbac-audit.md §17) is read through `CurrentProject`.
  */
 @Component({
   selector: 'q-project-page',
@@ -26,6 +27,7 @@ import { settingsVisible } from './settings/settings-visibility';
 export class ProjectPage {
   private readonly store = inject(CurrentProject);
   private readonly session = inject(SessionStore);
+  private readonly info = inject(SystemInfo);
   readonly projectId = input.required<string>();
 
   protected readonly project = this.store.project;
@@ -63,6 +65,13 @@ export class ProjectPage {
       settingsVisible(p.permissions, this.session.orgCan(p.organizationId, 'org.webhooks.manage'))
     );
   });
+  /**
+   * The Compliance tab (4E-1 §4): while a plugin lists the `project.tab` entry `compliance` and its
+   * feature (`compliance-export`) is active; every reader of the project sees it.
+   */
+  protected readonly complianceTab = computed(() =>
+    this.info.projectTabs().some((t) => t.id === 'compliance'),
+  );
   /** The main branch's open issues, the Issues tab's count. */
   protected readonly issueCount = computed(() => {
     const value = this.current()?.mainBranch?.measures['issues'];

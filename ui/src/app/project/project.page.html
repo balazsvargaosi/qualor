@@ -71,6 +71,15 @@
         i18n="@@project.tab.code"
         >Code</a
       >
+      @if (complianceTab()) {
+        <a
+          routerLink="compliance"
+          routerLinkActive="active"
+          ariaCurrentWhenActive="page"
+          i18n="@@project.tab.compliance"
+          >Compliance</a
+        >
+      }
       @if (showAccess()) {
         <a
           routerLink="access"

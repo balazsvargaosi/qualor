@@ -7,8 +7,8 @@ export type SystemInfoDto = ResponseBody<'/api/v0/system/info', 'get'>;
 export type UiExtension = SystemInfoDto['extensions'][number];
 
 /**
- * The feature each known enterprise settings entry needs (rbac-audit.md §17,
- * sso-scim.md §18).
+ * The feature each known enterprise entry needs (rbac-audit.md §17, sso-scim.md §18, 4E-1 §4):
+ * `compliance` is both a settings entry and a project tab.
  */
 const EXTENSION_FEATURES: Readonly<Record<string, string>> = {
   'audit-log': 'audit-log',
@@ -17,6 +17,7 @@ const EXTENSION_FEATURES: Readonly<Record<string, string>> = {
   sso: 'sso',
   'sign-in': 'sso',
   scim: 'scim',
+  compliance: 'compliance-export',
 };
 
 /**
@@ -37,14 +38,22 @@ export class SystemInfo {
     this.resource.hasValue() ? this.resource.value() : null,
   );
   /**
-   * The plugins' settings entries. An entry for a known enterprise screen appears only while its
-   * feature is active (rbac-audit.md §17: no audit link without `audit-log`).
+   * The plugins' entries of every point. An entry for a known enterprise screen appears only while
+   * its feature is active (rbac-audit.md §17: no audit link without `audit-log`).
    */
-  readonly extensions = computed<UiExtension[]>(() =>
+  private readonly active = computed<UiExtension[]>(() =>
     (this.info()?.extensions ?? []).filter((e) => {
       const feature = EXTENSION_FEATURES[e.id];
       return feature === undefined || this.features().includes(feature);
     }),
+  );
+  /** The plugins' settings entries (`settings.nav`); never a project tab. */
+  readonly extensions = computed<UiExtension[]>(() =>
+    this.active().filter((e) => e.point === 'settings.nav'),
+  );
+  /** The plugins' project tabs (`project.tab`, 4E-1 §4); never a settings entry. */
+  readonly projectTabs = computed<UiExtension[]>(() =>
+    this.active().filter((e) => e.point === 'project.tab'),
   );
   /** The active enterprise features (`audit-log`, `sso`, …); none while loading or after a failure. */
   readonly features = computed<readonly string[]>(() => this.info()?.features ?? []);

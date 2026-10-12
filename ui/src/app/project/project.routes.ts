@@ -35,6 +35,12 @@ export const projectRoutes: Routes = [
     loadComponent: () => import('./code/file.page').then((m) => m.FilePage),
   },
   {
+    // 4E-1 §4: the project's compliance reports, a plugin's project tab (`compliance-export`).
+    path: 'compliance',
+    title: $localize`:@@title.compliance:Compliance`,
+    loadComponent: () => import('./compliance.page').then((m) => m.ProjectCompliancePage),
+  },
+  {
     // rbac-audit.md §17: the project's role grants, in every edition; the tab is shown to org admins.
     path: 'access',
     title: $localize`:@@title.access:Access`,

@@ -71,3 +71,9 @@ export type SsoMapping = EeResponse<'/api/v0/ee/sso/connections/{id}/mappings', 
 export type SsoMappingInput = EeRequest<'/api/v0/ee/sso/connections/{id}/mappings', 'put'>[number];
 /** A SCIM token (§12.2): its prefix and dates, never the token. */
 export type ScimToken = EeResponse<'/api/v0/ee/scim/tokens', 'get'>[number];
+/** A compliance report (4E-1 §3): its state, its standards and the summary the preview shows. */
+export type ComplianceReport = EeResponse<'/api/v0/ee/compliance/reports/{id}', 'get'>;
+/** A page of compliance reports, newest first. */
+export type ComplianceReportPage = EeResponse<'/api/v0/ee/compliance/reports', 'get'>;
+/** The summary of a ready report (4E-1 §2.6). */
+export type ComplianceSummary = NonNullable<ComplianceReport['summary']>;

@@ -102,6 +102,17 @@
               >
             </li>
           }
+          @if (compliance()) {
+            <li>
+              <a
+                routerLink="ee/compliance"
+                routerLinkActive="active"
+                ariaCurrentWhenActive="page"
+                i18n="@@settings.tab.compliance"
+                >Compliance reports</a
+              >
+            </li>
+          }
         </ul>
       </div>
     }
