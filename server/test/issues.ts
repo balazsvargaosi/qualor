@@ -21,6 +21,7 @@ export interface RuleSeed {
   languages?: string[];
   quality?: 'security' | 'reliability' | 'maintainability';
   defaultSeverity?: 'blocker' | 'high' | 'medium' | 'low' | 'info';
+  kind?: 'issue' | 'hotspot';
   cwe?: number[];
   helpUri?: string | null;
 }
@@ -39,7 +40,7 @@ export async function seedRule(db: Executor, seed: RuleSeed): Promise<string> {
         languages: seed.languages ?? [],
         defaultSeverity: seed.defaultSeverity ?? 'medium',
         quality: seed.quality ?? 'maintainability',
-        kind: 'issue',
+        kind: seed.kind ?? 'issue',
         cwe: seed.cwe ?? [],
         helpUri: seed.helpUri ?? null,
         origin: 'reported',
