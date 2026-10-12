@@ -8,6 +8,7 @@ import {
   PROJECT_ROLES,
   projectPermissions,
   permissionScope,
+  ROLE_PERMISSIONS,
   type AccessFacts,
 } from './policy';
 
@@ -76,6 +77,7 @@ describe('the policy module (rbac-audit.md §3–§4)', () => {
         'issue.triage',
         'project.analyze',
         'project.branches.delete',
+        'project.compliance.create',
         'project.issues.import',
         'project.read',
         'project.settings',
@@ -98,6 +100,7 @@ describe('the policy module (rbac-audit.md §3–§4)', () => {
       'project.settings',
       'project.tokens.manage',
       'project.branches.delete',
+      'project.compliance.create',
       'project.issues.import',
     ];
     const orgRow: Record<string, readonly string[]> = {
@@ -160,6 +163,7 @@ describe('the policy module (rbac-audit.md §3–§4)', () => {
       'issue.triage',
       'project.analyze',
       'project.branches.delete',
+      'project.compliance.create',
       'project.issues.import',
       'project.read',
       'project.settings',
@@ -204,5 +208,20 @@ describe('the policy module (rbac-audit.md §3–§4)', () => {
     expect(projectPermissions(facts({ organizationRole: 'member' })).has('project.delete')).toBe(
       false,
     );
+  });
+});
+
+describe('compliance reports (4E-1 §3)', () => {
+  it('gives compliance reports to admins only', () => {
+    expect(ROLE_PERMISSIONS.admin.organization).toContain('org.compliance.manage');
+    for (const role of ['project_admin', 'member', 'viewer'] as const) {
+      expect(ROLE_PERMISSIONS[role].organization).not.toContain('org.compliance.manage');
+    }
+    expect(ROLE_PERMISSIONS.admin.project).toContain('project.compliance.create');
+    expect(ROLE_PERMISSIONS.project_admin.project).toContain('project.compliance.create');
+    expect(ROLE_PERMISSIONS.member.project).not.toContain('project.compliance.create');
+    expect(ROLE_PERMISSIONS.viewer.project).not.toContain('project.compliance.create');
+    expect(permissionScope('org.compliance.manage')).toBe('admin');
+    expect(permissionScope('project.compliance.create')).toBe('admin');
   });
 });

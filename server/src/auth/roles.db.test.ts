@@ -253,6 +253,7 @@ describe('roles and project grants (rbac-audit.md §3.2, §6)', () => {
         'issue.triage',
         'project.analyze',
         'project.branches.delete',
+        'project.compliance.create',
         'project.issues.import',
         'project.read',
         'project.settings',

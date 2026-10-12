@@ -74,7 +74,9 @@ describe('the audit catalogue (rbac-audit.md §8)', () => {
         spec.indexOf('### 8.1 Community'),
       );
       const named = new Set<string>();
-      for (const m of section.matchAll(/^\|\s*`([a-z_]+\.[a-z_]+)`((?:, `\.[a-z_]+`)*)/gm)) {
+      for (const m of section.matchAll(
+        /^\|\s*`([a-z_]+\.[a-z_]+(?:\.[a-z_]+)?)`((?:, `\.[a-z_]+`)*)/gm,
+      )) {
         const base = m[1]!;
         named.add(base);
         const prefix = base.slice(0, base.indexOf('.'));
@@ -244,5 +246,29 @@ describe('the audit catalogue (rbac-audit.md §8)', () => {
     );
     expect(urlOrigin('https://siem.example:8443/in')).toBe('https://siem.example:8443');
     expect(urlOrigin('https://user:pass@siem.example/in')).toBe('https://siem.example');
+  });
+});
+
+describe('compliance report events (4E-1 §2.4)', () => {
+  it('validates their details', () => {
+    expect(
+      AUDIT_CATALOGUE['compliance.report.created'].details.safeParse({
+        scope: 'project',
+        branch: 'main',
+      }).success,
+    ).toBe(true);
+    expect(
+      AUDIT_CATALOGUE['compliance.report.downloaded'].details.safeParse({
+        format: 'pdf',
+        sha256: 'a'.repeat(64),
+      }).success,
+    ).toBe(true);
+    expect(
+      AUDIT_CATALOGUE['compliance.report.downloaded'].details.safeParse({
+        format: 'doc',
+        sha256: 'a'.repeat(64),
+      }).success,
+    ).toBe(false);
+    expect(AUDIT_CATALOGUE['compliance.report.deleted'].target).toBe('compliance_report');
   });
 });
