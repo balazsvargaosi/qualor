@@ -195,6 +195,40 @@ describe('ComplianceReportsComponent (4E-1 §4)', () => {
     expect(rows(root)).toHaveLength(1);
   });
 
+  it('replaces "being built" once the created report is ready, and drops it when one fails', async () => {
+    const store = new FakeCompliance(server, []);
+    const { root } = await render({ canCreate: true });
+    const status = () => root.querySelector('.compliance-status')?.textContent?.trim();
+
+    button(root, 'Create report').click();
+    await flush();
+    expect(status()).toBe('The report is being built. It appears here as ready when it is done.');
+    // Still pending at the first poll: the message stays.
+    await vi.advanceTimersByTimeAsync(3_000);
+    await flush();
+    expect(status()).toBe('The report is being built. It appears here as ready when it is done.');
+    store.complete(store.reports[0]!.id);
+    await vi.advanceTimersByTimeAsync(3_000);
+    await flush();
+    expect(status()).toBe('The report is ready to download.');
+
+    // A failed build: its row says why; the live region no longer says it is being built.
+    button(root, 'Create report').click();
+    await flush();
+    expect(status()).toBe('The report is being built. It appears here as ready when it is done.');
+    store.complete(store.reports[0]!.id, {
+      status: 'failed',
+      error: 'the build failed',
+      sha256: null,
+      sizeBytes: null,
+      summary: null,
+    });
+    await vi.advanceTimersByTimeAsync(3_000);
+    await flush();
+    expect(status()).toBe('');
+    expect(rows(root)[0]?.querySelector('.badge')?.textContent?.trim()).toBe('Failed');
+  });
+
   it('offers Delete only when the report says so, and deletes after confirmation', async () => {
     const store = new FakeCompliance(server, [complianceReport({ id: OLD, canDelete: false })]);
     let { root } = await render();

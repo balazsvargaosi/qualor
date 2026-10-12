@@ -155,6 +155,7 @@
     "dialog.cancel": " Cancel ",
     "compliance.deleteConfirm": " Delete ",
     "compliance.membersOnly": "Only members of the organisation can see its compliance reports.",
+    "compliance.ready": "The report is ready to download.",
     "compliance.created": "The report is being built. It appears here as ready when it is done.",
     "compliance.alreadyPending": "A report is already being built here. Wait until it is ready, then create another.",
     "compliance.noAnalysis": "This branch has no successful analysis yet. Analyze it first, then create the report.",

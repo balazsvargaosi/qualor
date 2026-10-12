@@ -109,6 +109,8 @@ export class ComplianceReportsComponent {
   protected readonly moreError = signal<string | null>(null);
   /** The last change's result, for the live region. */
   protected readonly announcement = signal<string | null>(null);
+  /** The report this page created whose build the announcement is about, until it finishes. */
+  private readonly building = signal<string | null>(null);
   protected readonly copied = signal<{ hash: string; ok: boolean } | null>(null);
 
   /** The report the summary is shown for, and the standard chosen in it (else its first). */
@@ -147,6 +149,7 @@ export class ComplianceReportsComponent {
         this.createError.set(null);
         this.moreError.set(null);
         this.announcement.set(null);
+        this.building.set(null);
         this.copied.set(null);
       });
     });
@@ -185,6 +188,24 @@ export class ComplianceReportsComponent {
         return [answer ?? row];
       }),
     );
+    this.announceBuilt();
+  }
+
+  /**
+   * "Being built" no longer holds once that report is ready, failed or gone: a ready one is
+   * announced; a failed one's row says why, so the success message just goes.
+   */
+  private announceBuilt(): void {
+    const id = this.building();
+    if (id === null) return;
+    const report = this.reports().find((r) => r.id === id);
+    if (report?.status === 'pending') return;
+    this.building.set(null);
+    this.announcement.set(
+      report?.status === 'ready'
+        ? $localize`:@@compliance.ready:The report is ready to download.`
+        : null,
+    );
   }
 
   protected setBranch(event: Event): void {
@@ -202,6 +223,7 @@ export class ComplianceReportsComponent {
     this.creating.set(true);
     this.createError.set(null);
     this.announcement.set(null);
+    this.building.set(null);
     try {
       const report = await ok(this.ee.client.POST(REPORTS, { body }));
       if (scope !== this.scope()) return;
@@ -209,6 +231,9 @@ export class ComplianceReportsComponent {
       this.announcement.set(
         $localize`:@@compliance.created:The report is being built. It appears here as ready when it is done.`,
       );
+      this.building.set(report.id);
+      // Built already (a fast worker): say so now, as a poll would.
+      this.announceBuilt();
     } catch (err) {
       if (scope === this.scope()) this.createError.set(this.createMessage(err));
     } finally {
@@ -359,6 +384,7 @@ export class ComplianceReportsComponent {
   private finishDelete(report: ComplianceReport): void {
     this.closeDelete();
     this.toDelete.set(null);
+    if (this.building() === report.id) this.building.set(null);
     if (this.selectedId() === report.id) this.selectedId.set(null);
     this.reports.update((rows) => rows.filter((r) => r.id !== report.id));
     this.announcement.set(
