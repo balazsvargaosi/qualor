@@ -15,9 +15,21 @@ All notable changes to Qualor are listed here, newest first. The format follows
 
 ### Changed
 
-- Qualor's taint rules follow request data through the functions of one file: a value that goes
-  into a helper function in the same file and comes back out is still followed. The scanner runs
-  them this way whenever the rules release says it was tested that way.
+- Qualor's own security rules: `qualor/scanner` runs qualor-rules 2026.10.4 (57 rules). Taint
+  rules follow request data through the functions of one file: a value that goes into a helper
+  function in the same file and comes back out is still followed. The scanner runs them this way
+  whenever the rules release says it was tested that way. Fewer false positives, above all in the
+  Java injection rules: on the OWASP Benchmark their false-positive rate fell from 45 % to 19 %.
+  Python: requests in Starlette and FastAPI middleware, the program of `os.exec*()` and
+  `os.spawn*()`, PowerShell's `-File` and `-CommandWithArgs`, and the TLS switches of redis-py,
+  Motor and OpenSearch's `ssl_assert_hostname`. Java: disabled TLS checks in OkHttp, Apache
+  HttpClient and Jakarta REST clients, XML `Validator`s, and pages fetched with `HttpClient` from
+  a fixed origin taken as safe in XSS. JavaScript: XSS through the output `execFile()` hands to
+  its callback, pages fetched from a configured origin taken as safe, and awaited Next.js
+  redirects. Go: XSS through buffers and the request body copied to the response, PowerShell's
+  `-File` and `-CommandWithArgs`, and dangerous calls inside a comparison; code that only serves a test is
+  no longer reported. Scans are faster: every rule now skips files that cannot contain what it
+  looks for.
 
 ### Fixed
 
