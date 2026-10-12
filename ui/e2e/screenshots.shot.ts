@@ -26,6 +26,27 @@ async function shoot(page: Page, name: string): Promise<void> {
   await page.screenshot({ path: `${OUT}${name}.png`, fullPage: true });
 }
 
+/**
+ * A screen in the light and the dark theme, on a desktop and on a phone (390px): `name`,
+ * `name-dark`, `name-narrow` and `name-narrow-dark`. The page keeps its state between them.
+ */
+async function shootThemes(page: Page, name: string): Promise<void> {
+  const desktop = page.viewportSize();
+  for (const colorScheme of ['light', 'dark'] as const) {
+    await page.emulateMedia({ colorScheme });
+    for (const [width, suffix] of [
+      [desktop?.width ?? 1440, ''],
+      [390, '-narrow'],
+    ] as const) {
+      await page.setViewportSize({ width, height: desktop?.height ?? 900 });
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await shoot(page, `${name}${suffix}${colorScheme === 'dark' ? '-dark' : ''}`);
+    }
+  }
+  await page.emulateMedia({ colorScheme: 'light' });
+  if (desktop) await page.setViewportSize(desktop);
+}
+
 test.describe('signed out', () => {
   test.use({ storageState: { cookies: [], origins: [] } });
 
@@ -291,5 +312,28 @@ test.describe('enterprise', () => {
     await page.goto('/settings/ee/linked-accounts');
     await expect(page.getByRole('row', { name: /Acme SSO/ })).toBeVisible();
     await shoot(page, '30-linked-accounts');
+  });
+
+  // 4E-1 §4 (`compliance-export`): a ready report of Payments API's main branch with its summary
+  // shown, then the organisation's reports in Settings, each built by the server's worker.
+  test('36 project compliance, 37 compliance reports', async ({ page }) => {
+    await page.goto('/projects');
+    await page.getByRole('link', { name: PAYMENTS.name }).click();
+    await page
+      .getByRole('navigation', { name: 'Project' })
+      .getByRole('link', { name: 'Compliance' })
+      .click();
+    await page.getByRole('button', { name: 'Create report' }).click();
+    await expect(page.getByText('Ready', { exact: true })).toBeVisible({ timeout: 30_000 });
+    await page.getByRole('button', { name: /^Summary of the report of / }).click();
+    await expect(page.locator('.compliance-categories')).toBeVisible();
+    await shootThemes(page, '36-project-compliance');
+
+    await page.goto('/settings/ee/compliance');
+    await page.getByRole('button', { name: 'Create report' }).click();
+    await expect(page.getByText('Ready', { exact: true })).toBeVisible({ timeout: 30_000 });
+    await page.getByRole('button', { name: /^Summary of the report of / }).click();
+    await expect(page.locator('.compliance-categories')).toBeVisible();
+    await shootThemes(page, '37-settings-compliance');
   });
 });

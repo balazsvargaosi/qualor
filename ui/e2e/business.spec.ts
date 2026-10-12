@@ -1,5 +1,5 @@
 import { expect, expectAccessible, test } from './fixtures';
-import { SIEM_URL } from './seed-data';
+import { PAYMENTS, SIEM_URL } from './seed-data';
 
 /**
  * Plan 5D (rbac-audit.md §14.4, §17; sso-scim.md §4.4, §18): the enterprise server's database
@@ -68,5 +68,24 @@ test('the Single sign-on screen says the Business plan signs in through one conn
     'Your plan signs people in through one single sign-on connection at a time. Connecting several identity providers needs the Enterprise plan.',
   );
   await expect(page.locator('#sso-count')).toHaveCount(0);
+  await expectAccessible(page);
+});
+
+// 4E-1 §4: compliance reports are Enterprise only (`compliance-export`), so the reports the
+// enterprise tests made stay in the database but out of sight.
+test('the Business plan shows no compliance reports', async ({ page }) => {
+  await page.goto('/projects');
+  await page.getByRole('link', { name: PAYMENTS.name }).click();
+  const tabs = page.getByRole('navigation', { name: 'Project' });
+  await expect(tabs.getByRole('link', { name: 'Overview' })).toBeVisible();
+  await expect(tabs.getByRole('link', { name: 'Compliance' })).toHaveCount(0);
+
+  await page.goto('/settings/ee/compliance');
+  await expect(page).toHaveTitle('Compliance reports · Qualor');
+  await expect(page.locator('.settings-head')).toContainText(
+    'Compliance reports need an enterprise licence with the compliance-export feature.',
+  );
+  await expect(page.getByRole('link', { name: 'Compliance reports' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Create report' })).toHaveCount(0);
   await expectAccessible(page);
 });

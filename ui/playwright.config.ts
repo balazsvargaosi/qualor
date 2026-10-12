@@ -46,13 +46,14 @@ export default defineConfig({
     {
       name: 'e2e',
       testMatch: /.*\.spec\.ts/,
-      testIgnore: /(enterprise|sso|business)\.spec\.ts/,
+      testIgnore: /(enterprise|sso|compliance|business)\.spec\.ts/,
       dependencies: ['setup'],
       use: { ...chrome, storageState: STORAGE_STATE },
     },
     // Plan 4C: the enterprise screens, on the licensed server (audit-log) and its session; plan
-    // 4D adds single sign-on and SCIM (sso.spec.ts, features sso and scim). Since 5B the Members
-    // and Access tests run on the community server (roles.spec.ts, in the e2e project).
+    // 4D adds single sign-on and SCIM (sso.spec.ts, features sso and scim), 4E-1 compliance reports
+    // (compliance.spec.ts, compliance-export). Since 5B the Members and Access tests run on the
+    // community server (roles.spec.ts, in the e2e project).
     {
       name: 'enterprise-setup',
       testMatch: /enterprise\.setup\.ts/,
@@ -60,7 +61,7 @@ export default defineConfig({
     },
     {
       name: 'enterprise',
-      testMatch: /(enterprise|sso)\.spec\.ts/,
+      testMatch: /(enterprise|sso|compliance)\.spec\.ts/,
       dependencies: ['enterprise-setup'],
       use: { ...chrome, baseURL: ENTERPRISE_URL, storageState: ENTERPRISE_STORAGE_STATE },
     },

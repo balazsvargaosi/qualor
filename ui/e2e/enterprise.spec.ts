@@ -36,6 +36,7 @@ test.describe('on a tablet', () => {
     '/settings/ee/sign-in',
     '/settings/ee/scim',
     '/settings/ee/linked-accounts',
+    '/settings/ee/compliance',
   ]) {
     test(`${path} never scrolls sideways at 768px`, async ({ page }) => {
       await page.goto(path);
@@ -61,6 +62,7 @@ test.describe('on a phone', () => {
     '/settings/ee/sign-in',
     '/settings/ee/scim',
     '/settings/ee/linked-accounts',
+    '/settings/ee/compliance',
   ]) {
     test(`${path} never scrolls sideways`, async ({ page }) => {
       await page.goto(path);
