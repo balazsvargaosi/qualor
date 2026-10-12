@@ -1,0 +1,152 @@
+{
+  "owasp-top10-2021": {
+    "family": "owasp-top10",
+    "version": "2021",
+    "title": "OWASP Top 10 2021",
+    "parser": "owasp-top10-markdown",
+    "source": "OWASP Top 10:2021, the \"List of Mapped CWEs\" of each category (https://owasp.org/Top10/2021/), from https://github.com/OWASP/Top10",
+    "licence": "CC BY-SA 4.0",
+    "files": [
+      {
+        "url": "https://raw.githubusercontent.com/OWASP/Top10/master/2021/docs/en/A01_2021-Broken_Access_Control.md",
+        "file": "owasp-top10-2021/A01.md",
+        "sha256": "52d3cef100ba7811e6b83d07737ec01965324aa1a1cb02f1df4dfcc9d960ecaa"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/OWASP/Top10/master/2021/docs/en/A02_2021-Cryptographic_Failures.md",
+        "file": "owasp-top10-2021/A02.md",
+        "sha256": "d1d873df01349ea568b406275addb91b5e3b144b4f60fe3c1efb31006a8d518b"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/OWASP/Top10/master/2021/docs/en/A03_2021-Injection.md",
+        "file": "owasp-top10-2021/A03.md",
+        "sha256": "c660dd06c1d62d634f41607b243708f5bef1d2865d883065e4601332911a0060"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/OWASP/Top10/master/2021/docs/en/A04_2021-Insecure_Design.md",
+        "file": "owasp-top10-2021/A04.md",
+        "sha256": "5584c7ce61acab12f4e58fdf2218793ce7bf76a0de8c9b6051bfc876df145717"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/OWASP/Top10/master/2021/docs/en/A05_2021-Security_Misconfiguration.md",
+        "file": "owasp-top10-2021/A05.md",
+        "sha256": "298e416105dcad5b90a2441151acd3cfebb1181a2b9b2a0feb0397f73082bff4"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/OWASP/Top10/master/2021/docs/en/A06_2021-Vulnerable_and_Outdated_Components.md",
+        "file": "owasp-top10-2021/A06.md",
+        "sha256": "d6616b2e3020dd1c6e017584dec883eddc9dc18dddf3dabd7b5435bd25907e4a"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/OWASP/Top10/master/2021/docs/en/A07_2021-Identification_and_Authentication_Failures.md",
+        "file": "owasp-top10-2021/A07.md",
+        "sha256": "c4e85c1c4f325a9236959dd5521d52c89e90875b3a0a588c3eadb36a6daaf458"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/OWASP/Top10/master/2021/docs/en/A08_2021-Software_and_Data_Integrity_Failures.md",
+        "file": "owasp-top10-2021/A08.md",
+        "sha256": "8e7f33afe7a44dadddd55569d11f8abdc8fd835b4733d1ff217c14a35d027365"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/OWASP/Top10/master/2021/docs/en/A09_2021-Security_Logging_and_Monitoring_Failures.md",
+        "file": "owasp-top10-2021/A09.md",
+        "sha256": "1b986ddf78270c8f65326469ad9a1e29055edb3810b6386d33acb52aa4fbd53c"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/OWASP/Top10/master/2021/docs/en/A10_2021-Server-Side_Request_Forgery_(SSRF).md",
+        "file": "owasp-top10-2021/A10.md",
+        "sha256": "44b7ad63c379545c0cb90cd85ca282214cadabf5b2f52bb39913b461f0d9d071"
+      }
+    ]
+  },
+  "owasp-top10-2025": {
+    "family": "owasp-top10",
+    "version": "2025",
+    "title": "OWASP Top 10 2025",
+    "parser": "owasp-top10-markdown",
+    "source": "OWASP Top 10:2025, the \"List of Mapped CWEs\" of each category (https://owasp.org/Top10/2025/), from https://github.com/OWASP/Top10",
+    "licence": "CC BY-SA 4.0",
+    "files": [
+      {
+        "url": "https://raw.githubusercontent.com/OWASP/Top10/master/2025/docs/en/A01_2025-Broken_Access_Control.md",
+        "file": "owasp-top10-2025/A01.md",
+        "sha256": "d6ebc4e65422ff4fa32c310dec3c20ed6e804edfd2d06c7e5b8a802645f556ec"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/OWASP/Top10/master/2025/docs/en/A02_2025-Security_Misconfiguration.md",
+        "file": "owasp-top10-2025/A02.md",
+        "sha256": "0df66f6c3e23ee8234567b20de786bf579dac1561632dd532d64130bb2aa2d75"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/OWASP/Top10/master/2025/docs/en/A03_2025-Software_Supply_Chain_Failures.md",
+        "file": "owasp-top10-2025/A03.md",
+        "sha256": "d4108c04991ef2f5ab1d8ef301b51cfeef0fea35c550665c3dcfba7aa346758e"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/OWASP/Top10/master/2025/docs/en/A04_2025-Cryptographic_Failures.md",
+        "file": "owasp-top10-2025/A04.md",
+        "sha256": "43d7da6637dc9d7ad7d9f7a017afc36123beb96c13d4e35d986f89bca341eaad"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/OWASP/Top10/master/2025/docs/en/A05_2025-Injection.md",
+        "file": "owasp-top10-2025/A05.md",
+        "sha256": "d617676bd8d03ab656a481d97a3e8abd2a6241f22ea10326ad05120ba07494ec"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/OWASP/Top10/master/2025/docs/en/A06_2025-Insecure_Design.md",
+        "file": "owasp-top10-2025/A06.md",
+        "sha256": "e2b2f572b43ed5a4a82d2b1207c067687c321ecc683893f6bd4c2d2d467e22e4"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/OWASP/Top10/master/2025/docs/en/A07_2025-Authentication_Failures.md",
+        "file": "owasp-top10-2025/A07.md",
+        "sha256": "9f98e0c8f055b0c87b67078ae9af4799a9f8caf0736a3fdcd66b1b092b1c60da"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/OWASP/Top10/master/2025/docs/en/A08_2025-Software_or_Data_Integrity_Failures.md",
+        "file": "owasp-top10-2025/A08.md",
+        "sha256": "3739748e2cb72c3935dbab9236ac5cb5061da39a1891362369af0c27102a26ca"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/OWASP/Top10/master/2025/docs/en/A09_2025-Security_Logging_and_Alerting_Failures.md",
+        "file": "owasp-top10-2025/A09.md",
+        "sha256": "87121126d307ea09dbf073b090609c861c9ded6dc654f73c5ea6436b9522e9c8"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/OWASP/Top10/master/2025/docs/en/A10_2025-Mishandling_of_Exceptional_Conditions.md",
+        "file": "owasp-top10-2025/A10.md",
+        "sha256": "1e05837530582feb3e96d84160cd2286d5ba93348fedca2d8f8fb35eecc27ac4"
+      }
+    ]
+  },
+  "cwe-top25-2025": {
+    "family": "cwe-top25",
+    "version": "2025",
+    "title": "CWE Top 25 2025",
+    "parser": "cwe-top25-html",
+    "source": "MITRE, 2025 CWE Top 25 Most Dangerous Software Weaknesses (https://cwe.mitre.org/top25/archive/2025/2025_cwe_top25.html). Copyright © 2006–2026, The MITRE Corporation. CWE, CWSS, CWRAF, and the CWE logo are trademarks of The MITRE Corporation.",
+    "licence": "MITRE CWE Terms of Use",
+    "files": [
+      {
+        "url": "https://cwe.mitre.org/top25/archive/2025/2025_cwe_top25.html",
+        "file": "cwe-top25-2025/2025_cwe_top25.html",
+        "sha256": "5549e8bdd7b93dfe01f16dd7d646ca79056332564501debccab0026d073c1c87"
+      }
+    ]
+  },
+  "asvs-4.0.3": {
+    "family": "asvs",
+    "version": "4.0.3",
+    "title": "OWASP ASVS 4.0.3",
+    "parser": "asvs-csv",
+    "source": "OWASP Application Security Verification Standard 4.0.3, the CWE column of the requirements grouped by chapter, from https://github.com/OWASP/ASVS/tree/v4.0.3",
+    "licence": "CC BY-SA 4.0",
+    "files": [
+      {
+        "url": "https://raw.githubusercontent.com/OWASP/ASVS/v4.0.3/4.0/docs_en/OWASP%20Application%20Security%20Verification%20Standard%204.0.3-en.csv",
+        "file": "asvs-4.0.3/OWASP Application Security Verification Standard 4.0.3-en.csv",
+        "sha256": "debad938866cddb9c673c1d12045284d0dfe3e7edea46c19ad0b659ecb8a3951"
+      }
+    ]
+  }
+}

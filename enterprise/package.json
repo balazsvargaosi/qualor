@@ -6,7 +6,10 @@
   "type": "module",
   "scripts": {
     "build": "tsx scripts/build.ts",
-    "openapi": "tsx scripts/openapi.ts"
+    "openapi": "tsx scripts/openapi.ts",
+    "standards:generate": "tsx scripts/standards/generate.ts",
+    "standards:update": "tsx scripts/standards/update.ts",
+    "standards:freshness": "tsx scripts/standards/freshness.ts"
   },
   "dependencies": {
     "zod": "^4.6.5"

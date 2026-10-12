@@ -1,0 +1,26 @@
+[
+  {
+    "family": "cwe-top25",
+    "current": "cwe-top25-2025",
+    "nextCheck": "2027-01-31",
+    "note": "MITRE publishes yearly, usually November–December"
+  },
+  {
+    "family": "owasp-top10",
+    "current": "owasp-top10-2025",
+    "nextCheck": "2026-11-30",
+    "note": "last edition 2025-11; check yearly"
+  },
+  {
+    "family": "asvs",
+    "current": "asvs-4.0.3",
+    "nextCheck": "2027-10-12",
+    "note": "5.0 has no CWE mapping; check for a CRE or ASVS mapping"
+  },
+  {
+    "family": "pci-dss",
+    "current": "pci-dss-4.0.1-6.2.4",
+    "nextCheck": "2027-10-12",
+    "note": "curated by Qualor"
+  }
+]

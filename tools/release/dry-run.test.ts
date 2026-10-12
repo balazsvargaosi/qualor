@@ -2,7 +2,7 @@ import { parse } from 'yaml';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { VENDORED_GRAMMARS } from '../../cli/src/parse/vendored';
-import { binaryNote, parseDryRunArgs, pinServerDigest } from './dry-run';
+import { binaryNote, freshnessArgs, parseDryRunArgs, pinServerDigest } from './dry-run';
 import { parseVersion } from './version';
 
 const current = parseVersion('0.0.0');
@@ -60,6 +60,15 @@ describe('pnpm release:dry-run arguments (release.md §10)', () => {
     expect(() => parseDryRunArgs(['--targets', 'linux-x64,plan9-x64'], current)).toThrow(
       /unknown target plan9-x64/,
     );
+  });
+
+  it('checks the compliance standards strictly before building', () => {
+    expect(freshnessArgs()).toEqual([
+      '--filter',
+      '@qualor/enterprise',
+      'standards:freshness',
+      '--strict',
+    ]);
   });
 });
 

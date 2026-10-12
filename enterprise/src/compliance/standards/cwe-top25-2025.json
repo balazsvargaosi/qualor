@@ -1,0 +1,186 @@
+{
+  "id": "cwe-top25-2025",
+  "family": "cwe-top25",
+  "version": "2025",
+  "title": "CWE Top 25 2025",
+  "source": "MITRE, 2025 CWE Top 25 Most Dangerous Software Weaknesses (https://cwe.mitre.org/top25/archive/2025/2025_cwe_top25.html). Copyright © 2006–2026, The MITRE Corporation. CWE, CWSS, CWRAF, and the CWE logo are trademarks of The MITRE Corporation.",
+  "licence": "MITRE CWE Terms of Use",
+  "sourceSha256": "056cf27eee9067adf73c0654ff392ec143bff6c989fb3cd8c75424a485a70db1",
+  "categories": [
+    {
+      "id": "1",
+      "title": "CWE-79 Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')",
+      "cwe": [
+        79
+      ]
+    },
+    {
+      "id": "2",
+      "title": "CWE-89 Improper Neutralization of Special Elements used in an SQL Command ('SQL Injection')",
+      "cwe": [
+        89
+      ]
+    },
+    {
+      "id": "3",
+      "title": "CWE-352 Cross-Site Request Forgery (CSRF)",
+      "cwe": [
+        352
+      ]
+    },
+    {
+      "id": "4",
+      "title": "CWE-862 Missing Authorization",
+      "cwe": [
+        862
+      ]
+    },
+    {
+      "id": "5",
+      "title": "CWE-787 Out-of-bounds Write",
+      "cwe": [
+        787
+      ]
+    },
+    {
+      "id": "6",
+      "title": "CWE-22 Improper Limitation of a Pathname to a Restricted Directory ('Path Traversal')",
+      "cwe": [
+        22
+      ]
+    },
+    {
+      "id": "7",
+      "title": "CWE-416 Use After Free",
+      "cwe": [
+        416
+      ]
+    },
+    {
+      "id": "8",
+      "title": "CWE-125 Out-of-bounds Read",
+      "cwe": [
+        125
+      ]
+    },
+    {
+      "id": "9",
+      "title": "CWE-78 Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')",
+      "cwe": [
+        78
+      ]
+    },
+    {
+      "id": "10",
+      "title": "CWE-94 Improper Control of Generation of Code ('Code Injection')",
+      "cwe": [
+        94
+      ]
+    },
+    {
+      "id": "11",
+      "title": "CWE-120 Buffer Copy without Checking Size of Input ('Classic Buffer Overflow')",
+      "cwe": [
+        120
+      ]
+    },
+    {
+      "id": "12",
+      "title": "CWE-434 Unrestricted Upload of File with Dangerous Type",
+      "cwe": [
+        434
+      ]
+    },
+    {
+      "id": "13",
+      "title": "CWE-476 NULL Pointer Dereference",
+      "cwe": [
+        476
+      ]
+    },
+    {
+      "id": "14",
+      "title": "CWE-121 Stack-based Buffer Overflow",
+      "cwe": [
+        121
+      ]
+    },
+    {
+      "id": "15",
+      "title": "CWE-502 Deserialization of Untrusted Data",
+      "cwe": [
+        502
+      ]
+    },
+    {
+      "id": "16",
+      "title": "CWE-122 Heap-based Buffer Overflow",
+      "cwe": [
+        122
+      ]
+    },
+    {
+      "id": "17",
+      "title": "CWE-863 Incorrect Authorization",
+      "cwe": [
+        863
+      ]
+    },
+    {
+      "id": "18",
+      "title": "CWE-20 Improper Input Validation",
+      "cwe": [
+        20
+      ]
+    },
+    {
+      "id": "19",
+      "title": "CWE-284 Improper Access Control",
+      "cwe": [
+        284
+      ]
+    },
+    {
+      "id": "20",
+      "title": "CWE-200 Exposure of Sensitive Information to an Unauthorized Actor",
+      "cwe": [
+        200
+      ]
+    },
+    {
+      "id": "21",
+      "title": "CWE-306 Missing Authentication for Critical Function",
+      "cwe": [
+        306
+      ]
+    },
+    {
+      "id": "22",
+      "title": "CWE-918 Server-Side Request Forgery (SSRF)",
+      "cwe": [
+        918
+      ]
+    },
+    {
+      "id": "23",
+      "title": "CWE-77 Improper Neutralization of Special Elements used in a Command ('Command Injection')",
+      "cwe": [
+        77
+      ]
+    },
+    {
+      "id": "24",
+      "title": "CWE-639 Authorization Bypass Through User-Controlled Key",
+      "cwe": [
+        639
+      ]
+    },
+    {
+      "id": "25",
+      "title": "CWE-770 Allocation of Resources Without Limits or Throttling",
+      "cwe": [
+        770
+      ]
+    }
+  ]
+}
