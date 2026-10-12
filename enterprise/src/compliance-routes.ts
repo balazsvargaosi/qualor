@@ -153,6 +153,23 @@ function publicReason(err: unknown): string {
 }
 
 /**
+ * The code a failure carries, for the log: a problem code (REPORT_BUILD_FAILED) or a PostgreSQL
+ * SQLSTATE (5 characters), on the error or a `cause` it wraps (drizzle wraps driver errors).
+ * Never the message, the SQL or the parameters.
+ */
+function failureCode(err: unknown): string | undefined {
+  let current: unknown = err;
+  for (let depth = 0; depth < 5 && typeof current === 'object' && current !== null; depth++) {
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === 'string' && /^(?:[0-9A-Z]{5}|[A-Z][A-Z0-9_]{2,63})$/.test(code)) {
+      return code;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
+
+/**
  * 4E-1 §2.4, §2.5, §3: the compliance report API, feature `compliance-export`. Core's
  * `ctx.compliance` checks every caller (a report it cannot read is a 404) and writes the audit
  * events; these routes validate the input, queue the build and render the downloads.
@@ -405,11 +422,21 @@ export function complianceJobs(ctx: PluginContext): Record<string, PluginJobHand
           canonical: built.canonical,
           sha256: built.sha256,
           summary: built.summary,
+          standards: built.json.standards.map((s) => ({
+            id: s.id,
+            version: s.version,
+            sourceSha256: s.sourceSha256,
+          })),
         });
       } catch (err) {
         await ctx.compliance.fail(reportId, publicReason(err)).catch(() => false);
+        const code = failureCode(err);
         ctx.logger.warn(
-          { reportId, err: String((err as Error | null)?.name ?? 'Error') },
+          {
+            reportId,
+            err: String((err as Error | null)?.name ?? 'Error'),
+            ...(code === undefined ? {} : { code }),
+          },
           'compliance report failed',
         );
       }

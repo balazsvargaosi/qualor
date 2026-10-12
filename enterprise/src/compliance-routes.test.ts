@@ -415,7 +415,12 @@ describe('the build job ee.compliance.build (4E-1 §2.4)', () => {
     });
     const [id, result] = h.service.complete.mock.calls[0] as unknown as [
       string,
-      { canonical: Buffer; sha256: string; summary: { findings: { total: number } } },
+      {
+        canonical: Buffer;
+        sha256: string;
+        summary: { findings: { total: number } };
+        standards: unknown;
+      },
     ];
     expect(id).toBe(REPORT_ID);
     expect(result.sha256).toBe(createHash('sha256').update(result.canonical).digest('hex'));
@@ -426,6 +431,12 @@ describe('the build job ee.compliance.build (4E-1 §2.4)', () => {
       server: { version: '0.8.0' },
     });
     expect(result.summary.findings.total).toBe(0);
+    // The standards the build used, as the JSON names them (the row and the JSON agree).
+    const standards = (
+      json.standards as { id: string; version: string; sourceSha256: string }[]
+    ).map((s) => ({ id: s.id, version: s.version, sourceSha256: s.sourceSha256 }));
+    expect(standards.length).toBeGreaterThan(0);
+    expect(result.standards).toEqual(standards);
     expect(h.service.fail).not.toHaveBeenCalled();
   });
 
@@ -443,7 +454,7 @@ describe('the build job ee.compliance.build (4E-1 §2.4)', () => {
     expect(h.service.complete).not.toHaveBeenCalled();
     expect(h.logged).toContainEqual([
       'warn',
-      { reportId: REPORT_ID, err: 'Error' },
+      { reportId: REPORT_ID, err: 'Error', code: 'REPORT_BUILD_FAILED' },
       'compliance report failed',
     ]);
   });
@@ -451,15 +462,26 @@ describe('the build job ee.compliance.build (4E-1 §2.4)', () => {
   it('never stores SQL or parameters: another failure is "the report could not be built"', async () => {
     const h = harness({
       collect: vi.fn(async () => {
-        throw Object.assign(new Error('relation "secret_table" does not exist'), {
+        // As drizzle wraps a driver error: the query and its parameters on the outer error, the
+        // SQLSTATE on its cause.
+        throw Object.assign(new Error('Failed query: SELECT * FROM secret_table WHERE id = $1'), {
           query: 'SELECT * FROM secret_table WHERE id = $1',
           params: ['hunter2'],
+          cause: Object.assign(new Error('relation "secret_table" does not exist'), {
+            code: '42P01',
+          }),
         });
       }),
     });
     await h.run('ee.compliance.build', { reportId: REPORT_ID });
     expect(h.service.fail).toHaveBeenCalledWith(REPORT_ID, 'the report could not be built');
     expect(JSON.stringify(h.logged)).not.toMatch(/secret_table|hunter2/);
+    // The SQLSTATE is logged, so an operator can tell one failure from another.
+    expect(h.logged).toContainEqual([
+      'warn',
+      { reportId: REPORT_ID, err: 'Error', code: '42P01' },
+      'compliance report failed',
+    ]);
   });
 
   it('does not throw when the row is gone, or when failing it fails', async () => {
