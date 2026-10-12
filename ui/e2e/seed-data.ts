@@ -42,7 +42,7 @@ export const LICENSE_KEY_FILE = fileURLToPath(
 
 /**
  * Plan 4C (rbac-audit.md §17): the licensed e2e server `server/scripts/e2e/serve.ts` starts next
- * to the community one, with the Enterprise plan's six features (`ENTERPRISE_FEATURES`, plan 5D:
+ * to the community one, with the Enterprise plan's features (`ENTERPRISE_FEATURES`, plan 5D:
  * `audit-log.stream` and `sso.multi` among them), its own database and its own admin session
  * (`enterprise.setup.ts`), and the local receiver its audit stream may post to.
  *
