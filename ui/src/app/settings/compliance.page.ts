@@ -13,28 +13,7 @@ import { SystemInfo } from '../shell/system-info';
 @Component({
   selector: 'q-settings-compliance-page',
   imports: [ComplianceReportsComponent],
-  template: `
-    <div class="settings-head">
-      <div>
-        <h2 i18n="@@compliance.title">Compliance reports</h2>
-        @if (infoLoaded() && !licensed() && !infoError()) {
-          <p class="muted" i18n="@@compliance.notLicensed">
-            Compliance reports need an enterprise licence with the compliance-export feature.
-          </p>
-        } @else if (licensed() && org.current(); as o) {
-          <p class="muted" i18n="@@compliance.introOrg">
-            Reports of every project of {{ o.name }}, newest first. A project's own reports are on
-            its Compliance tab.
-          </p>
-        }
-      </div>
-    </div>
-    @if (infoError(); as message) {
-      <p class="alert alert-error" role="alert">{{ message }}</p>
-    } @else if (licensed() && scope(); as s) {
-      <q-compliance-reports [scope]="s" [canCreate]="canCreate()" />
-    }
-  `,
+  templateUrl: './compliance.page.html',
 })
 export class SettingsCompliancePage {
   private readonly info = inject(SystemInfo);

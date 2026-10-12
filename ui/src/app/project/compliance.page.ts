@@ -20,18 +20,7 @@ const BRANCH_LIMIT = 500;
 @Component({
   selector: 'q-project-compliance-page',
   imports: [ComplianceReportsComponent],
-  template: `
-    @if (infoError(); as message) {
-      <p class="alert alert-error" role="alert">{{ message }}</p>
-    } @else if (infoLoaded() && !licensed()) {
-      <h2 i18n="@@compliance.title">Compliance reports</h2>
-      <p class="muted" i18n="@@compliance.notLicensed">
-        Compliance reports need an enterprise licence with the compliance-export feature.
-      </p>
-    } @else if (licensed()) {
-      <q-compliance-reports [scope]="scope()" [canCreate]="canCreate()" [branches]="branches()" />
-    }
-  `,
+  templateUrl: './compliance.page.html',
 })
 export class ProjectCompliancePage {
   private readonly api = inject(Api);
