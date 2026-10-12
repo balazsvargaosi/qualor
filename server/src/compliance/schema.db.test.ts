@@ -10,7 +10,10 @@ describe('compliance_reports (4E-1 §1)', () => {
 
   beforeAll(async () => {
     tdb = await createTestDatabase();
-    const [o] = await tdb.db.insert(organizations).values({ key: 'acme', name: 'Acme' }).returning();
+    const [o] = await tdb.db
+      .insert(organizations)
+      .values({ key: 'acme', name: 'Acme' })
+      .returning();
     org = o!.id;
     const [p] = await tdb.db
       .insert(projects)
@@ -58,10 +61,7 @@ describe('compliance_reports (4E-1 §1)', () => {
       tdb.db.insert(complianceReports).values(row({ projectId: project })),
       '23514',
     );
-    await expectPgError(
-      tdb.db.insert(complianceReports).values(row({ status: 'ready' })),
-      '23514',
-    );
+    await expectPgError(tdb.db.insert(complianceReports).values(row({ status: 'ready' })), '23514');
     await expectPgError(
       tdb.db.insert(complianceReports).values(row({ status: 'failed', sha256: 'XYZ' })),
       '23514',
