@@ -36,7 +36,7 @@ Website: <https://qualor.dev> · Documentation: <https://qualor.dev/docs> · Sou
 
 ### Tags
 
-Every release has its full version tag, such as `0.7.0`, and a minor tag, such as `0.7`, that
+Every release has its full version tag, such as `0.7.1`, and a minor tag, such as `0.7`, that
 follows its patch releases. There is no `latest` tag: pin a version and upgrade when you choose to.
 
 ### Try it

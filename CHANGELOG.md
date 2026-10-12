@@ -6,6 +6,8 @@ All notable changes to Qualor are listed here, newest first. The format follows
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-12
+
 ### Added
 
 - `qualor import sonarqube` maps SonarQube's taint rules (`javasecurity`, `jssecurity`,
