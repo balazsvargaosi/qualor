@@ -67,7 +67,7 @@ export function renderLayout(input: LayoutInput): { html: string; text: string }
     input.cta === undefined
       ? null
       : url !== null
-        ? html`<tr><td style="padding:24px 0 0"><table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td bgcolor="#1f5fbf" style="background:#1f5fbf;border-radius:8px;padding:12px 22px"><a href="${url}" style="display:inline-block;font-family:${FONT};font-size:14px;font-weight:600;line-height:20px;color:#ffffff;text-decoration:none">${input.cta.label}</a></td></tr></table><p style="margin:12px 0 0;font-family:${FONT};font-size:12px;line-height:1.5;color:#4a5b73;word-break:break-all">Or open: <a href="${url}" style="color:#1f5fbf">${url}</a></p></td></tr>`
+        ? html`<tr><td style="padding:24px 0 0"><table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td bgcolor="#1f5fbf" style="background:#1f5fbf;border-radius:8px"><a href="${url}" style="display:inline-block;font-family:${FONT};font-size:14px;font-weight:600;line-height:20px;color:#ffffff;text-decoration:none;border-top:12px solid #1f5fbf;border-bottom:12px solid #1f5fbf;border-left:22px solid #1f5fbf;border-right:22px solid #1f5fbf;border-radius:8px">${input.cta.label}</a></td></tr></table><p style="margin:12px 0 0;font-family:${FONT};font-size:12px;line-height:1.5;color:#4a5b73;word-break:break-all">Or open: <a href="${url}" style="color:#1f5fbf">${url}</a></p></td></tr>`
         : html`<tr><td style="padding:20px 0 0;font-family:${FONT};font-size:14px;line-height:1.6;color:#33455f">${input.cta.fallbackText}</td></tr>`;
   const after = input.after
     ? html`<tr><td style="padding:20px 0 0;font-family:${FONT};font-size:14px;line-height:1.6;color:#33455f">${input.after}</td></tr>`

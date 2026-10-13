@@ -57,9 +57,11 @@ describe('renderLayout (E1 spec, direction A)', () => {
         fallbackText: 'Open Settings → Licence in Qualor.',
       },
     });
-    // F3: Outlook ignores padding on <a>, so the padding and the background sit on the cell.
+    // The cell carries the background; the link carries the padding as borders of the same
+    // colour, so the whole button is clickable (Outlook and Gmail alike).
+    expect(page).toContain('<td bgcolor="#1f5fbf" style="background:#1f5fbf;border-radius:8px">');
     expect(page).toContain(
-      '<td bgcolor="#1f5fbf" style="background:#1f5fbf;border-radius:8px;padding:12px 22px">',
+      'border-top:12px solid #1f5fbf;border-bottom:12px solid #1f5fbf;border-left:22px solid #1f5fbf;border-right:22px solid #1f5fbf',
     );
     expect(page.match(new RegExp(`href="${url}"`, 'g'))).toHaveLength(2);
     expect(page).toContain('Or open: ');
