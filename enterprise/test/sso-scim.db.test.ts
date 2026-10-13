@@ -179,6 +179,7 @@ describe('the enterprise SSO and SCIM API (sso-scim.md §17)', () => {
           'scim',
           'compliance-export',
           'portfolio',
+          'llm.auto-fix',
         ],
         error: null,
       },

@@ -67,10 +67,6 @@ const NOT_FROM_CORE_ROUTES = new Map<string, string>([
     'recorded by the enterprise compliance routes (4E-1 Task 9); covered by their own tests',
   ],
   ['audit.pruned', 'recorded by retention in housekeeping (Task 11), not by a request'],
-  [
-    'project.auto_fix_changed',
-    'recorded by PUT /projects/:id/ai/auto-fix, which answers 403 without limits.llm.automaticFixSuggestions (the enterprise feature llm.auto-fix, 4E-3a §2); covered by routes/auto-fix.db.test.ts',
-  ],
   // Plan 4D: the SSO and SCIM actions of sso-scim.md §15. None is recorded by a core route; each is produced by its flow, the
   // enterprise plugin's routes or the SCIM service, and covered by that code's own db tests.
   [

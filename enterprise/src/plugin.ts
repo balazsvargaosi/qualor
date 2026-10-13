@@ -24,6 +24,7 @@ const plugin: QualorPlugin = {
   // enterprise.md §1.4, §7.1: rbac is retired in 5B; roles and project grants are community.
   // 5D (§1.7): audit-log.stream needs audit-log, sso.multi needs sso (core's prerequisite table).
   // 4E-1: compliance-export has no prerequisite; neither has 4E-2's portfolio.
+  // 4E-3a: llm.auto-fix is Enterprise only and has no prerequisite.
   features: [
     'llm.fix-quota',
     'audit-log',
@@ -33,9 +34,12 @@ const plugin: QualorPlugin = {
     'scim',
     'compliance-export',
     'portfolio',
+    'llm.auto-fix',
   ],
   register(ctx) {
     ctx.limits('llm.fix-quota', { llm: { maxFixPerOrganizationPerDay: MAX_FIX_PER_DAY } });
+    // 4E-3a: the seam core reads for automatic fix suggestions; the routes and the opt-out are core's.
+    ctx.limits('llm.auto-fix', { llm: { automaticFixSuggestions: true } });
     // rbac-audit.md §13: mounted under /api/v0/ee, 403 while the feature is inactive. The grant
     // routes are core routes since 5B (§16).
     ctx.routes('audit-log', auditRoutes(ctx));

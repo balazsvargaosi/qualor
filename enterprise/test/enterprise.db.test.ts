@@ -90,6 +90,7 @@ describe('Qualor Enterprise end to end (enterprise.md §17)', () => {
           'scim',
           'compliance-export',
           'portfolio',
+          'llm.auto-fix',
         ],
         error: null,
       },

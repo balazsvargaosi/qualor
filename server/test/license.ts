@@ -35,6 +35,7 @@ export const ENTERPRISE_FEATURES: readonly string[] = Object.freeze([
   'scim',
   'compliance-export',
   'portfolio',
+  'llm.auto-fix',
 ]);
 
 export function testPayload(overrides: Partial<LicensePayload> = {}): LicensePayload {

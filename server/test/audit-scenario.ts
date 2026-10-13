@@ -135,7 +135,18 @@ export async function auditScenarioContext(
         checkFile: async (path) => ({ ok: true, realPath: path }),
         importModule: async () => ({ default: RBAC_FIXTURE }),
       }),
-      edition: (frozen) => createEdition({ boot, plugins: frozen, now, verifyOptions }),
+      edition: (frozen) => {
+        const edition = createEdition({ boot, plugins: frozen, now, verifyOptions });
+        // The fixture plugin has no llm.auto-fix; the seam core reads is switched on here, as the
+        // enterprise plugin does through ctx.limits (enterprise/test covers that path).
+        return {
+          ...edition,
+          limits: () => {
+            const limits = edition.limits();
+            return { ...limits, llm: { ...limits.llm, automaticFixSuggestions: true } };
+          },
+        };
+      },
     }),
   });
 }
@@ -517,6 +528,13 @@ export async function runAuditScenario(
     minSeverity: 'medium',
     maxPerAnalysis: 5,
   });
+
+  // project.auto_fix_changed: a project opts out of them. The route answers 403 without the licence
+  // seam, so only a context whose edition has limits.llm.automaticFixSuggestions drives it (the
+  // licensed run enables it, see auditScenarioContext; the community run skips it)
+  if (ctx.edition?.limits().llm.automaticFixSuggestions) {
+    await call('PUT', `/projects/${main.id}/ai/auto-fix`, 200, { enabled: false });
+  }
 
   // ai.requested and ai.fix_posted on a merge request of a project mapped to the fake GitLab
   gitlab.addProject({ id: 501, path: 'scenario/ai' });

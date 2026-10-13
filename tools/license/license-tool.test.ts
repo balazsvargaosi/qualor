@@ -733,7 +733,7 @@ describe('the command line never prints or leaks a private key', () => {
     const r = run(['frobnicate'], {});
     expect(r.err).toContain('Business:   --features sso,audit-log,llm.fix-quota');
     expect(r.err).toContain(
-      'Enterprise: --features sso,sso.multi,audit-log,audit-log.stream,llm.fix-quota,scim,compliance-export,portfolio',
+      'Enterprise: --features sso,sso.multi,audit-log,audit-log.stream,llm.fix-quota,scim,compliance-export,portfolio,llm.auto-fix',
     );
   });
 
