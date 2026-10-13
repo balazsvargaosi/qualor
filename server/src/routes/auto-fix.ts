@@ -45,6 +45,11 @@ export const projectAutoFixSchema = autoFixStateSchema.extend({
    * suggestions, and its automatic fix suggestions switched on.
    */
   organizationEnabled: z.boolean(),
+  /**
+   * The organisation excludes the project from the AI assistant, so it gets no automatic fix
+   * suggestions whatever its own switch says.
+   */
+  excludedFromAi: z.boolean(),
 });
 
 const organizationAutoFixSchema = autoFixSettingsSchema.extend({ available: z.boolean() });

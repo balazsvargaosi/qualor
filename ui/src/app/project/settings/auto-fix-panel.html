@@ -11,6 +11,11 @@
         project. An organisation administrator switches them on in
         <a routerLink="/settings/auto-fix">Settings → Automatic fixes</a>.
       </p>
+    } @else if (excludedFromAi()) {
+      <p id="auto-fix-excluded" class="muted" i18n="@@autoFix.project.excluded">
+        This project is excluded from the AI assistant, so no automatic fix suggestions are posted
+        for it. An instance administrator changes the exclusions in Settings → AI assistant.
+      </p>
     } @else {
       <div role="status">
         @if (announcement(); as message) {

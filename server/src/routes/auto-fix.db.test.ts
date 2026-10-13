@@ -314,7 +314,12 @@ describe('automatic fix suggestion settings (4E-3a §2)', () => {
       (await call('GET', `/projects/${project.id}`, session.headers)).json().autoFix;
 
     it('opts a project out and back in, for project.settings', async () => {
-      expect(await dto()).toEqual({ available: true, enabled: true, organizationEnabled: false });
+      expect(await dto()).toEqual({
+        available: true,
+        enabled: true,
+        organizationEnabled: false,
+        excludedFromAi: false,
+      });
       for (const s of [orgAdmin, projectAdmin, granted, admin]) {
         const out = await putProject(false, s);
         expect(out.statusCode, out.body).toBe(200);
@@ -323,18 +328,29 @@ describe('automatic fix suggestion settings (4E-3a §2)', () => {
           available: true,
           enabled: false,
           organizationEnabled: false,
+          excludedFromAi: false,
         });
         expect(
           (await readLlmSettings(ctx.db)).organizations[org]!.autoFixDisabledProjectIds,
         ).toEqual([project.id]);
         expect((await putProject(true, s)).json()).toEqual({ available: true, enabled: true });
-        expect(await dto()).toEqual({ available: true, enabled: true, organizationEnabled: false });
+        expect(await dto()).toEqual({
+          available: true,
+          enabled: true,
+          organizationEnabled: false,
+          excludedFromAi: false,
+        });
       }
       const list = await call('GET', '/projects', orgAdmin.headers);
       expect(
         (list.json().items as { id: string; autoFix: unknown }[]).find((p) => p.id === project.id)
           ?.autoFix,
-      ).toEqual({ available: true, enabled: true, organizationEnabled: false });
+      ).toEqual({
+        available: true,
+        enabled: true,
+        organizationEnabled: false,
+        excludedFromAi: false,
+      });
     });
 
     it('says whether the organisation has them on: the assistant, its fix suggestions and the switch', async () => {
@@ -343,13 +359,31 @@ describe('automatic fix suggestion settings (4E-3a §2)', () => {
       expect(await dto()).toMatchObject({ organizationEnabled: true });
       // A project opted out still sees its organisation's switch.
       await putProject(false);
-      expect(await dto()).toEqual({ available: true, enabled: false, organizationEnabled: true });
+      expect(await dto()).toEqual({
+        available: true,
+        enabled: false,
+        organizationEnabled: true,
+        excludedFromAi: false,
+      });
       await configure({ autoFix, features: { ...ORG_ON.features, fix: false } });
       expect(await dto()).toMatchObject({ organizationEnabled: false });
       await configure({ autoFix, enabled: false });
       expect(await dto()).toMatchObject({ organizationEnabled: false });
       await configure({ autoFix }, null);
       expect(await dto()).toMatchObject({ organizationEnabled: false });
+    });
+
+    it('says whether the organisation excludes the project from AI', async () => {
+      const autoFix = { ...DEFAULT_AUTO_FIX, enabled: true };
+      await configure({ autoFix, excludedProjectIds: [project.id] });
+      expect(await dto()).toEqual({
+        available: true,
+        enabled: true,
+        organizationEnabled: true,
+        excludedFromAi: true,
+      });
+      await configure({ autoFix, excludedProjectIds: [otherProject.id] });
+      expect(await dto()).toMatchObject({ excludedFromAi: false });
     });
 
     it('refuses a member, a viewer, an outsider and a token without the admin scope', async () => {
@@ -375,7 +409,12 @@ describe('automatic fix suggestion settings (4E-3a §2)', () => {
         expect(res.statusCode).toBe(403);
         expect(res.json()).toMatchObject({ code: 'FEATURE_NOT_LICENSED' });
       }
-      expect(await dto()).toEqual({ available: false, enabled: true, organizationEnabled: false });
+      expect(await dto()).toEqual({
+        available: false,
+        enabled: true,
+        organizationEnabled: false,
+        excludedFromAi: false,
+      });
     });
 
     it('records project.auto_fix_changed on a change, and nothing for the same value', async () => {
@@ -526,8 +565,7 @@ describe('automatic fix suggestion settings (4E-3a §2)', () => {
       });
       // The instance admin's form, loaded with only `org`.
       const body = await settingsBody();
-      delete body.organizations[otherOrg];
-      expect(Object.keys(body.organizations)).toEqual([org]);
+      body.organizations = { [org]: body.organizations[org] };
       // Meanwhile the other organisation's admin switches it on and opts a project out.
       expect((await putOrg(on, admin, otherOrg)).statusCode).toBe(200);
       expect((await putProject(false, admin, otherProject.id)).statusCode).toBe(200);

@@ -47,7 +47,11 @@ import {
   tokenSchema,
 } from '../http/schemas';
 import type { Limits } from '../limits';
-import { organizationAutoFixEnabled, projectAutoFixEnabled } from '../llm/auto-fix-settings';
+import {
+  organizationAutoFixEnabled,
+  projectAutoFixEnabled,
+  projectExcludedFromAi,
+} from '../llm/auto-fix-settings';
 import { readLlmSettings } from '../llm/settings';
 import { headlineMeasures } from '../measures/read';
 import { containsPattern } from '../issues/query';
@@ -219,6 +223,7 @@ export async function projectDtos(
         available: autoFixAvailable,
         enabled: projectAutoFixEnabled(llmSettings, p),
         organizationEnabled: organizationAutoFixEnabled(llmSettings, p.organizationId),
+        excludedFromAi: projectExcludedFromAi(llmSettings, p),
       },
     };
   });

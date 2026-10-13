@@ -72,6 +72,16 @@ export function organizationAutoFixEnabled(
   );
 }
 
+/** The organisation excludes the project from the AI assistant (llm.md §3.3). */
+export function projectExcludedFromAi(
+  settings: StoredLlmSettings,
+  project: { id: string; organizationId: string },
+): boolean {
+  return organizationSettings(settings, project.organizationId).excludedProjectIds.includes(
+    project.id,
+  );
+}
+
 /** The project is not opted out of its organisation's automatic fix suggestions. */
 export function projectAutoFixEnabled(
   settings: StoredLlmSettings,

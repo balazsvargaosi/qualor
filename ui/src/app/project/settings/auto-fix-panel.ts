@@ -8,10 +8,11 @@ import type { ProjectDto } from '../current-project';
 
 /**
  * Project → Settings → Automatic fix suggestions (4E-3a §2, §4), for `project.settings`: opts the
- * project out of its organisation's automatic fix suggestions, or back in. Three ways: without the
+ * project out of its organisation's automatic fix suggestions, or back in. Four ways: without the
  * enterprise feature `llm.auto-fix` (`autoFix.available`) the Enterprise note; while the
  * organisation has them off (`autoFix.organizationEnabled`) an explanation pointing to Settings →
- * Automatic fixes; else the switch. `saved` tells the page to read the project again.
+ * Automatic fixes; while the project is excluded from the AI assistant (`autoFix.excludedFromAi`)
+ * an explanation of that; else the switch. `saved` tells the page to read the project again.
  */
 @Component({
   selector: 'q-auto-fix-panel',
@@ -28,6 +29,7 @@ export class AutoFixPanel {
   protected readonly organizationEnabled = computed(
     () => this.project().autoFix.organizationEnabled,
   );
+  protected readonly excludedFromAi = computed(() => this.project().autoFix.excludedFromAi);
   /** The saved choice: a primitive, so reading the project again unchanged keeps the field. */
   private readonly stored = computed(() => this.project().autoFix.enabled);
   protected readonly enabled = linkedSignal(() => this.stored());

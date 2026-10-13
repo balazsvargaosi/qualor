@@ -2894,12 +2894,16 @@
                               },
                               "organizationEnabled": {
                                 "type": "boolean"
+                              },
+                              "excludedFromAi": {
+                                "type": "boolean"
                               }
                             },
                             "required": [
                               "available",
                               "enabled",
-                              "organizationEnabled"
+                              "organizationEnabled",
+                              "excludedFromAi"
                             ],
                             "additionalProperties": false
                           }
@@ -3258,12 +3262,16 @@
                         },
                         "organizationEnabled": {
                           "type": "boolean"
+                        },
+                        "excludedFromAi": {
+                          "type": "boolean"
                         }
                       },
                       "required": [
                         "available",
                         "enabled",
-                        "organizationEnabled"
+                        "organizationEnabled",
+                        "excludedFromAi"
                       ],
                       "additionalProperties": false
                     }
@@ -3604,12 +3612,16 @@
                         },
                         "organizationEnabled": {
                           "type": "boolean"
+                        },
+                        "excludedFromAi": {
+                          "type": "boolean"
                         }
                       },
                       "required": [
                         "available",
                         "enabled",
-                        "organizationEnabled"
+                        "organizationEnabled",
+                        "excludedFromAi"
                       ],
                       "additionalProperties": false
                     }
@@ -3941,12 +3953,16 @@
                         },
                         "organizationEnabled": {
                           "type": "boolean"
+                        },
+                        "excludedFromAi": {
+                          "type": "boolean"
                         }
                       },
                       "required": [
                         "available",
                         "enabled",
-                        "organizationEnabled"
+                        "organizationEnabled",
+                        "excludedFromAi"
                       ],
                       "additionalProperties": false
                     }
@@ -4403,12 +4419,16 @@
                         },
                         "organizationEnabled": {
                           "type": "boolean"
+                        },
+                        "excludedFromAi": {
+                          "type": "boolean"
                         }
                       },
                       "required": [
                         "available",
                         "enabled",
-                        "organizationEnabled"
+                        "organizationEnabled",
+                        "excludedFromAi"
                       ],
                       "additionalProperties": false
                     }

@@ -35,7 +35,12 @@ function setup(): FakeServer {
 }
 
 async function render(
-  autoFix: ProjectDto['autoFix'] = { available: true, enabled: true, organizationEnabled: true },
+  autoFix: ProjectDto['autoFix'] = {
+    available: true,
+    enabled: true,
+    organizationEnabled: true,
+    excludedFromAi: false,
+  },
 ) {
   const fixture = TestBed.createComponent(AutoFixPanel);
   fixture.componentRef.setInput('project', project(autoFix));
@@ -92,6 +97,7 @@ describe('AutoFixPanel (4E-3a §2, §4)', () => {
       available: true,
       enabled: false,
       organizationEnabled: true,
+      excludedFromAi: false,
     });
     expect(toggle(root).checked).toBe(false);
     toggle(root).click();
@@ -106,15 +112,26 @@ describe('AutoFixPanel (4E-3a §2, §4)', () => {
 
   it('explains instead of a switch without the licence, and asks the server nothing', async () => {
     const server = setup();
-    const { root } = await render({ available: false, enabled: true, organizationEnabled: false });
+    const { root } = await render({
+      available: false,
+      enabled: true,
+      organizationEnabled: false,
+      excludedFromAi: true,
+    });
     expect(root.querySelector('#auto-fix-project')).toBeNull();
     expect(root.textContent).toContain('Automatic fix suggestions need the Enterprise plan.');
+    expect(root.querySelector('#auto-fix-excluded')).toBeNull();
     expect(server.requests).toHaveLength(0);
   });
 
   it('explains instead of a switch while the organisation has them off, pointing to its settings', async () => {
     const server = setup();
-    const { root } = await render({ available: true, enabled: false, organizationEnabled: false });
+    const { root } = await render({
+      available: true,
+      enabled: false,
+      organizationEnabled: false,
+      excludedFromAi: true,
+    });
     expect(root.querySelector('#auto-fix-project')).toBeNull();
     const note = root.querySelector('#auto-fix-organization-off')!;
     expect(note.textContent).toContain(
@@ -122,6 +139,23 @@ describe('AutoFixPanel (4E-3a §2, §4)', () => {
     );
     expect(note.querySelector('a')?.getAttribute('href')).toBe('/settings/auto-fix');
     expect(note.querySelector('a')?.textContent?.trim()).toBe('Settings → Automatic fixes');
+    expect(root.querySelector('#auto-fix-excluded')).toBeNull();
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it('explains instead of a switch while the project is excluded from the AI assistant', async () => {
+    const server = setup();
+    const { root } = await render({
+      available: true,
+      enabled: true,
+      organizationEnabled: true,
+      excludedFromAi: true,
+    });
+    expect(root.querySelector('#auto-fix-project')).toBeNull();
+    expect(root.querySelector('#auto-fix-organization-off')).toBeNull();
+    expect(root.querySelector('#auto-fix-excluded')?.textContent).toContain(
+      'This project is excluded from the AI assistant, so no automatic fix suggestions are posted for it.',
+    );
     expect(server.requests).toHaveLength(0);
   });
 

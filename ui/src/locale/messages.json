@@ -746,6 +746,7 @@
     "title.branch": "Branch",
     "project.settings.autoFix": "Automatic fix suggestions",
     "autoFix.project.organizationOff": " The organisation has automatic fix suggestions switched off, so none are posted for this project. An organisation administrator switches them on in {$START_LINK}Settings → Automatic fixes{$CLOSE_LINK}. ",
+    "autoFix.project.excluded": " This project is excluded from the AI assistant, so no automatic fix suggestions are posted for it. An instance administrator changes the exclusions in Settings → AI assistant. ",
     "autoFix.project.label": "Automatic fix suggestions for this project",
     "autoFix.project.hint": " Fix suggestions for new findings are posted to this project's merge requests without a click, only while the organisation has automatic fix suggestions switched on. Switch it off to keep them for a person to ask for. ",
     "autoFix.project.save": " Save ",

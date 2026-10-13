@@ -1704,6 +1704,7 @@ export interface paths {
                                     available: boolean;
                                     enabled: boolean;
                                     organizationEnabled: boolean;
+                                    excludedFromAi: boolean;
                                 };
                             }[];
                             nextCursor: string | null;
@@ -1810,6 +1811,7 @@ export interface paths {
                                 available: boolean;
                                 enabled: boolean;
                                 organizationEnabled: boolean;
+                                excludedFromAi: boolean;
                             };
                         };
                     };
@@ -1936,6 +1938,7 @@ export interface paths {
                                 available: boolean;
                                 enabled: boolean;
                                 organizationEnabled: boolean;
+                                excludedFromAi: boolean;
                             };
                         };
                     };
@@ -2055,6 +2058,7 @@ export interface paths {
                                 available: boolean;
                                 enabled: boolean;
                                 organizationEnabled: boolean;
+                                excludedFromAi: boolean;
                             };
                         };
                     };
@@ -2254,6 +2258,7 @@ export interface paths {
                                 available: boolean;
                                 enabled: boolean;
                                 organizationEnabled: boolean;
+                                excludedFromAi: boolean;
                             };
                         };
                     };
