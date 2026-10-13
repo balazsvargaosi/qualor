@@ -223,6 +223,9 @@ export async function runHousekeeping(
       DELETE FROM llm_requests WHERE id IN (
         SELECT id FROM llm_requests
          WHERE created_at < now() - make_interval(days => ${r.llmRequestsDays})
+           -- An automatic fix row is what "never suggests again" looks at (4E-3a §3): it stays
+           -- while its issue does. A deleted issue sets issue_id to NULL, and the row goes.
+           AND NOT (feature = 'fix' AND user_id IS NULL AND issue_id IS NOT NULL)
          LIMIT ${limit}
          FOR UPDATE SKIP LOCKED)`,
   );

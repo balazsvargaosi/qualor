@@ -277,7 +277,16 @@ describe('daily housekeeping (data-model.md §7)', () => {
   });
 
   describe('llm_requests (llm.md §10.1)', () => {
-    const request = async (daysAgo: number, over: { status?: string; prompt?: unknown } = {}) => {
+    const request = async (
+      daysAgo: number,
+      over: {
+        status?: string;
+        prompt?: unknown;
+        feature?: 'explain' | 'fix';
+        issueId?: string;
+        userId?: string;
+      } = {},
+    ) => {
       const { organization_id } = (
         await h.ctx.db.execute<{ organization_id: string }>(
           sql`SELECT organization_id FROM projects WHERE id = ${p.id}`,
@@ -289,7 +298,9 @@ describe('daily housekeeping (data-model.md §7)', () => {
         .values({
           organizationId: organization_id,
           projectId: p.id,
-          feature: 'explain',
+          issueId: over.issueId ?? null,
+          userId: over.userId ?? null,
+          feature: over.feature ?? 'explain',
           cacheKey: 'a'.repeat(64),
           provider: 'openai',
           providerHost: 'api.example.com',
@@ -329,6 +340,38 @@ describe('daily housekeeping (data-model.md §7)', () => {
       expect(await byId(queued)).toBeUndefined();
       expect(await byId(running)).toBeUndefined();
       expect(await byId(recentQueued)).toBeDefined();
+    });
+
+    it("keeps an old automatic fix row while its issue lives: it is what 'never suggests again' reads", async () => {
+      await p.ingestOk(
+        reportWith({
+          projectKey: p.key,
+          branch: 'feature/auto-fix-retention',
+          files: [file('src/fix.ts')],
+          findings: [
+            finding({ path: 'src/fix.ts', line: 1 }),
+            finding({ path: 'src/fix.ts', line: 2, ruleId: 'r2' }),
+          ],
+        }),
+      );
+      const [live, gone] = (
+        await h.ctx.db
+          .select({ id: issues.id })
+          .from(issues)
+          .innerJoin(branches, eq(branches.id, issues.branchId))
+          .where(and(eq(branches.projectId, p.id), eq(branches.name, 'feature/auto-fix-retention')))
+          .orderBy(issues.startLine)
+      ).map((r) => r.id);
+      const automatic = await request(91, { feature: 'fix', issueId: live! });
+      const person = await request(91, { feature: 'fix', issueId: live!, userId: h.ctx.adminId });
+      const automaticOfDeleted = await request(91, { feature: 'fix', issueId: gone! });
+      await h.ctx.db.delete(issues).where(eq(issues.id, gone!));
+      expect(await byId(automaticOfDeleted)).toMatchObject({ issueId: null });
+
+      expect((await runHousekeeping(h.ctx.db)).llmRequests).toBe(2);
+      expect(await byId(automatic)).toBeDefined();
+      expect(await byId(person)).toBeUndefined();
+      expect(await byId(automaticOfDeleted)).toBeUndefined();
     });
 
     it('honours llmRequestsDays from the retention setting', async () => {

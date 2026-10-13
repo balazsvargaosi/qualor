@@ -516,7 +516,7 @@ A daily housekeeping job deletes old data:
 | closed issues | 30 days |
 | branches and MRs that have no analysis | 30 days |
 | webhook deliveries | 30 days |
-| AI assistant requests and answers | 90 days; stored prompts (off by default) 1–90 days, default 7 |
+| AI assistant requests and answers | 90 days, an automatic fix suggestion while its issue exists; stored prompts (off by default) 1–90 days, default 7 |
 | audit log events (enterprise, `audit-log`) | 365 days by default, 30 days to 100 years (**Settings → Audit settings**; [Roles and the audit log](./roles-and-audit.md#retention)) |
 | analyses and measures | forever |
 

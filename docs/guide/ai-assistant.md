@@ -142,8 +142,9 @@ After each analysis of a merge request or pull request whose project is mapped t
 - at most **the maximum per analysis** (default 10, from 1 to 25), the most severe first;
 - never an issue Qualor already asked a model about on its own, whatever the answer was. A later
   analysis of the same merge request, or a new commit that still has the finding, does not suggest
-  it again. If a person asked for a fix of that issue, their suggestion stands and is not posted
-  automatically;
+  it again. If a person already got a fix for that issue and it still applies (the same code, rule
+  and model, within the 30-day cache), Qualor neither asks again nor posts it; otherwise it asks on
+  its own;
 - never an issue the assistant would not send for a person either: secret-detection rules,
   credential files, excluded projects and excluded paths.
 
@@ -151,8 +152,8 @@ Qualor asks the model in the background, so the analysis, the quality gate and t
 comment are never delayed. Each answer that passes the same safety checks as a person's suggestion
 is posted to the merge request as an inline suggestion. It carries the line "Posted automatically
 for new findings of this merge request. A person can switch this off in Qualor's AI settings." and
-is labelled "AI-generated, may be wrong", like any other answer. In the issue view the fix shows
-**Suggested automatically** where a person's request shows who asked.
+is labelled "AI-generated, may be wrong", like any other answer. In the issue view an automatic fix
+shows **Suggested automatically**.
 
 ### The safety checks are the same
 
@@ -315,7 +316,9 @@ it to:
   (**Days to keep them**, default 7).
 - The answer is kept, since the issue view shows it and a fix is posted from it. For a fix, the
   lines it replaces are kept with it, to check them against the merge request before posting.
-- Request records are deleted after **90 days**, or with their organisation or project.
+- Request records are deleted after **90 days**, or with their organisation or project. The record
+  of an automatic fix suggestion stays while its issue exists, since it is what keeps Qualor from
+  suggesting that fix again.
 - Each finished request also writes one log line with the same details, never the content or the
   key. When the provider answered with an error, the line has its HTTP status (`providerStatus`).
 
