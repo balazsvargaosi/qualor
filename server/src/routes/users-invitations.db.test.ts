@@ -186,6 +186,31 @@ describe('invitations (mail E2 A8)', () => {
       .where(sql`user_id IN (${a.id}, ${b.id})`);
     expect(left).toEqual([]);
   });
+
+  it('ends every pending link when an admin changes the email address, not for a change of letter case', async () => {
+    const { id } = (
+      await create({ username: 'moved', invite: true, email: 'moved@example.test' })
+    ).json();
+    const invitation = linkToken(
+      (await mailsTo(ctx, 'moved@example.test', 'account.invitation'))[0]!.html,
+      '/accept-invite',
+    );
+    const { token: reset } = await issueAccountToken(ctx.db, {
+      userId: id,
+      kind: 'password_reset',
+      createdBy: null,
+      ttlMinutes: 60,
+    });
+    const patch = (payload: object) =>
+      ctx.app.inject({ method: 'PATCH', url: `/api/v0/users/${id}`, headers, payload });
+    expect((await patch({ email: 'MOVED@Example.test' })).statusCode).toBe(200);
+    expect(await peekAccountToken(ctx.db, invitation, 'invitation')).not.toBeNull();
+    expect(await peekAccountToken(ctx.db, reset, 'password_reset')).not.toBeNull();
+    const res = await patch({ email: 'moved-elsewhere@example.test' });
+    expect([res.statusCode, res.json().invitation]).toEqual([200, null]);
+    expect(await peekAccountToken(ctx.db, invitation, 'invitation')).toBeNull();
+    expect(await peekAccountToken(ctx.db, reset, 'password_reset')).toBeNull();
+  });
 });
 
 describe('invitation resends are rate-limited (mail E2)', () => {

@@ -439,7 +439,14 @@ export const userRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (app
         });
         if (body.active === false || passwordHash !== undefined) {
           await deleteUserSessions(tx, id);
-          // Mail E2: a set password or a deactivation voids every pending link (invitation, reset).
+        }
+        // Mail E2: a set password, a deactivation or a new address (letter case aside) voids every
+        // pending link (invitation, reset): those went to the address the account had before.
+        if (
+          body.active === false ||
+          passwordHash !== undefined ||
+          existing.email?.toLowerCase() !== user.email?.toLowerCase()
+        ) {
           await deleteAccountTokens(tx, id);
         }
         if (passwordHash !== undefined) {

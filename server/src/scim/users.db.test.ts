@@ -20,7 +20,7 @@ import {
   userIdOfIdentity,
 } from '../../test/sso';
 import { SYSTEM_ACTOR } from '../audit/recorder';
-import { issueAccountToken } from '../auth/account-tokens';
+import { issueAccountToken, peekAccountToken } from '../auth/account-tokens';
 import { accountTokens, identities, users } from '../db/schema';
 import { inEffectConnectionIds } from '../sso/connections';
 import { updateSignInSettings } from '../sso/sign-in-policy';
@@ -303,6 +303,48 @@ describe('SCIM Users (sso-scim.md §12.4–§12.6)', () => {
     expect(
       await ctx.db.select().from(accountTokens).where(eq(accountTokens.userId, userId)),
     ).toEqual([]);
+  });
+
+  it('an email change by PATCH or PUT ends pending account links; letter case alone keeps them (mail E2)', async () => {
+    const issueBoth = async (userId: string) => {
+      const links = [];
+      for (const kind of ['invitation', 'password_reset'] as const) {
+        const { token } = await issueAccountToken(ctx.db, {
+          userId,
+          kind,
+          createdBy: null,
+          ttlMinutes: 60,
+        });
+        links.push({ token, kind });
+      }
+      return links;
+    };
+    const live = async (links: { token: string; kind: 'invitation' | 'password_reset' }[]) =>
+      Promise.all(
+        links.map(async (l) => (await peekAccountToken(ctx.db, l.token, l.kind)) !== null),
+      );
+    const putEmail = (id: string, value: string) =>
+      scim('PUT', `/Users/${id}`, {
+        schemas: [USER],
+        userName: 'mover@acme.example',
+        emails: [{ value, primary: true }],
+      });
+    const id = await newUser('mover@acme.example', { emails: [{ value: 'mover@acme.example' }] });
+    const userId = await userIdOfIdentity(ctx, id);
+    const links = await issueBoth(userId);
+    expect((await putEmail(id, 'MOVER@acme.example')).statusCode).toBe(200);
+    expect(await live(links)).toEqual([true, true]);
+    const patched = await scim('PATCH', `/Users/${id}`, {
+      schemas: [PATCH],
+      Operations: [
+        { op: 'replace', path: 'emails[type eq "work"].value', value: 'mover2@acme.example' },
+      ],
+    });
+    expect(patched.statusCode, patched.body).toBe(200);
+    expect(await live(links)).toEqual([false, false]);
+    const again = await issueBoth(userId);
+    expect((await putEmail(id, 'mover3@acme.example')).statusCode).toBe(200);
+    expect(await live(again)).toEqual([false, false]);
   });
 
   it('refuses to deactivate or delete the last usable break-glass admin while the policy is break_glass_only', async () => {

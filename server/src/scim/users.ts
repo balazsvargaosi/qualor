@@ -587,6 +587,8 @@ async function applyUserState(
         .returning(),
     );
   }
+  // Mail E2: a pending invitation or reset link went to the address the account had before.
+  if (lower(nextUser.email) !== lower(user.email)) await deleteAccountTokens(tx, user.id);
 
   const events: AuditEventInput[] = [];
   const changes = [
