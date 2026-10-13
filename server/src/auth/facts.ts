@@ -1,5 +1,5 @@
 import { eq, inArray, or, sql, type SQL } from 'drizzle-orm';
-import type { AnyPgColumn } from 'drizzle-orm/pg-core';
+import { alias, type AnyPgColumn } from 'drizzle-orm/pg-core';
 import {
   memberships,
   organizations,
@@ -67,44 +67,40 @@ export const NO_PERMISSIONS: ReadonlySet<never> = new Set<never>();
 /**
  * `list:project.read` (rbac-audit.md §5): the projects of the organisations the user holds any
  * role in (every role reads), and the projects it holds a grant on. Undefined (no
- * filter) for an instance admin.
+ * filter) for an instance admin. It is {@link projectVisibleTo} for one known user, the one
+ * place the rule is written (visibility.db.test.ts); `access` is kept for the helpers' shape.
  */
-export function visibleProjectsCondition(access: AccessContext, user: UserRow): SQL | undefined {
+export function visibleProjectsCondition(_access: AccessContext, user: UserRow): SQL | undefined {
   if (user.isInstanceAdmin) return undefined;
-  const member = inArray(
-    projects.organizationId,
-    access.db
-      .select({ id: memberships.organizationId })
-      .from(memberships)
-      .where(eq(memberships.userId, user.id)),
-  );
-  return or(
-    member,
-    inArray(
-      projects.id,
-      access.db
-        .select({ id: projectMemberships.projectId })
-        .from(projectMemberships)
-        .where(eq(projectMemberships.userId, user.id)),
-    ),
-  );
+  return projectVisibleTo({ id: user.id, isInstanceAdmin: false }, projects);
 }
 
 /**
- * `list:project.read` for many users in one query (mail E3 N4): true when the user in `user.id`
- * may read the project in `project.id`. The same three ways in as {@link visibleProjectsCondition}
- * (instance admin, any role in the project's organisation, a grant on the project);
- * visibility.db.test.ts keeps the two equal.
+ * Aliases, so the subqueries never clash with an outer query that joins the same tables. In a
+ * `sql` template an alias renders as its name only: the FROM clause writes `${table} ${alias}`.
+ */
+const visibleMember = alias(memberships, 'v_m');
+const visibleGrant = alias(projectMemberships, 'v_pm');
+
+/**
+ * `list:project.read` as one SQL condition (rbac-audit.md §5, mail E3 N4): true when the user may
+ * read the project in `project.id`: an instance admin, any role in the project's organisation, or
+ * a grant on the project. `user.id` is a column (many users in one query, e.g. the watchers of a
+ * project) or a known user's id; `isInstanceAdmin` a column or a known flag.
+ * {@link visibleProjectsCondition} is built on it; visibility.db.test.ts pins both.
  */
 export function projectVisibleTo(
-  user: { id: AnyPgColumn; isInstanceAdmin: AnyPgColumn },
+  user: { id: AnyPgColumn | SQL | string; isInstanceAdmin: AnyPgColumn | SQL | boolean },
   project: { id: AnyPgColumn; organizationId: AnyPgColumn },
 ): SQL<boolean> {
-  return sql<boolean>`(${user.isInstanceAdmin}
-    OR EXISTS (SELECT 1 FROM memberships v_m
-                WHERE v_m.organization_id = ${project.organizationId} AND v_m.user_id = ${user.id})
-    OR EXISTS (SELECT 1 FROM project_memberships v_pm
-                WHERE v_pm.project_id = ${project.id} AND v_pm.user_id = ${user.id}))`;
+  if (user.isInstanceAdmin === true) return sql<boolean>`true`;
+  const member = sql`EXISTS (SELECT 1 FROM ${memberships} ${visibleMember}
+    WHERE ${visibleMember.organizationId} = ${project.organizationId} AND ${visibleMember.userId} = ${user.id})`;
+  const grant = sql`EXISTS (SELECT 1 FROM ${projectMemberships} ${visibleGrant}
+    WHERE ${visibleGrant.projectId} = ${project.id} AND ${visibleGrant.userId} = ${user.id})`;
+  return user.isInstanceAdmin === false
+    ? sql<boolean>`(${member} OR ${grant})`
+    : sql<boolean>`(${user.isInstanceAdmin} OR ${member} OR ${grant})`;
 }
 
 /**

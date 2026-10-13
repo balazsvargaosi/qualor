@@ -20,7 +20,7 @@ describe('projectVisibleTo (mail E3 N4) sees what visibleProjectsCondition sees'
     await ctx.close();
   });
 
-  it('for an instance admin, a member, a grant-only user and an outsider', async () => {
+  it('for an instance admin, a member, grant-only users, a mixed user and an outsider', async () => {
     const orgA = await organizationId(ctx, 'default');
     const [orgB] = await ctx.db
       .insert(organizations)
@@ -35,7 +35,7 @@ describe('projectVisibleTo (mail E3 N4) sees what visibleProjectsCondition sees'
       ])
       .returning();
     const all = created.map((p) => p.id);
-    const [pa, pb] = created;
+    const [pa, pb, pc] = created;
     const inst = await createUser(ctx, { username: 'vis-inst', isInstanceAdmin: true });
     const member = await createUser(ctx, { username: 'vis-member' });
     await addMember(ctx, orgA, member.id, 'viewer');
@@ -43,15 +43,27 @@ describe('projectVisibleTo (mail E3 N4) sees what visibleProjectsCondition sees'
     await ctx.db
       .insert(projectMemberships)
       .values({ projectId: pb!.id, userId: granted.id, role: 'viewer' });
+    const projectAdmin = await createUser(ctx, { username: 'vis-padmin' });
+    await ctx.db
+      .insert(projectMemberships)
+      .values({ projectId: pc!.id, userId: projectAdmin.id, role: 'project_admin' });
+    // A role in one organisation and a grant in the other.
+    const mixed = await createUser(ctx, { username: 'vis-mixed' });
+    await addMember(ctx, orgA, mixed.id, 'member');
+    await ctx.db
+      .insert(projectMemberships)
+      .values({ projectId: pc!.id, userId: mixed.id, role: 'member' });
     const outsider = await createUser(ctx, { username: 'vis-outsider' });
 
     const expected: Record<string, string[]> = {
       'vis-inst': [...all].sort(),
       'vis-member': [pa!.id],
       'vis-granted': [pb!.id],
+      'vis-padmin': [pc!.id],
+      'vis-mixed': [pa!.id, pc!.id].sort(),
       'vis-outsider': [],
     };
-    for (const u of [inst, member, granted, outsider]) {
+    for (const u of [inst, member, granted, projectAdmin, mixed, outsider]) {
       const [row] = await ctx.db.select().from(users).where(eq(users.id, u.id));
       const listed = await ctx.db
         .select({ id: projects.id })
