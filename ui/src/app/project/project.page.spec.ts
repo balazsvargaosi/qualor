@@ -59,6 +59,10 @@ describe('ProjectPage', () => {
       providers: [provideRouter([{ path: '**', children: [] }]), provideFakeServer(server)],
     });
     TestBed.inject(SessionStore).set(me());
+    // The band's Watch button (mail E3) asks for the caller's watch of the project.
+    server.on('GET', `/api/v0/projects/${ID}/watch`, {
+      body: { watching: false, emailReady: true, emailBlocker: null },
+    });
   });
 
   async function render(id: string) {
@@ -254,6 +258,19 @@ describe('ProjectPage', () => {
     expect(root.querySelector('.page-meta-title')).toBeNull();
     expect(root.querySelector('a.external-link')).toBeNull();
     expect(root.querySelector('a[href^="javascript"]')).toBeNull();
+  });
+
+  it('offers Watch in the band', async () => {
+    server.on('GET', `/api/v0/projects/${ID}`, { body: PROJECT });
+    const root = await render(ID);
+    expect(root.querySelector('q-watch-button button')?.textContent?.trim()).toBe('Watch');
+  });
+
+  it('shows no Watch button to the demo account', async () => {
+    TestBed.inject(SessionStore).set(me({ demo: true }));
+    server.on('GET', `/api/v0/projects/${ID}`, { body: PROJECT });
+    const root = await render(ID);
+    expect(root.querySelector('q-watch-button')).toBeNull();
   });
 
   describe('Settings tab', () => {

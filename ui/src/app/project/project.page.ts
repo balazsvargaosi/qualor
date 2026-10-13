@@ -8,24 +8,27 @@ import { type Crumb, PageHeader } from '../shared/page-header';
 import { mergeRequestLink, notFound } from './branches';
 import { CurrentProject } from './current-project';
 import { settingsVisible } from './settings/settings-visibility';
+import { WatchButton } from './watch-button';
 
 /**
  * A project's frame on the ink page band (spec §7.1): its name with the main branch's gate, the
  * key and the main branch (or those of the branch or merge request an overview shows), and tabs
  * for the overview, branches and issues, plus
- * Access for organisation admins, in every edition. The project (and the caller's `permissions` on
+ * Access for organisation admins, in every edition, and the Watch button (mail E3). The project (and the caller's `permissions` on
  * it, which the tabs use to hide what the caller may not do, rbac-audit.md §17) is read through
  * `CurrentProject`.
  */
 @Component({
   selector: 'q-project-page',
-  imports: [RouterLink, RouterLinkActive, RouterOutlet, GateBadge, Icon, PageHeader],
+  imports: [RouterLink, RouterLinkActive, RouterOutlet, GateBadge, Icon, PageHeader, WatchButton],
   templateUrl: './project.page.html',
   host: { class: 'bleed' },
 })
 export class ProjectPage {
   private readonly store = inject(CurrentProject);
   private readonly session = inject(SessionStore);
+  /** The read-only demo account watches nothing (the server refuses it). */
+  protected readonly demo = this.session.demo;
   readonly projectId = input.required<string>();
 
   protected readonly project = this.store.project;

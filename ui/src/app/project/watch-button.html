@@ -1,0 +1,102 @@
+<button
+  #button
+  type="button"
+  class="btn watch-toggle"
+  aria-controls="watch-menu"
+  [attr.aria-expanded]="open()"
+  [attr.aria-disabled]="busy() ? true : null"
+  (click)="toggle()"
+>
+  <q-icon name="bell" />
+  @if (state()?.watching) {
+    <ng-container i18n="@@watch.watching">Watching</ng-container>
+  } @else {
+    <ng-container i18n="@@watch.watch">Watch</ng-container>
+  }
+</button>
+@if (open()) {
+  <div
+    id="watch-menu"
+    #menu
+    class="watch-menu"
+    popover="manual"
+    role="group"
+    aria-label="Email notifications for this project"
+    i18n-aria-label="@@watch.menu"
+  >
+    @if (settings(); as s) {
+      <fieldset>
+        <legend i18n="@@watch.branches">Branches</legend>
+        <label
+          ><input
+            type="radio"
+            name="watch-branches"
+            [checked]="s.branches === 'main'"
+            (change)="setBranches('main')"
+          /><ng-container i18n="@@watch.scope.main">Main branch</ng-container></label
+        >
+        <label
+          ><input
+            type="radio"
+            name="watch-branches"
+            [checked]="s.branches === 'all'"
+            (change)="setBranches('all')"
+          /><ng-container i18n="@@watch.scope.all"
+            >All branches and merge requests</ng-container
+          ></label
+        >
+      </fieldset>
+      <fieldset>
+        <legend i18n="@@watch.events">Email me when</legend>
+        <label
+          ><input
+            type="checkbox"
+            [checked]="s.events.gateFailed"
+            (change)="setEvent('gateFailed', $event)"
+          /><ng-container i18n="@@watch.event.gateFailed"
+            >The quality gate fails</ng-container
+          ></label
+        >
+        <label
+          ><input
+            type="checkbox"
+            [checked]="s.events.gateRecovered"
+            (change)="setEvent('gateRecovered', $event)"
+          /><ng-container i18n="@@watch.event.gateRecovered"
+            >The quality gate passes again</ng-container
+          ></label
+        >
+        <label
+          ><input
+            type="checkbox"
+            [checked]="s.events.analysisFailed"
+            (change)="setEvent('analysisFailed', $event)"
+          /><ng-container i18n="@@watch.event.analysisFailed"
+            >An analysis fails</ng-container
+          ></label
+        >
+      </fieldset>
+      @if (hint(); as h) {
+        <p class="hint">
+          {{ h }}
+          @if (state()?.emailBlocker === 'preference_off') {
+            <a routerLink="/settings/notifications" i18n="@@watch.settingsLink"
+              >Notification settings</a
+            >
+          }
+        </p>
+      }
+      <button
+        type="button"
+        class="btn-quiet"
+        [attr.aria-disabled]="busy() ? true : null"
+        (click)="stop()"
+      >
+        <ng-container i18n="@@watch.stop">Stop watching</ng-container>
+      </button>
+    }
+    @if (error(); as message) {
+      <p class="alert alert-error" role="alert">{{ message }}</p>
+    }
+  </div>
+}

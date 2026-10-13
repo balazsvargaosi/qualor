@@ -37,6 +37,7 @@ export const ICONS = {
   folder: { d: ['M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z'] },
   file: { d: ['M7 3h7l5 5v11a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z', 'M14 3v5h5'] },
   key: { d: ['M10.5 13.5L20 4', 'M16 8l2.5 2.5', 'M13.5 10.5L16 13'], c: [[7.5, 16.5, 3.5]] },
+  bell: { d: ['M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15z', 'M10 20.5a2 2 0 0 0 4 0'] },
 } as const satisfies Record<
   string,
   { d: readonly string[]; c?: readonly (readonly [number, number, number])[] }

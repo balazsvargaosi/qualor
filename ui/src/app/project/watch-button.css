@@ -1,0 +1,45 @@
+:host {
+  display: inline-flex;
+}
+
+/* A manual popover in the top layer: the band clips what overflows it. The effect sets top/right. */
+.watch-menu {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  display: grid;
+  gap: 12px;
+  width: max-content;
+  max-width: min(22rem, calc(100vw - 2 * var(--gutter)));
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 16px 40px -16px rgb(10 27 51 / 0.35);
+  font-size: 13.5px;
+  text-align: left;
+}
+
+.watch-menu fieldset {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.watch-menu legend {
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+
+.watch-menu label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.watch-menu .hint {
+  margin: 0;
+}

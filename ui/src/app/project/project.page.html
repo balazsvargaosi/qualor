@@ -15,6 +15,9 @@
         <q-gate-badge [status]="main.gateStatus" />
       }
     </div>
+    @if (!demo()) {
+      <div pageActions class="band-actions"><q-watch-button [projectId]="p.id" /></div>
+    }
     <p pageMeta class="page-meta">
       <code>{{ p.key }}</code>
       @if (shown(); as b) {
