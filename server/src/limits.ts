@@ -1,7 +1,10 @@
 /** The community-edition limits (llm.md §13); there is no organisation limit (enterprise.md §1.3). */
 export const COMMUNITY_LLM_LIMITS = {
   maxFixPerOrganizationPerDay: 25,
-  /** The seam for the enterprise "LLM auto-fix beyond community limits"; read by nothing in 3B. */
+  /**
+   * The seam for the enterprise automatic fix suggestions (`llm.auto-fix`, 4E-3a): read by the
+   * auto-fix settings routes and `effectiveAutoFix` (llm/auto-fix-settings.ts).
+   */
   automaticFixSuggestions: false,
 } as const;
 

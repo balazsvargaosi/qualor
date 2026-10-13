@@ -510,6 +510,14 @@ export async function runAuditScenario(
     promptRetentionDays: 7,
   });
 
+  // organization.auto_fix_changed: the organisation's automatic fix suggestions, kept off (switching
+  // them off needs no licence, so the community run makes the same call)
+  await call('PUT', `/organizations/${org}/ai/auto-fix`, 200, {
+    enabled: false,
+    minSeverity: 'medium',
+    maxPerAnalysis: 5,
+  });
+
   // ai.requested and ai.fix_posted on a merge request of a project mapped to the fake GitLab
   gitlab.addProject({ id: 501, path: 'scenario/ai' });
   gitlab.addMergeRequest(501, {

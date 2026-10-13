@@ -1,4 +1,4 @@
-import { ENGINE_ID_PATTERN } from '@qualor/shared';
+import { ENGINE_ID_PATTERN, SEVERITIES } from '@qualor/shared';
 import { z } from 'zod';
 import { ORGANIZATION_KEY_PATTERN, PROJECT_KEY_PATTERN } from '../patterns';
 import type { AuditJson } from './canonical';
@@ -471,6 +471,19 @@ export const AUDIT_CATALOGUE = {
     }),
   },
   'ai.fix_posted': { target: 'issue', details: z.strictObject({ requestId: id }) },
+  'organization.auto_fix_changed': {
+    target: 'organization',
+    details: z.strictObject({
+      enabled: z.boolean(),
+      minSeverity: z.enum(SEVERITIES),
+      // 4E-3a §2: 1–25, as llm/settings.ts MAX_AUTO_FIX_PER_ANALYSIS.
+      maxPerAnalysis: z.number().int().min(1).max(25),
+    }),
+  },
+  'project.auto_fix_changed': {
+    target: 'project',
+    details: z.strictObject({ enabled: z.boolean() }),
+  },
   'audit.settings_updated': {
     target: 'audit_settings',
     details: z.strictObject({

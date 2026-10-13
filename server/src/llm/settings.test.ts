@@ -79,6 +79,8 @@ describe('LLM settings (llm.md §3)', () => {
       enabled: false,
       features: { explain: false, triage: false, fix: false },
       excludedProjectIds: [],
+      autoFix: { enabled: false, minSeverity: 'high', maxPerAnalysis: 10 },
+      autoFixDisabledProjectIds: [],
     });
   });
 

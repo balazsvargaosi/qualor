@@ -671,7 +671,8 @@
                                 "org.webhooks.manage",
                                 "org.scm.manage",
                                 "org.audit.read",
-                                "org.compliance.manage"
+                                "org.compliance.manage",
+                                "org.ai.manage"
                               ]
                             }
                           }
@@ -2881,6 +2882,22 @@
                                 "project.compliance.create"
                               ]
                             }
+                          },
+                          "autoFix": {
+                            "type": "object",
+                            "properties": {
+                              "available": {
+                                "type": "boolean"
+                              },
+                              "enabled": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "available",
+                              "enabled"
+                            ],
+                            "additionalProperties": false
                           }
                         },
                         "required": [
@@ -2896,7 +2913,8 @@
                           "createdAt",
                           "updatedAt",
                           "mainBranch",
-                          "permissions"
+                          "permissions",
+                          "autoFix"
                         ],
                         "additionalProperties": false
                       }
@@ -3224,6 +3242,22 @@
                           "project.compliance.create"
                         ]
                       }
+                    },
+                    "autoFix": {
+                      "type": "object",
+                      "properties": {
+                        "available": {
+                          "type": "boolean"
+                        },
+                        "enabled": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "available",
+                        "enabled"
+                      ],
+                      "additionalProperties": false
                     }
                   },
                   "required": [
@@ -3239,7 +3273,8 @@
                     "createdAt",
                     "updatedAt",
                     "mainBranch",
-                    "permissions"
+                    "permissions",
+                    "autoFix"
                   ],
                   "additionalProperties": false
                 }
@@ -3549,6 +3584,22 @@
                           "project.compliance.create"
                         ]
                       }
+                    },
+                    "autoFix": {
+                      "type": "object",
+                      "properties": {
+                        "available": {
+                          "type": "boolean"
+                        },
+                        "enabled": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "available",
+                        "enabled"
+                      ],
+                      "additionalProperties": false
                     }
                   },
                   "required": [
@@ -3564,7 +3615,8 @@
                     "createdAt",
                     "updatedAt",
                     "mainBranch",
-                    "permissions"
+                    "permissions",
+                    "autoFix"
                   ],
                   "additionalProperties": false
                 }
@@ -3865,6 +3917,22 @@
                           "project.compliance.create"
                         ]
                       }
+                    },
+                    "autoFix": {
+                      "type": "object",
+                      "properties": {
+                        "available": {
+                          "type": "boolean"
+                        },
+                        "enabled": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "available",
+                        "enabled"
+                      ],
+                      "additionalProperties": false
                     }
                   },
                   "required": [
@@ -3880,7 +3948,8 @@
                     "createdAt",
                     "updatedAt",
                     "mainBranch",
-                    "permissions"
+                    "permissions",
+                    "autoFix"
                   ],
                   "additionalProperties": false
                 }
@@ -4306,6 +4375,22 @@
                           "project.compliance.create"
                         ]
                       }
+                    },
+                    "autoFix": {
+                      "type": "object",
+                      "properties": {
+                        "available": {
+                          "type": "boolean"
+                        },
+                        "enabled": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "available",
+                        "enabled"
+                      ],
+                      "additionalProperties": false
                     }
                   },
                   "required": [
@@ -4321,7 +4406,8 @@
                     "createdAt",
                     "updatedAt",
                     "mainBranch",
-                    "permissions"
+                    "permissions",
+                    "autoFix"
                   ],
                   "additionalProperties": false
                 }
@@ -16858,12 +16944,58 @@
                               "format": "uuid",
                               "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
                             }
+                          },
+                          "autoFix": {
+                            "default": {
+                              "enabled": false,
+                              "minSeverity": "high",
+                              "maxPerAnalysis": 10
+                            },
+                            "type": "object",
+                            "properties": {
+                              "enabled": {
+                                "type": "boolean"
+                              },
+                              "minSeverity": {
+                                "type": "string",
+                                "enum": [
+                                  "blocker",
+                                  "high",
+                                  "medium",
+                                  "low",
+                                  "info"
+                                ]
+                              },
+                              "maxPerAnalysis": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 25
+                              }
+                            },
+                            "required": [
+                              "enabled",
+                              "minSeverity",
+                              "maxPerAnalysis"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "autoFixDisabledProjectIds": {
+                            "default": [],
+                            "maxItems": 1000,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "format": "uuid",
+                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                            }
                           }
                         },
                         "required": [
                           "enabled",
                           "features",
-                          "excludedProjectIds"
+                          "excludedProjectIds",
+                          "autoFix",
+                          "autoFixDisabledProjectIds"
                         ],
                         "additionalProperties": false
                       }
@@ -17145,6 +17277,46 @@
                             "format": "uuid",
                             "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
                           }
+                        },
+                        "autoFix": {
+                          "description": "Absent keeps the stored value",
+                          "type": "object",
+                          "properties": {
+                            "enabled": {
+                              "type": "boolean"
+                            },
+                            "minSeverity": {
+                              "type": "string",
+                              "enum": [
+                                "blocker",
+                                "high",
+                                "medium",
+                                "low",
+                                "info"
+                              ]
+                            },
+                            "maxPerAnalysis": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 25
+                            }
+                          },
+                          "required": [
+                            "enabled",
+                            "minSeverity",
+                            "maxPerAnalysis"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "autoFixDisabledProjectIds": {
+                          "description": "Absent keeps the stored value",
+                          "maxItems": 1000,
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "format": "uuid",
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                          }
                         }
                       },
                       "required": [
@@ -17388,12 +17560,58 @@
                               "format": "uuid",
                               "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
                             }
+                          },
+                          "autoFix": {
+                            "default": {
+                              "enabled": false,
+                              "minSeverity": "high",
+                              "maxPerAnalysis": 10
+                            },
+                            "type": "object",
+                            "properties": {
+                              "enabled": {
+                                "type": "boolean"
+                              },
+                              "minSeverity": {
+                                "type": "string",
+                                "enum": [
+                                  "blocker",
+                                  "high",
+                                  "medium",
+                                  "low",
+                                  "info"
+                                ]
+                              },
+                              "maxPerAnalysis": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 25
+                              }
+                            },
+                            "required": [
+                              "enabled",
+                              "minSeverity",
+                              "maxPerAnalysis"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "autoFixDisabledProjectIds": {
+                            "default": [],
+                            "maxItems": 1000,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "format": "uuid",
+                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                            }
                           }
                         },
                         "required": [
                           "enabled",
                           "features",
-                          "excludedProjectIds"
+                          "excludedProjectIds",
+                          "autoFix",
+                          "autoFixDisabledProjectIds"
                         ],
                         "additionalProperties": false
                       }
@@ -21327,6 +21545,368 @@
           },
           "404": {
             "description": "Not found, or not visible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed (VALIDATION_FAILED; errors[] names each field)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v0/organizations/{id}/ai/auto-fix": {
+      "get": {
+        "summary": "The organisation's automatic fix suggestion settings (org.ai.manage); `available` is false without the enterprise feature llm.auto-fix",
+        "tags": [
+          "ai"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "minSeverity": {
+                      "type": "string",
+                      "enum": [
+                        "blocker",
+                        "high",
+                        "medium",
+                        "low",
+                        "info"
+                      ]
+                    },
+                    "maxPerAnalysis": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 25
+                    },
+                    "available": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "enabled",
+                    "minSeverity",
+                    "maxPerAnalysis",
+                    "available"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated but not allowed (FORBIDDEN, INSUFFICIENT_SCOPE, TOKEN_NOT_ALLOWED, SESSION_REQUIRED, CSRF_FAILED, PASSWORD_CHANGE_REQUIRED)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed (VALIDATION_FAILED; errors[] names each field)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Set the organisation's automatic fix suggestions (org.ai.manage): posted to merge requests for new findings at or above minSeverity, at most maxPerAnalysis per analysis",
+        "tags": [
+          "ai"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "minSeverity": {
+                    "type": "string",
+                    "enum": [
+                      "blocker",
+                      "high",
+                      "medium",
+                      "low",
+                      "info"
+                    ]
+                  },
+                  "maxPerAnalysis": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 25
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "minSeverity",
+                  "maxPerAnalysis"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "minSeverity": {
+                      "type": "string",
+                      "enum": [
+                        "blocker",
+                        "high",
+                        "medium",
+                        "low",
+                        "info"
+                      ]
+                    },
+                    "maxPerAnalysis": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 25
+                    },
+                    "available": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "enabled",
+                    "minSeverity",
+                    "maxPerAnalysis",
+                    "available"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FEATURE_NOT_LICENSED (switching it on needs the enterprise feature llm.auto-fix), FORBIDDEN or INSUFFICIENT_SCOPE",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "AI_DISABLED (switching it on needs the AI assistant configured and the organisation enabled with fix suggestions); AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed while no audit event is stored; an administrator must restore it (a retry does not help)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed (VALIDATION_FAILED; errors[] names each field)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v0/projects/{id}/ai/auto-fix": {
+      "put": {
+        "summary": "Opt the project out of its organisation's automatic fix suggestions (enabled: false), or back in (project.settings)",
+        "tags": [
+          "ai"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "enabled"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "available": {
+                      "type": "boolean"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "available",
+                    "enabled"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FEATURE_NOT_LICENSED (the enterprise feature llm.auto-fix is not active), FORBIDDEN or INSUFFICIENT_SCOPE",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "AUTO_FIX_OPT_OUT_LIMIT_REACHED (the organisation has 1 000 projects opted out); AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed while no audit event is stored; an administrator must restore it (a retry does not help)",
             "content": {
               "application/problem+json": {
                 "schema": {

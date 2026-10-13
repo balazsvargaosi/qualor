@@ -225,3 +225,17 @@ describe('compliance reports (4E-1 §3)', () => {
     expect(permissionScope('project.compliance.create')).toBe('admin');
   });
 });
+
+describe('automatic fix suggestions (4E-3a §2)', () => {
+  it('gives org.ai.manage to the organisation admin only, with token scope admin', () => {
+    expect(ORGANIZATION_PERMISSIONS).toContain('org.ai.manage');
+    expect(ROLE_PERMISSIONS.admin.organization).toContain('org.ai.manage');
+    for (const role of ['project_admin', 'member', 'viewer'] as const) {
+      expect(ROLE_PERMISSIONS[role].organization).not.toContain('org.ai.manage');
+    }
+    expect(
+      organizationPermissions(facts({ hasProjectGrantInOrganization: true })).has('org.ai.manage'),
+    ).toBe(false);
+    expect(permissionScope('org.ai.manage')).toBe('admin');
+  });
+});

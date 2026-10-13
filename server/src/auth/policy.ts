@@ -25,6 +25,8 @@ export const ORGANIZATION_PERMISSIONS = [
   'org.audit.read',
   // 4E-1 §3: create and delete organisation compliance reports (enterprise, compliance-export).
   'org.compliance.manage',
+  // 4E-3a §2: the organisation's automatic fix suggestions (enterprise, llm.auto-fix).
+  'org.ai.manage',
 ] as const;
 export const PROJECT_PERMISSIONS = [
   'project.read',
@@ -86,6 +88,7 @@ const SCOPES: Readonly<Record<Permission, PermissionScope>> = Object.freeze({
   'org.scm.manage': 'admin',
   'org.audit.read': 'admin',
   'org.compliance.manage': 'admin',
+  'org.ai.manage': 'admin',
   'project.read': 'read',
   'project.analyze': 'analysis:write',
   'issue.triage': 'write',

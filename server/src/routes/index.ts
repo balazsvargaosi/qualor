@@ -3,6 +3,7 @@ import type { RouteDeps } from '../app';
 import { issueChangeCharge } from '../issues/rate-limit';
 import { aiRoutes } from './ai';
 import { analysisRoutes } from './analyses';
+import { autoFixRoutes } from './auto-fix';
 import { authRoutes } from './auth';
 import { branchRoutes } from './branches';
 import { gateRoutes } from './gates';
@@ -49,6 +50,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   await app.register(llmSettingsRoutes, { prefix: '/api/v0', deps });
   await app.register(licenseRoutes, { prefix: '/api/v0', deps });
   await app.register(aiRoutes, { prefix: '/api/v0', deps, chargeIssueChanges });
+  await app.register(autoFixRoutes, { prefix: '/api/v0', deps });
   // Its own plugin: its raw-body JSON parser stays in its encapsulation context (github.md §9).
   await app.register(githubWebhookRoutes, { deps });
 }

@@ -6,10 +6,9 @@ import type { RouteDeps } from '../app';
 import { actorOf } from '../audit/recorder';
 import { requireInstanceAdmin } from '../auth/access';
 import { encryptionKey, encryptSecret } from '../crypto/secrets';
-import type { Executor } from '../db/client';
 import { uuidList } from '../db/bulk';
 import { LOCKS } from '../db/locks';
-import { organizations, projects, type EncryptedValue } from '../db/schema';
+import { organizations, type EncryptedValue } from '../db/schema';
 import { conflict, ProblemError, validationFailed, type FieldError } from '../http/problem';
 import { noNul } from '../http/schemas';
 import { VERSION } from '../index';
@@ -19,14 +18,18 @@ import { ERROR_TEXTS, errorCodeOf, LLM_ERROR_CODES, type LlmErrorCode } from '..
 import { callProvider, LlmError, PROVIDER_KINDS } from '../llm/providers';
 import {
   ANTHROPIC_TEMPERATURE_TEXT,
+  autoFixSettingsSchema,
   budgetsSchema,
   globSchema,
   LLM_API_KEY_AAD,
   MAX_LLM_ORGANIZATIONS,
+  MAX_ORGANIZATION_PROJECT_IDS,
   MAX_TEMPERATURE,
   MODEL_PATTERN,
+  organizationSettings,
   orgLlmSettingsSchema,
   pricingSchema,
+  projectOwners,
   providerApiKey,
   providerConfig,
   readLlmSettings,
@@ -67,10 +70,24 @@ const providerBody = z.strictObject({
     }),
 });
 
+/**
+ * An organisation in the body. 4E-3a §2: the auto-fix fields may be left out (a form that does not
+ * know them), which keeps what is stored, so a save never undoes an organisation admin's choice.
+ */
+const orgBody = orgLlmSettingsSchema.extend({
+  autoFix: autoFixSettingsSchema.optional().meta({ description: 'Absent keeps the stored value' }),
+  autoFixDisabledProjectIds: z
+    .array(z.uuid())
+    .max(MAX_ORGANIZATION_PROJECT_IDS)
+    .optional()
+    .meta({ description: 'Absent keeps the stored value' }),
+});
+type OrgBody = z.infer<typeof orgBody>;
+
 const settingsBody = z.strictObject({
   provider: providerBody.nullable(),
   organizations: z
-    .record(z.uuid(), orgLlmSettingsSchema)
+    .record(z.uuid(), orgBody)
     .refine(
       (o) => Object.keys(o).length <= MAX_LLM_ORGANIZATIONS,
       `At most ${MAX_LLM_ORGANIZATIONS} organisations`,
@@ -154,26 +171,16 @@ const TEST_CALL = {
   maxOutputTokens: 20,
 };
 
-/**
- * The owner of each project id still in the database (a deleted project is absent). Used to drop
- * the excluded ids of projects deleted since the settings were saved (llm.md §3.3): an id that no
- * longer exists excludes nothing, and must not stop an admin from saving.
- */
-async function projectOwners(db: Executor, ids: readonly string[]): Promise<Map<string, string>> {
-  const owners = new Map<string, string>();
-  if (ids.length === 0) return owners;
-  const rows = await db
-    .select({ id: projects.id, organizationId: projects.organizationId })
-    .from(projects)
-    .where(sql`${projects.id} IN ${uuidList([...new Set(ids)])}`);
-  for (const r of rows) owners.set(r.id, r.organizationId);
-  return owners;
-}
+/** Every project id the organisations list (excluded, or opted out of auto-fix). */
+const listedProjectIdsOf = (
+  organizations: Record<string, Pick<OrgBody, 'excludedProjectIds' | 'autoFixDisabledProjectIds'>>,
+) =>
+  Object.values(organizations).flatMap((o) => [
+    ...o.excludedProjectIds,
+    ...(o.autoFixDisabledProjectIds ?? []),
+  ]);
 
-const excludedIdsOf = (organizations: Record<string, OrgLlmSettings>) =>
-  Object.values(organizations).flatMap((o) => o.excludedProjectIds);
-
-/** `organizations` without the excluded ids of projects that no longer exist. */
+/** `organizations` without the listed ids of projects that no longer exist (llm.md §3.3). */
 function withoutDeletedProjects(
   organizations: Record<string, OrgLlmSettings>,
   owners: ReadonlyMap<string, string>,
@@ -181,10 +188,51 @@ function withoutDeletedProjects(
   return Object.fromEntries(
     Object.entries(organizations).map(([id, o]) => [
       id,
-      { ...o, excludedProjectIds: o.excludedProjectIds.filter((p) => owners.has(p)) },
+      {
+        ...o,
+        excludedProjectIds: o.excludedProjectIds.filter((p) => owners.has(p)),
+        autoFixDisabledProjectIds: o.autoFixDisabledProjectIds.filter((p) => owners.has(p)),
+      },
     ]),
   );
 }
+
+/** The body's organisations, an auto-fix field left out keeping the stored one (4E-3a §2). */
+function withStoredAutoFix(
+  organizations: Record<string, OrgBody>,
+  current: StoredLlmSettings,
+): Record<string, OrgLlmSettings> {
+  return Object.fromEntries(
+    Object.entries(organizations).map(([id, o]) => {
+      const stored = organizationSettings(current, id);
+      return [
+        id,
+        {
+          ...o,
+          autoFix: o.autoFix ?? stored.autoFix,
+          autoFixDisabledProjectIds:
+            o.autoFixDisabledProjectIds ?? stored.autoFixDisabledProjectIds,
+        },
+      ];
+    }),
+  );
+}
+
+/** 4E-3a §2: the organisations without their auto-fix fields, and with only those. */
+const withoutAutoFix = (organizations: Record<string, OrgLlmSettings>) =>
+  Object.fromEntries(
+    Object.entries(organizations).map(([id, o]) => [
+      id,
+      { enabled: o.enabled, features: o.features, excludedProjectIds: o.excludedProjectIds },
+    ]),
+  );
+const autoFixOf = (organizations: Record<string, OrgLlmSettings>) =>
+  Object.fromEntries(
+    Object.entries(organizations).map(([id, o]) => [
+      id,
+      { autoFix: o.autoFix, autoFixDisabledProjectIds: o.autoFixDisabledProjectIds },
+    ]),
+  );
 
 function dto(
   s: StoredLlmSettings,
@@ -239,8 +287,27 @@ function changedFields(
     }
   }
   if (keySent) fields.push('provider.apiKey');
+  return [...fields, ...settingsFieldsChanged(current, next, differs)];
+}
+
+/**
+ * The names of the settings outside the provider that differ. `organizations` names a change of an
+ * organisation's switches or exclusions, `autoFix` one of its automatic fix suggestions or
+ * opt-outs (4E-3a §2).
+ */
+function settingsFieldsChanged(
+  current: StoredLlmSettings,
+  next: StoredLlmSettings,
+  differs: (a: unknown, b: unknown) => boolean,
+): string[] {
+  const fields: string[] = [];
+  if (differs(withoutAutoFix(current.organizations), withoutAutoFix(next.organizations))) {
+    fields.push('organizations');
+  }
+  if (differs(autoFixOf(current.organizations), autoFixOf(next.organizations))) {
+    fields.push('autoFix');
+  }
   for (const k of [
-    'organizations',
     'excludePaths',
     'budgets',
     'pricing',
@@ -264,17 +331,7 @@ function changedTopLevelKeys(current: StoredLlmSettings, next: StoredLlmSettings
     JSON.stringify(a, sorted) !== JSON.stringify(b, sorted);
   const fields: string[] = [];
   if (differs(provider(current), provider(next))) fields.push('provider');
-  for (const k of [
-    'organizations',
-    'excludePaths',
-    'budgets',
-    'pricing',
-    'storePrompts',
-    'promptRetentionDays',
-  ] as const) {
-    if (differs(current[k], next[k])) fields.push(k);
-  }
-  return fields;
+  return [...fields, ...settingsFieldsChanged(current, next, differs)];
 }
 
 export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (
@@ -294,8 +351,9 @@ export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
     body: SettingsBody,
     known: ReadonlySet<string>,
     owners: ReadonlyMap<string, string>,
-    storedFixPerDay: number,
+    stored: StoredLlmSettings,
   ): FieldError[] => {
+    const storedFixPerDay = stored.budgets.fixPerDay;
     const errors: FieldError[] = [];
     if (body.provider) {
       const problem = llmBaseUrlProblem(body.provider.baseUrl, deps.config.llmInternalHosts);
@@ -320,15 +378,29 @@ export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
         errors.push({ path: `body.organizations.${id}`, message: 'No such organisation' });
         continue;
       }
-      o.excludedProjectIds.forEach((projectId, i) => {
-        const owner = owners.get(projectId);
-        if (owner !== undefined && owner !== id) {
-          errors.push({
-            path: `body.organizations.${id}.excludedProjectIds.${i}`,
-            message: 'Not a project of this organisation',
-          });
-        }
-      });
+      for (const list of ['excludedProjectIds', 'autoFixDisabledProjectIds'] as const) {
+        (o[list] ?? []).forEach((projectId, i) => {
+          const owner = owners.get(projectId);
+          if (owner !== undefined && owner !== id) {
+            errors.push({
+              path: `body.organizations.${id}.${list}.${i}`,
+              message: 'Not a project of this organisation',
+            });
+          }
+        });
+      }
+      // 4E-3a §2: as the budget above, a switch-on saved while the licence allowed it is kept;
+      // only switching it on needs the feature.
+      if (
+        o.autoFix?.enabled === true &&
+        !organizationSettings(stored, id).autoFix.enabled &&
+        !deps.edition.limits().llm.automaticFixSuggestions
+      ) {
+        errors.push({
+          path: `body.organizations.${id}.autoFix.enabled`,
+          message: 'Needs the enterprise feature llm.auto-fix',
+        });
+      }
     }
     return errors;
   };
@@ -346,7 +418,7 @@ export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
   /** The settings as stored, without excluded projects deleted since they were saved. */
   const readForAdmin = async (): Promise<StoredLlmSettings> => {
     const settings = await readLlmSettings(deps.db);
-    const owners = await projectOwners(deps.db, excludedIdsOf(settings.organizations));
+    const owners = await projectOwners(deps.db, listedProjectIdsOf(settings.organizations));
     return {
       ...settings,
       organizations: withoutDeletedProjects(settings.organizations, owners),
@@ -382,10 +454,10 @@ export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
     async (request) => {
       const principal = requireInstanceAdmin(request);
       const body = request.body;
-      const owners = await projectOwners(deps.db, excludedIdsOf(body.organizations));
+      const owners = await projectOwners(deps.db, listedProjectIdsOf(body.organizations));
       const known = await knownOrganizations(Object.keys(body.organizations));
       const stored = await readLlmSettings(deps.db);
-      const errors = fieldProblems(body, known, owners, stored.budgets.fixPerDay);
+      const errors = fieldProblems(body, known, owners, stored);
       if (errors.length > 0) throw validationFailed(errors);
       const { current, next } = await deps.db.transaction(async (tx) => {
         await tx.execute(sql`SELECT pg_advisory_xact_lock(${LOCKS.llmSettings})`);
@@ -416,11 +488,14 @@ export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
           }
           provider = { ...rest, baseUrl, apiKeyEnc };
         }
+        const organizations = withStoredAutoFix(body.organizations, current);
+        // A project deleted meanwhile (or since the page read the settings) is dropped, a stored
+        // opt-out the body left out included.
+        const listed = await projectOwners(tx, listedProjectIdsOf(organizations));
         const next: StoredLlmSettings = {
           v: 1,
           provider,
-          // A project deleted meanwhile (or since the page read the settings) is dropped.
-          organizations: withoutDeletedProjects(body.organizations, owners),
+          organizations: withoutDeletedProjects(organizations, listed),
           excludePaths: body.excludePaths,
           budgets: body.budgets,
           pricing: body.pricing,

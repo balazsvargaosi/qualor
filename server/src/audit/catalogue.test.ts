@@ -272,3 +272,27 @@ describe('compliance report events (4E-1 §2.4)', () => {
     expect(AUDIT_CATALOGUE['compliance.report.deleted'].target).toBe('compliance_report');
   });
 });
+
+describe('automatic fix suggestion events (4E-3a §2)', () => {
+  it('records the organisation settings on the organisation', () => {
+    const d = AUDIT_CATALOGUE['organization.auto_fix_changed'];
+    expect(d.target).toBe('organization');
+    expect(
+      d.details.safeParse({ enabled: true, minSeverity: 'high', maxPerAnalysis: 10 }).success,
+    ).toBe(true);
+    expect(
+      d.details.safeParse({ enabled: true, minSeverity: 'critical', maxPerAnalysis: 10 }).success,
+    ).toBe(false);
+    expect(
+      d.details.safeParse({ enabled: true, minSeverity: 'high', maxPerAnalysis: 26 }).success,
+    ).toBe(false);
+    expect(d.details.safeParse({ enabled: true }).success).toBe(false);
+  });
+
+  it('records the project opt-out on the project', () => {
+    const d = AUDIT_CATALOGUE['project.auto_fix_changed'];
+    expect(d.target).toBe('project');
+    expect(d.details.safeParse({ enabled: false }).success).toBe(true);
+    expect(d.details.safeParse({ enabled: 'no' }).success).toBe(false);
+  });
+});

@@ -499,7 +499,7 @@ export interface paths {
                                 organizationKey: string;
                                 organizationName: string;
                                 role: ("admin" | "project_admin" | "member" | "viewer") | null;
-                                permissions: ("org.read" | "org.members.read" | "org.members.manage" | "org.projects.create" | "org.gates.manage" | "org.profiles.manage" | "org.webhooks.manage" | "org.scm.manage" | "org.audit.read" | "org.compliance.manage")[];
+                                permissions: ("org.read" | "org.members.read" | "org.members.manage" | "org.projects.create" | "org.gates.manage" | "org.profiles.manage" | "org.webhooks.manage" | "org.scm.manage" | "org.audit.read" | "org.compliance.manage" | "org.ai.manage")[];
                             }[];
                             projectGrants: {
                                 /** Format: uuid */
@@ -1700,6 +1700,10 @@ export interface paths {
                                     };
                                 } | null;
                                 permissions: ("project.read" | "project.analyze" | "issue.triage" | "ai.use" | "project.settings" | "project.tokens.manage" | "project.branches.delete" | "project.issues.import" | "project.delete" | "project.compliance.create")[];
+                                autoFix: {
+                                    available: boolean;
+                                    enabled: boolean;
+                                };
                             }[];
                             nextCursor: string | null;
                         };
@@ -1801,6 +1805,10 @@ export interface paths {
                                 };
                             } | null;
                             permissions: ("project.read" | "project.analyze" | "issue.triage" | "ai.use" | "project.settings" | "project.tokens.manage" | "project.branches.delete" | "project.issues.import" | "project.delete" | "project.compliance.create")[];
+                            autoFix: {
+                                available: boolean;
+                                enabled: boolean;
+                            };
                         };
                     };
                 };
@@ -1922,6 +1930,10 @@ export interface paths {
                                 };
                             } | null;
                             permissions: ("project.read" | "project.analyze" | "issue.triage" | "ai.use" | "project.settings" | "project.tokens.manage" | "project.branches.delete" | "project.issues.import" | "project.delete" | "project.compliance.create")[];
+                            autoFix: {
+                                available: boolean;
+                                enabled: boolean;
+                            };
                         };
                     };
                 };
@@ -2036,6 +2048,10 @@ export interface paths {
                                 };
                             } | null;
                             permissions: ("project.read" | "project.analyze" | "issue.triage" | "ai.use" | "project.settings" | "project.tokens.manage" | "project.branches.delete" | "project.issues.import" | "project.delete" | "project.compliance.create")[];
+                            autoFix: {
+                                available: boolean;
+                                enabled: boolean;
+                            };
                         };
                     };
                 };
@@ -2230,6 +2246,10 @@ export interface paths {
                                 };
                             } | null;
                             permissions: ("project.read" | "project.analyze" | "issue.triage" | "ai.use" | "project.settings" | "project.tokens.manage" | "project.branches.delete" | "project.issues.import" | "project.delete" | "project.compliance.create")[];
+                            autoFix: {
+                                available: boolean;
+                                enabled: boolean;
+                            };
                         };
                     };
                 };
@@ -8344,6 +8364,21 @@ export interface paths {
                                         fix: boolean;
                                     };
                                     excludedProjectIds: string[];
+                                    /**
+                                     * @default {
+                                     *       "enabled": false,
+                                     *       "minSeverity": "high",
+                                     *       "maxPerAnalysis": 10
+                                     *     }
+                                     */
+                                    autoFix: {
+                                        enabled: boolean;
+                                        /** @enum {string} */
+                                        minSeverity: "blocker" | "high" | "medium" | "low" | "info";
+                                        maxPerAnalysis: number;
+                                    };
+                                    /** @default [] */
+                                    autoFixDisabledProjectIds: string[];
                                 };
                             };
                             excludePaths: string[];
@@ -8432,6 +8467,15 @@ export interface paths {
                                     fix: boolean;
                                 };
                                 excludedProjectIds: string[];
+                                /** @description Absent keeps the stored value */
+                                autoFix?: {
+                                    enabled: boolean;
+                                    /** @enum {string} */
+                                    minSeverity: "blocker" | "high" | "medium" | "low" | "info";
+                                    maxPerAnalysis: number;
+                                };
+                                /** @description Absent keeps the stored value */
+                                autoFixDisabledProjectIds?: string[];
                             };
                         };
                         excludePaths: string[];
@@ -8485,6 +8529,21 @@ export interface paths {
                                         fix: boolean;
                                     };
                                     excludedProjectIds: string[];
+                                    /**
+                                     * @default {
+                                     *       "enabled": false,
+                                     *       "minSeverity": "high",
+                                     *       "maxPerAnalysis": 10
+                                     *     }
+                                     */
+                                    autoFix: {
+                                        enabled: boolean;
+                                        /** @enum {string} */
+                                        minSeverity: "blocker" | "high" | "medium" | "low" | "info";
+                                        maxPerAnalysis: number;
+                                    };
+                                    /** @default [] */
+                                    autoFixDisabledProjectIds: string[];
                                 };
                             };
                             excludePaths: string[];
@@ -9739,6 +9798,260 @@ export interface paths {
             };
         };
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v0/organizations/{id}/ai/auto-fix": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The organisation's automatic fix suggestion settings (org.ai.manage); `available` is false without the enterprise feature llm.auto-fix */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            enabled: boolean;
+                            /** @enum {string} */
+                            minSeverity: "blocker" | "high" | "medium" | "low" | "info";
+                            maxPerAnalysis: number;
+                            available: boolean;
+                        };
+                    };
+                };
+                /** @description Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS) */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Authenticated but not allowed (FORBIDDEN, INSUFFICIENT_SCOPE, TOKEN_NOT_ALLOWED, SESSION_REQUIRED, CSRF_FAILED, PASSWORD_CHANGE_REQUIRED) */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Not found, or not visible to the caller */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Validation failed (VALIDATION_FAILED; errors[] names each field) */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        /** Set the organisation's automatic fix suggestions (org.ai.manage): posted to merge requests for new findings at or above minSeverity, at most maxPerAnalysis per analysis */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        enabled: boolean;
+                        /** @enum {string} */
+                        minSeverity: "blocker" | "high" | "medium" | "low" | "info";
+                        maxPerAnalysis: number;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            enabled: boolean;
+                            /** @enum {string} */
+                            minSeverity: "blocker" | "high" | "medium" | "low" | "info";
+                            maxPerAnalysis: number;
+                            available: boolean;
+                        };
+                    };
+                };
+                /** @description Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS) */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description FEATURE_NOT_LICENSED (switching it on needs the enterprise feature llm.auto-fix), FORBIDDEN or INSUFFICIENT_SCOPE */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Not found, or not visible to the caller */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description AI_DISABLED (switching it on needs the AI assistant configured and the organisation enabled with fix suggestions); AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed while no audit event is stored; an administrator must restore it (a retry does not help) */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Validation failed (VALIDATION_FAILED; errors[] names each field) */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v0/projects/{id}/ai/auto-fix": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Opt the project out of its organisation's automatic fix suggestions (enabled: false), or back in (project.settings) */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        enabled: boolean;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            available: boolean;
+                            enabled: boolean;
+                        };
+                    };
+                };
+                /** @description Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS) */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description FEATURE_NOT_LICENSED (the enterprise feature llm.auto-fix is not active), FORBIDDEN or INSUFFICIENT_SCOPE */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Not found, or not visible to the caller */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description AUTO_FIX_OPT_OUT_LIMIT_REACHED (the organisation has 1 000 projects opted out); AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed while no audit event is stored; an administrator must restore it (a retry does not help) */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Validation failed (VALIDATION_FAILED; errors[] names each field) */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
         post?: never;
         delete?: never;
         options?: never;

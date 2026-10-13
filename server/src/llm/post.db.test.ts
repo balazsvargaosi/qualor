@@ -18,7 +18,7 @@ import {
 import { analyses, issues, jobs, llmRequests, projects } from '../db/schema';
 import { parseInternalHosts } from '../scm/url';
 import { AI_FIX_QUEUE, queueFixPost } from './post';
-import { DEFAULT_BUDGETS } from './settings';
+import { DEFAULT_AUTO_FIX, DEFAULT_BUDGETS } from './settings';
 
 const HEAD = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
@@ -567,6 +567,8 @@ describe('posting a fix suggestion (llm.md §8)', () => {
       enabled: true,
       features: { explain: true, triage: true, fix: true },
       excludedProjectIds: [] as string[],
+      autoFix: { ...DEFAULT_AUTO_FIX },
+      autoFixDisabledProjectIds: [] as string[],
     };
     const settingsWith = (org: typeof on) =>
       configureLlm(h.ctx.db, h.ctx.config.secretKey, llm, h.organizationId, {

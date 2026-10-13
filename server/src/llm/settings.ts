@@ -1,9 +1,11 @@
+import { SEVERITIES } from '@qualor/shared';
 import { sql } from 'drizzle-orm';
 import picomatch from 'picomatch';
 import { z } from 'zod';
 import { decryptSecret, encryptionKey } from '../crypto/secrets';
 import type { Executor } from '../db/client';
-import { instanceSettings } from '../db/schema';
+import { uuidList } from '../db/bulk';
+import { instanceSettings, projects } from '../db/schema';
 import { instanceSetting } from '../settings';
 import { PROVIDER_KINDS, type ProviderConfig } from './providers';
 
@@ -36,17 +38,47 @@ export const DEFAULT_BUDGETS: Budgets = {
   perUserPerHour: 30,
 };
 
-/** llm.md §3.3: an organisation's switches; at most 1 000 excluded projects. */
+/** 4E-3a §2: at most this many automatic fix suggestions per analysis. */
+export const MAX_AUTO_FIX_PER_ANALYSIS = 25;
+/** llm.md §3.3: at most this many ids in an organisation's project lists. */
+export const MAX_ORGANIZATION_PROJECT_IDS = 1_000;
+
+/**
+ * 4E-3a §2 (llm.md §3.3): the organisation's automatic fix suggestions, for its new findings of
+ * a merge request at or above `minSeverity`.
+ */
+export const autoFixSettingsSchema = z.strictObject({
+  enabled: z.boolean(),
+  minSeverity: z.enum(SEVERITIES),
+  maxPerAnalysis: z.number().int().min(1).max(MAX_AUTO_FIX_PER_ANALYSIS),
+});
+export type AutoFixSettings = z.infer<typeof autoFixSettingsSchema>;
+export const DEFAULT_AUTO_FIX: Readonly<AutoFixSettings> = Object.freeze({
+  enabled: false,
+  minSeverity: 'high',
+  maxPerAnalysis: 10,
+});
+
+const projectIds = z.array(z.uuid()).max(MAX_ORGANIZATION_PROJECT_IDS);
+
+/**
+ * llm.md §3.3: an organisation's switches; at most 1 000 excluded and 1 000 opted-out projects. A
+ * row stored before 4E-3 has neither auto-fix field and reads with the defaults.
+ */
 export const orgLlmSettingsSchema = z.strictObject({
   enabled: z.boolean(),
   features: z.strictObject({ explain: z.boolean(), triage: z.boolean(), fix: z.boolean() }),
-  excludedProjectIds: z.array(z.uuid()).max(1_000),
+  excludedProjectIds: projectIds,
+  autoFix: autoFixSettingsSchema.default(() => ({ ...DEFAULT_AUTO_FIX })),
+  autoFixDisabledProjectIds: projectIds.default(() => []),
 });
 export type OrgLlmSettings = z.infer<typeof orgLlmSettingsSchema>;
 export const DISABLED_ORGANIZATION: OrgLlmSettings = {
   enabled: false,
   features: { explain: false, triage: false, fix: false },
   excludedProjectIds: [],
+  autoFix: { ...DEFAULT_AUTO_FIX },
+  autoFixDisabledProjectIds: [],
 };
 
 /** llm.md §3.3: at most this many organisations in the map. */
@@ -161,6 +193,25 @@ export function organizationSettings(
   return Object.hasOwn(settings.organizations, organizationId)
     ? (settings.organizations[organizationId] ?? DISABLED_ORGANIZATION)
     : DISABLED_ORGANIZATION;
+}
+
+/**
+ * The owner of each project id still in the database (a deleted project is absent). Used to drop
+ * the excluded and opted-out ids of projects deleted since the settings were saved (llm.md §3.3):
+ * an id that no longer exists changes nothing, and must not stop anyone from saving.
+ */
+export async function projectOwners(
+  db: Executor,
+  ids: readonly string[],
+): Promise<Map<string, string>> {
+  const owners = new Map<string, string>();
+  if (ids.length === 0) return owners;
+  const rows = await db
+    .select({ id: projects.id, organizationId: projects.organizationId })
+    .from(projects)
+    .where(sql`${projects.id} IN ${uuidList([...new Set(ids)])}`);
+  for (const r of rows) owners.set(r.id, r.organizationId);
+  return owners;
 }
 
 /** llm.md §3.2: `excludePaths`, picomatch with dotfiles. */
