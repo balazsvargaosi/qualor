@@ -29,6 +29,10 @@ export const MAIL_KINDS = [
   'account.password-reset',
   'account.invitation',
   'account.password-changed',
+  // mail E3: project notifications.
+  'notify.gate-failed',
+  'notify.gate-recovered',
+  'notify.analysis-failed',
 ] as const;
 export type MailKind = (typeof MAIL_KINDS)[number];
 

@@ -7,6 +7,7 @@ import { gateHandlers } from '../src/gates/reevaluate';
 import { jobHandlers } from '../src/ingest/handlers';
 import type { IngestionStage } from '../src/ingest/process';
 import type { Limits } from '../src/limits';
+import { notifyDeps } from '../src/notifications/deps';
 import { runUntilIdle } from '../src/queue/worker';
 import {
   addMember,
@@ -55,9 +56,13 @@ export async function createIngestHarness(
     beforeReady?: (app: FastifyInstance) => void;
     /** Plugins and an edition (test/rbac.ts `rbacPlugins`), as createTestContext takes them. */
     pluginsFor?: NonNullable<Parameters<typeof createTestContext>[0]>['pluginsFor'];
+    /** Queue project notifications (mail E3) from ingestion and re-evaluation. */
+    notify?: boolean;
   } = {},
 ): Promise<IngestHarness> {
-  const ctx = await createTestContext(options);
+  const { notify: withNotify, ...contextOptions } = options;
+  const ctx = await createTestContext(contextOptions);
+  const notify = withNotify ? notifyDeps(ctx.config) : undefined;
   const org = await organizationId(ctx, 'default');
   const user = await createUser(ctx, { username: 'ingest-admin' });
   await addMember(ctx, org, user.id, 'admin');
@@ -79,7 +84,13 @@ export async function createIngestHarness(
         await runUntilIdle(
           ctx.db,
           {
-            ...jobHandlers({ db: ctx.db, upload: ctx.config.upload, stages, logger: ctx.app.log }),
+            ...jobHandlers({
+              db: ctx.db,
+              upload: ctx.config.upload,
+              stages,
+              logger: ctx.app.log,
+              notify,
+            }),
             ...gateHandlers({ db: ctx.db }),
           },
           ctx.app.log,

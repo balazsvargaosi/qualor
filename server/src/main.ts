@@ -29,6 +29,7 @@ import {
 } from './llm/job';
 import { MAIL_LEASE_MS, MAIL_WORKER_CONCURRENCY, mailHandlers } from './mail/deliver';
 import { mailDeps } from './mail/outbox';
+import { notifyDeps } from './notifications/deps';
 import { bootEnterprise, type EnterpriseBoot } from './plugins/boot';
 import { ensurePluginSchedules, startPluginWorker } from './plugins/mount';
 import { startWorker } from './queue/worker';
@@ -197,10 +198,12 @@ async function main(): Promise<void> {
   });
   // data-model.md §7: one daily housekeeping job, (re)scheduled at boot and after every reap.
   await ensureHousekeepingScheduled(database.db);
+  // mail E3: project notifications, queued by the analysis worker in its transactions.
+  const notify = notifyDeps(config);
   const worker = startWorker({
     db: database.db,
     handlers: {
-      ...jobHandlers({ db: database.db, upload: config.upload, logger }),
+      ...jobHandlers({ db: database.db, upload: config.upload, logger, notify }),
       ...housekeepingHandlers({ db: database.db, logger }),
       // scm.md §7: re-evaluations share the analysis worker and its per-project key.
       ...gateHandlers({ db: database.db, logger }),

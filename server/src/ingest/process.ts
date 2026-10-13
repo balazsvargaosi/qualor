@@ -13,6 +13,7 @@ import {
   type AnalysisWarning,
   type FieldIssue,
 } from '../db/schema';
+import type { NotifyDeps } from '../notifications/deps';
 import type { ProjectRow } from '../projects/access';
 import { decodeStoredReport } from './decode';
 import { ANALYSIS_QUEUE } from './service';
@@ -47,6 +48,8 @@ export interface IngestionContext {
   /** Stages may append; stored on the analysis when it succeeds. */
   readonly warnings: AnalysisWarning[];
   readonly logger: ProcessLogger;
+  /** mail E3: how project notifications are queued; null when the caller queues none (tests). */
+  readonly notify: NotifyDeps | null;
   /** Values earlier stages hand to later ones (see state.ts). */
   readonly state: IngestionState;
 }
@@ -105,6 +108,7 @@ export interface ProcessDeps {
   upload: UploadLimits;
   stages: readonly IngestionStage[];
   logger?: ProcessLogger;
+  notify?: NotifyDeps | undefined;
 }
 
 type BranchTarget =
@@ -373,6 +377,7 @@ async function ingest(
       report,
       warnings: [...report.warnings],
       logger,
+      notify: deps.notify ?? null,
       state: {},
     };
     for (const stage of deps.stages) await stage.run(ctx);

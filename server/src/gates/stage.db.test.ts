@@ -7,6 +7,7 @@ import { file, finding, reportWith, type ReportParts } from '../../test/reports'
 import { analyses, gateConditions, instanceSettings, projects, qualityGates } from '../db/schema';
 import { AnalysisFailure, reconcileDeadAnalyses } from '../ingest/process';
 import { DEFAULT_STAGES } from '../ingest/stages';
+import { notificationStage } from '../notifications/stage';
 import { webhookStage } from '../webhooks/stage';
 import { effectiveGate, gateStage, SMALL_CHANGESET_SETTING } from './stage';
 
@@ -219,10 +220,13 @@ describe('gate evaluation after ingestion (gates.md §6, server step 11)', () =>
       report(p, { files: [file('src/a.ts')], findings: [finding({ line: 5 })] }),
       // The webhook stage reads the gate result, so it stays after gateStage.
       [
-        ...DEFAULT_STAGES.filter((s) => s !== gateStage && s !== webhookStage),
+        ...DEFAULT_STAGES.filter(
+          (s) => s !== gateStage && s !== webhookStage && s !== notificationStage,
+        ),
         deleteGate,
         gateStage,
         webhookStage,
+        notificationStage,
       ],
     );
     expect((await analysis(id)).gateResult).toMatchObject({

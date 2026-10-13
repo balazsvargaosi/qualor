@@ -83,7 +83,8 @@ export async function subscriptionsToNotify(
  * webhooks per organisation (routes/webhooks.ts), so at most 100 deliveries, written in bounded
  * batches (deliveries.ts).
  *
- * It must stay the last stage (ingest/stages.ts, checked by stages.test.ts): its payload is the
+ * It must stay the last stage that touches the analysis (ingest/stages.ts, checked by
+ * stages.test.ts; only the notification stage, which writes none, follows it): its payload is the
  * analysis exactly as ingestion is about to store it, so no stage may change the analysis after.
  */
 export const webhookStage: IngestionStage = {
