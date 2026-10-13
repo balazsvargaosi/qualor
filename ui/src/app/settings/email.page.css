@@ -4,6 +4,8 @@
 }
 .email-panels {
   display: grid;
+  /* One track no wider than the page: a wide table scrolls in its panel instead. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
 }
 .email-panels > * {
