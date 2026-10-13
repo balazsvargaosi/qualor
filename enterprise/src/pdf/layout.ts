@@ -228,5 +228,8 @@ export function createDocument(options: {
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
   });
+  // A pdfkit 'error' during the layout, before the caller awaits `done`, is never an unhandled
+  // rejection; the caller that awaits `done` still gets it.
+  done.catch(() => undefined);
   return { doc, done };
 }

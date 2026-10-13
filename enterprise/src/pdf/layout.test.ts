@@ -44,4 +44,21 @@ describe('createDocument', () => {
     const b = await render({ ...INPUT, date: new Date('2026-10-13T09:30:01.000Z') });
     expect(a.equals(b)).toBe(false);
   });
+
+  it('never leaves an error during the layout as an unhandled rejection', async () => {
+    const unhandled: unknown[] = [];
+    const record = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', record);
+    try {
+      const { doc, done } = createDocument(INPUT);
+      // A pdfkit 'error' while the caller is still laying out, before it awaits `done`.
+      doc.emit('error', new Error('broken stream'));
+      await new Promise((r) => setTimeout(r, 20));
+      expect(unhandled).toEqual([]);
+      // The caller that does await it still sees the error.
+      await expect(done).rejects.toThrow('broken stream');
+    } finally {
+      process.off('unhandledRejection', record);
+    }
+  });
 });
