@@ -42,7 +42,10 @@ const BUSINESS_KEY = signTest(
   signer,
   testPayload({ features: [...new Set([...BUSINESS_FEATURES, 'support-bundle'])] }),
 );
-const KEY_WITHOUT_FEATURE = signTest(signer, testPayload({ features: [...BUSINESS_FEATURES] }));
+const KEY_WITHOUT_FEATURE = signTest(
+  signer,
+  testPayload({ features: BUSINESS_FEATURES.filter((feature) => feature !== 'support-bundle') }),
+);
 const PLUGIN: QualorPlugin = {
   name: 'support-fixture',
   apiVersion: 1,
