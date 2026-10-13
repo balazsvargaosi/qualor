@@ -15,7 +15,7 @@ const USAGE = `usage:
   pnpm license:sign --key <private.pem> --kid <kid> --customer <name> --expires <date>
                     [--features a,b] [--issued <date>] [--id <uuid>]
   Business:   --features sso,audit-log,llm.fix-quota
-  Enterprise: --features sso,sso.multi,audit-log,audit-log.stream,llm.fix-quota,scim,compliance-export
+  Enterprise: --features sso,sso.multi,audit-log,audit-log.stream,llm.fix-quota,scim,compliance-export,portfolio
   pnpm license:inspect <key | ->
 Dates are YYYY-MM-DD (00:00 UTC) or YYYY-MM-DDTHH:MM:SSZ.
 The private key's passphrase comes from ${PASSPHRASE_VARIABLE}, never from an argument.`;

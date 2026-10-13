@@ -119,6 +119,7 @@ test.describe('the licence page on a phone', () => {
       'sso.multi',
       'scim',
       'compliance-export',
+      'portfolio',
     ],
     test: true,
   };
