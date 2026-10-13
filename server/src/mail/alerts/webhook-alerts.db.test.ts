@@ -124,12 +124,13 @@ describe('failing-webhook alerts (E1 spec, Alerts)', () => {
     expect(await alerts()).toHaveLength(4);
   });
 
-  it('sends nothing with the alert switched off', async () => {
+  it('sends no instance alert with the alert switched off; an organisation administrator still gets theirs (mail E3)', async () => {
     await t.db.transaction((tx) =>
       writeMailSettings(tx, { alerts: { webhookFailures: false } }, t.config.secretKey),
     );
     expect(await giveUp()).toBe('failed');
-    expect(await alerts()).toEqual([]);
+    // alert-ops is an instance administrator only; admin also administers `default`.
+    expect((await alerts()).map((a) => a.to)).toEqual(['admin@example.com']);
   });
 
   it('sends nothing for a delivery that will be retried, nor for an inactive webhook', async () => {
