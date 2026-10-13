@@ -182,7 +182,8 @@ where](#what-is-sent-and-where)), and the same files and rules are never sent.
    Enterprise note in place of the controls.
 3. A **project admin** can opt one project out: **Project → Settings → Automatic fix
    suggestions**. A project cannot switch it on when the organisation has it off. Without the
-   organisation's switch the panel says so.
+   organisation's switch the panel says so, and for a project excluded from the AI assistant it
+   says that instead of offering the switch.
 
 Switching it off, or losing the licence, stops new suggestions at once, including requests already
 waiting, and posts nothing more. Suggestions already posted stay on the merge request. A
@@ -348,7 +349,7 @@ Today's use and budgets for an organisation are at `GET /api/v0/organizations/{i
 | "The request was interrupted; ask again" | the server restarted, or the request failed unexpectedly, while it ran |
 | "Not posted: the merge request has a newer commit" | analyse the latest commit, then ask for a new fix |
 | "Not posted: the lines are not added lines of the merge request" / "the code on the merge request differs" | suggestions can only replace lines the merge request added, unchanged. Fix it by hand |
-| No automatic suggestions on a merge request | check, in order: the licence lists `llm.auto-fix`; **Settings → Automatic fixes** is on for the organisation, and the organisation and **Suggest a fix** are enabled in **Settings → AI assistant**; the project did not opt out; the project is mapped to GitLab or GitHub; the findings are new in this merge request, open and at the minimum severity; no suggestion was made for them before; the daily fix budget is not used up |
+| No automatic suggestions on a merge request | check, in order: the licence lists `llm.auto-fix`; **Settings → Automatic fixes** is on for the organisation, and the organisation and **Suggest a fix** are enabled in **Settings → AI assistant**; the project did not opt out and is not excluded from the AI assistant; the project is mapped to GitLab or GitHub; the findings are new in this merge request, open and at the minimum severity; no suggestion was made for them before; the daily fix budget is not used up |
 | "Automatic fix suggestions need the Enterprise plan." (the Settings page, or the API's 403 `FEATURE_NOT_LICENSED`) | apply a key that lists `llm.auto-fix` ([Enterprise](./enterprise.md)) |
 | Switching automatic fix suggestions on answers 409 `AI_DISABLED` | an instance admin must configure a provider, enable the organisation and turn on **Suggest a fix** first |
 | 409 `AUTO_FIX_OPT_OUT_LIMIT_REACHED` | an organisation lists at most 1 000 projects that opted out; let a project back in first |
