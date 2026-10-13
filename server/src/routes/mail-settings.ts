@@ -149,7 +149,10 @@ function changedFields(
     ] as const) {
       if (before.server[k] !== after.server[k]) fields.push(`server.${k}`);
     }
-    if (passwordSent) fields.push('server.password');
+    // A new password is a change; removing one only when there was one (as the LLM key's 'removed').
+    if (passwordSent && (after.server.passwordEnc !== null || before.server.passwordEnc !== null)) {
+      fields.push('server.password');
+    }
   }
   for (const k of ['licenseExpiry', 'webhookFailures'] as const) {
     if (before.alerts[k] !== after.alerts[k]) fields.push(`alerts.${k}`);

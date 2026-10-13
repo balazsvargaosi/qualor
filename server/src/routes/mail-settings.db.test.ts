@@ -141,6 +141,11 @@ describe('/system/mail (E1 spec, API)', () => {
       false,
     );
     expect(lastChanged()).toEqual(['server.port', 'server.password']);
+    // Removing a password that is not there changes nothing.
+    expect((await put({ server: server({ password: null }) })).statusCode).toBe(200);
+    expect(lastChanged()).toEqual([]);
+    expect((await put({ server: server() })).json().server.passwordSet).toBe(true);
+    expect(lastChanged()).toEqual(['server.password']);
     expect((await put({ server: null })).json().server).toBeNull();
     expect(lastChanged()).toEqual(['server']);
   });
