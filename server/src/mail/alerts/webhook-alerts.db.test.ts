@@ -149,11 +149,38 @@ describe('failing-webhook alerts (E1 spec, Alerts)', () => {
     expect(await alerts()).toEqual([]);
   });
 
-  it('records the failure even when queueing the alert throws', async () => {
-    const broken = { config: { ...t.config, secretKey: undefined as never } };
-    expect(await giveUp(webhookId, { ...deps, mail: broken })).toBe('failed');
+  it('records the failure when the database refuses the alert, rolls back the partial alert and logs no address', async () => {
+    // A DB-level failure for the second administrator only: the first one's row is already
+    // inserted inside the savepoint when the second insert fails (drizzle's DrizzleQueryError,
+    // whose message carries the SQL parameters).
+    await t.db.execute(sql`
+      CREATE FUNCTION refuse_ops_mail() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.to_address = 'ops@example.com' THEN RAISE EXCEPTION 'refused by test'; END IF;
+        RETURN NEW;
+      END $$`);
+    await t.db.execute(sql`
+      CREATE TRIGGER refuse_ops_mail BEFORE INSERT ON mail_messages
+      FOR EACH ROW EXECUTE FUNCTION refuse_ops_mail()`);
+    const lines: string[] = [];
+    const capture = {
+      info: (...args: unknown[]) => void lines.push(JSON.stringify(args)),
+      warn: (...args: unknown[]) => void lines.push(JSON.stringify(args)),
+    };
+    try {
+      expect(await giveUp(webhookId, { ...deps, logger: capture })).toBe('failed');
+    } finally {
+      await t.db.execute(sql`DROP TRIGGER refuse_ops_mail ON mail_messages`);
+      await t.db.execute(sql`DROP FUNCTION refuse_ops_mail()`);
+    }
     expect(await alerts()).toEqual([]);
     const rows = await t.db.select({ status: webhookDeliveries.status }).from(webhookDeliveries);
     expect(rows).toEqual([{ status: 'failed' }]);
+    const logged = lines.join('\n');
+    expect(logged).toContain('webhook failure alert not queued');
+    expect(logged).toContain(webhookId);
+    for (const leak of ['admin@example.com', 'ops@example.com', 'params', 'Failed query']) {
+      expect(logged).not.toContain(leak);
+    }
   });
 });

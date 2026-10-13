@@ -252,8 +252,13 @@ export async function deliverWebhook(
             }),
           );
         } catch (error) {
+          // The class only: a database error's message carries the query's parameters (the
+          // administrators' addresses, the subject), and an address is never logged above debug.
           deps.logger?.warn(
-            { webhookId: webhook.id, error: error instanceof Error ? error.message : 'unknown' },
+            {
+              webhookId: webhook.id,
+              errorClass: error instanceof Error ? error.constructor.name : typeof error,
+            },
             'webhook failure alert not queued',
           );
         }
