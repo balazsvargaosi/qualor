@@ -7,6 +7,7 @@ import { actorOf } from '../audit/recorder';
 import { requireInstanceAdmin } from '../auth/access';
 import { encryptionKey, encryptSecret } from '../crypto/secrets';
 import { uuidList } from '../db/bulk';
+import type { Executor } from '../db/client';
 import { LOCKS } from '../db/locks';
 import { organizations, type EncryptedValue } from '../db/schema';
 import { conflict, ProblemError, validationFailed, type FieldError } from '../http/problem';
@@ -21,6 +22,7 @@ import {
   autoFixSettingsSchema,
   budgetsSchema,
   DEFAULT_AUTO_FIX,
+  DISABLED_ORGANIZATION,
   globSchema,
   LLM_API_KEY_AAD,
   MAX_LLM_ORGANIZATIONS,
@@ -223,13 +225,50 @@ function withoutDeletedProjects(
   );
 }
 
-/** The body's organisations, an auto-fix field left out keeping the stored one (4E-3a §2). */
+/** Which of the organisations still exist. */
+async function existingOrganizations(db: Executor, ids: readonly string[]): Promise<Set<string>> {
+  if (ids.length === 0) return new Set();
+  const found = await db
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(sql`${organizations.id} IN ${uuidList(ids)}`);
+  return new Set(found.map((r) => r.id));
+}
+
+/** Whether a stored entry holds an auto-fix choice: a value other than the defaults. */
+const hasAutoFixChoice = (o: OrgLlmSettings) =>
+  o.autoFix.enabled !== DEFAULT_AUTO_FIX.enabled ||
+  o.autoFix.minSeverity !== DEFAULT_AUTO_FIX.minSeverity ||
+  o.autoFix.maxPerAnalysis !== DEFAULT_AUTO_FIX.maxPerAnalysis ||
+  o.autoFixDisabledProjectIds.length > 0;
+
+/**
+ * The body's organisations, an auto-fix field left out keeping the stored one (4E-3a §2). An
+ * organisation the body leaves out loses its switches and exclusions, as before, but keeps its
+ * auto-fix choice: a form loaded before an organisation admin made it must not undo it. Its entry
+ * is then the one the organisation's auto-fix route creates (disabled, the choice kept). `kept`:
+ * those organisations ({@link omittedWithAutoFix}) that still exist.
+ */
 function withStoredAutoFix(
   organizations: Record<string, OrgBody>,
   current: StoredLlmSettings,
+  kept: ReadonlySet<string>,
 ): Record<string, OrgLlmSettings> {
-  return Object.fromEntries(
-    Object.entries(organizations).map(([id, o]) => {
+  return Object.fromEntries([
+    ...[...kept].map((id): [string, OrgLlmSettings] => {
+      const stored = organizationSettings(current, id);
+      return [
+        id,
+        {
+          ...DISABLED_ORGANIZATION,
+          features: { ...DISABLED_ORGANIZATION.features },
+          excludedProjectIds: [],
+          autoFix: stored.autoFix,
+          autoFixDisabledProjectIds: stored.autoFixDisabledProjectIds,
+        },
+      ];
+    }),
+    ...Object.entries(organizations).map(([id, o]): [string, OrgLlmSettings] => {
       const stored = organizationSettings(current, id);
       return [
         id,
@@ -241,8 +280,17 @@ function withStoredAutoFix(
         },
       ];
     }),
-  );
+  ]);
 }
+
+/** The ids of the organisations the body leaves out whose stored entry holds an auto-fix choice. */
+const omittedWithAutoFix = (
+  organizations: Record<string, OrgBody>,
+  current: StoredLlmSettings,
+): string[] =>
+  Object.entries(current.organizations)
+    .filter(([id, o]) => !Object.hasOwn(organizations, id) && hasAutoFixChoice(o))
+    .map(([id]) => id);
 
 /** 4E-3a §2: the organisations without their auto-fix fields, and with only those. */
 const withoutAutoFix = (organizations: Record<string, OrgLlmSettings>) =>
@@ -432,14 +480,7 @@ export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
   };
 
   /** The organisations of `ids` that exist. */
-  const knownOrganizations = async (ids: readonly string[]): Promise<Set<string>> => {
-    if (ids.length === 0) return new Set();
-    const found = await deps.db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(sql`${organizations.id} IN ${uuidList(ids)}`);
-    return new Set(found.map((r) => r.id));
-  };
+  const knownOrganizations = (ids: readonly string[]) => existingOrganizations(deps.db, ids);
 
   /** The settings as stored, without excluded projects deleted since they were saved. */
   const readForAdmin = async (): Promise<StoredLlmSettings> => {
@@ -514,7 +555,11 @@ export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
           }
           provider = { ...rest, baseUrl, apiKeyEnc };
         }
-        const organizations = withStoredAutoFix(body.organizations, current);
+        const kept = await existingOrganizations(
+          tx,
+          omittedWithAutoFix(body.organizations, current),
+        );
+        const organizations = withStoredAutoFix(body.organizations, current, kept);
         // A project deleted meanwhile (or since the page read the settings) is dropped, a stored
         // opt-out the body left out included.
         const listed = await projectOwners(tx, listedProjectIdsOf(organizations));

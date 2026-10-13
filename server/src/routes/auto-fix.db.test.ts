@@ -518,6 +518,47 @@ describe('automatic fix suggestion settings (4E-3a §2)', () => {
       });
     });
 
+    it('keeps the auto-fix choice of an organisation a stale form leaves out', async () => {
+      await writeLlmSettings(ctx.db, {
+        ...DEFAULT_LLM_SETTINGS,
+        provider: PROVIDER,
+        organizations: { [org]: ORG_ON, [otherOrg]: ORG_ON },
+      });
+      // The instance admin's form, loaded with only `org`.
+      const body = await settingsBody();
+      delete body.organizations[otherOrg];
+      expect(Object.keys(body.organizations)).toEqual([org]);
+      // Meanwhile the other organisation's admin switches it on and opts a project out.
+      expect((await putOrg(on, admin, otherOrg)).statusCode).toBe(200);
+      expect((await putProject(false, admin, otherProject.id)).statusCode).toBe(200);
+      // And an organisation deleted since keeps nothing.
+      const gone = (
+        await ctx.db.execute<{ id: string }>(sql`
+          INSERT INTO organizations (id, key, name) VALUES (gen_random_uuid(), 'af-gone', 'Gone')
+          RETURNING id`)
+      ).rows[0]!.id;
+      const stored = await readLlmSettings(ctx.db);
+      await writeLlmSettings(ctx.db, {
+        ...stored,
+        organizations: { ...stored.organizations, [gone]: { ...ORG_ON, autoFix: on } },
+      });
+      await ctx.db.execute(sql`DELETE FROM organizations WHERE id = ${gone}`);
+
+      const res = await call('PUT', '/system/llm', admin.headers, body);
+      expect(res.statusCode, res.body).toBe(200);
+      const saved = (await readLlmSettings(ctx.db)).organizations;
+      // Its switches go, as for any organisation a save leaves out; its auto-fix choice stays.
+      expect(saved[otherOrg]).toEqual({
+        enabled: false,
+        features: { explain: false, triage: false, fix: false },
+        excludedProjectIds: [],
+        autoFix: on,
+        autoFixDisabledProjectIds: [otherProject.id],
+      });
+      expect(Object.keys(saved).sort()).toEqual([org, otherOrg].sort());
+      expect((await getOrg(admin, otherOrg)).json()).toMatchObject(on);
+    });
+
     it('stores each opted-out project once', async () => {
       const body = await settingsBody();
       body.organizations[org] = {
