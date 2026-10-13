@@ -238,7 +238,9 @@ test('an instance admin creates a user who must change the password, and resets 
   const create = page.getByRole('dialog', { name: 'New user' });
   await expect(create.getByLabel('Username')).toBeFocused();
   await create.getByLabel('Username').fill('bob');
-  await create.getByLabel('Initial password').fill('bob initial passphrase');
+  // With email set up the dialog invites by default; this test sets a password instead.
+  await create.getByRole('radio', { name: 'Set an initial password' }).check();
+  await create.getByLabel('Initial password', { exact: true }).fill('bob initial passphrase');
   await create.getByRole('button', { name: 'Create user' }).click();
   await expect(create).toBeHidden();
   await expect(page.getByRole('status')).toContainText('bob can sign in now');
