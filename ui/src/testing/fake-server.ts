@@ -1,6 +1,11 @@
 import type { Provider } from '@angular/core';
 import { FETCH } from '../app/api/api';
-import type { ComplianceReport } from '../app/api/ee';
+import type {
+  ComplianceReport,
+  PortfolioAggregate,
+  PortfolioOverview,
+  PortfolioProjectRow,
+} from '../app/api/ee';
 import type { Me } from '../app/api/types';
 
 export interface RecordedRequest {
@@ -314,5 +319,132 @@ export class FakeCompliance {
   private find(path: string, pattern: RegExp): ComplianceReport | undefined {
     const id = pattern.exec(path)?.[1];
     return this.reports.find((r) => r.id === id);
+  }
+}
+
+const PORTFOLIO = '/api/v0/ee/portfolio';
+const PORTFOLIO_PROJECTS = '/api/v0/ee/portfolio/projects';
+
+/** A set of portfolio figures (4E-2 §1): three projects, two analysed, one abandoned. */
+export function portfolioAggregate(
+  overrides: Partial<PortfolioAggregate> = {},
+): PortfolioAggregate {
+  return {
+    projects: 3,
+    analysed: 2,
+    abandoned: 1,
+    gate: { passed: 1, failed: 1, error: 0, none: 0 },
+    passedShare: 0.5,
+    securityRating: { A: 1, B: 0, C: 1, D: 0, E: 0 },
+    reliabilityRating: { A: 2, B: 0, C: 0, D: 0, E: 0 },
+    ncloc: 12345,
+    coverage: 72.5,
+    duplication: 3.25,
+    issues: 42,
+    bySeverity: { blocker: 2, high: 5, medium: 10, low: 20, info: 5 },
+    securityIssues: 7,
+    reliabilityIssues: 9,
+    maintainabilityIssues: 26,
+    newIssues: 4,
+    ...overrides,
+  };
+}
+
+/** A project of the portfolio (4E-2 §2): analysed, its gate failed, by default. */
+export function portfolioRow(
+  key: string,
+  overrides: Partial<PortfolioProjectRow> = {},
+): PortfolioProjectRow {
+  return {
+    organization: { key: 'default', name: 'Default' },
+    project: {
+      id: `0190a6c2-0000-7000-8000-${key.padStart(12, '0')}`,
+      key,
+      name: `Project ${key}`,
+    },
+    lastAnalysisAt: '2026-10-12T09:00:00.000Z',
+    abandoned: false,
+    gate: 'failed',
+    securityRating: 'C',
+    reliabilityRating: 'A',
+    ncloc: 1000,
+    coverage: 80,
+    duplication: 2,
+    issues: 12,
+    bySeverity: { blocker: 1, high: 2, medium: 3, low: 4, info: 2 },
+    newIssues: 1,
+    secrets: 0,
+    vulnerableDependencies: 0,
+    ...overrides,
+  };
+}
+
+/**
+ * The portfolio of the default organisation (4E-2 §2): the totals of `portfolioAggregate`, 12
+ * weekly points from 2026-07-20 (coverage 61, 62, … 72; ncloc 1 000 more each week), no
+ * organisations (the organisation scope) and one project on each attention list.
+ */
+export function portfolioOverview(overrides: Partial<PortfolioOverview> = {}): PortfolioOverview {
+  const week = 7 * 24 * 3600 * 1000;
+  const first = Date.UTC(2026, 6, 20);
+  return {
+    generatedAt: '2026-10-13T12:00:00.000Z',
+    scope: { kind: 'organization', organization: { id: ORG_ID, key: 'default', name: 'Default' } },
+    granularity: 'week',
+    totals: { ...portfolioAggregate(), secrets: 1, vulnerableDependencies: 4 },
+    organizations: null,
+    trend: Array.from({ length: 12 }, (_, i) => ({
+      ...portfolioAggregate({
+        coverage: 61 + i,
+        ncloc: 1000 * (i + 1),
+        issues: 30 + i,
+        passedShare: i === 0 ? null : 0.5,
+      }),
+      start: new Date(first + i * week).toISOString(),
+      end: i === 11 ? '2026-10-13T12:00:00.000Z' : new Date(first + (i + 1) * week).toISOString(),
+      analyses: 10 + i,
+      triage: i,
+    })),
+    attention: {
+      failingGates: [portfolioRow('fail')],
+      worstSecurity: [portfolioRow('weak', { securityRating: 'E' })],
+      mostSevere: [
+        portfolioRow('severe', { bySeverity: { blocker: 3, high: 4, medium: 0, low: 0, info: 0 } }),
+      ],
+      abandoned: [portfolioRow('stale', { abandoned: true, lastAnalysisAt: null, gate: null })],
+    },
+    ...overrides,
+  };
+}
+
+/**
+ * The portfolio API (4E-2 §3): the overview (`overview`, for every scope and granularity) and the
+ * projects in pages of `limit` over `rows` (in the order given: the fake does not sort). A test
+ * answers a route itself with `server.on`, which wins.
+ */
+export class FakePortfolio {
+  overview: PortfolioOverview;
+  rows: PortfolioProjectRow[];
+
+  constructor(
+    server: FakeServer,
+    overview: PortfolioOverview = portfolioOverview(),
+    rows: PortfolioProjectRow[] = [portfolioRow('alpha'), portfolioRow('beta')],
+  ) {
+    this.overview = overview;
+    this.rows = rows;
+    server.on('GET', PORTFOLIO, (r) => ({
+      body: {
+        ...this.overview,
+        granularity: r.query.get('granularity') === 'month' ? 'month' : 'week',
+      },
+    }));
+    server.on('GET', PORTFOLIO_PROJECTS, (r) => {
+      const limit = Number(r.query.get('limit') ?? 50);
+      const start = Number(r.query.get('cursor') ?? 0);
+      const items = this.rows.slice(start, start + limit);
+      const next = start + limit < this.rows.length ? String(start + limit) : null;
+      return { body: page(items, next) };
+    });
   }
 }

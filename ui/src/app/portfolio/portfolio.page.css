@@ -1,0 +1,81 @@
+/* The portfolio (4E-2 §4): totals as cards, the trend and attention panels, then the tables. */
+.portfolio {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 24px;
+}
+.portfolio > *,
+.portfolio-section > *,
+.portfolio-grid > * {
+  margin: 0;
+}
+.portfolio-controls .segmented {
+  max-width: 100%;
+  overflow-x: auto;
+}
+.portfolio-downloads {
+  display: flex;
+  gap: 8px;
+}
+.portfolio-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(15rem, 100%), 1fr));
+  gap: 16px;
+}
+.portfolio-cards > .card {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  margin: 0;
+  min-width: 0;
+}
+.kpi-note {
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+.portfolio-section {
+  display: grid;
+  gap: 12px;
+}
+.portfolio-heading {
+  font-size: 17px;
+}
+.portfolio-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(26rem, 100%), 1fr));
+  gap: 16px;
+}
+.attention-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding-left: 1.4em;
+}
+.attention-list li {
+  overflow-wrap: anywhere;
+}
+.attention-list .muted {
+  display: block;
+  font-size: 12.5px;
+}
+th[scope='row'] {
+  font-weight: 600;
+  text-align: left;
+}
+button.sort {
+  all: unset;
+  cursor: pointer;
+  border-radius: 4px;
+}
+button.sort:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+th[aria-sort='ascending'] button.sort::after {
+  content: ' ▲';
+  font-size: 0.75em;
+}
+th[aria-sort='descending'] button.sort::after {
+  content: ' ▼';
+  font-size: 0.75em;
+}

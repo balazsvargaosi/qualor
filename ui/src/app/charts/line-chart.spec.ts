@@ -50,6 +50,15 @@ describe('LineChart', () => {
     expect(root.querySelector('polyline')).toBeNull();
   });
 
+  it('describes itself by its title when one is given', async () => {
+    const { fixture, root } = await render([series('share', [50, 75])], 'gate_pass_density');
+    fixture.componentRef.setInput('title', 'Gate pass share');
+    await fixture.whenStable();
+    expect(root.querySelector('svg')?.getAttribute('aria-label')).toBe(
+      'Gate pass share went from 50 % on Sep 1, 2026 to 75 % on Sep 8, 2026',
+    );
+  });
+
   it('stacks severities, describes their totals and shows a legend', async () => {
     const { root } = await render(
       [series('blocker', [1, 1], 'blocker', 'Blocker'), series('high', [2, null], 'high', 'High')],
