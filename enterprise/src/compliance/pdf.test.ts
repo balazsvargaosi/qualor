@@ -6,7 +6,9 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
-import { PDF_FINDINGS_MAX, RenderTimeoutError, defaultFontsDir, renderPdf } from './pdf';
+import { defaultFontsDir } from '../pdf/fonts';
+import { RenderTimeoutError } from '../pdf/layout';
+import { PDF_FINDINGS_MAX, renderPdf } from './pdf';
 import { sampleReport } from './test-report';
 
 async function textOf(pdf: Buffer): Promise<string> {

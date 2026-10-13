@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-Qualor-Enterprise
 import { describe, expect, it } from 'vitest';
-import { csvCell, csvRows } from './csv';
+import { csvCell } from '../csv';
+import { csvRows } from './csv';
 import { sampleReport } from './test-report';
 
 describe('csvRows (4E-1 §2.5)', () => {

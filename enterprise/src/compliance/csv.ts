@@ -1,23 +1,10 @@
 // SPDX-License-Identifier: LicenseRef-Qualor-Enterprise
+import { CSV_BOM, csvLine as line } from '../csv';
 import type { ReportJson } from './report';
-
-const FORMULA = /^[=+\-@\t\r]/;
-
-type Cell = string | number | boolean | null | undefined;
-
-/** RFC 4180 with formula neutralising (4E-1 §2.5). */
-export function csvCell(value: Cell): string {
-  if (value === null || value === undefined) return '';
-  let text = String(value);
-  if (typeof value === 'string' && FORMULA.test(text)) text = `'${text}`;
-  return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
-}
-
-const line = (cells: readonly Cell[]): string => `${cells.map(csvCell).join(',')}\r\n`;
 
 export function* csvRows(report: ReportJson): Generator<string> {
   const ids = report.standards.map((s) => s.id);
-  yield '﻿' +
+  yield CSV_BOM +
     line([
       'section',
       'project',

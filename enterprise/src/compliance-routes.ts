@@ -10,7 +10,8 @@ import type {
 } from '@qualor/server/plugin-contract';
 import { assembleReport, DETAIL_LIMIT, parseCanonical } from './compliance/assemble';
 import { csvRows } from './compliance/csv';
-import { RenderTimeoutError, renderPdf } from './compliance/pdf';
+import { renderPdf } from './compliance/pdf';
+import { RenderTimeoutError } from './pdf/layout';
 import { standardRefs } from './compliance/standard';
 
 const BUILD_QUEUE = 'ee.compliance.build';

@@ -12,6 +12,7 @@ import type {
 } from '@qualor/server/plugin-contract';
 import { complianceJobs, complianceRoutes } from './compliance-routes';
 import type * as Pdf from './compliance/pdf';
+import { RenderTimeoutError } from './pdf/layout';
 import { sampleReport } from './compliance/test-report';
 
 /** The PDF renderer, real unless a test makes it time out. */
@@ -22,7 +23,7 @@ vi.mock('./compliance/pdf', async (importOriginal) => {
     ...real,
     renderPdf: async (...args: Parameters<typeof real.renderPdf>) => {
       pdf.options.push(args[1]);
-      if (pdf.timeout) throw new real.RenderTimeoutError();
+      if (pdf.timeout) throw new RenderTimeoutError();
       return real.renderPdf(...args);
     },
   };
