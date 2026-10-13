@@ -26,7 +26,7 @@ UTF-8 JSON, except `logs.jsonl`, which holds one JSON log line per line.
 | `health.json` | the readiness checks, the database pool, the database size and the estimated row counts of the 15 largest tables |
 | `jobs.json` | the number of jobs by queue and status, and the last 50 failed jobs with their error text (cut to 500 characters, no job data) |
 | `analyses.json` | the last 50 failed analyses: the project key, the branch, the time and the error |
-| `scm.json` | the GitLab and GitHub connections: host, status, the state of the circuit breaker and the last error. No token, private key or webhook secret |
+| `scm.json` | the GitLab and GitHub connections: host, status, the state of the circuit breaker and the last error (the command's bundle has no live connection state, and its manifest says so). No token, private key or webhook secret |
 | `logs.jsonl` | the last server log lines of the replica that made the bundle: at most 5 000 lines and 5 MiB, oldest first. Only in a bundle downloaded from the web UI |
 
 **Never in it:** passwords, tokens and their hashes, `QUALOR_SECRET_KEY`, the database password,
@@ -113,7 +113,8 @@ back at the next start.
 | Symptom | Cause and fix |
 |---|---|
 | the command says it will not write the archive to a terminal | you ran it without `-T`, or without `>` or `--out`. Redirect the output to a file |
-| the command exits with 2 | the licence does not list `support-bundle`, or the server cannot read its licence. Check **Settings → Licence** or the server log |
+| the command exits with 2 | the licence does not list `support-bundle`, or it lapsed. Check **Settings → Licence** or the server log |
+| the command exits with 1 and names `QUALOR_LICENSE_FILE` | the licence file cannot be read. Check the path and the file's permissions |
 | the command says a server "holds" the data folder but its database did not answer | the server is starting or has just stopped. Wait for it, or 30 seconds, and run it again |
 | the command says no server is running and the folder holds no database | the volume is empty or wrong. Check the `data` volume of your `compose.yml` |
 | the download answers 429 | another bundle is being prepared. Wait and try again |
