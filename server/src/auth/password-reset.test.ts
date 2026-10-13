@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { UserRow } from './sessions';
-import { mayResetPassword, RESET_ANSWER_FLOOR_MS, waitForFloor } from './password-reset';
+import {
+  invitationApplies,
+  mayResetPassword,
+  RESET_ANSWER_FLOOR_MS,
+  waitForFloor,
+} from './password-reset';
 
 const USER: UserRow = {
   id: '0192f5a4-7c1e-7d3a-9b2e-5f1a2c3d4e5f',
@@ -74,5 +79,29 @@ describe('who may reset a password (mail E2 A3)', () => {
         facts: sso,
       }),
     ).toBe(true);
+  });
+});
+
+describe('whom an invitation still applies to (mail E2 A8)', () => {
+  const INVITED = { ...USER, passwordHash: null };
+
+  it('applies to an active account without a password or an SSO identity', () => {
+    expect(invitationApplies(INVITED, 0, POLICY)).toBe(true);
+  });
+
+  it.each([
+    ['inactive', { active: false }, 0],
+    ['with a password', { passwordHash: 'argon2-hash' }, 0],
+    ['the demo user', { username: 'guest' }, 0],
+    ['linked to single sign-on', {}, 1],
+  ] as const)('not to one %s', (_name, change, identities) => {
+    expect(invitationApplies({ ...INVITED, ...change }, identities, POLICY)).toBe(false);
+  });
+
+  it('follows the sign-in policy', () => {
+    const stored = { passwordSignIn: 'break_glass_only' as const, breakGlassUserIds: [] };
+    expect(
+      invitationApplies(INVITED, 0, { ...POLICY, stored, facts: { sso: true, forced: false } }),
+    ).toBe(false);
   });
 });

@@ -2,10 +2,10 @@ import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { accountContext, linkToken, mailsTo } from '../../test/account-mail';
 import { login, nextIp, type TestContext } from '../../test/app';
-import { adminHeaders, auditRows } from '../../test/sso';
+import { adminHeaders, auditRows, oidcConnection } from '../../test/sso';
 import { issueAccountToken, peekAccountToken } from '../auth/account-tokens';
 import { hashPassword } from '../auth/password';
-import { instanceSettings, users } from '../db/schema';
+import { identities, instanceSettings, users } from '../db/schema';
 
 describe('accepting an invitation (mail E2)', () => {
   let ctx: TestContext;
@@ -93,13 +93,14 @@ describe('accepting an invitation (mail E2)', () => {
     expect(await peekAccountToken(ctx.db, token, 'password_reset')).not.toBeNull();
   });
 
-  it('checks the policy when the link is used', async () => {
+  it('checks the policy when the link is looked at and used', async () => {
     const { token } = await invite('max');
     await ctx.db.insert(instanceSettings).values({
       key: 'sign-in',
       value: { passwordSignIn: 'break_glass_only', breakGlassUserIds: [ctx.adminId] },
     });
     try {
+      expectInvalid(await inspect(token));
       expectInvalid(await accept(token));
     } finally {
       await ctx.db.delete(instanceSettings).where(eq(instanceSettings.key, 'sign-in'));
@@ -125,6 +126,21 @@ describe('accepting an invitation (mail E2)', () => {
   it('refuses the demo user, uses the link up, and sets no password', async () => {
     const { id, token } = await invite('guest');
     expect(ctx.config.demoUser).toBe('guest');
+    expectInvalid(await inspect(token));
+    expectInvalid(await accept(token));
+    expect(await peekAccountToken(ctx.db, token, 'invitation')).toBeNull();
+    const [row] = await ctx.db.select().from(users).where(eq(users.id, id));
+    expect(row!.passwordHash).toBeNull();
+  });
+
+  it('refuses an account linked to single sign-on meanwhile, uses the link up, and sets no password', async () => {
+    const { id, token } = await invite('sso-pat');
+    const connectionId = await oidcConnection(ctx, { name: 'Accept IdP' });
+    await ctx.db
+      .insert(identities)
+      .values({ connectionId, userId: id, subject: 'sub-sso-pat', linkedBy: 'verified_email' });
+    expectInvalid(await inspect(token));
+    expect(await peekAccountToken(ctx.db, token, 'invitation')).not.toBeNull();
     expectInvalid(await accept(token));
     expect(await peekAccountToken(ctx.db, token, 'invitation')).toBeNull();
     const [row] = await ctx.db.select().from(users).where(eq(users.id, id));

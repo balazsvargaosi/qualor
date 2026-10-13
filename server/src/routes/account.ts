@@ -11,9 +11,13 @@ import {
   plausibleAccountToken,
   takeAccountToken,
 } from '../auth/account-tokens';
-import { isDemoUser } from '../auth/demo';
 import { hashPassword, newPasswordField } from '../auth/password';
-import { mayResetPassword, RESET_ANSWER_FLOOR_MS, waitForFloor } from '../auth/password-reset';
+import {
+  invitationApplies,
+  mayResetPassword,
+  RESET_ANSWER_FLOOR_MS,
+  waitForFloor,
+} from '../auth/password-reset';
 import { deleteUserSessions } from '../auth/sessions';
 import { LoginThrottle } from '../auth/throttle';
 import { users } from '../db/schema';
@@ -28,7 +32,8 @@ import {
 import { mailDeps, queueMail } from '../mail/outbox';
 import { renderPasswordResetMail } from '../mail/templates/account-password-reset';
 import { instanceHost } from '../mail/templates/text';
-import { mayUsePassword, readSignInSettings } from '../sso/sign-in-policy';
+import { readSignInSettings } from '../sso/sign-in-policy';
+import { userSsoSummary } from './users';
 
 /** Mail E2: requests per minute and address; messages per login in 15 minutes. */
 export const PASSWORD_RESET_REQUESTS_PER_MINUTE = 5;
@@ -225,7 +230,12 @@ export const accountRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (
       const found = await peekAccountToken(deps.db, request.body.token, 'invitation');
       if (!found) throw tokenInvalid();
       const [user] = await deps.db.select().from(users).where(eq(users.id, found.userId));
-      if (!user || !user.active || user.passwordHash !== null) throw tokenInvalid();
+      // The same answer accept would give, without using the link up.
+      if (!user) throw tokenInvalid();
+      const stored = await readSignInSettings(deps.db, request.log);
+      const policy = { demoUser: deps.config.demoUser, stored, facts: policyFacts() };
+      const { identities } = await userSsoSummary(deps.db, user.id);
+      if (!invitationApplies(user, identities, policy)) throw tokenInvalid();
       const [inviter] =
         found.createdBy === null
           ? []
@@ -263,6 +273,7 @@ export const accountRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (
       // Hash first: a slow hash never holds the token's row or a pooled connection.
       const passwordHash = await hashPassword(newPassword);
       const stored = await readSignInSettings(deps.db, request.log);
+      const policy = { demoUser: deps.config.demoUser, stored, facts: policyFacts() };
       const username = await deps.db.transaction(async (tx) => {
         const taken = await takeAccountToken(tx, token, 'invitation');
         if (!taken) return null;
@@ -271,17 +282,11 @@ export const accountRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (
           .from(users)
           .where(eq(users.id, taken.userId))
           .for('update');
-        // Never over a password set meanwhile; the policy and the demo account as for a reset.
-        // A refusal commits too, so the link is used up either way.
-        if (
-          !user ||
-          !user.active ||
-          user.passwordHash !== null ||
-          isDemoUser(deps.config.demoUser, user) ||
-          !mayUsePassword(user, stored, policyFacts()).allowed
-        ) {
-          return null;
-        }
+        // Never over a password set or an SSO identity linked meanwhile; the policy and the demo
+        // account as for a reset. A refusal commits too, so the link is used up either way.
+        if (!user) return null;
+        const { identities } = await userSsoSummary(tx, user.id);
+        if (!invitationApplies(user, identities, policy)) return null;
         await tx
           .update(users)
           .set({ passwordHash, passwordChangeRequired: false })

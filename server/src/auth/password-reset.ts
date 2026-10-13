@@ -40,3 +40,22 @@ export function mayResetPassword(
     mayUsePassword(user, policy.stored, policy.facts).allowed
   );
 }
+
+/**
+ * A8: an invitation still applies to an active account without a password and without a single
+ * sign-on identity (an SSO-only account never gains a password this way), not the demo user, that
+ * the sign-in policy lets use a password. Inspect and accept both decide with this.
+ */
+export function invitationApplies(
+  user: UserRow,
+  ssoIdentities: number,
+  policy: ResetPolicy,
+): boolean {
+  return (
+    user.active &&
+    user.passwordHash === null &&
+    ssoIdentities === 0 &&
+    !isDemoUser(policy.demoUser, user) &&
+    mayUsePassword(user, policy.stored, policy.facts).allowed
+  );
+}
