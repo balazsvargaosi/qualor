@@ -73,7 +73,8 @@
         <span class="kpi-label" i18n="@@portfolio.card.projects">Projects</span>
         <span class="kpi-value">{{ d.totals.projects | measure: 'projects' }}</span>
         <span class="kpi-note" i18n="@@portfolio.card.projectsNote"
-          >{{ d.totals.analysed }} analysed · {{ d.totals.abandoned }} abandoned</span
+          >{{ d.totals.analysed | measure: 'projects' }} analyzed ·
+          {{ d.totals.abandoned | measure: 'projects' }} abandoned</span
         >
       </div>
       <div class="card" data-card="gate">
@@ -144,6 +145,19 @@
           <ng-container i18n="@@portfolio.trend.weeks">Trend over 12 weeks</ng-container>
         }
       </h2>
+      <p class="muted portfolio-note">
+        @if (period() === 'month') {
+          <ng-container i18n="@@portfolio.trend.monthsNote"
+            >Each point is the state at the end of its month; the last one is the current month, up
+            to now.</ng-container
+          >
+        } @else {
+          <ng-container i18n="@@portfolio.trend.weeksNote"
+            >Each point is the state at the end of its week; the last one is the current week, up to
+            now.</ng-container
+          >
+        }
+      </p>
       <div class="portfolio-grid">
         @for (t of trends(); track t.id) {
           <section class="card panel" [attr.data-trend]="t.id" [attr.aria-label]="t.title">

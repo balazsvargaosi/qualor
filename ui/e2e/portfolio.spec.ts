@@ -6,7 +6,7 @@ import { LEGACY, PAYMENTS, SHOP } from './seed-data';
  * 4E-2 §4: the portfolio on the licensed e2e server (`server/scripts/e2e/serve.ts`, the
  * Enterprise plan's features, with `portfolio`). `seedDemo` gives the default organisation three
  * projects: Payments API and Web Shop with succeeded main-branch analyses uploaded during the
- * seeding, and Legacy Billing never analysed (so abandoned). The CSV and PDF are plain download
+ * seeding, and Legacy Billing never analyzed (so abandoned). The CSV and PDF are plain download
  * links; the server runs one export per person at a time.
  */
 
@@ -54,13 +54,13 @@ test('an admin opens the portfolio of all organisations by month and downloads i
   );
   await expect(page.getByRole('heading', { name: 'Trend over 12 months' })).toBeVisible();
 
-  // The seed's totals: three projects, two analysed, Legacy Billing never.
+  // The seed's totals: three projects, two analyzed, Legacy Billing never.
   const card = (name: string) => page.locator(`[data-card="${name}"]`);
   await expect(card('projects').locator('.kpi-value')).toHaveText('3');
-  await expect(card('projects').locator('.kpi-note')).toHaveText('2 analysed · 1 abandoned');
+  await expect(card('projects').locator('.kpi-note')).toHaveText('2 analyzed · 1 abandoned');
   await expect(card('ncloc').locator('.kpi-value')).toHaveText(/^[1-9]/);
   await expect(card('issues').locator('.kpi-value')).toHaveText(/^[1-9]/);
-  await expect(card('gate')).toContainText('of 2 analysed projects passed');
+  await expect(card('gate')).toContainText('of 2 analyzed projects passed');
 
   // The all scope lists the organisations: the default one, with the three projects.
   const organisations = page.getByRole('region', { name: 'Organisations', exact: true });
@@ -71,8 +71,8 @@ test('an admin opens the portfolio of all organisations by month and downloads i
     await expect(projects.getByRole('link', { name: p.name, exact: true })).toBeVisible();
   }
   await expect(
-    page.getByRole('region', { name: 'Not analysed in 30 days' }).getByRole('listitem'),
-  ).toHaveText([new RegExp(`^${LEGACY.name}\\s*Never analysed$`)]);
+    page.getByRole('region', { name: 'Not analyzed in 30 days' }).getByRole('listitem'),
+  ).toHaveText([new RegExp(`^${LEGACY.name}\\s*Never analyzed$`)]);
   await expectAccessible(page);
 
   const downloads = page.getByRole('group', { name: 'Download' });

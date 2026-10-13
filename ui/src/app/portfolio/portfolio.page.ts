@@ -41,12 +41,13 @@ const LETTERS: readonly Letter[] = ['A', 'B', 'C', 'D', 'E'];
 const SEVERITIES = ['blocker', 'high', 'medium', 'low', 'info'] as const;
 /** A share in percent: the measure pipe formats a `…_density` as "50 %". */
 const SHARE = 'gate_pass_density';
-/** A share no project is counted in (nothing analysed): a dash, never "0 %". */
-const NO_SHARE = '—';
+/** No value (nothing analyzed, no measures): the measure pipe's dash, never "0". */
+const NO_VALUE = formatMeasure(null, SHARE);
 
 /**
  * The projects table's sorts (4E-2 §2), in column order, with the order the server sorts in: the
- * worst first (failed gates, E ratings, the most issues, the oldest analysis), keys A to Z.
+ * worst first (failed gates, E ratings, the most issues, the lowest coverage, the oldest
+ * analysis), keys A to Z.
  */
 const COLUMNS: readonly {
   sort: PortfolioSort;
@@ -93,7 +94,7 @@ const COLUMNS: readonly {
   {
     sort: 'coverage',
     label: $localize`:@@portfolio.col.coverage:Coverage`,
-    order: 'descending',
+    order: 'ascending',
     num: true,
   },
   {
@@ -111,9 +112,9 @@ const sameScope = (a: PortfolioScope | null, b: PortfolioScope | null): boolean 
     a.scope === b.scope &&
     (a.scope === 'all' || (b.scope === 'organization' && a.organizationId === b.organizationId)));
 
-/** Blocker and high findings of a project, 0 when it has no measures. */
-const severe = (row: PortfolioProjectRow): number =>
-  (row.bySeverity?.blocker ?? 0) + (row.bySeverity?.high ?? 0);
+/** Blocker and high findings of a project, null when it has no measures. */
+const severe = (row: PortfolioProjectRow): number | null =>
+  row.bySeverity === null ? null : row.bySeverity.blocker + row.bySeverity.high;
 
 /**
  * Portfolio (4E-2 §4, feature `portfolio`): the quality of every project the caller can read, of
@@ -175,12 +176,20 @@ export class PortfolioPage {
     },
     { equal: sameScope },
   );
+  /** The organisation scope after a failed organisations load: an error, not an empty page. */
+  private readonly organizationsFailure = computed(() =>
+    this.licensed() &&
+    this.scopeKind() === 'organization' &&
+    this.org.organizations.status() === 'error'
+      ? problemMessage(this.org.organizations.error())
+      : null,
+  );
   /** The organisation scope of a user who sees no organisation: nothing to read. */
   private readonly noOrganization = computed(
     () =>
       this.licensed() &&
       this.scopeKind() === 'organization' &&
-      !this.org.organizations.isLoading() &&
+      this.org.organizations.status() === 'resolved' &&
       this.org.currentId() === null,
   );
 
@@ -195,6 +204,8 @@ export class PortfolioPage {
     this.overview.hasValue() ? this.overview.value() : null,
   );
   protected readonly failure = computed(() => {
+    const organizations = this.organizationsFailure();
+    if (organizations !== null) return organizations;
     if (this.overview.status() !== 'error') return null;
     const err = this.overview.error();
     if (err instanceof ApiError && err.code === 'PORTFOLIO_TIMEOUT') {
@@ -259,16 +270,21 @@ export class PortfolioPage {
     return scope ? this.api.exportHref(scope, this.period(), format) : null;
   }
 
-  /** A gate pass share (0–1) in percent, or a dash when no project was analysed. */
+  /** A gate pass share (0–1) in percent, or a dash when no project was analyzed. */
   protected share(value: number | null): string {
-    return value === null ? NO_SHARE : formatMeasure(value * 100, SHARE, this.locale);
+    return formatMeasure(value === null ? null : value * 100, SHARE, this.locale);
   }
 
-  protected passedNote(passed: number, analysed: number): string {
-    return $localize`:@@portfolio.card.gateNote:${passed}:passed: of ${analysed}:analysed: analysed projects passed`;
+  /** A count in a note, grouped as the measure pipe groups it ("1,234"). */
+  private count(value: number | null): string {
+    return formatMeasure(value, 'projects', this.locale);
   }
 
-  protected readonly noAnalysisNote = $localize`:@@portfolio.card.gateNone:No project analysed yet`;
+  protected passedNote(passed: number, analyzed: number): string {
+    return $localize`:@@portfolio.card.gateNote:${this.count(passed)}:passed: of ${this.count(analyzed)}:analyzed: analyzed projects passed`;
+  }
+
+  protected readonly noAnalysisNote = $localize`:@@portfolio.card.gateNone:No project analyzed yet`;
 
   protected ratingValue(letter: Letter | null): number | null {
     return letter === null ? null : LETTERS.indexOf(letter) + 1;
@@ -339,8 +355,13 @@ export class PortfolioPage {
   protected readonly attention = computed(() => {
     const lists = this.data()?.attention;
     if (!lists) return [];
-    const severeNote = (r: PortfolioProjectRow) =>
-      $localize`:@@portfolio.attention.severe:${severe(r)}:count: blocker and high`;
+    // A project with no measures has no count: a dash, never "0 blocker and high".
+    const severeNote = (r: PortfolioProjectRow) => {
+      const count = severe(r);
+      return count === null
+        ? NO_VALUE
+        : $localize`:@@portfolio.attention.severe:${this.count(count)}:count: blocker and high`;
+    };
     return [
       {
         id: 'failingGates',
@@ -352,7 +373,7 @@ export class PortfolioPage {
         title: $localize`:@@portfolio.attention.worstSecurity:Worst security ratings`,
         rows: lists.worstSecurity.map((row) => ({
           row,
-          note: $localize`:@@portfolio.attention.security:Security rating ${row.securityRating ?? NO_SHARE}:rating:`,
+          note: $localize`:@@portfolio.attention.security:Security rating ${row.securityRating ?? NO_VALUE}:rating:`,
         })),
       },
       {
@@ -362,12 +383,12 @@ export class PortfolioPage {
       },
       {
         id: 'abandoned',
-        title: $localize`:@@portfolio.attention.abandoned:Not analysed in 30 days`,
+        title: $localize`:@@portfolio.attention.abandoned:Not analyzed in 30 days`,
         rows: lists.abandoned.map((row) => ({
           row,
           note: row.lastAnalysisAt
-            ? $localize`:@@portfolio.attention.lastAnalysed:Last analysed ${formatDate(row.lastAnalysisAt, this.locale)}:date:`
-            : $localize`:@@portfolio.attention.never:Never analysed`,
+            ? $localize`:@@portfolio.attention.lastAnalysed:Last analyzed ${formatDate(row.lastAnalysisAt, this.locale)}:date:`
+            : $localize`:@@portfolio.attention.never:Never analyzed`,
         })),
       },
     ];

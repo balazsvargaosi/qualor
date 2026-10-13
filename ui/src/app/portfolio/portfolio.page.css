@@ -42,6 +42,9 @@
 .portfolio-heading {
   font-size: 17px;
 }
+.portfolio-note {
+  margin: 0;
+}
 .portfolio-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(26rem, 100%), 1fr));
