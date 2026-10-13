@@ -253,6 +253,10 @@
                   "properties": {
                     "version": {
                       "type": "string"
+                    },
+                    "latest": {
+                      "description": "A newer release found on Docker Hub; only while telemetry is on",
+                      "type": "string"
                     }
                   },
                   "required": [

@@ -15,6 +15,7 @@ import { freezePlugins, type LoadedPlugins } from '../src/plugins/mount';
 import type { PluginRegistry } from '../src/plugins/registry';
 import { testConfig } from './config';
 import { createTestDatabase, type TestDatabase } from './db';
+import type { UpdateSource } from '../src/update-check/checker';
 
 export const ADMIN_PASSWORD = 'correct horse battery staple';
 export const DEFAULT_TEST_PASSWORD = 'a perfectly fine passphrase';
@@ -59,6 +60,8 @@ export async function createTestContext(
     }>;
     /** Runs before the app is ready: the only moment it takes hooks. */
     beforeReady?: (app: FastifyInstance) => void;
+    /** The update check's answer, as main.ts gives it while telemetry is on. */
+    updates?: UpdateSource;
   } = {},
 ): Promise<TestContext> {
   const database = await createTestDatabase();
@@ -88,6 +91,7 @@ export async function createTestContext(
     edition,
     plugins,
     ...(loaded?.audit ? { audit: loaded.audit } : {}),
+    ...(options.updates ? { updates: options.updates } : {}),
     checkReady: async () => true,
   });
   options.beforeReady?.(app);

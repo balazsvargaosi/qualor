@@ -36,6 +36,7 @@ import {
   telemetryBootMessage,
   telemetryHandlers,
 } from './telemetry/schedule';
+import { createUpdateChecker } from './update-check/checker';
 import { webhookHandlers } from './webhooks/deliver';
 
 /** Webhook deliveries in flight at once (each waits at most 10 s for its receiver). */
@@ -177,6 +178,10 @@ async function main(): Promise<void> {
       );
     }
   }
+  // telemetry.md "Update check": only while telemetry is on; never fatal, never above info.
+  const updates = config.telemetry.enabled
+    ? createUpdateChecker({ url: config.updateCheck.url, currentVersion: VERSION, logger })
+    : undefined;
   const app = await buildApp({
     config,
     db: database.db,
@@ -187,6 +192,7 @@ async function main(): Promise<void> {
     plugins,
     // The recorder the plugin services record through (rbac-audit.md §9, §15).
     audit,
+    ...(updates ? { updates } : {}),
   });
   // data-model.md §7: one daily housekeeping job, (re)scheduled at boot and after every reap.
   await ensureHousekeepingScheduled(database.db);
@@ -269,6 +275,7 @@ async function main(): Promise<void> {
   // rbac-audit.md §15: each scheduled plugin queue has its next run waiting (one across replicas).
   await ensurePluginSchedules(database.db, plugins, 'now');
   await app.listen({ host: config.host, port: config.port });
+  updates?.start();
   try {
     if (config.telemetry.enabled) await scheduleTelemetryAtBoot(database.db);
     else await cancelTelemetry(database.db);
@@ -288,6 +295,7 @@ async function main(): Promise<void> {
     stopping = true;
     logger.info({ signal }, 'shutting down');
     try {
+      updates?.stop();
       await app.close();
       await worker.stop();
       await webhookWorker.stop();

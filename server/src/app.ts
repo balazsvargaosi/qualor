@@ -21,6 +21,7 @@ import { communityLimits, type Limits } from './limits';
 import { mountPluginRoutes, type LoadedPlugins } from './plugins/mount';
 import type { PluginRegistry } from './plugins/registry';
 import { registerRoutes } from './routes';
+import type { UpdateSource } from './update-check/checker';
 
 /** api.md §1: JSON bodies are limited to 1 MiB (report uploads stream separately). */
 export const JSON_BODY_LIMIT = 1024 * 1024;
@@ -45,6 +46,8 @@ export interface AppDeps {
    * through (rbac-audit.md §15); without it, one that records while `audit-log` is active.
    */
   audit?: AuditRecorder;
+  /** The update check (main.ts, only while telemetry is on); without it `/system/version` has no `latest`. */
+  updates?: UpdateSource;
 }
 
 /**

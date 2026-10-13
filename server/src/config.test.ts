@@ -1,6 +1,6 @@
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { ConfigError, loadConfig } from './config';
+import { ConfigError, DEFAULT_UPDATE_CHECK_URL, loadConfig } from './config';
 
 const base = {
   DATABASE_URL: 'postgres://q:q@localhost:5432/qualor',
@@ -43,6 +43,9 @@ describe('loadConfig', () => {
       pluginPaths: [],
       demoUser: null,
       telemetry: { enabled: true, url: 'https://qualor.dev/api/telemetry' },
+      updateCheck: {
+        url: 'https://hub.docker.com/v2/namespaces/qualor/repositories/server/tags?page_size=100&ordering=last_updated',
+      },
     });
   });
 
@@ -66,6 +69,19 @@ describe('loadConfig', () => {
     ).toBe('http://127.0.0.1:4000/t');
     expect(problems({ ...base, QUALOR_TELEMETRY_URL: 'ftp://x' })).toEqual([
       'QUALOR_TELEMETRY_URL: must be an http or https URL',
+    ]);
+  });
+
+  it('QUALOR_UPDATE_CHECK_URL: an http(s) URL, default Docker Hub', () => {
+    expect(
+      loadConfig({ ...base, QUALOR_UPDATE_CHECK_URL: 'http://127.0.0.1:4000/tags' }).updateCheck
+        .url,
+    ).toBe('http://127.0.0.1:4000/tags');
+    expect(loadConfig({ ...base, QUALOR_UPDATE_CHECK_URL: ' ' }).updateCheck.url).toBe(
+      DEFAULT_UPDATE_CHECK_URL,
+    );
+    expect(problems({ ...base, QUALOR_UPDATE_CHECK_URL: 'ftp://x' })).toEqual([
+      'QUALOR_UPDATE_CHECK_URL: must be an http or https URL',
     ]);
   });
 

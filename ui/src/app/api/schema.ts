@@ -173,6 +173,8 @@ export interface paths {
                     content: {
                         "application/json": {
                             version: string;
+                            /** @description A newer release found on Docker Hub; only while telemetry is on */
+                            latest?: string;
                         };
                     };
                 };

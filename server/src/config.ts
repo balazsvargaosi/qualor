@@ -141,24 +141,30 @@ const pluginPathsSchema = z
 /** telemetry.md: where the daily report goes. Not in the guide: for tests and staging. */
 export const DEFAULT_TELEMETRY_URL = 'https://qualor.dev/api/telemetry';
 
-const telemetryUrlSchema = z
-  .string()
-  .optional()
-  .transform((raw, ctx): string => {
-    const value = raw?.trim() ?? '';
-    if (value === '') return DEFAULT_TELEMETRY_URL;
-    let url: URL | undefined;
-    try {
-      url = new URL(value);
-    } catch {
-      url = undefined;
-    }
-    if (url === undefined || (url.protocol !== 'https:' && url.protocol !== 'http:')) {
-      ctx.addIssue({ code: 'custom', message: 'must be an http or https URL' });
-      return z.NEVER;
-    }
-    return url.href;
-  });
+/** telemetry.md "Update check": the tag list read daily. Not in the guide: for tests only. */
+export const DEFAULT_UPDATE_CHECK_URL =
+  'https://hub.docker.com/v2/namespaces/qualor/repositories/server/tags?page_size=100&ordering=last_updated';
+
+/** An http(s) URL; unset or blank means `fallback`. */
+const httpUrlSchema = (fallback: string) =>
+  z
+    .string()
+    .optional()
+    .transform((raw, ctx): string => {
+      const value = raw?.trim() ?? '';
+      if (value === '') return fallback;
+      let url: URL | undefined;
+      try {
+        url = new URL(value);
+      } catch {
+        url = undefined;
+      }
+      if (url === undefined || (url.protocol !== 'https:' && url.protocol !== 'http:')) {
+        ctx.addIssue({ code: 'custom', message: 'must be an http or https URL' });
+        return z.NEVER;
+      }
+      return url.href;
+    });
 
 const envSchema = z
   .object({
@@ -238,7 +244,8 @@ const envSchema = z
           .optional(),
       )
       .transform((v) => !(v === 'false' || v === '0' || v === 'off' || v === 'no')),
-    QUALOR_TELEMETRY_URL: telemetryUrlSchema,
+    QUALOR_TELEMETRY_URL: httpUrlSchema(DEFAULT_TELEMETRY_URL),
+    QUALOR_UPDATE_CHECK_URL: httpUrlSchema(DEFAULT_UPDATE_CHECK_URL),
   })
   .superRefine((e, ctx) => {
     // Names both variables, never the key text (enterprise.md §6).
@@ -307,6 +314,8 @@ export interface Config {
   demoUser: string | null;
   /** telemetry.md: QUALOR_TELEMETRY (default on) and QUALOR_TELEMETRY_URL. */
   telemetry: { enabled: boolean; url: string };
+  /** telemetry.md "Update check": QUALOR_UPDATE_CHECK_URL; runs only while telemetry is enabled. */
+  updateCheck: { url: string };
 }
 
 export class ConfigError extends Error {
@@ -361,5 +370,6 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     pluginPaths: e.QUALOR_PLUGIN_PATHS,
     demoUser: e.QUALOR_DEMO_USER,
     telemetry: { enabled: e.QUALOR_TELEMETRY, url: e.QUALOR_TELEMETRY_URL },
+    updateCheck: { url: e.QUALOR_UPDATE_CHECK_URL },
   };
 }
