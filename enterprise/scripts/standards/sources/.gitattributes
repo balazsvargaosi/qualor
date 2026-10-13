@@ -1,0 +1,3 @@
+# Byte-for-byte copies of the upstream sources, one folder per standard: their SHA-256 is in
+# manifest.json (4E-1 §2.2). manifest.json and the curated PCI source stay normal text.
+*/** -text

@@ -38,10 +38,10 @@ describe('runMigrations / pendingMigrations', () => {
     // 0000_extensions, 0001_init, 0002_analyses_scm_context (scm.md §7),
     // 0003_scm_connections_github_app (github.md §2.5), 0004_llm_requests (llm.md §11.1, DM-1),
     // 0005_rbac_audit (rbac-audit.md §7, approved 2026-09-27),
-    // 0006_sso_scim (sso-scim.md §13, approved 2026-09-28), 0007_mail (E1 spec, approved 2026-10-13),
-    // 0008_account_tokens (mail E2 A1, 2026-10-13).
-    // 0009_notifications (mail E3 N8, 2026-10-13).
-    expect(await pendingMigrations(t.db, MIGRATIONS_DIR)).toBe(10);
+    // 0006_sso_scim (sso-scim.md §13, approved 2026-09-28),
+    // 0007_compliance_reports (4E-1 §1), 0008_mail (E1 spec, approved 2026-10-13),
+    // 0009_account_tokens (mail E2 A1, 2026-10-13), 0010_notifications (mail E3 N8, 2026-10-13).
+    expect(await pendingMigrations(t.db, MIGRATIONS_DIR)).toBe(11);
     expect(await readinessCheck(t.db, MIGRATIONS_DIR)()).toBe(false);
     await runMigrations(t.pool, MIGRATIONS_DIR);
     expect(await pendingMigrations(t.db, MIGRATIONS_DIR)).toBe(0);
@@ -283,12 +283,9 @@ describe('runMigrations / pendingMigrations', () => {
     expect(await pendingMigrations(db.db, MIGRATIONS_DIR)).toBe(0);
     const after = await snapshot();
 
-    const added = [
-      'account_tokens',
+    // 0006 adds the SSO and SCIM tables; the run to the latest migration adds the later ones too.
+    const added0006 = [
       'identities',
-      'mail_messages',
-      'notification_preferences',
-      'project_watches',
       'scim_group_members',
       'scim_groups',
       'scim_tokens',
@@ -296,6 +293,14 @@ describe('runMigrations / pendingMigrations', () => {
       'sso_group_mappings',
       'sso_states',
     ];
+    const added = [
+      ...added0006,
+      'compliance_reports', // 0007_compliance_reports
+      'mail_messages', // 0008_mail
+      'account_tokens', // 0009_account_tokens
+      'notification_preferences', // 0010_notifications
+      'project_watches',
+    ].sort();
     expect(Object.keys(after).filter((name) => !(name in before))).toEqual(added);
     for (const name of added) expect(after[name], name).toEqual([]);
     for (const name of Object.keys(before)) expect(after[name], name).toEqual(before[name]);

@@ -54,22 +54,29 @@
     {
       "idx": 7,
       "version": "7",
-      "when": 1791849431545,
-      "tag": "0007_mail",
+      "when": 1791834406323,
+      "tag": "0007_compliance_reports",
       "breakpoints": true
     },
     {
       "idx": 8,
       "version": "7",
-      "when": 1791858949343,
-      "tag": "0008_account_tokens",
+      "when": 1791909106651,
+      "tag": "0008_mail",
       "breakpoints": true
     },
     {
       "idx": 9,
       "version": "7",
-      "when": 1791900144892,
-      "tag": "0009_notifications",
+      "when": 1791909113647,
+      "tag": "0009_account_tokens",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1791909114799,
+      "tag": "0010_notifications",
       "breakpoints": true
     }
   ]

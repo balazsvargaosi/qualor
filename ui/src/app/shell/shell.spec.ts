@@ -18,7 +18,7 @@ describe('Shell', () => {
   let server: FakeServer;
   let errors: unknown[];
 
-  beforeEach(() => {
+  function configure() {
     server = new FakeServer();
     errors = [];
     server.on('GET', '/api/v0/organizations', {
@@ -42,7 +42,9 @@ describe('Shell', () => {
       ],
     });
     TestBed.inject(SessionStore).set(me());
-  });
+  }
+
+  beforeEach(() => configure());
 
   it('renders a skip link, the labelled main navigation and the user menu', async () => {
     const fixture = TestBed.createComponent(Shell);
@@ -80,6 +82,50 @@ describe('Shell', () => {
     const select = root.querySelector<HTMLSelectElement>('#org-switch');
     expect(root.querySelector('label[for="org-switch"]')?.textContent).toContain('Organization');
     expect([...(select?.options ?? [])].map((o) => o.textContent)).toEqual(['Default', 'Acme']);
+  });
+
+  describe('the main.nav entries (4E-2 §4)', () => {
+    const PORTFOLIO = {
+      point: 'main.nav',
+      id: 'portfolio',
+      label: 'Portfolio',
+      path: '/portfolio',
+    };
+
+    async function navWith(features: string[], extensions: unknown[]) {
+      server.on('GET', '/api/v0/system/info', {
+        body: { version: '0.8.0', edition: 'enterprise', features, extensions },
+      });
+      const fixture = TestBed.createComponent(Shell);
+      await settle(fixture);
+      const nav = (fixture.nativeElement as HTMLElement).querySelector('nav[aria-label="Main"]');
+      return [...(nav?.querySelectorAll('a') ?? [])].map((a) => [
+        a.textContent?.trim(),
+        a.getAttribute('href'),
+      ]);
+    }
+
+    it('shows Portfolio after Quality gates while the feature and its entry are there', async () => {
+      const links = await navWith(['portfolio'], [PORTFOLIO]);
+      expect(links.slice(0, 3)).toEqual([
+        ['Projects', '/projects'],
+        ['Quality gates', '/gates'],
+        ['Portfolio', '/portfolio'],
+      ]);
+      expect(links).toHaveLength(7);
+    });
+
+    it('shows no Portfolio without the feature, without the entry, or for an unknown entry', async () => {
+      expect((await navWith([], [PORTFOLIO])).map(([name]) => name)).not.toContain('Portfolio');
+      TestBed.resetTestingModule();
+      configure();
+      expect((await navWith(['portfolio'], [])).map(([name]) => name)).not.toContain('Portfolio');
+      TestBed.resetTestingModule();
+      configure();
+      const other = { point: 'main.nav', id: 'other', label: 'Other', path: '/other' };
+      const settings = { ...PORTFOLIO, point: 'settings.nav' };
+      expect(await navWith(['portfolio'], [other, settings])).toHaveLength(6);
+    });
   });
 
   it('shows the demo banner and no password change to the demo account only', async () => {

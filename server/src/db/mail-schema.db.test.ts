@@ -7,7 +7,7 @@ import { mailMessages, users } from './schema';
 
 const ENVELOPE = { v: 1 as const, iv: 'aXY=', ct: 'Y3Q=', tag: 'dGFn' };
 
-describe('mail_messages (E1 spec, migration 0007_mail)', () => {
+describe('mail_messages (E1 spec, migration 0008_mail)', () => {
   let t: TestDatabase;
   const row = (over: Partial<typeof mailMessages.$inferInsert> = {}) => ({
     id: uuidv7(),

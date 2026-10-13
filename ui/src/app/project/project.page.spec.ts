@@ -309,4 +309,40 @@ describe('ProjectPage', () => {
       expect(tabs(await render(ID))).not.toContain('Settings');
     });
   });
+
+  describe('Compliance tab (4E-1 §4)', () => {
+    const tabs = (root: HTMLElement) =>
+      [...root.querySelectorAll('nav[aria-label="Project"] a')].map((a) => a.textContent?.trim());
+    const TAB = { point: 'project.tab', id: 'compliance', label: 'Compliance', path: 'compliance' };
+    const NAV = {
+      point: 'settings.nav',
+      id: 'compliance',
+      label: 'Compliance reports',
+      path: '/settings/ee/compliance',
+    };
+
+    function info(features: string[], extensions: object[]): void {
+      server.on('GET', `/api/v0/projects/${ID}`, { body: PROJECT });
+      server.on('GET', '/api/v0/system/info', {
+        body: { version: '0.8.0', edition: 'enterprise', features, extensions },
+      });
+    }
+
+    it('is a tab, after Code, while the plugin lists it and compliance-export is active', async () => {
+      info(['compliance-export'], [NAV, TAB]);
+      const root = await render(ID);
+      expect(tabs(root).slice(-2)).toEqual(['Code', 'Compliance']);
+      expect(root.querySelector('nav[aria-label="Project"] a[href$="/compliance"]')).not.toBeNull();
+    });
+
+    it('is no tab without the feature (a lapsed licence)', async () => {
+      info([], [NAV, TAB]);
+      expect(tabs(await render(ID))).not.toContain('Compliance');
+    });
+
+    it('is no tab when the plugin lists only the settings entry', async () => {
+      info(['compliance-export'], [NAV]);
+      expect(tabs(await render(ID))).not.toContain('Compliance');
+    });
+  });
 });

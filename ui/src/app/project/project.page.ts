@@ -1,10 +1,22 @@
-import { Component, computed, effect, inject, input } from '@angular/core';
-import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
+import {
+  afterRenderEffect,
+  Component,
+  computed,
+  effect,
+  type ElementRef,
+  inject,
+  input,
+  viewChild,
+} from '@angular/core';
+import { toSignal } from '@angular/core/rxjs-interop';
+import { NavigationEnd, Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
+import { filter, map } from 'rxjs';
 import { ApiError, problemMessage } from '../api/errors';
 import { SessionStore } from '../auth/session';
 import { GateBadge } from '../shared/gate-badge';
 import { Icon } from '../shared/icon';
 import { type Crumb, PageHeader } from '../shared/page-header';
+import { SystemInfo } from '../shell/system-info';
 import { mergeRequestLink, notFound } from './branches';
 import { CurrentProject } from './current-project';
 import { settingsVisible } from './settings/settings-visibility';
@@ -14,9 +26,9 @@ import { WatchButton } from './watch-button';
  * A project's frame on the ink page band (spec §7.1): its name with the main branch's gate, the
  * key and the main branch (or those of the branch or merge request an overview shows), and tabs
  * for the overview, branches and issues, plus Access for organisation admins, in every edition,
- * and the Watch button (mail E3). The project (and the caller's `permissions` on it, which the
- * tabs use to hide what the caller may not do, rbac-audit.md §17) is read through
- * `CurrentProject`.
+ * the plugins' project tabs (Compliance, 4E-1 §4), and the Watch button (mail E3). The project
+ * (and the caller's `permissions` on it, which the tabs use to hide what the caller may not do,
+ * rbac-audit.md §17) is read through `CurrentProject`.
  */
 @Component({
   selector: 'q-project-page',
@@ -27,6 +39,7 @@ import { WatchButton } from './watch-button';
 export class ProjectPage {
   private readonly store = inject(CurrentProject);
   private readonly session = inject(SessionStore);
+  private readonly info = inject(SystemInfo);
   /** The read-only demo account watches nothing (the server refuses it). */
   protected readonly demo = this.session.demo;
   readonly projectId = input.required<string>();
@@ -66,6 +79,13 @@ export class ProjectPage {
       settingsVisible(p.permissions, this.session.orgCan(p.organizationId, 'org.webhooks.manage'))
     );
   });
+  /**
+   * The Compliance tab (4E-1 §4): while a plugin lists the `project.tab` entry `compliance` and its
+   * feature (`compliance-export`) is active; every reader of the project sees it.
+   */
+  protected readonly complianceTab = computed(() =>
+    this.info.projectTabs().some((t) => t.id === 'compliance'),
+  );
   /** The main branch's open issues, the Issues tab's count. */
   protected readonly issueCount = computed(() => {
     const value = this.current()?.mainBranch?.measures['issues'];
@@ -79,7 +99,43 @@ export class ProjectPage {
     return problemMessage(malformed ? notFound() : error);
   });
 
+  private readonly tabs = viewChild<ElementRef<HTMLElement>>('tabs');
+  private readonly url = toSignal(
+    inject(Router).events.pipe(
+      filter((e) => e instanceof NavigationEnd),
+      map((e) => e.urlAfterRedirects),
+    ),
+  );
+
   constructor() {
     effect(() => this.store.use(this.projectId()));
+    // On a phone the tabs scroll sideways (styles.css, .page-band .tabs): the current tab is
+    // brought into view once the tabs it follows are shown, after each navigation, and when the
+    // bar narrows (a turned phone). RouterLinkActive marks the current tab in a microtask it
+    // queues while rendering, so this runs after it.
+    afterRenderEffect((onCleanup) => {
+      this.url();
+      this.complianceTab();
+      this.showAccess();
+      this.showSettings();
+      const nav = this.tabs()?.nativeElement;
+      if (!nav) return;
+      queueMicrotask(() => revealActiveTab(nav));
+      if (typeof ResizeObserver !== 'function') return;
+      const resized = new ResizeObserver(() => revealActiveTab(nav));
+      resized.observe(nav);
+      onCleanup(() => resized.disconnect());
+    });
   }
+}
+
+/** Scrolls the tab bar sideways, never the page, so that its active tab is wholly visible. */
+function revealActiveTab(nav: HTMLElement): void {
+  const active = nav.querySelector<HTMLElement>('a.active');
+  if (!active || nav.scrollWidth <= nav.clientWidth) return;
+  const bar = nav.getBoundingClientRect();
+  const tab = active.getBoundingClientRect();
+  // Whole pixels, rounded outwards: scrollLeft keeps no fraction on some screens.
+  if (tab.left < bar.left) nav.scrollLeft -= Math.ceil(bar.left - tab.left);
+  else if (tab.right > bar.right) nav.scrollLeft += Math.ceil(tab.right - bar.right);
 }

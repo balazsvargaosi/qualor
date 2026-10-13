@@ -8,7 +8,7 @@ import { SystemInfo } from '../shell/system-info';
  * has no screen for. The ids it knows (`audit-log`, `audit-settings`, rbac-audit.md §17) have
  * their own routes before this one (`settings.routes.ts`) and never reach it; any other entry is
  * named here with the note that its screen is not in this web UI. An id no active feature
- * registered is "Not found". The
+ * registered as a settings entry (`settings.nav`, never a project tab) is "Not found". The
  * entries are listed for instance admins only; anyone else who opens the address is told so, and a
  * failed `GET /system/info` is shown instead of an empty page.
  */
@@ -27,6 +27,7 @@ export class ExtensionPage {
     return err === null ? null : problemMessage(err);
   });
   protected readonly extension = computed(
-    () => this.info.extensions().find((e) => e.id === this.id()) ?? null,
+    () =>
+      this.info.extensions().find((e) => e.point === 'settings.nav' && e.id === this.id()) ?? null,
   );
 }

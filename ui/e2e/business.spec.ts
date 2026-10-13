@@ -1,5 +1,5 @@
 import { expect, expectAccessible, test } from './fixtures';
-import { SIEM_URL } from './seed-data';
+import { PAYMENTS, SIEM_URL } from './seed-data';
 
 /**
  * Plan 5D (rbac-audit.md §14.4, §17; sso-scim.md §4.4, §18): the enterprise server's database
@@ -69,4 +69,57 @@ test('the Single sign-on screen says the Business plan signs in through one conn
   );
   await expect(page.locator('#sso-count')).toHaveCount(0);
   await expectAccessible(page);
+});
+
+// 4E-1 §4: compliance reports are Enterprise only (`compliance-export`), so the reports the
+// enterprise tests made stay in the database but out of sight.
+test('the Business plan shows no compliance reports', async ({ page }) => {
+  await page.goto('/projects');
+  await page.getByRole('link', { name: PAYMENTS.name }).click();
+  const tabs = page.getByRole('navigation', { name: 'Project' });
+  await expect(tabs.getByRole('link', { name: 'Overview' })).toBeVisible();
+  await expect(tabs.getByRole('link', { name: 'Compliance' })).toHaveCount(0);
+
+  await page.goto('/settings/ee/compliance');
+  await expect(page).toHaveTitle('Compliance reports · Qualor');
+  await expect(page.locator('.settings-head')).toContainText(
+    'Compliance reports need an enterprise licence with the compliance-export feature.',
+  );
+  await expect(page.getByRole('link', { name: 'Compliance reports' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Create report' })).toHaveCount(0);
+  await expectAccessible(page);
+});
+
+// 4E-2 §4: the portfolio is Enterprise only (`portfolio`): no main-menu entry, and its address
+// says so without asking the enterprise API anything.
+test('the Business plan has no portfolio', async ({ page }) => {
+  const portfolioCalls: string[] = [];
+  page.on('request', (r) => {
+    const path = new URL(r.url()).pathname;
+    if (path.startsWith('/api/v0/ee/portfolio')) portfolioCalls.push(path);
+  });
+  const info = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/v0/system/info');
+  await page.goto('/projects');
+  const body = (await (await info).json()) as {
+    features: string[];
+    extensions: { id: string; point: string }[];
+  };
+  expect(body.features).not.toContain('portfolio');
+  expect(body.extensions.filter((e) => e.point === 'main.nav')).toEqual([]);
+  // The plugin's entries come with the system info, as does the version under the user menu:
+  // once that is there, the main menu is complete.
+  await expect(page.locator('.menu-version')).toBeAttached();
+  const nav = page.getByRole('navigation', { name: 'Main' });
+  await expect(nav.getByRole('link', { name: 'Quality gates' })).toBeVisible();
+  await expect(nav.getByRole('link', { name: 'Portfolio' })).toHaveCount(0);
+
+  await page.goto('/portfolio');
+  await expect(page).toHaveTitle('Portfolio · Qualor');
+  await expect(page.locator('.page-body')).toHaveText(
+    'Portfolio reports need an enterprise licence with the portfolio feature.',
+  );
+  await expect(page.getByRole('button', { name: 'All organisations' })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'CSV' })).toHaveCount(0);
+  await expectAccessible(page);
+  expect(portfolioCalls).toEqual([]);
 });

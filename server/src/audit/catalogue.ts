@@ -24,6 +24,7 @@ export const AUDIT_TARGET_TYPES = [
   'scim_group',
   'sign_in_settings',
   'mail_settings',
+  'compliance_report',
 ] as const;
 export type AuditTargetType = (typeof AUDIT_TARGET_TYPES)[number];
 
@@ -521,6 +522,21 @@ export const AUDIT_CATALOGUE = {
     }),
   },
   'audit.stream_secret_regenerated': { target: 'audit_settings', details: empty },
+  'compliance.report.created': {
+    target: 'compliance_report',
+    details: z.strictObject({ scope: z.enum(['project', 'organization']), branch: str.nullable() }),
+  },
+  'compliance.report.downloaded': {
+    target: 'compliance_report',
+    details: z.strictObject({
+      format: z.enum(['json', 'csv', 'pdf']),
+      sha256: z.string().regex(/^[0-9a-f]{64}$/),
+    }),
+  },
+  'compliance.report.deleted': {
+    target: 'compliance_report',
+    details: z.strictObject({ scope: z.enum(['project', 'organization']) }),
+  },
   'audit.exported': {
     target: null,
     details: z.strictObject({ from: iso, to: iso, filters: z.record(z.string().max(32), json) }),

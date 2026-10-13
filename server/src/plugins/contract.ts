@@ -10,9 +10,32 @@ import type { AuditActorContext, AuditEventInput } from '../audit/recorder';
 import type { AuditSettingsInput, AuditSettingsView } from '../audit/settings';
 import type { AuditHead, AuditVerification } from '../audit/verify';
 import type { OrganizationAccess } from '../auth/access';
+import type {
+  ComplianceFindingGroup,
+  ComplianceFindingRow,
+  ComplianceProjectSource,
+  ComplianceReportScope,
+  ComplianceReportStatus,
+  ComplianceSource,
+  ComplianceStandardRef,
+  ComplianceTriageRow,
+  FindingSection,
+  Severity,
+} from '../compliance/types';
 import type { OrganizationPermission, ProjectPermission } from '../auth/policy';
 import type { UserPrincipal } from '../auth/principal';
 import type { Db } from '../db/client';
+import type { Granularity } from '../portfolio/periods';
+import type {
+  PortfolioAggregate,
+  PortfolioOverview,
+  PortfolioProjectRow,
+  PortfolioScopeInput,
+  PortfolioSort,
+  PortfolioTrendPoint,
+  Rating,
+  SeverityCounts,
+} from '../portfolio/types';
 import type { ProjectRole } from '../db/schema';
 import type { LicensePayload } from '../license/token';
 import type { PluginLimitOverride } from '../limits';
@@ -48,6 +71,33 @@ export type {
   SsoTestResult,
 };
 
+/** The core types the 4E-2 portfolio service uses (4E-2 §2), for the plugin's `import type`. */
+export type {
+  Granularity,
+  PortfolioAggregate,
+  PortfolioOverview,
+  PortfolioProjectRow,
+  PortfolioScopeInput,
+  PortfolioSort,
+  PortfolioTrendPoint,
+  Rating,
+  SeverityCounts,
+};
+
+/** The core types the 4E-1 compliance service uses (4E-1 §1.1), for the plugin's `import type`. */
+export type {
+  ComplianceFindingGroup,
+  ComplianceFindingRow,
+  ComplianceProjectSource,
+  ComplianceReportScope,
+  ComplianceReportStatus,
+  ComplianceSource,
+  ComplianceStandardRef,
+  ComplianceTriageRow,
+  FindingSection,
+  Severity,
+};
+
 /** The core types the 4C services use, for the plugin to import with `import type`. */
 export type {
   AuditActorContext,
@@ -80,9 +130,24 @@ export interface PluginJob {
 
 export type PluginJobHandler = (job: PluginJob) => Promise<void>;
 
-/** enterprise.md §10.4: a navigation entry under Settings, shown while its feature is active. */
+/**
+ * 4E-1 §2.4 (additive): how a job is queued. `concurrencyKey` (`ee.<name>`, as a queue name): no
+ * two jobs with the same key run at once, across workers and replicas; none by default.
+ * `maxAttempts`: 1 to 5 (the default); a failed attempt is retried with a backoff.
+ */
+export interface PluginEnqueueOptions {
+  concurrencyKey?: string;
+  maxAttempts?: number;
+}
+
+/**
+ * enterprise.md §10.4: an entry shown while its feature is active. `settings.nav`: a navigation
+ * entry under Settings, `path` = `/settings/ee/<id>`. `project.tab` (4E-1 §4): a tab of the
+ * project page, `path` a relative tab path (`^[a-z][a-z0-9-]{0,31}$`). `main.nav` (4E-2 §4): an
+ * entry in the main navigation, `path` absolute (`^/[a-z][a-z0-9/-]{0,63}$`).
+ */
 export interface UiExtension {
-  point: 'settings.nav';
+  point: 'settings.nav' | 'project.tab' | 'main.nav';
   id: string;
   label: string;
   path: string;
@@ -108,7 +173,7 @@ export interface PluginContext {
   /** Queue names `^ee\.[a-z0-9][a-z0-9.-]{0,62}$`; skipped while the feature is inactive. */
   jobs(feature: string, handlers: Readonly<Record<string, PluginJobHandler>>): void;
   /** Only queues this plugin registered. */
-  enqueue(queue: string, payload: unknown): Promise<string>;
+  enqueue(queue: string, payload: unknown, options?: PluginEnqueueOptions): Promise<string>;
   limits(feature: string, override: PluginLimitOverride): void;
   ui(feature: string, extension: UiExtension): void;
   /** rbac-audit.md §15 (4C, additive): the route checks core routes use. */
@@ -124,6 +189,10 @@ export interface PluginContext {
   readonly sso: PluginSso;
   /** sso-scim.md §17.1 (4D, additive): the SCIM protocol and its tokens. */
   readonly scim: PluginScim;
+  /** 4E-1 §1.1 (additive): compliance reports, with core's permission checks. */
+  readonly compliance: PluginCompliance;
+  /** 4E-2 §2 (additive): portfolio reports, with core's permission checks. */
+  readonly portfolio: PluginPortfolio;
 }
 
 export type PluginPage<T> = { items: T[]; nextCursor: string | null };
@@ -223,6 +292,98 @@ export interface PluginScim {
     input: ScimTokenInput,
   ): Promise<{ view: ScimTokenView; token: string }>;
   revokeToken(actor: AuditActorContext, id: string): Promise<void>;
+}
+
+export type ComplianceDownloadFormat = 'json' | 'csv' | 'pdf';
+
+/** 4E-1 §3: a report as the API shows it; never its data. */
+export interface ComplianceReportView {
+  id: string;
+  scope: ComplianceReportScope;
+  organization: { id: string; key: string; name: string };
+  project: { id: string; key: string; name: string } | null;
+  branch: { id: string; name: string } | null;
+  status: ComplianceReportStatus;
+  createdBy: string;
+  createdAt: string;
+  completedAt: string | null;
+  standards: ComplianceStandardRef[];
+  sha256: string | null;
+  sizeBytes: number | null;
+  error: string | null;
+  summary: unknown | null;
+  /** The caller may delete it (org.compliance.manage on its organisation). */
+  canDelete: boolean;
+}
+
+export type ComplianceCreateInput =
+  { organizationId: string } | { projectId: string; branchId?: string };
+export type ComplianceListFilter = { organizationId: string } | { projectId: string };
+
+/**
+ * 4E-2 §2: built by core, computed on request over the projects the caller can read. Every member
+ * answers 403 FEATURE_NOT_LICENSED while `portfolio` is inactive and checks the caller itself.
+ */
+export interface PluginPortfolio {
+  overview(
+    request: FastifyRequest,
+    input: PortfolioScopeInput,
+    options: { granularity: Granularity },
+  ): Promise<PortfolioOverview>;
+  projects(
+    request: FastifyRequest,
+    input: PortfolioScopeInput,
+    page: { sort: PortfolioSort; cursor?: string; limit: number },
+  ): Promise<PluginPage<PortfolioProjectRow>>;
+  exportRows(
+    request: FastifyRequest,
+    input: PortfolioScopeInput,
+  ): AsyncIterable<PortfolioProjectRow>;
+}
+
+/**
+ * 4E-1 §1.1: built by core. Every member except `housekeeping` answers 403 FEATURE_NOT_LICENSED
+ * while `compliance-export` is inactive. The members that take the request check the caller
+ * themselves (a report it cannot read is a 404) and write their audit events; the job-side
+ * members take no caller.
+ */
+export interface PluginCompliance {
+  create(
+    request: FastifyRequest,
+    input: ComplianceCreateInput,
+    standards: readonly ComplianceStandardRef[],
+  ): Promise<ComplianceReportView>;
+  list(
+    request: FastifyRequest,
+    filter: ComplianceListFilter,
+    page: { limit: number; cursor?: string },
+  ): Promise<PluginPage<ComplianceReportView>>;
+  get(request: FastifyRequest, id: string): Promise<ComplianceReportView>;
+  /** The view and the gunzipped canonical JSON; records `compliance.report.downloaded`. */
+  download(
+    request: FastifyRequest,
+    id: string,
+    format: ComplianceDownloadFormat,
+  ): Promise<{ view: ComplianceReportView; canonical: Buffer }>;
+  remove(request: FastifyRequest, id: string): Promise<void>;
+  /** A known build failure rejects with a problem of code REPORT_BUILD_FAILED and a `detail`. */
+  collect(id: string, options: { limit: number; signal?: AbortSignal }): Promise<ComplianceSource>;
+  /**
+   * False when the row is gone or no longer pending (nothing written), or when core failed it
+   * (a summary over 64 KiB, or a `sha256` that is not the SHA-256 of `canonical`). `standards`,
+   * the refs the build used, replace the ones stored at creation, so the row and the JSON agree.
+   */
+  complete(
+    id: string,
+    result: {
+      canonical: Buffer;
+      sha256: string;
+      summary: unknown;
+      standards?: readonly ComplianceStandardRef[];
+    },
+  ): Promise<boolean>;
+  fail(id: string, error: string): Promise<boolean>;
+  housekeeping(): Promise<{ deleted: number; failed: number }>;
 }
 
 export interface PluginReport {

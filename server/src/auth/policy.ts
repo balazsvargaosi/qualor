@@ -23,6 +23,8 @@ export const ORGANIZATION_PERMISSIONS = [
   'org.webhooks.manage',
   'org.scm.manage',
   'org.audit.read',
+  // 4E-1 §3: create and delete organisation compliance reports (enterprise, compliance-export).
+  'org.compliance.manage',
 ] as const;
 export const PROJECT_PERMISSIONS = [
   'project.read',
@@ -34,6 +36,8 @@ export const PROJECT_PERMISSIONS = [
   'project.branches.delete',
   'project.issues.import',
   'project.delete',
+  // 4E-1 §3: create a project compliance report (enterprise, compliance-export).
+  'project.compliance.create',
 ] as const;
 export type OrganizationPermission = (typeof ORGANIZATION_PERMISSIONS)[number];
 export type ProjectPermission = (typeof PROJECT_PERMISSIONS)[number];
@@ -51,6 +55,7 @@ const ADMINISTER_PROJECT = [
   'project.tokens.manage',
   'project.branches.delete',
   'project.issues.import',
+  'project.compliance.create',
 ] as const;
 
 /** §3.2. A project grant uses the `project` part of its role. */
@@ -80,6 +85,7 @@ const SCOPES: Readonly<Record<Permission, PermissionScope>> = Object.freeze({
   'org.webhooks.manage': 'admin',
   'org.scm.manage': 'admin',
   'org.audit.read': 'admin',
+  'org.compliance.manage': 'admin',
   'project.read': 'read',
   'project.analyze': 'analysis:write',
   'issue.triage': 'write',
@@ -89,6 +95,7 @@ const SCOPES: Readonly<Record<Permission, PermissionScope>> = Object.freeze({
   'project.branches.delete': 'admin',
   'project.issues.import': 'admin',
   'project.delete': 'admin',
+  'project.compliance.create': 'admin',
 });
 
 export function permissionScope(permission: Permission): PermissionScope {

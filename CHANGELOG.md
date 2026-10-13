@@ -35,6 +35,23 @@ All notable changes to Qualor are listed here, newest first. The format follows
   failing-webhook email for their organisation.
 - API: `GET`/`PUT`/`DELETE /projects/{id}/watch`, `GET`/`PUT /me/notifications`, and the public
   `GET` and `POST /notifications/unsubscribe` (RFC 8058 one-click).
+- Compliance reports (Enterprise): OWASP Top 10 2021 and 2025, CWE Top 25 2025, OWASP ASVS 4.0.3
+  and PCI DSS 4.0.1 §6.2.4, for a project branch or an organisation, as JSON, CSV and PDF, kept
+  for a year with a SHA-256 to verify them. Create them on a project's **Compliance** tab or in
+  **Settings → Compliance reports**, or through `/api/v0/ee/compliance`. They need a licence key
+  listing the new feature `compliance-export`. Project admins and organisation admins create a
+  project's reports (the permission `project.compliance.create`); organisation admins create the
+  organisation's and delete reports (`org.compliance.manage`). The audit log records each report
+  created, downloaded or deleted. See [Compliance reports](docs/guide/compliance-reports.md).
+- Portfolio reports (Enterprise): **Portfolio** in the top bar shows the quality of every project
+  you can read, of one organisation or of all of them, on each project's main branch: quality
+  gates, security and reliability ratings, lines of code, coverage and duplication weighted by
+  lines of code, open issues by severity, secrets and vulnerable dependencies. It adds 12-week or
+  12-month trends, a table per organisation, and four lists of the projects that need attention
+  (failing gates, the worst security ratings, the most blocker and high issues, no analysis in 30
+  days). Download it as CSV (one row per project) or as PDF, or read it through
+  `/api/v0/ee/portfolio`. Each user sees only the projects they can read. It needs a licence key
+  listing the new feature `portfolio`. See [Portfolio reports](docs/guide/portfolio.md).
 
 ## [0.7.1] - 2026-10-12
 

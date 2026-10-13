@@ -23,6 +23,8 @@ RUN pnpm --filter @qualor/server build \
   && install -d -m 0755 /enterprise \
   && install -m 0644 enterprise/dist/plugin.js enterprise/dist/plugin.js.map enterprise/LICENSE \
     enterprise/package.json /enterprise/ \
+  && install -d -m 0755 /enterprise/fonts \
+  && install -m 0644 enterprise/fonts/*.ttf enterprise/fonts/OFL.txt /enterprise/fonts/ \
   && pnpm --filter @qualor/ui build \
   && pnpm --filter @qualor/server deploy --prod --legacy /out \
   && rm -rf /out/node_modules/@qualor /out/node_modules/.pnpm/@qualor+* \
@@ -75,6 +77,7 @@ COPY --from=build /src/ui/dist ./ui
 # The enterprise plugin, source-available under its own licence, not
 # MIT. The server imports it only while a licence key is valid (active, or in its 14-day grace
 # period); without one it never reads the file. Its manifest names the licence for SBOM tools.
+# Its fonts/ holds Noto Sans (SIL OFL 1.1, fonts/OFL.txt) for the compliance report PDF.
 # The build stage sets the modes (files 0644, the directory 0755) whatever its umask, as the
 # loader refuses a group- or world-writable plugin or directory; COPY makes them root's. (A
 # `COPY --chmod=0644` would give the directory it creates 0644 too, which nobody could enter.)

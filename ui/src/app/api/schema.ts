@@ -112,7 +112,7 @@ export interface paths {
                             features: string[];
                             extensions: {
                                 /** @enum {string} */
-                                point: "settings.nav";
+                                point: "settings.nav" | "project.tab" | "main.nav";
                                 id: string;
                                 label: string;
                                 path: string;
@@ -504,7 +504,7 @@ export interface paths {
                                 organizationKey: string;
                                 organizationName: string;
                                 role: ("admin" | "project_admin" | "member" | "viewer") | null;
-                                permissions: ("org.read" | "org.members.read" | "org.members.manage" | "org.projects.create" | "org.gates.manage" | "org.profiles.manage" | "org.webhooks.manage" | "org.scm.manage" | "org.audit.read")[];
+                                permissions: ("org.read" | "org.members.read" | "org.members.manage" | "org.projects.create" | "org.gates.manage" | "org.profiles.manage" | "org.webhooks.manage" | "org.scm.manage" | "org.audit.read" | "org.compliance.manage")[];
                             }[];
                             projectGrants: {
                                 /** Format: uuid */
@@ -2686,7 +2686,7 @@ export interface paths {
                                         [key: string]: number | null;
                                     };
                                 } | null;
-                                permissions: ("project.read" | "project.analyze" | "issue.triage" | "ai.use" | "project.settings" | "project.tokens.manage" | "project.branches.delete" | "project.issues.import" | "project.delete")[];
+                                permissions: ("project.read" | "project.analyze" | "issue.triage" | "ai.use" | "project.settings" | "project.tokens.manage" | "project.branches.delete" | "project.issues.import" | "project.delete" | "project.compliance.create")[];
                             }[];
                             nextCursor: string | null;
                         };
@@ -2787,7 +2787,7 @@ export interface paths {
                                     [key: string]: number | null;
                                 };
                             } | null;
-                            permissions: ("project.read" | "project.analyze" | "issue.triage" | "ai.use" | "project.settings" | "project.tokens.manage" | "project.branches.delete" | "project.issues.import" | "project.delete")[];
+                            permissions: ("project.read" | "project.analyze" | "issue.triage" | "ai.use" | "project.settings" | "project.tokens.manage" | "project.branches.delete" | "project.issues.import" | "project.delete" | "project.compliance.create")[];
                         };
                     };
                 };
@@ -2908,7 +2908,7 @@ export interface paths {
                                     [key: string]: number | null;
                                 };
                             } | null;
-                            permissions: ("project.read" | "project.analyze" | "issue.triage" | "ai.use" | "project.settings" | "project.tokens.manage" | "project.branches.delete" | "project.issues.import" | "project.delete")[];
+                            permissions: ("project.read" | "project.analyze" | "issue.triage" | "ai.use" | "project.settings" | "project.tokens.manage" | "project.branches.delete" | "project.issues.import" | "project.delete" | "project.compliance.create")[];
                         };
                     };
                 };
@@ -3022,7 +3022,7 @@ export interface paths {
                                     [key: string]: number | null;
                                 };
                             } | null;
-                            permissions: ("project.read" | "project.analyze" | "issue.triage" | "ai.use" | "project.settings" | "project.tokens.manage" | "project.branches.delete" | "project.issues.import" | "project.delete")[];
+                            permissions: ("project.read" | "project.analyze" | "issue.triage" | "ai.use" | "project.settings" | "project.tokens.manage" | "project.branches.delete" | "project.issues.import" | "project.delete" | "project.compliance.create")[];
                         };
                     };
                 };
@@ -3216,7 +3216,7 @@ export interface paths {
                                     [key: string]: number | null;
                                 };
                             } | null;
-                            permissions: ("project.read" | "project.analyze" | "issue.triage" | "ai.use" | "project.settings" | "project.tokens.manage" | "project.branches.delete" | "project.issues.import" | "project.delete")[];
+                            permissions: ("project.read" | "project.analyze" | "issue.triage" | "ai.use" | "project.settings" | "project.tokens.manage" | "project.branches.delete" | "project.issues.import" | "project.delete" | "project.compliance.create")[];
                         };
                     };
                 };

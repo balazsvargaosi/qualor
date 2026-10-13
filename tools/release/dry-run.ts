@@ -184,6 +184,14 @@ export function packageChart(
   return file;
 }
 
+/**
+ * 4E-1 §2.2.1: the compliance standards' freshness alarm, strict. The dry run (which both jobs of
+ * release.yml run first) fails when a standard's `nextCheck` has passed.
+ */
+export function freshnessArgs(): string[] {
+  return ['--filter', '@qualor/enterprise', 'standards:freshness', '--strict'];
+}
+
 function gitCommit(): string {
   const head = must(run('git', ['rev-parse', 'HEAD']), 'git rev-parse').stdout.trim();
   const dirty = run('git', ['status', '--porcelain']).stdout.trim() !== '';
@@ -234,6 +242,10 @@ export async function dryRun(o: DryRunOptions, root = DEFAULT_OUTPUT_ROOT): Prom
   let chartFile: string;
   let chartDigest: string | null = null;
   try {
+    must(
+      run(pnpm.command, [...pnpm.args, ...freshnessArgs()]),
+      'compliance standards freshness (4E-1 §2.2.1)',
+    );
     buildToolbox();
 
     // 3. CLI binaries and their sources.

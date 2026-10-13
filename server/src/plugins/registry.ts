@@ -3,14 +3,17 @@ import type { Db } from '../db/client';
 import type { EditionPlugins } from '../license/edition';
 import { FEATURE_PATTERN, type LicensePayload } from '../license/token';
 import { ENTERPRISE_MAX_FIX_PER_DAY, type LlmLimits, type PluginLimitOverride } from '../limits';
-import { enqueue } from '../queue/queue';
+import { DEFAULT_MAX_ATTEMPTS, enqueue, type EnqueueOptions } from '../queue/queue';
 import {
   PLUGIN_API_VERSION,
   type PluginAccess,
   type PluginAudit,
+  type PluginCompliance,
   type PluginContext,
+  type PluginEnqueueOptions,
   type PluginJobHandler,
   type PluginLogger,
+  type PluginPortfolio,
   type PluginReport,
   type PluginScim,
   type PluginSso,
@@ -23,6 +26,10 @@ import type { PluginServices } from './services';
 export const PLUGIN_NAME_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
 export const PLUGIN_QUEUE_PATTERN = /^ee\.[a-z0-9][a-z0-9.-]{0,62}$/;
 export const EXTENSION_ID_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
+/** 4E-1 §4: a `project.tab` extension's path, relative to the project page. */
+export const PROJECT_TAB_PATH_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
+/** 4E-2 §4: a `main.nav` extension's absolute path. */
+export const MAIN_NAV_PATH_PATTERN = /^\/[a-z][a-z0-9/-]{0,63}$/;
 /** A plugin declares at most this many features; each name is at most 64 characters (token.ts). */
 const MAX_FEATURES = 64;
 const MAX_FEATURE_LENGTH = 64;
@@ -183,22 +190,30 @@ function validateOverride(value: unknown): PluginLimitOverride {
   return Object.freeze({ llm: Object.freeze(llm) });
 }
 
-/** enterprise.md §10.4. */
+/**
+ * enterprise.md §10.4, 4E-1 §4: a `settings.nav` path is `/settings/ee/<id>`; a `project.tab`
+ * path is a relative tab path under the project page.
+ */
 function validateExtension(value: unknown): UiExtension {
   const e = snapshot(value, 'a UI extension');
   const { point, id, label, path } = e;
   const valid =
     Object.keys(e).every((k) => k === 'point' || k === 'id' || k === 'label' || k === 'path') &&
-    point === 'settings.nav' &&
+    (point === 'settings.nav' || point === 'project.tab' || point === 'main.nav') &&
     typeof id === 'string' &&
     EXTENSION_ID_PATTERN.test(id) &&
     typeof label === 'string' &&
     label.trim().length >= 1 &&
     label.length <= 40 &&
-    path === `/settings/ee/${id}`;
+    typeof path === 'string' &&
+    (point === 'settings.nav'
+      ? path === `/settings/ee/${id}`
+      : point === 'main.nav'
+        ? MAIN_NAV_PATH_PATTERN.test(path)
+        : PROJECT_TAB_PATH_PATTERN.test(path));
   if (!valid) throw new PluginError('invalid UI extension');
   return Object.freeze({
-    point: 'settings.nav',
+    point: point as UiExtension['point'],
     id: id as string,
     label: label as string,
     path: path as string,
@@ -211,7 +226,7 @@ export interface ContextBase {
   logger: PluginLogger;
   license: LicensePayload;
   /**
-   * rbac-audit.md §15, sso-scim.md §17.1: the access, audit, sso and scim services, built
+   * rbac-audit.md §15, sso-scim.md §17.1, 4E-1 §1.1: the access, audit, sso, scim and compliance services, built
    * by core (bootEnterprise). A context without them (core tests that load a plugin) gives the
    * plugin stand-ins that throw, naming the missing service.
    */
@@ -275,6 +290,59 @@ export const MISSING_SCIM: PluginScim = Object.freeze({
   createToken: unavailable('scim'),
   revokeToken: unavailable('scim'),
 });
+
+/** 4E-2 §2: what a context without the portfolio service gets. */
+export const MISSING_PORTFOLIO: PluginPortfolio = Object.freeze({
+  overview: unavailable('portfolio'),
+  projects: unavailable('portfolio'),
+  exportRows: unavailable('portfolio'),
+});
+
+/** 4E-1 §1.1: what a context without the compliance service gets. */
+export const MISSING_COMPLIANCE: PluginCompliance = Object.freeze({
+  create: unavailable('compliance'),
+  list: unavailable('compliance'),
+  get: unavailable('compliance'),
+  download: unavailable('compliance'),
+  remove: unavailable('compliance'),
+  collect: unavailable('compliance'),
+  complete: unavailable('compliance'),
+  fail: unavailable('compliance'),
+  housekeeping: unavailable('compliance'),
+});
+
+/**
+ * 4E-1 §2.4: a plugin's enqueue options, read once into a plain copy. The concurrency key is an
+ * `ee.` name, so a plugin can never hold back a core queue's key.
+ */
+function validateEnqueueOptions(
+  options: PluginEnqueueOptions | undefined,
+): Pick<EnqueueOptions, 'concurrencyKey' | 'maxAttempts'> {
+  if (options === undefined) return {};
+  if (typeof options !== 'object' || options === null) {
+    throw new PluginError('enqueue options must be an object');
+  }
+  const { concurrencyKey, maxAttempts } = options;
+  if (
+    concurrencyKey !== undefined &&
+    (typeof concurrencyKey !== 'string' || !PLUGIN_QUEUE_PATTERN.test(concurrencyKey))
+  ) {
+    throw new PluginError(`concurrency key ${String(concurrencyKey)} must match ee.<name>`);
+  }
+  if (
+    maxAttempts !== undefined &&
+    (typeof maxAttempts !== 'number' ||
+      !Number.isInteger(maxAttempts) ||
+      maxAttempts < 1 ||
+      maxAttempts > DEFAULT_MAX_ATTEMPTS)
+  ) {
+    throw new PluginError(`maxAttempts must be a whole number from 1 to ${DEFAULT_MAX_ATTEMPTS}`);
+  }
+  return {
+    ...(concurrencyKey === undefined ? {} : { concurrencyKey }),
+    ...(maxAttempts === undefined ? {} : { maxAttempts }),
+  };
+}
 
 /**
  * Ruling EE4: everything a plugin registers is validated when it is registered, staged here as a
@@ -363,7 +431,7 @@ export class StagedPlugin {
         }
         this.jobCalls.push(...staged);
       },
-      enqueue: async (queue: string, payload: unknown) => {
+      enqueue: async (queue: string, payload: unknown, options?: PluginEnqueueOptions) => {
         // Ownership is this instance's committed registration, never a name: a failed or
         // discarded plugin enqueues nothing, even under the name of a loaded one.
         // A registration dropped later (a route that failed to mount, ruling R-MOUNT) no longer
@@ -373,7 +441,7 @@ export class StagedPlugin {
           (this.committedTo?.jobs.some((j) => j.queue === queue && j.owner === this.token) ??
             false);
         if (!own) throw new PluginError(`${name} may not enqueue on ${String(queue)}`);
-        return enqueue(base.db, { queue, payload });
+        return enqueue(base.db, { queue, payload, ...validateEnqueueOptions(options) });
       },
       limits: (feature: string, override: PluginLimitOverride) => {
         const f = this.feature(feature);
@@ -387,6 +455,8 @@ export class StagedPlugin {
       audit: base.services?.audit ?? MISSING_AUDIT,
       sso: base.services?.sso ?? MISSING_SSO,
       scim: base.services?.scim ?? MISSING_SCIM,
+      compliance: base.services?.compliance ?? MISSING_COMPLIANCE,
+      portfolio: base.services?.portfolio ?? MISSING_PORTFOLIO,
       schedule: (feature: string, queue: string, everySeconds: number) => {
         const f = this.feature(feature);
         if (typeof queue !== 'string' || !PLUGIN_QUEUE_PATTERN.test(queue)) {

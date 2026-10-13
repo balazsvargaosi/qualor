@@ -6,7 +6,7 @@ import { uuidv7 } from './ids';
 
 const KEY = (c: string) => c.repeat(64);
 
-describe('migration 0008: account tokens (mail E2 A1)', () => {
+describe('migration 0009: account tokens (mail E2 A1)', () => {
   let t: TestDatabase;
   let userId: string;
   let adminId: string;

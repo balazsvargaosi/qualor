@@ -130,6 +130,23 @@ export async function requireOrganizationAccess(
 }
 
 /**
+ * 4E-1 §3: an organisation-level membership (any role), or an instance admin. A user who only
+ * holds project grants in the organisation sees it (org.read), so it gets 403 FORBIDDEN here; an
+ * invisible organisation is a 404, as everywhere.
+ */
+export async function requireOrganizationMember(
+  access: AccessContext,
+  principal: UserPrincipal,
+  organizationId: string,
+): Promise<OrganizationAccess> {
+  const org = await requireOrganizationAccess(access, principal, organizationId, 'org.read');
+  if (org.role === null && !principal.user.isInstanceAdmin) {
+    throw forbidden('FORBIDDEN', 'Only members of the organisation can do this');
+  }
+  return org;
+}
+
+/**
  * GET /users/lookup (rbac-audit.md §3.4 notes): an instance admin, or a user holding
  * `org.members.manage` in at least one organisation, with a token of the `admin` scope.
  */

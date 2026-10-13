@@ -2,6 +2,7 @@ import { DOCUMENT } from '@angular/common';
 import {
   afterNextRender,
   Component,
+  computed,
   DestroyRef,
   type ElementRef,
   inject,
@@ -16,6 +17,14 @@ import { Icon } from '../shared/icon';
 import { LicenseBanner } from './license-banner';
 import { SsoBanner } from './sso-banner';
 import { SystemInfo } from './system-info';
+
+/**
+ * The main-menu entries the UI has a screen for (4E-2 §4), by extension id: a plugin's entry for
+ * any other id is skipped, since no route would answer it.
+ */
+const MAIN_NAV: Readonly<Record<string, { path: string; label: string }>> = {
+  portfolio: { path: '/portfolio', label: $localize`:@@shell.nav.portfolio:Portfolio` },
+};
 
 /** The path of a router URL, without its query and fragment. */
 const pathOf = (url: string) => url.split(/[?#]/, 1)[0] ?? url;
@@ -39,6 +48,13 @@ export class Shell {
   protected readonly org = inject(OrgContext);
   /** The server's version and edition, at the foot of the user menu. */
   protected readonly system = inject(SystemInfo);
+  /** The plugins' main-menu entries with a known screen, after "Quality gates". */
+  protected readonly mainNav = computed(() =>
+    this.system.mainNav().flatMap((e) => {
+      const known = Object.hasOwn(MAIN_NAV, e.id) ? MAIN_NAV[e.id] : undefined;
+      return known ? [{ id: e.id, ...known }] : [];
+    }),
+  );
   protected readonly inputValue = inputValue;
   private readonly main = viewChild.required<ElementRef<HTMLElement>>('main');
   private readonly header = viewChild.required<ElementRef<HTMLElement>>('header');

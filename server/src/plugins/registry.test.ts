@@ -219,6 +219,68 @@ describe('StagedPlugin (ruling EE4)', () => {
     expect(reads).toBe(1);
   });
 
+  it('accepts a project.tab extension with a relative path and refuses an absolute one', () => {
+    const registry = emptyRegistry();
+    const staged = new StagedPlugin(plugin(), registry);
+    const ctx = staged.context(base, registry);
+    ctx.ui('fixture.echo', {
+      point: 'project.tab',
+      id: 'compliance',
+      label: 'Compliance',
+      path: 'compliance',
+    });
+    expect(() =>
+      ctx.ui('fixture.echo', { point: 'project.tab', id: 'x', label: 'X', path: '/settings/ee/x' }),
+    ).toThrow(PluginError);
+    staged.commit(registry);
+    expect(registry.extensions).toEqual([
+      {
+        feature: 'fixture.echo',
+        extension: {
+          point: 'project.tab',
+          id: 'compliance',
+          label: 'Compliance',
+          path: 'compliance',
+        },
+      },
+    ]);
+  });
+
+  it('accepts a main.nav extension with an absolute path and refuses a relative one', () => {
+    const registry = emptyRegistry();
+    const ctx = new StagedPlugin(plugin(), registry).context(base, registry);
+    ctx.ui('fixture.echo', {
+      point: 'main.nav',
+      id: 'portfolio',
+      label: 'Portfolio',
+      path: '/portfolio',
+    });
+    expect(() =>
+      ctx.ui('fixture.echo', { point: 'main.nav', id: 'x', label: 'X', path: 'portfolio' }),
+    ).toThrow(PluginError);
+    expect(() =>
+      ctx.ui('fixture.echo', { point: 'project.tab', id: 'x', label: 'X', path: '/x' }),
+    ).toThrow(PluginError);
+  });
+
+  it('gives a context without services a portfolio stand-in that throws', () => {
+    const registry = emptyRegistry();
+    const ctx = new StagedPlugin(plugin(), registry).context(base, registry);
+    expect(Object.isFrozen(ctx.portfolio)).toBe(true);
+    expect(() => ctx.portfolio.exportRows({} as never, { scope: 'all' })).toThrow(
+      'the portfolio service is not available in this context',
+    );
+  });
+
+  it('gives a context without services a compliance stand-in that throws', () => {
+    const registry = emptyRegistry();
+    const ctx = new StagedPlugin(plugin(), registry).context(base, registry);
+    expect(Object.isFrozen(ctx.compliance)).toBe(true);
+    expect(() => ctx.compliance.housekeeping()).toThrow(
+      'the compliance service is not available in this context',
+    );
+  });
+
   it('refuses a second plugin with the same name or feature', () => {
     const registry = emptyRegistry();
     new StagedPlugin(plugin(), registry).commit(registry);
@@ -286,6 +348,46 @@ describe('StagedPlugin (ruling EE4)', () => {
     staged.commit(registry);
     await expect(ctx.enqueue('analysis', {})).rejects.toThrow(PluginError);
     await expect(ctx.enqueue('ee.other', {})).rejects.toThrow(PluginError);
+  });
+
+  it('queues a job with an ee. concurrency key and at most five attempts, none by default (4E-1 §2.4)', async () => {
+    const inserted: Record<string, unknown>[] = [];
+    const db = {
+      insert: () => ({
+        values: (values: Record<string, unknown>) => {
+          inserted.push(values);
+          return { returning: async () => [{ id: `job-${inserted.length}` }] };
+        },
+      }),
+    };
+    const registry = emptyRegistry();
+    const staged = new StagedPlugin(plugin(), registry);
+    const ctx = staged.context({ ...base, db: db as never }, registry);
+    ctx.jobs('fixture.echo', { 'ee.fixture': async () => {} });
+    staged.commit(registry);
+    expect(await ctx.enqueue('ee.fixture', { n: 1 })).toBe('job-1');
+    expect(
+      await ctx.enqueue('ee.fixture', { n: 2 }, { concurrencyKey: 'ee.fixture', maxAttempts: 1 }),
+    ).toBe('job-2');
+    expect(inserted).toEqual([
+      { queue: 'ee.fixture', payload: { n: 1 }, concurrencyKey: null, maxAttempts: 5 },
+      { queue: 'ee.fixture', payload: { n: 2 }, concurrencyKey: 'ee.fixture', maxAttempts: 1 },
+    ]);
+    for (const options of [
+      { concurrencyKey: 'analysis' },
+      { concurrencyKey: 'analysis-project-1' },
+      { concurrencyKey: 42 },
+      { maxAttempts: 0 },
+      { maxAttempts: 6 },
+      { maxAttempts: 1.5 },
+      null,
+    ]) {
+      await expect(
+        ctx.enqueue('ee.fixture', {}, options as never),
+        JSON.stringify(options),
+      ).rejects.toThrow(PluginError);
+    }
+    expect(inserted).toHaveLength(2);
   });
 });
 

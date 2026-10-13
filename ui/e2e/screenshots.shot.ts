@@ -26,6 +26,27 @@ async function shoot(page: Page, name: string): Promise<void> {
   await page.screenshot({ path: `${OUT}${name}.png`, fullPage: true });
 }
 
+/**
+ * A screen in the light and the dark theme, on a desktop and on a phone (390px): `name`,
+ * `name-dark`, `name-narrow` and `name-narrow-dark`. The page keeps its state between them.
+ */
+async function shootThemes(page: Page, name: string): Promise<void> {
+  const desktop = page.viewportSize();
+  for (const colorScheme of ['light', 'dark'] as const) {
+    await page.emulateMedia({ colorScheme });
+    for (const [width, suffix] of [
+      [desktop?.width ?? 1440, ''],
+      [390, '-narrow'],
+    ] as const) {
+      await page.setViewportSize({ width, height: desktop?.height ?? 900 });
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await shoot(page, `${name}${suffix}${colorScheme === 'dark' ? '-dark' : ''}`);
+    }
+  }
+  await page.emulateMedia({ colorScheme: 'light' });
+  if (desktop) await page.setViewportSize(desktop);
+}
+
 test.describe('signed out', () => {
   test.use({ storageState: { cookies: [], origins: [] } });
 
@@ -151,11 +172,11 @@ test('18 AI assistant settings, 19 issue with the AI panel', async ({ page }) =>
 });
 
 // E1 spec: a configured server (the seed's, which nothing answers) with one failed test message.
-test('36 email settings', async ({ page }) => {
+test('40 email settings', async ({ page }) => {
   await page.goto('/settings/email');
   await expect(page.getByRole('heading', { name: 'Email', level: 2 })).toBeVisible();
   await expect(page.getByText('On · the last message failed')).toBeVisible();
-  await shoot(page, '36-settings-email');
+  await shoot(page, '40-settings-email');
 });
 
 test('20 licence, 21 licence in its grace period with the admin banner', async ({ page }) => {
@@ -299,5 +320,50 @@ test.describe('enterprise', () => {
     await page.goto('/settings/ee/linked-accounts');
     await expect(page.getByRole('row', { name: /Acme SSO/ })).toBeVisible();
     await shoot(page, '30-linked-accounts');
+  });
+
+  // 4E-1 §4 (`compliance-export`): a ready report of Payments API's main branch with its summary
+  // shown, then the organisation's reports in Settings, each built by the server's worker.
+  test('36 project compliance, 37 compliance reports', async ({ page }) => {
+    await page.goto('/projects');
+    await page.getByRole('link', { name: PAYMENTS.name }).click();
+    await page
+      .getByRole('navigation', { name: 'Project' })
+      .getByRole('link', { name: 'Compliance' })
+      .click();
+    await page.getByRole('button', { name: 'Create report' }).click();
+    await expect(page.getByText('Ready', { exact: true })).toBeVisible({ timeout: 30_000 });
+    await page.getByRole('button', { name: /^Summary of the report of / }).click();
+    await expect(page.locator('.compliance-categories')).toBeVisible();
+    await shootThemes(page, '36-project-compliance');
+
+    await page.goto('/settings/ee/compliance');
+    await page.getByRole('button', { name: 'Create report' }).click();
+    await expect(page.getByText('Ready', { exact: true })).toBeVisible({ timeout: 30_000 });
+    await page.getByRole('button', { name: /^Summary of the report of / }).click();
+    await expect(page.locator('.compliance-categories')).toBeVisible();
+    await shootThemes(page, '37-settings-compliance');
+  });
+
+  // 4E-2 §4 (`portfolio`): the default organisation's portfolio by week, then every
+  // organisation's by month, with the seed's three projects.
+  test('38 portfolio, 39 portfolio of all organisations', async ({ page }) => {
+    const ready = async () => {
+      await expect(page.locator('[data-card="projects"] .kpi-value')).toHaveText('3');
+      await expect(
+        page
+          .getByRole('region', { name: 'Projects', exact: true })
+          .getByRole('link', { name: PAYMENTS.name, exact: true }),
+      ).toBeVisible();
+    };
+    await page.goto('/portfolio');
+    await ready();
+    await shootThemes(page, '38-portfolio');
+
+    await page.goto('/portfolio?scope=all&granularity=month');
+    await ready();
+    await expect(page.getByRole('region', { name: 'Organisations', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Trend over 12 months' })).toBeVisible();
+    await shootThemes(page, '39-portfolio-all');
   });
 });

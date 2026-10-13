@@ -20,8 +20,8 @@ Every edition has these roles; none needs a licence.
 | Role | Can |
 |---|---|
 | **Instance admin** | everything, including users and organisations |
-| **Organization admin** (`admin`) | manage the organisation: projects, project tokens, quality profiles, gates, webhooks, GitLab/GitHub connections and each project's mapping to a repository, members and roles on single projects |
-| **Project admin** (`project_admin`) | what a Maintainer can, and also change project settings (except the GitLab/GitHub mapping), manage project tokens, delete branches and merge requests, and run the SonarQube status import |
+| **Organization admin** (`admin`) | manage the organisation: projects, project tokens, quality profiles, gates, webhooks, GitLab/GitHub connections and each project's mapping to a repository, members and roles on single projects; with the Enterprise plan, create and delete compliance reports of the organisation and of its projects (`org.compliance.manage`) |
+| **Project admin** (`project_admin`) | what a Maintainer can, and also change project settings (except the GitLab/GitHub mapping), manage project tokens, delete branches and merge requests, run the SonarQube status import, and, with the Enterprise plan, create compliance reports of the project (`project.compliance.create`) |
 | **Maintainer** (`member`) | read the projects, upload analyses, triage issues (change a status, override a severity) and use the AI assistant |
 | **Viewer** (`viewer`) | read the projects: code, issues, quality gate, quality profile and AI answers |
 

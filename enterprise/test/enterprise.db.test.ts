@@ -81,7 +81,16 @@ describe('Qualor Enterprise end to end (enterprise.md §17)', () => {
       {
         name: 'qualor-enterprise',
         state: 'loaded',
-        features: ['llm.fix-quota', 'audit-log', 'audit-log.stream', 'sso', 'sso.multi', 'scim'],
+        features: [
+          'llm.fix-quota',
+          'audit-log',
+          'audit-log.stream',
+          'sso',
+          'sso.multi',
+          'scim',
+          'compliance-export',
+          'portfolio',
+        ],
         error: null,
       },
     ]);

@@ -6,16 +6,22 @@
   "type": "module",
   "scripts": {
     "build": "tsx scripts/build.ts",
-    "openapi": "tsx scripts/openapi.ts"
+    "openapi": "tsx scripts/openapi.ts",
+    "standards:generate": "tsx scripts/standards/generate.ts",
+    "standards:update": "tsx scripts/standards/update.ts",
+    "standards:freshness": "tsx scripts/standards/freshness.ts"
   },
   "dependencies": {
+    "pdfkit": "0.20.2",
     "zod": "^4.6.5"
   },
   "devDependencies": {
     "@qualor/server": "workspace:*",
+    "@types/pdfkit": "^0.17.6",
     "drizzle-orm": "^0.45.3",
     "esbuild": "^0.28.2",
     "fastify": "^5.12.5",
-    "fastify-type-provider-zod": "^7.0.0"
+    "fastify-type-provider-zod": "^7.0.0",
+    "pdfjs-dist": "^6.4.299"
   }
 }

@@ -71,6 +71,11 @@ export const routes: Routes = [
         loadComponent: () => import('./gates/gate.page').then((m) => m.GatePage),
       },
       {
+        path: 'portfolio',
+        title: $localize`:@@title.portfolio:Portfolio`,
+        loadComponent: () => import('./portfolio/portfolio.page').then((m) => m.PortfolioPage),
+      },
+      {
         path: 'rules',
         title: $localize`:@@title.rules:Rules`,
         loadComponent: () => import('./rules/rules.page').then((m) => m.RulesPage),

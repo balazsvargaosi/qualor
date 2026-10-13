@@ -1,0 +1,324 @@
+<q-page-header [compact]="true">
+  <h1 pageTitle i18n="@@portfolio.title">Portfolio</h1>
+  @if (licensed()) {
+    <div pageActions class="band-actions portfolio-controls">
+      <div class="segmented" role="group" aria-label="Scope" i18n-aria-label="@@portfolio.scope">
+        <button
+          type="button"
+          [attr.aria-pressed]="scopeKind() === 'organization'"
+          (click)="choose({ scope: 'organization' })"
+          i18n="@@portfolio.scope.organization"
+        >
+          This organisation
+        </button>
+        <button
+          type="button"
+          [attr.aria-pressed]="scopeKind() === 'all'"
+          (click)="choose({ scope: 'all' })"
+          i18n="@@portfolio.scope.all"
+        >
+          All organisations
+        </button>
+      </div>
+      <div class="segmented" role="group" aria-label="Period" i18n-aria-label="@@portfolio.period">
+        <button
+          type="button"
+          [attr.aria-pressed]="period() === 'week'"
+          (click)="choose({ granularity: 'week' })"
+          i18n="@@portfolio.period.week"
+        >
+          Weeks
+        </button>
+        <button
+          type="button"
+          [attr.aria-pressed]="period() === 'month'"
+          (click)="choose({ granularity: 'month' })"
+          i18n="@@portfolio.period.month"
+        >
+          Months
+        </button>
+      </div>
+      @if (data() && !empty()) {
+        <div
+          class="portfolio-downloads"
+          role="group"
+          aria-label="Download"
+          i18n-aria-label="@@portfolio.download"
+        >
+          <a class="btn" download [attr.href]="exportHref('csv')" i18n="@@portfolio.csv">CSV</a>
+          <a class="btn" download [attr.href]="exportHref('pdf')" i18n="@@portfolio.pdf">PDF</a>
+        </div>
+      }
+    </div>
+  }
+</q-page-header>
+
+<div class="page-body portfolio">
+  @if (infoError(); as message) {
+    <p class="alert alert-error" role="alert">{{ message }}</p>
+  } @else if (infoLoaded() && !licensed()) {
+    <p class="muted" i18n="@@portfolio.notLicensed">
+      Portfolio reports need an enterprise licence with the portfolio feature.
+    </p>
+  } @else if (failure(); as message) {
+    <p class="alert alert-error" role="alert">{{ message }}</p>
+  } @else if (empty()) {
+    <div class="card empty-state">
+      <p i18n="@@portfolio.empty">No projects you can read yet.</p>
+    </div>
+  } @else if (data(); as d) {
+    <section class="portfolio-cards" aria-labelledby="portfolio-totals">
+      <h2 id="portfolio-totals" class="visually-hidden" i18n="@@portfolio.totals">Totals</h2>
+      <div class="card" data-card="projects">
+        <span class="kpi-label" i18n="@@portfolio.card.projects">Projects</span>
+        <span class="kpi-value">{{ d.totals.projects | measure: 'projects' }}</span>
+        <span class="kpi-note" i18n="@@portfolio.card.projectsNote"
+          >{{ d.totals.analysed | measure: 'projects' }} analyzed ·
+          {{ d.totals.abandoned | measure: 'projects' }} abandoned</span
+        >
+      </div>
+      <div class="card" data-card="gate">
+        <q-meter
+          label="Gate pass share"
+          i18n-label="@@portfolio.card.gate"
+          [value]="d.totals.gate.passed"
+          [max]="d.totals.analysed > 0 ? d.totals.analysed : null"
+          [text]="share(d.totals.passedShare)"
+          [note]="
+            d.totals.analysed > 0
+              ? passedNote(d.totals.gate.passed, d.totals.analysed)
+              : noAnalysisNote
+          "
+        />
+      </div>
+      <div class="card" data-card="security">
+        <span class="kpi-label" i18n="@@portfolio.card.security">Security rating</span>
+        <q-distribution [items]="ratings(d.totals.securityRating)" />
+      </div>
+      <div class="card" data-card="reliability">
+        <span class="kpi-label" i18n="@@portfolio.card.reliability">Reliability rating</span>
+        <q-distribution [items]="ratings(d.totals.reliabilityRating)" />
+      </div>
+      <div class="card" data-card="ncloc">
+        <span class="kpi-label" i18n="@@portfolio.card.ncloc">Lines of code</span>
+        <span class="kpi-value">{{ d.totals.ncloc | measure: 'ncloc' }}</span>
+      </div>
+      <div class="card" data-card="coverage">
+        <dl class="stat-list">
+          <div>
+            <dt i18n="@@portfolio.card.coverage">Coverage</dt>
+            <dd>{{ d.totals.coverage | measure: 'coverage' }}</dd>
+          </div>
+          <div>
+            <dt i18n="@@portfolio.card.duplication">Duplication</dt>
+            <dd>{{ d.totals.duplication | measure: 'duplicated_lines_density' }}</dd>
+          </div>
+        </dl>
+        <span class="kpi-note" i18n="@@portfolio.card.weighted">weighted by lines of code</span>
+      </div>
+      <div class="card" data-card="issues">
+        <span class="kpi-label" i18n="@@portfolio.card.issues">Open issues</span>
+        <span class="kpi-value">{{ d.totals.issues | measure: 'issues' }}</span>
+        <q-distribution [items]="severities()" />
+      </div>
+      <div class="card" data-card="findings">
+        <dl class="stat-list">
+          <div>
+            <dt i18n="@@portfolio.card.secrets">Secrets</dt>
+            <dd [class.bad]="d.totals.secrets > 0">{{ d.totals.secrets | measure: 'secrets' }}</dd>
+          </div>
+          <div>
+            <dt i18n="@@portfolio.card.dependencies">Vulnerable dependencies</dt>
+            <dd [class.bad]="d.totals.vulnerableDependencies > 0">
+              {{ d.totals.vulnerableDependencies | measure: 'dependencies' }}
+            </dd>
+          </div>
+        </dl>
+      </div>
+    </section>
+
+    <section class="portfolio-section" aria-labelledby="portfolio-trend">
+      <h2 id="portfolio-trend" class="portfolio-heading">
+        @if (period() === 'month') {
+          <ng-container i18n="@@portfolio.trend.months">Trend over 12 months</ng-container>
+        } @else {
+          <ng-container i18n="@@portfolio.trend.weeks">Trend over 12 weeks</ng-container>
+        }
+      </h2>
+      <p class="muted portfolio-note">
+        @if (period() === 'month') {
+          <ng-container i18n="@@portfolio.trend.monthsNote"
+            >Each point is the state at the end of its month; the last one is the current month, up
+            to now.</ng-container
+          >
+        } @else {
+          <ng-container i18n="@@portfolio.trend.weeksNote"
+            >Each point is the state at the end of its week; the last one is the current week, up to
+            now.</ng-container
+          >
+        }
+      </p>
+      <div class="portfolio-grid">
+        @for (t of trends(); track t.id) {
+          <section class="card panel" [attr.data-trend]="t.id" [attr.aria-label]="t.title">
+            <div class="panel-head">
+              <h3>{{ t.title }}</h3>
+            </div>
+            <div class="panel-body">
+              <q-line-chart
+                [series]="t.series"
+                [metric]="t.metric"
+                [title]="t.title"
+                [height]="220"
+              />
+            </div>
+          </section>
+        }
+      </div>
+    </section>
+
+    @if (d.organizations; as orgs) {
+      <section class="card panel" data-test="organizations" aria-labelledby="portfolio-orgs">
+        <div class="panel-head">
+          <h2 id="portfolio-orgs" i18n="@@portfolio.organizations">Organisations</h2>
+        </div>
+        <div class="panel-scroll" tabindex="0" role="group" aria-labelledby="portfolio-orgs">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col" i18n="@@portfolio.org.col.organization">Organisation</th>
+                <th scope="col" class="num" i18n="@@portfolio.org.col.projects">Projects</th>
+                <th scope="col" class="num" i18n="@@portfolio.org.col.gate">Gate pass share</th>
+                <th scope="col" class="num" i18n="@@portfolio.org.col.ncloc">Lines of code</th>
+                <th scope="col" class="num" i18n="@@portfolio.org.col.coverage">Coverage</th>
+                <th scope="col" class="num" i18n="@@portfolio.org.col.duplication">Duplication</th>
+                <th scope="col" class="num" i18n="@@portfolio.org.col.issues">Open issues</th>
+                <th scope="col" class="num" i18n="@@portfolio.org.col.abandoned">Abandoned</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (o of orgs; track o.id) {
+                <tr>
+                  <th scope="row">
+                    {{ o.name }}
+                    <div class="muted">
+                      <code>{{ o.key }}</code>
+                    </div>
+                  </th>
+                  <td class="num">{{ o.projects | measure: 'projects' }}</td>
+                  <td class="num">{{ share(o.passedShare) }}</td>
+                  <td class="num">{{ o.ncloc | measure: 'ncloc' }}</td>
+                  <td class="num">{{ o.coverage | measure: 'coverage' }}</td>
+                  <td class="num">{{ o.duplication | measure: 'duplicated_lines_density' }}</td>
+                  <td class="num">{{ o.issues | measure: 'issues' }}</td>
+                  <td class="num">{{ o.abandoned | measure: 'projects' }}</td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+      </section>
+    }
+
+    <section class="portfolio-section" aria-labelledby="portfolio-attention">
+      <h2 id="portfolio-attention" class="portfolio-heading" i18n="@@portfolio.attention">
+        Needs attention
+      </h2>
+      <div class="portfolio-grid">
+        @for (list of attention(); track list.id) {
+          <section
+            class="card panel"
+            [attr.data-attention]="list.id"
+            [attr.aria-label]="list.title"
+          >
+            <div class="panel-head">
+              <h3>{{ list.title }}</h3>
+            </div>
+            <div class="panel-body">
+              <ol class="attention-list">
+                @for (item of list.rows; track item.row.project.id) {
+                  <li>
+                    <a [routerLink]="['/projects', item.row.project.id]">{{
+                      item.row.project.name
+                    }}</a>
+                    <span class="muted">{{ item.note }}</span>
+                  </li>
+                } @empty {
+                  <li class="muted" i18n="@@portfolio.attention.none">None.</li>
+                }
+              </ol>
+            </div>
+          </section>
+        }
+      </div>
+    </section>
+
+    <section class="card panel" data-test="projects" aria-labelledby="portfolio-projects">
+      <div class="panel-head">
+        <h2 id="portfolio-projects" i18n="@@portfolio.projects">Projects</h2>
+      </div>
+      @if (projects.error(); as message) {
+        <p class="alert alert-error panel-alert" role="alert">{{ message }}</p>
+      }
+      <div class="panel-scroll">
+        <table [attr.aria-busy]="projects.loading()">
+          <caption class="visually-hidden" i18n="@@portfolio.projects.caption">
+            The projects with their main-branch quality; the column headers sort them
+          </caption>
+          <thead>
+            <tr>
+              @for (c of columns; track c.sort) {
+                <th scope="col" [class.num]="c.num" [attr.aria-sort]="ariaSort(c)">
+                  <button type="button" class="sort" (click)="sortBy(c.sort)">{{ c.label }}</button>
+                </th>
+              }
+            </tr>
+          </thead>
+          <tbody>
+            @for (r of projects.items(); track r.project.id) {
+              <tr>
+                <td>
+                  <a [routerLink]="['/projects', r.project.id]">{{ r.project.name }}</a>
+                  <div class="muted">
+                    <code>{{ r.project.key }}</code>
+                    @if (scopeKind() === 'all') {
+                      · {{ r.organization.name }}
+                    }
+                  </div>
+                </td>
+                <td><q-gate-badge [status]="r.gate" /></td>
+                <td><q-rating [value]="ratingValue(r.securityRating)" /></td>
+                <td><q-rating [value]="ratingValue(r.reliabilityRating)" /></td>
+                <td class="num">{{ r.issues | measure: 'issues' }}</td>
+                <td class="num">{{ r.ncloc | measure: 'ncloc' }}</td>
+                <td class="num">{{ r.coverage | measure: 'coverage' }}</td>
+                <td class="nowrap">
+                  @if (r.lastAnalysisAt; as at) {
+                    <span [title]="at | dateTime">{{ at | dateTime: 'date' }}</span>
+                  } @else {
+                    <span class="muted" i18n="@@portfolio.never">Never</span>
+                  }
+                </td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+    </section>
+    @if (projects.nextCursor()) {
+      <p class="load-more">
+        <button
+          type="button"
+          class="btn"
+          [attr.aria-disabled]="projects.loading() ? true : null"
+          (click)="projects.more()"
+          i18n="@@list.more"
+        >
+          Load more
+        </button>
+      </p>
+    }
+  } @else if (licensed()) {
+    <p class="muted" role="status" i18n="@@portfolio.loading">Loading the portfolio…</p>
+  }
+</div>

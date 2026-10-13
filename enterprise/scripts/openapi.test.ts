@@ -13,7 +13,7 @@ type Operation = {
 type Doc = { paths: Record<string, Record<string, Operation>> };
 
 describe('enterprise/openapi.json (rbac-audit.md §17)', () => {
-  it('holds the audit-log, sso and scim operations under /api/v0/ee only', async () => {
+  it('holds the audit-log, sso, scim, compliance-export and portfolio operations under /api/v0/ee only', async () => {
     const doc = (await enterpriseOpenApiDocument()) as Doc;
     const operations = Object.entries(doc.paths).flatMap(([path, item]) =>
       Object.keys(item).map((method) => `${method.toUpperCase()} ${path}`),
@@ -60,6 +60,16 @@ describe('enterprise/openapi.json (rbac-audit.md §17)', () => {
         'PUT /api/v0/ee/scim/v2/{*}',
         'PATCH /api/v0/ee/scim/v2/{*}',
         'DELETE /api/v0/ee/scim/v2/{*}',
+        // 4E-1 §3, feature compliance-export
+        'POST /api/v0/ee/compliance/reports',
+        'GET /api/v0/ee/compliance/reports',
+        'GET /api/v0/ee/compliance/reports/{id}',
+        'GET /api/v0/ee/compliance/reports/{id}/download',
+        'DELETE /api/v0/ee/compliance/reports/{id}',
+        // 4E-2 §3, feature portfolio
+        'GET /api/v0/ee/portfolio',
+        'GET /api/v0/ee/portfolio/projects',
+        'GET /api/v0/ee/portfolio/export',
       ].sort(),
     );
   }, 60_000);
@@ -76,6 +86,9 @@ describe('enterprise/openapi.json (rbac-audit.md §17)', () => {
       ['/api/v0/ee/sso/connections/{id}/mappings', 'put'],
       ['/api/v0/ee/sso/settings', 'put'],
       ['/api/v0/ee/scim/tokens', 'post'],
+      ['/api/v0/ee/compliance/reports', 'post'],
+      ['/api/v0/ee/compliance/reports/{id}/download', 'get'],
+      ['/api/v0/ee/compliance/reports/{id}', 'delete'],
     ] as const) {
       expect(
         doc.paths[path]?.[method]?.responses?.['409']?.description,

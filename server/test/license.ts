@@ -25,7 +25,7 @@ export const BUSINESS_FEATURES: readonly string[] = Object.freeze([
   'llm.fix-quota',
 ]);
 
-/** enterprise.md §1.7 (5D): the features an Enterprise key lists. */
+/** enterprise.md §1.7 (5D, 4E-1, 4E-2): the features an Enterprise key lists. */
 export const ENTERPRISE_FEATURES: readonly string[] = Object.freeze([
   'sso',
   'sso.multi',
@@ -33,6 +33,8 @@ export const ENTERPRISE_FEATURES: readonly string[] = Object.freeze([
   'audit-log.stream',
   'llm.fix-quota',
   'scim',
+  'compliance-export',
+  'portfolio',
 ]);
 
 export function testPayload(overrides: Partial<LicensePayload> = {}): LicensePayload {

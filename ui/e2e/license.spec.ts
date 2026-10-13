@@ -111,7 +111,16 @@ test.describe('the licence page on a phone', () => {
     issued: '2025-09-01T00:00:00.000Z',
     expires: '2026-09-20T00:00:00.000Z',
     graceEndsAt: '2026-10-04T00:00:00.000Z',
-    features: ['llm.fix-quota', 'audit-log', 'audit-log.stream', 'sso', 'sso.multi', 'scim'],
+    features: [
+      'llm.fix-quota',
+      'audit-log',
+      'audit-log.stream',
+      'sso',
+      'sso.multi',
+      'scim',
+      'compliance-export',
+      'portfolio',
+    ],
     test: true,
   };
   const STATES = [

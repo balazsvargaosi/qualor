@@ -1,5 +1,11 @@
 import type { Provider } from '@angular/core';
 import { FETCH } from '../app/api/api';
+import type {
+  ComplianceReport,
+  PortfolioAggregate,
+  PortfolioOverview,
+  PortfolioProjectRow,
+} from '../app/api/ee';
 import type { Me } from '../app/api/types';
 
 export interface RecordedRequest {
@@ -26,9 +32,10 @@ type Responder = FakeReply | ((request: RecordedRequest) => FakeReply | Promise<
  */
 export class FakeServer {
   readonly requests: RecordedRequest[] = [];
-  private readonly routes: { method: string; path: string; responder: Responder }[] = [];
+  private readonly routes: { method: string; path: string | RegExp; responder: Responder }[] = [];
 
-  on(method: string, path: string, responder: Responder): this {
+  /** Answers `method` on `path`: an exact path, or a pattern for paths with an id in them. */
+  on(method: string, path: string | RegExp, responder: Responder): this {
     this.routes.unshift({ method, path, responder });
     return this;
   }
@@ -49,7 +56,11 @@ export class FakeServer {
       body: text ? (JSON.parse(text) as unknown) : undefined,
     };
     this.requests.push(recorded);
-    const route = this.routes.find((r) => r.method === request.method && r.path === url.pathname);
+    const route = this.routes.find(
+      (r) =>
+        r.method === request.method &&
+        (typeof r.path === 'string' ? r.path === url.pathname : r.path.test(url.pathname)),
+    );
     const reply: FakeReply = route
       ? typeof route.responder === 'function'
         ? await route.responder(recorded)
@@ -167,5 +178,274 @@ export function expectNoPasswordManager(field: Element): void {
   expect(field.getAttribute('data-lpignore')).toBe('true');
   if (field instanceof HTMLInputElement && field.type === 'password') {
     expect(field.getAttribute('autocomplete')).toBe('new-password');
+  }
+}
+
+const COMPLIANCE = '/api/v0/ee/compliance/reports';
+const COMPLIANCE_ID = /^\/api\/v0\/ee\/compliance\/reports\/([^/]+)$/;
+const COMPLIANCE_DOWNLOAD = /^\/api\/v0\/ee\/compliance\/reports\/([^/]+)\/download$/;
+const NO_SEVERITIES = { blocker: 0, high: 0, medium: 0, low: 0, info: 0 };
+
+/** A compliance report as the API shows it (4E-1 §3): a ready project report by default. */
+export function complianceReport(overrides: Partial<ComplianceReport> = {}): ComplianceReport {
+  return {
+    id: '0190a6c2-0000-7000-8000-0000000000c1',
+    scope: 'project',
+    organization: { id: ORG_ID, key: 'default', name: 'Default' },
+    project: { id: '0190a6c2-0000-7000-8000-0000000000f1', key: 'acme/x', name: 'X' },
+    branch: { id: '0190a6c2-0000-7000-8000-0000000000b1', name: 'main' },
+    status: 'ready',
+    createdBy: 'Alice',
+    createdAt: '2026-10-12T10:00:00.000Z',
+    completedAt: '2026-10-12T10:00:05.000Z',
+    standards: [{ id: 'owasp-top10-2021', version: '2021', sourceSha256: 'f'.repeat(64) }],
+    sha256: 'ab'.repeat(32),
+    sizeBytes: 1024,
+    error: null,
+    summary: complianceSummary(),
+    canDelete: false,
+    ...overrides,
+  };
+}
+
+/** A report's summary (4E-1 §2.6): one OWASP Top 10 2021 category and nothing else, by default. */
+export function complianceSummary(
+  overrides: Partial<NonNullable<ComplianceReport['summary']>> = {},
+): NonNullable<ComplianceReport['summary']> {
+  return {
+    findings: { total: 3, bySeverity: { ...NO_SEVERITIES, high: 2, low: 1 }, inNewCode: 1 },
+    standards: [
+      {
+        id: 'owasp-top10-2021',
+        categories: [
+          {
+            id: 'A03',
+            title: 'Injection',
+            open: 2,
+            bySeverity: { ...NO_SEVERITIES, high: 2 },
+            inNewCode: 1,
+            rules: 1,
+            oldestFirstSeenAt: '2026-09-01T00:00:00.000Z',
+          },
+        ],
+        notMapped: { open: 1, bySeverity: { ...NO_SEVERITIES, low: 1 }, inNewCode: 0, rules: 1 },
+        distinctTotal: 3,
+      },
+    ],
+    secrets: { open: 0 },
+    dependencies: { open: 0, bySeverity: { ...NO_SEVERITIES } },
+    triage: { falsePositive: 0, wontFix: 0 },
+    truncated: false,
+    ...overrides,
+  };
+}
+
+/**
+ * The compliance report API (4E-1 §3) over an in-memory list, newest first: list (by
+ * organisation or project), create (a pending report), read, download and delete. A test changes
+ * `reports` to play the build job, or answers a route itself with `server.on`, which wins.
+ */
+export class FakeCompliance {
+  readonly reports: ComplianceReport[];
+  private created = 0;
+
+  constructor(server: FakeServer, reports: ComplianceReport[] = []) {
+    this.reports = [...reports];
+    server.on('GET', COMPLIANCE, (r) => {
+      const organizationId = r.query.get('organizationId');
+      const projectId = r.query.get('projectId');
+      const items = this.reports
+        .filter((report) =>
+          projectId
+            ? report.project?.id === projectId
+            : report.scope === 'organization' && report.organization.id === organizationId,
+        )
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      return { body: page(items) };
+    });
+    server.on('POST', COMPLIANCE, (r) => {
+      const body = r.body as { organizationId?: string; projectId?: string; branchId?: string };
+      this.created++;
+      const report = complianceReport({
+        id: `0190a6c2-0000-7000-8000-${String(900 + this.created).padStart(12, '0')}`,
+        scope: body.projectId ? 'project' : 'organization',
+        project: body.projectId ? { id: body.projectId, key: 'acme/x', name: 'X' } : null,
+        branch: body.branchId ? { id: body.branchId, name: 'main' } : null,
+        status: 'pending',
+        createdAt: new Date(Date.UTC(2026, 9, 13, 0, this.created)).toISOString(),
+        completedAt: null,
+        sha256: null,
+        sizeBytes: null,
+        summary: null,
+        canDelete: true,
+      });
+      this.reports.unshift(report);
+      return { status: 202, body: report };
+    });
+    server.on('GET', COMPLIANCE_ID, (r) => {
+      const report = this.find(r.path, COMPLIANCE_ID);
+      return report ? { body: report } : { status: 404, body: problem(404, 'NOT_FOUND') };
+    });
+    server.on('GET', COMPLIANCE_DOWNLOAD, (r) => {
+      const report = this.find(r.path, COMPLIANCE_DOWNLOAD);
+      if (!report) return { status: 404, body: problem(404, 'NOT_FOUND') };
+      if (report.status !== 'ready') return { status: 409, body: problem(409, 'REPORT_NOT_READY') };
+      return { body: { schemaVersion: 1, id: report.id } };
+    });
+    server.on('DELETE', COMPLIANCE_ID, (r) => {
+      const report = this.find(r.path, COMPLIANCE_ID);
+      if (!report) return { status: 404, body: problem(404, 'NOT_FOUND') };
+      if (report.status === 'pending') return { status: 409, body: problem(409, 'REPORT_PENDING') };
+      this.reports.splice(this.reports.indexOf(report), 1);
+      return { status: 204 };
+    });
+  }
+
+  /** Plays the build job: the report becomes ready with its sha256 and summary. */
+  complete(id: string, overrides: Partial<ComplianceReport> = {}): void {
+    const at = this.reports.findIndex((r) => r.id === id);
+    const report = this.reports[at];
+    if (!report) throw new Error(`no report ${id}`);
+    this.reports[at] = {
+      ...report,
+      status: 'ready',
+      completedAt: '2026-10-13T00:05:00.000Z',
+      sha256: 'cd'.repeat(32),
+      sizeBytes: 2048,
+      summary: complianceSummary(),
+      ...overrides,
+    };
+  }
+
+  private find(path: string, pattern: RegExp): ComplianceReport | undefined {
+    const id = pattern.exec(path)?.[1];
+    return this.reports.find((r) => r.id === id);
+  }
+}
+
+const PORTFOLIO = '/api/v0/ee/portfolio';
+const PORTFOLIO_PROJECTS = '/api/v0/ee/portfolio/projects';
+
+/** A set of portfolio figures (4E-2 §1): three projects, two analysed, one abandoned. */
+export function portfolioAggregate(
+  overrides: Partial<PortfolioAggregate> = {},
+): PortfolioAggregate {
+  return {
+    projects: 3,
+    analysed: 2,
+    abandoned: 1,
+    gate: { passed: 1, failed: 1, error: 0, none: 0 },
+    passedShare: 0.5,
+    securityRating: { A: 1, B: 0, C: 1, D: 0, E: 0 },
+    reliabilityRating: { A: 2, B: 0, C: 0, D: 0, E: 0 },
+    ncloc: 12345,
+    coverage: 72.5,
+    duplication: 3.25,
+    issues: 42,
+    bySeverity: { blocker: 2, high: 5, medium: 10, low: 20, info: 5 },
+    securityIssues: 7,
+    reliabilityIssues: 9,
+    maintainabilityIssues: 26,
+    newIssues: 4,
+    ...overrides,
+  };
+}
+
+/** A project of the portfolio (4E-2 §2): analysed, its gate failed, by default. */
+export function portfolioRow(
+  key: string,
+  overrides: Partial<PortfolioProjectRow> = {},
+): PortfolioProjectRow {
+  return {
+    organization: { key: 'default', name: 'Default' },
+    project: {
+      id: `0190a6c2-0000-7000-8000-${key.padStart(12, '0')}`,
+      key,
+      name: `Project ${key}`,
+    },
+    lastAnalysisAt: '2026-10-12T09:00:00.000Z',
+    abandoned: false,
+    gate: 'failed',
+    securityRating: 'C',
+    reliabilityRating: 'A',
+    ncloc: 1000,
+    coverage: 80,
+    duplication: 2,
+    issues: 12,
+    bySeverity: { blocker: 1, high: 2, medium: 3, low: 4, info: 2 },
+    newIssues: 1,
+    secrets: 0,
+    vulnerableDependencies: 0,
+    ...overrides,
+  };
+}
+
+/**
+ * The portfolio of the default organisation (4E-2 §2): the totals of `portfolioAggregate`, 12
+ * weekly points from 2026-07-20 (coverage 61, 62, … 72; ncloc 1 000 more each week), no
+ * organisations (the organisation scope) and one project on each attention list.
+ */
+export function portfolioOverview(overrides: Partial<PortfolioOverview> = {}): PortfolioOverview {
+  const week = 7 * 24 * 3600 * 1000;
+  const first = Date.UTC(2026, 6, 20);
+  return {
+    generatedAt: '2026-10-13T12:00:00.000Z',
+    scope: { kind: 'organization', organization: { id: ORG_ID, key: 'default', name: 'Default' } },
+    granularity: 'week',
+    totals: { ...portfolioAggregate(), secrets: 1, vulnerableDependencies: 4 },
+    organizations: null,
+    trend: Array.from({ length: 12 }, (_, i) => ({
+      ...portfolioAggregate({
+        coverage: 61 + i,
+        ncloc: 1000 * (i + 1),
+        issues: 30 + i,
+        passedShare: i === 0 ? null : 0.5,
+      }),
+      start: new Date(first + i * week).toISOString(),
+      end: i === 11 ? '2026-10-13T12:00:00.000Z' : new Date(first + (i + 1) * week).toISOString(),
+      analyses: 10 + i,
+      triage: i,
+    })),
+    attention: {
+      failingGates: [portfolioRow('fail')],
+      worstSecurity: [portfolioRow('weak', { securityRating: 'E' })],
+      mostSevere: [
+        portfolioRow('severe', { bySeverity: { blocker: 3, high: 4, medium: 0, low: 0, info: 0 } }),
+      ],
+      abandoned: [portfolioRow('stale', { abandoned: true, lastAnalysisAt: null, gate: null })],
+    },
+    ...overrides,
+  };
+}
+
+/**
+ * The portfolio API (4E-2 §3): the overview (`overview`, for every scope and granularity) and the
+ * projects in pages of `limit` over `rows` (in the order given: the fake does not sort). A test
+ * answers a route itself with `server.on`, which wins.
+ */
+export class FakePortfolio {
+  overview: PortfolioOverview;
+  rows: PortfolioProjectRow[];
+
+  constructor(
+    server: FakeServer,
+    overview: PortfolioOverview = portfolioOverview(),
+    rows: PortfolioProjectRow[] = [portfolioRow('alpha'), portfolioRow('beta')],
+  ) {
+    this.overview = overview;
+    this.rows = rows;
+    server.on('GET', PORTFOLIO, (r) => ({
+      body: {
+        ...this.overview,
+        granularity: r.query.get('granularity') === 'month' ? 'month' : 'week',
+      },
+    }));
+    server.on('GET', PORTFOLIO_PROJECTS, (r) => {
+      const limit = Number(r.query.get('limit') ?? 50);
+      const start = Number(r.query.get('cursor') ?? 0);
+      const items = this.rows.slice(start, start + limit);
+      const next = start + limit < this.rows.length ? String(start + limit) : null;
+      return { body: page(items, next) };
+    });
   }
 }

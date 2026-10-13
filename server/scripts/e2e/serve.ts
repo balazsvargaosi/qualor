@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
+import { connect, createServer as createTcpServer, type Socket } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
@@ -63,8 +64,9 @@ import { sweepE2eDatabases } from './sweep';
  * (QUALOR_E2E_SIEM_PORT) for the audit stream. It starts before the community server, so it is
  * up when Playwright's readiness check passes. Plan 5D: a third server on QUALOR_E2E_BUSINESS_PORT
  * serves the same database under a Business key (`sso`, `audit-log`, `llm.fix-quota`), as a
- * replica would after a move to the Business plan. Mail E2: a reader on QUALOR_E2E_MAIL_PORT hands
- * the tests the body of a pending account email.
+ * replica would after a move to the Business plan. It starts on the first connection to its port
+ * (see {@link lazyServer}). Mail E2: a reader on QUALOR_E2E_MAIL_PORT hands the tests the body of a
+ * pending account email.
  */
 const MAIN = fileURLToPath(new URL('../../.tmp/e2e-main.js', import.meta.url));
 
@@ -339,16 +341,24 @@ async function main(): Promise<void> {
   const enterpriseUrl = await waitForListening(enterprise);
   process.stdout.write(`qualor e2e enterprise server ready at ${enterpriseUrl}\n`);
 
-  // Plan 5D: the same database under a Business key, a replica after a move to that plan.
-  const business = start({
-    ...enterpriseEnv,
-    QUALOR_LICENSE: signTest(E2E_SIGNER, planPayload('E2E Business', BUSINESS_FEATURES)),
-    PORT: String(businessPort),
-    QUALOR_UI_DIR: uiDir,
-    QUALOR_PUBLIC_URL: `http://127.0.0.1:${businessPort}`,
-  });
-  const businessUrl = await waitForListening(business);
-  process.stdout.write(`qualor e2e business server ready at ${businessUrl}\n`);
+  // Plan 5D: the same database under a Business key, a replica after a move to that plan. It
+  // starts on the first connection to its port, not now: sharing the enterprise database and
+  // loading the same plugin, its job worker would claim plugin jobs (a compliance report's build,
+  // 4E-1) and, its key lacking the feature, complete them without running them (enterprise.md
+  // §10.3), so the report would stay pending. The `business` project runs after the `enterprise`
+  // one, when those jobs are done.
+  const business = await lazyServer(businessPort, () =>
+    start({
+      ...enterpriseEnv,
+      QUALOR_LICENSE: signTest(E2E_SIGNER, planPayload('E2E Business', BUSINESS_FEATURES)),
+      PORT: '0',
+      QUALOR_UI_DIR: uiDir,
+      QUALOR_PUBLIC_URL: `http://127.0.0.1:${businessPort}`,
+    }),
+  );
+  process.stdout.write(
+    `qualor e2e business server at http://127.0.0.1:${businessPort} (starts when first used)\n`,
+  );
 
   // QUALOR_PUBLIC_URL: the GitHub tab shows each App's webhook URL (github.md §2.2).
   const server = start({
@@ -376,7 +386,7 @@ async function main(): Promise<void> {
   const shutdown = async (code: number): Promise<void> => {
     if (stopping) return;
     stopping = true;
-    await Promise.all([stop(server), stop(enterprise), stop(business)]);
+    await Promise.all([stop(server), stop(enterprise), business.stop()]);
     rmSync(licenseKeyFile, { force: true });
     await new Promise<void>((resolve) => siem.close(() => resolve()));
     await new Promise<void>((resolve) => mail.close(() => resolve()));
@@ -398,9 +408,64 @@ async function main(): Promise<void> {
     if (!stopping) process.stderr.write(`qualor e2e enterprise server exited (${code})\n`);
     void shutdown(code ?? 1);
   });
-  business.once('exit', (code) => {
+  business.onExit((code) => {
     if (!stopping) process.stderr.write(`qualor e2e business server exited (${code})\n`);
     void shutdown(code ?? 1);
+  });
+}
+
+/** A server {@link lazyServer} starts on first use. */
+interface LazyServer {
+  /** Closes the port, and stops the server if it started. */
+  stop(): Promise<void>;
+  /** Called when the started server exits. */
+  onExit(listener: (code: number | null) => void): void;
+}
+
+/**
+ * Listens on 127.0.0.1:`port` and, on the first connection, starts the server `launch` spawns (on
+ * a port of its own); every connection is then passed through to it.
+ */
+function lazyServer(port: number, launch: () => ChildProcess): Promise<LazyServer> {
+  const exitListeners: ((code: number | null) => void)[] = [];
+  let started: Promise<{ child: ChildProcess; port: number }> | undefined;
+  const begin = async () => {
+    const child = launch();
+    child.once('exit', (code) => exitListeners.forEach((listener) => listener(code)));
+    const url = await waitForListening(child);
+    process.stdout.write(`qualor e2e server for :${port} started at ${url}\n`);
+    return { child, port: Number(new URL(url).port) };
+  };
+  const sockets = new Set<Socket>();
+  const proxy = createTcpServer((socket) => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+    started ??= begin();
+    started.then(
+      (target) => {
+        const upstream = connect(target.port, '127.0.0.1');
+        upstream.on('error', () => socket.destroy());
+        socket.on('error', () => upstream.destroy());
+        socket.pipe(upstream).pipe(socket);
+      },
+      () => socket.destroy(),
+    );
+  });
+  return new Promise((resolve, reject) => {
+    proxy.once('error', reject);
+    proxy.listen(port, '127.0.0.1', () =>
+      resolve({
+        stop: async () => {
+          // A kept-alive connection would hold close() open: end them all.
+          const closed = new Promise<void>((done) => proxy.close(() => done()));
+          for (const socket of sockets) socket.destroy();
+          await closed;
+          const target = await started?.catch(() => undefined);
+          if (target) await stop(target.child);
+        },
+        onExit: (listener) => void exitListeners.push(listener),
+      }),
+    );
   });
 }
 

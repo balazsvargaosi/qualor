@@ -97,6 +97,12 @@ export const settingsRoutes: Routes = [
     loadComponent: () => import('./scim.page').then((m) => m.ScimPage),
   },
   {
+    // 4E-1 §4: the organisation's compliance reports, while `compliance-export` is active.
+    path: 'ee/compliance',
+    title: $localize`:@@title.complianceReports:Compliance reports`,
+    loadComponent: () => import('./compliance.page').then((m) => m.SettingsCompliancePage),
+  },
+  {
     path: 'ee/:id',
     title: $localize`:@@title.extension:Enterprise`,
     loadComponent: () => import('./extension.page').then((m) => m.ExtensionPage),

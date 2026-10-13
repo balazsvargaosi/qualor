@@ -32,6 +32,7 @@
     "fastify-type-provider-zod": "^7.0.0",
     "nodemailer": "10.1.0",
     "openid-client": "6.8.8",
+    "pdfkit": "0.20.2",
     "pg": "^8.23.0",
     "picomatch": "^4.0.7",
     "pino": "^10.3.1",

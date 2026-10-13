@@ -1,0 +1,272 @@
+{
+  "id": "asvs-4.0.3",
+  "family": "asvs",
+  "version": "4.0.3",
+  "title": "OWASP ASVS 4.0.3",
+  "source": "OWASP Application Security Verification Standard 4.0.3, the CWE column of the requirements grouped by chapter, from https://github.com/OWASP/ASVS/tree/v4.0.3",
+  "licence": "CC BY-SA 4.0",
+  "sourceSha256": "2ff036c5e74025071ef2c2246bebcd60d663d8d2143fb459691488df9e9b5462",
+  "categories": [
+    {
+      "id": "V1",
+      "title": "Architecture, Design and Threat Modeling",
+      "cwe": [
+        116,
+        250,
+        265,
+        275,
+        284,
+        295,
+        306,
+        319,
+        320,
+        362,
+        367,
+        477,
+        494,
+        502,
+        602,
+        637,
+        646,
+        923,
+        1009,
+        1029,
+        1053,
+        1059,
+        1104,
+        1110
+      ]
+    },
+    {
+      "id": "V2",
+      "title": "Authentication",
+      "cwe": [
+        16,
+        255,
+        256,
+        263,
+        287,
+        304,
+        307,
+        308,
+        310,
+        319,
+        320,
+        326,
+        327,
+        330,
+        521,
+        522,
+        523,
+        613,
+        620,
+        640,
+        798,
+        916
+      ]
+    },
+    {
+      "id": "V3",
+      "title": "Session Management",
+      "cwe": [
+        16,
+        290,
+        306,
+        331,
+        345,
+        384,
+        539,
+        598,
+        613,
+        614,
+        798,
+        1004,
+        1275
+      ]
+    },
+    {
+      "id": "V4",
+      "title": "Access Control",
+      "cwe": [
+        285,
+        352,
+        419,
+        548,
+        602,
+        639,
+        732
+      ]
+    },
+    {
+      "id": "V5",
+      "title": "Validation, Sanitization and Encoding",
+      "cwe": [
+        20,
+        78,
+        79,
+        89,
+        90,
+        94,
+        95,
+        116,
+        120,
+        134,
+        138,
+        147,
+        159,
+        176,
+        190,
+        235,
+        502,
+        601,
+        611,
+        643,
+        829,
+        830,
+        915,
+        918
+      ]
+    },
+    {
+      "id": "V6",
+      "title": "Stored Cryptography",
+      "cwe": [
+        310,
+        311,
+        320,
+        326,
+        327,
+        338,
+        385,
+        798
+      ]
+    },
+    {
+      "id": "V7",
+      "title": "Error Handling and Logging",
+      "cwe": [
+        117,
+        200,
+        210,
+        285,
+        431,
+        532,
+        544,
+        778
+      ]
+    },
+    {
+      "id": "V8",
+      "title": "Data Protection",
+      "cwe": [
+        19,
+        200,
+        212,
+        226,
+        233,
+        285,
+        319,
+        327,
+        524,
+        525,
+        532,
+        770,
+        922
+      ]
+    },
+    {
+      "id": "V9",
+      "title": "Communication",
+      "cwe": [
+        287,
+        295,
+        299,
+        319,
+        326,
+        544
+      ]
+    },
+    {
+      "id": "V10",
+      "title": "Malicious Code",
+      "cwe": [
+        16,
+        272,
+        350,
+        353,
+        359,
+        507,
+        511,
+        749
+      ]
+    },
+    {
+      "id": "V11",
+      "title": "Business Logic",
+      "cwe": [
+        367,
+        390,
+        754,
+        770,
+        799,
+        841
+      ]
+    },
+    {
+      "id": "V12",
+      "title": "Files and Resources",
+      "cwe": [
+        22,
+        73,
+        78,
+        98,
+        400,
+        409,
+        434,
+        509,
+        552,
+        641,
+        770,
+        829,
+        918
+      ]
+    },
+    {
+      "id": "V13",
+      "title": "API and Web Service",
+      "cwe": [
+        20,
+        116,
+        285,
+        345,
+        352,
+        434,
+        436,
+        598,
+        650,
+        770
+      ]
+    },
+    {
+      "id": "V14",
+      "title": "Configuration",
+      "cwe": [
+        16,
+        116,
+        120,
+        173,
+        200,
+        265,
+        306,
+        346,
+        497,
+        523,
+        749,
+        829,
+        1002,
+        1021,
+        1026
+      ]
+    }
+  ]
+}

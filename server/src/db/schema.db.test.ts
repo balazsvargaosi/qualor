@@ -24,6 +24,7 @@ const TABLES = [
   'audit_events',
   'branch_files',
   'branches',
+  'compliance_reports',
   'gate_conditions',
   'identities',
   'instance_settings',

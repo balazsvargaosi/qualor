@@ -59,6 +59,8 @@ export class LineChart {
   readonly metric = input.required<string>();
   readonly stacked = input(false);
   readonly height = input(280);
+  /** The chart's name for its summary, when the metric's label is not it (a portfolio share). */
+  readonly title = input<string | null>(null);
 
   protected readonly width = signal(640);
   protected readonly active = signal<number | null>(null);
@@ -249,7 +251,7 @@ export class LineChart {
   });
 
   protected readonly summary = computed(() => {
-    const title = label('metric', this.metric());
+    const title = this.title() ?? label('metric', this.metric());
     const cols = this.columns().filter((c) => this.shown(c) !== null);
     const first = cols[0];
     const last = cols[cols.length - 1];

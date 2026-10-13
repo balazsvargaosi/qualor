@@ -8,6 +8,7 @@ const PAGES: Readonly<Record<string, () => Promise<{ default: string }>>> = {
   'ai-assistant': () => import('../../../../docs/guide/ai-assistant.md'),
   'ai-prompts': () => import('../../../../docs/guide/ai-prompts.md'),
   cli: () => import('../../../../docs/guide/cli.md'),
+  'compliance-reports': () => import('../../../../docs/guide/compliance-reports.md'),
   configuration: () => import('../../../../docs/guide/configuration.md'),
   email: () => import('../../../../docs/guide/email.md'),
   // The guide's page about the enterprise edition (Markdown text), not the enterprise/ package.
@@ -19,6 +20,7 @@ const PAGES: Readonly<Record<string, () => Promise<{ default: string }>>> = {
   'languages-and-analyzers': () => import('../../../../docs/guide/languages-and-analyzers.md'),
   'migrate-from-sonarqube': () => import('../../../../docs/guide/migrate-from-sonarqube.md'),
   'other-ci': () => import('../../../../docs/guide/other-ci.md'),
+  portfolio: () => import('../../../../docs/guide/portfolio.md'),
   'quality-gates': () => import('../../../../docs/guide/quality-gates.md'),
   'quick-start': () => import('../../../../docs/guide/quick-start.md'),
   'roles-and-audit': () => import('../../../../docs/guide/roles-and-audit.md'),

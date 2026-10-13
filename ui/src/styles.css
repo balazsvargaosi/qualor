@@ -1058,6 +1058,22 @@ tbody tr:has(.empty-state):hover {
 .tone-none {
   --tone: var(--border-strong);
 }
+/* A rating A–E (the portfolio's distributions): the rating letters' own colours. */
+.tone-rating-a {
+  --tone: var(--rating-a);
+}
+.tone-rating-b {
+  --tone: var(--rating-b);
+}
+.tone-rating-c {
+  --tone: var(--rating-c);
+}
+.tone-rating-d {
+  --tone: var(--rating-d);
+}
+.tone-rating-e {
+  --tone: var(--rating-e);
+}
 
 /* Tabs (a nav of links) */
 .tabs {

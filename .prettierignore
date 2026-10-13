@@ -31,3 +31,8 @@ cli/test/analyzer-output/trivy-deps-vulnerable*
 packages/shared/test/sarif-samples/roslyn.sarif
 # Helm templates are Go templates, not YAML (plan 4A).
 deploy/helm/qualor/templates/
+# 4E-1 §2.2: byte-for-byte copies of the upstream standards sources (SHA-256 in their manifest.json),
+# and the data files standards:generate writes from them (JSON.stringify), compared byte for byte.
+enterprise/scripts/standards/sources/*/
+enterprise/src/compliance/standards/*.json
+!enterprise/src/compliance/standards/freshness.json
