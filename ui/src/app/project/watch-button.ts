@@ -216,6 +216,8 @@ export class WatchButton {
         } catch (err) {
           if (generation !== this.generation) return;
           this.error.set(problemMessage(err));
+          // On purpose: a change queued behind the refused one is dropped too. It was made on top
+          // of settings the server never took, so the menu goes back to the last saved state.
           this.queued = null;
           this.settings.set(settingsOf(this.state()));
           this.restoreInputs();
