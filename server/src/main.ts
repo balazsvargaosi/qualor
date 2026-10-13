@@ -23,6 +23,7 @@ import {
   reconcileStuckLlmRequests,
 } from './llm/job';
 import { MAIL_LEASE_MS, MAIL_WORKER_CONCURRENCY, mailHandlers } from './mail/deliver';
+import { mailDeps } from './mail/outbox';
 import { bootEnterprise, type EnterpriseBoot } from './plugins/boot';
 import { ensurePluginSchedules, startPluginWorker } from './plugins/mount';
 import { startWorker } from './queue/worker';
@@ -223,7 +224,12 @@ async function main(): Promise<void> {
   // up analyses, and several deliveries run at once.
   const webhookWorker = startWorker({
     db: database.db,
-    handlers: webhookHandlers({ db: database.db, secretKey: config.secretKey, logger }),
+    handlers: webhookHandlers({
+      db: database.db,
+      secretKey: config.secretKey,
+      logger,
+      mail: mailDeps(config),
+    }),
     concurrency: WEBHOOK_WORKER_CONCURRENCY,
     leaseMs: WEBHOOK_LEASE_MS,
     logger,

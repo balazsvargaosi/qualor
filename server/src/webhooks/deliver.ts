@@ -6,6 +6,8 @@ import type { Db, Executor } from '../db/client';
 import { LOCKS } from '../db/locks';
 import { webhookDeliveries, webhookSubscriptions } from '../db/schema';
 import { VERSION } from '../index';
+import { alertWebhookFailed } from '../mail/alerts/webhook-alerts';
+import type { MailDeps } from '../mail/outbox';
 import { enqueue } from '../queue/queue';
 import type { JobHandlers } from '../queue/worker';
 import { DELIVERY_JOB_MAX_ATTEMPTS, WEBHOOK_QUEUE, WEBHOOK_SECRET_AAD } from './deliveries';
@@ -120,6 +122,8 @@ export interface DeliveryDeps {
   timeoutMs?: number;
   connectTimeoutMs?: number;
   resolve?: Resolver;
+  /** E1 spec: alerts instance administrators when a delivery gives up; absent, nothing is sent. */
+  mail?: MailDeps | undefined;
 }
 
 /** `busy`: another attempt of the same webhook is in flight; the job is to run again later. */
@@ -230,6 +234,29 @@ export async function deliverWebhook(
           runAt: updated.nextAttemptAt,
           maxAttempts: DELIVERY_JOB_MAX_ATTEMPTS,
         });
+      }
+      // E1 spec: a delivery that gave up alerts the instance administrators (24 h per webhook);
+      // an inactive webhook's refusal is its administrator's own doing and alerts nobody. The
+      // alert runs in a savepoint: a mail error rolls back only the alert, never the recording.
+      if (status === 'failed' && webhook.active && deps.mail) {
+        const mail = deps.mail;
+        try {
+          await tx.transaction((sp) =>
+            alertWebhookFailed(sp, mail, {
+              webhookId: webhook.id,
+              organizationId: webhook.organizationId,
+              projectId: webhook.projectId,
+              url: webhook.url,
+              attempts,
+              responseCode: outcome.status,
+            }),
+          );
+        } catch (error) {
+          deps.logger?.warn(
+            { webhookId: webhook.id, error: error instanceof Error ? error.message : 'unknown' },
+            'webhook failure alert not queued',
+          );
+        }
       }
       deps.logger?.info(
         {
