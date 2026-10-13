@@ -91,6 +91,23 @@ export function visibleProjectsCondition(access: AccessContext, user: UserRow): 
 }
 
 /**
+ * `list:project.read` for many users in one query (mail E3 N4): true when the user in `user.id`
+ * may read the project in `project.id`. The same three ways in as {@link visibleProjectsCondition}
+ * (instance admin, any role in the project's organisation, a grant on the project);
+ * visibility.db.test.ts keeps the two equal.
+ */
+export function projectVisibleTo(
+  user: { id: AnyPgColumn; isInstanceAdmin: AnyPgColumn },
+  project: { id: AnyPgColumn; organizationId: AnyPgColumn },
+): SQL<boolean> {
+  return sql<boolean>`(${user.isInstanceAdmin}
+    OR EXISTS (SELECT 1 FROM memberships v_m
+                WHERE v_m.organization_id = ${project.organizationId} AND v_m.user_id = ${user.id})
+    OR EXISTS (SELECT 1 FROM project_memberships v_pm
+                WHERE v_pm.project_id = ${project.id} AND v_pm.user_id = ${user.id}))`;
+}
+
+/**
  * `list:org.read`: the organisations the user holds a role in or a grant on one of
  * whose projects. Undefined (no filter) for an instance admin, unless `own` asks for the
  * organisations it belongs to itself (`GET /auth/me` lists those, rbac-audit.md §16).
