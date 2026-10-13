@@ -29,7 +29,7 @@ see different numbers.
 |---|---|
 | an instance admin | every project of every organisation |
 | a member of an organisation (any role) | every project of that organisation |
-| someone with a role on single projects only | those projects, in the organisations they belong to |
+| someone with a role on single projects only | those projects (their organisations appear under **All organisations**) |
 
 There are two scopes, switched with **This organisation** and **All organisations** in the page
 header:
@@ -39,8 +39,9 @@ header:
   adds the **Organisations** table, one row per organisation, sorted by key.
 
 The address of the page keeps the scope and the period, for example
-`/portfolio?scope=all&granularity=month`, so a bookmark or a shared link opens the same view (for
-the person who opens it, with the projects they can read).
+`/portfolio?scope=all&granularity=month`. A bookmark or a shared link of **All organisations**
+opens the same view (for the person who opens it, with the projects they can read); one of **This
+organisation** opens the organisation currently chosen in the recipient's header.
 
 ## How the numbers are worked out
 
@@ -49,7 +50,7 @@ merge requests do not count, except in the number of analyses per period (see [T
 
 **The last successful analysis.** A project's state is that of the newest **successful** analysis
 of its main branch: its quality gate and the measures recorded with it. Failed and queued analyses
-are skipped. A project with no successful analysis of its main branch is **never analysed**: it
+are skipped. A project with no successful analysis of its main branch is **never analyzed**: it
 counts in the number of projects, but has no gate, no ratings and no measures. "Last analysis" is
 when Qualor received the upload of that analysis, not the commit date the scanner reports.
 
@@ -71,9 +72,9 @@ duplicate of another), so they have no trend.
 
 **Adding projects up:**
 
-- **Projects** counts every project; **analysed** counts those with a successful analysis.
-- **Gate pass share** is the share of the analysed projects whose gate passed. Projects with
-  **Error** or **No gate** count against it; projects never analysed do not count at all.
+- **Projects** counts every project; **analyzed** counts those with a successful analysis.
+- **Gate pass share** is the share of the analyzed projects whose gate passed. Projects with
+  **Error** or **No gate** count against it; projects never analyzed do not count at all.
 - **Ratings** are shown as how many projects are rated A, B, C, D and E.
 - **Lines of code** and the issue counts are sums.
 - **Coverage** and **duplication** are weighted by lines of code: a project of 100 000 lines
@@ -83,7 +84,7 @@ duplicate of another), so they have no trend.
   it never counts as zero.
 
 **Abandoned** means no successful analysis of the main branch in the **last 30 days**, or never
-analysed. The threshold is fixed.
+analyzed. The threshold is fixed.
 
 ## Trends
 
@@ -113,7 +114,7 @@ Four lists of up to **10 projects** each, every project linked to its page:
 | **Failing quality gates** | the gate failed | the most blocker and high issues first |
 | **Worst security ratings** | rated B to E (A-rated projects never appear) | the worst rating first, then the most security issues |
 | **Most blocker and high issues** | at least one blocker or high issue | the most first |
-| **Not analysed in 30 days** | abandoned | never analysed first, then the oldest last analysis |
+| **Not analyzed in 30 days** | abandoned | never analyzed first, then the oldest last analysis |
 
 Ties are broken by project key. Keys compare character by character, by their code, so `API`
 comes before `api`.
@@ -122,7 +123,7 @@ comes before `api`.
 
 From the top:
 
-1. **Totals**, as cards: the projects with how many are analysed and abandoned; the gate pass
+1. **Totals**, as cards: the projects with how many are analyzed and abandoned; the gate pass
    share; the security and reliability ratings as stacked bars; lines of code; coverage and
    duplication; the open issues by severity; secrets and vulnerable dependencies.
 2. The **trend** charts.
@@ -135,10 +136,11 @@ From the top:
    | Column | Order |
    |---|---|
    | Project | the organisation key, then the project key, A to Z |
-   | Quality gate (the first sort) | Failed, Error, No gate, Passed, then never analysed |
+   | Quality gate (the first sort) | Failed, Error, No gate, Passed, then never analyzed; within each, the worst security rating first (E to A, then unrated) |
    | Security, Reliability | E first, then D to A, then unrated |
-   | Issues, Lines of code, Coverage | the highest first, then the projects without a value |
-   | Last analysis | never analysed first, then the oldest |
+   | Issues, Lines of code | the highest first, then the projects without a value |
+   | Coverage | the lowest first, then the projects without a value |
+   | Last analysis | never analyzed first, then the oldest |
 
 The page says "No projects you can read yet." when the scope holds none.
 
@@ -155,7 +157,7 @@ The page says "No projects you can read yet." when the scope holds none.
   - `last_analysis_at` is a UTC time such as `2027-10-12T09:30:00.000Z`; `abandoned` is `true` or
     `false`; `gate` is `passed`, `failed`, `error` or `none`; the ratings are `A` to `E`;
     `coverage` and `duplication` are percentages.
-  - A value the project does not have, and every measure of a project never analysed, is an empty
+  - A value the project does not have, and every measure of a project never analyzed, is an empty
     cell.
   - A cell that starts with `=`, `+`, `-`, `@`, a tab or a carriage return gets a leading `'`, so
     a spreadsheet never runs it as a formula.
@@ -168,14 +170,16 @@ The page says "No projects you can read yet." when the scope holds none.
      the tables of every point, with the analyses and triage decisions per period;
   4. the organisations (all organisations only);
   5. the four attention lists;
-  6. the projects: the first **50** by quality gate (Failed first). With more projects, the PDF
-     says that the CSV lists every one.
+  6. the projects: the first **50** by quality gate (Failed first, then the worst security
+     rating). With more projects, the PDF says that the CSV lists every one.
 
   The PDF uses the Noto Sans font, which covers Latin, Cyrillic and Greek; a project name in
   another script prints as the font's missing-glyph box. The CSV keeps it as it is.
 
 The file is named `qualor-portfolio-<organisation key>-<yyyymmdd>`, or `qualor-portfolio-all-…`
-for all organisations, with `.csv` or `.pdf`. The date is the day of the download in UTC.
+for all organisations, with `.csv` or `.pdf`. The date is the day of the download in UTC. In the
+file name the key is lower-cased, and characters outside `a`–`z`, `0`–`9` and `-` become `-`; a key
+with nothing left becomes `organization`.
 
 The portfolio is not a stored record: two downloads at different times can differ, since every
 scan changes the numbers. Downloads are sent with `Cache-Control: no-store`, so no proxy or
@@ -229,7 +233,7 @@ with the **Read** scope; a project analysis token is refused. Every route takes 
 | 503 `PORTFOLIO_TIMEOUT` | the 20-second budget, or the PDF's 60 seconds, ran out |
 
 In the JSON, shares are fractions: `passedShare` is `0.8` for 80 %. `coverage` and `duplication`
-are percentages. A value with nothing to count (no project analysed, no project with coverage) is
+are percentages. A value with nothing to count (no project analyzed, no project with coverage) is
 `null`, and so is each value a project does not have.
 
 ```sh
