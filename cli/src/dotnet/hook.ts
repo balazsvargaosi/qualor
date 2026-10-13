@@ -93,6 +93,8 @@ export function hookText(): string {
     <MSBuildWarningsAsErrors></MSBuildWarningsAsErrors>
     <_QualorHash>$([MSBuild]::StableStringHash('$(MSBuildProjectFullPath)|$(TargetFramework)'))</_QualorHash>
     <_QualorLog>$(_QualorSession)/sarif/$(MSBuildProjectName)-$(_QualorHash)-$(TargetFramework).sarif</_QualorLog>
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+    <CompilerGeneratedFilesOutputPath>$(_QualorSession)/generated/$(_QualorHash)</CompilerGeneratedFilesOutputPath>
   </PropertyGroup>
   <Target Name="_QualorBeforeCompile" BeforeTargets="CoreCompile" Condition="'$(_QualorActive)' == 'true'">
     <ItemGroup>
@@ -116,6 +118,24 @@ export function hookText(): string {
   </Target>
   <Target Name="_QualorRecord" AfterTargets="CoreCompile" Condition="'$(_QualorActive)' == 'true'">
     <WriteLinesToFile File="$(_QualorSession)/projects/$(_QualorHash).txt" Lines="$([MSBuild]::Escape('$(MSBuildProjectFullPath)'));$([MSBuild]::Escape('$(TargetFramework)'));$([MSBuild]::Escape('$(_QualorLog)'))" Overwrite="true" />
+  </Target>
+  <Target Name="_QualorRecordInputs" AfterTargets="CoreCompile" Condition="'$(_QualorActive)' == 'true'">
+    <ItemGroup>
+      <_QualorIn Include="qualor-compilation=1" />
+      <_QualorIn Include="project=$([MSBuild]::Escape('$(MSBuildProjectFullPath)'))" />
+      <_QualorIn Include="tfm=$([MSBuild]::Escape('$(TargetFramework)'))" />
+      <_QualorIn Include="assembly=$([MSBuild]::Escape('$(AssemblyName)'))" />
+      <_QualorIn Include="output-kind=$([MSBuild]::Escape('$(OutputType)'))" />
+      <_QualorIn Include="lang-version=$([MSBuild]::Escape('$(LangVersion)'))" />
+      <_QualorIn Include="nullable=$([MSBuild]::Escape('$(Nullable)'))" />
+      <_QualorIn Include="defines=$([MSBuild]::Escape('$(DefineConstants)'))" />
+      <_QualorIn Include="allow-unsafe=$([MSBuild]::Escape('$(AllowUnsafeBlocks)'))" />
+      <_QualorIn Include="generated-dir=$([MSBuild]::Escape('$(CompilerGeneratedFilesOutputPath)'))" />
+      <_QualorIn Include="@(Compile->'source=%(FullPath)')" />
+      <_QualorIn Include="@(ReferencePathWithRefAssemblies->'reference=%(FullPath)')" Condition="'%(ReferencePathWithRefAssemblies.ReferenceSourceTarget)' != 'ProjectReference'" />
+      <_QualorIn Include="@(ReferencePathWithRefAssemblies->'project-reference=%(MSBuildSourceProjectFile)')" Condition="'%(ReferencePathWithRefAssemblies.ReferenceSourceTarget)' == 'ProjectReference'" />
+    </ItemGroup>
+    <WriteLinesToFile File="$(_QualorSession)/compilations/$(_QualorHash).txt" Lines="@(_QualorIn)" Overwrite="true" />
   </Target>
 </Project>
 `;

@@ -90,7 +90,7 @@ describe('the hook text', () => {
     // conditioned on it (the groups nested inside a target inherit the target's condition).
     const afterActivation = text.slice(text.indexOf('  <Import'));
     const topLevel = afterActivation.match(/^ {2}<(PropertyGroup|Target|Import)\b[^>]*>/gm) ?? [];
-    expect(topLevel).toHaveLength(4);
+    expect(topLevel).toHaveLength(5);
     for (const tag of topLevel) expect(tag).toMatch(/_QualorActive/);
   });
   it('turns warnings from errors off and points ErrorLog at the session before CoreCompile', () => {
@@ -123,6 +123,34 @@ describe('the hook text', () => {
     expect(text).toContain(`<ItemGroup Condition="'@(_QualorOwnRoslynator)' == ''">`);
     expect(text).toContain(`<ItemGroup Condition="'@(_QualorOwnSonar)' == ''">`);
     expect(text).toContain('<Analyzer Include="@(QualorBundledSonarAnalyzer)" />');
+  });
+  it('records the compiler inputs after CoreCompile and emits generated files into the session (Roslyn engine)', () => {
+    expect(text).toContain('<EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>');
+    expect(text).toContain(
+      '<CompilerGeneratedFilesOutputPath>$(_QualorSession)/generated/$(_QualorHash)</CompilerGeneratedFilesOutputPath>',
+    );
+    expect(text).toMatch(
+      /<Target Name="_QualorRecordInputs" AfterTargets="CoreCompile" Condition="'\$\(_QualorActive\)' == 'true'">/,
+    );
+    expect(text).toContain('$(_QualorSession)/compilations/$(_QualorHash).txt');
+    expect(text).not.toMatch(/compilations\/.*Encoding=/); // an explicit utf-8 would write a BOM
+    for (const key of [
+      'qualor-compilation=1',
+      'project=',
+      'tfm=',
+      'assembly=',
+      'output-kind=',
+      'lang-version=',
+      'nullable=',
+      'defines=',
+      'allow-unsafe=',
+      'generated-dir=',
+      'source=',
+      'reference=',
+      'project-reference=',
+    ]) {
+      expect(text).toContain(key);
+    }
   });
 });
 
