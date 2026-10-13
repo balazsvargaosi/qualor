@@ -134,6 +134,7 @@ export function hookText(): string {
       <_QualorIn Include="@(Compile->'source=%(FullPath)')" />
       <_QualorIn Include="@(ReferencePathWithRefAssemblies->'reference=%(FullPath)')" Condition="'%(ReferencePathWithRefAssemblies.ReferenceSourceTarget)' != 'ProjectReference'" />
       <_QualorIn Include="@(ReferencePathWithRefAssemblies->'project-reference=%(MSBuildSourceProjectFile)')" Condition="'%(ReferencePathWithRefAssemblies.ReferenceSourceTarget)' == 'ProjectReference'" />
+      <_QualorIn Include="@(ReferencePathWithRefAssemblies->'project-reference-assembly=%(FullPath)')" Condition="'%(ReferencePathWithRefAssemblies.ReferenceSourceTarget)' == 'ProjectReference'" />
     </ItemGroup>
     <WriteLinesToFile File="$(_QualorSession)/compilations/$(_QualorHash).txt" Lines="@(_QualorIn)" Overwrite="true" />
   </Target>

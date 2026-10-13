@@ -178,6 +178,11 @@ describeWithDotnet()('qualor dotnet with a real build (fixtures/csharp-basic)', 
       ]);
       expect(app.get('project-reference')).toEqual([path.join(root, 'lib', 'Lib.csproj')]);
       expect(lib.get('project-reference')).toEqual([]);
+      const asm = app.get('project-reference-assembly');
+      expect(asm).toHaveLength(1); // paired by index with project-reference
+      expect(asm[0]).toMatch(/\/lib\/(obj\/[^/]+\/[^/]+\/ref|bin\/[^/]+\/[^/]+)\/Lib\.dll$/);
+      expect(existsSync(asm[0]!)).toBe(true);
+      expect(lib.get('project-reference-assembly')).toEqual([]);
       expect(app.get('reference').some((r) => r.endsWith('Lib.dll'))).toBe(false);
       const defines = app.get('defines');
       expect(defines).toHaveLength(1);
