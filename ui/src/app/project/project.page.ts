@@ -13,9 +13,9 @@ import { WatchButton } from './watch-button';
 /**
  * A project's frame on the ink page band (spec §7.1): its name with the main branch's gate, the
  * key and the main branch (or those of the branch or merge request an overview shows), and tabs
- * for the overview, branches and issues, plus
- * Access for organisation admins, in every edition, and the Watch button (mail E3). The project (and the caller's `permissions` on
- * it, which the tabs use to hide what the caller may not do, rbac-audit.md §17) is read through
+ * for the overview, branches and issues, plus Access for organisation admins, in every edition,
+ * and the Watch button (mail E3). The project (and the caller's `permissions` on it, which the
+ * tabs use to hide what the caller may not do, rbac-audit.md §17) is read through
  * `CurrentProject`.
  */
 @Component({

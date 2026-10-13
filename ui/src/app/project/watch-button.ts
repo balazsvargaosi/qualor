@@ -26,12 +26,22 @@ export const DEFAULT_WATCH: WatchSettings = {
   events: { gateFailed: true, gateRecovered: true, analysisFailed: true },
 };
 
+/** The settings of a watch the server confirmed; `null` when not watching. */
+function settingsOf(state: WatchState | null): WatchSettings | null {
+  return state?.watching ? { branches: state.branches, events: { ...state.events } } : null;
+}
+
 /**
  * The project's Watch button in the band (mail E3): off, "Watch" starts watching with the defaults
  * and opens the menu; on, "Watching" opens the menu with the scope, the three events and "Stop
  * watching". The menu says why no email would arrive. Escape closes it and gives the focus back; a
  * click elsewhere, scrolling or resizing closes it too. The band clips what overflows it, so the
  * menu is a manual popover in the top layer, placed under the button (as the shell's user menu).
+ *
+ * Each change builds on the settings the menu shows, and the PUTs go one at a time: a change made
+ * while one is on its way is sent after it (only the latest), so quick clicks never undo each
+ * other. A refused change puts the menu back to what the server holds. Answers about a project
+ * the button no longer shows are dropped (the page reuses the component across projects).
  */
 @Component({
   selector: 'q-watch-button',
@@ -50,17 +60,26 @@ export class WatchButton {
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   readonly projectId = input.required<string>();
 
+  /** The watch as the server last confirmed it; `null` until the first answer. */
   protected readonly state = signal<WatchState | null>(null);
+  /** What the menu shows: the settings asked for, saved or on their way. */
+  protected readonly settings = signal<WatchSettings | null>(null);
   protected readonly open = signal(false);
+  protected readonly loading = signal(false);
+  /** A PUT or the DELETE is on its way. */
   protected readonly busy = signal(false);
+  protected readonly stopping = signal(false);
   protected readonly error = signal<string | null>(null);
   private readonly button = viewChild.required<ElementRef<HTMLButtonElement>>('button');
   private readonly menu = viewChild<ElementRef<HTMLElement>>('menu');
 
-  protected readonly settings = computed<WatchSettings | null>(() => {
-    const s = this.state();
-    return s?.watching ? { branches: s.branches, events: s.events } : null;
-  });
+  /** Bumped when the project changes: answers of an earlier generation are dropped. */
+  private generation = 0;
+  /** The settings to send once the PUT on its way has answered (the latest change only). */
+  private queued: WatchSettings | null = null;
+  /** The running sequence of PUTs, if any. */
+  private saving: Promise<void> | null = null;
+
   protected readonly hint = computed(() => {
     switch (this.state()?.emailBlocker) {
       case 'no_address':
@@ -76,46 +95,69 @@ export class WatchButton {
 
   constructor() {
     effect(() => {
-      const id = this.projectId();
+      this.projectId();
       untracked(() => {
+        this.generation += 1;
+        this.queued = null;
+        this.saving = null;
+        this.busy.set(false);
+        this.stopping.set(false);
         this.open.set(false);
         this.state.set(null);
-        this.error.set(null);
-        void this.load(id);
+        this.settings.set(null);
+        void this.load();
       });
     });
-    // The opened menu goes to the top layer under the button, its right edge on the button's.
+    // The opened menu goes to the top layer under the button, its right edge on the button's,
+    // never taller than the viewport below it (it scrolls instead).
     effect(() => {
       const el = this.menu()?.nativeElement;
       if (!el) return;
       const rect = this.button().nativeElement.getBoundingClientRect();
-      el.style.top = `${Math.round(rect.bottom + 6)}px`;
+      const top = Math.round(rect.bottom + 6);
+      el.style.top = `${top}px`;
       el.style.right = `${Math.max(0, Math.round(document.documentElement.clientWidth - rect.right))}px`;
+      el.style.maxHeight = `calc(100dvh - ${top}px - var(--gutter))`;
       // jsdom has no Popover API (the shell's closeMenu does the same check).
       const popover = el as Partial<Pick<HTMLElement, 'showPopover'>>;
       if (popover.showPopover && !el.matches(':popover-open')) popover.showPopover.call(el);
     });
   }
 
-  private async load(id: string): Promise<void> {
+  private async load(): Promise<void> {
+    const generation = this.generation;
+    const id = this.projectId();
+    this.loading.set(true);
+    this.error.set(null);
     try {
       const state = await ok(
         this.api.client.GET('/api/v0/projects/{id}/watch', { params: { path: { id } } }),
       );
-      if (id === this.projectId()) this.state.set(state);
+      if (generation === this.generation) this.confirm(state);
     } catch (err) {
-      if (id === this.projectId()) this.error.set(problemMessage(err));
+      if (generation === this.generation) this.error.set(problemMessage(err));
+    } finally {
+      if (generation === this.generation) this.loading.set(false);
     }
   }
 
+  private confirm(state: WatchState): void {
+    this.state.set(state);
+    this.settings.set(settingsOf(state));
+  }
+
   protected async toggle(): Promise<void> {
-    if (this.busy()) return;
     if (this.open()) {
       this.close();
       return;
     }
-    if (this.state()?.watching === false) await this.save(DEFAULT_WATCH);
-    this.open.set(true);
+    if (this.busy() || this.loading()) return;
+    const generation = this.generation;
+    // A first answer that failed: ask again (the menu then shows the error if it fails again).
+    if (this.state() === null) await this.load();
+    if (generation !== this.generation) return;
+    if (this.state()?.watching === false) await this.edit(DEFAULT_WATCH);
+    if (generation === this.generation) this.open.set(true);
   }
 
   /** Closes the menu; `refocus` gives the focus back to the button (not after a click elsewhere). */
@@ -131,59 +173,102 @@ export class WatchButton {
     }
   }
 
-  protected async setBranches(branches: WatchSettings['branches']): Promise<void> {
+  protected setBranches(branches: WatchSettings['branches']): void {
     const current = this.settings();
-    if (current) await this.save({ ...current, branches });
+    if (current) void this.edit({ ...current, branches });
   }
 
-  protected async setEvent(key: EventKey, event: Event): Promise<void> {
+  protected setEvent(key: EventKey, event: Event): void {
     const current = this.settings();
     if (!current) return;
     const events = { ...current.events };
     events[key] = isChecked(event);
-    await this.save({ ...current, events });
+    void this.edit({ ...current, events });
   }
 
-  protected async stop(): Promise<void> {
-    const state = this.state();
-    if (this.busy() || !state) return;
+  /** Shows `next` at once and saves it, after the PUT on its way if there is one. */
+  private edit(next: WatchSettings): Promise<void> {
+    this.settings.set(next);
+    this.queued = next;
+    this.saving ??= this.drain(this.generation);
+    return this.saving;
+  }
+
+  private async drain(generation: number): Promise<void> {
+    const id = this.projectId();
     this.busy.set(true);
-    this.error.set(null);
     try {
-      await done(
-        this.api.client.DELETE('/api/v0/projects/{id}/watch', {
-          params: { path: { id: this.projectId() } },
-        }),
-      );
-      this.state.set({
-        watching: false,
-        emailReady: state.emailReady,
-        emailBlocker: state.emailBlocker,
-      });
-      this.close();
-    } catch (err) {
-      this.error.set(problemMessage(err));
+      while (this.queued !== null) {
+        const body = this.queued;
+        this.queued = null;
+        this.error.set(null);
+        try {
+          const state = await ok(
+            this.api.client.PUT('/api/v0/projects/{id}/watch', {
+              params: { path: { id } },
+              body,
+            }),
+          );
+          if (generation !== this.generation) return;
+          this.state.set(state);
+          // A newer change is still to be sent: keep showing it.
+          if (this.queued === null) this.settings.set(settingsOf(state));
+        } catch (err) {
+          if (generation !== this.generation) return;
+          this.error.set(problemMessage(err));
+          this.queued = null;
+          this.settings.set(settingsOf(this.state()));
+          this.restoreInputs();
+        }
+      }
     } finally {
-      this.busy.set(false);
+      if (generation === this.generation) {
+        this.saving = null;
+        this.busy.set(false);
+      }
     }
   }
 
-  private async save(body: WatchSettings): Promise<void> {
+  /**
+   * Puts the boxes back to the settings shown: a `[checked]` binding whose value did not change
+   * leaves the box the user clicked as it is.
+   */
+  private restoreInputs(): void {
+    const menu = this.menu()?.nativeElement;
+    const s = this.settings();
+    if (!menu || !s) return;
+    for (const box of menu.querySelectorAll<HTMLInputElement>('input')) {
+      box.checked =
+        box.type === 'radio' ? box.value === s.branches : s.events[box.value as EventKey] === true;
+    }
+  }
+
+  protected async stop(): Promise<void> {
+    if (this.busy() || !this.state()?.watching) return;
+    const generation = this.generation;
+    const id = this.projectId();
     this.busy.set(true);
+    this.stopping.set(true);
     this.error.set(null);
     try {
-      this.state.set(
-        await ok(
-          this.api.client.PUT('/api/v0/projects/{id}/watch', {
-            params: { path: { id: this.projectId() } },
-            body,
-          }),
-        ),
+      await done(
+        this.api.client.DELETE('/api/v0/projects/{id}/watch', { params: { path: { id } } }),
       );
+      if (generation !== this.generation) return;
+      const state = this.state();
+      this.confirm({
+        watching: false,
+        emailReady: state?.emailReady ?? false,
+        emailBlocker: state?.emailBlocker ?? null,
+      });
+      this.close();
     } catch (err) {
-      this.error.set(problemMessage(err));
+      if (generation === this.generation) this.error.set(problemMessage(err));
     } finally {
-      this.busy.set(false);
+      if (generation === this.generation) {
+        this.busy.set(false);
+        this.stopping.set(false);
+      }
     }
   }
 }

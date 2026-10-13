@@ -11,6 +11,8 @@
   gap: 12px;
   width: max-content;
   max-width: min(22rem, calc(100vw - 2 * var(--gutter)));
+  /* max-height comes from the effect too: below the button, a gutter above the bottom. */
+  overflow: auto;
   padding: 12px 14px;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);

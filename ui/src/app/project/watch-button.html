@@ -4,7 +4,7 @@
   class="btn watch-toggle"
   aria-controls="watch-menu"
   [attr.aria-expanded]="open()"
-  [attr.aria-disabled]="busy() ? true : null"
+  [attr.aria-disabled]="!open() && (busy() || loading()) ? true : null"
   (click)="toggle()"
 >
   <q-icon name="bell" />
@@ -25,12 +25,13 @@
     i18n-aria-label="@@watch.menu"
   >
     @if (settings(); as s) {
-      <fieldset>
+      <fieldset [disabled]="stopping()">
         <legend i18n="@@watch.branches">Branches</legend>
         <label
           ><input
             type="radio"
             name="watch-branches"
+            value="main"
             [checked]="s.branches === 'main'"
             (change)="setBranches('main')"
           /><ng-container i18n="@@watch.scope.main">Main branch</ng-container></label
@@ -39,6 +40,7 @@
           ><input
             type="radio"
             name="watch-branches"
+            value="all"
             [checked]="s.branches === 'all'"
             (change)="setBranches('all')"
           /><ng-container i18n="@@watch.scope.all"
@@ -46,11 +48,12 @@
           ></label
         >
       </fieldset>
-      <fieldset>
+      <fieldset [disabled]="stopping()">
         <legend i18n="@@watch.events">Email me when</legend>
         <label
           ><input
             type="checkbox"
+            value="gateFailed"
             [checked]="s.events.gateFailed"
             (change)="setEvent('gateFailed', $event)"
           /><ng-container i18n="@@watch.event.gateFailed"
@@ -60,6 +63,7 @@
         <label
           ><input
             type="checkbox"
+            value="gateRecovered"
             [checked]="s.events.gateRecovered"
             (change)="setEvent('gateRecovered', $event)"
           /><ng-container i18n="@@watch.event.gateRecovered"
@@ -69,6 +73,7 @@
         <label
           ><input
             type="checkbox"
+            value="analysisFailed"
             [checked]="s.events.analysisFailed"
             (change)="setEvent('analysisFailed', $event)"
           /><ng-container i18n="@@watch.event.analysisFailed"
