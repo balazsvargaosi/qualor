@@ -26,6 +26,8 @@ import { runUntilIdle } from '../queue/worker';
 import { analysisFailedKey, notifyAnalysesFailed, notifyAnalysisFailed } from './analysis';
 import { notifyDeps } from './deps';
 
+const MAIN = { name: 'main', kind: 'branch' as const };
+
 describe('analysis failure notifications (mail E3 N2, N7)', () => {
   let h: IngestHarness;
   let mainWatcher: string;
@@ -126,7 +128,7 @@ describe('analysis failure notifications (mail E3 N2, N7)', () => {
     await rejected.ingest(report(rejected), [...DEFAULT_STAGES, reject]);
     const rows = await failures(rejected);
     expect(rows.map((m) => m.toAddress)).toEqual(['alex@example.com', 'mira@example.com']);
-    expect(rows[0]!.dedupeKey).toBe(analysisFailedKey(rejected.id, 'main'));
+    expect(rows[0]!.dedupeKey).toBe(analysisFailedKey(rejected.id, MAIN));
     expect(text(rows[0]!)).toContain('TEST_REJECTED');
   });
 
@@ -138,9 +140,27 @@ describe('analysis failure notifications (mail E3 N2, N7)', () => {
     await h.ctx.db
       .update(mailMessages)
       .set({ createdAt: sql`now() - interval '7 hours'` })
-      .where(eq(mailMessages.dedupeKey, analysisFailedKey(p.id, 'main')));
+      .where(eq(mailMessages.dedupeKey, analysisFailedKey(p.id, MAIN)));
     await p.ingest(report(p), [...DEFAULT_STAGES, reject]);
     expect(await failures(p)).toHaveLength(4);
+  });
+
+  it('keeps a branch and a merge request of the same name in separate windows', async () => {
+    const p = await project();
+    await p.ingest(report(p, { branch: '42' }), [...DEFAULT_STAGES, reject]);
+    await p.ingest(
+      report(p, {
+        branch: 'feature/x',
+        mergeRequest: { id: '42', sourceBranch: 'feature/x', targetBranch: 'main' },
+      }),
+      [...DEFAULT_STAGES, reject],
+    );
+    const rows = await failures(p);
+    expect(rows.map((m) => m.toAddress)).toEqual(['alex@example.com', 'alex@example.com']);
+    expect(rows.map((m) => m.dedupeKey)).toEqual([
+      analysisFailedKey(p.id, { name: '42', kind: 'branch' }),
+      analysisFailedKey(p.id, { name: '42', kind: 'merge_request' }),
+    ]);
   });
 
   it('mails once after the last retry (PROCESSING_ERROR)', async () => {

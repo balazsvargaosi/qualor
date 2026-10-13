@@ -23,16 +23,20 @@ export const ANALYSIS_FAILED_DEDUPE_HOURS = 6;
 
 /**
  * At most 200 characters (E1's `dedupe_key`, which `queueMail` clips): a long branch name is
- * replaced by its hash, or two long branch names would share one dedupe window.
+ * replaced by its hash, or two long branch names would share one dedupe window. The kind is part
+ * of the key, since a merge request is named by its id: branch `42` and merge request !42 have
+ * windows of their own.
  */
-export function analysisFailedKey(projectId: string, branchName: string | null): string {
+export function analysisFailedKey(
+  projectId: string,
+  branch: Pick<BranchHint, 'name' | 'kind'> | null,
+): string {
+  if (branch === null) return `analysis.failed:${projectId}:?`;
   const name =
-    branchName === null
-      ? '?'
-      : branchName.length <= 100
-        ? branchName
-        : `#${createHash('sha256').update(branchName).digest('hex').slice(0, 32)}`;
-  return `analysis.failed:${projectId}:${name}`;
+    branch.name.length <= 100
+      ? branch.name
+      : `#${createHash('sha256').update(branch.name).digest('hex').slice(0, 32)}`;
+  return `analysis.failed:${projectId}:${branch.kind === 'merge_request' ? 'mr' : 'branch'}:${name}`;
 }
 
 /**
@@ -79,7 +83,7 @@ export async function notifyAnalysisFailed(
           kind: 'notify.analysis-failed',
           to: { address: watcher.email, userId: watcher.userId },
           dedupe: {
-            key: analysisFailedKey(row.project.id, branch?.name ?? null),
+            key: analysisFailedKey(row.project.id, branch),
             withinHours: ANALYSIS_FAILED_DEDUPE_HOURS,
           },
           render: () =>
