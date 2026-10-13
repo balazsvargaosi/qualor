@@ -1,6 +1,6 @@
 import { eq, inArray, sql } from 'drizzle-orm';
 import type { Report } from '@qualor/shared';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { addMember, bearer, createUser } from '../../test/app';
 import { createIngestHarness, type IngestHarness, type IngestProject } from '../../test/ingest';
 import { MAIL_ON, payloadOf, queued, watch, type OutboxRow } from '../../test/notify';
@@ -11,6 +11,7 @@ import {
   uploadReport,
   type ReportOverrides,
 } from '../../test/reports';
+import type { Db } from '../db/client';
 import { analyses, analysisReports, jobs, mailMessages } from '../db/schema';
 import { jobHandlers } from '../ingest/handlers';
 import {
@@ -237,6 +238,54 @@ describe('analysis failure notifications (mail E3 N2, N7)', () => {
     );
     expect(await failures(p)).toHaveLength(2);
     await h.ctx.db.delete(jobs).where(inArray(sql`${jobs.payload} ->> 'analysisId'`, ids));
+  });
+
+  it('never throws when queueing fails: logs the error class only, queues nothing, the analysis stays failed', async () => {
+    const p = await project();
+    const id = await upload(p, report(p));
+    expect(
+      await markFailed(h.ctx.db, id, { code: 'TEST_FAILED', message: 'failed by the test' }),
+    ).toBe(true);
+    // The second watcher's outbox row fails (a render bug or a refused row looks the same here):
+    // the first one, already inserted, rolls back with it.
+    let rows = 0;
+    const failing = {
+      transaction: (fn: (tx: unknown) => Promise<number>) =>
+        h.ctx.db.transaction((tx) =>
+          fn(
+            new Proxy(tx, {
+              get(target, prop) {
+                if (prop === 'insert')
+                  return (table: unknown) => {
+                    if (table === mailMessages && ++rows === 2)
+                      throw new Error('could not queue mira@example.com');
+                    return target.insert(table as typeof mailMessages);
+                  };
+                const value: unknown = Reflect.get(target, prop, target);
+                return typeof value === 'function' ? value.bind(target) : value;
+              },
+            }),
+          ),
+        ),
+    } as unknown as Db;
+    const warn = vi.fn();
+    expect(
+      await notifyAnalysisFailed(
+        failing,
+        notifyDeps(h.ctx.config),
+        { analysisId: id, branchHint: { ...MAIN, isMain: true } },
+        { warn },
+      ),
+    ).toBe(0);
+    expect(rows).toBe(2);
+    expect(warn).toHaveBeenCalledExactlyOnceWith(
+      { analysisId: id, errorClass: 'Error' },
+      'analysis failure notifications could not be queued',
+    );
+    expect(await failures(p)).toEqual([]);
+    const [row] = await h.ctx.db.select().from(analyses).where(eq(analyses.id, id));
+    expect(row?.status).toBe('failed');
+    await h.ctx.db.delete(jobs).where(eq(sql`${jobs.payload} ->> 'analysisId'`, id));
   });
 
   it('reconcileDeadAnalyses returns the analyses it failed, and each one is mailed', async () => {
