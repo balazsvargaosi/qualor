@@ -13,6 +13,7 @@ import {
 import { accountTokenKey, issueAccountToken } from '../auth/account-tokens';
 import { SESSION_COOKIE } from '../auth/sessions';
 import type * as Password from '../auth/password';
+import type * as AccountMail from '../mail/account';
 import { accountTokens, instanceSettings, users } from '../db/schema';
 
 /** Every argon2 hash, counted; `before` runs as a hash starts (it sees the database then). */
@@ -28,6 +29,19 @@ vi.mock('../auth/password', async (importOriginal) => {
       hashing.calls += 1;
       await hashing.before?.();
       return actual.hashPassword(password);
+    },
+  };
+});
+
+/** accountMailState, counted: an unknown login does the same work as a known one. */
+const mailState = vi.hoisted(() => ({ calls: 0 }));
+vi.mock('../mail/account', async (importOriginal) => {
+  const actual = await importOriginal<typeof AccountMail>();
+  return {
+    ...actual,
+    accountMailState: (...args: Parameters<typeof actual.accountMailState>) => {
+      mailState.calls += 1;
+      return actual.accountMailState(...args);
     },
   };
 });
@@ -81,6 +95,15 @@ describe('forgot password (mail E2 A3)', () => {
     expect(
       (await auditRows(ctx)).filter((e) => e.action === 'auth.password_reset_requested'),
     ).toEqual([]);
+  });
+
+  it('reads the mail state for an unknown login as for a known one', async () => {
+    await createUser(ctx, { username: 'kim-known' }); // no email: nothing queued for later tests
+    for (const login of ['kim-unknown', 'kim-known']) {
+      mailState.calls = 0;
+      expect((await forgot(login)).statusCode).toBe(202);
+      expect(mailState.calls, login).toBe(1);
+    }
   });
 
   it('queues a message per request and keeps one token, by name or by address', async () => {

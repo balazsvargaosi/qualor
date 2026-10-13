@@ -93,10 +93,11 @@ export const accountRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (
             .select()
             .from(users)
             .where(login.includes('@') ? eq(users.email, login) : eq(users.username, login));
-          const mail = user ? await accountMailState(deps.db, deps.config) : null;
+          // Read for every login, known or not, so both do the same work before the check.
+          const mail = await accountMailState(deps.db, deps.config);
           const stored = await readSignInSettings(deps.db, request.log);
           const policy = { demoUser: deps.config.demoUser, stored, facts: policyFacts() };
-          if (user && mail?.ready === true && mayResetPassword(user, policy)) {
+          if (user && mail.ready && mayResetPassword(user, policy)) {
             const address = user.email;
             const publicUrl = mail.publicUrl;
             await deps.db.transaction(async (tx) => {
