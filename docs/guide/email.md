@@ -1,8 +1,9 @@
 # Email
 
-Qualor sends email through an SMTP server you choose: a test message, alerts for instance
-administrators, and [account emails](#account-emails) (password reset links, invitations, the
-password-changed notice). Nothing is sent until an instance administrator or the operator sets up
+Qualor sends email through an SMTP server you choose: a test message, alerts for
+administrators, [account emails](#account-emails) (password reset links, invitations, the
+password-changed notice), and [project notifications](#project-notifications) for the projects
+you watch. Nothing is sent until an instance administrator or the operator sets up
 a server. Qualor never tracks whether a message was opened or a link clicked.
 
 ## What Qualor sends
@@ -11,16 +12,17 @@ a server. Qualor never tracks whether a message was opened or a link clicked.
 |---|---|---|
 | Test message | the address you type | **Send test** in **Settings → Email** |
 | Licence expiry | every instance administrator with an email address | 30, 7 and 1 day before the licence expires, when its 14-day grace period starts, and when it ends ([When a licence expires](./enterprise.md#when-a-licence-expires)). Each once per licence key; a step that was missed (email was off then) is not sent late |
-| Failing webhook | every instance administrator with an email address | when a webhook delivery gives up after its 7 attempts; at most one a day for each webhook, and only for a webhook that is switched on ([Webhooks](./webhooks-and-api.md#webhooks)) |
+| Failing webhook | every instance administrator with an email address, and the organisation's administrators ([below](#failing-webhooks-for-organisation-administrators)) | when a webhook delivery gives up after its 7 attempts; at most one a day for each webhook, and only for a webhook that is switched on ([Webhooks](./webhooks-and-api.md#webhooks)) |
 | Password reset link | the account's email address | **Forgot password?** on the sign-in page ([Account emails](#account-emails)) |
 | Invitation | the invited user's email address | an instance administrator invites a new user in **Settings → Users** |
 | Password changed | the account's email address | after a reset through a link, a change of one's own password, or a reset by an administrator |
+| Project notifications | everyone who watches the project | its quality gate fails or passes again, or an analysis fails ([Project notifications](#project-notifications)) |
 
-Each alert has a switch in **Settings → Email → Alerts for administrators**; both are on. An
-administrator without an email address gets nothing: add one in **Settings → Users**. The panel
-says how many administrators have none.
-
-Notifications about your projects are **not available yet**.
+Each alert has a switch in **Settings → Email → Alerts for administrators**; both are on.
+Organisation administrators turn their failing-webhook email off in **Settings → Notifications**
+([below](#failing-webhooks-for-organisation-administrators)). An administrator without an email
+address gets nothing: add one in **Settings → Users**. The panel says how many administrators have
+none.
 
 Every message has an HTML part and a plain-text part. Its links lead to the address in
 `QUALOR_PUBLIC_URL`; without it, a message says where to go in Qualor instead, and
@@ -51,6 +53,59 @@ Without an SMTP server or without `QUALOR_PUBLIC_URL`, the sign-in page shows no
 **Forgot password?**, **Settings → Users** creates users with an initial password only, and an
 instance admin resets forgotten passwords. See
 [Users, projects and tokens](./users-projects-tokens.md#forgotten-passwords-and-invitations).
+
+## Project notifications
+
+Anyone who can see a project can **watch** it and get an email when something needs them:
+
+| Email | Sent when |
+|---|---|
+| **Quality gate failed** | the gate of a watched branch becomes Failed, from any other status, also on a branch's first analysis. It lists the failing conditions and counts the new issues by severity |
+| **Quality gate passes again** | the gate goes from Failed to Passed, after an analysis or after issues were marked false positive or won't fix (or reopened) |
+| **Analysis failed** | Qualor could not process an analysis, for example an invalid report. At most one email per branch every 6 hours, so a broken pipeline does not fill your inbox. When Qualor cannot tell which branch failed, every watcher of the project gets it |
+
+### Watching a project
+
+On a project's page, press **Watch** (the bell). Watching starts with the main branch and all three
+emails. Press **Watching** to change it:
+
+- **Main branch**, or **All branches and merge requests**;
+- each of the three emails on or off: **The quality gate fails**, **The quality gate passes
+  again** and **An analysis fails**;
+- **Stop watching**.
+
+**Settings → Notifications** lists every project you watch, with the same choices, and has the
+switch for all notification email, **Email me at** your address.
+
+Nobody watches anything until they press Watch: creating a project watches nothing.
+
+### Who gets the email
+
+An email goes to you only while all of these hold:
+
+- you can still see the project: a role in its organisation, a role on the project, or instance
+  administrator. If you lose access, the emails stop; they start again if you get access back;
+- your account is active and has an email address. An instance administrator sets it in
+  **Settings → Users**;
+- **Email me at …** is on in **Settings → Notifications**;
+- email is set up on the server (see the top of this page).
+
+The [read-only demo](./users-projects-tokens.md#a-public-read-only-demo) account never gets email.
+
+### Stopping the emails
+
+Every email ends with **Stop watching this project** and **Notification settings**. Stop watching
+works without signing in: the page asks once, then stops. Opening the link only shows that
+question, so a mail scanner that opens links stops nothing. Mail apps with a one-click unsubscribe
+button (Gmail, Apple Mail, Outlook) use the same link. Without `QUALOR_PUBLIC_URL` the emails have
+no links; use **Settings → Notifications** instead.
+
+### Failing webhooks for organisation administrators
+
+Organisation administrators also get the failing-webhook email for their organisation's webhooks
+(see [Webhooks](./webhooks-and-api.md#webhooks)), at most once a day per webhook. Turn it off in
+**Settings → Notifications** with **Failing webhooks in organisations I administer**. An instance
+administrator who is also an organisation administrator gets it once, not twice.
 
 ## Set up in Qualor
 
@@ -153,3 +208,4 @@ administrators only. Changing the settings and sending a test are in the
 | "The SMTP server refused the message." | the server refused the sender or the recipient without a reply that says why | check the **From address** and the recipient; look at the mail server's own log |
 | messages have no links, and the page warns about `QUALOR_PUBLIC_URL` | `QUALOR_PUBLIC_URL` is not set | set it and restart ([Server settings](./install-server.md#server-settings)) |
 | an administrator gets no alerts | no email address, the alert is off, or it was sent already (once per licence step, once a day per webhook) | add the address in **Settings → Users**; check the switches; look at **Recent messages** |
+| Notifications arrive late, or many watchers get one at once | the email provider limits how fast Qualor may send, and many watchers can reach that limit | nothing: Qualor retries throttled messages for about an hour. **Recent messages** shows them as Retrying |

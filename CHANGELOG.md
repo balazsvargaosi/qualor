@@ -27,6 +27,14 @@ All notable changes to Qualor are listed here, newest first. The format follows
   `POST /auth/invitations/inspect`, `POST /auth/invitations/accept`, and
   `POST`/`DELETE /users/{id}/invitation`; `POST /users` takes `invite`, users carry `invitation`,
   and `GET /auth/methods` says `passwordReset`.
+- Project notifications by email: press **Watch** on a project to get an email when its quality
+  gate fails, when it passes again, and when an analysis fails, on the main branch or on every
+  branch and merge request. **Settings → Notifications** lists your watched projects and turns
+  notification email off. Every email has a **Stop watching** link that works without signing in,
+  and mail apps' one-click unsubscribe works too. Organisation administrators also get the
+  failing-webhook email for their organisation.
+- API: `GET`/`PUT`/`DELETE /projects/{id}/watch`, `GET`/`PUT /me/notifications`, and the public
+  `GET` and `POST /notifications/unsubscribe` (RFC 8058 one-click).
 
 ## [0.7.1] - 2026-10-12
 

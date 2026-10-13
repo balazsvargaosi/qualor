@@ -142,7 +142,8 @@ records the old and new user name, display name, email and external id, as an ad
 user records its fields. Also not recorded:
 analysis uploads and their processing, every *read* except an export, a refused request other
 than a sign-in attempt, an issue change Qualor itself makes (closing, reopening or mirroring
-during ingestion, a gate re-evaluation), and GitHub's own webhook deliveries to Qualor.
+during ingestion, a gate re-evaluation), GitHub's own webhook deliveries to Qualor, and watching
+projects and the notification settings (personal preferences).
 
 Each event also keeps the caller's **IP address and browser** (cut to 256 characters) for as long
 as retention keeps the event — worth knowing for your own privacy notice.

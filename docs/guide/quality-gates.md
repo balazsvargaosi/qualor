@@ -65,6 +65,11 @@ Rules of evaluation:
 - Changing a gate does not re-judge past analyses. Changing an issue's status does re-judge the
   branch's latest analysis at once.
 
+### Watching a project
+
+To get an email when a project's gate fails or passes again, or when one of its analyses fails,
+press **Watch** on the project's page. See [Project notifications](./email.md#project-notifications).
+
 ### Metrics you can use in conditions
 
 | Group | Metrics (add `new_` for the new-code version) |

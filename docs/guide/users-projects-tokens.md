@@ -35,7 +35,9 @@ deactivate users, and make or remove instance admins. A new user and a user whos
 reset must choose a new password at their next password sign-in (a single sign-on sign-in does
 not ask). Passwords have at least 12 characters, and sign-in is rate-limited.
 
-An instance admin needs an email address to get Qualor's [alerts by email](./email.md).
+An instance admin needs an email address to get Qualor's [alerts by email](./email.md). Everyone needs one to get
+[project notifications](./email.md#project-notifications); an instance administrator sets it in
+**Settings → Users**.
 
 Organization admins manage organisation membership and roles in **Settings → Members**: add
 someone by their exact user name, change their role, or remove them. An organisation always keeps
