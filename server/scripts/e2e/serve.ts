@@ -18,6 +18,9 @@ import {
 import { BUSINESS_FEATURES, ENTERPRISE_FEATURES, signTest, testPayload } from '../../test/license';
 import { E2E_SIGNER, signCurrent } from '../../test/license-e2e-key';
 import { databaseUrl } from '../../test/urls';
+import { decryptSecret, encryptionKey } from '../../src/crypto/secrets';
+import type { EncryptedValue } from '../../src/db/schema';
+import { mailPayloadAad } from '../../src/mail/outbox';
 import { buildServer } from '../bundle';
 import {
   seedAi,
@@ -60,7 +63,8 @@ import { sweepE2eDatabases } from './sweep';
  * (QUALOR_E2E_SIEM_PORT) for the audit stream. It starts before the community server, so it is
  * up when Playwright's readiness check passes. Plan 5D: a third server on QUALOR_E2E_BUSINESS_PORT
  * serves the same database under a Business key (`sso`, `audit-log`, `llm.fix-quota`), as a
- * replica would after a move to the Business plan.
+ * replica would after a move to the Business plan. Mail E2: a reader on QUALOR_E2E_MAIL_PORT hands
+ * the tests the body of a pending account email.
  */
 const MAIN = fileURLToPath(new URL('../../.tmp/e2e-main.js', import.meta.url));
 
@@ -197,6 +201,7 @@ async function main(): Promise<void> {
   const enterprisePort = Number(process.env.QUALOR_E2E_ENTERPRISE_PORT ?? String(port + 1));
   const siemPort = Number(process.env.QUALOR_E2E_SIEM_PORT ?? String(port + 2));
   const businessPort = Number(process.env.QUALOR_E2E_BUSINESS_PORT ?? String(port + 3));
+  const mailPort = Number(process.env.QUALOR_E2E_MAIL_PORT ?? String(port + 4));
   const plugin = path.resolve(env('QUALOR_E2E_ENTERPRISE_PLUGIN'));
   if (!existsSync(plugin)) throw new Error(`no built enterprise plugin at ${plugin}`);
   const roleUsers = {
@@ -323,6 +328,7 @@ async function main(): Promise<void> {
     await settings.end();
   }
   const siem = await siemReceiver(siemPort);
+  const mail = await mailReader(mailPort, databaseUrl(adminUrl, name), serverEnv.QUALOR_SECRET_KEY);
 
   const enterprise = start({
     ...enterpriseEnv,
@@ -373,6 +379,7 @@ async function main(): Promise<void> {
     await Promise.all([stop(server), stop(enterprise), stop(business)]);
     rmSync(licenseKeyFile, { force: true });
     await new Promise<void>((resolve) => siem.close(() => resolve()));
+    await new Promise<void>((resolve) => mail.close(() => resolve()));
     await closeFakes().catch((err: unknown) => {
       process.stderr.write(`qualor e2e fakes did not close: ${String(err)}\n`);
     });
@@ -411,6 +418,57 @@ function planPayload(
     expires: utc(now + 365 * day),
     features: [...features],
   });
+}
+
+/**
+ * Mail E2: the end-to-end tests read the link of an account email the community server queued.
+ * E1's seedMail points the server's SMTP at 127.0.0.1:9, where nothing listens, so the message
+ * stays pending (its next try is a minute later) and its body is still stored; this decrypts it
+ * with the server's key. Test only, on 127.0.0.1.
+ */
+function mailReader(port: number, connectionString: string, secretKey: string): Promise<Server> {
+  const key = encryptionKey(secretKey);
+  const server = createServer((req, res) => {
+    void (async () => {
+      const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+      const to = url.searchParams.get('to');
+      const kind = url.searchParams.get('kind');
+      if (url.pathname !== '/latest' || !to || !kind) {
+        res.statusCode = 404;
+        res.end();
+        return;
+      }
+      const client = new pg.Client({ connectionString });
+      await client.connect();
+      try {
+        const { rows } = await client.query<{
+          id: string;
+          subject: string;
+          payload_enc: EncryptedValue;
+        }>(
+          `SELECT id, subject, payload_enc FROM mail_messages
+            WHERE to_address = $1 AND kind = $2 AND payload_enc IS NOT NULL
+            ORDER BY id DESC LIMIT 1`,
+          [to, kind],
+        );
+        const row = rows[0];
+        const plain = row ? decryptSecret(key, row.payload_enc, mailPayloadAad(row.id)) : null;
+        if (!row || plain === null) {
+          res.statusCode = 404;
+          res.end();
+          return;
+        }
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ subject: row.subject, ...(JSON.parse(plain) as object) }));
+      } finally {
+        await client.end();
+      }
+    })().catch(() => {
+      res.statusCode = 500;
+      res.end();
+    });
+  });
+  return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve(server)));
 }
 
 /**
