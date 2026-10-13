@@ -209,4 +209,25 @@ describe('createLogger (api.md §4 redaction)', () => {
     expect(out).toContain(`"url":"${UNSUBSCRIBE_PATH}"`);
     expect(out).toContain('"url":"/api/v0/issues?q=kept-query"');
   });
+
+  it('drops the token of any spelling that reaches the unsubscribe route, or names it', () => {
+    const { lines, logger } = capture();
+    // Matched by the route (the router decoded the path), and a variant no route took (a 404).
+    logger.info(
+      {
+        req: {
+          method: 'GET',
+          url: '/api/v0/notifications/unsubscrib%65?t=ROUTED-TOKEN',
+          routeOptions: { url: UNSUBSCRIBE_PATH },
+        },
+      },
+      'routed',
+    );
+    logger.info({ req: { method: 'GET', url: `${UNSUBSCRIBE_PATH}/?t=SLASH-TOKEN` } }, 'slash');
+    const out = lines.join('\n');
+    expect(out).not.toContain('ROUTED-TOKEN');
+    expect(out).not.toContain('SLASH-TOKEN');
+    expect(out).toContain('"url":"/api/v0/notifications/unsubscrib%65"');
+    expect(out).toContain(`"url":"${UNSUBSCRIBE_PATH}/"`);
+  });
 });

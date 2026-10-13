@@ -77,6 +77,8 @@ interface SerializableRequest {
   ip?: string;
   headers?: Record<string, unknown>;
   socket?: { remotePort?: number };
+  /** The matched route: another spelling of its path (`%65` for `e`) still names it here. */
+  routeOptions?: { url?: string };
 }
 
 /**
@@ -85,13 +87,15 @@ interface SerializableRequest {
  * and `remotePort` (fastify/lib/logger-pino.js, checked against the installed 5.12.5). This keeps the
  * same fields, so no existing log consumer changes, and additionally drops the query string of a URL
  * under `SSO_PATH_PREFIX` (it holds `code` and `state`, sso-scim.md §7.8) and of the stop-watching
- * link under `UNSUBSCRIBE_PATH` (its token `t`, mail E3).
+ * link under `UNSUBSCRIBE_PATH` or routed to it (its token `t`, mail E3).
  */
 function reqSerializer(req: SerializableRequest): Record<string, unknown> {
   const url = typeof req.url === 'string' ? req.url : undefined;
   const cut =
-    url?.startsWith(SSO_PATH_PREFIX) || url?.startsWith(UNSUBSCRIBE_PATH)
-      ? url.split('?', 1)[0]
+    url?.startsWith(SSO_PATH_PREFIX) ||
+    url?.startsWith(UNSUBSCRIBE_PATH) ||
+    req.routeOptions?.url === UNSUBSCRIBE_PATH
+      ? url?.split('?', 1)[0]
       : url;
   return {
     method: req.method,

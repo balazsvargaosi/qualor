@@ -344,6 +344,13 @@ describe('watch, notification and unsubscribe routes (mail E3)', () => {
     expect((await openLink(token)).statusCode).toBe(303);
     expect((await unsubscribe(token)).statusCode).toBe(200);
     expect((await unsubscribe('garbage-token-value')).statusCode).toBe(400);
+    // Another spelling of the path that the router still matches: the matched route counts.
+    const spelled = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/v0/notifications/unsubscrib%65?t=${encodeURIComponent(token)}`,
+      remoteAddress: nextIp(),
+    });
+    expect(spelled.statusCode).toBe(200);
     const lines = ctx.logs.slice(from).join('\n');
     expect(lines).toContain('"url":"/api/v0/notifications/unsubscribe"');
     for (const secret of [
@@ -355,6 +362,23 @@ describe('watch, notification and unsubscribe routes (mail E3)', () => {
     ]) {
       expect(lines).not.toContain(secret);
     }
+  });
+
+  it('refuses a body over 1 KB with 413, and keeps the watch', async () => {
+    await watch(ctx.db, viewerId, projectId);
+    const token = unsubscribeToken(ctx.config.secretKey, viewerId, projectId);
+    for (const contentType of ['application/x-www-form-urlencoded', 'application/json']) {
+      const res = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/v0/notifications/unsubscribe?t=${encodeURIComponent(token)}`,
+        remoteAddress: nextIp(),
+        headers: { 'content-type': contentType },
+        payload: `List-Unsubscribe=One-Click&pad=${'x'.repeat(1024)}`,
+      });
+      expect(res.statusCode, contentType).toBe(413);
+    }
+    expect(await watchesOf(viewerId, projectId)).toHaveLength(1);
+    await ctx.db.delete(projectWatches).where(eq(projectWatches.userId, viewerId));
   });
 
   it('answers project null once the project is gone', async () => {
