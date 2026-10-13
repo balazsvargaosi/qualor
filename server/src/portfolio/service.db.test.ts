@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { FastifyRequest } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
@@ -814,15 +814,16 @@ describe('ctx.portfolio overview (4E-2 §1, §2)', () => {
   const sorted = (): [string, string[]][] => [
     // R5: organisation key, then project key, in byte order (upper case first).
     ['key', ['alpha', 'beta', 'delta', 'gamma', 'Zulu', 'omega']],
-    // failed, error, none, passed, then never analysed.
-    ['gate', [...tie('beta', 'omega'), 'delta', ...tie('alpha', 'Zulu'), 'gamma']],
+    // failed, error, none, passed, then never analysed; within one, the worst security rating
+    // first (R11): beta (E) before omega (B).
+    ['gate', ['beta', 'omega', 'delta', ...tie('alpha', 'Zulu'), 'gamma']],
     // E first; delta (no measures) and gamma (never analysed) last.
     ['security', ['beta', 'omega', ...tie('alpha', 'Zulu'), ...tie('delta', 'gamma')]],
     ['reliability', ['alpha', ...tie('beta', 'omega', 'Zulu'), ...tie('delta', 'gamma')]],
     ['issues', ['alpha', 'beta', 'omega', 'Zulu', ...tie('delta', 'gamma')]],
     ['ncloc', ['beta', 'alpha', 'omega', 'Zulu', ...tie('delta', 'gamma')]],
-    // beta has no coverage: with the unmeasured, last.
-    ['coverage', ['omega', 'alpha', 'Zulu', ...tie('beta', 'delta', 'gamma')]],
+    // The lowest first (R12); beta has no coverage: with the unmeasured, last.
+    ['coverage', ['Zulu', 'alpha', 'omega', ...tie('beta', 'delta', 'gamma')]],
     // Oldest first, and never analysed before everything (the most stale).
     ['lastAnalysis', ['gamma', 'beta', 'omega', 'Zulu', 'delta', 'alpha']],
   ];
@@ -845,6 +846,49 @@ describe('ctx.portfolio overview (4E-2 §1, §2)', () => {
         expect(sizes.at(-1)).toBeGreaterThan(0);
         expect(sizes.slice(0, -1).every((n) => n === limit)).toBe(true);
       }
+    }
+  });
+
+  it('pages through the gate sort by its security tie-break either way round the ids (R11)', async () => {
+    /** Sets the security rating of a project's one main-branch analysis (beta's or omega's). */
+    const setSecurity = (key: string, value: number) =>
+      ctx.db
+        .update(measures)
+        .set({ value })
+        .where(
+          and(
+            eq(measures.metricKey, 'security_rating'),
+            inArray(
+              measures.analysisId,
+              ctx.db
+                .select({ id: analyses.id })
+                .from(analyses)
+                .where(eq(analyses.projectId, ids[key]!)),
+            ),
+          ),
+        );
+    // beta and omega both fail their gate. One of the two orders runs against their id order,
+    // so a cursor without the rating would skip or repeat a row in it.
+    try {
+      for (const [beta, omega, first] of [
+        [5, 2, ['beta', 'omega']],
+        [2, 5, ['omega', 'beta']],
+      ] as const) {
+        await setSecurity('beta', beta);
+        await setSecurity('omega', omega);
+        for (const limit of [1, 2, 4]) {
+          const { seen } = await pageThrough(root, { scope: 'all', sort: 'gate' }, limit);
+          expect(keysOf(seen), `beta ${beta}, omega ${omega}, limit ${limit}`).toEqual([
+            ...first,
+            'delta',
+            ...tie('alpha', 'Zulu'),
+            'gamma',
+          ]);
+        }
+      }
+    } finally {
+      await setSecurity('beta', 5);
+      await setSecurity('omega', 2);
     }
   });
 
@@ -883,6 +927,8 @@ describe('ctx.portfolio overview (4E-2 §1, §2)', () => {
       ['ncloc', keyCursor],
       ['key', dateCursor],
       ['gate', encode({ v: 4, id: ids.alpha })],
+      ['gate', encode({ v: [4, 1], id: ids.alpha })],
+      ['gate', encode({ v: [0, 6], id: ids.alpha })],
       ['security', encode({ v: 0, id: ids.alpha })],
       ['lastAnalysis', encode({ v: '2026-10-13', id: ids.alpha })],
     ] as const) {

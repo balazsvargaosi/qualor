@@ -330,9 +330,10 @@ function sortOrder<V>(
   return { value, compare: compare as (a: unknown, b: unknown) => number, schema };
 }
 
+const ratingSchema = z.number().int().min(1).max(5).nullable();
 const ratingOrder = (rating: (row: PortfolioProjectRow) => Rating | null): SortOrder =>
-  sortOrder((r) => ratingValue(rating(r)), desc, z.number().int().min(1).max(5).nullable());
-const measureOrder = (key: 'issues' | 'ncloc' | 'coverage'): SortOrder =>
+  sortOrder((r) => ratingValue(rating(r)), desc, ratingSchema);
+const measureOrder = (key: 'issues' | 'ncloc'): SortOrder =>
   sortOrder((r) => r[key], desc, z.number().nullable());
 
 /** 4E-2 §2: the sorts of the projects table. A missing value sorts last, except where noted. */
@@ -342,16 +343,22 @@ const SORTS: Record<PortfolioSort, SortOrder> = {
     (a, b) => byteOrder(a[0], b[0]) || byteOrder(a[1], b[1]),
     z.tuple([z.string(), z.string()]),
   ),
+  // R11: within a gate status, the worst security rating first (E to A, unrated last). The
+  // tie-break is part of the value the cursor carries, so paging never skips or repeats a row.
   gate: sortOrder(
-    (r) => (r.gate === null ? null : GATE_RANK[r.gate]),
-    ascNullLast,
-    z.number().int().min(0).max(3).nullable(),
+    (r): [number | null, number | null] => [
+      r.gate === null ? null : GATE_RANK[r.gate],
+      ratingValue(r.securityRating),
+    ],
+    (a, b) => ascNullLast(a[0], b[0]) || desc(a[1], b[1]),
+    z.tuple([z.number().int().min(0).max(3).nullable(), ratingSchema]),
   ),
   security: ratingOrder((r) => r.securityRating),
   reliability: ratingOrder((r) => r.reliabilityRating),
   issues: measureOrder('issues'),
   ncloc: measureOrder('ncloc'),
-  coverage: measureOrder('coverage'),
+  // R12: the lowest coverage first (the projects that need tests), unmeasured last.
+  coverage: sortOrder((r) => r.coverage, ascNullLast, z.number().nullable()),
   // Oldest first, and never analysed before all: those are the most stale. The values are
   // toISOString()'s, so byte order is time order.
   lastAnalysis: sortOrder(
