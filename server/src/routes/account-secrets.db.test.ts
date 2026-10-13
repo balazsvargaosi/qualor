@@ -8,12 +8,12 @@ import { createLogger } from '../http/logger';
 import { mailHandlers } from '../mail/deliver';
 import { runUntilIdle } from '../queue/worker';
 
-const TABLES = ['mail_messages', 'audit_events', 'jobs', 'account_tokens', 'users'] as const;
-
 describe('account link secrets never leak (mail E2 A2)', () => {
   let ctx: TestContext;
   let sink: FakeSmtp;
   const workerLines: string[] = [];
+  /** Every answer the test got: status, headers and payload, as one string each. */
+  const answers: string[] = [];
 
   beforeAll(async () => {
     // E1's test SMTP server, without TLS or AUTH, answering 250 to every message.
@@ -25,16 +25,19 @@ describe('account link secrets never leak (mail E2 A2)', () => {
     await sink.close();
   });
 
-  const post = (url: string, payload: object, headers?: Record<string, string>) =>
-    ctx.app.inject({
+  const post = async (url: string, payload: object, headers?: Record<string, string>) => {
+    const res = await ctx.app.inject({
       method: 'POST',
       url,
       payload,
       remoteAddress: nextIp(),
       ...(headers ? { headers } : {}),
     });
+    answers.push(`${res.statusCode} ${JSON.stringify(res.headers)} ${res.payload}`);
+    return res;
+  };
 
-  it('keeps reset and invitation secrets out of every log line, every table and every subject', async () => {
+  it('keeps reset and invitation secrets out of every answer, log line, table and subject', async () => {
     await createUser(ctx, { username: 'lena', email: 'lena@example.test' });
     expect((await post('/api/v0/auth/password-reset', { login: 'lena' })).statusCode).toBe(202);
     const [reset] = await mailsTo(ctx, 'lena@example.test', 'account.password-reset');
@@ -90,10 +93,22 @@ describe('account link secrets never leak (mail E2 A2)', () => {
     // reset, its password-changed notice, the invitation (accepting sends none)
     expect(sink.received).toHaveLength(3);
 
+    // Every table there is, so one added later is scanned too.
+    const tables = (
+      await ctx.db.execute<{ name: string }>(
+        sql`SELECT table_name AS name FROM information_schema.tables
+             WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`,
+      )
+    ).rows.map((r) => r.name);
+    expect(tables).toEqual(
+      expect.arrayContaining(['mail_messages', 'audit_events', 'jobs', 'account_tokens', 'users']),
+    );
+    expect(answers).toHaveLength(6);
     for (const secret of [resetToken, inviteToken]) {
+      expect(answers.filter((answer) => answer.includes(secret))).toEqual([]);
       expect(ctx.logs.filter((line) => line.includes(secret))).toEqual([]);
       expect(workerLines.filter((line) => line.includes(secret))).toEqual([]);
-      for (const table of TABLES) {
+      for (const table of tables) {
         const found = await ctx.db.execute<{ n: number }>(
           sql`SELECT count(*)::int AS n FROM ${sql.identifier(table)} x WHERE to_jsonb(x)::text LIKE ${`%${secret}%`}`,
         );
