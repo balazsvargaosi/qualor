@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { markerOf } from '../scm/markdown';
-import { AI_FIX_MARKER, aiFixMarker, FIX_BODY_MAX_BYTES, fixSuggestionBody } from './render';
+import {
+  AI_FIX_MARKER,
+  aiFixMarker,
+  AUTO_FIX_NOTICE,
+  FIX_BODY_MAX_BYTES,
+  fixSuggestionBody,
+} from './render';
 
 const ISSUE = '0190a3c4-0000-7000-8000-000000000001';
 const REQ = '0190a3c4-0000-7000-8000-000000000002';
@@ -38,6 +44,22 @@ describe('fix suggestion comments (llm.md §8.4)', () => {
     expect(body).toContain(
       '[View the issue in Qualor](https://qualor.example.com/projects/p/issues/i)',
     );
+  });
+
+  it('says after the header that an automatic suggestion was posted automatically (4E-3a §3)', () => {
+    for (const provider of ['gitlab', 'github'] as const) {
+      const lines = fixSuggestionBody({ ...base, provider, automatic: true }).split('\n');
+      expect(lines[1]).toMatch(/^\*\*AI-generated fix suggestion\*\*/);
+      expect(lines[2]).toBe(
+        "Posted automatically for new findings of this merge request. A person can switch this off in Qualor's AI settings.",
+      );
+      expect(lines[2]).toBe(AUTO_FIX_NOTICE);
+      expect(lines[3]).toBe('');
+    }
+    // A person's suggestion has no such line.
+    const person = fixSuggestionBody({ ...base, provider: 'gitlab' });
+    expect(person).not.toContain(AUTO_FIX_NOTICE);
+    expect(person.split('\n')[2]).toBe('');
   });
 
   it('builds a GitHub suggestion without the range suffix', () => {

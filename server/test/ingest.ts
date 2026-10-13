@@ -6,7 +6,7 @@ import { analyses } from '../src/db/schema';
 import { gateHandlers } from '../src/gates/reevaluate';
 import { jobHandlers } from '../src/ingest/handlers';
 import type { IngestionStage } from '../src/ingest/process';
-import type { Limits } from '../src/limits';
+import { communityLimits, type Limits } from '../src/limits';
 import { runUntilIdle } from '../src/queue/worker';
 import {
   addMember,
@@ -79,7 +79,14 @@ export async function createIngestHarness(
         await runUntilIdle(
           ctx.db,
           {
-            ...jobHandlers({ db: ctx.db, upload: ctx.config.upload, stages, logger: ctx.app.log }),
+            ...jobHandlers({
+              db: ctx.db,
+              upload: ctx.config.upload,
+              stages,
+              logger: ctx.app.log,
+              // The app's limits (the auto-fix stage's licence seam), read for each analysis.
+              limits: () => ctx.edition?.limits() ?? options.limits ?? communityLimits(),
+            }),
             ...gateHandlers({ db: ctx.db }),
           },
           ctx.app.log,

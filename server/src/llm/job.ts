@@ -9,15 +9,19 @@ import {
 } from '@qualor/shared';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
+import { SYSTEM_ACTOR, type AuditRecorder } from '../audit/recorder';
 import type { Db, Executor } from '../db/client';
 import { llmRequests, type LlmRequestRow } from '../db/schema';
 import type { Resolver } from '../http/outbound';
+import { communityLimits, type Limits } from '../limits';
 import { enqueue } from '../queue/queue';
 import type { JobHandlers, WorkerLogger } from '../queue/worker';
 import { inSeconds } from '../scm/queue';
 import { CircuitBreaker, OrganizationSlots } from '../scm/runtime';
+import { effectiveAutoFix } from './auto-fix-settings';
 import { errorCodeOf, TRANSIENT_FAILURES, type LlmErrorCode } from './errors';
 import { baseUrlHash, buildIssueInput, cacheKeyOf } from './input';
+import { queueFixPost } from './post';
 import { callProvider, LlmError, type LlmAnswer } from './providers';
 import { LLM_QUEUE } from './service';
 import {
@@ -57,6 +61,11 @@ export const llmJobPayload = z.strictObject({
    * `SETTINGS_CHANGED` too (llm.md §14). Never the URL itself.
    */
   baseUrl: z.string().regex(/^[0-9a-f]{64}$/),
+  /**
+   * An automatic fix request (4E-3a §3): the job checks the automatic rule again before sending,
+   * and queues the post of a `fixed` answer itself, as `POST /ai-requests/{id}/post` would.
+   */
+  auto: z.literal(true).optional(),
 });
 export type LlmJobPayload = z.infer<typeof llmJobPayload>;
 
@@ -79,6 +88,13 @@ export interface LlmJobDeps {
   runtime: LlmRuntime;
   logger?: WorkerLogger | undefined;
   version: string;
+  /**
+   * The edition's limits, read on every job (enterprise.md §7): an automatic request is sent
+   * only while `automaticFixSuggestions` holds. Without it, the community limits.
+   */
+  limits?: () => Limits;
+  /** The recorder an automatic post records `ai.fix_posted` through (the system actor). */
+  audit?: AuditRecorder;
   resolve?: Resolver;
   /**
    * The prompt's nonce; default 16 random bytes in hex.
@@ -254,6 +270,42 @@ function validate(
   return { ok: true, result };
 }
 
+/**
+ * 4E-3a §3 step 4: a `fixed` automatic answer is posted as `POST /ai-requests/{id}/post` posts a
+ * person's, through the same checks (`queueFixPost`), once the automatic rule is checked again.
+ * A refused post is logged with its reason; the post job stores its own failures on the request.
+ */
+async function postAutomatically(deps: LlmJobDeps, requestId: string): Promise<void> {
+  const [row] = await deps.db.select().from(llmRequests).where(eq(llmRequests.id, requestId));
+  if (row?.status !== 'succeeded') return;
+  const settings = await readLlmSettings(deps.db);
+  const rule = effectiveAutoFix(settings, limitsOf(deps), {
+    id: row.projectId,
+    organizationId: row.organizationId,
+  });
+  const queued = rule.allowed
+    ? await queueFixPost(
+        deps.db,
+        row,
+        undefined,
+        deps.audit ? { recorder: deps.audit, context: SYSTEM_ACTOR } : undefined,
+      )
+    : ({ ok: false, refusal: 'ai_disabled' } as const);
+  if (queued.ok) {
+    deps.logger?.info(
+      { requestId, organizationId: row.organizationId },
+      'automatic fix post queued',
+    );
+  } else {
+    deps.logger?.warn(
+      { requestId, organizationId: row.organizationId, refusal: queued.refusal },
+      'automatic fix suggestion not posted',
+    );
+  }
+}
+
+const limitsOf = (deps: LlmJobDeps): Limits => deps.limits?.() ?? communityLimits();
+
 async function runLlmJob(deps: LlmJobDeps, payload: LlmJobPayload): Promise<void> {
   const [row] = await deps.db
     .select()
@@ -284,11 +336,18 @@ async function runLlmJob(deps: LlmJobDeps, payload: LlmJobPayload): Promise<void
     const settings = await readLlmSettings(deps.db);
     const provider = settings.provider;
     const org = organizationSettings(settings, row.organizationId);
+    // An automatic request (no person) is sent only while the automatic rule holds (4E-3a §3).
+    const automatic = payload.auto === true && row.userId === null;
     if (
       provider === null ||
       !org.enabled ||
       !org.features[row.feature] ||
-      org.excludedProjectIds.includes(row.projectId)
+      org.excludedProjectIds.includes(row.projectId) ||
+      (automatic &&
+        !effectiveAutoFix(settings, limitsOf(deps), {
+          id: row.projectId,
+          organizationId: row.organizationId,
+        }).allowed)
     ) {
       return await finish(deps, row, started, { ok: false, code: 'AI_DISABLED' });
     }
@@ -390,6 +449,9 @@ async function runLlmJob(deps: LlmJobDeps, payload: LlmJobPayload): Promise<void
       ...tokens,
       costMicroUsd,
     });
+    // Read back by the post: a row this job no longer finished (a lost lease) is not posted.
+    const fixed = (checked.result as { status?: unknown }).status === 'fixed';
+    if (automatic && row.feature === 'fix' && fixed) await postAutomatically(deps, row.id);
   } finally {
     deps.runtime.slots.release(row.organizationId);
   }

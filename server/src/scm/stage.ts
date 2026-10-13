@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { projects, scmConnections } from '../db/schema';
 import type { IngestionStage } from '../ingest/process';
+import { enqueueAutoFix } from '../llm/auto-fix';
 import { enqueueDecoration } from './queue';
 
 /**
@@ -9,6 +10,8 @@ import { enqueueDecoration } from './queue';
  * CI, a GitHub repository for one from GitHub Actions), enqueue the decoration of this analysis in
  * the ingestion transaction. Nothing is sent here; a rolled-back analysis decorates nothing. The
  * mapping is read again inside the transaction (the project row was loaded before it began).
+ * After a merge request's decoration, its automatic fix suggestions (enterprise, 4E-3a §3) are
+ * queued too, when the organisation switched them on for the project.
  */
 export const scmStage: IngestionStage = {
   name: 'scm',
@@ -27,6 +30,11 @@ export const scmStage: IngestionStage = {
       branchId: ctx.branch.id,
       gitlab: provider === 'gitlab' ? (ctx.report.scm.gitlab ?? null) : null,
       github: provider === 'github' ? (ctx.report.scm.github ?? null) : null,
+    });
+    await enqueueAutoFix(ctx.tx, ctx.limits, {
+      analysisId: ctx.analysisId,
+      branch: ctx.branch,
+      project: ctx.project,
     });
   },
 };

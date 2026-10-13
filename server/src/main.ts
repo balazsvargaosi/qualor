@@ -15,6 +15,7 @@ import { VERSION } from './index';
 import { jobHandlers } from './ingest/handlers';
 import { reconcileDeadAnalyses } from './ingest/process';
 import { LicenseFileError } from './license/source';
+import { autoFixHandlers } from './llm/auto-fix';
 import {
   createLlmRuntime,
   LLM_LEASE_MS,
@@ -193,7 +194,13 @@ async function main(): Promise<void> {
   const worker = startWorker({
     db: database.db,
     handlers: {
-      ...jobHandlers({ db: database.db, upload: config.upload, logger }),
+      // The SCM stage queues a merge request's automatic fix suggestions under the edition's limits.
+      ...jobHandlers({
+        db: database.db,
+        upload: config.upload,
+        logger,
+        limits: () => edition.limits(),
+      }),
       ...housekeepingHandlers({ db: database.db, logger }),
       // scm.md §7: re-evaluations share the analysis worker and its per-project key.
       ...gateHandlers({ db: database.db, logger }),
@@ -243,17 +250,23 @@ async function main(): Promise<void> {
     logger,
   });
   // llm.md §12.3: AI requests have their own worker, so a slow or absent model never delays
-  // analyses, deliveries or decorations.
+  // analyses, deliveries or decorations. It also runs the automatic fix suggestions of an analysed
+  // merge request (4E-3a §3), which queue requests and never call the model themselves.
   const llmWorker = startWorker({
     db: database.db,
-    handlers: llmHandlers({
-      db: database.db,
-      secretKey: config.secretKey,
-      internalHosts: config.llmInternalHosts,
-      runtime: createLlmRuntime(),
-      logger,
-      version: VERSION,
-    }),
+    handlers: {
+      ...llmHandlers({
+        db: database.db,
+        secretKey: config.secretKey,
+        internalHosts: config.llmInternalHosts,
+        runtime: createLlmRuntime(),
+        logger,
+        version: VERSION,
+        limits: () => edition.limits(),
+        audit,
+      }),
+      ...autoFixHandlers({ db: database.db, limits: () => edition.limits(), audit, logger }),
+    },
     concurrency: LLM_WORKER_CONCURRENCY,
     leaseMs: LLM_LEASE_MS,
     logger,

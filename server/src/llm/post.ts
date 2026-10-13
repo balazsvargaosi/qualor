@@ -348,6 +348,8 @@ async function loadTarget(
     endLine: fix.endLine,
     replacement: fix.replacement,
     issueUrl: issueUrl(publicUrl, loaded.project.id, built.issue.id),
+    // 4E-3a §3: a request with no user was made automatically, and says so.
+    automatic: row.userId === null,
   });
   return { row, loaded, path: built.issue.path, fix, body, marker };
 }
