@@ -92,7 +92,9 @@ prefix ending in `.*`, for example `issue.*`):
   [read-only demo](./users-projects-tokens.md#a-public-read-only-demo) as `demo`, or through single
   sign-on with the connection it used; one that only `QUALOR_FORCE_PASSWORD_SIGN_IN` allowed is marked `forced`), a
   failed attempt (see below; a correct password refused because only break-glass admins may use
-  one has the reason `password_disabled`), a sign-out, a password change, and each start of the
+  one has the reason `password_disabled`), a sign-out, a password change, a password reset link requested (`auth.password_reset_requested`,
+  by `anonymous`: never the name or address typed) and used (`auth.password_reset`), an invitation
+  accepted (`auth.invitation_accepted`), and each start of the
   server with `QUALOR_FORCE_PASSWORD_SIGN_IN=true` (`auth.password_sign_in_forced`).
 - **Single sign-on** (with `sso`, [Single sign-on and SCIM](./sso-and-scim.md)): a failed single
   sign-on on an existing connection (`sso.sign_in_failed`, with the error code the person saw; a
@@ -103,7 +105,9 @@ prefix ending in `.*`, for example `issue.*`):
 - **SCIM** (with `scim`): a SCIM token created or revoked; a user created, changed, deactivated,
   reactivated or deleted by the identity provider; a SCIM group created, changed or deleted. Each
   event names the token and the connection that made the change.
-- **Users and personal tokens:** a user created or changed, a personal token created or revoked.
+- **Users and personal tokens:** a user created (`invited` says whether by an invitation) or
+  changed, an invitation sent or resent (`user.invited`) or revoked (`user.invitation_revoked`), a
+  personal token created or revoked.
 - **Organisations and their members:** an organisation created; a member added, its role changed,
   or removed; the same three for a role on a single project. Changes made by single
   sign-on's group sync are recorded the same way, by `system`, with `managedBy` naming the
@@ -130,7 +134,7 @@ existing user's name is that user's id and name stored, so a person who mistypes
 into the user name field leaves nothing behind.
 
 **Never recorded:** any password, token, token hash, webhook or stream secret, SCM token, GitHub
-private key, licence key, the AI provider's key, a session id, a comment's text, or an AI prompt or
+private key, licence key, the AI provider's key, a session id, a password reset or invitation link, a comment's text, or an AI prompt or
 answer; nor an OIDC client secret, a SAML service provider key, a SCIM token, an ID token, an access
 token, an authorization code, a SAML response or assertion, or what the identity provider says
 about a person at sign-in. A SCIM change of a user records the old and new user name, display name,

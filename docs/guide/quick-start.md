@@ -26,7 +26,9 @@ grep BOOTSTRAP .env        # the admin password for the first sign-in
 ```
 
 Open <http://127.0.0.1:8080> and sign in as `admin` with that password. Then change it: open the
-menu under your name at the top right and choose **Change password**. The server listens on `127.0.0.1` only. To reach it from other
+menu under your name at the top right and choose **Change password**. **Forgot password?** on the sign-in page works once Qualor can send
+email and `QUALOR_PUBLIC_URL` is set ([Email](./email.md#account-emails)); until then an instance
+admin resets passwords in **Settings → Users**. The server listens on `127.0.0.1` only. To reach it from other
 machines, put TLS in front of it ([Install the server](./install-server.md#reverse-proxy-and-tls)).
 
 ## 2. Pull the scanner

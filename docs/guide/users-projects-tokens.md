@@ -30,7 +30,7 @@ someone Project admin, Maintainer or Viewer on a **single project**, in **Projec
 project role only adds to the organisation role. The full permission table is in
 [Roles and the audit log](./roles-and-audit.md).
 
-Instance admins manage users in **Settings → Users**: create users, reset passwords, deactivate
+Instance admins manage users in **Settings → Users**: create or invite users, reset passwords, deactivate
 users, and make or remove instance admins. A new user and a user whose password was reset must
 choose a new password at their next password sign-in (a single sign-on sign-in does not ask).
 Passwords have at least 12 characters, and sign-in is rate-limited.
@@ -50,6 +50,27 @@ curl -fsS -X PUT -H "Authorization: Bearer $QUALOR_ADMIN_TOKEN" -H 'Content-Type
 
 Roles on a single project use `/api/v0/projects/<project id>/members/<user id>` the same way (see
 [Roles and the audit log](./roles-and-audit.md#managing-members)).
+
+### Forgotten passwords and invitations
+
+When Qualor can send email ([Email](./email.md#account-emails)) and `QUALOR_PUBLIC_URL` is set:
+
+- **Forgot password?** on the sign-in page sends a one-time link to the account's email address;
+  it works for 60 minutes. The page gives the same answer whether or not an account matches. Only
+  people who sign in with a password get a link: not single sign-on accounts without one, not the
+  [demo account](#a-public-read-only-demo), and while password sign-in is limited to break-glass
+  admins, only those admins. Setting the new password signs out every session of the account;
+  personal tokens keep working. Then sign in with the new password. Each address may ask 5 times a
+  minute, and one account gets at most 3 links in 15 minutes.
+- **Settings → Users → New user** can **Send an invitation email** instead of setting an initial
+  password (the user then needs an email address). The user chooses their own password through the
+  link, which works for 7 days. The list shows **Invited · expires …** or **Invitation expired**,
+  with **Resend invitation** (the earlier link stops working) and **Revoke invitation**. Setting a
+  password for the user, or deactivating them, also ends the invitation.
+- People get **Your Qualor password was changed** after a reset through a link, a change of their
+  own password, or a reset by an administrator.
+
+Without email, an instance admin resets a forgotten password in **Settings → Users**, as before.
 
 ### A public, read-only demo
 

@@ -465,6 +465,10 @@ With break-glass admins only:
   records it as a failed sign-in with the reason `password_disabled`;
 - **API and CI tokens keep working unchanged**, and so does changing your own password (for users
   who have one);
+- **Forgot password?** follows the same rule: only the break-glass admins get a reset link (the
+  page answers everyone else the same way), and the link is checked again when it is used;
+- **Settings → Users** sends no invitations (409 `PASSWORD_SIGN_IN_DISABLED`): new users sign in
+  with single sign-on;
 - an instance admin can still set a user's password; the user can use it once the policy allows.
   Setting it ends that user's sessions and revokes their personal tokens.
 

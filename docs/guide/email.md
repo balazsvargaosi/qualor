@@ -1,7 +1,8 @@
 # Email
 
-Qualor sends email through an SMTP server you choose: a test message, and alerts for instance
-administrators. Nothing is sent until an instance administrator or the operator sets up a server.
+Qualor sends email through an SMTP server you choose: a test message, alerts for instance
+administrators, and [account emails](#account-emails) (password reset links, invitations, the
+password-changed notice). Nothing is sent until an instance administrator or the operator sets up a server.
 Qualor never tracks whether a message was opened or a link clicked.
 
 ## What Qualor sends
@@ -11,17 +12,42 @@ Qualor never tracks whether a message was opened or a link clicked.
 | Test message | the address you type | **Send test** in **Settings → Email** |
 | Licence expiry | every instance administrator with an email address | 30, 7 and 1 day before the licence expires, when its 14-day grace period starts, and when it ends ([When a licence expires](./enterprise.md#when-a-licence-expires)). Each once per licence key; a step that was missed (email was off then) is not sent late |
 | Failing webhook | every instance administrator with an email address | when a webhook delivery gives up after its 7 attempts; at most one a day for each webhook, and only for a webhook that is switched on ([Webhooks](./webhooks-and-api.md#webhooks)) |
+| Password reset link | the account's email address | **Forgot password?** on the sign-in page ([Account emails](#account-emails)) |
+| Invitation | the invited user's email address | an instance administrator invites a new user in **Settings → Users** |
+| Password changed | the account's email address | after a reset through a link, a change of one's own password, or a reset by an administrator |
 
 Each alert has a switch in **Settings → Email → Alerts for administrators**; both are on. An
 administrator without an email address gets nothing: add one in **Settings → Users**. The panel
 says how many administrators have none.
 
-Password reset links, invitations and notifications about your projects are **not available
-yet**.
+Notifications about your projects are **not available yet**.
 
 Every message has an HTML part and a plain-text part. Its links lead to the address in
 `QUALOR_PUBLIC_URL`; without it, a message says where to go in Qualor instead, and
 **Settings → Email** warns.
+
+## Account emails
+
+With an SMTP server **and** `QUALOR_PUBLIC_URL` set, Qualor also sends these to people with an
+email address on their account:
+
+- **Reset your Qualor password**, after someone uses **Forgot password?** on the sign-in page. The
+  link works once, for 60 minutes. It does not sign anyone in: the person signs in with the new
+  password afterwards.
+- **<name> invited you to Qualor**, when an instance admin invites a new user from
+  **Settings → Users**. The link works once, for 7 days, and the admin can resend or revoke it.
+- **Your Qualor password was changed**, after a reset through a link, a change of one's own
+  password, or a reset by an administrator. It names the account, the time (UTC) and, for a change
+  the person made, the address it came from.
+
+The secret part of each link comes after `#` in the address, so it never reaches the server's
+logs, a proxy or another site. Qualor stores only a hash of it, and deletes a message's body from
+the database once the message is delivered.
+
+Without an SMTP server or without `QUALOR_PUBLIC_URL`, the sign-in page shows no
+**Forgot password?**, **Settings → Users** creates users with an initial password only, and an
+instance admin resets forgotten passwords. See
+[Users, projects and tokens](./users-projects-tokens.md#forgotten-passwords-and-invitations).
 
 ## Set up in Qualor
 

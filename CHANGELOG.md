@@ -15,6 +15,17 @@ All notable changes to Qualor are listed here, newest first. The format follows
   when its grace period starts and when it ends, and when a webhook delivery gives up (at most once
   a day per webhook); each alert can be turned off. Messages have an HTML and a plain-text part,
   are retried on temporary failures, and their body is deleted once sent.
+- Forgotten passwords: with email set up and `QUALOR_PUBLIC_URL` set, **Forgot password?** on the
+  sign-in page sends a one-time link that works for 60 minutes. It follows the password sign-in
+  policy: break-glass-only servers send links to break-glass admins only, and the demo account and
+  single sign-on accounts without a password get none.
+- Invitations: instance admins invite a new user by email from **Settings → Users** instead of
+  making up an initial password. The link works for 7 days and can be resent or revoked.
+- A "Your Qualor password was changed" email after every password change.
+- API: `POST /auth/password-reset`, `POST /auth/password-reset/complete`,
+  `POST /auth/invitations/inspect`, `POST /auth/invitations/accept`, and
+  `POST`/`DELETE /users/{id}/invitation`; `POST /users` takes `invite`, users carry `invitation`,
+  and `GET /auth/methods` says `passwordReset`.
 
 ## [0.7.1] - 2026-10-12
 
