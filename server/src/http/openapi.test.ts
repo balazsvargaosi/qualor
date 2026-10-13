@@ -116,6 +116,24 @@ describe('OpenAPI document (api.md §6.1)', () => {
       }
     });
 
+    it('documents the email routes’ refusals (E1 spec)', () => {
+      expect(statuses(op('/api/v0/system/mail/test', 'post'))).toEqual([
+        '200',
+        '401',
+        '403',
+        '409',
+        '422',
+        '429',
+        '502',
+      ]);
+      expect(op('/api/v0/system/mail/test', 'post').responses['502']?.description).toContain(
+        'MAIL_SEND_FAILED',
+      );
+      expect(op('/api/v0/system/mail', 'put').responses['409']?.description).toMatch(
+        /^MAIL_SET_BY_ENVIRONMENT/,
+      );
+    });
+
     it('describes the report upload: gzip body, its content type, and every rejection', () => {
       const upload = op('/api/v0/analyses', 'post');
       expect(statuses(upload)).toEqual(['202', '401', '403', '404', '413', '415', '422', '503']);

@@ -22,7 +22,8 @@ export interface FieldError {
 export interface ProblemExtensions {
   /**
    * 422 LICENSE_INVALID: the verifier's reason code (enterprise.md §4, §9). 422 VALIDATION_FAILED
-   * of **Read metadata** (SAML): what failed (sso/saml.ts SAML_METADATA_PROBLEM_CODES).
+   * of **Read metadata** (SAML): what failed (sso/saml.ts SAML_METADATA_PROBLEM_CODES). 502
+   * MAIL_SEND_FAILED: why the test message was not sent (mail/transport.ts MAIL_ERROR_CODES).
    */
   reason?: string;
 }

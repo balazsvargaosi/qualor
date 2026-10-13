@@ -23,6 +23,7 @@ export const AUDIT_TARGET_TYPES = [
   'scim_token',
   'scim_group',
   'sign_in_settings',
+  'mail_settings',
 ] as const;
 export type AuditTargetType = (typeof AUDIT_TARGET_TYPES)[number];
 
@@ -68,6 +69,21 @@ export const SCM_CONNECTION_CHANGED_FIELDS = [
   'privateKey',
   'webhookSecret',
 ] as const;
+/** E1 spec: the names `mail.settings_updated` may list (names only, never a value). */
+export const MAIL_SETTINGS_CHANGED_FIELDS = [
+  'server',
+  'server.host',
+  'server.port',
+  'server.security',
+  'server.username',
+  'server.password',
+  'server.fromName',
+  'server.fromAddress',
+  'server.replyTo',
+  'alerts.licenseExpiry',
+  'alerts.webhookFailures',
+] as const;
+export type MailSettingsChangedField = (typeof MAIL_SETTINGS_CHANGED_FIELDS)[number];
 /** sso-scim.md §7.7: the SSO flow failure codes, reused by `sso.sign_in_failed` and Task 12's errors.ts. */
 export const SSO_ERROR_REASONS = [
   'unavailable',
@@ -470,6 +486,18 @@ export const AUDIT_CATALOGUE = {
     }),
   },
   'ai.fix_posted': { target: 'issue', details: z.strictObject({ requestId: id }) },
+  'mail.settings_updated': {
+    target: 'mail_settings',
+    details: z.strictObject({
+      changed: z
+        .array(z.enum(MAIL_SETTINGS_CHANGED_FIELDS))
+        .max(MAIL_SETTINGS_CHANGED_FIELDS.length),
+    }),
+  },
+  'mail.test_sent': {
+    target: 'mail_settings',
+    details: z.strictObject({ messageId: id, delivered: z.boolean() }),
+  },
   'audit.settings_updated': {
     target: 'audit_settings',
     details: z.strictObject({

@@ -11,6 +11,7 @@ import { issueRoutes } from './issues';
 import { issueStatusImportRoutes } from './issue-status-import';
 import { licenseRoutes } from './license';
 import { llmSettingsRoutes } from './llm-settings';
+import { mailSettingsRoutes } from './mail-settings';
 import { measureRoutes } from './measures';
 import { newCodeRoutes } from './newcode';
 import { organizationRoutes } from './organizations';
@@ -47,6 +48,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   await app.register(webhookRoutes, { prefix: '/api/v0', deps });
   await app.register(scmConnectionRoutes, { prefix: '/api/v0', deps });
   await app.register(llmSettingsRoutes, { prefix: '/api/v0', deps });
+  await app.register(mailSettingsRoutes, { prefix: '/api/v0', deps });
   await app.register(licenseRoutes, { prefix: '/api/v0', deps });
   await app.register(aiRoutes, { prefix: '/api/v0', deps, chargeIssueChanges });
   // Its own plugin: its raw-body JSON parser stays in its encapsulation context (github.md §9).

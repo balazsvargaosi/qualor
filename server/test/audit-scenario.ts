@@ -28,6 +28,7 @@ import {
 } from './app';
 import { createFakeGitLab, type FakeGitLab } from './fake-gitlab';
 import { createFakeLlm, type FakeLlm } from './fake-llm';
+import { closedPort } from './mail';
 import { signTest, testPayload, testSigner, verifyWith, type TestSigner } from './license';
 import { RBAC_FIXTURE } from './rbac';
 import { engine, file, finding, gzipJson, reportWith, uploadReport } from './reports';
@@ -55,6 +56,7 @@ const S = {
   transitionComment: 'scenario comment: single transition 64',
   bulkComment: 'scenario comment: bulk transition 75',
   importComment: 'scenario comment: imported from SonarQube 86',
+  smtpPassword: ['smtp', 'scenario', 'pass', 'word', '5M'].join('-'),
 } as const;
 
 /** A prompt line: the AI request sends it to the provider; no event may hold it. */
@@ -509,6 +511,21 @@ export async function runAuditScenario(
     storePrompts: false,
     promptRetentionDays: 7,
   });
+
+  // mail.settings_updated (with a password) and mail.test_sent (refused: nothing listens there)
+  await call('PUT', '/system/mail', 200, {
+    server: {
+      host: '127.0.0.1',
+      port: await closedPort(),
+      security: 'none',
+      username: 'scenario',
+      password: S.smtpPassword,
+      fromName: 'Qualor',
+      fromAddress: 'qualor@example.com',
+      replyTo: null,
+    },
+  });
+  await call('POST', '/system/mail/test', 502, { to: 'scenario@example.com' });
 
   // ai.requested and ai.fix_posted on a merge request of a project mapped to the fake GitLab
   gitlab.addProject({ id: 501, path: 'scenario/ai' });

@@ -1,10 +1,12 @@
 import { sql } from 'drizzle-orm';
 import { z } from 'zod';
+import { isStorableText } from '../audit/canonical';
 import { SMTP_SECURITIES, type Config } from '../config';
 import { decryptSecret, encryptionKey, encryptSecret } from '../crypto/secrets';
 import type { Executor } from '../db/client';
 import { LOCKS } from '../db/locks';
 import { instanceSettings } from '../db/schema';
+import { SURROGATE_MESSAGE } from '../http/schemas';
 import { instanceSetting } from '../settings';
 import { emailAddress, isHostName, isOneLine, ONE_LINE_MESSAGE } from './address';
 import type { MailServer } from './transport';
@@ -21,12 +23,20 @@ const encrypted = z.strictObject({
   tag: z.string(),
 });
 
-/** A non-empty single-line string of at most `max` characters (it ends up in a mail header). */
+/**
+ * A non-empty single-line string of at most `max` characters (it ends up in a mail header), that
+ * the jsonb row can store (no lone surrogate).
+ */
 export const mailLine = (max: number) =>
-  z.string().min(1).max(max).refine(isOneLine, ONE_LINE_MESSAGE);
+  z
+    .string()
+    .min(1)
+    .max(max)
+    .refine(isOneLine, ONE_LINE_MESSAGE)
+    .refine((s) => !isOneLine(s) || isStorableText(s), SURROGATE_MESSAGE);
 
 export const storedMailServerSchema = z.strictObject({
-  host: z.string().min(1).max(253).refine(isHostName),
+  host: z.string().min(1).max(253).refine(isHostName, 'A host name or an IP address'),
   port: z.number().int().min(1).max(65_535),
   security: z.enum(SMTP_SECURITIES),
   username: mailLine(256).nullable(),
