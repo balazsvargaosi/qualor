@@ -1,5 +1,6 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
+import { pruneAccountTokens } from '../auth/account-tokens';
 import { pruneAuditEvents } from '../audit/retention';
 import { AuditAnchorMalformedError, readAuditSettings } from '../audit/settings';
 import type { Db, Executor } from '../db/client';
@@ -96,6 +97,8 @@ export interface HousekeepingResult {
   auditEvents: number;
   /** Expired SSO flow state: pending flows, used assertion ids, finish codes (sso-scim.md §7.1). */
   ssoStates: number;
+  /** Expired account links (mail E2): resets at once, invitations 30 days after they expired. */
+  accountTokens: number;
   /** Email log rows past `mailMessagesDays` (E1 spec). */
   mailMessages: number;
   /** Pending messages failed after MAIL_GIVE_UP_DAYS, their body dropped. */
@@ -153,7 +156,8 @@ async function pruneAuditStep(db: Db, logger: HousekeepingLogger | undefined): P
  *   not `audit-log` is active (rbac-audit.md §11);
  * - expired SSO flow state (sso-scim.md §7.1), skipping a row a sign-in is taking at that moment;
  * - an email log row after mailMessagesDays; a message pending for 2 days is failed and its body
- *   dropped (its job was lost).
+ *   dropped (its job was lost);
+ * - expired account links (mail E2), skipping a row a request is taking at that moment.
  */
 export async function runHousekeeping(
   db: Db,
@@ -302,6 +306,7 @@ export async function runHousekeeping(
   );
   const auditEvents = await pruneAuditStep(db, logger);
   const ssoStates = await pruneSsoStates(db);
+  const accountTokens = await pruneAccountTokens(db);
   return {
     analysisReports,
     closedIssues,
@@ -314,6 +319,7 @@ export async function runHousekeeping(
     sessions,
     auditEvents,
     ssoStates,
+    accountTokens,
     mailMessages,
     abandonedMailMessages,
   };

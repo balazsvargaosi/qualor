@@ -1211,3 +1211,37 @@ export const mailMessages = pgTable(
   ],
 );
 export type MailMessageRow = typeof mailMessages.$inferSelect;
+
+// ─── 4.11 Account tokens (mail E2, migration 0008_account_tokens) ──────────
+
+export const ACCOUNT_TOKEN_KINDS = ['password_reset', 'invitation'] as const;
+export type AccountTokenKind = (typeof ACCOUNT_TOKEN_KINDS)[number];
+
+/**
+ * Mail E2 A1: the one-time links of a password reset (60 minutes) and an invitation (7 days). The
+ * key is the SHA-256 hex of the raw secret, which only the email holds; one row per user and kind,
+ * taken with DELETE … RETURNING so each link works once on any replica.
+ */
+export const accountTokens = pgTable(
+  'account_tokens',
+  {
+    key: text('key').primaryKey(),
+    kind: text('kind').notNull().$type<AccountTokenKind>(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    expiresAt: at('expires_at').notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('account_tokens_user_kind_unique').on(t.userId, t.kind),
+    index('account_tokens_expires_idx').on(t.expiresAt),
+    // The creator FK's index (§2).
+    index('account_tokens_created_by_idx')
+      .on(t.createdBy)
+      .where(sql`created_by IS NOT NULL`),
+    check('account_tokens_kind_check', sql`kind IN ('password_reset','invitation')`),
+    check('account_tokens_key_format', sql`key ~ '^[0-9a-f]{64}$'`),
+  ],
+);

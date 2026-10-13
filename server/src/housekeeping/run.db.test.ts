@@ -15,6 +15,7 @@ import {
   webhookDeliveries,
   webhookSubscriptions,
 } from '../db/schema';
+import { accountTokenKey, issueAccountToken } from '../auth/account-tokens';
 import { appendEvents, type AuditActorContext } from '../audit/recorder';
 import { AUDIT_CHAIN_KEY, AUDIT_SETTINGS_KEY } from '../audit/settings';
 import { verifyAuditChain } from '../audit/verify';
@@ -512,6 +513,20 @@ describe('daily housekeeping (data-model.md §7)', () => {
       SELECT key FROM sso_states WHERE connection_id = ${connectionId}`);
     expect(left.rows).toEqual([{ key: 'oidc:live' }]);
     expect((await runHousekeeping(h.ctx.db)).ssoStates).toBe(0);
+  });
+
+  it('prunes expired account tokens (mail E2)', async () => {
+    const { token } = await issueAccountToken(h.ctx.db, {
+      userId: h.ctx.adminId,
+      kind: 'password_reset',
+      createdBy: null,
+      ttlMinutes: 60,
+    });
+    await h.ctx.db.execute(
+      sql`UPDATE account_tokens SET expires_at = now() - interval '1 minute' WHERE key = ${accountTokenKey(token)}`,
+    );
+    expect((await runHousekeeping(h.ctx.db)).accountTokens).toBe(1);
+    expect((await runHousekeeping(h.ctx.db)).accountTokens).toBe(0);
   });
 
   it('deletes email past retention and gives up on messages pending for two days (E1 spec)', async () => {

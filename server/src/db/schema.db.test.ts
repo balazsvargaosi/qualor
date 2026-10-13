@@ -17,6 +17,7 @@ import {
 } from './schema';
 
 const TABLES = [
+  'account_tokens',
   'analyses',
   'analysis_reports',
   'api_tokens',
