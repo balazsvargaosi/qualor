@@ -246,6 +246,32 @@ describe('StagedPlugin (ruling EE4)', () => {
     ]);
   });
 
+  it('accepts a main.nav extension with an absolute path and refuses a relative one', () => {
+    const registry = emptyRegistry();
+    const ctx = new StagedPlugin(plugin(), registry).context(base, registry);
+    ctx.ui('fixture.echo', {
+      point: 'main.nav',
+      id: 'portfolio',
+      label: 'Portfolio',
+      path: '/portfolio',
+    });
+    expect(() =>
+      ctx.ui('fixture.echo', { point: 'main.nav', id: 'x', label: 'X', path: 'portfolio' }),
+    ).toThrow(PluginError);
+    expect(() =>
+      ctx.ui('fixture.echo', { point: 'project.tab', id: 'x', label: 'X', path: '/x' }),
+    ).toThrow(PluginError);
+  });
+
+  it('gives a context without services a portfolio stand-in that throws', () => {
+    const registry = emptyRegistry();
+    const ctx = new StagedPlugin(plugin(), registry).context(base, registry);
+    expect(Object.isFrozen(ctx.portfolio)).toBe(true);
+    expect(() => ctx.portfolio.exportRows({} as never, { scope: 'all' })).toThrow(
+      'the portfolio service is not available in this context',
+    );
+  });
+
   it('gives a context without services a compliance stand-in that throws', () => {
     const registry = emptyRegistry();
     const ctx = new StagedPlugin(plugin(), registry).context(base, registry);

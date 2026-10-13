@@ -179,7 +179,8 @@
                             "type": "string",
                             "enum": [
                               "settings.nav",
-                              "project.tab"
+                              "project.tab",
+                              "main.nav"
                             ]
                           },
                           "id": {

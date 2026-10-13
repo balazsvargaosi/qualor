@@ -112,7 +112,7 @@ export interface paths {
                             features: string[];
                             extensions: {
                                 /** @enum {string} */
-                                point: "settings.nav" | "project.tab";
+                                point: "settings.nav" | "project.tab" | "main.nav";
                                 id: string;
                                 label: string;
                                 path: string;

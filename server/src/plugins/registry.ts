@@ -13,6 +13,7 @@ import {
   type PluginEnqueueOptions,
   type PluginJobHandler,
   type PluginLogger,
+  type PluginPortfolio,
   type PluginReport,
   type PluginScim,
   type PluginSso,
@@ -27,6 +28,8 @@ export const PLUGIN_QUEUE_PATTERN = /^ee\.[a-z0-9][a-z0-9.-]{0,62}$/;
 export const EXTENSION_ID_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
 /** 4E-1 §4: a `project.tab` extension's path, relative to the project page. */
 export const PROJECT_TAB_PATH_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
+/** 4E-2 §4: a `main.nav` extension's absolute path. */
+export const MAIN_NAV_PATH_PATTERN = /^\/[a-z][a-z0-9/-]{0,63}$/;
 /** A plugin declares at most this many features; each name is at most 64 characters (token.ts). */
 const MAX_FEATURES = 64;
 const MAX_FEATURE_LENGTH = 64;
@@ -196,7 +199,7 @@ function validateExtension(value: unknown): UiExtension {
   const { point, id, label, path } = e;
   const valid =
     Object.keys(e).every((k) => k === 'point' || k === 'id' || k === 'label' || k === 'path') &&
-    (point === 'settings.nav' || point === 'project.tab') &&
+    (point === 'settings.nav' || point === 'project.tab' || point === 'main.nav') &&
     typeof id === 'string' &&
     EXTENSION_ID_PATTERN.test(id) &&
     typeof label === 'string' &&
@@ -205,7 +208,9 @@ function validateExtension(value: unknown): UiExtension {
     typeof path === 'string' &&
     (point === 'settings.nav'
       ? path === `/settings/ee/${id}`
-      : PROJECT_TAB_PATH_PATTERN.test(path));
+      : point === 'main.nav'
+        ? MAIN_NAV_PATH_PATTERN.test(path)
+        : PROJECT_TAB_PATH_PATTERN.test(path));
   if (!valid) throw new PluginError('invalid UI extension');
   return Object.freeze({
     point: point as UiExtension['point'],
@@ -284,6 +289,13 @@ export const MISSING_SCIM: PluginScim = Object.freeze({
   listTokens: unavailable('scim'),
   createToken: unavailable('scim'),
   revokeToken: unavailable('scim'),
+});
+
+/** 4E-2 §2: what a context without the portfolio service gets. */
+export const MISSING_PORTFOLIO: PluginPortfolio = Object.freeze({
+  overview: unavailable('portfolio'),
+  projects: unavailable('portfolio'),
+  exportRows: unavailable('portfolio'),
 });
 
 /** 4E-1 §1.1: what a context without the compliance service gets. */
@@ -444,6 +456,7 @@ export class StagedPlugin {
       sso: base.services?.sso ?? MISSING_SSO,
       scim: base.services?.scim ?? MISSING_SCIM,
       compliance: base.services?.compliance ?? MISSING_COMPLIANCE,
+      portfolio: base.services?.portfolio ?? MISSING_PORTFOLIO,
       schedule: (feature: string, queue: string, everySeconds: number) => {
         const f = this.feature(feature);
         if (typeof queue !== 'string' || !PLUGIN_QUEUE_PATTERN.test(queue)) {

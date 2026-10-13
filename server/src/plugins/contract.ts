@@ -25,6 +25,17 @@ import type {
 import type { OrganizationPermission, ProjectPermission } from '../auth/policy';
 import type { UserPrincipal } from '../auth/principal';
 import type { Db } from '../db/client';
+import type { Granularity } from '../portfolio/periods';
+import type {
+  PortfolioAggregate,
+  PortfolioOverview,
+  PortfolioProjectRow,
+  PortfolioScopeInput,
+  PortfolioSort,
+  PortfolioTrendPoint,
+  Rating,
+  SeverityCounts,
+} from '../portfolio/types';
 import type { ProjectRole } from '../db/schema';
 import type { LicensePayload } from '../license/token';
 import type { PluginLimitOverride } from '../limits';
@@ -58,6 +69,19 @@ export type {
   SsoGroupMappingInput,
   SsoGroupMappingView,
   SsoTestResult,
+};
+
+/** The core types the 4E-2 portfolio service uses (4E-2 §2), for the plugin's `import type`. */
+export type {
+  Granularity,
+  PortfolioAggregate,
+  PortfolioOverview,
+  PortfolioProjectRow,
+  PortfolioScopeInput,
+  PortfolioSort,
+  PortfolioTrendPoint,
+  Rating,
+  SeverityCounts,
 };
 
 /** The core types the 4E-1 compliance service uses (4E-1 §1.1), for the plugin's `import type`. */
@@ -119,10 +143,11 @@ export interface PluginEnqueueOptions {
 /**
  * enterprise.md §10.4: an entry shown while its feature is active. `settings.nav`: a navigation
  * entry under Settings, `path` = `/settings/ee/<id>`. `project.tab` (4E-1 §4): a tab of the
- * project page, `path` a relative tab path (`^[a-z][a-z0-9-]{0,31}$`).
+ * project page, `path` a relative tab path (`^[a-z][a-z0-9-]{0,31}$`). `main.nav` (4E-2 §4): an
+ * entry in the main navigation, `path` absolute (`^/[a-z][a-z0-9/-]{0,63}$`).
  */
 export interface UiExtension {
-  point: 'settings.nav' | 'project.tab';
+  point: 'settings.nav' | 'project.tab' | 'main.nav';
   id: string;
   label: string;
   path: string;
@@ -166,6 +191,8 @@ export interface PluginContext {
   readonly scim: PluginScim;
   /** 4E-1 §1.1 (additive): compliance reports, with core's permission checks. */
   readonly compliance: PluginCompliance;
+  /** 4E-2 §2 (additive): portfolio reports, with core's permission checks. */
+  readonly portfolio: PluginPortfolio;
 }
 
 export type PluginPage<T> = { items: T[]; nextCursor: string | null };
@@ -299,6 +326,23 @@ export type ComplianceListFilter = { organizationId: string } | { projectId: str
  * themselves (a report it cannot read is a 404) and write their audit events; the job-side
  * members take no caller.
  */
+export interface PluginPortfolio {
+  overview(
+    request: FastifyRequest,
+    input: PortfolioScopeInput,
+    options: { granularity: Granularity },
+  ): Promise<PortfolioOverview>;
+  projects(
+    request: FastifyRequest,
+    input: PortfolioScopeInput,
+    page: { sort: PortfolioSort; cursor?: string; limit: number },
+  ): Promise<PluginPage<PortfolioProjectRow>>;
+  exportRows(
+    request: FastifyRequest,
+    input: PortfolioScopeInput,
+  ): AsyncIterable<PortfolioProjectRow>;
+}
+
 export interface PluginCompliance {
   create(
     request: FastifyRequest,

@@ -27,6 +27,7 @@ import type {
   PluginAccess,
   PluginAudit,
   PluginCompliance,
+  PluginPortfolio,
   PluginScim,
   PluginSso,
 } from './contract';
@@ -42,6 +43,7 @@ export interface PluginServices {
   readonly sso: PluginSso;
   readonly scim: PluginScim;
   readonly compliance: PluginCompliance;
+  readonly portfolio: PluginPortfolio;
 }
 
 /**
@@ -190,5 +192,15 @@ export function createPluginServices(
     recorder,
   });
 
-  return Object.freeze({ access, audit, sso, scim, compliance });
+  // 4E-2 §2: a stub until the portfolio service lands (task 2 replaces it).
+  const notImplemented = (): never => {
+    throw new PluginError('portfolio service not implemented');
+  };
+  const portfolio: PluginPortfolio = Object.freeze({
+    overview: notImplemented,
+    projects: notImplemented,
+    exportRows: notImplemented,
+  });
+
+  return Object.freeze({ access, audit, sso, scim, compliance, portfolio });
 }

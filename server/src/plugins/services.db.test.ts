@@ -209,7 +209,14 @@ describe('the plugin services (rbac-audit.md §15)', () => {
       expect(Object.isFrozen(s.compliance)).toBe(true);
       // Without config, edition and logger, sso and scim are the stand-ins that throw.
       // No rbac service since 5B: the grant routes are core routes (rbac-audit.md §15, §16).
-      expect(Object.keys(s).sort()).toEqual(['access', 'audit', 'compliance', 'scim', 'sso']);
+      expect(Object.keys(s).sort()).toEqual([
+        'access',
+        'audit',
+        'compliance',
+        'portfolio',
+        'scim',
+        'sso',
+      ]);
       expect(() => s.sso.listConnections()).toThrow(
         'the sso service is not available in this context',
       );
