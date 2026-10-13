@@ -297,7 +297,10 @@ describe('the SonarQube mapping table (import-sonarqube.md §6)', () => {
   });
 
   it('maps csharpsquid rules the bundled SonarAnalyzer has to roslyn, one to one', () => {
-    expect(SONAR_MAPPING.language('cs')).toEqual({ language: 'csharp', engines: ['roslyn'] });
+    expect(SONAR_MAPPING.language('cs')).toEqual({
+      language: 'csharp',
+      engines: ['roslyn', 'qualor'],
+    });
     expect(SONAR_MAPPING.targets('csharpsquid:S1481')).toEqual([
       { key: 'roslyn:S1481', relation: 'equivalent', reviewed: true, source: 'repository' },
     ]);
@@ -533,6 +536,18 @@ describe('the SonarQube mapping table (import-sonarqube.md §6)', () => {
     js: ['S2076', 'S2083', 'S2631', 'S3649', 'S5131', 'S5144', 'S5146', 'S5147', 'S5334'],
     python: ['S2076', 'S2083', 'S2091', 'S2631', 'S3649', 'S5131', 'S5135', 'S5144', 'S5146'],
     go: ['S2076', 'S2083', 'S3649', 'S5144', 'S5146', 'S6096'],
+    csharp: [
+      'S2076',
+      'S2078',
+      'S2083',
+      'S2091',
+      'S2631',
+      'S3649',
+      'S5131',
+      'S5135',
+      'S5144',
+      'S5146',
+    ],
   };
   const TAINT_TARGET: Record<string, string> = {
     S2076: 'command-injection',
@@ -554,6 +569,7 @@ describe('the SonarQube mapping table (import-sonarqube.md §6)', () => {
     js: ['jssecurity', 'tssecurity'],
     python: ['pythonsecurity'],
     go: ['gosecurity'],
+    csharp: ['roslyn.sonaranalyzer.security.cs'],
   };
   const overlap = (key: string) => [{ key, relation: 'overlap', reviewed: false, source: 'table' }];
 
@@ -587,11 +603,13 @@ describe('the SonarQube mapping table (import-sonarqube.md §6)', () => {
     ];
     for (const [sonar, q] of more) expect(SONAR_MAPPING.targets(sonar), sonar).toEqual(overlap(q));
     const rows = raw.rules.filter((r) => r.qualor.some((q) => q.startsWith('qualor:')));
-    expect(rows).toHaveLength(44);
+    expect(rows).toHaveLength(54);
     for (const row of rows) {
       expect(row.qualor, row.sonar.join()).toHaveLength(1);
       expect(
-        row.sonar.every((s) => /^(java|js|ts|python|go)security:S\d+$/.test(s)),
+        row.sonar.every((s) =>
+          /^((java|js|ts|python|go)security|roslyn\.sonaranalyzer\.security\.cs):S\d+$/.test(s),
+        ),
         row.sonar.join(),
       ).toBe(true);
     }
@@ -611,7 +629,7 @@ describe('the SonarQube mapping table (import-sonarqube.md §6)', () => {
     'pythonsecurity:S6096',
     'gosecurity:S2091',
     'gosecurity:S5135',
-    'roslyn.sonaranalyzer.security.cs:S3649', // C# comes later
+    'roslyn.sonaranalyzer.security.cs:S5145', // log injection: no C# rule of its class
     'phpsecurity:S3649',
   ])('leaves %s unmapped: no Qualor rule of its class in that language', (key) => {
     expect(SONAR_MAPPING.targets(key)).toEqual([]);
@@ -653,6 +671,7 @@ describe('the SonarQube mapping table (import-sonarqube.md §6)', () => {
     javasecurity: 'java',
     pythonsecurity: 'py',
     gosecurity: 'go',
+    'roslyn.sonaranalyzer.security.cs': 'cs',
     squid: 'java',
     csharpsquid: 'cs',
     python: 'py',

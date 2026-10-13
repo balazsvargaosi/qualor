@@ -49,7 +49,7 @@ export interface SonarLanguage {
   engines: readonly BuiltinEngine[];
 }
 
-const SONAR_RULE = /^[a-z_][a-z0-9_-]*:.+$/;
+const SONAR_RULE = /^[a-z_][a-z0-9_.-]*:.+$/;
 const REPOSITORY = /^[a-z_][a-z0-9_-]*$/;
 const QUALOR_RULE = new RegExp(`^(?:${BUILTIN_ENGINES.join('|')}):.{1,512}$`, 's');
 /** report-format.md §9: a rule id is at most 512 characters. */
