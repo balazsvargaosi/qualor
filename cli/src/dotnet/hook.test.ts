@@ -149,6 +149,8 @@ describe('the hook text', () => {
       'reference=',
       'project-reference=',
       'project-reference-assembly=',
+      'features=',
+      'interceptors-namespaces=',
     ]) {
       expect(text).toContain(key);
     }

@@ -122,6 +122,7 @@ describeWithDotnet()('qualor dotnet with a real build (fixtures/csharp-basic)', 
     <TargetFramework>net8.0</TargetFramework>
     <OutputType>Exe</OutputType>
     <DefineConstants>$(DefineConstants);A;B</DefineConstants>
+    <InterceptorsNamespaces>$(InterceptorsNamespaces);Lib.Gen</InterceptorsNamespaces>
   </PropertyGroup>
   <ItemGroup><ProjectReference Include="../lib/Lib.csproj" /></ItemGroup>
 </Project>
@@ -185,6 +186,9 @@ describeWithDotnet()('qualor dotnet with a real build (fixtures/csharp-basic)', 
       expect(lib.get('project-reference-assembly')).toEqual([]);
       expect(app.get('reference').some((r) => r.endsWith('Lib.dll'))).toBe(false);
       const defines = app.get('defines');
+      expect(app.get('interceptors-namespaces')).toHaveLength(1);
+      expect(app.get('interceptors-namespaces')[0]!.split(';')).toContain('Lib.Gen');
+      expect(app.get('features')).toHaveLength(1);
       expect(defines).toHaveLength(1);
       expect(defines[0]!.split(';')).toEqual(expect.arrayContaining(['A', 'B']));
     },

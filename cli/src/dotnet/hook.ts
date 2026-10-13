@@ -131,6 +131,8 @@ export function hookText(): string {
       <_QualorIn Include="defines=$([MSBuild]::Escape('$(DefineConstants)'))" />
       <_QualorIn Include="allow-unsafe=$([MSBuild]::Escape('$(AllowUnsafeBlocks)'))" />
       <_QualorIn Include="generated-dir=$([MSBuild]::Escape('$(CompilerGeneratedFilesOutputPath)'))" />
+      <_QualorIn Include="features=$([MSBuild]::Escape('$(Features)'))" />
+      <_QualorIn Include="interceptors-namespaces=$([MSBuild]::Escape('$(InterceptorsNamespaces);$(InterceptorsPreviewNamespaces)'))" />
       <_QualorIn Include="@(Compile->'source=%(FullPath)')" />
       <_QualorIn Include="@(ReferencePathWithRefAssemblies->'reference=%(FullPath)')" Condition="'%(ReferencePathWithRefAssemblies.ReferenceSourceTarget)' != 'ProjectReference'" />
       <_QualorIn Include="@(ReferencePathWithRefAssemblies->'project-reference=%(MSBuildSourceProjectFile)')" Condition="'%(ReferencePathWithRefAssemblies.ReferenceSourceTarget)' == 'ProjectReference'" />
