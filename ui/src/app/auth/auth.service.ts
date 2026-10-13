@@ -78,6 +78,21 @@ export class AuthService {
     }
   }
 
+  /** `POST /auth/password-reset` (public): always 202, whether or not an account matches. */
+  async requestPasswordReset(login: string): Promise<void> {
+    await done(this.api.client.POST('/api/v0/auth/password-reset', { body: { login } }));
+  }
+
+  /** `POST /auth/password-reset/complete` (public): the account's username; it does not sign in. */
+  async completePasswordReset(token: string, newPassword: string): Promise<string> {
+    const answer = await ok(
+      this.api.client.POST('/api/v0/auth/password-reset/complete', {
+        body: { token, newPassword },
+      }),
+    );
+    return answer.username;
+  }
+
   async changePassword(currentPassword: string, newPassword: string): Promise<void> {
     await done(
       this.api.client.PUT('/api/v0/auth/me/password', { body: { currentPassword, newPassword } }),

@@ -17,6 +17,18 @@ export const routes: Routes = [
     loadComponent: () => import('./auth/change-password.page').then((m) => m.ChangePasswordPage),
   },
   {
+    path: 'forgot-password',
+    title: $localize`:@@title.forgotPassword:Forgot password`,
+    canActivate: [requireGuest],
+    loadComponent: () => import('./auth/forgot-password.page').then((m) => m.ForgotPasswordPage),
+  },
+  {
+    // No guard: the link works in any browser; it never signs in (mail E2 A5).
+    path: 'reset-password',
+    title: $localize`:@@title.resetPassword:Reset password`,
+    loadComponent: () => import('./auth/reset-password.page').then((m) => m.ResetPasswordPage),
+  },
+  {
     path: 'unavailable',
     title: $localize`:@@title.unavailable:Server unavailable`,
     loadComponent: () => import('./shared/unavailable.page').then((m) => m.UnavailablePage),

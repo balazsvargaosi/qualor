@@ -323,3 +323,65 @@ describe('safeReturnUrl', () => {
     }
   });
 });
+
+describe('LoginPage account emails (mail E2)', () => {
+  let server: FakeServer;
+  beforeEach(() => {
+    server = new FakeServer();
+    TestBed.configureTestingModule({
+      imports: [LoginPage],
+      providers: [provideRouter([{ path: '**', children: [] }]), provideFakeServer(server)],
+    });
+  });
+  const methods = (passwordReset: boolean) =>
+    server.on('GET', '/api/v0/auth/methods', {
+      body: { password: 'everyone', providers: [], demo: false, passwordReset },
+    });
+  async function render(inputs: Record<string, string> = {}) {
+    const fixture = TestBed.createComponent(LoginPage);
+    for (const [name, value] of Object.entries(inputs)) fixture.componentRef.setInput(name, value);
+    await settle(fixture);
+    return { fixture, root: fixture.nativeElement as HTMLElement };
+  }
+
+  it('offers "Forgot password?" under the password only when the server can send links', async () => {
+    methods(true);
+    const shown = await render();
+    expect(shown.root.querySelector('[data-test=forgot-password]')?.getAttribute('href')).toBe(
+      '/forgot-password',
+    );
+    shown.fixture.destroy();
+    methods(false);
+    const hidden = await render();
+    expect(hidden.root.querySelector('[data-test=forgot-password]')).toBeNull();
+  });
+
+  it('offers it in the folded emergency sign-in as well', async () => {
+    server.on('GET', '/api/v0/auth/methods', {
+      body: { password: 'break_glass_only', providers: [], demo: false, passwordReset: true },
+    });
+    const { fixture, root } = await render();
+    expect(root.querySelector('[data-test=forgot-password]')).toBeNull();
+    root.querySelector<HTMLButtonElement>('[data-test=emergency-sign-in]')!.click();
+    await settle(fixture);
+    const link = root.querySelector('form[data-test=password-form] [data-test=forgot-password]');
+    expect(link?.textContent).toContain('Forgot password?');
+  });
+
+  it('confirms a finished reset and fills in the username', async () => {
+    methods(true);
+    const { root } = await render({ reset: 'done', username: 'rita' });
+    expect(root.querySelector('[data-test=reset-done]')?.textContent).toContain(
+      'Your password is changed. Sign in with the new one.',
+    );
+    expect(root.querySelector<HTMLInputElement>('#login-username')!.value).toBe('rita');
+  });
+
+  it('confirms an accepted invitation', async () => {
+    methods(true);
+    const { root } = await render({ invite: 'done', username: 'ivy' });
+    expect(root.querySelector('[data-test=invite-done]')?.textContent).toContain(
+      'Your password is set. Sign in to start.',
+    );
+  });
+});

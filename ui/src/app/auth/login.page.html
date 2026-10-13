@@ -4,6 +4,20 @@
     @if (ssoErrorMessage(); as message) {
       <p class="alert alert-error" role="alert" data-test="sso-error">{{ message }}</p>
     }
+    @if (notice() === 'reset') {
+      <p class="alert alert-success" role="status" data-test="reset-done" i18n="@@auth.reset.done">
+        Your password is changed. Sign in with the new one.
+      </p>
+    } @else if (notice() === 'invite') {
+      <p
+        class="alert alert-success"
+        role="status"
+        data-test="invite-done"
+        i18n="@@auth.invite.done"
+      >
+        Your password is set. Sign in to start.
+      </p>
+    }
     @if (demo()) {
       <div class="auth-providers" data-test="demo">
         <button
@@ -85,6 +99,16 @@
             [value]="password()"
             (input)="password.set(inputValue($event))"
           />
+          @if (passwordReset()) {
+            <span class="hint"
+              ><a
+                routerLink="/forgot-password"
+                data-test="forgot-password"
+                i18n="@@auth.forgot.link"
+                >Forgot password?</a
+              ></span
+            >
+          }
         </div>
         <button
           type="submit"

@@ -7,10 +7,11 @@ import {
   inject,
   Injector,
   input,
+  type OnInit,
   signal,
   viewChild,
 } from '@angular/core';
-import { Router } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 import { ApiError, problemMessage } from '../api/errors';
 import type { AuthMethods, SsoProvider } from '../api/types';
 import { AuthLayout } from '../shared/auth-layout';
@@ -30,10 +31,10 @@ const PASSWORD_ONLY: AuthMethods = {
 
 @Component({
   selector: 'q-login-page',
-  imports: [AuthLayout, Icon],
+  imports: [AuthLayout, Icon, RouterLink],
   templateUrl: './login.page.html',
 })
-export class LoginPage {
+export class LoginPage implements OnInit {
   private readonly auth = inject(AuthService);
   private readonly router = inject(Router);
 
@@ -47,6 +48,15 @@ export class LoginPage {
    * mapped to a fixed message; the value itself is never shown.
    */
   readonly ssoError = input<string | undefined>(undefined, { alias: 'sso_error' });
+  /** `?reset=done` (mail E2 A5): a reset link set a new password; sign in with it. */
+  readonly reset = input<string>();
+  /** `?invite=done`: an invitation link set the first password. */
+  readonly invite = input<string>();
+  /** `?username=`: who just set a password, filled in for them. */
+  readonly prefill = input<string | undefined>(undefined, { alias: 'username' });
+  protected readonly notice = computed(() =>
+    this.reset() === 'done' ? 'reset' : this.invite() === 'done' ? 'invite' : null,
+  );
 
   /**
    * `GET /auth/methods`; undefined while it loads, so a folded password form never appears and
@@ -64,6 +74,8 @@ export class LoginPage {
   );
   /** The server lets guests look around a read-only demo (`QUALOR_DEMO_USER`). */
   protected readonly demo = computed(() => this.methods()?.demo === true);
+  /** Mail E2 A4: "Forgot password?" only where the server can send the link. */
+  protected readonly passwordReset = computed(() => this.methods()?.passwordReset === true);
   protected readonly ssoErrorMessage = computed(() => {
     const code = this.ssoError();
     return code ? ssoErrorText(code) : null;
@@ -81,6 +93,11 @@ export class LoginPage {
       (methods) => this.methods.set(methods),
       () => this.methods.set(PASSWORD_ONLY),
     );
+  }
+
+  ngOnInit(): void {
+    const name = this.prefill();
+    if (name) this.username.set(name.slice(0, 64));
   }
 
   /**
