@@ -272,6 +272,15 @@ describe('StagedPlugin (ruling EE4)', () => {
     );
   });
 
+  it('gives a context without services a support stand-in that throws', () => {
+    const registry = emptyRegistry();
+    const ctx = new StagedPlugin(plugin(), registry).context(base, registry);
+    expect(Object.isFrozen(ctx.support)).toBe(true);
+    expect(() => ctx.support.bundle({} as never)).toThrow(
+      'the support service is not available in this context',
+    );
+  });
+
   it('gives a context without services a compliance stand-in that throws', () => {
     const registry = emptyRegistry();
     const ctx = new StagedPlugin(plugin(), registry).context(base, registry);

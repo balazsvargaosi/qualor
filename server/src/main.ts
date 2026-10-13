@@ -138,6 +138,8 @@ async function main(): Promise<void> {
     if (err instanceof BootstrapError) await abort(err.message);
     throw err;
   }
+  // The SCM worker's per-process state; the support bundle reads its circuits (4E-3b §1).
+  const scmRuntime = createScmRuntime();
   // enterprise.md §6, §12: the key is read once; plugins load only while it is active or in grace.
   // The API and the workers share the one frozen registry and the one edition.
   let enterprise: EnterpriseBoot;
@@ -147,6 +149,8 @@ async function main(): Promise<void> {
       db: database.db,
       logger,
       serverVersion: VERSION,
+      // 4E-3b §4: the support bundle reads this replica's log tail and SCM circuits.
+      support: { migrationsDir: MIGRATIONS_DIR, logBuffer, scmRuntime },
     });
   } catch (err) {
     // The message names the variable and the path, never the file's content.
@@ -244,7 +248,7 @@ async function main(): Promise<void> {
     handlers: scmHandlers({
       db: database.db,
       scm: { secretKey: config.secretKey, internalHosts: config.scmInternalHosts },
-      runtime: createScmRuntime(),
+      runtime: scmRuntime,
       publicUrl: config.publicUrl,
       logger,
       // An automatic fix post checks the licence's seam again when it runs (4E-3a §3).

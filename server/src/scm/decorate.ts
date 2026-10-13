@@ -339,6 +339,10 @@ function settleCircuit(
   connectionId: string,
   outcome: DecorationOutcome | undefined,
 ): void {
+  // 4E-3b §1: what the support bundle shows of the connection.
+  if (outcome?.kind === 'done' || outcome?.kind === 'failed') {
+    runtime.health.record(connectionId, outcome.kind === 'done' ? null : outcome.error.message);
+  }
   if (outcome?.kind === 'done') runtime.circuit.success(connectionId);
   else if (outcome?.kind === 'failed' && outcome.countsForCircuit) {
     runtime.circuit.failure(connectionId);

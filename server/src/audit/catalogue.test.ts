@@ -273,6 +273,17 @@ describe('compliance report events (4E-1 §2.4)', () => {
   });
 });
 
+describe('the support bundle event (4E-3b §4)', () => {
+  it('names no target and records the source and the size', () => {
+    const d = AUDIT_CATALOGUE['support.bundle_downloaded'];
+    expect(d.target).toBeNull();
+    expect(d.details.safeParse({ source: 'ui', bytes: 1234 }).success).toBe(true);
+    expect(d.details.safeParse({ source: 'command', bytes: 1234 }).success).toBe(false);
+    expect(d.details.safeParse({ source: 'ui', bytes: -1 }).success).toBe(false);
+    expect(d.details.safeParse({ source: 'ui' }).success).toBe(false);
+  });
+});
+
 describe('automatic fix suggestion events (4E-3a §2)', () => {
   it('records the organisation settings on the organisation', () => {
     const d = AUDIT_CATALOGUE['organization.auto_fix_changed'];

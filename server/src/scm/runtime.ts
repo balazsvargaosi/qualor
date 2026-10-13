@@ -66,6 +66,41 @@ export class CircuitBreaker {
     const entry = this.state.get(key);
     if (entry) entry.probing = false;
   }
+
+  /** Where the circuit stands, for the support bundle (4E-3b §1); it changes nothing. */
+  inspect(key: string): {
+    state: 'closed' | 'open' | 'half-open';
+    failures: number;
+    openedAt: Date | null;
+  } {
+    const entry = this.state.get(key);
+    if (!entry || entry.failures < this.threshold) {
+      return { state: 'closed', failures: entry?.failures ?? 0, openedAt: null };
+    }
+    return {
+      state: entry.openUntil > this.now() ? 'open' : 'half-open',
+      failures: entry.failures,
+      openedAt: new Date(entry.openUntil - this.openMs),
+    };
+  }
+}
+
+/**
+ * The last decoration outcome of each connection in this process, for the support bundle
+ * (4E-3b §1): `ok` after GitLab or GitHub answered, `failing` with the error after a failure.
+ */
+export class ConnectionHealth {
+  private readonly last = new Map<string, { ok: boolean; error: string | null; at: Date }>();
+
+  constructor(private readonly now: () => number = Date.now) {}
+
+  record(connectionId: string, error: string | null): void {
+    this.last.set(connectionId, { ok: error === null, error, at: new Date(this.now()) });
+  }
+
+  get(connectionId: string): { ok: boolean; error: string | null; at: Date } | null {
+    return this.last.get(connectionId) ?? null;
+  }
 }
 
 /** At most `max` decorations per organisation in flight in this process (scm.md §4.2). */
@@ -91,6 +126,8 @@ export class OrganizationSlots {
 /** The per-process state of the decoration worker. */
 export interface ScmRuntime {
   circuit: CircuitBreaker;
+  /** 4E-3b §1: the last outcome per connection, read by the support bundle. */
+  health: ConnectionHealth;
   slots: OrganizationSlots;
   /** github.md §4: installation tokens, shared by every job of the process. */
   githubTokens: InstallationTokenCache;
@@ -101,6 +138,7 @@ export interface ScmRuntime {
 export function createScmRuntime(now: () => number = Date.now): ScmRuntime {
   return {
     circuit: new CircuitBreaker(now),
+    health: new ConnectionHealth(now),
     slots: new OrganizationSlots(),
     githubTokens: new InstallationTokenCache(now),
     githubPacer: new MutationPacer(now),

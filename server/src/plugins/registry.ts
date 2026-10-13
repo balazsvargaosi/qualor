@@ -17,6 +17,7 @@ import {
   type PluginReport,
   type PluginScim,
   type PluginSso,
+  type PluginSupport,
   type QualorPlugin,
   type UiExtension,
 } from './contract';
@@ -226,9 +227,10 @@ export interface ContextBase {
   logger: PluginLogger;
   license: LicensePayload;
   /**
-   * rbac-audit.md §15, sso-scim.md §17.1, 4E-1 §1.1: the access, audit, sso, scim and compliance services, built
-   * by core (bootEnterprise). A context without them (core tests that load a plugin) gives the
-   * plugin stand-ins that throw, naming the missing service.
+   * rbac-audit.md §15, sso-scim.md §17.1, 4E-1 §1.1, 4E-2 §2, 4E-3b §4: the access, audit, sso,
+   * scim, compliance, portfolio and support services, built by core (bootEnterprise). A context
+   * without them (core tests that load a plugin) gives the plugin stand-ins that throw, naming
+   * the missing service.
    */
   services?: PluginServices;
 }
@@ -296,6 +298,11 @@ export const MISSING_PORTFOLIO: PluginPortfolio = Object.freeze({
   overview: unavailable('portfolio'),
   projects: unavailable('portfolio'),
   exportRows: unavailable('portfolio'),
+});
+
+/** 4E-3b §4: what a context without the support service gets. */
+export const MISSING_SUPPORT: PluginSupport = Object.freeze({
+  bundle: unavailable('support'),
 });
 
 /** 4E-1 §1.1: what a context without the compliance service gets. */
@@ -457,6 +464,7 @@ export class StagedPlugin {
       scim: base.services?.scim ?? MISSING_SCIM,
       compliance: base.services?.compliance ?? MISSING_COMPLIANCE,
       portfolio: base.services?.portfolio ?? MISSING_PORTFOLIO,
+      support: base.services?.support ?? MISSING_SUPPORT,
       schedule: (feature: string, queue: string, everySeconds: number) => {
         const f = this.feature(feature);
         if (typeof queue !== 'string' || !PLUGIN_QUEUE_PATTERN.test(queue)) {

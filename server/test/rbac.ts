@@ -6,7 +6,8 @@ import { DAY_MS, licenseState } from '../src/license/state';
 import { verifyLicenseKey } from '../src/license/verify';
 import type { QualorPlugin } from '../src/plugins/contract';
 import { loadPlugins } from '../src/plugins/loader';
-import { createPluginServices } from '../src/plugins/services';
+import { createPluginServices, type SupportServiceInputs } from '../src/plugins/services';
+import type { Config } from '../src/config';
 import { createTestContext, type TestContext } from './app';
 import { signTest, testPayload, testSigner, verifyWith } from './license';
 
@@ -43,6 +44,8 @@ export function rbacPlugins(options: {
   expires?: string;
   plugin?: QualorPlugin;
   edition?: (edition: Edition) => Edition;
+  /** 4E-3b §4: the support service's inputs; without them ctx.support throws. */
+  support?: SupportServiceInputs;
 }): PluginsFor {
   const signer = testSigner();
   const license = testPayload({
@@ -75,6 +78,7 @@ export function rbacPlugins(options: {
         return edition;
       },
       logger,
+      ...(options.support ? { support: options.support } : {}),
     });
     const plugins = await loadPlugins({
       paths: ['/virtual/rbac-fixture.js'],
@@ -102,8 +106,14 @@ export async function rbacContext(options: {
   expires?: string;
   plugin?: QualorPlugin;
   edition?: (edition: Edition) => Edition;
+  support?: SupportServiceInputs;
+  /** Configuration overrides, as createTestContext takes them. */
+  config?: Partial<Config>;
 }): Promise<TestContext> {
-  return createTestContext({ pluginsFor: rbacPlugins(options) });
+  return createTestContext({
+    pluginsFor: rbacPlugins(options),
+    ...(options.config ? { config: options.config } : {}),
+  });
 }
 
 export async function grantProject(

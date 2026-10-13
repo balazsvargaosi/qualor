@@ -216,9 +216,14 @@ describe('the plugin services (rbac-audit.md §15)', () => {
         'portfolio',
         'scim',
         'sso',
+        'support',
       ]);
       expect(() => s.sso.listConnections()).toThrow(
         'the sso service is not available in this context',
+      );
+      // 4E-3b §4: without the config, the edition and the support inputs, support throws too.
+      expect(() => s.support.bundle({} as never)).toThrow(
+        'the support service is not available in this context',
       );
     });
 

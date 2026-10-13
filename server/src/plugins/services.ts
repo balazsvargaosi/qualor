@@ -19,11 +19,14 @@ import {
 import { createComplianceService } from '../compliance/service';
 import type { Config } from '../config';
 import type { Db } from '../db/client';
+import type { LogBuffer } from '../http/log-buffer';
 import { ProblemError, validationFailed } from '../http/problem';
 import type { Edition } from '../license/edition';
 import { createPortfolioService } from '../portfolio/service';
 import { projectForUser } from '../projects/access';
+import type { ScmRuntime } from '../scm/runtime';
 import { createScimService, createSsoService } from '../sso/service';
+import { createSupportService } from '../support/service';
 import type {
   PluginAccess,
   PluginAudit,
@@ -31,12 +34,13 @@ import type {
   PluginPortfolio,
   PluginScim,
   PluginSso,
+  PluginSupport,
 } from './contract';
-import { MISSING_SCIM, MISSING_SSO, PluginError } from './registry';
+import { MISSING_SCIM, MISSING_SSO, MISSING_SUPPORT, PluginError } from './registry';
 
 /**
- * rbac-audit.md §15, sso-scim.md §17.1, 4E-1 §1.1: what core passes to a plugin's context,
- * besides 4B's.
+ * rbac-audit.md §15, sso-scim.md §17.1, 4E-1 §1.1, 4E-2 §2, 4E-3b §4: what core passes to a
+ * plugin's context, besides 4B's.
  */
 export interface PluginServices {
   readonly access: PluginAccess;
@@ -45,6 +49,22 @@ export interface PluginServices {
   readonly scim: PluginScim;
   readonly compliance: PluginCompliance;
   readonly portfolio: PluginPortfolio;
+  readonly support: PluginSupport;
+}
+
+/**
+ * 4E-3b §4: what the support service reads besides the configuration and the edition (both from
+ * the sso inputs). Without it (a script or a test) `support` is the stand-in that throws.
+ */
+export interface SupportServiceInputs {
+  /** The server's migrations folder, for the pending count. */
+  migrationsDir: string | null;
+  /** This replica's log tail (main.ts's buffer). */
+  logBuffer?: LogBuffer | undefined;
+  /** The SCM worker's runtime in this process, for the circuits. */
+  scmRuntime?: Pick<ScmRuntime, 'circuit' | 'health'> | undefined;
+  /** Tests inject a small cap. */
+  maxBytes?: number;
 }
 
 /**
@@ -109,6 +129,8 @@ export function createPluginServices(
     now?: () => Date;
     /** Stream warnings (events that aged out unsent), never a URL, body or secret. */
     log?: { warn: (message: string) => void };
+    /** 4E-3b §4: with the sso inputs, the support service; without, its stand-in. */
+    support?: SupportServiceInputs;
   } & SsoServiceInputs,
 ): PluginServices {
   const { db, recorder } = deps;
@@ -196,5 +218,25 @@ export function createPluginServices(
   // 4E-2 §2: the portfolio reads, over the projects the caller can read.
   const portfolio = createPortfolioService({ db, isFeatureActive: deps.isFeatureActive });
 
-  return Object.freeze({ access, audit, sso, scim, compliance, portfolio });
+  // 4E-3b §4: the support bundle, read from the configuration and the edition at request time.
+  const supportInputs = deps.support;
+  const support: PluginSupport =
+    ssoDeps && supportInputs
+      ? createSupportService({
+          collect: () => ({
+            db,
+            config: ssoDeps.config,
+            edition: ssoDeps.edition(),
+            version: deps.version,
+            migrationsDir: supportInputs.migrationsDir,
+            scmRuntime: supportInputs.scmRuntime,
+          }),
+          isFeatureActive: deps.isFeatureActive,
+          recorder,
+          logBuffer: supportInputs.logBuffer,
+          ...(supportInputs.maxBytes === undefined ? {} : { maxBytes: supportInputs.maxBytes }),
+        })
+      : MISSING_SUPPORT;
+
+  return Object.freeze({ access, audit, sso, scim, compliance, portfolio, support });
 }

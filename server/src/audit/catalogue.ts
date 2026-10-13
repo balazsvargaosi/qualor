@@ -509,6 +509,14 @@ export const AUDIT_CATALOGUE = {
     target: 'compliance_report',
     details: z.strictObject({ scope: z.enum(['project', 'organization']) }),
   },
+  // 4E-3b §4: an instance admin downloaded the support bundle; it names no target.
+  'support.bundle_downloaded': {
+    target: null,
+    details: z.strictObject({
+      source: z.literal('ui'),
+      bytes: z.number().int().min(0).refine(Number.isSafeInteger),
+    }),
+  },
   'audit.exported': {
     target: null,
     details: z.strictObject({ from: iso, to: iso, filters: z.record(z.string().max(32), json) }),

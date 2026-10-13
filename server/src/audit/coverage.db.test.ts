@@ -67,6 +67,10 @@ const NOT_FROM_CORE_ROUTES = new Map<string, string>([
     'recorded by the enterprise compliance routes (4E-1 Task 9); covered by their own tests',
   ],
   ['audit.pruned', 'recorded by retention in housekeeping (Task 11), not by a request'],
+  [
+    'support.bundle_downloaded',
+    'recorded by ctx.support (4E-3b), reached through the enterprise support route; covered by support/service.db.test.ts',
+  ],
   // Plan 4D: the SSO and SCIM actions of sso-scim.md §15. None is recorded by a core route; each is produced by its flow, the
   // enterprise plugin's routes or the SCIM service, and covered by that code's own db tests.
   [
