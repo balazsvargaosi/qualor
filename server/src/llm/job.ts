@@ -289,6 +289,7 @@ async function postAutomatically(deps: LlmJobDeps, requestId: string): Promise<v
         row,
         undefined,
         deps.audit ? { recorder: deps.audit, context: SYSTEM_ACTOR } : undefined,
+        { auto: true },
       )
     : ({ ok: false, refusal: 'ai_disabled' } as const);
   if (queued.ok) {
@@ -451,7 +452,22 @@ async function runLlmJob(deps: LlmJobDeps, payload: LlmJobPayload): Promise<void
     });
     // Read back by the post: a row this job no longer finished (a lost lease) is not posted.
     const fixed = (checked.result as { status?: unknown }).status === 'fixed';
-    if (automatic && row.feature === 'fix' && fixed) await postAutomatically(deps, row.id);
+    if (automatic && row.feature === 'fix' && fixed) {
+      try {
+        await postAutomatically(deps, row.id);
+      } catch (err) {
+        // The request is finished and stays so: a throw would only fail the job, never retry
+        // the post, so the failure is logged (class only) and the suggestion is not posted.
+        deps.logger?.warn(
+          {
+            requestId: row.id,
+            organizationId: row.organizationId,
+            errorClass: err instanceof Error ? err.constructor.name : typeof err,
+          },
+          'automatic fix post could not be queued',
+        );
+      }
+    }
   } finally {
     deps.runtime.slots.release(row.organizationId);
   }

@@ -14,8 +14,12 @@ import { pathExcluded, readLlmSettings, type StoredLlmSettings } from './setting
 
 /** 4E-3a §3: the automatic fix suggestions of one analysis are a job of their own. */
 export const AUTO_FIX_QUEUE = 'llm-auto-fix';
-/** The job's own retries, for database failures (an issue asked about is never asked again). */
-export const AUTO_FIX_JOB_MAX_ATTEMPTS = 3;
+/**
+ * One attempt: a retry after a failure midway would start counting `maxPerAnalysis` again, and
+ * the rows do not say which analysis asked. What a failed job did not ask about, the merge
+ * request's next analysis does.
+ */
+export const AUTO_FIX_JOB_MAX_ATTEMPTS = 1;
 
 /** 4E-3a §3: two analyses of one merge request are never handled at once. */
 export const autoFixKey = (branchId: string): string => `${AUTO_FIX_QUEUE}:${branchId}`;

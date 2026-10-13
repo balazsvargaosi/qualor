@@ -244,6 +244,8 @@ async function main(): Promise<void> {
       runtime: createScmRuntime(),
       publicUrl: config.publicUrl,
       logger,
+      // An automatic fix post checks the licence's seam again when it runs (4E-3a §3).
+      limits: () => edition.limits(),
     }),
     concurrency: SCM_WORKER_CONCURRENCY,
     leaseMs: SCM_LEASE_MS,

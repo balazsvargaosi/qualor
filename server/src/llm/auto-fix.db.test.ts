@@ -1,6 +1,7 @@
 import type { Severity } from '@qualor/shared';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { QUIET_AUDIT_LOG } from '../../test/audit-log';
 import { createFakeGitHub, type FakeGitHub } from '../../test/fake-github';
 import { createFakeGitLab, type FakeGitLab } from '../../test/fake-gitlab';
 import { createFakeLlm, type FakeLlm } from '../../test/fake-llm';
@@ -16,12 +17,14 @@ import {
   runDecorations,
   silentLogger,
 } from '../../test/scm';
-import { branches, issues, jobs, llmRequests } from '../db/schema';
+import { createAuditRecorder } from '../audit/recorder';
+import { auditEvents, branches, issues, jobs, llmRequests } from '../db/schema';
 import type { Limits } from '../limits';
 import { claimJob, type Job } from '../queue/queue';
 import { runUntilIdle } from '../queue/worker';
 import { parseInternalHosts } from '../scm/url';
 import { AUTO_FIX_QUEUE, autoFixHandlers, autoFixKey, type AutoFixDeps } from './auto-fix';
+import { AI_FIX_QUEUE } from './post';
 import { createAiRequest, LLM_QUEUE } from './service';
 import {
   DEFAULT_AUTO_FIX,
@@ -75,11 +78,14 @@ describe('automatic fix suggestions (4E-3a §3)', () => {
   const limits: Limits = {
     llm: { maxFixPerOrganizationPerDay: 100_000, automaticFixSuggestions: true },
   };
-  const autoDeps = (): AutoFixDeps => ({
+  const autoDeps = (over: Partial<AutoFixDeps> = {}): AutoFixDeps => ({
     db: h.ctx.db,
     limits: () => limits,
     logger: h.ctx.app.log,
+    ...over,
   });
+  /** The `scm` worker's deps with the same live limits, as main.ts builds them. */
+  const scmDeps = () => decorationDeps(h, { limits: () => limits });
 
   const aiFixThreads = (gitlabId: number) =>
     gitlab
@@ -175,7 +181,7 @@ describe('automatic fix suggestions (4E-3a §3)', () => {
   }
   const runLlm = () => runLlmJobs(h, llmJobDeps(h, { limits: () => limits }));
   /** The stage's job, the `llm` jobs it queued, then the `scm` worker (decorations and posts). */
-  async function runAll(deps = decorationDeps(h)): Promise<void> {
+  async function runAll(deps = scmDeps()): Promise<void> {
     await runAutoFix();
     await runLlm();
     await runDecorations(h, deps);
@@ -230,7 +236,7 @@ describe('automatic fix suggestions (4E-3a §3)', () => {
     expect(mine.map((j) => (j.payload as { auto?: boolean }).auto)).toEqual([true, true, true]);
     expect(await requestedLines(project.id)).toEqual([2, 3, 5]);
     await runLlm();
-    await runDecorations(h, decorationDeps(h));
+    await runDecorations(h, scmDeps());
     expect(llm.requests).toHaveLength(3);
     const threads = aiFixThreads(gitlabId);
     expect(threads).toHaveLength(3);
@@ -266,7 +272,7 @@ describe('automatic fix suggestions (4E-3a §3)', () => {
         findings: reportFindings([[3, 'blocker']]),
       }),
     );
-    await runAll(githubDeps(h));
+    await runAll(githubDeps(h, { limits: () => limits }));
     const comments = github.reviewComments.filter((c) => c.repoId === repoId);
     expect(comments).toHaveLength(1);
     expect(comments[0]).toMatchObject({ path: 'src/a.ts', line: 3, commitId: HEAD });
@@ -545,7 +551,7 @@ describe('automatic fix suggestions (4E-3a §3)', () => {
       expect(await fixRows(project.id)).toHaveLength(3);
       await configure({ autoFix: { ...DEFAULT_AUTO_FIX, enabled: false } });
       await runLlm();
-      await runDecorations(h, decorationDeps(h));
+      await runDecorations(h, scmDeps());
       expect(llm.requests).toHaveLength(0);
       expect((await fixRows(project.id)).map((r) => r.errorCode)).toEqual([
         'AI_DISABLED',
@@ -560,11 +566,129 @@ describe('automatic fix suggestions (4E-3a §3)', () => {
       await runAutoFix();
       limits.llm.automaticFixSuggestions = false;
       await runLlm();
-      await runDecorations(h, decorationDeps(h));
+      await runDecorations(h, scmDeps());
       expect(llm.requests).toHaveLength(0);
       expect(aiFixThreads(gitlabId)).toHaveLength(0);
-      expect(await fixRows(project.id)).toHaveLength(3);
+      expect((await fixRows(project.id)).map((r) => r.errorCode)).toEqual([
+        'AI_DISABLED',
+        'AI_DISABLED',
+        'AI_DISABLED',
+      ]);
     });
+  });
+
+  describe('posts nothing when a rule no longer holds when the post job runs', () => {
+    const cases: [string, (project: IngestProject) => Promise<void>][] = [
+      [
+        'auto-fix switched off',
+        () => configure({ autoFix: { ...DEFAULT_AUTO_FIX, enabled: false } }),
+      ],
+      ['the project opted out', (p) => configure({ autoFixDisabledProjectIds: [p.id] })],
+      [
+        'the licence lapsed',
+        async () => {
+          limits.llm.automaticFixSuggestions = false;
+        },
+      ],
+    ];
+    for (const [name, change] of cases) {
+      it(name, async () => {
+        const { project, gitlabId } = await gitlabCase(`auto-post-${name.replace(/\W+/g, '-')}`);
+        await runAutoFix();
+        await runLlm();
+        const queued = await h.ctx.db.select().from(jobs).where(eq(jobs.queue, AI_FIX_QUEUE));
+        const rows = await fixRows(project.id);
+        const mine = queued.filter((j) =>
+          rows.some((r) => r.id === (j.payload as { requestId: string }).requestId),
+        );
+        // Queued by the automatic path, and marked so.
+        expect(mine.map((j) => (j.payload as { auto?: boolean }).auto)).toEqual([true, true, true]);
+        await change(project);
+        await runDecorations(h, scmDeps());
+        for (const row of await fixRows(project.id)) {
+          expect(row.post).toMatchObject({ status: 'failed', reason: 'not_possible' });
+        }
+        expect(aiFixThreads(gitlabId)).toHaveLength(0);
+      });
+    }
+
+    it('a person posting a suggestion is not held to the automatic rule', async () => {
+      const { project, gitlabId } = await gitlabCase('auto-post-person', [[2, 'high']]);
+      await h.ctx.db.delete(jobs).where(eq(jobs.queue, AUTO_FIX_QUEUE));
+      const [issue] = await h.ctx.db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(eq(issues.projectId, project.id));
+      const asked = await h.ctx.app.inject({
+        method: 'POST',
+        url: `/api/v0/issues/${issue!.id}/ai/fix`,
+        headers: h.orgAdmin.headers,
+        payload: {},
+      });
+      expect(asked.statusCode, asked.body).toBe(202);
+      await runLlm();
+      await configure({ autoFix: { ...DEFAULT_AUTO_FIX, enabled: false } });
+      const posted = await h.ctx.app.inject({
+        method: 'POST',
+        url: `/api/v0/ai-requests/${asked.json<{ id: string }>().id}/post`,
+        headers: h.orgAdmin.headers,
+        payload: {},
+      });
+      expect(posted.statusCode, posted.body).toBe(202);
+      await runDecorations(h, scmDeps());
+      expect(aiFixThreads(gitlabId)).toHaveLength(1);
+    });
+  });
+
+  it('keeps the cap after a job that failed midway: it is not retried', async () => {
+    await configure({ autoFix: { enabled: true, minSeverity: 'high', maxPerAnalysis: 2 } });
+    const { project } = await gitlabCase('auto-retry', ALL_HIGH);
+    // The second automatic insert of this project fails, as a database failure would.
+    await h.ctx.db.execute(
+      sql.raw(`CREATE OR REPLACE FUNCTION test_fail_second_auto() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.user_id IS NULL AND NEW.project_id = '${project.id}' AND (SELECT count(*)
+               FROM llm_requests WHERE user_id IS NULL AND project_id = NEW.project_id) >= 1 THEN
+            RAISE EXCEPTION 'injected failure';
+          END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`),
+    );
+    await h.ctx.db.execute(
+      sql.raw(`CREATE TRIGGER test_fail_second_auto BEFORE INSERT ON llm_requests
+        FOR EACH ROW EXECUTE FUNCTION test_fail_second_auto()`),
+    );
+    try {
+      await runAutoFix();
+    } finally {
+      await h.ctx.db.execute(sql.raw('DROP TRIGGER test_fail_second_auto ON llm_requests'));
+      await h.ctx.db.execute(sql.raw('DROP FUNCTION test_fail_second_auto()'));
+    }
+    expect(await requestedLines(project.id)).toEqual([2]);
+    const [job] = await autoJobs();
+    expect(job).toMatchObject({ status: 'dead', maxAttempts: 1 });
+    // Nothing runs it again: a retry would ask for two more and break the cap.
+    await runAutoFix();
+    expect(await requestedLines(project.id)).toEqual([2]);
+  });
+
+  it('records the automatic request and post as the system actor (ai.requested, ai.fix_posted)', async () => {
+    const audit = createAuditRecorder({ log: QUIET_AUDIT_LOG, isActive: () => true });
+    const { project } = await gitlabCase('auto-audit', [[2, 'high']]);
+    await runUntilIdle(h.ctx.db, autoFixHandlers(autoDeps({ audit })), silentLogger);
+    await runLlmJobs(h, llmJobDeps(h, { limits: () => limits, audit }));
+    const [row] = await fixRows(project.id);
+    const events = await h.ctx.db
+      .select()
+      .from(auditEvents)
+      .where(eq(auditEvents.projectId, project.id))
+      .orderBy(auditEvents.seq);
+    expect(
+      events.map((e) => [e.action, e.actorType, e.actorUserId, e.targetId, e.details.requestId]),
+    ).toEqual([
+      ['ai.requested', 'system', null, row!.issueId, row!.id],
+      ['ai.fix_posted', 'system', null, row!.issueId, row!.id],
+    ]);
   });
 
   it('posts nothing when the head moved (not_head)', async () => {
@@ -572,7 +696,7 @@ describe('automatic fix suggestions (4E-3a §3)', () => {
     await runAutoFix();
     await runLlm();
     gitlab.updateMergeRequest(gitlabId, 7, { headSha: NEXT });
-    await runDecorations(h, decorationDeps(h));
+    await runDecorations(h, scmDeps());
     const rows = await fixRows(project.id);
     expect(rows).toHaveLength(3);
     for (const row of rows)
@@ -595,7 +719,7 @@ describe('automatic fix suggestions (4E-3a §3)', () => {
     });
     expect(asked.statusCode, asked.body).toBe(202);
     await runLlm();
-    await runDecorations(h, decorationDeps(h));
+    await runDecorations(h, scmDeps());
     // A person's suggestion is posted only when the person clicks.
     expect(aiFixThreads(gitlabId)).toHaveLength(0);
     const [person] = await h.ctx.db

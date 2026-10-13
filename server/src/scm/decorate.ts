@@ -1,5 +1,6 @@
 import type { FastifyBaseLogger } from 'fastify';
 import type { Db } from '../db/client';
+import type { Limits } from '../limits';
 import { AI_FIX_QUEUE, postFixHandler } from '../llm/post';
 import type { JobHandlers } from '../queue/worker';
 import { gitlabClientFor, type ScmDeps } from './connections';
@@ -48,6 +49,11 @@ export interface DecorationDeps {
   logger?: Pick<FastifyBaseLogger, 'info' | 'warn'> | undefined;
   /** Threads one job resolves or reopens (scm.md §5.4); tests set a smaller bound. */
   maxThreadUpdates?: number;
+  /**
+   * The edition's limits, read by an automatic fix post (4E-3a §3); without them, the community
+   * limits, so an automatic post fails closed.
+   */
+  limits?: (() => Limits) | undefined;
 }
 
 export type DecorationOutcome =
