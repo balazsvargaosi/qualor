@@ -25,6 +25,10 @@ All notable changes to Qualor are listed here, newest first. The format follows
   days). Download it as CSV (one row per project) or as PDF, or read it through
   `/api/v0/ee/portfolio`. Each user sees only the projects they can read. It needs a licence key
   listing the new feature `portfolio`. See [Portfolio reports](docs/guide/portfolio.md).
+- While telemetry is on, the server checks Docker Hub daily for a newer release: it logs it, shows
+  instance admins a dismissible banner and a note in the user menu, and `GET /api/v0/system/version`
+  returns it as `latest`, which `qualor scan` logs. `QUALOR_TELEMETRY=false` turns it off. See
+  [Telemetry](docs/guide/telemetry.md#update-check).
 
 ## [0.7.1] - 2026-10-12
 

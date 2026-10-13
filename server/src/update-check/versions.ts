@@ -7,9 +7,7 @@ export function parseStable(tag: string): [number, number, number] | null {
 /** `X.Y.Z` with an optional `-pre` and `+build`; null for anything else. */
 function parseAny(version: string): { core: [number, number, number]; pre: boolean } | null {
   const m = /^(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?(?:\+.*)?$/.exec(version);
-  return m
-    ? { core: [Number(m[1]), Number(m[2]), Number(m[3])], pre: m[4] !== undefined }
-    : null;
+  return m ? { core: [Number(m[1]), Number(m[2]), Number(m[3])], pre: m[4] !== undefined } : null;
 }
 
 /**
@@ -20,10 +18,10 @@ export function compareVersions(a: string, b: string): number {
   const pa = parseAny(a);
   const pb = parseAny(b);
   if (pa === null || pb === null) return (pa === null ? 0 : 1) - (pb === null ? 0 : 1);
-  for (let i = 0; i < 3; i++) {
-    const diff = pa.core[i]! - pb.core[i]!;
-    if (diff !== 0) return diff;
-  }
+  const [aMajor, aMinor, aPatch] = pa.core;
+  const [bMajor, bMinor, bPatch] = pb.core;
+  const diff = aMajor - bMajor || aMinor - bMinor || aPatch - bPatch;
+  if (diff !== 0) return diff;
   return (pa.pre ? 0 : 1) - (pb.pre ? 0 : 1);
 }
 

@@ -7,9 +7,8 @@ import {
 import type { FetchOutcome } from './fetch-latest';
 
 function setup(outcomes: FetchOutcome[], currentVersion = '0.7.1') {
-  const fetchLatest = vi.fn(
-    async (_url: string): Promise<FetchOutcome> =>
-      outcomes.shift() ?? { ok: false, reason: 'none' },
+  const fetchLatest = vi.fn<(url: string) => Promise<FetchOutcome>>(
+    async () => outcomes.shift() ?? { ok: false, reason: 'none' },
   );
   const logger = { info: vi.fn(), debug: vi.fn() };
   const checker = createUpdateChecker({
