@@ -327,7 +327,7 @@ describe('ctx.support (4E-3b §2, §4)', () => {
       .where(eq(auditEvents.action, 'support.bundle_downloaded'));
     const res = await download(ctx, member);
     expect(res.statusCode).toBe(403);
-    expect(res.json()).not.toMatchObject({ code: 'FEATURE_NOT_LICENSED' });
+    expect(res.json()).toMatchObject({ code: 'FORBIDDEN', title: 'Instance administrators only' });
     const after = await ctx.db
       .select()
       .from(auditEvents)

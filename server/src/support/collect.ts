@@ -20,7 +20,13 @@ import type { Edition } from '../license/edition';
 import { PLUGIN_API_VERSION } from '../plugins/contract';
 import type { ScmRuntime } from '../scm/runtime';
 import { allowlistedConfig, allowlistedSetting, urlHost } from './allowlist';
-import { cleanErrorText, cleanLogLine, configuredSecrets, createRedactor } from './secrets';
+import {
+  cleanErrorText,
+  cleanLogLine,
+  configuredSecrets,
+  createRedactor,
+  redactTree,
+} from './secrets';
 import { zipStore } from './zip';
 
 /** 4E-3b §1: the archive is at most this large; logs, then jobs, then analyses are trimmed. */
@@ -415,7 +421,8 @@ function enoughToCover(sizes: readonly number[], bytes: number): number {
 /**
  * 4E-3b §1, §2: the support bundle. Every section is collected on its own; one that fails holds
  * its error, and the others are still written. Error texts and log lines are cleaned (configured
- * secret values redacted), and every file passes the redaction once more as a whole. Over
+ * secret values redacted), and every string and key of every file passes the redaction once
+ * more, inside the value, so each file stays valid JSON. Over
  * `maxBytes`, the oldest log lines go first, then the oldest failed jobs, then the oldest failed
  * analyses; `manifest.notes` says what was dropped.
  */
@@ -449,7 +456,7 @@ export async function collectSupportBundle(
   let overCap = false;
 
   const text = (value: Json): Buffer =>
-    Buffer.from(redact(`${JSON.stringify(value, null, 2)}\n`), 'utf8');
+    Buffer.from(`${JSON.stringify(redactTree(value, redact), null, 2)}\n`, 'utf8');
   // The sections that are never trimmed are encoded once.
   const encoded = new Map<string, Buffer>();
   for (const [name, value] of sections) {

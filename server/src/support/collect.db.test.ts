@@ -10,6 +10,7 @@ import {
 import { MIGRATIONS_DIR } from '../../test/paths';
 import { readZip, type ZipEntry } from '../../test/zip';
 import { VERSION } from '../index';
+import { writeSetting } from '../audit/settings';
 import { encryptionKey, encryptSecret } from '../crypto/secrets';
 import { analyses, jobs, scmConnections } from '../db/schema';
 import { fixedEdition } from '../license/edition';
@@ -337,5 +338,68 @@ describe('collectSupportBundle: the size cap (4E-3b §1, Review Focus 5)', () =>
     const got = readZip(bundle.data);
     expect(json(got, 'analyses.json').failed).toEqual([]);
     expect(bundle.notes.at(-1)).toBe('nothing left to trim: the archive is over 1000 bytes');
+  });
+});
+
+describe('collectSupportBundle with a numeric secret (Ruling R11)', () => {
+  let ctx: TestContext;
+
+  beforeAll(async () => {
+    ctx = await createTestContext({
+      config: { databaseUrl: 'postgres://qualor:2026@db.internal:5432/qualor' },
+    });
+    // Numbers holding the digits, copied as values: they must stay numbers.
+    await writeSetting(ctx.db, 'gate.smallChangesetLines', 120260);
+    await writeSetting(ctx.db, 'retention', { closedIssuesDays: 2026 });
+  });
+  afterAll(async () => ctx.close());
+
+  /** Every string and key of a JSON value. */
+  const texts = (value: unknown): string[] =>
+    typeof value === 'string'
+      ? [value]
+      : Array.isArray(value)
+        ? value.flatMap(texts)
+        : typeof value === 'object' && value !== null
+          ? Object.entries(value).flatMap(([key, item]) => [key, ...texts(item)])
+          : [];
+
+  it('keeps every file valid JSON, with the value redacted inside strings only', async () => {
+    const bundle = await collectSupportBundle(depsOf(ctx), {
+      source: 'ui',
+      logs: [
+        '{"level":30,"time":1760020260000,"msg":"pin 2026 used","2026":2026}',
+        'a plain line with 2026 in it',
+      ],
+      now: NOW,
+    });
+    const entries = readZip(bundle.data);
+    const health = json(entries, 'health.json') as { databaseBytes: number };
+    expect(typeof health.databaseBytes).toBe('number');
+    expect(json(entries, 'settings.json').instanceSettings).toMatchObject({
+      'gate.smallChangesetLines': 120260,
+      retention: { closedIssuesDays: 2026 },
+    });
+    for (const entry of entries) {
+      const values =
+        entry.name === 'logs.jsonl'
+          ? entry.data
+              .toString('utf8')
+              .trimEnd()
+              .split('\n')
+              .slice(0, 1)
+              .map((line) => JSON.parse(line) as unknown)
+          : [JSON.parse(entry.data.toString('utf8')) as unknown];
+      for (const text of values.flatMap(texts)) expect(text, entry.name).not.toContain('2026');
+    }
+    const lines = entries.at(-1)!.data.toString('utf8').trimEnd().split('\n');
+    expect(JSON.parse(lines[0]!)).toEqual({
+      level: 30,
+      time: 1760020260000,
+      msg: 'pin [redacted] used',
+      '[redacted]': 2026,
+    });
+    expect(lines[1]).toBe('a plain line with [redacted] in it');
+    expect(json(entries, 'manifest.json').generatedAt).toBe('[redacted]-10-14T08:09:10.000Z');
   });
 });

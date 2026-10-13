@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cleanErrorText, cleanLogLine, createRedactor, redactSecrets } from './secrets';
+import { cleanErrorText, cleanLogLine, createRedactor, redactSecrets, redactTree } from './secrets';
 
 describe('redactSecrets (4E-3b §2)', () => {
   const secret = 'Sup3r/Secret+Value=';
@@ -33,6 +33,41 @@ describe('redactSecrets (4E-3b §2)', () => {
       JSON.stringify({ msg: 'oops', key: '[redacted]' }),
     );
   });
+
+  it('cleans a JSON log line inside its strings and keys only, so it stays valid JSON', () => {
+    const redact = createRedactor(['2026']);
+    const line = JSON.stringify({
+      level: 30,
+      time: 1760020260000,
+      msg: 'pin 2026 used',
+      '2026': 1,
+    });
+    const out = cleanLogLine(line, redact);
+    expect(JSON.parse(out)).toEqual({
+      level: 30,
+      time: 1760020260000,
+      msg: 'pin [redacted] used',
+      '[redacted]': 1,
+    });
+    expect(cleanLogLine('2026', redact)).toBe('[redacted]');
+    expect(cleanLogLine('not json 2026 {', redact)).toBe('not json [redacted] {');
+  });
+});
+
+describe('redactTree', () => {
+  it('redacts strings and keys, never numbers or literals', () => {
+    const redact = createRedactor(['2026']);
+    expect(
+      redactTree(
+        { bytes: 120260000, list: ['x2026', true, null], nested: { '2026x': 2026 } },
+        redact,
+      ),
+    ).toEqual({
+      bytes: 120260000,
+      list: ['x[redacted]', true, null],
+      nested: { '[redacted]x': 2026 },
+    });
+  });
 });
 
 describe('cleanErrorText', () => {
@@ -45,6 +80,13 @@ describe('cleanErrorText', () => {
         redact,
       ),
     ).toBe('failed with [redacted] at https://[redacted]@gitlab.example/x (Bearer [redacted])');
+    expect(
+      cleanErrorText(
+        'GitHub said 401 to Authorization: token ghp_abcdefghijklmnopqrstuvwxyz',
+        redact,
+      ),
+    ).toBe('GitHub said 401 to Authorization: token [redacted]');
+    expect(cleanErrorText('token expired yesterday', redact)).toBe('token expired yesterday');
     expect(cleanErrorText('basic authentication failed', redact)).toBe(
       'basic authentication failed',
     );

@@ -174,26 +174,59 @@ export function redactSecrets(text: string, secrets: readonly string[]): string 
 }
 
 const URL_CREDENTIALS = /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@"']+@/gi;
-/** An HTTP credential written out: `Bearer` or `Basic` and a run of at least 16 token characters. */
-const AUTH_SCHEME = /\b(bearer|basic)\s+[A-Za-z0-9._~+/-]{16,}=*/gi;
+/**
+ * An HTTP credential written out: `Bearer`, `Basic` or `token` (GitHub's `Authorization: token`)
+ * and a run of at least 16 token characters.
+ */
+const AUTH_SCHEME = /\b(bearer|basic|token)\s+[A-Za-z0-9._~+/-]{16,}=*/gi;
 // eslint-disable-next-line no-control-regex
 const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
 
+/** Free text with configured secrets redacted and URL and HTTP credentials dropped. */
+function cleanText(text: string, redact: (text: string) => string): string {
+  return redact(text)
+    .replace(URL_CREDENTIALS, `$1${REDACTED}@`)
+    .replace(AUTH_SCHEME, `$1 ${REDACTED}`);
+}
+
 /**
  * An error text for the bundle (4E-3b §1, §2): configured secrets redacted, URL credentials and
- * `Bearer`/`Basic` credentials dropped, control characters removed, then cut to 500 characters.
+ * `Bearer`/`Basic`/`token` credentials dropped, control characters removed, then cut to 500
+ * characters.
  */
 export function cleanErrorText(text: string, redact: (text: string) => string): string {
-  const cleaned = redact(text)
-    .replace(URL_CREDENTIALS, `$1${REDACTED}@`)
-    .replace(AUTH_SCHEME, `$1 ${REDACTED}`)
-    .replace(CONTROL, '');
+  const cleaned = cleanText(text, redact).replace(CONTROL, '');
   return [...cleaned].slice(0, MAX_ERROR_TEXT).join('');
 }
 
-/** A log line for the bundle: configured secrets redacted and URL credentials dropped. */
+/**
+ * A JSON value with `redact` applied to every string and every object key, and nothing else: a
+ * number or a literal is never touched, so the value still serialises to valid JSON (a secret
+ * `2026` must not turn `120260000` into `1[redacted]0000`).
+ */
+export function redactTree(value: unknown, redact: (text: string) => string): unknown {
+  if (typeof value === 'string') return redact(value);
+  if (Array.isArray(value)) return value.map((item) => redactTree(item, redact));
+  if (typeof value === 'object' && value !== null) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [redact(key), redactTree(item, redact)]),
+    );
+  }
+  return value;
+}
+
+/**
+ * A log line for the bundle. A JSON line (pino writes nothing else) is cleaned inside its strings
+ * and keys only, so it stays valid JSON; any other line is cleaned as text.
+ */
 export function cleanLogLine(line: string, redact: (text: string) => string): string {
-  return redact(line)
-    .replace(URL_CREDENTIALS, `$1${REDACTED}@`)
-    .replace(AUTH_SCHEME, `$1 ${REDACTED}`);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return cleanText(line, redact);
+  }
+  // A bare number or literal on a line is no pino line: text, so a numeric secret still goes.
+  if (typeof parsed !== 'object' || parsed === null) return cleanText(line, redact);
+  return JSON.stringify(redactTree(parsed, (text) => cleanText(text, redact)));
 }

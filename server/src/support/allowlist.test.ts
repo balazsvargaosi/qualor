@@ -1,11 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import { testConfig } from '../../test/config';
 import type { Config } from '../config';
+import { DEFAULT_RETENTION } from '../housekeeping/run';
+import {
+  autoFixSettingsSchema,
+  budgetsSchema,
+  orgLlmSettingsSchema,
+  pricingSchema,
+} from '../llm/settings';
 import {
   allowlistedConfig,
   allowlistedSetting,
   applyAllowlist,
   SUPPORT_CONFIG_ALLOWLIST,
+  SUPPORT_SETTINGS_ALLOWLIST,
   urlHost,
 } from './allowlist';
 
@@ -190,5 +198,93 @@ describe('the settings allowlist (4E-3b §2)', () => {
     expect(
       Object.keys(applyAllowlist({ b: 1, B: 2, a: 3 }, { '*': 'value' }, keep) as object),
     ).toEqual(['B', 'a', 'b']);
+  });
+});
+
+describe('the settings allowlist copies whole subtrees only of known shape (Ruling R11)', () => {
+  /** `value` rules whose value is a scalar or an array of scalars. */
+  const LEAVES = [
+    'audit:retentionDays',
+    'audit:stream.active',
+    'audit-chain:throughSeq',
+    'audit-chain:throughHash',
+    'audit-stream:cursorSeq',
+    'audit-stream:lastSuccessAt',
+    'audit-stream:failingSince',
+    'audit-stream:consecutiveFailures',
+    'audit-stream:nextAttemptAt',
+    'audit-stream:skipped',
+    'gate.smallChangesetLines:',
+    'license:savedAt',
+    'license:savedBy',
+    'llm:v',
+    'llm:provider.kind',
+    'llm:provider.model',
+    'llm:provider.auth',
+    'llm:provider.jsonMode',
+    'llm:provider.maxTokensField',
+    'llm:provider.temperature',
+    'llm:provider.timeoutSeconds',
+    'llm:organizations.*.enabled',
+    'llm:excludePaths',
+    'llm:storePrompts',
+    'llm:promptRetentionDays',
+    'sign-in:passwordSignIn',
+    'sign-in:breakGlassUserIds',
+    'webhooks:allowHttp',
+    'webhooks:allowInternalHosts',
+  ];
+  /**
+   * `value` rules that copy an object (or every key, `*`) whole: each key set as classified, and
+   * the current schema's. A new key fails here until someone decides it may leave the instance.
+   */
+  const SUBTREES: Record<string, { classified: string[]; current: string[] }> = {
+    'llm:organizations.*.features': {
+      classified: ['explain', 'fix', 'triage'],
+      current: Object.keys(orgLlmSettingsSchema.shape.features.shape),
+    },
+    'llm:organizations.*.autoFix': {
+      classified: ['enabled', 'maxPerAnalysis', 'minSeverity'],
+      current: Object.keys(autoFixSettingsSchema.shape),
+    },
+    'llm:budgets': {
+      classified: [
+        'costPerDayUsd',
+        'explainPerDay',
+        'fixPerDay',
+        'perUserPerHour',
+        'tokensPerDay',
+        'triagePerDay',
+      ],
+      current: Object.keys(budgetsSchema.shape),
+    },
+    'llm:pricing': {
+      classified: ['inputUsdPerMTok', 'outputUsdPerMTok'],
+      current: Object.keys(pricingSchema.unwrap().shape),
+    },
+    'retention:*': {
+      classified: [
+        'analysisReportsDays',
+        'branchesWithoutAnalysisDays',
+        'closedIssuesDays',
+        'finishedJobsDays',
+        'llmRequestsDays',
+        'webhookDeliveriesDays',
+      ],
+      current: Object.keys(DEFAULT_RETENTION),
+    },
+  };
+
+  it('classifies every value rule as a leaf or a pinned subtree', () => {
+    const rules = Object.entries(SUPPORT_SETTINGS_ALLOWLIST).flatMap(([key, paths]) =>
+      Object.entries(paths)
+        .filter(([, rule]) => rule === 'value')
+        .map(([path]) => `${key}:${path}`),
+    );
+    expect(rules.sort()).toEqual([...LEAVES, ...Object.keys(SUBTREES)].sort());
+  });
+
+  it.each(Object.entries(SUBTREES))('pins the keys of %s to the schema', (_, subtree) => {
+    expect([...subtree.current].sort()).toEqual(subtree.classified);
   });
 });
