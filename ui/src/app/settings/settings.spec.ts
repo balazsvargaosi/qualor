@@ -482,6 +482,7 @@ function user(id: string, username: string, overrides: Partial<User> = {}): User
     passwordChangeRequired: false,
     hasPassword: true,
     sso: { identities: 0, scim: false },
+    invitation: null,
     lastLoginAt: null,
     createdAt: '',
     ...overrides,
@@ -501,6 +502,7 @@ describe('UsersPage', () => {
       passwordChangeRequired: true,
       hasPassword: true,
       sso: { identities: 0, scim: false },
+      invitation: null,
       lastLoginAt: null,
       createdAt: '',
     };

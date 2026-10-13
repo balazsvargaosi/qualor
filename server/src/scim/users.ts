@@ -1,6 +1,7 @@
 import { and, asc, count, eq, inArray, isNotNull, isNull, ne, sql, type SQL } from 'drizzle-orm';
 import type { AuditEventInput } from '../audit/recorder';
 import { SYSTEM_ACTOR } from '../audit/recorder';
+import { deleteAccountTokens } from '../auth/account-tokens';
 import { deleteUserSessions } from '../auth/sessions';
 import type { Executor } from '../db/client';
 import { PG_UNIQUE_VIOLATION, pgConstraint, pgErrorCode } from '../db/errors';
@@ -482,7 +483,8 @@ async function assertMayDeactivate(tx: Executor, user: UserRow): Promise<void> {
 
 /**
  * spec §12.6: every session of the user ends and every personal token is revoked (`revoked_at`
- * set, so a reactivation does not bring them back). The counts, for the audit event.
+ * set, so a reactivation does not bring them back); every account link goes too (mail E2). The
+ * counts, for the audit event.
  */
 async function endAccess(
   tx: Executor,
@@ -490,6 +492,8 @@ async function endAccess(
 ): Promise<{ sessionsEnded: number; tokensRevoked: number }> {
   const [live] = await tx.select({ n: count() }).from(sessions).where(eq(sessions.userId, userId));
   await deleteUserSessions(tx, userId);
+  // Mail E2: a pending invitation or reset link must not outlive the access it would restore.
+  await deleteAccountTokens(tx, userId);
   const revoked = await tx
     .update(apiTokens)
     .set({ revokedAt: new Date() })

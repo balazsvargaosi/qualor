@@ -20,7 +20,12 @@ import {
   visibleOrganizationsCondition,
 } from '../auth/facts';
 import { ORGANIZATION_PERMISSIONS, organizationPermissions, PROJECT_ROLES } from '../auth/policy';
-import { hashPassword, PASSWORD_MAX_LENGTH, verifyPassword } from '../auth/password';
+import {
+  hashPassword,
+  newPasswordField,
+  PASSWORD_MAX_LENGTH,
+  verifyPassword,
+} from '../auth/password';
 import {
   createSession,
   csrfTokenFor,
@@ -41,11 +46,10 @@ import {
 import { ProblemError, validationFailed } from '../http/problem';
 import { queuePasswordChangedNotice, selfServiceReady } from '../mail/account';
 import { mailDeps } from '../mail/outbox';
-import { noContent, text, userDto, userSchema } from '../http/schemas';
+import { noContent, text, userSchema } from '../http/schemas';
 import { connectionsInEffect } from '../sso/connections';
 import { effectivePasswordPolicy, mayUsePassword, readSignInSettings } from '../sso/sign-in-policy';
-import { newPasswordField } from './account';
-import { userSsoSummary } from './users';
+import { singleUserDto } from './users';
 
 export const LOGIN_ATTEMPTS_PER_MINUTE = 10;
 
@@ -375,7 +379,7 @@ export const authRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (app
         .limit(1000);
       return {
         user: {
-          ...userDto(user, await userSsoSummary(deps.db, user.id)),
+          ...(await singleUserDto(deps.db, user)),
           // For this session (ruling R7): an SSO session is not held up by the forced change.
           passwordChangeRequired: passwordChangeRequired(principal, deps.config.secretKey),
         },

@@ -20,7 +20,8 @@ import {
   userIdOfIdentity,
 } from '../../test/sso';
 import { SYSTEM_ACTOR } from '../audit/recorder';
-import { identities, users } from '../db/schema';
+import { issueAccountToken } from '../auth/account-tokens';
+import { accountTokens, identities, users } from '../db/schema';
 import { inEffectConnectionIds } from '../sso/connections';
 import { updateSignInSettings } from '../sso/sign-in-policy';
 import { handleScim } from './handle';
@@ -260,6 +261,48 @@ describe('SCIM Users (sso-scim.md §12.4–§12.6)', () => {
     });
     expect(on.json().active).toBe(true);
     expect(await liveTokens(ctx, userId)).toBe(0);
+  });
+
+  it('deactivation also ends pending account links (mail E2)', async () => {
+    const id = await newUser('linked@acme.example');
+    const userId = await userIdOfIdentity(ctx, id);
+    await issueAccountToken(ctx.db, {
+      userId,
+      kind: 'invitation',
+      createdBy: null,
+      ttlMinutes: 60,
+    });
+    await issueAccountToken(ctx.db, {
+      userId,
+      kind: 'password_reset',
+      createdBy: null,
+      ttlMinutes: 60,
+    });
+    await scim('PATCH', `/Users/${id}`, deactivate);
+    expect(
+      await ctx.db.select().from(accountTokens).where(eq(accountTokens.userId, userId)),
+    ).toEqual([]);
+  });
+
+  it('deleting a user also ends their pending account links (mail E2)', async () => {
+    const id = await newUser('linked-deleted@acme.example');
+    const userId = await userIdOfIdentity(ctx, id);
+    await issueAccountToken(ctx.db, {
+      userId,
+      kind: 'invitation',
+      createdBy: null,
+      ttlMinutes: 60,
+    });
+    await issueAccountToken(ctx.db, {
+      userId,
+      kind: 'password_reset',
+      createdBy: null,
+      ttlMinutes: 60,
+    });
+    expect((await scim('DELETE', `/Users/${id}`)).statusCode).toBe(204);
+    expect(
+      await ctx.db.select().from(accountTokens).where(eq(accountTokens.userId, userId)),
+    ).toEqual([]);
   });
 
   it('refuses to deactivate or delete the last usable break-glass admin while the policy is break_glass_only', async () => {

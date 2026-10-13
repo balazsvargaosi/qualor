@@ -1,8 +1,11 @@
 import { hash, verify } from '@node-rs/argon2';
+import { z } from 'zod';
 
 export const PASSWORD_MIN_LENGTH = 12;
 /** Caps argon2 input so a huge "password" cannot be used to burn CPU. */
 export const PASSWORD_MAX_LENGTH = 256;
+/** A new password (12-256): set by an admin, by a reset link or by the account page. */
+export const newPasswordField = z.string().min(PASSWORD_MIN_LENGTH).max(PASSWORD_MAX_LENGTH);
 
 // OWASP baseline for argon2id (the library's default algorithm): 19 MiB, 2 passes, 1 lane.
 const OPTIONS = { memoryCost: 19_456, timeCost: 2, parallelism: 1 };

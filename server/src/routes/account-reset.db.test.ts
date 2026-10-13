@@ -437,4 +437,33 @@ describe('the password-changed notice (mail E2 A7)', () => {
     expect(notices[0]!.text).not.toContain('From:');
     expect(await mailsTo(ctx, 'nopass@example.test')).toEqual([]);
   });
+
+  it('sends the admin-reset notice to the old address when the same change replaces the email', async () => {
+    const headers = await adminHeaders(ctx);
+    const moved = await createUser(ctx, { username: 'moved', email: 'moved-old@example.test' });
+    const res = await ctx.app.inject({
+      method: 'PATCH',
+      url: `/api/v0/users/${moved.id}`,
+      headers,
+      payload: { email: 'moved-new@example.test', password: 'an admin chose this one' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(await mailsTo(ctx, 'moved-old@example.test', 'account.password-changed')).toHaveLength(
+      1,
+    );
+    expect(await mailsTo(ctx, 'moved-new@example.test')).toEqual([]);
+  });
+
+  it('sends the admin-reset notice to the new address when the account had none', async () => {
+    const headers = await adminHeaders(ctx);
+    const bare = await createUser(ctx, { username: 'bare' });
+    const res = await ctx.app.inject({
+      method: 'PATCH',
+      url: `/api/v0/users/${bare.id}`,
+      headers,
+      payload: { email: 'bare-new@example.test', password: 'an admin chose this one' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(await mailsTo(ctx, 'bare-new@example.test', 'account.password-changed')).toHaveLength(1);
+  });
 });

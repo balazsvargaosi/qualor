@@ -55,6 +55,8 @@ export const userSchema = z.object({
   hasPassword: z.boolean(),
   /** sso-scim.md §16.2: how many SSO identities the user has, and whether SCIM made one. */
   sso: z.object({ identities: z.number().int().min(0), scim: z.boolean() }),
+  /** Mail E2 A8: the user's invitation, live or expired (compare `expiresAt`), else null. */
+  invitation: z.object({ expiresAt: timestamp }).nullable(),
   lastLoginAt: timestamp.nullable(),
   createdAt: timestamp,
 });
@@ -64,7 +66,11 @@ export type UserSsoSummary = UserDto['sso'];
 /** A user without identities (a new user, or any user before plan 4D's first sign-in). */
 export const NO_SSO: UserSsoSummary = Object.freeze({ identities: 0, scim: false });
 
-export function userDto(user: UserRow, sso: UserSsoSummary): UserDto {
+export function userDto(
+  user: UserRow,
+  sso: UserSsoSummary,
+  invitation: { expiresAt: Date } | null,
+): UserDto {
   return {
     id: user.id,
     username: user.username,
@@ -75,6 +81,7 @@ export function userDto(user: UserRow, sso: UserSsoSummary): UserDto {
     passwordChangeRequired: user.passwordChangeRequired,
     hasPassword: user.passwordHash !== null,
     sso: { identities: sso.identities, scim: sso.scim },
+    invitation: invitation === null ? null : { expiresAt: iso(invitation.expiresAt) },
     lastLoginAt: isoOrNull(user.lastLoginAt),
     createdAt: iso(user.createdAt),
   };

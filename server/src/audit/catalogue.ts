@@ -298,7 +298,11 @@ export const AUDIT_CATALOGUE = {
   },
   'user.created': {
     target: 'user',
-    details: z.strictObject({ instanceAdmin: z.boolean(), passwordChangeRequired: z.boolean() }),
+    details: z.strictObject({
+      instanceAdmin: z.boolean(),
+      passwordChangeRequired: z.boolean(),
+      invited: z.boolean(),
+    }),
   },
   'user.updated': {
     target: 'user',
@@ -307,6 +311,9 @@ export const AUDIT_CATALOGUE = {
       passwordReset: z.boolean(),
     }),
   },
+  /** Mail E2 A8: an invitation sent (or sent again, `resend`). */
+  'user.invited': { target: 'user', details: z.strictObject({ resend: z.boolean() }) },
+  'user.invitation_revoked': { target: 'user', details: empty },
   'token.created': {
     target: 'token',
     details: z.strictObject({

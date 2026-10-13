@@ -3,9 +3,16 @@ import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import type { RouteDeps } from '../app';
 import { USER_CHANGE_FIELDS } from '../audit/catalogue';
-import { actorOf } from '../audit/recorder';
+import { actorOf, type AuditEventInput } from '../audit/recorder';
 import { accessOf, requireInstanceAdmin, requireMembersManager, requireUser } from '../auth/access';
-import { hashPassword, PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH } from '../auth/password';
+import {
+  deleteAccountTokens,
+  INVITATION_TTL_MINUTES,
+  invitationsOf,
+  issueAccountToken,
+  type IssuedAccountToken,
+} from '../auth/account-tokens';
+import { hashPassword, newPasswordField } from '../auth/password';
 import { deleteUserSessions, type UserRow } from '../auth/sessions';
 import type { Executor } from '../db/client';
 import { PG_UNIQUE_VIOLATION, pgConstraint, pgErrorCode } from '../db/errors';
@@ -13,20 +20,43 @@ import { LOCKS } from '../db/locks';
 import { first } from '../db/rows';
 import { apiTokens, identities, users } from '../db/schema';
 import { decodeCursor, pageQuery, pageSchema, toPage } from '../http/pagination';
-import { conflict, forbidden, notFound } from '../http/problem';
-import { idParams, NO_SSO, text, userDto, userSchema, type UserSsoSummary } from '../http/schemas';
-import { queuePasswordChangedNotice } from '../mail/account';
-import { mailDeps } from '../mail/outbox';
+import { conflict, type FieldError, forbidden, notFound, validationFailed } from '../http/problem';
+import {
+  idParams,
+  NO_SSO,
+  noContent,
+  text,
+  userDto,
+  type UserDto,
+  userSchema,
+  type UserSsoSummary,
+} from '../http/schemas';
+import {
+  accountLink,
+  accountMailState,
+  INVITE_PATH,
+  queuePasswordChangedNotice,
+} from '../mail/account';
+import { mailDeps, queueMail } from '../mail/outbox';
+import { renderInvitationMail } from '../mail/templates/account-invitation';
+import { instanceHost } from '../mail/templates/text';
 import { USERNAME_PATTERN } from '../patterns';
-import { assertBreakGlassKept } from '../sso/sign-in-policy';
+import {
+  assertBreakGlassKept,
+  effectivePasswordPolicy,
+  readSignInSettings,
+  type SignInLog,
+} from '../sso/sign-in-policy';
 
-const password = z.string().min(PASSWORD_MIN_LENGTH).max(PASSWORD_MAX_LENGTH);
 const createUserBody = z.strictObject({
   username: z.string().regex(USERNAME_PATTERN),
-  password,
+  /** Required unless `invite`; with `invite` the user chooses it through the emailed link. */
+  password: newPasswordField.optional(),
   displayName: text(255).optional(),
   email: z.email().max(320).optional(),
   isInstanceAdmin: z.boolean().default(false),
+  /** Mail E2 A8: send an invitation email instead of setting an initial password. */
+  invite: z.boolean().default(false),
 });
 const patchUserBody = z
   .strictObject({
@@ -34,7 +64,7 @@ const patchUserBody = z
     email: z.email().max(320).nullable().optional(),
     isInstanceAdmin: z.boolean().optional(),
     active: z.boolean().optional(),
-    password: password.optional(),
+    password: newPasswordField.optional(),
   })
   .refine((body) => Object.keys(body).length > 0, { message: 'At least one field is required' });
 
@@ -74,6 +104,89 @@ function uniqueConflict(err: unknown) {
     : conflict('USERNAME_TAKEN', 'That username is already taken');
 }
 
+/** A user with their SSO summary and invitation, for one answer. */
+export async function singleUserDto(db: Executor, user: UserRow): Promise<UserDto> {
+  return userDto(
+    user,
+    await userSsoSummary(db, user.id),
+    (await invitationsOf(db, [user.id]))(user.id),
+  );
+}
+
+const MAIL_NOT_CONFIGURED = () =>
+  conflict(
+    'MAIL_NOT_CONFIGURED',
+    'Email is not configured: set up an SMTP server in Settings → Email',
+  );
+
+/**
+ * A8: invitations need mail and QUALOR_PUBLIC_URL (409s, in that order), and password sign-in
+ * open to everyone: under break-glass-only, new users sign in with single sign-on. Returns the
+ * public URL the link starts with.
+ */
+async function invitationBase(deps: RouteDeps, log: SignInLog): Promise<string> {
+  const mail = await accountMailState(deps.db, deps.config);
+  if (!mail.ready) {
+    throw mail.missing === 'mail'
+      ? MAIL_NOT_CONFIGURED()
+      : conflict(
+          'PUBLIC_URL_REQUIRED',
+          'Invitations need QUALOR_PUBLIC_URL for the link in the email',
+        );
+  }
+  const stored = await readSignInSettings(deps.db, log);
+  const facts = {
+    sso: deps.edition.isFeatureActive('sso'),
+    forced: deps.config.forcePasswordSignIn,
+  };
+  if (effectivePasswordPolicy(stored, facts) === 'break_glass_only') {
+    throw conflict(
+      'PASSWORD_SIGN_IN_DISABLED',
+      'Password sign-in is limited to break-glass administrators: new users sign in with single sign-on',
+    );
+  }
+  return mail.publicUrl;
+}
+
+/** A new invitation link (replacing an earlier one) and its email, in the caller's transaction. */
+async function sendInvitation(
+  tx: Executor,
+  deps: RouteDeps,
+  input: { user: UserRow; email: string; inviter: UserRow; publicUrl: string },
+): Promise<IssuedAccountToken> {
+  const issued = await issueAccountToken(tx, {
+    userId: input.user.id,
+    kind: 'invitation',
+    createdBy: input.inviter.id,
+    ttlMinutes: INVITATION_TTL_MINUTES,
+  });
+  const queued = await queueMail(tx, mailDeps(deps.config), {
+    kind: 'account.invitation',
+    to: { address: input.email, userId: input.user.id },
+    render: () =>
+      renderInvitationMail({
+        inviter: input.inviter.displayName ?? input.inviter.username,
+        username: input.user.username,
+        email: input.email,
+        host: instanceHost(deps.config.publicUrl),
+        url: accountLink(input.publicUrl, INVITE_PATH, issued.token),
+        expiresAt: issued.expiresAt,
+      }),
+  });
+  // Mail turned off after the check (or an address queueMail refuses): refuse, and the
+  // transaction takes the link back.
+  if (queued.status === 'skipped') throw MAIL_NOT_CONFIGURED();
+  return issued;
+}
+
+/** A8: invitable is active, without a password, with an email and no SSO identity. */
+function invitationNotApplicable() {
+  return conflict(
+    'INVITATION_NOT_APPLICABLE',
+    'Only an active user without a password, with an email address and without single sign-on can be invited',
+  );
+}
+
 export const userRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (app, { deps }) => {
   app.get(
     '/users',
@@ -104,11 +217,13 @@ export const userRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (app
         .orderBy(asc(users.id))
         .limit(request.query.limit + 1);
       const page = toPage(rows, request.query.limit);
-      const sso = await userSsoSummaries(
-        deps.db,
-        page.items.map((u) => u.id),
-      );
-      return { items: page.items.map((u) => userDto(u, sso(u.id))), nextCursor: page.nextCursor };
+      const ids = page.items.map((u) => u.id);
+      const sso = await userSsoSummaries(deps.db, ids);
+      const invitation = await invitationsOf(deps.db, ids);
+      return {
+        items: page.items.map((u) => userDto(u, sso(u.id), invitation(u.id))),
+        nextCursor: page.nextCursor,
+      };
     },
   );
 
@@ -155,20 +270,45 @@ export const userRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (app
   app.post(
     '/users',
     {
-      config: { openapi: { problems: [409] } },
+      config: {
+        openapi: {
+          problems: [409],
+          problemDescriptions: {
+            409: 'USERNAME_TAKEN; EMAIL_TAKEN; with invite: MAIL_NOT_CONFIGURED, PUBLIC_URL_REQUIRED, PASSWORD_SIGN_IN_DISABLED',
+          },
+        },
+      },
       schema: {
         tags: ['users'],
-        summary: 'Create a user (must change the password at first login)',
+        summary:
+          'Create a user: with an initial password (changed at first sign-in), or invited by email',
         body: createUserBody,
         response: { 201: userSchema },
       },
     },
     async (request, reply) => {
-      requireInstanceAdmin(request);
+      const principal = requireInstanceAdmin(request);
       const body = request.body;
-      const passwordHash = await hashPassword(body.password);
+      let publicUrl: string | null = null;
+      if (body.invite) {
+        const errors: FieldError[] = [];
+        if (body.password !== undefined) {
+          errors.push({
+            path: 'body.password',
+            message: 'Leave the password out when you send an invitation',
+          });
+        }
+        if (body.email === undefined) {
+          errors.push({ path: 'body.email', message: 'An invitation needs an email address' });
+        }
+        if (errors.length > 0) throw validationFailed(errors);
+        publicUrl = await invitationBase(deps, request.log);
+      } else if (body.password === undefined) {
+        throw validationFailed([{ path: 'body.password', message: 'Required' }]);
+      }
+      const passwordHash = body.password === undefined ? null : await hashPassword(body.password);
       try {
-        const user = await deps.db.transaction(async (tx) => {
+        const { user, invitation } = await deps.db.transaction(async (tx) => {
           const created = first(
             await tx
               .insert(users)
@@ -178,23 +318,39 @@ export const userRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (app
                 displayName: body.displayName ?? null,
                 email: body.email ?? null,
                 isInstanceAdmin: body.isInstanceAdmin,
-                passwordChangeRequired: true,
+                // An invited user has no password to change; they choose their own.
+                passwordChangeRequired: !body.invite,
               })
               .returning(),
           );
-          await deps.audit.record(tx, actorOf(request), [
+          const target = { type: 'user' as const, id: created.id, label: created.username };
+          const sent =
+            publicUrl !== null && created.email !== null
+              ? await sendInvitation(tx, deps, {
+                  user: created,
+                  email: created.email,
+                  inviter: principal.user,
+                  publicUrl,
+                })
+              : null;
+          const events: AuditEventInput[] = [
             {
               action: 'user.created',
-              target: { type: 'user', id: created.id, label: created.username },
+              target,
               details: {
                 instanceAdmin: created.isInstanceAdmin,
                 passwordChangeRequired: created.passwordChangeRequired,
+                invited: body.invite,
               },
             },
-          ]);
-          return created;
+          ];
+          if (sent) events.push({ action: 'user.invited', target, details: { resend: false } });
+          await deps.audit.record(tx, actorOf(request), events);
+          return { user: created, invitation: sent };
         });
-        return reply.code(201).send(userDto(user, NO_SSO));
+        return reply
+          .code(201)
+          .send(userDto(user, NO_SSO, invitation ? { expiresAt: invitation.expiresAt } : null));
       } catch (err) {
         throw uniqueConflict(err) ?? err;
       }
@@ -281,7 +437,11 @@ export const userRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (app
           active: body.active,
           isInstanceAdmin: body.isInstanceAdmin,
         });
-        if (body.active === false || passwordHash !== undefined) await deleteUserSessions(tx, id);
+        if (body.active === false || passwordHash !== undefined) {
+          await deleteUserSessions(tx, id);
+          // Mail E2: a set password or a deactivation voids every pending link (invitation, reset).
+          await deleteAccountTokens(tx, id);
+        }
         if (passwordHash !== undefined) {
           // A reset password must also invalidate any personal access tokens minted under the old
           // one: otherwise a live token silently outlives the credential that was just rotated.
@@ -295,10 +455,11 @@ export const userRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (app
                 isNull(apiTokens.revokedAt),
               ),
             );
-          // A7: an account that had a password hears that an administrator replaced it.
+          // A7: an account that had a password hears that an administrator replaced it, at the
+          // address it had before this change (the new one only when it had none).
           if (existing.hasPassword) {
             await queuePasswordChangedNotice(tx, mailDeps(deps.config), {
-              user,
+              user: { ...user, email: existing.email ?? user.email },
               variant: 'admin',
               ip: null,
             });
@@ -321,7 +482,104 @@ export const userRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (app
         }
         return user;
       });
-      return userDto(updated, await userSsoSummary(deps.db, updated.id));
+      return singleUserDto(deps.db, updated);
+    },
+  );
+
+  app.post(
+    '/users/:id/invitation',
+    {
+      config: {
+        rateLimit: {
+          max: 10,
+          timeWindow: 60_000,
+          keyGenerator: (request) =>
+            request.principal && request.principal.kind !== 'project'
+              ? `user:${request.principal.user.id}`
+              : request.ip,
+        },
+        openapi: {
+          problems: [409, 429],
+          problemDescriptions: {
+            409: 'INVITATION_NOT_APPLICABLE (only an active user without a password, with an email address and without single sign-on); MAIL_NOT_CONFIGURED; PUBLIC_URL_REQUIRED; PASSWORD_SIGN_IN_DISABLED',
+          },
+        },
+      },
+      schema: {
+        tags: ['users'],
+        summary: 'Send a new invitation email; the earlier link stops working',
+        params: idParams,
+        response: { 200: userSchema },
+      },
+    },
+    async (request) => {
+      const principal = requireInstanceAdmin(request);
+      const { id } = request.params;
+      const [existing] = await deps.db.select({ id: users.id }).from(users).where(eq(users.id, id));
+      if (!existing) throw notFound('User');
+      const publicUrl = await invitationBase(deps, request.log);
+      const { user, issued } = await deps.db.transaction(async (tx) => {
+        const [locked] = await tx.select().from(users).where(eq(users.id, id)).for('update');
+        if (!locked) throw notFound('User');
+        const sso = await userSsoSummary(tx, locked.id);
+        const email = locked.email;
+        if (
+          !locked.active ||
+          locked.passwordHash !== null ||
+          email === null ||
+          sso.identities > 0
+        ) {
+          throw invitationNotApplicable();
+        }
+        const sent = await sendInvitation(tx, deps, {
+          user: locked,
+          email,
+          inviter: principal.user,
+          publicUrl,
+        });
+        await deps.audit.record(tx, actorOf(request), [
+          {
+            action: 'user.invited',
+            target: { type: 'user', id: locked.id, label: locked.username },
+            details: { resend: true },
+          },
+        ]);
+        return { user: locked, issued: sent };
+      });
+      // NO_SSO: the route refused any user with an identity.
+      return userDto(user, NO_SSO, { expiresAt: issued.expiresAt });
+    },
+  );
+
+  app.delete(
+    '/users/:id/invitation',
+    {
+      schema: {
+        tags: ['users'],
+        summary: 'Revoke a pending invitation; its link stops working',
+        params: idParams,
+        response: { 204: noContent },
+      },
+    },
+    async (request, reply) => {
+      requireInstanceAdmin(request);
+      const { id } = request.params;
+      await deps.db.transaction(async (tx) => {
+        const [user] = await tx
+          .select({ id: users.id, username: users.username })
+          .from(users)
+          .where(eq(users.id, id));
+        if (!user) throw notFound('User');
+        if ((await deleteAccountTokens(tx, id, 'invitation')) === 0) throw notFound('Invitation');
+        await deps.audit.record(tx, actorOf(request), [
+          {
+            action: 'user.invitation_revoked',
+            target: { type: 'user', id: user.id, label: user.username },
+            details: {},
+          },
+        ]);
+      });
+      return reply.code(204).send();
     },
   );
 };

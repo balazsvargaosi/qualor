@@ -490,6 +490,10 @@ export interface paths {
                                     identities: number;
                                     scim: boolean;
                                 };
+                                invitation: {
+                                    /** Format: date-time */
+                                    expiresAt: string;
+                                } | null;
                                 lastLoginAt: string | null;
                                 /** Format: date-time */
                                 createdAt: string;
@@ -813,6 +817,10 @@ export interface paths {
                                     identities: number;
                                     scim: boolean;
                                 };
+                                invitation: {
+                                    /** Format: date-time */
+                                    expiresAt: string;
+                                } | null;
                                 lastLoginAt: string | null;
                                 /** Format: date-time */
                                 createdAt: string;
@@ -851,7 +859,7 @@ export interface paths {
             };
         };
         put?: never;
-        /** Create a user (must change the password at first login) */
+        /** Create a user: with an initial password (changed at first sign-in), or invited by email */
         post: {
             parameters: {
                 query?: never;
@@ -863,12 +871,14 @@ export interface paths {
                 content: {
                     "application/json": {
                         username: string;
-                        password: string;
+                        password?: string;
                         displayName?: string;
                         /** Format: email */
                         email?: string;
                         /** @default false */
                         isInstanceAdmin?: boolean;
+                        /** @default false */
+                        invite?: boolean;
                     };
                 };
             };
@@ -893,6 +903,10 @@ export interface paths {
                                 identities: number;
                                 scim: boolean;
                             };
+                            invitation: {
+                                /** Format: date-time */
+                                expiresAt: string;
+                            } | null;
                             lastLoginAt: string | null;
                             /** Format: date-time */
                             createdAt: string;
@@ -917,7 +931,7 @@ export interface paths {
                         "application/problem+json": components["schemas"]["Problem"];
                     };
                 };
-                /** @description Conflicts with the current state; AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed while no audit event is stored; an administrator must restore it (a retry does not help) */
+                /** @description USERNAME_TAKEN; EMAIL_TAKEN; with invite: MAIL_NOT_CONFIGURED, PUBLIC_URL_REQUIRED, PASSWORD_SIGN_IN_DISABLED; AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed while no audit event is stored; an administrator must restore it (a retry does not help) */
                 409: {
                     headers: {
                         [name: string]: unknown;
@@ -1086,6 +1100,10 @@ export interface paths {
                                 identities: number;
                                 scim: boolean;
                             };
+                            invitation: {
+                                /** Format: date-time */
+                                expiresAt: string;
+                            } | null;
                             lastLoginAt: string | null;
                             /** Format: date-time */
                             createdAt: string;
@@ -1139,6 +1157,184 @@ export interface paths {
                 };
             };
         };
+        trace?: never;
+    };
+    "/api/v0/users/{id}/invitation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Send a new invitation email; the earlier link stops working */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** Format: uuid */
+                            id: string;
+                            username: string;
+                            displayName: string | null;
+                            email: string | null;
+                            isInstanceAdmin: boolean;
+                            active: boolean;
+                            passwordChangeRequired: boolean;
+                            hasPassword: boolean;
+                            sso: {
+                                identities: number;
+                                scim: boolean;
+                            };
+                            invitation: {
+                                /** Format: date-time */
+                                expiresAt: string;
+                            } | null;
+                            lastLoginAt: string | null;
+                            /** Format: date-time */
+                            createdAt: string;
+                        };
+                    };
+                };
+                /** @description Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS) */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Authenticated but not allowed (FORBIDDEN, INSUFFICIENT_SCOPE, TOKEN_NOT_ALLOWED, SESSION_REQUIRED, CSRF_FAILED, PASSWORD_CHANGE_REQUIRED) */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Not found, or not visible to the caller */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description INVITATION_NOT_APPLICABLE (only an active user without a password, with an email address and without single sign-on); MAIL_NOT_CONFIGURED; PUBLIC_URL_REQUIRED; PASSWORD_SIGN_IN_DISABLED; AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed while no audit event is stored; an administrator must restore it (a retry does not help) */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Validation failed (VALIDATION_FAILED; errors[] names each field) */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Rate limited (RATE_LIMITED); see Retry-After */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        /** Revoke a pending invitation; its link stops working */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS) */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Authenticated but not allowed (FORBIDDEN, INSUFFICIENT_SCOPE, TOKEN_NOT_ALLOWED, SESSION_REQUIRED, CSRF_FAILED, PASSWORD_CHANGE_REQUIRED) */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Not found, or not visible to the caller */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed while no audit event is stored; an administrator must restore it (a retry does not help) */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Validation failed (VALIDATION_FAILED; errors[] names each field) */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v0/tokens": {

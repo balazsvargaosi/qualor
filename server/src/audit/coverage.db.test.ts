@@ -70,6 +70,14 @@ const NOT_FROM_CORE_ROUTES = new Map<string, string>([
     'recorded by POST /auth/password-reset/complete (mail E2), which needs a reset link the scenario never mails; covered by routes/account-reset.db.test.ts',
   ],
   [
+    'user.invited',
+    'recorded by POST /users with invite and POST /users/:id/invitation (mail E2) only with an SMTP server and QUALOR_PUBLIC_URL, which the scenario does not set up; covered by routes/users-invitations.db.test.ts',
+  ],
+  [
+    'user.invitation_revoked',
+    'recorded by DELETE /users/:id/invitation (mail E2), which needs an invitation the scenario cannot send; covered by routes/users-invitations.db.test.ts',
+  ],
+  [
     'sso.sign_in_failed',
     'recorded by failSsoFlow (4D Task 12) when the OIDC (4D Task 13) or SAML (4D Task 14) flow fails; covered by their own tests',
   ],

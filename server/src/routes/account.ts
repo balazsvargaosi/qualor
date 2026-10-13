@@ -10,7 +10,7 @@ import {
   plausibleAccountToken,
   takeAccountToken,
 } from '../auth/account-tokens';
-import { hashPassword, PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH } from '../auth/password';
+import { hashPassword, newPasswordField } from '../auth/password';
 import { mayResetPassword, RESET_ANSWER_FLOOR_MS, waitForFloor } from '../auth/password-reset';
 import { deleteUserSessions } from '../auth/sessions';
 import { LoginThrottle } from '../auth/throttle';
@@ -40,8 +40,6 @@ class MailTurnedOff extends Error {}
 
 /** A link's secret in a JSON body: bounded here, its form checked without a query (A1). */
 export const tokenField = z.string().max(1024);
-/** A new password (12-256), as the account page's change (`PUT /auth/me/password`) takes it. */
-export const newPasswordField = z.string().min(PASSWORD_MIN_LENGTH).max(PASSWORD_MAX_LENGTH);
 const TOKEN_INVALID_TEXT = 'This link has expired or was already used. Ask for a new one.';
 export const TOKEN_INVALID_DESCRIPTION =
   'TOKEN_INVALID: the link has expired, was already used, or its account can no longer set a password this way';

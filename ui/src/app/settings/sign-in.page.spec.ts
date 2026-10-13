@@ -30,6 +30,7 @@ function user(id: string, username: string, overrides: Record<string, unknown> =
     passwordChangeRequired: false,
     hasPassword: true,
     sso: { identities: 0, scim: false },
+    invitation: null,
     lastLoginAt: null,
     createdAt: '2026-09-01T00:00:00.000Z',
     ...overrides,
