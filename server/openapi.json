@@ -18658,6 +18658,10 @@
                         "fix"
                       ]
                     },
+                    "automatic": {
+                      "type": "boolean",
+                      "description": "No person asked: an automatic fix suggestion (enterprise feature llm.auto-fix)"
+                    },
                     "status": {
                       "type": "string",
                       "enum": [
@@ -18955,6 +18959,7 @@
                     "id",
                     "issueId",
                     "feature",
+                    "automatic",
                     "status",
                     "model",
                     "promptVersion",
@@ -19001,6 +19006,10 @@
                         "fix"
                       ]
                     },
+                    "automatic": {
+                      "type": "boolean",
+                      "description": "No person asked: an automatic fix suggestion (enterprise feature llm.auto-fix)"
+                    },
                     "status": {
                       "type": "string",
                       "enum": [
@@ -19298,6 +19307,7 @@
                     "id",
                     "issueId",
                     "feature",
+                    "automatic",
                     "status",
                     "model",
                     "promptVersion",
@@ -19426,6 +19436,10 @@
                         "fix"
                       ]
                     },
+                    "automatic": {
+                      "type": "boolean",
+                      "description": "No person asked: an automatic fix suggestion (enterprise feature llm.auto-fix)"
+                    },
                     "status": {
                       "type": "string",
                       "enum": [
@@ -19723,6 +19737,7 @@
                     "id",
                     "issueId",
                     "feature",
+                    "automatic",
                     "status",
                     "model",
                     "promptVersion",
@@ -19843,6 +19858,10 @@
                         "fix"
                       ]
                     },
+                    "automatic": {
+                      "type": "boolean",
+                      "description": "No person asked: an automatic fix suggestion (enterprise feature llm.auto-fix)"
+                    },
                     "status": {
                       "type": "string",
                       "enum": [
@@ -20140,6 +20159,7 @@
                     "id",
                     "issueId",
                     "feature",
+                    "automatic",
                     "status",
                     "model",
                     "promptVersion",
@@ -20273,6 +20293,10 @@
                                 "fix"
                               ]
                             },
+                            "automatic": {
+                              "type": "boolean",
+                              "description": "No person asked: an automatic fix suggestion (enterprise feature llm.auto-fix)"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -20570,6 +20594,7 @@
                             "id",
                             "issueId",
                             "feature",
+                            "automatic",
                             "status",
                             "model",
                             "promptVersion",
@@ -20616,6 +20641,10 @@
                                 "fix"
                               ]
                             },
+                            "automatic": {
+                              "type": "boolean",
+                              "description": "No person asked: an automatic fix suggestion (enterprise feature llm.auto-fix)"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -20913,6 +20942,7 @@
                             "id",
                             "issueId",
                             "feature",
+                            "automatic",
                             "status",
                             "model",
                             "promptVersion",
@@ -20959,6 +20989,10 @@
                                 "fix"
                               ]
                             },
+                            "automatic": {
+                              "type": "boolean",
+                              "description": "No person asked: an automatic fix suggestion (enterprise feature llm.auto-fix)"
+                            },
                             "status": {
                               "type": "string",
                               "enum": [
@@ -21256,6 +21290,7 @@
                             "id",
                             "issueId",
                             "feature",
+                            "automatic",
                             "status",
                             "model",
                             "promptVersion",

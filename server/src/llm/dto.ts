@@ -48,6 +48,10 @@ export const aiRequestSchema = z.object({
   id: z.uuid(),
   issueId: z.uuid().nullable(),
   feature: z.enum(LLM_FEATURES),
+  /** 4E-3a §4: no person asked (the enterprise feature llm.auto-fix); `user_id` is null. */
+  automatic: z.boolean().meta({
+    description: 'No person asked: an automatic fix suggestion (enterprise feature llm.auto-fix)',
+  }),
   status: z.enum(LLM_REQUEST_STATUSES),
   model: z.string(),
   promptVersion: z.string(),
@@ -85,6 +89,7 @@ export function aiRequestDto(row: LlmRequestRow): AiRequestDto {
     id: row.id,
     issueId: row.issueId,
     feature: row.feature,
+    automatic: row.userId === null,
     status: row.status,
     model: row.model,
     promptVersion: row.promptVersion,

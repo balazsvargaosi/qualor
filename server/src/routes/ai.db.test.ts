@@ -176,6 +176,7 @@ describe('AI requests (llm.md §5, §10, §12, §16)', () => {
     const body = res.json();
     expect(body).toMatchObject({
       feature: 'explain',
+      automatic: false,
       status: 'queued',
       model: 'fake-model',
       promptVersion: 'explain.v1',

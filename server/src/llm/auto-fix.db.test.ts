@@ -290,6 +290,14 @@ describe('automatic fix suggestions (4E-3a §3)', () => {
     for (const row of await fixRows(project.id)) {
       expect(row.post).toMatchObject({ status: 'posted' });
     }
+    // The issue view shows it as suggested automatically (4E-3a §4).
+    const read = await h.ctx.app.inject({
+      method: 'GET',
+      url: `/api/v0/ai-requests/${rows[0]!.id}`,
+      headers: h.orgAdmin.headers,
+    });
+    expect(read.statusCode, read.body).toBe(200);
+    expect(read.json()).toMatchObject({ feature: 'fix', automatic: true });
   });
 
   it('posts a GitHub review comment with the automatic line', async () => {
@@ -667,6 +675,7 @@ describe('automatic fix suggestions (4E-3a §3)', () => {
         payload: {},
       });
       expect(asked.statusCode, asked.body).toBe(202);
+      expect(asked.json()).toMatchObject({ automatic: false });
       await runLlm();
       await configure({ autoFix: { ...DEFAULT_AUTO_FIX, enabled: false } });
       const posted = await h.ctx.app.inject({

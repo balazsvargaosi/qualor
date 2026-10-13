@@ -8987,6 +8987,8 @@ export interface paths {
                             issueId: string | null;
                             /** @enum {string} */
                             feature: "explain" | "triage" | "fix";
+                            /** @description No person asked: an automatic fix suggestion (enterprise feature llm.auto-fix) */
+                            automatic: boolean;
                             /** @enum {string} */
                             status: "queued" | "running" | "succeeded" | "failed";
                             model: string;
@@ -9053,6 +9055,8 @@ export interface paths {
                             issueId: string | null;
                             /** @enum {string} */
                             feature: "explain" | "triage" | "fix";
+                            /** @description No person asked: an automatic fix suggestion (enterprise feature llm.auto-fix) */
+                            automatic: boolean;
                             /** @enum {string} */
                             status: "queued" | "running" | "succeeded" | "failed";
                             model: string;
@@ -9200,6 +9204,8 @@ export interface paths {
                             issueId: string | null;
                             /** @enum {string} */
                             feature: "explain" | "triage" | "fix";
+                            /** @description No person asked: an automatic fix suggestion (enterprise feature llm.auto-fix) */
+                            automatic: boolean;
                             /** @enum {string} */
                             status: "queued" | "running" | "succeeded" | "failed";
                             model: string;
@@ -9337,6 +9343,8 @@ export interface paths {
                             issueId: string | null;
                             /** @enum {string} */
                             feature: "explain" | "triage" | "fix";
+                            /** @description No person asked: an automatic fix suggestion (enterprise feature llm.auto-fix) */
+                            automatic: boolean;
                             /** @enum {string} */
                             status: "queued" | "running" | "succeeded" | "failed";
                             model: string;
@@ -9485,6 +9493,8 @@ export interface paths {
                                 issueId: string | null;
                                 /** @enum {string} */
                                 feature: "explain" | "triage" | "fix";
+                                /** @description No person asked: an automatic fix suggestion (enterprise feature llm.auto-fix) */
+                                automatic: boolean;
                                 /** @enum {string} */
                                 status: "queued" | "running" | "succeeded" | "failed";
                                 model: string;
@@ -9543,6 +9553,8 @@ export interface paths {
                                 issueId: string | null;
                                 /** @enum {string} */
                                 feature: "explain" | "triage" | "fix";
+                                /** @description No person asked: an automatic fix suggestion (enterprise feature llm.auto-fix) */
+                                automatic: boolean;
                                 /** @enum {string} */
                                 status: "queued" | "running" | "succeeded" | "failed";
                                 model: string;
@@ -9601,6 +9613,8 @@ export interface paths {
                                 issueId: string | null;
                                 /** @enum {string} */
                                 feature: "explain" | "triage" | "fix";
+                                /** @description No person asked: an automatic fix suggestion (enterprise feature llm.auto-fix) */
+                                automatic: boolean;
                                 /** @enum {string} */
                                 status: "queued" | "running" | "succeeded" | "failed";
                                 model: string;
