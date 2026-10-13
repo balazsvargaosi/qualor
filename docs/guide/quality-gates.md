@@ -68,7 +68,8 @@ Rules of evaluation:
 ### Watching a project
 
 To get an email when a project's gate fails or passes again, or when one of its analyses fails,
-press **Watch** on the project's page. See [Project notifications](./email.md#project-notifications).
+press **Watch** on the project's page. See
+[Project notifications](./email.md#project-notifications).
 
 ### Metrics you can use in conditions
 

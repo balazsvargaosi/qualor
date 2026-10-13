@@ -95,17 +95,18 @@ The [read-only demo](./users-projects-tokens.md#a-public-read-only-demo) account
 ### Stopping the emails
 
 Every email ends with **Stop watching this project** and **Notification settings**. Stop watching
-works without signing in: the page asks once, then stops. Opening the link only shows that
-question, so a mail scanner that opens links stops nothing. Mail apps with a one-click unsubscribe
-button (Gmail, Apple Mail, Outlook) use the same link. Without `QUALOR_PUBLIC_URL` the emails have
-no links; use **Settings → Notifications** instead.
+works without signing in. Opening the link in a browser shows a page that asks once, then stops,
+so a mail scanner that opens links stops nothing. Mail apps with a one-click unsubscribe button
+(Gmail, Apple Mail, Outlook) stop watching in one click, without the question. Without
+`QUALOR_PUBLIC_URL` the emails have no links; use **Settings → Notifications** instead.
 
 ### Failing webhooks for organisation administrators
 
 Organisation administrators also get the failing-webhook email for their organisation's webhooks
 (see [Webhooks](./webhooks-and-api.md#webhooks)), at most once a day per webhook. Turn it off in
-**Settings → Notifications** with **Failing webhooks in organisations I administer**. An instance
-administrator who is also an organisation administrator gets it once, not twice.
+**Settings → Notifications** with **Failing webhooks in organisations I administer**; turning off
+**Email me at …** stops it too. An instance administrator who is also an organisation
+administrator gets it once, not twice.
 
 ## Set up in Qualor
 
