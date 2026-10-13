@@ -68,6 +68,9 @@
                 >Qualor {{ info.version }} · Community</ng-container
               >
             }
+            @if (updates.latest(); as latest) {
+              <ng-container i18n="@@shell.versionAvailable"> · {{ latest }} available</ng-container>
+            }
           </p>
         }
       </div>
@@ -76,6 +79,7 @@
 </header>
 <q-license-banner />
 <q-sso-banner />
+<q-update-banner />
 @if (session.demo()) {
   <div class="license-banner" role="status" data-test="demo-banner">
     <p i18n="@@shell.demoBanner">

@@ -240,6 +240,31 @@ describe('Shell', () => {
     expect(root.textContent).not.toContain('read-only');
   });
 
+  it('tells an instance admin in the menu and a banner that a newer release exists', async () => {
+    TestBed.inject(SessionStore).set(me({ admin: true }));
+    server.on('GET', '/api/v0/system/version', { body: { version: '1.2.3', latest: '1.3.0' } });
+    const fixture = TestBed.createComponent(Shell);
+    await settle(fixture);
+    const root = fixture.nativeElement as HTMLElement;
+    expect(root.querySelector('.menu-version')?.textContent?.replace(/\s+/g, ' ').trim()).toBe(
+      'Qualor 1.2.3 · Community · 1.3.0 available',
+    );
+    expect(root.querySelector('q-update-banner')?.textContent).toContain(
+      'Qualor 1.3.0 is available',
+    );
+  });
+
+  it('never asks about updates for a user who is not an instance admin', async () => {
+    server.on('GET', '/api/v0/system/version', { body: { version: '1.2.3', latest: '1.3.0' } });
+    const fixture = TestBed.createComponent(Shell);
+    await settle(fixture);
+    const root = fixture.nativeElement as HTMLElement;
+    expect(root.querySelector('.menu-version')?.textContent?.trim()).toBe(
+      'Qualor 1.2.3 · Community',
+    );
+    expect(server.requestsTo('GET', '/api/v0/system/version')).toHaveLength(0);
+  });
+
   it('shows the licence banner to an instance admin, after the header', async () => {
     TestBed.inject(SessionStore).set(me({ admin: true }));
     server.on('GET', '/api/v0/license', {
