@@ -9,6 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildServer } from '../scripts/bundle';
 import { createTestDatabase, type TestDatabase } from '../test/db';
 import { E2E_SIGNER, signCurrent } from '../test/license-e2e-key';
+import { readZip } from '../test/zip';
 import { auditEvents, jobs } from './db/schema';
 
 const MAIN = fileURLToPath(new URL('../dist/main.js', import.meta.url));
@@ -414,5 +415,79 @@ describe('test licence keys and the bundles (enterprise.md §14.2)', () => {
     expect(stdout).toMatch(/"licence":"active"/);
     expect(stdout).toMatch(/"edition":"enterprise"/);
     expect(imported).toBe(true);
+  }, 120_000);
+
+  /** Runs `main <args>` to its exit; standard output as bytes (it may be a zip). */
+  async function runToExit(
+    main: string,
+    args: string[],
+    env: NodeJS.ProcessEnv,
+  ): Promise<{ code: number | null; stdout: Buffer; stderr: string }> {
+    const chunks: Buffer[] = [];
+    let stderr = '';
+    const child = spawn(process.execPath, [main, ...args], {
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    child.stdout!.on('data', (chunk: Buffer) => chunks.push(chunk));
+    child.stderr!.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString('utf8');
+    });
+    const deadline = setTimeout(() => child.kill('SIGKILL'), 60_000);
+    try {
+      // 'close' comes after the exit and after the streams' last chunk.
+      const code = await new Promise<number | null>((resolve) => child.once('close', resolve));
+      return { code, stdout: Buffer.concat(chunks), stderr };
+    } finally {
+      clearTimeout(deadline);
+      if (child.exitCode === null) child.kill('SIGKILL');
+    }
+  }
+
+  it('support-bundle (4E-3b §4): the zip alone on standard output, the log on standard error', async () => {
+    const SUPPORT_PLUGIN = fileURLToPath(
+      new URL('../test/fixtures/plugins/support-bundle-plugin.mjs', import.meta.url),
+    );
+    const database = await createTestDatabase();
+    try {
+      const { code, stdout, stderr } = await runToExit(
+        TEST_MAIN,
+        ['support-bundle'],
+        bootEnv(database.url, {
+          QUALOR_LICENSE: signCurrent(E2E_SIGNER, ['support-bundle']),
+          QUALOR_PLUGIN_PATHS: SUPPORT_PLUGIN,
+        }),
+      );
+      expect(code, stderr).toBe(0);
+      const names = readZip(stdout).map((e) => e.name);
+      expect(names).toContain('manifest.json');
+      expect(names).not.toContain('logs.jsonl');
+      // Only log lines on standard error: no server started, nothing migrated or recorded.
+      const lines = stderr.split(/\r?\n/).filter((l) => l !== '');
+      for (const line of lines) expect(() => JSON.parse(line), line).not.toThrow();
+      expect(stderr).toMatch(/"edition":"enterprise"/);
+      expect(stderr).not.toMatch(/Server listening/);
+      expect(await database.db.select().from(auditEvents)).toEqual([]);
+    } finally {
+      await database.close();
+    }
+  }, 120_000);
+
+  it('support-bundle on the production bundle without a licence: exit 2, nothing on standard output', async () => {
+    const database = await createTestDatabase();
+    try {
+      const { code, stdout, stderr } = await runToExit(
+        MAIN,
+        ['support-bundle'],
+        bootEnv(database.url, {}),
+      );
+      expect(code).toBe(2);
+      expect(stdout.length).toBe(0);
+      expect(stderr).toContain(
+        'qualor-server: the support bundle needs an active Business or Enterprise licence (the feature "support-bundle" is not active)\n',
+      );
+    } finally {
+      await database.close();
+    }
   }, 120_000);
 });

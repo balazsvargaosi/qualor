@@ -29,6 +29,7 @@ import { ensurePluginSchedules, startPluginWorker } from './plugins/mount';
 import { startWorker } from './queue/worker';
 import { scmHandlers } from './scm/decorate';
 import { createScmRuntime } from './scm/runtime';
+import { supportBundleCommand } from './support/command';
 import { readSignInSettings } from './sso/sign-in-policy';
 import { databaseStartupError, formatStartupError } from './startup-error';
 import {
@@ -67,6 +68,18 @@ async function main(): Promise<void> {
   } catch (err) {
     if (err instanceof ConfigError) fail(err.message);
     throw err;
+  }
+  // 4E-3b §4: the bundle for when the UI is unreachable. No UI, HTTP, workers or migrations; it
+  // logs to standard error, because standard output may carry the zip.
+  if (process.argv[2] === 'support-bundle') {
+    process.exit(
+      await supportBundleCommand({
+        args: process.argv.slice(3),
+        config,
+        version: VERSION,
+        migrationsDir: MIGRATIONS_DIR,
+      }),
+    );
   }
   // Plan 1F ruling Y2: a UI directory that is missing or wrong stops the boot, before migrations.
   let ui: UiAssets | undefined;

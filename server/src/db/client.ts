@@ -17,10 +17,19 @@ export interface Database {
 export interface DatabaseOptions {
   max?: number;
   onError?: (err: Error) => void;
+  /**
+   * Every session starts read-only (`default_transaction_read_only`), so nothing can write: the
+   * support-bundle command. Options in the URL itself take precedence over this.
+   */
+  readOnly?: boolean;
 }
 
 export function createDatabase(url: string, options: DatabaseOptions = {}): Database {
-  const pool = new pg.Pool({ connectionString: url, max: options.max ?? 10 });
+  const pool = new pg.Pool({
+    connectionString: url,
+    max: options.max ?? 10,
+    ...(options.readOnly ? { options: '-c default_transaction_read_only=on' } : {}),
+  });
   // An idle client that loses its connection emits 'error' on the pool; with no listener the
   // process would crash.
   pool.on('error', (err) => options.onError?.(err));
