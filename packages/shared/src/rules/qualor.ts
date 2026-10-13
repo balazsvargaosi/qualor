@@ -3,9 +3,9 @@ import { ISSUE_KINDS, SEVERITIES, type IssueKind, type Severity } from '../repor
 
 /**
  * Qualor's own security rules (plan 6B-1, config.md §6): the `<lang>` directories of the
- * qualor-rules pack. `js` holds the JavaScript and TypeScript rules.
+ * qualor-rules pack. `js` holds the JavaScript and TypeScript rules, `csharp` the C# rules (6B-C#).
  */
-export const QUALOR_RULE_LANGS = ['js', 'python', 'java', 'go'] as const;
+export const QUALOR_RULE_LANGS = ['js', 'python', 'java', 'go', 'csharp'] as const;
 
 const NAME = '[a-z0-9]+(?:-[a-z0-9]+)*';
 const LANG = `(${QUALOR_RULE_LANGS.join('|')})`;

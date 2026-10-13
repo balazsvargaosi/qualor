@@ -30,6 +30,7 @@ describe('qualor rule ids (plan 6B-1)', () => {
     expect(qualorRuleId('java.sql-injection')).toBe('java/sql-injection');
     expect(qualorRuleId('js.open-redirect')).toBe('js/open-redirect');
     expect(qualorRuleId('go.ssrf')).toBe('go/ssrf');
+    expect(qualorRuleId('csharp.sql-injection')).toBe('csharp/sql-injection');
   });
 
   it('answers null for anything else', () => {
@@ -58,6 +59,15 @@ describe('qualorManifestSchema (plan 6B-1)', () => {
       released: '2026-10-03',
     });
     expect(parsed.rules[0]).toEqual(entry({ frameworks: ['jdbc'] }));
+  });
+
+  it('accepts a csharp rule of the pack', () => {
+    const rule = entry({
+      id: 'csharp/sql-injection',
+      path: 'rules/csharp/sql/sql-injection.yml',
+      languages: ['csharp'],
+    });
+    expect(qualorManifestSchema.parse(manifest({ rules: [rule] })).rules[0]).toEqual(rule);
   });
 
   it('reads taintIntrafile, the pack being tested with OpenGrep --taint-intrafile (plan 6B-6)', () => {

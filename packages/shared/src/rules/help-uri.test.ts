@@ -35,6 +35,9 @@ describe('rule documentation links', () => {
     expect(qualorRuleHelpUri('go/sql-injection')).toBe(
       'https://github.com/qualor-dev/qualor-rules/blob/main/docs/rules/go/sql-injection.md',
     );
+    expect(qualorRuleHelpUri('csharp/sql-injection')).toBe(
+      'https://github.com/qualor-dev/qualor-rules/blob/main/docs/rules/csharp/sql-injection.md',
+    );
     expect(qualorRuleHelpUri('js/xss')).toBe(
       'https://github.com/qualor-dev/qualor-rules/blob/main/docs/rules/js/xss.md',
     );

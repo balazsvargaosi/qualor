@@ -34,6 +34,7 @@ export const QUALOR_LANGUAGES: readonly Language[] = [
   'python',
   'java',
   'go',
+  'csharp',
 ];
 
 export const QUALOR_RULES_NOT_INSTALLED =

@@ -161,7 +161,14 @@ describe('loadQualorPack (config.md §6, plan 6B-1)', () => {
 describe('qualorAnalyzer.prepare (config.md §6, plan 6B-1)', () => {
   it('runs for the languages of the pack, and gives its rules those languages', () => {
     expect(qualorAnalyzer.id).toBe('qualor');
-    expect(qualorAnalyzer.languages).toEqual(['javascript', 'typescript', 'python', 'java', 'go']);
+    expect(qualorAnalyzer.languages).toEqual([
+      'javascript',
+      'typescript',
+      'python',
+      'java',
+      'go',
+      'csharp',
+    ]);
     expect(qualorAnalyzer.ruleLanguages).toBe(QUALOR_LANGUAGES);
   });
 
@@ -229,6 +236,7 @@ describe('qualorAnalyzer.prepare (config.md §6, plan 6B-1)', () => {
         scopeFile(root, 'web/c.js', 'javascript'),
         scopeFile(root, 'App.java', 'java'),
         scopeFile(root, 'cmd/main.go', 'go'),
+        scopeFile(root, 'src/Api/OrdersController.cs', 'csharp'),
         scopeFile(root, 'README.md', 'other'),
         scopeFile(root, 'a.kt', 'kotlin'),
       ],
@@ -255,6 +263,7 @@ describe('qualorAnalyzer.prepare (config.md §6, plan 6B-1)', () => {
         'web/c.js',
         'App.java',
         'cmd/main.go',
+        'src/Api/OrdersController.cs',
       ],
       cwd: root,
       env: deadProxyEnv(),
