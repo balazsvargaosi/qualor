@@ -126,8 +126,8 @@ All notable changes to Qualor are listed here, newest first. The format follows
   [Telemetry](docs/guide/telemetry.md#update-check).
 - Qualor's security rules cover C# (ASP.NET Core): 12 rules for SQL, command, LDAP, XPath and
   regular expression injection, path traversal, SSRF, XSS, open redirects, unsafe deserialization,
-  XML external entities and disabled TLS verification. They need this Qualor version: Qualor 0.7.1 and older
-  refuses a rules pack that holds C# rules (its images pin their own pack and are unaffected).
+  XML external entities and disabled TLS verification. They need a newer Qualor: Qualor 0.7.1 and older
+  refuse a rules pack that holds C# rules (its images pin their own pack and are unaffected).
 
 ## [0.7.1] - 2026-10-12
 

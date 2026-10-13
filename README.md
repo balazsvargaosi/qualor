@@ -11,7 +11,7 @@ across commits, measures coverage, duplication and complexity, and applies a qua
 code. MIT, except `enterprise/`: source-available under the Qualor Enterprise Licence, and inert
 without a licence key
 ([licence keys](https://qualor.dev/enterprise)). Qualor also brings its own source-available
-security rules for JS/TS, Python, Java and Go: they follow HTTP request data into SQL, shell
+security rules for JS/TS, Python, Java, Go and C#: they follow HTTP request data into SQL, shell
 commands, file paths, templates, redirects and outgoing requests, and report unsafe settings such
 as disabled TLS verification.
 

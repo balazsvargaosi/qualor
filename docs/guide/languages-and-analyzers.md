@@ -20,7 +20,7 @@ supported languages it also computes size, complexity, duplication and coverage.
 | C++ | the same | `.cpp`/`.cc`/`.cxx`/`.hpp`/`.h`... files exist |
 | Java | **PMD 7** (source), **SpotBugs** (bytecode) with **FindSecBugs** 1.14.0 (LGPL-3.0, security) | `.java` files exist. SpotBugs also needs compiled classes |
 | C# | **Roslyn** analyzers of the .NET SDK, plus **Roslynator** and **SonarAnalyzer.CSharp** (SonarQube-compatible rules) | through `qualor dotnet begin` / `end` around your build, with `qualor/scanner-dotnet` |
-| Security rules | **Qualor's own rules** on OpenGrep, for JavaScript, TypeScript, Python, Java and Go (PolyForm Shield 1.0.0, source-available) | files of those languages are in scope, run by the `qualor/scanner` image |
+| Security rules | **Qualor's own rules** on OpenGrep, for JavaScript, TypeScript, Python, Java, Go and C# (PolyForm Shield 1.0.0, source-available) | files of those languages are in scope, run by the `qualor/scanner` image |
 | Security patterns (SAST) | **OpenGrep** (or Semgrep) | you name rule files in `qualor.yml`. No rules are bundled yet |
 | Secrets | **Gitleaks** | always (`enabled: true` by default) |
 | Vulnerable dependencies | **Trivy** | lockfiles or manifests exist |
@@ -715,7 +715,7 @@ your dependencies before the scan: see [Dependency licences](./dependency-licens
 
 ## Security rules (Qualor)
 
-Qualor has its own security rules for JavaScript, TypeScript, Python, Java and Go: 57 rules that
+Qualor has its own security rules for JavaScript, TypeScript, Python, Java, Go and C#: 69 rules that
 run in every edition, as the `qualor` engine on OpenGrep. The `qualor/scanner` image (and
 `qualor/scanner-dotnet`, which builds on it) includes them. There are three kinds:
 
@@ -811,17 +811,17 @@ rules apply to both):
 | Rule | Finds | Frameworks and libraries |
 |---|---|---|
 | `qualor:csharp/sql-injection` | SQL built from request data | ASP.NET Core (controllers, Minimal APIs, Razor Pages); ADO.NET, Dapper, Entity Framework Core |
-| `qualor:csharp/command-injection` | a program, its arguments or a shell script built from request data | ASP.NET Core; `System.Diagnostics.Process` |
+| `qualor:csharp/command-injection` | the program started, or a shell's command line, built from request data (not the arguments of other programs) | ASP.NET Core; `System.Diagnostics.Process` |
 | `qualor:csharp/path-traversal` | a file path built from request data | ASP.NET Core; `System.IO` |
-| `qualor:csharp/ssrf` | a server-side request whose URL, scheme or host comes from the request | ASP.NET Core; `HttpClient`, `WebClient`, `WebRequest` |
+| `qualor:csharp/ssrf` | a server-side request whose URL, scheme or host comes from the request | ASP.NET Core; `HttpClient`, `HttpRequestMessage`, `WebRequest` and `HttpWebRequest` |
 | `qualor:csharp/xss` | request data written into an HTML response without encoding | ASP.NET Core |
 | `qualor:csharp/open-redirect` | a redirect whose target comes from the request | ASP.NET Core |
 | `qualor:csharp/ldap-injection` | an LDAP search filter built from request data | ASP.NET Core; `System.DirectoryServices` |
-| `qualor:csharp/xpath-injection` | an XPath expression built from request data | ASP.NET Core; `System.Xml.XPath` |
+| `qualor:csharp/xpath-injection` | an XPath expression built from request data | ASP.NET Core; `System.Xml` (`SelectNodes`, `XPathNavigator`) and LINQ to XML (`XPathSelectElement`) |
 | `qualor:csharp/regex-injection` | a regular expression built from request data (ReDoS) | ASP.NET Core; `System.Text.RegularExpressions` |
-| `qualor:csharp/unsafe-deserialization` | request data read with a deserializer that can create arbitrary types | ASP.NET Core; `BinaryFormatter`, `NetDataContractSerializer`, `LosFormatter`, Json.NET with type names |
-| `qualor:csharp/xxe` | an XML parser used with DTD processing or an external resolver | `System.Xml` (`XmlDocument`, `XmlTextReader`, `XmlReader`), `XDocument` |
-| `qualor:csharp/tls-verification-disabled` | a certificate or host name validation callback that accepts anything | `HttpClientHandler`, `SslStream`, `ServicePointManager` |
+| `qualor:csharp/unsafe-deserialization` | a deserializer that lets the data choose the types to create, whatever the data is (it needs no request) | `BinaryFormatter` and the other formatters, Json.NET `TypeNameHandling` other than `None`, `JavaScriptSerializer` with `SimpleTypeResolver` |
+| `qualor:csharp/xxe` | an XML parser given an `XmlUrlResolver` while it processes DTDs, whatever the document (it needs no request) | `System.Xml` (`XmlReaderSettings`, `XmlDocument`, `XmlTextReader`) |
+| `qualor:csharp/tls-verification-disabled` | a certificate or host name validation callback that accepts anything | `HttpClientHandler`, `SocketsHttpHandler`, `SslStream`, `ServicePointManager` |
 
 Limits of the C# rules:
 
@@ -870,7 +870,9 @@ request and pull request comments.
   `QUALOR_RULES_DIR` to it and put the OpenGrep version that its `manifest.json` names
   (`opengrep`) on the `PATH`; with another version the scan logs a warning. Without the rules the
   engine is skipped with the message "Qualor's security rules are not installed" (see
-  Troubleshooting), and nothing else changes.
+  Troubleshooting), and nothing else changes. A rules release that holds C# rules needs Qualor
+  0.8.0 or later: Qualor 0.7.1 and older refuse the whole pack (the images pin their own pack, so
+  they are unaffected).
 
 ## SAST patterns (OpenGrep / Semgrep)
 

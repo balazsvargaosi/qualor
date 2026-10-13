@@ -94,7 +94,7 @@ clang-tidy, scan in the job that built the project, with your own clang-tidy and
   analyzer is skipped.
 - Qualor's own security rules, qualor-rules 2026.10.4 (PolyForm Shield 1.0.0, source-available),
   in `/opt/qualor/rules/qualor`, run on the bundled OpenGrep: for JavaScript and TypeScript,
-  Python, Java and Go, they follow HTTP request data into SQL, NoSQL, shell commands, code and
+  Python, Java, Go and C#, they follow HTTP request data into SQL, NoSQL, shell commands, code and
   template evaluation, file paths, LDAP and XPath queries, regular expressions, outgoing requests,
   redirects and HTML responses, and report disabled TLS verification, XXE, zip slip, unsafe
   deserialization and broken ciphers. Weak hashes, cookies without their flags, raw HTML in React,

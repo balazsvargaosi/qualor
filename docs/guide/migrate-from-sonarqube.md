@@ -47,8 +47,8 @@ unauthenticated LDAP (S4433) and Jackson default typing (S4544). The others cove
 their counterpart, so they import issue statuses only.
 
 SonarQube's taint rules of its commercial editions (`javasecurity`, `jssecurity`, `tssecurity`,
-`pythonsecurity` and `gosecurity`) map to Qualor's own security rules (see Languages and
-analyzers) where both find the same kind of vulnerability: SQL, NoSQL, OS command, LDAP, XPath,
+`pythonsecurity`, `gosecurity` and the C# taint rules of `roslyn.sonaranalyzer.security.cs`) map to
+Qualor's own security rules (see Languages and analyzers) where both find the same kind of vulnerability: SQL, NoSQL, OS command, LDAP, XPath,
 code, expression-language and template injection, path traversal, zip slip, XSS, SSRF, open
 redirects, regular expressions built from request data, unsafe deserialization and prototype
 pollution. For example, `javasecurity:S3649` maps to `qualor:java/sql-injection` and
