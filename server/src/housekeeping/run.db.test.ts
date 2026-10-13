@@ -10,6 +10,7 @@ import {
   issues,
   jobs,
   llmRequests,
+  mailMessages,
   sessions,
   webhookDeliveries,
   webhookSubscriptions,
@@ -25,6 +26,7 @@ import {
   ensureHousekeepingScheduled,
   HOUSEKEEPING_QUEUE,
   housekeepingHandlers,
+  MAIL_GAVE_UP_TEXT,
   runHousekeeping,
 } from './run';
 
@@ -510,6 +512,54 @@ describe('daily housekeeping (data-model.md §7)', () => {
       SELECT key FROM sso_states WHERE connection_id = ${connectionId}`);
     expect(left.rows).toEqual([{ key: 'oidc:live' }]);
     expect((await runHousekeeping(h.ctx.db)).ssoStates).toBe(0);
+  });
+
+  it('deletes email past retention and gives up on messages pending for two days (E1 spec)', async () => {
+    const envelope = { v: 1 as const, iv: 'aXY=', ct: 'Y3Q=', tag: 'dGFn' };
+    const insert = async (status: 'pending' | 'sent', days: number) => {
+      const [row] = await h.ctx.db
+        .insert(mailMessages)
+        .values({
+          kind: 'test',
+          toAddress: 'ops@example.com',
+          subject: 'Housekeeping',
+          status,
+          payloadEnc: status === 'pending' ? envelope : null,
+        })
+        .returning({ id: mailMessages.id });
+      await h.ctx.db.execute(
+        sql`UPDATE mail_messages SET created_at = ${ago(days)} WHERE id = ${row!.id}`,
+      );
+      return row!.id;
+    };
+    const old = await insert('sent', 31);
+    const recent = await insert('sent', 29);
+    const stuck = await insert('pending', 3);
+    const waiting = await insert('pending', 1);
+    const result = await runHousekeeping(h.ctx.db);
+    expect(result).toMatchObject({ mailMessages: 1, abandonedMailMessages: 1 });
+    const left = new Map(
+      (await h.ctx.db.select().from(mailMessages)).map((r) => [r.id, r] as const),
+    );
+    expect(left.has(old)).toBe(false);
+    expect(left.get(stuck)).toMatchObject({
+      status: 'failed',
+      payloadEnc: null,
+      lastError: MAIL_GAVE_UP_TEXT,
+    });
+    expect(left.get(waiting)).toMatchObject({ status: 'pending' });
+    try {
+      await h.ctx.db
+        .insert(instanceSettings)
+        .values({ key: 'retention', value: { mailMessagesDays: 10 } });
+      expect((await runHousekeeping(h.ctx.db)).mailMessages).toBe(1);
+      expect(await h.ctx.db.select().from(mailMessages).where(eq(mailMessages.id, recent))).toEqual(
+        [],
+      );
+    } finally {
+      await h.ctx.db.delete(instanceSettings).where(eq(instanceSettings.key, 'retention'));
+      await h.ctx.db.delete(mailMessages);
+    }
   });
 
   it('keeps exactly one run scheduled, however many replicas ask at once', async () => {

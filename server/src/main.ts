@@ -22,6 +22,7 @@ import {
   llmHandlers,
   reconcileStuckLlmRequests,
 } from './llm/job';
+import { MAIL_LEASE_MS, MAIL_WORKER_CONCURRENCY, mailHandlers } from './mail/deliver';
 import { bootEnterprise, type EnterpriseBoot } from './plugins/boot';
 import { ensurePluginSchedules, startPluginWorker } from './plugins/mount';
 import { startWorker } from './queue/worker';
@@ -263,6 +264,15 @@ async function main(): Promise<void> {
       if (abandoned > 0) logger.warn({ abandoned }, 'failed AI requests whose job was lost');
     },
   });
+  // E1 spec: email has its own worker, so a slow SMTP server never delays analyses, deliveries
+  // or decorations.
+  const mailWorker = startWorker({
+    db: database.db,
+    handlers: mailHandlers({ db: database.db, config, logger }),
+    concurrency: MAIL_WORKER_CONCURRENCY,
+    leaseMs: MAIL_LEASE_MS,
+    logger,
+  });
   // enterprise.md §10.3: plugin jobs have their own worker, only when a plugin registered jobs;
   // each job checks its feature against the same edition as the API's routes.
   const pluginWorker = startPluginWorker({ db: database.db, plugins, edition, logger });
@@ -293,6 +303,7 @@ async function main(): Promise<void> {
       await webhookWorker.stop();
       await scmWorker.stop();
       await llmWorker.stop();
+      await mailWorker.stop();
       await pluginWorker?.stop();
       await database.close();
       await embedded?.stop();

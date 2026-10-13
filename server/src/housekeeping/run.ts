@@ -23,6 +23,8 @@ export const DEFAULT_RETENTION = {
   webhookDeliveriesDays: 30,
   /** AI requests and their answers (llm.md §10.1). */
   llmRequestsDays: 90,
+  /** The email delivery log (E1 spec). */
+  mailMessagesDays: 30,
   /** Not in §7: finished jobs are only useful for debugging (ruling H1). */
   finishedJobsDays: 7,
 };
@@ -36,6 +38,7 @@ const retentionSchema = z
     branchesWithoutAnalysisDays: days,
     webhookDeliveriesDays: days,
     llmRequestsDays: days,
+    mailMessagesDays: days,
     finishedJobsDays: days,
   })
   .partial();
@@ -49,6 +52,10 @@ export async function retentionSettings(db: Executor): Promise<Retention> {
 const BATCH = 5_000;
 /** Stored reports are up to the upload limit each; delete fewer per statement. */
 const REPORT_BATCH = 500;
+
+/** E1 spec: a message still pending this long lost its job: it is failed and its body dropped. */
+export const MAIL_GIVE_UP_DAYS = 2;
+export const MAIL_GAVE_UP_TEXT = 'Gave up: not delivered within 2 days';
 
 /** A strictly formatted UUID, checked before a jsonb string is cast (a malformed payload must not
  *  make the cast, and the whole run, fail). */
@@ -89,6 +96,10 @@ export interface HousekeepingResult {
   auditEvents: number;
   /** Expired SSO flow state: pending flows, used assertion ids, finish codes (sso-scim.md §7.1). */
   ssoStates: number;
+  /** Email log rows past `mailMessagesDays` (E1 spec). */
+  mailMessages: number;
+  /** Pending messages failed after MAIL_GIVE_UP_DAYS, their body dropped. */
+  abandonedMailMessages: number;
 }
 
 export interface HousekeepingLogger {
@@ -140,7 +151,9 @@ async function pruneAuditStep(db: Db, logger: HousekeepingLogger | undefined): P
  *   whatever its status;
  * - audit events only as a prefix of the chain, anchored in the same transaction, and whether or
  *   not `audit-log` is active (rbac-audit.md §11);
- * - expired SSO flow state (sso-scim.md §7.1), skipping a row a sign-in is taking at that moment.
+ * - expired SSO flow state (sso-scim.md §7.1), skipping a row a sign-in is taking at that moment;
+ * - an email log row after mailMessagesDays; a message pending for 2 days is failed and its body
+ *   dropped (its job was lost).
  */
 export async function runHousekeeping(
   db: Db,
@@ -261,6 +274,32 @@ export async function runHousekeeping(
       DELETE FROM sessions WHERE id IN (
         SELECT id FROM sessions WHERE expires_at < now() LIMIT ${limit} FOR UPDATE SKIP LOCKED)`,
   );
+  const mailMessages = await deleteInBatches(
+    db,
+    BATCH,
+    (limit) => sql`
+      DELETE FROM mail_messages WHERE id IN (
+        SELECT id FROM mail_messages
+         WHERE created_at < now() - make_interval(days => ${r.mailMessagesDays})
+         LIMIT ${limit}
+         FOR UPDATE SKIP LOCKED)`,
+  );
+  const abandonedMailMessages = await deleteInBatches(
+    db,
+    BATCH,
+    (limit) => sql`
+      UPDATE mail_messages
+         SET status = 'failed', payload_enc = NULL, next_attempt_at = NULL,
+             last_error = ${MAIL_GAVE_UP_TEXT}, updated_at = now()
+       WHERE id IN (
+         SELECT id FROM mail_messages
+          WHERE status = 'pending'
+            AND created_at < now() - make_interval(days => ${MAIL_GIVE_UP_DAYS})
+          LIMIT ${limit}
+          FOR UPDATE SKIP LOCKED)
+         -- Re-checked on the row being updated: an attempt recorded meanwhile moved it on.
+         AND status = 'pending'`,
+  );
   const auditEvents = await pruneAuditStep(db, logger);
   const ssoStates = await pruneSsoStates(db);
   return {
@@ -275,6 +314,8 @@ export async function runHousekeeping(
     sessions,
     auditEvents,
     ssoStates,
+    mailMessages,
+    abandonedMailMessages,
   };
 }
 
