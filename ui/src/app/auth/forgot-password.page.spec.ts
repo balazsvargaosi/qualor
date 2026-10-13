@@ -45,6 +45,8 @@ describe('ForgotPasswordPage (mail E2)', () => {
       "If an account matches, we've sent an email with a link. It works for 60 minutes.",
     );
     expect(root.querySelector('form')).toBeNull();
+    // The note replaces the form that had focus: focus moves to it, so it is read out.
+    expect(document.activeElement).toBe(root.querySelector('[data-test=reset-sent]'));
     expect(root.querySelector('a[href="/login"]')).not.toBeNull();
   });
 

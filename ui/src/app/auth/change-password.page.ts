@@ -8,6 +8,8 @@ import { SessionStore } from './session';
 
 /** api.md §2: the minimum length `PUT /auth/me/password` accepts. */
 export const PASSWORD_MIN_LENGTH = 12;
+/** api.md §2: the longest new password the server accepts. */
+export const PASSWORD_MAX_LENGTH = 256;
 
 @Component({
   selector: 'q-change-password-page',

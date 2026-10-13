@@ -1,17 +1,25 @@
-import { DOCUMENT } from '@angular/common';
-import { afterNextRender, Component, inject, signal } from '@angular/core';
+import {
+  afterNextRender,
+  Component,
+  type ElementRef,
+  inject,
+  Injector,
+  signal,
+  viewChild,
+} from '@angular/core';
 import { Router, RouterLink } from '@angular/router';
 import { ApiError, fieldErrors, problemMessage } from '../api/errors';
 import { AuthLayout } from '../shared/auth-layout';
 import { inputValue } from '../shared/forms';
 import { AuthService } from './auth.service';
-import { PASSWORD_MIN_LENGTH } from './change-password.page';
-import { takeFragmentToken } from './fragment-token';
+import { PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH } from './change-password.page';
+import { takeLinkToken } from './fragment-token';
 import { newPasswordProblem } from './new-password';
 
 /**
- * Mail E2: `/reset-password#token=…`. Takes the token out of the address bar at once, posts it in
- * the body with the new password, then opens the sign-in page with the username (A5: no sign-in).
+ * Mail E2: `/reset-password#token=…`. Takes the token out of the address bar (and the router's
+ * URL) at once, posts it in the body with the new password, then opens the sign-in page with the
+ * username (A5: no sign-in).
  */
 @Component({
   selector: 'q-reset-password-page',
@@ -21,8 +29,8 @@ import { newPasswordProblem } from './new-password';
 export class ResetPasswordPage {
   private readonly auth = inject(AuthService);
   private readonly router = inject(Router);
-  private readonly document = inject(DOCUMENT);
-  private readonly token = takeFragmentToken(this.document);
+  private readonly injector = inject(Injector);
+  private readonly token = takeLinkToken();
   /** No token in the link, or the server said it expired or was used. */
   protected readonly invalid = signal(this.token === null);
   protected readonly next = signal('');
@@ -31,14 +39,9 @@ export class ResetPasswordPage {
   protected readonly error = signal<string | null>(null);
   protected readonly nextError = signal<string | null>(null);
   protected readonly minLength = PASSWORD_MIN_LENGTH;
+  protected readonly maxLength = PASSWORD_MAX_LENGTH;
   protected readonly inputValue = inputValue;
-
-  constructor() {
-    // The router writes the address it navigated to, fragment included, to the address bar. Today
-    // it does so before it creates this page, but a write that lands after the field above read
-    // the token would put it back: clear it once more after the first render (preflight M15).
-    afterNextRender(() => takeFragmentToken(this.document));
-  }
+  private readonly invalidNote = viewChild<ElementRef<HTMLElement>>('invalidNote');
 
   protected async submit(event: Event): Promise<void> {
     event.preventDefault();
@@ -52,12 +55,18 @@ export class ResetPasswordPage {
       const username = await this.auth.completePasswordReset(token, this.next());
       await this.router.navigate(['/login'], { queryParams: { reset: 'done', username } });
     } catch (err) {
-      if (err instanceof ApiError && err.code === 'TOKEN_INVALID') this.invalid.set(true);
+      if (err instanceof ApiError && err.code === 'TOKEN_INVALID') this.showInvalid();
       else if (fieldErrors(err)['body.newPassword']) {
         this.nextError.set(newPasswordProblem('', ''));
       } else this.error.set(problemMessage(err));
     } finally {
       this.busy.set(false);
     }
+  }
+
+  /** The note replaces the form, which had focus: focus moves to the note, so it is read out. */
+  private showInvalid(): void {
+    this.invalid.set(true);
+    afterNextRender(() => this.invalidNote()?.nativeElement.focus(), { injector: this.injector });
   }
 }

@@ -90,6 +90,7 @@ describe('ResetPasswordPage (mail E2)', () => {
     );
     expect(root.querySelector('a[href="/forgot-password"]')).not.toBeNull();
     expect(root.querySelector('form')).toBeNull();
+    expect(document.activeElement).toBe(root.querySelector('[data-test=token-invalid]'));
   });
 
   it('says so at once when the address has no token, and asks nothing', async () => {
@@ -123,10 +124,21 @@ describe('ResetPasswordPage opened by the router (mail E2, preflight M15)', () =
     const harness = await RouterTestingHarness.create();
     // As at start-up: the router navigates to the address the browser opened, fragment included,
     // and writes that address (with the fragment) to the address bar as it activates the page.
-    TestBed.inject(Router).initialNavigation();
+    const router = TestBed.inject(Router);
+    router.initialNavigation();
     await settle(harness.fixture);
+    const page = harness.routeNativeElement!;
+    expect(page.querySelector('#reset-new')?.getAttribute('maxlength')).toBe('256');
+    expect(page.querySelector('#reset-confirm')?.getAttribute('maxlength')).toBe('256');
     expect(window.location.hash).toBe('');
     expect(window.location.href).not.toContain('AbC123');
+    // The router's own URL (a returnUrl when the session ends, the address it restores after a
+    // failed navigation) lost the fragment too, and the page (with its token) stayed.
+    expect(router.url).toBe('/reset-password');
+    await router.navigateByUrl('/nowhere').catch(() => undefined);
+    await settle(harness.fixture);
+    expect(window.location.href).not.toContain('AbC123');
+    expect(harness.routeNativeElement).toBe(page);
     await fill(
       harness.routeNativeElement!,
       harness.fixture,

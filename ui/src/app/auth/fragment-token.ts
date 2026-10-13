@@ -1,3 +1,7 @@
+import { DOCUMENT } from '@angular/common';
+import { afterNextRender, inject } from '@angular/core';
+import { Router } from '@angular/router';
+
 /**
  * Mail E2 A2: a one-time link carries its secret in the fragment (`#token=…`), which the browser
  * never sends to a server or puts in a Referer. Reads it once and takes the fragment out of the
@@ -12,4 +16,24 @@ export function takeFragmentToken(document: Document): string | null {
     history.replaceState(history.state, '', `${location.pathname}${location.search}`);
   }
   return token === null || token === '' ? null : token;
+}
+
+/**
+ * The token of the link that opened this page (reset, invitation), for a field initialiser of the
+ * page component. Besides the address bar, the router keeps the URL it navigated to, fragment
+ * included (`router.url`), and may write it back: to the address bar (after the page read it, or
+ * when a later navigation fails) or into a `returnUrl` (an expired session). So after the first
+ * render the fragment is cleared once more and the router moves to the same address without it;
+ * the route is the same, so the page and its token stay.
+ */
+export function takeLinkToken(): string | null {
+  const document = inject(DOCUMENT);
+  const router = inject(Router);
+  const token = takeFragmentToken(document);
+  afterNextRender(() => {
+    takeFragmentToken(document);
+    const at = router.url.indexOf('#');
+    if (at !== -1) void router.navigateByUrl(router.url.slice(0, at), { replaceUrl: true });
+  });
+  return token;
 }

@@ -1,4 +1,12 @@
-import { Component, inject, signal } from '@angular/core';
+import {
+  afterNextRender,
+  Component,
+  type ElementRef,
+  inject,
+  Injector,
+  signal,
+  viewChild,
+} from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { problemMessage } from '../api/errors';
 import { AuthLayout } from '../shared/auth-layout';
@@ -16,6 +24,7 @@ import { AuthService } from './auth.service';
 })
 export class ForgotPasswordPage {
   private readonly auth = inject(AuthService);
+  private readonly injector = inject(Injector);
   /** `GET /auth/methods` `passwordReset`; undefined while it loads, false when it fails. */
   protected readonly available = signal<boolean | undefined>(undefined);
   protected readonly login = signal('');
@@ -23,6 +32,7 @@ export class ForgotPasswordPage {
   protected readonly busy = signal(false);
   protected readonly error = signal<string | null>(null);
   protected readonly inputValue = inputValue;
+  private readonly sentNote = viewChild<ElementRef<HTMLElement>>('sentNote');
 
   constructor() {
     this.auth.methods().then(
@@ -40,6 +50,8 @@ export class ForgotPasswordPage {
     try {
       await this.auth.requestPasswordReset(login);
       this.sent.set(true);
+      // The note replaces the form, which had focus: focus moves to the note, so it is read out.
+      afterNextRender(() => this.sentNote()?.nativeElement.focus(), { injector: this.injector });
     } catch (err) {
       this.error.set(problemMessage(err));
     } finally {
