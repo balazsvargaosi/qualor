@@ -1,5 +1,6 @@
 import type { RenderedMail } from '../payload';
 import { accountSamples } from './account-samples';
+import { notifySamples } from './notify-samples';
 import { renderLicenseExpiry, type LicenseAlertVariant } from './license-expiry';
 import { renderTestMail } from './test';
 import { renderWebhookFailed } from './webhook-failed';
@@ -52,5 +53,6 @@ export function sampleMails(
       }),
     },
     ...accountSamples(publicUrl),
+    ...notifySamples(publicUrl),
   ];
 }

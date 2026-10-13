@@ -24,6 +24,11 @@ describe('the E1 messages (E1 spec, Templates)', () => {
       ['account.password-changed-self', 'Your Qualor password was changed'],
       ['account.password-changed-reset', 'Your Qualor password was changed'],
       ['account.password-changed-admin', 'Your Qualor password was changed'],
+      ['notify.gate-failed', 'Payments API: quality gate failed on main'],
+      ['notify.gate-failed-mr', 'Payments API: quality gate failed on !42'],
+      ['notify.gate-recovered', 'Payments API: quality gate passes again on main'],
+      ['notify.analysis-failed', 'Payments API: an analysis of feature/refunds failed'],
+      ['webhook.failed-organization', 'Webhook to hooks.example.com is failing'],
     ]);
   });
 
