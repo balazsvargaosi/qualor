@@ -21,7 +21,8 @@ All notable changes to Qualor are listed here, newest first. The format follows
   single sign-on accounts without a password get none.
 - Invitations: instance admins invite a new user by email from **Settings → Users** instead of
   making up an initial password. The link works for 7 days and can be resent or revoked.
-- A "Your Qualor password was changed" email after every password change.
+- A "Your Qualor password was changed" email after a reset through a link, a change of one's own
+  password, or a reset by an administrator (to accounts that have an email address).
 - API: `POST /auth/password-reset`, `POST /auth/password-reset/complete`,
   `POST /auth/invitations/inspect`, `POST /auth/invitations/accept`, and
   `POST`/`DELETE /users/{id}/invitation`; `POST /users` takes `invite`, users carry `invitation`,

@@ -28,13 +28,15 @@ Every message has an HTML part and a plain-text part. Its links lead to the addr
 
 ## Account emails
 
-With an SMTP server **and** `QUALOR_PUBLIC_URL` set, Qualor also sends these to people with an
-email address on their account:
+With an SMTP server, Qualor also sends these to people with an email address on their account.
+The reset and invitation emails also need `QUALOR_PUBLIC_URL`, because they carry a link; the
+password-changed notice needs only the SMTP server (without `QUALOR_PUBLIC_URL` it just has no
+link to reset the password).
 
 - **Reset your Qualor password**, after someone uses **Forgot password?** on the sign-in page. The
   link works once, for 60 minutes. It does not sign anyone in: the person signs in with the new
   password afterwards.
-- **<name> invited you to Qualor**, when an instance admin invites a new user from
+- **The inviter's name, then "invited you to Qualor"**, when an instance admin invites a new user from
   **Settings → Users**. The link works once, for 7 days, and the admin can resend or revoke it.
 - **Your Qualor password was changed**, after a reset through a link, a change of one's own
   password, or a reset by an administrator. It names the account, the time (UTC) and, for a change
