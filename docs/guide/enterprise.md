@@ -19,14 +19,14 @@ works in air-gapped networks.
 | Several identity providers at once (up to 10 connections) | no | no | yes, feature `sso.multi` ([One connection or several](./sso-and-scim.md#one-connection-or-several)) |
 | SCIM 2.0 provisioning | no | no | yes, feature `scim` ([SCIM](./sso-and-scim.md#scim-with-entra-id-and-okta)) |
 | Compliance reports (OWASP Top 10, CWE Top 25, OWASP ASVS, PCI DSS 6.2.4) as JSON, CSV and PDF | no | no | yes, feature `compliance-export` ([Compliance reports](./compliance-reports.md)) |
-| Portfolio reports | no | no | **not yet**: they are being built and will switch on with an Enterprise key |
+| Portfolio reports: the quality of every project and organisation, with 12-week or 12-month trends and the projects that need attention, as CSV and PDF | no | no | yes, feature `portfolio` ([Portfolio reports](./portfolio.md)) |
 
 A licence switches on the features its key lists, and nothing else. A Business key lists `sso`,
 `audit-log` and `llm.fix-quota`; an Enterprise key lists those and `sso.multi`,
-`audit-log.stream`, `scim` and `compliance-export` too. **Settings → Licence** lists the features
-the key has under **Enterprise features**, each marked Active or Not active; `GET /api/v0/license` shows the same. Roles and
-project access need no licence: they are part of every edition. Portfolio reports are not available
-yet, in any edition.
+`audit-log.stream`, `scim`, `compliance-export` and `portfolio` too. **Settings → Licence** lists
+the features the key has under **Enterprise features**, each marked Active or Not active;
+`GET /api/v0/license` shows the same. Roles and project access need no licence: they are part of
+every edition.
 
 Two features extend another and work only with it: `audit-log.stream` needs `audit-log`, and
 `sso.multi` needs `sso`. A key that lists one without the other still loads, but the extension
@@ -60,7 +60,7 @@ needs a subscription. Everything outside `enterprise/` is MIT.
 |---|---|---|
 | Community | free | the community edition (MIT), with no limit on lines of code, users, projects or organisations, including all four roles and project access; no licence key; help from the community |
 | Business | $4,900 a year | single sign-on (OIDC, SAML 2.0) with one enabled connection at a time, the audit log with its JSON Lines export, and the higher AI fix suggestion limit; email support |
-| Enterprise | $12,000 a year | everything in Business, plus SCIM 2.0 provisioning, streaming the audit log to a SIEM, several identity providers at once (up to 10 connections), compliance reports, and portfolio reports once they ship; SLA support: email only, first reply within 1 business day for critical issues, no phone or 24x7 |
+| Enterprise | $12,000 a year | everything in Business, plus SCIM 2.0 provisioning, streaming the audit log to a SIEM, several identity providers at once (up to 10 connections), compliance reports and portfolio reports; SLA support: email only, first reply within 1 business day for critical issues, no phone or 24x7 |
 
 Prices are per server instance, per year, in US dollars. They never depend on lines of code or
 on the number of users. A plan is the set of features its licence key lists (see
@@ -227,6 +227,9 @@ Users who are not instance admins see nothing else about the licence.
      the **Compliance** tab and **Settings → Compliance reports** are not shown, and every
      `/api/v0/ee/compliance` route answers 403 `FEATURE_NOT_LICENSED`
      ([Retention](./compliance-reports.md#retention));
+   - **Portfolio** leaves the top bar and every `/api/v0/ee/portfolio` route answers 403
+     `FEATURE_NOT_LICENSED`; the portfolio keeps no data of its own, so nothing is lost
+     ([When the licence lapses](./portfolio.md#when-the-licence-lapses));
    - **nothing is deleted and nothing becomes read-only.** Every organisation, project, issue,
      history and setting stays, and every organisation keeps working as before, with the community
      edition's features;
@@ -239,8 +242,8 @@ Removing a key, or replacing it with one that lists fewer features, has the same
 next start, for the features the new key no longer lists.
 
 **Moving from Enterprise to Business** (a Business key replacing an Enterprise one, or a key that
-no longer lists `audit-log.stream`, `sso.multi`, `scim` or `compliance-export`) deletes nothing
-either:
+no longer lists `audit-log.stream`, `sso.multi`, `scim`, `compliance-export` or `portfolio`)
+deletes nothing either:
 
 - **the SIEM stream pauses.** Its URL, secret and position are kept, and events keep waiting in
   the audit log. With an Enterprise key again, the stream carries on from where it stopped and
@@ -254,7 +257,9 @@ either:
 - **SCIM requests are refused**, so deprovisioning stops: deactivate leavers in **Settings →
   Users** ([When the licence lapses](./sso-and-scim.md#when-the-licence-lapses));
 - **compliance reports are kept but hidden** until an Enterprise key is applied again
-  ([Retention](./compliance-reports.md#retention)).
+  ([Retention](./compliance-reports.md#retention));
+- **Portfolio leaves the top bar** until an Enterprise key is applied again; it keeps no data, so
+  it comes back as it was.
 
 Keys issued before the organisation limit was removed may still carry an `organizations` field.
 They keep working, and the server ignores that field.

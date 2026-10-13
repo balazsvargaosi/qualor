@@ -140,10 +140,10 @@ answer; nor an OIDC client secret, a SAML service provider key, a SCIM token, an
 token, an authorization code, a SAML response or assertion, or what the identity provider says
 about a person at sign-in. A SCIM change of a user records the old and new user name, display name,
 email and external id, as an admin's change of a user records its fields. Also not recorded:
-analysis uploads and their processing, every *read* except an export or a compliance report
-download, a refused request other than a sign-in attempt, an issue change Qualor itself makes
-(closing, reopening or mirroring during ingestion, a gate re-evaluation), and GitHub's own webhook
-deliveries to Qualor.
+analysis uploads and their processing, every *read* except an audit log export or a compliance
+report download (so neither the portfolio nor its downloads), a refused request other than a
+sign-in attempt, an issue change Qualor itself makes (closing, reopening or mirroring during
+ingestion, a gate re-evaluation), and GitHub's own webhook deliveries to Qualor.
 
 Each event also keeps the caller's **IP address and browser** (cut to 256 characters) for as long
 as retention keeps the event — worth knowing for your own privacy notice.

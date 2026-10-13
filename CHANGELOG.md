@@ -16,6 +16,15 @@ All notable changes to Qualor are listed here, newest first. The format follows
   project's reports (the permission `project.compliance.create`); organisation admins create the
   organisation's and delete reports (`org.compliance.manage`). The audit log records each report
   created, downloaded or deleted. See [Compliance reports](docs/guide/compliance-reports.md).
+- Portfolio reports (Enterprise): **Portfolio** in the top bar shows the quality of every project
+  you can read, of one organisation or of all of them, on each project's main branch: quality
+  gates, security and reliability ratings, lines of code, coverage and duplication weighted by
+  lines of code, open issues by severity, secrets and vulnerable dependencies. It adds 12-week or
+  12-month trends, a table per organisation, and four lists of the projects that need attention
+  (failing gates, the worst security ratings, the most blocker and high issues, no analysis in 30
+  days). Download it as CSV (one row per project) or as PDF, or read it through
+  `/api/v0/ee/portfolio`. Each user sees only the projects they can read. It needs a licence key
+  listing the new feature `portfolio`. See [Portfolio reports](docs/guide/portfolio.md).
 
 ## [0.7.1] - 2026-10-12
 

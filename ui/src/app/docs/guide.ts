@@ -19,6 +19,7 @@ const PAGES: Readonly<Record<string, () => Promise<{ default: string }>>> = {
   'languages-and-analyzers': () => import('../../../../docs/guide/languages-and-analyzers.md'),
   'migrate-from-sonarqube': () => import('../../../../docs/guide/migrate-from-sonarqube.md'),
   'other-ci': () => import('../../../../docs/guide/other-ci.md'),
+  portfolio: () => import('../../../../docs/guide/portfolio.md'),
   'quality-gates': () => import('../../../../docs/guide/quality-gates.md'),
   'quick-start': () => import('../../../../docs/guide/quick-start.md'),
   'roles-and-audit': () => import('../../../../docs/guide/roles-and-audit.md'),
