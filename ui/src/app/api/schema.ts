@@ -2142,7 +2142,7 @@ export interface paths {
         put?: never;
         /**
          * Stop watching the project of an email link (one click, no sign-in)
-         * @description The token of the link in a notification email (`t`). Deletes that watch; idempotent. Any body (RFC 8058 `List-Unsubscribe=One-Click`, urlencoded or multipart, or none) is ignored. A GET does nothing: link scanners must not unsubscribe people.
+         * @description The token of the link in a notification email (`t`). Deletes that watch; idempotent. Any body (RFC 8058 `List-Unsubscribe=One-Click`, urlencoded or multipart, or none) is ignored. A GET only redirects to the page that asks first: link scanners must not unsubscribe people.
          */
         post: {
             parameters: {

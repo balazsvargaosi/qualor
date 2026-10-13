@@ -52,7 +52,11 @@ const notificationsResponse = z.object({
     }),
   ),
 });
-/** A token is 142 characters; twice MAX_TOKEN_LENGTH leaves room for a percent-encoded one. */
+/**
+ * Fastify decodes the query before validation, so this sees the token itself. The bound only
+ * caps the work: `verifyUnsubscribeToken` answers anything over MAX_TOKEN_LENGTH with
+ * TOKEN_INVALID, and this cap turns only a far longer `t` into a 422.
+ */
 const tokenQuery = z.strictObject({ t: z.string().max(MAX_TOKEN_LENGTH * 2) });
 
 type WatchRow = typeof projectWatches.$inferSelect;
@@ -315,7 +319,7 @@ export const unsubscribeRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
         tags: ['notifications'],
         summary: 'Stop watching the project of an email link (one click, no sign-in)',
         description:
-          'The token of the link in a notification email (`t`). Deletes that watch; idempotent. Any body (RFC 8058 `List-Unsubscribe=One-Click`, urlencoded or multipart, or none) is ignored. A GET does nothing: link scanners must not unsubscribe people.',
+          'The token of the link in a notification email (`t`). Deletes that watch; idempotent. Any body (RFC 8058 `List-Unsubscribe=One-Click`, urlencoded or multipart, or none) is ignored. A GET only redirects to the page that asks first: link scanners must not unsubscribe people.',
         security: [],
         querystring: tokenQuery,
         response: { 200: z.object({ project: z.object({ name: z.string() }).nullable() }) },

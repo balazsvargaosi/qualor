@@ -3327,7 +3327,7 @@
         "tags": [
           "notifications"
         ],
-        "description": "The token of the link in a notification email (`t`). Deletes that watch; idempotent. Any body (RFC 8058 `List-Unsubscribe=One-Click`, urlencoded or multipart, or none) is ignored. A GET does nothing: link scanners must not unsubscribe people.",
+        "description": "The token of the link in a notification email (`t`). Deletes that watch; idempotent. Any body (RFC 8058 `List-Unsubscribe=One-Click`, urlencoded or multipart, or none) is ignored. A GET only redirects to the page that asks first: link scanners must not unsubscribe people.",
         "parameters": [
           {
             "schema": {
