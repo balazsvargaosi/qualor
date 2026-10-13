@@ -1245,3 +1245,43 @@ export const accountTokens = pgTable(
     check('account_tokens_key_format', sql`key ~ '^[0-9a-f]{64}$'`),
   ],
 );
+
+// ─── 4.12 Project notifications (mail E3) ───────────────────────────────────
+
+/** mail E3 N3: a watch covers the main branch only, or every branch and merge request. */
+export const WATCH_BRANCHES = ['main', 'all'] as const;
+export type WatchBranches = (typeof WATCH_BRANCHES)[number];
+
+/** mail E3 N1–N3: one person's watch of one project; opt-in, removed with either. */
+export const projectWatches = pgTable(
+  'project_watches',
+  {
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    branches: text('branches').notNull().default('main').$type<WatchBranches>(),
+    gateFailed: boolean('gate_failed').notNull().default(true),
+    gateRecovered: boolean('gate_recovered').notNull().default(true),
+    analysisFailed: boolean('analysis_failed').notNull().default(true),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.projectId] }),
+    index('project_watches_project_idx').on(t.projectId),
+    check('project_watches_branches_check', sql`branches IN ('main','all')`),
+  ],
+);
+
+/** mail E3 N6: a person's notification switches; no row means both on. */
+export const notificationPreferences = pgTable('notification_preferences', {
+  userId: uuid('user_id')
+    .primaryKey()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  email: boolean('email').notNull().default(true),
+  orgWebhookFailures: boolean('org_webhook_failures').notNull().default(true),
+  updatedAt: updatedAt(),
+});

@@ -40,7 +40,8 @@ describe('runMigrations / pendingMigrations', () => {
     // 0005_rbac_audit (rbac-audit.md §7, approved 2026-09-27),
     // 0006_sso_scim (sso-scim.md §13, approved 2026-09-28), 0007_mail (E1 spec, approved 2026-10-13),
     // 0008_account_tokens (mail E2 A1, 2026-10-13).
-    expect(await pendingMigrations(t.db, MIGRATIONS_DIR)).toBe(9);
+    // 0009_notifications (mail E3 N8, 2026-10-13).
+    expect(await pendingMigrations(t.db, MIGRATIONS_DIR)).toBe(10);
     expect(await readinessCheck(t.db, MIGRATIONS_DIR)()).toBe(false);
     await runMigrations(t.pool, MIGRATIONS_DIR);
     expect(await pendingMigrations(t.db, MIGRATIONS_DIR)).toBe(0);
@@ -286,6 +287,8 @@ describe('runMigrations / pendingMigrations', () => {
       'account_tokens',
       'identities',
       'mail_messages',
+      'notification_preferences',
+      'project_watches',
       'scim_group_members',
       'scim_groups',
       'scim_tokens',

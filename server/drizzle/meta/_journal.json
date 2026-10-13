@@ -64,6 +64,13 @@
       "when": 1791858949343,
       "tag": "0008_account_tokens",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1791900144892,
+      "tag": "0009_notifications",
+      "breakpoints": true
     }
   ]
 }
