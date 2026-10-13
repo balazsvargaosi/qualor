@@ -84,7 +84,24 @@
                       >Must change password</span
                     >
                   }
-                  @if (!u.hasPassword) {
+                  @if (u.invitation; as invitation) {
+                    @if (isLive(invitation.expiresAt)) {
+                      <span
+                        class="badge badge-accent"
+                        data-test="invited"
+                        i18n="@@users.invite.badge"
+                        >Invited · expires {{ invitation.expiresAt | dateTime }}</span
+                      >
+                    } @else {
+                      <span
+                        class="badge badge-warn"
+                        data-test="invitation-expired"
+                        i18n="@@users.invite.expired"
+                        >Invitation expired</span
+                      >
+                    }
+                  }
+                  @if (!u.hasPassword && !u.invitation) {
                     <span class="badge" i18n="@@users.noPassword">No password</span>
                   }
                   @if (u.sso.identities > 0) {
@@ -142,6 +159,30 @@
                       i18n="@@users.resetOpen"
                     >
                       Reset password
+                    </button>
+                  }
+                  @if (canInvite(u)) {
+                    <button
+                      type="button"
+                      class="btn-quiet"
+                      data-test="resend-invitation"
+                      [attr.aria-disabled]="busy() ? true : null"
+                      (click)="resend(u)"
+                      i18n="@@users.invite.resend"
+                    >
+                      Resend invitation
+                    </button>
+                  }
+                  @if (u.invitation && isLive(u.invitation.expiresAt)) {
+                    <button
+                      type="button"
+                      class="btn-quiet"
+                      data-test="revoke-invitation"
+                      [attr.aria-disabled]="busy() ? true : null"
+                      (click)="revoke(u)"
+                      i18n="@@users.invite.revoke"
+                    >
+                      Revoke invitation
                     </button>
                   }
                 </div>
@@ -230,6 +271,7 @@
             #emailField
             id="user-email"
             type="email"
+            [attr.required]="mode() === 'invite' ? '' : null"
             maxlength="320"
             autocomplete="off"
             [attr.aria-invalid]="errors().email ? true : null"
@@ -241,30 +283,60 @@
             <span id="user-email-error" class="field-error" role="alert">{{ message }}</span>
           }
         </div>
-        <div class="field">
-          <label for="user-password" i18n="@@users.password">Initial password</label>
-          <input
-            #passwordField
-            id="user-password"
-            type="password"
-            autocomplete="new-password"
-            required
-            [attr.aria-invalid]="errors().password ? true : null"
-            [attr.aria-describedby]="
-              errors().password ? 'user-password-error user-password-hint' : 'user-password-hint'
-            "
-            [attr.minlength]="minLength"
-            [attr.maxlength]="maxLength"
-            [value]="password()"
-            (input)="set('password', $event)"
-          />
-          @if (errors().password; as message) {
-            <span id="user-password-error" class="field-error" role="alert">{{ message }}</span>
+        <fieldset class="field" data-test="create-mode">
+          <legend i18n="@@users.invite.how">How the user gets a password</legend>
+          <label class="row">
+            <input
+              type="radio"
+              name="create-mode"
+              value="invite"
+              [checked]="mode() === 'invite'"
+              [disabled]="inviteState() !== 'available'"
+              [attr.aria-describedby]="inviteHint() ? 'create-mode-hint' : null"
+              (change)="mode.set('invite')"
+            />
+            <span i18n="@@users.invite.modeInvite">Send an invitation email</span>
+          </label>
+          <label class="row">
+            <input
+              type="radio"
+              name="create-mode"
+              value="password"
+              [checked]="mode() === 'password'"
+              (change)="mode.set('password')"
+            />
+            <span i18n="@@users.invite.modePassword">Set an initial password</span>
+          </label>
+          @if (inviteHint(); as hint) {
+            <span id="create-mode-hint" class="hint">{{ hint }}</span>
           }
-          <span id="user-password-hint" class="hint" i18n="@@users.passwordHint"
-            >At least {{ minLength }} characters. The user changes it at the first sign-in.</span
-          >
-        </div>
+        </fieldset>
+        @if (mode() === 'password') {
+          <div class="field">
+            <label for="user-password" i18n="@@users.password">Initial password</label>
+            <input
+              #passwordField
+              id="user-password"
+              type="password"
+              autocomplete="new-password"
+              required
+              [attr.aria-invalid]="errors().password ? true : null"
+              [attr.aria-describedby]="
+                errors().password ? 'user-password-error user-password-hint' : 'user-password-hint'
+              "
+              [attr.minlength]="minLength"
+              [attr.maxlength]="maxLength"
+              [value]="password()"
+              (input)="set('password', $event)"
+            />
+            @if (errors().password; as message) {
+              <span id="user-password-error" class="field-error" role="alert">{{ message }}</span>
+            }
+            <span id="user-password-hint" class="hint" i18n="@@users.passwordHint"
+              >At least {{ minLength }} characters. The user changes it at the first sign-in.</span
+            >
+          </div>
+        }
         <label class="row">
           <input type="checkbox" [checked]="admin()" (change)="admin.set(isChecked($event))" />
           <span i18n="@@users.isAdmin">Instance admin</span>

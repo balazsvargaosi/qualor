@@ -91,6 +91,12 @@ export function messageKindText(kind: string): string {
       return $localize`:@@email.kind.license:Licence expiry`;
     case 'webhook.failed':
       return $localize`:@@email.kind.webhook:Failing webhook`;
+    case 'account.password-reset':
+      return $localize`:@@email.kind.passwordReset:Password reset`;
+    case 'account.invitation':
+      return $localize`:@@email.kind.invitation:Invitation`;
+    case 'account.password-changed':
+      return $localize`:@@email.kind.passwordChanged:Password changed`;
     default:
       return kind;
   }

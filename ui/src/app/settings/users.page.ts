@@ -10,9 +10,10 @@ import {
   untracked,
   viewChild,
 } from '@angular/core';
-import { Api, ok } from '../api/api';
+import { Api, done, ok } from '../api/api';
 import { ApiError, fieldErrors, problemMessage } from '../api/errors';
 import type { ItemOf } from '../api/types';
+import { AuthService } from '../auth/auth.service';
 import { PASSWORD_MIN_LENGTH } from '../auth/change-password.page';
 import { SessionStore } from '../auth/session';
 import { DateTimePipe } from '../shared/date-time.pipe';
@@ -47,6 +48,9 @@ const PASSWORD_MAX_LENGTH = 256;
  * - Deactivating or demoting yourself asks first; your own password is changed from the user menu
  *   (a reset here would end your session), so your row offers no reset.
  *
+ * - Mail E2: "New user" sends an invitation email when the server can (else an initial password);
+ *   invited rows show their invitation, which can be resent or revoked.
+ *
  * Step 8 of the redesign (spec §7.8): the users in a panel with quiet row actions; "New user"
  * opens a dialog holding the form; each other user's row resets their password in a dialog that
  * names them (it replaces the separate form with its user list); asking about your own account
@@ -60,6 +64,21 @@ const PASSWORD_MAX_LENGTH = 256;
 export class UsersPage {
   private readonly api = inject(Api);
   private readonly session = inject(SessionStore);
+  private readonly auth = inject(AuthService);
+  /**
+   * Mail E2 A8, from `GET /auth/methods`: invitations work with email and QUALOR_PUBLIC_URL set
+   * (`passwordReset`) while password sign-in is open to everyone.
+   */
+  protected readonly inviteState = signal<'available' | 'no-mail' | 'break-glass'>('no-mail');
+  protected readonly inviteHint = computed(() =>
+    this.inviteState() === 'no-mail'
+      ? inviteRefusal('MAIL_NOT_CONFIGURED')
+      : this.inviteState() === 'break-glass'
+        ? inviteRefusal('PASSWORD_SIGN_IN_DISABLED')
+        : null,
+  );
+  /** How the new user gets a password: an invitation email, or an initial password typed here. */
+  protected readonly mode = signal<'invite' | 'password'>('password');
   private readonly injector = inject(Injector);
   private readonly document = inject(DOCUMENT);
   protected readonly isAdmin = computed(() => this.session.user()?.isInstanceAdmin === true);
@@ -119,8 +138,73 @@ export class UsersPage {
     effect(() => {
       if (this.isAdmin() && !this.started) {
         this.started = true;
-        untracked(() => void this.list.reset(this.noPasswordOnly()));
+        untracked(() => {
+          void this.list.reset(this.noPasswordOnly());
+          void this.loadInviteState();
+        });
       }
+    });
+  }
+
+  private async loadInviteState(): Promise<void> {
+    try {
+      const methods = await this.auth.methods();
+      this.inviteState.set(
+        methods.password === 'break_glass_only'
+          ? 'break-glass'
+          : methods.passwordReset
+            ? 'available'
+            : 'no-mail',
+      );
+    } catch {
+      this.inviteState.set('no-mail');
+    }
+  }
+
+  /** Invitable: active, no password, an email, no single sign-on identity (the server's rule). */
+  protected canInvite(user: User): boolean {
+    return user.active && !user.hasPassword && user.email !== null && user.sso.identities === 0;
+  }
+
+  protected isLive(expiresAt: string): boolean {
+    return Date.parse(expiresAt) > Date.now();
+  }
+
+  protected async resend(user: User): Promise<void> {
+    if (this.busy()) return;
+    await this.run(
+      async () => {
+        const updated = await ok(
+          this.api.client.POST('/api/v0/users/{id}/invitation', {
+            params: { path: { id: user.id } },
+          }),
+        );
+        this.replace(updated);
+        this.announcement.set(
+          $localize`:@@users.invite.resent:${user.username}:username: gets a new invitation email. The earlier link no longer works.`,
+        );
+      },
+      (err) => {
+        const refused = err instanceof ApiError ? inviteRefusal(err.code) : null;
+        if (refused === null) return false;
+        this.error.set(refused);
+        return true;
+      },
+    );
+  }
+
+  protected async revoke(user: User): Promise<void> {
+    if (this.busy()) return;
+    await this.run(async () => {
+      await done(
+        this.api.client.DELETE('/api/v0/users/{id}/invitation', {
+          params: { path: { id: user.id } },
+        }),
+      );
+      this.replace({ ...user, invitation: null });
+      this.announcement.set(
+        $localize`:@@users.invite.revoked:The invitation of ${user.username}:username: no longer works.`,
+      );
     });
   }
 
@@ -153,6 +237,7 @@ export class UsersPage {
     this.admin.set(false);
     this.errors.set({});
     this.dialogError.set(null);
+    this.mode.set(this.inviteState() === 'available' ? 'invite' : 'password');
     openAfterRender(this.injector, () => this.createDialog()?.nativeElement);
   }
 
@@ -171,9 +256,15 @@ export class UsersPage {
     event.preventDefault();
     if (this.busy()) return;
     const username = this.username().trim();
+    const email = this.email().trim();
+    const displayName = this.displayName().trim();
+    const invite = this.mode() === 'invite';
     const errors: Partial<Record<Field, string>> = {};
     if (!username) errors.username = usernameMessage();
-    if (this.password().length < PASSWORD_MIN_LENGTH) errors.password = passwordShort();
+    if (invite && !email) {
+      errors.email = $localize`:@@users.invite.needsEmail:Enter the email address the invitation goes to.`;
+    }
+    if (!invite && this.password().length < PASSWORD_MIN_LENGTH) errors.password = passwordShort();
     this.errors.set(errors);
     this.dialogError.set(null);
     if (Object.keys(errors).length > 0) {
@@ -185,17 +276,27 @@ export class UsersPage {
       async () => {
         const user = await ok(
           this.api.client.POST('/api/v0/users', {
-            body: {
-              username,
-              password,
-              isInstanceAdmin: this.admin(),
-              ...(this.displayName().trim() ? { displayName: this.displayName().trim() } : {}),
-              ...(this.email().trim() ? { email: this.email().trim() } : {}),
-            },
+            body: invite
+              ? {
+                  username,
+                  invite: true,
+                  email,
+                  isInstanceAdmin: this.admin(),
+                  ...(displayName ? { displayName } : {}),
+                }
+              : {
+                  username,
+                  password,
+                  isInstanceAdmin: this.admin(),
+                  ...(displayName ? { displayName } : {}),
+                  ...(email ? { email } : {}),
+                },
           }),
         );
         this.announcement.set(
-          $localize`:@@users.created:${user.username}:username: can sign in now and must choose a new password first.`,
+          invite
+            ? $localize`:@@users.invite.sent:${user.username}:username: gets an email with a link to set a password.`
+            : $localize`:@@users.created:${user.username}:username: can sign in now and must choose a new password first.`,
         );
         clearField(this.usernameField(), this.username);
         clearField(this.displayNameField(), this.displayName);
@@ -353,6 +454,12 @@ export class UsersPage {
    * handled there: the dialog stays open with what was typed, the password aside.
    */
   private createFailed(err: unknown): boolean {
+    const refused = err instanceof ApiError ? inviteRefusal(err.code) : null;
+    if (refused !== null) {
+      this.errors.set({});
+      this.dialogError.set(refused);
+      return true;
+    }
     const fields = fieldErrors(err);
     const errors: Partial<Record<Field, string>> = {};
     if (fields['body.username'] !== undefined) errors.username = usernameMessage();
@@ -419,6 +526,21 @@ function passwordShort(): string {
 
 function usernameMessage(): string {
   return $localize`:@@users.badUsername:Use 1 to 64 letters, digits, dots, dashes or underscores for the username.`;
+}
+
+/** Why the server refused an invitation (mail E2 A8), in the page's words; null for other codes. */
+function inviteRefusal(code: string | null): string | null {
+  switch (code) {
+    case 'MAIL_NOT_CONFIGURED':
+    case 'PUBLIC_URL_REQUIRED':
+      return $localize`:@@users.invite.needsMail:Invitations need an email server and QUALOR_PUBLIC_URL. Set them up in Settings → Email.`;
+    case 'PASSWORD_SIGN_IN_DISABLED':
+      return $localize`:@@users.invite.breakGlass:Password sign-in is limited to break-glass administrators, so new users sign in with single sign-on.`;
+    case 'INVITATION_NOT_APPLICABLE':
+      return $localize`:@@users.invite.notApplicable:Only an active user without a password, with an email address and without single sign-on can be invited.`;
+    default:
+      return null;
+  }
 }
 
 function changeMessage(user: User, body: UserPatch): string {
