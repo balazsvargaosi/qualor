@@ -123,3 +123,36 @@ test('the Business plan has no portfolio', async ({ page }) => {
   await expectAccessible(page);
   expect(portfolioCalls).toEqual([]);
 });
+
+// 4E-3a §2, §4: automatic fix suggestions are Enterprise only (`llm.auto-fix`). The organisation's
+// switch-on and the project's opt-out that enterprise.spec.ts saved are kept but not offered: each
+// screen shows the Enterprise note in place of its controls.
+test('the Business plan shows the Enterprise note for automatic fix suggestions', async ({
+  page,
+}) => {
+  await page.goto('/settings/auto-fix');
+  await expect(page).toHaveTitle('Automatic fix suggestions · Qualor');
+  await expect(page.locator('#auto-fix-not-licensed')).toHaveText(
+    'Automatic fix suggestions need the Enterprise plan.',
+  );
+  await expect(page.getByLabel('Post fix suggestions automatically')).toHaveCount(0);
+  await expectAccessible(page);
+
+  await page.goto('/settings/ai');
+  const block = page
+    .locator('.setting-row[data-key]')
+    .filter({ hasText: 'Default' })
+    .getByRole('group', { name: 'Automatic fix suggestions' });
+  await expect(block).toContainText('Automatic fix suggestions need the Enterprise plan.');
+  await expect(block.getByRole('checkbox')).toHaveCount(0);
+
+  await page.goto('/projects');
+  await page.getByRole('link', { name: PAYMENTS.name }).click();
+  await page
+    .getByRole('navigation', { name: 'Project' })
+    .getByRole('link', { name: 'Settings' })
+    .click();
+  const panel = page.locator('#auto-fix');
+  await expect(panel).toContainText('Automatic fix suggestions need the Enterprise plan.');
+  await expect(panel.getByRole('checkbox')).toHaveCount(0);
+});

@@ -1,0 +1,9 @@
+:host {
+  display: block;
+}
+
+.actions {
+  display: flex;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+}

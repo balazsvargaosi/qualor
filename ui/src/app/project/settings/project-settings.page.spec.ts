@@ -34,6 +34,7 @@ function setup(options: Setup): FakeServer {
       createdAt: '',
       updatedAt: '',
       permissions: options.projectPermissions,
+      autoFix: { available: true, enabled: true },
     },
   });
   TestBed.configureTestingModule({
@@ -82,6 +83,7 @@ describe('ProjectSettingsPage', () => {
       'New code',
       'Quality gate and profiles',
       'Main branch',
+      'Automatic fix suggestions',
       'Analysis tokens',
       'Danger zone',
     ]);
@@ -90,6 +92,7 @@ describe('ProjectSettingsPage', () => {
       'new-code',
       'gate',
       'main-branch',
+      'auto-fix',
       'tokens',
       'danger',
     ]);

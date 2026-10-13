@@ -1,0 +1,7 @@
+/* Automatic fix suggestions (4E-3a §4): one panel of setting rows, Save at its foot. */
+.auto-fix .panel-head {
+  padding-bottom: 14px;
+}
+.auto-fix .panel-head h3 {
+  margin: 0;
+}

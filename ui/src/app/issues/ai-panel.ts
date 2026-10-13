@@ -72,7 +72,8 @@ export function postTarget(branch: Branch): PostTarget | null {
  * model's text shown as text (interpolation only, never HTML or Markdown, plan 1F ruling Y5)
  * and labelled as AI-generated. A triage answer is a suggestion only: "Mark as false positive…"
  * hands its id to the issue page's own transition form, where the person writes the comment and
- * decides. A fix is posted to the merge request only after a second, explicit confirmation.
+ * decides. A fix is posted to the merge request only after a second, explicit confirmation; one no
+ * person asked for (`automatic`, 4E-3a §4) says it was suggested automatically.
  */
 @Component({
   selector: 'q-ai-panel',

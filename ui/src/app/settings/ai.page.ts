@@ -19,16 +19,31 @@ import { fieldErrors, problemMessage } from '../api/errors';
 import type { ItemOf, Organization, RequestBody, ResponseBody } from '../api/types';
 import { SessionStore } from '../auth/session';
 import { Meter } from '../charts/meter';
+import { label } from '../i18n/labels';
 import { OrgContext } from '../org/org-context';
 import { inputValue, isChecked } from '../shared/forms';
+import { SystemInfo } from '../shell/system-info';
 import { llmProblemText } from './ai-text';
+import {
+  AUTO_FIX_FEATURE,
+  AUTO_FIX_SEVERITIES,
+  type AutoFix,
+  type AutoFixSeverity,
+  autoFixNotLicensed,
+  DEFAULT_AUTO_FIX,
+  isAutoFixSeverity,
+  MAX_AUTO_FIX_PER_ANALYSIS,
+  maxPerAnalysisRefusal,
+  parseMaxPerAnalysis,
+} from './auto-fix';
 
 type Settings = ResponseBody<'/api/v0/system/llm', 'get'>;
 type SettingsBody = RequestBody<'/api/v0/system/llm', 'put'>;
 /**
- * What this form edits of an organisation. It never holds the automatic fix suggestion fields
- * (`autoFix`, `autoFixDisabledProjectIds`): organisation and project admins change those
- * meanwhile, and the server keeps the stored values of the fields a save leaves out.
+ * What this form edits of an organisation, besides its automatic fix suggestions. Organisation and
+ * project admins change `autoFix` and `autoFixDisabledProjectIds` meanwhile, and the server keeps
+ * the stored values of the fields a save leaves out: the form sends an organisation's `autoFix`
+ * only when it was edited here (ruling R1), and never `autoFixDisabledProjectIds`.
  */
 type OrgSettings = Pick<
   Settings['organizations'][string],
@@ -37,6 +52,12 @@ type OrgSettings = Pick<
 type Feature = keyof OrgSettings['features'];
 type Kind = '' | 'openai' | 'anthropic';
 type Project = ItemOf<'/api/v0/projects'>;
+/** An organisation's automatic fix suggestions as the form holds them: the maximum as typed. */
+interface AutoFixDraft {
+  enabled: boolean;
+  minSeverity: AutoFixSeverity;
+  maxPerAnalysis: string;
+}
 /** A project an organisation may exclude: a listed one, or an excluded id the list did not have. */
 interface ExcludableProject {
   id: string;
@@ -85,6 +106,9 @@ const SERVER_PATHS: [string, Field][] = [
   ['body.promptRetentionDays', 'retention'],
 ];
 
+/** A 422 path of an organisation's automatic fix block: its id, then the field. */
+const AUTO_FIX_PATH = /^body\.organizations\.([^.]+)\.autoFix(?:\.(\w+))?/;
+
 /** llm.md §3.2: at most 100 excluded path globs. */
 const MAX_EXCLUDE_PATHS = 100;
 /** The organisations an instance admin sees (ruling R11), read page by page up to this bound. */
@@ -96,9 +120,10 @@ const PROJECT_PAGES = 20;
  * The AI assistant (llm.md §3, §18), for instance admins: the one provider of the instance (its
  * kind, address, model and options, and an API key that is write-only: read from its field once
  * at a submission, emptied at once whatever happens next, never kept in the page's state, never
- * shown), each organisation's enablement and features, the excluded paths, the budgets (the fix
- * budget capped at this edition's ceiling, enterprise.md §7.2), prices, prompt storage, and a Test of the saved
- * provider. Refusals and test problems are shown in the page's own words (plan 1F ruling Y3).
+ * shown), each organisation's enablement and features and its automatic fix suggestions (4E-3a
+ * §4: the Enterprise note in place of them without `llm.auto-fix`), the excluded paths, the
+ * budgets (the fix budget capped at this edition's ceiling, enterprise.md §7.2), prices, prompt
+ * storage, and a Test of the saved provider. Refusals and test problems are shown in the page's own words (plan 1F ruling Y3).
  *
  * Step 8 of the redesign (spec §7.8): today's use of the current organisation against its budgets
  * as meters (`GET /organizations/{id}/ai`; a failed read leaves an alert in its panel), then the
@@ -116,6 +141,7 @@ export class AiSettingsPage {
   private readonly document = inject(DOCUMENT);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly session = inject(SessionStore);
+  private readonly info = inject(SystemInfo);
   protected readonly org = inject(OrgContext);
   protected readonly instanceAdmin = computed(() => this.session.user()?.isInstanceAdmin === true);
   /** Today's use and the budgets of the organisation chosen in the header (llm.md §12.1). */
@@ -166,6 +192,20 @@ export class AiSettingsPage {
   protected readonly priceOutput = signal('');
   protected readonly storePrompts = signal(false);
   protected readonly retention = signal('7');
+
+  /** Each organisation's automatic fix suggestions (4E-3a §2), stored or as edited. */
+  protected readonly autoFix = signal<Record<string, AutoFixDraft>>({});
+  /** The blocks as last loaded or saved: a save sends only those that differ (ruling R1). */
+  private loadedAutoFix: Readonly<Record<string, AutoFixDraft>> = {};
+  /** A refused automatic fix block, by organisation id. */
+  protected readonly autoFixErrors = signal<Record<string, string>>({});
+  /** The enterprise feature `llm.auto-fix` is active: else the note replaces the controls. */
+  protected readonly autoFixAvailable = computed(() =>
+    this.info.features().includes(AUTO_FIX_FEATURE),
+  );
+  protected readonly autoFixNotLicensed = autoFixNotLicensed();
+  protected readonly severities = AUTO_FIX_SEVERITIES;
+  protected readonly maxAutoFix = MAX_AUTO_FIX_PER_ANALYSIS;
 
   protected readonly errors = signal<Partial<Record<Field, string>>>({});
   protected readonly announcement = signal<string | null>(null);
@@ -318,6 +358,53 @@ export class AiSettingsPage {
     });
   }
 
+  protected autoFixOf(id: string): AutoFixDraft {
+    return this.autoFix()[id] ?? draftOf(DEFAULT_AUTO_FIX);
+  }
+
+  protected severityLabel(severity: AutoFixSeverity): string {
+    return label('severity', severity);
+  }
+
+  protected setAutoFixEnabled(id: string, event: Event): void {
+    this.editAutoFix(id, { enabled: isChecked(event) });
+  }
+
+  protected setAutoFixSeverity(id: string, event: Event): void {
+    const value = inputValue(event);
+    if (isAutoFixSeverity(value)) this.editAutoFix(id, { minSeverity: value });
+  }
+
+  protected setAutoFixMax(id: string, event: Event): void {
+    this.editAutoFix(id, { maxPerAnalysis: inputValue(event) });
+  }
+
+  protected autoFixError(id: string): string | null {
+    return this.autoFixErrors()[id] ?? null;
+  }
+
+  private editAutoFix(id: string, change: Partial<AutoFixDraft>): void {
+    this.autoFix.update((all) => ({ ...all, [id]: { ...this.autoFixOf(id), ...change } }));
+    if (this.autoFixError(id) === null) return;
+    this.autoFixErrors.update((all) =>
+      Object.fromEntries(Object.entries(all).filter(([key]) => key !== id)),
+    );
+  }
+
+  /**
+   * Whether the organisation's block was edited here: it differs from what was loaded or saved
+   * (the default for an organisation the settings did not hold). Only then does a save send it.
+   */
+  private autoFixEdited(id: string): boolean {
+    const draft = this.autoFixOf(id);
+    const loaded = this.loadedAutoFix[id] ?? draftOf(DEFAULT_AUTO_FIX);
+    return (
+      draft.enabled !== loaded.enabled ||
+      draft.minSeverity !== loaded.minSeverity ||
+      draft.maxPerAnalysis.trim() !== loaded.maxPerAnalysis
+    );
+  }
+
   protected setRemoveKey(event: Event): void {
     this.removeKey.set(isChecked(event));
     this.clearError('key');
@@ -346,8 +433,10 @@ export class AiSettingsPage {
     this.emptyKey();
     if (this.busy() || this.settings() === null) return;
     const errors: Partial<Record<Field, string>> = {};
-    const body = this.body(apiKey, errors);
+    const autoFixErrors: Record<string, string> = {};
+    const body = this.body(apiKey, errors, autoFixErrors);
     this.errors.set(errors);
+    this.autoFixErrors.set(autoFixErrors);
     if (!body) {
       this.focusFirstInvalid();
       return;
@@ -365,14 +454,24 @@ export class AiSettingsPage {
       (err) => {
         const fields = fieldErrors(err);
         const refused: Partial<Record<Field, string>> = {};
+        const autoFixRefused: Record<string, string> = {};
         for (const path of Object.keys(fields)) {
+          const autoFix = AUTO_FIX_PATH.exec(path);
+          if (autoFix?.[1] !== undefined) {
+            autoFixRefused[autoFix[1]] ??=
+              autoFix[2] === 'enabled' ? this.autoFixNotLicensed : maxPerAnalysisRefusal();
+            continue;
+          }
           const match = SERVER_PATHS.find(
             ([prefix]) => path === prefix || path.startsWith(`${prefix}.`),
           );
           if (match && refused[match[1]] === undefined) refused[match[1]] = refusal(match[1]);
         }
-        if (Object.keys(refused).length === 0) return false;
+        if (Object.keys(refused).length === 0 && Object.keys(autoFixRefused).length === 0) {
+          return false;
+        }
         this.errors.set(refused);
+        this.autoFixErrors.set(autoFixRefused);
         this.focusFirstInvalid();
         return true;
       },
@@ -471,6 +570,13 @@ export class AiSettingsPage {
         ]),
       ),
     );
+    this.autoFix.set(
+      Object.fromEntries(
+        Object.entries(settings.organizations).map(([id, o]) => [id, draftOf(o.autoFix)]),
+      ),
+    );
+    this.loadedAutoFix = this.autoFix();
+    this.autoFixErrors.set({});
     this.exclude.set(settings.excludePaths.join('\n'));
     const b = settings.budgets;
     this.budgets.set({
@@ -489,7 +595,11 @@ export class AiSettingsPage {
   }
 
   /** The whole `PUT` body from the form, or null with `errors` filled. */
-  private body(apiKey: string, errors: Partial<Record<Field, string>>): SettingsBody | null {
+  private body(
+    apiKey: string,
+    errors: Partial<Record<Field, string>>,
+    autoFixErrors: Record<string, string>,
+  ): SettingsBody | null {
     const refuse = (field: Field) => {
       errors[field] ??= refusal(field);
       return 0;
@@ -560,16 +670,39 @@ export class AiSettingsPage {
             outputUsdPerMTok: decimal('price-output', outputPrice, 0, 10_000),
           };
 
+    // An organisation's automatic fix block goes only when it was edited here (ruling R1), so a
+    // save keeps what an organisation admin changed meanwhile; the projects opted out never go.
+    const edited = new Set(Object.keys(this.autoFix()).filter((id) => this.autoFixEdited(id)));
+    const organizations: SettingsBody['organizations'] = {};
+    for (const id of new Set([...Object.keys(this.orgSettings()), ...edited])) {
+      const settings = this.orgOf(id);
+      if (!edited.has(id)) {
+        organizations[id] = settings;
+        continue;
+      }
+      const draft = this.autoFixOf(id);
+      const maxPerAnalysis = parseMaxPerAnalysis(draft.maxPerAnalysis);
+      if (maxPerAnalysis === null) autoFixErrors[id] = maxPerAnalysisRefusal();
+      const autoFix: AutoFix = {
+        enabled: draft.enabled,
+        minSeverity: draft.minSeverity,
+        maxPerAnalysis: maxPerAnalysis ?? 0,
+      };
+      organizations[id] = { ...settings, autoFix };
+    }
+
     const body: SettingsBody = {
       provider,
-      organizations: this.orgSettings(),
+      organizations,
       excludePaths,
       budgets,
       pricing,
       storePrompts: this.storePrompts(),
       promptRetentionDays: int('retention', this.retention(), 1, 90),
     };
-    return Object.keys(errors).length === 0 ? body : null;
+    return Object.keys(errors).length === 0 && Object.keys(autoFixErrors).length === 0
+      ? body
+      : null;
   }
 
   private emptyKey(): void {
@@ -580,12 +713,14 @@ export class AiSettingsPage {
   private focusFirstInvalid(): void {
     const errors = this.errors();
     const first = FIELDS.find((field) => errors[field] !== undefined);
-    if (!first) return;
+    // Else the first organisation (in the page's order) whose automatic fix block was refused.
+    const autoFix = this.organizations().find((o) => this.autoFixError(o.id) !== null);
+    const id = first ? `ai-${first}` : autoFix ? `ai-org-${autoFix.id}-auto-fix-max` : null;
+    if (!id) return;
     // After the render that marks it invalid (and, for the key, shows its error text).
-    afterNextRender(
-      () => this.host.nativeElement.querySelector<HTMLElement>(`#ai-${first}`)?.focus(),
-      { injector: this.injector },
-    );
+    afterNextRender(() => this.host.nativeElement.querySelector<HTMLElement>(`#${id}`)?.focus(), {
+      injector: this.injector,
+    });
   }
 
   /**
@@ -607,6 +742,14 @@ export class AiSettingsPage {
       this.busy.set(false);
     }
   }
+}
+
+function draftOf(autoFix: AutoFix): AutoFixDraft {
+  return {
+    enabled: autoFix.enabled,
+    minSeverity: autoFix.minSeverity,
+    maxPerAnalysis: String(autoFix.maxPerAnalysis),
+  };
 }
 
 /** The page's own words for a refused field (the server's text is never shown). */

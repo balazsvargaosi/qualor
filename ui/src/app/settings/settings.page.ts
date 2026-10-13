@@ -63,14 +63,15 @@ export class SettingsPage {
     () => this.ids().has('compliance') && this.org.can('org.read'),
   );
   /**
-   * The organization's entries: members, webhooks, the SCM connections, the audit log and the
-   * compliance reports.
+   * The organization's entries: members, webhooks, the SCM connections, the automatic fix
+   * suggestions (4E-3a §4), the audit log and the compliance reports.
    */
   protected readonly organization = computed(
     () =>
       this.org.can('org.members.read') ||
       this.org.can('org.webhooks.manage') ||
       this.org.can('org.scm.manage') ||
+      this.org.can('org.ai.manage') ||
       this.auditLog() ||
       this.compliance(),
   );

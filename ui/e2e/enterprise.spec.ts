@@ -263,3 +263,90 @@ test('the instance admin streams the audit log and sees the secret once', async 
     'The receiver answered HTTP 204: the test passed.',
   );
 });
+
+test.describe('automatic fix suggestions (4E-3a §4)', () => {
+  /** Payments API → Settings, through the project's own tabs. */
+  async function openProjectSettings(page: Page): Promise<void> {
+    await page.goto('/projects');
+    await page.getByRole('link', { name: PAYMENTS.name }).click();
+    await page
+      .getByRole('navigation', { name: 'Project' })
+      .getByRole('link', { name: 'Settings' })
+      .click();
+    await expect(page).toHaveURL(/\/projects\/[^/]+\/settings$/);
+  }
+
+  test('the organisation switches them on and a project opts out', async ({ page }) => {
+    // The instance admin points the assistant at a host under .invalid (RFC 6761): saving contacts
+    // nothing, and no test asks the model. The organisation's block is left as it was, so the save
+    // sends none (it would undo what an organisation admin changes meanwhile).
+    await page.goto('/settings/ai');
+    await expect(page.getByRole('heading', { name: 'AI assistant', level: 2 })).toBeVisible();
+    await page.getByLabel('Kind', { exact: true }).selectOption('openai');
+    await page.getByLabel('Base URL').fill('https://llm.example.invalid/v1');
+    await page.getByLabel('Model', { exact: true }).fill('fake-model');
+    await page.locator('#ai-key').fill(['e2e', 'llm', 'key', 'never', 'sent'].join('-'));
+    const row = page.locator('.setting-row[data-key]').filter({ hasText: 'Default' });
+    await row.getByLabel('Enabled', { exact: true }).check();
+    await row.getByLabel('Suggest a fix').check();
+    const block = row.getByRole('group', { name: 'Automatic fix suggestions' });
+    await expect(block.getByLabel('On', { exact: true })).not.toBeChecked();
+    await expect(block.getByLabel('Minimum severity')).toHaveValue('high');
+    await expect(block.getByLabel('At most per analysis')).toHaveValue('10');
+    const put = page.waitForRequest(
+      (r) => r.method() === 'PUT' && new URL(r.url()).pathname === '/api/v0/system/llm',
+    );
+    await page.getByRole('button', { name: 'Save' }).click();
+    const sent = (await put).postDataJSON() as { organizations: Record<string, object> };
+    for (const organization of Object.values(sent.organizations)) {
+      expect(organization).not.toHaveProperty('autoFix');
+      expect(organization).not.toHaveProperty('autoFixDisabledProjectIds');
+    }
+    await expect(page.getByRole('status')).toHaveText('The AI assistant settings were saved.');
+    await expectAccessible(page);
+
+    // Settings → Automatic fixes: the organisation's own screen.
+    await page.goto('/settings');
+    await page.getByRole('link', { name: 'Automatic fixes' }).click();
+    await expect(page).toHaveTitle('Automatic fix suggestions · Qualor');
+    await expect(
+      page.getByText('Suggestions are posted to merge requests without a click.'),
+    ).toBeVisible();
+    await page.getByLabel('Post fix suggestions automatically').check();
+    await page.getByLabel('Minimum severity').selectOption('medium');
+    await page.getByLabel('At most per analysis').fill('5');
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByRole('status')).toHaveText('The automatic fix suggestions were saved.');
+    await expectAccessible(page);
+    await page.reload();
+    await expect(page.getByLabel('Post fix suggestions automatically')).toBeChecked();
+    await expect(page.getByLabel('Minimum severity')).toHaveValue('medium');
+    await expect(page.getByLabel('At most per analysis')).toHaveValue('5');
+
+    // The project opts out, and stays out after a reload.
+    await openProjectSettings(page);
+    const panel = page.locator('#auto-fix');
+    const toggle = panel.getByLabel('Automatic fix suggestions for this project');
+    await expect(toggle).toBeChecked();
+    await toggle.uncheck();
+    await panel.getByRole('button', { name: 'Save' }).click();
+    await expect(panel.getByRole('status')).toHaveText(
+      'Automatic fix suggestions are off for this project.',
+    );
+    await expectAccessible(page);
+    await page.reload();
+    await expect(
+      page.locator('#auto-fix').getByLabel('Automatic fix suggestions for this project'),
+    ).not.toBeChecked();
+
+    // The instance admin's screen shows what the organisation admin chose.
+    await page.goto('/settings/ai');
+    const saved = page
+      .locator('.setting-row[data-key]')
+      .filter({ hasText: 'Default' })
+      .getByRole('group', { name: 'Automatic fix suggestions' });
+    await expect(saved.getByLabel('On', { exact: true })).toBeChecked();
+    await expect(saved.getByLabel('Minimum severity')).toHaveValue('medium');
+    await expect(saved.getByLabel('At most per analysis')).toHaveValue('5');
+  });
+});

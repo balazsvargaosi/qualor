@@ -91,6 +91,17 @@
               >
             </li>
           }
+          @if (org.can('org.ai.manage')) {
+            <li>
+              <a
+                routerLink="auto-fix"
+                routerLinkActive="active"
+                ariaCurrentWhenActive="page"
+                i18n="@@settings.tab.autoFix"
+                >Automatic fixes</a
+              >
+            </li>
+          }
           @if (auditLog()) {
             <li>
               <a

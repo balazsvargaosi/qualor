@@ -7,6 +7,7 @@ import type {
   PortfolioProjectRow,
 } from '../app/api/ee';
 import type { Me } from '../app/api/types';
+import { type AutoFix, DEFAULT_AUTO_FIX } from '../app/settings/auto-fix';
 
 export interface RecordedRequest {
   method: string;
@@ -101,6 +102,7 @@ export const ORG_ID = '0190a6c2-0000-7000-8000-000000000001';
 
 /** An organisation admin's permissions, as `GET /auth/me` lists them (rbac-audit.md §3.2). */
 export const ORG_ADMIN_PERMISSIONS = [
+  'org.ai.manage',
   'org.audit.read',
   'org.gates.manage',
   'org.members.manage',
@@ -446,5 +448,76 @@ export class FakePortfolio {
       const next = start + limit < this.rows.length ? String(start + limit) : null;
       return { body: page(items, next) };
     });
+  }
+}
+
+const ORG_AUTO_FIX = /^\/api\/v0\/organizations\/([^/]+)\/ai\/auto-fix$/;
+const PROJECT_AUTO_FIX = /^\/api\/v0\/projects\/([^/]+)\/ai\/auto-fix$/;
+
+/**
+ * The automatic fix suggestion routes (4E-3a §2) over in-memory settings: the organisation route
+ * (`GET`/`PUT /organizations/{id}/ai/auto-fix`) and the project opt-out (`PUT
+ * /projects/{id}/ai/auto-fix`). Switching on from off needs `available` (else 403
+ * FEATURE_NOT_LICENSED) and `fixEnabled` (else 409 AI_DISABLED); without the licence the stored
+ * values are kept and read with `available: false`. A test answers a route itself with
+ * `server.on`, which wins.
+ */
+export class FakeAutoFix {
+  available: boolean;
+  /** The organisation is AI-enabled with `features.fix`. */
+  fixEnabled: boolean;
+  /** Stored blocks by organisation id; one not listed reads as the default. */
+  readonly organizations: Record<string, AutoFix>;
+  /** The projects opted out. */
+  readonly optedOut = new Set<string>();
+
+  constructor(
+    server: FakeServer,
+    options: {
+      available?: boolean;
+      fixEnabled?: boolean;
+      organizations?: Record<string, AutoFix>;
+    } = {},
+  ) {
+    this.available = options.available ?? true;
+    this.fixEnabled = options.fixEnabled ?? true;
+    this.organizations = { ...options.organizations };
+    server.on('GET', ORG_AUTO_FIX, (r) => ({
+      body: { available: this.available, ...this.of(ORG_AUTO_FIX.exec(r.path)?.[1] ?? '') },
+    }));
+    server.on('PUT', ORG_AUTO_FIX, (r) => {
+      const id = ORG_AUTO_FIX.exec(r.path)?.[1] ?? '';
+      const next = r.body as AutoFix;
+      if (
+        !Number.isInteger(next.maxPerAnalysis) ||
+        next.maxPerAnalysis < 1 ||
+        next.maxPerAnalysis > 25
+      ) {
+        return {
+          status: 422,
+          body: problem(422, 'VALIDATION_FAILED', [
+            { path: 'body.maxPerAnalysis', message: 'Too big' },
+          ]),
+        };
+      }
+      if (next.enabled && !this.of(id).enabled) {
+        if (!this.available) return { status: 403, body: problem(403, 'FEATURE_NOT_LICENSED') };
+        if (!this.fixEnabled) return { status: 409, body: problem(409, 'AI_DISABLED') };
+      }
+      this.organizations[id] = { ...next };
+      return { body: { available: this.available, ...next } };
+    });
+    server.on('PUT', PROJECT_AUTO_FIX, (r) => {
+      if (!this.available) return { status: 403, body: problem(403, 'FEATURE_NOT_LICENSED') };
+      const id = PROJECT_AUTO_FIX.exec(r.path)?.[1] ?? '';
+      const { enabled } = r.body as { enabled: boolean };
+      if (enabled) this.optedOut.delete(id);
+      else this.optedOut.add(id);
+      return { body: { available: true, enabled } };
+    });
+  }
+
+  of(organizationId: string): AutoFix {
+    return this.organizations[organizationId] ?? { ...DEFAULT_AUTO_FIX };
   }
 }

@@ -44,6 +44,12 @@ export const settingsRoutes: Routes = [
     loadComponent: () => import('./repositories.page').then((m) => m.RepositoriesPage),
   },
   {
+    // 4E-3a §4: an organisation's automatic fix suggestions, for its admins (org.ai.manage).
+    path: 'auto-fix',
+    title: $localize`:@@title.autoFix:Automatic fix suggestions`,
+    loadComponent: () => import('./auto-fix.page').then((m) => m.AutoFixPage),
+  },
+  {
     path: 'ai',
     title: $localize`:@@title.ai:AI assistant`,
     loadComponent: () => import('./ai.page').then((m) => m.AiSettingsPage),
