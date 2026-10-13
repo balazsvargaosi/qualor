@@ -2,7 +2,8 @@
 
 The Qualor server sends anonymous usage statistics to the Qualor project once a day. They tell us
 how many servers run, which versions, and which languages and features people use, so we know
-what to work on. The scanner (`qualor scan`) sends nothing.
+what to work on. While telemetry is on, the server also checks Docker Hub once a day for a newer
+Qualor release. The scanner (`qualor scan`) sends nothing.
 
 ## Turn it off
 
@@ -63,6 +64,22 @@ The whole report, as an example:
 
 Names of users, organisations, projects, repositories or branches, email addresses, URLs and
 host names, source code, file paths, issues, tokens, secrets and the licence key.
+
+## Update check
+
+While telemetry is on, the server asks Docker Hub (`hub.docker.com`) for the list of
+`qualor/server` tags about a minute after it starts and then every 24 hours. The request carries
+nothing about your installation; like any request, Docker Hub sees the address it comes from.
+
+When a newer release exists, the server:
+
+- logs `Qualor 0.8.0 is available (this server runs 0.7.1)` with a link to the release notes;
+- shows instance admins a banner, which they can dismiss until the next release, and the new
+  version next to the current one in the user menu;
+- tells the scanner, which logs it at the start of a scan (see [the scanner](./cli.md#qualor-scan)).
+
+`QUALOR_TELEMETRY=false` turns the update check off as well. Behind a firewall or with your own
+registry mirror the check fails quietly and nothing is shown.
 
 ## What happens on our side
 

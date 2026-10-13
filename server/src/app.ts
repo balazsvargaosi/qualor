@@ -22,6 +22,7 @@ import { communityLimits, type Limits } from './limits';
 import { mountPluginRoutes, type LoadedPlugins } from './plugins/mount';
 import type { PluginRegistry } from './plugins/registry';
 import { registerRoutes } from './routes';
+import type { UpdateSource } from './update-check/checker';
 
 /** api.md §1: JSON bodies are limited to 1 MiB (report uploads stream separately). */
 export const JSON_BODY_LIMIT = 1024 * 1024;
@@ -48,6 +49,8 @@ export interface AppDeps {
   audit?: AuditRecorder;
   /** The in-memory tail of the server log (main.ts); without it the support bundle has no logs. */
   logBuffer?: LogBuffer;
+  /** The update check (main.ts, only while telemetry is on); without it `/system/version` has no `latest`. */
+  updates?: UpdateSource;
 }
 
 /**

@@ -140,4 +140,25 @@ describe('GET /system/version', () => {
       await ctx.close();
     }
   });
+
+  it('adds latest only when the update check found a newer release', async () => {
+    for (const [latest, expected] of [
+      [null, { version: VERSION }],
+      ['99.0.0', { version: VERSION, latest: '99.0.0' }],
+    ] as const) {
+      const ctx = await createTestContext({ updates: { latest: () => latest } });
+      try {
+        const session = await login(ctx, 'admin', ADMIN_PASSWORD);
+        const res = await ctx.app.inject({
+          method: 'GET',
+          url: '/api/v0/system/version',
+          headers: session.headers,
+        });
+        expect(res.statusCode).toBe(200);
+        expect(res.json()).toEqual(expected);
+      } finally {
+        await ctx.close();
+      }
+    }
+  });
 });

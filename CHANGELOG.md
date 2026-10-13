@@ -44,6 +44,10 @@ All notable changes to Qualor are listed here, newest first. The format follows
   log (`support.bundle_downloaded`). When the web UI is down, `node dist/main.js support-bundle`
   in the server image writes the same zip, without logs, and records nothing. It needs a licence
   key listing the new feature `support-bundle`. See [The support bundle](docs/guide/support-bundle.md).
+- While telemetry is on, the server checks Docker Hub daily for a newer release: it logs it, shows
+  instance admins a dismissible banner and a note in the user menu, and `GET /api/v0/system/version`
+  returns it as `latest`, which `qualor scan` logs. `QUALOR_TELEMETRY=false` turns it off. See
+  [Telemetry](docs/guide/telemetry.md#update-check).
 
 ## [0.7.1] - 2026-10-12
 

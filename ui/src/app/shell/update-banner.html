@@ -1,0 +1,24 @@
+@if (visible()) {
+  <div class="license-banner" role="status" data-test="update-banner">
+    <p>
+      <ng-container i18n="@@updateBanner.text"
+        >Qualor {{ notice.latest() }} is available. This server runs
+        {{ notice.version() }}.</ng-container
+      >
+      <a [href]="notesUrl()" target="_blank" rel="noopener" i18n="@@updateBanner.notes"
+        >Release notes</a
+      >
+      <a routerLink="/docs/install-server" fragment="upgrades" i18n="@@updateBanner.upgrade"
+        >How to upgrade</a
+      >
+      <button
+        type="button"
+        class="btn btn-link"
+        (click)="notice.dismiss()"
+        i18n="@@updateBanner.dismiss"
+      >
+        Dismiss
+      </button>
+    </p>
+  </div>
+}

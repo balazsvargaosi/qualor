@@ -372,7 +372,7 @@ describe('test licence keys and the bundles (enterprise.md §14.2)', () => {
   describe.each([
     {
       enabled: true,
-      line: 'Telemetry: enabled — anonymous usage statistics are sent daily to qualor.dev',
+      line: 'Telemetry: enabled — anonymous usage statistics are sent daily to qualor.dev and Docker Hub is checked daily for a new version',
       jobs: 1,
     },
     { enabled: false, line: 'Telemetry: disabled', jobs: 0 },
@@ -382,7 +382,13 @@ describe('test licence keys and the bundles (enterprise.md §14.2)', () => {
       const child = spawn(process.execPath, [TEST_MAIN], {
         env: bootEnv(
           database.url,
-          enabled ? { QUALOR_TELEMETRY: 'true', QUALOR_TELEMETRY_URL: 'http://127.0.0.1:9/t' } : {},
+          enabled
+            ? {
+                QUALOR_TELEMETRY: 'true',
+                QUALOR_TELEMETRY_URL: 'http://127.0.0.1:9/t',
+                QUALOR_UPDATE_CHECK_URL: 'http://127.0.0.1:9/tags',
+              }
+            : {},
         ),
         stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
       });

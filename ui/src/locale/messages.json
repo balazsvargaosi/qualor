@@ -1982,8 +1982,13 @@
     "shell.signOut": "Sign out",
     "shell.versionEnterprise": "Qualor {$INTERPOLATION} · Enterprise",
     "shell.versionCommunity": "Qualor {$INTERPOLATION} · Community",
+    "shell.versionAvailable": " · {$INTERPOLATION} available",
     "shell.demoBanner": " You are exploring a read-only demo of Qualor. Look around: nothing you do here changes it. ",
     "shell.nav.portfolio": "Portfolio",
-    "ssoBanner.forced": " Password sign-in is forced on by QUALOR_FORCE_PASSWORD_SIGN_IN. Remove it once single sign-on works again. "
+    "ssoBanner.forced": " Password sign-in is forced on by QUALOR_FORCE_PASSWORD_SIGN_IN. Remove it once single sign-on works again. ",
+    "updateBanner.text": "Qualor {$INTERPOLATION} is available. This server runs {$INTERPOLATION_1}.",
+    "updateBanner.notes": "Release notes",
+    "updateBanner.upgrade": "How to upgrade",
+    "updateBanner.dismiss": " Dismiss "
   }
 }

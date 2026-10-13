@@ -79,4 +79,31 @@ describe('checkServerVersion', () => {
     expect(await checkServerVersion(ep(server.url), out.log)).toBe('1.0.0');
     expect(out.text()).not.toContain('\u001b');
   });
+
+  it('says when the server knows of a newer release', async () => {
+    const server = await serve((_req, res) =>
+      json(res, 200, { version: samePatchLine, latest: '99.1.0' }),
+    );
+    const out = capture();
+    expect(await checkServerVersion(ep(server.url), out.log)).toBe(samePatchLine);
+    expect(out.text()).toContain(
+      `\nQualor 99.1.0 is available (server ${samePatchLine}, scanner ${VERSION}): upgrade the server and use qualor/scanner:99.1\n`,
+    );
+  });
+
+  it('says nothing about updates when the server sends no latest', async () => {
+    const server = await serve((_req, res) => json(res, 200, { version: samePatchLine }));
+    const out = capture();
+    await checkServerVersion(ep(server.url), out.log);
+    expect(out.text()).not.toContain('is available');
+  });
+
+  it('ignores a latest that is not a version', async () => {
+    const server = await serve((_req, res) =>
+      json(res, 200, { version: samePatchLine, latest: 'soon' }),
+    );
+    const out = capture();
+    expect(await checkServerVersion(ep(server.url), out.log)).toBe(samePatchLine);
+    expect(out.text()).not.toContain('is available');
+  });
 });
