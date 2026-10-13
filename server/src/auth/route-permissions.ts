@@ -18,6 +18,7 @@ export const ROUTE_PERMISSIONS: Readonly<Record<string, RouteRule>> = Object.fre
   'GET /auth/methods': 'public',
   'POST /auth/demo': 'public',
   'POST /auth/password-reset': 'public',
+  'POST /auth/password-reset/complete': 'public',
   'POST /auth/logout': 'authenticated',
   'GET /auth/me': 'authenticated',
   'PUT /auth/me/password': 'self',

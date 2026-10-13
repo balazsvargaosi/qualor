@@ -1,10 +1,36 @@
-import { eq } from 'drizzle-orm';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { eq, sql } from 'drizzle-orm';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { accountContext, countRows, linkToken, mailsTo } from '../../test/account-mail';
-import { createUser, nextIp, type TestContext } from '../../test/app';
-import { auditRows } from '../../test/sso';
-import { accountTokenKey } from '../auth/account-tokens';
+import { createUser, DEFAULT_TEST_PASSWORD, login, nextIp, type TestContext } from '../../test/app';
+import {
+  activeSessions,
+  adminHeaders,
+  auditRows,
+  givePersonalToken,
+  giveSession,
+  liveTokens,
+} from '../../test/sso';
+import { accountTokenKey, issueAccountToken } from '../auth/account-tokens';
+import { SESSION_COOKIE } from '../auth/sessions';
+import type * as Password from '../auth/password';
 import { accountTokens, instanceSettings, users } from '../db/schema';
+
+/** Every argon2 hash, counted; `before` runs as a hash starts (it sees the database then). */
+const hashing = vi.hoisted(() => ({
+  calls: 0,
+  before: undefined as (() => Promise<void>) | undefined,
+}));
+vi.mock('../auth/password', async (importOriginal) => {
+  const actual = await importOriginal<typeof Password>();
+  return {
+    ...actual,
+    hashPassword: async (password: string) => {
+      hashing.calls += 1;
+      await hashing.before?.();
+      return actual.hashPassword(password);
+    },
+  };
+});
 
 const forgotOn =
   (ctx: TestContext) =>
@@ -144,5 +170,271 @@ describe('forgot password without mail or QUALOR_PUBLIC_URL (mail E2 A4)', () =>
     } finally {
       await ctx.close();
     }
+  });
+});
+
+describe('finishing a reset (mail E2)', () => {
+  let ctx: TestContext;
+  beforeAll(async () => {
+    ctx = await accountContext();
+  });
+  afterAll(async () => ctx.close());
+
+  const complete = (
+    token: string,
+    newPassword = 'a brand new passphrase',
+    remoteAddress = nextIp(),
+  ) =>
+    ctx.app.inject({
+      method: 'POST',
+      url: '/api/v0/auth/password-reset/complete',
+      payload: { token, newPassword },
+      remoteAddress,
+    });
+  const resetLink = async (userId: string) =>
+    (
+      await issueAccountToken(ctx.db, {
+        userId,
+        kind: 'password_reset',
+        createdBy: null,
+        ttlMinutes: 60,
+      })
+    ).token;
+  const hashOf = async (userId: string) =>
+    (await ctx.db.select().from(users).where(eq(users.id, userId)))[0]!.passwordHash;
+  const expectInvalid = (res: Awaited<ReturnType<typeof complete>>) =>
+    expect([res.statusCode, res.json().code, res.json().title]).toEqual([
+      400,
+      'TOKEN_INVALID',
+      'This link has expired or was already used. Ask for a new one.',
+    ]);
+
+  it('sets the password, ends every session, keeps personal tokens, clears the forced change, and does not sign in', async () => {
+    const pia = await createUser(ctx, {
+      username: 'pia',
+      email: 'pia@example.test',
+      passwordChangeRequired: true,
+    });
+    const session = await giveSession(ctx, pia.id);
+    const personal = await givePersonalToken(ctx, pia.id);
+    const from = ctx.logs.length;
+    const link = await resetLink(pia.id);
+    const res = await complete(link, 'a brand new passphrase', '198.51.100.23');
+    expect([res.statusCode, res.json()]).toEqual([200, { username: 'pia' }]);
+    // Neither the secret nor the new password reaches a log line.
+    expect(ctx.logs.slice(from).join('\n')).not.toContain(link);
+    expect(ctx.logs.slice(from).join('\n')).not.toContain('a brand new passphrase');
+    expect(res.cookies.find((c) => c.name === SESSION_COOKIE)).toBeUndefined();
+    expect(await activeSessions(ctx, pia.id)).toBe(0);
+    expect(
+      (
+        await ctx.app.inject({
+          method: 'GET',
+          url: '/api/v0/auth/me',
+          cookies: { [SESSION_COOKIE]: session },
+        })
+      ).statusCode,
+    ).toBe(401);
+    expect(await liveTokens(ctx, pia.id)).toBe(1);
+    expect(
+      (
+        await ctx.app.inject({
+          method: 'GET',
+          url: '/api/v0/auth/me',
+          headers: { authorization: `Bearer ${personal}` },
+        })
+      ).statusCode,
+    ).toBe(200);
+    const [row] = await ctx.db.select().from(users).where(eq(users.id, pia.id));
+    expect(row!.passwordChangeRequired).toBe(false);
+    expect((await login(ctx, 'pia', 'a brand new passphrase')).cookie).toBeTruthy();
+    expect(
+      (await auditRows(ctx)).filter((e) => e.action === 'auth.password_reset').at(-1),
+    ).toMatchObject({
+      actorUserId: pia.id,
+      targetId: pia.id,
+      details: {},
+    });
+    const [notice] = await mailsTo(ctx, 'pia@example.test', 'account.password-changed');
+    expect(notice!.subject).toBe('Your Qualor password was changed');
+    expect(notice!.text).toContain('198.51.100.23');
+    expect(notice!.html).toContain('reset with a link');
+  });
+
+  it('uses a link once, even twice at the same moment', async () => {
+    const quinn = await createUser(ctx, { username: 'quinn', email: 'quinn@example.test' });
+    const token = await resetLink(quinn.id);
+    const [a, b] = await Promise.all([complete(token), complete(token)]);
+    expect([a.statusCode, b.statusCode].sort()).toEqual([200, 400]);
+    expectInvalid(await complete(token));
+  });
+
+  it('refuses an expired link, a link of another kind and a malformed one', async () => {
+    const ross = await createUser(ctx, { username: 'ross', email: 'ross@example.test' });
+    const before = await hashOf(ross.id);
+    const expired = await resetLink(ross.id);
+    await ctx.db.execute(
+      sql`UPDATE account_tokens SET expires_at = now() - interval '1 second' WHERE user_id = ${ross.id}`,
+    );
+    expectInvalid(await complete(expired));
+    const { token: invitation } = await issueAccountToken(ctx.db, {
+      userId: ross.id,
+      kind: 'invitation',
+      createdBy: null,
+      ttlMinutes: 60,
+    });
+    expectInvalid(await complete(invitation));
+    expect(await countRows(ctx, 'account_tokens')).toBeGreaterThan(0); // the invitation stays
+    expectInvalid(await complete('not-a-token!'));
+    expectInvalid(await complete('x'.repeat(101)));
+    expect(await hashOf(ross.id)).toBe(before);
+  });
+
+  it('checks the policy again when the link is used, and uses the link up', async () => {
+    const sara = await createUser(ctx, { username: 'sara', email: 'sara@example.test' });
+    const before = await hashOf(sara.id);
+    const token = await resetLink(sara.id);
+    await ctx.db.insert(instanceSettings).values({
+      key: 'sign-in',
+      value: { passwordSignIn: 'break_glass_only', breakGlassUserIds: [ctx.adminId] },
+    });
+    try {
+      expectInvalid(await complete(token));
+    } finally {
+      await ctx.db.delete(instanceSettings).where(eq(instanceSettings.key, 'sign-in'));
+    }
+    expectInvalid(await complete(token));
+    expect(await hashOf(sara.id)).toBe(before);
+  });
+
+  it('refuses a password shorter than 12 characters (422) without using the link up', async () => {
+    const tom = await createUser(ctx, { username: 'tom', email: 'tom@example.test' });
+    const token = await resetLink(tom.id);
+    expect((await complete(token, 'short')).statusCode).toBe(422);
+    expect((await complete(token)).statusCode).toBe(200);
+  });
+
+  it('allows 10 attempts a minute per address, then 429', async () => {
+    const ip = nextIp();
+    for (let i = 0; i < 10; i++)
+      expect((await complete('nope', undefined, ip)).statusCode).toBe(400);
+    expect((await complete('nope', undefined, ip)).statusCode).toBe(429);
+  });
+
+  it('hashes the new password before it takes the link, and hashes nothing for a malformed one', async () => {
+    const wes = await createUser(ctx, { username: 'wes', email: 'wes@example.test' });
+    const token = await resetLink(wes.id);
+    // While the hash runs, the link's row is still there and nobody holds it (NOWAIT throws).
+    let rowsWhileHashing: number | undefined;
+    hashing.before = async () => {
+      const result = await ctx.db.execute(
+        sql`SELECT key FROM account_tokens WHERE user_id = ${wes.id} FOR UPDATE NOWAIT`,
+      );
+      rowsWhileHashing = result.rows.length;
+    };
+    try {
+      expect((await complete(token)).statusCode).toBe(200);
+    } finally {
+      hashing.before = undefined;
+    }
+    expect(rowsWhileHashing).toBe(1);
+    hashing.calls = 0;
+    expectInvalid(await complete('not-a-token!'));
+    expectInvalid(await complete('x'.repeat(101)));
+    expect(hashing.calls).toBe(0);
+  });
+
+  it('refuses the demo account and a deactivated one when the link is used, and uses the link up', async () => {
+    const guest = await createUser(ctx, { username: 'guest', email: 'guest@example.test' });
+    const gone = await createUser(ctx, { username: 'gone', email: 'gone@example.test' });
+    const tokens = [await resetLink(guest.id), await resetLink(gone.id)];
+    await ctx.db.update(users).set({ active: false }).where(eq(users.id, gone.id));
+    for (const [user, token] of [
+      [guest, tokens[0]!],
+      [gone, tokens[1]!],
+    ] as const) {
+      const before = await hashOf(user.id);
+      expectInvalid(await complete(token));
+      expect(await hashOf(user.id), user.username).toBe(before);
+      expect(
+        await ctx.db.select().from(accountTokens).where(eq(accountTokens.userId, user.id)),
+        user.username,
+      ).toEqual([]);
+      expect(await mailsTo(ctx, `${user.username}@example.test`), user.username).toEqual([]);
+    }
+    expect(
+      (await auditRows(ctx)).filter(
+        (e) => e.action === 'auth.password_reset' && [guest.id, gone.id].includes(e.targetId ?? ''),
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe('the password-changed notice (mail E2 A7)', () => {
+  let ctx: TestContext;
+  beforeAll(async () => {
+    ctx = await accountContext();
+  });
+  afterAll(async () => ctx.close());
+
+  it('follows a change on the account page, and voids a pending reset link', async () => {
+    const uma = await createUser(ctx, { username: 'uma', email: 'uma@example.test' });
+    await issueAccountToken(ctx.db, {
+      userId: uma.id,
+      kind: 'password_reset',
+      createdBy: null,
+      ttlMinutes: 60,
+    });
+    const s = await login(ctx, 'uma', DEFAULT_TEST_PASSWORD);
+    const res = await ctx.app.inject({
+      method: 'PUT',
+      url: '/api/v0/auth/me/password',
+      headers: s.headers,
+      payload: { currentPassword: DEFAULT_TEST_PASSWORD, newPassword: 'uma chose a new one' },
+      remoteAddress: '198.51.100.40',
+    });
+    expect(res.statusCode).toBe(204);
+    const [notice] = await mailsTo(ctx, 'uma@example.test', 'account.password-changed');
+    expect(notice!.html).toContain('changed on the account page');
+    expect(notice!.text).toContain('198.51.100.40');
+    expect(await countRows(ctx, 'account_tokens')).toBe(0);
+  });
+
+  it('is not sent for an account without an email address', async () => {
+    await createUser(ctx, { username: 'wynn' });
+    const before = await countRows(ctx, 'mail_messages');
+    const s = await login(ctx, 'wynn', DEFAULT_TEST_PASSWORD);
+    const res = await ctx.app.inject({
+      method: 'PUT',
+      url: '/api/v0/auth/me/password',
+      headers: s.headers,
+      payload: { currentPassword: DEFAULT_TEST_PASSWORD, newPassword: 'wynn chose a new one' },
+    });
+    expect(res.statusCode).toBe(204);
+    expect(await countRows(ctx, 'mail_messages')).toBe(before);
+  });
+
+  it('follows an admin reset that replaced a password, saying what ended, and only then', async () => {
+    const headers = await adminHeaders(ctx);
+    const vic = await createUser(ctx, { username: 'vic', email: 'vic@example.test' });
+    const [nopass] = await ctx.db
+      .insert(users)
+      .values({ username: 'nopass', email: 'nopass@example.test', passwordHash: null })
+      .returning();
+    const noMail = await createUser(ctx, { username: 'nomail' });
+    for (const id of [vic.id, nopass!.id, noMail.id]) {
+      const res = await ctx.app.inject({
+        method: 'PATCH',
+        url: `/api/v0/users/${id}`,
+        headers,
+        payload: { password: 'an admin chose this one' },
+      });
+      expect(res.statusCode).toBe(200);
+    }
+    const notices = await mailsTo(ctx, 'vic@example.test', 'account.password-changed');
+    expect(notices).toHaveLength(1);
+    expect(notices[0]!.html).toContain('An administrator');
+    expect(notices[0]!.text).not.toContain('From:');
+    expect(await mailsTo(ctx, 'nopass@example.test')).toEqual([]);
   });
 });

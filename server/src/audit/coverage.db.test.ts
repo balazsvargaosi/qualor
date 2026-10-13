@@ -66,6 +66,10 @@ const NOT_FROM_CORE_ROUTES = new Map<string, string>([
     'recorded by POST /auth/password-reset (mail E2) only with an SMTP server and QUALOR_PUBLIC_URL; the scenario saves an SMTP server (E1) but its server has no QUALOR_PUBLIC_URL; covered by routes/account-reset.db.test.ts',
   ],
   [
+    'auth.password_reset',
+    'recorded by POST /auth/password-reset/complete (mail E2), which needs a reset link the scenario never mails; covered by routes/account-reset.db.test.ts',
+  ],
+  [
     'sso.sign_in_failed',
     'recorded by failSsoFlow (4D Task 12) when the OIDC (4D Task 13) or SAML (4D Task 14) flow fails; covered by their own tests',
   ],

@@ -5,6 +5,7 @@ import { z } from 'zod';
 import type { RouteDeps } from '../app';
 import { actorOf, anonymousActor, userActor } from '../audit/recorder';
 import { accessOf, requirePrincipal, requireSession, requireUser } from '../auth/access';
+import { deleteAccountTokens } from '../auth/account-tokens';
 import { passwordChangeRequired } from '../auth/authenticate';
 import {
   DEMO_SESSION_MAX_HOURS,
@@ -19,12 +20,7 @@ import {
   visibleOrganizationsCondition,
 } from '../auth/facts';
 import { ORGANIZATION_PERMISSIONS, organizationPermissions, PROJECT_ROLES } from '../auth/policy';
-import {
-  hashPassword,
-  PASSWORD_MAX_LENGTH,
-  PASSWORD_MIN_LENGTH,
-  verifyPassword,
-} from '../auth/password';
+import { hashPassword, PASSWORD_MAX_LENGTH, verifyPassword } from '../auth/password';
 import {
   createSession,
   csrfTokenFor,
@@ -43,10 +39,12 @@ import {
   users,
 } from '../db/schema';
 import { ProblemError, validationFailed } from '../http/problem';
-import { selfServiceReady } from '../mail/account';
+import { queuePasswordChangedNotice, selfServiceReady } from '../mail/account';
+import { mailDeps } from '../mail/outbox';
 import { noContent, text, userDto, userSchema } from '../http/schemas';
 import { connectionsInEffect } from '../sso/connections';
 import { effectivePasswordPolicy, mayUsePassword, readSignInSettings } from '../sso/sign-in-policy';
+import { newPasswordField } from './account';
 import { userSsoSummary } from './users';
 
 export const LOGIN_ATTEMPTS_PER_MINUTE = 10;
@@ -60,7 +58,7 @@ const loginBody = z.strictObject({
 });
 const passwordBody = z.strictObject({
   currentPassword: z.string().min(1).max(PASSWORD_MAX_LENGTH),
-  newPassword: z.string().min(PASSWORD_MIN_LENGTH).max(PASSWORD_MAX_LENGTH),
+  newPassword: newPasswordField,
 });
 const meResponse = z.object({
   user: userSchema,
@@ -439,6 +437,13 @@ export const authRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (app
             details: {},
           },
         ]);
+        // Mail E2: a changed password voids a pending reset link, and the owner hears of it (A7).
+        await deleteAccountTokens(tx, principal.user.id, 'password_reset');
+        await queuePasswordChangedNotice(tx, mailDeps(deps.config), {
+          user: principal.user,
+          variant: 'self',
+          ip: request.ip || null,
+        });
       });
       return reply.code(204).send();
     },

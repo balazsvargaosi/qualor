@@ -1,6 +1,12 @@
 import type { Config } from '../config';
 import type { Executor } from '../db/client';
+import { type MailDeps, queueMail } from './outbox';
 import { mailConfigured } from './settings';
+import {
+  type PasswordChangedVariant,
+  renderPasswordChangedMail,
+} from './templates/account-password-changed';
+import { instanceHost, publicLink } from './templates/text';
 
 export const RESET_PATH = '/reset-password';
 export const INVITE_PATH = '/accept-invite';
@@ -38,4 +44,38 @@ export async function selfServiceReady(
   config: Pick<Config, 'smtp' | 'publicUrl'>,
 ): Promise<boolean> {
   return (await accountMailState(db, config)).ready;
+}
+
+/**
+ * A7: "Your Qualor password was changed" to the account's address, in the change's transaction.
+ * Nothing for an account without an email; nothing is stored while mail is off (queueMail skips).
+ * The reset link appears only while self-service can work (a queued message means mail is on).
+ */
+export async function queuePasswordChangedNotice(
+  tx: Executor,
+  deps: MailDeps,
+  input: {
+    user: { id: string; username: string; email: string | null };
+    variant: PasswordChangedVariant;
+    ip: string | null;
+  },
+): Promise<void> {
+  const address = input.user.email;
+  if (address === null) return;
+  const { publicUrl } = deps.config;
+  const at = new Date();
+  // `skipped` (mail off) and `duplicate` (no dedupe here) need nothing more: the change stands.
+  await queueMail(tx, deps, {
+    kind: 'account.password-changed',
+    to: { address, userId: input.user.id },
+    render: () =>
+      renderPasswordChangedMail({
+        variant: input.variant,
+        username: input.user.username,
+        host: instanceHost(publicUrl),
+        at,
+        ip: input.ip,
+        forgotUrl: publicLink(publicUrl, FORGOT_PATH),
+      }),
+  });
 }

@@ -15,6 +15,8 @@ import { apiTokens, identities, users } from '../db/schema';
 import { decodeCursor, pageQuery, pageSchema, toPage } from '../http/pagination';
 import { conflict, forbidden, notFound } from '../http/problem';
 import { idParams, NO_SSO, text, userDto, userSchema, type UserSsoSummary } from '../http/schemas';
+import { queuePasswordChangedNotice } from '../mail/account';
+import { mailDeps } from '../mail/outbox';
 import { USERNAME_PATTERN } from '../patterns';
 import { assertBreakGlassKept } from '../sso/sign-in-policy';
 
@@ -245,6 +247,7 @@ export const userRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (app
             email: users.email,
             active: users.active,
             isInstanceAdmin: users.isInstanceAdmin,
+            hasPassword: sql<boolean>`${users.passwordHash} IS NOT NULL`,
           })
           .from(users)
           .where(eq(users.id, id));
@@ -292,6 +295,14 @@ export const userRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (app
                 isNull(apiTokens.revokedAt),
               ),
             );
+          // A7: an account that had a password hears that an administrator replaced it.
+          if (existing.hasPassword) {
+            await queuePasswordChangedNotice(tx, mailDeps(deps.config), {
+              user,
+              variant: 'admin',
+              ip: null,
+            });
+          }
         }
         // rbac-audit.md §8: only the fields whose value changed; a password only as a flag.
         const fieldChanges = USER_CHANGE_FIELDS.filter(
