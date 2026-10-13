@@ -91,10 +91,18 @@ describe('sendMail (E1 spec, transport)', () => {
     const [mail] = plain.received;
     expect(mail?.to).toEqual(['ada@example.com']);
     expect(mail?.raw).not.toMatch(/^Bcc:/im);
-    // The line break is encoded inside the display name (and the header folded): one From header.
+    // The line break is flattened to a space in the display name: one From header.
     const unfolded = mail?.raw.replace(/\n[ \t]+/g, ' ') ?? '';
     expect(unfolded.match(/^From:/gim)).toHaveLength(1);
-    expect(unfolded).toMatch(/^From: =\?UTF-8\?Q\?Qualor=0D=0ABcc[^\n]* <qualor@example\.com>$/m);
+    expect(unfolded).toMatch(/^From: "Qualor Bcc: x@evil.example" <qualor@example.com>$/m);
+  });
+
+  it('refuses a recipient that parses as a list, before connecting', async () => {
+    const err = await failure(
+      sendMail(testSmtp(plain.port), { ...message, to: 'a@example.com, b@example.com' }, fast),
+    );
+    expect(err).toMatchObject({ code: 'config', transient: false });
+    expect(plain.received).toHaveLength(0);
   });
 
   it('adds List-Unsubscribe headers and drops any other header a template names', async () => {
@@ -195,6 +203,12 @@ describe('toMailSendError (E1 spec: transient or permanent)', () => {
       'auth',
       false,
       535,
+    ],
+    [
+      { code: 'EAUTH', responseCode: 454, response: '454 4.7.0 Temporary authentication failure' },
+      'auth',
+      true,
+      454,
     ],
     [{ code: 'ENOAUTH' }, 'auth', false, null],
     [{ code: 'ETIMEDOUT' }, 'timeout', true, null],

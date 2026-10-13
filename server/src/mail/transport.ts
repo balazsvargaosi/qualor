@@ -1,6 +1,7 @@
 import { hostname } from 'node:os';
 import { createTransport } from 'nodemailer';
 import type { SmtpConfig } from '../config';
+import { isEmailAddress } from './address';
 import { LOGO_CID, logoPng } from './assets/logo';
 import { MAIL_HEADER_NAMES, type MailHeaders } from './payload';
 import { clipUtf8, oneLine } from './text';
@@ -91,6 +92,12 @@ export async function sendMail(
   message: OutgoingMail,
   options: SendOptions = {},
 ): Promise<{ response: string; ms: number }> {
+  // nodemailer parses an address string as a list: refuse anything but one plain address.
+  if (!isEmailAddress(message.to)) {
+    throw new MailSendError('config', 'The recipient is not a single email address', {
+      transient: false,
+    });
+  }
   const timeouts = options.timeouts ?? SMTP_TIMEOUTS;
   const transport = createTransport({
     host: server.host,
@@ -118,8 +125,10 @@ export async function sendMail(
   const started = performance.now();
   try {
     const info = await transport.sendMail({
-      from: { name: server.fromName, address: server.fromAddress },
+      from: { name: oneLine(server.fromName), address: server.fromAddress },
       to: message.to,
+      // Exactly one recipient, whatever `to` parses as.
+      envelope: { from: server.fromAddress, to: [message.to] },
       ...(server.replyTo === null ? {} : { replyTo: server.replyTo }),
       subject: oneLine(message.subject),
       text: message.text,
@@ -173,9 +182,10 @@ export function toMailSendError(err: unknown): MailSendError {
       ? clipUtf8(oneLine(e.response), MAX_SMTP_TEXT_BYTES)
       : null;
   if (code === 'EAUTH' || code === 'ENOAUTH') {
+    // A 4xx reply (454 temporary authentication failure) is worth a retry; 5xx or no code is not.
     return new MailSendError('auth', reply ?? 'The SMTP server refused the user name or password', {
       smtpCode,
-      transient: false,
+      transient: smtpCode !== null && smtpCode >= 400 && smtpCode < 500,
     });
   }
   if (code === 'ETIMEDOUT') {
