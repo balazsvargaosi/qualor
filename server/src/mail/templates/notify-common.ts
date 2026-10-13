@@ -145,13 +145,16 @@ export function branchLinks(input: Pick<GateMailInput, 'project' | 'branch' | 'l
 
 export function gateIntro(input: GateMailInput, outcome: 'failed' | 'passes again'): SafeHtml {
   const label = branchLabel(input.branch);
-  const gateName = input.gate.gate?.name ?? 'quality gate';
+  const gateName = input.gate.gate?.name;
   const changed = input.cause === 'reevaluation' ? ' after issues were changed' : '';
   const mr =
     input.branch.kind === 'merge_request'
       ? html` Merge request ${label}${input.branch.mrTitle ? html` “${input.branch.mrTitle}”` : ''}${input.branch.mrTargetBranch ? html` targets ${input.branch.mrTargetBranch}` : ''}.`
       : '';
-  return html`The quality gate <strong>${gateName}</strong> ${outcome} on <strong>${label}</strong> of <strong>${input.project.name}</strong>${changed}.${mr}`;
+  // Practically unreachable without a gate (`evaluateGate(null)` is status `none`), but never
+  // "The quality gate quality gate failed".
+  const gate = gateName === undefined ? '' : html` <strong>${gateName}</strong>`;
+  return html`The quality gate${gate} ${outcome} on <strong>${label}</strong> of <strong>${input.project.name}</strong>${changed}.${mr}`;
 }
 
 export function gateFacts(input: GateMailInput): [string, string][] {

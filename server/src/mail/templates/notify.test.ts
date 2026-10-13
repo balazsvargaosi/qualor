@@ -100,6 +100,18 @@ describe('project notification templates (mail E3)', () => {
     );
   });
 
+  it('says "The quality gate failed" when the gate has no name, never "quality gate quality gate"', () => {
+    const gate = { ...SAMPLE_GATE_FAILED.gate, gate: null };
+    for (const mail of [
+      renderGateFailed({ ...SAMPLE_GATE_FAILED, gate }),
+      renderGateRecovered({ ...SAMPLE_GATE_RECOVERED, gate: { ...gate, status: 'passed' } }),
+    ]) {
+      expect(flat(mail.text)).toMatch(/The quality gate (failed|passes again) on main of Payments/);
+      expect(mail.html).toMatch(/The quality gate (failed|passes again) on <strong>main<\/strong>/);
+      expect(flat(mail.text)).not.toContain('quality gate quality gate');
+    }
+  });
+
   it('leaves the new-code line out when no count is known', () => {
     const mail = renderGateFailed({ ...SAMPLE_GATE_FAILED, measures: {} });
     expect(mail.text).not.toContain('New code:');
