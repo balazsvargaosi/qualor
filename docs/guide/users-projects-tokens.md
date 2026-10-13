@@ -35,6 +35,8 @@ users, and make or remove instance admins. A new user and a user whose password 
 choose a new password at their next password sign-in (a single sign-on sign-in does not ask).
 Passwords have at least 12 characters, and sign-in is rate-limited.
 
+An instance admin needs an email address to get Qualor's [alerts by email](./email.md).
+
 Organization admins manage organisation membership and roles in **Settings → Members**: add
 someone by their exact user name, change their role, or remove them. An organisation always keeps
 at least one Organization admin: demoting or removing the last one answers 409 `LAST_ADMIN`, so

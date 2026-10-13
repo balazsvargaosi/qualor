@@ -58,6 +58,9 @@ services:
       # everyone with a password while the identity provider is down (remove it again afterwards).
       # QUALOR_SSO_INTERNAL_HOSTS: keycloak.corp.example.com:8443
       # QUALOR_FORCE_PASSWORD_SIGN_IN: 'true'
+      # Email (docs/guide/email.md): the SMTP server and the sender, if Qualor sends email.
+      # QUALOR_SMTP_URL: smtp://qualor%40example.com:<password>@smtp.example.com:587
+      # QUALOR_SMTP_FROM: Qualor <qualor@example.com>
     ports:
       - '${QUALOR_BIND_ADDRESS:-127.0.0.1}:${QUALOR_PORT:-8080}:8080'
     read_only: true

@@ -45,6 +45,7 @@ function verify(rawBody, headers, secret, maxAgeSeconds = 300) {
   once.
 - Each attempt has 10 s to complete. A delivery gets 7 attempts with exponential backoff (1, 2, 4, 8,
   16, 32 minutes). Only a 2xx answer counts as success, and redirects are not followed.
+- When a delivery gives up after its 7 attempts, instance administrators get an email ([Email](./email.md)), at most one a day for each webhook.
 - In the UI, each webhook shows its last 20 deliveries as a strip (delivered above the line, failed
   below it, pending on it) with the share delivered; **Recent deliveries** lists them with each one's
   status, response code and the first 1 KiB of the answer. Deliveries are kept 30 days. **Refresh**
@@ -101,6 +102,7 @@ q "$QUALOR_URL/api/v0/issues?branchId=<id>&severity=blocker&severity=high&inNewC
 | SCM | `GET/POST/PATCH/DELETE /scm-connections`, `POST /scm-connections/{id}/test` |
 | Webhooks | `/webhooks…`, `/webhooks/{id}/deliveries`, `…/redeliver`, `…/regenerate-secret` |
 | AI assistant | `POST /issues/{id}/ai/{explain,triage,fix}`, `GET /issues/{id}/ai`, `GET /ai-requests/{id}`, `POST /ai-requests/{id}/post`, `GET /organizations/{id}/ai`; instance admins: `GET/PUT /system/llm`, `POST /system/llm/test` ([AI assistant](./ai-assistant.md)) |
+| Email (instance admins) | `GET/PUT /system/mail`, `POST /system/mail/test`, `GET /system/mail/messages` ([Email](./email.md)) |
 | Single sign-on (enterprise) | `/ee/sso/connections…`, `/ee/sso/settings`, `/ee/sso/me/identities`, `/ee/sso/users/{userId}/identities` ([below](#single-sign-on-and-scim-enterprise)) |
 | SCIM (enterprise) | `GET/POST /ee/scim/tokens`, `DELETE /ee/scim/tokens/{id}`, and the SCIM 2.0 service under `/ee/scim/v2` ([below](#single-sign-on-and-scim-enterprise)) |
 | Audit log (enterprise) | `GET /ee/audit/events`, `GET /ee/audit/export`, `GET /ee/audit/head`, `GET /ee/audit/verify`, `GET/PUT /ee/audit/settings`, `POST /ee/audit/settings/stream/{regenerate-secret,test}` ([Roles and the audit log](./roles-and-audit.md)). The two stream routes, and a `PUT` with a `stream` object, need `audit-log.stream` too (403 `FEATURE_NOT_LICENSED` without it; retention alone and `"stream": null` need only `audit-log`) |

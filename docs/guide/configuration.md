@@ -133,8 +133,8 @@ repositories. Files over 1 MiB are skipped for metrics and duplication, but anal
 
 ## Environment variables (scanner)
 
-The server's variables (such as `QUALOR_PUBLIC_URL`, `QUALOR_SCM_INTERNAL_HOSTS` and
-`QUALOR_LLM_INTERNAL_HOSTS`) are in [Install the server](./install-server.md#server-settings).
+The server's variables (such as `QUALOR_PUBLIC_URL`, `QUALOR_SCM_INTERNAL_HOSTS`,
+`QUALOR_LLM_INTERNAL_HOSTS` and `QUALOR_SMTP_URL`) are in [Install the server](./install-server.md#server-settings).
 
 | Variable | Meaning |
 |---|---|

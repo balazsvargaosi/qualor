@@ -204,9 +204,9 @@ Users who are not instance admins see nothing else about the licence.
 
 1. From 30 days before the expiry date, instance admins see a notice at the top of every page: "The
    Qualor licence expires on … Renew it to keep the enterprise features." It links to the licence
-   page.
+   page. Instance administrators also get an email 30, 7 and 1 day before ([Email](./email.md)).
 2. On the expiry date a **14-day grace period** starts. Everything keeps working, and the notice
-   says when the enterprise features stop.
+   says when the enterprise features stop. Instance administrators get an email when it starts.
 3. When the grace period ends, the server runs as the community edition, without a restart:
    - the AI assistant's fix suggestions are limited to 25 per organisation per day again. A higher
      fix budget you saved stays saved and applies again with a renewed key; until then you can keep
@@ -227,7 +227,7 @@ Users who are not instance admins see nothing else about the licence.
      edition's features;
    - instance admins see a notice at the top of every page: "The Qualor licence has expired.
      Enterprise features are off: Qualor runs as the community edition until the licence is
-     renewed. Nothing was deleted."
+     renewed. Nothing was deleted." Instance administrators get an email as well.
 4. Apply a renewed key and restart: everything works as before, with all its data.
 
 Removing a key, or replacing it with one that lists fewer features, has the same effect at the

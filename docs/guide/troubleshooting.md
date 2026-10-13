@@ -95,7 +95,13 @@ Every message and error code is explained in [AI assistant](./ai-assistant.md#tr
 | `/readyz` answers 503 | migrations are still running, or the database is unreachable: `docker compose logs server` |
 | sign-in fails behind a proxy, or every user shares one rate limit | set `QUALOR_TRUST_PROXY` |
 | users signed out after a restart | `QUALOR_SECRET_KEY` changed |
+| the server stops at start naming `QUALOR_SMTP_URL` or `QUALOR_SMTP_FROM` | the URL is not `smtp://…`/`smtps://…` as [Email](./email.md#set-up-with-environment-variables) shows (URL-encode `@`, `:` and `/` in the user name and password), or `QUALOR_SMTP_FROM` is missing |
 | the server runs out of memory on large reports | give it 4 GiB and keep `QUALOR_WORKER_CONCURRENCY=1` |
+
+## Email
+
+See [Email → Troubleshooting](./email.md#troubleshooting) for what each error of **Send test** and
+the **Recent messages** list means.
 
 ## The licence
 

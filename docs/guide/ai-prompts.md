@@ -145,6 +145,8 @@ Inputs:
   <gitlab.corp.example.com[:port] | none>
 - database: <the server's own, on the volume | external PostgreSQL:
   DATABASE_URL is in the environment variable QUALOR_DATABASE_URL>
+- outgoing email, if any: <the SMTP server as a QUALOR_SMTP_URL
+  and the sender | none>
 
 Steps:
 1. Check the prerequisites: Docker with Compose v2, at least 1 GiB
@@ -155,8 +157,9 @@ Steps:
    Docker Hub (tag: <0.7 | a full version such as 0.7.1>).
 3. Create /opt/qualor/.env with QUALOR_VERSION, a value from
    `openssl rand -hex 32` for each secret, QUALOR_PUBLIC_URL,
-   QUALOR_TRUST_PROXY=1 and, if needed, QUALOR_SCM_INTERNAL_HOSTS
-   and DATABASE_URL, with mode 600. Never show the secret values.
+   QUALOR_TRUST_PROXY=1 and, if needed, QUALOR_SCM_INTERNAL_HOSTS,
+   DATABASE_URL, and QUALOR_SMTP_URL with QUALOR_SMTP_FROM, with
+   mode 600. Never show the secret values.
 4. Start it with `docker compose up -d` and wait until the server is
    healthy.
 5. Configure the reverse proxy: body size 50m, request buffering

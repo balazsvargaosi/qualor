@@ -120,6 +120,8 @@ prefix ending in `.*`, for example `issue.*`):
 - **The licence:** a key uploaded or removed (never the key itself).
 - **The AI assistant:** its settings changed (whether a key was set, removed or kept — never the
   key), a request sent to the provider, a fix suggestion queued to post.
+- **Email:** its settings changed (the names of the changed fields only, never the password), and a
+  test message sent (whether it was delivered).
 - **The audit log itself:** its retention or SIEM stream settings changed, the stream's secret
   regenerated, an export started, and retention's own removal of old events.
 

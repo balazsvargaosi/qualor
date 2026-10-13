@@ -85,6 +85,9 @@ services:
       QUALOR_LLM_INTERNAL_HOSTS: ${QUALOR_LLM_INTERNAL_HOSTS:-}
       QUALOR_SSO_INTERNAL_HOSTS: ${QUALOR_SSO_INTERNAL_HOSTS:-}
       QUALOR_FORCE_PASSWORD_SIGN_IN: ${QUALOR_FORCE_PASSWORD_SIGN_IN:-}
+      # Email (email.md), if you send it: the SMTP server and the sender.
+      # QUALOR_SMTP_URL: ${QUALOR_SMTP_URL}
+      # QUALOR_SMTP_FROM: ${QUALOR_SMTP_FROM}
       QUALOR_WORKER_CONCURRENCY: ${QUALOR_WORKER_CONCURRENCY:-1}
       QUALOR_LOG_LEVEL: ${QUALOR_LOG_LEVEL:-info}
     volumes:
@@ -132,6 +135,9 @@ QUALOR_TRUST_PROXY=1
 # QUALOR_LLM_INTERNAL_HOSTS=ollama:11434
 # An identity provider for single sign-on on an internal network (see sso-and-scim.md), if any:
 # QUALOR_SSO_INTERNAL_HOSTS=keycloak.corp.example.com:8443
+# An SMTP server for email (see email.md), if any:
+# QUALOR_SMTP_URL=smtp://qualor%40example.com:<password>@smtp.example.com:587
+# QUALOR_SMTP_FROM=Qualor <qualor@example.com>
 EOF
 grep BOOTSTRAP .env     # the first admin password; you change it at the first sign-in
 ```
@@ -262,13 +268,28 @@ kubectl -n qualor rollout restart deployment/qualor
 
 Every server setting of the table below has a value in `config` (`publicUrl`, `trustProxy`,
 `scmInternalHosts`, `llmInternalHosts`, `ssoInternalHosts`, `forcePasswordSignIn`,
-`telemetry`, `workerConcurrency`, `logLevel`) or goes into `extraEnv`, for example:
+`telemetry`, `workerConcurrency`, `logLevel`, `smtpFrom`, `smtpReplyTo`) or goes into `extraEnv`, for example:
 
 ```yaml
 extraEnv:
   - name: QUALOR_UPLOAD_MAX_COMPRESSED_BYTES
     value: '104857600'
 ```
+
+Email ([Email](./email.md)): put the SMTP URL into the Secret, as the key `QUALOR_SMTP_URL`, and
+set the sender; then restart the server, since the chart does not watch a Secret you own:
+
+```sh
+kubectl -n qualor patch secret qualor-secrets --type merge \
+  -p '{"stringData":{"QUALOR_SMTP_URL":"smtp://qualor%40example.com:<password>@smtp.example.com:587"}}'
+```
+
+```yaml
+config:
+  smtpFrom: Qualor <qualor@example.com>
+```
+
+Without `secrets.existingSecret`, set `secrets.smtpUrl` instead and the chart's own Secret holds it.
 
 The chart checks its values against a schema, so a misspelt key fails the install instead of
 being ignored. Pin the image by digest with `image.digest: sha256:…` to run exactly the image you
@@ -373,7 +394,7 @@ into a `postgres://` URL.
 |---|---|---|
 | `DATABASE_URL` | none | an [external PostgreSQL](#external-postgresql) 16+. Unset: the server runs its own |
 | `QUALOR_DATA_DIR` | `/var/lib/qualor` | the volume of the server's own PostgreSQL (unused with `DATABASE_URL`) |
-| `QUALOR_SECRET_KEY` | required | at least 32 characters. It keys the CSRF tokens and encrypts stored secrets (SCM tokens, GitHub App keys, webhook secrets, the AI provider's API key) |
+| `QUALOR_SECRET_KEY` | required | at least 32 characters. It keys the CSRF tokens and encrypts stored secrets (SCM tokens, GitHub App keys, webhook secrets, the AI provider's API key, the SMTP password) |
 | `QUALOR_BOOTSTRAP_ADMIN_USERNAME` / `_PASSWORD` | `admin` / none | the first instance admin, used on the first start only |
 | `QUALOR_PUBLIC_URL` | none | the address users open Qualor at. It makes the links in MR/PR comments, commit statuses and check runs, the GitHub webhook URL, and the single sign-on and SCIM addresses. **Set it** once Qualor has a real address. [Single sign-on](./sso-and-scim.md) needs it |
 | `QUALOR_SCM_INTERNAL_HOSTS` | none | the GitLab/GitHub Enterprise hosts on your internal network that Qualor may call, comma-separated, each with an optional port (`gitlab.corp:8443`). Without an entry, Qualor calls only hosts that resolve to public addresses |
@@ -385,12 +406,15 @@ into a `postgres://` URL.
 | `QUALOR_SESSION_TTL_HOURS` | `168` | browser session lifetime |
 | `QUALOR_DEMO_USER` | none | a user name anyone may sign in as from the sign-in page, read-only and without a password: a [public demo](./users-projects-tokens.md#a-public-read-only-demo). Not the bootstrap admin |
 | `QUALOR_TELEMETRY` | `true` | `false`, `0`, `off` or `no` turns off the daily anonymous usage statistics ([Telemetry](./telemetry.md)). Any other value but `true`, `1`, `on`, `yes` or empty stops the start |
+| `QUALOR_SMTP_URL` | none | the SMTP server for [email](./email.md): `smtp://user:password@host:587` (STARTTLS), `smtps://…:465` (TLS), or `?security=none` for a relay without TLS. It replaces the server set in **Settings → Email**, which then shows it read-only |
+| `QUALOR_SMTP_FROM` | none | the sender of Qualor's email, `Qualor <qualor@example.com>` or an address; required with `QUALOR_SMTP_URL` |
+| `QUALOR_SMTP_REPLY_TO` | none | an address replies go to |
 | `QUALOR_UPLOAD_MAX_COMPRESSED_BYTES` | 50 MiB | largest report upload, as sent |
 | `QUALOR_UPLOAD_MAX_DECOMPRESSED_BYTES` | 500 MiB | largest report once inflated (500 MiB is also the maximum) |
 | `QUALOR_MAX_CONCURRENT_UPLOADS` | `4` | uploads read at once. More get 503 with `Retry-After` |
 | `QUALOR_REQUEST_TIMEOUT_MS` | `300000` | longest a request may run |
 | `QUALOR_WORKER_CONCURRENCY` | `1` | analysis jobs processed at once. Each slot can use several times one report's size in memory |
-| `NODE_EXTRA_CA_CERTS` | none | a PEM bundle, when your GitLab, GitHub Enterprise or webhook receivers use a private CA. Mount the file into the container |
+| `NODE_EXTRA_CA_CERTS` | none | a PEM bundle, when your GitLab, GitHub Enterprise, webhook receivers or SMTP server use a private CA. Mount the file into the container |
 | `QUALOR_LICENSE` | none | an [enterprise licence](./enterprise.md) key. Not together with `QUALOR_LICENSE_FILE` |
 | `QUALOR_LICENSE_FILE` | none | the path of a file holding the licence key (for example a Docker or Kubernetes secret), read at start: UTF-8, or UTF-16 with a byte-order mark. A file that cannot be read stops the start |
 
@@ -516,6 +540,7 @@ A daily housekeeping job deletes old data:
 | closed issues | 30 days |
 | branches and MRs that have no analysis | 30 days |
 | webhook deliveries | 30 days |
+| the email log (Settings → Email) | 30 days; a message still waiting after 2 days is given up |
 | AI assistant requests and answers | 90 days; stored prompts (off by default) 1–90 days, default 7 |
 | audit log events (enterprise, `audit-log`) | 365 days by default, 30 days to 100 years (**Settings → Audit settings**; [Roles and the audit log](./roles-and-audit.md#retention)) |
 | analyses and measures | forever |

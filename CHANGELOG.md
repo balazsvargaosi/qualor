@@ -6,6 +6,16 @@ All notable changes to Qualor are listed here, newest first. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Email. Instance administrators set up an SMTP server in **Settings → Email**, or the operator
+  sets `QUALOR_SMTP_URL` and `QUALOR_SMTP_FROM` (Helm: `secrets.smtpUrl` and `config.smtpFrom`).
+  **Send test** shows the server's answer, and **Recent messages** lists every message with its
+  status. Qualor emails the instance administrators 30, 7 and 1 day before the licence expires,
+  when its grace period starts and when it ends, and when a webhook delivery gives up (at most once
+  a day per webhook); each alert can be turned off. Messages have an HTML and a plain-text part,
+  are retried on temporary failures, and their body is deleted once sent.
+
 ## [0.7.1] - 2026-10-12
 
 ### Added

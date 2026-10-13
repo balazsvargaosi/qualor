@@ -39,20 +39,21 @@ release: **Docs** in the top bar, at `/docs` on your server, for signed-in users
    profiles and issue statuses.
 10. [AI assistant](./ai-assistant.md): explain issues, suggest triage and fixes with your own
     model; off by default.
-11. [CLI reference](./cli.md): commands, options and exit codes.
-12. [Migrating from SonarQube](./migrate-from-sonarqube.md): `qualor import sonarqube`.
-13. [Webhooks and REST API](./webhooks-and-api.md): events, signatures and the most useful
+11. [Email](./email.md): the SMTP server, the test message and the alerts for administrators.
+12. [CLI reference](./cli.md): commands, options and exit codes.
+13. [Migrating from SonarQube](./migrate-from-sonarqube.md): `qualor import sonarqube`.
+14. [Webhooks and REST API](./webhooks-and-api.md): events, signatures and the most useful
     endpoints.
-14. [Enterprise](./enterprise.md): what a licence key adds, how to apply it, and what happens when
+15. [Enterprise](./enterprise.md): what a licence key adds, how to apply it, and what happens when
     it expires.
-15. [Roles and the audit log](./roles-and-audit.md): the four roles and project-level access (every
+16. [Roles and the audit log](./roles-and-audit.md): the four roles and project-level access (every
     edition), and the security audit log with its export, verification and SIEM stream.
-16. [Single sign-on and SCIM](./sso-and-scim.md): OIDC and SAML sign-in, group mapping,
+17. [Single sign-on and SCIM](./sso-and-scim.md): OIDC and SAML sign-in, group mapping,
     break-glass admins, and SCIM provisioning.
-17. [Troubleshooting](./troubleshooting.md): what common errors mean and how to fix them.
-18. [AI prompts](./ai-prompts.md): ready-made prompts that let an AI agent roll Qualor out in your
+18. [Troubleshooting](./troubleshooting.md): what common errors mean and how to fix them.
+19. [AI prompts](./ai-prompts.md): ready-made prompts that let an AI agent roll Qualor out in your
     company.
-19. [Telemetry](./telemetry.md): the anonymous usage statistics the server sends, and how to turn
+20. [Telemetry](./telemetry.md): the anonymous usage statistics the server sends, and how to turn
     them off.
 
 ## How Qualor works
