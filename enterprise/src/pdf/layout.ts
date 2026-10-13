@@ -33,7 +33,7 @@ const PAD = 3;
  * Without ligatures: a ligature glyph (fi) maps back to one letter only when text is copied or
  * searched. fontkit takes an object of overrides, which the pdfkit typings do not describe.
  */
-const FEATURES = { liga: false } as unknown as PDFKit.Mixins.OpenTypeFeatures[];
+export const FEATURES = { liga: false } as unknown as PDFKit.Mixins.OpenTypeFeatures[];
 
 /** Lays the report out top to bottom on a buffered pdfkit document. */
 export class Layout {
