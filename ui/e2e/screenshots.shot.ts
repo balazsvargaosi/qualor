@@ -336,4 +336,26 @@ test.describe('enterprise', () => {
     await expect(page.locator('.compliance-categories')).toBeVisible();
     await shootThemes(page, '37-settings-compliance');
   });
+
+  // 4E-2 §4 (`portfolio`): the default organisation's portfolio by week, then every
+  // organisation's by month, with the seed's three projects.
+  test('38 portfolio, 39 portfolio of all organisations', async ({ page }) => {
+    const ready = async () => {
+      await expect(page.locator('[data-card="projects"] .kpi-value')).toHaveText('3');
+      await expect(
+        page
+          .getByRole('region', { name: 'Projects', exact: true })
+          .getByRole('link', { name: PAYMENTS.name, exact: true }),
+      ).toBeVisible();
+    };
+    await page.goto('/portfolio');
+    await ready();
+    await shootThemes(page, '38-portfolio');
+
+    await page.goto('/portfolio?scope=all&granularity=month');
+    await ready();
+    await expect(page.getByRole('region', { name: 'Organisations', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Trend over 12 months' })).toBeVisible();
+    await shootThemes(page, '39-portfolio-all');
+  });
 });

@@ -89,3 +89,37 @@ test('the Business plan shows no compliance reports', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'Create report' })).toHaveCount(0);
   await expectAccessible(page);
 });
+
+// 4E-2 §4: the portfolio is Enterprise only (`portfolio`): no main-menu entry, and its address
+// says so without asking the enterprise API anything.
+test('the Business plan has no portfolio', async ({ page }) => {
+  const portfolioCalls: string[] = [];
+  page.on('request', (r) => {
+    const path = new URL(r.url()).pathname;
+    if (path.startsWith('/api/v0/ee/portfolio')) portfolioCalls.push(path);
+  });
+  const info = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/v0/system/info');
+  await page.goto('/projects');
+  const body = (await (await info).json()) as {
+    features: string[];
+    extensions: { id: string; point: string }[];
+  };
+  expect(body.features).not.toContain('portfolio');
+  expect(body.extensions.filter((e) => e.point === 'main.nav')).toEqual([]);
+  // The plugin's entries come with the system info, as does the version under the user menu:
+  // once that is there, the main menu is complete.
+  await expect(page.locator('.menu-version')).toBeAttached();
+  const nav = page.getByRole('navigation', { name: 'Main' });
+  await expect(nav.getByRole('link', { name: 'Quality gates' })).toBeVisible();
+  await expect(nav.getByRole('link', { name: 'Portfolio' })).toHaveCount(0);
+
+  await page.goto('/portfolio');
+  await expect(page).toHaveTitle('Portfolio · Qualor');
+  await expect(page.locator('.page-body')).toHaveText(
+    'Portfolio reports need an enterprise licence with the portfolio feature.',
+  );
+  await expect(page.getByRole('button', { name: 'All organisations' })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'CSV' })).toHaveCount(0);
+  await expectAccessible(page);
+  expect(portfolioCalls).toEqual([]);
+});

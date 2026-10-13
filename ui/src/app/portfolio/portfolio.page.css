@@ -17,9 +17,11 @@
   display: flex;
   gap: 8px;
 }
+/* 17rem: the open issues card's rows (dot, severity, count, bar) need that much width; any
+   narrower and the severity names break a letter per line. */
 .portfolio-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(15rem, 100%), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(17rem, 100%), 1fr));
   gap: 16px;
 }
 .portfolio-cards > .card {
