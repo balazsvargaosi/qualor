@@ -321,10 +321,8 @@ export type ComplianceCreateInput =
 export type ComplianceListFilter = { organizationId: string } | { projectId: string };
 
 /**
- * 4E-1 §1.1: built by core. Every member except `housekeeping` answers 403 FEATURE_NOT_LICENSED
- * while `compliance-export` is inactive. The members that take the request check the caller
- * themselves (a report it cannot read is a 404) and write their audit events; the job-side
- * members take no caller.
+ * 4E-2 §2: built by core, computed on request over the projects the caller can read. Every member
+ * answers 403 FEATURE_NOT_LICENSED while `portfolio` is inactive and checks the caller itself.
  */
 export interface PluginPortfolio {
   overview(
@@ -343,6 +341,12 @@ export interface PluginPortfolio {
   ): AsyncIterable<PortfolioProjectRow>;
 }
 
+/**
+ * 4E-1 §1.1: built by core. Every member except `housekeeping` answers 403 FEATURE_NOT_LICENSED
+ * while `compliance-export` is inactive. The members that take the request check the caller
+ * themselves (a report it cannot read is a 404) and write their audit events; the job-side
+ * members take no caller.
+ */
 export interface PluginCompliance {
   create(
     request: FastifyRequest,

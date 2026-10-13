@@ -1,0 +1,702 @@
+import { randomBytes } from 'node:crypto';
+import { sql } from 'drizzle-orm';
+import type { FastifyRequest } from 'fastify';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import {
+  ADMIN_PASSWORD,
+  addMember,
+  createProject,
+  createUser,
+  login,
+  type Session,
+  type TestContext,
+} from '../../test/app';
+import { mainBranchId, seedIssue, seedRule } from '../../test/issues';
+import { grantProject, rbacContext } from '../../test/rbac';
+import { analyses, branches, issueChanges, measures } from '../db/schema';
+import type {
+  PluginPortfolio,
+  PortfolioAggregate,
+  PortfolioOverview,
+  QualorPlugin,
+} from '../plugins/contract';
+import { createPortfolioService, readSnapshot } from './service';
+
+/** A Wednesday: the last week bucket starts Monday 2026-10-12, the last month 2026-10-01. */
+const NOW = new Date('2026-10-14T12:00:00.000Z');
+const LICENSED = new Date('2027-01-01T00:00:00Z');
+
+/** A uuid v7 at exactly `iso` (uuidv7() never goes back in time, so it cannot seed the past). */
+function idAt(iso: string): string {
+  const hex = Date.parse(iso).toString(16).padStart(12, '0');
+  const r = randomBytes(10).toString('hex');
+  const variant = ((Number.parseInt(r[3]!, 16) & 3) | 8).toString(16);
+  return `${hex.slice(0, 8)}-${hex.slice(8)}-7${r.slice(0, 3)}-${variant}${r.slice(4, 7)}-${r.slice(8, 20)}`;
+}
+
+/** The service on the fixed clock; the plugin's context holds the one on the transaction's. */
+let fixed: PluginPortfolio;
+
+type Query = { scope?: string; organizationId?: string; granularity?: string };
+const inputOf = (q: Query) =>
+  (q.scope === 'organization'
+    ? { scope: 'organization', organizationId: q.organizationId }
+    : { scope: 'all' }) as never;
+
+const FIXTURE: QualorPlugin = {
+  name: 'portfolio-fixture',
+  apiVersion: 1,
+  features: ['portfolio'],
+  register(ctx) {
+    ctx.routes('portfolio', async (app) => {
+      app.get('/t/portfolio', async (req) => {
+        const q = req.query as Query;
+        return ctx.portfolio.overview(req, inputOf(q), {
+          granularity: (q.granularity ?? 'week') as never,
+        });
+      });
+      app.get('/t/portfolio/fixed', async (req) => {
+        const q = req.query as Query;
+        return fixed.overview(req, inputOf(q), {
+          granularity: (q.granularity ?? 'week') as never,
+        });
+      });
+    });
+  },
+};
+
+const EMPTY: PortfolioAggregate = {
+  projects: 0,
+  analysed: 0,
+  abandoned: 0,
+  gate: { passed: 0, failed: 0, error: 0, none: 0 },
+  passedShare: null,
+  securityRating: { A: 0, B: 0, C: 0, D: 0, E: 0 },
+  reliabilityRating: { A: 0, B: 0, C: 0, D: 0, E: 0 },
+  ncloc: 0,
+  coverage: null,
+  duplication: null,
+  issues: 0,
+  bySeverity: { blocker: 0, high: 0, medium: 0, low: 0, info: 0 },
+  securityIssues: 0,
+  reliabilityIssues: 0,
+  maintainabilityIssues: 0,
+  newIssues: 0,
+};
+
+const WEEK_STARTS = [
+  '2026-07-27',
+  '2026-08-03',
+  '2026-08-10',
+  '2026-08-17',
+  '2026-08-24',
+  '2026-08-31',
+  '2026-09-07',
+  '2026-09-14',
+  '2026-09-21',
+  '2026-09-28',
+  '2026-10-05',
+  '2026-10-12',
+].map((d) => `${d}T00:00:00.000Z`);
+
+describe('ctx.portfolio overview (4E-2 §1, §2)', () => {
+  let ctx: TestContext;
+  let root: Session;
+  let member: Session;
+  let grantOnly: Session;
+  let outsider: Session;
+  let east: string;
+  let north: string;
+  const ids: Record<string, string> = {};
+
+  const overview = async (
+    session: Session,
+    query: Query,
+    path = '/fixed',
+  ): Promise<{ status: number; body: PortfolioOverview & { code?: string } }> => {
+    const qs = new URLSearchParams(query as Record<string, string>).toString();
+    const res = await ctx.app.inject({
+      method: 'GET',
+      url: `/api/v0/ee/t/portfolio${path}?${qs}`,
+      headers: session.headers,
+    });
+    return { status: res.statusCode, body: res.json() };
+  };
+
+  /** Measures of an analysis: overall keys, and `new_issues` stored as (`issues`, `new`). */
+  const measure = async (analysisId: string, values: Record<string, number>) => {
+    await ctx.db
+      .insert(measures)
+      .values(
+        Object.entries(values).map(([key, value]) =>
+          key === 'new_issues'
+            ? { analysisId, metricKey: 'issues', scope: 'new' as const, value }
+            : { analysisId, metricKey: key, scope: 'overall' as const, value },
+        ),
+      );
+  };
+
+  const analysis = async (
+    projectId: string,
+    branchId: string,
+    at: string,
+    status: 'succeeded' | 'failed' | 'queued',
+    gateStatus: 'passed' | 'failed' | 'error' | 'none' | null = null,
+  ): Promise<string> => {
+    const id = idAt(at);
+    await ctx.db.insert(analyses).values({
+      id,
+      projectId,
+      branchId,
+      status,
+      revision: 'a'.repeat(40),
+      baselineStatus: 'ok',
+      scannerVersion: '1.0.0',
+      analysisDate: new Date(at),
+      gateStatus,
+    });
+    return id;
+  };
+
+  beforeAll(async () => {
+    ctx = await rbacContext({ now: () => LICENSED, features: ['portfolio'], plugin: FIXTURE });
+    fixed = createPortfolioService({ db: ctx.db, isFeatureActive: () => true, now: () => NOW });
+    root = await login(ctx, 'admin', ADMIN_PASSWORD);
+    const newOrg = async (key: string) => {
+      const res = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/v0/organizations',
+        headers: root.headers,
+        payload: { key, name: `${key} team` },
+      });
+      expect(res.statusCode).toBe(201);
+      return (res.json() as { id: string }).id;
+    };
+    // Created out of key order, so the all scope's sort by key shows.
+    north = await newOrg('north');
+    east = await newOrg('east');
+    for (const [key, org] of [
+      ['alpha', east],
+      ['beta', east],
+      ['gamma', east],
+      ['delta', east],
+      ['omega', north],
+    ] as const) {
+      ids[key] = (await createProject(ctx, root, { organizationId: org, key })).id;
+    }
+    const main = async (key: string) => mainBranchId(ctx.db, ids[key]!);
+
+    // alpha: a1 at exactly Monday 2026-09-28 00:00:00.000Z (gate failed), a2 on 2026-10-13.
+    const alphaMain = await main('alpha');
+    const a1 = await analysis(
+      ids.alpha!,
+      alphaMain,
+      '2026-09-28T00:00:00.000Z',
+      'succeeded',
+      'failed',
+    );
+    await measure(a1, {
+      ncloc: 1000,
+      coverage: 50,
+      duplicated_lines_density: 10,
+      security_rating: 3,
+      reliability_rating: 2,
+      issues: 20,
+      blocker_issues: 1,
+      high_issues: 2,
+      medium_issues: 3,
+      low_issues: 4,
+      info_issues: 10,
+      security_issues: 5,
+      reliability_issues: 6,
+      maintainability_issues: 9,
+      new_issues: 4,
+    });
+    const a2 = await analysis(
+      ids.alpha!,
+      alphaMain,
+      '2026-10-13T09:00:00.000Z',
+      'succeeded',
+      'passed',
+    );
+    await measure(a2, {
+      ncloc: 1200,
+      coverage: 80,
+      duplicated_lines_density: 5,
+      security_rating: 1,
+      reliability_rating: 2,
+      issues: 10,
+      blocker_issues: 0,
+      high_issues: 1,
+      medium_issues: 2,
+      low_issues: 3,
+      info_issues: 4,
+      security_issues: 1,
+      reliability_issues: 2,
+      maintainability_issues: 7,
+      new_issues: 2,
+    });
+    // Neither a failed nor a queued analysis sets the state.
+    const failed = await analysis(ids.alpha!, alphaMain, '2026-10-14T10:00:00.000Z', 'failed');
+    await measure(failed, { ncloc: 999_999, security_rating: 5 });
+    await analysis(ids.alpha!, alphaMain, '2026-10-14T11:00:00.000Z', 'queued');
+    // A branch that is not main: counts as activity, never as state.
+    const [feature] = await ctx.db
+      .insert(branches)
+      .values({ projectId: ids.alpha!, kind: 'branch', name: 'feature' })
+      .returning({ id: branches.id });
+    const side = await analysis(
+      ids.alpha!,
+      feature!.id,
+      '2026-10-14T11:30:00.000Z',
+      'succeeded',
+      'failed',
+    );
+    await measure(side, { ncloc: 777_777, security_rating: 5, blocker_issues: 50 });
+
+    // beta: abandoned, last analysed 40 days before NOW; no coverage, no new_issues.
+    const betaMain = await main('beta');
+    const b1 = await analysis(
+      ids.beta!,
+      betaMain,
+      '2026-09-04T12:00:00.000Z',
+      'succeeded',
+      'failed',
+    );
+    await measure(b1, {
+      ncloc: 3000,
+      duplicated_lines_density: 20,
+      security_rating: 5,
+      reliability_rating: 1,
+      issues: 7,
+      blocker_issues: 2,
+      high_issues: 3,
+      medium_issues: 1,
+      low_issues: 1,
+      info_issues: 0,
+      security_issues: 4,
+      reliability_issues: 2,
+      maintainability_issues: 1,
+    });
+    // gamma is never analysed. delta is analysed, with no measures.
+    await analysis(
+      ids.delta!,
+      await main('delta'),
+      '2026-10-10T00:00:00.000Z',
+      'succeeded',
+      'error',
+    );
+    // omega (north): failing, one high finding.
+    const o1 = await analysis(
+      ids.omega!,
+      await main('omega'),
+      '2026-10-01T00:00:00.000Z',
+      'succeeded',
+      'failed',
+    );
+    await measure(o1, {
+      ncloc: 500,
+      coverage: 90,
+      duplicated_lines_density: 0,
+      security_rating: 2,
+      reliability_rating: 1,
+      issues: 3,
+      blocker_issues: 0,
+      high_issues: 1,
+      medium_issues: 0,
+      low_issues: 1,
+      info_issues: 1,
+      security_issues: 0,
+      reliability_issues: 1,
+      maintainability_issues: 2,
+      new_issues: 1,
+    });
+
+    // Current-only counts: open, not duplicate, main branch.
+    const secret = await seedRule(ctx.db, { key: 'gitleaks:aws-key', quality: 'security' });
+    const dependency = await seedRule(ctx.db, { key: 'trivy:CVE-2026-1', quality: 'security' });
+    const code = await seedRule(ctx.db, { key: 'eslint:no-eval', quality: 'security' });
+    const onAlpha = { projectId: ids.alpha!, branchId: alphaMain };
+    const s1 = await seedIssue(ctx.db, { ...onAlpha, ruleId: secret });
+    await seedIssue(ctx.db, { ...onAlpha, ruleId: secret });
+    await seedIssue(ctx.db, { ...onAlpha, ruleId: secret, status: 'resolved' });
+    await seedIssue(ctx.db, { ...onAlpha, ruleId: secret, duplicateOfIssueId: s1 });
+    for (let i = 0; i < 3; i++) await seedIssue(ctx.db, { ...onAlpha, ruleId: dependency });
+    await seedIssue(ctx.db, { projectId: ids.alpha!, branchId: feature!.id, ruleId: dependency });
+    await seedIssue(ctx.db, { ...onAlpha, ruleId: code });
+    await seedIssue(ctx.db, {
+      projectId: ids.omega!,
+      branchId: await main('omega'),
+      ruleId: secret,
+    });
+
+    // Triage: a false positive on alpha (week of 08-31, September), a won't fix on beta (week of
+    // 10-05, October); a resolution and a comment do not count.
+    const alphaIssue = await seedIssue(ctx.db, {
+      ...onAlpha,
+      ruleId: code,
+      status: 'false_positive',
+    });
+    const betaIssue = await seedIssue(ctx.db, {
+      projectId: ids.beta!,
+      branchId: betaMain,
+      ruleId: code,
+      status: 'wont_fix',
+    });
+    await ctx.db.insert(issueChanges).values([
+      {
+        issueId: alphaIssue,
+        field: 'status',
+        oldValue: 'open',
+        newValue: 'false_positive',
+        createdAt: new Date('2026-09-02T08:00:00Z'),
+      },
+      {
+        issueId: betaIssue,
+        field: 'status',
+        oldValue: 'open',
+        newValue: 'wont_fix',
+        createdAt: new Date('2026-10-06T08:00:00Z'),
+      },
+      {
+        issueId: alphaIssue,
+        field: 'status',
+        oldValue: 'open',
+        newValue: 'resolved',
+        createdAt: new Date('2026-10-06T09:00:00Z'),
+      },
+      {
+        issueId: alphaIssue,
+        field: 'comment',
+        comment: 'false_positive',
+        createdAt: new Date('2026-10-06T10:00:00Z'),
+      },
+    ]);
+
+    const session = async (username: string) => {
+      const user = await createUser(ctx, { username });
+      return { user, session: await login(ctx, user.username, user.password) };
+    };
+    const m = await session('east-member');
+    await addMember(ctx, east, m.user.id, 'member');
+    member = m.session;
+    const g = await session('alpha-viewer');
+    await grantProject(ctx, ids.alpha!, g.user.id, 'viewer');
+    grantOnly = g.session;
+    outsider = (await session('outsider')).session;
+  });
+  afterAll(async () => ctx.close());
+
+  const eastAggregate = {
+    projects: 4,
+    analysed: 3,
+    abandoned: 2,
+    gate: { passed: 1, failed: 1, error: 1, none: 0 },
+    securityRating: { A: 1, B: 0, C: 0, D: 0, E: 1 },
+    reliabilityRating: { A: 1, B: 1, C: 0, D: 0, E: 0 },
+    ncloc: 4200,
+    coverage: 80,
+    issues: 17,
+    bySeverity: { blocker: 2, high: 4, medium: 3, low: 4, info: 4 },
+    securityIssues: 5,
+    reliabilityIssues: 4,
+    maintainabilityIssues: 8,
+    newIssues: 2,
+  };
+  const eastTotals = { ...eastAggregate, secrets: 2, vulnerableDependencies: 3 };
+
+  it('totals the organisation scope for a member, by hand from the seed', async () => {
+    const { status, body } = await overview(member, {
+      scope: 'organization',
+      organizationId: east,
+    });
+    expect(status, JSON.stringify(body)).toBe(200);
+    expect(body.generatedAt).toBe(NOW.toISOString());
+    expect(body.scope).toEqual({
+      kind: 'organization',
+      organization: { id: east, key: 'east', name: 'east team' },
+    });
+    expect(body.granularity).toBe('week');
+    expect(body.organizations).toBeNull();
+    expect(body.totals).toMatchObject(eastTotals);
+    expect(body.totals.passedShare).toBeCloseTo(1 / 3, 10);
+    // (5 × 1200 + 20 × 3000) / 4200: both have ncloc and duplication.
+    expect(body.totals.duplication).toBeCloseTo(66_000 / 4200, 10);
+    const keys = (list: { project: { key: string } }[]) => list.map((r) => r.project.key);
+    expect(keys(body.attention.failingGates)).toEqual(['beta']);
+    expect(keys(body.attention.worstSecurity)).toEqual(['beta', 'alpha']);
+    expect(keys(body.attention.mostSevere)).toEqual(['beta', 'alpha']);
+    expect(keys(body.attention.abandoned)).toEqual(['gamma', 'beta']);
+    const alpha = body.attention.worstSecurity[1]!;
+    expect(alpha).toEqual({
+      organization: { key: 'east', name: 'east team' },
+      project: { id: ids.alpha, key: 'alpha', name: 'alpha' },
+      lastAnalysisAt: '2026-10-13T09:00:00.000Z',
+      abandoned: false,
+      gate: 'passed',
+      securityRating: 'A',
+      reliabilityRating: 'B',
+      ncloc: 1200,
+      coverage: 80,
+      duplication: 5,
+      issues: 10,
+      bySeverity: { blocker: 0, high: 1, medium: 2, low: 3, info: 4 },
+      newIssues: 2,
+      secrets: 2,
+      vulnerableDependencies: 3,
+    });
+    expect(body.attention.abandoned[1]).toMatchObject({
+      lastAnalysisAt: '2026-09-04T12:00:00.000Z',
+      abandoned: true,
+      securityRating: 'E',
+      coverage: null,
+      newIssues: null,
+    });
+  });
+
+  it('shows a grant-only user its granted project only (Review Focus 2)', async () => {
+    const { status, body } = await overview(grantOnly, {
+      scope: 'organization',
+      organizationId: east,
+    });
+    expect(status, JSON.stringify(body)).toBe(200);
+    expect(body.totals).toMatchObject({
+      projects: 1,
+      analysed: 1,
+      abandoned: 0,
+      gate: { passed: 1, failed: 0, error: 0, none: 0 },
+      passedShare: 1,
+      securityRating: { A: 1, B: 0, C: 0, D: 0, E: 0 },
+      ncloc: 1200,
+      coverage: 80,
+      duplication: 5,
+      issues: 10,
+      secrets: 2,
+      vulnerableDependencies: 3,
+    });
+    expect(body.trend.map((p) => p.projects)).toEqual(Array(12).fill(1));
+    expect(body.trend.map((p) => p.analyses)).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 2]);
+    expect(body.trend.map((p) => p.triage)).toEqual([0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
+    for (const list of Object.values(body.attention)) {
+      expect(list.every((r) => r.project.key === 'alpha')).toBe(true);
+    }
+    expect(body.attention.worstSecurity).toHaveLength(1);
+    expect(body.attention.abandoned).toEqual([]);
+
+    const all = await overview(grantOnly, { scope: 'all' });
+    expect(all.status).toBe(200);
+    expect(all.body.scope).toEqual({ kind: 'all', organization: null });
+    expect(all.body.organizations?.map((o) => [o.key, o.name, o.projects])).toEqual([
+      ['east', 'east team', 1],
+    ]);
+    expect(all.body.totals.projects).toBe(1);
+  });
+
+  it('hides an organisation from an outsider, and gives it empty totals (Review Focus 1)', async () => {
+    const org = await overview(outsider, { scope: 'organization', organizationId: east });
+    expect(org.status).toBe(404);
+    const missing = await overview(outsider, {
+      scope: 'organization',
+      organizationId: 'not-a-uuid',
+    });
+    expect(missing.status).toBe(404);
+    const { status, body } = await overview(outsider, { scope: 'all' });
+    expect(status).toBe(200);
+    expect(body.totals).toEqual({ ...EMPTY, secrets: 0, vulnerableDependencies: 0 });
+    expect(body.organizations).toEqual([]);
+    expect(body.trend).toHaveLength(12);
+    for (const point of body.trend) {
+      expect(point).toEqual({
+        ...EMPTY,
+        start: point.start,
+        end: point.end,
+        analyses: 0,
+        triage: 0,
+      });
+    }
+    expect(body.attention).toEqual({
+      failingGates: [],
+      worstSecurity: [],
+      mostSevere: [],
+      abandoned: [],
+    });
+  });
+
+  it('shows an instance admin every organisation with a project, sorted by key', async () => {
+    const { status, body } = await overview(root, { scope: 'all' });
+    expect(status).toBe(200);
+    expect(body.organizations?.map((o) => [o.id, o.key, o.name])).toEqual([
+      [east, 'east', 'east team'],
+      [north, 'north', 'north team'],
+    ]);
+    const [eastRow, northRow] = body.organizations!;
+    expect(eastRow).toMatchObject(eastAggregate);
+    expect(northRow).toMatchObject({
+      projects: 1,
+      analysed: 1,
+      gate: { passed: 0, failed: 1, error: 0, none: 0 },
+      passedShare: 0,
+      coverage: 90,
+      duplication: 0,
+    });
+    expect(body.totals).toMatchObject({
+      projects: 5,
+      analysed: 4,
+      ncloc: 4700,
+      secrets: 3,
+      vulnerableDependencies: 3,
+    });
+    // (80 × 1200 + 90 × 500) / 1700: beta has no coverage.
+    expect(body.totals.coverage).toBeCloseTo(141_000 / 1700, 10);
+    const keys = (list: { project: { key: string } }[]) => list.map((r) => r.project.key);
+    expect(keys(body.attention.failingGates)).toEqual(['beta', 'omega']);
+    expect(keys(body.attention.worstSecurity)).toEqual(['beta', 'omega', 'alpha']);
+    // alpha and omega tie at one blocker or high finding: by key.
+    expect(keys(body.attention.mostSevere)).toEqual(['beta', 'alpha', 'omega']);
+  });
+
+  it('reads the state at each bucket end from main-branch successes before it (Review Focus 3)', async () => {
+    const { body } = await overview(member, { scope: 'organization', organizationId: east });
+    expect(body.trend.map((p) => p.start)).toEqual(WEEK_STARTS);
+    expect(body.trend.map((p) => p.end)).toEqual([...WEEK_STARTS.slice(1), NOW.toISOString()]);
+    const at = (start: string) => body.trend.find((p) => p.start.startsWith(start))!;
+    // The bucket ending Monday 09-28 00:00 does not see a1 uploaded at exactly that instant.
+    expect(at('2026-09-21')).toMatchObject({
+      projects: 4,
+      analysed: 1,
+      abandoned: 3,
+      gate: { passed: 0, failed: 1, error: 0, none: 0 },
+      ncloc: 3000,
+    });
+    // The next one does; beta's last analysis is now more than 30 days before the bucket end.
+    expect(at('2026-09-28')).toMatchObject({
+      analysed: 2,
+      abandoned: 3,
+      gate: { passed: 0, failed: 2, error: 0, none: 0 },
+      securityRating: { A: 0, B: 0, C: 1, D: 0, E: 1 },
+      ncloc: 4000,
+    });
+    // a2 (10-13) does not change the bucket ending 10-12; delta (10-10) joins it.
+    expect(at('2026-10-05')).toMatchObject({
+      analysed: 3,
+      gate: { passed: 0, failed: 2, error: 1, none: 0 },
+      ncloc: 4000,
+    });
+    // The current bucket is the state now; the failed, queued and non-main ones set nothing.
+    expect(at('2026-10-12')).toMatchObject(eastAggregate);
+    expect(body.trend.slice(0, 5).map((p) => p.analysed)).toEqual([0, 0, 0, 0, 0]);
+    expect(body.trend.slice(0, 5).map((p) => p.abandoned)).toEqual([4, 4, 4, 4, 4]);
+    expect(at('2026-08-31')).toMatchObject({ analysed: 1, abandoned: 3 });
+    // a1 counts in the week it opens; the non-main success counts, the failed and queued do not.
+    expect(body.trend.map((p) => p.analyses)).toEqual([0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 2]);
+    expect(body.trend.map((p) => p.triage)).toEqual([0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0]);
+  });
+
+  it('buckets by calendar month', async () => {
+    const { body } = await overview(member, {
+      scope: 'organization',
+      organizationId: east,
+      granularity: 'month',
+    });
+    expect(body.granularity).toBe('month');
+    expect(body.trend.map((p) => p.start)).toEqual([
+      '2025-11-01T00:00:00.000Z',
+      '2025-12-01T00:00:00.000Z',
+      '2026-01-01T00:00:00.000Z',
+      '2026-02-01T00:00:00.000Z',
+      '2026-03-01T00:00:00.000Z',
+      '2026-04-01T00:00:00.000Z',
+      '2026-05-01T00:00:00.000Z',
+      '2026-06-01T00:00:00.000Z',
+      '2026-07-01T00:00:00.000Z',
+      '2026-08-01T00:00:00.000Z',
+      '2026-09-01T00:00:00.000Z',
+      '2026-10-01T00:00:00.000Z',
+    ]);
+    expect(body.trend.at(-1)!.end).toBe(NOW.toISOString());
+    expect(body.trend.map((p) => p.triage)).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1]);
+    expect(body.trend.map((p) => p.analyses)).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 3]);
+    // The end of September: beta and a1; beta is not yet 30 days old.
+    expect(body.trend[10]).toMatchObject({ analysed: 2, abandoned: 2 });
+  });
+
+  it('gives a never-analysed project and one without measures nulls, never NaN', async () => {
+    const { body } = await overview(root, { scope: 'organization', organizationId: east });
+    const gamma = body.attention.abandoned.find((r) => r.project.key === 'gamma');
+    expect(gamma).toMatchObject({
+      lastAnalysisAt: null,
+      abandoned: true,
+      gate: null,
+      securityRating: null,
+      reliabilityRating: null,
+      ncloc: null,
+      coverage: null,
+      duplication: null,
+      issues: null,
+      bySeverity: null,
+      newIssues: null,
+      secrets: 0,
+      vulnerableDependencies: 0,
+    });
+    // delta (analysed, no measures) is counted as analysed with gate error, and nowhere else.
+    expect(body.totals.analysed).toBe(3);
+    expect(body.totals.gate.error).toBe(1);
+    expect(body.attention.worstSecurity.map((r) => r.project.key)).not.toContain('delta');
+    expect(body.attention.mostSevere.map((r) => r.project.key)).not.toContain('delta');
+
+    // JSON turns NaN into null, so read the service's own answer: as an instance admin, and as a
+    // user who sees nothing.
+    const numbers: number[] = [];
+    const walk = (v: unknown): void => {
+      if (typeof v === 'number') numbers.push(v);
+      else if (v !== null && typeof v === 'object') Object.values(v).forEach(walk);
+    };
+    for (const user of [
+      { id: ctx.adminId, isInstanceAdmin: true },
+      { id: '00000000-0000-7000-8000-000000000000', isInstanceAdmin: false },
+    ]) {
+      const request = { principal: { kind: 'session', user } } as unknown as FastifyRequest;
+      walk(await fixed.overview(request, { scope: 'all' }, { granularity: 'week' }));
+    }
+    expect(numbers.length).toBeGreaterThan(100);
+    expect(numbers.filter((n) => !Number.isFinite(n))).toEqual([]);
+  });
+
+  it('serves the plugin context on the transaction clock', async () => {
+    const { status, body } = await overview(
+      member,
+      { scope: 'organization', organizationId: east },
+      '',
+    );
+    expect(status, JSON.stringify(body)).toBe(200);
+    expect(Math.abs(Date.parse(body.generatedAt) - Date.now())).toBeLessThan(60_000);
+    expect(body.trend).toHaveLength(12);
+    expect(body.totals).toMatchObject({ projects: 4, analysed: 3, secrets: 2 });
+  });
+
+  it('answers 503 PORTFOLIO_TIMEOUT past the statement budget', async () => {
+    await expect(
+      readSnapshot(ctx.db, 1, async (tx) => tx.execute(sql`SELECT pg_sleep(0.2)`)),
+    ).rejects.toMatchObject({
+      status: 503,
+      code: 'PORTFOLIO_TIMEOUT',
+      message: 'The portfolio took too long to compute',
+    });
+    // The budget is local to the transaction.
+    const [row] = (
+      await ctx.db.execute<{ t: string }>(sql`SELECT current_setting('statement_timeout') AS t`)
+    ).rows;
+    expect(row?.t).toBe('0');
+  });
+
+  it('answers 403 FEATURE_NOT_LICENSED while the feature is inactive', async () => {
+    const off = createPortfolioService({ db: ctx.db, isFeatureActive: () => false });
+    await expect(
+      off.overview({} as FastifyRequest, { scope: 'all' }, { granularity: 'week' }),
+    ).rejects.toMatchObject({
+      status: 403,
+      code: 'FEATURE_NOT_LICENSED',
+      message: 'The enterprise feature "portfolio" is not licensed',
+    });
+  });
+});

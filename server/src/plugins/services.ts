@@ -21,6 +21,7 @@ import type { Config } from '../config';
 import type { Db } from '../db/client';
 import { ProblemError, validationFailed } from '../http/problem';
 import type { Edition } from '../license/edition';
+import { createPortfolioService } from '../portfolio/service';
 import { projectForUser } from '../projects/access';
 import { createScimService, createSsoService } from '../sso/service';
 import type {
@@ -192,15 +193,8 @@ export function createPluginServices(
     recorder,
   });
 
-  // 4E-2 §2: a stub until the portfolio service lands (task 2 replaces it).
-  const notImplemented = (): never => {
-    throw new PluginError('portfolio service not implemented');
-  };
-  const portfolio: PluginPortfolio = Object.freeze({
-    overview: notImplemented,
-    projects: notImplemented,
-    exportRows: notImplemented,
-  });
+  // 4E-2 §2: the portfolio reads, over the projects the caller can read.
+  const portfolio = createPortfolioService({ db, isFeatureActive: deps.isFeatureActive });
 
   return Object.freeze({ access, audit, sso, scim, compliance, portfolio });
 }
