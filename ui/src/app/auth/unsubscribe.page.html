@@ -1,0 +1,51 @@
+<q-auth-layout>
+  <div class="card auth-card">
+    @switch (state()) {
+      @case ('done') {
+        <h1 #result tabindex="-1" i18n="@@unsubscribe.doneTitle">Done</h1>
+        @if (projectName(); as name) {
+          <p i18n="@@unsubscribe.done">You no longer watch {{ name }}.</p>
+        } @else {
+          <p i18n="@@unsubscribe.doneUnknown">You no longer watch this project.</p>
+        }
+      }
+      @case ('invalid') {
+        <h1 #result tabindex="-1" i18n="@@unsubscribe.invalidTitle">This link doesn't work</h1>
+        <p i18n="@@unsubscribe.invalid">
+          This link is not valid. Manage your notifications in Settings.
+        </p>
+      }
+      @case ('missing') {
+        <h1 i18n="@@unsubscribe.missingTitle">This link is not complete</h1>
+        <p i18n="@@unsubscribe.missing">
+          Open the link from the email again, or manage your notifications in Settings.
+        </p>
+      }
+      @default {
+        <h1 i18n="@@unsubscribe.title">Stop emails about this project?</h1>
+        <p i18n="@@unsubscribe.body">
+          You will no longer get emails about this project. You can watch it again from its page.
+        </p>
+        @if (error(); as message) {
+          <p class="alert alert-error" role="alert">{{ message }}</p>
+        }
+        <button
+          type="button"
+          class="btn btn-primary"
+          [attr.aria-disabled]="state() === 'busy' ? true : null"
+          (click)="confirm()"
+          i18n="@@unsubscribe.confirm"
+        >
+          Stop emails
+        </button>
+      }
+    }
+    @if (state() === 'done' || state() === 'invalid' || state() === 'missing') {
+      <p>
+        <a routerLink="/settings/notifications" i18n="@@unsubscribe.settings"
+          >Notification settings</a
+        >
+      </p>
+    }
+  </div>
+</q-auth-layout>

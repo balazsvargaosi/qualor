@@ -34,6 +34,12 @@ export const routes: Routes = [
     loadComponent: () => import('./auth/accept-invite.page').then((m) => m.AcceptInvitePage),
   },
   {
+    // mail E3: an email's stop link; no guard, it works without signing in.
+    path: 'unsubscribe',
+    title: $localize`:@@title.unsubscribe:Stop emails`,
+    loadComponent: () => import('./auth/unsubscribe.page').then((m) => m.UnsubscribePage),
+  },
+  {
     path: 'unavailable',
     title: $localize`:@@title.unavailable:Server unavailable`,
     loadComponent: () => import('./shared/unavailable.page').then((m) => m.UnavailablePage),
