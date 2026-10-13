@@ -9,6 +9,11 @@ import { restoreEmbedded } from './db/restore';
 import { readinessCheck, runMigrations } from './db/migrate';
 import { gateHandlers } from './gates/reevaluate';
 import { ensureHousekeepingScheduled, housekeepingHandlers } from './housekeeping/run';
+import {
+  ensureLicenseAlertScheduled,
+  licenseAlertHandlers,
+  scheduleLicenseAlertAtBoot,
+} from './mail/alerts/license-alerts';
 import { createLogger } from './http/logger';
 import { loadUiAssets, UiAssetsError, type UiAssets } from './http/ui';
 import { VERSION } from './index';
@@ -209,6 +214,8 @@ async function main(): Promise<void> {
             logger,
           })
         : {}),
+      // E1 spec: the daily licence expiry check (it queues email; the mail worker sends it).
+      ...licenseAlertHandlers({ db: database.db, edition, config, logger }),
     },
     concurrency: config.workerConcurrency,
     logger,
@@ -217,6 +224,7 @@ async function main(): Promise<void> {
     afterReap: async (db) => {
       await reconcileDeadAnalyses(db);
       await ensureHousekeepingScheduled(db);
+      await ensureLicenseAlertScheduled(db);
       if (config.telemetry.enabled) await ensureTelemetryScheduled(db);
     },
   });
@@ -296,6 +304,18 @@ async function main(): Promise<void> {
         errorClass: err instanceof Error ? err.constructor.name : typeof err,
       },
       'telemetry could not be scheduled',
+    );
+  }
+  try {
+    await scheduleLicenseAlertAtBoot(database.db);
+  } catch (err) {
+    // Never fatal: the worker's afterReap re-creates the run within 30 s.
+    logger.warn(
+      {
+        component: 'licence',
+        errorClass: err instanceof Error ? err.constructor.name : typeof err,
+      },
+      'the licence expiry check could not be scheduled',
     );
   }
 
