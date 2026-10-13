@@ -506,6 +506,7 @@ describe('SettingsPage navigation for members and enterprise entries (rbac-audit
       'Organizations',
       'Users',
       'AI assistant',
+      'Email',
       'Licence',
     ]);
   });

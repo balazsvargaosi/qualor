@@ -1,0 +1,505 @@
+<div class="settings-head">
+  <div>
+    <h2 tabindex="-1" i18n="@@email.title">Email</h2>
+    @if (!instanceAdmin()) {
+      <p class="muted" i18n="@@email.adminsOnly">Only instance administrators configure email.</p>
+    } @else {
+      <p class="muted" i18n="@@email.intro">
+        Qualor sends a test message and alerts for instance administrators through an SMTP server
+        you choose. Nothing is sent until a server is set up here or by the operator.
+      </p>
+    }
+  </div>
+</div>
+@if (!instanceAdmin()) {
+  <!-- Nothing more: the server is asked nothing. -->
+} @else if (loadError(); as message) {
+  <p class="alert alert-error" role="alert">{{ message }}</p>
+} @else if (settings(); as s) {
+  <p class="email-state">
+    @if (state() === 'off') {
+      <span class="badge badge-none" i18n="@@email.state.off">Off: no SMTP server</span>
+    } @else if (state() === 'failing') {
+      <span class="badge badge-warn" i18n="@@email.state.failing"
+        >On · the last message failed</span
+      >
+    } @else if (s.lastMessage; as last) {
+      <span class="badge badge-passed" i18n="@@email.state.delivered"
+        >On · last message delivered {{ last.at | dateTime }}</span
+      >
+    } @else {
+      <span class="badge badge-passed" i18n="@@email.state.on">On</span>
+    }
+  </p>
+  @if (!s.publicUrlSet) {
+    <p class="alert alert-warn" i18n="@@email.noPublicUrl">
+      QUALOR_PUBLIC_URL is not set, so messages can't link to Qualor.
+    </p>
+  }
+
+  <div class="email-panels">
+    <form
+      id="email-server"
+      class="card panel"
+      aria-labelledby="email-server-heading"
+      novalidate
+      (submit)="save($event)"
+    >
+      <div class="panel-head">
+        <h3 id="email-server-heading" i18n="@@email.server.title">SMTP server</h3>
+        @if (fromEnvironment()) {
+          <span class="badge badge-tag" i18n="@@email.server.environment"
+            >Set by the environment</span
+          >
+        }
+      </div>
+      @if (fromEnvironment()) {
+        <p class="alert alert-info panel-alert" i18n="@@email.server.environmentHint">
+          The operator set the SMTP server with QUALOR_SMTP_URL, so it is shown here read-only. The
+          alerts below can still be changed.
+        </p>
+      }
+      <div class="setting-row">
+        <div class="setting-text">
+          <label for="email-host" i18n="@@email.server.host">Host</label>
+          <p id="email-host-hint" i18n="@@email.server.hostHint">
+            Such as smtp.office365.com. Empty turns email off when you save.
+          </p>
+        </div>
+        <div class="setting-field">
+          <input
+            id="email-host"
+            type="text"
+            maxlength="253"
+            autocomplete="off"
+            spellcheck="false"
+            [value]="values.host()"
+            [readOnly]="fromEnvironment()"
+            [attr.aria-invalid]="fieldError('host') ? true : null"
+            [attr.aria-describedby]="describedBy('host', true)"
+            (input)="edit('host', $event)"
+          />
+          @if (fieldError('host'); as message) {
+            <span id="email-host-error" class="field-error" role="alert">{{ message }}</span>
+          }
+        </div>
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <span id="email-security-label" class="setting-name" i18n="@@email.server.security"
+            >Security</span
+          >
+          <p id="email-security-hint">{{ securityHint() }}</p>
+        </div>
+        <div class="setting-field">
+          <div
+            class="segmented"
+            role="group"
+            aria-labelledby="email-security-label"
+            aria-describedby="email-security-hint"
+          >
+            @for (option of securities; track option.id) {
+              <button
+                type="button"
+                [attr.aria-pressed]="security() === option.id"
+                [disabled]="fromEnvironment()"
+                (click)="setSecurity(option.id)"
+              >
+                {{ option.label }}
+              </button>
+            }
+          </div>
+        </div>
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <label for="email-port" i18n="@@email.server.port">Port</label>
+        </div>
+        <div class="setting-field">
+          <input
+            id="email-port"
+            class="short"
+            type="text"
+            inputmode="numeric"
+            maxlength="5"
+            autocomplete="off"
+            [value]="values.port()"
+            [readOnly]="fromEnvironment()"
+            [attr.aria-invalid]="fieldError('port') ? true : null"
+            [attr.aria-describedby]="describedBy('port')"
+            (input)="edit('port', $event)"
+          />
+          @if (fieldError('port'); as message) {
+            <span id="email-port-error" class="field-error" role="alert">{{ message }}</span>
+          }
+        </div>
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <label for="email-username" i18n="@@email.server.username">Username</label>
+          <p id="email-username-hint" i18n="@@email.server.usernameHint">
+            Empty for a server that takes mail without signing in.
+          </p>
+        </div>
+        <div class="setting-field">
+          <input
+            id="email-username"
+            type="text"
+            maxlength="256"
+            autocomplete="off"
+            spellcheck="false"
+            [value]="values.username()"
+            [readOnly]="fromEnvironment()"
+            [attr.aria-invalid]="fieldError('username') ? true : null"
+            [attr.aria-describedby]="describedBy('username', true)"
+            (input)="edit('username', $event)"
+          />
+          @if (fieldError('username'); as message) {
+            <span id="email-username-error" class="field-error" role="alert">{{ message }}</span>
+          }
+        </div>
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          @if (replacingPassword() && !fromEnvironment()) {
+            <label for="email-password" i18n="@@email.server.password">Password</label>
+          } @else {
+            <span class="setting-name" i18n="@@email.server.password">Password</span>
+          }
+          <p id="email-password-hint" i18n="@@email.server.passwordHint">
+            Stored encrypted; Qualor never shows it again.
+          </p>
+        </div>
+        <div class="setting-field">
+          <p class="email-password-state">
+            @if (server()?.passwordSet && !removePassword()) {
+              <span class="badge badge-passed" i18n="@@email.server.passwordSet">Set</span>
+            } @else {
+              <span class="badge badge-none" i18n="@@email.server.passwordNotSet">Not set</span>
+            }
+          </p>
+          @if (server()?.passwordSet && !server()?.passwordReadable) {
+            <p class="alert alert-error" i18n="@@email.server.passwordUnreadable">
+              The stored password can't be decrypted (QUALOR_SECRET_KEY changed): enter it again.
+            </p>
+          }
+          @if (!fromEnvironment()) {
+            @if (replacingPassword()) {
+              <input
+                #passwordField
+                id="email-password"
+                type="password"
+                maxlength="1024"
+                autocomplete="new-password"
+                data-1p-ignore
+                data-lpignore="true"
+                spellcheck="false"
+                [attr.aria-invalid]="fieldError('password') ? true : null"
+                [attr.aria-describedby]="describedBy('password', true)"
+                (input)="clearError('password')"
+              />
+              @if (fieldError('password'); as message) {
+                <span id="email-password-error" class="field-error" role="alert">{{
+                  message
+                }}</span>
+              }
+            } @else {
+              <div class="email-buttons">
+                <button
+                  id="email-password-replace"
+                  type="button"
+                  class="btn"
+                  i18n="@@email.server.replace"
+                  (click)="replacePassword()"
+                >
+                  Replace
+                </button>
+                <button
+                  id="email-password-remove"
+                  type="button"
+                  class="btn btn-quiet"
+                  [attr.aria-pressed]="removePassword()"
+                  i18n="@@email.server.remove"
+                  (click)="toggleRemovePassword()"
+                >
+                  Remove
+                </button>
+              </div>
+            }
+          }
+        </div>
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <label for="email-from-name" i18n="@@email.server.fromName">From name</label>
+        </div>
+        <div class="setting-field">
+          <input
+            id="email-from-name"
+            type="text"
+            maxlength="100"
+            autocomplete="off"
+            [value]="values['from-name']()"
+            [readOnly]="fromEnvironment()"
+            [attr.aria-invalid]="fieldError('from-name') ? true : null"
+            [attr.aria-describedby]="describedBy('from-name')"
+            (input)="edit('from-name', $event)"
+          />
+          @if (fieldError('from-name'); as message) {
+            <span id="email-from-name-error" class="field-error" role="alert">{{ message }}</span>
+          }
+        </div>
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <label for="email-from-address" i18n="@@email.server.fromAddress">From address</label>
+          <p id="email-from-address-hint" i18n="@@email.server.fromAddressHint">
+            An address the SMTP server lets Qualor send from.
+          </p>
+        </div>
+        <div class="setting-field">
+          <input
+            id="email-from-address"
+            type="email"
+            maxlength="320"
+            autocomplete="off"
+            spellcheck="false"
+            [value]="values['from-address']()"
+            [readOnly]="fromEnvironment()"
+            [attr.aria-invalid]="fieldError('from-address') ? true : null"
+            [attr.aria-describedby]="describedBy('from-address', true)"
+            (input)="edit('from-address', $event)"
+          />
+          @if (fieldError('from-address'); as message) {
+            <span id="email-from-address-error" class="field-error" role="alert">{{
+              message
+            }}</span>
+          }
+        </div>
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <label for="email-reply-to" i18n="@@email.server.replyTo">Reply-to</label>
+          <p id="email-reply-to-hint" i18n="@@email.server.replyToHint">
+            Optional: where replies go, such as your help desk.
+          </p>
+        </div>
+        <div class="setting-field">
+          <input
+            id="email-reply-to"
+            type="email"
+            maxlength="320"
+            autocomplete="off"
+            spellcheck="false"
+            [value]="values['reply-to']()"
+            [readOnly]="fromEnvironment()"
+            [attr.aria-invalid]="fieldError('reply-to') ? true : null"
+            [attr.aria-describedby]="describedBy('reply-to', true)"
+            (input)="edit('reply-to', $event)"
+          />
+          @if (fieldError('reply-to'); as message) {
+            <span id="email-reply-to-error" class="field-error" role="alert">{{ message }}</span>
+          }
+        </div>
+      </div>
+      @if (!fromEnvironment()) {
+        <div class="email-actions">
+          <button
+            type="submit"
+            class="btn btn-primary"
+            [disabled]="saving()"
+            i18n="@@email.server.save"
+          >
+            Save
+          </button>
+          <span role="status" class="muted">{{ announcement() ?? '' }}</span>
+        </div>
+        @if (saveError(); as message) {
+          <p class="alert alert-error panel-alert" role="alert">{{ message }}</p>
+        }
+      }
+    </form>
+
+    <form
+      id="email-test"
+      class="card panel"
+      aria-labelledby="email-test-heading"
+      novalidate
+      (submit)="sendTest($event)"
+    >
+      <div class="panel-head">
+        <h3 id="email-test-heading" i18n="@@email.test.title">Send a test message</h3>
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <label for="email-test-to" i18n="@@email.test.to">To</label>
+          <p id="email-test-to-hint" i18n="@@email.test.toHint">
+            It goes out at once through the saved server, not through the form above.
+          </p>
+        </div>
+        <div class="setting-field">
+          <input
+            id="email-test-to"
+            type="email"
+            maxlength="320"
+            autocomplete="email"
+            spellcheck="false"
+            [value]="testTo()"
+            [attr.aria-invalid]="fieldError('test-to') ? true : null"
+            [attr.aria-describedby]="describedBy('test-to', true)"
+            (input)="editTestTo($event)"
+          />
+          @if (fieldError('test-to'); as message) {
+            <span id="email-test-to-error" class="field-error" role="alert">{{ message }}</span>
+          }
+          <div class="email-buttons">
+            <button
+              type="submit"
+              class="btn"
+              [disabled]="testing() || !server()"
+              i18n="@@email.test.send"
+            >
+              Send test
+            </button>
+          </div>
+          @if (testResult(); as result) {
+            @if (result.ok) {
+              <p class="alert alert-success" role="status" i18n="@@email.test.sent">
+                Sent in {{ result.ms }} ms. The server answered: <code>{{ result.response }}</code>
+              </p>
+            } @else {
+              <div class="alert alert-error" role="alert">
+                <p>{{ result.message }}</p>
+                @if (result.reply) {
+                  <code class="email-reply">{{ result.reply }}</code>
+                }
+              </div>
+            }
+          }
+        </div>
+      </div>
+    </form>
+
+    <section id="email-alerts" class="card panel" aria-labelledby="email-alerts-heading">
+      <div class="panel-head">
+        <h3 id="email-alerts-heading" i18n="@@email.alerts.title">Alerts for administrators</h3>
+      </div>
+      @if (alertsError(); as message) {
+        <p class="alert alert-error panel-alert" role="alert">{{ message }}</p>
+      }
+      <div class="setting-row">
+        <div class="setting-text">
+          <label for="email-alert-license" i18n="@@email.alerts.license">Licence expiry</label>
+          <p id="email-alert-license-hint" i18n="@@email.alerts.licenseHint">
+            30, 7 and 1 day before the licence expires, when its grace period starts, and when it
+            ends.
+          </p>
+        </div>
+        <div class="setting-field">
+          <input
+            id="email-alert-license"
+            type="checkbox"
+            aria-describedby="email-alert-license-hint"
+            [checked]="s.alerts.licenseExpiry"
+            (change)="setAlert('licenseExpiry', $event)"
+          />
+        </div>
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <label for="email-alert-webhooks" i18n="@@email.alerts.webhooks">Failing webhooks</label>
+          <p id="email-alert-webhooks-hint" i18n="@@email.alerts.webhooksHint">
+            When a webhook delivery gives up after its 7 attempts; at most one a day per webhook.
+          </p>
+        </div>
+        <div class="setting-field">
+          <input
+            id="email-alert-webhooks"
+            type="checkbox"
+            aria-describedby="email-alert-webhooks-hint"
+            [checked]="s.alerts.webhookFailures"
+            (change)="setAlert('webhookFailures', $event)"
+          />
+        </div>
+      </div>
+      <p class="email-recipients">
+        <span i18n="@@email.alerts.recipients">{s.administrators.total, plural,
+          =1 {Recipients: 1 administrator}
+          other {Recipients: {{ s.administrators.total }} administrators}
+        }</span>
+        @if (s.administrators.withoutEmail > 0) {
+          {{ ' '
+          }}<a
+            routerLink="/settings/users"
+            i18n="@@email.alerts.withoutEmail"
+            >{s.administrators.withoutEmail, plural,
+              =1 {1 has no email address}
+              other {{{ s.administrators.withoutEmail }} have no email address}
+            }</a
+          >
+        }
+      </p>
+    </section>
+
+    <section id="email-log" class="card panel" aria-labelledby="email-log-heading">
+      <div class="panel-head">
+        <h3 id="email-log-heading" i18n="@@email.log.title">Recent messages</h3>
+        <span class="panel-sub" i18n="@@email.log.kept">Kept 30 days</span>
+      </div>
+      @if (messages.error(); as message) {
+        <p class="alert alert-error panel-alert" role="alert">{{ message }}</p>
+      } @else if (messages.loaded() && messages.items().length === 0) {
+        <div class="panel-body">
+          <p class="muted" i18n="@@email.log.empty">No messages yet.</p>
+        </div>
+      } @else {
+        <div class="panel-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col" i18n="@@email.log.when">When</th>
+                <th scope="col" i18n="@@email.log.to">To</th>
+                <th scope="col" i18n="@@email.log.message">Message</th>
+                <th scope="col" i18n="@@email.log.status">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (m of messages.items(); track m.id) {
+                <tr>
+                  <td>{{ m.createdAt | dateTime }}</td>
+                  <td>{{ m.toAddress }}</td>
+                  <td>
+                    <span class="email-kind">{{ kindText(m.kind) }}</span>
+                    {{ m.subject }}
+                  </td>
+                  <td>
+                    <span [class]="statusBadge(m)">{{ statusText(m) }}</span>
+                    @if (m.lastError) {
+                      <code class="email-reply">{{ m.lastError }}</code>
+                    } @else if (m.smtpResponse) {
+                      <code class="email-reply">{{ m.smtpResponse }}</code>
+                    }
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+        @if (messages.nextCursor()) {
+          <div class="panel-foot">
+            <button
+              id="email-log-more"
+              type="button"
+              class="btn"
+              [disabled]="messages.loading()"
+              i18n="@@email.log.more"
+              (click)="messages.more()"
+            >
+              Load more
+            </button>
+          </div>
+        }
+      }
+    </section>
+  </div>
+}

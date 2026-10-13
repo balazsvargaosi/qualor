@@ -24,6 +24,7 @@ import {
   seedDemo,
   seedEnterprise,
   seedGitHubApp,
+  seedMail,
   seedRoles,
   seedSso,
   seedSsoIdentity,
@@ -269,6 +270,7 @@ async function main(): Promise<void> {
       gitlabToken: gitlab.token,
       gitlabProjectRef: GITLAB_PROJECT.path,
     });
+    await seedMail(seedUrl, credentials);
   } finally {
     await stop(seeding);
   }

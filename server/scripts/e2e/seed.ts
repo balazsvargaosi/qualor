@@ -817,6 +817,38 @@ export async function seedAi(
   });
 }
 
+/**
+ * Email (E1 spec) for the screenshots and the settings tests: a server nothing listens on (no real
+ * SMTP in the tests), so Settings → Email shows a configured server, its alerts and one failed
+ * test message in the log.
+ */
+export async function seedMail(base: string, credentials: SeedCredentials): Promise<void> {
+  const admin = new Client(base);
+  await admin.login(credentials.adminUsername, credentials.adminPassword);
+  await admin.json('PUT', '/api/v0/system/mail', {
+    server: {
+      host: '127.0.0.1',
+      port: 9,
+      security: 'none',
+      username: 'qualor',
+      password: ['e2e', 'smtp', 'password'].join('-'),
+      fromName: 'Qualor',
+      fromAddress: 'qualor@example.com',
+      replyTo: null,
+    },
+  });
+  // Nothing listens on port 9: the test message fails (502), and the log shows it.
+  const refused = await admin
+    .json('POST', '/api/v0/system/mail/test', { to: 'admin@example.com' })
+    .then(
+      () => null,
+      (err: unknown) => err,
+    );
+  if (!(refused instanceof Error) || !refused.message.includes(': 502 ')) {
+    throw new Error(`the e2e test message should have been refused: ${String(refused)}`);
+  }
+}
+
 /** The people of the roles tests (rbac-audit.md §17), with the passwords they end up with. */
 export interface RoleSeedUsers {
   /** An organisation admin of the default organisation who is not an instance admin. */

@@ -150,6 +150,14 @@ test('18 AI assistant settings, 19 issue with the AI panel', async ({ page }) =>
   await shoot(page, '19-issue-ai');
 });
 
+// E1 spec: a configured server (the seed's, which nothing answers) with one failed test message.
+test('36 email settings', async ({ page }) => {
+  await page.goto('/settings/email');
+  await expect(page.getByRole('heading', { name: 'Email', level: 2 })).toBeVisible();
+  await expect(page.getByText('On · the last message failed')).toBeVisible();
+  await shoot(page, '36-settings-email');
+});
+
 test('20 licence, 21 licence in its grace period with the admin banner', async ({ page }) => {
   await page.goto('/settings/license');
   await expect(page.getByText('Community edition')).toBeVisible();

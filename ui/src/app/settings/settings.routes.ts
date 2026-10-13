@@ -49,6 +49,11 @@ export const settingsRoutes: Routes = [
     loadComponent: () => import('./ai.page').then((m) => m.AiSettingsPage),
   },
   {
+    path: 'email',
+    title: $localize`:@@title.email:Email`,
+    loadComponent: () => import('./email.page').then((m) => m.EmailSettingsPage),
+  },
+  {
     path: 'license',
     title: $localize`:@@title.license:Licence`,
     loadComponent: () => import('./license.page').then((m) => m.LicensePage),

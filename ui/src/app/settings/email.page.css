@@ -1,0 +1,55 @@
+/* Settings → Email (E1 spec): the state line, then four panels of setting rows. */
+.email-state {
+  margin: 0 0 16px;
+}
+.email-panels {
+  display: grid;
+  gap: 16px;
+}
+.email-panels > * {
+  margin: 0;
+}
+.email-panels .panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding-bottom: 14px;
+}
+.email-panels .panel-head h3 {
+  margin: 0;
+}
+.email-password-state {
+  margin: 0;
+}
+.email-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.email-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 12px 22px;
+  border-top: 1px solid var(--hairline);
+}
+.email-recipients {
+  margin: 0;
+  padding: 14px 22px;
+  border-top: 1px solid var(--hairline);
+  font-size: 13px;
+}
+.email-kind {
+  display: block;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.email-reply {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

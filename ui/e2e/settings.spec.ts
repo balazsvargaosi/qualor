@@ -76,6 +76,7 @@ test.describe('on a tablet', () => {
     '/settings/github',
     '/settings/repositories',
     '/settings/ai',
+    '/settings/email',
     '/settings/license',
   ]) {
     test(`${path} never scrolls sideways at 768px`, async ({ page }) => {
@@ -117,6 +118,7 @@ test.describe('on a phone', () => {
     '/settings/github',
     '/settings/repositories',
     '/settings/ai',
+    '/settings/email',
     '/settings/license',
   ]) {
     test(`${path} never scrolls sideways`, async ({ page }) => {
