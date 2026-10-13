@@ -20,6 +20,8 @@ export class LogBuffer extends Writable {
   private head = 0;
   private bytes = 0;
   private partial = '';
+  /** The unterminated line grew over `maxBytes`: the rest of it, up to its newline, is dropped. */
+  private discarding = false;
 
   constructor({
     maxLines = LOG_BUFFER_MAX_LINES,
@@ -34,8 +36,22 @@ export class LogBuffer extends Writable {
     const text = this.partial + (typeof chunk === 'string' ? chunk : chunk.toString('utf8'));
     const parts = text.split('\n');
     this.partial = parts.pop() ?? '';
-    for (const line of parts) if (line !== '') this.add(line);
+    parts.forEach((line, i) => {
+      // The tail of a line that was already too long: it ends here, and is dropped too.
+      if (i === 0 && this.discarding) this.discarding = false;
+      else if (line !== '') this.add(line);
+    });
+    if (this.discarding || this.tooLong(this.partial)) {
+      this.partial = '';
+      this.discarding = true;
+    }
     done();
+  }
+
+  /** Over the byte cap: UTF-8 takes at least one and at most three bytes per UTF-16 unit. */
+  private tooLong(text: string): boolean {
+    if (text.length * 3 <= this.maxBytes) return false;
+    return text.length > this.maxBytes || Buffer.byteLength(text, 'utf8') > this.maxBytes;
   }
 
   /** The kept lines, oldest first, each without its trailing newline. */

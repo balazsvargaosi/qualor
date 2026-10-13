@@ -38,6 +38,19 @@ describe('LogBuffer', () => {
     expect(buffer.snapshot()).toEqual(['ok']);
   });
 
+  it('holds no unterminated line over maxBytes, and drops the rest of it up to its newline', () => {
+    const buffer = new LogBuffer({ maxBytes: 8 });
+    buffer.write('ok\nabcd');
+    buffer.write('efghij'); // 10 bytes without a newline: over the cap
+    expect((buffer as unknown as { partial: string }).partial).toBe('');
+    buffer.write('klmn');
+    expect((buffer as unknown as { partial: string }).partial).toBe('');
+    buffer.write('op\nnext\n');
+    expect(buffer.snapshot()).toEqual(['ok', 'next']);
+    buffer.write('a\n');
+    expect(buffer.snapshot()).toEqual(['ok', 'next', 'a']);
+  });
+
   it('holds the caps over many writes', () => {
     const buffer = new LogBuffer({ maxLines: 2000 });
     for (let i = 0; i < 10000; i++) buffer.write(`line ${i}\n`);

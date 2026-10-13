@@ -2,7 +2,8 @@ import { crc32 } from 'node:zlib';
 
 /** The classic zip format has 32-bit sizes and offsets, and this writer has no ZIP64. */
 const MAX_ARCHIVE_BYTES = 4 * 1024 ** 3 - 1;
-const MAX_ENTRIES = 0xffff;
+/** 0xFFFF in the end record's counts tells some readers to look for a ZIP64 record. */
+export const MAX_ZIP_ENTRIES = 0xfffe;
 
 export class ZipTooLargeError extends Error {
   constructor(message = 'the archive would be larger than 4 GiB') {
@@ -21,10 +22,11 @@ function dosDateTime(now: Date): { time: number; date: number } {
 
 /**
  * A zip archive of stored (uncompressed) entries: UTF-8 names (flag bit 11), CRC-32 per entry,
- * the central directory and the end record. No ZIP64: more than 4 GiB is refused.
+ * the central directory and the end record. No ZIP64: more than 4 GiB or more than
+ * {@link MAX_ZIP_ENTRIES} entries is refused.
  */
 export function zipStore(files: { name: string; data: Buffer }[]): Buffer {
-  if (files.length > MAX_ENTRIES) throw new ZipTooLargeError('too many entries for a zip');
+  if (files.length > MAX_ZIP_ENTRIES) throw new ZipTooLargeError('too many entries for a zip');
   const { time, date } = dosDateTime(new Date());
   const names = files.map((file) => Buffer.from(file.name, 'utf8'));
   let total = 22;
