@@ -19,6 +19,7 @@ import type {
   PluginPortfolio,
   PortfolioAggregate,
   PortfolioOverview,
+  PortfolioProjectRow,
   QualorPlugin,
 } from '../plugins/contract';
 import { createPortfolioService, readSnapshot } from './service';
@@ -38,7 +39,14 @@ function idAt(iso: string): string {
 /** The service on the fixed clock; the plugin's context holds the one on the transaction's. */
 let fixed: PluginPortfolio;
 
-type Query = { scope?: string; organizationId?: string; granularity?: string };
+type Query = {
+  scope?: string;
+  organizationId?: string;
+  granularity?: string;
+  sort?: string;
+  cursor?: string;
+  limit?: string;
+};
 const inputOf = (q: Query) =>
   (q.scope === 'organization'
     ? { scope: 'organization', organizationId: q.organizationId }
@@ -61,6 +69,19 @@ const FIXTURE: QualorPlugin = {
         return fixed.overview(req, inputOf(q), {
           granularity: (q.granularity ?? 'week') as never,
         });
+      });
+      app.get('/t/portfolio/projects', async (req) => {
+        const q = req.query as Query;
+        return fixed.projects(req, inputOf(q), {
+          sort: (q.sort ?? 'key') as never,
+          ...(q.cursor === undefined ? {} : { cursor: q.cursor }),
+          limit: Number(q.limit ?? '50'),
+        });
+      });
+      app.get('/t/portfolio/export', async (req) => {
+        const rows: PortfolioProjectRow[] = [];
+        for await (const row of fixed.exportRows(req, inputOf(req.query as Query))) rows.push(row);
+        return rows;
       });
     });
   },
@@ -748,5 +769,180 @@ describe('ctx.portfolio overview (4E-2 §1, §2)', () => {
       code: 'FEATURE_NOT_LICENSED',
       message: 'The enterprise feature "portfolio" is not licensed',
     });
+  });
+
+  // ─── projects: sorted pages and the cursor (4E-2 §2) ─────────────────────────────────────────
+
+  type Page = { items: PortfolioProjectRow[]; nextCursor: string | null };
+  const read = async <T>(
+    session: Session,
+    path: string,
+    query: Query,
+  ): Promise<{ status: number; body: T & { code?: string; errors?: unknown } }> => {
+    const qs = new URLSearchParams(
+      Object.entries(query).filter((e): e is [string, string] => e[1] !== undefined),
+    ).toString();
+    const res = await ctx.app.inject({
+      method: 'GET',
+      url: `/api/v0/ee/t/portfolio/${path}?${qs}`,
+      headers: session.headers,
+    });
+    return { status: res.statusCode, body: res.json() };
+  };
+  const page = (session: Session, query: Query) => read<Page>(session, 'projects', query);
+  const keysOf = (rows: PortfolioProjectRow[]) => rows.map((r) => r.project.key);
+  /** Projects that tie on the sort value, in the tie-break order: by project id. */
+  const tie = (...keys: string[]) => [...keys].sort((a, b) => (ids[a]! < ids[b]! ? -1 : 1));
+
+  /** Every row of a sort, read `limit` at a time through the cursor. */
+  const pageThrough = async (session: Session, query: Query, limit: number) => {
+    const seen: PortfolioProjectRow[] = [];
+    const sizes: number[] = [];
+    let cursor: string | undefined;
+    for (let i = 0; i < 20; i++) {
+      const { status, body } = await page(session, { ...query, limit: String(limit), cursor });
+      expect(status, JSON.stringify(body)).toBe(200);
+      seen.push(...body.items);
+      sizes.push(body.items.length);
+      if (body.nextCursor === null) return { seen, sizes };
+      cursor = body.nextCursor;
+    }
+    throw new Error('the cursor never ended');
+  };
+
+  /** The sorts over the seed, computed after the seed (tie() reads the ids). */
+  const sorted = (): [string, string[]][] => [
+    // R5: organisation key, then project key, in byte order (upper case first).
+    ['key', ['alpha', 'beta', 'delta', 'gamma', 'Zulu', 'omega']],
+    // failed, error, none, passed, then never analysed.
+    ['gate', [...tie('beta', 'omega'), 'delta', ...tie('alpha', 'Zulu'), 'gamma']],
+    // E first; delta (no measures) and gamma (never analysed) last.
+    ['security', ['beta', 'omega', ...tie('alpha', 'Zulu'), ...tie('delta', 'gamma')]],
+    ['reliability', ['alpha', ...tie('beta', 'omega', 'Zulu'), ...tie('delta', 'gamma')]],
+    ['issues', ['alpha', 'beta', 'omega', 'Zulu', ...tie('delta', 'gamma')]],
+    ['ncloc', ['beta', 'alpha', 'omega', 'Zulu', ...tie('delta', 'gamma')]],
+    // beta has no coverage: with the unmeasured, last.
+    ['coverage', ['omega', 'alpha', 'Zulu', ...tie('beta', 'delta', 'gamma')]],
+    // Oldest first, and never analysed before everything (the most stale).
+    ['lastAnalysis', ['gamma', 'beta', 'omega', 'Zulu', 'delta', 'alpha']],
+  ];
+
+  it('sorts the projects by each sort, nulls in their place', async () => {
+    for (const [sort, expected] of sorted()) {
+      const { status, body } = await page(root, { scope: 'all', sort, limit: '100' });
+      expect(status, JSON.stringify(body)).toBe(200);
+      expect(keysOf(body.items), sort).toEqual(expected);
+      expect(body.nextCursor).toBeNull();
+    }
+  });
+
+  it('pages through every sort with the cursor, every row exactly once', async () => {
+    for (const [sort, expected] of sorted()) {
+      for (const limit of [1, 2, 4]) {
+        const { seen, sizes } = await pageThrough(root, { scope: 'all', sort }, limit);
+        expect(keysOf(seen), `${sort}, limit ${limit}`).toEqual(expected);
+        // A full last page has no next cursor: no empty page at the end.
+        expect(sizes.at(-1)).toBeGreaterThan(0);
+        expect(sizes.slice(0, -1).every((n) => n === limit)).toBe(true);
+      }
+    }
+  });
+
+  it('serves the same rows as the overview, and only what the user can read', async () => {
+    const all = await page(root, { scope: 'all', sort: 'key', limit: '100' });
+    const { body } = await overview(root, { scope: 'all' });
+    const alpha = all.body.items.find((r) => r.project.key === 'alpha');
+    expect(alpha).toEqual(body.attention.mostSevere.find((r) => r.project.key === 'alpha'));
+    const gamma = all.body.items.find((r) => r.project.key === 'gamma');
+    expect(gamma).toEqual(body.attention.abandoned.find((r) => r.project.key === 'gamma'));
+
+    const inEast = await page(member, { scope: 'organization', organizationId: east, sort: 'key' });
+    expect(keysOf(inEast.body.items)).toEqual(['alpha', 'beta', 'delta', 'gamma']);
+    const memberAll = await page(member, { scope: 'all', sort: 'ncloc' });
+    expect(keysOf(memberAll.body.items)).toEqual(['beta', 'alpha', ...tie('delta', 'gamma')]);
+    const granted = await page(grantOnly, { scope: 'all', sort: 'gate' });
+    expect(keysOf(granted.body.items)).toEqual(['alpha']);
+    expect((await page(outsider, { scope: 'all' })).body).toEqual({ items: [], nextCursor: null });
+    expect((await page(outsider, { scope: 'organization', organizationId: east })).status).toBe(
+      404,
+    );
+  });
+
+  it('answers 422 for a bad cursor, sort or limit', async () => {
+    const encode = (v: unknown) => Buffer.from(JSON.stringify(v), 'utf8').toString('base64url');
+    const keyCursor = (await page(root, { scope: 'all', sort: 'key', limit: '1' })).body
+      .nextCursor!;
+    const dateCursor = (await page(root, { scope: 'all', sort: 'lastAnalysis', limit: '2' })).body
+      .nextCursor!;
+    for (const [sort, cursor] of [
+      ['key', 'not-a-cursor'],
+      ['key', encode({ v: ['east', 'alpha'] })],
+      ['key', encode({ v: ['east', 'alpha'], id: 'not-a-uuid' })],
+      ['key', encode({ v: ['east', 'alpha'], id: ids.alpha, extra: 1 })],
+      // A cursor of one sort is no cursor of another.
+      ['ncloc', keyCursor],
+      ['key', dateCursor],
+      ['gate', encode({ v: 4, id: ids.alpha })],
+      ['security', encode({ v: 0, id: ids.alpha })],
+      ['lastAnalysis', encode({ v: '2026-10-13', id: ids.alpha })],
+    ] as const) {
+      const { status, body } = await page(root, { scope: 'all', sort, cursor });
+      expect(status, `${sort} ${cursor}`).toBe(422);
+      expect(body.errors).toEqual([{ path: 'query.cursor', message: 'Invalid cursor' }]);
+    }
+    for (const [query, path] of [
+      [{ sort: 'name' }, 'query.sort'],
+      [{ limit: '0' }, 'query.limit'],
+      [{ limit: '101' }, 'query.limit'],
+      [{ limit: '2.5' }, 'query.limit'],
+    ] as const) {
+      const { status, body } = await page(root, { scope: 'all', ...query });
+      expect(status, JSON.stringify(query)).toBe(422);
+      expect(body.errors).toEqual([expect.objectContaining({ path })]);
+    }
+    // A null sort value is a cursor value like any other.
+    const ncloc = await page(root, { scope: 'all', sort: 'ncloc', limit: '5' });
+    const tail = await page(root, { scope: 'all', sort: 'ncloc', cursor: ncloc.body.nextCursor! });
+    expect(tail.status).toBe(200);
+    expect(tail.body.items).toHaveLength(1);
+  });
+
+  // ─── exportRows (4E-2 §2) ────────────────────────────────────────────────────────────────────
+
+  it('exports every visible row by key, and only those (grant-only user)', async () => {
+    const all = await read<PortfolioProjectRow[]>(root, 'export', { scope: 'all' });
+    expect(all.status).toBe(200);
+    expect(keysOf(all.body)).toEqual(['alpha', 'beta', 'delta', 'gamma', 'Zulu', 'omega']);
+    const paged = await page(root, { scope: 'all', sort: 'key', limit: '100' });
+    expect(all.body).toEqual(paged.body.items);
+
+    const granted = await read<PortfolioProjectRow[]>(grantOnly, 'export', { scope: 'all' });
+    expect(keysOf(granted.body)).toEqual(['alpha']);
+    const inEast = await read<PortfolioProjectRow[]>(grantOnly, 'export', {
+      scope: 'organization',
+      organizationId: east,
+    });
+    expect(keysOf(inEast.body)).toEqual(['alpha']);
+    const inNorth = await read<PortfolioProjectRow[]>(grantOnly, 'export', {
+      scope: 'organization',
+      organizationId: north,
+    });
+    expect(inNorth.status).toBe(404);
+    const none = await read<PortfolioProjectRow[]>(outsider, 'export', { scope: 'all' });
+    expect(none.body).toEqual([]);
+  });
+
+  it('gates projects and exportRows on the feature', async () => {
+    const off = createPortfolioService({ db: ctx.db, isFeatureActive: () => false });
+    const problem = {
+      status: 403,
+      code: 'FEATURE_NOT_LICENSED',
+      message: 'The enterprise feature "portfolio" is not licensed',
+    };
+    await expect(
+      off.projects({} as FastifyRequest, { scope: 'all' }, { sort: 'key', limit: 50 }),
+    ).rejects.toMatchObject(problem);
+    const rows = off.exportRows({} as FastifyRequest, { scope: 'all' });
+    await expect(rows[Symbol.asyncIterator]().next()).rejects.toMatchObject(problem);
   });
 });

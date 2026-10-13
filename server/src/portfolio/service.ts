@@ -1,11 +1,14 @@
 import { sql } from 'drizzle-orm';
+import type { FastifyRequest } from 'fastify';
+import { z } from 'zod';
 import { requireOrganizationAccess, requireUser, type AccessContext } from '../auth/access';
+import type { UserPrincipal } from '../auth/principal';
 import type { Db, Executor } from '../db/client';
 import { pgErrorCode } from '../db/errors';
 import { uuidv7Timestamp } from '../db/ids';
+import { decodeKeyset, encodeKeyset } from '../http/keyset';
 import { notFound, ProblemError, validationFailed } from '../http/problem';
 import type { PluginPortfolio } from '../plugins/contract';
-import { PluginError } from '../plugins/registry';
 import { periods, type Granularity } from './periods';
 import {
   activity,
@@ -23,6 +26,8 @@ import type {
   PortfolioAggregate,
   PortfolioOverview,
   PortfolioProjectRow,
+  PortfolioScopeInput,
+  PortfolioSort,
   Rating,
   SeverityCounts,
 } from './types';
@@ -39,6 +44,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const RATINGS: readonly Rating[] = ['A', 'B', 'C', 'D', 'E'];
 const SEVERITIES = ['blocker', 'high', 'medium', 'low', 'info'] as const;
 const GATES = ['passed', 'failed', 'error', 'none'] as const;
+/** 4E-2 §2: a page holds 1–100 rows. */
+const MAX_PAGE = 100;
 
 /** A project's row at a time, with the quality sums the aggregates need besides the row. */
 export interface ProjectState extends PortfolioProjectRow {
@@ -286,6 +293,91 @@ function byOrganization(
     .map(([id, g]) => ({ id, key: g.key, name: g.name, ...aggregate(g.rows) }));
 }
 
+/** R5: code-unit (byte) order, as SQL's `COLLATE "C"`. */
+const byteOrder = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+/** Ascending, a missing value last. */
+const ascNullLast = (a: number | null, b: number | null): number =>
+  a === b ? 0 : a === null ? 1 : b === null ? -1 : a - b;
+/** Ascending, a missing value first. */
+const ascNullFirst = (a: string | null, b: string | null): number =>
+  a === b ? 0 : a === null ? -1 : b === null ? 1 : byteOrder(a, b);
+/** A rating as its measure, 1 (A) to 5 (E). */
+const ratingValue = (r: Rating | null): number | null =>
+  r === null ? null : RATINGS.indexOf(r) + 1;
+const GATE_RANK: Record<NonNullable<PortfolioProjectRow['gate']>, number> = {
+  failed: 0,
+  error: 1,
+  none: 2,
+  passed: 3,
+};
+
+/**
+ * One sort of the projects table: the row's sort value (what the cursor carries as `v`), the
+ * order of two values, and the schema a cursor's `v` must match. Ties are broken by project id.
+ */
+interface SortOrder {
+  value: (row: PortfolioProjectRow) => unknown;
+  compare: (a: unknown, b: unknown) => number;
+  schema: z.ZodType;
+}
+
+/** A sort over values of type V: `compare` only ever sees `value`'s results or `schema`'s. */
+function sortOrder<V>(
+  value: (row: PortfolioProjectRow) => V,
+  compare: (a: V, b: V) => number,
+  schema: z.ZodType<V>,
+): SortOrder {
+  return { value, compare: compare as (a: unknown, b: unknown) => number, schema };
+}
+
+const ratingOrder = (rating: (row: PortfolioProjectRow) => Rating | null): SortOrder =>
+  sortOrder((r) => ratingValue(rating(r)), desc, z.number().int().min(1).max(5).nullable());
+const measureOrder = (key: 'issues' | 'ncloc' | 'coverage'): SortOrder =>
+  sortOrder((r) => r[key], desc, z.number().nullable());
+
+/** 4E-2 §2: the sorts of the projects table. A missing value sorts last, except where noted. */
+const SORTS: Record<PortfolioSort, SortOrder> = {
+  key: sortOrder(
+    (r): [string, string] => [r.organization.key, r.project.key],
+    (a, b) => byteOrder(a[0], b[0]) || byteOrder(a[1], b[1]),
+    z.tuple([z.string(), z.string()]),
+  ),
+  gate: sortOrder(
+    (r) => (r.gate === null ? null : GATE_RANK[r.gate]),
+    ascNullLast,
+    z.number().int().min(0).max(3).nullable(),
+  ),
+  security: ratingOrder((r) => r.securityRating),
+  reliability: ratingOrder((r) => r.reliabilityRating),
+  issues: measureOrder('issues'),
+  ncloc: measureOrder('ncloc'),
+  coverage: measureOrder('coverage'),
+  // Oldest first, and never analysed before all: those are the most stale. The values are
+  // toISOString()'s, so byte order is time order.
+  lastAnalysis: sortOrder(
+    (r) => r.lastAnalysisAt,
+    ascNullFirst,
+    z.iso.datetime({ precision: 3 }).nullable(),
+  ),
+};
+
+/** A cursor: the last row's sort value and project id. */
+interface Position {
+  v: unknown;
+  id: string;
+}
+
+function sortedRows(rows: readonly ProjectState[], order: SortOrder) {
+  const compare = (a: Position, b: Position): number =>
+    order.compare(a.v, b.v) || byteOrder(a.id, b.id);
+  const entries = rows.map((s) => {
+    const row = rowOf(s);
+    return { row, at: { v: order.value(row), id: row.project.id } satisfies Position };
+  });
+  entries.sort((a, b) => compare(a.at, b.at));
+  return { entries, compare };
+}
+
 /**
  * 4E-2 §2: the core service behind `ctx.portfolio`, computed on request over the projects the
  * caller can read (the filter of `GET /projects`). Every member answers 403 FEATURE_NOT_LICENSED
@@ -315,6 +407,67 @@ export function createPortfolioService(deps: {
     }
   };
 
+  /**
+   * §2 access for a scope: the organisation scope needs `org.read` on it (an invisible or
+   * malformed one is 404); the all scope only a signed-in user. Its organisation id, or null.
+   */
+  const organizationOfScope = async (
+    principal: UserPrincipal,
+    input: PortfolioScopeInput,
+  ): Promise<string | null> => {
+    const scope = input as Partial<{ scope: string; organizationId: string }>;
+    if (scope.scope === 'all') return null;
+    if (scope.scope !== 'organization') {
+      throw validationFailed([{ path: 'query.scope', message: 'Use organization or all' }]);
+    }
+    if (typeof scope.organizationId !== 'string' || !UUID.test(scope.organizationId)) {
+      throw notFound('Organization');
+    }
+    await requireOrganizationAccess(access, principal, scope.organizationId, 'org.read');
+    return scope.organizationId;
+  };
+
+  const clock = async (tx: Executor): Promise<Date> =>
+    deps.now ? deps.now() : await transactionNow(tx);
+
+  /**
+   * §1: the states of `visible` at each time in `ends`. `rowsAt(i)` counts only the projects
+   * existing by then (R4), unless `all` asks for every one.
+   */
+  const statesOver = async (tx: Executor, visible: readonly VisibleProject[], ends: Date[]) => {
+    const ids = visible.map((p) => p.id);
+    const states = await statesAt(tx, ids, ends);
+    const analysisIds = [
+      ...new Set(states.flatMap((m) => [...m.values()].map((s) => s.analysisId))),
+    ];
+    const values = await measuresOf(tx, analysisIds);
+    const findings = await currentFindings(tx, ids);
+    return (i: number, existing: 'existing' | 'all' = 'existing'): ProjectState[] => {
+      const end = ends[i];
+      if (end === undefined) throw new RangeError(`no state time ${i}`);
+      return visible
+        .filter((p) => existing === 'all' || p.createdAt.getTime() <= end.getTime())
+        .map((p) => {
+          const branch = states[i]?.get(p.id);
+          return projectState(
+            p,
+            branch,
+            branch === undefined ? undefined : values.get(branch.analysisId),
+            end,
+            findings.get(p.id),
+          );
+        });
+    };
+  };
+
+  /** The current rows of every project in the scope the caller can read, in one snapshot. */
+  const currentRows = (principal: UserPrincipal, organizationId: string | null) =>
+    readSnapshot(db, timeoutMs, async (tx) => {
+      const now = await clock(tx);
+      const visible = await visibleProjects(tx, principal.user, organizationId);
+      return (await statesOver(tx, visible, [now]))(0, 'all');
+    });
+
   const overview: PluginPortfolio['overview'] = async (request, input, options) => {
     gate();
     const principal = requireUser(request, 'read');
@@ -322,51 +475,26 @@ export function createPortfolioService(deps: {
     if (granularity !== 'week' && granularity !== 'month') {
       throw validationFailed([{ path: 'query.granularity', message: 'Use week or month' }]);
     }
-    const scope = input as Partial<{ scope: string; organizationId: string }>;
-    let organizationId: string | null = null;
-    if (scope.scope === 'organization') {
-      if (typeof scope.organizationId !== 'string' || !UUID.test(scope.organizationId)) {
-        throw notFound('Organization');
-      }
-      await requireOrganizationAccess(access, principal, scope.organizationId, 'org.read');
-      organizationId = scope.organizationId;
-    } else if (scope.scope !== 'all') {
-      throw validationFailed([{ path: 'query.scope', message: 'Use organization or all' }]);
-    }
+    const organizationId = await organizationOfScope(principal, input);
 
     return readSnapshot(db, timeoutMs, async (tx): Promise<PortfolioOverview> => {
-      const generatedAt = deps.now ? deps.now() : await transactionNow(tx);
+      const generatedAt = await clock(tx);
       const organization =
         organizationId === null ? null : await organizationOf(tx, organizationId);
       if (organizationId !== null && organization === null) throw notFound('Organization');
       const visible = await visibleProjects(tx, principal.user, organizationId);
-      const ids = visible.map((p) => p.id);
       const buckets = periods(generatedAt, granularity);
-      const ends = buckets.map((b) => b.end);
-      const states = await statesAt(tx, ids, ends);
-      const analysisIds = [
-        ...new Set(states.flatMap((m) => [...m.values()].map((s) => s.analysisId))),
-      ];
-      const values = await measuresOf(tx, analysisIds);
-      const findings = await currentFindings(tx, ids);
-      const counts = await activity(tx, ids, [...buckets.map((b) => b.start), generatedAt]);
+      const rowsAt = await statesOver(
+        tx,
+        visible,
+        buckets.map((b) => b.end),
+      );
+      const counts = await activity(
+        tx,
+        visible.map((p) => p.id),
+        [...buckets.map((b) => b.start), generatedAt],
+      );
 
-      /** The rows at bucket i's end; a trend point counts only the projects existing by then (R4). */
-      const rowsAt = (i: number, existing: 'existing' | 'all' = 'existing'): ProjectState[] => {
-        const end = ends[i] ?? generatedAt;
-        return visible
-          .filter((p) => existing === 'all' || p.createdAt.getTime() <= end.getTime())
-          .map((p) => {
-            const branch = states[i]?.get(p.id);
-            return projectState(
-              p,
-              branch,
-              branch === undefined ? undefined : values.get(branch.analysisId),
-              end,
-              findings.get(p.id),
-            );
-          });
-      };
       // The last bucket ends at generatedAt: its state is the state now, over every visible project.
       const now = rowsAt(buckets.length - 1, 'all');
       const sum = (key: 'secrets' | 'vulnerableDependencies') =>
@@ -393,14 +521,59 @@ export function createPortfolioService(deps: {
     });
   };
 
-  // 4E-2 §2: paging and the export land in the next step.
-  const notImplemented = (): never => {
-    throw new PluginError('portfolio service not implemented');
+  /**
+   * 4E-2 §2: one page of the current rows in `sort` order, after the cursor's row. The page is
+   * cut here, after the scope's whole current state: one state query, over at most a few
+   * thousand projects.
+   */
+  const projectsPage: PluginPortfolio['projects'] = async (request, input, page) => {
+    gate();
+    const principal = requireUser(request, 'read');
+    const { sort, cursor, limit } = page as Partial<typeof page>;
+    const order = typeof sort === 'string' && Object.hasOwn(SORTS, sort) ? SORTS[sort] : undefined;
+    if (order === undefined) {
+      throw validationFailed([
+        { path: 'query.sort', message: `Use one of ${Object.keys(SORTS).join(', ')}` },
+      ]);
+    }
+    if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > MAX_PAGE) {
+      throw validationFailed([
+        { path: 'query.limit', message: `limit is a whole number from 1 to ${MAX_PAGE}` },
+      ]);
+    }
+    const after = decodeKeyset(cursor, z.strictObject({ v: order.schema, id: z.uuid() }));
+    const organizationId = await organizationOfScope(principal, input);
+
+    const { entries, compare } = sortedRows(await currentRows(principal, organizationId), order);
+    const first = after === undefined ? 0 : entries.findIndex((e) => compare(e.at, after) > 0);
+    const rest = first < 0 ? [] : entries.slice(first);
+    const items = rest.slice(0, limit);
+    const last = items.at(-1);
+    return {
+      items: items.map((e) => e.row),
+      nextCursor: rest.length > items.length && last ? encodeKeyset(last.at) : null,
+    };
   };
+
+  /**
+   * 4E-2 §2: every current row of the scope, by key (organisation, then project). Computed once,
+   * in one snapshot that is closed before the first row is yielded, so a slow reader holds no
+   * connection. The checks run on the first `next()`.
+   */
+  async function* exportRows(
+    request: FastifyRequest,
+    input: PortfolioScopeInput,
+  ): AsyncGenerator<PortfolioProjectRow> {
+    gate();
+    const principal = requireUser(request, 'read');
+    const organizationId = await organizationOfScope(principal, input);
+    const { entries } = sortedRows(await currentRows(principal, organizationId), SORTS.key);
+    for (const e of entries) yield e.row;
+  }
 
   return Object.freeze({
     overview,
-    projects: notImplemented,
-    exportRows: notImplemented,
+    projects: projectsPage,
+    exportRows,
   } satisfies PluginPortfolio);
 }
