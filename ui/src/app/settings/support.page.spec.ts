@@ -52,6 +52,23 @@ describe('SupportPage (4E-3b §5)', () => {
     expect(link.hasAttribute('download')).toBe(true);
   });
 
+  it('says each download is recorded in the audit log only while the audit log is active', async () => {
+    setup({ admin: true, features: ['support-bundle', 'audit-log'] });
+    const audited = await render();
+    expect(audited.querySelector('#support-audited')?.textContent?.trim()).toBe(
+      'Each download is recorded in the audit log. Only one bundle is prepared at a time.',
+    );
+    expect(audited.querySelector('#support-one-at-a-time')).toBeNull();
+    TestBed.resetTestingModule();
+    setup({ admin: true, features: ['support-bundle'] });
+    const plain = await render();
+    expect(plain.querySelector('#support-audited')).toBeNull();
+    expect(plain.textContent).not.toContain('audit log');
+    expect(plain.querySelector('#support-one-at-a-time')?.textContent?.trim()).toBe(
+      'Only one bundle is prepared at a time.',
+    );
+  });
+
   it('shows both commands for when the web UI is unreachable, and the support address', async () => {
     setup({ admin: true });
     const root = await render();

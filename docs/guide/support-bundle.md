@@ -49,8 +49,9 @@ page appears only for instance admins on a server whose licence lists `support-b
   the refusal as a failed download or a small error page.
 - With several replicas, the logs in the bundle come from the replica that served your request.
   Download it again, or use the command below on the other replicas, to see theirs.
-- **Each download is recorded in the audit log** as `support.bundle_downloaded`, with who
-  downloaded it and the size ([Roles and the audit log](./roles-and-audit.md#what-is-recorded)).
+- **Each download is recorded in the audit log** (the feature `audit-log`, which both plans
+  include) as `support.bundle_downloaded`, with who downloaded it and the size
+  ([Roles and the audit log](./roles-and-audit.md#what-is-recorded)).
 
 Through the API, `GET /api/v0/ee/support/bundle` returns the zip to an instance admin, as an
 attachment.

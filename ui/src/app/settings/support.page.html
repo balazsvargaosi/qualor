@@ -43,9 +43,15 @@
           <ng-container i18n="@@support.download">Download support bundle</ng-container>
         </a>
       </p>
-      <p class="muted" i18n="@@support.audited">
-        Each download is recorded in the audit log. Only one bundle is prepared at a time.
-      </p>
+      @if (audited()) {
+        <p id="support-audited" class="muted" i18n="@@support.audited">
+          Each download is recorded in the audit log. Only one bundle is prepared at a time.
+        </p>
+      } @else {
+        <p id="support-one-at-a-time" class="muted" i18n="@@support.oneAtATime">
+          Only one bundle is prepared at a time.
+        </p>
+      }
     </div>
   </section>
 

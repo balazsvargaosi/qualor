@@ -1805,6 +1805,7 @@
     "support.never": " It never contains secrets (keys, passwords, tokens, webhook secrets or the licence key itself) or your source code. ",
     "support.download": "Download support bundle",
     "support.audited": " Each download is recorded in the audit log. Only one bundle is prepared at a time. ",
+    "support.oneAtATime": " Only one bundle is prepared at a time. ",
     "support.commandTitle": "When the web UI is down",
     "support.commandIntro": " Run a command in the folder of your Docker Compose file. The archive has the same files without the logs; add the output of {$START_TAG_CODE}docker logs --tail 5000{$CLOSE_TAG_CODE} for the server container. ",
     "support.commandRunning": "While the server is running",
