@@ -54,6 +54,9 @@ secrets:
   existingSecret: ''
   secretKey: ''
   bootstrapAdminPassword: ''
+  # Email (https://qualor.dev/docs/email): QUALOR_SMTP_URL, which may hold the SMTP password.
+  # With existingSecret, put the key QUALOR_SMTP_URL into that Secret instead.
+  smtpUrl: ''
 
 config:
   bootstrapAdminUsername: admin
@@ -67,6 +70,9 @@ config:
   forcePasswordSignIn: false
   # Anonymous usage statistics sent daily to qualor.dev (https://qualor.dev/docs/telemetry).
   telemetry: true
+  # The sender of Qualor's email, `Name <address>` or an address; needed with an SMTP URL.
+  smtpFrom: ''
+  smtpReplyTo: ''
   workerConcurrency: 1
   logLevel: info
 extraEnv: []

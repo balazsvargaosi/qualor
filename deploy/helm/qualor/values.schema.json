@@ -100,7 +100,8 @@
       "properties": {
         "existingSecret": { "type": "string" },
         "secretKey": { "type": "string", "anyOf": [{ "maxLength": 0 }, { "minLength": 32 }] },
-        "bootstrapAdminPassword": { "type": "string", "anyOf": [{ "maxLength": 0 }, { "minLength": 12 }] }
+        "bootstrapAdminPassword": { "type": "string", "anyOf": [{ "maxLength": 0 }, { "minLength": 12 }] },
+        "smtpUrl": { "type": "string", "pattern": "^(smtps?://\\S+)?$" }
       }
     },
     "config": {
@@ -118,6 +119,8 @@
         "ssoInternalHosts": { "type": "string" },
         "forcePasswordSignIn": { "type": "boolean" },
         "telemetry": { "type": "boolean" },
+        "smtpFrom": { "type": "string", "maxLength": 400, "pattern": "^[^\\r\\n]*$" },
+        "smtpReplyTo": { "type": "string", "pattern": "^([^\\s@]+@[^\\s@]+)?$" },
         "workerConcurrency": { "type": "integer", "minimum": 1, "maximum": 32 },
         "logLevel": { "enum": ["error", "warn", "info", "debug"] }
       }

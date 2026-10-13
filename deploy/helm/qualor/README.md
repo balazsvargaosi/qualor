@@ -9,6 +9,9 @@ The user documentation is at <https://qualor.dev/docs/install-server#kubernetes-
 
 ## Notes on values
 
+- `secrets.smtpUrl`: the SMTP server for email (`QUALOR_SMTP_URL`), stored in the chart's Secret.
+  With `secrets.existingSecret`, add the key `QUALOR_SMTP_URL` to that Secret instead (the server
+  reads it when present). Either way set `config.smtpFrom`.
 - `ingress.annotations`: Helm merges yours with the defaults (the ingress-nginx body size, request
   buffering and read timeout). Set a key to `null` to remove a default.
 - `database.external.caSecret`: a Secret with the certificate of a private CA (key

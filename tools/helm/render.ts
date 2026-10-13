@@ -11,7 +11,7 @@ const WORK = '.tmp/helm-test';
 export interface EnvVar {
   name: string;
   value?: string;
-  valueFrom?: { secretKeyRef?: { name: string; key: string } };
+  valueFrom?: { secretKeyRef?: { name: string; key: string; optional?: boolean } };
 }
 export interface Probe {
   httpGet?: { path: string; port: string | number };

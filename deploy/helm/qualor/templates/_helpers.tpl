@@ -103,6 +103,12 @@ app.kubernetes.io/component: postgres
 {{- end -}}
 {{- end -}}
 {{- end -}}
+{{- if and $v.secrets.smtpUrl $v.secrets.existingSecret -}}
+{{- fail "secrets.smtpUrl is not read with secrets.existingSecret: put QUALOR_SMTP_URL into that Secret" -}}
+{{- end -}}
+{{- if and $v.secrets.smtpUrl (not $v.config.smtpFrom) -}}
+{{- fail "secrets.smtpUrl needs config.smtpFrom (the sender address)" -}}
+{{- end -}}
 {{/* The schema checks these too; they hold when a caller skips it (--skip-schema-validation). */}}
 {{- if not $v.secrets.existingSecret -}}
 {{- if or (lt (len $v.secrets.secretKey) 32) (lt (len $v.secrets.bootstrapAdminPassword) 12) -}}
@@ -223,6 +229,20 @@ seccompProfile:
 {{- if eq (toString $v.config.telemetry) "false" }}
 - name: QUALOR_TELEMETRY
   value: "false"
+{{- end }}
+- name: QUALOR_SMTP_URL
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "qualor.secretName" . }}
+      key: QUALOR_SMTP_URL
+      optional: true
+{{- with $v.config.smtpFrom }}
+- name: QUALOR_SMTP_FROM
+  value: {{ . | quote }}
+{{- end }}
+{{- with $v.config.smtpReplyTo }}
+- name: QUALOR_SMTP_REPLY_TO
+  value: {{ . | quote }}
 {{- end }}
 {{- with $v.extraEnv }}
 {{ toYaml . }}

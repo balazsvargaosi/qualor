@@ -83,6 +83,9 @@ describe('values.schema.json (release.md §6.3)', () => {
     ['a telemetry that is not a boolean', { config: { telemetry: 'false' } }],
     ['an unknown networkPolicy key', { networkPolicy: { enabled: true, deny: true } }],
     ['networkPolicy.ingressFrom that is not a list', { networkPolicy: { ingressFrom: {} } }],
+    ['an SMTP URL that is not smtp(s)://', { secrets: { smtpUrl: 'http://mail.example.com' } }],
+    ['a sender with a line break', { config: { smtpFrom: 'Qualor <q@example.com>\nBcc: x@y' } }],
+    ['a reply-to that is no address', { config: { smtpReplyTo: 'help desk' } }],
   ])('rejects %s', (_what, over) => {
     expect(ok(withValues(over))).toBe(false);
   });
@@ -128,6 +131,13 @@ describe('values.schema.json (release.md §6.3)', () => {
             { to: [{ ipBlock: { cidr: '10.0.0.0/8' } }], ports: [{ port: 443, protocol: 'TCP' }] },
           ],
         },
+      },
+    ],
+    [
+      'an SMTP server with its sender and reply-to',
+      {
+        secrets: { smtpUrl: 'smtps://qualor%40example.com:pw@smtp.example.com:465' },
+        config: { smtpFrom: 'Qualor <qualor@example.com>', smtpReplyTo: 'help@example.com' },
       },
     ],
   ])('accepts %s', (_what, over) => {

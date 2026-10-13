@@ -353,6 +353,51 @@ describe('secrets never in plain text (release.md §6.4)', () => {
   });
 });
 
+describe('email (E1 spec)', () => {
+  const URL = 'smtps://qualor%40example.com:not-a-real-password@smtp.example.com:465';
+
+  it('puts secrets.smtpUrl into the chart’s Secret and reads it from there, optionally', () => {
+    const objects = render(EMBEDDED, {
+      secrets: { smtpUrl: URL },
+      config: { smtpFrom: 'Qualor <qualor@example.com>', smtpReplyTo: 'help@example.com' },
+    });
+    const secret = find(objects, 'Secret', 'qualor-secrets') as K8sObject & {
+      data: Record<string, string>;
+    };
+    expect(Buffer.from(secret.data['QUALOR_SMTP_URL'] ?? '', 'base64').toString()).toBe(URL);
+    expect(JSON.stringify(objects)).not.toContain('not-a-real-password');
+    const sts = find(objects, 'StatefulSet', 'qualor');
+    expect(env(sts, 'QUALOR_SMTP_URL')?.valueFrom?.secretKeyRef).toEqual({
+      name: 'qualor-secrets',
+      key: 'QUALOR_SMTP_URL',
+      optional: true,
+    });
+    expect(env(sts, 'QUALOR_SMTP_FROM')?.value).toBe('Qualor <qualor@example.com>');
+    expect(env(sts, 'QUALOR_SMTP_REPLY_TO')?.value).toBe('help@example.com');
+  });
+
+  it('reads QUALOR_SMTP_URL from an existing Secret, optionally, and adds no sender without one', () => {
+    const dep = find(render(['ci/external-values.yaml']), 'Deployment', 'qualor');
+    expect(env(dep, 'QUALOR_SMTP_URL')?.valueFrom?.secretKeyRef).toEqual({
+      name: 'qualor-secrets',
+      key: 'QUALOR_SMTP_URL',
+      optional: true,
+    });
+    expect(env(dep, 'QUALOR_SMTP_FROM')).toBeUndefined();
+    expect(env(dep, 'QUALOR_SMTP_REPLY_TO')).toBeUndefined();
+  });
+
+  it('leaves the key out of the chart’s Secret without an SMTP URL', () => {
+    const secret = find(render(EMBEDDED), 'Secret', 'qualor-secrets') as K8sObject & {
+      data: Record<string, string>;
+    };
+    expect(Object.keys(secret.data).sort()).toEqual([
+      'QUALOR_BOOTSTRAP_ADMIN_PASSWORD',
+      'QUALOR_SECRET_KEY',
+    ]);
+  });
+});
+
 describe('fix wave: the bundled PostgreSQL (release.md §6.2, §6.4)', () => {
   const objects = render(['ci/bundled-values.yaml']);
   const pgImage =
@@ -474,6 +519,20 @@ describe('fix wave: more render-time checks (release.md §6.5)', () => {
     if (r.ok) throw new Error('rendered, but should have failed');
     return r.error;
   }
+
+  it('refuses an SMTP URL without a sender, and one beside an existing Secret', () => {
+    expect(
+      fails(EMBEDDED, { secrets: { smtpUrl: 'smtp://relay.lan:25?security=none' } }),
+    ).toContain('secrets.smtpUrl needs config.smtpFrom (the sender address)');
+    expect(
+      fails(['ci/external-values.yaml'], {
+        secrets: { smtpUrl: 'smtp://relay.lan:25?security=none' },
+        config: { smtpFrom: 'qualor@example.com' },
+      }),
+    ).toContain(
+      'secrets.smtpUrl is not read with secrets.existingSecret: put QUALOR_SMTP_URL into that Secret',
+    );
+  });
 
   it('refuses an unknown database mode even without the schema', () => {
     expect(fails(EMBEDDED, { database: { mode: 'sqlite' } }, SKIP)).toContain(
