@@ -66,8 +66,10 @@ When Qualor can send email ([Email](./email.md#account-emails)) and `QUALOR_PUBL
   password (the user then needs an email address). The user chooses their own password through the
   link, which works for 7 days. The list shows **Invited · expires …** or **Invitation expired**,
   with **Resend invitation** (the earlier link stops working) and **Revoke invitation**. Setting a
-  password for the user, or deactivating them, also ends the invitation. **Resend invitation** is
-  refused for a user who already has a password or a single sign-on identity.
+  password for the user, changing their email address or deactivating them also ends the
+  invitation and any reset link, and an invitation stops working once the account is linked to
+  single sign-on. **Resend invitation** is refused for a user who already has a password or a
+  single sign-on identity.
 - People get **Your Qualor password was changed** after a reset through a link, a change of their
   own password, or a reset by an administrator.
 
