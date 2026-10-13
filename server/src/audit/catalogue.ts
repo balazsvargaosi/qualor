@@ -182,6 +182,8 @@ export const AUDIT_CATALOGUE = {
   },
   'auth.sign_out': { target: 'user', details: empty },
   'auth.password_changed': { target: 'user', details: empty },
+  /** Mail E2: a reset link was sent; the actor is anonymous, never the name or address typed. */
+  'auth.password_reset_requested': { target: 'user', details: empty },
   'auth.password_sign_in_forced': {
     target: null,
     details: z.strictObject({ storedPolicy: z.enum(['everyone', 'break_glass_only']) }),

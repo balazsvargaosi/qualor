@@ -3,6 +3,7 @@ import type { RouteDeps } from '../app';
 import { issueChangeCharge } from '../issues/rate-limit';
 import { aiRoutes } from './ai';
 import { analysisRoutes } from './analyses';
+import { accountRoutes } from './account';
 import { authRoutes } from './auth';
 import { branchRoutes } from './branches';
 import { gateRoutes } from './gates';
@@ -31,6 +32,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   const chargeIssueChanges = issueChangeCharge();
   await app.register(systemRoutes, { deps });
   await app.register(authRoutes, { prefix: '/api/v0', deps });
+  await app.register(accountRoutes, { prefix: '/api/v0', deps });
   await app.register(userRoutes, { prefix: '/api/v0', deps });
   await app.register(tokenRoutes, { prefix: '/api/v0', deps });
   await app.register(organizationRoutes, { prefix: '/api/v0', deps });

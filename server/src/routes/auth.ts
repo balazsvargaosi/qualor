@@ -43,6 +43,7 @@ import {
   users,
 } from '../db/schema';
 import { ProblemError, validationFailed } from '../http/problem';
+import { selfServiceReady } from '../mail/account';
 import { noContent, text, userDto, userSchema } from '../http/schemas';
 import { connectionsInEffect } from '../sso/connections';
 import { effectivePasswordPolicy, mayUsePassword, readSignInSettings } from '../sso/sign-in-policy';
@@ -105,6 +106,11 @@ const methodsResponse = z.object({
   ),
   /** Whether guests may sign in to the read-only demo (`POST /auth/demo`). */
   demo: z.boolean(),
+  /**
+   * Mail E2 A4: "Forgot password?" and invitations work (an SMTP server and QUALOR_PUBLIC_URL are
+   * set). Names no setting beyond this yes or no.
+   */
+  passwordReset: z.boolean(),
 });
 
 function setSessionCookie(
@@ -253,6 +259,7 @@ export const authRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (app
           startUrl: `/api/v0/ee/sso/${p.id}/start`,
         })),
         demo: (await demoAccount(deps.db, deps.config.demoUser)) !== null,
+        passwordReset: await selfServiceReady(deps.db, deps.config),
       };
     },
   );

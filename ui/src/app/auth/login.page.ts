@@ -21,7 +21,12 @@ import { safeReturnUrl } from './guards';
 import { ssoErrorText } from './sso-text';
 
 /** What a server that cannot say (an older one, or a failed request) allows: passwords only. */
-const PASSWORD_ONLY: AuthMethods = { password: 'everyone', providers: [], demo: false };
+const PASSWORD_ONLY: AuthMethods = {
+  password: 'everyone',
+  providers: [],
+  demo: false,
+  passwordReset: false,
+};
 
 @Component({
   selector: 'q-login-page',
