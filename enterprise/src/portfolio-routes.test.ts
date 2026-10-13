@@ -14,14 +14,19 @@ import type * as Pdf from './portfolio/pdf';
 import { RenderTimeoutError } from './pdf/layout';
 import { sampleOverview, sampleRows } from './portfolio/test-overview';
 
-/** The PDF renderer, real unless a test makes it time out. */
-const pdf = vi.hoisted(() => ({ timeout: false, calls: [] as unknown[][] }));
+/** The PDF renderer, real unless a test makes it time out or holds it. */
+const pdf = vi.hoisted(() => ({
+  timeout: false,
+  calls: [] as unknown[][],
+  hold: undefined as Promise<unknown> | undefined,
+}));
 vi.mock('./portfolio/pdf', async (importOriginal) => {
   const real = await importOriginal<typeof Pdf>();
   return {
     ...real,
     renderPortfolioPdf: async (...args: Parameters<typeof real.renderPortfolioPdf>) => {
       pdf.calls.push(args);
+      await pdf.hold;
       if (pdf.timeout) throw new RenderTimeoutError();
       return real.renderPortfolioPdf(...args);
     },
@@ -137,6 +142,7 @@ let app: FastifyInstance | undefined;
 afterEach(async () => {
   pdf.timeout = false;
   pdf.calls.length = 0;
+  pdf.hold = undefined;
   vi.useRealTimers();
   await app?.close();
   app = undefined;
@@ -392,6 +398,23 @@ describe('GET /portfolio/export (4E-2 §3)', () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(await statusOf(url)).toBe(200);
     expect(h.service.exportRows).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the slot while a dropped PDF export still renders, and frees it after (a real socket)', async () => {
+    const render = deferred();
+    pdf.hold = render.promise;
+    const h = harness();
+    app = h.app;
+    const url = `${await listening(app)}/portfolio/export?${ORG}&format=pdf`;
+    // The client goes away during the render.
+    await dropAfter(url, 200);
+    expect(pdf.calls).toHaveLength(1);
+    await new Promise((r) => setTimeout(r, 50));
+    // The render still runs: the user's next export waits for it.
+    expect(await statusOf(url)).toBe(429);
+    pdf.hold = undefined;
+    render.resolve();
+    await vi.waitFor(async () => expect(await statusOf(url)).toBe(200));
   });
 
   it('frees the slot when the PDF data is refused', async () => {

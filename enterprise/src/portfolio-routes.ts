@@ -296,9 +296,7 @@ export function portfolioRoutes(ctx: PluginContext): FastifyPluginAsync {
         const release = () => {
           if (exporting.get(user.id) === token) exporting.delete(user.id);
         };
-        // Before any await: a client that goes away while the rows are computed frees the slot,
-        // and so does one that goes away before the stream's generator ever runs.
-        reply.raw.once('close', release);
+        // The PDF frees the slot when its work ends, even for a client that went away meanwhile.
         // The CSV streams past this handler: its generator, or a dropped connection, frees it.
         let streaming = false;
         try {
@@ -316,6 +314,9 @@ export function portfolioRoutes(ctx: PluginContext): FastifyPluginAsync {
               }
             }
             streaming = true;
+            // Attached with no await before the send: a client that goes away before the
+            // stream's generator ever runs frees the slot too.
+            reply.raw.once('close', release);
             return (
               reply
                 // §3: no proxy or browser cache keeps a copy.

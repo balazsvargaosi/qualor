@@ -17,14 +17,19 @@ import type * as Pdf from './compliance/pdf';
 import { RenderTimeoutError } from './pdf/layout';
 import { sampleReport } from './compliance/test-report';
 
-/** The PDF renderer, real unless a test makes it time out. */
-const pdf = vi.hoisted(() => ({ timeout: false, options: [] as unknown[] }));
+/** The PDF renderer, real unless a test makes it time out or holds it. */
+const pdf = vi.hoisted(() => ({
+  timeout: false,
+  options: [] as unknown[],
+  hold: undefined as Promise<unknown> | undefined,
+}));
 vi.mock('./compliance/pdf', async (importOriginal) => {
   const real = await importOriginal<typeof Pdf>();
   return {
     ...real,
     renderPdf: async (...args: Parameters<typeof real.renderPdf>) => {
       pdf.options.push(args[1]);
+      await pdf.hold;
       if (pdf.timeout) throw new RenderTimeoutError();
       return real.renderPdf(...args);
     },
@@ -178,6 +183,7 @@ let app: FastifyInstance | undefined;
 afterEach(async () => {
   pdf.timeout = false;
   pdf.options.length = 0;
+  pdf.hold = undefined;
   await app?.close();
   app = undefined;
 });
@@ -375,6 +381,8 @@ describe('GET /compliance/reports/:id/download (4E-1 §2.5)', () => {
     const late = await download('pdf');
     expect(late.statusCode).toBe(503);
     expect(late.json()).toMatchObject({ code: 'REPORT_RENDER_TIMEOUT' });
+    // The problem is no attachment.
+    expect(late.headers['content-disposition']).toBeUndefined();
     expect(h.logged).toContainEqual([
       'warn',
       { reportId: REPORT_ID },
@@ -440,6 +448,23 @@ describe('GET /compliance/reports/:id/download (4E-1 §2.5)', () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(await statusOf(url)).toBe(200);
     expect(h.service.download).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the slot while a dropped PDF download still renders, and frees it after (a real socket)', async () => {
+    const render = deferred<undefined>();
+    pdf.hold = render.promise;
+    const h = harness();
+    app = h.app;
+    const url = `${await listening(app)}/compliance/reports/${REPORT_ID}/download?format=pdf`;
+    // The client goes away during the render.
+    await dropAfter(url, 200);
+    expect(pdf.options).toHaveLength(1);
+    await new Promise((r) => setTimeout(r, 50));
+    // The render still runs: the user's next download waits for it.
+    expect(await statusOf(url)).toBe(429);
+    pdf.hold = undefined;
+    render.resolve(undefined);
+    await vi.waitFor(async () => expect(await statusOf(url)).toBe(200));
   });
 
   it('frees the slot when the service refuses the download', async () => {

@@ -313,20 +313,21 @@ export function complianceRoutes(ctx: PluginContext): FastifyPluginAsync {
         const release = () => {
           if (downloading.get(userId) === token) downloading.delete(userId);
         };
-        // Before any await: a client that goes away while the report is read frees the slot, and
-        // so does one that goes away before the stream's generator ever runs.
-        reply.raw.once('close', release);
-        // The CSV streams past this handler: its generator, or a dropped connection, frees it.
+        // JSON and PDF free the slot when their work ends, even for a client that went away
+        // meanwhile. The CSV streams past this handler: its generator, or a dropped connection,
+        // frees it.
         let streaming = false;
         try {
           const { view, canonical } = await ctx.compliance.download(request, id, format);
           const filename = `qualor-compliance-${scopeKey(view)}-${reportDay(canonical, view)}-${view.id.slice(0, 8)}.${format}`;
-          reply
-            // §2.5: no proxy or browser cache keeps a copy.
-            .header('cache-control', 'no-store')
-            .header('content-disposition', `attachment; filename="${filename}"`);
+          // Set only on the file itself: a problem (a PDF that outruns its budget) is no attachment.
+          const attachment = () =>
+            reply
+              // §2.5: no proxy or browser cache keeps a copy.
+              .header('cache-control', 'no-store')
+              .header('content-disposition', `attachment; filename="${filename}"`);
           if (format === 'json') {
-            return reply
+            return attachment()
               .header('content-type', 'application/json; charset=utf-8')
               .send(canonical as unknown as string);
           }
@@ -343,8 +344,11 @@ export function complianceRoutes(ctx: PluginContext): FastifyPluginAsync {
               }
             }
             streaming = true;
+            // Attached with no await before the send: a client that goes away before the
+            // stream's generator ever runs frees the slot too.
+            reply.raw.once('close', release);
             return (
-              reply
+              attachment()
                 .header('content-type', 'text/csv; charset=utf-8')
                 // Fastify sends a stream as it is, past the serializer; the schema documents it.
                 .send(Readable.from(lines()) as unknown as string)
@@ -368,7 +372,9 @@ export function complianceRoutes(ctx: PluginContext): FastifyPluginAsync {
             }
             throw err;
           }
-          return reply.header('content-type', 'application/pdf').send(file as unknown as string);
+          return attachment()
+            .header('content-type', 'application/pdf')
+            .send(file as unknown as string);
         } finally {
           if (!streaming) release();
         }
