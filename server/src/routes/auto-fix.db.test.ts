@@ -211,17 +211,36 @@ describe('automatic fix suggestion settings (4E-3a §2)', () => {
     });
 
     it('answers 403 FEATURE_NOT_LICENSED for switching it on without the seam, and keeps the values', async () => {
-      expect((await putOrg(on)).statusCode).toBe(200);
       licensed = false;
-      const refused = await putOrg({ ...on, maxPerAnalysis: 7 });
+      const refused = await putOrg(on);
       expect(refused.statusCode).toBe(403);
       expect(refused.json()).toMatchObject({ code: 'FEATURE_NOT_LICENSED' });
+      expect((await getOrg()).json()).toEqual({ available: false, ...DEFAULT_AUTO_FIX });
+      licensed = true;
+      expect((await putOrg(on)).statusCode).toBe(200);
+      licensed = false;
       // The stored values are kept and shown as unavailable.
       expect((await getOrg()).json()).toEqual({ available: false, ...on });
-      // Switching it off needs no licence.
+      // A stored switch-on keeps its threshold editable without the licence.
+      const tuned = await putOrg({ ...on, maxPerAnalysis: 7 });
+      expect(tuned.statusCode, tuned.body).toBe(200);
+      expect(tuned.json()).toEqual({ available: false, ...on, maxPerAnalysis: 7 });
+      // Switching it off needs no licence; switching it back on does.
       const off = await putOrg({ ...on, enabled: false });
       expect(off.statusCode, off.body).toBe(200);
       expect(off.json()).toEqual({ available: false, ...on, enabled: false });
+      expect((await putOrg(on)).json()).toMatchObject({ code: 'FEATURE_NOT_LICENSED' });
+    });
+
+    it('checks the fix suggestions only when switching it on, not for a stored switch-on', async () => {
+      await configure({
+        features: { explain: true, triage: true, fix: false },
+        autoFix: { ...on },
+      });
+      const tuned = await putOrg({ ...on, minSeverity: 'blocker' });
+      expect(tuned.statusCode, tuned.body).toBe(200);
+      expect((await putOrg({ ...on, enabled: false })).statusCode).toBe(200);
+      expect((await putOrg(on)).json()).toMatchObject({ code: 'AI_DISABLED' });
     });
 
     it.each<[string, Partial<OrgLlmSettings>, StoredProvider | null]>([
@@ -458,6 +477,90 @@ describe('automatic fix suggestion settings (4E-3a §2)', () => {
       const [event] = (await events('ai.settings_updated')).slice(-1);
       expect((event!.details as { changed: string[] }).changed).toContain('organizations');
       expect((event!.details as { changed: string[] }).changed).not.toContain('autoFix');
+    });
+
+    it('keeps what the organisation and project routes set when a save leaves the fields out', async () => {
+      expect((await putOrg(on)).statusCode).toBe(200);
+      expect((await putProject(false)).statusCode).toBe(200);
+      const body = await settingsBody();
+      // The instance admin's form sends only the fields it edits.
+      body.organizations[org] = {
+        enabled: body.organizations[org].enabled,
+        features: body.organizations[org].features,
+        excludedProjectIds: body.organizations[org].excludedProjectIds,
+      };
+      body.budgets = { ...body.budgets, explainPerDay: 99 };
+      const res = await call('PUT', '/system/llm', admin.headers, body);
+      expect(res.statusCode, res.body).toBe(200);
+      expect((await getOrg()).json()).toEqual({ available: true, ...on });
+      expect((await readLlmSettings(ctx.db)).organizations[org]).toMatchObject({
+        autoFix: on,
+        autoFixDisabledProjectIds: [project.id],
+      });
+    });
+
+    it('stores each opted-out project once', async () => {
+      const body = await settingsBody();
+      body.organizations[org] = {
+        ...body.organizations[org],
+        autoFixDisabledProjectIds: [project.id, project.id],
+      };
+      const res = await call('PUT', '/system/llm', admin.headers, body);
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json().organizations[org].autoFixDisabledProjectIds).toEqual([project.id]);
+      expect((await readLlmSettings(ctx.db)).organizations[org]!.autoFixDisabledProjectIds).toEqual(
+        [project.id],
+      );
+    });
+
+    it('does not count disabled default entries towards the 1 000 organisations', async () => {
+      const filled = await ctx.db.execute<{ id: string }>(sql`
+        INSERT INTO organizations (id, key, name)
+        SELECT gen_random_uuid(), 'af-fill-' || i, 'fill ' || i FROM generate_series(1, 1000) AS i
+        RETURNING id`);
+      const ids = filled.rows.map((r) => r.id);
+      try {
+        const body = await settingsBody();
+        const enabled = {
+          enabled: true,
+          features: { explain: true, triage: false, fix: false },
+          excludedProjectIds: [],
+        };
+        const disabled = {
+          enabled: false,
+          features: { explain: false, triage: false, fix: false },
+          excludedProjectIds: [],
+        };
+        // 999 fill organisations and `org` enabled: 1 000; one more, and `otherOrg`, as the
+        // organisation and project routes leave them (disabled, the defaults).
+        body.organizations = {
+          [org]: body.organizations[org],
+          ...Object.fromEntries(ids.slice(0, 999).map((id) => [id, enabled])),
+          [ids[999]!]: disabled,
+          [otherOrg]: {
+            ...disabled,
+            autoFix: { ...DEFAULT_AUTO_FIX },
+            autoFixDisabledProjectIds: [],
+          },
+        };
+        const ok = await call('PUT', '/system/llm', admin.headers, body);
+        expect(ok.statusCode, ok.body).toBe(200);
+        body.organizations[ids[999]!] = enabled;
+        const over = await call('PUT', '/system/llm', admin.headers, body);
+        expect(over.statusCode).toBe(422);
+        expect(over.json().errors.map((e: { path: string }) => e.path)).toEqual([
+          'body.organizations',
+        ]);
+        // An entry that differs from the defaults in its auto-fix values counts.
+        body.organizations[ids[999]!] = {
+          ...disabled,
+          autoFix: { ...DEFAULT_AUTO_FIX, minSeverity: 'low' },
+        };
+        expect((await call('PUT', '/system/llm', admin.headers, body)).statusCode).toBe(422);
+      } finally {
+        await configure();
+        await ctx.db.execute(sql`DELETE FROM organizations WHERE key LIKE 'af-fill-%'`);
+      }
     });
 
     it('refuses switching it on without the seam, and keeps a stored switch-on', async () => {

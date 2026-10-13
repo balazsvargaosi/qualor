@@ -390,6 +390,47 @@ describe('AiSettingsPage (llm.md §3, §18)', () => {
     expect(body.organizations[ORG_ID]?.excludedProjectIds.sort()).toEqual(['p2', 'p9']);
   });
 
+  it('never sends the automatic fix suggestion fields, so a save keeps what other admins set', async () => {
+    const server = setup({
+      ...CONFIGURED,
+      organizations: {
+        [ORG_ID]: {
+          ...CONFIGURED.organizations[ORG_ID],
+          autoFix: { enabled: true, minSeverity: 'medium', maxPerAnalysis: 5 },
+          autoFixDisabledProjectIds: ['p1'],
+        },
+      },
+    });
+    server.on('PUT', '/api/v0/system/llm', { body: CONFIGURED });
+    const { fixture, root } = await render();
+    root.querySelector<HTMLInputElement>(`#ai-org-${ORG_ID}-fix`)!.click();
+    submit(root);
+    await settle(fixture);
+    const body = server.requestsTo('PUT', '/api/v0/system/llm')[0]?.body as {
+      organizations: Record<string, object>;
+    };
+    expect(body.organizations[ORG_ID]).toEqual({
+      enabled: true,
+      features: { explain: true, triage: true, fix: true },
+      excludedProjectIds: [],
+    });
+  });
+
+  it('enables an organisation absent from the settings without the automatic fix fields', async () => {
+    const server = setup({ ...CONFIGURED, organizations: {} });
+    server.on('PUT', '/api/v0/system/llm', { body: CONFIGURED });
+    const { fixture, root } = await render();
+    root.querySelector<HTMLInputElement>(`#ai-org-${ORG_ID}-enabled`)!.click();
+    submit(root);
+    await settle(fixture);
+    const body = server.requestsTo('PUT', '/api/v0/system/llm')[0]?.body as {
+      organizations: Record<string, object>;
+    };
+    expect(body.organizations[ORG_ID]).not.toHaveProperty('autoFix');
+    expect(body.organizations[ORG_ID]).not.toHaveProperty('autoFixDisabledProjectIds');
+    expect(body.organizations[ORG_ID]).toMatchObject({ enabled: true });
+  });
+
   it('refuses a key typed while the kind is None, and says so', async () => {
     const server = setup();
     const { fixture, root } = await render();

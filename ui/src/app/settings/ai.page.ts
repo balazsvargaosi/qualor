@@ -25,7 +25,15 @@ import { llmProblemText } from './ai-text';
 
 type Settings = ResponseBody<'/api/v0/system/llm', 'get'>;
 type SettingsBody = RequestBody<'/api/v0/system/llm', 'put'>;
-type OrgSettings = Settings['organizations'][string];
+/**
+ * What this form edits of an organisation. It never holds the automatic fix suggestion fields
+ * (`autoFix`, `autoFixDisabledProjectIds`): organisation and project admins change those
+ * meanwhile, and the server keeps the stored values of the fields a save leaves out.
+ */
+type OrgSettings = Pick<
+  Settings['organizations'][string],
+  'enabled' | 'features' | 'excludedProjectIds'
+>;
 type Feature = keyof OrgSettings['features'];
 type Kind = '' | 'openai' | 'anthropic';
 type Project = ItemOf<'/api/v0/projects'>;
@@ -258,8 +266,6 @@ export class AiSettingsPage {
         enabled: false,
         features: { explain: false, triage: false, fix: false },
         excludedProjectIds: [],
-        autoFix: { enabled: false, minSeverity: 'high', maxPerAnalysis: 10 },
-        autoFixDisabledProjectIds: [],
       }
     );
   }
@@ -453,7 +459,18 @@ export class AiSettingsPage {
     this.timeout.set(String(p?.timeoutSeconds ?? 60));
     this.temperature.set(p?.temperature === null || p === null ? '' : String(p.temperature));
     this.removeKey.set(false);
-    this.orgSettings.set(structuredClone(settings.organizations));
+    this.orgSettings.set(
+      Object.fromEntries(
+        Object.entries(settings.organizations).map(([id, o]) => [
+          id,
+          {
+            enabled: o.enabled,
+            features: { ...o.features },
+            excludedProjectIds: [...o.excludedProjectIds],
+          },
+        ]),
+      ),
+    );
     this.exclude.set(settings.excludePaths.join('\n'));
     const b = settings.budgets;
     this.budgets.set({

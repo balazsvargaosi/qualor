@@ -9922,7 +9922,7 @@ export interface paths {
                         "application/problem+json": components["schemas"]["Problem"];
                     };
                 };
-                /** @description FEATURE_NOT_LICENSED (switching it on needs the enterprise feature llm.auto-fix), FORBIDDEN or INSUFFICIENT_SCOPE */
+                /** @description FEATURE_NOT_LICENSED (switching it on, from off, needs the enterprise feature llm.auto-fix), FORBIDDEN or INSUFFICIENT_SCOPE */
                 403: {
                     headers: {
                         [name: string]: unknown;
@@ -9940,7 +9940,7 @@ export interface paths {
                         "application/problem+json": components["schemas"]["Problem"];
                     };
                 };
-                /** @description AI_DISABLED (switching it on needs the AI assistant configured and the organisation enabled with fix suggestions); AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed while no audit event is stored; an administrator must restore it (a retry does not help) */
+                /** @description AI_DISABLED (switching it on, from off, needs the AI assistant configured and the organisation enabled with fix suggestions); AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed while no audit event is stored; an administrator must restore it (a retry does not help) */
                 409: {
                     headers: {
                         [name: string]: unknown;

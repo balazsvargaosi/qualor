@@ -20,6 +20,7 @@ import {
   ANTHROPIC_TEMPERATURE_TEXT,
   autoFixSettingsSchema,
   budgetsSchema,
+  DEFAULT_AUTO_FIX,
   globSchema,
   LLM_API_KEY_AAD,
   MAX_LLM_ORGANIZATIONS,
@@ -84,12 +85,34 @@ const orgBody = orgLlmSettingsSchema.extend({
 });
 type OrgBody = z.infer<typeof orgBody>;
 
+/**
+ * An entry that says no more than an absent one (llm.md §3.3: disabled, nothing excluded, the
+ * auto-fix defaults). The organisation and project auto-fix routes create such entries, so they
+ * do not count towards MAX_LLM_ORGANIZATIONS.
+ */
+function isDisabledDefault(o: OrgBody): boolean {
+  const autoFix = o.autoFix ?? DEFAULT_AUTO_FIX;
+  return (
+    !o.enabled &&
+    !o.features.explain &&
+    !o.features.triage &&
+    !o.features.fix &&
+    o.excludedProjectIds.length === 0 &&
+    autoFix.enabled === DEFAULT_AUTO_FIX.enabled &&
+    autoFix.minSeverity === DEFAULT_AUTO_FIX.minSeverity &&
+    autoFix.maxPerAnalysis === DEFAULT_AUTO_FIX.maxPerAnalysis &&
+    (o.autoFixDisabledProjectIds ?? []).length === 0
+  );
+}
+
 const settingsBody = z.strictObject({
   provider: providerBody.nullable(),
   organizations: z
     .record(z.uuid(), orgBody)
     .refine(
-      (o) => Object.keys(o).length <= MAX_LLM_ORGANIZATIONS,
+      (o) =>
+        Object.values(o).filter((entry) => !isDisabledDefault(entry)).length <=
+        MAX_LLM_ORGANIZATIONS,
       `At most ${MAX_LLM_ORGANIZATIONS} organisations`,
     ),
   excludePaths: z.array(globSchema).max(100),
@@ -191,7 +214,10 @@ function withoutDeletedProjects(
       {
         ...o,
         excludedProjectIds: o.excludedProjectIds.filter((p) => owners.has(p)),
-        autoFixDisabledProjectIds: o.autoFixDisabledProjectIds.filter((p) => owners.has(p)),
+        // Each id once (a body may repeat one).
+        autoFixDisabledProjectIds: [
+          ...new Set(o.autoFixDisabledProjectIds.filter((p) => owners.has(p))),
+        ],
       },
     ]),
   );

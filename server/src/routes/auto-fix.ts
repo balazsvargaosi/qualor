@@ -84,8 +84,8 @@ export const autoFixRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (
         openapi: {
           problems: [409],
           problemDescriptions: {
-            403: 'FEATURE_NOT_LICENSED (switching it on needs the enterprise feature llm.auto-fix), FORBIDDEN or INSUFFICIENT_SCOPE',
-            409: 'AI_DISABLED (switching it on needs the AI assistant configured and the organisation enabled with fix suggestions)',
+            403: 'FEATURE_NOT_LICENSED (switching it on, from off, needs the enterprise feature llm.auto-fix), FORBIDDEN or INSUFFICIENT_SCOPE',
+            409: 'AI_DISABLED (switching it on, from off, needs the AI assistant configured and the organisation enabled with fix suggestions)',
           },
         },
       },
@@ -108,17 +108,21 @@ export const autoFixRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (
         'org.ai.manage',
       );
       const next: AutoFixSettings = request.body;
-      // Without the licence the stored values are kept; only switching it on is refused.
-      if (next.enabled && !available()) throw notLicensed();
       const saved = await deps.db.transaction(async (tx) => {
         const settings = await lockLlmSettings(tx);
-        if (next.enabled && !fixSuggestionsEnabled(settings, organizationId)) {
-          throw conflict(
-            'AI_DISABLED',
-            'The AI fix suggestions are not enabled for this organisation',
-          );
-        }
         const current = organizationSettings(settings, organizationId).autoFix;
+        // Only switching it on (stored off) needs the licence and the organisation's fix
+        // suggestions: a switch-on saved before keeps its threshold editable, as on /system/llm,
+        // and without the licence the stored values are kept.
+        if (next.enabled && !current.enabled) {
+          if (!available()) throw notLicensed();
+          if (!fixSuggestionsEnabled(settings, organizationId)) {
+            throw conflict(
+              'AI_DISABLED',
+              'The AI fix suggestions are not enabled for this organisation',
+            );
+          }
+        }
         if (sameAutoFix(current, next)) return current;
         await writeLlmSettings(tx, withOrganizationAutoFix(settings, organizationId, next));
         if (deps.audit.active()) {
