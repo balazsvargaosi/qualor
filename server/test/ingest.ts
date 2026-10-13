@@ -91,7 +91,7 @@ export async function createIngestHarness(
               logger: ctx.app.log,
               notify,
             }),
-            ...gateHandlers({ db: ctx.db }),
+            ...gateHandlers({ db: ctx.db, notify }),
           },
           ctx.app.log,
         );

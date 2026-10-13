@@ -11,6 +11,8 @@ import { analysisConcurrencyKey } from '../ingest/service';
 import type { MeasureValues } from '../ingest/state';
 import { issueMeasures } from '../measures/compute';
 import { resolvedIssueCounts, visibleIssueCounts } from '../measures/store';
+import type { NotifyDeps } from '../notifications/deps';
+import { notifyGateChangeSafely } from '../notifications/gate';
 import { enqueue } from '../queue/queue';
 import type { JobHandlers } from '../queue/worker';
 import { readScmContext } from '../scm/context';
@@ -134,7 +136,11 @@ export type ReevaluationResult = 'nothing' | 'unchanged' | 'measures' | 'gate' |
 export async function reevaluateBranch(
   db: Db,
   branchId: string,
-  options: { logger?: Logger | undefined; redecorate?: boolean } = {},
+  options: {
+    logger?: Logger | undefined;
+    redecorate?: boolean;
+    notify?: NotifyDeps | undefined;
+  } = {},
 ): Promise<ReevaluationResult> {
   const { logger } = options;
   return db.transaction(async (tx) => {
@@ -199,6 +205,21 @@ export async function reevaluateBranch(
           event: 'gate.status_changed',
           payload,
         })),
+      );
+      // mail E3: the same change mailed to the branch's watchers, in this transaction.
+      await notifyGateChangeSafely(
+        tx,
+        options.notify ?? null,
+        {
+          project,
+          branch,
+          analysis: { id: analysis.id, revision: analysis.revision },
+          previous: previous.status,
+          next,
+          measures: { ...stored, ...fresh },
+          cause: 'reevaluation',
+        },
+        logger,
       );
     }
     // A changed verdict moves the commit status and the summary; a changed issue that may have a
@@ -267,7 +288,11 @@ export async function reevaluateBranch(
 }
 
 /** The `gate` queue's handler (scm.md §7); main.ts runs it in the analysis worker. */
-export function gateHandlers(deps: { db: Db; logger?: Logger | undefined }): JobHandlers {
+export function gateHandlers(deps: {
+  db: Db;
+  logger?: Logger | undefined;
+  notify?: NotifyDeps | undefined;
+}): JobHandlers {
   return {
     [GATE_QUEUE]: async (job) => {
       const parsed = payloadSchema.safeParse(job.payload);
@@ -278,6 +303,7 @@ export function gateHandlers(deps: { db: Db; logger?: Logger | undefined }): Job
       const result = await reevaluateBranch(deps.db, parsed.data.branchId, {
         logger: deps.logger,
         redecorate: parsed.data.redecorate === true,
+        notify: deps.notify,
       });
       if (result !== 'nothing' && result !== 'unchanged') {
         deps.logger?.info({ branchId: parsed.data.branchId, result }, 'quality gate re-evaluated');

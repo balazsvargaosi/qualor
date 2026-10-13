@@ -206,7 +206,7 @@ async function main(): Promise<void> {
       ...jobHandlers({ db: database.db, upload: config.upload, logger, notify }),
       ...housekeepingHandlers({ db: database.db, logger }),
       // scm.md §7: re-evaluations share the analysis worker and its per-project key.
-      ...gateHandlers({ db: database.db, logger }),
+      ...gateHandlers({ db: database.db, logger, notify }),
       // telemetry.md: only when enabled; the queue has no handler (and no job) otherwise.
       ...(config.telemetry.enabled
         ? telemetryHandlers({
