@@ -228,6 +228,8 @@ export class NotificationsPage {
         this.api.client.DELETE('/api/v0/projects/{id}/watch', { params: { path: { id } } }),
       );
       this.dropRow(id);
+      // A change refused while the stop waited for it no longer matters: the watch is gone.
+      this.error.set(null);
       this.announcement.set(
         $localize`:@@notifications.stopped:You no longer watch ${w.project.name}:name:.`,
       );

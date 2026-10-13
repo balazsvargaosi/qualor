@@ -225,6 +225,29 @@ describe('NotificationsPage', () => {
     expect(alert(root)).toBeNull();
   });
 
+  it('clears the error of a change refused on its way once the stop it waited for succeeds', async () => {
+    server.on('GET', '/api/v0/me/notifications', { body: DATA });
+    server.on('DELETE', WATCH_A, { status: 204 });
+    const gates: (() => void)[] = [];
+    server.on('PUT', WATCH_A, async () => {
+      await new Promise<void>((resolve) => gates.push(resolve));
+      return { status: 500, body: problem(500, 'INTERNAL') };
+    });
+    const { fixture, root } = await render();
+    boxes(rowOf(root, 0))[0]!.click();
+    await settle(fixture);
+    stopAlpha(root).click();
+    await settle(fixture);
+    gates.shift()?.();
+    await settle(fixture);
+    expect(server.requestsTo('DELETE', WATCH_A)).toHaveLength(1);
+    expect(names(root)).toEqual(['Zeta']);
+    expect(alert(root)).toBeNull();
+    expect(root.querySelector('[role="status"]')?.textContent?.trim()).toBe(
+      'You no longer watch Alpha.',
+    );
+  });
+
   it('keeps the row and says why when stopping fails', async () => {
     server.on('GET', '/api/v0/me/notifications', { body: DATA });
     server.on('DELETE', WATCH_A, { status: 500, body: problem(500, 'INTERNAL') });
