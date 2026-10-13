@@ -82,3 +82,19 @@ export async function countRows(
   );
   return result.rows[0]?.n ?? 0;
 }
+
+/**
+ * Resolves once a query of this database waits on a lock (a request queued behind a transaction
+ * the test holds); throws after `timeoutMs`.
+ */
+export async function untilLockWait(ctx: TestContext, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const result = await ctx.db.execute<{ n: number }>(sql`
+      SELECT count(*)::int AS n FROM pg_stat_activity
+       WHERE datname = current_database() AND wait_event_type = 'Lock'`);
+    if ((result.rows[0]?.n ?? 0) > 0) return;
+    if (Date.now() > deadline) throw new Error('no query waits on a lock');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}

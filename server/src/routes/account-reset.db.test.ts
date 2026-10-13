@@ -1,6 +1,12 @@
 import { eq, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { accountContext, countRows, linkToken, mailsTo } from '../../test/account-mail';
+import {
+  accountContext,
+  countRows,
+  linkToken,
+  mailsTo,
+  untilLockWait,
+} from '../../test/account-mail';
 import { createUser, DEFAULT_TEST_PASSWORD, login, nextIp, type TestContext } from '../../test/app';
 import {
   activeSessions,
@@ -10,7 +16,7 @@ import {
   giveSession,
   liveTokens,
 } from '../../test/sso';
-import { accountTokenKey, issueAccountToken } from '../auth/account-tokens';
+import { accountTokenKey, deleteAccountTokens, issueAccountToken } from '../auth/account-tokens';
 import { SESSION_COOKIE } from '../auth/sessions';
 import type * as Password from '../auth/password';
 import type * as AccountMail from '../mail/account';
@@ -290,6 +296,20 @@ describe('finishing a reset (mail E2)', () => {
     const [a, b] = await Promise.all([complete(token), complete(token)]);
     expect([a.statusCode, b.statusCode].sort()).toEqual([200, 400]);
     expectInvalid(await complete(token));
+  });
+
+  it('waits behind a change to the same account (user row, then its links), never deadlocking', async () => {
+    const rae = await createUser(ctx, { username: 'rae', email: 'rae@example.test' });
+    const token = await resetLink(rae.id);
+    let answer: ReturnType<typeof complete> | undefined;
+    // An admin's change of the account in PATCH /users/:id order: the user row, then its links.
+    await ctx.db.transaction(async (tx) => {
+      await tx.select().from(users).where(eq(users.id, rae.id)).for('update');
+      answer = complete(token);
+      await untilLockWait(ctx);
+      await deleteAccountTokens(tx, rae.id);
+    });
+    expectInvalid(await answer!);
   });
 
   it('refuses an expired link, a link of another kind and a malformed one', async () => {

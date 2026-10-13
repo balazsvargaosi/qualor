@@ -18,9 +18,10 @@ import {
   RESET_ANSWER_FLOOR_MS,
   waitForFloor,
 } from '../auth/password-reset';
-import { deleteUserSessions } from '../auth/sessions';
+import { deleteUserSessions, type UserRow } from '../auth/sessions';
 import { LoginThrottle } from '../auth/throttle';
-import { users } from '../db/schema';
+import type { Executor } from '../db/client';
+import { type AccountTokenKind, users } from '../db/schema';
 import { ProblemError } from '../http/problem';
 import { text } from '../http/schemas';
 import {
@@ -53,6 +54,26 @@ export const TOKEN_INVALID_DESCRIPTION =
 
 export function tokenInvalid(): ProblemError {
   return new ProblemError(400, 'TOKEN_INVALID', TOKEN_INVALID_TEXT);
+}
+
+/**
+ * Uses the link up with its account's row locked first, the order every change of an account
+ * keeps (PATCH /users/:id, a resend, SCIM, a password change: the user row, then its links), so
+ * using a link never deadlocks with one. The account, or null when the link is not (or no longer)
+ * there.
+ */
+async function takeLinkLocked(
+  tx: Executor,
+  raw: string,
+  kind: AccountTokenKind,
+): Promise<UserRow | null> {
+  const peeked = await peekAccountToken(tx, raw, kind);
+  if (!peeked) return null;
+  const [user] = await tx.select().from(users).where(eq(users.id, peeked.userId)).for('update');
+  if (!user) return null;
+  // Taken after the lock: a change that went first may have replaced or voided it meanwhile.
+  const taken = await takeAccountToken(tx, raw, kind);
+  return taken?.userId === user.id ? user : null;
 }
 
 /**
@@ -169,13 +190,7 @@ export const accountRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (
       const stored = await readSignInSettings(deps.db, request.log);
       const policy = { demoUser: deps.config.demoUser, stored, facts: policyFacts() };
       const username = await deps.db.transaction(async (tx) => {
-        const taken = await takeAccountToken(tx, token, 'password_reset');
-        if (!taken) return null;
-        const [user] = await tx
-          .select()
-          .from(users)
-          .where(eq(users.id, taken.userId))
-          .for('update');
+        const user = await takeLinkLocked(tx, token, 'password_reset');
         // Re-checked now (A3): a refusal commits too, so the link is used up either way.
         if (!user || !mayResetPassword(user, policy)) return null;
         await tx
@@ -276,13 +291,7 @@ export const accountRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (
       const stored = await readSignInSettings(deps.db, request.log);
       const policy = { demoUser: deps.config.demoUser, stored, facts: policyFacts() };
       const username = await deps.db.transaction(async (tx) => {
-        const taken = await takeAccountToken(tx, token, 'invitation');
-        if (!taken) return null;
-        const [user] = await tx
-          .select()
-          .from(users)
-          .where(eq(users.id, taken.userId))
-          .for('update');
+        const user = await takeLinkLocked(tx, token, 'invitation');
         // Never over a password set or an SSO identity linked meanwhile; the policy and the demo
         // account as for a reset. A refusal commits too, so the link is used up either way.
         if (!user) return null;

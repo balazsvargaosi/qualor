@@ -1,9 +1,13 @@
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { accountContext, linkToken, mailsTo } from '../../test/account-mail';
+import { accountContext, linkToken, mailsTo, untilLockWait } from '../../test/account-mail';
 import { login, nextIp, type TestContext } from '../../test/app';
 import { adminHeaders, auditRows, oidcConnection } from '../../test/sso';
-import { issueAccountToken, peekAccountToken } from '../auth/account-tokens';
+import {
+  INVITATION_TTL_MINUTES,
+  issueAccountToken,
+  peekAccountToken,
+} from '../auth/account-tokens';
 import { hashPassword } from '../auth/password';
 import { identities, instanceSettings, users } from '../db/schema';
 
@@ -105,6 +109,28 @@ describe('accepting an invitation (mail E2)', () => {
     } finally {
       await ctx.db.delete(instanceSettings).where(eq(instanceSettings.key, 'sign-in'));
     }
+  });
+
+  it('waits behind a resend for the same account (user row, then the link), never deadlocking', async () => {
+    const { id, token } = await invite('rue');
+    let answer: ReturnType<typeof accept> | undefined;
+    let fresh = '';
+    // POST /users/:id/invitation's order: the user row, then the new link over the old one.
+    await ctx.db.transaction(async (tx) => {
+      await tx.select().from(users).where(eq(users.id, id)).for('update');
+      answer = accept(token);
+      await untilLockWait(ctx);
+      fresh = (
+        await issueAccountToken(tx, {
+          userId: id,
+          kind: 'invitation',
+          createdBy: ctx.adminId,
+          ttlMinutes: INVITATION_TTL_MINUTES,
+        })
+      ).token;
+    });
+    expectInvalid(await answer!);
+    expect((await inspect(fresh)).statusCode).toBe(200);
   });
 
   it('refuses malformed and unknown links', async () => {
