@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-Qualor-Enterprise
 import { createHash } from 'node:crypto';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { serializerCompiler, validatorCompiler } from 'fastify-type-provider-zod';
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest';
@@ -32,6 +34,36 @@ vi.mock('./compliance/pdf', async (importOriginal) => {
 const REPORT_ID = '0b6f1c1e-5d3a-4a8e-9f2b-7c1d2e3f4a5b';
 const ORG_ID = '7a9e3c1d-2b4f-4c6e-8a0b-1c2d3e4f5a6b';
 const PROJECT_ID = '1f2e3d4c-5b6a-4978-8695-a4b3c2d1e0f9';
+
+/** A GET on a real socket that the client drops after `ms`, as a browser that goes away. */
+function dropAfter(url: string, ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const req = http.get(url, { agent: false });
+    req.on('error', () => undefined);
+    setTimeout(() => {
+      req.destroy();
+      resolve();
+    }, ms);
+  });
+}
+
+/** The status of a GET on a real socket, its body read to the end. */
+function statusOf(url: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    http
+      .get(url, { agent: false }, (res) => {
+        res.resume();
+        res.on('end', () => resolve(res.statusCode ?? 0));
+      })
+      .on('error', reject);
+  });
+}
+
+/** Listens on a free local port: the base URL. */
+async function listening(server: FastifyInstance): Promise<string> {
+  await server.listen({ port: 0, host: '127.0.0.1' });
+  return `http://127.0.0.1:${(server.server.address() as AddressInfo).port}`;
+}
 
 /** A deferred promise a test settles by hand. */
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
@@ -390,6 +422,24 @@ describe('GET /compliance/reports/:id/download (4E-1 §2.5)', () => {
     abort.abort();
     await aborted.catch(() => undefined);
     await vi.waitFor(async () => expect((await download('json')).statusCode).toBe(200));
+  });
+
+  it('frees the slot when the client goes away while the report is read (a real socket)', async () => {
+    const read = deferred<undefined>();
+    const h = harness();
+    h.service.download.mockImplementationOnce(async () => {
+      await new Promise((r) => setTimeout(r, 300));
+      read.resolve(undefined);
+      return { view: view(), canonical: canonical() };
+    });
+    app = h.app;
+    const url = `${await listening(app)}/compliance/reports/${REPORT_ID}/download?format=csv`;
+    await dropAfter(url, 100);
+    // The dropped download's handler has gone on past the read.
+    await read.promise;
+    await new Promise((r) => setTimeout(r, 50));
+    expect(await statusOf(url)).toBe(200);
+    expect(h.service.download).toHaveBeenCalledTimes(2);
   });
 
   it('frees the slot when the service refuses the download', async () => {

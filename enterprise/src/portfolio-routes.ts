@@ -296,11 +296,18 @@ export function portfolioRoutes(ctx: PluginContext): FastifyPluginAsync {
         const release = () => {
           if (exporting.get(user.id) === token) exporting.delete(user.id);
         };
+        // Before any await: a client that goes away while the rows are computed frees the slot,
+        // and so does one that goes away before the stream's generator ever runs.
+        reply.raw.once('close', release);
         // The CSV streams past this handler: its generator, or a dropped connection, frees it.
         let streaming = false;
         try {
           if (q.format === 'csv') {
             const { organizationKey, at, rows } = await csvExport(request, input);
+            if (request.raw.destroyed || reply.raw.destroyed) {
+              await rows.return(undefined);
+              throw ctx.access.problem(499, 'CLIENT_ABORTED', 'The client closed the connection');
+            }
             async function* lines(): AsyncGenerator<string> {
               try {
                 yield* portfolioCsv(rows);
@@ -308,8 +315,6 @@ export function portfolioRoutes(ctx: PluginContext): FastifyPluginAsync {
                 release();
               }
             }
-            // A client that goes away before the body starts never runs the generator.
-            reply.raw.once('close', release);
             streaming = true;
             return (
               reply
@@ -324,6 +329,8 @@ export function portfolioRoutes(ctx: PluginContext): FastifyPluginAsync {
                 .send(Readable.from(lines()) as unknown as string)
             );
           }
+          // Two snapshots, not one: under concurrent writes the PDF's project list may disagree
+          // slightly with its overview. The PDF is not a stored snapshot (§3).
           const overview = await ctx.portfolio.overview(request, input, {
             granularity: q.granularity,
           });

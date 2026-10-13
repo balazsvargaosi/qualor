@@ -295,6 +295,19 @@ describe('Qualor Enterprise: portfolio reports through the built plugin (4E-2 §
       await get(session, `${PORTFOLIO}?scope=organization&organizationId=${orgA}`)
     ).json() as Overview;
     expect(org.totals.projects).toBe(1);
+    // Review Focus 2: the attention lists hold no hidden project. gamma (org-b, failed gate) is
+    // in root's failing gates, never in the grant-only user's.
+    const rootAll = (await get(sessions['root']!, `${PORTFOLIO}?scope=all`)).json() as Overview;
+    expect(keysOf(rootAll.attention['failingGates']!)).toContain('org-b/gamma');
+    for (const overview of [all, org]) {
+      expect(Object.keys(overview.attention).sort()).toEqual(
+        ['abandoned', 'failingGates', 'mostSevere', 'worstSecurity'].sort(),
+      );
+      for (const [list, rows] of Object.entries(overview.attention)) {
+        for (const key of keysOf(rows)) expect(key, list).toBe('org-a/alpha');
+      }
+      expect(overview.attention['failingGates']).toEqual([]);
+    }
     const page = (await get(session, `${PORTFOLIO}/projects?scope=all`)).json() as {
       items: Row[];
     };
@@ -302,6 +315,16 @@ describe('Qualor Enterprise: portfolio reports through the built plugin (4E-2 §
     const csv = await get(session, `${PORTFOLIO}/export?scope=all&format=csv`);
     expect(csv.statusCode).toBe(200);
     expect(csvLines(csv.body)).toHaveLength(2);
+    // The organisation scope of org A: beta is hidden, alpha alone.
+    const orgCsv = await get(
+      session,
+      `${PORTFOLIO}/export?scope=organization&organizationId=${orgA}&format=csv`,
+    );
+    expect(orgCsv.statusCode).toBe(200);
+    expect(orgCsv.headers['content-disposition']).toMatch(/filename="qualor-portfolio-org-a-/);
+    const orgLines = csvLines(orgCsv.body);
+    expect(orgLines).toHaveLength(2);
+    expect(orgLines[1]).toMatch(/^org-a,org-a team,alpha,/);
     // Another organisation is not visible: a problem, never a header and a broken stream.
     for (const format of ['csv', 'pdf']) {
       const hidden = await get(

@@ -313,6 +313,9 @@ export function complianceRoutes(ctx: PluginContext): FastifyPluginAsync {
         const release = () => {
           if (downloading.get(userId) === token) downloading.delete(userId);
         };
+        // Before any await: a client that goes away while the report is read frees the slot, and
+        // so does one that goes away before the stream's generator ever runs.
+        reply.raw.once('close', release);
         // The CSV streams past this handler: its generator, or a dropped connection, frees it.
         let streaming = false;
         try {
@@ -328,6 +331,9 @@ export function complianceRoutes(ctx: PluginContext): FastifyPluginAsync {
               .send(canonical as unknown as string);
           }
           if (format === 'csv') {
+            if (request.raw.destroyed || reply.raw.destroyed) {
+              throw ctx.access.problem(499, 'CLIENT_ABORTED', 'The client closed the connection');
+            }
             const rows = csvRows(parseCanonical(canonical));
             async function* lines(): AsyncGenerator<string> {
               try {
@@ -336,8 +342,6 @@ export function complianceRoutes(ctx: PluginContext): FastifyPluginAsync {
                 release();
               }
             }
-            // A client that goes away before the body starts never runs the generator.
-            reply.raw.once('close', release);
             streaming = true;
             return (
               reply
