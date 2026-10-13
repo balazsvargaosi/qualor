@@ -1,29 +1,31 @@
 import type { Severity } from '@qualor/shared';
-import { and, eq, isNull, sql } from 'drizzle-orm';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { QUIET_AUDIT_LOG } from '../../test/audit-log';
 import { createFakeGitHub, type FakeGitHub } from '../../test/fake-github';
 import { createFakeGitLab, type FakeGitLab } from '../../test/fake-gitlab';
 import { createFakeLlm, type FakeLlm } from '../../test/fake-llm';
 import { githubDeps, mappedGitHubProject, pullRequestReport } from '../../test/github';
 import { createIngestHarness, type IngestHarness, type IngestProject } from '../../test/ingest';
-import { configureLlm, llmJobDeps, runLlmJobs } from '../../test/llm';
+import { configureLlm, llmJobDeps } from '../../test/llm';
 import { engine, file, finding, reportWith } from '../../test/reports';
 import {
   decorationDeps,
   mappedProject,
   mergeRequestReport,
   PUBLIC_URL,
-  runDecorations,
   silentLogger,
 } from '../../test/scm';
 import { createAuditRecorder } from '../audit/recorder';
 import { auditEvents, branches, issues, jobs, llmRequests } from '../db/schema';
 import type { Limits } from '../limits';
 import { claimJob, type Job } from '../queue/queue';
-import { runUntilIdle } from '../queue/worker';
+import { runUntilIdle, type JobHandlers } from '../queue/worker';
+import { scmHandlers, type DecorationDeps } from '../scm/decorate';
+import { SCM_QUEUE } from '../scm/queue';
 import { parseInternalHosts } from '../scm/url';
 import { AUTO_FIX_QUEUE, autoFixHandlers, autoFixKey, type AutoFixDeps } from './auto-fix';
+import { llmHandlers, type LlmJobDeps } from './job';
 import { AI_FIX_QUEUE } from './post';
 import { createAiRequest, LLM_QUEUE } from './service';
 import {
@@ -84,8 +86,19 @@ describe('automatic fix suggestions (4E-3a §3)', () => {
     logger: h.ctx.app.log,
     ...over,
   });
-  /** The `scm` worker's deps with the same live limits, as main.ts builds them. */
-  const scmDeps = () => decorationDeps(h, { limits: () => limits });
+  /**
+   * The `scm` worker's deps with the same live limits, as main.ts builds them, and timeouts long
+   * enough that a slow moment of the fakes never becomes a retry scheduled for later.
+   */
+  const scmOverrides = (): Partial<DecorationDeps> => ({
+    limits: () => limits,
+    scm: {
+      ...decorationDeps(h).scm,
+      clientOptions: { timeoutMs: 15_000 },
+      githubClientOptions: { timeoutMs: 15_000 },
+    },
+  });
+  const scmDeps = () => decorationDeps(h, scmOverrides());
 
   const aiFixThreads = (gitlabId: number) =>
     gitlab
@@ -172,19 +185,33 @@ describe('automatic fix suggestions (4E-3a §3)', () => {
     return { project, gitlabId, analysisId, branchId: branch!.id, analyse };
   }
 
-  async function runAutoFix(): Promise<void> {
-    await h.ctx.db
-      .update(jobs)
-      .set({ runAt: sql`now()` })
-      .where(eq(jobs.queue, AUTO_FIX_QUEUE));
-    await runUntilIdle(h.ctx.db, autoFixHandlers(autoDeps()), silentLogger);
+  /**
+   * Runs the queues until none of their jobs is left queued, also those a job requeued for later
+   * (a retry, a busy slot's defer): `runUntilIdle` alone stops at the first moment nothing is due.
+   */
+  async function drain(handlers: JobHandlers, queues: string[]): Promise<void> {
+    for (let round = 0; round < 5; round++) {
+      const queued = and(inArray(jobs.queue, queues), eq(jobs.status, 'queued'));
+      await h.ctx.db
+        .update(jobs)
+        .set({ runAt: sql`now()` })
+        .where(queued);
+      await runUntilIdle(h.ctx.db, handlers, silentLogger);
+      const left = await h.ctx.db.select({ id: jobs.id }).from(jobs).where(queued);
+      if (left.length === 0) return;
+    }
+    throw new Error(`jobs of ${queues.join(', ')} still queued after 5 rounds`);
   }
-  const runLlm = () => runLlmJobs(h, llmJobDeps(h, { limits: () => limits }));
+  const runAutoFix = (deps = autoDeps()) => drain(autoFixHandlers(deps), [AUTO_FIX_QUEUE]);
+  const runLlm = (over: Partial<LlmJobDeps> = {}) =>
+    drain(llmHandlers(llmJobDeps(h, { limits: () => limits, ...over })), [LLM_QUEUE]);
+  /** The `scm` worker's queues: decorations and fix posts. */
+  const runScm = (deps = scmDeps()) => drain(scmHandlers(deps), [SCM_QUEUE, AI_FIX_QUEUE]);
   /** The stage's job, the `llm` jobs it queued, then the `scm` worker (decorations and posts). */
   async function runAll(deps = scmDeps()): Promise<void> {
     await runAutoFix();
     await runLlm();
-    await runDecorations(h, deps);
+    await runScm(deps);
   }
 
   beforeAll(async () => {
@@ -211,9 +238,23 @@ describe('automatic fix suggestions (4E-3a §3)', () => {
     await configure();
     // Every test starts with today's budget unused (earlier tests' requests become yesterday's).
     await h.ctx.db.update(llmRequests).set({ createdAt: sql`now() - interval '1 day'` });
-    await h.ctx.db.delete(jobs).where(eq(jobs.queue, AUTO_FIX_QUEUE));
+    // Nothing of an earlier test runs in this one (a decoration, a job a test never ran).
+    await h.ctx.db.delete(jobs);
     llm.requests.length = 0;
     h.ctx.logs.length = 0;
+  });
+  afterEach(async () => {
+    // No job failed or was retried behind a test's back.
+    const failed = await h.ctx.db
+      .select({
+        queue: jobs.queue,
+        status: jobs.status,
+        attempts: jobs.attempts,
+        error: jobs.lastError,
+      })
+      .from(jobs)
+      .where(sql`${jobs.status} = 'dead' OR ${jobs.attempts} > 1`);
+    expect(failed, JSON.stringify(failed)).toEqual([]);
   });
 
   it('posts a suggestion for each new high finding of a GitLab merge request, with the automatic line', async () => {
@@ -236,7 +277,7 @@ describe('automatic fix suggestions (4E-3a §3)', () => {
     expect(mine.map((j) => (j.payload as { auto?: boolean }).auto)).toEqual([true, true, true]);
     expect(await requestedLines(project.id)).toEqual([2, 3, 5]);
     await runLlm();
-    await runDecorations(h, scmDeps());
+    await runScm();
     expect(llm.requests).toHaveLength(3);
     const threads = aiFixThreads(gitlabId);
     expect(threads).toHaveLength(3);
@@ -272,7 +313,7 @@ describe('automatic fix suggestions (4E-3a §3)', () => {
         findings: reportFindings([[3, 'blocker']]),
       }),
     );
-    await runAll(githubDeps(h, { limits: () => limits }));
+    await runAll(githubDeps(h, scmOverrides()));
     const comments = github.reviewComments.filter((c) => c.repoId === repoId);
     expect(comments).toHaveLength(1);
     expect(comments[0]).toMatchObject({ path: 'src/a.ts', line: 3, commitId: HEAD });
@@ -551,7 +592,7 @@ describe('automatic fix suggestions (4E-3a §3)', () => {
       expect(await fixRows(project.id)).toHaveLength(3);
       await configure({ autoFix: { ...DEFAULT_AUTO_FIX, enabled: false } });
       await runLlm();
-      await runDecorations(h, scmDeps());
+      await runScm();
       expect(llm.requests).toHaveLength(0);
       expect((await fixRows(project.id)).map((r) => r.errorCode)).toEqual([
         'AI_DISABLED',
@@ -566,7 +607,7 @@ describe('automatic fix suggestions (4E-3a §3)', () => {
       await runAutoFix();
       limits.llm.automaticFixSuggestions = false;
       await runLlm();
-      await runDecorations(h, scmDeps());
+      await runScm();
       expect(llm.requests).toHaveLength(0);
       expect(aiFixThreads(gitlabId)).toHaveLength(0);
       expect((await fixRows(project.id)).map((r) => r.errorCode)).toEqual([
@@ -604,7 +645,7 @@ describe('automatic fix suggestions (4E-3a §3)', () => {
         // Queued by the automatic path, and marked so.
         expect(mine.map((j) => (j.payload as { auto?: boolean }).auto)).toEqual([true, true, true]);
         await change(project);
-        await runDecorations(h, scmDeps());
+        await runScm();
         for (const row of await fixRows(project.id)) {
           expect(row.post).toMatchObject({ status: 'failed', reason: 'not_possible' });
         }
@@ -635,7 +676,7 @@ describe('automatic fix suggestions (4E-3a §3)', () => {
         payload: {},
       });
       expect(posted.statusCode, posted.body).toBe(202);
-      await runDecorations(h, scmDeps());
+      await runScm();
       expect(aiFixThreads(gitlabId)).toHaveLength(1);
     });
   });
@@ -670,13 +711,15 @@ describe('automatic fix suggestions (4E-3a §3)', () => {
     // Nothing runs it again: a retry would ask for two more and break the cap.
     await runAutoFix();
     expect(await requestedLines(project.id)).toEqual([2]);
+    // The one dead job this test expects.
+    await h.ctx.db.delete(jobs).where(eq(jobs.id, job!.id));
   });
 
   it('records the automatic request and post as the system actor (ai.requested, ai.fix_posted)', async () => {
     const audit = createAuditRecorder({ log: QUIET_AUDIT_LOG, isActive: () => true });
     const { project } = await gitlabCase('auto-audit', [[2, 'high']]);
-    await runUntilIdle(h.ctx.db, autoFixHandlers(autoDeps({ audit })), silentLogger);
-    await runLlmJobs(h, llmJobDeps(h, { limits: () => limits, audit }));
+    await runAutoFix(autoDeps({ audit }));
+    await runLlm({ audit });
     const [row] = await fixRows(project.id);
     const events = await h.ctx.db
       .select()
@@ -696,7 +739,7 @@ describe('automatic fix suggestions (4E-3a §3)', () => {
     await runAutoFix();
     await runLlm();
     gitlab.updateMergeRequest(gitlabId, 7, { headSha: NEXT });
-    await runDecorations(h, scmDeps());
+    await runScm();
     const rows = await fixRows(project.id);
     expect(rows).toHaveLength(3);
     for (const row of rows)
@@ -719,7 +762,7 @@ describe('automatic fix suggestions (4E-3a §3)', () => {
     });
     expect(asked.statusCode, asked.body).toBe(202);
     await runLlm();
-    await runDecorations(h, scmDeps());
+    await runScm();
     // A person's suggestion is posted only when the person clicks.
     expect(aiFixThreads(gitlabId)).toHaveLength(0);
     const [person] = await h.ctx.db

@@ -1,10 +1,11 @@
-import { eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import type { Report } from '@qualor/shared';
 import type { FastifyInstance } from 'fastify';
 import type { Config } from '../src/config';
-import { analyses } from '../src/db/schema';
+import { analyses, jobs } from '../src/db/schema';
 import { gateHandlers } from '../src/gates/reevaluate';
 import { jobHandlers } from '../src/ingest/handlers';
+import { ANALYSIS_QUEUE } from '../src/ingest/service';
 import type { IngestionStage } from '../src/ingest/process';
 import { communityLimits, type Limits } from '../src/limits';
 import { runUntilIdle } from '../src/queue/worker';
@@ -102,8 +103,18 @@ export async function createIngestHarness(
           const analysisId = await ingest(report, stages);
           const [row] = await ctx.db.select().from(analyses).where(eq(analyses.id, analysisId));
           if (row?.status !== 'succeeded') {
+            // Its job too: one left queued for later (a retry's backoff) or dead says why.
+            const job = await ctx.db
+              .select({ status: jobs.status, attempts: jobs.attempts, lastError: jobs.lastError })
+              .from(jobs)
+              .where(
+                and(
+                  eq(jobs.queue, ANALYSIS_QUEUE),
+                  sql`${jobs.payload} ->> 'analysisId' = ${analysisId}`,
+                ),
+              );
             throw new Error(
-              `analysis ${analysisId} ended ${row?.status}: ${JSON.stringify(row?.error)}`,
+              `analysis ${analysisId} ended ${row?.status}: ${JSON.stringify(row?.error)}; its job: ${JSON.stringify(job)}`,
             );
           }
           return analysisId;
