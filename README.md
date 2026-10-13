@@ -314,7 +314,10 @@ instance under **Settings → AI assistant**: an OpenAI-compatible chat completi
 Azure OpenAI's v1 API, vLLM, Ollama, LM Studio) or the Anthropic Messages API, with its base URL,
 model and API key (write-only, stored encrypted). Each organisation is then enabled with the
 features it wants, and projects and paths can be excluded. No request leaves the server without
-that configuration and a person's click; the CLI never contacts a model.
+that configuration and a person's click, except the Enterprise feature **Automatic fix suggestions**:
+an organisation admin can switch it on (it is off by default) to have Qualor suggest fixes for the
+new findings of each merge request, at or above a severity they choose, and post them as
+suggestions without a click. A project can opt out. The CLI never contacts a model.
 
 **What is sent** for the issue: the rule's key, name, description and CWE; the severity, quality
 and kind; the message; the path, lines and language; and the stored snippet (the flagged lines

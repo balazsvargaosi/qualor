@@ -38,7 +38,7 @@ release: **Docs** in the top bar, at `/docs` on your server, for signed-in users
 9. [Quality gates, profiles and issues](./quality-gates.md): metrics, new code, gates, rule
    profiles and issue statuses.
 10. [AI assistant](./ai-assistant.md): explain issues, suggest triage and fixes with your own
-    model; off by default.
+    model; off by default. Enterprise adds automatic fix suggestions for merge requests.
 11. [CLI reference](./cli.md): commands, options and exit codes.
 12. [Migrating from SonarQube](./migrate-from-sonarqube.md): `qualor import sonarqube`.
 13. [Webhooks and REST API](./webhooks-and-api.md): events, signatures and the most useful
@@ -58,6 +58,8 @@ release: **Docs** in the top bar, at `/docs` on your server, for signed-in users
     company.
 21. [Telemetry](./telemetry.md): the anonymous usage statistics the server sends, and how to turn
     them off.
+22. [The support bundle](./support-bundle.md): one zip with versions, configuration without
+    secrets, health and recent failures, from the web UI or a command.
 
 ## How Qualor works
 

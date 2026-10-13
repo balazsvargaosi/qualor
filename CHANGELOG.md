@@ -25,6 +25,25 @@ All notable changes to Qualor are listed here, newest first. The format follows
   days). Download it as CSV (one row per project) or as PDF, or read it through
   `/api/v0/ee/portfolio`. Each user sees only the projects they can read. It needs a licence key
   listing the new feature `portfolio`. See [Portfolio reports](docs/guide/portfolio.md).
+- Automatic fix suggestions (Enterprise): an organisation admin can switch on, in **Settings →
+  Automatic fixes**, fix suggestions for the new findings of each analysed merge request or pull
+  request. Qualor asks the AI assistant's model on its own and posts the answers as a GitLab
+  suggestion or a GitHub suggested change, with a line saying they were posted automatically.
+  The admin chooses the minimum severity (default high) and the maximum per analysis (1 to 25,
+  default 10); a project admin can opt a project out. Only new-code findings are used, an issue
+  is never suggested twice, the organisation's daily fix budget applies, and the safety checks
+  are those of a person's suggestion. It is off by default and needs a licence key listing the
+  new feature `llm.auto-fix`. This is the one case where Qualor calls the model without a click.
+  The new permission `org.ai.manage` (Organization admin) and the audit actions
+  `organization.auto_fix_changed` and `project.auto_fix_changed` go with it. See
+  [Automatic fix suggestions](docs/guide/ai-assistant.md#automatic-fix-suggestions-enterprise).
+- The support bundle (Business and Enterprise): **Settings → Support** downloads one zip with the
+  versions, the configuration and settings without any secret, the licence state, the health of
+  the database and queues, the recent failed jobs and analyses, the connections to GitLab and
+  GitHub and the recent server logs, for an instance admin; the download is recorded in the audit
+  log (`support.bundle_downloaded`). When the web UI is down, `node dist/main.js support-bundle`
+  in the server image writes the same zip, without logs, and records nothing. It needs a licence
+  key listing the new feature `support-bundle`. See [The support bundle](docs/guide/support-bundle.md).
 
 ## [0.7.1] - 2026-10-12
 

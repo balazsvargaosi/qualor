@@ -80,10 +80,15 @@ mapping. Its message says what is wrong.
 | "The model did not answer in time" | raise the timeout in the settings (up to 600 s) |
 | "The stored API key can no longer be read" | `QUALOR_SECRET_KEY` changed. Enter the API key again |
 | a fix suggestion is "Not posted" | the merge request has a newer commit, or the lines are not lines it added, unchanged |
+| no automatic fix suggestions on a merge request (Enterprise) | see [Automatic fix suggestions](./ai-assistant.md#troubleshooting): the licence, **Settings → Automatic fixes**, the project's opt-out, the minimum severity and the daily fix budget |
 
 Every message and error code is explained in [AI assistant](./ai-assistant.md#troubleshooting).
 
 ## The server
+
+If you ask us for help, send a [support bundle](./support-bundle.md): one zip with the versions,
+the configuration without secrets, the health of the database and the recent failures. It needs a
+Business or Enterprise licence.
 
 | Symptom | Fix |
 |---|---|
@@ -96,6 +101,7 @@ Every message and error code is explained in [AI assistant](./ai-assistant.md#tr
 | sign-in fails behind a proxy, or every user shares one rate limit | set `QUALOR_TRUST_PROXY` |
 | users signed out after a restart | `QUALOR_SECRET_KEY` changed |
 | the server runs out of memory on large reports | give it 4 GiB and keep `QUALOR_WORKER_CONCURRENCY=1` |
+| you need to send us the state of a server (Business and Enterprise) | **Settings → Support**, or `docker compose exec -T server /usr/local/bin/node dist/main.js support-bundle > qualor-support.zip` when the web UI is down ([The support bundle](./support-bundle.md)) |
 
 ## The licence
 

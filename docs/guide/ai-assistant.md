@@ -6,7 +6,10 @@ uses a model you choose, with your own key: a hosted provider or a local model o
 ## What it does
 
 In the issue view, the **AI assistant** panel offers three actions. Each one runs only when a person
-clicks it, for that one issue.
+clicks it, for that one issue. With an Enterprise licence, an organisation admin can also let
+Qualor suggest fixes for the new findings of merge requests without a click (see
+[Automatic fix suggestions](#automatic-fix-suggestions-enterprise)); that is off until they switch
+it on.
 
 - **Explain**: what the rule checks, why this code triggers it, the risk, and how to fix it.
 - **Suggest triage**: whether the finding looks like a false positive, with a verdict ("Likely a
@@ -41,7 +44,9 @@ it.
 Nothing is sent to any model until an instance admin has configured a provider **and** enabled
 the organisation **and** the feature, **and** a person clicks. No scan, merge request comment or
 background job ever calls a model by itself, and the scanner (the CLI) never contacts a model: only
-the server does.
+the server does. The one exception is the Enterprise feature
+[automatic fix suggestions](#automatic-fix-suggestions-enterprise), which an organisation admin
+must switch on first.
 
 For the one issue a person asks about, the server sends:
 
@@ -117,6 +122,88 @@ The AI assistant panel appears in the issue view only for an enabled organisatio
 only when its feature is on and the issue can be sent. Any member of the organisation can ask and
 post, as for changing an issue's status: signed in, or with a token that has the `write` scope (see
 [Users, projects and tokens](./users-projects-tokens.md)).
+
+## Automatic fix suggestions (Enterprise)
+
+With an Enterprise licence (the feature `llm.auto-fix`, see [Enterprise](./enterprise.md)), Qualor
+can suggest fixes for the new findings of a merge request or pull request on its own, and post
+them there as a GitLab suggestion or a GitHub suggested change, without anyone clicking **Suggest a
+fix**. It is **off by default**, for every organisation. Nothing is committed or pushed: a person
+still reviews each suggestion and applies it on GitLab or GitHub, or ignores it.
+
+### What runs, and when
+
+After each analysis of a merge request or pull request whose project is mapped to GitLab or GitHub
+([GitLab](./gitlab.md), [GitHub](./github.md)), Qualor picks the findings that get a suggestion:
+
+- only **new-code** findings of that merge request, never the old issues of the branch it targets,
+  and never an analysis of the main branch or of another branch;
+- only **open** issues of at least the **minimum severity** (default **High**: blocker and high);
+- at most **the maximum per analysis** (default 10, from 1 to 25), the most severe first;
+- never an issue Qualor already asked a model about on its own, whatever the answer was. A later
+  analysis of the same merge request, or a new commit that still has the finding, does not suggest
+  it again. If a person asked for a fix of that issue, their suggestion stands and is not posted
+  automatically;
+- never an issue the assistant would not send for a person either: secret-detection rules,
+  credential files, excluded projects and excluded paths.
+
+Qualor asks the model in the background, so the analysis, the quality gate and the merge request
+comment are never delayed. Each answer that passes the same safety checks as a person's suggestion
+is posted to the merge request as an inline suggestion. It carries the line "Posted automatically
+for new findings of this merge request. A person can switch this off in Qualor's AI settings." and
+is labelled "AI-generated, may be wrong", like any other answer. In the issue view the fix shows
+**Suggested automatically** where a person's request shows who asked.
+
+### The safety checks are the same
+
+A suggestion is posted only when all of these still hold when Qualor posts it:
+
+- the merge request's head is still the commit Qualor analysed. After a newer push, the next
+  analysis starts again, and the findings that got no suggestion yet can get one;
+- the lines to replace are lines the merge request added, and they are unchanged;
+- the issue is still open, the answer passed the safety rules (inside the shown lines, no secret,
+  no control characters, no GitLab quick action), and the assistant, its fix feature and automatic
+  fix suggestions are still enabled for the organisation and the project.
+
+The same data is sent as for a person's fix, redacted the same way ([What is sent, and
+where](#what-is-sent-and-where)), and the same files and rules are never sent.
+
+### Switch it on and off
+
+1. An instance admin has configured a provider and enabled the organisation with **Suggest a fix**
+   ([Configuration](#configuration)). Automatic fix suggestions follow from that: they cannot be
+   switched on for an organisation that has none of it.
+2. An **organisation admin** opens **Settings → Automatic fixes** (the organisation chosen in the
+   header) and switches on **Post fix suggestions automatically**, with the **Minimum severity** and
+   the **At most per analysis**. The same block is on **Settings → AI assistant** for an instance
+   admin, per organisation. The permission is `org.ai.manage`, held by the Organization admin role
+   ([Roles and the audit log](./roles-and-audit.md)). Without the licence the page shows an
+   Enterprise note in place of the controls.
+3. A **project admin** can opt one project out: **Project → Settings → Automatic fix
+   suggestions**. A project cannot switch it on when the organisation has it off. Without the
+   organisation's switch the panel says so.
+
+Switching it off, or losing the licence, stops new suggestions at once, including requests already
+waiting, and posts nothing more. Suggestions already posted stay on the merge request. A
+suggestion a person asked for is never posted automatically.
+
+### Budget and cost
+
+An automatic suggestion is an ordinary fix request of the organisation: it counts against the
+organisation's **daily fix budget**, its tokens and its estimated cost ([Budgets and
+limits](#budgets-and-limits)). Not against a person's hourly bound, since no person asked. With
+Enterprise your fix budget is the only limit. When the budget is used up, Qualor stops asking for
+that analysis, and the findings that got no suggestion yet are picked up by a later analysis of
+the same merge request, once the budget is back at the next UTC midnight. The server logs one line
+(`outcome: budget_exhausted`). Lower **At most per analysis** or raise the budget if suggestions
+use it up too fast.
+
+### Audit
+
+The audit log records a change of the organisation's settings as
+`organization.auto_fix_changed` and a project's opt-out as `project.auto_fix_changed`. Each
+automatic request and each post are recorded as `ai.requested` and `ai.fix_posted` by the system,
+since no person acted ([Roles and the audit log](./roles-and-audit.md#what-is-recorded)).
 
 ## A local model with Ollama
 
@@ -258,6 +345,10 @@ Today's use and budgets for an organisation are at `GET /api/v0/organizations/{i
 | "The request was interrupted; ask again" | the server restarted, or the request failed unexpectedly, while it ran |
 | "Not posted: the merge request has a newer commit" | analyse the latest commit, then ask for a new fix |
 | "Not posted: the lines are not added lines of the merge request" / "the code on the merge request differs" | suggestions can only replace lines the merge request added, unchanged. Fix it by hand |
+| No automatic suggestions on a merge request | check, in order: the licence lists `llm.auto-fix`; **Settings → Automatic fixes** is on for the organisation, and the organisation and **Suggest a fix** are enabled in **Settings → AI assistant**; the project did not opt out; the project is mapped to GitLab or GitHub; the findings are new in this merge request, open and at the minimum severity; no suggestion was made for them before; the daily fix budget is not used up |
+| "Automatic fix suggestions need the Enterprise plan." (the Settings page, or the API's 403 `FEATURE_NOT_LICENSED`) | apply a key that lists `llm.auto-fix` ([Enterprise](./enterprise.md)) |
+| Switching automatic fix suggestions on answers 409 `AI_DISABLED` | an instance admin must configure a provider, enable the organisation and turn on **Suggest a fix** first |
+| 409 `AUTO_FIX_OPT_OUT_LIMIT_REACHED` | an organisation lists at most 1 000 projects that opted out; let a project back in first |
 | "The project is not mapped to GitLab or GitHub" | map it in **Settings → Repositories** ([GitLab](./gitlab.md), [GitHub](./github.md)) |
 
 Error codes in the API: `AI_DISABLED` (409), `AI_NOT_ELIGIBLE` (409, with the reason in `detail`),

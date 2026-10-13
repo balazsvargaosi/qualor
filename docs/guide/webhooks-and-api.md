@@ -101,10 +101,12 @@ q "$QUALOR_URL/api/v0/issues?branchId=<id>&severity=blocker&severity=high&inNewC
 | SCM | `GET/POST/PATCH/DELETE /scm-connections`, `POST /scm-connections/{id}/test` |
 | Webhooks | `/webhooks…`, `/webhooks/{id}/deliveries`, `…/redeliver`, `…/regenerate-secret` |
 | AI assistant | `POST /issues/{id}/ai/{explain,triage,fix}`, `GET /issues/{id}/ai`, `GET /ai-requests/{id}`, `POST /ai-requests/{id}/post`, `GET /organizations/{id}/ai`; instance admins: `GET/PUT /system/llm`, `POST /system/llm/test` ([AI assistant](./ai-assistant.md)) |
+| Automatic fix suggestions (enterprise) | `GET/PUT /organizations/{id}/ai/auto-fix` (organisation admins), `PUT /projects/{id}/ai/auto-fix` (project settings); each answers 403 `FEATURE_NOT_LICENSED` when `llm.auto-fix` is not active. The project object carries `autoFix` ([Automatic fix suggestions](./ai-assistant.md#automatic-fix-suggestions-enterprise)) |
 | Single sign-on (enterprise) | `/ee/sso/connections…`, `/ee/sso/settings`, `/ee/sso/me/identities`, `/ee/sso/users/{userId}/identities` ([below](#single-sign-on-and-scim-enterprise)) |
 | SCIM (enterprise) | `GET/POST /ee/scim/tokens`, `DELETE /ee/scim/tokens/{id}`, and the SCIM 2.0 service under `/ee/scim/v2` ([below](#single-sign-on-and-scim-enterprise)) |
 | Audit log (enterprise) | `GET /ee/audit/events`, `GET /ee/audit/export`, `GET /ee/audit/head`, `GET /ee/audit/verify`, `GET/PUT /ee/audit/settings`, `POST /ee/audit/settings/stream/{regenerate-secret,test}` ([Roles and the audit log](./roles-and-audit.md)). The two stream routes, and a `PUT` with a `stream` object, need `audit-log.stream` too (403 `FEATURE_NOT_LICENSED` without it; retention alone and `"stream": null` need only `audit-log`) |
 | Compliance reports (enterprise) | `GET/POST /ee/compliance/reports`, `GET/DELETE /ee/compliance/reports/{id}`, `GET /ee/compliance/reports/{id}/download` (`?format=json`, `csv` or `pdf`) ([Compliance reports](./compliance-reports.md#the-api)) |
+| Support bundle (business and enterprise) | `GET /ee/support/bundle`, an instance admin; one bundle at a time, 429 `RATE_LIMITED` otherwise ([The support bundle](./support-bundle.md)) |
 | Portfolio reports (enterprise) | `GET /ee/portfolio`, `GET /ee/portfolio/projects`, `GET /ee/portfolio/export` (`?format=csv` or `pdf`), each with `?scope=organization&organizationId=…` or `?scope=all` ([Portfolio reports](./portfolio.md#the-api)) |
 
 Errors are `application/problem+json` with a stable `code`, such as `PROJECT_NOT_FOUND`,
