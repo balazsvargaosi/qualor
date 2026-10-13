@@ -20,7 +20,8 @@ The user documentation is at <https://qualor.dev/docs/install-server#kubernetes-
 - `networkPolicy.enabled` (off by default): the server accepts only its port, from
   `networkPolicy.ingressFrom` or from anywhere, and the bundled PostgreSQL only the server. The
   server's egress is restricted only when `networkPolicy.egress` has rules (DNS and the bundled
-  PostgreSQL are then added). It needs a CNI that enforces NetworkPolicy.
+  PostgreSQL are then added; list your SCM, model, webhook, SMTP and database hosts). It needs a
+  CNI that enforces NetworkPolicy.
 
 ## Upgrades
 

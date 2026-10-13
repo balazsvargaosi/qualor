@@ -304,7 +304,7 @@ defaults. To drop one, set it to `null`.
 A NetworkPolicy is available and off by default. With it on, the server accepts connections only
 on its port (from the sources you list, or from anywhere), and in `bundled` mode PostgreSQL only
 from the server. The server's outgoing connections stay open unless you list `egress` rules; then
-add your SCM, model, webhook and database hosts there:
+add your SCM, model, webhook, SMTP and database hosts there:
 
 ```yaml
 networkPolicy:

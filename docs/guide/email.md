@@ -87,15 +87,17 @@ from a private certificate authority, give the server that CA in `NODE_EXTRA_CA_
 
 ## Delivery, retries and the log
 
-A message is stored in the same database transaction as what it is about, so an alert is never
-lost or sent for something that did not happen. Qualor then sends it on its own: a slow mail
-server never delays analyses.
+A message is stored in the same database transaction as what it is about, so it is never sent
+for something that did not happen. Qualor then sends it on its own: a slow mail server never
+delays analyses.
 
 - A temporary failure (the server cannot be reached, does not answer in time, or answers with a
-  `4xx` code such as greylisting) is retried 1, 2, 4, 8, 16 and 32 minutes later: 7 attempts.
+  `4xx` code such as greylisting) is retried 1, 2, 4, 8, 16 and 32 minutes later: 7 attempts
+  over about an hour. When the last one fails too, the message is **Failed** and stays in the
+  log; it is not sent later.
 - A permanent failure (a `5xx` answer, a refused password, a certificate that does not verify, or
   STARTTLS not offered) fails the message at once.
-- A message still waiting after 2 days is given up.
+- A message still waiting after 2 days is given up and failed.
 
 **Recent messages** in **Settings → Email** lists every message with when it was queued, the
 recipient, the subject and its status (**Delivered**, **Retrying n/7**, **Failed** or **Pending**),

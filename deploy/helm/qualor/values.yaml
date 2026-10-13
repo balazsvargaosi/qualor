@@ -100,7 +100,8 @@ networkPolicy:
   # Who may reach the server's port (NetworkPolicy peers). Empty: any source.
   ingressFrom: []
   # Egress rules for the server. Empty: its egress is not restricted. With rules, only DNS, the
-  # bundled PostgreSQL and these are allowed: add your SCM, model, webhook and database hosts.
+  # bundled PostgreSQL and these are allowed: add your SCM, model, webhook, SMTP and database
+  # hosts.
   egress: []
 
 resources:
