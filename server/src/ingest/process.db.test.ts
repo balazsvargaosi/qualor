@@ -138,7 +138,7 @@ describe('analysis processing job', () => {
     await ctx.db.execute(
       sql`UPDATE jobs SET status = 'dead' WHERE payload ->> 'analysisId' = ${abandoned}`,
     );
-    expect(await reconcileDeadAnalyses(ctx.db)).toBe(1);
+    expect(await reconcileDeadAnalyses(ctx.db)).toHaveLength(1);
     expect(await updatedAt(abandoned)).toBeGreaterThan(old.getTime());
     // Later tests look up "the" dead job; don't leave this one behind.
     await ctx.db.execute(sql`DELETE FROM jobs WHERE payload ->> 'analysisId' = ${abandoned}`);
@@ -258,7 +258,7 @@ describe('analysis processing job', () => {
       UPDATE jobs SET status = 'dead'
        WHERE id = ${malformedJobId} OR payload ->> 'analysisId' = ${id}
     `);
-    expect(await reconcileDeadAnalyses(ctx.db)).toBe(1);
+    expect(await reconcileDeadAnalyses(ctx.db)).toHaveLength(1);
     expect((await read(id)).error.code).toBe('PROCESSING_ERROR');
     await ctx.db.execute(sql`
       DELETE FROM jobs WHERE id = ${malformedJobId} OR payload ->> 'analysisId' = ${id}
@@ -521,10 +521,10 @@ describe('analysis processing job', () => {
     const [deadJob] = await ctx.db.select().from(jobs).where(eq(jobs.id, job!.id));
     expect(deadJob!.status).toBe('dead');
     expect((await read(id)).status).toBe('processing');
-    expect(await reconcileDeadAnalyses(ctx.db)).toBe(1);
+    expect(await reconcileDeadAnalyses(ctx.db)).toHaveLength(1);
     expect(await read(id)).toMatchObject({ status: 'failed', error: { code: 'PROCESSING_ERROR' } });
     // Idempotent: nothing left to reconcile, and a second pass never re-touches it.
-    expect(await reconcileDeadAnalyses(ctx.db)).toBe(0);
+    expect(await reconcileDeadAnalyses(ctx.db)).toEqual([]);
     // Controller ruling T5: don't leave this test's own dead job behind — an unscoped lookup in a
     // later test (or one added by a future implementer) should never have to account for it.
     await ctx.db.delete(jobs).where(eq(jobs.id, job!.id));

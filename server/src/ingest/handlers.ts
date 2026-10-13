@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { UploadLimits } from '../config';
 import type { Db } from '../db/client';
+import { notifyAnalysisFailed } from '../notifications/analysis';
 import type { NotifyDeps } from '../notifications/deps';
 import type { JobHandlers } from '../queue/worker';
 import { markFailed, processAnalysis, type IngestionStage, type ProcessLogger } from './process';
@@ -41,10 +42,14 @@ export function jobHandlers(deps: JobDeps): JobHandlers {
       } catch (err) {
         // Last attempt: leave a terminal state the CLI can see; rethrow so the job is buried as dead.
         if (job.attempts >= job.maxAttempts) {
-          await markFailed(deps.db, analysisId, {
+          const failed = await markFailed(deps.db, analysisId, {
             code: 'PROCESSING_ERROR',
             message: 'The server failed to process this analysis',
           });
+          // mail E3: only when this call failed it (a succeeded analysis stays as it is).
+          if (failed && deps.notify) {
+            await notifyAnalysisFailed(deps.db, deps.notify, { analysisId }, deps.logger);
+          }
         }
         throw err;
       }

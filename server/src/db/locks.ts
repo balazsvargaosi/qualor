@@ -70,4 +70,9 @@ export const LOCKS = {
   mailSettings: 7_310_021,
   /** `pg_advisory_xact_lock(key)`: the licence-alert schedule and its daily check, one at a time. */
   licenseAlerts: 7_310_022,
+  /**
+   * The first key of `pg_advisory_xact_lock(key, hashtext(projectId))`: one project's
+   * "analysis failed" emails are queued one at a time, so the 6-hour dedupe holds (mail E3 N7).
+   */
+  analysisFailedMail: 7_310_023,
 } as const;

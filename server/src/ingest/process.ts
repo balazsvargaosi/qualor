@@ -13,6 +13,7 @@ import {
   type AnalysisWarning,
   type FieldIssue,
 } from '../db/schema';
+import { notifyAnalysisFailed, type BranchHint } from '../notifications/analysis';
 import type { NotifyDeps } from '../notifications/deps';
 import type { ProjectRow } from '../projects/access';
 import { decodeStoredReport } from './decode';
@@ -127,6 +128,16 @@ function branchTarget(report: Report): BranchTarget | null {
   return report.scm.branch ? { kind: 'branch', name: report.scm.branch } : null;
 }
 
+/** mail E3: the branch a decoded report names, for the failure email (the branch row may not exist). */
+function branchHintOf(project: ProjectRow, target: BranchTarget | null): BranchHint | null {
+  if (!target) return null;
+  return {
+    name: target.name,
+    kind: target.kind,
+    isMain: target.kind === 'branch' && target.name === project.mainBranchName,
+  };
+}
+
 /** The analysis columns a report fills (also the webhook payload's view of them, webhooks/stage.ts). */
 export function analysisFields(
   report: Report,
@@ -185,12 +196,15 @@ export async function markFailed(
   analysisId: string,
   error: AnalysisError,
   fields: Partial<typeof analyses.$inferInsert> = {},
-): Promise<void> {
-  await db
+): Promise<boolean> {
+  const changed = await db
     .update(analyses)
     // gates.md §6: "if ingestion itself fails, gate_status = 'error'" (ruling G4).
     .set({ ...fields, status: 'failed', error, gateStatus: 'error', finishedAt: sql`now()` })
-    .where(and(eq(analyses.id, analysisId), inArray(analyses.status, ['queued', 'processing'])));
+    .where(and(eq(analyses.id, analysisId), inArray(analyses.status, ['queued', 'processing'])))
+    .returning({ id: analyses.id });
+  // mail E3: callers notify only when this call failed the analysis.
+  return changed.length > 0;
 }
 
 const ABANDONED_JOB_ERROR: AnalysisError = {
@@ -207,10 +221,11 @@ const ABANDONED_JOB_ERROR: AnalysisError = {
  * never coming back — it would stay `'queued'`/`'processing'` forever. Call this after every reap
  * cycle (see `queue/worker.ts`'s `afterReap`) to sweep every analysis whose ingest job already
  * went `'dead'` behind its back. Idempotent: an analysis already `failed`/`succeeded` is excluded
- * by the same `status IN ('queued','processing')` guard as everywhere else here.
+ * by the same `status IN ('queued','processing')` guard as everywhere else here. Returns the ids
+ * it failed, so the caller can notify each (mail E3).
  */
-export async function reconcileDeadAnalyses(db: Executor): Promise<number> {
-  const result = await db.execute(sql`
+export async function reconcileDeadAnalyses(db: Executor): Promise<string[]> {
+  const result = await db.execute<{ id: string }>(sql`
     UPDATE analyses a
        SET status = 'failed',
            error = ${JSON.stringify(ABANDONED_JOB_ERROR)}::jsonb,
@@ -223,8 +238,9 @@ export async function reconcileDeadAnalyses(db: Executor): Promise<number> {
        -- Compared as text: a malformed payload must not make the cast (and the whole sweep) fail.
        AND j.payload ->> 'analysisId' = a.id::text
        AND a.status IN ('queued', 'processing')
+    RETURNING a.id
   `);
-  return result.rowCount ?? 0;
+  return result.rows.map((row) => row.id);
 }
 
 /**
@@ -255,6 +271,21 @@ export async function processAnalysis(deps: ProcessDeps, analysisId: string): Pr
     );
     return;
   }
+  /** Fails the analysis; when this call changed it, mails its watchers (mail E3). */
+  const fail = async (
+    error: AnalysisError,
+    options: { fields?: Partial<typeof analyses.$inferInsert>; hint?: BranchHint | null } = {},
+  ): Promise<void> => {
+    if (!(await markFailed(db, analysisId, error, options.fields))) return;
+    if (deps.notify) {
+      await notifyAnalysisFailed(
+        db,
+        deps.notify,
+        { analysisId, branchHint: options.hint ?? null },
+        logger,
+      );
+    }
+  };
   // Defensive, not currently reachable: `analyses.project_id` references `projects.id` ON DELETE
   // CASCADE, so a deleted project takes this very analysis row down with it — the `!analysis`
   // check above already caught that case. Kept in case a future migration relaxes that FK (e.g.
@@ -276,24 +307,27 @@ export async function processAnalysis(deps: ProcessDeps, analysisId: string): Pr
       { analysisId },
       'the uploaded report is no longer stored; marking the analysis failed',
     );
-    return markFailed(db, analysisId, {
+    return fail({
       code: 'REPORT_MISSING',
       message: 'The uploaded report is no longer stored',
     });
   }
 
   const decoded = decodeStoredReport(stored.body, deps.upload, logger);
-  if (!decoded.ok) return markFailed(db, analysisId, decoded.error);
+  if (!decoded.ok) return fail(decoded.error);
   const report = decoded.report;
   if (report.project.key !== project.key) {
-    return markFailed(db, analysisId, {
-      code: 'PROJECT_KEY_MISMATCH',
-      message: `The report is for project "${report.project.key}" but was uploaded to "${project.key}"`,
-    });
+    return fail(
+      {
+        code: 'PROJECT_KEY_MISMATCH',
+        message: `The report is for project "${report.project.key}" but was uploaded to "${project.key}"`,
+      },
+      { hint: branchHintOf(project, branchTarget(report)) },
+    );
   }
   const target = branchTarget(report);
   if (!target) {
-    return markFailed(db, analysisId, {
+    return fail({
       code: 'BRANCH_REQUIRED',
       message: 'The report names neither a branch nor a merge request (detached checkout?)',
     });
@@ -306,9 +340,9 @@ export async function processAnalysis(deps: ProcessDeps, analysisId: string): Pr
     // The ingestion transaction (branch upsert included) has rolled back; record what the report
     // said, without the branch, which may not exist.
     logger.info({ analysisId, code: err.code }, 'an ingestion stage rejected the analysis');
-    await markFailed(db, analysisId, err.toAnalysisError(), {
-      ...analysisFields(report, null),
-      warnings: capWarnings(report.warnings),
+    await fail(err.toAnalysisError(), {
+      fields: { ...analysisFields(report, null), warnings: capWarnings(report.warnings) },
+      hint: branchHintOf(project, target),
     });
   }
 }

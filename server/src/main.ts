@@ -29,6 +29,7 @@ import {
 } from './llm/job';
 import { MAIL_LEASE_MS, MAIL_WORKER_CONCURRENCY, mailHandlers } from './mail/deliver';
 import { mailDeps } from './mail/outbox';
+import { notifyAnalysesFailed } from './notifications/analysis';
 import { notifyDeps } from './notifications/deps';
 import { bootEnterprise, type EnterpriseBoot } from './plugins/boot';
 import { ensurePluginSchedules, startPluginWorker } from './plugins/mount';
@@ -225,7 +226,8 @@ async function main(): Promise<void> {
     // Ruling S13 #2: a worker that crashes mid-run never gets to markFailed its own analysis;
     // sweep for that after every reap cycle instead.
     afterReap: async (db) => {
-      await reconcileDeadAnalyses(db);
+      // mail E3: each analysis the sweep failed is mailed to its watchers (never throws).
+      await notifyAnalysesFailed(db, notify, await reconcileDeadAnalyses(db), logger);
       await ensureHousekeepingScheduled(db);
       await ensureLicenseAlertScheduled(db);
       if (config.telemetry.enabled) await ensureTelemetryScheduled(db);
