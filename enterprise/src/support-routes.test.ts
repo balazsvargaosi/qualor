@@ -87,6 +87,23 @@ describe('GET /support/bundle (4E-3b §4)', () => {
     expect(h.support.bundle).toHaveBeenCalledTimes(1);
   });
 
+  it('refuses a file name that is not plain (500) and frees the slot', async () => {
+    const h = harness(done);
+    const unsafe = ['a"; x=y.zip', 'a\r\nset-cookie: x.zip', '../a.zip', 'a b.zip', ''];
+    for (const fileName of unsafe) {
+      const stream = Readable.from([ZIP]);
+      h.support.bundle.mockResolvedValueOnce({ fileName, stream });
+    }
+    app = h.app;
+    for (const fileName of unsafe) {
+      const res = await app.inject({ url: '/support/bundle' });
+      expect(res.statusCode, fileName).toBe(500);
+      expect(res.json()).toMatchObject({ code: 'INTERNAL_ERROR' });
+      expect(res.headers['content-disposition']).toBeUndefined();
+    }
+    expect((await app.inject({ url: '/support/bundle' })).statusCode).toBe(200);
+  });
+
   it("passes core's refusals through (403) and frees the slot", async () => {
     const h = harness(done);
     h.support.bundle.mockRejectedValueOnce(

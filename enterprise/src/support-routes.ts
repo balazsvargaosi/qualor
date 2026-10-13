@@ -10,6 +10,9 @@ import type { PluginContext } from '@qualor/server/plugin-contract';
  */
 let inFlight: symbol | null = null;
 
+/** The only file names the content-disposition header carries: no quote, slash or line break. */
+const SAFE_FILE_NAME = /^[\w.-]+$/;
+
 /**
  * 4E-3b §4: the support bundle download, feature `support-bundle`. Core's `ctx.support` checks
  * the caller (an instance admin), collects the archive and records the audit event; this route
@@ -61,6 +64,15 @@ export function supportRoutes(ctx: PluginContext): FastifyPluginAsync {
         let streaming = false;
         try {
           const { fileName, stream } = await ctx.support.bundle(request);
+          // Defence in depth: core names the file, and only a plain name goes into the header.
+          if (!SAFE_FILE_NAME.test(fileName)) {
+            stream.destroy();
+            throw ctx.access.problem(
+              500,
+              'INTERNAL_ERROR',
+              'The support bundle has an unexpected file name',
+            );
+          }
           if (request.raw.destroyed || reply.raw.destroyed) {
             stream.destroy();
             throw ctx.access.problem(499, 'CLIENT_ABORTED', 'The client closed the connection');
