@@ -192,7 +192,7 @@ describe('gate notifications from ingestion (mail E3 N2, N3)', () => {
     // E1's webhook-alert rule: the error's class only, never its message (a database error's
     // message carries the query's parameters, addresses among them).
     expect(warn).toHaveBeenCalledWith(
-      { analysisId: 'a', errorClass: expect.any(String) },
+      { analysisId: 'a', errorClass: 'DrizzleQueryError' },
       'project notifications could not be queued',
     );
   });

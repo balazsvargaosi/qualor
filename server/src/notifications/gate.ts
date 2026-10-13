@@ -104,7 +104,9 @@ export async function notifyGateChangeSafely(
   change: GateChange,
   logger?: Pick<FastifyBaseLogger, 'warn'>,
 ): Promise<void> {
-  if (deps === null) return;
+  // Most analyses change nothing worth a message: decide before paying for the savepoint (two
+  // round trips inside the ingestion transaction).
+  if (deps === null || gateEvent(change.previous, change.next.status) === null) return;
   try {
     await tx.transaction((savepoint) => notifyGateChange(savepoint, deps, change));
   } catch (err) {
