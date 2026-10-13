@@ -37,6 +37,7 @@ test.describe('on a tablet', () => {
     '/settings/ee/scim',
     '/settings/ee/linked-accounts',
     '/settings/ee/compliance',
+    '/settings/ee/support',
   ]) {
     test(`${path} never scrolls sideways at 768px`, async ({ page }) => {
       await page.goto(path);
@@ -63,6 +64,7 @@ test.describe('on a phone', () => {
     '/settings/ee/scim',
     '/settings/ee/linked-accounts',
     '/settings/ee/compliance',
+    '/settings/ee/support',
   ]) {
     test(`${path} never scrolls sideways`, async ({ page }) => {
       await page.goto(path);
@@ -349,4 +351,32 @@ test.describe('automatic fix suggestions (4E-3a §4)', () => {
     await expect(saved.getByLabel('Minimum severity')).toHaveValue('medium');
     await expect(saved.getByLabel('At most per analysis')).toHaveValue('5');
   });
+});
+
+// 4E-3b §5: the support bundle (feature `support-bundle`) for the instance admin. The download is
+// a plain link; the archive is a zip whose manifest names the UI as its source.
+test('an instance admin downloads the support bundle from Settings → Support', async ({ page }) => {
+  await page.goto('/settings');
+  await page.getByRole('link', { name: 'Support' }).click();
+  await expect(page).toHaveURL(/\/settings\/ee\/support$/);
+  await expect(page).toHaveTitle('Support · Qualor');
+  await expect(page.getByText('It never contains secrets')).toBeVisible();
+  await expect(page.locator('#support-command-running')).toHaveValue(
+    'docker compose exec -T server /usr/local/bin/node dist/main.js support-bundle > qualor-support.zip',
+  );
+  await expect(page.locator('#support-command-stopped')).toHaveValue(
+    'docker compose run --rm -T server support-bundle > qualor-support.zip',
+  );
+  await expect(page.getByRole('link', { name: 'support@qualor.dev' })).toBeVisible();
+  await expectAccessible(page);
+
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByRole('link', { name: 'Download support bundle' }).click(),
+  ]);
+  expect(download.suggestedFilename()).toMatch(/^qualor-support-\d{8}-\d{6}\.zip$/);
+  const archive = readFileSync((await download.path())!);
+  expect(archive.subarray(0, 2).toString()).toBe('PK');
+  const text = archive.toString('latin1');
+  for (const name of ['manifest.json', 'license.json', 'logs.jsonl']) expect(text).toContain(name);
 });

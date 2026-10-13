@@ -204,6 +204,17 @@
               >
             </li>
           }
+          @if (support()) {
+            <li>
+              <a
+                routerLink="ee/support"
+                routerLinkActive="active"
+                ariaCurrentWhenActive="page"
+                i18n="@@settings.tab.support"
+                >Support</a
+              >
+            </li>
+          }
           <li>
             <a
               routerLink="license"

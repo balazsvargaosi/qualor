@@ -10,6 +10,7 @@ import { complianceJobs, complianceRoutes, HOUSEKEEPING_QUEUE } from './complian
 import { portfolioRoutes } from './portfolio-routes';
 import { scimRoutes } from './scim-routes';
 import { ssoRoutes } from './sso-routes';
+import { supportRoutes } from './support-routes';
 
 /** The admin's budget maximum (server/src/llm/settings.ts); core refuses more. */
 const MAX_FIX_PER_DAY = 100_000;
@@ -25,6 +26,7 @@ const plugin: QualorPlugin = {
   // 5D (§1.7): audit-log.stream needs audit-log, sso.multi needs sso (core's prerequisite table).
   // 4E-1: compliance-export has no prerequisite; neither has 4E-2's portfolio.
   // 4E-3a: llm.auto-fix is Enterprise only and has no prerequisite.
+  // 4E-3b: support-bundle is Business and Enterprise, with no prerequisite.
   features: [
     'llm.fix-quota',
     'audit-log',
@@ -35,6 +37,7 @@ const plugin: QualorPlugin = {
     'compliance-export',
     'portfolio',
     'llm.auto-fix',
+    'support-bundle',
   ],
   register(ctx) {
     ctx.limits('llm.fix-quota', { llm: { maxFixPerOrganizationPerDay: MAX_FIX_PER_DAY } });
@@ -62,6 +65,8 @@ const plugin: QualorPlugin = {
     ctx.schedule('compliance-export', HOUSEKEEPING_QUEUE, COMPLIANCE_HOUSEKEEPING_SECONDS);
     // 4E-2: portfolio reports, Enterprise; the numbers are core's ctx.portfolio.
     ctx.routes('portfolio', portfolioRoutes(ctx));
+    // 4E-3b: the support bundle for instance admins; the data is core's ctx.support.
+    ctx.routes('support-bundle', supportRoutes(ctx));
     ctx.ui('audit-log', {
       point: 'settings.nav',
       id: 'audit-log',
@@ -115,6 +120,12 @@ const plugin: QualorPlugin = {
       id: 'portfolio',
       label: 'Portfolio',
       path: '/portfolio',
+    });
+    ctx.ui('support-bundle', {
+      point: 'settings.nav',
+      id: 'support',
+      label: 'Support',
+      path: '/settings/ee/support',
     });
     // No licensee name or licence id: the boot line leaves them out too (enterprise.md §6).
     ctx.logger.info('Qualor Enterprise registered');

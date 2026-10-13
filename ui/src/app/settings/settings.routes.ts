@@ -99,6 +99,12 @@ export const settingsRoutes: Routes = [
     loadComponent: () => import('./compliance.page').then((m) => m.SettingsCompliancePage),
   },
   {
+    // 4E-3b §5: the support bundle (instance admins), while `support-bundle` is active.
+    path: 'ee/support',
+    title: $localize`:@@title.support:Support`,
+    loadComponent: () => import('./support.page').then((m) => m.SupportPage),
+  },
+  {
     path: 'ee/:id',
     title: $localize`:@@title.extension:Enterprise`,
     loadComponent: () => import('./extension.page').then((m) => m.ExtensionPage),

@@ -15,6 +15,7 @@ const KNOWN_EXTENSIONS = new Set([
   'sign-in',
   'scim',
   'compliance',
+  'support',
 ]);
 
 /**
@@ -56,6 +57,8 @@ export class SettingsPage {
   protected readonly sso = computed(() => this.ids().has('sso') && this.instanceAdmin());
   protected readonly signIn = computed(() => this.ids().has('sign-in') && this.instanceAdmin());
   protected readonly scim = computed(() => this.ids().has('scim') && this.instanceAdmin());
+  /** The support bundle (4E-3b §5): instance admins, while `support-bundle` is active. */
+  protected readonly support = computed(() => this.ids().has('support') && this.instanceAdmin());
   /**
    * The organisation's compliance reports (4E-1 §4): for its members (an organisation role, which
    * always holds `org.read`) and instance admins, while `compliance-export` is active.

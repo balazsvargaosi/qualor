@@ -165,7 +165,7 @@ describe('the enterprise SSO and SCIM API (sso-scim.md §17)', () => {
 
   const inject = (options: InjectOptions) => ctx.app.inject(options);
 
-  it('loads with its eight features and the four 4D settings entries', async () => {
+  it('loads with its ten features and the four 4D settings entries', async () => {
     expect(ctx.edition!.plugins()).toEqual([
       {
         name: 'qualor-enterprise',
@@ -180,6 +180,7 @@ describe('the enterprise SSO and SCIM API (sso-scim.md §17)', () => {
           'compliance-export',
           'portfolio',
           'llm.auto-fix',
+          'support-bundle',
         ],
         error: null,
       },
@@ -821,7 +822,12 @@ describe('sso.multi: one connection in effect without it (sso-scim.md §4.4)', (
 
     // Business: nothing written; only the oldest enabled connection is in effect.
     await boot(BUSINESS_FEATURES);
-    expect(ctx!.edition!.activeFeatures()).toEqual(['audit-log', 'llm.fix-quota', 'sso']);
+    expect(ctx!.edition!.activeFeatures()).toEqual([
+      'audit-log',
+      'llm.fix-quota',
+      'sso',
+      'support-bundle',
+    ]);
     expect(await rowCounts(ctx!, TABLES)).toEqual(counts);
     expect(await enabledFlags()).toEqual(flags);
     expect(await inEffect()).toEqual({ Oldest: true, Middle: false, Newest: false });

@@ -1,0 +1,82 @@
+<div class="settings-head">
+  <div>
+    <h2 i18n="@@support.title">Support</h2>
+    @if (infoLoaded() && !infoError()) {
+      @if (!licensed()) {
+        <p class="muted" i18n="@@support.notLicensed">
+          The support bundle needs a Business or Enterprise licence with the support-bundle feature.
+        </p>
+      } @else if (!instanceAdmin()) {
+        <p class="muted" i18n="@@support.adminsOnly">
+          Only instance administrators download the support bundle.
+        </p>
+      } @else {
+        <p class="muted" i18n="@@support.intro">
+          One archive with what support needs to diagnose a problem. It is downloaded to your
+          computer and is never sent anywhere by Qualor.
+        </p>
+      }
+    }
+  </div>
+</div>
+@if (infoError(); as message) {
+  <p class="alert alert-error" role="alert">{{ message }}</p>
+} @else if (allowed()) {
+  <section class="card panel" aria-labelledby="support-bundle-title">
+    <div class="panel-head">
+      <h3 id="support-bundle-title" i18n="@@support.bundleTitle">Support bundle</h3>
+    </div>
+    <div class="panel-body">
+      <p i18n="@@support.contains">
+        The bundle holds the versions and environment of this server, its licence state, the
+        installed plugins, the applied migrations, its configuration and settings without any
+        secret, the health of the database and queues, the recent failed jobs and analyses, the
+        connections to your source code hosts and the recent server logs of the replica that served
+        this download.
+      </p>
+      <p i18n="@@support.never">
+        It never contains secrets (keys, passwords, tokens, webhook secrets or the licence key
+        itself) or your source code.
+      </p>
+      <p>
+        <a id="support-download" class="btn btn-primary" [href]="bundleUrl" download>
+          <ng-container i18n="@@support.download">Download support bundle</ng-container>
+        </a>
+      </p>
+      <p class="muted" i18n="@@support.audited">
+        Each download is recorded in the audit log. Only one bundle is prepared at a time.
+      </p>
+    </div>
+  </section>
+
+  <section class="card panel" aria-labelledby="support-command-title">
+    <div class="panel-head">
+      <h3 id="support-command-title" i18n="@@support.commandTitle">When the web UI is down</h3>
+    </div>
+    <div class="panel-body">
+      <p i18n="@@support.commandIntro">
+        Run a command in the folder of your Docker Compose file. The archive has the same files
+        without the logs; add the output of <code>docker logs --tail 5000</code> for the server
+        container.
+      </p>
+      <q-copy-value
+        fieldId="support-command-running"
+        label="While the server is running"
+        i18n-label="@@support.commandRunning"
+        [value]="commandRunning"
+      />
+      <q-copy-value
+        fieldId="support-command-stopped"
+        label="While the server is stopped"
+        i18n-label="@@support.commandStopped"
+        [value]="commandStopped"
+      />
+    </div>
+  </section>
+
+  <p i18n="@@support.contact">
+    Send the archive to
+    <a [href]="'mailto:' + email">{{ email }}</a
+    >, with a description of what went wrong.
+  </p>
+}

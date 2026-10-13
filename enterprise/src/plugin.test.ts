@@ -5,7 +5,7 @@ import type { PluginContext } from '@qualor/server/plugin-contract';
 import plugin from './plugin';
 
 describe('qualor-enterprise', () => {
-  it('declares its nine features, lifts the fix ceiling, and registers the audit-log, audit-log.stream, sso, scim, compliance-export and portfolio API (rbac is retired in 5B)', async () => {
+  it('declares its ten features, lifts the fix ceiling, and registers the audit-log, audit-log.stream, sso, scim, compliance-export, portfolio and support-bundle API (rbac is retired in 5B)', async () => {
     const limits: unknown[] = [];
     const routes: string[] = [];
     const jobs: [string, string[]][] = [];
@@ -40,6 +40,7 @@ describe('qualor-enterprise', () => {
         'compliance-export',
         'portfolio',
         'llm.auto-fix',
+        'support-bundle',
       ],
     });
     await plugin.register(ctx);
@@ -54,6 +55,7 @@ describe('qualor-enterprise', () => {
       'scim',
       'compliance-export',
       'portfolio',
+      'support-bundle',
     ]);
     // rbac-audit.md §14.2, §14.4: the stream, every 10 seconds, only while audit-log.stream is active.
     // 4E-1 §2.4: the report builds, and the hourly housekeeping.
@@ -120,13 +122,18 @@ describe('qualor-enterprise', () => {
       ],
       // 4E-2 §4: the main-menu entry.
       ['portfolio', { point: 'main.nav', id: 'portfolio', label: 'Portfolio', path: '/portfolio' }],
+      // 4E-3b §4: the Support page, for instance admins.
+      [
+        'support-bundle',
+        { point: 'settings.nav', id: 'support', label: 'Support', path: '/settings/ee/support' },
+      ],
     ]);
     // enterprise.md §6: the licensee is not logged (the boot line leaves it out, and so does the plugin).
     expect(logged).toEqual([['Qualor Enterprise registered']]);
     expect(JSON.stringify(logged)).not.toMatch(/Acme|6f1c2a9e/);
   });
 
-  it('declares llm.fix-quota, audit-log, audit-log.stream, sso, sso.multi, scim, compliance-export, portfolio and llm.auto-fix, and never a retired feature (enterprise.md §1.4, §1.7)', () => {
+  it('declares llm.fix-quota, audit-log, audit-log.stream, sso, sso.multi, scim, compliance-export, portfolio, llm.auto-fix and support-bundle, and never a retired feature (enterprise.md §1.4, §1.7)', () => {
     // RETIRED_FEATURES lives in server/src/license/token.ts; enterprise/src imports core as types
     // only (tools/boundaries.test.ts), so the retired list is inlined here, kept in sync by hand.
     const RETIRED_FEATURES: readonly string[] = ['rbac'];
@@ -140,6 +147,7 @@ describe('qualor-enterprise', () => {
       'compliance-export',
       'portfolio',
       'llm.auto-fix',
+      'support-bundle',
     ]);
     expect(plugin.features).toContain('compliance-export');
     expect(plugin.features).toContain('portfolio');

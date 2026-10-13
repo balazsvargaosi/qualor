@@ -1,9 +1,10 @@
+import { readFileSync } from 'node:fs';
 import { expect, expectAccessible, test } from './fixtures';
 import { PAYMENTS, SIEM_URL } from './seed-data';
 
 /**
  * Plan 5D (rbac-audit.md §14.4, §17; sso-scim.md §4.4, §18): the enterprise server's database
- * served under a Business key (`sso`, `audit-log`, `llm.fix-quota`; `server/scripts/e2e/serve.ts`),
+ * served under a Business key (`sso`, `audit-log`, `llm.fix-quota`, `support-bundle`; `server/scripts/e2e/serve.ts`),
  * after the enterprise tests. The stream enterprise.spec.ts configured is kept and paused: its
  * fields and buttons are disabled with the reason, Save sends retention alone, and Remove under
  * Stream status deletes it (the guide's steps, docs/guide/roles-and-audit.md).
@@ -16,7 +17,7 @@ test('a Business admin sees the kept stream paused and saves retention without i
   await page.goto('/settings/ee/audit-settings');
   await expect(page).toHaveTitle('Audit settings · Qualor');
   const features = ((await (await info).json()) as { features: string[] }).features;
-  expect([...features].sort()).toEqual(['audit-log', 'llm.fix-quota', 'sso']);
+  expect([...features].sort()).toEqual(['audit-log', 'llm.fix-quota', 'sso', 'support-bundle']);
 
   await expect(page.locator('#audit-stream-not-licensed')).toHaveText(
     'Streaming the audit log to a SIEM needs the Enterprise plan.',
@@ -157,4 +158,20 @@ test('the Business plan shows the Enterprise note for automatic fix suggestions'
   const panel = page.locator('#auto-fix');
   await expect(panel).toContainText('Automatic fix suggestions need the Enterprise plan.');
   await expect(panel.getByRole('checkbox')).toHaveCount(0);
+});
+
+// 4E-3b: the support bundle is a Business feature too (`support-bundle`).
+test('a Business admin downloads the support bundle', async ({ page }) => {
+  await page.goto('/settings/ee/support');
+  await expect(page).toHaveTitle('Support · Qualor');
+  await expect(page.getByRole('link', { name: 'Support', exact: true })).toBeVisible();
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByRole('link', { name: 'Download support bundle' }).click(),
+  ]);
+  expect(download.suggestedFilename()).toMatch(/^qualor-support-\d{8}-\d{6}\.zip$/);
+  const archive = readFileSync((await download.path())!);
+  expect(archive.subarray(0, 2).toString()).toBe('PK');
+  expect(archive.toString('latin1')).toContain('manifest.json');
+  await expectAccessible(page);
 });

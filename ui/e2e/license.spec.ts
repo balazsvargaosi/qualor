@@ -121,6 +121,7 @@ test.describe('the licence page on a phone', () => {
       'compliance-export',
       'portfolio',
       'llm.auto-fix',
+      'support-bundle',
     ],
     test: true,
   };

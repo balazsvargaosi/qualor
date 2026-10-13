@@ -23,6 +23,7 @@ export const BUSINESS_FEATURES: readonly string[] = Object.freeze([
   'sso',
   'audit-log',
   'llm.fix-quota',
+  'support-bundle',
 ]);
 
 /** enterprise.md §1.7 (5D, 4E-1, 4E-2): the features an Enterprise key lists. */
@@ -36,6 +37,7 @@ export const ENTERPRISE_FEATURES: readonly string[] = Object.freeze([
   'compliance-export',
   'portfolio',
   'llm.auto-fix',
+  'support-bundle',
 ]);
 
 export function testPayload(overrides: Partial<LicensePayload> = {}): LicensePayload {
