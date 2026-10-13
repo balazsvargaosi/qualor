@@ -688,6 +688,30 @@ describe('automatic fix suggestions (4E-3a §3)', () => {
       await runScm();
       expect(aiFixThreads(gitlabId)).toHaveLength(1);
     });
+
+    it('a person posting an automatic suggestion by hand gets no automatic line', async () => {
+      const { project, gitlabId } = await gitlabCase('auto-post-by-hand', [[2, 'high']]);
+      await runAutoFix();
+      await runLlm();
+      // The automatic post finds auto-fix off and posts nothing; a person then posts it.
+      await configure({ autoFix: { ...DEFAULT_AUTO_FIX, enabled: false } });
+      await runScm();
+      const [row] = await fixRows(project.id);
+      expect(row).toMatchObject({ userId: null, post: { status: 'failed' } });
+      expect(aiFixThreads(gitlabId)).toHaveLength(0);
+      const posted = await h.ctx.app.inject({
+        method: 'POST',
+        url: `/api/v0/ai-requests/${row!.id}/post`,
+        headers: h.orgAdmin.headers,
+        payload: {},
+      });
+      expect(posted.statusCode, posted.body).toBe(202);
+      await runScm();
+      const [thread] = aiFixThreads(gitlabId);
+      const body = thread!.notes[0]!.body.split('\n');
+      expect(body[1]).toMatch(/^\*\*AI-generated fix suggestion\*\*/);
+      expect(body).not.toContain(AUTO_LINE);
+    });
   });
 
   it('keeps the cap after a job that failed midway: it is not retried', async () => {
