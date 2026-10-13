@@ -2,5 +2,8 @@
   "singleQuote": true,
   "printWidth": 100,
   "trailingComma": "all",
-  "overrides": [{ "files": "ui/src/**/*.html", "options": { "parser": "angular" } }]
+  "overrides": [
+    { "files": "ui/src/**/*.html", "options": { "parser": "angular" } },
+    { "files": "server/src/mail/templates/**", "options": { "embeddedLanguageFormatting": "off" } }
+  ]
 }
