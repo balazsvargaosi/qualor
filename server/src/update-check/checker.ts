@@ -84,3 +84,16 @@ export function createUpdateChecker(deps: {
     },
   };
 }
+
+/**
+ * telemetry.md "Update check": the checker main.ts starts, or none while telemetry is off, so
+ * `QUALOR_TELEMETRY=false` means no request to Docker Hub at all.
+ */
+export function updateCheckerFor(
+  config: { telemetry: { enabled: boolean }; updateCheck: { url: string } },
+  deps: Omit<Parameters<typeof createUpdateChecker>[0], 'url'>,
+): UpdateChecker | undefined {
+  return config.telemetry.enabled
+    ? createUpdateChecker({ ...deps, url: config.updateCheck.url })
+    : undefined;
+}

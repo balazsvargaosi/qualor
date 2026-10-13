@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createUpdateChecker,
+  updateCheckerFor,
   UPDATE_CHECK_FIRST_DELAY_MS,
   UPDATE_CHECK_INTERVAL_MS,
 } from './checker';
@@ -105,5 +106,32 @@ describe('createUpdateChecker', () => {
       { component: 'update-check', reason: 'TypeError' },
       'update check failed',
     );
+  });
+});
+
+describe('updateCheckerFor (telemetry.md "Update check")', () => {
+  const logger = { info: () => undefined, debug: () => undefined };
+  const config = (enabled: boolean) => ({
+    telemetry: { enabled, url: 'http://127.0.0.1:9/t' },
+    updateCheck: { url: 'http://hub.test/tags' },
+  });
+
+  it('creates no checker while telemetry is off, so Docker Hub is never asked', () => {
+    expect(updateCheckerFor(config(false), { currentVersion: '0.7.1', logger })).toBeUndefined();
+  });
+
+  it('creates a checker for the configured URL while telemetry is on', async () => {
+    const fetchLatest = vi.fn<(url: string) => Promise<FetchOutcome>>(async () => ({
+      ok: true,
+      latest: '0.8.0',
+    }));
+    const checker = updateCheckerFor(config(true), {
+      currentVersion: '0.7.1',
+      logger,
+      fetchLatest,
+    });
+    await checker?.checkNow();
+    expect(fetchLatest).toHaveBeenCalledWith('http://hub.test/tags');
+    expect(checker?.latest()).toBe('0.8.0');
   });
 });

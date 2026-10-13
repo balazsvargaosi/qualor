@@ -36,7 +36,7 @@ import {
   telemetryBootMessage,
   telemetryHandlers,
 } from './telemetry/schedule';
-import { createUpdateChecker } from './update-check/checker';
+import { updateCheckerFor } from './update-check/checker';
 import { webhookHandlers } from './webhooks/deliver';
 
 /** Webhook deliveries in flight at once (each waits at most 10 s for its receiver). */
@@ -179,9 +179,7 @@ async function main(): Promise<void> {
     }
   }
   // telemetry.md "Update check": only while telemetry is on; never fatal, never above info.
-  const updates = config.telemetry.enabled
-    ? createUpdateChecker({ url: config.updateCheck.url, currentVersion: VERSION, logger })
-    : undefined;
+  const updates = updateCheckerFor(config, { currentVersion: VERSION, logger });
   const app = await buildApp({
     config,
     db: database.db,
