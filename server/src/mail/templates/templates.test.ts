@@ -19,6 +19,11 @@ describe('the E1 messages (E1 spec, Templates)', () => {
       ['license.expiry-grace', 'Your Qualor licence has expired: 7 days of grace left'],
       ['license.expiry-expired', 'Your Qualor licence has expired'],
       ['webhook.failed', 'Webhook to hooks.example.com is failing'],
+      ['account.password-reset', 'Reset your Qualor password'],
+      ['account.invitation', 'Ada Admin invited you to Qualor'],
+      ['account.password-changed-self', 'Your Qualor password was changed'],
+      ['account.password-changed-reset', 'Your Qualor password was changed'],
+      ['account.password-changed-admin', 'Your Qualor password was changed'],
     ]);
   });
 

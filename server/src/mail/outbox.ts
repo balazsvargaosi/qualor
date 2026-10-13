@@ -21,7 +21,15 @@ export const MAIL_JOB_MAX_ATTEMPTS = 3;
 export const MAX_SUBJECT_LENGTH = 300;
 
 /** Template ids (`mail_messages.kind`, CHECKed `^[a-z0-9.-]{1,64}$`). E2 and E3 add theirs here. */
-export const MAIL_KINDS = ['test', 'license.expiry', 'webhook.failed'] as const;
+export const MAIL_KINDS = [
+  'test',
+  'license.expiry',
+  'webhook.failed',
+  // mail E2: account emails.
+  'account.password-reset',
+  'account.invitation',
+  'account.password-changed',
+] as const;
 export type MailKind = (typeof MAIL_KINDS)[number];
 
 /** M5: each payload decrypts only as the payload of its own row. */
