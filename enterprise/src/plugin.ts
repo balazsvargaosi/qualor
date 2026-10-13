@@ -7,6 +7,7 @@
 import type { QualorPlugin } from '@qualor/server/plugin-contract';
 import { auditRoutes, auditStreamRoutes } from './audit-routes';
 import { complianceJobs, complianceRoutes, HOUSEKEEPING_QUEUE } from './compliance-routes';
+import { portfolioRoutes } from './portfolio-routes';
 import { scimRoutes } from './scim-routes';
 import { ssoRoutes } from './sso-routes';
 
@@ -22,7 +23,7 @@ const plugin: QualorPlugin = {
   apiVersion: 1,
   // enterprise.md §1.4, §7.1: rbac is retired in 5B; roles and project grants are community.
   // 5D (§1.7): audit-log.stream needs audit-log, sso.multi needs sso (core's prerequisite table).
-  // 4E-1: compliance-export has no prerequisite.
+  // 4E-1: compliance-export has no prerequisite; neither has 4E-2's portfolio.
   features: [
     'llm.fix-quota',
     'audit-log',
@@ -31,6 +32,7 @@ const plugin: QualorPlugin = {
     'sso.multi',
     'scim',
     'compliance-export',
+    'portfolio',
   ],
   register(ctx) {
     ctx.limits('llm.fix-quota', { llm: { maxFixPerOrganizationPerDay: MAX_FIX_PER_DAY } });
@@ -54,6 +56,8 @@ const plugin: QualorPlugin = {
     ctx.routes('compliance-export', complianceRoutes(ctx));
     ctx.jobs('compliance-export', complianceJobs(ctx));
     ctx.schedule('compliance-export', HOUSEKEEPING_QUEUE, COMPLIANCE_HOUSEKEEPING_SECONDS);
+    // 4E-2: portfolio reports, Enterprise; the numbers are core's ctx.portfolio.
+    ctx.routes('portfolio', portfolioRoutes(ctx));
     ctx.ui('audit-log', {
       point: 'settings.nav',
       id: 'audit-log',
@@ -100,6 +104,13 @@ const plugin: QualorPlugin = {
       id: 'compliance',
       label: 'Compliance reports',
       path: '/settings/ee/compliance',
+    });
+    // 4E-2 §4: the Portfolio entry of the main menu, after Quality gates.
+    ctx.ui('portfolio', {
+      point: 'main.nav',
+      id: 'portfolio',
+      label: 'Portfolio',
+      path: '/portfolio',
     });
     // No licensee name or licence id: the boot line leaves them out too (enterprise.md §6).
     ctx.logger.info('Qualor Enterprise registered');

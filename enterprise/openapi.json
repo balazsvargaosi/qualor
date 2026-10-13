@@ -7504,6 +7504,2311 @@
           }
         }
       }
+    },
+    "/api/v0/ee/portfolio": {
+      "get": {
+        "summary": "The portfolio of an organisation or of every organisation: totals, the 12-period trend, the organisations and the attention lists, over the projects the caller can read",
+        "tags": [
+          "enterprise"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "organization",
+                "all"
+              ]
+            },
+            "in": "query",
+            "name": "scope",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            "in": "query",
+            "name": "organizationId",
+            "required": false
+          },
+          {
+            "schema": {
+              "default": "week",
+              "type": "string",
+              "enum": [
+                "week",
+                "month"
+              ]
+            },
+            "in": "query",
+            "name": "granularity",
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "generatedAt": {
+                      "type": "string"
+                    },
+                    "scope": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "organization",
+                            "all"
+                          ]
+                        },
+                        "organization": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "id": {
+                                  "type": "string"
+                                },
+                                "key": {
+                                  "type": "string"
+                                },
+                                "name": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "key",
+                                "name"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "organization"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "granularity": {
+                      "type": "string",
+                      "enum": [
+                        "week",
+                        "month"
+                      ]
+                    },
+                    "totals": {
+                      "type": "object",
+                      "properties": {
+                        "projects": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "analysed": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "abandoned": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "gate": {
+                          "type": "object",
+                          "properties": {
+                            "passed": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "failed": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "error": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "none": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "passed",
+                            "failed",
+                            "error",
+                            "none"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "passedShare": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "securityRating": {
+                          "type": "object",
+                          "properties": {
+                            "A": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "B": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "C": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "D": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "E": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "A",
+                            "B",
+                            "C",
+                            "D",
+                            "E"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "reliabilityRating": {
+                          "type": "object",
+                          "properties": {
+                            "A": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "B": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "C": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "D": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "E": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "A",
+                            "B",
+                            "C",
+                            "D",
+                            "E"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "ncloc": {
+                          "type": "number"
+                        },
+                        "coverage": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "duplication": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "issues": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "bySeverity": {
+                          "type": "object",
+                          "properties": {
+                            "blocker": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "high": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "medium": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "low": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "info": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "blocker",
+                            "high",
+                            "medium",
+                            "low",
+                            "info"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "securityIssues": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "reliabilityIssues": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "maintainabilityIssues": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "newIssues": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "secrets": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "vulnerableDependencies": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "projects",
+                        "analysed",
+                        "abandoned",
+                        "gate",
+                        "passedShare",
+                        "securityRating",
+                        "reliabilityRating",
+                        "ncloc",
+                        "coverage",
+                        "duplication",
+                        "issues",
+                        "bySeverity",
+                        "securityIssues",
+                        "reliabilityIssues",
+                        "maintainabilityIssues",
+                        "newIssues",
+                        "secrets",
+                        "vulnerableDependencies"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "organizations": {
+                      "anyOf": [
+                        {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "key": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "projects": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "analysed": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "abandoned": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "gate": {
+                                "type": "object",
+                                "properties": {
+                                  "passed": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "failed": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "error": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "none": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": [
+                                  "passed",
+                                  "failed",
+                                  "error",
+                                  "none"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "passedShare": {
+                                "type": [
+                                  "number",
+                                  "null"
+                                ]
+                              },
+                              "securityRating": {
+                                "type": "object",
+                                "properties": {
+                                  "A": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "B": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "C": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "D": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "E": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": [
+                                  "A",
+                                  "B",
+                                  "C",
+                                  "D",
+                                  "E"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "reliabilityRating": {
+                                "type": "object",
+                                "properties": {
+                                  "A": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "B": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "C": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "D": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "E": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": [
+                                  "A",
+                                  "B",
+                                  "C",
+                                  "D",
+                                  "E"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "ncloc": {
+                                "type": "number"
+                              },
+                              "coverage": {
+                                "type": [
+                                  "number",
+                                  "null"
+                                ]
+                              },
+                              "duplication": {
+                                "type": [
+                                  "number",
+                                  "null"
+                                ]
+                              },
+                              "issues": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "bySeverity": {
+                                "type": "object",
+                                "properties": {
+                                  "blocker": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "high": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "medium": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "low": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "info": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": [
+                                  "blocker",
+                                  "high",
+                                  "medium",
+                                  "low",
+                                  "info"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "securityIssues": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "reliabilityIssues": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "maintainabilityIssues": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "newIssues": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "key",
+                              "name",
+                              "projects",
+                              "analysed",
+                              "abandoned",
+                              "gate",
+                              "passedShare",
+                              "securityRating",
+                              "reliabilityRating",
+                              "ncloc",
+                              "coverage",
+                              "duplication",
+                              "issues",
+                              "bySeverity",
+                              "securityIssues",
+                              "reliabilityIssues",
+                              "maintainabilityIssues",
+                              "newIssues"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "trend": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "start": {
+                            "type": "string"
+                          },
+                          "end": {
+                            "type": "string"
+                          },
+                          "projects": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "analysed": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "abandoned": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "gate": {
+                            "type": "object",
+                            "properties": {
+                              "passed": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "failed": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "error": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "none": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": [
+                              "passed",
+                              "failed",
+                              "error",
+                              "none"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "passedShare": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "securityRating": {
+                            "type": "object",
+                            "properties": {
+                              "A": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "B": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "C": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "D": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "E": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": [
+                              "A",
+                              "B",
+                              "C",
+                              "D",
+                              "E"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "reliabilityRating": {
+                            "type": "object",
+                            "properties": {
+                              "A": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "B": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "C": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "D": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "E": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": [
+                              "A",
+                              "B",
+                              "C",
+                              "D",
+                              "E"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "ncloc": {
+                            "type": "number"
+                          },
+                          "coverage": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "duplication": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "issues": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "bySeverity": {
+                            "type": "object",
+                            "properties": {
+                              "blocker": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "high": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "medium": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "low": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "info": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": [
+                              "blocker",
+                              "high",
+                              "medium",
+                              "low",
+                              "info"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "securityIssues": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "reliabilityIssues": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "maintainabilityIssues": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "newIssues": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "analyses": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "triage": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          }
+                        },
+                        "required": [
+                          "start",
+                          "end",
+                          "projects",
+                          "analysed",
+                          "abandoned",
+                          "gate",
+                          "passedShare",
+                          "securityRating",
+                          "reliabilityRating",
+                          "ncloc",
+                          "coverage",
+                          "duplication",
+                          "issues",
+                          "bySeverity",
+                          "securityIssues",
+                          "reliabilityIssues",
+                          "maintainabilityIssues",
+                          "newIssues",
+                          "analyses",
+                          "triage"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "attention": {
+                      "type": "object",
+                      "properties": {
+                        "failingGates": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "organization": {
+                                "type": "object",
+                                "properties": {
+                                  "key": {
+                                    "type": "string"
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "key",
+                                  "name"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "project": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "type": "string"
+                                  },
+                                  "key": {
+                                    "type": "string"
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id",
+                                  "key",
+                                  "name"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "lastAnalysisAt": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "abandoned": {
+                                "type": "boolean"
+                              },
+                              "gate": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "passed",
+                                      "failed",
+                                      "error",
+                                      "none"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "securityRating": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "A",
+                                      "B",
+                                      "C",
+                                      "D",
+                                      "E"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "reliabilityRating": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "A",
+                                      "B",
+                                      "C",
+                                      "D",
+                                      "E"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "ncloc": {
+                                "type": [
+                                  "number",
+                                  "null"
+                                ]
+                              },
+                              "coverage": {
+                                "type": [
+                                  "number",
+                                  "null"
+                                ]
+                              },
+                              "duplication": {
+                                "type": [
+                                  "number",
+                                  "null"
+                                ]
+                              },
+                              "issues": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "bySeverity": {
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "blocker": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "high": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "medium": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "low": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "info": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      }
+                                    },
+                                    "required": [
+                                      "blocker",
+                                      "high",
+                                      "medium",
+                                      "low",
+                                      "info"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "newIssues": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "secrets": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "vulnerableDependencies": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": [
+                              "organization",
+                              "project",
+                              "lastAnalysisAt",
+                              "abandoned",
+                              "gate",
+                              "securityRating",
+                              "reliabilityRating",
+                              "ncloc",
+                              "coverage",
+                              "duplication",
+                              "issues",
+                              "bySeverity",
+                              "newIssues",
+                              "secrets",
+                              "vulnerableDependencies"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "worstSecurity": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "organization": {
+                                "type": "object",
+                                "properties": {
+                                  "key": {
+                                    "type": "string"
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "key",
+                                  "name"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "project": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "type": "string"
+                                  },
+                                  "key": {
+                                    "type": "string"
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id",
+                                  "key",
+                                  "name"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "lastAnalysisAt": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "abandoned": {
+                                "type": "boolean"
+                              },
+                              "gate": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "passed",
+                                      "failed",
+                                      "error",
+                                      "none"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "securityRating": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "A",
+                                      "B",
+                                      "C",
+                                      "D",
+                                      "E"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "reliabilityRating": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "A",
+                                      "B",
+                                      "C",
+                                      "D",
+                                      "E"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "ncloc": {
+                                "type": [
+                                  "number",
+                                  "null"
+                                ]
+                              },
+                              "coverage": {
+                                "type": [
+                                  "number",
+                                  "null"
+                                ]
+                              },
+                              "duplication": {
+                                "type": [
+                                  "number",
+                                  "null"
+                                ]
+                              },
+                              "issues": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "bySeverity": {
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "blocker": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "high": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "medium": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "low": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "info": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      }
+                                    },
+                                    "required": [
+                                      "blocker",
+                                      "high",
+                                      "medium",
+                                      "low",
+                                      "info"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "newIssues": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "secrets": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "vulnerableDependencies": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": [
+                              "organization",
+                              "project",
+                              "lastAnalysisAt",
+                              "abandoned",
+                              "gate",
+                              "securityRating",
+                              "reliabilityRating",
+                              "ncloc",
+                              "coverage",
+                              "duplication",
+                              "issues",
+                              "bySeverity",
+                              "newIssues",
+                              "secrets",
+                              "vulnerableDependencies"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "mostSevere": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "organization": {
+                                "type": "object",
+                                "properties": {
+                                  "key": {
+                                    "type": "string"
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "key",
+                                  "name"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "project": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "type": "string"
+                                  },
+                                  "key": {
+                                    "type": "string"
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id",
+                                  "key",
+                                  "name"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "lastAnalysisAt": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "abandoned": {
+                                "type": "boolean"
+                              },
+                              "gate": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "passed",
+                                      "failed",
+                                      "error",
+                                      "none"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "securityRating": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "A",
+                                      "B",
+                                      "C",
+                                      "D",
+                                      "E"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "reliabilityRating": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "A",
+                                      "B",
+                                      "C",
+                                      "D",
+                                      "E"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "ncloc": {
+                                "type": [
+                                  "number",
+                                  "null"
+                                ]
+                              },
+                              "coverage": {
+                                "type": [
+                                  "number",
+                                  "null"
+                                ]
+                              },
+                              "duplication": {
+                                "type": [
+                                  "number",
+                                  "null"
+                                ]
+                              },
+                              "issues": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "bySeverity": {
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "blocker": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "high": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "medium": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "low": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "info": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      }
+                                    },
+                                    "required": [
+                                      "blocker",
+                                      "high",
+                                      "medium",
+                                      "low",
+                                      "info"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "newIssues": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "secrets": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "vulnerableDependencies": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": [
+                              "organization",
+                              "project",
+                              "lastAnalysisAt",
+                              "abandoned",
+                              "gate",
+                              "securityRating",
+                              "reliabilityRating",
+                              "ncloc",
+                              "coverage",
+                              "duplication",
+                              "issues",
+                              "bySeverity",
+                              "newIssues",
+                              "secrets",
+                              "vulnerableDependencies"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "abandoned": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "organization": {
+                                "type": "object",
+                                "properties": {
+                                  "key": {
+                                    "type": "string"
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "key",
+                                  "name"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "project": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "type": "string"
+                                  },
+                                  "key": {
+                                    "type": "string"
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id",
+                                  "key",
+                                  "name"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "lastAnalysisAt": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "abandoned": {
+                                "type": "boolean"
+                              },
+                              "gate": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "passed",
+                                      "failed",
+                                      "error",
+                                      "none"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "securityRating": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "A",
+                                      "B",
+                                      "C",
+                                      "D",
+                                      "E"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "reliabilityRating": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "A",
+                                      "B",
+                                      "C",
+                                      "D",
+                                      "E"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "ncloc": {
+                                "type": [
+                                  "number",
+                                  "null"
+                                ]
+                              },
+                              "coverage": {
+                                "type": [
+                                  "number",
+                                  "null"
+                                ]
+                              },
+                              "duplication": {
+                                "type": [
+                                  "number",
+                                  "null"
+                                ]
+                              },
+                              "issues": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "bySeverity": {
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "blocker": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "high": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "medium": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "low": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "info": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      }
+                                    },
+                                    "required": [
+                                      "blocker",
+                                      "high",
+                                      "medium",
+                                      "low",
+                                      "info"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "newIssues": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "secrets": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "vulnerableDependencies": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": [
+                              "organization",
+                              "project",
+                              "lastAnalysisAt",
+                              "abandoned",
+                              "gate",
+                              "securityRating",
+                              "reliabilityRating",
+                              "ncloc",
+                              "coverage",
+                              "duplication",
+                              "issues",
+                              "bySeverity",
+                              "newIssues",
+                              "secrets",
+                              "vulnerableDependencies"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "failingGates",
+                        "worstSecurity",
+                        "mostSevere",
+                        "abandoned"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "generatedAt",
+                    "scope",
+                    "granularity",
+                    "totals",
+                    "organizations",
+                    "trend",
+                    "attention"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated but not allowed (FORBIDDEN, INSUFFICIENT_SCOPE, TOKEN_NOT_ALLOWED, SESSION_REQUIRED, CSRF_FAILED, PASSWORD_CHANGE_REQUIRED)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The organisation is not visible to the caller (Organization not found)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed (VALIDATION_FAILED; errors[] names each field)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "PORTFOLIO_TIMEOUT (the portfolio took longer than its 20-second budget)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v0/ee/portfolio/projects": {
+      "get": {
+        "summary": "A page of the portfolio's projects, each on its main branch, in the sort's order",
+        "tags": [
+          "enterprise"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "organization",
+                "all"
+              ]
+            },
+            "in": "query",
+            "name": "scope",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            "in": "query",
+            "name": "organizationId",
+            "required": false
+          },
+          {
+            "schema": {
+              "default": "key",
+              "type": "string",
+              "enum": [
+                "key",
+                "gate",
+                "security",
+                "reliability",
+                "issues",
+                "ncloc",
+                "coverage",
+                "lastAnalysis"
+              ]
+            },
+            "in": "query",
+            "name": "sort",
+            "required": false
+          },
+          {
+            "schema": {
+              "default": 50,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "in": "query",
+            "name": "limit",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 2048
+            },
+            "in": "query",
+            "name": "cursor",
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "organization": {
+                            "type": "object",
+                            "properties": {
+                              "key": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "key",
+                              "name"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "project": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "key": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "key",
+                              "name"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "lastAnalysisAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "abandoned": {
+                            "type": "boolean"
+                          },
+                          "gate": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "passed",
+                                  "failed",
+                                  "error",
+                                  "none"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "securityRating": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "A",
+                                  "B",
+                                  "C",
+                                  "D",
+                                  "E"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "reliabilityRating": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "A",
+                                  "B",
+                                  "C",
+                                  "D",
+                                  "E"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "ncloc": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "coverage": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "duplication": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "issues": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "bySeverity": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "blocker": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "high": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "medium": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "low": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "info": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": [
+                                  "blocker",
+                                  "high",
+                                  "medium",
+                                  "low",
+                                  "info"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "newIssues": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "secrets": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "vulnerableDependencies": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          }
+                        },
+                        "required": [
+                          "organization",
+                          "project",
+                          "lastAnalysisAt",
+                          "abandoned",
+                          "gate",
+                          "securityRating",
+                          "reliabilityRating",
+                          "ncloc",
+                          "coverage",
+                          "duplication",
+                          "issues",
+                          "bySeverity",
+                          "newIssues",
+                          "secrets",
+                          "vulnerableDependencies"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "nextCursor": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "nextCursor"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated but not allowed (FORBIDDEN, INSUFFICIENT_SCOPE, TOKEN_NOT_ALLOWED, SESSION_REQUIRED, CSRF_FAILED, PASSWORD_CHANGE_REQUIRED)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The organisation is not visible to the caller (Organization not found)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed (VALIDATION_FAILED; errors[] names each field)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "PORTFOLIO_TIMEOUT (the portfolio took longer than its 20-second budget)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v0/ee/portfolio/export": {
+      "get": {
+        "summary": "Download the portfolio as CSV (every project) or as PDF (the overview and the first 50 projects by gate)",
+        "tags": [
+          "enterprise"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "organization",
+                "all"
+              ]
+            },
+            "in": "query",
+            "name": "scope",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            "in": "query",
+            "name": "organizationId",
+            "required": false
+          },
+          {
+            "schema": {
+              "default": "week",
+              "type": "string",
+              "enum": [
+                "week",
+                "month"
+              ]
+            },
+            "in": "query",
+            "name": "granularity",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "csv",
+                "pdf"
+              ]
+            },
+            "in": "query",
+            "name": "format",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file, as an attachment: the CSV (UTF-8 with a BOM) or the PDF",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "application/pdf": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated but not allowed (FORBIDDEN, INSUFFICIENT_SCOPE, TOKEN_NOT_ALLOWED, SESSION_REQUIRED, CSRF_FAILED, PASSWORD_CHANGE_REQUIRED)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The organisation is not visible to the caller (Organization not found)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed (VALIDATION_FAILED; errors[] names each field)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "An export is already running for you (RATE_LIMITED)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "PORTFOLIO_TIMEOUT (the portfolio took longer than its 20-second budget), or the PDF took longer than 60 seconds to render",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "security": [

@@ -165,7 +165,7 @@ describe('the enterprise SSO and SCIM API (sso-scim.md §17)', () => {
 
   const inject = (options: InjectOptions) => ctx.app.inject(options);
 
-  it('loads with its seven features and the four 4D settings entries', async () => {
+  it('loads with its eight features and the four 4D settings entries', async () => {
     expect(ctx.edition!.plugins()).toEqual([
       {
         name: 'qualor-enterprise',
@@ -178,6 +178,7 @@ describe('the enterprise SSO and SCIM API (sso-scim.md §17)', () => {
           'sso.multi',
           'scim',
           'compliance-export',
+          'portfolio',
         ],
         error: null,
       },

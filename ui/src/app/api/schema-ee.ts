@@ -3580,6 +3580,573 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v0/ee/portfolio": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The portfolio of an organisation or of every organisation: totals, the 12-period trend, the organisations and the attention lists, over the projects the caller can read */
+        get: {
+            parameters: {
+                query: {
+                    scope: "organization" | "all";
+                    organizationId?: string;
+                    granularity?: "week" | "month";
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            generatedAt: string;
+                            scope: {
+                                /** @enum {string} */
+                                kind: "organization" | "all";
+                                organization: {
+                                    id: string;
+                                    key: string;
+                                    name: string;
+                                } | null;
+                            };
+                            /** @enum {string} */
+                            granularity: "week" | "month";
+                            totals: {
+                                projects: number;
+                                analysed: number;
+                                abandoned: number;
+                                gate: {
+                                    passed: number;
+                                    failed: number;
+                                    error: number;
+                                    none: number;
+                                };
+                                passedShare: number | null;
+                                securityRating: {
+                                    A: number;
+                                    B: number;
+                                    C: number;
+                                    D: number;
+                                    E: number;
+                                };
+                                reliabilityRating: {
+                                    A: number;
+                                    B: number;
+                                    C: number;
+                                    D: number;
+                                    E: number;
+                                };
+                                ncloc: number;
+                                coverage: number | null;
+                                duplication: number | null;
+                                issues: number;
+                                bySeverity: {
+                                    blocker: number;
+                                    high: number;
+                                    medium: number;
+                                    low: number;
+                                    info: number;
+                                };
+                                securityIssues: number;
+                                reliabilityIssues: number;
+                                maintainabilityIssues: number;
+                                newIssues: number;
+                                secrets: number;
+                                vulnerableDependencies: number;
+                            };
+                            organizations: {
+                                id: string;
+                                key: string;
+                                name: string;
+                                projects: number;
+                                analysed: number;
+                                abandoned: number;
+                                gate: {
+                                    passed: number;
+                                    failed: number;
+                                    error: number;
+                                    none: number;
+                                };
+                                passedShare: number | null;
+                                securityRating: {
+                                    A: number;
+                                    B: number;
+                                    C: number;
+                                    D: number;
+                                    E: number;
+                                };
+                                reliabilityRating: {
+                                    A: number;
+                                    B: number;
+                                    C: number;
+                                    D: number;
+                                    E: number;
+                                };
+                                ncloc: number;
+                                coverage: number | null;
+                                duplication: number | null;
+                                issues: number;
+                                bySeverity: {
+                                    blocker: number;
+                                    high: number;
+                                    medium: number;
+                                    low: number;
+                                    info: number;
+                                };
+                                securityIssues: number;
+                                reliabilityIssues: number;
+                                maintainabilityIssues: number;
+                                newIssues: number;
+                            }[] | null;
+                            trend: {
+                                start: string;
+                                end: string;
+                                projects: number;
+                                analysed: number;
+                                abandoned: number;
+                                gate: {
+                                    passed: number;
+                                    failed: number;
+                                    error: number;
+                                    none: number;
+                                };
+                                passedShare: number | null;
+                                securityRating: {
+                                    A: number;
+                                    B: number;
+                                    C: number;
+                                    D: number;
+                                    E: number;
+                                };
+                                reliabilityRating: {
+                                    A: number;
+                                    B: number;
+                                    C: number;
+                                    D: number;
+                                    E: number;
+                                };
+                                ncloc: number;
+                                coverage: number | null;
+                                duplication: number | null;
+                                issues: number;
+                                bySeverity: {
+                                    blocker: number;
+                                    high: number;
+                                    medium: number;
+                                    low: number;
+                                    info: number;
+                                };
+                                securityIssues: number;
+                                reliabilityIssues: number;
+                                maintainabilityIssues: number;
+                                newIssues: number;
+                                analyses: number;
+                                triage: number;
+                            }[];
+                            attention: {
+                                failingGates: {
+                                    organization: {
+                                        key: string;
+                                        name: string;
+                                    };
+                                    project: {
+                                        id: string;
+                                        key: string;
+                                        name: string;
+                                    };
+                                    lastAnalysisAt: string | null;
+                                    abandoned: boolean;
+                                    gate: ("passed" | "failed" | "error" | "none") | null;
+                                    securityRating: ("A" | "B" | "C" | "D" | "E") | null;
+                                    reliabilityRating: ("A" | "B" | "C" | "D" | "E") | null;
+                                    ncloc: number | null;
+                                    coverage: number | null;
+                                    duplication: number | null;
+                                    issues: number | null;
+                                    bySeverity: {
+                                        blocker: number;
+                                        high: number;
+                                        medium: number;
+                                        low: number;
+                                        info: number;
+                                    } | null;
+                                    newIssues: number | null;
+                                    secrets: number;
+                                    vulnerableDependencies: number;
+                                }[];
+                                worstSecurity: {
+                                    organization: {
+                                        key: string;
+                                        name: string;
+                                    };
+                                    project: {
+                                        id: string;
+                                        key: string;
+                                        name: string;
+                                    };
+                                    lastAnalysisAt: string | null;
+                                    abandoned: boolean;
+                                    gate: ("passed" | "failed" | "error" | "none") | null;
+                                    securityRating: ("A" | "B" | "C" | "D" | "E") | null;
+                                    reliabilityRating: ("A" | "B" | "C" | "D" | "E") | null;
+                                    ncloc: number | null;
+                                    coverage: number | null;
+                                    duplication: number | null;
+                                    issues: number | null;
+                                    bySeverity: {
+                                        blocker: number;
+                                        high: number;
+                                        medium: number;
+                                        low: number;
+                                        info: number;
+                                    } | null;
+                                    newIssues: number | null;
+                                    secrets: number;
+                                    vulnerableDependencies: number;
+                                }[];
+                                mostSevere: {
+                                    organization: {
+                                        key: string;
+                                        name: string;
+                                    };
+                                    project: {
+                                        id: string;
+                                        key: string;
+                                        name: string;
+                                    };
+                                    lastAnalysisAt: string | null;
+                                    abandoned: boolean;
+                                    gate: ("passed" | "failed" | "error" | "none") | null;
+                                    securityRating: ("A" | "B" | "C" | "D" | "E") | null;
+                                    reliabilityRating: ("A" | "B" | "C" | "D" | "E") | null;
+                                    ncloc: number | null;
+                                    coverage: number | null;
+                                    duplication: number | null;
+                                    issues: number | null;
+                                    bySeverity: {
+                                        blocker: number;
+                                        high: number;
+                                        medium: number;
+                                        low: number;
+                                        info: number;
+                                    } | null;
+                                    newIssues: number | null;
+                                    secrets: number;
+                                    vulnerableDependencies: number;
+                                }[];
+                                abandoned: {
+                                    organization: {
+                                        key: string;
+                                        name: string;
+                                    };
+                                    project: {
+                                        id: string;
+                                        key: string;
+                                        name: string;
+                                    };
+                                    lastAnalysisAt: string | null;
+                                    abandoned: boolean;
+                                    gate: ("passed" | "failed" | "error" | "none") | null;
+                                    securityRating: ("A" | "B" | "C" | "D" | "E") | null;
+                                    reliabilityRating: ("A" | "B" | "C" | "D" | "E") | null;
+                                    ncloc: number | null;
+                                    coverage: number | null;
+                                    duplication: number | null;
+                                    issues: number | null;
+                                    bySeverity: {
+                                        blocker: number;
+                                        high: number;
+                                        medium: number;
+                                        low: number;
+                                        info: number;
+                                    } | null;
+                                    newIssues: number | null;
+                                    secrets: number;
+                                    vulnerableDependencies: number;
+                                }[];
+                            };
+                        };
+                    };
+                };
+                /** @description Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS) */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Authenticated but not allowed (FORBIDDEN, INSUFFICIENT_SCOPE, TOKEN_NOT_ALLOWED, SESSION_REQUIRED, CSRF_FAILED, PASSWORD_CHANGE_REQUIRED) */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description The organisation is not visible to the caller (Organization not found) */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Validation failed (VALIDATION_FAILED; errors[] names each field) */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description PORTFOLIO_TIMEOUT (the portfolio took longer than its 20-second budget) */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v0/ee/portfolio/projects": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A page of the portfolio's projects, each on its main branch, in the sort's order */
+        get: {
+            parameters: {
+                query: {
+                    scope: "organization" | "all";
+                    organizationId?: string;
+                    sort?: "key" | "gate" | "security" | "reliability" | "issues" | "ncloc" | "coverage" | "lastAnalysis";
+                    limit?: number;
+                    cursor?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items: {
+                                organization: {
+                                    key: string;
+                                    name: string;
+                                };
+                                project: {
+                                    id: string;
+                                    key: string;
+                                    name: string;
+                                };
+                                lastAnalysisAt: string | null;
+                                abandoned: boolean;
+                                gate: ("passed" | "failed" | "error" | "none") | null;
+                                securityRating: ("A" | "B" | "C" | "D" | "E") | null;
+                                reliabilityRating: ("A" | "B" | "C" | "D" | "E") | null;
+                                ncloc: number | null;
+                                coverage: number | null;
+                                duplication: number | null;
+                                issues: number | null;
+                                bySeverity: {
+                                    blocker: number;
+                                    high: number;
+                                    medium: number;
+                                    low: number;
+                                    info: number;
+                                } | null;
+                                newIssues: number | null;
+                                secrets: number;
+                                vulnerableDependencies: number;
+                            }[];
+                            nextCursor: string | null;
+                        };
+                    };
+                };
+                /** @description Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS) */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Authenticated but not allowed (FORBIDDEN, INSUFFICIENT_SCOPE, TOKEN_NOT_ALLOWED, SESSION_REQUIRED, CSRF_FAILED, PASSWORD_CHANGE_REQUIRED) */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description The organisation is not visible to the caller (Organization not found) */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Validation failed (VALIDATION_FAILED; errors[] names each field) */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description PORTFOLIO_TIMEOUT (the portfolio took longer than its 20-second budget) */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v0/ee/portfolio/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download the portfolio as CSV (every project) or as PDF (the overview and the first 50 projects by gate) */
+        get: {
+            parameters: {
+                query: {
+                    scope: "organization" | "all";
+                    organizationId?: string;
+                    granularity?: "week" | "month";
+                    format: "csv" | "pdf";
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The file, as an attachment: the CSV (UTF-8 with a BOM) or the PDF */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/csv": string;
+                        "application/pdf": string;
+                    };
+                };
+                /** @description Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS) */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Authenticated but not allowed (FORBIDDEN, INSUFFICIENT_SCOPE, TOKEN_NOT_ALLOWED, SESSION_REQUIRED, CSRF_FAILED, PASSWORD_CHANGE_REQUIRED) */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description The organisation is not visible to the caller (Organization not found) */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Validation failed (VALIDATION_FAILED; errors[] names each field) */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description An export is already running for you (RATE_LIMITED) */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description PORTFOLIO_TIMEOUT (the portfolio took longer than its 20-second budget), or the PDF took longer than 60 seconds to render */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {

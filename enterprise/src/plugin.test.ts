@@ -5,7 +5,7 @@ import type { PluginContext } from '@qualor/server/plugin-contract';
 import plugin from './plugin';
 
 describe('qualor-enterprise', () => {
-  it('declares its seven features, lifts the fix ceiling, and registers the audit-log, audit-log.stream, sso, scim and compliance-export API (rbac is retired in 5B)', async () => {
+  it('declares its eight features, lifts the fix ceiling, and registers the audit-log, audit-log.stream, sso, scim, compliance-export and portfolio API (rbac is retired in 5B)', async () => {
     const limits: unknown[] = [];
     const routes: string[] = [];
     const jobs: [string, string[]][] = [];
@@ -38,11 +38,19 @@ describe('qualor-enterprise', () => {
         'sso.multi',
         'scim',
         'compliance-export',
+        'portfolio',
       ],
     });
     await plugin.register(ctx);
     expect(limits).toEqual([['llm.fix-quota', { llm: { maxFixPerOrganizationPerDay: 100_000 } }]]);
-    expect(routes).toEqual(['audit-log', 'audit-log.stream', 'sso', 'scim', 'compliance-export']);
+    expect(routes).toEqual([
+      'audit-log',
+      'audit-log.stream',
+      'sso',
+      'scim',
+      'compliance-export',
+      'portfolio',
+    ]);
     // rbac-audit.md §14.2, §14.4: the stream, every 10 seconds, only while audit-log.stream is active.
     // 4E-1 §2.4: the report builds, and the hourly housekeeping.
     expect(jobs).toEqual([
@@ -106,13 +114,15 @@ describe('qualor-enterprise', () => {
           path: '/settings/ee/compliance',
         },
       ],
+      // 4E-2 §4: the main-menu entry.
+      ['portfolio', { point: 'main.nav', id: 'portfolio', label: 'Portfolio', path: '/portfolio' }],
     ]);
     // enterprise.md §6: the licensee is not logged (the boot line leaves it out, and so does the plugin).
     expect(logged).toEqual([['Qualor Enterprise registered']]);
     expect(JSON.stringify(logged)).not.toMatch(/Acme|6f1c2a9e/);
   });
 
-  it('declares llm.fix-quota, audit-log, audit-log.stream, sso, sso.multi, scim and compliance-export, and never a retired feature (enterprise.md §1.4, §1.7)', () => {
+  it('declares llm.fix-quota, audit-log, audit-log.stream, sso, sso.multi, scim, compliance-export and portfolio, and never a retired feature (enterprise.md §1.4, §1.7)', () => {
     // RETIRED_FEATURES lives in server/src/license/token.ts; enterprise/src imports core as types
     // only (tools/boundaries.test.ts), so the retired list is inlined here, kept in sync by hand.
     const RETIRED_FEATURES: readonly string[] = ['rbac'];
@@ -124,8 +134,10 @@ describe('qualor-enterprise', () => {
       'sso.multi',
       'scim',
       'compliance-export',
+      'portfolio',
     ]);
     expect(plugin.features).toContain('compliance-export');
+    expect(plugin.features).toContain('portfolio');
     for (const feature of RETIRED_FEATURES) expect(plugin.features).not.toContain(feature);
   });
 

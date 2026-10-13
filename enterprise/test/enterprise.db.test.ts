@@ -89,6 +89,7 @@ describe('Qualor Enterprise end to end (enterprise.md §17)', () => {
           'sso.multi',
           'scim',
           'compliance-export',
+          'portfolio',
         ],
         error: null,
       },

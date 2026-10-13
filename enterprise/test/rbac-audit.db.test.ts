@@ -223,8 +223,8 @@ describe('Qualor Enterprise: audit-log, and the grant routes in core (rbac-audit
       {
         name: 'qualor-enterprise',
         state: 'loaded',
-        // The plugin declares sso, sso.multi, scim and compliance-export too; this key does not
-        // list them.
+        // The plugin declares sso, sso.multi, scim, compliance-export and portfolio too; this key
+        // does not list them.
         features: [
           'llm.fix-quota',
           'audit-log',
@@ -233,6 +233,7 @@ describe('Qualor Enterprise: audit-log, and the grant routes in core (rbac-audit
           'sso.multi',
           'scim',
           'compliance-export',
+          'portfolio',
         ],
         error: null,
       },

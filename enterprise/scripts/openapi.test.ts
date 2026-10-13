@@ -13,7 +13,7 @@ type Operation = {
 type Doc = { paths: Record<string, Record<string, Operation>> };
 
 describe('enterprise/openapi.json (rbac-audit.md §17)', () => {
-  it('holds the audit-log, sso, scim and compliance-export operations under /api/v0/ee only', async () => {
+  it('holds the audit-log, sso, scim, compliance-export and portfolio operations under /api/v0/ee only', async () => {
     const doc = (await enterpriseOpenApiDocument()) as Doc;
     const operations = Object.entries(doc.paths).flatMap(([path, item]) =>
       Object.keys(item).map((method) => `${method.toUpperCase()} ${path}`),
@@ -66,6 +66,10 @@ describe('enterprise/openapi.json (rbac-audit.md §17)', () => {
         'GET /api/v0/ee/compliance/reports/{id}',
         'GET /api/v0/ee/compliance/reports/{id}/download',
         'DELETE /api/v0/ee/compliance/reports/{id}',
+        // 4E-2 §3, feature portfolio
+        'GET /api/v0/ee/portfolio',
+        'GET /api/v0/ee/portfolio/projects',
+        'GET /api/v0/ee/portfolio/export',
       ].sort(),
     );
   }, 60_000);
