@@ -11,6 +11,8 @@ export const UNAUDITED_MUTATIONS: ReadonlySet<string> = new Set([
   // Connection tests change nothing.
   'POST /scm-connections/:id/test',
   'POST /system/llm/test',
+  // Mail E2: reading who an invitation is for changes nothing (POST keeps the secret in the body).
+  'POST /auth/invitations/inspect',
   // GitHub's own deliveries.
   'POST /api/v0/github/webhooks/:connectionId',
 ]);

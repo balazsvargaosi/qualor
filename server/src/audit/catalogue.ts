@@ -186,6 +186,8 @@ export const AUDIT_CATALOGUE = {
   'auth.password_reset_requested': { target: 'user', details: empty },
   /** Mail E2: a password set through a reset link; the actor is the account itself. */
   'auth.password_reset': { target: 'user', details: empty },
+  /** Mail E2: a first password chosen through an invitation link; the actor is the account itself. */
+  'auth.invitation_accepted': { target: 'user', details: empty },
   'auth.password_sign_in_forced': {
     target: null,
     details: z.strictObject({ storedPolicy: z.enum(['everyone', 'break_glass_only']) }),

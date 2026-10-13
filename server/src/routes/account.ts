@@ -7,9 +7,11 @@ import {
   deleteAccountTokens,
   issueAccountToken,
   PASSWORD_RESET_TTL_MINUTES,
+  peekAccountToken,
   plausibleAccountToken,
   takeAccountToken,
 } from '../auth/account-tokens';
+import { isDemoUser } from '../auth/demo';
 import { hashPassword, newPasswordField } from '../auth/password';
 import { mayResetPassword, RESET_ANSWER_FLOOR_MS, waitForFloor } from '../auth/password-reset';
 import { deleteUserSessions } from '../auth/sessions';
@@ -26,7 +28,7 @@ import {
 import { mailDeps, queueMail } from '../mail/outbox';
 import { renderPasswordResetMail } from '../mail/templates/account-password-reset';
 import { instanceHost } from '../mail/templates/text';
-import { readSignInSettings } from '../sso/sign-in-policy';
+import { mayUsePassword, readSignInSettings } from '../sso/sign-in-policy';
 
 /** Mail E2: requests per minute and address; messages per login in 15 minutes. */
 export const PASSWORD_RESET_REQUESTS_PER_MINUTE = 5;
@@ -189,6 +191,109 @@ export const accountRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (
           variant: 'reset',
           ip: request.ip || null,
         });
+        return user.username;
+      });
+      if (username === null) throw tokenInvalid();
+      return { username };
+    },
+  );
+
+  app.post(
+    '/auth/invitations/inspect',
+    {
+      config: {
+        public: true,
+        rateLimit: { max: 30, timeWindow: 60_000 },
+        openapi: { problems: [400, 429], problemDescriptions: { 400: TOKEN_INVALID_DESCRIPTION } },
+      },
+      schema: {
+        tags: ['auth'],
+        summary: 'Who an invitation link is for, without using it up',
+        security: [],
+        body: z.strictObject({ token: tokenField }),
+        response: {
+          200: z.object({
+            username: z.string(),
+            displayName: z.string().nullable(),
+            /** The inviting admin's display name (else username); null once they are gone. */
+            invitedBy: z.string().nullable(),
+          }),
+        },
+      },
+    },
+    async (request) => {
+      const found = await peekAccountToken(deps.db, request.body.token, 'invitation');
+      if (!found) throw tokenInvalid();
+      const [user] = await deps.db.select().from(users).where(eq(users.id, found.userId));
+      if (!user || !user.active || user.passwordHash !== null) throw tokenInvalid();
+      const [inviter] =
+        found.createdBy === null
+          ? []
+          : await deps.db
+              .select({ displayName: users.displayName, username: users.username })
+              .from(users)
+              .where(eq(users.id, found.createdBy));
+      return {
+        username: user.username,
+        displayName: user.displayName,
+        invitedBy: inviter ? (inviter.displayName ?? inviter.username) : null,
+      };
+    },
+  );
+
+  app.post(
+    '/auth/invitations/accept',
+    {
+      config: {
+        public: true,
+        rateLimit: { max: 10, timeWindow: 60_000 },
+        openapi: { problems: [400, 429], problemDescriptions: { 400: TOKEN_INVALID_DESCRIPTION } },
+      },
+      schema: {
+        tags: ['auth'],
+        summary: 'Choose the first password with an invitation link; does not sign in',
+        security: [],
+        body: z.strictObject({ token: tokenField, newPassword: newPasswordField }),
+        response: { 200: z.object({ username: z.string() }) },
+      },
+    },
+    async (request) => {
+      const { token, newPassword } = request.body;
+      if (!plausibleAccountToken(token)) throw tokenInvalid();
+      // Hash first: a slow hash never holds the token's row or a pooled connection.
+      const passwordHash = await hashPassword(newPassword);
+      const stored = await readSignInSettings(deps.db, request.log);
+      const username = await deps.db.transaction(async (tx) => {
+        const taken = await takeAccountToken(tx, token, 'invitation');
+        if (!taken) return null;
+        const [user] = await tx
+          .select()
+          .from(users)
+          .where(eq(users.id, taken.userId))
+          .for('update');
+        // Never over a password set meanwhile; the policy and the demo account as for a reset.
+        // A refusal commits too, so the link is used up either way.
+        if (
+          !user ||
+          !user.active ||
+          user.passwordHash !== null ||
+          isDemoUser(deps.config.demoUser, user) ||
+          !mayUsePassword(user, stored, policyFacts()).allowed
+        ) {
+          return null;
+        }
+        await tx
+          .update(users)
+          .set({ passwordHash, passwordChangeRequired: false })
+          .where(eq(users.id, user.id));
+        await deleteUserSessions(tx, user.id);
+        await deps.audit.record(tx, userActor(request, user), [
+          {
+            action: 'auth.invitation_accepted',
+            target: { type: 'user', id: user.id, label: user.username },
+            details: {},
+          },
+        ]);
         return user.username;
       });
       if (username === null) throw tokenInvalid();

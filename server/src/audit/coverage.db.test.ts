@@ -70,6 +70,10 @@ const NOT_FROM_CORE_ROUTES = new Map<string, string>([
     'recorded by POST /auth/password-reset/complete (mail E2), which needs a reset link the scenario never mails; covered by routes/account-reset.db.test.ts',
   ],
   [
+    'auth.invitation_accepted',
+    'recorded by POST /auth/invitations/accept (mail E2), which needs an invitation the scenario cannot send; covered by routes/account-invite.db.test.ts',
+  ],
+  [
     'user.invited',
     'recorded by POST /users with invite and POST /users/:id/invitation (mail E2) only with an SMTP server and QUALOR_PUBLIC_URL, which the scenario does not set up; covered by routes/users-invitations.db.test.ts',
   ],
