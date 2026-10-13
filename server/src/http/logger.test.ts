@@ -1,6 +1,6 @@
 import { DrizzleQueryError } from 'drizzle-orm/errors';
 import { describe, expect, it } from 'vitest';
-import { createLogger, SSO_PATH_PREFIX } from './logger';
+import { createLogger, SSO_PATH_PREFIX, UNSUBSCRIBE_PATH } from './logger';
 
 function capture(level: 'info' | 'warn' = 'info') {
   const lines: string[] = [];
@@ -184,6 +184,12 @@ describe('createLogger (api.md §4 redaction)', () => {
       },
       'callback',
     );
+    // mail E3: the stop-watching token on the unsubscribe link, and a route beside it keeps its query
+    logger.info(
+      { req: { method: 'POST', url: `${UNSUBSCRIBE_PATH}?t=UNSUB-TOKEN-VALUE.TAG` } },
+      'unsubscribe',
+    );
+    logger.info({ req: { method: 'GET', url: '/api/v0/issues?q=kept-query' } }, 'other');
     const out = lines.join('\n');
     for (const secret of [
       'oidc-CLIENT-SECRET-value',
@@ -196,8 +202,11 @@ describe('createLogger (api.md §4 redaction)', () => {
       scimToken,
       'CB-CODE-VALUE',
       'CB-STATE-VALUE',
+      'UNSUB-TOKEN-VALUE',
     ]) {
       expect(out).not.toContain(secret);
     }
+    expect(out).toContain(`"url":"${UNSUBSCRIBE_PATH}"`);
+    expect(out).toContain('"url":"/api/v0/issues?q=kept-query"');
   });
 });

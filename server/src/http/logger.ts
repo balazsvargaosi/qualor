@@ -67,6 +67,8 @@ function errSerializer(value: unknown): unknown {
 
 /** sso-scim.md §7.8: `code` and `state` ride in the query string of the SSO callbacks. */
 export const SSO_PATH_PREFIX = '/api/v0/ee/sso/';
+/** mail E3 N5: the stop-watching token `t` rides in the query string of the unsubscribe link. */
+export const UNSUBSCRIBE_PATH = '/api/v0/notifications/unsubscribe';
 
 interface SerializableRequest {
   method?: string;
@@ -82,11 +84,15 @@ interface SerializableRequest {
  * whose default serializer emits `method`, `url`, `version`, `host`, `remoteAddress` (from `req.ip`)
  * and `remotePort` (fastify/lib/logger-pino.js, checked against the installed 5.12.5). This keeps the
  * same fields, so no existing log consumer changes, and additionally drops the query string of a URL
- * under `SSO_PATH_PREFIX` (it holds `code` and `state`, sso-scim.md §7.8).
+ * under `SSO_PATH_PREFIX` (it holds `code` and `state`, sso-scim.md §7.8) and of the stop-watching
+ * link under `UNSUBSCRIBE_PATH` (its token `t`, mail E3).
  */
 function reqSerializer(req: SerializableRequest): Record<string, unknown> {
   const url = typeof req.url === 'string' ? req.url : undefined;
-  const cut = url?.startsWith(SSO_PATH_PREFIX) ? url.split('?', 1)[0] : url;
+  const cut =
+    url?.startsWith(SSO_PATH_PREFIX) || url?.startsWith(UNSUBSCRIBE_PATH)
+      ? url.split('?', 1)[0]
+      : url;
   return {
     method: req.method,
     url: cut,

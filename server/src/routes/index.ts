@@ -15,6 +15,7 @@ import { llmSettingsRoutes } from './llm-settings';
 import { mailSettingsRoutes } from './mail-settings';
 import { measureRoutes } from './measures';
 import { newCodeRoutes } from './newcode';
+import { notificationRoutes, unsubscribeRoutes } from './notifications';
 import { organizationRoutes } from './organizations';
 import { profileRoutes } from './profiles';
 import { projectMemberRoutes } from './project-members';
@@ -35,6 +36,9 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   await app.register(accountRoutes, { prefix: '/api/v0', deps });
   await app.register(userRoutes, { prefix: '/api/v0', deps });
   await app.register(tokenRoutes, { prefix: '/api/v0', deps });
+  await app.register(notificationRoutes, { prefix: '/api/v0', deps });
+  // Its own plugin: its body parsers (RFC 8058 forms, ignored) stay in its encapsulation context.
+  await app.register(unsubscribeRoutes, { prefix: '/api/v0', deps });
   await app.register(organizationRoutes, { prefix: '/api/v0', deps });
   await app.register(projectRoutes, { prefix: '/api/v0', deps });
   await app.register(projectMemberRoutes, { prefix: '/api/v0', deps });

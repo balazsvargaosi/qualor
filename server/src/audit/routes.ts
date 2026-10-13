@@ -13,6 +13,11 @@ export const UNAUDITED_MUTATIONS: ReadonlySet<string> = new Set([
   'POST /system/llm/test',
   // Mail E2: reading who an invitation is for changes nothing (POST keeps the secret in the body).
   'POST /auth/invitations/inspect',
+  // mail E3: personal notification preferences, like a token's last use.
+  'PUT /projects/:id/watch',
+  'DELETE /projects/:id/watch',
+  'PUT /me/notifications',
+  'POST /notifications/unsubscribe',
   // GitHub's own deliveries.
   'POST /api/v0/github/webhooks/:connectionId',
 ]);
