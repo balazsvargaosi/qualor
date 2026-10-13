@@ -1,4 +1,4 @@
-import { sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { isStorableText } from '../audit/canonical';
 import { SMTP_SECURITIES, type Config } from '../config';
@@ -7,7 +7,6 @@ import type { Executor } from '../db/client';
 import { LOCKS } from '../db/locks';
 import { instanceSettings } from '../db/schema';
 import { SURROGATE_MESSAGE } from '../http/schemas';
-import { instanceSetting } from '../settings';
 import { emailAddress, isHostName, isOneLine, ONE_LINE_MESSAGE } from './address';
 import type { MailServer } from './transport';
 
@@ -16,7 +15,7 @@ export const MAIL_SETTINGS_KEY = 'mail';
 export const MAIL_PASSWORD_AAD = 'instance_settings.mail.password';
 export const UNREADABLE_PASSWORD_TEXT = "The SMTP password can't be decrypted: enter it again";
 
-const encrypted = z.strictObject({
+const encrypted = z.object({
   v: z.literal(1),
   iv: z.string(),
   ct: z.string(),
@@ -53,20 +52,58 @@ export const mailAlertsSchema = z.strictObject({
 });
 export type MailAlerts = z.infer<typeof mailAlertsSchema>;
 
-export const storedMailSettingsSchema = z.strictObject({
-  server: storedMailServerSchema.nullable(),
-  alerts: mailAlertsSchema,
-});
-export type StoredMailSettings = z.infer<typeof storedMailSettingsSchema>;
+export interface StoredMailSettings {
+  server: StoredMailServer | null;
+  alerts: MailAlerts;
+}
 
 export const DEFAULT_MAIL_SETTINGS: StoredMailSettings = {
   server: null,
   alerts: { licenseExpiry: true, webhookFailures: true },
 };
 
-/** A row that is missing or does not parse reads as the defaults (no server, both alerts on). */
-export function readMailSettings(db: Executor): Promise<StoredMailSettings> {
-  return instanceSetting(db, MAIL_SETTINGS_KEY, storedMailSettingsSchema, DEFAULT_MAIL_SETTINGS);
+/*
+ * Reading is lenient, part by part, so that a row written by another version (an extra key, a
+ * missing switch, a tightened check) never turns into the defaults that the next write would store
+ * over the real server: unknown keys are dropped, each alert switch defaults to on on its own, and
+ * a server that does not parse reads as none but is kept as stored by writes that leave it alone.
+ */
+const serverOnRead = z.object(storedMailServerSchema.shape).nullable();
+const alertsOnRead = z
+  .object({
+    licenseExpiry: z.boolean().catch(DEFAULT_MAIL_SETTINGS.alerts.licenseExpiry),
+    webhookFailures: z.boolean().catch(DEFAULT_MAIL_SETTINGS.alerts.webhookFailures),
+  })
+  .catch({ ...DEFAULT_MAIL_SETTINGS.alerts });
+
+interface StoredRow {
+  settings: StoredMailSettings;
+  /** The row's `server` exactly as stored when it is present but does not parse, else undefined. */
+  unreadableServer: unknown;
+}
+
+async function readStoredRow(db: Executor): Promise<StoredRow> {
+  const [row] = await db
+    .select({ value: instanceSettings.value })
+    .from(instanceSettings)
+    .where(eq(instanceSettings.key, MAIL_SETTINGS_KEY));
+  const value: Record<string, unknown> =
+    typeof row?.value === 'object' && row.value !== null && !Array.isArray(row.value)
+      ? (row.value as Record<string, unknown>)
+      : {};
+  const alerts = alertsOnRead.parse(value.alerts ?? {});
+  const server = serverOnRead.safeParse(value.server ?? null);
+  return server.success
+    ? { settings: { server: server.data, alerts }, unreadableServer: undefined }
+    : { settings: { server: null, alerts }, unreadableServer: value.server };
+}
+
+/**
+ * The row, part by part: missing reads as the defaults (no server, both alerts on); a server that
+ * does not parse reads as none (email off) and a missing or invalid alert switch as on.
+ */
+export async function readMailSettings(db: Executor): Promise<StoredMailSettings> {
+  return (await readStoredRow(db)).settings;
 }
 
 /** The server part of a write: `password` a string sets it, null removes it, absent keeps it. */
@@ -97,7 +134,7 @@ export async function writeMailSettings(
   secretKey: string,
 ): Promise<{ before: StoredMailSettings; after: StoredMailSettings }> {
   await tx.execute(sql`SELECT pg_advisory_xact_lock(${LOCKS.mailSettings})`);
-  const before = await readMailSettings(tx);
+  const { settings: before, unreadableServer } = await readStoredRow(tx);
   let server = before.server;
   if (patch.server === null) {
     server = null;
@@ -117,12 +154,17 @@ export async function writeMailSettings(
     alerts.webhookFailures = patch.alerts.webhookFailures;
   }
   const after: StoredMailSettings = { server, alerts };
+  // A stored server that does not parse is never wiped as a side effect of an alerts-only write.
+  const value =
+    patch.server === undefined && unreadableServer !== undefined
+      ? { server: unreadableServer, alerts }
+      : after;
   await tx
     .insert(instanceSettings)
-    .values({ key: MAIL_SETTINGS_KEY, value: after })
+    .values({ key: MAIL_SETTINGS_KEY, value })
     .onConflictDoUpdate({
       target: instanceSettings.key,
-      set: { value: after, updatedAt: sql`now()` },
+      set: { value, updatedAt: sql`now()` },
     });
   return { before, after };
 }

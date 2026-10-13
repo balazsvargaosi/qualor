@@ -176,6 +176,30 @@ describe('/system/mail (E1 spec, API)', () => {
     expect(lastChanged()).toEqual(['alerts.webhookFailures']);
   });
 
+  it('shows a stored server that does not parse as off, and an alert switch leaves it stored', async () => {
+    await put({ server: server() });
+    const [row] = await ctx.db
+      .select()
+      .from(instanceSettings)
+      .where(eq(instanceSettings.key, 'mail'));
+    const value = row!.value as { server: Record<string, unknown>; alerts: unknown };
+    const broken = { ...value.server, host: 'not a host' };
+    await ctx.db
+      .update(instanceSettings)
+      .set({ value: { ...value, server: broken } })
+      .where(eq(instanceSettings.key, 'mail'));
+    const res = await get();
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().server).toBeNull();
+    expect((await put({ alerts: { licenseExpiry: false } })).statusCode).toBe(200);
+    expect(lastChanged()).toEqual(['alerts.licenseExpiry']);
+    const [after] = await ctx.db
+      .select()
+      .from(instanceSettings)
+      .where(eq(instanceSettings.key, 'mail'));
+    expect((after!.value as { server: unknown }).server).toEqual(broken);
+  });
+
   it('answers 409 MAIL_NOT_CONFIGURED for a test without a server', async () => {
     const res = await sendTest();
     expect(res.statusCode).toBe(409);

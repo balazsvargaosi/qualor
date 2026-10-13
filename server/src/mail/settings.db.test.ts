@@ -95,6 +95,57 @@ describe('the mail settings row (E1 spec, Settings)', () => {
     expect(settings.server?.host).toBe('smtp.example.com');
   });
 
+  it('keeps the server and its password through an unknown key or a missing alert switch (other versions)', async () => {
+    await write({ server: SERVER });
+    const original = (await stored()) as { server: Record<string, unknown> };
+    const passwordEnc = original.server.passwordEnc;
+    const rows = [
+      // A later version's extra keys (a downgrade).
+      { ...original, digestHour: 7, server: { ...original.server, pool: true } },
+      // An earlier or later shape without one of the alert switches.
+      { server: original.server, alerts: { licenseExpiry: false } },
+    ];
+    for (const value of rows) {
+      await t.db
+        .update(instanceSettings)
+        .set({ value })
+        .where(eq(instanceSettings.key, MAIL_SETTINGS_KEY));
+      const settings = await readMailSettings(t.db);
+      expect(settings.server).toMatchObject({ host: 'smtp.example.com', passwordEnc });
+      expect(settings.alerts.webhookFailures).toBe(true);
+      await write({ alerts: { webhookFailures: false } });
+      expect(((await stored()) as typeof original).server.passwordEnc).toEqual(passwordEnc);
+      expect((await effectiveMail(t.db, NO_ENV, SECRET)).server).toMatchObject({
+        host: 'smtp.example.com',
+        password: SMTP_TEST_PASSWORD,
+      });
+      expect((await readMailSettings(t.db)).alerts.webhookFailures).toBe(false);
+    }
+  });
+
+  it('reads a server that does not parse as not configured, and keeps it through an alerts-only write', async () => {
+    await write({ server: SERVER });
+    const original = (await stored()) as { server: Record<string, unknown> };
+    const broken = { ...original.server, port: 'not-a-port' };
+    await t.db
+      .update(instanceSettings)
+      .set({ value: { server: broken, alerts: { licenseExpiry: true, webhookFailures: true } } })
+      .where(eq(instanceSettings.key, MAIL_SETTINGS_KEY));
+    expect(await readMailSettings(t.db)).toEqual({
+      server: null,
+      alerts: { licenseExpiry: true, webhookFailures: true },
+    });
+    expect(await mailConfigured(t.db, NO_ENV)).toBe(false);
+    await write({ alerts: { licenseExpiry: false } });
+    expect(await stored()).toEqual({
+      server: broken,
+      alerts: { licenseExpiry: false, webhookFailures: true },
+    });
+    // An explicit server write still replaces (or removes) it.
+    await write({ server: null });
+    expect(((await stored()) as { server: unknown }).server).toBeNull();
+  });
+
   it('lets QUALOR_SMTP_URL win for the server, with the alerts still from the row', async () => {
     await write({ server: SERVER, alerts: { licenseExpiry: false } });
     const env = testSmtp(2525, { host: 'relay.env.example' });
