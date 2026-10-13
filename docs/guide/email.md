@@ -2,8 +2,8 @@
 
 Qualor sends email through an SMTP server you choose: a test message, alerts for instance
 administrators, and [account emails](#account-emails) (password reset links, invitations, the
-password-changed notice). Nothing is sent until an instance administrator or the operator sets up a server.
-Qualor never tracks whether a message was opened or a link clicked.
+password-changed notice). Nothing is sent until an instance administrator or the operator sets up
+a server. Qualor never tracks whether a message was opened or a link clicked.
 
 ## What Qualor sends
 
@@ -36,8 +36,9 @@ link to reset the password).
 - **Reset your Qualor password**, after someone uses **Forgot password?** on the sign-in page. The
   link works once, for 60 minutes. It does not sign anyone in: the person signs in with the new
   password afterwards.
-- **The inviter's name, then "invited you to Qualor"**, when an instance admin invites a new user from
-  **Settings → Users**. The link works once, for 7 days, and the admin can resend or revoke it.
+- **The inviter's name, then "invited you to Qualor"**, when an instance admin invites a new user
+  from **Settings → Users**. The link works once, for 7 days, and the admin can resend or revoke
+  it.
 - **Your Qualor password was changed**, after a reset through a link, a change of one's own
   password, or a reset by an administrator. It names the account, the time (UTC) and, for a change
   the person made, the address it came from.

@@ -60,8 +60,8 @@ When Qualor can send email ([Email](./email.md#account-emails)) and `QUALOR_PUBL
   people who sign in with a password get a link: not single sign-on accounts without one, not the
   [demo account](#a-public-read-only-demo), and while password sign-in is limited to break-glass
   admins, only those admins. Setting the new password signs out every session of the account;
-  personal tokens keep working. Then sign in with the new password. Each IP address may ask 5 times a
-  minute, and each name or email typed gets at most 3 requests in 15 minutes.
+  personal tokens keep working. Then sign in with the new password. Each IP address may ask 5 times
+  a minute, and each name or email typed gets at most 3 requests in 15 minutes.
 - **Settings → Users → New user** can **Send an invitation email** instead of setting an initial
   password (the user then needs an email address). The user chooses their own password through the
   link, which works for 7 days. The list shows **Invited · expires …** or **Invitation expired**,
