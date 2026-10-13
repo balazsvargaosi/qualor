@@ -255,8 +255,26 @@ describe('toMailSendError (E1 spec: transient or permanent)', () => {
     expect(err.message).not.toMatch(/[\r\n]/);
   });
 
-  it('names the EHLO host from the public URL, else the machine', () => {
-    expect(ehloName('https://qualor.example.com/sub')).toBe('qualor.example.com');
+  it('names the EHLO host from the public URL when it is a domain name (RFC 5321)', () => {
+    expect(ehloName('https://qualor.example.com/sub', 'pod-1')).toBe('qualor.example.com');
+    expect(ehloName('https://Qualor.Example.com.:8443/', 'pod-1')).toBe('qualor.example.com');
+  });
+
+  it('writes an IP public URL as an address literal', () => {
+    expect(ehloName('http://10.0.0.5:8080/', 'pod-1')).toBe('[10.0.0.5]');
+    expect(ehloName('http://[::1]:8080/', 'pod-1')).toBe('[IPv6:::1]');
+    expect(ehloName('http://[2001:db8::5]/', 'pod-1')).toBe('[IPv6:2001:db8::5]');
+  });
+
+  it("uses the machine's name only when it is fully qualified, else nodemailer's [127.0.0.1]", () => {
+    expect(ehloName(null, 'mail-host.example.com')).toBe('mail-host.example.com');
+    expect(ehloName(null, '3f2a9c1d7b4e')).toBe('[127.0.0.1]');
+    expect(ehloName(null, 'qualor-7d9f8b-x2x4q')).toBe('[127.0.0.1]');
+    expect(ehloName(null, '')).toBe('[127.0.0.1]');
+    expect(ehloName(null, '192.168.1.20')).toBe('[192.168.1.20]');
+    // A public URL that is not a fully qualified name falls back the same way.
+    expect(ehloName('http://qualor:8080/', 'pod-1')).toBe('[127.0.0.1]');
+    expect(ehloName('http://localhost:8080/', 'box.example.org')).toBe('box.example.org');
     expect(ehloName(null)).not.toBe('');
   });
 });

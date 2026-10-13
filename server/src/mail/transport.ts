@@ -1,3 +1,4 @@
+import { isIPv4, isIPv6 } from 'node:net';
 import { hostname } from 'node:os';
 import { createTransport } from 'nodemailer';
 import type { SmtpConfig } from '../config';
@@ -67,10 +68,26 @@ export interface SendOptions {
   timeouts?: SmtpTimeouts;
 }
 
-/** The EHLO name: QUALOR_PUBLIC_URL's host, else the machine's name. */
-export function ehloName(publicUrl: string | null): string {
-  if (publicUrl !== null) return new URL(publicUrl).hostname;
-  return hostname() || 'localhost';
+/** nodemailer's own EHLO name for a machine without a fully qualified name. */
+const LOOPBACK_LITERAL = '[127.0.0.1]';
+
+/** A fully qualified domain name (lower case, no trailing dot), an RFC 5321 address literal, or null. */
+function ehloHost(host: string): string | null {
+  if (isIPv4(host)) return `[${host}]`;
+  if (host.startsWith('[') && host.endsWith(']')) return `[IPv6:${host.slice(1, -1)}]`;
+  if (isIPv6(host)) return `[IPv6:${host}]`;
+  const name = host.toLowerCase().replace(/\.$/, '');
+  return name.includes('.') ? name : null;
+}
+
+/**
+ * The EHLO name (RFC 5321: a fully qualified domain name or an address literal): QUALOR_PUBLIC_URL's
+ * host, else the machine's name when it is fully qualified, else `[127.0.0.1]` as nodemailer would
+ * (a container's name is not, and strict relays refuse a name that is not).
+ */
+export function ehloName(publicUrl: string | null, machineName: string = hostname()): string {
+  const fromUrl = publicUrl === null ? null : ehloHost(new URL(publicUrl).hostname);
+  return fromUrl ?? ehloHost(machineName) ?? LOOPBACK_LITERAL;
 }
 
 /** Only the headers of MAIL_HEADER_NAMES, and only values of one line. */
