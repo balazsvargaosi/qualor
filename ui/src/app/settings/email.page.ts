@@ -57,9 +57,9 @@ const MESSAGES_PER_PAGE = 20;
 
 /**
  * Settings → Email (E1 spec), for instance admins: the state, the SMTP server (read-only when
- * QUALOR_SMTP_URL sets it; the password write-only: read from its field once at a save, emptied
- * at once, never kept in the page's state, never shown), a test message, the two alerts for
- * administrators (saved at once), and the recent messages with their status.
+ * QUALOR_SMTP_URL sets it; the password write-only: read from its field at a save that goes out,
+ * emptied once stored, never kept in the page's state, never shown), a test message, the two
+ * alerts for administrators (saved at once), and the recent messages with their status.
  */
 @Component({
   selector: 'q-email-settings-page',
@@ -223,13 +223,14 @@ export class EmailSettingsPage {
   protected async save(event: Event): Promise<void> {
     event.preventDefault();
     if (this.saving() || this.fromEnvironment()) return;
-    const field = this.passwordField()?.nativeElement;
-    const typed = field?.value ?? '';
-    if (field) field.value = '';
     const host = this.values.host().trim();
     const refused = this.localRefusals(host);
     this.errors.set(refused);
+    // A refused save keeps what was typed, the password too: it is read only for a save that goes
+    // out, and its field is emptied once the server has stored it.
     if (Object.keys(refused).length > 0) return;
+    const field = this.passwordField()?.nativeElement;
+    const typed = field?.value ?? '';
     const body: MailBody = {
       server:
         host === ''
@@ -253,7 +254,9 @@ export class EmailSettingsPage {
     this.saveError.set(null);
     this.announcement.set(null);
     try {
-      this.apply(await ok(this.api.client.PUT('/api/v0/system/mail', { body })));
+      const saved = await ok(this.api.client.PUT('/api/v0/system/mail', { body }));
+      if (field) field.value = '';
+      this.apply(saved);
       this.announcement.set($localize`:@@email.saved:Saved.`);
     } catch (err) {
       const fields = this.serverRefusals(err);

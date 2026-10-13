@@ -21,6 +21,10 @@
 .email-panels .panel-head h3 {
   margin: 0;
 }
+/* .setting-field is a grid: keep the switch as wide as its options, as the mockup has it. */
+.setting-field > .segmented {
+  justify-self: start;
+}
 .email-password-state {
   margin: 0;
 }

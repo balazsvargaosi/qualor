@@ -62,9 +62,11 @@
       <div class="setting-row">
         <div class="setting-text">
           <label for="email-host" i18n="@@email.server.host">Host</label>
-          <p id="email-host-hint" i18n="@@email.server.hostHint">
-            Such as smtp.office365.com. Empty turns email off when you save.
-          </p>
+          @if (!fromEnvironment()) {
+            <p id="email-host-hint" i18n="@@email.server.hostHint">
+              Such as smtp.office365.com. Empty turns email off when you save.
+            </p>
+          }
         </div>
         <div class="setting-field">
           <input
@@ -76,7 +78,7 @@
             [value]="values.host()"
             [readOnly]="fromEnvironment()"
             [attr.aria-invalid]="fieldError('host') ? true : null"
-            [attr.aria-describedby]="describedBy('host', true)"
+            [attr.aria-describedby]="describedBy('host', !fromEnvironment())"
             (input)="edit('host', $event)"
           />
           @if (fieldError('host'); as message) {
@@ -362,20 +364,24 @@
               Send test
             </button>
           </div>
-          @if (testResult(); as result) {
-            @if (result.ok) {
-              <p class="alert alert-success" role="status" i18n="@@email.test.sent">
-                Sent in {{ result.ms }} ms. The server answered: <code>{{ result.response }}</code>
-              </p>
-            } @else {
-              <div class="alert alert-error" role="alert">
-                <p>{{ result.message }}</p>
-                @if (result.reply) {
-                  <code class="email-reply">{{ result.reply }}</code>
-                }
-              </div>
+          <!-- Always present, so a screen reader announces each result as its text changes. -->
+          <div id="email-test-result" role="status">
+            @if (testResult(); as result) {
+              @if (result.ok) {
+                <p class="alert alert-success" i18n="@@email.test.sent">
+                  Sent in {{ result.ms }} ms. The server answered:
+                  <code>{{ result.response }}</code>
+                </p>
+              } @else {
+                <div class="alert alert-error">
+                  <p>{{ result.message }}</p>
+                  @if (result.reply) {
+                    <code class="email-reply">{{ result.reply }}</code>
+                  }
+                </div>
+              }
             }
-          }
+          </div>
         </div>
       </div>
     </form>
@@ -428,8 +434,8 @@
           other {Recipients: {{ s.administrators.total }} administrators}
         }</span>
         @if (s.administrators.withoutEmail > 0) {
-          {{ ' '
-          }}<a
+          <span aria-hidden="true"> · </span
+          ><a
             routerLink="/settings/users"
             i18n="@@email.alerts.withoutEmail"
             >{s.administrators.withoutEmail, plural,

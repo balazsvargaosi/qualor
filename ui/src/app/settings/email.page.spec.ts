@@ -117,6 +117,7 @@ describe('EmailSettingsPage (E1 spec, UI)', () => {
     expect(root.querySelector<HTMLInputElement>('#email-host')!.readOnly).toBe(true);
     expect(root.querySelector('form#email-server button[type="submit"]')).toBeNull();
     expect(root.querySelector('#email-password')).toBeNull();
+    expect(text(root)).not.toContain('Empty turns email off');
   });
 
   it('sends the password once from a password field, never shows it, and keeps it when not retyped', async () => {
@@ -152,6 +153,43 @@ describe('EmailSettingsPage (E1 spec, UI)', () => {
     expect(server.requestsTo('PUT', '/api/v0/system/mail')[1]?.body).not.toHaveProperty(
       'server.password',
     );
+  });
+
+  it('keeps a typed password when the page refuses a save, and sends it with the next one', async () => {
+    const server = setup(OFF);
+    server.on('PUT', '/api/v0/system/mail', { body: { ...OFF, server: SERVER } });
+    const { fixture, root } = await render();
+    type(root, '#email-host', 'smtp.example.com');
+    type(root, '#email-password', PASSWORD);
+    submit(root, 'email-server');
+    await settle(fixture);
+    expect(server.requestsTo('PUT', '/api/v0/system/mail')).toEqual([]);
+    expect(root.querySelector('#email-from-address')!.getAttribute('aria-invalid')).toBe('true');
+    expect(root.querySelector<HTMLInputElement>('#email-password')!.value).toBe(PASSWORD);
+    type(root, '#email-from-address', 'qualor@example.com');
+    submit(root, 'email-server');
+    await settle(fixture);
+    expect(server.requestsTo('PUT', '/api/v0/system/mail')[0]?.body).toMatchObject({
+      server: { fromAddress: 'qualor@example.com', password: PASSWORD },
+    });
+  });
+
+  it('keeps a typed password when the server refuses a save', async () => {
+    const server = setup(OFF);
+    server.on('PUT', '/api/v0/system/mail', {
+      status: 422,
+      body: problem(422, 'VALIDATION_FAILED', [
+        { path: 'body.server.fromAddress', message: 'Invalid email' },
+      ]),
+    });
+    const { fixture, root } = await render();
+    type(root, '#email-host', 'smtp.example.com');
+    type(root, '#email-password', PASSWORD);
+    type(root, '#email-from-address', 'not-an-address');
+    submit(root, 'email-server');
+    await settle(fixture);
+    expect(root.querySelector('#email-from-address')!.getAttribute('aria-invalid')).toBe('true');
+    expect(root.querySelector<HTMLInputElement>('#email-password')!.value).toBe(PASSWORD);
   });
 
   it('removes the password with Remove, and switches the port with the security', async () => {
@@ -194,13 +232,15 @@ describe('EmailSettingsPage (E1 spec, UI)', () => {
     });
     const { fixture, root } = await render();
     expect(root.querySelector<HTMLInputElement>('#email-test-to')!.value).toBe('');
+    const result = root.querySelector<HTMLElement>('#email-test-result')!;
+    expect(result.getAttribute('role')).toBe('status');
     type(root, '#email-test-to', 'ada@example.com');
     submit(root, 'email-test');
     await settle(fixture);
     expect(server.requestsTo('POST', '/api/v0/system/mail/test')[0]?.body).toEqual({
       to: 'ada@example.com',
     });
-    expect(text(root)).toContain('Sent in 412 ms. The server answered: 250 2.0.0 OK queued');
+    expect(text(result)).toContain('Sent in 412 ms. The server answered: 250 2.0.0 OK queued');
     server.on('POST', '/api/v0/system/mail/test', {
       status: 502,
       body: {
@@ -211,8 +251,9 @@ describe('EmailSettingsPage (E1 spec, UI)', () => {
     });
     submit(root, 'email-test');
     await settle(fixture);
-    expect(text(root)).toContain('The SMTP server refused the user name or password.');
-    expect(text(root)).toContain('535 5.7.8 Authentication failed');
+    expect(root.querySelector('#email-test-result')).toBe(result);
+    expect(text(result)).toContain('The SMTP server refused the user name or password.');
+    expect(text(result)).toContain('535 5.7.8 Authentication failed');
   });
 
   it('saves an alert switch at once', async () => {
@@ -227,8 +268,7 @@ describe('EmailSettingsPage (E1 spec, UI)', () => {
     expect(server.requestsTo('PUT', '/api/v0/system/mail')[0]?.body).toEqual({
       alerts: { licenseExpiry: false },
     });
-    expect(text(root)).toContain('Recipients: 2 administrators');
-    expect(text(root)).toContain('1 has no email address');
+    expect(text(root)).toContain('Recipients: 2 administrators · 1 has no email address');
   });
 
   it('lists recent messages with their status and error, and loads more', async () => {
