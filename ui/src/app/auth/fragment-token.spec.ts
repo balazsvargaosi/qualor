@@ -28,7 +28,7 @@ describe('takeFragmentToken (mail E2 A2)', () => {
     expect(window.location.hash).toBe('');
   });
 
-  it('reads another parameter by name (mail E3: the stop link is #t=�)', () => {
+  it('reads another parameter by name (mail E3: the stop link is #t=<token>)', () => {
     window.history.replaceState({ navigationId: 3 }, '', '/unsubscribe#t=abc.def');
     expect(takeFragmentToken(document, 't')).toBe('abc.def');
     expect(window.location.hash).toBe('');
