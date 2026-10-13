@@ -7,6 +7,7 @@ function state(over: Partial<ProjectState> = {}): ProjectState {
   n += 1;
   return {
     organizationId: 'org',
+    severities: { blocker: 1, high: 0, medium: 0, low: 0, info: 0 },
     organization: { key: 'org', name: 'Org' },
     project: { id: `p${n}`, key: `p${n}`, name: `p${n}` },
     lastAnalysisAt: '2026-10-01T00:00:00.000Z',
@@ -40,6 +41,7 @@ const NEVER: Partial<ProjectState> = {
   duplication: null,
   issues: null,
   bySeverity: null,
+  severities: { blocker: null, high: null, medium: null, low: null, info: null },
   newIssues: null,
   securityIssues: null,
   reliabilityIssues: null,
@@ -84,6 +86,17 @@ describe('portfolio aggregate (4E-2 §1)', () => {
     expect(aggregate([]).passedShare).toBeNull();
     // Zero lines of code: no weight, so no share rather than NaN.
     expect(aggregate([state({ ncloc: 0, coverage: 80 })]).coverage).toBeNull();
+  });
+
+  it('sums each severity on its own, leaving out only the missing ones', () => {
+    const a = aggregate([
+      state({
+        bySeverity: null,
+        severities: { blocker: 2, high: null, medium: 3, low: null, info: null },
+      }),
+      state({ severities: { blocker: 1, high: 4, medium: 0, low: 1, info: 5 } }),
+    ]);
+    expect(a.bySeverity).toEqual({ blocker: 3, high: 4, medium: 3, low: 1, info: 5 });
   });
 
   it('counts gates, ratings and sums', () => {

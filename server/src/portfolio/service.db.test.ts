@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import type { FastifyRequest } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
@@ -13,7 +13,8 @@ import {
 } from '../../test/app';
 import { mainBranchId, seedIssue, seedRule } from '../../test/issues';
 import { grantProject, rbacContext } from '../../test/rbac';
-import { analyses, branches, issueChanges, measures } from '../db/schema';
+import { createDatabase } from '../db/client';
+import { analyses, branches, issueChanges, measures, projects } from '../db/schema';
 import type {
   PluginPortfolio,
   PortfolioAggregate,
@@ -181,9 +182,17 @@ describe('ctx.portfolio overview (4E-2 §1, §2)', () => {
       ['gamma', east],
       ['delta', east],
       ['omega', north],
+      // Upper case sorts before lower case in code-unit order (R5).
+      ['Zulu', north],
     ] as const) {
       ids[key] = (await createProject(ctx, root, { organizationId: org, key })).id;
     }
+    // Every project exists from the start of the year, except Zulu: created in week 6 (R4).
+    await ctx.db.update(projects).set({ createdAt: new Date('2026-01-01T00:00:00Z') });
+    await ctx.db
+      .update(projects)
+      .set({ createdAt: new Date('2026-09-01T00:00:00Z') })
+      .where(eq(projects.id, ids.Zulu!));
     const main = async (key: string) => mainBranchId(ctx.db, ids[key]!);
 
     // alpha: a1 at exactly Monday 2026-09-28 00:00:00.000Z (gate failed), a2 on 2026-10-13.
@@ -286,7 +295,7 @@ describe('ctx.portfolio overview (4E-2 §1, §2)', () => {
       'succeeded',
       'error',
     );
-    // omega (north): failing, one high finding.
+    // omega (north): failing, with no blocker or high finding.
     const o1 = await analysis(
       ids.omega!,
       await main('omega'),
@@ -302,14 +311,39 @@ describe('ctx.portfolio overview (4E-2 §1, §2)', () => {
       reliability_rating: 1,
       issues: 3,
       blocker_issues: 0,
-      high_issues: 1,
-      medium_issues: 0,
+      high_issues: 0,
+      medium_issues: 1,
       low_issues: 1,
       info_issues: 1,
       security_issues: 0,
       reliability_issues: 1,
       maintainability_issues: 2,
       new_issues: 1,
+    });
+    // Zulu (north, created 2026-09-01): passing, rated A, one high finding.
+    const z1 = await analysis(
+      ids.Zulu!,
+      await main('Zulu'),
+      '2026-10-02T00:00:00.000Z',
+      'succeeded',
+      'passed',
+    );
+    await measure(z1, {
+      ncloc: 100,
+      coverage: 60,
+      duplicated_lines_density: 0,
+      security_rating: 1,
+      reliability_rating: 1,
+      issues: 1,
+      blocker_issues: 0,
+      high_issues: 1,
+      medium_issues: 0,
+      low_issues: 0,
+      info_issues: 0,
+      security_issues: 0,
+      reliability_issues: 0,
+      maintainability_issues: 1,
+      new_issues: 0,
     });
 
     // Current-only counts: open, not duplicate, main branch.
@@ -424,10 +458,11 @@ describe('ctx.portfolio overview (4E-2 §1, §2)', () => {
     expect(body.totals.duplication).toBeCloseTo(66_000 / 4200, 10);
     const keys = (list: { project: { key: string } }[]) => list.map((r) => r.project.key);
     expect(keys(body.attention.failingGates)).toEqual(['beta']);
-    expect(keys(body.attention.worstSecurity)).toEqual(['beta', 'alpha']);
+    // R3: alpha is rated A, so it needs no security attention; it has one high finding.
+    expect(keys(body.attention.worstSecurity)).toEqual(['beta']);
     expect(keys(body.attention.mostSevere)).toEqual(['beta', 'alpha']);
     expect(keys(body.attention.abandoned)).toEqual(['gamma', 'beta']);
-    const alpha = body.attention.worstSecurity[1]!;
+    const alpha = body.attention.mostSevere[1]!;
     expect(alpha).toEqual({
       organization: { key: 'east', name: 'east team' },
       project: { id: ids.alpha, key: 'alpha', name: 'alpha' },
@@ -480,7 +515,8 @@ describe('ctx.portfolio overview (4E-2 §1, §2)', () => {
     for (const list of Object.values(body.attention)) {
       expect(list.every((r) => r.project.key === 'alpha')).toBe(true);
     }
-    expect(body.attention.worstSecurity).toHaveLength(1);
+    expect(body.attention.worstSecurity).toHaveLength(0);
+    expect(body.attention.mostSevere).toHaveLength(1);
     expect(body.attention.abandoned).toEqual([]);
 
     const all = await overview(grantOnly, { scope: 'all' });
@@ -532,27 +568,33 @@ describe('ctx.portfolio overview (4E-2 §1, §2)', () => {
     const [eastRow, northRow] = body.organizations!;
     expect(eastRow).toMatchObject(eastAggregate);
     expect(northRow).toMatchObject({
-      projects: 1,
-      analysed: 1,
-      gate: { passed: 0, failed: 1, error: 0, none: 0 },
-      passedShare: 0,
-      coverage: 90,
+      projects: 2,
+      analysed: 2,
+      gate: { passed: 1, failed: 1, error: 0, none: 0 },
+      passedShare: 0.5,
       duplication: 0,
     });
+    // (90 × 500 + 60 × 100) / 600.
+    expect(northRow!.coverage).toBeCloseTo(51_000 / 600, 10);
     expect(body.totals).toMatchObject({
-      projects: 5,
-      analysed: 4,
-      ncloc: 4700,
+      projects: 6,
+      analysed: 5,
+      ncloc: 4800,
       secrets: 3,
       vulnerableDependencies: 3,
     });
-    // (80 × 1200 + 90 × 500) / 1700: beta has no coverage.
-    expect(body.totals.coverage).toBeCloseTo(141_000 / 1700, 10);
+    // (80 × 1200 + 90 × 500 + 60 × 100) / 1800: beta has no coverage.
+    expect(body.totals.coverage).toBeCloseTo(147_000 / 1800, 10);
     const keys = (list: { project: { key: string } }[]) => list.map((r) => r.project.key);
     expect(keys(body.attention.failingGates)).toEqual(['beta', 'omega']);
-    expect(keys(body.attention.worstSecurity)).toEqual(['beta', 'omega', 'alpha']);
-    // alpha and omega tie at one blocker or high finding: by key.
-    expect(keys(body.attention.mostSevere)).toEqual(['beta', 'alpha', 'omega']);
+    // R3: alpha and Zulu are rated A; omega has no blocker or high finding.
+    expect(keys(body.attention.worstSecurity)).toEqual(['beta', 'omega']);
+    // Zulu and alpha tie at one high finding: by key in code-unit order, upper case first (R5).
+    expect(keys(body.attention.mostSevere)).toEqual(['beta', 'Zulu', 'alpha']);
+    // R4: Zulu, created in week 6, is absent from the points before it.
+    expect(body.trend.map((p) => p.projects)).toEqual([5, 5, 5, 5, 5, 6, 6, 6, 6, 6, 6, 6]);
+    expect(body.trend[4]).toMatchObject({ projects: 5, analysed: 0, abandoned: 5 });
+    expect(body.trend[5]).toMatchObject({ projects: 6, analysed: 1, abandoned: 5 });
   });
 
   it('reads the state at each bucket end from main-branch successes before it (Review Focus 3)', async () => {
@@ -675,18 +717,26 @@ describe('ctx.portfolio overview (4E-2 §1, §2)', () => {
   });
 
   it('answers 503 PORTFOLIO_TIMEOUT past the statement budget', async () => {
-    await expect(
-      readSnapshot(ctx.db, 1, async (tx) => tx.execute(sql`SELECT pg_sleep(0.2)`)),
-    ).rejects.toMatchObject({
-      status: 503,
-      code: 'PORTFOLIO_TIMEOUT',
-      message: 'The portfolio took too long to compute',
-    });
-    // The budget is local to the transaction.
-    const [row] = (
-      await ctx.db.execute<{ t: string }>(sql`SELECT current_setting('statement_timeout') AS t`)
-    ).rows;
-    expect(row?.t).toBe('0');
+    // One connection, so the check below runs on the connection the budget was set on.
+    const pinned = createDatabase(ctx.database.url, { max: 1 });
+    try {
+      await expect(
+        readSnapshot(pinned.db, 1, async (tx) => tx.execute(sql`SELECT pg_sleep(0.2)`)),
+      ).rejects.toMatchObject({
+        status: 503,
+        code: 'PORTFOLIO_TIMEOUT',
+        message: 'The portfolio took too long to compute',
+      });
+      // The budget is local to the transaction: the connection is back on the default.
+      const [row] = (
+        await pinned.db.execute<{ t: string }>(
+          sql`SELECT current_setting('statement_timeout') AS t`,
+        )
+      ).rows;
+      expect(row?.t).toBe('0');
+    } finally {
+      await pinned.close();
+    }
   });
 
   it('answers 403 FEATURE_NOT_LICENSED while the feature is inactive', async () => {

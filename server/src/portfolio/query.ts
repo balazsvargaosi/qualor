@@ -1,4 +1,4 @@
-import { and, asc, eq, sql, type SQL } from 'drizzle-orm';
+import { and, eq, sql, type SQL } from 'drizzle-orm';
 import type { AccessContext } from '../auth/access';
 import { visibleProjectsCondition } from '../auth/facts';
 import type { UserRow } from '../auth/sessions';
@@ -7,14 +7,14 @@ import { organizations, projects } from '../db/schema';
 import { uuidv7Floor } from './periods';
 
 /**
- * 4E-2 Â§1, Â§2: the portfolio's reads. Each one is a single statement over a set of project ids,
+ * 4E-2 §1, §2: the portfolio's reads. Each one is a single statement over a set of project ids,
  * so the number of round trips does not grow with the number of projects or buckets.
  */
 
 /** A JS array as one bound parameter (a bare array would be spread into a value list). */
 const uuidArray = (ids: readonly string[]) => sql`${sql.param(ids)}::uuid[]`;
 
-/** The overall measures a project's state reads (Â§1); `issues` is also read in scope `new`. */
+/** The overall measures a project's state reads (§1); `issues` is also read in scope `new`. */
 export const STATE_METRICS = [
   'security_rating',
   'reliability_rating',
@@ -42,6 +42,7 @@ export interface VisibleProject {
   organizationId: string;
   organizationKey: string;
   organizationName: string;
+  createdAt: Date;
 }
 
 export interface BranchState {
@@ -58,23 +59,27 @@ export async function visibleProjects(
   const access: AccessContext = { db: tx };
   const conditions: (SQL | undefined)[] = [visibleProjectsCondition(access, user)];
   if (organizationId !== null) conditions.push(eq(projects.organizationId, organizationId));
-  return tx
-    .select({
-      id: projects.id,
-      key: projects.key,
-      name: projects.name,
-      organizationId: organizations.id,
-      organizationKey: organizations.key,
-      organizationName: organizations.name,
-    })
-    .from(projects)
-    .innerJoin(organizations, eq(organizations.id, projects.organizationId))
-    .where(and(...conditions))
-    .orderBy(asc(projects.key));
+  return (
+    tx
+      .select({
+        id: projects.id,
+        key: projects.key,
+        name: projects.name,
+        organizationId: organizations.id,
+        organizationKey: organizations.key,
+        organizationName: organizations.name,
+        createdAt: projects.createdAt,
+      })
+      .from(projects)
+      .innerJoin(organizations, eq(organizations.id, projects.organizationId))
+      .where(and(...conditions))
+      // R5: keys sort in code-unit (byte) order, as the TS comparisons do.
+      .orderBy(sql`${projects.key} COLLATE "C"`)
+  );
 }
 
 /**
- * The state of each project at each time in `ends` (Â§1): the newest succeeded analysis of its
+ * The state of each project at each time in `ends` (§1): the newest succeeded analysis of its
  * main branch uploaded before that time (`id < uuidv7Floor(t)`, served by analyses_branch_idx).
  * One map per time, by project id; a project with no such analysis is absent.
  */
@@ -131,7 +136,7 @@ export async function measuresOf(
   return out;
 }
 
-/** Â§1 current-only facts: open, not duplicate issues of `gitleaks` and `trivy` on main branches. */
+/** §1 current-only facts: open, not duplicate issues of `gitleaks` and `trivy` on main branches. */
 export async function currentFindings(
   tx: Executor,
   projectIds: readonly string[],
@@ -157,7 +162,7 @@ export async function currentFindings(
 }
 
 /**
- * Â§1 activity per period. `bounds` are the periods' starts and then the last one's end (n + 1
+ * §1 activity per period. `bounds` are the periods' starts and then the last one's end (n + 1
  * times for n periods); each count is per period, oldest first:
  * - `analyses`: succeeded analyses of any branch, uploaded in the period (by id);
  * - `triage`: status changes to false_positive or wont_fix, created in the period.

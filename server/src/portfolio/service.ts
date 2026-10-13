@@ -43,6 +43,8 @@ const GATES = ['passed', 'failed', 'error', 'none'] as const;
 /** A project's row at a time, with the quality sums the aggregates need besides the row. */
 export interface ProjectState extends PortfolioProjectRow {
   organizationId: string;
+  /** Each severity's measure, a missing one null (the row's `bySeverity` is all or nothing). */
+  severities: Record<(typeof SEVERITIES)[number], number | null>;
   securityIssues: number | null;
   reliabilityIssues: number | null;
   maintainabilityIssues: number | null;
@@ -96,20 +98,21 @@ function projectState(
   const last = branch === undefined ? null : uuidv7Timestamp(branch.analysisId);
   const m = (key: keyof MeasureValues): number | null =>
     branch === undefined ? null : (values?.[key] ?? null);
-  const severities = SEVERITIES.map((s) => m(`${s}_issues`));
-  const bySeverity: SeverityCounts | null = severities.every((v) => v !== null)
-    ? {
-        blocker: severities[0] as number,
-        high: severities[1] as number,
-        medium: severities[2] as number,
-        low: severities[3] as number,
-        info: severities[4] as number,
-      }
+  const severities = {
+    blocker: m('blocker_issues'),
+    high: m('high_issues'),
+    medium: m('medium_issues'),
+    low: m('low_issues'),
+    info: m('info_issues'),
+  };
+  const bySeverity: SeverityCounts | null = SEVERITIES.every((s) => severities[s] !== null)
+    ? (severities as SeverityCounts)
     : null;
   const gate =
     branch === undefined ? null : (GATES.find((g) => g === branch.gateStatus) ?? ('none' as const));
   return {
     organizationId: p.organizationId,
+    severities,
     organization: { key: p.organizationKey, name: p.organizationName },
     project: { id: p.id, key: p.key, name: p.name },
     lastAnalysisAt: last === null ? null : new Date(last).toISOString(),
@@ -173,9 +176,7 @@ export function aggregate(rows: readonly ProjectState[]): PortfolioAggregate {
       }
     }
     out.issues += r.issues ?? 0;
-    if (r.bySeverity !== null) {
-      for (const s of SEVERITIES) out.bySeverity[s] += r.bySeverity[s];
-    }
+    for (const s of SEVERITIES) out.bySeverity[s] += r.severities[s] ?? 0;
     out.securityIssues += r.securityIssues ?? 0;
     out.reliabilityIssues += r.reliabilityIssues ?? 0;
     out.maintainabilityIssues += r.maintainabilityIssues ?? 0;
@@ -215,8 +216,9 @@ const desc = (a: number | null, b: number | null): number =>
   a === b ? 0 : a === null ? 1 : b === null ? -1 : b - a;
 const byKey = (a: ProjectState, b: ProjectState): number =>
   a.project.key < b.project.key ? -1 : a.project.key > b.project.key ? 1 : 0;
-const severe = (s: ProjectState): number | null =>
-  s.bySeverity === null ? null : s.bySeverity.blocker + s.bySeverity.high;
+/** blocker_issues + high_issues, a missing one left out; null when both are missing. */
+const severe = ({ severities: { blocker, high } }: ProjectState): number | null =>
+  blocker === null && high === null ? null : (blocker ?? 0) + (high ?? 0);
 const ratingRank = (r: Rating | null): number | null => (r === null ? null : RATINGS.indexOf(r));
 
 function top(
@@ -241,14 +243,16 @@ function attention(rows: readonly ProjectState[]): PortfolioOverview['attention'
     ),
     worstSecurity: top(
       rows,
-      (s) => s.securityRating !== null,
+      // R3: only projects rated B–E need attention.
+      (s) => s.securityRating !== null && s.securityRating !== 'A',
       (a, b) =>
         desc(ratingRank(a.securityRating), ratingRank(b.securityRating)) ||
         desc(a.securityIssues, b.securityIssues),
     ),
     mostSevere: top(
       rows,
-      (s) => s.bySeverity !== null,
+      // R3: only projects with a blocker or high finding.
+      (s) => (severe(s) ?? 0) > 0,
       (a, b) => desc(severe(a), severe(b)),
     ),
     // Never analysed first, then the oldest last analysis.
@@ -347,19 +351,24 @@ export function createPortfolioService(deps: {
       const findings = await currentFindings(tx, ids);
       const counts = await activity(tx, ids, [...buckets.map((b) => b.start), generatedAt]);
 
-      const rowsAt = (i: number): ProjectState[] =>
-        visible.map((p) => {
-          const branch = states[i]?.get(p.id);
-          return projectState(
-            p,
-            branch,
-            branch === undefined ? undefined : values.get(branch.analysisId),
-            ends[i] ?? generatedAt,
-            findings.get(p.id),
-          );
-        });
-      // The last bucket ends at generatedAt: its state is the state now.
-      const now = rowsAt(buckets.length - 1);
+      /** The rows at bucket i's end; a trend point counts only the projects existing by then (R4). */
+      const rowsAt = (i: number, existing: 'existing' | 'all' = 'existing'): ProjectState[] => {
+        const end = ends[i] ?? generatedAt;
+        return visible
+          .filter((p) => existing === 'all' || p.createdAt.getTime() <= end.getTime())
+          .map((p) => {
+            const branch = states[i]?.get(p.id);
+            return projectState(
+              p,
+              branch,
+              branch === undefined ? undefined : values.get(branch.analysisId),
+              end,
+              findings.get(p.id),
+            );
+          });
+      };
+      // The last bucket ends at generatedAt: its state is the state now, over every visible project.
+      const now = rowsAt(buckets.length - 1, 'all');
       const sum = (key: 'secrets' | 'vulnerableDependencies') =>
         now.reduce((n, r) => n + r[key], 0);
       return {
