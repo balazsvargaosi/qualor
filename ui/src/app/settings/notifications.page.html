@@ -1,0 +1,158 @@
+<div class="settings-head">
+  <div>
+    <h2 i18n="@@notifications.title">Notifications</h2>
+    <p class="muted" i18n="@@notifications.intro">
+      Qualor emails you when the quality gate of a project you watch fails or passes again, and when
+      one of its analyses fails.
+    </p>
+  </div>
+</div>
+<div role="status">
+  @if (announcement(); as message) {
+    <p class="alert alert-success">{{ message }}</p>
+  }
+</div>
+@if (error(); as message) {
+  <p class="alert alert-error" role="alert">{{ message }}</p>
+}
+@if (data(); as d) {
+  @if (!d.mailConfigured) {
+    <p class="alert alert-warn" i18n="@@notifications.notConfigured">
+      Email isn't set up on this server, so Qualor sends no notifications yet.
+    </p>
+  }
+  <section class="card panel notification-switches" aria-labelledby="notifications-email">
+    <h3 id="notifications-email" i18n="@@notifications.emailTitle">Email</h3>
+    @if (d.emailAddress; as address) {
+      <label
+        ><input
+          type="checkbox"
+          data-preference="email"
+          [checked]="d.preferences.email"
+          [disabled]="demo()"
+          (change)="setPreference('email', $event)"
+        /><span i18n="@@notifications.email">Email me at {{ address }}</span></label
+      >
+    } @else {
+      <p class="hint" i18n="@@notifications.noAddress">
+        You have no email address: ask an administrator to add one.
+      </p>
+    }
+    @if (d.isOrgAdmin) {
+      <label
+        ><input
+          type="checkbox"
+          data-preference="orgWebhookFailures"
+          [checked]="d.preferences.orgWebhookFailures"
+          [disabled]="demo()"
+          (change)="setPreference('orgWebhookFailures', $event)"
+        /><span i18n="@@notifications.orgWebhooks"
+          >Failing webhooks in organisations I administer</span
+        ></label
+      >
+    }
+  </section>
+  <section class="card panel" aria-labelledby="notifications-watched">
+    <h3 id="notifications-watched" i18n="@@notifications.watched">Watched projects</h3>
+    @if (d.watches.length === 0) {
+      <p class="muted" i18n="@@notifications.empty">
+        You don't watch any project yet. Use Watch on a project page.
+      </p>
+    } @else {
+      <div class="panel-scroll">
+        <table>
+          <caption class="visually-hidden" i18n="@@notifications.caption">
+            Projects you watch
+          </caption>
+          <thead>
+            <tr>
+              <th scope="col" i18n="@@notifications.col.project">Project</th>
+              <th scope="col" i18n="@@notifications.col.branches">Branches</th>
+              <th scope="col" i18n="@@notifications.col.gateFailed">Gate fails</th>
+              <th scope="col" i18n="@@notifications.col.gateRecovered">Gate passes again</th>
+              <th scope="col" i18n="@@notifications.col.analysisFailed">Analysis fails</th>
+              <th scope="col" class="actions-col">
+                <span class="visually-hidden" i18n="@@notifications.col.actions">Actions</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (w of d.watches; track w.project.id) {
+              <tr [attr.data-project]="w.project.id">
+                <td>
+                  <a [routerLink]="['/projects', w.project.id]">{{ w.project.name }}</a>
+                </td>
+                <td>
+                  <select
+                    [attr.aria-label]="branchesLabel(w)"
+                    [disabled]="demo() || stopping().has(w.project.id)"
+                    (change)="setBranches(w, $event)"
+                  >
+                    <option
+                      value="main"
+                      [selected]="w.branches === 'main'"
+                      i18n="@@notifications.scope.main"
+                    >
+                      Main branch
+                    </option>
+                    <option
+                      value="all"
+                      [selected]="w.branches === 'all'"
+                      i18n="@@notifications.scope.all"
+                    >
+                      All branches and merge requests
+                    </option>
+                  </select>
+                </td>
+                <td>
+                  <input
+                    type="checkbox"
+                    data-event="gateFailed"
+                    [attr.aria-label]="gateFailedLabel(w)"
+                    [checked]="w.events.gateFailed"
+                    [disabled]="demo() || stopping().has(w.project.id)"
+                    (change)="setEvent(w, 'gateFailed', $event)"
+                  />
+                </td>
+                <td>
+                  <input
+                    type="checkbox"
+                    data-event="gateRecovered"
+                    [attr.aria-label]="gateRecoveredLabel(w)"
+                    [checked]="w.events.gateRecovered"
+                    [disabled]="demo() || stopping().has(w.project.id)"
+                    (change)="setEvent(w, 'gateRecovered', $event)"
+                  />
+                </td>
+                <td>
+                  <input
+                    type="checkbox"
+                    data-event="analysisFailed"
+                    [attr.aria-label]="analysisFailedLabel(w)"
+                    [checked]="w.events.analysisFailed"
+                    [disabled]="demo() || stopping().has(w.project.id)"
+                    (change)="setEvent(w, 'analysisFailed', $event)"
+                  />
+                </td>
+                <td class="actions-col">
+                  @if (!demo()) {
+                    <button
+                      type="button"
+                      class="btn-quiet"
+                      [attr.aria-label]="stopLabel(w)"
+                      [disabled]="stopping().has(w.project.id)"
+                      (click)="stop(w)"
+                      i18n="@@notifications.stop"
+                    >
+                      Stop watching
+                    </button>
+                  }
+                </td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+    }
+  </section>
+}

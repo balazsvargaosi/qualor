@@ -1,0 +1,20 @@
+.notification-switches {
+  display: grid;
+  gap: 10px;
+}
+
+.notification-switches label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.panel + .panel {
+  margin-top: 16px;
+}
+
+.actions-col {
+  width: 1%;
+  white-space: nowrap;
+  text-align: right;
+}

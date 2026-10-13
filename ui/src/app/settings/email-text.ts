@@ -97,6 +97,12 @@ export function messageKindText(kind: string): string {
       return $localize`:@@email.kind.invitation:Invitation`;
     case 'account.password-changed':
       return $localize`:@@email.kind.passwordChanged:Password changed`;
+    case 'notify.gate-failed':
+      return $localize`:@@email.kind.gateFailed:Quality gate failed`;
+    case 'notify.gate-recovered':
+      return $localize`:@@email.kind.gateRecovered:Quality gate passes again`;
+    case 'notify.analysis-failed':
+      return $localize`:@@email.kind.analysisFailed:Analysis failed`;
     default:
       return kind;
   }

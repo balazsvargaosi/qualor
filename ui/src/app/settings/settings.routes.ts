@@ -9,6 +9,11 @@ export const settingsRoutes: Routes = [
     loadComponent: () => import('./tokens.page').then((m) => m.TokensPage),
   },
   {
+    path: 'notifications',
+    title: $localize`:@@title.notifications:Notifications`,
+    loadComponent: () => import('./notifications.page').then((m) => m.NotificationsPage),
+  },
+  {
     path: 'organizations',
     title: $localize`:@@title.organizations:Organizations`,
     loadComponent: () => import('./organizations.page').then((m) => m.OrganizationsPage),
