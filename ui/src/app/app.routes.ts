@@ -29,6 +29,11 @@ export const routes: Routes = [
     loadComponent: () => import('./auth/reset-password.page').then((m) => m.ResetPasswordPage),
   },
   {
+    path: 'accept-invite',
+    title: $localize`:@@title.acceptInvite:Accept invitation`,
+    loadComponent: () => import('./auth/accept-invite.page').then((m) => m.AcceptInvitePage),
+  },
+  {
     path: 'unavailable',
     title: $localize`:@@title.unavailable:Server unavailable`,
     loadComponent: () => import('./shared/unavailable.page').then((m) => m.UnavailablePage),

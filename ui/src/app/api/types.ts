@@ -35,6 +35,8 @@ export type Me = ResponseBody<'/api/v0/auth/me', 'get'>;
 /** `GET /auth/methods` (sso-scim.md §10): the password policy and the SSO providers. */
 export type AuthMethods = ResponseBody<'/api/v0/auth/methods', 'get'>;
 export type SsoProvider = AuthMethods['providers'][number];
+/** `POST /auth/invitations/inspect` (mail E2): who an invitation link is for. */
+export type InvitationInfo = ResponseBody<'/api/v0/auth/invitations/inspect', 'post'>;
 export type Organization = ItemOf<'/api/v0/organizations'>;
 
 /** A role grant on one project (rbac-audit.md §16, `GET /projects/{id}/members`). */

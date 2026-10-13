@@ -2,7 +2,7 @@ import { Injectable, inject } from '@angular/core';
 import { Router } from '@angular/router';
 import { Api, done, ok } from '../api/api';
 import { ApiError, isProblem } from '../api/errors';
-import type { AuthMethods, Me } from '../api/types';
+import type { AuthMethods, InvitationInfo, Me } from '../api/types';
 import { SessionStore } from './session';
 
 @Injectable({ providedIn: 'root' })
@@ -89,6 +89,19 @@ export class AuthService {
       this.api.client.POST('/api/v0/auth/password-reset/complete', {
         body: { token, newPassword },
       }),
+    );
+    return answer.username;
+  }
+
+  /** `POST /auth/invitations/inspect` (public): who the link is for; does not use it up. */
+  inspectInvitation(token: string): Promise<InvitationInfo> {
+    return ok(this.api.client.POST('/api/v0/auth/invitations/inspect', { body: { token } }));
+  }
+
+  /** `POST /auth/invitations/accept` (public): the account's username; it does not sign in. */
+  async acceptInvitation(token: string, newPassword: string): Promise<string> {
+    const answer = await ok(
+      this.api.client.POST('/api/v0/auth/invitations/accept', { body: { token, newPassword } }),
     );
     return answer.username;
   }

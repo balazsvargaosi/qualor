@@ -1,0 +1,83 @@
+<q-auth-layout>
+  <div class="card auth-card">
+    <h1 i18n="@@auth.invite.title">Welcome to Qualor</h1>
+    @if (loadError(); as message) {
+      <p class="alert alert-error" role="alert">{{ message }}</p>
+    } @else if (invitation() === null) {
+      <p
+        #invalidNote
+        class="alert alert-error"
+        role="alert"
+        data-test="token-invalid"
+        tabindex="-1"
+        i18n="@@auth.invite.invalid"
+      >
+        This invitation has expired or was already used. Ask your administrator for a new one.
+      </p>
+    } @else if (invitation(); as info) {
+      <p data-test="welcome" i18n="@@auth.invite.welcome">
+        Welcome, {{ info.displayName || info.username }}. Choose a password for {{ info.username }}.
+      </p>
+      @if (info.invitedBy; as inviter) {
+        <p class="muted" i18n="@@auth.invite.invitedBy">{{ inviter }} invited you.</p>
+      }
+      <form method="post" (submit)="submit($event)">
+        @if (error(); as message) {
+          <p class="alert alert-error" role="alert">{{ message }}</p>
+        }
+        <input
+          type="text"
+          name="username"
+          autocomplete="username"
+          hidden
+          readonly
+          [value]="info.username"
+        />
+        <div class="field">
+          <label for="invite-new" i18n="@@auth.invite.new">Password</label>
+          <input
+            id="invite-new"
+            type="password"
+            autocomplete="new-password"
+            required
+            [attr.minlength]="minLength"
+            [attr.maxlength]="maxLength"
+            aria-describedby="invite-new-hint"
+            [attr.aria-invalid]="nextError() ? true : null"
+            [value]="next()"
+            (input)="next.set(inputValue($event))"
+          />
+          <span id="invite-new-hint" class="hint" i18n="@@auth.invite.hint"
+            >At least {{ minLength }} characters.</span
+          >
+          @if (nextError(); as message) {
+            <span class="field-error" role="alert">{{ message }}</span>
+          }
+        </div>
+        <div class="field">
+          <label for="invite-confirm" i18n="@@auth.invite.confirm">Repeat the password</label>
+          <input
+            id="invite-confirm"
+            type="password"
+            autocomplete="new-password"
+            required
+            [attr.maxlength]="maxLength"
+            [value]="confirm()"
+            (input)="confirm.set(inputValue($event))"
+          />
+        </div>
+        <button
+          type="submit"
+          class="btn btn-primary"
+          [attr.aria-disabled]="busy() ? true : null"
+          i18n="@@auth.invite.submit"
+        >
+          Set my password
+        </button>
+      </form>
+    }
+    <p class="auth-alt">
+      <a routerLink="/login" i18n="@@auth.invite.signIn">Go to sign-in</a>
+    </p>
+  </div>
+</q-auth-layout>
