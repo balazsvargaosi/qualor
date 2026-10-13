@@ -10,7 +10,7 @@ Qualor never tracks whether a message was opened or a link clicked.
 |---|---|---|
 | Test message | the address you type | **Send test** in **Settings → Email** |
 | Licence expiry | every instance administrator with an email address | 30, 7 and 1 day before the licence expires, when its 14-day grace period starts, and when it ends ([When a licence expires](./enterprise.md#when-a-licence-expires)). Each once per licence key; a step that was missed (email was off then) is not sent late |
-| Failing webhook | every instance administrator with an email address | when a webhook delivery gives up after its 7 attempts; at most one a day for each webhook ([Webhooks](./webhooks-and-api.md#webhooks)) |
+| Failing webhook | every instance administrator with an email address | when a webhook delivery gives up after its 7 attempts; at most one a day for each webhook, and only for a webhook that is switched on ([Webhooks](./webhooks-and-api.md#webhooks)) |
 
 Each alert has a switch in **Settings → Email → Alerts for administrators**; both are on. An
 administrator without an email address gets nothing: add one in **Settings → Users**. The panel
@@ -117,6 +117,8 @@ administrators only. Changing the settings and sending a test are in the
 | "The SMTP server refused the user name or password." | wrong credentials | Microsoft 365: turn on Authenticated SMTP for the mailbox; Gmail: use an app password |
 | STARTTLS refused, or "the server does not offer it" | the server speaks implicit TLS, or no TLS | choose **TLS** (port 465), or **None** for a relay on your own network |
 | a `5xx` answer such as "relay not permitted" or "sender not allowed" | the server does not let this account send as the **From address** | use an address the account may send from |
-| "The SMTP password can't be decrypted: enter it again" | `QUALOR_SECRET_KEY` changed | **Replace** the password |
+| "The stored password can't be decrypted (QUALOR_SECRET_KEY changed): enter it again." under **Password**, or "The stored SMTP password can no longer be read. Enter it again." after **Send test** | `QUALOR_SECRET_KEY` changed | **Replace** the password |
+| "The SMTP server did not answer in time." | the server is slow or a firewall drops the connection | check **Host** and **Port**, that the server is up, and the firewall between Qualor and it |
+| "The SMTP server refused the message." | the server refused the sender or the recipient without a reply that says why | check the **From address** and the recipient; look at the mail server's own log |
 | messages have no links, and the page warns about `QUALOR_PUBLIC_URL` | `QUALOR_PUBLIC_URL` is not set | set it and restart ([Server settings](./install-server.md#server-settings)) |
 | an administrator gets no alerts | no email address, the alert is off, or it was sent already (once per licence step, once a day per webhook) | add the address in **Settings → Users**; check the switches; look at **Recent messages** |

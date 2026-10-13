@@ -45,7 +45,7 @@ function verify(rawBody, headers, secret, maxAgeSeconds = 300) {
   once.
 - Each attempt has 10 s to complete. A delivery gets 7 attempts with exponential backoff (1, 2, 4, 8,
   16, 32 minutes). Only a 2xx answer counts as success, and redirects are not followed.
-- When a delivery gives up after its 7 attempts, instance administrators get an email ([Email](./email.md)), at most one a day for each webhook.
+- When a delivery gives up after its 7 attempts, instance administrators get an email ([Email](./email.md)), at most one a day for each webhook. A webhook that is switched off alerts nobody.
 - In the UI, each webhook shows its last 20 deliveries as a strip (delivered above the line, failed
   below it, pending on it) with the share delivered; **Recent deliveries** lists them with each one's
   status, response code and the first 1 KiB of the answer. Deliveries are kept 30 days. **Refresh**
