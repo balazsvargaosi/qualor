@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import {
   existsSync,
   mkdirSync,
@@ -103,7 +104,7 @@ async function run(
       checkFile: async (p) => ({ ok: true, realPath: p }),
       importModule: async () => ({ default: PLUGIN }),
     },
-    handleSignals: false,
+    signals: false,
     ...extra,
   });
   return { code, stdout: out.data(), stderr };
@@ -116,6 +117,23 @@ const manifest = (zip: Buffer): Record<string, unknown> =>
       .find((e) => e.name === 'manifest.json')!
       .data.toString('utf8'),
   ) as Record<string, unknown>;
+
+/** The whole bundle: every file, no `logs.jsonl`, and no section that failed. */
+function expectComplete(zip: Buffer): void {
+  expect(names(zip)).toEqual(FILES);
+  const notes = manifest(zip).notes as string[];
+  expect(notes.filter((note) => note.includes('could not be collected'))).toEqual([]);
+}
+
+/** `run`'s boot seams with another plugin. */
+const bootWith = (plugin: QualorPlugin): SupportCommandOptions['boot'] => ({
+  verifyOptions: (at) => verifyWith(signer, at),
+  now: () => NOW,
+  checkFile: async (p) => ({ ok: true, realPath: p }),
+  importModule: async () => ({ default: plugin }),
+});
+
+const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 let database: TestDatabase;
 beforeAll(async () => {
@@ -140,7 +158,7 @@ describe('support-bundle with an external database', () => {
     const result = await run(external());
     expect(result.stderr).toBe('');
     expect(result.code).toBe(0);
-    expect(names(result.stdout)).toEqual(FILES);
+    expectComplete(result.stdout);
     expect(manifest(result.stdout)).toMatchObject({ source: 'command' });
     expect(manifest(result.stdout).notes).toContain(COMMAND_LOGS_NOTE);
     expect(await auditCount()).toBe(before);
@@ -156,7 +174,7 @@ describe('support-bundle with an external database', () => {
         expect(result.code).toBe(0);
         expect(result.stdout.length).toBe(0);
         expect(result.stderr).toBe(`qualor-server: wrote ${target}\n`);
-        expect(names(readFileSync(target))).toEqual(FILES);
+        expectComplete(readFileSync(target));
         expect(readdirSync(dir)).toEqual(['bundle.zip']);
       }
     } finally {
@@ -258,19 +276,58 @@ describe('support-bundle with an external database', () => {
         await ctx.db.execute(sql`CREATE TABLE support_command_write_probe (id int)`);
       },
     };
-    const result = await run(external(), {
-      boot: {
-        verifyOptions: (at) => verifyWith(signer, at),
-        now: () => NOW,
-        checkFile: async (p) => ({ ok: true, realPath: p }),
-        importModule: async () => ({ default: writer }),
-      },
-    });
+    const result = await run(external(), { boot: bootWith(writer) });
     expect(result.code).toBe(EXIT_NOT_LICENSED);
     const probe = await database.db.execute<{ n: number }>(
       sql`SELECT count(*)::int AS n FROM information_schema.tables WHERE table_name = 'support_command_write_probe'`,
     );
     expect(probe.rows[0]!.n).toBe(0);
+  });
+
+  it('exits 1 on a licence file that cannot be read, with its own message', async () => {
+    const missing = path.join(os.tmpdir(), `qualor-missing-licence-${process.pid}`);
+    const result = await run(external({ license: { text: null, file: missing } }));
+    expect(result.code).toBe(1);
+    expect(result.stdout.length).toBe(0);
+    expect(result.stderr).toMatch(/^qualor-server: QUALOR_LICENSE_FILE: cannot read .*\n$/);
+  });
+
+  it('an interrupt once the file is in place says the bundle was written', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'qualor-bundle-'));
+    const target = path.join(dir, 'bundle.zip');
+    const signals = new EventEmitter();
+    const exit = vi.fn();
+    let stderr = '';
+    try {
+      const code = await supportBundleCommand({
+        args: ['--out', target],
+        config: external(),
+        version: VERSION,
+        migrationsDir: MIGRATIONS_DIR,
+        logger: createLogger('silent'),
+        stdout: capture().stream,
+        // The interrupt lands right after the rename, before the command returns.
+        stderr: {
+          write: (text: string) => {
+            stderr += text;
+            if (text.includes('wrote')) signals.emit('SIGTERM', 'SIGTERM');
+          },
+        },
+        boot: bootWith(PLUGIN),
+        signals,
+        exit,
+      });
+      expect(code).toBe(0);
+      expect(exit).toHaveBeenCalledExactlyOnceWith(1);
+      expect(stderr).toBe(
+        `qualor-server: wrote ${target}\n` +
+          'qualor-server: interrupted (SIGTERM) after the bundle was written\n',
+      );
+      expectComplete(readFileSync(target));
+      expect(signals.listenerCount('SIGINT') + signals.listenerCount('SIGTERM')).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -342,7 +399,7 @@ describe('support-bundle with the embedded database', () => {
       });
       expect(result.stderr).toBe('');
       expect(result.code).toBe(0);
-      expect(names(result.stdout)).toEqual(FILES);
+      expectComplete(result.stdout);
       expect(spawnPostgres).not.toHaveBeenCalled();
       expect(socketUrls).toEqual([
         `postgresql://qualor@${encodeURIComponent(path.join(dataDir, 'run'))}/qualor`,
@@ -382,7 +439,7 @@ describe('support-bundle with the embedded database', () => {
       });
       expect(result.stderr).toBe('');
       expect(result.code).toBe(0);
-      expect(names(result.stdout)).toEqual(FILES);
+      expectComplete(result.stdout);
       expect(spawnPostgres).toHaveBeenCalledTimes(1);
       expect(seen.lease).toBe(true);
       expect(children[0]!.exitCode !== null || children[0]!.signalCode !== null).toBe(true);
@@ -431,5 +488,64 @@ describe('support-bundle with the embedded database', () => {
     );
     expect(spawnPostgres).not.toHaveBeenCalled();
     expect(existsSync(leaseFile())).toBe(false);
+  });
+
+  it('an interrupt stops the PostgreSQL it started and releases the lease; a second one is ignored', async () => {
+    const spawnPostgres = fakePostgres({});
+    const signals = new EventEmitter();
+    const exit = vi.fn();
+    const interrupter: QualorPlugin = {
+      ...PLUGIN,
+      register() {
+        // Mid-run, after the start; Ctrl-C twice.
+        signals.emit('SIGINT', 'SIGINT');
+        signals.emit('SIGINT', 'SIGINT');
+      },
+    };
+    const result = await run(embedded(), {
+      embedded: embeddedOptions(spawnPostgres),
+      databaseUrlFor: () => database.url,
+      boot: bootWith(interrupter),
+      signals,
+      exit,
+    });
+    expect(result.code).toBe(1);
+    expect(exit).toHaveBeenCalledExactlyOnceWith(1);
+    expect(result.stdout.length).toBe(0);
+    expect(result.stderr).toBe('qualor-server: interrupted (SIGINT); no bundle was written\n');
+    expect(spawnPostgres).toHaveBeenCalledTimes(1);
+    expect(children[0]!.exitCode !== null || children[0]!.signalCode !== null).toBe(true);
+    expect(existsSync(leaseFile())).toBe(false);
+    expect(signals.listenerCount('SIGINT') + signals.listenerCount('SIGTERM')).toBe(0);
+  });
+
+  it('a lease another server takes over mid-run: PostgreSQL stopped, exit 1 with that reason', async () => {
+    const spawnPostgres = fakePostgres({});
+    const theirs = JSON.stringify({
+      instance: 'theirs',
+      host: 'another-container',
+      renewedAt: Date.now(),
+    });
+    const takeover: QualorPlugin = {
+      ...PLUGIN,
+      async register() {
+        writeFileSync(leaseFile(), theirs);
+        // Several renewal ticks: the next one finds the lease gone.
+        await pause(300);
+      },
+    };
+    const result = await run(embedded(), {
+      embedded: { ...embeddedOptions(spawnPostgres), lease: { settleMs: 10, renewMs: 25 } },
+      databaseUrlFor: () => database.url,
+      boot: bootWith(takeover),
+    });
+    expect(result.code).toBe(1);
+    expect(result.stdout.length).toBe(0);
+    expect(result.stderr).toBe(
+      'qualor-server: another server took the data directory over while the bundle was collected; the embedded PostgreSQL was stopped and no bundle was written\n',
+    );
+    expect(children[0]!.exitCode !== null || children[0]!.signalCode !== null).toBe(true);
+    // Its lease is theirs, and left alone.
+    expect(readFileSync(leaseFile(), 'utf8')).toBe(theirs);
   });
 });

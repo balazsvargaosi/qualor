@@ -62,8 +62,29 @@ export interface SupportCommandOptions {
   };
   /** Tests: the URL connected to for an embedded socket URL (their own database). */
   databaseUrlFor?: (socketUrl: string) => string;
-  /** Interrupts stop the embedded PostgreSQL first; tests switch this off. Default true. */
-  handleSignals?: boolean;
+  /**
+   * Where SIGINT and SIGTERM come from (default `process`); `false` installs no handlers. An
+   * interrupt stops the embedded PostgreSQL and releases the lease before the process exits.
+   */
+  signals?: SignalSource | false;
+  /** Tests: what an interrupt calls once cleaned up (default `process.exit`). */
+  exit?: (code: number) => void;
+}
+
+export interface SignalSource {
+  on(signal: 'SIGINT' | 'SIGTERM', listener: (signal: NodeJS.Signals) => void): unknown;
+  off(signal: 'SIGINT' | 'SIGTERM', listener: (signal: NodeJS.Signals) => void): unknown;
+}
+
+/** What the run holds, for the cleanup, and what it has done, for an interrupt's message. */
+interface Held {
+  database?: Database;
+  starting?: Promise<EmbeddedPostgres>;
+  tmp?: string;
+  /** Set once the zip was handed to standard output or renamed into place. */
+  written?: boolean;
+  /** Set, before anything is stopped, when another server took the lease over. */
+  lost?: string;
 }
 
 /** A failure the command explains itself, with its exit code. */
@@ -133,7 +154,7 @@ export async function supportBundleCommand(options: SupportCommandOptions): Prom
   const logger =
     options.logger ?? createLogger(config.logLevel, destination({ dest: 2, sync: true }));
 
-  const held: { database?: Database; starting?: Promise<EmbeddedPostgres>; tmp?: string } = {};
+  const held: Held = {};
   let cleaning: Promise<void> | undefined;
   /** Closes the pool, stops a PostgreSQL this command started and removes a partial file. */
   const cleanup = (): Promise<void> =>
@@ -143,22 +164,39 @@ export async function supportBundleCommand(options: SupportCommandOptions): Prom
         (embedded) => embedded.stop(),
         () => undefined,
       );
-      if (held.tmp !== undefined) await rm(held.tmp, { force: true });
+      if (held.tmp !== undefined) await rm(held.tmp, { force: true }).catch(() => undefined);
     })());
+  const signals = options.signals ?? process;
+  const exit = options.exit ?? ((code: number) => process.exit(code));
+  let interrupted = false;
   const onSignal = (signal: NodeJS.Signals): void => {
+    // A second Ctrl-C while cleaning up is ignored: the default action would orphan PostgreSQL.
+    if (interrupted) return;
+    interrupted = true;
     void cleanup().finally(() => {
-      say(`interrupted (${signal}); no bundle was written`);
-      process.exit(1);
+      say(
+        held.written
+          ? `interrupted (${signal}) after the bundle was written`
+          : `interrupted (${signal}); no bundle was written`,
+      );
+      exit(1);
     });
   };
-  if (options.handleSignals !== false) {
-    process.once('SIGINT', onSignal);
-    process.once('SIGTERM', onSignal);
+  if (signals !== false) {
+    signals.on('SIGINT', onSignal);
+    signals.on('SIGTERM', onSignal);
   }
   try {
     await collectAndWrite(options, parsed.out, logger, held, say, stdout);
     return 0;
   } catch (err) {
+    // An interrupt reports itself; the failure it caused (a closed pool) is not news.
+    if (interrupted) return 1;
+    // Whichever failure comes first, a lost lease is the reason (the PostgreSQL was stopped).
+    if (held.lost !== undefined) {
+      say(held.lost);
+      return 1;
+    }
     if (err instanceof CommandError) {
       say(err.message);
       return err.exitCode;
@@ -167,9 +205,12 @@ export async function supportBundleCommand(options: SupportCommandOptions): Prom
     say(`the support bundle failed: ${formatStartupError(err)}`);
     return 1;
   } finally {
-    process.off('SIGINT', onSignal);
-    process.off('SIGTERM', onSignal);
+    // The handlers stay until the cleanup is over, so an interrupt during it is still caught.
     await cleanup();
+    if (signals !== false) {
+      signals.off('SIGINT', onSignal);
+      signals.off('SIGTERM', onSignal);
+    }
   }
 }
 
@@ -177,14 +218,15 @@ async function collectAndWrite(
   options: SupportCommandOptions,
   out: string | null,
   logger: Logger,
-  held: { database?: Database; starting?: Promise<EmbeddedPostgres>; tmp?: string },
+  held: Held,
   say: (message: string) => void,
   stdout: CommandOutput,
 ): Promise<void> {
   const { config } = options;
-  const connection = await openConnection(options, logger, held, say);
+  const connection = await openConnection(options, logger, held);
+  // One connection, made read-only before its first query and checked below: nothing can write.
   const database = createDatabase(connection.url, {
-    max: 4,
+    max: 1,
     readOnly: true,
     onError: (err) => logger.warn({ err }, 'idle database connection failed'),
   });
@@ -195,6 +237,12 @@ async function collectAndWrite(
     pending = await pendingMigrations(database.db, options.migrationsDir);
   } catch (err) {
     throw new CommandError(1, connection.unreachable(err));
+  }
+  const readOnly = await database.pool.query<{ transaction_read_only: string }>(
+    'SHOW transaction_read_only',
+  );
+  if (readOnly.rows[0]?.transaction_read_only !== 'on') {
+    throw new CommandError(1, 'the database session could not be made read-only');
   }
   const behind =
     pending > 0
@@ -236,18 +284,14 @@ async function collectAndWrite(
   } catch (err) {
     throw new CommandError(1, `the support bundle failed: ${formatStartupError(err)}${behind}`);
   }
-  if (connection.lost()) {
-    throw new CommandError(
-      1,
-      'another server took the data directory over while the bundle was collected; no bundle was written',
-    );
-  }
+  if (held.lost !== undefined) throw new CommandError(1, held.lost);
   const warnBehind = (): void => {
     if (pending > 0)
       say(`the database is ${pending} migration(s) behind this server; the bundle reports it`);
   };
   if (out === null) {
     await writeOut(stdout, bundle.data);
+    held.written = true;
     warnBehind();
     return;
   }
@@ -257,6 +301,7 @@ async function collectAndWrite(
   await writeFile(tmp, bundle.data, { flag: 'wx' });
   await rename(tmp, target);
   delete held.tmp;
+  held.written = true;
   say(`wrote ${target}`);
   warnBehind();
 }
@@ -279,15 +324,12 @@ interface Connection {
   url: string;
   /** The message for a database that does not answer. */
   unreachable(err: unknown): string;
-  /** Whether another server took over the lease of a PostgreSQL this command started. */
-  lost(): boolean;
 }
 
 async function openConnection(
   options: SupportCommandOptions,
   logger: Logger,
-  held: { starting?: Promise<EmbeddedPostgres> },
-  say: (message: string) => void,
+  held: Held,
 ): Promise<Connection> {
   const { config } = options;
   if (config.databaseUrl !== null) {
@@ -296,7 +338,6 @@ async function openConnection(
       // Never the URL: it holds the password.
       unreachable: (err) =>
         `the database did not answer (${formatStartupError(err)}); check DATABASE_URL`,
-      lost: () => false,
     };
   }
   const { dataDir } = config.embedded;
@@ -312,7 +353,6 @@ async function openConnection(
       url: urlFor(socketUrl(run)),
       unreachable: (err) =>
         `a Qualor server (host ${lease.host}) holds ${dataDir}, but its database did not answer on ${run} (${formatStartupError(err)}): try again once it is up, or in 30 s if it has stopped`,
-      lost: () => false,
     };
   }
   if (!(await exists(path.join(dataDir, 'postgres', 'PG_VERSION')))) {
@@ -321,17 +361,18 @@ async function openConnection(
       `no Qualor server is running on ${dataDir} and it holds no database: start the server first`,
     );
   }
-  let lost = false;
   held.starting = startEmbeddedPostgres({
     ...config.embedded,
     logger,
     ...options.embedded,
     lease: {
       ...options.embedded?.lease,
+      // The reason is recorded first: the stop makes the collection fail, and the command then
+      // reports this instead of that failure.
       onLost: () => {
-        lost = true;
-        say('another server took the data directory over; stopping the embedded PostgreSQL');
-        void held.starting?.then((embedded) => embedded.stop());
+        held.lost =
+          'another server took the data directory over while the bundle was collected; the embedded PostgreSQL was stopped and no bundle was written';
+        void held.starting?.then((embedded) => embedded.stop()).catch(() => undefined);
       },
     },
   });
@@ -347,6 +388,5 @@ async function openConnection(
   return {
     url: urlFor(embedded.url),
     unreachable: (err) => `the embedded PostgreSQL did not answer (${formatStartupError(err)})`,
-    lost: () => lost,
   };
 }
