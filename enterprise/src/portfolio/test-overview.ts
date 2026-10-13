@@ -90,7 +90,7 @@ const neverAnalysed = (): PortfolioProjectRow =>
     vulnerableDependencies: 0,
   });
 
-/** Three fresh rows: a failing project, a passing one in another organisation, a never-analysed one. */
+/** Three fresh rows: a failing project, a passing one in another organisation, a never-analysed. */
 export function sampleRows(): PortfolioProjectRow[] {
   return [sampleRow(0), passing(), neverAnalysed()];
 }

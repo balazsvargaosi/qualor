@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-Qualor-Enterprise
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
+import type { PortfolioProjectRow } from '@qualor/server/plugin-contract';
 import { RenderTimeoutError } from '../pdf/layout';
 import { PDF_PROJECTS_MAX, renderPortfolioPdf } from './pdf';
 import { sampleOverview, sampleRow, sampleRows } from './test-overview';
@@ -101,5 +102,40 @@ describe('renderPortfolioPdf (4E-2 §3)', () => {
     await expect(
       renderPortfolioPdf(sampleOverview(), sampleRows(), { ...OPTIONS, deadline: Date.now() - 1 }),
     ).rejects.toBeInstanceOf(RenderTimeoutError);
+  });
+
+  describe('with a clock that ticks once per reading', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    /** Date.now() returns 0, 1, 2, …; `calls()` says how many readings were taken. */
+    function tickingClock(): { calls: () => number } {
+      let ticks = 0;
+      vi.spyOn(Date, 'now').mockImplementation(() => ticks++);
+      return { calls: () => ticks };
+    }
+
+    it('stops when the deadline passes in the middle of the project table', async () => {
+      const overview = sampleOverview();
+      overview.totals.projects = 50;
+      const rows = (): PortfolioProjectRow[] => Array.from({ length: 50 }, (_, i) => sampleRow(i));
+      const readings = async (projects: PortfolioProjectRow[]): Promise<number> => {
+        const clock = tickingClock();
+        await renderPortfolioPdf(overview, projects, { ...OPTIONS, deadline: Infinity });
+        vi.restoreAllMocks();
+        return clock.calls();
+      };
+      // Every section start and every table row reads the clock once; the project table, the last
+      // thing that does, accounts for the last 50 readings.
+      const total = await readings(rows());
+      expect(total - (await readings([]))).toBe(50);
+      // With a deadline 10 readings before the end, the 42nd row's reading is the first past it.
+      const clock = tickingClock();
+      await expect(
+        renderPortfolioPdf(overview, rows(), { ...OPTIONS, deadline: total - 10 }),
+      ).rejects.toBeInstanceOf(RenderTimeoutError);
+      expect(clock.calls()).toBe(total - 8);
+    });
   });
 });

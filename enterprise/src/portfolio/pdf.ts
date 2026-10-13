@@ -473,9 +473,10 @@ interface RenderOptions {
 
 /**
  * 4E-2 §3: the portfolio as an A4 PDF on 4E-1's layout: cover, totals, trend with four line
- * charts, organisations (all scope), attention lists, and the first 50 of `rows` (the caller's
- * order: by gate, then security). The footer id and the creation date are `generatedAt`, so one
- * input renders to the same bytes.
+ * charts, organisations (all scope), attention lists, and the first 50 of `rows`. The caller
+ * supplies `rows` sorted by gate, then security rating (`projects(sort: 'gate')`), as the PDF
+ * says; they are printed in the order given. The footer id and the creation date are
+ * `generatedAt`, so one input renders to the same bytes.
  */
 export async function renderPortfolioPdf(
   overview: PortfolioOverview,
