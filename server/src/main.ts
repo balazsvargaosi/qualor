@@ -10,6 +10,7 @@ import { readinessCheck, runMigrations } from './db/migrate';
 import { gateHandlers } from './gates/reevaluate';
 import { ensureHousekeepingScheduled, housekeepingHandlers } from './housekeeping/run';
 import { createLogger } from './http/logger';
+import { LogBuffer } from './http/log-buffer';
 import { loadUiAssets, UiAssetsError, type UiAssets } from './http/ui';
 import { VERSION } from './index';
 import { jobHandlers } from './ingest/handlers';
@@ -77,7 +78,8 @@ async function main(): Promise<void> {
       throw err;
     }
   }
-  const logger = createLogger(config.logLevel);
+  const logBuffer = new LogBuffer();
+  const logger = createLogger(config.logLevel, undefined, logBuffer);
   if (process.argv[2] === 'restore') {
     process.exit(await restoreEmbedded(config, logger));
   }
@@ -185,6 +187,7 @@ async function main(): Promise<void> {
     checkReady: readinessCheck(database.db, MIGRATIONS_DIR),
     ui,
     edition,
+    logBuffer,
     plugins,
     // The recorder the plugin services record through (rbac-audit.md §9, §15).
     audit,

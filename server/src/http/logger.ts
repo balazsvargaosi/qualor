@@ -1,4 +1,6 @@
 import {
+  destination as stdoutDestination,
+  multistream,
   pino,
   stdSerializers,
   type DestinationStream,
@@ -105,6 +107,22 @@ export function loggerOptions(level: LogLevel): LoggerOptions {
   };
 }
 
-export function createLogger(level: LogLevel, destination?: DestinationStream): Logger {
+/**
+ * With a `buffer` (the support bundle's log tail), every line goes to the destination (stdout by
+ * default) and to the buffer; the lines are the same, already redacted ones, at the same level.
+ */
+export function createLogger(
+  level: LogLevel,
+  destination?: DestinationStream,
+  buffer?: DestinationStream,
+): Logger {
+  if (buffer) {
+    // Entries default to `info`; the logger's own level does the filtering.
+    const streams = [
+      { level: 'trace', stream: destination ?? stdoutDestination(1) },
+      { level: 'trace', stream: buffer },
+    ];
+    return pino(loggerOptions(level), multistream(streams));
+  }
   return destination ? pino(loggerOptions(level), destination) : pino(loggerOptions(level));
 }

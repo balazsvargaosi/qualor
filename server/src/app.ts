@@ -11,6 +11,7 @@ import type { Config } from './config';
 import type { Db } from './db/client';
 import { installExpectContinue } from './http/expect-continue';
 import { createLogger } from './http/logger';
+import type { LogBuffer } from './http/log-buffer';
 import { openApiOptions } from './http/openapi';
 import { installErrorHandling, ProblemError } from './http/problem';
 import './http/route-config';
@@ -45,6 +46,8 @@ export interface AppDeps {
    * through (rbac-audit.md §15); without it, one that records while `audit-log` is active.
    */
   audit?: AuditRecorder;
+  /** The in-memory tail of the server log (main.ts); without it the support bundle has no logs. */
+  logBuffer?: LogBuffer;
 }
 
 /**
