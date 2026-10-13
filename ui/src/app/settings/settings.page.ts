@@ -3,6 +3,7 @@ import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { SessionStore } from '../auth/session';
 import { OrgContext } from '../org/org-context';
 import { PageHeader } from '../shared/page-header';
+import { AUTO_FIX_FEATURE } from './auto-fix';
 import { SystemInfo } from '../shell/system-info';
 
 /** The enterprise settings entries the UI renders with its own screens (rbac-audit.md §17). */
@@ -63,6 +64,13 @@ export class SettingsPage {
     () => this.ids().has('compliance') && this.org.can('org.read'),
   );
   /**
+   * The organisation's automatic fix suggestions (4E-3a §4, ruling R7): for holders of
+   * `org.ai.manage`, while `llm.auto-fix` is active; the address itself says when it is not.
+   */
+  protected readonly autoFix = computed(
+    () => this.info.features().includes(AUTO_FIX_FEATURE) && this.org.can('org.ai.manage'),
+  );
+  /**
    * The organization's entries: members, webhooks, the SCM connections, the automatic fix
    * suggestions (4E-3a §4), the audit log and the compliance reports.
    */
@@ -71,7 +79,7 @@ export class SettingsPage {
       this.org.can('org.members.read') ||
       this.org.can('org.webhooks.manage') ||
       this.org.can('org.scm.manage') ||
-      this.org.can('org.ai.manage') ||
+      this.autoFix() ||
       this.auditLog() ||
       this.compliance(),
   );

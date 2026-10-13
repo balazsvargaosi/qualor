@@ -91,7 +91,7 @@
               >
             </li>
           }
-          @if (org.can('org.ai.manage')) {
+          @if (autoFix()) {
             <li>
               <a
                 routerLink="auto-fix"

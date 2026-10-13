@@ -34,7 +34,7 @@ function setup(options: Setup): FakeServer {
       createdAt: '',
       updatedAt: '',
       permissions: options.projectPermissions,
-      autoFix: { available: true, enabled: true },
+      autoFix: { available: true, enabled: true, organizationEnabled: true },
     },
   });
   TestBed.configureTestingModule({

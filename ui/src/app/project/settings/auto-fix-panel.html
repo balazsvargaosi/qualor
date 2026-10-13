@@ -5,6 +5,12 @@
   <div class="panel-body">
     @if (!available()) {
       <p class="muted">{{ notLicensed }}</p>
+    } @else if (!organizationEnabled()) {
+      <p id="auto-fix-organization-off" class="muted" i18n="@@autoFix.project.organizationOff">
+        The organisation has automatic fix suggestions switched off, so none are posted for this
+        project. An organisation administrator switches them on in
+        <a routerLink="/settings/auto-fix">Settings → Automatic fixes</a>.
+      </p>
     } @else {
       <div role="status">
         @if (announcement(); as message) {

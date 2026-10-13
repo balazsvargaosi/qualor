@@ -107,7 +107,7 @@ const SERVER_PATHS: [string, Field][] = [
 ];
 
 /** A 422 path of an organisation's automatic fix block: its id, then the field. */
-const AUTO_FIX_PATH = /^body\.organizations\.([^.]+)\.autoFix(?:\.(\w+))?/;
+const AUTO_FIX_PATH = /^body\.organizations\.([^.]+)\.autoFix(?:\.(\w+))?$/;
 
 /** llm.md §3.2: at most 100 excluded path globs. */
 const MAX_EXCLUDE_PATHS = 100;
@@ -394,14 +394,18 @@ export class AiSettingsPage {
   /**
    * Whether the organisation's block was edited here: it differs from what was loaded or saved
    * (the default for an organisation the settings did not hold). Only then does a save send it.
+   * The maximum compares as a number ("010" is 10); one that is not a number from 1 to 25 counts
+   * as edited, so the save refuses it.
    */
   private autoFixEdited(id: string): boolean {
     const draft = this.autoFixOf(id);
     const loaded = this.loadedAutoFix[id] ?? draftOf(DEFAULT_AUTO_FIX);
+    const max = parseMaxPerAnalysis(draft.maxPerAnalysis);
     return (
       draft.enabled !== loaded.enabled ||
       draft.minSeverity !== loaded.minSeverity ||
-      draft.maxPerAnalysis.trim() !== loaded.maxPerAnalysis
+      max === null ||
+      max !== Number(loaded.maxPerAnalysis)
     );
   }
 

@@ -32,7 +32,7 @@ function user(who: Who): Me {
   };
 }
 
-function setup(who: Who = 'orgAdmin'): FakeServer {
+function setup(who: Who = 'orgAdmin', features: string[] = ['llm.auto-fix']): FakeServer {
   const server = new FakeServer();
   server.on('GET', '/api/v0/organizations', {
     body: page([
@@ -41,7 +41,7 @@ function setup(who: Who = 'orgAdmin'): FakeServer {
     ]),
   });
   server.on('GET', '/api/v0/system/info', {
-    body: { version: '0.8.0', edition: 'enterprise', features: [], extensions: [] },
+    body: { version: '0.8.0', edition: 'enterprise', features, extensions: [] },
   });
   TestBed.configureTestingModule({
     providers: [provideRouter([{ path: '**', children: [] }]), provideFakeServer(server)],
@@ -220,6 +220,16 @@ describe('AutoFixPage (4E-3a §2, §4)', () => {
     );
   });
 
+  it('says so when there is no organisation to show, instead of loading forever', async () => {
+    const server = setup();
+    server.on('GET', '/api/v0/organizations', { body: page([]) });
+    new FakeAutoFix(server);
+    const { root } = await render();
+    expect(root.textContent).toContain('There is no organization to show');
+    expect(root.querySelector('form')).toBeNull();
+    expect(server.requests.filter((r) => r.path.endsWith('/ai/auto-fix'))).toHaveLength(0);
+  });
+
   it('tells a member who is not an organisation admin, and asks the server nothing', async () => {
     const server = setup('member');
     new FakeAutoFix(server);
@@ -232,8 +242,8 @@ describe('AutoFixPage (4E-3a §2, §4)', () => {
 });
 
 describe('SettingsPage: Automatic fixes (4E-3a §4)', () => {
-  async function labels(who: Who): Promise<(string | undefined)[]> {
-    setup(who);
+  async function labels(who: Who, features?: string[]): Promise<(string | undefined)[]> {
+    setup(who, features);
     const fixture = TestBed.createComponent(SettingsPage);
     await settle(fixture);
     const root = fixture.nativeElement as HTMLElement;
@@ -244,5 +254,9 @@ describe('SettingsPage: Automatic fixes (4E-3a §4)', () => {
     expect(await labels('orgAdmin')).toContain('Automatic fixes');
     TestBed.resetTestingModule();
     expect(await labels('member')).not.toContain('Automatic fixes');
+  });
+
+  it('hides it without llm.auto-fix (ruling R7); the address still shows the Enterprise note', async () => {
+    expect(await labels('orgAdmin', [])).not.toContain('Automatic fixes');
   });
 });

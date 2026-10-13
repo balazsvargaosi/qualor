@@ -32,7 +32,7 @@ export function isAutoFixSeverity(value: string): value is AutoFixSeverity {
 /** The typed maximum per analysis as a whole number from 1 to 25, or null. */
 export function parseMaxPerAnalysis(raw: string): number | null {
   const value = raw.trim();
-  if (!/^\d{1,2}$/.test(value)) return null;
+  if (!/^\d{1,3}$/.test(value)) return null;
   const n = Number(value);
   return n >= 1 && n <= MAX_AUTO_FIX_PER_ANALYSIS ? n : null;
 }

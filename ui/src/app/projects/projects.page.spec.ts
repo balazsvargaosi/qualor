@@ -34,7 +34,7 @@ function project(id: string, name: string, overrides: Partial<Project> = {}): Pr
       measures: { issues: 9, coverage: 65.74, duplicated_lines_density: 1.25, ncloc: 12345 },
     },
     permissions: ['project.read'],
-    autoFix: { available: false, enabled: true },
+    autoFix: { available: false, enabled: true, organizationEnabled: false },
     ...overrides,
   };
 }

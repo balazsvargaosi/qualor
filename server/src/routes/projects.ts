@@ -47,14 +47,14 @@ import {
   tokenSchema,
 } from '../http/schemas';
 import type { Limits } from '../limits';
-import { projectAutoFixEnabled } from '../llm/auto-fix-settings';
+import { organizationAutoFixEnabled, projectAutoFixEnabled } from '../llm/auto-fix-settings';
 import { readLlmSettings } from '../llm/settings';
 import { headlineMeasures } from '../measures/read';
 import { containsPattern } from '../issues/query';
 import { PROJECT_KEY_PATTERN } from '../patterns';
 import { projectForUser, type ProjectRow } from '../projects/access';
 import { forgetForeignMergeRequestUrls } from '../scm/connections';
-import { autoFixStateSchema } from './auto-fix';
+import { projectAutoFixSchema } from './auto-fix';
 import { projectRefProblem, scmProjectRef } from './scm-connections';
 
 export const newCodeDefinitionSchema = z.discriminatedUnion('type', [
@@ -91,10 +91,10 @@ export const projectSchema = z.object({
   /** rbac-audit.md §16: the caller's effective permissions on the project (the UI hides the rest). */
   permissions: z.array(z.enum(PROJECT_PERMISSIONS)),
   /**
-   * 4E-3a §2: whether automatic fix suggestions are available (the enterprise feature llm.auto-fix)
-   * and the project is not opted out of them.
+   * 4E-3a §2, §4: whether automatic fix suggestions are available (the enterprise feature
+   * llm.auto-fix), the project is not opted out of them, and the organisation has them on.
    */
-  autoFix: autoFixStateSchema,
+  autoFix: projectAutoFixSchema,
 });
 export type ProjectDto = z.infer<typeof projectSchema>;
 
@@ -215,7 +215,11 @@ export async function projectDtos(
           }),
         ),
       ].sort(),
-      autoFix: { available: autoFixAvailable, enabled: projectAutoFixEnabled(llmSettings, p) },
+      autoFix: {
+        available: autoFixAvailable,
+        enabled: projectAutoFixEnabled(llmSettings, p),
+        organizationEnabled: organizationAutoFixEnabled(llmSettings, p.organizationId),
+      },
     };
   });
 }

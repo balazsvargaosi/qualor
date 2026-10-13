@@ -136,6 +136,8 @@ test('the Business plan shows the Enterprise note for automatic fix suggestions'
     'Automatic fix suggestions need the Enterprise plan.',
   );
   await expect(page.getByLabel('Post fix suggestions automatically')).toHaveCount(0);
+  // Ruling R7: no Settings entry without the feature; the address above still says why.
+  await expect(page.getByRole('link', { name: 'Automatic fixes' })).toHaveCount(0);
   await expectAccessible(page);
 
   await page.goto('/settings/ai');

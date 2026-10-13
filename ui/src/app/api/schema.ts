@@ -1703,6 +1703,7 @@ export interface paths {
                                 autoFix: {
                                     available: boolean;
                                     enabled: boolean;
+                                    organizationEnabled: boolean;
                                 };
                             }[];
                             nextCursor: string | null;
@@ -1808,6 +1809,7 @@ export interface paths {
                             autoFix: {
                                 available: boolean;
                                 enabled: boolean;
+                                organizationEnabled: boolean;
                             };
                         };
                     };
@@ -1933,6 +1935,7 @@ export interface paths {
                             autoFix: {
                                 available: boolean;
                                 enabled: boolean;
+                                organizationEnabled: boolean;
                             };
                         };
                     };
@@ -2051,6 +2054,7 @@ export interface paths {
                             autoFix: {
                                 available: boolean;
                                 enabled: boolean;
+                                organizationEnabled: boolean;
                             };
                         };
                     };
@@ -2249,6 +2253,7 @@ export interface paths {
                             autoFix: {
                                 available: boolean;
                                 enabled: boolean;
+                                organizationEnabled: boolean;
                             };
                         };
                     };

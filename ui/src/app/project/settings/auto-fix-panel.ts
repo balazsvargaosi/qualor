@@ -1,4 +1,5 @@
 import { Component, computed, inject, input, linkedSignal, output, signal } from '@angular/core';
+import { RouterLink } from '@angular/router';
 import { Api, ok } from '../../api/api';
 import { ApiError, problemMessage } from '../../api/errors';
 import { autoFixNotLicensed } from '../../settings/auto-fix';
@@ -7,12 +8,14 @@ import type { ProjectDto } from '../current-project';
 
 /**
  * Project → Settings → Automatic fix suggestions (4E-3a §2, §4), for `project.settings`: opts the
- * project out of its organisation's automatic fix suggestions, or back in. Shown with its switch
- * while the enterprise feature `llm.auto-fix` is active (`autoFix.available`), else with the
- * Enterprise note. `saved` tells the page to read the project again.
+ * project out of its organisation's automatic fix suggestions, or back in. Three ways: without the
+ * enterprise feature `llm.auto-fix` (`autoFix.available`) the Enterprise note; while the
+ * organisation has them off (`autoFix.organizationEnabled`) an explanation pointing to Settings →
+ * Automatic fixes; else the switch. `saved` tells the page to read the project again.
  */
 @Component({
   selector: 'q-auto-fix-panel',
+  imports: [RouterLink],
   templateUrl: './auto-fix-panel.html',
   styleUrl: './auto-fix-panel.css',
 })
@@ -22,6 +25,9 @@ export class AutoFixPanel {
   readonly saved = output();
 
   protected readonly available = computed(() => this.project().autoFix.available);
+  protected readonly organizationEnabled = computed(
+    () => this.project().autoFix.organizationEnabled,
+  );
   /** The saved choice: a primitive, so reading the project again unchanged keeps the field. */
   private readonly stored = computed(() => this.project().autoFix.enabled);
   protected readonly enabled = linkedSignal(() => this.stored());

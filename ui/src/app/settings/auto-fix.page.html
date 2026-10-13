@@ -8,7 +8,13 @@
     </p>
   </div>
 </div>
-@if (org.current() && !allowed()) {
+@if (org.organizations.error()) {
+  <p class="alert alert-error" role="alert" i18n="@@autoFix.organizationsFailed">
+    The organizations could not be loaded.
+  </p>
+} @else if (!org.current() && !org.organizations.isLoading()) {
+  <p class="muted" i18n="@@autoFix.noOrganization">There is no organization to show.</p>
+} @else if (org.current() && !allowed()) {
   <p class="muted" i18n="@@autoFix.adminsOnly">
     Only organisation administrators change the automatic fix suggestions.
   </p>

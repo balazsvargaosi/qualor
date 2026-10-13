@@ -35,6 +35,18 @@ export const autoFixStateSchema = z.object({
   enabled: z.boolean(),
 });
 
+/**
+ * The project DTO's `autoFix` (4E-3a §4): the state, and whether the organisation has them on, so
+ * the project settings can explain an opt-out that would change nothing.
+ */
+export const projectAutoFixSchema = autoFixStateSchema.extend({
+  /**
+   * The organisation has them on: the assistant configured, the organisation enabled with fix
+   * suggestions, and its automatic fix suggestions switched on.
+   */
+  organizationEnabled: z.boolean(),
+});
+
 const organizationAutoFixSchema = autoFixSettingsSchema.extend({ available: z.boolean() });
 
 const notLicensed = (): ProblemError =>

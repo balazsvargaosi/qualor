@@ -58,6 +58,20 @@ export function fixSuggestionsEnabled(
   return settings.provider !== null && org.enabled && org.features.fix;
 }
 
+/**
+ * 4E-3a §4: the organisation-level part of the effective rule: the assistant configured, the
+ * organisation enabled with fix suggestions, and its automatic fix suggestions switched on.
+ */
+export function organizationAutoFixEnabled(
+  settings: StoredLlmSettings,
+  organizationId: string,
+): boolean {
+  return (
+    fixSuggestionsEnabled(settings, organizationId) &&
+    organizationSettings(settings, organizationId).autoFix.enabled
+  );
+}
+
 /** The project is not opted out of its organisation's automatic fix suggestions. */
 export function projectAutoFixEnabled(
   settings: StoredLlmSettings,

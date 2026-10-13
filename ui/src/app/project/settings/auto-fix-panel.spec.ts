@@ -1,4 +1,5 @@
 import { TestBed } from '@angular/core/testing';
+import { provideRouter } from '@angular/router';
 import {
   FakeAutoFix,
   FakeServer,
@@ -27,11 +28,15 @@ function project(autoFix: ProjectDto['autoFix']): ProjectDto {
 
 function setup(): FakeServer {
   const server = new FakeServer();
-  TestBed.configureTestingModule({ providers: [provideFakeServer(server)] });
+  TestBed.configureTestingModule({
+    providers: [provideRouter([{ path: '**', children: [] }]), provideFakeServer(server)],
+  });
   return server;
 }
 
-async function render(autoFix: ProjectDto['autoFix'] = { available: true, enabled: true }) {
+async function render(
+  autoFix: ProjectDto['autoFix'] = { available: true, enabled: true, organizationEnabled: true },
+) {
   const fixture = TestBed.createComponent(AutoFixPanel);
   fixture.componentRef.setInput('project', project(autoFix));
   const saved = vi.fn();
@@ -83,7 +88,11 @@ describe('AutoFixPanel (4E-3a §2, §4)', () => {
   it('opts a project back in', async () => {
     const server = setup();
     new FakeAutoFix(server);
-    const { fixture, root } = await render({ available: true, enabled: false });
+    const { fixture, root } = await render({
+      available: true,
+      enabled: false,
+      organizationEnabled: true,
+    });
     expect(toggle(root).checked).toBe(false);
     toggle(root).click();
     await settle(fixture);
@@ -97,9 +106,22 @@ describe('AutoFixPanel (4E-3a §2, §4)', () => {
 
   it('explains instead of a switch without the licence, and asks the server nothing', async () => {
     const server = setup();
-    const { root } = await render({ available: false, enabled: true });
+    const { root } = await render({ available: false, enabled: true, organizationEnabled: false });
     expect(root.querySelector('#auto-fix-project')).toBeNull();
     expect(root.textContent).toContain('Automatic fix suggestions need the Enterprise plan.');
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it('explains instead of a switch while the organisation has them off, pointing to its settings', async () => {
+    const server = setup();
+    const { root } = await render({ available: true, enabled: false, organizationEnabled: false });
+    expect(root.querySelector('#auto-fix-project')).toBeNull();
+    const note = root.querySelector('#auto-fix-organization-off')!;
+    expect(note.textContent).toContain(
+      'The organisation has automatic fix suggestions switched off, so none are posted for this project.',
+    );
+    expect(note.querySelector('a')?.getAttribute('href')).toBe('/settings/auto-fix');
+    expect(note.querySelector('a')?.textContent?.trim()).toBe('Settings → Automatic fixes');
     expect(server.requests).toHaveLength(0);
   });
 

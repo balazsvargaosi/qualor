@@ -483,10 +483,7 @@ describe('SettingsPage navigation for members and enterprise entries (rbac-audit
     await settle(admin);
     expect(groups(admin.nativeElement as HTMLElement)).toEqual([
       { title: 'Your account', links: ['Access tokens'] },
-      {
-        title: 'Organization',
-        links: ['Members', 'Webhooks', 'GitLab', 'GitHub', 'Repositories', 'Automatic fixes'],
-      },
+      { title: 'Organization', links: ['Members', 'Webhooks', 'GitLab', 'GitHub', 'Repositories'] },
     ]);
     TestBed.resetTestingModule();
     setup({ role: 'member' });

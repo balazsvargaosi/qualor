@@ -730,6 +730,36 @@ describe('AiSettingsPage: automatic fix suggestions (4E-3a §4)', () => {
     expect(put(server)?.organizations[OTHER_ID]).not.toHaveProperty('autoFix');
   });
 
+  it('counts the maximum as a number: 010 for a stored 10 is no edit', async () => {
+    const server = setup(TWO_ORGS);
+    withTwoOrgs(server);
+    server.on('PUT', '/api/v0/system/llm', { body: TWO_ORGS });
+    const { fixture, root } = await render();
+    type(root, `#ai-org-${ORG_ID}-auto-fix-max`, '010');
+    submit(root);
+    await settle(fixture);
+    expect(put(server)?.organizations[ORG_ID]).not.toHaveProperty('autoFix');
+  });
+
+  it("leaves a refused opt-out list alone: it is not the organisation's block", async () => {
+    const server = setup(TWO_ORGS);
+    withTwoOrgs(server);
+    server.on('PUT', '/api/v0/system/llm', {
+      status: 422,
+      body: problem(422, 'VALIDATION_FAILED', [
+        {
+          path: `body.organizations.${ORG_ID}.autoFixDisabledProjectIds.0`,
+          message: 'Not a project of this organisation',
+        },
+      ]),
+    });
+    const { fixture, root } = await render();
+    submit(root);
+    await settle(fixture);
+    expect(root.querySelector(`#ai-org-${ORG_ID}-auto-fix-error`)).toBeNull();
+    expect(root.querySelector('.alert-error')).not.toBeNull();
+  });
+
   it('sends an organisation absent from the settings once its block is edited', async () => {
     const server = setup({ ...CONFIGURED, organizations: {} });
     server.on('PUT', '/api/v0/system/llm', { body: CONFIGURED });
