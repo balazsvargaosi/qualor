@@ -124,6 +124,10 @@ All notable changes to Qualor are listed here, newest first. The format follows
   instance admins a dismissible banner and a note in the user menu, and `GET /api/v0/system/version`
   returns it as `latest`, which `qualor scan` logs. `QUALOR_TELEMETRY=false` turns it off. See
   [Telemetry](docs/guide/telemetry.md#update-check).
+- Qualor's security rules cover C# (ASP.NET Core): 12 rules for SQL, command, LDAP, XPath and
+  regular expression injection, path traversal, SSRF, XSS, open redirects, unsafe deserialization,
+  XML external entities and disabled TLS verification. They need this Qualor version: Qualor 0.7.1 and older
+  refuses a rules pack that holds C# rules (its images pin their own pack and are unaffected).
 
 ## [0.7.1] - 2026-10-12
 

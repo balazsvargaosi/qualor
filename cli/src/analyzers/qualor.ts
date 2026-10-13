@@ -262,7 +262,7 @@ export function createQualorAnalyzer(
       .filter((f) => QUALOR_LANGUAGES.includes(f.language))
       .map((f) => path.relative(ctx.root, f.absPath).split(path.sep).join('/'));
     if (files.length === 0) {
-      return { skip: 'no JavaScript, TypeScript, Python, Java or Go files in scope' };
+      return { skip: 'no JavaScript, TypeScript, Python, Java, Go or C# files in scope' };
     }
     // Plan 6B-1: only the OpenGrep the pack is tested with, never Semgrep.
     const opengrep = ctx.resolveBinary('opengrep');

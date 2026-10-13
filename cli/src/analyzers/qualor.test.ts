@@ -216,7 +216,7 @@ describe('qualorAnalyzer.prepare (config.md §6, plan 6B-1)', () => {
     const analyzer = createQualorAnalyzer({ defaultDir: writePack(tmp()) });
     const files = [scopeFile(root, 'README.md', 'other'), scopeFile(root, 'a.kt', 'kotlin')];
     expect(await analyzer.prepare(context(root, { files }))).toEqual({
-      skip: 'no JavaScript, TypeScript, Python, Java or Go files in scope',
+      skip: 'no JavaScript, TypeScript, Python, Java, Go or C# files in scope',
     });
     expect(
       await analyzer.prepare(context(root, { binaries: { semgrep: '/usr/bin/semgrep' } })),

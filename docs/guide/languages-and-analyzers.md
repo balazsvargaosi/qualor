@@ -806,6 +806,31 @@ rules apply to both):
 | `qualor:go/weak-hash` (hotspot) | MD5 or SHA-1 | `crypto/md5`, `crypto/sha1`, `crypto` |
 | `qualor:go/insecure-cookie` (hotspot) | a cookie set without `Secure` or `HttpOnly` | `net/http`, Gin, Echo |
 
+**C#:**
+
+| Rule | Finds | Frameworks and libraries |
+|---|---|---|
+| `qualor:csharp/sql-injection` | SQL built from request data | ASP.NET Core (controllers, Minimal APIs, Razor Pages); ADO.NET, Dapper, Entity Framework Core |
+| `qualor:csharp/command-injection` | a program, its arguments or a shell script built from request data | ASP.NET Core; `System.Diagnostics.Process` |
+| `qualor:csharp/path-traversal` | a file path built from request data | ASP.NET Core; `System.IO` |
+| `qualor:csharp/ssrf` | a server-side request whose URL, scheme or host comes from the request | ASP.NET Core; `HttpClient`, `WebClient`, `WebRequest` |
+| `qualor:csharp/xss` | request data written into an HTML response without encoding | ASP.NET Core |
+| `qualor:csharp/open-redirect` | a redirect whose target comes from the request | ASP.NET Core |
+| `qualor:csharp/ldap-injection` | an LDAP search filter built from request data | ASP.NET Core; `System.DirectoryServices` |
+| `qualor:csharp/xpath-injection` | an XPath expression built from request data | ASP.NET Core; `System.Xml.XPath` |
+| `qualor:csharp/regex-injection` | a regular expression built from request data (ReDoS) | ASP.NET Core; `System.Text.RegularExpressions` |
+| `qualor:csharp/unsafe-deserialization` | request data read with a deserializer that can create arbitrary types | ASP.NET Core; `BinaryFormatter`, `NetDataContractSerializer`, `LosFormatter`, Json.NET with type names |
+| `qualor:csharp/xxe` | an XML parser used with DTD processing or an external resolver | `System.Xml` (`XmlDocument`, `XmlTextReader`, `XmlReader`), `XDocument` |
+| `qualor:csharp/tls-verification-disabled` | a certificate or host name validation callback that accepts anything | `HttpClientHandler`, `SslStream`, `ServicePointManager` |
+
+Limits of the C# rules:
+
+- Razor views (`.cshtml`, `.razor`) are not analysed.
+- Flows are followed within one file, not across files.
+- OpenGrep 1.30 does not parse C# 12 body-less type declarations and some collection
+  expressions, so parts of such files are skipped.
+- Data does not flow out of expression-bodied members or property getters.
+
 Each finding's message says why the code is unsafe and how to fix it. Each rule also has its own
 page in the qualor-rules repository, under `docs/rules/<lang>/<name>.md` (for
 `qualor:go/sql-injection`,

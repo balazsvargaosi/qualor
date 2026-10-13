@@ -101,6 +101,17 @@ describe('qualorManifestSchema (plan 6B-1)', () => {
     for (const m of bad) {
       expect(qualorManifestSchema.safeParse(m).success, JSON.stringify(m)).toBe(false);
     }
+    // A pack of a language this CLI does not know (as Qualor 0.7.x sees a pack with C# rules)
+    // is refused as a whole, never half-loaded.
+    expect(
+      qualorManifestSchema.safeParse(
+        manifest({
+          rules: [
+            entry({ id: 'kotlin/sql-injection', path: 'rules/kotlin/sql/sql-injection.yml' }),
+          ],
+        }),
+      ).success,
+    ).toBe(false);
   });
 });
 
