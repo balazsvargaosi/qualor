@@ -7,6 +7,7 @@ import { gateHandlers } from '../src/gates/reevaluate';
 import { jobHandlers } from '../src/ingest/handlers';
 import { ANALYSIS_QUEUE } from '../src/ingest/service';
 import type { IngestionStage } from '../src/ingest/process';
+import type { Edition } from '../src/license/edition';
 import { communityLimits, type Limits } from '../src/limits';
 import { runUntilIdle } from '../src/queue/worker';
 import {
@@ -53,6 +54,8 @@ export async function createIngestHarness(
   options: {
     config?: Partial<Config>;
     limits?: Limits;
+    /** A run-time edition, as createTestContext takes it; takes precedence over `limits`. */
+    edition?: Edition;
     beforeReady?: (app: FastifyInstance) => void;
     /** Plugins and an edition (test/rbac.ts `rbacPlugins`), as createTestContext takes them. */
     pluginsFor?: NonNullable<Parameters<typeof createTestContext>[0]>['pluginsFor'];

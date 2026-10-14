@@ -82,6 +82,23 @@ function dependencyFilter(branchId: string, f: DependencyFilter): SQL | undefine
   );
 }
 
+function selectRows(db: Executor, where: SQL | undefined) {
+  const d = branchDependencies;
+  return db
+    .select({
+      ecosystem: d.ecosystem,
+      path: d.path,
+      line: d.line,
+      name: d.name,
+      version: d.version,
+      licenses: d.licenses,
+      direct: d.direct,
+    })
+    .from(d)
+    .where(where)
+    .orderBy(asc(d.name), asc(d.version), asc(d.path), asc(d.ecosystem));
+}
+
 /** One page of a branch's inventory, by name, version, lockfile and ecosystem, and the filtered total. */
 export async function listDependencies(
   db: Executor,
@@ -92,19 +109,7 @@ export async function listDependencies(
   const d = branchDependencies;
   const where = dependencyFilter(branchId, filter);
   const [rows, [count]] = await Promise.all([
-    db
-      .select({
-        ecosystem: d.ecosystem,
-        path: d.path,
-        line: d.line,
-        name: d.name,
-        version: d.version,
-        licenses: d.licenses,
-        direct: d.direct,
-      })
-      .from(d)
-      .where(where)
-      .orderBy(asc(d.name), asc(d.version), asc(d.path), asc(d.ecosystem))
+    selectRows(db, where)
       .limit(page.pageSize)
       .offset((page.page - 1) * page.pageSize),
     db
@@ -113,6 +118,18 @@ export async function listDependencies(
       .where(where),
   ]);
   return { rows, total: count?.total ?? 0 };
+}
+
+/**
+ * Every entry of a branch's inventory that matches `filter`, in the list's order: for a filter
+ * SQL cannot apply (the licence policy's verdict). A snapshot holds at most 50 000 entries.
+ */
+export async function listAllDependencies(
+  db: Executor,
+  branchId: string,
+  filter: DependencyFilter,
+): Promise<DependencyRow[]> {
+  return selectRows(db, dependencyFilter(branchId, filter));
 }
 
 /** The whole inventory of a branch at a glance; filters do not apply. */

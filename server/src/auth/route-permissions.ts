@@ -41,6 +41,8 @@ export const ROUTE_PERMISSIONS: Readonly<Record<string, RouteRule>> = Object.fre
   'GET /organizations/:id/ai': 'org.read',
   'GET /organizations/:id/ai/auto-fix': 'org.ai.manage',
   'PUT /organizations/:id/ai/auto-fix': 'org.ai.manage',
+  'GET /organizations/:id/license-policy': 'org.read',
+  'PUT /organizations/:id/license-policy': 'org.licenses.manage',
   'GET /projects': 'list:project.read',
   'POST /projects': 'org.projects.create',
   'GET /projects/by-key': 'project.read',

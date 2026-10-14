@@ -66,4 +66,9 @@ export const LOCKS = {
   scimSync: 7_310_019,
   /** `pg_advisory_xact_lock(key)`: one writer of the telemetry schedule at a time (telemetry.md). */
   telemetry: 7_310_020,
+  /**
+   * `pg_advisory_xact_lock(key)`: one writer of the `licensePolicy` settings row at a time (6M §4).
+   * 7_310_021–023 are reserved for the mail settings and schedules.
+   */
+  licensePolicy: 7_310_024,
 } as const;

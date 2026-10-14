@@ -1,10 +1,12 @@
 import { and, eq } from 'drizzle-orm';
-import type { DependencyEntry, Report } from '@qualor/shared';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { DependencyEntry, LicensePolicy, Report } from '@qualor/shared';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { addMember, createUser, login, type Session } from '../../test/app';
 import { createIngestHarness, type IngestHarness, type IngestProject } from '../../test/ingest';
 import { engine, file, finding, reportWith, type ReportParts } from '../../test/reports';
-import { branches } from '../db/schema';
+import { branches, instanceSettings } from '../db/schema';
+import { fixedEdition } from '../license/edition';
+import { LICENSE_POLICY_SETTINGS_KEY, writeLicensePolicy } from '../licenses/settings';
 
 /** 6M §8: the community dependency inventory API, `GET /projects/{id}/dependencies`. */
 describe('GET /projects/{id}/dependencies (6M)', () => {
@@ -78,7 +80,13 @@ describe('GET /projects/{id}/dependencies (6M)', () => {
     const res = await get(url(p));
     expect(res.statusCode, res.body).toBe(200);
     const body = res.json();
-    expect(body).toMatchObject({ page: 1, pageSize: 50, total: 7, inventory: true });
+    expect(body).toMatchObject({
+      page: 1,
+      pageSize: 50,
+      total: 7,
+      inventory: true,
+      verdicts: false,
+    });
     expect(body.rows.map((r: { name: string }) => r.name)).toEqual([
       'agpl-db',
       'apache-lib',
@@ -192,6 +200,7 @@ describe('GET /projects/{id}/dependencies (6M)', () => {
       total: 0,
       summary: { total: 0, known: 0, unknown: 0, byLicense: [] },
       inventory: false,
+      verdicts: false,
     };
     // No analysis yet: there is no main branch row.
     expect((await get(url(fresh))).json()).toEqual(empty);
@@ -274,5 +283,152 @@ describe('the licensing quality (6M)', () => {
     expect(rules.json().items.map((r: { key: string }) => r.key)).toEqual([
       'acme-licenses:forbidden',
     ]);
+  });
+});
+
+/**
+ * 6M §8: with `limits.licenses.policy` on and a policy for the project's organisation, every row
+ * carries the policy's verdict, and `verdict` filters by it.
+ */
+describe('GET /projects/{id}/dependencies with a licence policy (6M)', () => {
+  let h: IngestHarness;
+  let p: IngestProject;
+  let licensed = true;
+  const STRONG: LicensePolicy = {
+    mode: 'denylist',
+    forbiddenGroups: ['strong-copyleft'],
+    forbidden: [],
+    allowed: [],
+    warnUnknown: false,
+  };
+  const dep = (name: string, licenses: string[], ecosystem = 'npm'): DependencyEntry => ({
+    ecosystem,
+    path: ecosystem === 'npm' ? 'package-lock.json' : 'pom.xml',
+    name,
+    version: '1.0.0',
+    licenses,
+  });
+  const get = async (query = '') => {
+    const res = await h.ctx.app.inject({
+      method: 'GET',
+      url: `/api/v0/projects/${p.id}/dependencies${query === '' ? '' : `?${query}`}`,
+      headers: h.orgAdmin.headers,
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    return res.json() as {
+      rows: { name: string; verdict?: string }[];
+      total: number;
+      verdicts: boolean;
+    };
+  };
+  const verdicts = async (query = '') =>
+    Object.fromEntries((await get(query)).rows.map((r) => [r.name, r.verdict]));
+  const setPolicy = (policy: LicensePolicy | null) =>
+    h.ctx.db.transaction((tx) => writeLicensePolicy(tx, h.organizationId, policy));
+
+  beforeAll(async () => {
+    const base = fixedEdition();
+    h = await createIngestHarness({
+      edition: {
+        ...base,
+        limits: () => ({ ...base.limits(), licenses: { policy: licensed } }),
+      },
+    });
+    p = await h.project('deps/policy');
+    await p.ingestOk(
+      reportWith({
+        projectKey: p.key,
+        dependencies: [
+          dep('a-gpl', ['GPL-3.0-only']),
+          dep('b-dual', ['MIT OR GPL-3.0-only']),
+          dep('c-mit', ['MIT']),
+          dep('d-none', []),
+          dep('e-lgpl', ['LGPL-2.1-only', 'MIT'], 'maven'),
+          dep('f-gpl2', ['GPL-2.0+'], 'maven'),
+          dep('g-custom', ['Some custom licence']),
+        ],
+      }),
+    );
+  });
+  afterAll(async () => {
+    await h.close();
+  });
+  beforeEach(async () => {
+    licensed = true;
+    await h.ctx.db
+      .delete(instanceSettings)
+      .where(eq(instanceSettings.key, LICENSE_POLICY_SETTINGS_KEY));
+  });
+
+  it('carries no verdict without a policy, and ignores the verdict filter', async () => {
+    const all = await get();
+    expect(all.verdicts).toBe(false);
+    expect(all.rows.every((r) => !('verdict' in r))).toBe(true);
+    expect((await get('verdict=forbidden')).total).toBe(7);
+  });
+
+  it('carries no verdict without the seam, even with a stored policy', async () => {
+    await setPolicy(STRONG);
+    licensed = false;
+    const all = await get('verdict=forbidden');
+    expect(all).toMatchObject({ total: 7, verdicts: false });
+    expect(all.rows.every((r) => !('verdict' in r))).toBe(true);
+  });
+
+  it('ignores the policy of another organisation', async () => {
+    await h.ctx.db.insert(instanceSettings).values({
+      key: LICENSE_POLICY_SETTINGS_KEY,
+      value: { organizations: { '0190a6c2-0000-7000-8000-00000000beef': STRONG } },
+    });
+    expect((await get()).verdicts).toBe(false);
+  });
+
+  it('judges every row by the organisation policy', async () => {
+    await setPolicy(STRONG);
+    expect((await get()).verdicts).toBe(true);
+    expect(await verdicts()).toEqual({
+      'a-gpl': 'forbidden',
+      'b-dual': 'allowed',
+      'c-mit': 'allowed',
+      'd-none': 'unknown',
+      'e-lgpl': 'allowed',
+      'f-gpl2': 'forbidden',
+      'g-custom': 'unknown',
+    });
+    await setPolicy({ ...STRONG, forbiddenGroups: ['weak-copyleft'] });
+    expect(await verdicts('ecosystem=maven')).toEqual({
+      'e-lgpl': 'forbidden',
+      'f-gpl2': 'allowed',
+    });
+  });
+
+  it('filters by verdict before paging, with the other filters', async () => {
+    await setPolicy(STRONG);
+    const forbidden = await get('verdict=forbidden');
+    expect(forbidden).toMatchObject({ total: 2, verdicts: true });
+    expect(forbidden.rows.map((r) => r.name)).toEqual(['a-gpl', 'f-gpl2']);
+    expect(Object.keys(await verdicts('verdict=unknown'))).toEqual(['d-none', 'g-custom']);
+
+    const allowed = await get('verdict=allowed&pageSize=2&page=2');
+    expect(allowed.total).toBe(3);
+    expect(allowed.rows.map((r) => [r.name, r.verdict])).toEqual([['e-lgpl', 'allowed']]);
+    expect((await get('verdict=allowed&pageSize=2&page=3')).rows).toEqual([]);
+    expect((await get('verdict=allowed&pageSize=2')).rows.map((r) => r.name)).toEqual([
+      'b-dual',
+      'c-mit',
+    ]);
+
+    const maven = await get('verdict=forbidden&ecosystem=maven');
+    expect(maven.rows.map((r) => r.name)).toEqual(['f-gpl2']);
+    expect(maven.total).toBe(1);
+  });
+
+  it('validates the verdict (422)', async () => {
+    const res = await h.ctx.app.inject({
+      method: 'GET',
+      url: `/api/v0/projects/${p.id}/dependencies?verdict=bad`,
+      headers: h.orgAdmin.headers,
+    });
+    expect(res.statusCode).toBe(422);
   });
 });

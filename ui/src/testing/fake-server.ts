@@ -105,6 +105,7 @@ export const ORG_ADMIN_PERMISSIONS = [
   'org.ai.manage',
   'org.audit.read',
   'org.gates.manage',
+  'org.licenses.manage',
   'org.members.manage',
   'org.members.read',
   'org.profiles.manage',

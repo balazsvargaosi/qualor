@@ -15,6 +15,7 @@ const PROJECT = '00000000-0000-7000-8000-0000000000a1';
 const OTHER_PROJECT = '00000000-0000-7000-8000-0000000000a2';
 
 const LICENSED: Limits = {
+  ...communityLimits(),
   llm: { ...communityLimits().llm, automaticFixSuggestions: true },
 };
 

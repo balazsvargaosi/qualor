@@ -93,6 +93,18 @@ describe('StagedPlugin (ruling EE4)', () => {
         ctx.ui('fixture.echo', { point: 'settings.nav', id: 'x', label: 'X', path: '/admin' }),
     ],
     [
+      'a non-boolean licenses.policy',
+      (ctx) => ctx.limits('fixture.echo', { licenses: { policy: 'yes' } } as never),
+    ],
+    [
+      'an unknown licenses limit',
+      (ctx) => ctx.limits('fixture.echo', { licenses: { inventory: true } } as never),
+    ],
+    [
+      'licenses that is not an object',
+      (ctx) => ctx.limits('fixture.echo', { licenses: 5 } as never),
+    ],
+    [
       'a limit other than llm (the retired organisation limit)',
       (ctx) => ctx.limits('fixture.echo', { organizations: 99 } as never),
     ],
@@ -181,6 +193,20 @@ describe('StagedPlugin (ruling EE4)', () => {
     expect(Object.getOwnPropertyDescriptor(stored.llm, 'maxFixPerOrganizationPerDay')).toEqual(
       expect.objectContaining({ value: 500, writable: false }),
     );
+  });
+
+  it('keeps a licenses.policy override (6M license-policy)', () => {
+    const registry = emptyRegistry();
+    const staged = new StagedPlugin(plugin(), registry);
+    const ctx = staged.context(base, registry);
+    ctx.limits('fixture.echo', { licenses: { policy: true } });
+    ctx.limits('fixture.echo', { llm: { automaticFixSuggestions: true }, licenses: {} });
+    staged.commit(registry);
+    expect(registry.limitOverrides.map((o) => o.override)).toEqual([
+      { licenses: { policy: true } },
+      { llm: { automaticFixSuggestions: true }, licenses: {} },
+    ]);
+    expect(Object.isFrozen(registry.limitOverrides[0]!.override.licenses)).toBe(true);
   });
 
   it('refuses a getter that returns a bad value on its one read', () => {

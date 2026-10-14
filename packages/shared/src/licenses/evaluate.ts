@@ -65,12 +65,23 @@ function evaluateExpr(expr: LicenseExpr, forbidsLeaf: (term: string) => boolean)
 }
 
 export function classify(licenses: readonly string[], policy: LicensePolicy): Classification {
+  return licenseClassifier(policy)(licenses);
+}
+
+/**
+ * `classify` with the policy prepared once (its lists canonicalised into sets), for judging many
+ * dependencies by one policy. Later changes to `policy` do not reach the returned function.
+ */
+export function licenseClassifier(
+  policy: LicensePolicy,
+): (licenses: readonly string[]) => Classification {
+  const mode = policy.mode;
   const allowed = new Set(policy.allowed.map(canonicalTerm));
   const forbiddenTerms = new Set(policy.forbidden.map(canonicalTerm));
   const groups = new Set<LicenseGroupId>(policy.forbiddenGroups);
 
   const forbidsLeaf =
-    policy.mode === 'allowlist'
+    mode === 'allowlist'
       ? (term: string): boolean => {
           const base = splitTerm(term).id;
           return !(allowed.has(term) || allowed.has(base));
@@ -88,6 +99,14 @@ export function classify(licenses: readonly string[], policy: LicensePolicy): Cl
           return group !== null && groups.has(group);
         };
 
+  return (licenses) => judge(licenses, mode, forbidsLeaf);
+}
+
+function judge(
+  licenses: readonly string[],
+  mode: LicensePolicy['mode'],
+  forbidsLeaf: (term: string) => boolean,
+): Classification {
   let forbidden = false;
   let allUnrecognised = true;
   let parsed = 0;
@@ -102,7 +121,7 @@ export function classify(licenses: readonly string[], policy: LicensePolicy): Cl
     if (expr === null) {
       // Text that is not an expression is one unrecognised term and is never taken apart: no rule
       // or group applies to it, so a denylist lets it through and an allowlist refuses it.
-      const refused = policy.mode === 'allowlist';
+      const refused = mode === 'allowlist';
       node = { forbidden: refused, allUnrecognised: true, culprits: refused ? [text] : [] };
       if (refused) rawCulprits.add(text);
     } else node = evaluateExpr(expr, forbidsLeaf);

@@ -501,7 +501,7 @@ export interface paths {
                                 organizationKey: string;
                                 organizationName: string;
                                 role: ("admin" | "project_admin" | "member" | "viewer") | null;
-                                permissions: ("org.read" | "org.members.read" | "org.members.manage" | "org.projects.create" | "org.gates.manage" | "org.profiles.manage" | "org.webhooks.manage" | "org.scm.manage" | "org.audit.read" | "org.compliance.manage" | "org.ai.manage")[];
+                                permissions: ("org.read" | "org.members.read" | "org.members.manage" | "org.projects.create" | "org.gates.manage" | "org.profiles.manage" | "org.webhooks.manage" | "org.scm.manage" | "org.audit.read" | "org.compliance.manage" | "org.ai.manage" | "org.licenses.manage")[];
                             }[];
                             projectGrants: {
                                 /** Format: uuid */
@@ -3874,6 +3874,8 @@ export interface paths {
                     unknown?: "true" | "false";
                     direct?: "true" | "false";
                     q?: string;
+                    /** @description Entries with this verdict of the organisation's licence policy; ignored (every entry matches) while the answer's `verdicts` is false */
+                    verdict?: "allowed" | "forbidden" | "unknown";
                     page?: number;
                     pageSize?: number;
                 };
@@ -3900,6 +3902,8 @@ export interface paths {
                                 version: string;
                                 licenses: string[];
                                 direct: boolean | null;
+                                /** @enum {string} */
+                                verdict?: "allowed" | "forbidden" | "unknown";
                             }[];
                             page: number;
                             pageSize: number;
@@ -3914,6 +3918,7 @@ export interface paths {
                                 }[];
                             };
                             inventory: boolean;
+                            verdicts: boolean;
                         };
                     };
                 };
@@ -10193,6 +10198,200 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v0/organizations/{id}/license-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The organisation's licence policy (org.read), the licence groups and the SPDX ids it may name; `available` is false without the enterprise feature license-policy */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            available: boolean;
+                            policy: {
+                                /** @enum {string} */
+                                mode: "denylist" | "allowlist";
+                                forbiddenGroups: ("network-copyleft" | "strong-copyleft" | "weak-copyleft" | "non-commercial-or-source-available")[];
+                                forbidden: string[];
+                                allowed: string[];
+                                warnUnknown: boolean;
+                            } | null;
+                            groups: {
+                                /** @enum {string} */
+                                id: "network-copyleft" | "strong-copyleft" | "weak-copyleft" | "non-commercial-or-source-available";
+                                label: string;
+                                description: string;
+                                members: string[];
+                            }[];
+                            spdxIds: {
+                                licenses: string[];
+                                exceptions: string[];
+                            };
+                        };
+                    };
+                };
+                /** @description Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS) */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Authenticated but not allowed (FORBIDDEN, INSUFFICIENT_SCOPE, TOKEN_NOT_ALLOWED, SESSION_REQUIRED, CSRF_FAILED, PASSWORD_CHANGE_REQUIRED) */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Not found, or not visible to the caller */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Validation failed (VALIDATION_FAILED; errors[] names each field) */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        /** Set the organisation's licence policy, or remove it with `policy: null` (org.licenses.manage); the ids are stored in their canonical SPDX spelling, each list sorted */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        policy: {
+                            /** @enum {string} */
+                            mode: "denylist" | "allowlist";
+                            forbiddenGroups: ("network-copyleft" | "strong-copyleft" | "weak-copyleft" | "non-commercial-or-source-available")[];
+                            forbidden: string[];
+                            allowed: string[];
+                            warnUnknown: boolean;
+                        } | null;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            available: boolean;
+                            policy: {
+                                /** @enum {string} */
+                                mode: "denylist" | "allowlist";
+                                forbiddenGroups: ("network-copyleft" | "strong-copyleft" | "weak-copyleft" | "non-commercial-or-source-available")[];
+                                forbidden: string[];
+                                allowed: string[];
+                                warnUnknown: boolean;
+                            } | null;
+                        };
+                    };
+                };
+                /** @description INVALID_LICENSE_ID: an entry of `forbidden` or `allowed` is not an SPDX licence id or "id WITH exception" term; `details.invalid` lists them */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS) */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description FEATURE_NOT_LICENSED (the enterprise feature license-policy is not active), FORBIDDEN or INSUFFICIENT_SCOPE */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Not found, or not visible to the caller */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed while no audit event is stored; an administrator must restore it (a retry does not help) */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Validation failed (VALIDATION_FAILED; errors[] names each field) */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -10208,6 +10407,10 @@ export interface components {
             detail?: string;
             /** @description LICENSE_INVALID: why the key was rejected (malformed, unknown-key, bad-signature, bad-payload, revoked, not-yet-valid). VALIDATION_FAILED of POST /ee/sso/connections/{id}/saml/metadata: what failed (a fetch.<reason> code of the connection Test, or config_invalid, metadata.no_url, metadata.not_saml, metadata.incomplete, metadata.sso_url). Map the code, not the text */
             reason?: string;
+            /** @description INVALID_LICENSE_ID: `invalid` lists the licence policy entries that are not SPDX licence ids or "id WITH exception" terms, as sent */
+            details?: {
+                invalid: string[];
+            };
             errors?: {
                 /** @description <body|query|params|headers>.<dotted path> */
                 path: string;

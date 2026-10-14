@@ -16,10 +16,12 @@ describe('licensed limits (enterprise.md §7.2)', () => {
   it('has no organisation limit: only the LLM limits (enterprise.md §1.3)', () => {
     expect(communityLimits()).toEqual({
       llm: { maxFixPerOrganizationPerDay: 25, automaticFixSuggestions: false },
+      licenses: { policy: false },
     });
-    expect(licensedLimits([])).toEqual({ llm: COMMUNITY_LLM_LIMITS });
+    expect(licensedLimits([])).toEqual({ llm: COMMUNITY_LLM_LIMITS, licenses: { policy: false } });
     expect(licensedLimits([{ llm: { maxFixPerOrganizationPerDay: 100_000 } }])).toEqual({
       llm: { maxFixPerOrganizationPerDay: 100_000, automaticFixSuggestions: false },
+      licenses: { policy: false },
     });
   });
 
@@ -43,6 +45,7 @@ describe('licensed limits (enterprise.md §7.2)', () => {
     ]);
     expect(limits).toEqual({
       llm: { maxFixPerOrganizationPerDay: 100_000, automaticFixSuggestions: false },
+      licenses: { policy: false },
     });
   });
 
@@ -58,5 +61,41 @@ describe('licensed limits (enterprise.md §7.2)', () => {
       maxFixPerOrganizationPerDay: 0,
       automaticFixSuggestions: false,
     });
+  });
+
+  it('turns the licence policy on only with a boolean override (6M)', () => {
+    expect(licensedLimits([{ licenses: { policy: true } }]).licenses).toEqual({ policy: true });
+    // In order: a later boolean wins, anything else is ignored.
+    expect(
+      licensedLimits([
+        { licenses: { policy: true } },
+        { licenses: { policy: 'no' as never } },
+        { licenses: {} },
+      ]).licenses,
+    ).toEqual({ policy: true });
+    expect(
+      licensedLimits([{ licenses: { policy: true } }, { licenses: { policy: false } }]).licenses,
+    ).toEqual({ policy: false });
+    expect(licensedLimits([{ licenses: { policy: 1 as never } }]).licenses).toEqual({
+      policy: false,
+    });
+    // An unknown key is ignored, and the policy limit leaves the LLM limits alone.
+    const limits = licensedLimits([
+      { licenses: { policy: true, inventory: true } as never },
+      { licences: { policy: true } } as never,
+    ]);
+    expect(limits).toEqual({ llm: COMMUNITY_LLM_LIMITS, licenses: { policy: true } });
+  });
+
+  it('reads the policy override once', () => {
+    let reads = 0;
+    const licenses = {
+      get policy(): boolean {
+        reads += 1;
+        return reads === 1;
+      },
+    };
+    expect(licensedLimits([{ licenses }]).licenses.policy).toBe(true);
+    expect(reads).toBe(1);
   });
 });

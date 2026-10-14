@@ -137,13 +137,18 @@ export async function auditScenarioContext(
       }),
       edition: (frozen) => {
         const edition = createEdition({ boot, plugins: frozen, now, verifyOptions });
-        // The fixture plugin has no llm.auto-fix; the seam core reads is switched on here, as the
-        // enterprise plugin does through ctx.limits (enterprise/test covers that path).
+        // The fixture plugin has neither llm.auto-fix nor license-policy; the seams core reads are
+        // switched on here, as the enterprise plugin does through ctx.limits (enterprise/test
+        // covers that path).
         return {
           ...edition,
           limits: () => {
             const limits = edition.limits();
-            return { ...limits, llm: { ...limits.llm, automaticFixSuggestions: true } };
+            return {
+              ...limits,
+              llm: { ...limits.llm, automaticFixSuggestions: true },
+              licenses: { policy: true },
+            };
           },
         };
       },
@@ -534,6 +539,21 @@ export async function runAuditScenario(
   // licensed run enables it, see auditScenarioContext; the community run skips it)
   if (ctx.edition?.limits().llm.automaticFixSuggestions) {
     await call('PUT', `/projects/${main.id}/ai/auto-fix`, 200, { enabled: false });
+  }
+
+  // organization.license_policy_changed: the organisation's licence policy (6M). The route answers
+  // 403 without the licence seam, so only a context whose edition has limits.licenses.policy
+  // drives it (the licensed run, see auditScenarioContext; the community run skips it)
+  if (ctx.edition?.limits().licenses.policy) {
+    await call('PUT', `/organizations/${org}/license-policy`, 200, {
+      policy: {
+        mode: 'denylist',
+        forbiddenGroups: ['network-copyleft'],
+        forbidden: ['SSPL-1.0'],
+        allowed: [],
+        warnUnknown: false,
+      },
+    });
   }
 
   // ai.requested and ai.fix_posted on a merge request of a project mapped to the fake GitLab

@@ -2,7 +2,12 @@ import type { FastifyPluginAsync } from 'fastify';
 import type { Db } from '../db/client';
 import type { EditionPlugins } from '../license/edition';
 import { FEATURE_PATTERN, type LicensePayload } from '../license/token';
-import { ENTERPRISE_MAX_FIX_PER_DAY, type LlmLimits, type PluginLimitOverride } from '../limits';
+import {
+  ENTERPRISE_MAX_FIX_PER_DAY,
+  type LicenseLimits,
+  type LlmLimits,
+  type PluginLimitOverride,
+} from '../limits';
 import { DEFAULT_MAX_ATTEMPTS, enqueue, type EnqueueOptions } from '../queue/queue';
 import {
   PLUGIN_API_VERSION,
@@ -156,14 +161,41 @@ export function validatePlugin(value: unknown): QualorPlugin {
   });
 }
 
-/** enterprise.md §10.5: only these LLM limits, within the spec's bounds, checked at registration. */
+/** 6M §5: `licenses.policy`, a boolean, and nothing else. */
+function validateLicenseOverride(value: unknown): Partial<LicenseLimits> {
+  const raw = snapshot(value, 'licenses');
+  const licenses: Partial<LicenseLimits> = {};
+  for (const key of Object.keys(raw)) {
+    if (key !== 'policy') throw new PluginError(`unknown limit licenses.${key}`);
+    const v = raw[key];
+    if (typeof v !== 'boolean') throw new PluginError('licenses.policy must be a boolean');
+    licenses.policy = v;
+  }
+  return Object.freeze(licenses);
+}
+
+/**
+ * enterprise.md §10.5: only these LLM limits, within the spec's bounds, and the licence policy
+ * (6M), checked at registration.
+ */
 function validateOverride(value: unknown): PluginLimitOverride {
   const override = snapshot(value, 'a limit override');
   for (const key of Object.keys(override)) {
-    if (key !== 'llm') throw new PluginError('a plugin may override only llm limits');
+    if (key !== 'llm' && key !== 'licenses') {
+      throw new PluginError('a plugin may override only llm and licenses limits');
+    }
   }
-  if (override.llm === undefined) return Object.freeze({});
-  const raw = snapshot(override.llm, 'llm');
+  const licenses =
+    override.licenses === undefined ? undefined : validateLicenseOverride(override.licenses);
+  const llm = override.llm === undefined ? undefined : validateLlmOverride(override.llm);
+  return Object.freeze({
+    ...(llm === undefined ? {} : { llm }),
+    ...(licenses === undefined ? {} : { licenses }),
+  });
+}
+
+function validateLlmOverride(value: unknown): Partial<LlmLimits> {
+  const raw = snapshot(value, 'llm');
   const llm: Partial<LlmLimits> = {};
   for (const key of Object.keys(raw)) {
     const v = raw[key];
@@ -188,7 +220,7 @@ function validateOverride(value: unknown): PluginLimitOverride {
       throw new PluginError(`unknown limit llm.${key}`);
     }
   }
-  return Object.freeze({ llm: Object.freeze(llm) });
+  return Object.freeze(llm);
 }
 
 /**

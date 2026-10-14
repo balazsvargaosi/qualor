@@ -25,6 +25,8 @@ export interface ProblemExtensions {
    * of **Read metadata** (SAML): what failed (sso/saml.ts SAML_METADATA_PROBLEM_CODES).
    */
   reason?: string;
+  /** 400 INVALID_LICENSE_ID: the policy entries that are not SPDX ids or terms (6M §5). */
+  details?: { invalid: string[] };
 }
 
 export interface Problem extends ProblemExtensions {

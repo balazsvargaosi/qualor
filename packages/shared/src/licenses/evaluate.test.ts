@@ -4,6 +4,7 @@ import {
   classify,
   EMPTY_LICENSE_POLICY,
   invalidLicenseIds,
+  licenseClassifier,
   licensePolicySchema,
   type LicensePolicy,
 } from './evaluate';
@@ -279,5 +280,42 @@ describe('invalidLicenseIds', () => {
     });
     expect(invalidLicenseIds(policy)).toEqual(['Nope-1.0', 'MIT WITH Not-An-Exception']);
     expect(invalidLicenseIds(EMPTY_LICENSE_POLICY)).toEqual([]);
+  });
+});
+
+describe('licenseClassifier', () => {
+  it('judges like classify, with the policy prepared once', () => {
+    const policies = [
+      strong,
+      weak,
+      deny({ forbidden: ['gpl-3.0'], allowed: ['GPL-2.0-only'] }),
+      deny({ mode: 'allowlist', allowed: ['MIT', 'Apache-2.0'] }),
+    ];
+    const cases = [
+      [],
+      ['MIT'],
+      ['GPL-3.0-only'],
+      ['MIT OR GPL-3.0-only'],
+      ['LGPL-2.1-only AND MIT'],
+      ['GPL-2.0-only WITH Classpath-exception-2.0'],
+      ['Apache-2.0', 'GPL-2.0+'],
+      ['some custom licence'],
+    ];
+    for (const policy of policies) {
+      const judge = licenseClassifier(policy);
+      for (const licenses of cases) {
+        expect(judge(licenses), JSON.stringify([policy, licenses])).toEqual(
+          classify(licenses, policy),
+        );
+      }
+    }
+  });
+
+  it('does not see later changes to the policy object', () => {
+    const policy = deny({ forbidden: ['MIT'] });
+    const judge = licenseClassifier(policy);
+    policy.forbidden.push('Apache-2.0');
+    expect(judge(['Apache-2.0']).verdict).toBe('allowed');
+    expect(judge(['MIT']).verdict).toBe('forbidden');
   });
 });

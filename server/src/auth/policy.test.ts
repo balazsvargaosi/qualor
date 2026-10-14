@@ -239,3 +239,19 @@ describe('automatic fix suggestions (4E-3a §2)', () => {
     expect(permissionScope('org.ai.manage')).toBe('admin');
   });
 });
+
+describe('the licence policy (6M §5)', () => {
+  it('gives org.licenses.manage to the organisation admin only, with token scope admin', () => {
+    expect(ORGANIZATION_PERMISSIONS).toContain('org.licenses.manage');
+    expect(ROLE_PERMISSIONS.admin.organization).toContain('org.licenses.manage');
+    for (const role of ['project_admin', 'member', 'viewer'] as const) {
+      expect(ROLE_PERMISSIONS[role].organization).not.toContain('org.licenses.manage');
+    }
+    expect(
+      organizationPermissions(facts({ hasProjectGrantInOrganization: true })).has(
+        'org.licenses.manage',
+      ),
+    ).toBe(false);
+    expect(permissionScope('org.licenses.manage')).toBe('admin');
+  });
+});

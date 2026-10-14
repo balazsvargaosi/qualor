@@ -307,3 +307,41 @@ describe('automatic fix suggestion events (4E-3a §2)', () => {
     expect(d.details.safeParse({ enabled: 'no' }).success).toBe(false);
   });
 });
+
+describe('licence policy events (6M §5)', () => {
+  const policy = {
+    mode: 'denylist',
+    forbiddenGroups: ['strong-copyleft'],
+    forbidden: ['SSPL-1.0'],
+    allowed: ['LGPL-2.1-only'],
+    warnUnknown: false,
+  };
+
+  it('records the old and the new policy on the organisation', () => {
+    const d = AUDIT_CATALOGUE['organization.license_policy_changed'];
+    expect(d.target).toBe('organization');
+    expect(d.details.safeParse({ before: null, after: policy }).success).toBe(true);
+    expect(d.details.safeParse({ before: policy, after: null }).success).toBe(true);
+    expect(
+      d.details.safeParse({
+        before: policy,
+        after: { ...policy, mode: 'allowlist', forbidden: Array(500).fill('MIT') },
+      }).success,
+    ).toBe(true);
+    expect(d.details.safeParse({ before: null }).success).toBe(false);
+    expect(d.details.safeParse({ before: null, after: { ...policy, mode: 'open' } }).success).toBe(
+      false,
+    );
+    expect(
+      d.details.safeParse({ before: null, after: { ...policy, forbiddenGroups: ['permissive'] } })
+        .success,
+    ).toBe(false);
+    expect(
+      d.details.safeParse({ before: null, after: { ...policy, allowed: Array(501).fill('MIT') } })
+        .success,
+    ).toBe(false);
+    expect(d.details.safeParse({ before: null, after: { ...policy, extra: 1 } }).success).toBe(
+      false,
+    );
+  });
+});

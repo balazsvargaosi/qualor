@@ -1,4 +1,10 @@
-import { LICENSE_GROUPS, type LicenseGroupId } from '@qualor/shared';
+import {
+  LICENSE_GROUPS,
+  licenseClassifier,
+  type LicenseGroupId,
+  type LicensePolicy,
+  type LicenseVerdict,
+} from '@qualor/shared';
 import { and, eq } from 'drizzle-orm';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
@@ -8,17 +14,21 @@ import { branches } from '../db/schema';
 import {
   dependencySummary,
   hasInventory,
+  listAllDependencies,
   listDependencies,
   type DependencyFilter,
+  type DependencyRow,
 } from '../dependencies/query';
 import { notFound } from '../http/problem';
 import { idParams, noNul, text } from '../http/schemas';
+import { policyFor } from '../licenses/settings';
 import { projectForUser } from '../projects/access';
 
 const GROUP_IDS = LICENSE_GROUPS.map((g) => g.id) as [LicenseGroupId, ...LicenseGroupId[]];
 const booleanParam = z.enum(['true', 'false']).optional();
+const VERDICTS = ['allowed', 'forbidden', 'unknown'] as const satisfies readonly LicenseVerdict[];
 
-/** One inventory entry. Later fields (the policy verdict) are added per row, optional. */
+/** One inventory entry. */
 const dependencySchema = z.object({
   ecosystem: z.string(),
   /** The lockfile or manifest, repo-relative. */
@@ -30,6 +40,11 @@ const dependencySchema = z.object({
   licenses: z.array(z.string()),
   /** `null`: the scanner did not say. */
   direct: z.boolean().nullable(),
+  /**
+   * The organisation licence policy's verdict (6M §8): present when `verdicts` is true, that is
+   * while the enterprise feature license-policy is active and the organisation has a policy.
+   */
+  verdict: z.enum(VERDICTS).optional(),
 });
 
 const summarySchema = z.object({
@@ -50,6 +65,11 @@ const responseSchema = z.object({
   summary: summarySchema,
   /** `false`: no analysis of the branch has reported a dependency inventory yet. */
   inventory: z.boolean(),
+  /**
+   * The rows carry the policy's `verdict`, and the `verdict` filter applies: the enterprise
+   * feature license-policy is active and the project's organisation has a licence policy.
+   */
+  verdicts: z.boolean(),
 });
 
 const querySchema = z
@@ -67,6 +87,10 @@ const querySchema = z
     unknown: booleanParam,
     direct: booleanParam,
     q: noNul(z.string().trim().min(1).max(200)).optional(),
+    verdict: z.enum(VERDICTS).optional().meta({
+      description:
+        "Entries with this verdict of the organisation's licence policy; ignored (every entry matches) while the answer's `verdicts` is false",
+    }),
     page: z.coerce.number().int().min(1).max(100_000).default(1),
     pageSize: z.coerce.number().int().min(1).max(500).default(50),
   })
@@ -76,6 +100,24 @@ const querySchema = z
   });
 
 const EMPTY_SUMMARY = { total: 0, known: 0, unknown: 0, byLicense: [] };
+
+/**
+ * The policy's verdict on a row's licences: the policy prepared once, and each distinct set of
+ * licences judged once (an inventory repeats a few licence sets many times).
+ */
+function verdictOf(policy: LicensePolicy): (row: DependencyRow) => LicenseVerdict {
+  const judge = licenseClassifier(policy);
+  const seen = new Map<string, LicenseVerdict>();
+  return (row) => {
+    const key = JSON.stringify(row.licenses);
+    let verdict = seen.get(key);
+    if (verdict === undefined) {
+      verdict = judge(row.licenses).verdict;
+      seen.set(key, verdict);
+    }
+    return verdict;
+  };
+}
 
 export const dependencyRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (
   app,
@@ -118,10 +160,22 @@ export const dependencyRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asyn
           ),
         );
       const paging = { page: query.page, pageSize: query.pageSize };
+      // 6M §8: the verdicts need the feature and a policy of the project's organisation.
+      const policy = deps.edition.limits().licenses.policy
+        ? await policyFor(deps.db, project.organizationId)
+        : null;
+      const verdicts = policy !== null;
       if (!branch) {
         if (named) throw notFound('Branch');
         // The main branch has no analysis yet.
-        return { rows: [], ...paging, total: 0, summary: EMPTY_SUMMARY, inventory: false };
+        return {
+          rows: [],
+          ...paging,
+          total: 0,
+          summary: EMPTY_SUMMARY,
+          inventory: false,
+          verdicts,
+        };
       }
 
       const filter: DependencyFilter = {
@@ -132,17 +186,40 @@ export const dependencyRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asyn
         ...(query.direct !== undefined && { direct: query.direct === 'true' }),
         ...(query.q !== undefined && { q: query.q }),
       };
+      const judge = policy === null ? null : verdictOf(policy);
       const [list, summary] = await Promise.all([
-        listDependencies(deps.db, branch.id, filter, paging),
+        judge !== null && query.verdict !== undefined
+          ? verdictPage(deps, branch.id, filter, judge, query.verdict, paging)
+          : listDependencies(deps.db, branch.id, filter, paging),
         dependencySummary(deps.db, branch.id),
       ]);
       return {
-        rows: list.rows,
+        rows: judge === null ? list.rows : list.rows.map((r) => ({ ...r, verdict: judge(r) })),
         ...paging,
         total: list.total,
         summary,
         inventory: await hasInventory(deps.db, branch.id, summary.total),
+        verdicts,
       };
     },
   );
 };
+
+/**
+ * The policy is not in SQL: the verdict filter judges every entry the other filters keep (at
+ * most the 50 000 of a snapshot), in the list's order, and pages after it.
+ */
+async function verdictPage(
+  deps: RouteDeps,
+  branchId: string,
+  filter: DependencyFilter,
+  judge: (row: DependencyRow) => LicenseVerdict,
+  verdict: LicenseVerdict,
+  page: { page: number; pageSize: number },
+): Promise<{ rows: DependencyRow[]; total: number }> {
+  const matching = (await listAllDependencies(deps.db, branchId, filter)).filter(
+    (r) => judge(r) === verdict,
+  );
+  const start = (page.page - 1) * page.pageSize;
+  return { rows: matching.slice(start, start + page.pageSize), total: matching.length };
+}

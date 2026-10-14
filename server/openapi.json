@@ -44,6 +44,21 @@
             "type": "string",
             "description": "LICENSE_INVALID: why the key was rejected (malformed, unknown-key, bad-signature, bad-payload, revoked, not-yet-valid). VALIDATION_FAILED of POST /ee/sso/connections/{id}/saml/metadata: what failed (a fetch.<reason> code of the connection Test, or config_invalid, metadata.no_url, metadata.not_saml, metadata.incomplete, metadata.sso_url). Map the code, not the text"
           },
+          "details": {
+            "type": "object",
+            "description": "INVALID_LICENSE_ID: `invalid` lists the licence policy entries that are not SPDX licence ids or \"id WITH exception\" terms, as sent",
+            "properties": {
+              "invalid": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "invalid"
+            ]
+          },
           "errors": {
             "type": "array",
             "items": {
@@ -676,7 +691,8 @@
                                 "org.scm.manage",
                                 "org.audit.read",
                                 "org.compliance.manage",
-                                "org.ai.manage"
+                                "org.ai.manage",
+                                "org.licenses.manage"
                               ]
                             }
                           }
@@ -7761,6 +7777,20 @@
           },
           {
             "schema": {
+              "type": "string",
+              "enum": [
+                "allowed",
+                "forbidden",
+                "unknown"
+              ]
+            },
+            "in": "query",
+            "name": "verdict",
+            "required": false,
+            "description": "Entries with this verdict of the organisation's licence policy; ignored (every entry matches) while the answer's `verdicts` is false"
+          },
+          {
+            "schema": {
               "default": 1,
               "type": "integer",
               "minimum": 1,
@@ -7839,6 +7869,14 @@
                             "type": [
                               "boolean",
                               "null"
+                            ]
+                          },
+                          "verdict": {
+                            "type": "string",
+                            "enum": [
+                              "allowed",
+                              "forbidden",
+                              "unknown"
                             ]
                           }
                         },
@@ -7919,6 +7957,9 @@
                     },
                     "inventory": {
                       "type": "boolean"
+                    },
+                    "verdicts": {
+                      "type": "boolean"
                     }
                   },
                   "required": [
@@ -7927,7 +7968,8 @@
                     "pageSize",
                     "total",
                     "summary",
-                    "inventory"
+                    "inventory",
+                    "verdicts"
                   ],
                   "additionalProperties": false
                 }
@@ -22310,6 +22352,446 @@
           },
           "409": {
             "description": "AUTO_FIX_OPT_OUT_LIMIT_REACHED (the organisation has 1 000 projects opted out); AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed while no audit event is stored; an administrator must restore it (a retry does not help)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed (VALIDATION_FAILED; errors[] names each field)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v0/organizations/{id}/license-policy": {
+      "get": {
+        "summary": "The organisation's licence policy (org.read), the licence groups and the SPDX ids it may name; `available` is false without the enterprise feature license-policy",
+        "tags": [
+          "organizations"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "available": {
+                      "type": "boolean"
+                    },
+                    "policy": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "mode": {
+                              "type": "string",
+                              "enum": [
+                                "denylist",
+                                "allowlist"
+                              ]
+                            },
+                            "forbiddenGroups": {
+                              "maxItems": 4,
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "enum": [
+                                  "network-copyleft",
+                                  "strong-copyleft",
+                                  "weak-copyleft",
+                                  "non-commercial-or-source-available"
+                                ]
+                              }
+                            },
+                            "forbidden": {
+                              "maxItems": 500,
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256
+                              }
+                            },
+                            "allowed": {
+                              "maxItems": 500,
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256
+                              }
+                            },
+                            "warnUnknown": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "mode",
+                            "forbiddenGroups",
+                            "forbidden",
+                            "allowed",
+                            "warnUnknown"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "groups": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "enum": [
+                              "network-copyleft",
+                              "strong-copyleft",
+                              "weak-copyleft",
+                              "non-commercial-or-source-available"
+                            ]
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "description": {
+                            "type": "string"
+                          },
+                          "members": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "label",
+                          "description",
+                          "members"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "spdxIds": {
+                      "type": "object",
+                      "properties": {
+                        "licenses": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "exceptions": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "required": [
+                        "licenses",
+                        "exceptions"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "available",
+                    "policy",
+                    "groups",
+                    "spdxIds"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated but not allowed (FORBIDDEN, INSUFFICIENT_SCOPE, TOKEN_NOT_ALLOWED, SESSION_REQUIRED, CSRF_FAILED, PASSWORD_CHANGE_REQUIRED)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed (VALIDATION_FAILED; errors[] names each field)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Set the organisation's licence policy, or remove it with `policy: null` (org.licenses.manage); the ids are stored in their canonical SPDX spelling, each list sorted",
+        "tags": [
+          "organizations"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "policy": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "enum": [
+                              "denylist",
+                              "allowlist"
+                            ]
+                          },
+                          "forbiddenGroups": {
+                            "maxItems": 4,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "network-copyleft",
+                                "strong-copyleft",
+                                "weak-copyleft",
+                                "non-commercial-or-source-available"
+                              ]
+                            }
+                          },
+                          "forbidden": {
+                            "maxItems": 500,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 256
+                            }
+                          },
+                          "allowed": {
+                            "maxItems": 500,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 256
+                            }
+                          },
+                          "warnUnknown": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "mode",
+                          "forbiddenGroups",
+                          "forbidden",
+                          "allowed",
+                          "warnUnknown"
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "policy"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "available": {
+                      "type": "boolean"
+                    },
+                    "policy": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "mode": {
+                              "type": "string",
+                              "enum": [
+                                "denylist",
+                                "allowlist"
+                              ]
+                            },
+                            "forbiddenGroups": {
+                              "maxItems": 4,
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "enum": [
+                                  "network-copyleft",
+                                  "strong-copyleft",
+                                  "weak-copyleft",
+                                  "non-commercial-or-source-available"
+                                ]
+                              }
+                            },
+                            "forbidden": {
+                              "maxItems": 500,
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256
+                              }
+                            },
+                            "allowed": {
+                              "maxItems": 500,
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256
+                              }
+                            },
+                            "warnUnknown": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "mode",
+                            "forbiddenGroups",
+                            "forbidden",
+                            "allowed",
+                            "warnUnknown"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "available",
+                    "policy"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "INVALID_LICENSE_ID: an entry of `forbidden` or `allowed` is not an SPDX licence id or \"id WITH exception\" term; `details.invalid` lists them",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FEATURE_NOT_LICENSED (the enterprise feature license-policy is not active), FORBIDDEN or INSUFFICIENT_SCOPE",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed while no audit event is stored; an administrator must restore it (a retry does not help)",
             "content": {
               "application/problem+json": {
                 "schema": {
