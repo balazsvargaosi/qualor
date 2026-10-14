@@ -3,7 +3,7 @@
  * trimmed and otherwise as written (`Public Domain` stays that: it names no licence).
  */
 import { formatLicenseExpression, licenseTerms, parseLicenseExpression } from './expression';
-import { isSpdxId, termId } from './spdx';
+import { isSpdxId, splitTerm } from './spdx';
 
 /**
  * Whole-string spellings (compared lower-case, whitespace collapsed) that an SPDX parse would not
@@ -47,6 +47,6 @@ export function normalizeLicense(raw: string): string {
   if (expr === null) return trimmed;
   // A lone unrecognised word stays as written; a compound expression is rewritten when any part is known.
   if (expr.kind === 'id') return isSpdxId(expr.id) ? expr.id : trimmed;
-  const known = licenseTerms(expr).some((t) => isSpdxId(termId(t)));
+  const known = licenseTerms(expr).some((t) => isSpdxId(splitTerm(t).id));
   return known ? formatLicenseExpression(expr) : trimmed;
 }

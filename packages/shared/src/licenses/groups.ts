@@ -3,7 +3,7 @@
  * the licences' own terms. The member lists name SPDX ids (and `id WITH exception` terms); the
  * integrity test fails when a member is missing from the vendored SPDX list.
  */
-import { canonicalTerm, COMMONS_CLAUSE, SPDX_LICENSE_IDS } from './spdx';
+import { canonicalTerm, COMMONS_CLAUSE, SPDX_LICENSE_IDS, splitTerm } from './spdx';
 
 export type LicenseGroupId =
   'network-copyleft' | 'strong-copyleft' | 'weak-copyleft' | 'non-commercial-or-source-available';
@@ -118,8 +118,8 @@ export function groupOf(term: string): LicenseGroupId | null {
   const canon = canonicalTerm(term);
   const direct = GROUP_BY_TERM.get(canon);
   if (direct !== undefined) return direct;
-  const i = canon.indexOf(' WITH ');
-  if (i < 0) return null;
-  if (canon.slice(i + 6) === COMMONS_CLAUSE) return GROUP_BY_TERM.get(COMMONS_CLAUSE) ?? null;
-  return GROUP_BY_TERM.get(canon.slice(0, i)) ?? null;
+  const { id, exception } = splitTerm(canon);
+  if (exception === null) return null;
+  if (exception === COMMONS_CLAUSE) return GROUP_BY_TERM.get(COMMONS_CLAUSE) ?? null;
+  return GROUP_BY_TERM.get(id) ?? null;
 }

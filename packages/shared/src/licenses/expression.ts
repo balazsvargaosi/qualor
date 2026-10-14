@@ -3,7 +3,7 @@
  * parentheses group; keywords are case-insensitive; a `+` suffix on an id means `-or-later`.
  * An id that is not on the SPDX list stays in the tree as written.
  */
-import { canonicalException, COMMONS_CLAUSE, resolveLicenseId } from './spdx';
+import { canonicalException, COMMONS_CLAUSE, resolveLicenseId, splitTerm } from './spdx';
 
 export type LicenseExpr =
   | { kind: 'id'; id: string } // canonical SPDX id, or an unrecognised raw string
@@ -56,7 +56,13 @@ export function parseLicenseExpression(text: string): LicenseExpr | null {
     }
     if (t === ')' || KEYWORDS.has(t.toLowerCase())) return null;
     pos++;
-    const id = resolveLicenseId(t);
+    const resolved = splitTerm(resolveLicenseId(t));
+    const id = resolved.id;
+    if (resolved.exception !== null) {
+      // A deprecated 'GPL-2.0-with-...' id already carries its exception.
+      if (isKeyword(peek(), 'with')) return null;
+      return { kind: 'with', id, exception: resolved.exception };
+    }
     if (!isKeyword(peek(), 'with')) return { kind: 'id', id };
     pos++;
     const exc = peek();

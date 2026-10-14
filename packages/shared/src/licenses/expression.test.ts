@@ -46,7 +46,8 @@ describe('parseLicenseExpression', () => {
 
   it('reads a + suffix as -or-later', () => {
     expect(parseLicenseExpression('GPL-2.0+')).toEqual(id('GPL-2.0-or-later'));
-    expect(parseLicenseExpression('LGPL-2.1-only+')).toEqual(id('LGPL-2.1-only+'));
+    expect(parseLicenseExpression('LGPL-2.1-only+')).toEqual(id('LGPL-2.1-only'));
+    expect(parseLicenseExpression('EUPL-1.2+')).toEqual(id('EUPL-1.2'));
   });
 
   it('is case-insensitive in keywords and ids', () => {
@@ -60,6 +61,15 @@ describe('parseLicenseExpression', () => {
       id: 'GPL-2.0-only',
       exception: 'Classpath-exception-2.0',
     });
+  });
+
+  it('reads a deprecated -with- id as its id WITH exception', () => {
+    expect(parseLicenseExpression('GPL-2.0-with-classpath-exception')).toEqual({
+      kind: 'with',
+      id: 'GPL-2.0-only',
+      exception: 'Classpath-exception-2.0',
+    });
+    expect(parseLicenseExpression('GPL-2.0-with-classpath-exception WITH Foo')).toBeNull();
   });
 
   it('keeps an id that is not on the SPDX list as written', () => {

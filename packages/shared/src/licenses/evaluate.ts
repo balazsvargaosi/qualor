@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { licenseTerms, parseLicenseExpression, type LicenseExpr } from './expression';
 import { groupOf, type LicenseGroupId } from './groups';
 import { normalizeLicense } from './normalize';
-import { canonicalTerm, COMMONS_CLAUSE, isSpdxException, isSpdxId, termId } from './spdx';
+import { canonicalTerm, COMMONS_CLAUSE, isSpdxException, isSpdxId, splitTerm } from './spdx';
 
 export interface LicensePolicy {
   mode: 'denylist' | 'allowlist';
@@ -31,11 +31,9 @@ export interface Classification {
   group: LicenseGroupId | null;
 }
 
-const WITH_SEP = ' WITH ';
-
 /** A term is recognised when its id is on the SPDX list or it belongs to a licence group. */
 function isRecognised(term: string): boolean {
-  const base = termId(term);
+  const base = splitTerm(term).id;
   return isSpdxId(base) || groupOf(term) !== null;
 }
 
@@ -74,12 +72,12 @@ export function classify(licenses: readonly string[], policy: LicensePolicy): Cl
   const forbidsLeaf =
     policy.mode === 'allowlist'
       ? (term: string): boolean => {
-          const base = termId(term);
+          const base = splitTerm(term).id;
           return !(allowed.has(term) || allowed.has(base));
         }
       : (term: string): boolean => {
           // The exact rule on the whole term first, then the rule of its id, then the groups.
-          const base = termId(term);
+          const base = splitTerm(term).id;
           if (allowed.has(term)) return false;
           if (forbiddenTerms.has(term)) return true;
           if (base !== term) {
@@ -94,13 +92,20 @@ export function classify(licenses: readonly string[], policy: LicensePolicy): Cl
   let allUnrecognised = true;
   let parsed = 0;
   const culprits = new Set<string>();
+  const rawCulprits = new Set<string>();
   for (const entry of licenses) {
     const text = normalizeLicense(entry);
     if (text === '') continue; // an empty entry names nothing
-    // Text that is not an expression is one unrecognised leaf holding the raw string.
-    const expr: LicenseExpr = parseLicenseExpression(text) ?? { kind: 'id', id: text };
     parsed++;
-    const node = evaluateExpr(expr, forbidsLeaf);
+    const expr = parseLicenseExpression(text);
+    let node: Node;
+    if (expr === null) {
+      // Text that is not an expression is one unrecognised term and is never taken apart: no rule
+      // or group applies to it, so a denylist lets it through and an allowlist refuses it.
+      const refused = policy.mode === 'allowlist';
+      node = { forbidden: refused, allUnrecognised: true, culprits: refused ? [text] : [] };
+      if (refused) rawCulprits.add(text);
+    } else node = evaluateExpr(expr, forbidsLeaf);
     if (node.forbidden) forbidden = true;
     if (!node.allUnrecognised) allUnrecognised = false;
     for (const c of node.culprits) culprits.add(c);
@@ -109,7 +114,12 @@ export function classify(licenses: readonly string[], policy: LicensePolicy): Cl
   if (parsed === 0) return { verdict: 'unknown', culprits: [], group: null };
   if (forbidden) {
     const sorted = [...culprits].sort();
-    return { verdict: 'forbidden', culprits: sorted, group: groupOf(sorted[0] ?? '') };
+    const first = sorted[0];
+    return {
+      verdict: 'forbidden',
+      culprits: sorted,
+      group: first === undefined || rawCulprits.has(first) ? null : groupOf(first),
+    };
   }
   return { verdict: allUnrecognised ? 'unknown' : 'allowed', culprits: [], group: null };
 }
@@ -133,10 +143,9 @@ export const licensePolicySchema: z.ZodType<LicensePolicy> = z.object({
 
 function isKnownTerm(entry: string): boolean {
   const term = canonicalTerm(entry);
-  const i = term.indexOf(WITH_SEP);
-  if (i < 0) return isSpdxId(term) || groupOf(term) !== null;
-  const exception = term.slice(i + WITH_SEP.length);
-  return isSpdxId(term.slice(0, i)) && (isSpdxException(exception) || exception === COMMONS_CLAUSE);
+  const { id, exception } = splitTerm(term);
+  if (exception === null) return isSpdxId(id) || groupOf(term) !== null;
+  return isSpdxId(id) && (isSpdxException(exception) || exception === COMMONS_CLAUSE);
 }
 
 /** The entries of the policy's `forbidden` and `allowed` lists that are not SPDX ids or terms. */

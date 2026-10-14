@@ -141,6 +141,69 @@ describe('classify, unparseable entries', () => {
   });
 });
 
+describe('classify, raw text is never taken apart', () => {
+  it('does not read a WITH inside free text', () => {
+    const noCommercial = deny({ forbiddenGroups: ['non-commercial-or-source-available'] });
+    expect(classify(['GPL-3.0-only WITH Foo Bar'], strong).verdict).toBe('unknown');
+    expect(
+      classify(['GPL-3.0-only WITH some exception'], deny({ forbidden: ['GPL-3.0-only'] })).verdict,
+    ).toBe('unknown');
+    expect(classify(['MIT foo WITH Commons-Clause'], noCommercial).verdict).toBe('unknown');
+  });
+
+  it('refuses it under an allowlist, with no group', () => {
+    const only = deny({ mode: 'allowlist', allowed: ['MIT'] });
+    expect(classify(['MIT WITH Foo Bar'], only)).toEqual({
+      verdict: 'forbidden',
+      culprits: ['MIT WITH Foo Bar'],
+      group: null,
+    });
+    const gpl = deny({ mode: 'allowlist', allowed: ['MIT'] });
+    expect(classify(['GPL-3.0-only WITH Foo Bar'], gpl).group).toBeNull();
+  });
+});
+
+describe('classify, deprecated and + spellings', () => {
+  it('keeps the deprecated -with- ids inside the copyleft groups', () => {
+    expect(classify(['GPL-2.0-with-classpath-exception'], weak).verdict).toBe('forbidden');
+    expect(classify(['GPL-2.0-with-classpath-exception'], strong).verdict).toBe('allowed');
+    for (const id of [
+      'GPL-2.0-with-GCC-exception',
+      'GPL-2.0-with-autoconf-exception',
+      'GPL-2.0-with-bison-exception',
+      'GPL-2.0-with-font-exception',
+      'GPL-3.0-with-GCC-exception',
+      'GPL-3.0-with-autoconf-exception',
+    ])
+      expect(classify([id], strong)).toMatchObject({
+        verdict: 'forbidden',
+        group: 'strong-copyleft',
+      });
+  });
+
+  it('resolves a + on an id with no later form to the id', () => {
+    expect(classify(['EUPL-1.2+'], deny({ forbiddenGroups: ['network-copyleft'] })).verdict).toBe(
+      'forbidden',
+    );
+    expect(classify(['MPL-1.1+'], weak).verdict).toBe('forbidden');
+    expect(classify(['EPL-1.0+'], weak).verdict).toBe('forbidden');
+    expect(invalidLicenseIds(deny({ forbidden: ['EUPL-1.2+', 'MPL-1.1+', 'EPL-1.0+'] }))).toEqual(
+      [],
+    );
+  });
+
+  it('treats GPLv2+, GPL-2.0+ and GPL-2.0-or-later as one licence', () => {
+    const policy = deny({ forbidden: ['GPL-2.0-or-later'] });
+    for (const s of ['GPLv2+', 'GPL-2.0+', 'GPL-2.0-or-later'])
+      expect(classify([s], policy)).toEqual({
+        verdict: 'forbidden',
+        culprits: ['GPL-2.0-or-later'],
+        group: 'strong-copyleft',
+      });
+    expect(classify(['GPL-2.0-only'], policy).verdict).toBe('allowed');
+  });
+});
+
 describe('classify, allowlist', () => {
   const allowOnly = (allowed: string[]) => deny({ mode: 'allowlist', allowed });
 

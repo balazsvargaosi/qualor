@@ -48,22 +48,38 @@ const DEPRECATED_BARE = new Set([
 ]);
 
 /**
- * A licence id as written in a manifest to the canonical SPDX id: any case, the deprecated GNU ids
- * mapped to `-only`, and a `+` suffix to `-or-later` (`GPL-2.0+`). A `+` on an id with no
- * 'or later' form stays as written. An id that cannot be resolved comes back unchanged.
+ * The deprecated `GPL-x.y-with-*-exception` ids and their SPDX replacements (an id WITH an
+ * exception). Like the bare GNU ids they mean the "only" form.
+ */
+const DEPRECATED_WITH: Readonly<Record<string, string>> = {
+  'gpl-2.0-with-autoconf-exception': 'GPL-2.0-only WITH Autoconf-exception-2.0',
+  'gpl-2.0-with-bison-exception': 'GPL-2.0-only WITH Bison-exception-2.2',
+  'gpl-2.0-with-classpath-exception': 'GPL-2.0-only WITH Classpath-exception-2.0',
+  'gpl-2.0-with-font-exception': 'GPL-2.0-only WITH Font-exception-2.0',
+  'gpl-2.0-with-gcc-exception': 'GPL-2.0-only WITH GCC-exception-2.0',
+  'gpl-3.0-with-autoconf-exception': 'GPL-3.0-only WITH Autoconf-exception-3.0',
+  'gpl-3.0-with-gcc-exception': 'GPL-3.0-only WITH GCC-exception-3.1',
+};
+export const DEPRECATED_WITH_IDS: readonly string[] = Object.values(DEPRECATED_WITH);
+
+/**
+ * A licence id as written in a manifest to its canonical form: any case, the deprecated GNU ids
+ * mapped to `-only`, the deprecated `-with-` ids to `id WITH exception`, and a `+` suffix to
+ * `-or-later` (`GPL-2.0+`) or, where the id has no such form, to the id itself (`EUPL-1.2+` is
+ * EUPL-1.2). An id that cannot be resolved comes back unchanged. The result is an id, or for a
+ * deprecated `-with-` id an "id WITH exception" term.
  */
 export function resolveLicenseId(token: string): string {
   if (token.endsWith('+')) {
     const base = canonicalId(token.slice(0, -1));
-    if (base !== null) {
-      if (DEPRECATED_BARE.has(base)) return `${base}-or-later`;
-      const later = canonicalId(`${base}-or-later`);
-      if (later !== null) return later;
-    }
-    return token;
+    if (base === null || base.toLowerCase() in DEPRECATED_WITH) return token;
+    if (DEPRECATED_BARE.has(base)) return `${base}-or-later`;
+    return canonicalId(`${base}-or-later`) ?? base;
   }
   const canon = canonicalId(token);
   if (canon === null) return token;
+  const withTerm = DEPRECATED_WITH[canon.toLowerCase()];
+  if (withTerm !== undefined) return withTerm;
   return DEPRECATED_BARE.has(canon) ? `${canon}-only` : canon;
 }
 
@@ -76,17 +92,24 @@ export const COMMONS_CLAUSE = 'Commons-Clause';
 const WITH_TERM = /^(\S+)\s+WITH\s+(\S+)$/i;
 const isCommonsClause = (s: string): boolean => s.toLowerCase() === COMMONS_CLAUSE.toLowerCase();
 
-/** The licence id of a term: 'GPL-2.0-only WITH X' gives 'GPL-2.0-only'. */
-export function termId(term: string): string {
-  return term.split(' WITH ')[0] ?? term;
+/**
+ * Splits a term into its id and exception ("GPL-2.0-only WITH X" gives the id and X; a plain id has
+ * no exception). The one place a term is taken apart: only call it on a term from the parser or the
+ * canonical form, never on free text.
+ */
+export function splitTerm(term: string): { id: string; exception: string | null } {
+  const m = WITH_TERM.exec(term.trim());
+  return m === null
+    ? { id: term.trim(), exception: null }
+    : { id: m[1] ?? '', exception: m[2] ?? '' };
 }
 
-/** The canonical spelling of a term: an id, or 'id WITH exception'. Unresolved parts stay as written. */
+/** The canonical spelling of a term: an id, or "id WITH exception". Unresolved parts stay as written. */
 export function canonicalTerm(term: string): string {
-  const trimmed = term.trim();
-  const m = WITH_TERM.exec(trimmed);
-  if (m === null) return isCommonsClause(trimmed) ? COMMONS_CLAUSE : resolveLicenseId(trimmed);
-  const [, id = trimmed, exc = ''] = m;
-  const exception = isCommonsClause(exc) ? COMMONS_CLAUSE : (canonicalException(exc) ?? exc);
-  return `${resolveLicenseId(id)} WITH ${exception}`;
+  const { id, exception } = splitTerm(term);
+  if (exception === null) return isCommonsClause(id) ? COMMONS_CLAUSE : resolveLicenseId(id);
+  const exc = isCommonsClause(exception)
+    ? COMMONS_CLAUSE
+    : (canonicalException(exception) ?? exception);
+  return `${resolveLicenseId(id)} WITH ${exc}`;
 }
