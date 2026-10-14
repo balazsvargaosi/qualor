@@ -166,6 +166,7 @@ export async function createUser(
   input: {
     username: string;
     password?: string;
+    displayName?: string | null;
     email?: string | null;
     isInstanceAdmin?: boolean;
     passwordChangeRequired?: boolean;
@@ -178,6 +179,7 @@ export async function createUser(
     .values({
       username: input.username,
       passwordHash: await hashPassword(password),
+      displayName: input.displayName ?? null,
       email: input.email ?? null,
       isInstanceAdmin: input.isInstanceAdmin ?? false,
       passwordChangeRequired: input.passwordChangeRequired ?? false,

@@ -36,12 +36,22 @@ export interface IssueFilters {
   includeDuplicates: boolean;
 }
 
+/** `q` with `%`, `_` and `\` escaped, so ILIKE (whose default escape is `\`) takes them literally. */
+function likeLiteral(q: string): string {
+  return q.replace(/[\\%_]/g, (c) => `\\${c}`);
+}
+
 /**
  * An ILIKE pattern matching `q` anywhere: `%`, `_` and `\` in the search text are literal
  * characters (ILIKE's default escape is `\`). Shared by every `q` search (projects, issues).
  */
 export function containsPattern(q: string): string {
-  return `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+  return `%${likeLiteral(q)}%`;
+}
+
+/** An ILIKE pattern matching text that starts with `q`, wildcards literal (the user pickers). */
+export function prefixPattern(q: string): string {
+  return `${likeLiteral(q)}%`;
 }
 
 /**

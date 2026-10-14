@@ -1,10 +1,17 @@
-import { and, asc, count, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
+import { and, asc, count, eq, gt, ilike, inArray, isNull, notExists, or, sql } from 'drizzle-orm';
+import type { FastifyRequest } from 'fastify';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import type { RouteDeps } from '../app';
 import { USER_CHANGE_FIELDS } from '../audit/catalogue';
 import { actorOf, type AuditEventInput } from '../audit/recorder';
-import { accessOf, requireInstanceAdmin, requireMembersManager, requireUser } from '../auth/access';
+import {
+  accessOf,
+  requireInstanceAdmin,
+  requireMembersManager,
+  requireOrganizationAccess,
+  requireUser,
+} from '../auth/access';
 import {
   deleteAccountTokens,
   INVITATION_TTL_MINUTES,
@@ -18,7 +25,7 @@ import type { Executor } from '../db/client';
 import { PG_UNIQUE_VIOLATION, pgConstraint, pgErrorCode } from '../db/errors';
 import { LOCKS } from '../db/locks';
 import { first } from '../db/rows';
-import { apiTokens, identities, users } from '../db/schema';
+import { apiTokens, identities, memberships, users } from '../db/schema';
 import { decodeCursor, pageQuery, pageSchema, toPage } from '../http/pagination';
 import { conflict, type FieldError, forbidden, notFound, validationFailed } from '../http/problem';
 import {
@@ -31,6 +38,7 @@ import {
   userSchema,
   type UserSsoSummary,
 } from '../http/schemas';
+import { prefixPattern } from '../issues/query';
 import {
   accountLink,
   accountMailState,
@@ -187,6 +195,22 @@ function invitationNotApplicable() {
   );
 }
 
+/** The rate-limit key of the user-name routes: the user (authentication has run), else the address. */
+function perCaller(request: FastifyRequest): string {
+  return request.principal && request.principal.kind !== 'project'
+    ? `user:${request.principal.user.id}`
+    : request.ip;
+}
+
+/** GET /users/search: at most 64 characters of q (a username's length) and 10 suggestions. */
+const SEARCH_MAX = 64;
+const SEARCH_LIMIT = 10;
+const userSuggestionSchema = z.object({
+  id: z.uuid(),
+  username: z.string(),
+  displayName: z.string().nullable(),
+});
+
 export const userRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (app, { deps }) => {
   app.get(
     '/users',
@@ -233,14 +257,7 @@ export const userRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (app
       config: {
         // api.md §3: 30 a minute per caller. Authentication (an app-level onRequest hook) has run
         // by now, so the key is the user, and one address cannot exhaust another user's budget.
-        rateLimit: {
-          max: 30,
-          timeWindow: 60_000,
-          keyGenerator: (request) =>
-            request.principal && request.principal.kind !== 'project'
-              ? `user:${request.principal.user.id}`
-              : request.ip,
-        },
+        rateLimit: { max: 30, timeWindow: 60_000, keyGenerator: perCaller },
         openapi: { problems: [403, 404, 429] },
       },
       schema: {
@@ -264,6 +281,80 @@ export const userRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (app
         .where(and(eq(users.username, request.query.username), eq(users.active, true)));
       if (!user) throw notFound('User');
       return user;
+    },
+  );
+
+  app.get(
+    '/users/search',
+    {
+      config: {
+        // api.md §3: the user picker asks as the person types (debounced), so it has its own
+        // budget, 60 a minute per caller; the exact lookup keeps its 30.
+        rateLimit: { max: 60, timeWindow: 60_000, keyGenerator: perCaller },
+        openapi: { problems: [403, 404, 429] },
+      },
+      schema: {
+        tags: ['users'],
+        summary:
+          'Suggest active users whose username or display name starts with q, ignoring case (org admins, to add a member); only id, username and display name',
+        querystring: z.strictObject({
+          q: text(SEARCH_MAX).meta({
+            description:
+              'The start of a username or display name, ignoring case: at least 2 characters (1 for an instance admin); % and _ match themselves',
+          }),
+          limit: z.coerce.number().int().min(1).max(SEARCH_LIMIT).default(SEARCH_LIMIT),
+          excludeOrganization: z.uuid().optional().meta({
+            description:
+              'Leave out the members of this organisation; the caller must be allowed to manage its members',
+          }),
+        }),
+        response: { 200: z.object({ users: z.array(userSuggestionSchema) }) },
+      },
+    },
+    async (request) => {
+      const principal = requireUser(request, 'admin');
+      const access = accessOf(deps);
+      await requireMembersManager(access, principal);
+      const { q, limit, excludeOrganization } = request.query;
+      const min = principal.user.isInstanceAdmin ? 1 : 2;
+      if (q.length < min) {
+        throw validationFailed([{ path: 'query.q', message: `Type at least ${min} characters` }]);
+      }
+      if (excludeOrganization !== undefined) {
+        await requireOrganizationAccess(
+          access,
+          principal,
+          excludeOrganization,
+          'org.members.manage',
+        );
+      }
+      const pattern = prefixPattern(q);
+      // the name only, never the email or the admin flag, as the lookup (the same audience).
+      const found = await deps.db
+        .select({ id: users.id, username: users.username, displayName: users.displayName })
+        .from(users)
+        .where(
+          and(
+            eq(users.active, true),
+            or(ilike(users.username, pattern), ilike(users.displayName, pattern)),
+            excludeOrganization === undefined
+              ? undefined
+              : notExists(
+                  deps.db
+                    .select({ one: sql`1` })
+                    .from(memberships)
+                    .where(
+                      and(
+                        eq(memberships.organizationId, excludeOrganization),
+                        eq(memberships.userId, users.id),
+                      ),
+                    ),
+                ),
+          ),
+        )
+        .orderBy(asc(users.username))
+        .limit(limit);
+      return { users: found };
     },
   );
 

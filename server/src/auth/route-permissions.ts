@@ -30,6 +30,7 @@ export const ROUTE_PERMISSIONS: Readonly<Record<string, RouteRule>> = Object.fre
   'POST /users/:id/invitation': 'instance-admin',
   'DELETE /users/:id/invitation': 'instance-admin',
   'GET /users/lookup': 'org.members.manage',
+  'GET /users/search': 'org.members.manage',
   'GET /tokens': 'self',
   'POST /tokens': 'self',
   'DELETE /tokens/:id': 'self',

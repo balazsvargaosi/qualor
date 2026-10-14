@@ -256,6 +256,62 @@ describe('organizations and members', () => {
     });
     expect((await call('GET', '/system/info', {})).statusCode).toBe(401);
   });
+
+  it('filters the members by a prefix of the username or the display name (q)', async () => {
+    const org = (
+      await call('POST', '/organizations', admin.headers, { key: 'q-org', name: 'Q' })
+    ).json().id as string;
+    const join = async (username: string, displayName: string | null) => {
+      const u = await createUser(ctx, { username, displayName });
+      await addMember(ctx, org, u.id, 'member');
+    };
+    await join('quinn', 'Zed Quinn');
+    await join('Quentin', null);
+    await join('q_bert', 'Bert');
+    await join('qxbert', 'Q 50% done');
+    await join('qpct', 'Q 50 done');
+    await join('rita', 'Quiet Rita');
+    const names = async (query: string) =>
+      (
+        (await call('GET', `/organizations/${org}/members?${query}`, admin.headers)).json()
+          .items as { username: string }[]
+      )
+        .map((m) => m.username)
+        .sort();
+    expect(await names('q=QU')).toEqual(['Quentin', 'quinn', 'rita']);
+    expect(await names('q=zed')).toEqual(['quinn']);
+    expect(await names('q=quinn')).toEqual(['quinn']);
+    // LIKE wildcards are literal.
+    expect(await names('q=q_')).toEqual(['q_bert']);
+    expect(await names('q=q%2050%25')).toEqual(['qxbert']);
+    expect(await names('q=%25')).toEqual([]);
+    // pagination is unchanged under the filter.
+    const first = await call('GET', `/organizations/${org}/members?q=qu&limit=2`, admin.headers);
+    expect(first.json().items).toHaveLength(2);
+    const second = await call(
+      'GET',
+      `/organizations/${org}/members?q=qu&limit=2&cursor=${first.json().nextCursor}`,
+      admin.headers,
+    );
+    expect(second.json()).toMatchObject({ nextCursor: null });
+    expect(second.json().items).toHaveLength(1);
+    expect(paths(await call('GET', `/organizations/${org}/members?q=`, admin.headers))).toEqual([
+      'query.q',
+    ]);
+    expect(paths(await call('GET', `/organizations/${org}/members?q=a%00`, admin.headers))).toEqual(
+      ['query.q'],
+    );
+    expect(
+      paths(await call('GET', `/organizations/${org}/members?q=${'a'.repeat(65)}`, admin.headers)),
+    ).toEqual(['query.q']);
+    // the permission is unchanged: org.members.read.
+    expect(
+      (await call('GET', `/organizations/${teamId}/members?q=org`, member.headers)).statusCode,
+    ).toBe(403);
+    expect(
+      (await call('GET', `/organizations/${teamId}/members?q=org`, outsider.headers)).statusCode,
+    ).toBe(404);
+  });
 });
 
 describe('organisation creation over HTTP under concurrency (data-model.md §8 item 2)', () => {

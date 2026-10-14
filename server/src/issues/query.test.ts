@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { containsPattern, FACET_CONCURRENCY, mapConcurrent } from './query';
+import { containsPattern, FACET_CONCURRENCY, mapConcurrent, prefixPattern } from './query';
 
 describe('containsPattern', () => {
   it('escapes %, _ and \\ so they match literally', () => {
     expect(containsPattern('100%_a\\b')).toBe('%100\\%\\_a\\\\b%');
+  });
+});
+
+describe('prefixPattern', () => {
+  it('matches a prefix, with %, _ and \\ literal', () => {
+    expect(prefixPattern('100%_a\\b')).toBe('100\\%\\_a\\\\b%');
   });
 });
 

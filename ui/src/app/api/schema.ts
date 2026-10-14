@@ -1201,6 +1201,100 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v0/users/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Suggest active users whose username or display name starts with q, ignoring case (org admins, to add a member); only id, username and display name */
+        get: {
+            parameters: {
+                query: {
+                    /** @description The start of a username or display name, ignoring case: at least 2 characters (1 for an instance admin); % and _ match themselves */
+                    q: string;
+                    limit?: number;
+                    /** @description Leave out the members of this organisation; the caller must be allowed to manage its members */
+                    excludeOrganization?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            users: {
+                                /** Format: uuid */
+                                id: string;
+                                username: string;
+                                displayName: string | null;
+                            }[];
+                        };
+                    };
+                };
+                /** @description Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS) */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Authenticated but not allowed (FORBIDDEN, INSUFFICIENT_SCOPE, TOKEN_NOT_ALLOWED, SESSION_REQUIRED, CSRF_FAILED, PASSWORD_CHANGE_REQUIRED) */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Not found, or not visible to the caller */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Validation failed (VALIDATION_FAILED; errors[] names each field) */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Rate limited (RATE_LIMITED); see Retry-After */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v0/users/{id}": {
         parameters: {
             query?: never;
@@ -2362,12 +2456,14 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Members of an organisation; managedBy names the SSO connection whose group sync manages a membership */
+        /** Members of an organisation; managedBy names the SSO connection whose group sync manages a membership; q keeps those whose username or display name starts with it */
         get: {
             parameters: {
                 query?: {
                     limit?: number;
                     cursor?: string;
+                    /** @description Only members whose username or display name starts with this, ignoring case; % and _ match themselves */
+                    q?: string;
                 };
                 header?: never;
                 path: {
