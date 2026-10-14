@@ -214,7 +214,9 @@ policy decides which packages are reported, so quality profiles do not apply to 
 
 - The issue sits on the package's line in the lockfile. It is **new code** when that line is: the
   change added the package or changed its version. A forbidden package that was already there
-  before the policy does not fail merge requests, but it is counted on the branch.
+  before the policy does not fail merge requests, but it is counted on the branch. When the
+  scanner could not find the package's line in the lockfile, the issue is never new code, so
+  `new_*` gate conditions do not catch it on a merge request; branch-level conditions still do.
 - A package at a new version is a new issue.
 - Licence issues appear in the merge request decoration like any other issue, but not in the
   GitLab report artifacts the scanner writes (`--gitlab-code-quality` and the others), since the
@@ -291,8 +293,9 @@ q -X PUT "$QUALOR_URL/api/v0/organizations/<org id>/license-policy" -d '{"policy
 |---|---|---|
 | `LICENSE_SCAN_FAILED` | the licence pass could not run, or failed; with `licenses: true`, also when Trivy is not installed | read the scan log; the vulnerability findings are not affected |
 | `LICENSE_SCAN_TIMEOUT` | the pass took longer than `licenseTimeoutSeconds` | raise `analyzers.trivy.licenseTimeoutSeconds`, or exclude directories you do not ship |
-| `DEPENDENCIES_TRUNCATED` | more than 50 000 packages; the direct ones are kept first | exclude lockfiles you do not ship (`sources.exclude`) |
-| `DEPENDENCIES_OUT_OF_SCOPE` | lockfiles in folders the scan does not analyse (gitignored or excluded, such as an in-repository package cache) were left out of the inventory | none needed; add the folder to `sources.exclude` to silence it and let the pass skip it |
+| `DEPENDENCIES_TRUNCATED` | more than 50 000 packages; the direct ones are kept first. Licence issues are still opened, but none is closed while the inventory is cut | exclude lockfiles you do not ship (`sources.exclude`) |
+| `DEPENDENCIES_OUT_OF_SCOPE` | lockfiles in folders the scan does not analyse (gitignored, such as an in-repository package cache) were left out of the inventory; lockfiles under `sources.exclude` or the built-in excludes (such as a .NET build's `bin/Debug/`) are left out without it | none needed; add the folder to `sources.exclude` to silence it and let the pass skip it |
 | `DEPENDENCIES_SKIPPED` | packages whose name, version or lockfile path is too long for the report | none needed; they are left out of the inventory |
 | `DEPENDENCY_LICENSES_SKIPPED` | licence strings longer than 256 characters, or beyond 16 for one package, were left out | check those packages' licences by hand |
+| `LICENSE_POLICY_INVALID` | the organisation's stored licence policy could not be read, so the licences were not judged; open licence issues stay as they are | set the policy again in **Settings → Licence policy**, which shows it as missing |
 | `DEPENDENCY_PATHS_INVALID` | the server could not place some flagged packages, because their lockfile path is not a repository path | only a report written by another tool can cause it; check that tool's lockfile paths |

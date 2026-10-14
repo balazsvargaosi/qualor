@@ -882,10 +882,12 @@ The engine ids of the built-in analyzers (`eslint`, `ruff`, `semgrep`, `stylelin
 `clang-tidy` and the others) are reserved: `engine: ruff` is a configuration error, and a SARIF
 file from a tool Qualor runs itself is reported under `ext-<tool>` (`ext-ruff`, `ext-stylelint`,
 `ext-htmlhint`, `ext-detekt`, `ext-swiftlint`, `ext-phpstan`, `ext-rubocop`, `ext-staticcheck`,
-`ext-gosec`, `ext-cppcheck`, `ext-clang-tidy`). `license` is reserved too: it is the engine of
-the [licence policy](./dependency-licenses.md#licence-issues)'s issues, so `engine: license` is a
-configuration error, and a SARIF tool named `license` is reported as `ext-license`. Don't import Ruff, stylelint, HTMLHint, detekt,
-SwiftLint, PHPStan, RuboCop, staticcheck, gosec, cppcheck or clang-tidy SARIF any more: Qualor runs
+`ext-gosec`, `ext-cppcheck`, `ext-clang-tidy`). `license` and `trivy-licenses` are reserved too:
+they are the engine of the [licence policy](./dependency-licenses.md#licence-issues)'s issues and
+the scanner's licence pass, so `engine: license` and `engine: trivy-licenses` are configuration
+errors, and a SARIF tool of either name is reported as `ext-license` or `ext-trivy-licenses`.
+Don't import Ruff, stylelint, HTMLHint, detekt, SwiftLint, PHPStan, RuboCop, staticcheck, gosec,
+cppcheck or clang-tidy SARIF any more: Qualor runs
 Ruff (see [Python](#python-ruff)), stylelint and HTMLHint (see
 [CSS and SCSS](#css-and-scss-stylelint) and [HTML](#html-htmlhint)), detekt (see
 [Kotlin](#kotlin-detekt)), SwiftLint (see [Swift](#swift-swiftlint)), PHPStan (see

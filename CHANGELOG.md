@@ -38,9 +38,11 @@ All notable changes to Qualor are listed here, newest first. The format follows
 
 ### Changed
 
-- **Breaking:** `license` is now a reserved engine id, the engine of the licence policy's issues.
-  A `qualor.yml` `sarif:` entry with `engine: license` is a configuration error (exit 2): rename
-  it. A SARIF file whose tool is named `license` is reported as `ext-license`.
+- **Breaking:** `license` and `trivy-licenses` are now reserved engine ids: `license` is the engine
+  of the licence policy's issues, `trivy-licenses` the scanner's licence pass. A `qualor.yml`
+  `sarif:` entry with `engine: license` or `engine: trivy-licenses` is a configuration error
+  (exit 2): rename it. A SARIF file whose tool is named `license` or `trivy-licenses` is reported
+  as `ext-license` or `ext-trivy-licenses`.
 
 ## [0.8.0] - 2026-10-14
 
