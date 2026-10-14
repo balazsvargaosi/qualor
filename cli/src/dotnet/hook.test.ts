@@ -163,11 +163,14 @@ describe('the hook text', () => {
   it('records the Razor views of the project items as razor-view lines, absolute and once each (R-11)', () => {
     // The format stays v1: the engine's reader ignores keys it does not know.
     expect(text).toContain('qualor-compilation=1');
-    for (const item of ['Content', 'RazorGenerate', 'RazorCompile', 'AdditionalFiles']) {
+    for (const item of ['Content', 'RazorGenerate', 'AdditionalFiles']) {
       expect(text).toContain(
         `<_QualorRazorView Include="@(${item})" Condition="'%(${item}.Extension)' == '.cshtml'" />`,
       );
     }
+    // The Razor SDK's RazorCompile items (ASP.NET Core 2.1 to 5.0) are the generated C# files of
+    // the views, never a .cshtml: they are not read.
+    expect(text).not.toContain('RazorCompile');
     // A None view only when the project copies it to its own output: nopCommerce's Nop.Web holds
     // the plugins' built views as None items (published only), which are no views of its own.
     expect(text).toContain(

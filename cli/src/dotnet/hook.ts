@@ -125,7 +125,6 @@ export function hookText(): string {
       <_QualorRazorView Include="@(Content)" Condition="'%(Content.Extension)' == '.cshtml'" />
       <_QualorRazorView Include="@(None)" Condition="'%(None.Extension)' == '.cshtml' and '%(None.CopyToOutputDirectory)' != '' and '%(None.CopyToOutputDirectory)' != 'Never'" />
       <_QualorRazorView Include="@(RazorGenerate)" Condition="'%(RazorGenerate.Extension)' == '.cshtml'" />
-      <_QualorRazorView Include="@(RazorCompile)" Condition="'%(RazorCompile.Extension)' == '.cshtml'" />
       <_QualorRazorView Include="@(AdditionalFiles)" Condition="'%(AdditionalFiles.Extension)' == '.cshtml'" />
     </ItemGroup>
     <ItemGroup>
