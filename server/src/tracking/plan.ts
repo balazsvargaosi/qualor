@@ -2,6 +2,7 @@ import type { IssueKind, Quality, Report, Severity } from '@qualor/shared';
 import { uuidv7 } from '../db/ids';
 import type { AcceptedFinding } from '../ingest/state';
 import type { NewCodeClassifier } from '../newcode/lines';
+import { SERVER_ENGINES } from '../rules/server-engines';
 import { matchFindings, renamer, type Trackable } from './match';
 
 export type IssueStatus = 'open' | 'resolved' | 'wont_fix' | 'false_positive' | 'closed';
@@ -133,16 +134,6 @@ export interface TrackingPlan {
   live: LiveIssue[];
 }
 
-/** The engine of the licence policy findings, which the server makes itself (6M §6). */
-export const LICENSE_ENGINE = 'license';
-
-/**
- * Engines only the server runs. Whether one ran comes from {@link PlanInput.serverOkEngines},
- * never from the report: a report entry claiming one with status ok would otherwise close its
- * issues without the server having judged anything (6M Review Focus 1).
- */
-export const SERVER_ENGINES: ReadonlySet<string> = new Set([LICENSE_ENGINE]);
-
 export interface PlanInput {
   report: Report;
   findings: readonly AcceptedFinding[];
@@ -152,7 +143,11 @@ export interface PlanInput {
   now: Date;
   /** By position in `findings`; see data-model.md §5.4. */
   inherited?: ReadonlyMap<number, InheritedIssue>;
-  /** The {@link SERVER_ENGINES} that ran for this analysis with status ok. */
+  /**
+   * The server engines (rules/server-engines.ts) that ran for this analysis with status ok.
+   * Whether one ran comes from here, never from the report: a report entry claiming one with
+   * status ok would otherwise close its issues without the server having judged anything.
+   */
   serverOkEngines?: readonly string[];
 }
 

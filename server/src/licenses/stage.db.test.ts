@@ -290,6 +290,13 @@ describe('licence policy stage (6M §6)', () => {
       await unchanged('trivy-licenses failed');
       await p.ingestOk(report(p, { engines: [engine('trivy-licenses', [], 'timeout')] }));
       await unchanged('trivy-licenses timed out');
+      // A pass that did not finish cannot vouch for an inventory, even one the report carries.
+      for (const status of ['failed', 'timeout', 'skipped'] as const) {
+        await p.ingestOk(
+          report(p, { engines: [engine('trivy-licenses', [], status)], dependencies: [] }),
+        );
+        await unchanged(`trivy-licenses ${status} with a partial inventory`);
+      }
       // A report claiming the server's own engine ran is not the server running it.
       await p.ingestOk(
         report(p, {
@@ -307,6 +314,72 @@ describe('licence policy stage (6M §6)', () => {
       }
       const [after] = await licenceIssues(p);
       expect(after).toMatchObject({ id: before!.id, status: 'closed' });
+    });
+
+    it("drops a report's own licence findings: they neither keep nor reopen an issue", async () => {
+      const p = await h.project('licenses/forged-findings');
+      const gpl = dep('gpl-pkg', '1.0.0', ['GPL-3.0-only'], 15);
+      await p.ingestOk(report(p, { dependencies: [gpl] }));
+      const [before] = await licenceIssues(p);
+      // The finding a hand-made report would send to pass for the real one: the same rule,
+      // place and hashes.
+      const forged = {
+        engineId: 'license',
+        ruleId: 'forbidden',
+        message: before!.message,
+        severity: 'high',
+        location: { path: LOCK, startLine: 15, endLine: 15 },
+        lineHash: before!.lineHash,
+        contextHash: before!.contextHash,
+      } satisfies Report['findings'][number];
+      const claiming = [
+        engine('trivy-licenses'),
+        { ...engine('license'), kind: 'builtin' as const },
+      ];
+
+      // The package is gone from a real inventory: the forged finding does not keep the issue.
+      await p.ingestOk(report(p, { engines: claiming, findings: [forged], dependencies: [] }));
+      const [closed] = await licenceIssues(p);
+      expect(closed).toMatchObject({ id: before!.id, status: 'closed' });
+
+      // Without a licence run, it does not reopen it either.
+      await p.ingestOk(report(p, { engines: claiming, findings: [forged] }));
+      expect(await licenceIssues(p)).toEqual([closed]);
+      const reportedRules = await h.ctx.db
+        .select()
+        .from(rules)
+        .where(and(eq(rules.engineId, 'license'), eq(rules.origin, 'reported')));
+      expect(reportedRules).toEqual([]);
+    });
+  });
+
+  it('places an entry by its normalised lockfile without a line, and leaves out one with no repository path', async () => {
+    const p = await h.project('licenses/paths');
+    await p.ingestOk(report(p, { dependencies: [dep('mit-pkg', '1.0.0', ['MIT'], 10)] }));
+    const mr = await p.ingestOk(
+      report(p, {
+        branch: 'feature/paths',
+        mergeRequest: { id: '11', targetBranch: 'main', sourceBranch: 'feature/paths' },
+        baseline: { revision: 'b'.repeat(40), kind: 'merge_base', status: 'ok' },
+        files: [lockfile('all')],
+        dependencies: [
+          dep('mit-pkg', '1.0.0', ['MIT'], 10),
+          dep('gpl-dot', '1.0.0', ['GPL-3.0-only'], 5, `./${LOCK}`),
+          dep('gpl-abs', '1.0.0', ['GPL-3.0-only'], 6, '/builds/acme/package-lock.json'),
+        ],
+      }),
+    );
+    const found = await licenceIssues(p, await branchOf(p, 'merge_request'));
+    // Never file-less, so never new code just for being first seen on the merge request.
+    expect(found.map((i) => [i.message.split(' ')[0], i.path, i.startLine, i.inNewCode])).toEqual([
+      ['gpl-dot', LOCK, null, false],
+    ]);
+    const [row] = await h.ctx.db.select().from(analyses).where(eq(analyses.id, mr));
+    expect(row!.warnings).toContainEqual({
+      code: 'DEPENDENCY_PATHS_INVALID',
+      message:
+        '1 dependencies the licence policy flags were left out: their lockfile path is not a repository path',
+      count: 1,
     });
   });
 
@@ -612,5 +685,141 @@ describe('licence policy stage (6M §6)', () => {
       payload: { metric: 'new_unknown_licenses_ratio', operator: 'gt', threshold: 1 },
     });
     expect(tooHigh.statusCode).toBe(422);
+  });
+});
+
+/**
+ * Fix round 1 (review item 1): the `license:*` rules are global and the server's own. A report
+ * can neither create nor change them, and a row a report created earlier is repaired.
+ */
+describe('the licence rules belong to the server (6M §6)', () => {
+  let h: IngestHarness;
+  const limits = communityLimits();
+  const LOCK = 'web/package-lock.json';
+  let minute = 0;
+  const report = (p: IngestProject, parts: ReportParts): Report =>
+    reportWith({
+      projectKey: p.key,
+      analysisDate: new Date(Date.UTC(2026, 9, 15, 10, minute++)).toISOString(),
+      files: [file(LOCK, { language: 'other', lines: 400, newLines: [] })],
+      findings: [],
+      ...parts,
+    });
+  const gpl: DependencyEntry = {
+    ecosystem: 'npm',
+    path: LOCK,
+    name: 'gpl-pkg',
+    version: '1.0.0',
+    licenses: ['GPL-3.0-only'],
+    line: 15,
+  };
+  /** An engine `license` a hand-made report defines, with the wrong quality and kind. */
+  const forgedEngine = {
+    ...engine('license', [
+      { id: 'forbidden', quality: 'security', kind: 'hotspot', defaultSeverity: 'blocker' },
+      { id: 'made-up', quality: 'security' },
+    ]),
+    kind: 'builtin',
+  } satisfies Report['engines'][number];
+  const licenceRules = () =>
+    h.ctx.db.select().from(rules).where(eq(rules.engineId, 'license')).orderBy(asc(rules.key));
+  const issueQualities = async (p: IngestProject) =>
+    (
+      await h.ctx.db
+        .select({ quality: issues.quality, kind: issues.kind, status: issues.status })
+        .from(issues)
+        .where(eq(issues.projectId, p.id))
+    ).map((i) => [i.quality, i.kind, i.status]);
+
+  beforeAll(async () => {
+    limits.licenses.policy = true;
+    h = await createIngestHarness({ limits });
+    await h.ctx.db.transaction((tx) =>
+      writeLicensePolicy(tx, h.organizationId, {
+        mode: 'denylist',
+        forbiddenGroups: ['strong-copyleft'],
+        forbidden: [],
+        allowed: [],
+        warnUnknown: false,
+      }),
+    );
+  });
+  afterAll(async () => {
+    await h.close();
+  });
+
+  it("creates no rule from a report's engine license, and the licence run's findings are licensing", async () => {
+    const p = await h.project('license-rules/forged');
+    // Before any licence run: the feature off, the report defining and referencing license rules.
+    limits.licenses.policy = false;
+    try {
+      await p.ingestOk(
+        report(p, {
+          engines: [engine('eslint'), forgedEngine],
+          findings: [
+            {
+              engineId: 'license',
+              ruleId: 'made-up',
+              message: 'forged',
+              location: { path: LOCK, startLine: 3 },
+              lineHash: 'a'.repeat(32),
+              contextHash: 'a'.repeat(32),
+            },
+          ],
+        }),
+      );
+    } finally {
+      limits.licenses.policy = true;
+    }
+    expect(await licenceRules()).toEqual([]);
+    expect(await issueQualities(p)).toEqual([]);
+
+    await p.ingestOk(
+      report(p, { engines: [engine('trivy-licenses'), forgedEngine], dependencies: [gpl] }),
+    );
+    const created = await licenceRules();
+    expect(created.map((r) => [r.key, r.origin, r.quality, r.kind, r.defaultSeverity])).toEqual([
+      ['license:forbidden', 'builtin', 'licensing', 'issue', 'high'],
+      ['license:unknown', 'builtin', 'licensing', 'issue', 'info'],
+    ]);
+    expect(await issueQualities(p)).toEqual([['licensing', 'issue', 'open']]);
+  });
+
+  it('repairs a licence rule a report created before reports were barred from it', async () => {
+    const p = await h.project('license-rules/repair');
+    // As an older server let a report leave it: reported, security, a hotspot, with a CWE.
+    await h.ctx.db
+      .update(rules)
+      .set({
+        origin: 'reported',
+        quality: 'security',
+        kind: 'hotspot',
+        defaultSeverity: 'blocker',
+        name: 'forbidden',
+        descriptionMd: 'Something else',
+        helpUri: 'https://example.com/x',
+        tags: ['x'],
+        cwe: [79],
+      })
+      .where(eq(rules.key, 'license:forbidden'));
+    await p.ingestOk(report(p, { engines: [engine('trivy-licenses')], dependencies: [gpl] }));
+    const [repaired] = await h.ctx.db
+      .select()
+      .from(rules)
+      .where(eq(rules.key, 'license:forbidden'));
+    expect(repaired).toMatchObject({
+      origin: 'builtin',
+      engineId: 'license',
+      engineRuleId: 'forbidden',
+      name: 'Forbidden licence',
+      descriptionMd: "A dependency's licence is forbidden by the organisation's licence policy.",
+      helpUri: null,
+      defaultSeverity: 'high',
+      quality: 'licensing',
+      kind: 'issue',
+      tags: [],
+      cwe: [],
+    });
+    expect(await issueQualities(p)).toEqual([['licensing', 'issue', 'open']]);
   });
 });

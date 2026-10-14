@@ -51,7 +51,7 @@ export interface IngestionState {
   findings?: readonly AcceptedFinding[];
   /**
    * Set by the licence policy stage when it judged the report's inventory: the server engines
-   * (tracking/plan.ts `SERVER_ENGINES`) that ran with status ok, so tracking may close their
+   * (rules/server-engines.ts) that ran with status ok, so tracking may close their
    * issues that were not found again. A report's own entry for one of them never counts.
    */
   serverOkEngines?: readonly string[];

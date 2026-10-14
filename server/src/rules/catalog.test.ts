@@ -21,4 +21,24 @@ describe('ruleRowsFromReport', () => {
       'my-tool:zzz-bare',
     ]);
   });
+
+  it("never takes a server engine's rules from a report, defined or only referenced (6M §6)", () => {
+    const report = reportWith({
+      engines: [
+        engine('eslint', [{ id: 'no-console' }]),
+        engine('license', [
+          { id: 'forbidden', quality: 'security', kind: 'hotspot', defaultSeverity: 'blocker' },
+        ]),
+      ],
+      files: [file('src/a.ts')],
+      findings: [
+        finding({ line: 1 }),
+        finding({ engineId: 'license', ruleId: 'forbidden', line: 2 }),
+        finding({ engineId: 'license', ruleId: 'made-up', line: 3 }),
+      ],
+    });
+    const { withMetadata, bare } = ruleRowsFromReport(report);
+    expect(withMetadata.map((r) => r.key)).toEqual(['eslint:no-console']);
+    expect(bare).toEqual([]);
+  });
 });

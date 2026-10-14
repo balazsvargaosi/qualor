@@ -11,6 +11,7 @@ import type { Executor } from '../db/client';
 import { uuidv7 } from '../db/ids';
 import { rules } from '../db/schema';
 import type { ResolvedRule } from '../ingest/state';
+import { SERVER_ENGINES } from './server-engines';
 
 export function ruleKey(engineId: string, ruleId: string): string {
   return `${engineId}:${ruleId}`;
@@ -48,6 +49,8 @@ export function ruleRowsFromReport(report: Report): {
 } {
   const withMetadata = new Map<string, ReportedRuleRow>();
   for (const engine of report.engines) {
+    // A server engine's rules are the server's own (6M §6): a report never defines them.
+    if (SERVER_ENGINES.has(engine.id)) continue;
     const defaults = engineRuleDefaults(engine.id);
     for (const meta of engine.rules) {
       const key = ruleKey(engine.id, meta.id);
@@ -71,6 +74,7 @@ export function ruleRowsFromReport(report: Report): {
   }
   const bare = new Map<string, ReportedRuleRow>();
   for (const finding of report.findings) {
+    if (SERVER_ENGINES.has(finding.engineId)) continue;
     const key = ruleKey(finding.engineId, finding.ruleId);
     if (withMetadata.has(key) || bare.has(key)) continue;
     const defaults = engineRuleDefaults(finding.engineId);
@@ -181,7 +185,8 @@ const METADATA_SET = sql.raw(METADATA.map((c) => `${c} = n.${c}`).join(', '));
 /**
  * data-model.md §4.4: a rule never seen before is created with `origin = 'reported'`; a reported
  * rule's metadata is refreshed when a report carries different metadata; a `builtin` rule is
- * never overwritten. Returns every rule the report's findings reference, by key.
+ * never overwritten. Returns every rule the report's findings reference, by key. A server engine's
+ * rules and findings (rules/server-engines.ts) are left out: the rules stage drops those findings.
  *
  * Rules are global (shared by every organisation), so an ingestion must not hold locks on
  * rows it does not change: an `INSERT … ON CONFLICT DO UPDATE` locks every conflicting row, even
@@ -231,7 +236,13 @@ export async function upsertReportedRules(
       SELECT ${VALUES} FROM jsonb_to_recordset(${chunk}::jsonb) AS ${RECORD}
       ON CONFLICT (key) DO NOTHING`);
   }
-  const referenced = [...new Set(report.findings.map((f) => ruleKey(f.engineId, f.ruleId)))];
+  const referenced = [
+    ...new Set(
+      report.findings
+        .filter((f) => !SERVER_ENGINES.has(f.engineId))
+        .map((f) => ruleKey(f.engineId, f.ruleId)),
+    ),
+  ];
   const resolved = new Map<string, ResolvedRule>();
   if (referenced.length === 0) return resolved;
   const lookup = async (keys: readonly string[]) => {

@@ -4,12 +4,13 @@ import {
   filelessHash,
   LICENSE_GROUPS,
   licenseClassifier,
+  normalizeRepoPath,
   validateRepoPath,
   type IssueKind,
   type Quality,
   type Severity,
 } from '@qualor/shared';
-import { inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { Executor } from '../db/client';
 import { uuidv7 } from '../db/ids';
 import { rules } from '../db/schema';
@@ -21,11 +22,17 @@ import {
   type ResolvedRule,
 } from '../ingest/state';
 import { mergeDependencyEntries, type DependencyRowInput } from '../measures/store';
-import { LICENSE_ENGINE } from '../tracking/plan';
+import { LICENSE_ENGINE } from '../rules/server-engines';
 import { policyFor } from './settings';
 
 export const FORBIDDEN_RULE_KEY = `${LICENSE_ENGINE}:forbidden`;
 export const UNKNOWN_RULE_KEY = `${LICENSE_ENGINE}:unknown`;
+
+/** The CLI's engine entry for its licence pass (cli/src/analyzers/trivy-licenses.ts). */
+const LICENSE_PASS_ENGINE = 'trivy-licenses';
+
+/** The analysis warning for inventory entries whose lockfile path is not a repository path. */
+export const DEPENDENCY_PATHS_INVALID = 'DEPENDENCY_PATHS_INVALID';
 
 interface BuiltinRule {
   key: string;
@@ -57,9 +64,12 @@ const QUALITY: Quality = 'licensing';
 const KIND: IssueKind = 'issue';
 
 /**
- * Creates the two licence rules when they are missing and reads them back. A rule that exists is
- * left as it is (`ON CONFLICT DO NOTHING`, so no row lock), as the rules stage leaves a built-in
- * rule (data-model.md §4.4).
+ * Creates the two licence rules when they are missing, repairs one a report created (origin
+ * `reported`, before reports were barred from the `license` engine), and reads them back.
+ *
+ * A built-in row is never touched: the insert is `ON CONFLICT DO NOTHING` and the repair matches
+ * only `origin = 'reported'`, so neither takes a row lock on the usual path. The read-back is
+ * checked: rules are global, and a licence finding must never take another quality (6M L6).
  */
 export async function ensureLicenseRules(tx: Executor): Promise<Map<string, ResolvedRule>> {
   await tx
@@ -79,6 +89,27 @@ export async function ensureLicenseRules(tx: Executor): Promise<Map<string, Reso
       })),
     )
     .onConflictDoNothing({ target: rules.key });
+  for (const r of LICENSE_RULES) {
+    await tx
+      .update(rules)
+      .set({
+        origin: 'builtin',
+        engineId: LICENSE_ENGINE,
+        engineRuleId: r.engineRuleId,
+        name: r.name,
+        descriptionMd: r.description,
+        helpUri: null,
+        languages: [],
+        defaultSeverity: r.severity,
+        quality: QUALITY,
+        kind: KIND,
+        tags: [],
+        cwe: [],
+        status: 'ready',
+        updatedAt: sql`now()`,
+      })
+      .where(and(eq(rules.key, r.key), eq(rules.origin, 'reported')));
+  }
   const rows = await tx
     .select({
       id: rules.id,
@@ -96,16 +127,20 @@ export async function ensureLicenseRules(tx: Executor): Promise<Map<string, Reso
         LICENSE_RULES.map((r) => r.key),
       ),
     );
-  return new Map(
-    rows.map((r) => [
-      r.key,
-      {
-        ...r,
-        defaultSeverity: r.defaultSeverity as Severity,
-        quality: r.quality as Quality,
-      },
-    ]),
-  );
+  const resolved = new Map<string, ResolvedRule>();
+  for (const r of rows) {
+    if (r.engineId !== LICENSE_ENGINE || r.quality !== QUALITY || r.kind !== KIND) {
+      throw new Error(
+        `licence rule ${r.key} is ${r.engineId}/${r.quality}/${r.kind}, not ${LICENSE_ENGINE}/${QUALITY}/${KIND}`,
+      );
+    }
+    resolved.set(r.key, {
+      ...r,
+      defaultSeverity: r.defaultSeverity as Severity,
+      quality: QUALITY,
+    });
+  }
+  return resolved;
 }
 
 const GROUP_LABELS = new Map(LICENSE_GROUPS.map((g) => [g.id, g.label]));
@@ -121,28 +156,42 @@ function compareEntries(a: DependencyRowInput, b: DependencyRowInput): number {
   );
 }
 
+/**
+ * Where a finding on this entry goes: its lockfile and line; the lockfile alone when the
+ * scanner gave no line, or when the path is not a repository path as written but normalises to
+ * one (`./web/package-lock.json`, backslashes: the line then may not be that file's); null when
+ * no repository path can be made of it.
+ */
+function locationOf(entry: DependencyRowInput): IngestedFinding['location'] {
+  if (validateRepoPath(entry.path) === null) {
+    return entry.line === null
+      ? { path: entry.path }
+      : { path: entry.path, startLine: entry.line, endLine: entry.line };
+  }
+  try {
+    const path = normalizeRepoPath(entry.path);
+    return validateRepoPath(path) === null ? { path } : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The finding of one inventory entry under one rule: the package in its lockfile. */
 function licenseFinding(
   entry: DependencyRowInput,
+  location: NonNullable<IngestedFinding['location']>,
   rule: ResolvedRule,
   message: string,
 ): IngestedFinding {
   // The package's identity, as Trivy's findings use it (sarif/normalize.ts): stable when the
   // lockfile is re-ordered or the entry moves; a version bump is another package.
   const hash = filelessHash(rule.key, `${entry.name}@${entry.version}`, entry.path);
-  // A path a report could not carry as a location (a foreign scanner's absolute path, say) keeps
-  // the finding, file-less: its identity still names the lockfile.
-  const placed = validateRepoPath(entry.path) === null;
   return {
     engineId: LICENSE_ENGINE,
     ruleId: rule.key.slice(LICENSE_ENGINE.length + 1),
     message,
     severity: rule.defaultSeverity,
-    location: !placed
-      ? null
-      : entry.line === null
-        ? { path: entry.path }
-        : { path: entry.path, startLine: entry.line, endLine: entry.line },
+    location,
     lineHash: hash,
     contextHash: hash,
   };
@@ -153,27 +202,22 @@ function licenseFinding(
  * adds a finding of engine `license` per forbidden entry (and per unknown one when the policy
  * warns on unknown licences), before tracking, so they become ordinary issues.
  *
- * It runs only when the feature is licensed and the report carries an inventory. Then it tells
- * tracking that the `license` engine ran (`serverOkEngines`), which closes the licence issues not
- * found again: without a policy, every one of them. Otherwise it does nothing, and tracking leaves
- * every open licence issue as it is (a lapsed licence, an older CLI, a failed or timed-out pass).
+ * It runs only when the feature is licensed, the report carries an inventory, and the report's
+ * licence pass (`trivy-licenses`), when it names one, has status ok: a partial inventory must not
+ * close anything. Then it tells tracking that the `license` engine ran (`serverOkEngines`), which
+ * closes the licence issues not found again: without a policy, every one of them. Otherwise it does
+ * nothing, and tracking leaves every open licence issue as it is (a lapsed licence, an older CLI,
+ * a failed or timed-out pass). A report's own `license` findings never get here: the rules stage
+ * drops them.
  */
 export const licensePolicyStage: IngestionStage = {
   name: 'license-policy',
   async run(ctx) {
-    // Licence findings are the server's alone: a report's findings of engine `license` (a
-    // hand-made report) are dropped, so they can neither open nor keep a licence issue.
-    const reported = requireState(ctx.state, 'findings');
-    const findings = reported.filter((f) => f.rule.engineId !== LICENSE_ENGINE);
-    if (findings.length !== reported.length) {
-      ctx.logger.debug(
-        { analysisId: ctx.analysisId, dropped: reported.length - findings.length },
-        'dropped report findings of the server-only licence engine',
-      );
-      ctx.state.findings = findings;
-    }
+    const findings = requireState(ctx.state, 'findings');
     const entries = ctx.report.dependencies;
     if (!ctx.limits.licenses.policy || entries === undefined) return;
+    const pass = ctx.report.engines.filter((e) => e.id === LICENSE_PASS_ENGINE);
+    if (pass.some((e) => e.status !== 'ok')) return;
 
     const policy = (await policyFor(ctx.tx, ctx.project.organizationId)) ?? EMPTY_LICENSE_POLICY;
     const resolved = await ensureLicenseRules(ctx.tx);
@@ -183,30 +227,33 @@ export const licensePolicyStage: IngestionStage = {
 
     const classify = licenseClassifier(policy);
     const made: { finding: IngestedFinding; rule: ResolvedRule }[] = [];
+    let unplaced = 0;
     // Merged as the inventory store merges them: one finding per (path, ecosystem, name, version).
     for (const entry of mergeDependencyEntries(entries).sort(compareEntries)) {
       const verdict = classify(entry.licenses);
       const version = entry.version || 'unknown version';
+      const add = (rule: ResolvedRule, message: string) => {
+        const location = locationOf(entry);
+        // Never file-less: a file-less finding first seen now would count as new code.
+        if (location === null) unplaced += 1;
+        else made.push({ rule, finding: licenseFinding(entry, location, rule, message) });
+      };
       if (verdict.verdict === 'forbidden') {
         const group = verdict.group === null ? undefined : GROUP_LABELS.get(verdict.group);
-        made.push({
-          rule: forbiddenRule,
-          finding: licenseFinding(
-            entry,
-            forbiddenRule,
-            `${entry.name} ${version} is licensed ${entry.licenses.join(' AND ')}, which the organisation's licence policy forbids${group ? ` (${group})` : ''}.`,
-          ),
-        });
+        add(
+          forbiddenRule,
+          `${entry.name} ${version} is licensed ${entry.licenses.join(' AND ')}, which the organisation's licence policy forbids${group ? ` (${group})` : ''}.`,
+        );
       } else if (verdict.verdict === 'unknown' && policy.warnUnknown) {
-        made.push({
-          rule: unknownRule,
-          finding: licenseFinding(
-            entry,
-            unknownRule,
-            `${entry.name} ${version} has no licence Qualor could read.`,
-          ),
-        });
+        add(unknownRule, `${entry.name} ${version} has no licence Qualor could read.`);
       }
+    }
+    if (unplaced > 0) {
+      ctx.warnings.push({
+        code: DEPENDENCY_PATHS_INVALID,
+        message: `${unplaced} dependencies the licence policy flags were left out: their lockfile path is not a repository path`,
+        count: unplaced,
+      });
     }
 
     const fingerprints = computeFingerprints(
