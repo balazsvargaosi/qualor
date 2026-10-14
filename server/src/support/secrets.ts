@@ -83,7 +83,8 @@ function databasePassword(url: string | null): string[] {
  * encrypted, so the bundle can search its texts for them. Held in memory for one bundle only.
  * Covers QUALOR_SECRET_KEY, the database password, the bootstrap password, the licence key text
  * (variable, file or upload), the LLM API key, the audit stream secret, webhook secrets, SSO
- * client secrets and SP keys, SCM tokens, GitHub App private keys and webhook secrets.
+ * client secrets and SP keys, SCM tokens, GitHub App private keys and webhook secrets, and the
+ * SMTP password of QUALOR_SMTP_URL and of Settings → Email.
  */
 export async function configuredSecrets(db: Executor, config: Config): Promise<string[]> {
   const key = encryptionKey(config.secretKey);
