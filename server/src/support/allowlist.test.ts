@@ -269,6 +269,7 @@ describe('the settings allowlist copies whole subtrees only of known shape (Ruli
         'closedIssuesDays',
         'finishedJobsDays',
         'llmRequestsDays',
+        'mailMessagesDays',
         'webhookDeliveriesDays',
       ],
       current: Object.keys(DEFAULT_RETENTION),
