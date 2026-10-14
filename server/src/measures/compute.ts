@@ -301,15 +301,27 @@ export interface IssueCountRow {
   count: number;
 }
 
+/** The visible issues (open, not a duplicate, kind issue) as the issue measures count them. */
+export interface VisibleIssueCounts {
+  rows: readonly IssueCountRow[];
+  /** 6M §7: visible issues of rule `license:forbidden`, all and in new code. */
+  forbiddenLicenses: { overall: number; new: number };
+}
+
 const SEVERITY_KEYS: readonly Severity[] = ['blocker', 'high', 'medium', 'low', 'info'];
-const QUALITY_KEYS: readonly Quality[] = ['security', 'reliability', 'maintainability'];
+const QUALITY_KEYS: readonly Quality[] = [
+  'security',
+  'reliability',
+  'maintainability',
+  'licensing',
+];
 
 /**
- * gates.md §2 issue counts and ratings. `rows` are visible issues only (open, not a duplicate,
- * kind issue); `accepted` and `falsePositives` count wont_fix and false_positive issues.
+ * gates.md §2 issue counts and ratings, and 6M §7's forbidden licences (`licensing` has no
+ * rating). `accepted` and `falsePositives` count wont_fix and false_positive issues.
  */
 export function issueMeasures(
-  rows: readonly IssueCountRow[],
+  { rows, forbiddenLicenses }: VisibleIssueCounts,
   accepted: number,
   falsePositives: number,
   baselineUnavailable: boolean,
@@ -337,6 +349,7 @@ export function issueMeasures(
         `${q}_issues`,
         sum((r) => r.quality === q),
       );
+    set('forbidden_licenses', forbiddenLicenses[scope]);
     for (const q of ['security', 'reliability'] as const) {
       const severities = inScope
         .filter((r) => r.quality === q && r.count > 0)
@@ -347,4 +360,12 @@ export function issueMeasures(
   values.accepted_issues = accepted;
   values.false_positive_issues = falsePositives;
   return values;
+}
+
+/**
+ * 6M §7: the share of the branch's inventory entries without a licence (as the Dependencies tab
+ * counts them), in percent; null without an entry.
+ */
+export function dependencyMeasures(counts: { total: number; unknown: number }): MeasureValues {
+  return { unknown_licenses_ratio: ratio(counts.unknown, counts.total) };
 }

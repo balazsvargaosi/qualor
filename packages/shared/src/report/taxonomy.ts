@@ -48,6 +48,8 @@ export const BUILTIN_ENGINES = [
   'cppcheck',
   'clang-tidy',
   'qualor',
+  // 6M §6: the server's licence policy findings. Reserved: no report engine may take the id.
+  'license',
 ] as const;
 export type BuiltinEngine = (typeof BUILTIN_ENGINES)[number];
 

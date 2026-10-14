@@ -19,7 +19,7 @@ const NONE = new Set([
   'accepted_issues',
   'false_positive_issues',
 ]);
-const PERCENT = /(^|_)(coverage|density)$/;
+const PERCENT = /(^|_)(coverage|density|ratio)$/;
 
 const base = (metric: string) => (metric.startsWith('new_') ? metric.slice(4) : metric);
 
@@ -30,7 +30,7 @@ export function direction(metric: string): Direction {
   return 'lower_is_better';
 }
 
-/** Coverages and densities, shown as "65.7 %" and changing by "pts". */
+/** Coverages, densities and ratios, shown as "65.7 %" and changing by "pts". */
 export function isPercentMetric(metric: string): boolean {
   return PERCENT.test(base(metric));
 }

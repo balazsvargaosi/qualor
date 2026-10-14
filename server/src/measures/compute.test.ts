@@ -3,13 +3,21 @@ import { describe, expect, it } from 'vitest';
 import { file, reportWith, type ReportParts } from '../../test/reports';
 import { newCodeClassifier } from '../newcode/lines';
 import {
+  dependencyMeasures,
   fileCoverageCounts,
   intersectRanges,
   issueMeasures,
   lineSet,
   reportMeasures,
   subtractRanges,
+  type IssueCountRow,
+  type VisibleIssueCounts,
 } from './compute';
+
+const visible = (
+  rows: IssueCountRow[],
+  forbiddenLicenses: VisibleIssueCounts['forbiddenLicenses'] = { overall: 0, new: 0 },
+): VisibleIssueCounts => ({ rows, forbiddenLicenses });
 
 const measure = (parts: ReportParts) => {
   const report = reportWith(parts);
@@ -154,11 +162,11 @@ describe('reportMeasures (gates.md §2–§3)', () => {
 describe('issueMeasures (gates.md §2)', () => {
   it('counts by severity and quality, rates by the worst severity, and splits new code', () => {
     const m = issueMeasures(
-      [
+      visible([
         { severity: 'high', quality: 'security', inNewCode: true, count: 2 },
         { severity: 'low', quality: 'reliability', inNewCode: false, count: 3 },
         { severity: 'info', quality: 'maintainability', inNewCode: true, count: 1 },
-      ],
+      ]),
       4,
       5,
       false,
@@ -179,8 +187,46 @@ describe('issueMeasures (gates.md §2)', () => {
     });
   });
 
+  it('counts licensing issues and forbidden licences, without a licensing rating', () => {
+    const m = issueMeasures(
+      visible(
+        [
+          { severity: 'high', quality: 'licensing', inNewCode: true, count: 1 },
+          { severity: 'high', quality: 'licensing', inNewCode: false, count: 2 },
+          { severity: 'info', quality: 'licensing', inNewCode: false, count: 4 },
+        ],
+        { overall: 3, new: 1 },
+      ),
+      0,
+      0,
+      false,
+    );
+    expect(m).toMatchObject({
+      issues: 7,
+      high_issues: 3,
+      licensing_issues: 7,
+      new_licensing_issues: 1,
+      forbidden_licenses: 3,
+      new_forbidden_licenses: 1,
+      security_issues: 0,
+      security_rating: 1,
+      reliability_rating: 1,
+    });
+    expect(m).not.toHaveProperty('licensing_rating');
+    expect(issueMeasures(visible([], { overall: 2, new: 1 }), 0, 0, true)).toMatchObject({
+      forbidden_licenses: 2,
+      new_forbidden_licenses: null,
+    });
+  });
+
+  it('measures the share of inventory entries without a licence', () => {
+    expect(dependencyMeasures({ total: 8, unknown: 2 })).toEqual({ unknown_licenses_ratio: 25 });
+    expect(dependencyMeasures({ total: 3, unknown: 1 })).toEqual({ unknown_licenses_ratio: 33.3 });
+    expect(dependencyMeasures({ total: 0, unknown: 0 })).toEqual({ unknown_licenses_ratio: null });
+  });
+
   it('nulls new-code issue measures without a baseline', () => {
-    const m = issueMeasures([], 0, 0, true);
+    const m = issueMeasures(visible([]), 0, 0, true);
     expect(m).toMatchObject({
       issues: 0,
       security_rating: 1,
@@ -193,7 +239,8 @@ describe('issueMeasures (gates.md §2)', () => {
     const report = reportWith({ files: [file('src/a.ts')] });
     const keys = Object.keys({
       ...reportMeasures(report, newCodeClassifier(report)),
-      ...issueMeasures([], 0, 0, false),
+      ...issueMeasures(visible([]), 0, 0, false),
+      ...dependencyMeasures({ total: 0, unknown: 0 }),
     });
     expect(keys.sort()).toEqual(allMetricKeys().sort());
   });

@@ -1,4 +1,5 @@
 import { gateStage } from '../gates/stage';
+import { licensePolicyStage } from '../licenses/stage';
 import { measuresStage } from '../measures/stage';
 import { rulesStage } from '../rules/stage';
 import { scmStage } from '../scm/stage';
@@ -8,11 +9,13 @@ import type { IngestionStage } from './process';
 
 /**
  * Order matters: each stage reads what earlier ones put in `ctx.state` (state.ts). The SCM stage
- * only enqueues a decoration job (scm.md §4.1). The webhook stage stays last (stages.test.ts): its
+ * only enqueues a decoration job (scm.md §4.1). The licence policy stage adds its findings to the
+ * rules stage's before tracking (6M §6). The webhook stage stays last (stages.test.ts): its
  * payload is the analysis as ingestion stores it.
  */
 export const DEFAULT_STAGES: readonly IngestionStage[] = [
   rulesStage,
+  licensePolicyStage,
   trackingStage,
   measuresStage,
   gateStage,

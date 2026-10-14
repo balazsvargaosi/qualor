@@ -16,10 +16,23 @@ import {
   fileCoverageCounts,
   newLineRanges,
   type IssueCountRow,
+  type VisibleIssueCounts,
 } from './compute';
 
-/** gates.md §2: visible issues are open, not a duplicate, and of kind `issue`. */
-export async function visibleIssueCounts(tx: Executor, branchId: string): Promise<IssueCountRow[]> {
+/**
+ * gates.md §2: visible issues are open, not a duplicate, and of kind `issue`. Counted by severity,
+ * quality and new code, and (6M §7) the visible issues of rule `license:forbidden` on their own.
+ */
+export async function visibleIssueCounts(
+  tx: Executor,
+  branchId: string,
+): Promise<VisibleIssueCounts> {
+  const visible = and(
+    eq(issues.branchId, branchId),
+    eq(issues.status, 'open'),
+    isNull(issues.duplicateOfIssueId),
+    eq(issues.kind, 'issue'),
+  );
   const rows = await tx
     .select({
       severity: issues.severity,
@@ -28,21 +41,48 @@ export async function visibleIssueCounts(tx: Executor, branchId: string): Promis
       count: sql<number>`count(*)::int`,
     })
     .from(issues)
+    .where(visible)
+    .groupBy(issues.severity, issues.quality, issues.inNewCode);
+  const [forbidden] = await tx
+    .select({
+      overall: sql<number>`count(*)::int`,
+      new: sql<number>`count(*) FILTER (WHERE ${issues.inNewCode})::int`,
+    })
+    .from(issues)
     .where(
       and(
-        eq(issues.branchId, branchId),
-        eq(issues.status, 'open'),
-        isNull(issues.duplicateOfIssueId),
-        eq(issues.kind, 'issue'),
+        visible,
+        sql`${issues.ruleId} = (SELECT id FROM rules WHERE key = ${FORBIDDEN_LICENSE_RULE_KEY})`,
       ),
-    )
-    .groupBy(issues.severity, issues.quality, issues.inNewCode);
-  return rows.map((r) => ({
-    severity: r.severity as Severity,
-    quality: r.quality as Quality,
-    inNewCode: r.inNewCode,
-    count: r.count,
-  }));
+    );
+  return {
+    rows: rows.map((r): IssueCountRow => ({
+      severity: r.severity as Severity,
+      quality: r.quality as Quality,
+      inNewCode: r.inNewCode,
+      count: r.count,
+    })),
+    forbiddenLicenses: { overall: forbidden?.overall ?? 0, new: forbidden?.new ?? 0 },
+  };
+}
+
+/** The rule of 6M's forbidden licence findings (licenses/stage.ts `FORBIDDEN_RULE_KEY`). */
+const FORBIDDEN_LICENSE_RULE_KEY = 'license:forbidden';
+
+/** 6M §7: how many entries the branch's inventory snapshot holds, and how many have no licence. */
+export async function dependencyLicenseCounts(
+  tx: Executor,
+  branchId: string,
+): Promise<{ total: number; unknown: number }> {
+  const d = branchDependencies;
+  const [row] = await tx
+    .select({
+      total: sql<number>`count(*)::int`,
+      unknown: sql<number>`count(*) FILTER (WHERE cardinality(${d.licenses}) = 0)::int`,
+    })
+    .from(d)
+    .where(eq(d.branchId, branchId));
+  return { total: row?.total ?? 0, unknown: row?.unknown ?? 0 };
 }
 
 /** `accepted_issues` (wont_fix) and `false_positive_issues`: kind `issue`, duplicates excluded (ruling M1). */

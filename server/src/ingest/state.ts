@@ -11,11 +11,24 @@ export interface ResolvedRule {
   cwe: readonly number[];
 }
 
-/** A report finding that survived the profile filter, with its rule and effective severity. */
+type ReportLocation = NonNullable<ReportFinding['location']>;
+
+/**
+ * A report finding, or one the server makes (6M §6: a licence finding on a lockfile entry the
+ * scanner gave no line, which has a path and no line, as a report finding never does).
+ */
+export type IngestedFinding = Omit<ReportFinding, 'location'> & {
+  location: (Omit<ReportLocation, 'startLine'> & { startLine?: number }) | null;
+};
+
+/**
+ * A finding that survived the profile filter, with its rule and effective severity: a report
+ * finding (rules stage) or one the server made (the licence policy stage).
+ */
 export interface AcceptedFinding {
-  /** Position in `report.findings`. */
+  /** Position in `report.findings`; a server finding continues after the last report finding. */
   index: number;
-  finding: ReportFinding;
+  finding: IngestedFinding;
   rule: ResolvedRule;
   /** Profile `severity_override`, else the finding's own severity, else the rule default. */
   severity: Severity;
@@ -31,8 +44,17 @@ export type MeasureValues = Record<string, number | null>;
  * exactly one stage (in `DEFAULT_STAGES` order) and read by later ones via {@link requireState}.
  */
 export interface IngestionState {
-  /** Set by the rules stage: the findings that become (or match) issues. */
+  /**
+   * Set by the rules stage: the findings that become (or match) issues. The licence policy stage
+   * appends its own.
+   */
   findings?: readonly AcceptedFinding[];
+  /**
+   * Set by the licence policy stage when it judged the report's inventory: the server engines
+   * (tracking/plan.ts `SERVER_ENGINES`) that ran with status ok, so tracking may close their
+   * issues that were not found again. A report's own entry for one of them never counts.
+   */
+  serverOkEngines?: readonly string[];
   /** Set by the measures stage. */
   measures?: MeasureValues;
   /** Set by the gate stage. The hook later stages (webhooks, server step 13) read. */

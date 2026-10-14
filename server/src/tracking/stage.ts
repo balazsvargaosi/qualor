@@ -40,6 +40,7 @@ export async function buildTrackingPlan(ctx: IngestionContext): Promise<BuiltTra
     classifier: newCodeClassifier(ctx.report),
     now,
     inherited,
+    serverOkEngines: ctx.state.serverOkEngines ?? [],
   });
   return { plan, inherited };
 }

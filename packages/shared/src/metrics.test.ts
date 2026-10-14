@@ -34,6 +34,9 @@ describe('metric catalog', () => {
       'security_issues',
       'reliability_issues',
       'maintainability_issues',
+      'licensing_issues',
+      'forbidden_licenses',
+      'unknown_licenses_ratio',
       'accepted_issues',
       'false_positive_issues',
       'security_rating',
@@ -64,6 +67,13 @@ describe('metric catalog', () => {
     });
     expect(resolveMetricKey('new_ncloc')).toBeUndefined();
     expect(resolveMetricKey('new_accepted_issues')).toBeUndefined();
+    expect(resolveMetricKey('new_forbidden_licenses')).toMatchObject({ scope: 'new' });
+    expect(resolveMetricKey('new_licensing_issues')).toMatchObject({ scope: 'new' });
+    expect(resolveMetricKey('unknown_licenses_ratio')).toMatchObject({
+      definition: { type: 'percent', direction: 'lower_is_better', domain: 'issues' },
+    });
+    expect(resolveMetricKey('new_unknown_licenses_ratio')).toBeUndefined();
+    expect(resolveMetricKey('licensing_rating')).toBeUndefined();
     expect(resolveMetricKey('nope')).toBeUndefined();
   });
 

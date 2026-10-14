@@ -133,6 +133,16 @@ export interface TrackingPlan {
   live: LiveIssue[];
 }
 
+/** The engine of the licence policy findings, which the server makes itself (6M §6). */
+export const LICENSE_ENGINE = 'license';
+
+/**
+ * Engines only the server runs. Whether one ran comes from {@link PlanInput.serverOkEngines},
+ * never from the report: a report entry claiming one with status ok would otherwise close its
+ * issues without the server having judged anything (6M Review Focus 1).
+ */
+export const SERVER_ENGINES: ReadonlySet<string> = new Set([LICENSE_ENGINE]);
+
 export interface PlanInput {
   report: Report;
   findings: readonly AcceptedFinding[];
@@ -142,6 +152,8 @@ export interface PlanInput {
   now: Date;
   /** By position in `findings`; see data-model.md §5.4. */
   inherited?: ReadonlyMap<number, InheritedIssue>;
+  /** The {@link SERVER_ENGINES} that ran for this analysis with status ok. */
+  serverOkEngines?: readonly string[];
 }
 
 export function findingTrackable(f: AcceptedFinding): Trackable {
@@ -226,7 +238,8 @@ function write(
  * matched issues are updated (see {@link reopenedStatus} for how a `closed` or `resolved` one is
  * reopened), unmatched findings become new issues, and an unmatched candidate is closed only when
  * its engine reported `status: ok` in this report — an analyzer that failed, timed out, was
- * skipped or is absent leaves its issues untouched.
+ * skipped or is absent leaves its issues untouched. A server engine's status is the server's
+ * own (`serverOkEngines`), whatever the report says.
  */
 export function planTracking(input: PlanInput): TrackingPlan {
   const { report, findings, candidates, classifier, now } = input;
@@ -235,7 +248,10 @@ export function planTracking(input: PlanInput): TrackingPlan {
     findings.map(findingTrackable),
     candidates.map((c) => candidateTrackable(c, rename)),
   );
-  const okEngines = new Set(report.engines.filter((e) => e.status === 'ok').map((e) => e.id));
+  const okEngines = new Set(
+    report.engines.filter((e) => e.status === 'ok' && !SERVER_ENGINES.has(e.id)).map((e) => e.id),
+  );
+  for (const id of input.serverOkEngines ?? []) if (SERVER_ENGINES.has(id)) okEngines.add(id);
   const plan: TrackingPlan = {
     updates: [],
     inserts: [],

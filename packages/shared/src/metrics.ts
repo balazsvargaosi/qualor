@@ -56,6 +56,10 @@ export const METRICS: readonly MetricDefinition[] = [
   issueCount('security_issues', 'Security issues'),
   issueCount('reliability_issues', 'Reliability issues'),
   issueCount('maintainability_issues', 'Maintainability issues'),
+  // 6M §7: licence findings have their own quality, `licensing`, and no rating.
+  issueCount('licensing_issues', 'Licensing issues'),
+  issueCount('forbidden_licenses', 'Forbidden licences'),
+  m('unknown_licenses_ratio', 'Unknown licences', 'percent', 'lower_is_better', OVERALL, 'issues'),
   m('accepted_issues', "Won't fix issues", 'int', 'none', OVERALL, 'issues'),
   m('false_positive_issues', 'False positive issues', 'int', 'none', OVERALL, 'issues'),
   m('security_rating', 'Security rating', 'rating', 'lower_is_better', BOTH, 'ratings'),
