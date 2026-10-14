@@ -93,6 +93,62 @@ describeWithDotnet()('qualor dotnet with a real build (fixtures/csharp-basic)', 
   );
 
   it(
+    'builds a large dictionary initializer after an early return within a minute (CA1508 stalls under AnalysisMode=All)',
+    { timeout: 300_000 },
+    () => {
+      const root = tmp();
+      const env = {
+        ...process.env,
+        XDG_DATA_HOME: tmp(),
+        DOTNET_CLI_TELEMETRY_OPTOUT: '1',
+        DOTNET_NOLOGO: '1',
+      };
+      const entries = Array.from({ length: 200 }, (_, i) => `["key${i}"] = "value${i}"`).join(
+        ',\n      ',
+      );
+      mkdirSync(path.join(root, 'lib'), { recursive: true });
+      writeFileSync(
+        path.join(root, 'lib/Lib.csproj'),
+        '<Project Sdk="Microsoft.NET.Sdk">\n  <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>\n</Project>\n',
+      );
+      writeFileSync(
+        path.join(root, 'lib/Big.cs'),
+        `using System;
+using System.Collections.Generic;
+namespace Lib;
+public static class Ext
+{
+  public static void Put(this object o, Dictionary<string, string> d) { }
+}
+public class Big
+{
+  private static bool Installed() => Environment.TickCount > 0;
+  public void Up()
+  {
+    if (!Installed()) return;
+    this.Put(new Dictionary<string, string>
+    {
+      ${entries},
+    });
+  }
+}
+`,
+      );
+      initRepo(root);
+      commitAll(root, 'fixture');
+      expect(runDotnetBegin({}, captureIO({ cwd: root, env }).io, silentLogger)).toBe(EXIT.OK);
+      const started = Date.now();
+      const build = spawnSync(
+        'dotnet',
+        ['build', '--no-incremental', '-nologo', 'lib/Lib.csproj'],
+        { cwd: root, env, encoding: 'utf8', timeout: 120_000 },
+      );
+      expect(build.status, build.stdout + build.stderr).toBe(0);
+      expect(Date.now() - started).toBeLessThan(60_000);
+    },
+  );
+
+  it(
     "records each project's compiler inputs, exactly (Roslyn engine, Review Focus 5)",
     { timeout: 300_000 },
     () => {

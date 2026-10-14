@@ -129,6 +129,14 @@ All notable changes to Qualor are listed here, newest first. The format follows
   XML external entities and disabled TLS verification. They need a newer Qualor: Qualor 0.7.1 and older
   refuse a rules pack that holds C# rules (its images pin their own pack and are unaffected).
 
+### Changed
+
+- C#: `qualor dotnet begin` runs the SDK's analyzers in the Recommended mode with all security
+  rules on (it was the All mode). Noisy rules such as CA2007 are no longer reported, so their open
+  issues close at the next scan. Builds of large solutions no longer stall: one rule of the All
+  mode (CA1508) never finished on a method that passes a large dictionary initializer, and the
+  mode cost three times the analyzer time.
+
 ## [0.7.1] - 2026-10-12
 
 ### Added

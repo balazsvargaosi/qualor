@@ -101,7 +101,11 @@ describe('the hook text', () => {
     expect(text).toContain('BeforeTargets="CoreCompile"');
     expect(text).toContain('<ErrorLog>$(_QualorLog),version=2.1</ErrorLog>');
     expect(text).toContain('AfterTargets="CoreCompile"');
-    expect(text).toContain('<AnalysisMode>All</AnalysisMode>');
+  });
+  it('runs the SDK analyzers in the Recommended mode with every security rule (CA1508 stalls under All)', () => {
+    expect(text).toContain('<AnalysisMode>Recommended</AnalysisMode>');
+    expect(text).toContain('<AnalysisModeSecurity>All</AnalysisModeSecurity>');
+    expect(text).not.toContain('AnalysisMode>All');
   });
   it('also turns the MSBuild warnings-as-errors properties off, in both places (final review R12, M1)', () => {
     const count = (needle: string) => text.split(needle).length - 1;

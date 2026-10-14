@@ -605,6 +605,10 @@ build-command: 'dotnet build MySolution.sln --no-incremental' }`. For GitHub, us
 - Inside the scan job, the hook turns off *warnings as errors*, so the extra rules cannot break a build
   that passes without them. Compiler errors still fail it. If your pipeline must fail on warnings,
   keep a separate build job for that.
+- The SDK's analyzers run in the **Recommended** mode, with every security rule on. The noisy
+  rules the stricter *All* mode adds (CA2007 and similar) are not reported, and one of them,
+  CA1508, no longer makes a build of a large solution stall. Set a rule's severity in your
+  `.editorconfig` to turn it back on.
 - The repository's `.editorconfig` and `.globalconfig` still decide severities. A rule set to `none`
   stays off. If the project references Roslynator or SonarAnalyzer.CSharp itself, its own version
   is used instead of the bundled one, so there is never a duplicate-analyzer build error.
