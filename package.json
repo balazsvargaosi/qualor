@@ -68,6 +68,7 @@
     "deploy:exit-test": "tsx tools/deploy/dogfood.ts --exit-test",
     "deploy:screenshots": "tsx tools/deploy/screenshots.ts",
     "deploy:sources": "tsx tools/deploy/sources-fetch.ts",
+    "spdx:update": "tsx tools/licenses/spdx-update.ts",
     "trivy-db:pin": "tsx tools/analyzers/trivy-db-pin.ts",
     "deploy:debian-sources": "tsx tools/deploy/debian-sources-gen.ts",
     "deploy:release-images": "tsx tools/deploy/release-images.ts",

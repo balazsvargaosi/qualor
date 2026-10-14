@@ -38,3 +38,4 @@ export * from './llm/eligibility';
 export * from './llm/output';
 export * from './llm/from-issue';
 export * from './llm/fix';
+export * from './licenses';
