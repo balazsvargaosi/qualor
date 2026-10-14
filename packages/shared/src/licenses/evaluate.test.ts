@@ -1,3 +1,4 @@
+import { LICENSE_GROUPS } from './groups';
 import { describe, expect, it } from 'vitest';
 import {
   classify,
@@ -113,6 +114,33 @@ describe('classify, denylist', () => {
   });
 });
 
+describe('classify, unparseable entries', () => {
+  it('denylist: counts them as unrecognised leaves', () => {
+    expect(classify(['Public Domain'], strong).verdict).toBe('unknown');
+    expect(classify(['Some Custom Licence v2'], strong).verdict).toBe('unknown');
+    expect(classify(['MIT OR'], strong).verdict).toBe('unknown');
+    expect(classify(['(MIT'], strong).verdict).toBe('unknown');
+    expect(classify(['Public Domain', 'MIT'], strong).verdict).toBe('allowed');
+    expect(classify(['Public Domain', 'GPL-3.0-only'], strong).verdict).toBe('forbidden');
+  });
+
+  it('allowlist: forbids them, naming the raw string', () => {
+    const only = deny({ mode: 'allowlist', allowed: ['MIT'] });
+    expect(classify(['MIT', 'Public Domain'], only)).toEqual({
+      verdict: 'forbidden',
+      culprits: ['Public Domain'],
+      group: null,
+    });
+    expect(classify(['MIT OR'], only)).toEqual({
+      verdict: 'forbidden',
+      culprits: ['MIT OR'],
+      group: null,
+    });
+    expect(classify(['Some Custom Licence v2'], only).culprits).toEqual(['Some Custom Licence v2']);
+    expect(classify([], only).verdict).toBe('unknown');
+  });
+});
+
 describe('classify, allowlist', () => {
   const allowOnly = (allowed: string[]) => deny({ mode: 'allowlist', allowed });
 
@@ -170,6 +198,12 @@ describe('licensePolicySchema', () => {
 });
 
 describe('invalidLicenseIds', () => {
+  it('accepts every group member, the WITH terms and Commons-Clause included', () => {
+    const members = LICENSE_GROUPS.flatMap((g) => g.members);
+    expect(members).toContain('Commons-Clause');
+    expect(invalidLicenseIds(deny({ forbidden: members, allowed: members }))).toEqual([]);
+  });
+
   it('returns the entries that are not SPDX ids or terms', () => {
     const policy = deny({
       forbidden: ['GPL-3.0-only', 'Nope-1.0', 'GPL-2.0-only WITH Classpath-exception-2.0'],

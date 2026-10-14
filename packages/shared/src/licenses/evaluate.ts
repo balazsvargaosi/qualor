@@ -95,8 +95,10 @@ export function classify(licenses: readonly string[], policy: LicensePolicy): Cl
   let parsed = 0;
   const culprits = new Set<string>();
   for (const entry of licenses) {
-    const expr = parseLicenseExpression(normalizeLicense(entry));
-    if (expr === null) continue; // malformed: it names no licence
+    const text = normalizeLicense(entry);
+    if (text === '') continue; // an empty entry names nothing
+    // Text that is not an expression is one unrecognised leaf holding the raw string.
+    const expr: LicenseExpr = parseLicenseExpression(text) ?? { kind: 'id', id: text };
     parsed++;
     const node = evaluateExpr(expr, forbidsLeaf);
     if (node.forbidden) forbidden = true;
