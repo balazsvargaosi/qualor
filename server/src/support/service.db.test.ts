@@ -27,6 +27,7 @@ import { LogBuffer } from '../http/log-buffer';
 import { createLogger } from '../http/logger';
 import { LICENSE_SETTING_KEY } from '../license/source';
 import { DEFAULT_LLM_SETTINGS, LLM_API_KEY_AAD, writeLlmSettings } from '../llm/settings';
+import { MAIL_PASSWORD_AAD, MAIL_SETTINGS_KEY } from '../mail/settings';
 import type { QualorPlugin } from '../plugins/contract';
 import { SCM_TOKEN_AAD } from '../scm/connections';
 import { encryptPrivateKey, encryptWebhookSecret } from '../scm/github/credentials';
@@ -49,6 +50,8 @@ const SSO_SECRET = `oidc-${'cs-14142135623730'}`;
 const SCM_TOKEN = `glpat-${'17320508075688'}`;
 const GITHUB_WEBHOOK_SECRET = `ghwh-${'22360679774997aa'}`;
 const AUDIT_STREAM_SECRET = `siem-${'26457513110645'}`;
+const SMTP_PASSWORD = `smtp-${'31622776601683'}`;
+const SMTP_URL_PASSWORD = `smtpurl-${'44721359549995'}`;
 const LICENSE_TEXT =
   'QLK1.test-a.eyJMaWNlbnNlUGF5bG9hZFNlY3JldCI6MX0.U2lnbmF0dXJlU2VjcmV0VmFsdWVYWVo';
 const STORED_LICENSE = 'QLK1.test-a.U3RvcmVkUGF5bG9hZFNlY3JldDEyMw.U3RvcmVkU2lnbmF0dXJlNDU2';
@@ -69,6 +72,8 @@ const PLANTED = [
   SCM_TOKEN,
   GITHUB_WEBHOOK_SECRET,
   AUDIT_STREAM_SECRET,
+  SMTP_PASSWORD,
+  SMTP_URL_PASSWORD,
   LICENSE_TEXT,
   STORED_LICENSE,
   ...LICENSE_TEXT.split('.').slice(2),
@@ -135,6 +140,16 @@ describe('ctx.support (4E-3b §2, §4)', () => {
         databaseUrl: `postgres://qualor:${DB_PASSWORD}@db.internal:5432/qualor?sslmode=require`,
         bootstrapAdmin: { username: 'admin', password: BOOTSTRAP_PASSWORD },
         license: { text: LICENSE_TEXT, file: null },
+        smtp: {
+          host: 'smtp.example',
+          port: 587,
+          security: 'starttls',
+          username: 'qualor',
+          password: SMTP_URL_PASSWORD,
+          fromName: 'Qualor',
+          fromAddress: 'qualor@example.com',
+          replyTo: null,
+        },
       },
     });
     admin = await login(ctx, 'admin', ADMIN_PASSWORD);
@@ -164,6 +179,19 @@ describe('ctx.support (4E-3b §2, §4)', () => {
         active: true,
         secretEnc: encryptSecret(key, AUDIT_STREAM_SECRET, AUDIT_STREAM_SECRET_AAD),
       },
+    });
+    await writeSetting(ctx.db, MAIL_SETTINGS_KEY, {
+      server: {
+        host: 'smtp.example',
+        port: 587,
+        security: 'starttls',
+        username: 'qualor',
+        passwordEnc: encryptSecret(key, SMTP_PASSWORD, MAIL_PASSWORD_AAD),
+        fromName: 'Qualor',
+        fromAddress: 'qualor@example.com',
+        replyTo: null,
+      },
+      alerts: { licenseExpiry: true, webhookFailures: true },
     });
     await writeSetting(ctx.db, LICENSE_SETTING_KEY, {
       key: STORED_LICENSE,
@@ -218,7 +246,7 @@ describe('ctx.support (4E-3b §2, §4)', () => {
       queue: 'scm',
       payload: { token: SCM_TOKEN },
       status: 'dead',
-      lastError: `IdP refused client secret ${SSO_SECRET}; Authorization: Bearer ${SECRET_KEY}`,
+      lastError: `IdP refused client secret ${SSO_SECRET}; Authorization: Bearer ${SECRET_KEY}; SMTP AUTH ${SMTP_PASSWORD} / ${SMTP_URL_PASSWORD}`,
     });
     runtime.health.record(gitlab!.id, `GitHub refused ${GITHUB_WEBHOOK_SECRET}`);
   });
@@ -265,7 +293,7 @@ describe('ctx.support (4E-3b §2, §4)', () => {
       failed: { lastError: string }[];
     };
     expect(jobsFile.failed[0]?.lastError).toBe(
-      'IdP refused client secret [redacted]; Authorization: Bearer [redacted]',
+      'IdP refused client secret [redacted]; Authorization: Bearer [redacted]; SMTP AUTH [redacted] / [redacted]',
     );
     const scm = JSON.parse(fileOf(entries, 'scm.json')) as {
       connections: { provider: string; lastError: string | null }[];

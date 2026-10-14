@@ -12,6 +12,7 @@ import {
 import { decodeLicenseText, LICENSE_SETTING_KEY, MAX_LICENSE_FILE_BYTES } from '../license/source';
 import { normaliseKey } from '../license/token';
 import { LLM_API_KEY_AAD } from '../llm/settings';
+import { MAIL_PASSWORD_AAD } from '../mail/settings';
 import { SCM_TOKEN_AAD } from '../scm/connections';
 import { WEBHOOK_SECRET_AAD as SCM_WEBHOOK_SECRET_AAD } from '../scm/github/credentials';
 import { SECRET_AAD as SSO_SECRET_AAD, SP_KEY_AAD } from '../sso/connection-config';
@@ -53,7 +54,7 @@ async function licenseFileText(file: string): Promise<string | null> {
 }
 
 /** The AADs of the envelopes `instance_settings` rows hold (data-model.md §2). */
-const SETTINGS_AADS = [LLM_API_KEY_AAD, AUDIT_STREAM_SECRET_AAD] as const;
+const SETTINGS_AADS = [LLM_API_KEY_AAD, AUDIT_STREAM_SECRET_AAD, MAIL_PASSWORD_AAD] as const;
 
 /** Every `{ v, iv, ct, tag }` object in a JSON value, at any depth. */
 function envelopes(value: unknown, depth = 0): unknown[] {
@@ -93,6 +94,8 @@ export async function configuredSecrets(db: Executor, config: Config): Promise<s
     if (plain !== null) found.push(plain, ...pemParts(plain));
   };
   if (config.bootstrapAdmin.password !== undefined) found.push(config.bootstrapAdmin.password);
+  // E1: QUALOR_SMTP_URL's password; the one saved in Settings → Email is a settings envelope.
+  if (config.smtp?.password) found.push(config.smtp.password);
   if (config.license.text !== null) found.push(...licenseParts(config.license.text));
   if (config.license.file !== null) {
     const text = await licenseFileText(config.license.file);
