@@ -222,6 +222,33 @@ function installEmergencyCleanup(log: Logger): () => void {
   };
 }
 
+/**
+ * `fn` with the same signal handling as `runAnalyzers`: on Ctrl+C or job cancellation every
+ * tracked process tree is killed and every tracked work directory removed (the licence pass of
+ * `scan/dependencies.ts` runs after the analyzers, outside their call).
+ */
+export async function withEmergencyCleanup<T>(log: Logger, fn: () => Promise<T>): Promise<T> {
+  const uninstall = installEmergencyCleanup(log);
+  try {
+    return await fn();
+  } finally {
+    uninstall();
+  }
+}
+
+/** A private work directory under `tempRoot`, removed by the signal handler too until released. */
+export function createWorkDir(id: string, tempRoot: string = os.tmpdir()): string {
+  const dir = mkdtempSync(path.join(tempRoot, `qualor-${id}-`));
+  activeWorkDirs.add(dir);
+  return dir;
+}
+
+/** Removes a `createWorkDir` directory (failures are logged at debug, never thrown). */
+export function releaseWorkDir(dir: string, log: Logger): void {
+  activeWorkDirs.delete(dir);
+  removeWorkDir(dir, log);
+}
+
 async function capture(
   analyzer: Analyzer,
   o: RunAnalyzersOptions,
@@ -260,8 +287,7 @@ async function capture(
     return skipped(`no ${analyzer.languages.join('/')} files in scope`);
   }
 
-  const workDir = mkdtempSync(path.join(o.tempRoot ?? os.tmpdir(), `qualor-${analyzer.id}-`));
-  activeWorkDirs.add(workDir);
+  const workDir = createWorkDir(analyzer.id, o.tempRoot);
   const started = performance.now();
   const parentEnv = o.env ?? process.env;
   // Secrets stripped, and PATH/CLASSPATH never pointing into the checkout (ruling V3).
@@ -402,8 +428,7 @@ async function capture(
     }
     return { ...done('ok', null), sarif: converted };
   } finally {
-    activeWorkDirs.delete(workDir);
-    removeWorkDir(workDir, o.log);
+    releaseWorkDir(workDir, o.log);
   }
 }
 
@@ -413,16 +438,13 @@ export async function runAnalyzers(
 ): Promise<SarifCapture[]> {
   // Fix-round findings 10 and (round 2) 2/3: kill every analyzer process tree and remove every
   // work directory on Ctrl+C / job cancellation, only for the duration of this call.
-  const uninstall = installEmergencyCleanup(o.log);
-  try {
+  return withEmergencyCleanup(o.log, () => {
     const languages = new Set(o.files.map((f) => f.language).filter((l) => l !== 'other'));
     const serialise = exclusiveGroups();
-    return await mapLimit(analyzers, o.concurrency ?? defaultConcurrency(), (a) =>
+    return mapLimit(analyzers, o.concurrency ?? defaultConcurrency(), (a) =>
       capture(a, o, languages, serialise),
     );
-  } finally {
-    uninstall();
-  }
+  });
 }
 
 /**

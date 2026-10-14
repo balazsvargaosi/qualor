@@ -1,0 +1,52 @@
+{
+  "SchemaVersion": 2,
+  "Trivy": {
+    "Version": "0.74.0"
+  },
+  "ReportID": "00000000-0000-0000-0000-000000000000",
+  "CreatedAt": "2026-10-14T00:00:00Z",
+  "ArtifactName": ".",
+  "ArtifactType": "filesystem",
+  "Results": [
+    {
+      "Target": "go.mod",
+      "Class": "lang-pkgs",
+      "Type": "gomod",
+      "Packages": [
+        {
+          "ID": "github.com/gin-gonic/gin@v1.9.1",
+          "Name": "github.com/gin-gonic/gin",
+          "Identifier": {
+            "PURL": "pkg:golang/github.com/gin-gonic/gin@v1.9.1",
+            "UID": "7033aa0bce43fed8"
+          },
+          "Version": "v1.9.1",
+          "Relationship": "direct",
+          "AnalyzedBy": "gomod"
+        },
+        {
+          "ID": "github.com/sirupsen/logrus@v1.9.3",
+          "Name": "github.com/sirupsen/logrus",
+          "Identifier": {
+            "PURL": "pkg:golang/github.com/sirupsen/logrus@v1.9.3",
+            "UID": "7923169ecc90236f"
+          },
+          "Version": "v1.9.3",
+          "Relationship": "direct",
+          "AnalyzedBy": "gomod"
+        },
+        {
+          "ID": "x",
+          "Name": "x",
+          "Identifier": {
+            "PURL": "pkg:golang/x",
+            "UID": "3e17d595cc0b68a7"
+          },
+          "Relationship": "root",
+          "DependsOn": ["github.com/gin-gonic/gin@v1.9.1", "github.com/sirupsen/logrus@v1.9.3"],
+          "AnalyzedBy": "gomod"
+        }
+      ]
+    }
+  ]
+}

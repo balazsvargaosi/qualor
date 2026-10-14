@@ -1,0 +1,29 @@
+{
+  "description": "Dependency licences (6M): Trivy's licence pass lists every package of an npm and a pnpm lockfile with its licences; the CLI makes no licence findings (the server judges the inventory)",
+  "engines": ["trivy-licenses"],
+  "findingsExhaustive": true,
+  "findings": [],
+  "files": {
+    "web/package.json": { "language": "other", "kind": "main", "lines": 10 },
+    "web/package-lock.json": { "language": "other", "kind": "main", "lines": 36 },
+    "app/package.json": { "language": "other", "kind": "main", "lines": 8 },
+    "app/pnpm-lock.yaml": { "language": "other", "kind": "main", "lines": 22 }
+  },
+  "duplications": [],
+  "coverage": null,
+  "dependencies": [
+    { "path": "web/package-lock.json", "ecosystem": "npm", "name": "apache-lib", "version": "3.1.0", "licenses": ["Apache-2.0"] },
+    { "path": "web/package-lock.json", "ecosystem": "npm", "name": "dual-lib", "version": "2.0.0", "licenses": ["MIT OR GPL-2.0-or-later"] },
+    { "path": "web/package-lock.json", "ecosystem": "npm", "name": "left-pad-gpl", "version": "1.0.0", "licenses": ["GPL-3.0-only"] },
+    { "path": "web/package-lock.json", "ecosystem": "npm", "name": "plain", "version": "1.0.0", "licenses": ["MIT"] },
+    { "path": "app/pnpm-lock.yaml", "ecosystem": "pnpm", "name": "tiny-util", "version": "0.4.2", "licenses": [] }
+  ],
+  "notes": {
+    "packages": "made-up names: no vulnerability database knows them, so the vulnerability pass finds nothing here either; only the lockfile fields Trivy reads matter",
+    "engines": "trivy-licenses only: the licence pass needs the trivy binary and no vulnerability database (ENGINE_TOOLS in tools/fixtures/run.ts), so this fixture is checked wherever Trivy is installed; the expected engines are those that must report ok, not every engine of the report",
+    "web/package-lock.json": "npm lockfile v3 carries each package's licence field: Trivy reads the licences from the lockfile alone, apache-lib, dual-lib and left-pad-gpl are direct and plain is apache-lib's dependency",
+    "dual-lib": "a dual licence stays one SPDX expression; the server's policy decides that an OR with an allowed licence is allowed",
+    "app/pnpm-lock.yaml": "pnpm lockfiles carry no licences: without node_modules (a CI job that did not install) the package's licences are unknown, []",
+    "files": "lockfiles are files of language other (config.md §3.1 includes them), which a licence finding's new-code classification needs; each line count is the file's own (wc -l)"
+  }
+}

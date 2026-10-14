@@ -1,0 +1,83 @@
+{
+  "SchemaVersion": 2,
+  "Trivy": {
+    "Version": "0.74.0"
+  },
+  "ReportID": "00000000-0000-0000-0000-000000000000",
+  "CreatedAt": "2026-10-14T00:00:00Z",
+  "ArtifactName": ".",
+  "ArtifactType": "filesystem",
+  "Results": [
+    {
+      "Target": "yarn.lock",
+      "Class": "lang-pkgs",
+      "Type": "yarn",
+      "Packages": [
+        {
+          "ID": "express@4.22.3",
+          "Name": "express",
+          "Identifier": {
+            "PURL": "pkg:npm/express@4.22.3",
+            "UID": "a81ceabaa80d837f"
+          },
+          "Version": "4.22.3",
+          "Relationship": "direct",
+          "DependsOn": [],
+          "Locations": [
+            {
+              "StartLine": 142,
+              "EndLine": 177
+            }
+          ],
+          "AnalyzedBy": "yarn"
+        },
+        {
+          "ID": "readline-sync@1.4.10",
+          "Name": "readline-sync",
+          "Identifier": {
+            "PURL": "pkg:npm/readline-sync@1.4.10",
+            "UID": "558a430413d5fd0"
+          },
+          "Version": "1.4.10",
+          "Relationship": "direct",
+          "Locations": [
+            {
+              "StartLine": 381,
+              "EndLine": 384
+            }
+          ],
+          "AnalyzedBy": "yarn"
+        },
+        {
+          "ID": "y1@1.0.0",
+          "Name": "y1",
+          "Identifier": {
+            "PURL": "pkg:npm/y1@1.0.0",
+            "UID": "d6c46968b0241812"
+          },
+          "Version": "1.0.0",
+          "Licenses": ["ISC"],
+          "Relationship": "root",
+          "DependsOn": ["express@4.22.3", "readline-sync@1.4.10"],
+          "AnalyzedBy": "yarn"
+        }
+      ]
+    },
+    {
+      "Target": "yarn.lock",
+      "Class": "license",
+      "Licenses": [
+        {
+          "Severity": "LOW",
+          "Category": "notice",
+          "PkgName": "y1",
+          "FilePath": "yarn.lock",
+          "Name": "ISC",
+          "Text": "",
+          "Confidence": 1,
+          "Link": ""
+        }
+      ]
+    }
+  ]
+}

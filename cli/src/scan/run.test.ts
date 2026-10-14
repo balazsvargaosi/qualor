@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { gunzipSync } from 'node:zlib';
@@ -26,6 +26,7 @@ import { VERSION } from '../index';
 import { createLogger, silentLogger } from '../log';
 import { main } from '../main';
 import { pmdAnalyzer } from '../analyzers/pmd';
+import type { ProcessResult, ProcessSpec } from '../analyzers/process';
 import { builtinAnalyzers } from '../analyzers/registry';
 import { trivyJsonToSarif } from '../analyzers/trivy-output';
 import type { Analyzer } from '../analyzers/types';
@@ -105,7 +106,7 @@ describe('qualor scan --dry-run', () => {
     // SpotBugs, detekt, swiftlint, roslyn, stylelint, htmlhint, phpstan, rubocop, staticcheck, govet,
     // gosec and qualor are skipped wherever it runs; Gitleaks is auto so a
     // missing binary is a skip, not exit 3; Trivy runs where its database is installed and finds no
-    // lockfile (plan 2B).
+    // lockfile (plan 2B), and its licence pass (6M) runs where Trivy is installed, after them.
     const repo = path.join(tmp(), 'repo');
     writeTree(repo, {
       'README.md': '# docs only\n',
@@ -120,7 +121,10 @@ describe('qualor scan --dry-run', () => {
     );
     expect(code, c.stderr()).toBe(0);
     const report = readReport(path.join(repo, 'out', 'r.json.gz'));
-    expect(report.engines.map((e) => e.id)).toEqual(builtinAnalyzers().map((a) => a.id));
+    expect(report.engines.map((e) => e.id)).toEqual([
+      ...builtinAnalyzers().map((a) => a.id),
+      'trivy-licenses',
+    ]);
     expect(report.engines.map((e) => e.id)).toEqual(
       expect.arrayContaining(['stylelint', 'htmlhint', 'phpstan']),
     );
@@ -875,7 +879,7 @@ describe('qualor scan --gitlab-dependency-scanning (scm.md §9, plan 2B)', () =>
         ]),
         c.io,
         silentLogger,
-        { analyzers: [recordedTrivy(tool)] },
+        { analyzers: [recordedTrivy(tool)], licensePass: { resolveBinary: () => null } },
       );
       expect(code, c.stderr()).toBe(0);
       const read = (file: string) =>
@@ -937,7 +941,9 @@ describe('qualor scan --gitlab-dependency-scanning (scm.md §9, plan 2B)', () =>
           version: '0.74.0',
           database: { name: 'trivy-db', updatedAt: '2026-09-25T06:36:11.019457553Z' },
         }),
+        expect.objectContaining({ id: 'trivy-licenses', status: 'skipped' }),
       ]);
+      expect(report.dependencies).toBeUndefined();
     },
   );
 
@@ -974,7 +980,7 @@ copyFileSync(${JSON.stringify(
         ]),
         c.io,
         createLogger('warn', c.io.stderr),
-        { analyzers: [recordedTrivy(tool, drop)] },
+        { analyzers: [recordedTrivy(tool, drop)], licensePass: { resolveBinary: () => null } },
       );
       expect(code, c.stderr()).toBe(0);
       const ds = JSON.parse(
@@ -985,6 +991,161 @@ copyFileSync(${JSON.stringify(
       expect(c.stderr()).toContain(
         '--gitlab-dependency-scanning: the scan is marked failed, because 1 dependency finding(s) have no package: GitLab would take them as fixed',
       );
+    },
+  );
+
+  /** The vulnerability pass's recorded output, copied by a fake trivy (as in the tests above). */
+  const recordedTool = () => {
+    const tool = path.join(tmp(), 'trivy.mjs');
+    writeTree(path.dirname(tool), {
+      'trivy.mjs': `import { copyFileSync } from 'node:fs';
+copyFileSync(${JSON.stringify(
+        path.join(ANALYZER_OUTPUT_DIR, 'trivy-deps-vulnerable.json'),
+      )}, process.argv[2]);
+`,
+    });
+    return tool;
+  };
+  /** The licence pass's process, faked: writes `output` (if any) to --output and returns `r`. */
+  const licenceProcess =
+    (output: unknown, r: Partial<ProcessResult> = {}) =>
+    (spec: ProcessSpec): Promise<ProcessResult> => {
+      const out = spec.args[spec.args.indexOf('--output') + 1];
+      if (output !== undefined && out !== undefined) writeFileSync(out, JSON.stringify(output));
+      return Promise.resolve({
+        exitCode: 0,
+        timedOut: false,
+        durationMs: 1,
+        stdout: '',
+        stderr: '',
+        ...r,
+      });
+    };
+  const gitlabFlags = [
+    '--dry-run',
+    '--output',
+    'r.json.gz',
+    '--project-key',
+    'fixtures/deps-vulnerable',
+    '--gitlab-code-quality',
+    'gl-code-quality-report.json',
+    '--gitlab-dependency-scanning',
+    'gl-dependency-scanning-report.json',
+  ];
+
+  it(
+    'keeps the vulnerability findings when the licence pass times out (Review Focus 3)',
+    { timeout: 60_000 },
+    async () => {
+      const repo = fixtureRepo('deps-vulnerable');
+      const c = captureIO({ cwd: repo, env: SCAN_TEST_ENV });
+      const code = await runScan(scanFlags(gitlabFlags), c.io, silentLogger, {
+        analyzers: [recordedTrivy(recordedTool())],
+        licensePass: {
+          resolveBinary: () => '/opt/qualor/bin/trivy',
+          runProcess: licenceProcess(undefined, { exitCode: null, timedOut: true }),
+        },
+      });
+      expect(code, c.stderr()).toBe(0);
+      const report = readReport(path.join(repo, 'r.json.gz'));
+      expect(report.findings.map((f) => `${f.engineId}:${f.ruleId}`).sort()).toEqual([
+        'trivy:CVE-2015-6420',
+        'trivy:CVE-2015-7501',
+        'trivy:CVE-2021-44906',
+        'trivy:CVE-2021-44906',
+      ]);
+      expect(report.engines.map((e) => [e.id, e.status])).toEqual([
+        ['trivy', 'ok'],
+        ['trivy-licenses', 'timeout'],
+      ]);
+      expect(report.warnings.filter((w) => w.code.startsWith('LICENSE_'))).toEqual([
+        {
+          code: 'LICENSE_SCAN_TIMEOUT',
+          message: expect.stringContaining('300 s') as string,
+          count: 1,
+        },
+      ]);
+      expect(report.dependencies).toBeUndefined();
+      // GitLab's files carry no licence data: the pass's timeout leaves them complete.
+      const ds = JSON.parse(
+        readFileSync(path.join(repo, 'gl-dependency-scanning-report.json'), 'utf8'),
+      ) as { scan: { status: string }; vulnerabilities: unknown[] };
+      expect(ds.scan.status).toBe('success');
+      expect(ds.vulnerabilities).toHaveLength(4);
+      expect(existsSync(path.join(repo, 'gl-code-quality-report.json'))).toBe(true);
+    },
+  );
+
+  it(
+    'reports the inventory of lockfiles that are files of the report, after the vulnerability pass',
+    { timeout: 60_000 },
+    async () => {
+      const repo = fixtureRepo('deps-vulnerable');
+      const output = {
+        SchemaVersion: 2,
+        Trivy: { Version: '0.74.0' },
+        Results: [
+          {
+            Target: 'web/package-lock.json',
+            Class: 'lang-pkgs',
+            Type: 'npm',
+            Packages: [
+              {
+                Name: 'minimist',
+                Version: '1.2.5',
+                Licenses: ['MIT'],
+                Relationship: 'direct',
+                Locations: [{ StartLine: 14, EndLine: 19 }],
+              },
+            ],
+          },
+          { Target: 'web/package-lock.json', Class: 'license', Licenses: [] },
+          {
+            Target: 'tools/pnpm-lock.yaml',
+            Class: 'lang-pkgs',
+            Type: 'pnpm',
+            Packages: [{ Name: 'minimist', Version: '1.2.5', Relationship: 'direct' }],
+          },
+        ],
+      };
+      const c = captureIO({ cwd: repo, env: SCAN_TEST_ENV });
+      const code = await runScan(scanFlags(gitlabFlags), c.io, silentLogger, {
+        analyzers: [recordedTrivy(recordedTool())],
+        licensePass: {
+          resolveBinary: () => '/opt/qualor/bin/trivy',
+          runProcess: licenceProcess(output),
+        },
+      });
+      expect(code, c.stderr()).toBe(0);
+      const report = readReport(path.join(repo, 'r.json.gz'));
+      expect(report.engines.map((e) => [e.id, e.status, e.version])).toEqual([
+        ['trivy', 'ok', '0.74.0'],
+        ['trivy-licenses', 'ok', '0.74.0'],
+      ]);
+      expect(report.findings).toHaveLength(4);
+      expect(report.dependencies).toEqual([
+        {
+          ecosystem: 'pnpm',
+          path: 'tools/pnpm-lock.yaml',
+          line: 17,
+          name: 'minimist',
+          version: '1.2.5',
+          licenses: [],
+          direct: true,
+        },
+        {
+          ecosystem: 'npm',
+          path: 'web/package-lock.json',
+          line: 15,
+          name: 'minimist',
+          version: '1.2.5',
+          licenses: ['MIT'],
+          direct: true,
+        },
+      ]);
+      // New-code classification of a licence finding needs its lockfile among the files.
+      const files = new Set(report.files.map((f) => f.path));
+      for (const d of report.dependencies ?? []) expect(files, d.path).toContain(d.path);
     },
   );
 

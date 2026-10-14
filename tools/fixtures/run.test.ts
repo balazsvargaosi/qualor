@@ -71,6 +71,9 @@ describe('analyzer capabilities (ruling T4)', () => {
     expect(unavailableEngines(['trivy'], (t) => t === 'trivy')).toEqual(['trivy']);
     expect(unavailableEngines(['trivy'], (t) => t === TRIVY_DATABASE)).toEqual(['trivy']);
     expect(unavailableEngines(['trivy'], (t) => ['trivy', TRIVY_DATABASE].includes(t))).toEqual([]);
+    // 6M: the licence pass needs the binary only, never the database.
+    expect(unavailableEngines(['trivy-licenses'], () => false)).toEqual(['trivy-licenses']);
+    expect(unavailableEngines(['trivy-licenses'], (t) => t === 'trivy')).toEqual([]);
     // Plan 8A/8B: sonarjs needs node and the image's own pass, like Trivy above.
     expect(unavailableEngines(['sonarjs'], (t) => t === 'node')).toEqual(['sonarjs']);
     expect(unavailableEngines(['sonarjs'], (t) => t === SONARJS_PASS)).toEqual(['sonarjs']);
@@ -483,6 +486,22 @@ describe('checkGitLabReports (scm.md §9)', () => {
       'gitlab: the Code Quality file was written, but an engine failed, timed out or was unavailable (ruling G6)',
     ]);
     expect(checkGitLabReports(incomplete, null, failedScan('failure'), () => source)).toEqual([]);
+    // 6M: the licence pass puts nothing in GitLab's files; its failure leaves them complete.
+    for (const status of ['failed', 'timeout', 'skipped'] as const) {
+      const licences: Report = {
+        ...report,
+        engines: [
+          ...report.engines,
+          {
+            ...report.engines[0]!,
+            id: 'trivy-licenses',
+            status,
+            reason: 'trivy is not installed (trivy on PATH or in the scanner image)',
+          },
+        ],
+      };
+      expect(checkGitLabReports(licences, codeQuality, sast(), () => source), status).toEqual([]);
+    }
     expect(
       checkGitLabReports(report, null, failedScan('failure'), () => source).map((p) => p.detail),
     ).toEqual([

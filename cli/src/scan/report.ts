@@ -9,6 +9,7 @@ import {
   REPORT_BOUNDS,
   REPORT_SCHEMA_VERSION,
   reportSchema,
+  type DependencyEntry,
   type QualorConfig,
   type Report,
   type ReportFile,
@@ -33,6 +34,8 @@ export interface ReportParts {
   duplications: DuplicationGroup[];
   engines: NormalizedEngines;
   warnings: Warnings;
+  /** The licence pass's inventory (spec §1), when it completed; absent otherwise. */
+  dependencies?: DependencyEntry[];
 }
 
 /** report-format §3–§8 (findings, snippets and hashes come from the SARIF normaliser). */
@@ -85,6 +88,7 @@ export function assembleReport(p: ReportParts): Report {
     findings: p.engines.findings,
     duplications: p.duplications,
     warnings: p.warnings.list(),
+    ...(p.dependencies !== undefined && { dependencies: p.dependencies }),
   };
 }
 
@@ -164,9 +168,9 @@ const OUTPUT_PATH_ERRORS = new Set([
 ]);
 
 /**
- * The containers serialised piece by piece: the root, its large arrays (report-format §9 bounds),
- * each engine and its `rules` (up to 20 000 per engine), and `scm` with its `renames`. Paths use
- * `[]` for "an element of".
+ * The containers serialised piece by piece: the root, its large arrays (report-format §9 bounds,
+ * `dependencies` up to 50 000), each engine and its `rules` (up to 20 000 per engine), and `scm`
+ * with its `renames`. Paths use `[]` for "an element of".
  */
 const STREAMED_PATHS = new Set([
   '',
@@ -178,6 +182,7 @@ const STREAMED_PATHS = new Set([
   'engines[].rules',
   'scm',
   'scm.renames',
+  'dependencies',
 ]);
 /** Chunks are batched to about this many UTF-16 code units before they are handed to gzip. */
 const CHUNK_CHARS = 64 * 1024;

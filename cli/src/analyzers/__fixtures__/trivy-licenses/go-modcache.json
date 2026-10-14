@@ -1,0 +1,82 @@
+{
+  "SchemaVersion": 2,
+  "Trivy": {
+    "Version": "0.74.0"
+  },
+  "ReportID": "00000000-0000-0000-0000-000000000000",
+  "CreatedAt": "2026-10-14T00:00:00Z",
+  "ArtifactName": ".",
+  "ArtifactType": "filesystem",
+  "Results": [
+    {
+      "Target": "go.mod",
+      "Class": "lang-pkgs",
+      "Type": "gomod",
+      "Packages": [
+        {
+          "ID": "github.com/gin-gonic/gin@v1.9.1",
+          "Name": "github.com/gin-gonic/gin",
+          "Identifier": {
+            "PURL": "pkg:golang/github.com/gin-gonic/gin@v1.9.1",
+            "UID": "10ca5091d44d3175"
+          },
+          "Version": "v1.9.1",
+          "Licenses": ["MIT"],
+          "Relationship": "direct",
+          "DependsOn": [],
+          "AnalyzedBy": "gomod"
+        },
+        {
+          "ID": "github.com/sirupsen/logrus@v1.9.3",
+          "Name": "github.com/sirupsen/logrus",
+          "Identifier": {
+            "PURL": "pkg:golang/github.com/sirupsen/logrus@v1.9.3",
+            "UID": "38df8c0f49330955"
+          },
+          "Version": "v1.9.3",
+          "Licenses": ["MIT"],
+          "Relationship": "direct",
+          "DependsOn": [],
+          "AnalyzedBy": "gomod"
+        },
+        {
+          "ID": "x",
+          "Name": "x",
+          "Identifier": {
+            "PURL": "pkg:golang/x",
+            "UID": "29e7950ed055edc1"
+          },
+          "Relationship": "root",
+          "DependsOn": ["github.com/gin-gonic/gin@v1.9.1", "github.com/sirupsen/logrus@v1.9.3"],
+          "AnalyzedBy": "gomod"
+        }
+      ]
+    },
+    {
+      "Target": "go.mod",
+      "Class": "license",
+      "Licenses": [
+        {
+          "Severity": "LOW",
+          "Category": "notice",
+          "PkgName": "github.com/gin-gonic/gin",
+          "FilePath": "go.mod",
+          "Name": "MIT",
+          "Text": "",
+          "Confidence": 1,
+          "Link": ""
+        },
+        {
+          "Severity": "LOW",
+          "Category": "notice",
+          "PkgName": "github.com/sirupsen/logrus",
+          "FilePath": "go.mod",
+          "Name": "MIT",
+          "Text": "",
+          "Confidence": 1,
+          "Link": ""
+        }
+      ]
+    }
+  ]
+}
