@@ -917,8 +917,8 @@ request and pull request comments.
   `QUALOR_RULES_DIR` to it and put the OpenGrep version that its `manifest.json` names
   (`opengrep`) on the `PATH`; with another version the scan logs a warning. Without the rules the
   engine is skipped with the message "Qualor's security rules are not installed" (see
-  Troubleshooting), and nothing else changes. A rules release that holds C# rules needs Qualor
-  0.8.0 or later: Qualor 0.7.1 and older refuse the whole pack (the images pin their own pack, so
+  Troubleshooting), and nothing else changes. A rules release that holds C# rules needs a Qualor
+  release after 0.8.0: Qualor 0.8.0 and older refuse the whole pack (the images pin their own pack, so
   they are unaffected).
 
 ## SAST patterns (OpenGrep / Semgrep)

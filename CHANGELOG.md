@@ -71,6 +71,22 @@ All notable changes to Qualor are listed here, newest first. The format follows
   name; never the email address), with `limit`, `excludeOrganization` and `excludeProject`. It has
   the permission of `GET /users/lookup` and allows 60 requests a minute per caller.
   `GET /organizations/{id}/members` takes `q` with the same match.
+- Qualor's security rules cover C# (ASP.NET Core): 12 rules for SQL, command, LDAP, XPath and
+  regular expression injection, path traversal, SSRF, XSS, open redirects, unsafe deserialization,
+  XML external entities and disabled TLS verification. They need a Qualor release after 0.8.0:
+  Qualor 0.8.0 and older refuse a rules pack that holds C# rules (its images pin their own pack and
+  are unaffected).
+- C#: under `qualor dotnet begin` and `end`, Qualor's own Roslyn taint engine runs these rules on
+  the whole solution in place of OpenGrep, for the files of the projects the build compiled. It
+  follows request data across methods, files and projects and into the code generated for Razor
+  views and components, and shows the path as each finding's related locations. Its budget is 10
+  minutes and 4 GB (`QUALOR_TAINT_TIME_LIMIT`, `QUALOR_TAINT_MEMORY_LIMIT`). When it cannot give a
+  complete result, the OpenGrep C# rules run as before and the report warns
+  (`TAINT_ENGINE_FALLBACK`) with the reason. A finding whose path goes through stored data, a
+  lookup by a request key or a call or view the engine could not narrow down is marked
+  **Possible** on the issue list, the issue and file pages and in the GitLab Code Quality and SAST
+  reports; the issues API returns it as `confidence` (`high`, `medium`, or `null` when the analyzer
+  sets none).
 
 ### Changed
 
@@ -79,6 +95,11 @@ All notable changes to Qualor are listed here, newest first. The format follows
   `sarif:` entry with `engine: license` or `engine: trivy-licenses` is a configuration error
   (exit 2): rename it. A SARIF file whose tool is named `license` or `trivy-licenses` is reported
   as `ext-license` or `ext-trivy-licenses`.
+- C#: `qualor dotnet begin` runs the SDK's analyzers in the Recommended mode with all security
+  rules on (it was the All mode). Noisy rules such as CA2007 are no longer reported, so their open
+  issues close at the next scan. Builds of large solutions no longer stall: one rule of the All
+  mode (CA1508) never finished on a method that passes a large dictionary initializer, and the
+  mode cost three times the analyzer time.
 
 ## [0.8.0] - 2026-10-14
 
@@ -124,29 +145,6 @@ All notable changes to Qualor are listed here, newest first. The format follows
   instance admins a dismissible banner and a note in the user menu, and `GET /api/v0/system/version`
   returns it as `latest`, which `qualor scan` logs. `QUALOR_TELEMETRY=false` turns it off. See
   [Telemetry](docs/guide/telemetry.md#update-check).
-- Qualor's security rules cover C# (ASP.NET Core): 12 rules for SQL, command, LDAP, XPath and
-  regular expression injection, path traversal, SSRF, XSS, open redirects, unsafe deserialization,
-  XML external entities and disabled TLS verification. They need a newer Qualor: Qualor 0.7.1 and older
-  refuse a rules pack that holds C# rules (its images pin their own pack and are unaffected).
-- C#: under `qualor dotnet begin` and `end`, Qualor's own Roslyn taint engine runs these rules on
-  the whole solution in place of OpenGrep, for the files of the projects the build compiled. It
-  follows request data across methods, files and projects and into the code generated for Razor
-  views and components, and shows the path as each finding's related locations. Its budget is 10
-  minutes and 4 GB (`QUALOR_TAINT_TIME_LIMIT`, `QUALOR_TAINT_MEMORY_LIMIT`). When it cannot give a
-  complete result, the OpenGrep C# rules run as before and the report warns
-  (`TAINT_ENGINE_FALLBACK`) with the reason. A finding whose path goes through stored data, a
-  lookup by a request key or a call or view the engine could not narrow down is marked
-  **Possible** on the issue list, the issue and file pages and in the GitLab Code Quality and SAST
-  reports; the issues API returns it as `confidence` (`high`, `medium`, or `null` when the analyzer
-  sets none).
-
-### Changed
-
-- C#: `qualor dotnet begin` runs the SDK's analyzers in the Recommended mode with all security
-  rules on (it was the All mode). Noisy rules such as CA2007 are no longer reported, so their open
-  issues close at the next scan. Builds of large solutions no longer stall: one rule of the All
-  mode (CA1508) never finished on a method that passes a large dictionary initializer, and the
-  mode cost three times the analyzer time.
 
 ## [0.7.1] - 2026-10-12
 
