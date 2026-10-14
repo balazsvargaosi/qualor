@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import {
+  BUILTIN_EXCLUDES,
   REDACTED,
   REPORT_BOUNDS,
   type DependencyEntry,
@@ -73,7 +74,7 @@ export function licensePassEnabled(config: QualorConfig): boolean {
   return trivy.enabled !== false && trivy.licenses !== false;
 }
 
-/** Credentials in a URL (`https://user:password@host`) never reach a warning. */
+/** Credentials in a URL (`https://user:password@host`) never reach the log. */
 const scrubLine = (line: string) => line.replace(/\/\/[^/\s@]+@/g, `//${REDACTED}@`);
 
 const warning = (code: string, message: string): NormalizeWarning => ({ code, message, count: 1 });
@@ -191,18 +192,19 @@ export async function collectDependencies(
     }
     if (result.exitCode === null || !run.okExitCodes.includes(result.exitCode)) {
       const reason = `exited with code ${result.exitCode ?? 'null'}`;
+      // config.md §6: the tool's stderr stays in the log (the runner's `failureDetail` rule); the
+      // report's warning is a fixed message.
       const first = stderrLines(result.stderr)[0];
-      const detail = first === undefined ? '' : scrubLine(detailLine(first));
-      return failed(
-        reason,
-        `the Trivy licence pass ${reason}${detail === '' ? '' : `: ${detail}`}`,
-      );
+      if (first !== undefined) o.log.warn(`${LICENSE_ENGINE_ID}: ${scrubLine(detailLine(first))}`);
+      return failed(reason, `the Trivy licence pass ${reason}: no dependency inventory`);
     }
     let parsed: ReturnType<typeof trivyJsonToInventory>;
     let version: string | null = null;
     try {
       const output = readOutput(run.sarifPath);
-      const exclude = globMatcher(o.config.sources.exclude, true);
+      // The built-in excludes too: Trivy reports a .NET build's `bin/Debug/**/*.deps.json`, which
+      // would otherwise count as out of scope on every scan after a build.
+      const exclude = globMatcher([...BUILTIN_EXCLUDES, ...o.config.sources.exclude], true);
       parsed = trivyJsonToInventory(output, o.root, { exclude, knownPaths: o.knownPaths });
       const v = (output as { Trivy?: { Version?: unknown } }).Trivy?.Version;
       if (typeof v === 'string' && v.length <= REPORT_BOUNDS.engineVersionChars) version = v;

@@ -3,6 +3,7 @@ import path from 'node:path';
 import {
   normalizeLicense,
   normalizeRepoPath,
+  REPORT_BOUNDS,
   type DependencyEntry,
   type NormalizeWarning,
 } from '@qualor/shared';
@@ -16,7 +17,7 @@ import type { AnalyzerCommand, AnalyzerContext } from './types';
 export const LICENSE_ENGINE_ID = 'trivy-licenses';
 
 /** Report bounds of `dependencies` (spec §2, report-format.md). */
-export const MAX_DEPENDENCIES = 50_000;
+export const MAX_DEPENDENCIES: number = REPORT_BOUNDS.dependencies;
 const MAX_LICENSES = 16;
 const MAX_LICENSE_CHARS = 256;
 const MAX_PATH_CHARS = 1_024;
@@ -195,7 +196,7 @@ export function goModLine(lines: readonly string[], name: string, version: strin
 }
 
 export interface InventoryOptions {
-  /** `sources.exclude`: a lockfile it matches is left out. */
+  /** `sources.exclude` and the built-in excludes: a lockfile they match is left out silently. */
   exclude?: (repoPath: string) => boolean;
   /**
    * The scan's files (the report's `files`), the analyzers' `knownPaths`: a lockfile outside them
@@ -224,7 +225,8 @@ function targetPath(target: string, root: string): string | null {
  * skipped and counted in one `DEPENDENCIES_SKIPPED` warning; a licence string it could not carry
  * is dropped and counted in `DEPENDENCY_LICENSES_SKIPPED`. A lockfile the scan does not analyse
  * (not in `knownPaths`: gitignored or excluded, such as an in-repository Go module cache) is left
- * out and counted in `DEPENDENCIES_OUT_OF_SCOPE`; one under `sources.exclude` is left out silently.
+ * out and counted in `DEPENDENCIES_OUT_OF_SCOPE`; one that `exclude` matches (`sources.exclude`, the
+ * built-in excludes such as a .NET build's `bin/Debug/`) is left out silently.
  * Throws on output that is not Trivy's JSON report. Entries are neither merged nor capped here
  * (`mergeDuplicates`, `capInventory`).
  */

@@ -168,8 +168,8 @@ describe('collectDependencies: the licence pass in a scan (spec §1)', () => {
           ],
         },
         {
-          // Under a built-in exclude.
-          Target: 'internal/testdata/package-lock.json',
+          // A gitignored in-repository npm cache.
+          Target: '.npm-cache/x/package-lock.json',
           Class: 'lang-pkgs',
           Type: 'npm',
           Packages: [{ Name: 'd', Version: '1' }],
@@ -189,6 +189,34 @@ describe('collectDependencies: the licence pass in a scan (spec §1)', () => {
         count: 3,
       },
     ]);
+  });
+
+  it('drops the targets under the built-in excludes silently, such as a .NET build’s deps.json (final review, Task 11 minor)', async () => {
+    const result = (Target: string, Type: string, Name: string) => ({
+      Target,
+      Class: 'lang-pkgs',
+      Type,
+      Packages: [{ Name, Version: '1.0.0', Licenses: ['MIT'] }],
+    });
+    const json = JSON.stringify({
+      SchemaVersion: 2,
+      Results: [
+        result('App.csproj', 'nuget', 'a'),
+        // What Trivy 0.74.0 `fs` reports after `dotnet build` (measured with qualor/scanner:6m).
+        result('bin/Debug/net10.0/App.deps.json', 'dotnet-core', 'Newtonsoft.Json'),
+        result('src/Lib/bin/Release/net8.0/Lib.deps.json', 'dotnet-core', 'b'),
+        result('obj/project.assets.json', 'nuget', 'c'),
+        result('web/node_modules/x/package-lock.json', 'npm', 'd'),
+        result('internal/testdata/package-lock.json', 'npm', 'e'),
+        result('vendor/composer/installed.json', 'composer-vendor', 'f'),
+      ],
+    });
+    const pass = await collectDependencies({
+      ...options({ run: fakeTrivy(json).run }),
+      knownPaths: new Set(['App.csproj', 'Program.cs']),
+    });
+    expect(pass?.entries?.map((e) => `${e.path} ${e.name}`)).toEqual(['App.csproj a']);
+    expect(pass?.warnings).toEqual([]);
   });
 
   it('skips silently under auto when trivy is not installed, and warns under true', async () => {
@@ -214,23 +242,43 @@ describe('collectDependencies: the licence pass in a scan (spec §1)', () => {
     expect(fake.calls).toEqual([]);
   });
 
-  it('records a failed run with the first stderr line, and no inventory', async () => {
+  it('records a failed run with a fixed warning, logs the first stderr line, and no inventory', async () => {
     const fake = fakeTrivy(null, {
       exitCode: 1,
       stderr:
         '\n2026-10-14T10:00:00Z\tFATAL\tFatal error\trun error: fs scan error: https://ci:hunter2@proxy.example/x\nsecond line\n',
     });
-    const pass = await collectDependencies(options({ run: fake.run }));
+    const logged: string[] = [];
+    const pass = await collectDependencies({
+      ...options({ run: fake.run }),
+      log: { ...silentLogger, warn: (m: string) => logged.push(m) },
+    });
     expect(pass?.engine).toMatchObject({ status: 'failed', reason: 'exited with code 1' });
     expect(pass?.entries).toBeUndefined();
+    // config.md §6: the tool's output never reaches the report, only the log.
     expect(pass?.warnings).toEqual([
       {
         code: 'LICENSE_SCAN_FAILED',
-        message:
-          'the Trivy licence pass exited with code 1: 2026-10-14T10:00:00Z FATAL Fatal error run error: fs scan error: https://«redacted»@proxy.example/x',
+        message: 'the Trivy licence pass exited with code 1: no dependency inventory',
         count: 1,
       },
     ]);
+    expect(logged).toEqual([
+      'trivy-licenses: 2026-10-14T10:00:00Z FATAL Fatal error run error: fs scan error: https://«redacted»@proxy.example/x',
+      'trivy-licenses: failed (exited with code 1)',
+    ]);
+  });
+
+  it('gives the same fixed warning when Trivy fails without stderr', async () => {
+    const logged: string[] = [];
+    const pass = await collectDependencies({
+      ...options({ run: fakeTrivy(null, { exitCode: 2 }).run }),
+      log: { ...silentLogger, warn: (m: string) => logged.push(m) },
+    });
+    expect(pass?.warnings.map((w) => w.message)).toEqual([
+      'the Trivy licence pass exited with code 2: no dependency inventory',
+    ]);
+    expect(logged).toEqual(['trivy-licenses: failed (exited with code 2)']);
   });
 
   it('records a run whose output is not Trivy JSON as failed', async () => {
