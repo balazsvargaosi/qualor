@@ -1,1 +1,6 @@
-{}
+{
+  "qualor-security-dotnet": {
+    "reason": "needs the Roslyn-engine / C# rules pack (released with the pin step, Task 19 of the engine plan)",
+    "kinds": ["missing-finding"]
+  }
+}

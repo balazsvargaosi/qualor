@@ -4,11 +4,11 @@ import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { expect, it } from 'vitest';
 import { describeWithDotnet } from '../../test/analyzers';
-import { DEFAULT_QUALOR_RULES_DIR, loadQualorPack } from '../analyzers/qualor';
 import { commitAll, initRepo } from '../../test/git';
 import { captureIO } from '../../test/io';
 import { testParsers } from '../../test/parsers';
 import { useTempDirs } from '../../test/tmp';
+import { DEFAULT_QUALOR_RULES_DIR, loadQualorPack } from '../analyzers/qualor';
 import { EXIT } from '../errors';
 import { silentLogger } from '../log';
 import { runDotnetBegin } from './begin';
@@ -294,13 +294,25 @@ describeWithDotnet()(
         ...extraEnv,
       };
       expect(runDotnetBegin({}, captureIO({ cwd: root, env }).io, silentLogger)).toBe(EXIT.OK);
-      const started = Date.now();
-      const build = spawnSync('dotnet', ['build', '--no-incremental', '-nologo', 'Shop.slnx'], {
+      // Restore first (NuGet downloads on a cold cache are not the build), then time the build alone.
+      const restore = spawnSync('dotnet', ['restore', '-nologo', 'Shop.slnx'], {
         cwd: root,
         env,
         encoding: 'utf8',
         timeout: 600_000,
       });
+      expect(restore.status, restore.stdout + restore.stderr).toBe(0);
+      const started = Date.now();
+      const build = spawnSync(
+        'dotnet',
+        ['build', '--no-restore', '--no-incremental', '-nologo', 'Shop.slnx'],
+        {
+          cwd: root,
+          env,
+          encoding: 'utf8',
+          timeout: 600_000,
+        },
+      );
       const buildMs = Date.now() - started;
       expect(build.status, build.stdout + build.stderr).toBe(0);
       const out = path.join(tmp(), 'r.json.gz');
