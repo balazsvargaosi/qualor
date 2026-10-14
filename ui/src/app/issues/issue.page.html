@@ -23,7 +23,17 @@
           @if (i.duplicateOfIssueId) {
             <span class="badge badge-tag" i18n="@@issues.duplicate">Duplicate</span>
           }
+          @if (i.confidence === 'medium') {
+            <span class="badge badge-tag" i18n="@@issues.possible">Possible</span>
+          }
         </p>
+        @if (i.confidence === 'medium') {
+          <p class="muted" i18n="@@issue.possible.note">
+            Possible: the path the analysis followed to this issue goes through stored data, a
+            lookup by a key or a call it could not narrow down. Check that the data really gets
+            there before you act on it.
+          </p>
+        }
         @if (i.duplicateOfIssueId; as primary) {
           <p>
             <a
@@ -177,6 +187,16 @@
           <dd>{{ i.kind | label: 'kind' }}</dd>
           <dt i18n="@@issue.details.quality">Software quality</dt>
           <dd>{{ i.quality | label: 'quality' }}</dd>
+          @if (i.confidence) {
+            <dt i18n="@@issue.details.confidence">Confidence</dt>
+            <dd>
+              @if (i.confidence === 'medium') {
+                <ng-container i18n="@@issue.details.confidence.medium">Possible</ng-container>
+              } @else {
+                <ng-container i18n="@@issue.details.confidence.high">High</ng-container>
+              }
+            </dd>
+          }
           <dt i18n="@@issue.details.rule">Rule</dt>
           <dd>
             <code>{{ i.rule.key }}</code>

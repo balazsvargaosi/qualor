@@ -135,6 +135,11 @@ Each rule also has a **quality**: security, reliability, maintainability or lice
 holds the issues of the organisation's [licence policy](./dependency-licenses.md) (Business and
 Enterprise). It has no rating, and those issues never count as security issues.
 
+Some findings of Qualor's C# taint engine are marked **Possible**: the path the engine followed
+goes through stored data, a lookup or a call it could not narrow down (see
+[C#](./languages-and-analyzers.md#c)). The mark does not change the severity, the gate or the
+counts; it tells you to check the path before you act on the finding.
+
 ## Issue statuses
 
 | Status | Set by | Meaning |

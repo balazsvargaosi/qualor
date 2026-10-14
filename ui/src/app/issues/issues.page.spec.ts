@@ -38,6 +38,7 @@ function issue(id: string, overrides: Partial<Issue> = {}): Issue {
     endColumn: null,
     inNewCode: false,
     duplicateOfIssueId: null,
+    confidence: null,
     firstSeenAt: '2026-09-15T09:00:00.000Z',
     resolvedAt: null,
     closedAt: null,
@@ -134,6 +135,26 @@ describe('IssuesPage', () => {
     ]);
     // The status filter is active (open): only the selected value shows a count.
     expect(facetText(root, 'status').slice(0, 2)).toEqual(['Open 2', 'Resolved']);
+  });
+
+  it('marks a medium-confidence finding of the C# taint engine Possible, and only that one (R-9)', async () => {
+    server.on('GET', '/api/v0/issues', {
+      body: {
+        items: [
+          issue('i1', { confidence: 'medium' }),
+          issue('i2', { confidence: 'high' }),
+          issue('i3'),
+        ],
+        nextCursor: null,
+        facets: {},
+      },
+    });
+    const { root } = await render();
+    const rows = [...root.querySelectorAll('tbody tr')];
+    const tags = rows.map((r) =>
+      [...r.querySelectorAll('.issue-meta .badge')].map((b) => b.textContent?.trim()),
+    );
+    expect(tags).toEqual([['Possible'], [], []]);
   });
 
   it('writes rule values as code, and gives a colour only to severities', async () => {

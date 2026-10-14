@@ -121,6 +121,10 @@
 .issues-table tr.on-line {
   background: var(--accent-soft);
 }
+/* "Possible" (R-9) after an issue's message. */
+.issues-table .issue-link + .badge {
+  margin-left: 8px;
+}
 .file-placeholder {
   min-height: 320px;
 }

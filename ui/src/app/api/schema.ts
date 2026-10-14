@@ -4886,6 +4886,7 @@ export interface paths {
                                 status: string;
                                 inNewCode: boolean;
                                 duplicateOfIssueId: string | null;
+                                confidence: ("high" | "medium") | null;
                                 startLine: number | null;
                                 startColumn: number | null;
                                 endLine: number | null;
@@ -6107,6 +6108,7 @@ export interface paths {
                                 endColumn: number | null;
                                 inNewCode: boolean;
                                 duplicateOfIssueId: string | null;
+                                confidence: ("high" | "medium") | null;
                                 /** Format: date-time */
                                 firstSeenAt: string;
                                 resolvedAt: string | null;
@@ -6236,6 +6238,7 @@ export interface paths {
                             endColumn: number | null;
                             inNewCode: boolean;
                             duplicateOfIssueId: string | null;
+                            confidence: ("high" | "medium") | null;
                             /** Format: date-time */
                             firstSeenAt: string;
                             resolvedAt: string | null;
@@ -6371,6 +6374,7 @@ export interface paths {
                             endColumn: number | null;
                             inNewCode: boolean;
                             duplicateOfIssueId: string | null;
+                            confidence: ("high" | "medium") | null;
                             /** Format: date-time */
                             firstSeenAt: string;
                             resolvedAt: string | null;
@@ -6542,6 +6546,7 @@ export interface paths {
                             endColumn: number | null;
                             inNewCode: boolean;
                             duplicateOfIssueId: string | null;
+                            confidence: ("high" | "medium") | null;
                             /** Format: date-time */
                             firstSeenAt: string;
                             resolvedAt: string | null;

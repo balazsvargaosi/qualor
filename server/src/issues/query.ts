@@ -122,6 +122,7 @@ export interface IssueListRow {
   endColumn: number | null;
   inNewCode: boolean;
   duplicateOfIssueId: string | null;
+  confidence: string | null;
   firstSeenAt: Date;
   resolvedAt: Date | null;
   closedAt: Date | null;
@@ -150,6 +151,7 @@ const listColumns = {
   endColumn: issues.endColumn,
   inNewCode: issues.inNewCode,
   duplicateOfIssueId: issues.duplicateOfIssueId,
+  confidence: issues.confidence,
   firstSeenAt: issues.firstSeenAt,
   resolvedAt: issues.resolvedAt,
   closedAt: issues.closedAt,

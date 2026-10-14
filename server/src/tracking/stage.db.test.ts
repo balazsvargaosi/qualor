@@ -457,6 +457,7 @@ describe('issue tracking (server step 8, data-model.md §5.2 and §6)', () => {
             in_new_code: issue!.inNewCode,
             snippet: issue!.snippet,
             secondary_locations: issue!.secondaryLocations,
+            confidence: issue!.confidence,
             from_status: 'open',
           },
         ],
@@ -511,6 +512,7 @@ describe('issue tracking (server step 8, data-model.md §5.2 and §6)', () => {
             in_new_code: issue!.inNewCode,
             snippet: issue!.snippet,
             secondary_locations: issue!.secondaryLocations,
+            confidence: issue!.confidence,
             from_status: 'open', // planned from a stale read
           },
         ],

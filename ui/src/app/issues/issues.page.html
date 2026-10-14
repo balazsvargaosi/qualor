@@ -284,6 +284,9 @@
                     @if (issue.duplicateOfIssueId) {
                       <span class="badge badge-tag" i18n="@@issues.duplicate">Duplicate</span>
                     }
+                    @if (issue.confidence === 'medium') {
+                      <span class="badge badge-tag" i18n="@@issues.possible">Possible</span>
+                    }
                   </div>
                 </td>
                 <td class="nowrap">{{ issue.status | label: 'status' }}</td>

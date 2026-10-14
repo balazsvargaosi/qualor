@@ -9248,6 +9248,20 @@
                               }
                             ]
                           },
+                          "confidence": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "high",
+                                  "medium"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "startLine": {
                             "anyOf": [
                               {
@@ -9307,6 +9321,7 @@
                           "status",
                           "inNewCode",
                           "duplicateOfIssueId",
+                          "confidence",
                           "startLine",
                           "startColumn",
                           "endLine",
@@ -11721,6 +11736,20 @@
                               }
                             ]
                           },
+                          "confidence": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "high",
+                                  "medium"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "firstSeenAt": {
                             "type": "string",
                             "format": "date-time",
@@ -11779,6 +11808,7 @@
                           "endColumn",
                           "inNewCode",
                           "duplicateOfIssueId",
+                          "confidence",
                           "firstSeenAt",
                           "resolvedAt",
                           "closedAt",
@@ -12113,6 +12143,20 @@
                         }
                       ]
                     },
+                    "confidence": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "high",
+                            "medium"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "firstSeenAt": {
                       "type": "string",
                       "format": "date-time",
@@ -12264,6 +12308,7 @@
                     "endColumn",
                     "inNewCode",
                     "duplicateOfIssueId",
+                    "confidence",
                     "firstSeenAt",
                     "resolvedAt",
                     "closedAt",
@@ -12579,6 +12624,20 @@
                         }
                       ]
                     },
+                    "confidence": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "high",
+                            "medium"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "firstSeenAt": {
                       "type": "string",
                       "format": "date-time",
@@ -12730,6 +12789,7 @@
                     "endColumn",
                     "inNewCode",
                     "duplicateOfIssueId",
+                    "confidence",
                     "firstSeenAt",
                     "resolvedAt",
                     "closedAt",
@@ -13085,6 +13145,20 @@
                         }
                       ]
                     },
+                    "confidence": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "high",
+                            "medium"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "firstSeenAt": {
                       "type": "string",
                       "format": "date-time",
@@ -13236,6 +13310,7 @@
                     "endColumn",
                     "inNewCode",
                     "duplicateOfIssueId",
+                    "confidence",
                     "firstSeenAt",
                     "resolvedAt",
                     "closedAt",

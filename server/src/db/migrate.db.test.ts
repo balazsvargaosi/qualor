@@ -41,8 +41,9 @@ describe('runMigrations / pendingMigrations', () => {
     // 0006_sso_scim (sso-scim.md §13, approved 2026-09-28),
     // 0007_compliance_reports (4E-1 §1), 0008_branch_dependencies (6M §4), 0009_mail (E1 spec,
     // approved 2026-10-13), 0010_account_tokens (mail E2 A1, 2026-10-13), 0011_notifications
-    // (mail E3 N8, 2026-10-13).
-    expect(await pendingMigrations(t.db, MIGRATIONS_DIR)).toBe(12);
+    // (mail E3 N8, 2026-10-13), 0012_issues_confidence (6B-C# engine spec R-9, approved
+    // 2026-10-15).
+    expect(await pendingMigrations(t.db, MIGRATIONS_DIR)).toBe(13);
     expect(await readinessCheck(t.db, MIGRATIONS_DIR)()).toBe(false);
     await runMigrations(t.pool, MIGRATIONS_DIR);
     expect(await pendingMigrations(t.db, MIGRATIONS_DIR)).toBe(0);

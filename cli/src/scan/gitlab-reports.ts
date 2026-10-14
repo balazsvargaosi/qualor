@@ -6,6 +6,7 @@ import {
   DEPENDENCY_ENGINES,
   effectiveCwe,
   engineRuleDefaults,
+  findingConfidence,
   REDACTED,
   REPORT_BOUNDS,
   reportFingerprints,
@@ -107,7 +108,7 @@ export function codeQualityReport(
     entries.push({
       severity,
       entry: {
-        description: finding.message,
+        description: possiblePrefix(finding) + finding.message,
         check_name: scrub(key),
         fingerprint: fingerprints[index] ?? '',
         severity: CODE_QUALITY_SEVERITY[severity],
@@ -158,6 +159,15 @@ const SAST_SEVERITY: Record<Severity, SastVulnerability['severity']> = {
 };
 /** The schema's `name` bound, in characters. */
 const MAX_NAME_CHARS = 255;
+
+/**
+ * What a finding's text starts with when Qualor's C# taint engine reported it with `medium`
+ * confidence (its path goes through the heap, a lookup by a request key or a fallback edge): the
+ * "possible" the issue screens show. Nothing for any other finding.
+ */
+export function possiblePrefix(finding: Report['findings'][number]): string {
+  return findingConfidence(finding) === 'medium' ? 'Possible: ' : '';
+}
 
 /** `2026-09-22T10:15:00`: the schema's time format (UTC, no fraction, no zone). */
 export function sastTime(date: Date): string {
@@ -221,7 +231,7 @@ export function sastReport(
     const safeKey = scrub(key);
     const ruleName = rule?.name?.trim() ?? '';
     const name = safePlainValue(
-      ruleName !== '' && !leaks(ruleName) ? ruleName : safeKey,
+      possiblePrefix(finding) + (ruleName !== '' && !leaks(ruleName) ? ruleName : safeKey),
       MAX_NAME_CHARS,
     );
     const severity = finding.severity ?? defaults.defaultSeverity;

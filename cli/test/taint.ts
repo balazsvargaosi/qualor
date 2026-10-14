@@ -72,6 +72,8 @@ export interface EngineFinding {
   /** The path from source to sink: [uri, line, message]. */
   steps?: [string, number, string][];
   others?: [string, number][];
+  /** The engine's confidence (R-9): `result.properties.confidence`, level "warning" for medium. */
+  confidence?: 'high' | 'medium';
 }
 
 /** SARIF in the shape Qualor.Taint.Cli `analyze` writes (qualor-rules SarifWriter.cs). */
@@ -103,7 +105,7 @@ export function engineSarif(
         results: findings.map((f) => ({
           ruleId: f.rule,
           ruleIndex: ids.indexOf(f.rule),
-          level: 'error',
+          level: f.confidence === 'medium' ? 'warning' : 'error',
           message: { text: `${f.rule}: request data reaches the sink` },
           locations: [location(f.uri, f.line)],
           ...(f.steps !== undefined && {
@@ -121,6 +123,7 @@ export function engineSarif(
               ...location(u, l, 'other request data reaching the same sink'),
             })),
           }),
+          ...(f.confidence !== undefined && { properties: { confidence: f.confidence } }),
         })),
         invocations: [{ executionSuccessful: o.complete ?? true }],
         properties: { analysisStats: { projects: 1, methods: 10, failedMethods: 0 } },

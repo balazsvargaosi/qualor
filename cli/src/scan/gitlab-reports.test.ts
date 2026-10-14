@@ -154,6 +154,24 @@ describe('GitLab Code Quality report (scm.md §9)', () => {
     expect(validate([{ ...codeQualityReport(report)[0], severity: 'high' }])).toBe(false);
   });
 
+  it("starts a medium-confidence finding of Qualor's C# taint engine with Possible (R-9)", () => {
+    const engine = { ...finding, engineId: 'qualor', ruleId: 'csharp/sql-injection' };
+    const report = withFindings([
+      { ...engine, message: 'medium', properties: { confidence: 'medium' } },
+      { ...engine, message: 'high', lineHash: 'e'.repeat(32), properties: { confidence: 'high' } },
+      { ...engine, message: 'opengrep', lineHash: 'd'.repeat(32) },
+      { ...finding, message: 'other tool', properties: { confidence: 'medium' } },
+    ]);
+    expect(codeQualityReport(report).map((e) => e.description)).toEqual([
+      'Possible: medium',
+      'high',
+      'opengrep',
+      'other tool',
+    ]);
+    const validate = codeQualityValidator();
+    expect(validate(codeQualityReport(report)), JSON.stringify(validate.errors)).toBe(true);
+  });
+
   it('keeps its fingerprints stable across runs: they depend on the finding, not the scan', () => {
     const report = withFindings([finding, { ...finding, lineHash: 'f'.repeat(32) }]);
     const again: Report = {
@@ -458,6 +476,48 @@ describe('GitLab SAST report (scm.md §9)', () => {
       ],
     });
     expect(JSON.stringify(sast)).not.toMatch(/raw_source_code_extract|"links"|"solution"/);
+  });
+
+  it("names a medium-confidence finding of Qualor's C# taint engine Possible, still valid (R-9)", () => {
+    const base = secure();
+    const report: Report = {
+      ...base,
+      engines: [
+        ...base.engines,
+        {
+          id: 'qualor',
+          kind: 'builtin',
+          version: '1.0.0',
+          status: 'ok',
+          durationMs: 1,
+          rules: [{ id: 'csharp/sql-injection', name: 'SQL injection', quality: 'security' }],
+        },
+      ],
+      findings: [
+        ...base.findings,
+        ...(['medium', 'high'] as const).map((confidence, i) => ({
+          engineId: 'qualor',
+          ruleId: 'csharp/sql-injection',
+          message: `request data reaches the sink (${confidence})`,
+          severity: 'blocker' as const,
+          location: { path: 'src/A.cs', startLine: 4 + i },
+          lineHash: String(5 + i).repeat(32),
+          contextHash: '6'.repeat(32),
+          properties: { confidence },
+        })),
+      ],
+    };
+    const sast = sastReport(report, times);
+    const validate = sastValidator();
+    expect(validate(sast), JSON.stringify(validate.errors)).toBe(true);
+    expect(
+      sast.vulnerabilities
+        .filter((v) => v.location.file === 'src/A.cs')
+        .map((v) => [v.name, v.location.start_line]),
+    ).toEqual([
+      ['Possible: SQL injection', 4],
+      ['SQL injection', 5],
+    ]);
   });
 
   it('puts a description in a code span GitLab cannot render out of (scm.md §6)', () => {

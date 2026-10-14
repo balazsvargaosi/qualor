@@ -659,6 +659,9 @@ export const issues = pgTable(
     }),
     snippet: jsonb('snippet').$type<unknown>(),
     secondaryLocations: jsonb('secondary_locations').notNull().default(emptyJsonArray),
+    // Qualor's C# taint engine only (R-9): 'medium' is shown as "possible"; null for every other
+    // analyzer (not set).
+    confidence: text('confidence').$type<'high' | 'medium'>(),
     firstSeenAnalysisId: uuid('first_seen_analysis_id').references(() => analyses.id, {
       onDelete: 'set null',
     }),
@@ -706,6 +709,7 @@ export const issues = pgTable(
       sql`quality IN ('security','reliability','maintainability','licensing')`,
     ),
     check('issues_kind_check', sql`kind IN ('issue','hotspot')`),
+    check('issues_confidence_check', sql`confidence IN ('high','medium')`),
   ],
 );
 

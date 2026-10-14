@@ -31,6 +31,7 @@ const issue = (id: string, startLine: number | null, over: Partial<Issue> = {}):
   status: 'open',
   inNewCode: false,
   duplicateOfIssueId: null,
+  confidence: null,
   startLine,
   startColumn: null,
   endLine: null,
@@ -228,6 +229,29 @@ describe('FilePage (spec §4.3)', () => {
     expect(first).toEqual(['7', 'Blocker', 'Message i7', 'ts:sql', 'Open']);
     expect(rows[0]!.querySelector('.badge-blocker')).not.toBeNull();
     expect(root.textContent).not.toContain('Only the first 500 issues are listed.');
+  });
+
+  it('marks a medium-confidence finding of the C# taint engine Possible next to its message (R-9)', async () => {
+    setup({
+      ...DETAIL,
+      issues: [
+        issue('i3', 3, { confidence: 'medium' }),
+        issue('i4', 4, { confidence: 'high' }),
+        issue('i5', 5),
+      ],
+    });
+    const { root } = await render();
+    const rows = [...root.querySelectorAll('.issues-table tbody tr')];
+    expect(
+      rows.map((r) => [
+        flat(r.querySelector('a.issue-link')),
+        flat(r.querySelectorAll('td')[2]?.querySelector('.badge')),
+      ]),
+    ).toEqual([
+      ['Message i3', 'Possible'],
+      ['Message i4', undefined],
+      ['Message i5', undefined],
+    ]);
   });
 
   it('notes a truncated issue list', async () => {

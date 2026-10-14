@@ -161,6 +161,9 @@
                         [routerLink]="['/projects', projectId(), 'issues', i.id]"
                         >{{ i.message }}</a
                       >
+                      @if (i.confidence === 'medium') {
+                        <span class="badge badge-tag" i18n="@@file.issues.possible">Possible</span>
+                      }
                     </td>
                     <td class="mono rule">{{ i.ruleKey }}</td>
                     <td class="nowrap">{{ i.status | label: 'status' }}</td>

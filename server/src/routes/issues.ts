@@ -1,4 +1,11 @@
-import { ISSUE_KINDS, QUALITIES, ruleHelpUri, SEVERITIES, secondaryLocation } from '@qualor/shared';
+import {
+  CONFIDENCES,
+  ISSUE_KINDS,
+  QUALITIES,
+  ruleHelpUri,
+  SEVERITIES,
+  secondaryLocation,
+} from '@qualor/shared';
 import { and, asc, eq, gt } from 'drizzle-orm';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
@@ -58,6 +65,12 @@ export const issueSchema = z.object({
   endColumn: z.number().int().nullable(),
   inNewCode: z.boolean(),
   duplicateOfIssueId: z.uuid().nullable(),
+  /**
+   * Qualor's C# taint engine's confidence (R-9): `medium` when the reported path goes through the
+   * heap, a lookup by a request key or a fallback edge (shown as "possible"); null when the
+   * analyzer sets none (every other one).
+   */
+  confidence: z.enum(CONFIDENCES).nullable(),
   firstSeenAt: timestamp,
   resolvedAt: timestamp.nullable(),
   closedAt: timestamp.nullable(),
@@ -196,6 +209,7 @@ export function issueDto(row: IssueListRow): IssueDto {
     endColumn: row.endColumn,
     inNewCode: row.inNewCode,
     duplicateOfIssueId: row.duplicateOfIssueId,
+    confidence: (row.confidence as IssueDto['confidence']) ?? null,
     firstSeenAt: iso(row.firstSeenAt),
     resolvedAt: isoOrNull(row.resolvedAt),
     closedAt: isoOrNull(row.closedAt),

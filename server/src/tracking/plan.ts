@@ -1,4 +1,11 @@
-import type { IssueKind, Quality, Report, Severity } from '@qualor/shared';
+import {
+  findingConfidence,
+  type Confidence,
+  type IssueKind,
+  type Quality,
+  type Report,
+  type Severity,
+} from '@qualor/shared';
 import { uuidv7 } from '../db/ids';
 import type { AcceptedFinding } from '../ingest/state';
 import type { NewCodeClassifier } from '../newcode/lines';
@@ -68,6 +75,8 @@ export interface IssueWrite {
   in_new_code: boolean;
   snippet: unknown;
   secondary_locations: unknown;
+  /** Qualor's C# taint engine's confidence (R-9), null when the finding has none. */
+  confidence: Confidence | null;
 }
 
 export interface IssueInsert extends IssueWrite {
@@ -225,6 +234,7 @@ function write(
     snippet: f.finding.snippet ?? null,
     // Stored as reported. Their paths may lie outside files[]; nothing joins on them (ruling T6).
     secondary_locations: f.finding.secondaryLocations ?? [],
+    confidence: findingConfidence(f.finding) ?? null,
   };
 }
 

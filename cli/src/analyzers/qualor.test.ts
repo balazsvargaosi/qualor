@@ -1,7 +1,12 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { engineMapping, type QualorManifest, type SarifLog } from '@qualor/shared';
+import {
+  engineMapping,
+  findingConfidence,
+  type QualorManifest,
+  type SarifLog,
+} from '@qualor/shared';
 import { describe, expect, it } from 'vitest';
 import { expectedKeys, fakeContext, findingKeys, normalizeRecorded } from '../../test/analyzers';
 import { FIXTURES_DIR } from '../../test/fixtures';
@@ -842,6 +847,39 @@ describe("qualor with Qualor's Roslyn taint engine under qualor dotnet end (6B-C
     );
     if (!('run' in csharp)) throw new Error(JSON.stringify(csharp));
     expect(csharp.run.args.slice(csharp.run.args.indexOf('--') + 1)).toEqual(['src/B.cs']);
+  });
+
+  it("carries the engine's confidence into the finding, with the rule's severity whatever the level (R-9)", async () => {
+    const { root, files, pack } = setup();
+    const taint: TaintRun = {
+      kind: 'ok',
+      sources: ['src/A.cs', 'src/B.cs'],
+      sarif: engineSarif(root, [
+        { rule: 'csharp.sql-injection', uri: 'src/A.cs', line: 4, confidence: 'medium' },
+        { rule: 'csharp.sql-injection', uri: 'src/B.cs', line: 4, confidence: 'high' },
+      ]) as SarifLog,
+    };
+    const prep = await createQualorAnalyzer({ defaultDir: pack }).prepare(
+      withTaint(root, files, taint),
+    );
+    if (!('run' in prep) || prep.run.transform === undefined) throw new Error(JSON.stringify(prep));
+    const out = normalizeIn(root, prep.run.transform(opengrepSarif(), ''));
+
+    // A medium result's SARIF level is "warning": the severity stays the manifest's.
+    expect(findingKeys(out.findings)).toEqual([
+      'qualor:csharp/sql-injection src/A.cs:4 [blocker]',
+      'qualor:csharp/sql-injection src/B.cs:4 [blocker]',
+    ]);
+    expect(out.findings.map((f) => findingConfidence(f))).toEqual(['medium', 'high']);
+
+    // The OpenGrep path keeps no confidence.
+    const plain = await createQualorAnalyzer({ defaultDir: pack }).prepare(
+      withTaint(root, files, null),
+    );
+    if (!('run' in plain) || plain.run.transform === undefined) throw new Error('no run');
+    const opengrep = normalizeIn(root, plain.run.transform(opengrepSarif(), ''));
+    expect(opengrep.findings).toHaveLength(1);
+    expect(findingConfidence(opengrep.findings[0]!)).toBeUndefined();
   });
 
   it('needs no OpenGrep when only C# files are in scope: the engine findings are the run', async () => {

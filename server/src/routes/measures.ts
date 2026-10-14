@@ -1,4 +1,4 @@
-import { METRICS, validateRepoPath } from '@qualor/shared';
+import { CONFIDENCES, METRICS, validateRepoPath } from '@qualor/shared';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import type { RouteDeps } from '../app';
@@ -73,6 +73,8 @@ const fileIssueSchema = z.object({
   status: z.string(),
   inNewCode: z.boolean(),
   duplicateOfIssueId: z.uuid().nullable(),
+  /** Qualor's C# taint engine's confidence (R-9; `medium`: "possible"), null when not set. */
+  confidence: z.enum(CONFIDENCES).nullable(),
   startLine: z.number().int().nullable(),
   startColumn: z.number().int().nullable(),
   endLine: z.number().int().nullable(),
@@ -297,6 +299,7 @@ export const measureRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (
           status: issue.status,
           inNewCode: issue.inNewCode,
           duplicateOfIssueId: issue.duplicateOfIssueId,
+          confidence: issue.confidence ?? null,
           startLine: issue.startLine,
           startColumn: issue.startColumn,
           endLine: issue.endLine,

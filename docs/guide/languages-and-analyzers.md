@@ -632,6 +632,16 @@ the `.cs` files, under the same rule keys (`qualor:csharp/<name>`):
   build) is still analysed by the OpenGrep C# rules.
 - Each finding shows the path from the request data to the dangerous call as its related
   locations, followed by any other request data that reaches the same call.
+- Each finding has a confidence. When the path goes through stored data (a field or property set
+  elsewhere in the same request), a lookup whose key comes from the request, a `ViewData` entry
+  under a key built at run time, a view the engine could not tell from its name, or an interface
+  or virtual call it could not narrow down to one implementation, the finding is marked
+  **Possible**: in the issue list, on the issue page (with a **Confidence** line in its details),
+  in a file's issue list, and as `Possible: ` at the start of its entry in the GitLab Code Quality
+  and SAST reports. Check those with more care before you act on them. The engine shows a direct
+  path when it finds one. The other findings have high confidence and no mark. Possible findings
+  count like any other in the quality gate and the issue counts. The OpenGrep rules and the other
+  analyzers set no confidence, so their findings never show the mark.
 - The engine has a budget: 10 minutes and 4 GB by default. Set `QUALOR_TAINT_TIME_LIMIT` (seconds)
   and `QUALOR_TAINT_MEMORY_LIMIT` (megabytes) to change it.
 - When the engine cannot give a complete result, the OpenGrep C# rules run as in a plain scan, and

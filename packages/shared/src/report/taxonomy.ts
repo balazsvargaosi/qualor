@@ -16,6 +16,27 @@ export type Quality = (typeof QUALITIES)[number];
 export const ISSUE_KINDS = ['issue', 'hotspot'] as const;
 export type IssueKind = (typeof ISSUE_KINDS)[number];
 
+/**
+ * A finding's confidence, set by Qualor's C# taint engine only (`result.properties.confidence` of its SARIF): `medium`
+ * when the path it reports goes through the heap, a lookup by a request key or a fallback edge, shown as "possible";
+ * `high` otherwise. Every other analyzer, and the OpenGrep rules, set none.
+ */
+export const CONFIDENCES = ['high', 'medium'] as const;
+export type Confidence = (typeof CONFIDENCES)[number];
+
+/**
+ * The confidence of a finding: its `properties.confidence` when the finding is Qualor's own (engine `qualor`) and the
+ * value is one of CONFIDENCES; otherwise none (another tool's SARIF may use the same property name with other values).
+ */
+export function findingConfidence(finding: {
+  engineId: string;
+  properties?: Record<string, unknown> | undefined;
+}): Confidence | undefined {
+  if (finding.engineId !== 'qualor') return undefined;
+  const value = finding.properties?.['confidence'];
+  return (CONFIDENCES as readonly unknown[]).includes(value) ? (value as Confidence) : undefined;
+}
+
 export const LANGUAGES = [
   'typescript',
   'javascript',

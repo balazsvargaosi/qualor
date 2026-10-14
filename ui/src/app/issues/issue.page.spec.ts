@@ -53,6 +53,7 @@ function detail(overrides: Partial<IssueDetail> = {}): IssueDetail {
     endColumn: null,
     inNewCode: true,
     duplicateOfIssueId: null,
+    confidence: null,
     firstSeenAt: '2026-09-15T09:00:00.000Z',
     resolvedAt: null,
     closedAt: null,
@@ -106,6 +107,37 @@ describe('IssuePage', () => {
 
   const buttonIn = (root: HTMLElement, name: string) =>
     [...root.querySelectorAll('button')].find((b) => b.textContent?.trim() === name);
+
+  it('tags a medium-confidence finding of the C# taint engine Possible, says why, and shows the confidence (R-9)', async () => {
+    server.on('GET', `/api/v0/issues/${ID}`, { body: detail({ confidence: 'medium' }) });
+    const { root } = await render();
+    const tags = [...root.querySelectorAll('.issue-tags .badge')].map((b) => b.textContent?.trim());
+    expect(tags).toContain('Possible');
+    expect(root.querySelector('.issue-header')?.textContent).toContain(
+      'goes through stored data, a lookup by a key or a call it could not narrow down',
+    );
+    const details = [...root.querySelectorAll('.details-list dt')].map((d) => [
+      d.textContent?.trim(),
+      d.nextElementSibling?.textContent?.trim(),
+    ]);
+    expect(details).toContainEqual(['Confidence', 'Possible']);
+  });
+
+  it('shows a high confidence in the details only, and nothing for a finding without one', async () => {
+    server.on('GET', `/api/v0/issues/${ID}`, { body: detail({ confidence: 'high' }) });
+    const high = (await render()).root;
+    expect(
+      [...high.querySelectorAll('.issue-tags .badge')].map((b) => b.textContent?.trim()),
+    ).not.toContain('Possible');
+    expect(
+      [...high.querySelectorAll('.details-list dt')].map((d) => d.textContent?.trim()),
+    ).toContain('Confidence');
+    server.on('GET', `/api/v0/issues/${ID}`, { body: detail() });
+    const none = (await render()).root;
+    expect(
+      [...none.querySelectorAll('.details-list dt')].map((d) => d.textContent?.trim()),
+    ).not.toContain('Confidence');
+  });
 
   it('shows messages and the Markdown description as text, and no unsafe link', async () => {
     const { root } = await render();
