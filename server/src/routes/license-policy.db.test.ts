@@ -17,6 +17,7 @@ import { auditEvents, instanceSettings } from '../db/schema';
 import {
   LICENSE_POLICY_SETTINGS_KEY,
   readLicensePolicies,
+  storedPolicyFor,
   writeLicensePolicy,
 } from '../licenses/settings';
 
@@ -69,6 +70,19 @@ describe('the organisation licence policy routes (6M §5)', () => {
     call('PUT', `/organizations/${id}/license-policy`, caller, { policy });
   const stored = async (id = org): Promise<LicensePolicy | null> =>
     (await readLicensePolicies(ctx.db)).organizations[id] ?? null;
+  /** The licence policy row as it is stored, and a way to store one bypassing the write. */
+  const storedRow = async (): Promise<unknown> =>
+    (
+      await ctx.db
+        .select({ value: instanceSettings.value })
+        .from(instanceSettings)
+        .where(eq(instanceSettings.key, LICENSE_POLICY_SETTINGS_KEY))
+    )[0]?.value;
+  const storeRow = (value: unknown) =>
+    ctx.db
+      .insert(instanceSettings)
+      .values({ key: LICENSE_POLICY_SETTINGS_KEY, value })
+      .onConflictDoUpdate({ target: instanceSettings.key, set: { value } });
   const events = (): Promise<Event[]> =>
     ctx.db
       .select()
@@ -308,6 +322,85 @@ describe('the organisation licence policy routes (6M §5)', () => {
         [otherOrg]: POLICY,
       });
     });
+  });
+
+  describe('an unreadable stored policy (final review)', () => {
+    /** A group id a newer version wrote: this version cannot read the entry. */
+    const UNREADABLE = { ...POLICY, forbiddenGroups: ['future-group'] };
+
+    it("carries another organisation's unreadable entry over as it is, and still drops a deleted one's", async () => {
+      const deleted = '0190a6c2-0000-7000-8000-00000000dead';
+      await storeRow({
+        organizations: { [otherOrg]: UNREADABLE, [deleted]: UNREADABLE, 'not-an-id': POLICY },
+        later: { kept: true },
+      });
+      expect((await putPolicy(POLICY)).statusCode).toBe(200);
+      expect(await storedRow()).toEqual({
+        organizations: { [org]: POLICY, [otherOrg]: UNREADABLE },
+        later: { kept: true },
+      });
+      // The other organisation's analyses still warn LICENSE_POLICY_INVALID, rather than judge
+      // against no policy.
+      expect(await storedPolicyFor(ctx.db, otherOrg)).toEqual({ state: 'invalid' });
+      expect((await putPolicy(null)).statusCode).toBe(200);
+      expect(await storedRow()).toEqual({
+        organizations: { [otherOrg]: UNREADABLE },
+        later: { kept: true },
+      });
+    });
+
+    it('removes its own unreadable entry with null, and records the removal', async () => {
+      for (const unreadable of [UNREADABLE, 'not a policy']) {
+        await storeRow({ organizations: { [org]: unreadable, [otherOrg]: POLICY } });
+        expect(await storedPolicyFor(ctx.db, org)).toEqual({ state: 'invalid' });
+        const recorded = (await events()).length;
+        const res = await putPolicy(null);
+        expect(res.statusCode, res.body).toBe(200);
+        expect(res.json()).toEqual({ available: true, policy: null });
+        expect(await storedRow()).toEqual({ organizations: { [otherOrg]: POLICY } });
+        // The next analysis runs as with no policy.
+        expect(await storedPolicyFor(ctx.db, org)).toEqual({ state: 'none' });
+        const removal = (await events()).slice(recorded);
+        expect(removal).toHaveLength(1);
+        expect(removal[0]).toMatchObject({ details: { before: null, after: null } });
+        // Removing it again is a no-op.
+        expect((await putPolicy(null)).statusCode).toBe(200);
+        expect(await events()).toHaveLength(recorded + 1);
+      }
+    });
+
+    it('replaces its own unreadable entry with a policy', async () => {
+      await storeRow({ organizations: { [org]: UNREADABLE } });
+      const recorded = (await events()).length;
+      expect((await putPolicy(POLICY)).statusCode).toBe(200);
+      expect(await storedRow()).toEqual({ organizations: { [org]: POLICY } });
+      expect((await events()).slice(recorded)).toMatchObject([
+        { details: { before: null, after: POLICY } },
+      ]);
+    });
+
+    it.each([
+      ['organizations is a list', { organizations: [POLICY] }],
+      ['organizations is a string', { organizations: 'x' }],
+      ['the row is a list', [{ organizations: {} }]],
+      ['the row is a string', 'x'],
+    ])(
+      'refuses to write over a row it cannot read (%s): 409 LICENSE_POLICIES_UNREADABLE, the row unchanged',
+      async (_, broken) => {
+        await storeRow(broken);
+        const recorded = (await events()).length;
+        for (const policy of [POLICY, null]) {
+          const res = await putPolicy(policy);
+          expect(res.statusCode, res.body).toBe(409);
+          expect(res.json()).toMatchObject({ code: 'LICENSE_POLICIES_UNREADABLE' });
+        }
+        await expect(
+          ctx.db.transaction((tx) => writeLicensePolicy(tx, otherOrg, POLICY)),
+        ).rejects.toMatchObject({ code: 'LICENSE_POLICIES_UNREADABLE' });
+        expect(await storedRow()).toEqual(broken);
+        expect(await events()).toHaveLength(recorded);
+      },
+    );
   });
 
   describe('the audit event organization.license_policy_changed', () => {

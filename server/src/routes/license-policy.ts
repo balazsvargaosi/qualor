@@ -19,7 +19,9 @@ import { organizations } from '../db/schema';
 import { ProblemError } from '../http/problem';
 import { idParams } from '../http/schemas';
 import {
-  lockLicensePolicies,
+  LICENSE_POLICY_SETTINGS_KEY,
+  licensePoliciesUnreadable,
+  lockStoredLicensePolicies,
   normalizeLicensePolicy,
   policyFor,
   sameLicensePolicy,
@@ -120,10 +122,11 @@ export const licensePolicyRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = a
     {
       config: {
         openapi: {
-          problems: [400],
+          problems: [400, 409],
           problemDescriptions: {
             400: 'INVALID_LICENSE_ID: an entry of `forbidden` or `allowed` is not an SPDX licence id or "id WITH exception" term; `details.invalid` lists them',
             403: 'FEATURE_NOT_LICENSED (the enterprise feature license-policy is not active), FORBIDDEN or INSUFFICIENT_SCOPE',
+            409: 'LICENSE_POLICIES_UNREADABLE: the stored licence policies (instance setting `licensePolicy`) are not an object with an `organizations` object; nothing is changed until an operator fixes or deletes the row',
           },
         },
       },
@@ -153,8 +156,22 @@ export const licensePolicyRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = a
       }
       const next = sent === null ? null : normalizeLicensePolicy(sent);
       await deps.db.transaction(async (tx) => {
-        const before = (await lockLicensePolicies(tx)).organizations[organizationId] ?? null;
-        if (sameLicensePolicy(before, next)) return;
+        const stored = await lockStoredLicensePolicies(tx);
+        if (stored === null) {
+          request.log.error(
+            { organizationId, setting: LICENSE_POLICY_SETTINGS_KEY },
+            'the stored licence policies cannot be read: the policy was not changed',
+          );
+          throw licensePoliciesUnreadable();
+        }
+        // An entry this version cannot read is no policy (`before: null`), but it is still
+        // replaced or, with `null`, removed: it would otherwise keep LICENSE_POLICY_INVALID firing.
+        const stated = Object.hasOwn(stored.entries, organizationId);
+        const readable = stated
+          ? licensePolicySchema.safeParse(stored.entries[organizationId])
+          : undefined;
+        const before = readable?.success ? readable.data : null;
+        if (readable?.success ? sameLicensePolicy(before, next) : !stated && next === null) return;
         await writeLicensePolicy(tx, organizationId, next);
         if (deps.audit.active()) {
           const [row] = await tx

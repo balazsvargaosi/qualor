@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { Executor } from '../db/client';
 import { LOCKS } from '../db/locks';
 import { instanceSettings, organizations } from '../db/schema';
+import { ProblemError } from '../http/problem';
 import { instanceSetting } from '../settings';
 
 /** 6M §4: the `instance_settings` row of the organisation licence policies. */
@@ -16,13 +17,19 @@ export interface LicensePolicySettings {
 
 export const DEFAULT_LICENSE_POLICY_SETTINGS: LicensePolicySettings = { organizations: {} };
 
-/** The stored row's shape, its entries unchecked. */
-const storedRowSchema = z.object({ organizations: z.record(z.string(), z.unknown()).default({}) });
+/**
+ * The stored row's shape, its entries unchecked. Members other than `organizations` (a newer
+ * version's) are kept, so a write carries them over.
+ */
+const storedRowSchema = z.looseObject({
+  organizations: z.record(z.string(), z.unknown()).default({}),
+});
 
 /**
- * The stored row. An entry that does not parse (an operator's edit) is dropped on its own, so it
- * never takes the other organisations' policies with it, and the next write removes it. The
- * licence stage does not read it through this: see {@link storedPolicyFor}.
+ * The stored row as it is read. An entry that does not parse (an operator's edit, or a newer
+ * version's policy) is left out on its own, so it never takes the other organisations' policies
+ * with it; a write keeps it as it is stored ({@link writeLicensePolicy}). The licence stage does
+ * not read it through this: see {@link storedPolicyFor}.
  */
 export const licensePolicySettingsSchema: z.ZodType<LicensePolicySettings> =
   storedRowSchema.transform(({ organizations: entries }) => {
@@ -78,30 +85,59 @@ export async function policyFor(
   return (await readLicensePolicies(db)).organizations[organizationId] ?? null;
 }
 
-/**
- * The stored policies, read under the advisory lock every write of the row takes, so a change
- * made from them in `tx` never overwrites another write.
- */
-export async function lockLicensePolicies(tx: Executor): Promise<LicensePolicySettings> {
-  await tx.execute(sql`SELECT pg_advisory_xact_lock(${LOCKS.licensePolicy})`);
-  return readLicensePolicies(tx);
+/** The stored row as it is, its entries unchecked: what a write starts from. */
+export interface StoredLicensePolicies {
+  /** The row's members, `organizations` included; empty without a row. */
+  row: Record<string, unknown>;
+  /** Each organisation's entry as it is stored, readable or not. */
+  entries: Record<string, unknown>;
 }
+
+/**
+ * The stored row, read raw under the advisory lock every write of the row takes, so a change made
+ * from it in `tx` never overwrites another write. `null` when the row's outer shape is broken
+ * (`organizations` is not an object): no entry can be told from another then, so nothing may be
+ * written over it ({@link licensePoliciesUnreadable}).
+ */
+export async function lockStoredLicensePolicies(
+  tx: Executor,
+): Promise<StoredLicensePolicies | null> {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(${LOCKS.licensePolicy})`);
+  const [stored] = await tx
+    .select({ value: instanceSettings.value })
+    .from(instanceSettings)
+    .where(eq(instanceSettings.key, LICENSE_POLICY_SETTINGS_KEY));
+  if (!stored) return { row: {}, entries: {} };
+  const parsed = storedRowSchema.safeParse(stored.value);
+  if (!parsed.success) return null;
+  return { row: parsed.data, entries: parsed.data.organizations };
+}
+
+/** The stored row cannot be read: writing over it would lose every organisation's policy. */
+export const LICENSE_POLICIES_UNREADABLE = 'LICENSE_POLICIES_UNREADABLE';
+
+export const licensePoliciesUnreadable = (): ProblemError =>
+  new ProblemError(409, LICENSE_POLICIES_UNREADABLE, 'The stored licence policies cannot be read', {
+    detail: `The instance setting "${LICENSE_POLICY_SETTINGS_KEY}" is not an object with an "organizations" object, so no policy can be changed; fix the row, or delete it to remove every organisation's policy`,
+  });
 
 const isUuid = (id: string): boolean => z.uuid().safeParse(id).success;
 
 /**
- * Sets (or with `null` removes) the organisation's policy, under the lock. The entries of
- * organisations deleted since are dropped (6M §4). Call it inside a transaction.
+ * Sets (or with `null` removes) the organisation's policy, under the lock. Every other
+ * organisation's entry is carried over as it is stored, even one this version cannot read (final
+ * review): only the entries of organisations deleted since are dropped (6M §4). Throws
+ * {@link licensePoliciesUnreadable} when the row's outer shape is broken, and changes nothing.
+ * Call it inside a transaction.
  */
 export async function writeLicensePolicy(
   tx: Executor,
   organizationId: string,
   policy: LicensePolicy | null,
 ): Promise<void> {
-  const current = await lockLicensePolicies(tx);
-  const others = Object.keys(current.organizations).filter(
-    (id) => id !== organizationId && isUuid(id),
-  );
+  const stored = await lockStoredLicensePolicies(tx);
+  if (stored === null) throw licensePoliciesUnreadable();
+  const others = Object.keys(stored.entries).filter((id) => id !== organizationId && isUuid(id));
   const existing =
     others.length === 0
       ? new Set<string>()
@@ -113,12 +149,12 @@ export async function writeLicensePolicy(
               .where(inArray(organizations.id, others))
           ).map((r) => r.id),
         );
-  const next: Record<string, LicensePolicy> = {};
-  for (const [id, kept] of Object.entries(current.organizations)) {
+  const next: Record<string, unknown> = {};
+  for (const [id, kept] of Object.entries(stored.entries)) {
     if (existing.has(id)) next[id] = kept;
   }
   if (policy !== null) next[organizationId] = policy;
-  const value: LicensePolicySettings = { organizations: next };
+  const value = { ...stored.row, organizations: next };
   await tx
     .insert(instanceSettings)
     .values({ key: LICENSE_POLICY_SETTINGS_KEY, value })

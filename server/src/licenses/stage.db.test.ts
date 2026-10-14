@@ -17,6 +17,7 @@ import {
   instanceSettings,
   issues,
   measures,
+  organizations,
   projects,
   qualityGates,
   rules,
@@ -70,6 +71,23 @@ describe('licence policy stage (6M §6)', () => {
   });
   const setPolicy = (policy: LicensePolicy | null) =>
     h.ctx.db.transaction((tx) => writeLicensePolicy(tx, h.organizationId, policy));
+  /** Stores the licence policy row as it is given, bypassing the write's checks. */
+  const store = (value: unknown) =>
+    h.ctx.db
+      .insert(instanceSettings)
+      .values({ key: LICENSE_POLICY_SETTINGS_KEY, value })
+      .onConflictDoUpdate({ target: instanceSettings.key, set: { value } });
+  const storedRow = async () =>
+    (
+      await h.ctx.db
+        .select({ value: instanceSettings.value })
+        .from(instanceSettings)
+        .where(eq(instanceSettings.key, LICENSE_POLICY_SETTINGS_KEY))
+    )[0]?.value;
+  const warningsOf = async (id: string) =>
+    ((await h.ctx.db.select().from(analyses).where(eq(analyses.id, id)))[0]!.warnings ?? []) as {
+      code: string;
+    }[];
   const mainOf = async (p: IngestProject) => {
     const [row] = await h.ctx.db
       .select()
@@ -381,14 +399,6 @@ describe('licence policy stage (6M §6)', () => {
       expect(before).toMatchObject({ status: 'open' });
 
       const OTHER = '0190a6c2-0000-7000-8000-0000000000ff';
-      const store = (value: unknown) =>
-        h.ctx.db
-          .insert(instanceSettings)
-          .values({ key: LICENSE_POLICY_SETTINGS_KEY, value })
-          .onConflictDoUpdate({ target: instanceSettings.key, set: { value } });
-      const warningsOf = async (id: string) =>
-        ((await h.ctx.db.select().from(analyses).where(eq(analyses.id, id)))[0]!.warnings ??
-          []) as { code: string }[];
       try {
         // This organisation's entry no longer parses (a group id a newer version wrote), the
         // other organisation's does: the inventory without the package must not close its issue.
@@ -411,7 +421,8 @@ describe('licence policy stage (6M §6)', () => {
               "the organisation's stored licence policy could not be read: the dependency licences were not judged, and the licence issues stay as they are",
             count: 1,
           });
-          await setPolicy(STRONG);
+          // Stored as it is: a write refuses a row whose outer shape is broken.
+          await store({ organizations: { [h.organizationId]: STRONG } });
         }
 
         // Another organisation's bad entry does not hide this one's policy (Task 6).
@@ -428,6 +439,43 @@ describe('licence policy stage (6M §6)', () => {
         expect(after).toMatchObject({ id: before!.id, status: 'closed' });
       } finally {
         await setPolicy(STRONG);
+      }
+    });
+
+    it('keeps an unreadable entry when another organisation writes, until its own organisation removes it (final review)', async () => {
+      const p = await h.project('licenses/policy-invalid-kept');
+      const gpl = dep('gpl-pkg', '1.0.0', ['GPL-3.0-only'], 15);
+      await p.ingestOk(report(p, { dependencies: [gpl] }));
+      const [before, ...rest] = await licenceIssues(p);
+      expect(rest).toEqual([]);
+      expect(before).toMatchObject({ status: 'open' });
+      const [writer] = await h.ctx.db
+        .insert(organizations)
+        .values({ key: 'licenses-writer', name: 'Writer' })
+        .returning({ id: organizations.id });
+      // A group id a newer version wrote: this version cannot read the entry.
+      const unreadable = { ...STRONG, forbiddenGroups: ['future-group'] };
+      try {
+        await store({ organizations: { [h.organizationId]: unreadable } });
+        // Another organisation saves its policy: this organisation's entry is carried over as is.
+        await h.ctx.db.transaction((tx) => writeLicensePolicy(tx, writer!.id, STRONG));
+        expect(await storedRow()).toEqual({
+          organizations: { [h.organizationId]: unreadable, [writer!.id]: STRONG },
+        });
+        const kept = await p.ingestOk(report(p, { dependencies: [] }));
+        expect(await licenceIssues(p)).toEqual([before]);
+        expect((await warningsOf(kept)).map((w) => w.code)).toContain('LICENSE_POLICY_INVALID');
+
+        // Its own organisation removes it: the next analysis runs with no policy, which closes.
+        await setPolicy(null);
+        expect(await storedRow()).toEqual({ organizations: { [writer!.id]: STRONG } });
+        const none = await p.ingestOk(report(p, { dependencies: [gpl] }));
+        expect((await warningsOf(none)).map((w) => w.code)).not.toContain('LICENSE_POLICY_INVALID');
+        const [after] = await licenceIssues(p);
+        expect(after).toMatchObject({ id: before!.id, status: 'closed' });
+      } finally {
+        await store({ organizations: { [h.organizationId]: STRONG } });
+        await h.ctx.db.delete(organizations).where(eq(organizations.id, writer!.id));
       }
     });
 
