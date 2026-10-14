@@ -147,6 +147,8 @@ async function buildReport(
     log,
   });
   const files = analyzed.map((a) => a.file);
+  // The scan's scope: a finding (and a lockfile of the licence pass) elsewhere is left out.
+  const knownPaths = new Set(files.map((f) => f.path));
   const captures = [
     ...(await runAnalyzers(analyzers, {
       root,
@@ -162,7 +164,7 @@ async function buildReport(
   const engines = normalizeCaptures(captures, {
     repoRoot: root,
     readLines: fileLines(root),
-    knownPaths: new Set(files.map((f) => f.path)),
+    knownPaths,
     log,
     onSecrets: (texts, unknown) => {
       redaction = { texts, unknown };
@@ -172,7 +174,14 @@ async function buildReport(
   // Spec §1: the licence pass, after the analyzers, wherever Trivy runs. Its failure or timeout
   // is a warning and no inventory; the vulnerability findings above are unaffected.
   const licenses = analyzers.some((a) => a.id === 'trivy')
-    ? await collectDependencies({ root, config, log, env: io.env, ...deps.licensePass })
+    ? await collectDependencies({
+        root,
+        config,
+        knownPaths,
+        log,
+        env: io.env,
+        ...deps.licensePass,
+      })
     : null;
   if (licenses !== null) warnings.addAll(licenses.warnings);
 

@@ -52,6 +52,8 @@ const options = (o: {
     root,
     tempRoot,
     config: config(o.input),
+    // The lockfiles of these tests are files of the scan, unless a test says otherwise.
+    knownPaths: new Set(['package-lock.json', 'a/package-lock.json', 'old/x/package-lock.json']),
     log: silentLogger,
     env: o.env ?? {},
     resolveBinary: () => (o.trivy === undefined ? '/opt/qualor/bin/trivy' : o.trivy),
@@ -143,6 +145,50 @@ describe('collectDependencies: the licence pass in a scan (spec §1)', () => {
       options({ input: { sources: { exclude: ['old/**'] } }, run: fakeTrivy(json).run }),
     );
     expect(pass?.entries?.map((e) => e.path)).toEqual(['a/package-lock.json']);
+  });
+
+  it('keeps only the lockfiles among the scan’s files, and counts the others in one warning (Task 11 C1)', async () => {
+    const json = JSON.stringify({
+      SchemaVersion: 2,
+      Results: [
+        {
+          Target: 'go.mod',
+          Class: 'lang-pkgs',
+          Type: 'gomod',
+          Packages: [{ Name: 'example.com/a', Version: 'v1.0.0', Licenses: ['MIT'] }],
+        },
+        {
+          // A gitignored in-repository module cache (GOPATH=$CI_PROJECT_DIR/.go).
+          Target: '.go/pkg/mod/github.com/bytedance/sonic@v1.9.1/go.mod',
+          Class: 'lang-pkgs',
+          Type: 'gomod',
+          Packages: [
+            { Name: 'example.com/b', Version: 'v1.0.0' },
+            { Name: 'example.com/c', Version: 'v1.0.0' },
+          ],
+        },
+        {
+          // Under a built-in exclude.
+          Target: 'internal/testdata/package-lock.json',
+          Class: 'lang-pkgs',
+          Type: 'npm',
+          Packages: [{ Name: 'd', Version: '1' }],
+        },
+      ],
+    });
+    const pass = await collectDependencies({
+      ...options({ run: fakeTrivy(json).run }),
+      knownPaths: new Set(['go.mod', 'go.sum', 'main.go']),
+    });
+    expect(pass?.engine.status).toBe('ok');
+    expect(pass?.entries?.map((e) => `${e.path} ${e.name}`)).toEqual(['go.mod example.com/a']);
+    expect(pass?.warnings).toEqual([
+      {
+        code: 'DEPENDENCIES_OUT_OF_SCOPE',
+        message: expect.stringContaining('3 dependencies from 2 lockfiles') as string,
+        count: 3,
+      },
+    ]);
   });
 
   it('skips silently under auto when trivy is not installed, and warns under true', async () => {

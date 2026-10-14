@@ -56,6 +56,11 @@ export interface DependencyPassHooks {
 export interface CollectDependenciesOptions extends DependencyPassHooks {
   root: string;
   config: QualorConfig;
+  /**
+   * The scan's files (the report's `files`): only their lockfiles enter the inventory, the
+   * vulnerability pass's scope (`knownPaths` of `normalizeCaptures`).
+   */
+  knownPaths: ReadonlySet<string>;
   log: Logger;
   /** The CLI's own environment (the analyzers'). */
   env?: Readonly<Record<string, string | undefined>>;
@@ -198,7 +203,7 @@ export async function collectDependencies(
     try {
       const output = readOutput(run.sarifPath);
       const exclude = globMatcher(o.config.sources.exclude, true);
-      parsed = trivyJsonToInventory(output, o.root, { exclude });
+      parsed = trivyJsonToInventory(output, o.root, { exclude, knownPaths: o.knownPaths });
       const v = (output as { Trivy?: { Version?: unknown } }).Trivy?.Version;
       if (typeof v === 'string' && v.length <= REPORT_BOUNDS.engineVersionChars) version = v;
     } catch (err) {

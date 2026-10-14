@@ -197,6 +197,12 @@ export function goModLine(lines: readonly string[], name: string, version: strin
 export interface InventoryOptions {
   /** `sources.exclude`: a lockfile it matches is left out. */
   exclude?: (repoPath: string) => boolean;
+  /**
+   * The scan's files (the report's `files`), the analyzers' `knownPaths`: a lockfile outside them
+   * is left out and counted in `DEPENDENCIES_OUT_OF_SCOPE`, as the vulnerability pass drops a
+   * finding there with `FINDING_OUT_OF_SCOPE`. Absent, every lockfile is kept.
+   */
+  knownPaths?: ReadonlySet<string>;
 }
 
 /** The repository path of a Trivy target, or null when it is not one. */
@@ -216,8 +222,11 @@ function targetPath(target: string, root: string): string | null {
  * T3), else the `name@version` search of the lockfile, else (Go) the `go.mod` requirement. An entry
  * the report could not carry (an over-long name, version or path, an unusable ecosystem or path) is
  * skipped and counted in one `DEPENDENCIES_SKIPPED` warning; a licence string it could not carry
- * is dropped and counted in `DEPENDENCY_LICENSES_SKIPPED`. Throws on output that is not Trivy's
- * JSON report. Entries are neither merged nor capped here (`mergeDuplicates`, `capInventory`).
+ * is dropped and counted in `DEPENDENCY_LICENSES_SKIPPED`. A lockfile the scan does not analyse
+ * (not in `knownPaths`: gitignored or excluded, such as an in-repository Go module cache) is left
+ * out and counted in `DEPENDENCIES_OUT_OF_SCOPE`; one under `sources.exclude` is left out silently.
+ * Throws on output that is not Trivy's JSON report. Entries are neither merged nor capped here
+ * (`mergeDuplicates`, `capInventory`).
  */
 export function trivyJsonToInventory(
   output: unknown,
@@ -228,6 +237,8 @@ export function trivyJsonToInventory(
   const entries: DependencyEntry[] = [];
   const stats: LicenseStats = { licensesDropped: 0 };
   let skipped = 0;
+  let outOfScope = 0;
+  const outOfScopePaths = new Set<string>();
   for (const result of report.Results ?? []) {
     if (result.Class !== 'lang-pkgs') continue;
     const packages = (result.Packages ?? []).filter((p) => p.Relationship !== 'root');
@@ -235,6 +246,11 @@ export function trivyJsonToInventory(
     const ecosystem = result.Type ?? '';
     const repoPath = targetPath(result.Target, root);
     if (repoPath !== null && o.exclude?.(repoPath) === true) continue;
+    if (repoPath !== null && o.knownPaths !== undefined && !o.knownPaths.has(repoPath)) {
+      outOfScope += packages.length;
+      outOfScopePaths.add(repoPath);
+      continue;
+    }
     if (!ECOSYSTEM.test(ecosystem) || repoPath === null || repoPath.length > MAX_PATH_CHARS) {
       skipped += packages.length;
       continue;
@@ -267,6 +283,13 @@ export function trivyJsonToInventory(
       code: 'DEPENDENCIES_SKIPPED',
       message: `${skipped} dependencies were left out of the inventory: a name, version or lockfile path longer than the report allows, or a package type it does not accept`,
       count: skipped,
+    });
+  }
+  if (outOfScope > 0) {
+    warnings.push({
+      code: 'DEPENDENCIES_OUT_OF_SCOPE',
+      message: `${outOfScope} dependencies from ${outOfScopePaths.size} lockfiles outside the analysis scope (gitignored or excluded, such as an in-repository package cache) were left out of the inventory`,
+      count: outOfScope,
     });
   }
   if (stats.licensesDropped > 0) warnings.push(licensesSkippedWarning(stats.licensesDropped));

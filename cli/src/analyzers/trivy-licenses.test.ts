@@ -426,6 +426,45 @@ describe('Trivy licence JSON to the dependency inventory (spec §1)', () => {
     expect(warnings).toEqual([]);
   });
 
+  it('drops and counts the lockfiles outside the scan’s files, as the vulnerability pass does (Task 11 C1)', () => {
+    const cached = '.go/pkg/mod/github.com/bytedance/sonic@v1.9.1/go.mod';
+    const json = trivyJson([
+      { Target: 'go.mod', Type: 'gomod', Packages: [{ Name: 'example.com/a', Version: 'v1.0.0' }] },
+      {
+        Target: cached,
+        Type: 'gomod',
+        Packages: [
+          { Name: 'example.com/b', Version: 'v1.0.0' },
+          { Name: 'example.com/c', Version: 'v1.0.0' },
+          { Name: 'github.com/bytedance/sonic', Version: 'v1.9.1', Relationship: 'root' },
+        ],
+      },
+      {
+        Target: './.go/pkg/mod/github.com/x/y@v2.0.0/go.mod',
+        Type: 'gomod',
+        Packages: [{ Name: 'example.com/d', Version: 'v1.0.0' }],
+      },
+      {
+        Target: 'pkg/testdata/package-lock.json',
+        Type: 'npm',
+        Packages: [{ Name: 'e', Version: '1' }],
+      },
+      { Target: 'legacy/package-lock.json', Type: 'npm', Packages: [{ Name: 'f', Version: '1' }] },
+    ]);
+    const { entries, warnings } = trivyJsonToInventory(json, root(), {
+      knownPaths: new Set(['go.mod', 'go.sum', 'pkg/main.go']),
+      exclude: (p) => p.startsWith('legacy/'),
+    });
+    expect(entries.map((e) => `${e.path} ${e.name}`)).toEqual(['go.mod example.com/a']);
+    expect(warnings).toEqual([
+      {
+        code: 'DEPENDENCIES_OUT_OF_SCOPE',
+        message: expect.stringContaining('4 dependencies from 3 lockfiles') as string,
+        count: 4,
+      },
+    ]);
+  });
+
   it('skips and counts what the report cannot carry, rather than failing', () => {
     const { entries, warnings } = trivyJsonToInventory(
       trivyJson([

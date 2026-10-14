@@ -1081,6 +1081,14 @@ copyFileSync(${JSON.stringify(
     { timeout: 60_000 },
     async () => {
       const repo = fixtureRepo('deps-vulnerable');
+      // Task 11 C1: a gitignored in-repository Go module cache and a built-in-excluded folder hold
+      // lockfiles Trivy reads, but the scan does not analyse them.
+      const cached = '.go/pkg/mod/github.com/bytedance/sonic@v1.9.1/go.mod';
+      writeTree(repo, {
+        '.gitignore': '.go/\n',
+        [cached]: 'module github.com/bytedance/sonic\n\nrequire example.com/b v1.0.0\n',
+        'web/testdata/package-lock.json': '{}\n',
+      });
       const output = {
         SchemaVersion: 2,
         Trivy: { Version: '0.74.0' },
@@ -1105,6 +1113,18 @@ copyFileSync(${JSON.stringify(
             Class: 'lang-pkgs',
             Type: 'pnpm',
             Packages: [{ Name: 'minimist', Version: '1.2.5', Relationship: 'direct' }],
+          },
+          {
+            Target: cached,
+            Class: 'lang-pkgs',
+            Type: 'gomod',
+            Packages: [{ Name: 'example.com/b', Version: 'v1.0.0', Licenses: ['GPL-3.0'] }],
+          },
+          {
+            Target: 'web/testdata/package-lock.json',
+            Class: 'lang-pkgs',
+            Type: 'npm',
+            Packages: [{ Name: 'left-pad', Version: '1.3.0' }],
           },
         ],
       };
@@ -1146,6 +1166,13 @@ copyFileSync(${JSON.stringify(
       // New-code classification of a licence finding needs its lockfile among the files.
       const files = new Set(report.files.map((f) => f.path));
       for (const d of report.dependencies ?? []) expect(files, d.path).toContain(d.path);
+      expect(report.warnings.filter((w) => w.code === 'DEPENDENCIES_OUT_OF_SCOPE')).toEqual([
+        {
+          code: 'DEPENDENCIES_OUT_OF_SCOPE',
+          message: expect.stringContaining('2 dependencies from 2 lockfiles') as string,
+          count: 2,
+        },
+      ]);
     },
   );
 
