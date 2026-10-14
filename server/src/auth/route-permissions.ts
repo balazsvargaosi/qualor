@@ -63,7 +63,7 @@ export const ROUTE_PERMISSIONS: Readonly<Record<string, RouteRule>> = Object.fre
   'GET /branches/:id/measures/history': 'project.read',
   'GET /branches/:id/files': 'project.read',
   'GET /branches/:id/file': 'project.read',
-  'GET /projects/:key/dependencies': 'project.read',
+  'GET /projects/:id/dependencies': 'project.read',
   'GET /issues': 'project.read',
   'GET /issues/:id': 'project.read',
   'POST /issues/:id/transition': 'issue.triage',

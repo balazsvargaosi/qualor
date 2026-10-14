@@ -110,6 +110,45 @@ describe('the branch dependency inventory (6M)', () => {
     expect(await inventory(main.id)).toEqual([]);
   });
 
+  it('merges duplicate keys, also keys equal once NUL is stripped, instead of failing the analysis', async () => {
+    const p = await h.project('deps/duplicates');
+    const analysisId = await p.ingestOk(
+      report(p, {
+        dependencies: [
+          dep('dup', { licenses: ['MIT'], line: 5 }),
+          dep('dup', { licenses: ['Apache-2.0', 'MIT'], direct: true, line: 9 }),
+          dep('nul', { licenses: ['ISC'], direct: false }),
+          dep('n\u0000ul', { licenses: ['BSD-3-Clause'], line: 3 }),
+        ],
+      }),
+    );
+    const main = await branchOf(p, 'branch');
+    expect(await inventory(main.id)).toEqual([
+      {
+        branchId: main.id,
+        path: 'package-lock.json',
+        ecosystem: 'npm',
+        name: 'dup',
+        version: '1.0.0',
+        licenses: ['Apache-2.0', 'MIT'],
+        direct: true,
+        line: 5,
+        analysisId,
+      },
+      {
+        branchId: main.id,
+        path: 'package-lock.json',
+        ecosystem: 'npm',
+        name: 'nul',
+        version: '1.0.0',
+        licenses: ['BSD-3-Clause', 'ISC'],
+        direct: false,
+        line: 3,
+        analysisId,
+      },
+    ]);
+  });
+
   it('writes a large inventory in batches', async () => {
     const p = await h.project('deps/large');
     const entries = Array.from({ length: 2_345 }, (_, i) => dep(`pkg-${i}`));

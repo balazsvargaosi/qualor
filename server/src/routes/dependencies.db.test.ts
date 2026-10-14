@@ -6,8 +6,8 @@ import { createIngestHarness, type IngestHarness, type IngestProject } from '../
 import { engine, file, finding, reportWith, type ReportParts } from '../../test/reports';
 import { branches } from '../db/schema';
 
-/** 6M §8: the community dependency inventory API, `GET /projects/{key}/dependencies`. */
-describe('GET /projects/{key}/dependencies (6M)', () => {
+/** 6M §8: the community dependency inventory API, `GET /projects/{id}/dependencies`. */
+describe('GET /projects/{id}/dependencies (6M)', () => {
   let h: IngestHarness;
   let p: IngestProject;
   let minute = 0;
@@ -32,7 +32,7 @@ describe('GET /projects/{key}/dependencies (6M)', () => {
       ...(session === null ? {} : { headers: session.headers }),
     });
   const url = (project: IngestProject, query = '') =>
-    `/projects/${encodeURIComponent(project.key)}/dependencies${query === '' ? '' : `?${query}`}`;
+    `/projects/${project.id}/dependencies${query === '' ? '' : `?${query}`}`;
   const names = async (query: string) => {
     const res = await get(url(p, query));
     expect(res.statusCode, res.body).toBe(200);
@@ -126,7 +126,9 @@ describe('GET /projects/{key}/dependencies (6M)', () => {
     expect(await names('direct=true')).toEqual(['lodash']);
     expect(await names('direct=false')).toHaveLength(6);
     expect(await names('q=LIB')).toEqual(['apache-lib', 'gpl-lib']);
-    expect(await names('q=100%25')).toEqual([]);
+    // LIKE wildcards are literal: unescaped, `%` and `_` would match every name.
+    expect(await names('q=%25')).toEqual([]);
+    expect(await names('q=_')).toEqual([]);
     expect(await names('ecosystem=npm&direct=false&license=MIT')).toEqual([]);
 
     const filtered = (await get(url(p, 'ecosystem=maven'))).json();
@@ -171,7 +173,10 @@ describe('GET /projects/{key}/dependencies (6M)', () => {
   });
 
   it('answers 404 for an unknown project, branch or merge request', async () => {
-    expect((await get('/projects/no-such-project/dependencies')).statusCode).toBe(404);
+    expect(
+      (await get('/projects/00000000-0000-7000-8000-000000000000/dependencies')).statusCode,
+    ).toBe(404);
+    expect((await get('/projects/not-a-uuid/dependencies')).statusCode).toBe(422);
     expect((await get(url(p, 'branch=nope'))).statusCode).toBe(404);
     expect((await get(url(p, 'mr=99'))).statusCode).toBe(404);
     // A merge request is not found by its name as a branch.

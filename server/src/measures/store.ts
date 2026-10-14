@@ -264,11 +264,63 @@ export async function replaceBranchFiles(
 /** Rows per INSERT of {@link replaceBranchDependencies}: a 50 000-entry inventory is 50 statements. */
 const DEPENDENCY_BATCH = 1_000;
 
+/** At most this many licences per stored entry (the report's own bound per entry). */
+const MAX_DEPENDENCY_LICENSES = 16;
+
+/** One stored inventory row before it gets its branch and analysis. */
+export interface DependencyRowInput {
+  path: string;
+  ecosystem: string;
+  name: string;
+  version: string;
+  licenses: string[];
+  direct: boolean | null;
+  line: number | null;
+}
+
+const withoutNul = (s: string) => (s.includes(' ') ? s.replaceAll(' ', '') : s);
+
+/**
+ * The rows of an inventory, one per key (path, ecosystem, name, version) as the table's primary
+ * key sees it: after the NUL stripping that {@link jsonChunks} applies. The Qualor CLI never sends
+ * a duplicate (spec §2), but nothing in the report schema forbids one, and a primary-key violation
+ * would fail the whole ingestion. Duplicates are merged: the sorted union of their licences (at
+ * most {@link MAX_DEPENDENCY_LICENSES}), `direct` true if any says so, else false if any says
+ * so, and the first known line. An entry without a duplicate is kept as given.
+ */
+export function mergeDependencyEntries(entries: readonly DependencyEntry[]): DependencyRowInput[] {
+  const rows = new Map<string, DependencyRowInput>();
+  for (const e of entries) {
+    const row = {
+      path: withoutNul(e.path),
+      ecosystem: withoutNul(e.ecosystem),
+      name: withoutNul(e.name),
+      version: withoutNul(e.version),
+      licenses: e.licenses.map(withoutNul),
+      direct: e.direct ?? null,
+      line: e.line ?? null,
+    };
+    const key = JSON.stringify([row.path, row.ecosystem, row.name, row.version]);
+    const seen = rows.get(key);
+    if (seen === undefined) {
+      rows.set(key, row);
+      continue;
+    }
+    seen.licenses = [...new Set([...seen.licenses, ...row.licenses])]
+      .sort()
+      .slice(0, MAX_DEPENDENCY_LICENSES);
+    if (row.direct === true) seen.direct = true;
+    else if (row.direct === false && seen.direct === null) seen.direct = false;
+    seen.line ??= row.line;
+  }
+  return [...rows.values()];
+}
+
 /**
  * 6M §4: `branch_dependencies` is the dependency inventory of the branch's latest analysis that
  * carried one, replaced in the ingestion transaction. The entries are stored as the report gives
- * them: the scanner already normalised the licences and merged duplicates by
- * (path, ecosystem, name, version), and `path` need not be one of the report's files.
+ * them (the scanner already normalised the licences), except that duplicates are merged
+ * ({@link mergeDependencyEntries}); `path` need not be one of the report's files.
  */
 export async function replaceBranchDependencies(
   tx: Executor,
@@ -277,15 +329,7 @@ export async function replaceBranchDependencies(
   entries: readonly DependencyEntry[],
 ): Promise<void> {
   await tx.delete(branchDependencies).where(eq(branchDependencies.branchId, branchId));
-  const rows = entries.map((e) => ({
-    path: e.path,
-    ecosystem: e.ecosystem,
-    name: e.name,
-    version: e.version,
-    licenses: e.licenses,
-    direct: e.direct ?? null,
-    line: e.line ?? null,
-  }));
+  const rows = mergeDependencyEntries(entries);
   for (const chunk of jsonChunks(rows, { maxRows: DEPENDENCY_BATCH })) {
     await tx.execute(sql`
       INSERT INTO branch_dependencies (branch_id, path, ecosystem, name, version, licenses,

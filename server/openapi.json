@@ -7665,7 +7665,7 @@
         }
       }
     },
-    "/api/v0/projects/{key}/dependencies": {
+    "/api/v0/projects/{id}/dependencies": {
       "get": {
         "summary": "The dependency inventory of a branch or merge request (the main branch by default), filtered and paged",
         "tags": [
@@ -7784,10 +7784,11 @@
           {
             "schema": {
               "type": "string",
-              "pattern": "^[A-Za-z0-9._/:-]{1,255}$"
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
             },
             "in": "path",
-            "name": "key",
+            "name": "id",
             "required": true
           }
         ],

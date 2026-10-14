@@ -3855,7 +3855,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v0/projects/{key}/dependencies": {
+    "/api/v0/projects/{id}/dependencies": {
         parameters: {
             query?: never;
             header?: never;
@@ -3879,7 +3879,7 @@ export interface paths {
                 };
                 header?: never;
                 path: {
-                    key: string;
+                    id: string;
                 };
                 cookie?: never;
             };

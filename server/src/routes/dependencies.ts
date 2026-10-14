@@ -4,7 +4,7 @@ import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import type { RouteDeps } from '../app';
 import { accessOf, requireUser } from '../auth/access';
-import { branches, projects } from '../db/schema';
+import { branches } from '../db/schema';
 import {
   dependencySummary,
   hasInventory,
@@ -12,8 +12,7 @@ import {
   type DependencyFilter,
 } from '../dependencies/query';
 import { notFound } from '../http/problem';
-import { noNul, text } from '../http/schemas';
-import { PROJECT_KEY_PATTERN } from '../patterns';
+import { idParams, noNul, text } from '../http/schemas';
 import { projectForUser } from '../projects/access';
 
 const GROUP_IDS = LICENSE_GROUPS.map((g) => g.id) as [LicenseGroupId, ...LicenseGroupId[]];
@@ -83,27 +82,26 @@ export const dependencyRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asyn
   { deps },
 ) => {
   app.get(
-    '/projects/:key/dependencies',
+    '/projects/:id/dependencies',
     {
       config: { openapi: { problems: [404] } },
       schema: {
         tags: ['dependencies'],
         summary:
           'The dependency inventory of a branch or merge request (the main branch by default), filtered and paged',
-        params: z.strictObject({ key: z.string().regex(PROJECT_KEY_PATTERN) }),
+        params: idParams,
         querystring: querySchema,
         response: { 200: responseSchema },
       },
     },
     async (request) => {
-      const principal = requireUser(request);
       const query = request.query;
-      const [found] = await deps.db
-        .select({ id: projects.id })
-        .from(projects)
-        .where(eq(projects.key, request.params.key));
-      if (!found) throw notFound('Project');
-      const project = await projectForUser(accessOf(deps), principal, found.id, 'project.read');
+      const project = await projectForUser(
+        accessOf(deps),
+        requireUser(request),
+        request.params.id,
+        'project.read',
+      );
 
       const named = query.mr !== undefined || query.branch !== undefined;
       const [branch] = await deps.db
