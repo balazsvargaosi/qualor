@@ -49,13 +49,32 @@ export const expectedSchema = z.strictObject({
       coverage: z.number().min(0).max(100),
     })
     .nullable(),
+  // Dependency licences (6M): when present, the report's entries must equal this list exactly.
+  dependencies: z
+    .array(
+      z.strictObject({
+        path: z.string(),
+        ecosystem: z.string(),
+        name: z.string(),
+        version: z.string(),
+        licenses: z.array(z.string()),
+      }),
+    )
+    .optional(),
   notes: z.record(z.string(), z.string()).optional(),
 });
 
 export type Expected = z.infer<typeof expectedSchema>;
 
 export interface Mismatch {
-  kind: 'engine' | 'missing-finding' | 'unexpected-finding' | 'file' | 'duplication' | 'coverage';
+  kind:
+    | 'engine'
+    | 'missing-finding'
+    | 'unexpected-finding'
+    | 'file'
+    | 'duplication'
+    | 'coverage'
+    | 'dependency';
   detail: string;
 }
 
@@ -170,6 +189,41 @@ export function compareFixture(expected: Expected, report: Report): Mismatch[] {
     if (!actualGroups.has(g)) out.push({ kind: 'duplication', detail: `missing group ${g}` });
   for (const g of actualGroups)
     if (!expectedGroups.has(g)) out.push({ kind: 'duplication', detail: `unexpected group ${g}` });
+
+  if (expected.dependencies !== undefined) {
+    const depKey = (d: { path: string; ecosystem: string; name: string; version: string }) =>
+      `${d.path} ${d.ecosystem} ${d.name}@${d.version}`;
+    const view = (d: {
+      path: string;
+      ecosystem: string;
+      name: string;
+      version: string;
+      licenses: readonly string[];
+    }) => ({
+      path: d.path,
+      ecosystem: d.ecosystem,
+      name: d.name,
+      version: d.version,
+      licenses: [...d.licenses],
+    });
+    const byKey = (a: ReturnType<typeof view>, b: ReturnType<typeof view>) =>
+      depKey(a) < depKey(b) ? -1 : depKey(a) > depKey(b) ? 1 : 0;
+    const want = expected.dependencies.map(view).sort(byKey);
+    const got = (report.dependencies ?? []).map(view).sort(byKey);
+    const wantByKey = new Map(want.map((d) => [depKey(d), d]));
+    const gotByKey = new Map(got.map((d) => [depKey(d), d]));
+    for (const [k, w] of wantByKey) {
+      const g = gotByKey.get(k);
+      if (!g) out.push({ kind: 'dependency', detail: `${k}: missing from report` });
+      else if (JSON.stringify(g.licenses) !== JSON.stringify(w.licenses))
+        out.push({
+          kind: 'dependency',
+          detail: `${k}: licenses expected [${w.licenses.join(', ')}], got [${g.licenses.join(', ')}]`,
+        });
+    }
+    for (const k of gotByKey.keys())
+      if (!wantByKey.has(k)) out.push({ kind: 'dependency', detail: `${k}: unexpected` });
+  }
 
   const covered = report.files.filter((f) => f.kind === 'main' && f.coverage);
   const measures =

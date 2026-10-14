@@ -258,6 +258,10 @@ const analyzers = z
       .strictObject({
         enabled,
         timeoutSeconds: timeout(600),
+        // Dependency licences (6M): a second, offline Trivy pass over the lockfiles. 'auto' runs
+        // it where lockfiles exist; false skips it.
+        licenses: z.union([z.literal('auto'), z.boolean()]).default('auto'),
+        licenseTimeoutSeconds: timeout(300),
       })
       .prefault({}),
     // C# (plan 2D): the Roslyn analyzers run inside the project's own build between

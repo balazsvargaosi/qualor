@@ -482,6 +482,24 @@
               "type": "integer",
               "exclusiveMinimum": 0,
               "maximum": 86400
+            },
+            "licenses": {
+              "default": "auto",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "auto"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "licenseTimeoutSeconds": {
+              "default": 300,
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 86400
             }
           },
           "additionalProperties": false

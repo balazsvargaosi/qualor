@@ -25,7 +25,12 @@ describe('parseConfig', () => {
       timeoutSeconds: 900,
     });
     expect(c.analyzers.gitleaks.enabled).toBe(true);
-    expect(c.analyzers.trivy).toEqual({ enabled: 'auto', timeoutSeconds: 600 });
+    expect(c.analyzers.trivy).toEqual({
+      enabled: 'auto',
+      timeoutSeconds: 600,
+      licenses: 'auto',
+      licenseTimeoutSeconds: 300,
+    });
     expect(c.analyzers.semgrep.configs).toEqual(['qualor-default']);
     expect(c.analyzers.spotbugs.classDirs).toEqual(['target/classes', 'build/classes/java/main']);
     expect(c.duplication).toEqual({ enabled: true, minTokens: 100, minLines: 10, exclude: [] });

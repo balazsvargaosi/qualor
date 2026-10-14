@@ -237,6 +237,17 @@ const scm = z.object({
     .optional(),
 });
 
+export const dependencyEntrySchema = z.object({
+  ecosystem: z.string().regex(/^[a-z0-9-]{1,32}$/),
+  path: z.string().max(1_024),
+  line: line.optional(),
+  name: z.string().max(512),
+  version: z.string().max(256),
+  licenses: z.array(z.string().max(256)).max(16),
+  direct: z.boolean().optional(),
+});
+export type DependencyEntry = z.infer<typeof dependencyEntrySchema>;
+
 export const reportSchema = z
   .object({
     schemaVersion: z.literal(REPORT_SCHEMA_VERSION),
@@ -274,6 +285,9 @@ export const reportSchema = z
         }),
       )
       .max(1_000),
+    // Dependency licences (6M). Optional, schemaVersion stays 1: servers older than 6M strip it
+    // (this schema is a plain z.object), so a newer scanner stays compatible with them.
+    dependencies: z.array(dependencyEntrySchema).max(50_000).optional(),
   })
   .superRefine((r, ctx) => {
     const paths = new Set<string>();

@@ -273,3 +273,35 @@ describe('scm.github (github.md §3)', () => {
     ).toEqual([]);
   });
 });
+
+describe('reportSchema dependencies', () => {
+  const entry = {
+    ecosystem: 'npm',
+    path: 'package-lock.json',
+    name: 'a',
+    version: '1.0.0',
+    licenses: ['MIT'],
+  };
+  const with_ = (dependencies: unknown) => issues({ ...base, dependencies });
+
+  it('accepts no field, an empty array and a full entry', () => {
+    expect(issues(base)).toEqual([]);
+    expect(with_([])).toEqual([]);
+    expect(with_([{ ...entry, line: 3, direct: true }])).toEqual([]);
+  });
+
+  it('refuses entries over each limit', () => {
+    expect(with_([{ ...entry, ecosystem: 'NPM' }])).not.toEqual([]);
+    expect(with_([{ ...entry, ecosystem: 'a'.repeat(33) }])).not.toEqual([]);
+    expect(with_([{ ...entry, path: 'a'.repeat(1_025) }])).not.toEqual([]);
+    expect(with_([{ ...entry, name: 'a'.repeat(513) }])).not.toEqual([]);
+    expect(with_([{ ...entry, version: 'a'.repeat(257) }])).not.toEqual([]);
+    expect(with_([{ ...entry, licenses: Array(17).fill('MIT') }])).not.toEqual([]);
+    expect(with_([{ ...entry, licenses: ['a'.repeat(257)] }])).not.toEqual([]);
+  });
+
+  it('refuses more than 50 000 entries', () => {
+    expect(with_(Array(50_000).fill(entry))).toEqual([]);
+    expect(with_(Array(50_001).fill(entry))).not.toEqual([]);
+  });
+});
