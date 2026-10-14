@@ -1,4 +1,4 @@
-import type { IssueKind, Quality, Severity } from '../report/taxonomy';
+import type { IssueKind, ReportQuality, Severity } from '../report/taxonomy';
 
 /**
  * PHPStan (plan 9A, config.md §3, §6). `PHPSTAN_VERSION` is the PHPStan the qualor/scanner image
@@ -83,7 +83,7 @@ const MAINTAINABILITY_SUFFIXES = [
  * reliability/medium. Always an issue.
  */
 export function phpstanRule(identifier: string): {
-  quality: Quality;
+  quality: ReportQuality;
   kind: IssueKind;
   defaultSeverity: Severity;
 } {

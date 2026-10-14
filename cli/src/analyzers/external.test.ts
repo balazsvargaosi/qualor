@@ -50,6 +50,12 @@ describe('engine ids of external SARIF', () => {
       id: 'osv-scanner',
       renamed: false,
     });
+    // 6M: the server's licence engine and the CLI's licence pass are reserved too.
+    expect(externalEngineId('License', undefined)).toEqual({ id: 'ext-license', renamed: true });
+    expect(externalEngineId('Trivy Licenses', undefined)).toEqual({
+      id: 'ext-trivy-licenses',
+      renamed: true,
+    });
   });
 });
 

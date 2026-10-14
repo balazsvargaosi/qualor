@@ -375,6 +375,12 @@ describe('BUILTIN_EXCLUDES', () => {
     expect(errorPaths({ version: 1, sarif: [{ path: 'r.sarif', engine: 'detekt' }] })).not.toEqual(
       [],
     );
+    // 6M: so are the server's licence engine and the CLI's licence pass.
+    for (const engine of ['license', 'trivy-licenses']) {
+      expect(() => parseConfig({ version: 1, sarif: [{ path: 'r.sarif', engine }] })).toThrow(
+        /reserved/,
+      );
+    }
     // Android and Kotlin Multiplatform test source sets (ruling E17).
     expect(c.tests.include).toContain('**/src/androidTest/**');
     expect(c.tests.include).toContain('**/src/*Test/**');

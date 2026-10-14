@@ -3,7 +3,7 @@ import type { DependencyEntry, LicensePolicy, Report } from '@qualor/shared';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { addMember, createUser, login, type Session } from '../../test/app';
 import { createIngestHarness, type IngestHarness, type IngestProject } from '../../test/ingest';
-import { engine, file, finding, reportWith, type ReportParts } from '../../test/reports';
+import { engine, file, reportWith, type ReportParts } from '../../test/reports';
 import { branches, instanceSettings } from '../db/schema';
 import { fixedEdition } from '../license/edition';
 import { LICENSE_POLICY_SETTINGS_KEY, writeLicensePolicy } from '../licenses/settings';
@@ -233,12 +233,27 @@ describe('GET /projects/{id}/dependencies (6M)', () => {
   });
 });
 
-/** 6M: the `licensing` quality is accepted by the rules and issues CHECKs and the issue filters. */
+/**
+ * 6M: the `licensing` quality is accepted by the rules and issues CHECKs and the issue filters.
+ * Only the server makes licensing issues: a report cannot declare the quality (final review I3).
+ */
 describe('the licensing quality (6M)', () => {
   let h: IngestHarness;
 
   beforeAll(async () => {
-    h = await createIngestHarness();
+    const base = fixedEdition();
+    h = await createIngestHarness({
+      edition: { ...base, limits: () => ({ ...base.limits(), licenses: { policy: true } }) },
+    });
+    await h.ctx.db.transaction((tx) =>
+      writeLicensePolicy(tx, h.organizationId, {
+        mode: 'denylist',
+        forbiddenGroups: ['strong-copyleft'],
+        forbidden: [],
+        allowed: [],
+        warnUnknown: false,
+      }),
+    );
   });
   afterAll(async () => {
     await h.close();
@@ -249,14 +264,18 @@ describe('the licensing quality (6M)', () => {
     await p.ingestOk(
       reportWith({
         projectKey: p.key,
-        engines: [
-          engine('acme-licenses', [
-            { id: 'forbidden', quality: 'licensing', kind: 'issue', defaultSeverity: 'high' },
-          ]),
-        ],
+        engines: [engine('trivy-licenses')],
         files: [file('package-lock.json', { language: 'other', lines: 20 })],
-        findings: [
-          finding({ engineId: 'acme-licenses', ruleId: 'forbidden', path: 'package-lock.json' }),
+        findings: [],
+        dependencies: [
+          {
+            ecosystem: 'npm',
+            path: 'package-lock.json',
+            name: 'gpl-pkg',
+            version: '1.0.0',
+            licenses: ['GPL-3.0-only'],
+            line: 5,
+          },
         ],
       }),
     );
@@ -280,9 +299,12 @@ describe('the licensing quality (6M)', () => {
       headers: h.orgAdmin.headers,
     });
     expect(rules.statusCode, rules.body).toBe(200);
-    expect(rules.json().items.map((r: { key: string }) => r.key)).toEqual([
-      'acme-licenses:forbidden',
-    ]);
+    expect(
+      rules
+        .json()
+        .items.map((r: { key: string }) => r.key)
+        .sort(),
+    ).toEqual(['license:forbidden', 'license:unknown']);
   });
 });
 

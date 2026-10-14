@@ -450,6 +450,19 @@ describe('normalizeSarif', () => {
     expect(out.rules[0]!.quality).toBe('reliability');
   });
 
+  it('treats a declared quality licensing as any unknown quality: server-only (6M, final review I3)', () => {
+    const out = normalizeSarif(
+      log([], {
+        rules: [
+          { id: 'X1', properties: { qualor: { quality: 'licensing' } } },
+          { id: 'X2', properties: { qualor: { quality: 'performance' } } },
+        ],
+      }),
+      opts({ engineId: 'mytool' }),
+    );
+    expect(out.rules.map((r) => r.quality)).toEqual(['maintainability', 'maintainability']);
+  });
+
   it('redacts the secret region from snippet and hashes', () => {
     const out = normalizeSarif(
       log(

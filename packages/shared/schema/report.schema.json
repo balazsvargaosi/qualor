@@ -319,8 +319,7 @@
                   "enum": [
                     "security",
                     "reliability",
-                    "maintainability",
-                    "licensing"
+                    "maintainability"
                   ]
                 },
                 "kind": {

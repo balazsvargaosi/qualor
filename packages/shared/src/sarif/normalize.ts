@@ -2,7 +2,7 @@ import { contextHash, filelessHash, lineHash, MAX_HASHED_LINES } from '../hash';
 import { normalizeRepoPath, PathError } from '../paths';
 import type { ReportFinding, RuleMeta } from '../report/schema';
 import { REPORT_BOUNDS } from '../report/schema';
-import { QUALITIES, type Quality, type Severity } from '../report/taxonomy';
+import { REPORT_QUALITIES, type ReportQuality, type Severity } from '../report/taxonomy';
 import { currentHelpUri } from '../rules/help-uri';
 import {
   sarifLogSchema,
@@ -550,7 +550,8 @@ function ruleMeta(
     : [];
   const cweProp = Array.isArray(props['cwe']) ? (props['cwe'] as unknown[]) : [];
   const qualorProp = props['qualor'] as { quality?: unknown } | undefined;
-  const declared = QUALITIES.find((q) => q === qualorProp?.quality);
+  // `licensing` is server-only: a rule claiming it is an unknown quality, as any other.
+  const declared = REPORT_QUALITIES.find((q) => q === qualorProp?.quality);
   const mapped = mapping?.rule?.(rule) ?? {};
   const level = rule.defaultConfiguration?.level;
   const defaultSeverity = mapped.defaultSeverity ?? (level ? levelToSeverity(level) : undefined);
@@ -562,7 +563,7 @@ function ruleMeta(
     .filter((id) => /^[1-9]\d{0,6}$/.test(id))
     .map((id) => `CWE-${id}`);
   const cwe = parseCwe([...allTags, ...cweProp, ...cweRelations]).slice(0, REPORT_BOUNDS.ruleCwes);
-  const quality: Quality = mapped.quality ?? declared ?? 'maintainability';
+  const quality: ReportQuality = mapped.quality ?? declared ?? 'maintainability';
   // Report bounds (report-format §5): text is truncated, an over-long URI or tag is dropped (a cut
   // URI would point somewhere else), so tool metadata can never make the report invalid.
   const tags = allTags

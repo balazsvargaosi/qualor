@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { coverageMeasures } from './metrics';
 import type { Report } from './report/schema';
-import { ISSUE_KINDS, LANGUAGES, QUALITIES, SEVERITIES } from './report/taxonomy';
+import { ISSUE_KINDS, LANGUAGES, REPORT_QUALITIES, SEVERITIES } from './report/taxonomy';
 
 const count = z.number().int().min(0);
 const block = z.strictObject({
@@ -20,7 +20,7 @@ export const expectedSchema = z.strictObject({
       path: z.string(),
       startLine: z.number().int().min(1),
       severity: z.enum(SEVERITIES).optional(),
-      quality: z.enum(QUALITIES).optional(),
+      quality: z.enum(REPORT_QUALITIES).optional(),
       kind: z.enum(ISSUE_KINDS).optional(),
     }),
   ),

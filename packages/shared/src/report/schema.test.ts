@@ -68,6 +68,22 @@ describe('reportSchema', () => {
   it('rejects an external engine claiming a reserved id', () => {
     const engines = [{ ...must(base.engines[0]), kind: 'external' as const }];
     expect(issues({ ...base, engines }).join()).toMatch(/reserved/);
+    // 6M: the server's licence engine and the CLI's licence pass.
+    for (const id of ['license', 'trivy-licenses']) {
+      const claimed = [{ ...must(base.engines[0]), id, kind: 'external' as const, rules: [] }];
+      expect(issues({ ...base, engines: claimed, findings: [] }).join(), id).toMatch(/reserved/);
+    }
+  });
+
+  it('refuses a rule of quality licensing: only the server makes licence issues (6M, final review I3)', () => {
+    const engine = must(base.engines[0]);
+    const rule = { id: 'forbidden', kind: 'issue' as const, defaultSeverity: 'high' as const };
+    for (const quality of ['security', 'reliability', 'maintainability']) {
+      const engines = [{ ...engine, rules: [{ ...rule, quality }] }];
+      expect(issues({ ...base, engines }), quality).toEqual([]);
+    }
+    const engines = [{ ...engine, rules: [{ ...rule, quality: 'licensing' }] }];
+    expect(issues({ ...base, engines }).join()).toMatch(/engines\.0\.rules\.0\.quality/);
   });
 
   it('rejects invalid engine ids', () => {

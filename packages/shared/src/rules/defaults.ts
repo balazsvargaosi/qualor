@@ -1,4 +1,4 @@
-import type { Quality, Severity } from '../report/taxonomy';
+import type { ReportQuality, Severity } from '../report/taxonomy';
 
 /**
  * Engines whose findings are vulnerable dependencies, not the project's own code (plan 2B): GitLab
@@ -12,7 +12,7 @@ export const DEPENDENCY_ENGINES: ReadonlySet<string> = new Set(['trivy']);
  * findings are security findings for GitLab's SAST report (scm.md §9).
  */
 export function engineRuleDefaults(engineId: string): {
-  quality: Quality;
+  quality: ReportQuality;
   defaultSeverity: Severity;
 } {
   if (engineId === 'gitleaks') return { quality: 'security', defaultSeverity: 'blocker' };
