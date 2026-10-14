@@ -92,6 +92,7 @@ describe('Qualor Enterprise end to end (enterprise.md §17)', () => {
           'portfolio',
           'llm.auto-fix',
           'support-bundle',
+          'license-policy',
         ],
         error: null,
       },

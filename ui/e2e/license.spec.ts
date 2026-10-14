@@ -122,6 +122,7 @@ test.describe('the licence page on a phone', () => {
       'portfolio',
       'llm.auto-fix',
       'support-bundle',
+      'license-policy',
     ],
     test: true,
   };

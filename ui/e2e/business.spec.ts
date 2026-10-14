@@ -4,7 +4,7 @@ import { PAYMENTS, SIEM_URL } from './seed-data';
 
 /**
  * Plan 5D (rbac-audit.md §14.4, §17; sso-scim.md §4.4, §18): the enterprise server's database
- * served under a Business key (`sso`, `audit-log`, `llm.fix-quota`, `support-bundle`; `server/scripts/e2e/serve.ts`),
+ * served under a Business key (`sso`, `audit-log`, `llm.fix-quota`, `support-bundle`, `license-policy`; `server/scripts/e2e/serve.ts`),
  * after the enterprise tests. The stream enterprise.spec.ts configured is kept and paused: its
  * fields and buttons are disabled with the reason, Save sends retention alone, and Remove under
  * Stream status deletes it (the guide's steps, docs/guide/roles-and-audit.md).
@@ -17,7 +17,13 @@ test('a Business admin sees the kept stream paused and saves retention without i
   await page.goto('/settings/ee/audit-settings');
   await expect(page).toHaveTitle('Audit settings · Qualor');
   const features = ((await (await info).json()) as { features: string[] }).features;
-  expect([...features].sort()).toEqual(['audit-log', 'llm.fix-quota', 'sso', 'support-bundle']);
+  expect([...features].sort()).toEqual([
+    'audit-log',
+    'license-policy',
+    'llm.fix-quota',
+    'sso',
+    'support-bundle',
+  ]);
 
   await expect(page.locator('#audit-stream-not-licensed')).toHaveText(
     'Streaming the audit log to a SIEM needs the Enterprise plan.',

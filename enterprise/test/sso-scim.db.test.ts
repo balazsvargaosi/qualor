@@ -181,6 +181,7 @@ describe('the enterprise SSO and SCIM API (sso-scim.md §17)', () => {
           'portfolio',
           'llm.auto-fix',
           'support-bundle',
+          'license-policy',
         ],
         error: null,
       },
@@ -824,6 +825,7 @@ describe('sso.multi: one connection in effect without it (sso-scim.md §4.4)', (
     await boot(BUSINESS_FEATURES);
     expect(ctx!.edition!.activeFeatures()).toEqual([
       'audit-log',
+      'license-policy',
       'llm.fix-quota',
       'sso',
       'support-bundle',

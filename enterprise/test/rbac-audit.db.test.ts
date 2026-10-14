@@ -236,6 +236,7 @@ describe('Qualor Enterprise: audit-log, and the grant routes in core (rbac-audit
           'portfolio',
           'llm.auto-fix',
           'support-bundle',
+          'license-policy',
         ],
         error: null,
       },

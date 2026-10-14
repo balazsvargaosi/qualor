@@ -27,6 +27,7 @@ const plugin: QualorPlugin = {
   // 4E-1: compliance-export has no prerequisite; neither has 4E-2's portfolio.
   // 4E-3a: llm.auto-fix is Enterprise only and has no prerequisite.
   // 4E-3b: support-bundle is Business and Enterprise, with no prerequisite.
+  // 6M: license-policy is Business and Enterprise, with no prerequisite.
   features: [
     'llm.fix-quota',
     'audit-log',
@@ -38,11 +39,15 @@ const plugin: QualorPlugin = {
     'portfolio',
     'llm.auto-fix',
     'support-bundle',
+    'license-policy',
   ],
   register(ctx) {
     ctx.limits('llm.fix-quota', { llm: { maxFixPerOrganizationPerDay: MAX_FIX_PER_DAY } });
     // 4E-3a: the seam core reads for automatic fix suggestions; the routes and the opt-out are core's.
     ctx.limits('llm.auto-fix', { llm: { automaticFixSuggestions: true } });
+    // 6M: the seam core reads for the organisation licence policy; the routes, the ingest stage and
+    // the permission are core's.
+    ctx.limits('license-policy', { licenses: { policy: true } });
     // rbac-audit.md §13: mounted under /api/v0/ee, 403 while the feature is inactive. The grant
     // routes are core routes since 5B (§16).
     ctx.routes('audit-log', auditRoutes(ctx));
