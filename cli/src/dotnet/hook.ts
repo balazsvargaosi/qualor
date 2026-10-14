@@ -122,6 +122,13 @@ export function hookText(): string {
   </Target>
   <Target Name="_QualorRecordInputs" AfterTargets="CoreCompile" Condition="'$(_QualorActive)' == 'true'">
     <ItemGroup>
+      <_QualorRazorView Include="@(Content)" Condition="'%(Content.Extension)' == '.cshtml'" />
+      <_QualorRazorView Include="@(None)" Condition="'%(None.Extension)' == '.cshtml'" />
+      <_QualorRazorView Include="@(RazorGenerate)" Condition="'%(RazorGenerate.Extension)' == '.cshtml'" />
+      <_QualorRazorView Include="@(RazorCompile)" Condition="'%(RazorCompile.Extension)' == '.cshtml'" />
+      <_QualorRazorView Include="@(AdditionalFiles)" Condition="'%(AdditionalFiles.Extension)' == '.cshtml'" />
+    </ItemGroup>
+    <ItemGroup>
       <_QualorIn Include="qualor-compilation=1" />
       <_QualorIn Include="project=$([MSBuild]::Escape('$(MSBuildProjectFullPath)'))" />
       <_QualorIn Include="tfm=$([MSBuild]::Escape('$(TargetFramework)'))" />
@@ -136,6 +143,7 @@ export function hookText(): string {
       <_QualorIn Include="features=$([MSBuild]::Escape('$(Features)'))" />
       <_QualorIn Include="interceptors-namespaces=$([MSBuild]::Escape('$(InterceptorsNamespaces);$(InterceptorsPreviewNamespaces)'))" />
       <_QualorIn Include="@(Compile->'source=%(FullPath)')" />
+      <_QualorIn Include="@(_QualorRazorView->'razor-view=%(FullPath)'->Distinct())" />
       <_QualorIn Include="@(ReferencePathWithRefAssemblies->'reference=%(FullPath)')" Condition="'%(ReferencePathWithRefAssemblies.ReferenceSourceTarget)' != 'ProjectReference'" />
       <_QualorIn Include="@(ReferencePathWithRefAssemblies->'project-reference=%(MSBuildSourceProjectFile)')" Condition="'%(ReferencePathWithRefAssemblies.ReferenceSourceTarget)' == 'ProjectReference'" />
       <_QualorIn Include="@(ReferencePathWithRefAssemblies->'project-reference-assembly=%(FullPath)')" Condition="'%(ReferencePathWithRefAssemblies.ReferenceSourceTarget)' == 'ProjectReference'" />

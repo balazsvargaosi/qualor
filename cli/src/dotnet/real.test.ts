@@ -193,10 +193,21 @@ public class Big
     <InterceptorsNamespaces>$(InterceptorsNamespaces);Lib.Gen</InterceptorsNamespaces>
   </PropertyGroup>
   <ItemGroup><ProjectReference Include="../lib/Lib.csproj" /></ItemGroup>
+  <ItemGroup>
+    <None Remove="Views/Shared/Lay out.cshtml;Excluded.cshtml" />
+    <Content Include="Views/Shared/Lay out.cshtml" />
+    <AdditionalFiles Include="Views/Shared/Lay out.cshtml" />
+  </ItemGroup>
 </Project>
 `,
       );
       write('app dir/Program.cs', 'System.Console.WriteLine(Lib.L.N);\n');
+      // R-11: the Razor views among the project's items are recorded once each (a plain SDK
+      // project's None items take every file); a file in no item and other extensions are not.
+      write('app dir/Views/Home/Ïndex.cshtml', '<p>@Model</p>\n');
+      write('app dir/Views/Shared/Lay out.cshtml', '@RenderBody()\n');
+      write('app dir/Views/readme.txt', 'not a view\n');
+      write('app dir/Excluded.cshtml', '<p>in no item</p>\n');
       write('app dir/sub dir/Ünï cödé.cs', 'namespace App; public static class U { }\n');
       initRepo(root);
       commitAll(root, 'fixture');
@@ -259,6 +270,13 @@ public class Big
       expect(app.get('features')).toHaveLength(1);
       expect(defines).toHaveLength(1);
       expect(defines[0]!.split(';')).toEqual(expect.arrayContaining(['A', 'B']));
+      expect(app.get('razor-view').sort()).toEqual(
+        [
+          path.join(root, 'app dir', 'Views', 'Home', 'Ïndex.cshtml'),
+          path.join(root, 'app dir', 'Views', 'Shared', 'Lay out.cshtml'),
+        ].sort(),
+      );
+      expect(lib.get('razor-view')).toEqual([]);
     },
   );
 });

@@ -160,6 +160,24 @@ describe('the hook text', () => {
       expect(text).toContain(key);
     }
   });
+  it('records the Razor views of the project items as razor-view lines, absolute and once each (R-11)', () => {
+    // The format stays v1: the engine's reader ignores keys it does not know.
+    expect(text).toContain('qualor-compilation=1');
+    for (const item of ['Content', 'None', 'RazorGenerate', 'RazorCompile', 'AdditionalFiles']) {
+      expect(text).toContain(
+        `<_QualorRazorView Include="@(${item})" Condition="'%(${item}.Extension)' == '.cshtml'" />`,
+      );
+    }
+    expect(text).toContain(
+      `<_QualorIn Include="@(_QualorRazorView->'razor-view=%(FullPath)'->Distinct())" />`,
+    );
+    // Collected inside the recording target, so a project outside a session gets nothing.
+    const target = text.slice(
+      text.indexOf('<Target Name="_QualorRecordInputs"'),
+      text.indexOf('</Target>', text.indexOf('<Target Name="_QualorRecordInputs"')),
+    );
+    expect(target).toContain('_QualorRazorView');
+  });
 });
 
 describe('installHook / removeHook', () => {
