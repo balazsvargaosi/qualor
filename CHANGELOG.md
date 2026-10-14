@@ -6,6 +6,8 @@ All notable changes to Qualor are listed here, newest first. The format follows
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-14
+
 ### Added
 
 - Compliance reports (Enterprise): OWASP Top 10 2021 and 2025, CWE Top 25 2025, OWASP ASVS 4.0.3

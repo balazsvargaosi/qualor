@@ -73,7 +73,7 @@ nothing about your installation; like any request, Docker Hub sees the address i
 
 When a newer release exists, the server:
 
-- logs `Qualor 0.8.0 is available (this server runs 0.7.1)` with a link to the release notes;
+- logs `Qualor 0.9.0 is available (this server runs 0.8.0)` with a link to the release notes;
 - shows instance admins a banner, which they can dismiss until the next release, and the new
   version next to the current one in the user menu;
 - tells the scanner, which logs it at the start of a scan (see [the scanner](./cli.md#qualor-scan)).
