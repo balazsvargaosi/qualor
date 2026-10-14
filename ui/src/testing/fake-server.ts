@@ -749,32 +749,42 @@ export interface DirectoryMembership {
   role: OrgMember['role'];
 }
 
+/** A role granted on one project in the fake directory (`excludeProject` leaves it out). */
+export interface DirectoryGrant {
+  projectId: string;
+  userId: string;
+}
+
 /**
- * The server's user-picker match: the username starts with `q`, or a word of the display name
- * does (words split at spaces and hyphens), ignoring case.
+ * The server's user-picker match (`userNameMatches`): the username starts with `q`, or the display
+ * name does from its start or from just after a space or a hyphen, ignoring case. So `q` may run
+ * over several words: "alice sm" matches "Alice Smith".
  */
 export function userMatches(user: { username: string; displayName: string | null }, q: string) {
   const start = q.toLowerCase();
+  const name = (user.displayName ?? '').toLowerCase();
   return (
     user.username.toLowerCase().startsWith(start) ||
-    (user.displayName ?? '')
-      .toLowerCase()
-      .split(/[ -]+/)
-      .some((word) => word.startsWith(start))
+    name.startsWith(start) ||
+    name.includes(` ${start}`) ||
+    name.includes(`-${start}`)
   );
 }
 
 /**
- * The user pickers' routes over an in-memory directory: `GET /users/search` (q of 2 to 64
- * characters, or from 1 for an instance admin, else 422; limit 1 to 10; active users only, by
- * username; `excludeOrganization` leaves its members out; never an email; 429 RATE_LIMITED while
- * `rateLimited`) and `GET /organizations/{id}/members` (its members in user id order, in pages of
- * `limit` after `cursor`; with `q`, the active ones that match). A test answers a route itself with
- * `server.on` after this, which wins.
+ * The user pickers' routes over an in-memory directory, as the server answers them:
+ * - `GET /users/search`: q of at most 64 UTF-16 units, then trimmed, of at least 2 characters
+ *   (code points; 1 for an instance admin), else 422; limit 1 to 10; active users only, by
+ *   username; `excludeOrganization` leaves its members out and `excludeProject` the users with a
+ *   grant on it; never an email; 429 RATE_LIMITED while `rateLimited`.
+ * - `GET /organizations/{id}/members`: its members in user id order, in pages of `limit` after
+ *   `cursor`; with `q` (trimmed, else 422 when blank), the active ones that match.
+ * A test answers a route itself with `server.on` after this, which wins.
  */
 export class FakeUserDirectory {
   users: DirectoryUser[];
   memberships: DirectoryMembership[];
+  grants: DirectoryGrant[];
   /** The caller is an instance admin: a one-character q is accepted. */
   instanceAdmin: boolean;
   rateLimited = false;
@@ -784,11 +794,13 @@ export class FakeUserDirectory {
     options: {
       users?: DirectoryUser[];
       memberships?: DirectoryMembership[];
+      grants?: DirectoryGrant[];
       instanceAdmin?: boolean;
     } = {},
   ) {
     this.users = options.users ?? [];
     this.memberships = options.memberships ?? [];
+    this.grants = options.grants ?? [];
     this.instanceAdmin = options.instanceAdmin ?? false;
     server.on('GET', USERS_SEARCH, (r) => this.search(r.query));
     server.on('GET', ORG_MEMBERS, (r) =>
@@ -800,19 +812,23 @@ export class FakeUserDirectory {
     if (this.rateLimited) {
       return { status: 429, body: problem(429, 'RATE_LIMITED'), headers: { 'retry-after': '60' } };
     }
-    const q = query.get('q') ?? '';
+    const raw = query.get('q') ?? '';
+    const q = raw.trim();
     const limit = Number(query.get('limit') ?? 10);
-    const length = [...q].length;
-    if (length < (this.instanceAdmin ? 1 : 2) || length > 64 || !(limit >= 1 && limit <= 10)) {
+    // the maximum in UTF-16 units of q as sent, the minimum in characters of q trimmed.
+    const short = [...q].length < (this.instanceAdmin ? 1 : 2);
+    if (raw.length > 64 || short || !(limit >= 1 && limit <= 10)) {
       return {
         status: 422,
         body: problem(422, 'VALIDATION_FAILED', [{ path: 'query.q', message: 'Too short' }]),
       };
     }
     const excluded = query.get('excludeOrganization');
-    const members = new Set(
-      this.memberships.filter((m) => m.organizationId === excluded).map((m) => m.userId),
-    );
+    const project = query.get('excludeProject');
+    const members = new Set([
+      ...this.memberships.filter((m) => m.organizationId === excluded).map((m) => m.userId),
+      ...this.grants.filter((g) => g.projectId === project).map((g) => g.userId),
+    ]);
     const body: UserSuggestions = {
       users: this.users
         .filter((u) => u.active !== false && !members.has(u.id) && userMatches(u, q))
@@ -824,7 +840,13 @@ export class FakeUserDirectory {
   }
 
   private members(organizationId: string, query: URLSearchParams): FakeReply {
-    const q = query.get('q');
+    const q = query.get('q')?.trim() ?? null;
+    if (q === '') {
+      return {
+        status: 422,
+        body: problem(422, 'VALIDATION_FAILED', [{ path: 'query.q', message: 'Too short' }]),
+      };
+    }
     const limit = Number(query.get('limit') ?? 50);
     const cursor = query.get('cursor');
     const rows: OrgMember[] = this.memberships

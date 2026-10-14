@@ -68,9 +68,9 @@ All notable changes to Qualor are listed here, newest first. The format follows
   click it; typing the whole user name still works. Add member leaves out the organisation's
   members, and Access leaves out the people who already have a role on the project.
 - API: `GET /users/search?q=` returns up to 10 matching active users (id, user name and display
-  name; never the email address), with `limit` and `excludeOrganization`. It has the permission of
-  `GET /users/lookup` and allows 60 requests a minute per caller. `GET /organizations/{id}/members`
-  takes `q` with the same match.
+  name; never the email address), with `limit`, `excludeOrganization` and `excludeProject`. It has
+  the permission of `GET /users/lookup` and allows 60 requests a minute per caller.
+  `GET /organizations/{id}/members` takes `q` with the same match.
 
 ### Changed
 

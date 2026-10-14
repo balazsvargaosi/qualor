@@ -127,9 +127,18 @@ export class UserPicker {
   }
 
   protected onKeydown(event: KeyboardEvent): void {
-    // While an input method composes a character, its keys are its own (Enter confirms it).
-    if (event.isComposing) return;
+    // While an input method composes a character, its keys are its own (Enter confirms it);
+    // Safari ends a composition with a keydown of keyCode 229 after compositionend.
+    if (event.isComposing || event.keyCode === 229) return;
     switch (event.key) {
+      case 'Tab':
+        // The list closes before the browser moves the focus, so it moves on to the next control
+        // (an open list that scrolls could otherwise take it, then hide with it). Tab goes on.
+        if (this.open()) {
+          this.state.set('idle');
+          this.active.set(-1);
+        }
+        return;
       case 'ArrowDown':
         event.preventDefault();
         if (this.open()) this.move(1);
@@ -165,7 +174,7 @@ export class UserPicker {
     }
   }
 
-  /** Keeps the focus in the input while an option is clicked. */
+  /** Keeps the focus in the input while the list (an option, its padding, its scrollbar) is pressed. */
   protected keepFocus(event: MouseEvent): void {
     event.preventDefault();
   }

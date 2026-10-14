@@ -61,7 +61,8 @@ Organization admin first.
 **Project → Access** (Organization admins only — a Project admin cannot grant roles) does the same
 for a role on one project: give someone a role, change it, or remove it. The name field suggests
 active users the same way, members of the organisation or not (a role on one project can go to
-anyone), and leaves out those who already have a role on the project. The tab
+anyone), and leaves out those who already have a role on the project
+(`GET /users/search?excludeProject=`). The tab
 reminds you that organisation roles apply on top of these. A project accepts at most **1 000**
 roles granted directly on it; beyond that, `PUT` answers 409 `PROJECT_GRANT_LIMIT_REACHED`.
 

@@ -98,7 +98,7 @@ q "$QUALOR_URL/api/v0/issues?branchId=<id>&severity=blocker&severity=high&inNewC
 | Dependencies | `GET /projects/{id}/dependencies` (a branch's dependency inventory with licences; `?branch=` or `?mr=`, filters, paging; every edition) ([Dependency licences](./dependency-licenses.md#the-api)) |
 | Issues | `GET /issues`, `GET /issues/{id}`, `POST /issues/{id}/transition`, `POST /issues/bulk-transition`, `PATCH /issues/{id}` (severity), `GET /issues/{id}/changelog` |
 | Rules, profiles, gates | `GET /rules`, `/quality-profiles…`, `/quality-gates…` (conditions, copy, set-default), `GET /metrics` |
-| Users and organisations | `GET/POST/PATCH /users` (each user with `hasPassword` and `sso`; `GET /users?signIn=no-password`), `GET /users/lookup?username=`, `GET /users/search?q=` (see below), `GET /organizations`, `…/members` (each with `managedBy`; `?q=` keeps the active members that match, as `/users/search` does) |
+| Users and organisations | `GET/POST/PATCH /users` (each user with `hasPassword` and `sso`; `GET /users?signIn=no-password`), `GET /users/lookup?username=`, `GET /users/search?q=` (see below), `GET /organizations`, `…/members` (each with `managedBy`; `?q=`, trimmed, keeps the active members that match, as `/users/search` does) |
 | Sign-in | `POST /auth/login`, `POST /auth/logout`, `GET /auth/me`, `GET /auth/methods` (public: the password policy, the single sign-on buttons and whether there is a demo), `POST /auth/demo` (public: signs in to the [read-only demo](./users-projects-tokens.md#a-public-read-only-demo)) |
 | SCM | `GET/POST/PATCH/DELETE /scm-connections`, `POST /scm-connections/{id}/test` |
 | Webhooks | `/webhooks…`, `/webhooks/{id}/deliveries`, `…/redeliver`, `…/regenerate-secret` |
@@ -118,15 +118,17 @@ Errors are `application/problem+json` with a stable `code`, such as `PROJECT_NOT
 for resources you can see but not change. The 403 carries a code that says why.
 
 `GET /users/search?q=` suggests people for the user name fields of the app: up to `limit` (1 to
-10, 10 by default) active users whose user name starts with `q`, or a word of whose display name
-does, ignoring case, ordered by user name. `q` has 2 to 64 characters (1 is enough for an instance
-admin; a shorter one answers 422), and `%` and `_` in it match themselves. Each user has only `id`,
-`username` and `displayName`, never an email address. It needs what `GET /users/lookup` needs: a
-token with the **Admin** scope, from an instance admin or someone who manages the members of an
-organisation. `excludeOrganization=<id>` leaves out the members of that organisation, which the
-caller must manage (403 for one they can see but not manage, 404 for one they cannot see). Each
-caller gets 60 searches a minute (429 `RATE_LIMITED` beyond that); the exact lookup has its own
-30.
+10, 10 by default) active users whose user name starts with `q`, or whose display name does from
+the start of one of its words, ignoring case, ordered by user name. Spaces around `q` are trimmed;
+what is left needs at least 2 characters (1 for an instance admin; a shorter one answers 422), and
+`q` may be at most 64 UTF-16 units long (an emoji counts as 2). `%` and `_` in it match
+themselves. Each user has only `id`, `username` and `displayName`, never an email address. It
+needs what `GET /users/lookup` needs: a token with the **Admin** scope, from an instance admin or
+someone who manages the members of an organisation. `excludeOrganization=<id>` leaves out the members of that organisation, which the
+caller must manage; `excludeProject=<id>` leaves out the people with a role granted on that
+project, whose roles the caller must manage (Organization admin of its organisation). Both answer
+403 for one the caller can see but not manage, and 404 for one they cannot see. Each caller gets 60
+searches a minute (429 `RATE_LIMITED` beyond that); the exact lookup has its own 30.
 
 ```sh
 curl -fsS -H "Authorization: Bearer $QUALOR_ADMIN_TOKEN" \

@@ -39,9 +39,9 @@ type Pending =
  * Project → Access (rbac-audit.md §16, §17): the project's role grants, which add a role on this
  * project only to whatever the person's organisation role gives. In every edition since
  * 5B (§1.3), through the core API. Org admins add a grant, change and remove one. The name field
- * suggests the active users without a grant on the project (`GET /users/search`: a grant may go to
- * anyone active, a member of the organisation or not, §16); a picked one is granted at once, a
- * name typed without a pick is looked up first (`GET /users/lookup`), then
+ * suggests the active users without a grant on the project (`GET /users/search?excludeProject=`: a
+ * grant may go to anyone active, a member of the organisation or not, §16); a picked one is
+ * granted at once, a name typed without a pick is looked up first (`GET /users/lookup`), then
  * `PUT /projects/{id}/members/{userId}`.
  * Nothing is asked while the caller cannot read the organisation's members (`org.members.read`).
  *
@@ -102,13 +102,18 @@ export class AccessPage {
   protected readonly busy = signal(false);
   /** `GET /users/search` takes 2 characters, or 1 from an instance admin. */
   protected readonly searchMin = computed(() => (this.session.user()?.isInstanceAdmin ? 1 : 2));
-  /** The suggestions: the active users, less those with a grant on this project already. */
+  /**
+   * The suggestions: the active users without a grant on this project yet (the server leaves the
+   * granted ones out, so ten suggestions are ten people one can still give a role).
+   */
   protected readonly searchUsers: UserSource = async (q) => {
+    const projectId = this.projectId();
     const found = await ok(
-      this.api.client.GET('/api/v0/users/search', { params: { query: { q } } }),
+      this.api.client.GET('/api/v0/users/search', {
+        params: { query: { q, excludeProject: projectId } },
+      }),
     );
-    const granted = new Set(this.list.items().map((g) => g.userId));
-    return found.users.filter((u) => !granted.has(u.id));
+    return found.users;
   };
   private readonly heading = viewChild.required<ElementRef<HTMLElement>>('heading');
   private readonly table = viewChild<ElementRef<HTMLElement>>('table');

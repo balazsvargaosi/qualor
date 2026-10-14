@@ -309,6 +309,41 @@ describe('UserPicker', () => {
     expect(input.getAttribute('aria-expanded')).toBe('true');
   });
 
+  it('leaves Enter to Safari ending a composition (keyCode 229)', async () => {
+    const { input, picker } = await render(async () => [ALICE]);
+    type(input, 'al');
+    await flush(SEARCH_DELAY_MS);
+    press(input, 'ArrowDown');
+    const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    Object.defineProperty(enter, 'keyCode', { value: 229 });
+    input.dispatchEvent(enter);
+    fixture.detectChanges();
+    expect(enter.defaultPrevented).toBe(false);
+    expect(picker.selected()).toBeNull();
+  });
+
+  it('closes the list on Tab before the focus moves, and lets Tab go on', async () => {
+    const { root, input, picker } = await render(async () => [ALICE, ALBERT]);
+    type(input, 'al');
+    await flush(SEARCH_DELAY_MS);
+    press(input, 'ArrowDown');
+    expect(input.getAttribute('aria-expanded')).toBe('true');
+    const tab = press(input, 'Tab');
+    expect(tab).toEqual({ prevented: false, stopped: false });
+    const listbox = root.querySelector<HTMLElement>('[role="listbox"]')!;
+    expect(listbox.hidden).toBe(true);
+    expect(input.getAttribute('aria-expanded')).toBe('false');
+    expect(input.hasAttribute('aria-activedescendant')).toBe(false);
+    // Tab picks nothing: the text stays as typed.
+    expect(picker.selected()).toBeNull();
+    expect(input.value).toBe('al');
+    // The list itself never takes the focus from the keyboard, and pressing it keeps the focus.
+    expect(listbox.getAttribute('tabindex')).toBe('-1');
+    const down = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+    listbox.dispatchEvent(down);
+    expect(down.defaultPrevented).toBe(true);
+  });
+
   it('keeps its live region rendered and shown while it has nothing to say', async () => {
     const { root, input } = await render(async () => []);
     const region = root.querySelector<HTMLElement>('[aria-live="polite"]')!;

@@ -210,6 +210,8 @@ describe('AccessPage (rbac-audit.md §16, §17)', () => {
         { id: CAROL, username: 'carol', displayName: 'Carol Bond' },
       ],
       memberships: [{ organizationId: ORG_ID, userId: BEA, role: 'viewer' }],
+      // bob's grant is on the page's first page; the server knows it whatever the page loaded.
+      grants: [{ projectId: PROJECT, userId: BOB }],
     });
     server.on('PUT', `${MEMBERS}/${CAROL}`, { body: grant(CAROL, 'carol', 'viewer') });
     const { fixture, root } = await render();
@@ -225,10 +227,14 @@ describe('AccessPage (rbac-audit.md §16, §17)', () => {
     await new Promise((resolve) => setTimeout(resolve, SEARCH_DELAY_MS + 20));
     await settle(fixture);
     const asked = server.requestsTo('GET', '/api/v0/users/search');
-    expect(asked.map((r) => [r.query.get('q'), r.query.get('excludeOrganization')])).toEqual([
-      ['Bo', null],
-    ]);
-    // bob already has a role here: not offered.
+    expect(
+      asked.map((r) => [
+        r.query.get('q'),
+        r.query.get('excludeProject'),
+        r.query.get('excludeOrganization'),
+      ]),
+    ).toEqual([['Bo', PROJECT, null]]);
+    // bob already has a role here: the server leaves him out (excludeProject).
     const offered = [...add.querySelectorAll<HTMLElement>('[role="option"]')];
     expect(offered.map((o) => o.textContent?.replace(/\s+/g, ' ').trim())).toEqual([
       'bea — Bea Boyd',

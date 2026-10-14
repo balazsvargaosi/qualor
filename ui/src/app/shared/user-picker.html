@@ -26,10 +26,12 @@
       #list
       class="user-picker-list"
       role="listbox"
+      tabindex="-1"
       [id]="listboxId()"
       aria-label="Suggestions"
       i18n-aria-label="@@userPicker.list"
       [hidden]="!open()"
+      (mousedown)="keepFocus($event)"
       [style.max-height]="listMax()"
     >
       @for (user of suggestions(); track user.id; let i = $index) {
@@ -38,7 +40,6 @@
           [id]="optionId(i)"
           [class.active]="i === active()"
           [attr.aria-selected]="i === active()"
-          (mousedown)="keepFocus($event)"
           (click)="pick(user)"
         >
           <span class="user-picker-name">{{ user.username }}</span>
