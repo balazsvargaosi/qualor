@@ -2456,13 +2456,13 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Members of an organisation; managedBy names the SSO connection whose group sync manages a membership; q keeps those whose username or display name starts with it */
+        /** Members of an organisation; managedBy names the SSO connection whose group sync manages a membership; q keeps the active members whose username or a display-name word starts with it */
         get: {
             parameters: {
                 query?: {
                     limit?: number;
                     cursor?: string;
-                    /** @description Only members whose username or display name starts with this, ignoring case; % and _ match themselves */
+                    /** @description Only active members whose username, or a word of whose display name, starts with this, ignoring case; % and _ match themselves */
                     q?: string;
                 };
                 header?: never;

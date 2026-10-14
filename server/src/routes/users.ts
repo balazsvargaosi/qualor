@@ -1,4 +1,16 @@
-import { and, asc, count, eq, gt, ilike, inArray, isNull, notExists, or, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  count,
+  eq,
+  gt,
+  ilike,
+  inArray,
+  isNull,
+  notExists,
+  sql,
+  type SQL,
+} from 'drizzle-orm';
 import type { FastifyRequest } from 'fastify';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
@@ -38,7 +50,7 @@ import {
   userSchema,
   type UserSsoSummary,
 } from '../http/schemas';
-import { prefixPattern } from '../issues/query';
+import { likeLiteral, prefixPattern } from '../issues/query';
 import {
   accountLink,
   accountMailState,
@@ -202,6 +214,23 @@ function perCaller(request: FastifyRequest): string {
     : request.ip;
 }
 
+/**
+ * The user pickers' match (GET /users/search, GET /organizations/{id}/members?q): the username
+ * starts with `q`, or a word of the display name does. A word starts the name or follows a space
+ * (one or more) or a hyphen ("smi" finds "Alice Smith", "luc" finds "Jean-Luc"), never inside a
+ * word. Case-insensitive; `%`, `_` and `\` in `q` are literal.
+ */
+export function userNameMatches(q: string): SQL {
+  const word = likeLiteral(q);
+  const alternatives = [
+    ilike(users.username, prefixPattern(q)),
+    ilike(users.displayName, `${word}%`),
+    ilike(users.displayName, `% ${word}%`),
+    ilike(users.displayName, `%-${word}%`),
+  ];
+  return sql`(${sql.join(alternatives, sql` or `)})`;
+}
+
 /** GET /users/search: at most 64 characters of q (a username's length) and 10 suggestions. */
 const SEARCH_MAX = 64;
 const SEARCH_LIMIT = 10;
@@ -289,7 +318,8 @@ export const userRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (app
     {
       config: {
         // api.md §3: the user picker asks as the person types (debounced), so it has its own
-        // budget, 60 a minute per caller; the exact lookup keeps its 30.
+        // budget, 60 a minute per caller; the exact lookup keeps its 30. In memory: each server
+        // process (replica) counts on its own, as the login throttle (auth/throttle.ts).
         rateLimit: { max: 60, timeWindow: 60_000, keyGenerator: perCaller },
         openapi: { problems: [403, 404, 429] },
       },
@@ -317,7 +347,8 @@ export const userRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (app
       await requireMembersManager(access, principal);
       const { q, limit, excludeOrganization } = request.query;
       const min = principal.user.isInstanceAdmin ? 1 : 2;
-      if (q.length < min) {
+      // characters as a person counts them (code points), not UTF-16 units.
+      if ([...q].length < min) {
         throw validationFailed([{ path: 'query.q', message: `Type at least ${min} characters` }]);
       }
       if (excludeOrganization !== undefined) {
@@ -328,7 +359,6 @@ export const userRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (app
           'org.members.manage',
         );
       }
-      const pattern = prefixPattern(q);
       // the name only, never the email or the admin flag, as the lookup (the same audience).
       const found = await deps.db
         .select({ id: users.id, username: users.username, displayName: users.displayName })
@@ -336,7 +366,7 @@ export const userRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (app
         .where(
           and(
             eq(users.active, true),
-            or(ilike(users.username, pattern), ilike(users.displayName, pattern)),
+            userNameMatches(q),
             excludeOrganization === undefined
               ? undefined
               : notExists(

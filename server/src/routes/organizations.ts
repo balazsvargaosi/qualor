@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, ilike, ne, or } from 'drizzle-orm';
+import { and, asc, eq, gt, ne } from 'drizzle-orm';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import type { RouteDeps } from '../app';
@@ -23,9 +23,9 @@ import {
 import { decodeCursor, pageQuery, pageSchema, toPage } from '../http/pagination';
 import { conflict, notFound } from '../http/problem';
 import { iso, idParams, noContent, text, timestamp } from '../http/schemas';
-import { prefixPattern } from '../issues/query';
 import { createOrganization, type OrganizationRow } from '../orgs/service';
 import { ORGANIZATION_KEY_PATTERN } from '../patterns';
+import { userNameMatches } from './users';
 
 // rbac-audit.md §3.2, §6.1, §16: the four organisation roles, in every edition.
 const role = z.enum(ORGANIZATION_ROLES);
@@ -164,13 +164,13 @@ export const organizationRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = as
       schema: {
         tags: ['organizations'],
         summary:
-          'Members of an organisation; managedBy names the SSO connection whose group sync manages a membership; q keeps those whose username or display name starts with it',
+          'Members of an organisation; managedBy names the SSO connection whose group sync manages a membership; q keeps the active members whose username or a display-name word starts with it',
         params: idParams,
         querystring: z.strictObject({
           ...pageQuery,
           q: text(64).optional().meta({
             description:
-              'Only members whose username or display name starts with this, ignoring case; % and _ match themselves',
+              'Only active members whose username, or a word of whose display name, starts with this, ignoring case; % and _ match themselves',
           }),
         }),
         response: { 200: pageSchema(memberSchema) },
@@ -185,7 +185,6 @@ export const organizationRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = as
         'org.members.read',
       );
       const after = decodeCursor(request.query.cursor);
-      const pattern = request.query.q === undefined ? undefined : prefixPattern(request.query.q);
       const rows = await deps.db
         .select({
           id: users.id,
@@ -203,9 +202,10 @@ export const organizationRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = as
           and(
             eq(memberships.organizationId, request.params.id),
             after ? gt(users.id, after) : undefined,
-            pattern === undefined
+            // the user pickers' match; a search suggests active members only.
+            request.query.q === undefined
               ? undefined
-              : or(ilike(users.username, pattern), ilike(users.displayName, pattern)),
+              : and(eq(users.active, true), userNameMatches(request.query.q)),
           ),
         )
         .orderBy(asc(users.id))

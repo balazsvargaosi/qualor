@@ -37,7 +37,7 @@ export interface IssueFilters {
 }
 
 /** `q` with `%`, `_` and `\` escaped, so ILIKE (whose default escape is `\`) takes them literally. */
-function likeLiteral(q: string): string {
+export function likeLiteral(q: string): string {
   return q.replace(/[\\%_]/g, (c) => `\\${c}`);
 }
 

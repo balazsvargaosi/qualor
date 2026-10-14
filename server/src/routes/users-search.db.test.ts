@@ -92,6 +92,8 @@ describe('GET /users/search', () => {
     await createUser(ctx, { username: 'xoray' });
     await createUser(ctx, { username: 'pct-one', displayName: '50% off' });
     await createUser(ctx, { username: 'pct-two', displayName: '50 percent' });
+    await createUser(ctx, { username: 'jl', displayName: 'Jean-Luc Picard' });
+    await createUser(ctx, { username: 'ann', displayName: 'Ann   Lee' });
     for (let n = 1; n <= 12; n += 1) {
       await createUser(ctx, { username: `lim${String(n).padStart(2, '0')}` });
     }
@@ -125,15 +127,25 @@ describe('GET /users/search', () => {
     expect(admin.statusCode).toBe(200);
   });
 
-  it('matches a prefix of the username or the display name, ignoring case, ordered by username', async () => {
+  it('matches the start of the username or of any word of the display name, ignoring case, ordered by username', async () => {
     expect(names(await get(orgAdmin.headers, '/users/search?q=AL'))).toEqual([
       'Albert',
       'alice',
       'bob',
     ]);
-    // display name only: "Alfred Bob"; a word inside the name is not a prefix.
+    // display name only: "Alfred Bob".
     expect(names(await get(orgAdmin.headers, '/users/search?q=alF'))).toEqual(['bob']);
-    expect(names(await get(orgAdmin.headers, '/users/search?q=smith'))).toEqual([]);
+    // any word of the display name, after a space (one or more) or a hyphen.
+    expect(names(await get(orgAdmin.headers, '/users/search?q=smith'))).toEqual(['alice']);
+    expect(names(await get(orgAdmin.headers, '/users/search?q=SMI'))).toEqual(['alice']);
+    expect(names(await get(orgAdmin.headers, '/users/search?q=luc'))).toEqual(['jl']);
+    expect(names(await get(orgAdmin.headers, '/users/search?q=pic'))).toEqual(['jl']);
+    expect(names(await get(orgAdmin.headers, '/users/search?q=lee'))).toEqual(['ann']);
+    expect(names(await get(orgAdmin.headers, '/users/search?q=alice%20sm'))).toEqual(['alice']);
+    // not in the middle of a word, and the username only at its start.
+    expect(names(await get(orgAdmin.headers, '/users/search?q=mith'))).toEqual([]);
+    expect(names(await get(orgAdmin.headers, '/users/search?q=ard'))).toEqual([]);
+    expect(names(await get(orgAdmin.headers, '/users/search?q=one'))).toEqual([]);
     expect(names(await get(orgAdmin.headers, '/users/search?q=ALBE'))).toEqual(['Albert']);
     expect(names(await get(orgAdmin.headers, '/users/search?q=zz'))).toEqual([]);
   });
@@ -166,6 +178,11 @@ describe('GET /users/search', () => {
     ]);
     expect((await get(orgAdmin.headers, `/users/search?q=${'a'.repeat(64)}`)).statusCode).toBe(200);
     expect(paths(await get(orgAdmin.headers, '/users/search?q=al%00'))).toEqual(['query.q']);
+    // the minimum counts characters (code points), not UTF-16 units: one astral character is 1.
+    const astral = encodeURIComponent(String.fromCodePoint(0x1f600));
+    expect(paths(await get(orgAdmin.headers, `/users/search?q=${astral}`))).toEqual(['query.q']);
+    expect((await get(root.headers, `/users/search?q=${astral}`)).statusCode).toBe(200);
+    expect((await get(orgAdmin.headers, `/users/search?q=${astral}a`)).statusCode).toBe(200);
     expect(paths(await get(orgAdmin.headers, '/users/search?q=al&extra=1'))).not.toEqual([]);
   });
 

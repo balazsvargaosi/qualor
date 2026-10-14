@@ -3855,7 +3855,7 @@
     },
     "/api/v0/organizations/{id}/members": {
       "get": {
-        "summary": "Members of an organisation; managedBy names the SSO connection whose group sync manages a membership; q keeps those whose username or display name starts with it",
+        "summary": "Members of an organisation; managedBy names the SSO connection whose group sync manages a membership; q keeps the active members whose username or a display-name word starts with it",
         "tags": [
           "organizations"
         ],
@@ -3889,7 +3889,7 @@
             "in": "query",
             "name": "q",
             "required": false,
-            "description": "Only members whose username or display name starts with this, ignoring case; % and _ match themselves"
+            "description": "Only active members whose username, or a word of whose display name, starts with this, ignoring case; % and _ match themselves"
           },
           {
             "schema": {

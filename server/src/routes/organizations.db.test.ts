@@ -257,12 +257,12 @@ describe('organizations and members', () => {
     expect((await call('GET', '/system/info', {})).statusCode).toBe(401);
   });
 
-  it('filters the members by a prefix of the username or the display name (q)', async () => {
+  it('filters the members by the start of the username or of a display-name word (q)', async () => {
     const org = (
       await call('POST', '/organizations', admin.headers, { key: 'q-org', name: 'Q' })
     ).json().id as string;
-    const join = async (username: string, displayName: string | null) => {
-      const u = await createUser(ctx, { username, displayName });
+    const join = async (username: string, displayName: string | null, active = true) => {
+      const u = await createUser(ctx, { username, displayName, active });
       await addMember(ctx, org, u.id, 'member');
     };
     await join('quinn', 'Zed Quinn');
@@ -271,6 +271,7 @@ describe('organizations and members', () => {
     await join('qxbert', 'Q 50% done');
     await join('qpct', 'Q 50 done');
     await join('rita', 'Quiet Rita');
+    await join('quill', 'Gone Quill', false);
     const names = async (query: string) =>
       (
         (await call('GET', `/organizations/${org}/members?${query}`, admin.headers)).json()
@@ -281,6 +282,12 @@ describe('organizations and members', () => {
     expect(await names('q=QU')).toEqual(['Quentin', 'quinn', 'rita']);
     expect(await names('q=zed')).toEqual(['quinn']);
     expect(await names('q=quinn')).toEqual(['quinn']);
+    // any word of the display name, not the middle of one.
+    expect(await names('q=RIT')).toEqual(['rita']);
+    expect(await names('q=uinn')).toEqual([]);
+    // with q, inactive members are left out; without it they are still listed.
+    expect(await names('q=quill')).toEqual([]);
+    expect(await names('limit=50')).toContain('quill');
     // LIKE wildcards are literal.
     expect(await names('q=q_')).toEqual(['q_bert']);
     expect(await names('q=q%2050%25')).toEqual(['qxbert']);
