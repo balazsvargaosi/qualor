@@ -93,7 +93,7 @@ function normalizeOne(
     rules: [],
     ...(c.database !== undefined && { database: c.database }),
   };
-  if (c.status !== 'ok' && c.sarif === undefined)
+  if (c.status !== 'ok' && c.salvaged !== true)
     return { engine, result: null, secretTexts: [], fragmentTexts: [] };
   try {
     const { result, secrets } = normalizeSarifWithSecrets(c.sarif, {
@@ -125,7 +125,7 @@ function normalizeOne(
     };
   } catch (err) {
     // A salvaged SARIF that cannot be read leaves the run's own status and reason.
-    if (c.status !== 'ok') {
+    if (c.status !== 'ok' && c.salvaged === true) {
       o.log.debug(`${c.engineId}: salvaged SARIF not normalised: ${String(err)}`);
       return { engine, result: null, secretTexts: [], fragmentTexts: [] };
     }

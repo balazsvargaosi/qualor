@@ -990,6 +990,26 @@ describe("qualor with Qualor's Roslyn taint engine under qualor dotnet end (6B-C
       { repoRoot: root, readLines: fileLines(root), knownPaths: new Set(), log: silentLogger },
     );
     expect(bad.findings).toEqual([]);
+
+    // A non-ok capture with SARIF but without the salvage flag reports nothing.
+    const unflagged = normalizeCaptures(
+      [
+        {
+          engineId: 'qualor',
+          kind: 'builtin',
+          status: 'timeout',
+          reason: 'timed out after 900 s',
+          durationMs: 1,
+          version: null,
+          required: false,
+          sarif: salvage.sarif,
+          mapping: engineMapping('qualor')!,
+        },
+      ],
+      { repoRoot: root, readLines: fileLines(root), knownPaths: new Set(), log: silentLogger },
+    );
+    expect(unflagged.findings).toEqual([]);
+    expect(unflagged.engines[0]).toMatchObject({ status: 'timeout' });
     expect(bad.engines[0]).toMatchObject({ status: 'timeout', reason: 'timed out after 900 s' });
   });
 

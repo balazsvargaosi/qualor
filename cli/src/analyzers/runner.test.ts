@@ -19,6 +19,7 @@ import {
   removeActiveWorkDirs,
   requiredFailures,
   runAnalyzers,
+  SALVAGE_NOTE,
   spawnFailureReason,
 } from './runner';
 import type { Analyzer, AnalyzerId, SarifCapture } from './types';
@@ -440,6 +441,11 @@ describe('runAnalyzers', () => {
         ],
         { root, files, config: config(), log: silentLogger },
       );
+      for (const c of [captures[0], captures[1], captures[2], unavailable]) {
+        expect(c?.reason).toMatch(/; the Roslyn taint engine's findings are included$/);
+      }
+      expect(captures[0]?.reason).toBe(`timed out after 1 s; ${SALVAGE_NOTE}`);
+      expect(captures[1]?.reason).toBe(`exited with code 2; ${SALVAGE_NOTE}`);
       expect(unavailable).toMatchObject({
         status: 'skipped',
         unavailable: true,
