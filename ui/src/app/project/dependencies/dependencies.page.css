@@ -1,0 +1,108 @@
+/* The Dependencies tab (6M §8): the branch and search bar, the filter row, the inventory panel. */
+.deps-toolbar,
+.deps-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+  margin-bottom: 16px;
+}
+.deps-filters {
+  margin-bottom: 20px;
+}
+.toolbar-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.toolbar-field .label {
+  margin: 0;
+  white-space: nowrap;
+}
+.toolbar-field select {
+  min-width: 0;
+  max-width: 100%;
+}
+.deps-search {
+  display: flex;
+  flex-wrap: wrap;
+  flex: 1 1 24rem;
+  align-items: center;
+  gap: 8px;
+  max-width: 40rem;
+}
+.deps-search .search-field {
+  flex: 1 1 14rem;
+}
+.deps-search .search-field input {
+  width: 100%;
+  min-width: 0;
+}
+.ecosystem-field {
+  flex: 0 1 9rem;
+  min-width: 7rem;
+}
+.ecosystem-field input {
+  width: 100%;
+}
+.deps-search .field-error {
+  flex-basis: 100%;
+}
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  cursor: pointer;
+}
+.deps-list .panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 16px;
+}
+.deps-summary {
+  margin: 0;
+}
+/* Long names break anywhere, but a column keeps a readable width: the table scrolls instead. */
+.package {
+  min-width: 9rem;
+  overflow-wrap: anywhere;
+}
+.lockfile-cell {
+  min-width: 11rem;
+}
+.lockfile code {
+  overflow-wrap: anywhere;
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.chip {
+  overflow-wrap: anywhere;
+}
+.verdict-issues {
+  font-size: 13px;
+}
+.deps-none {
+  margin: 0;
+  color: var(--text-muted);
+}
+.pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+.pager-range {
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.pager-buttons {
+  display: flex;
+  gap: 8px;
+}

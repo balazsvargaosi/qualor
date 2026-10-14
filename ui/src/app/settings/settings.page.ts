@@ -4,6 +4,7 @@ import { SessionStore } from '../auth/session';
 import { OrgContext } from '../org/org-context';
 import { PageHeader } from '../shared/page-header';
 import { AUTO_FIX_FEATURE } from './auto-fix';
+import { LICENSE_POLICY_FEATURE } from './license-policy';
 import { SystemInfo } from '../shell/system-info';
 
 /** The enterprise settings entries the UI renders with its own screens (rbac-audit.md §17). */
@@ -74,8 +75,16 @@ export class SettingsPage {
     () => this.info.features().includes(AUTO_FIX_FEATURE) && this.org.can('org.ai.manage'),
   );
   /**
+   * The organisation's licence policy (6M §8): for holders of `org.licenses.manage`, while
+   * `license-policy` is active; the address itself shows the Business note when it is not.
+   */
+  protected readonly licensePolicy = computed(
+    () =>
+      this.info.features().includes(LICENSE_POLICY_FEATURE) && this.org.can('org.licenses.manage'),
+  );
+  /**
    * The organization's entries: members, webhooks, the SCM connections, the automatic fix
-   * suggestions (4E-3a §4), the audit log and the compliance reports.
+   * suggestions (4E-3a §4), the licence policy (6M §8), the audit log and the compliance reports.
    */
   protected readonly organization = computed(
     () =>
@@ -83,6 +92,7 @@ export class SettingsPage {
       this.org.can('org.webhooks.manage') ||
       this.org.can('org.scm.manage') ||
       this.autoFix() ||
+      this.licensePolicy() ||
       this.auditLog() ||
       this.compliance(),
   );

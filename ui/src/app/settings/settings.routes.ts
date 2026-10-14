@@ -50,6 +50,12 @@ export const settingsRoutes: Routes = [
     loadComponent: () => import('./auto-fix.page').then((m) => m.AutoFixPage),
   },
   {
+    // 6M §8: the organisation's licence policy, for its admins (org.licenses.manage).
+    path: 'license-policy',
+    title: $localize`:@@title.licensePolicy:Licence policy`,
+    loadComponent: () => import('./license-policy.page').then((m) => m.LicensePolicyPage),
+  },
+  {
     path: 'ai',
     title: $localize`:@@title.ai:AI assistant`,
     loadComponent: () => import('./ai.page').then((m) => m.AiSettingsPage),

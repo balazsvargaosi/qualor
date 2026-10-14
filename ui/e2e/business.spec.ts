@@ -1,6 +1,9 @@
+import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { gzipSync } from 'node:zlib';
+import type { APIRequestContext, Page } from '@playwright/test';
 import { expect, expectAccessible, test } from './fixtures';
-import { PAYMENTS, SIEM_URL } from './seed-data';
+import { BUSINESS_URL, DEPENDENCIES, PAYMENTS, PAYMENTS_REPORT_FILE, SIEM_URL } from './seed-data';
 
 /**
  * Plan 5D (rbac-audit.md §14.4, §17; sso-scim.md §4.4, §18): the enterprise server's database
@@ -180,4 +183,123 @@ test('a Business admin downloads the support bundle', async ({ page }) => {
   expect(archive.subarray(0, 2).toString()).toBe('PK');
   expect(archive.toString('latin1')).toContain('manifest.json');
   await expectAccessible(page);
+});
+
+/**
+ * 6M: the seed's last report of Payments API's main branch, ingested again as a new analysis (a
+ * new revision, today's date) with a project analysis token, as the CLI would upload it; resolves
+ * once the server has analysed it.
+ */
+async function ingestAgain(page: Page, request: APIRequestContext): Promise<void> {
+  const me = (await (await page.request.get('/api/v0/auth/me')).json()) as { csrfToken: string };
+  const projects = (await (await page.request.get('/api/v0/projects?limit=100')).json()) as {
+    items: { id: string; key: string }[];
+  };
+  const payments = projects.items.find((p) => p.key === PAYMENTS.key);
+  expect(payments).toBeDefined();
+  const created = await page.request.post(`/api/v0/projects/${payments!.id}/tokens`, {
+    headers: { 'x-qualor-csrf': me.csrfToken },
+    data: { name: 'licence policy e2e' },
+  });
+  expect(created.status()).toBe(201);
+  const { token } = (await created.json()) as { token: string };
+
+  const report = JSON.parse(readFileSync(PAYMENTS_REPORT_FILE, 'utf8')) as {
+    analysisDate: string;
+    scm: { revision: string };
+  };
+  report.analysisDate = new Date().toISOString();
+  report.scm.revision = randomBytes(20).toString('hex');
+  const upload = await request.post(
+    `/api/v0/analyses?projectKey=${encodeURIComponent(PAYMENTS.key)}`,
+    {
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/vnd.qualor.report+json',
+        'content-encoding': 'gzip',
+      },
+      data: gzipSync(Buffer.from(JSON.stringify(report), 'utf8')),
+    },
+  );
+  expect(upload.status()).toBe(202);
+  const { analysisId } = (await upload.json()) as { analysisId: string };
+  await expect
+    .poll(
+      async () => {
+        const res = await request.get(`/api/v0/analyses/${analysisId}`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        return ((await res.json()) as { status: string }).status;
+      },
+      { timeout: 60_000 },
+    )
+    .toBe('succeeded');
+}
+
+// 6M §5, §8: the licence policy is a Business feature (`license-policy`). The admin forbids strong
+// copyleft; the Dependencies tab judges the inventory at once, and the next analysis of the branch
+// reports the forbidden licence as a Licensing issue on its lockfile line.
+test('a Business admin forbids strong copyleft, and the next analysis reports it', async ({
+  page,
+  playwright,
+}) => {
+  await page.goto('/settings/license-policy');
+  await expect(page).toHaveTitle('Licence policy · Qualor');
+  await expect(page.getByRole('link', { name: 'Licence policy' })).toBeVisible();
+  await expect(page.getByLabel('Forbid listed licences')).toBeChecked();
+  // A group's members show on demand.
+  const members = page.locator('#license-policy-members-strong-copyleft');
+  await expect(members).toBeHidden();
+  await page.getByRole('button', { name: /licences in Strong copyleft$/ }).click();
+  await expect(members).toBeVisible();
+  await expect(members).toContainText('GPL-3.0-only');
+  await page.getByRole('checkbox', { name: 'Strong copyleft' }).check();
+  await page.getByRole('button', { name: 'Save' }).click();
+  await expect(page.getByRole('status').first()).toHaveText(
+    "The licence policy was saved. It applies from each project's next analysis.",
+  );
+  await expect(page.getByRole('button', { name: 'Remove policy' })).toBeVisible();
+  await expectAccessible(page);
+
+  await page.goto('/projects');
+  await page.getByRole('link', { name: PAYMENTS.name }).click();
+  await page
+    .getByRole('navigation', { name: 'Project' })
+    .getByRole('link', { name: 'Dependencies' })
+    .click();
+  const table = page.getByRole('table', { name: 'Dependencies with their licences' });
+  await expect(table.getByRole('columnheader', { name: 'Policy' })).toBeVisible();
+  const forbidden = table.getByRole('row', {
+    name: new RegExp(DEPENDENCIES.strongCopyleft.name),
+  });
+  await expect(forbidden).toContainText('Forbidden');
+  await expect(table.getByRole('row', { name: /dual-licensed-math/ })).toContainText('Allowed');
+  await page.getByLabel('Forbidden only').check();
+  await expect(table.getByRole('row')).toHaveCount(2);
+  await expectAccessible(page);
+
+  const request = await playwright.request.newContext({ baseURL: BUSINESS_URL });
+  try {
+    await ingestAgain(page, request);
+  } finally {
+    await request.dispose();
+  }
+
+  const { name, version, license } = DEPENDENCIES.strongCopyleft;
+  await forbidden.getByRole('link', { name: `Issues of ${name} ${version}` }).click();
+  await expect(page).toHaveURL(/\/issues\?.*rule=license:forbidden/);
+  const message = `${name} ${version} is licensed ${license}, which the organisation's licence policy forbids (Strong copyleft).`;
+  await expect(page.getByRole('link', { name: message, exact: true })).toBeVisible();
+  const quality = page.locator('fieldset[data-facet="quality"]');
+  await expect(quality.getByText('Licensing')).toBeVisible();
+  await quality.getByRole('checkbox', { name: /Licensing/ }).check();
+  await expect(page).toHaveURL(/[?&]quality=licensing(&|$)/);
+  await expect(page.getByRole('link', { name: message, exact: true })).toBeVisible();
+  await expectAccessible(page);
+
+  await page.getByRole('link', { name: message, exact: true }).click();
+  await expect(page).toHaveTitle('Issue · Qualor');
+  const details = page.locator('dl.details-list');
+  await expect(details).toContainText('Licensing');
+  await expect(details.getByRole('link', { name: 'package-lock.json:40' })).toBeVisible();
 });

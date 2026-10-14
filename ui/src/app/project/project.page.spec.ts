@@ -93,8 +93,11 @@ describe('ProjectPage', () => {
       'Overview',
       'Branches and merge requests',
       'Issues',
+      'Dependencies',
       'Code',
     ]);
+    // 6M §8: the Dependencies tab, in every edition, between Issues and Code.
+    expect(tabs?.querySelector('a[href$="/dependencies"]')).not.toBeNull();
   });
 
   it('treats a malformed or unknown project id as a project that does not exist', async () => {

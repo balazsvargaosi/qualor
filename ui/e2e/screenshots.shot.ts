@@ -251,6 +251,18 @@ test('31 project settings, 32 code tree, 33 code file, 34 issue related, 35 webh
   await shoot(page, '35-webhooks-scope');
 });
 
+// 6M §8: Payments API's dependency inventory on the community server (no policy, no verdicts).
+test('40 project dependencies', async ({ page }) => {
+  await page.goto('/projects');
+  await page.getByRole('link', { name: PAYMENTS.name }).click();
+  await page
+    .getByRole('navigation', { name: 'Project' })
+    .getByRole('link', { name: 'Dependencies' })
+    .click();
+  await expect(page.locator('.deps-summary')).toContainText('packages have a known licence');
+  await shootThemes(page, '40-project-dependencies');
+});
+
 /**
  * Plan 4C: the enterprise screens, on the licensed server (`audit-log`, and since plan 4D `sso`
  * and `scim`) and its session.
@@ -357,5 +369,21 @@ test.describe('enterprise', () => {
     await expect(page.getByRole('region', { name: 'Organisations', exact: true })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Trend over 12 months' })).toBeVisible();
     await shootThemes(page, '39-portfolio-all');
+  });
+
+  // 6M §8 (`license-policy`): a policy that forbids strong copyleft and one more licence, after
+  // the portfolio, whose figures it must not change.
+  test('41 licence policy', async ({ page }) => {
+    await page.goto('/settings/license-policy');
+    await page.getByRole('checkbox', { name: 'Strong copyleft' }).check();
+    await page.getByRole('checkbox', { name: 'Network copyleft' }).check();
+    const forbidden = page.getByRole('combobox', { name: 'Forbidden licences' });
+    await forbidden.fill('CC-BY-SA-4.0');
+    await forbidden.press('Enter');
+    await page.getByRole('button', { name: /licences in Strong copyleft$/ }).click();
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByRole('status').first()).toContainText('The licence policy was saved.');
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await shootThemes(page, '41-settings-license-policy');
   });
 });

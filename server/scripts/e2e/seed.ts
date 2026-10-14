@@ -1,7 +1,7 @@
 import { generateKeyPairSync } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { gzipSync } from 'node:zlib';
-import { hex32, type Report } from '@qualor/shared';
+import { type DependencyEntry, hex32, type Report } from '@qualor/shared';
 import pg from 'pg';
 
 /**
@@ -162,6 +162,59 @@ const ENGINES: Report['engines'] = [
   },
 ];
 
+/**
+ * 6M: the dependency inventory of Payments API, as the CLI's licence pass (`trivy-licenses`)
+ * reports it: npm packages in package-lock.json, a Go module, and a pnpm workspace whose packages
+ * were not installed, so its licence is unknown and its entry has no line. Seven entries, six with
+ * a known licence. `ledger-gpl` is strong copyleft (forbidden by the Business e2e policy),
+ * `dual-licensed-math` is MIT OR GPL (allowed), `phone-format-lgpl` weak copyleft. The package
+ * names are made up, so no real package is said to carry these licences.
+ */
+const PAYMENTS_DEPENDENCIES: DependencyEntry[] = [
+  npm('express', '4.19.2', ['MIT'], 12, true),
+  npm('decimal.js', '10.4.3', ['MIT'], 25, true),
+  npm('ledger-gpl', '2.1.0', ['GPL-3.0-only'], 40, false),
+  npm('dual-licensed-math', '1.0.0', ['MIT OR GPL-2.0-or-later'], 57, false),
+  npm('phone-format-lgpl', '3.2.1', ['LGPL-3.0-only'], 71, false),
+  {
+    ecosystem: 'gomod',
+    path: 'go.mod',
+    line: 5,
+    name: 'github.com/acme/retry',
+    version: 'v1.4.0',
+    licenses: ['Apache-2.0'],
+    direct: true,
+  },
+  {
+    ecosystem: 'pnpm',
+    path: 'web/pnpm-lock.yaml',
+    name: 'left-pad-internal',
+    version: '0.3.1',
+    licenses: [],
+    direct: true,
+  },
+];
+
+function npm(
+  name: string,
+  version: string,
+  licenses: string[],
+  line: number,
+  direct: boolean,
+): DependencyEntry {
+  return { ecosystem: 'npm', path: 'package-lock.json', line, name, version, licenses, direct };
+}
+
+/** The CLI's licence pass, as a report that carries an inventory names it. */
+const LICENSE_PASS: Report['engines'][number] = {
+  id: 'trivy-licenses',
+  kind: 'builtin',
+  version: '0.70.0',
+  status: 'ok',
+  durationMs: 3_200,
+  rules: [],
+};
+
 function report(input: {
   projectKey: string;
   projectName: string;
@@ -174,6 +227,8 @@ function report(input: {
   files: FileSpec[];
   findings: FindingSpec[];
   duplications?: DuplicationSpec[];
+  /** 6M: the dependency inventory; the report then names the licence pass too. */
+  dependencies?: DependencyEntry[];
 }): Report {
   const ranges = (count: number): [number, number][] => (count > 0 ? [[1, count]] : []);
   return {
@@ -196,7 +251,7 @@ function report(input: {
       renames: [],
     },
     analysisDate: input.date,
-    engines: ENGINES,
+    engines: input.dependencies ? [...ENGINES, LICENSE_PASS] : ENGINES,
     files: input.files.map((f) => ({
       path: f.path,
       language: f.language ?? 'typescript',
@@ -267,6 +322,7 @@ function report(input: {
     }),
     duplications: input.duplications ?? [],
     warnings: [],
+    ...(input.dependencies ? { dependencies: input.dependencies } : {}),
   };
 }
 
@@ -434,6 +490,10 @@ function paymentsFiles(scale: number, newLines = false): FileSpec[] {
     { path: 'src/util/log.ts', lines: 20, ncloc: 14, covered: 14 },
     { path: 'config/staging.env', language: 'other', lines: 12, ncloc: 0 },
     { path: 'test/refunds.test.ts', kind: 'test', lines: 140, ncloc: 120 },
+    // 6M: the lockfiles of the dependency inventory, for the Dependencies tab's links.
+    { path: 'package-lock.json', language: 'other', lines: 96, ncloc: 0 },
+    { path: 'go.mod', language: 'other', lines: 12, ncloc: 0 },
+    { path: 'web/pnpm-lock.yaml', language: 'other', lines: 40, ncloc: 0 },
   ];
 }
 
@@ -479,7 +539,12 @@ interface Issue {
   rule: { key: string };
 }
 
-export async function seedDemo(base: string, credentials: SeedCredentials): Promise<void> {
+/** What {@link seedDemo} hands back: the last report of Payments API's main branch (6M). */
+export interface DemoSeed {
+  paymentsMainReport: Report;
+}
+
+export async function seedDemo(base: string, credentials: SeedCredentials): Promise<DemoSeed> {
   const admin = new Client(base);
   await admin.login(credentials.adminUsername, credentials.adminPassword);
   const [org] = (await admin.json<Page<{ id: string }>>('GET', '/api/v0/organizations')).items;
@@ -548,29 +613,26 @@ export async function seedDemo(base: string, credentials: SeedCredentials): Prom
       findings: [...PAYMENTS_BASE, ...PAYMENTS_SECOND],
     }),
   );
-  await upload(
-    base,
-    payments.token,
-    payments.key,
-    report({
-      ...common,
-      version: '1.4.0',
-      date: '2026-09-15T09:00:00Z',
-      revision: 'c'.repeat(40),
-      firstAnalysis: false,
-      files: paymentsFiles(1, true),
-      findings: [...PAYMENTS_BASE, ...PAYMENTS_SECOND, ...PAYMENTS_THIRD],
-      // Outside the new lines (40–58), so the gate's new-code duplication stays as it was.
-      duplications: [
-        {
-          blocks: [
-            { path: 'src/refunds/limits.ts', startLine: 60, endLine: 80 },
-            { path: 'src/refunds/service.ts', startLine: 30, endLine: 50 },
-          ],
-        },
-      ],
-    }),
-  );
+  const paymentsMainReport = report({
+    ...common,
+    version: '1.4.0',
+    date: '2026-09-15T09:00:00Z',
+    revision: 'c'.repeat(40),
+    firstAnalysis: false,
+    files: paymentsFiles(1, true),
+    findings: [...PAYMENTS_BASE, ...PAYMENTS_SECOND, ...PAYMENTS_THIRD],
+    // Outside the new lines (40–58), so the gate's new-code duplication stays as it was.
+    duplications: [
+      {
+        blocks: [
+          { path: 'src/refunds/limits.ts', startLine: 60, endLine: 80 },
+          { path: 'src/refunds/service.ts', startLine: 30, endLine: 50 },
+        ],
+      },
+    ],
+    dependencies: PAYMENTS_DEPENDENCIES,
+  });
+  await upload(base, payments.token, payments.key, paymentsMainReport);
   await upload(
     base,
     payments.token,
@@ -585,6 +647,7 @@ export async function seedDemo(base: string, credentials: SeedCredentials): Prom
       firstAnalysis: false,
       files: paymentsFiles(1, true),
       findings: [...PAYMENTS_BASE, ...PAYMENTS_THIRD],
+      dependencies: PAYMENTS_DEPENDENCIES,
     }),
   );
 
@@ -712,6 +775,7 @@ export async function seedDemo(base: string, credentials: SeedCredentials): Prom
     name: 'ci-main',
     expiresInDays: 90,
   });
+  return { paymentsMainReport };
 }
 
 /**

@@ -193,6 +193,21 @@ describe('IssuePage', () => {
     );
   });
 
+  it('links a location with a path and no line (a lockfile, 6M) to the file without a line', async () => {
+    server.on('GET', `/api/v0/issues/${ID}`, {
+      body: detail({ path: 'package-lock.json', startLine: null, snippet: null }),
+    });
+    const { root } = await render();
+    const file = [...root.querySelectorAll('dl.details-list dt')].find(
+      (dt) => dt.textContent?.trim() === 'File',
+    );
+    const link = file?.nextElementSibling?.querySelector('a');
+    expect(link?.textContent?.trim()).toBe('package-lock.json');
+    expect(link?.getAttribute('href')).toBe(
+      '/projects/p1/code/file?branch=b1&path=package-lock.json',
+    );
+  });
+
   it('links an http(s) rule documentation in a new tab without an opener or referrer', async () => {
     server.on('GET', `/api/v0/issues/${ID}`, {
       body: detail({

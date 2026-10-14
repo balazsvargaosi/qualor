@@ -1,0 +1,270 @@
+<div class="deps-toolbar">
+  <div class="toolbar-field">
+    <label for="deps-branch" class="label" i18n="@@deps.branch">Branch</label>
+    <select id="deps-branch" (change)="setBranch($event)">
+      @for (b of branchOptions(); track b.id) {
+        <option [value]="b.id" [selected]="b.id === branch()?.id">{{ b.title }}</option>
+      }
+    </select>
+  </div>
+  <form role="search" class="deps-search" novalidate (submit)="submitSearch($event)">
+    <label for="deps-search" class="visually-hidden" i18n="@@deps.search.label"
+      >Search packages</label
+    >
+    <span class="search-field">
+      <q-icon name="search" />
+      <input
+        id="deps-search"
+        type="search"
+        [attr.maxlength]="qMax"
+        placeholder="Search packages"
+        i18n-placeholder="@@deps.search.placeholder"
+        [value]="search()"
+        (input)="search.set(inputValue($event))"
+      />
+    </span>
+    <span class="ecosystem-field">
+      <label for="deps-ecosystem" class="visually-hidden" i18n="@@deps.ecosystem.label"
+        >Ecosystem</label
+      >
+      <input
+        id="deps-ecosystem"
+        list="deps-ecosystems"
+        maxlength="32"
+        autocomplete="off"
+        placeholder="Ecosystem"
+        i18n-placeholder="@@deps.ecosystem.placeholder"
+        [value]="ecosystem()"
+        [attr.aria-invalid]="ecosystemError() ? true : null"
+        [attr.aria-describedby]="ecosystemError() ? 'deps-ecosystem-error' : null"
+        (input)="setEcosystem($event)"
+      />
+      <datalist id="deps-ecosystems">
+        @for (e of ecosystems(); track e) {
+          <option [value]="e"></option>
+        }
+      </datalist>
+    </span>
+    <button type="submit" class="btn" i18n="@@deps.search.submit">Search</button>
+    @if (ecosystemError(); as message) {
+      <span id="deps-ecosystem-error" class="field-error" role="alert">{{ message }}</span>
+    }
+  </form>
+</div>
+
+<div class="deps-filters">
+  <div class="toolbar-field">
+    <label for="deps-license" class="label" i18n="@@deps.license">Licence</label>
+    <select id="deps-license" (change)="setLicense($event)">
+      <option value="" [selected]="!filters().license" i18n="@@deps.license.all">
+        All licences
+      </option>
+      @for (l of licenseOptions(); track l.value) {
+        <option [value]="l.value" [selected]="l.value === filters().license">{{ l.label }}</option>
+      }
+    </select>
+  </div>
+  <div class="toolbar-field">
+    <label for="deps-group" class="label" i18n="@@deps.group">Licence group</label>
+    <select id="deps-group" (change)="setGroup($event)">
+      <option value="" [selected]="!filters().group" i18n="@@deps.group.all">All groups</option>
+      @for (g of groups; track g) {
+        <option [value]="g" [selected]="g === filters().group">
+          {{ g | label: 'licenseGroup' }}
+        </option>
+      }
+    </select>
+  </div>
+  <label class="toggle">
+    <input
+      id="deps-unknown"
+      type="checkbox"
+      [checked]="filters().unknown"
+      (change)="setUnknown($event)"
+    />
+    <span i18n="@@deps.unknownOnly">Unknown only</span>
+  </label>
+  <label class="toggle">
+    <input
+      id="deps-direct"
+      type="checkbox"
+      [checked]="filters().direct"
+      (change)="setDirect($event)"
+    />
+    <span i18n="@@deps.directOnly">Direct only</span>
+  </label>
+  @if (verdicts()) {
+    <label class="toggle">
+      <input
+        id="deps-forbidden"
+        type="checkbox"
+        [checked]="filters().forbidden"
+        (change)="setForbidden($event)"
+      />
+      <span i18n="@@deps.forbiddenOnly">Forbidden only</span>
+    </label>
+  }
+</div>
+
+<section class="card panel deps-list" aria-labelledby="deps-heading">
+  <div class="panel-head">
+    <h2 id="deps-heading" i18n="@@deps.heading">Dependencies</h2>
+    @if (current(); as answer) {
+      @if (answer.inventory) {
+        <p class="panel-sub deps-summary">
+          <span i18n="@@deps.summary"
+            >{{ answer.summary.known }} of {{ answer.summary.total }} packages have a known
+            licence</span
+          >&ngsp;·&ngsp;<a routerLink="/docs/dependency-licenses" i18n="@@deps.guideLink"
+            >Which lockfiles Qualor reads</a
+          >
+        </p>
+      }
+    }
+  </div>
+  @if (branchError(); as message) {
+    <p class="alert alert-error panel-alert" role="alert">{{ message }}</p>
+  }
+  @if (loadError(); as message) {
+    <p class="alert alert-error panel-alert" role="alert">{{ message }}</p>
+  }
+  @if (current(); as answer) {
+    @if (!answer.inventory) {
+      <div class="empty-state">
+        <img src="art/empty.webp" alt="" width="900" height="675" />
+        <p i18n="@@deps.noInventory">
+          No dependency inventory yet. Scans with Qualor 0.9 or later record one.
+        </p>
+      </div>
+    } @else {
+      <div class="panel-scroll">
+        <table [attr.aria-busy]="loading()">
+          <caption class="visually-hidden" i18n="@@deps.caption">
+            Dependencies with their licences
+          </caption>
+          <thead>
+            <tr>
+              <th scope="col" i18n="@@deps.col.package">Package</th>
+              <th scope="col" i18n="@@deps.col.version">Version</th>
+              <th scope="col" i18n="@@deps.col.ecosystem">Ecosystem</th>
+              <th scope="col" i18n="@@deps.col.lockfile">Lockfile</th>
+              <th scope="col" i18n="@@deps.col.licenses">Licences</th>
+              <th scope="col" i18n="@@deps.col.direct">Dependency</th>
+              @if (answer.verdicts) {
+                <th scope="col" i18n="@@deps.col.policy">Policy</th>
+              }
+            </tr>
+          </thead>
+          <tbody>
+            @for (row of answer.rows; track $index) {
+              <tr>
+                <th scope="row" class="package">{{ row.name }}</th>
+                <td>
+                  <code>{{ row.version }}</code>
+                </td>
+                <td>{{ row.ecosystem }}</td>
+                <td class="lockfile-cell">
+                  @let f = fileLink(row);
+                  <a
+                    class="lockfile"
+                    [routerLink]="f.commands"
+                    [queryParams]="f.queryParams"
+                    [fragment]="f.fragment"
+                    ><code>{{ row.path }}{{ row.line ? ':' + row.line : '' }}</code></a
+                  >
+                </td>
+                <td>
+                  @if (row.licenses.length > 0) {
+                    <span class="chips">
+                      @for (l of row.licenses; track $index) {
+                        <span class="chip">{{ l }}</span>
+                      }
+                    </span>
+                  } @else {
+                    <span class="badge badge-tag" i18n="@@deps.unknownLicence">Unknown</span>
+                  }
+                </td>
+                <td class="nowrap">
+                  @switch (row.direct) {
+                    @case (true) {
+                      <ng-container i18n="@@deps.direct">Direct</ng-container>
+                    }
+                    @case (false) {
+                      <ng-container i18n="@@deps.transitive">Transitive</ng-container>
+                    }
+                    @default {
+                      <span
+                        class="muted"
+                        aria-label="Not known"
+                        i18n-aria-label="@@deps.directUnknown"
+                        >–</span
+                      >
+                    }
+                  }
+                </td>
+                @if (answer.verdicts) {
+                  <td class="nowrap">
+                    @switch (row.verdict) {
+                      @case ('forbidden') {
+                        <span class="badge badge-failed">{{ verdictLabels.forbidden }}</span>
+                        &ngsp;<a
+                          class="verdict-issues"
+                          [routerLink]="['/projects', projectId(), 'issues']"
+                          [queryParams]="issuesParams(row)"
+                          [attr.aria-label]="issuesLabel(row)"
+                          i18n="@@deps.issuesLink"
+                          >Issues</a
+                        >
+                      }
+                      @case ('allowed') {
+                        <span class="badge badge-passed">{{ verdictLabels.allowed }}</span>
+                      }
+                      @default {
+                        <span class="badge badge-tag">{{ verdictLabels.unknown }}</span>
+                      }
+                    }
+                  </td>
+                }
+              </tr>
+            } @empty {
+              <tr>
+                <td [attr.colspan]="answer.verdicts ? 7 : 6">
+                  <p class="deps-none" i18n="@@deps.none">No package matches.</p>
+                </td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+      @if (pageRange(); as range) {
+        <nav class="panel-foot pager" aria-label="Pages" i18n-aria-label="@@deps.pages">
+          <span class="pager-range" i18n="@@deps.range"
+            >{{ range.first }}–{{ range.last }} of {{ range.total }}</span
+          >
+          @if (range.pages) {
+            <span class="pager-buttons">
+              <button
+                type="button"
+                class="btn"
+                [disabled]="answer.page <= 1"
+                (click)="goTo(answer.page - 1)"
+                i18n="@@deps.previous"
+              >
+                Previous
+              </button>
+              <button
+                type="button"
+                class="btn"
+                [disabled]="!range.more"
+                (click)="goTo(answer.page + 1)"
+                i18n="@@deps.next"
+              >
+                Next
+              </button>
+            </span>
+          }
+        </nav>
+      }
+    }
+  }
+</section>

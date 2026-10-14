@@ -7,7 +7,16 @@ import type {
   PortfolioProjectRow,
 } from '../app/api/ee';
 import type { Me } from '../app/api/types';
+import type {
+  DependencyAnswer,
+  DependencyRow,
+} from '../app/project/dependencies/dependencies.page';
 import { type AutoFix, DEFAULT_AUTO_FIX } from '../app/settings/auto-fix';
+import type {
+  LicenseGroupId,
+  LicensePolicy,
+  OrgLicensePolicy,
+} from '../app/settings/license-policy';
 
 export interface RecordedRequest {
   method: string;
@@ -520,5 +529,201 @@ export class FakeAutoFix {
 
   of(organizationId: string): AutoFix {
     return this.organizations[organizationId] ?? { ...DEFAULT_AUTO_FIX };
+  }
+}
+
+const DEPENDENCIES = /^\/api\/v0\/projects\/([^/]+)\/dependencies$/;
+
+/** An inventory entry (6M §8): a direct npm package under MIT in package-lock.json, by default. */
+export function dependency(overrides: Partial<DependencyRow> = {}): DependencyRow {
+  return {
+    ecosystem: 'npm',
+    path: 'package-lock.json',
+    line: 12,
+    name: 'express',
+    version: '4.19.2',
+    licenses: ['MIT'],
+    direct: true,
+    ...overrides,
+  };
+}
+
+/** A few members of each licence group, enough for the fakes (the server sends the real lists). */
+export const FAKE_LICENSE_GROUPS: OrgLicensePolicy['groups'] = [
+  {
+    id: 'network-copyleft',
+    label: 'Network copyleft',
+    description: 'Copyleft that reaches users over a network.',
+    members: ['AGPL-3.0-only', 'AGPL-3.0-or-later', 'SSPL-1.0'],
+  },
+  {
+    id: 'strong-copyleft',
+    label: 'Strong copyleft',
+    description: 'Copyleft over the whole combined work.',
+    members: ['GPL-2.0-only', 'GPL-2.0-or-later', 'GPL-3.0-only', 'GPL-3.0-or-later'],
+  },
+  {
+    id: 'weak-copyleft',
+    label: 'Weak copyleft',
+    description: 'Copyleft over the licensed files or library only.',
+    members: ['LGPL-2.1-only', 'LGPL-3.0-only', 'MPL-2.0'],
+  },
+  {
+    id: 'non-commercial-or-source-available',
+    label: 'Non-commercial or source-available',
+    description: 'Licences that restrict commercial use or are not open source.',
+    members: ['BUSL-1.1', 'CC-BY-NC-4.0', 'Commons-Clause'],
+  },
+];
+
+/**
+ * The dependencies route (6M §8, `GET /projects/{id}/dependencies`) over in-memory `rows`: the
+ * filters (an exact licence string, a group by {@link FAKE_LICENSE_GROUPS}, the ecosystem, unknown
+ * and direct, a name search, the verdict while `verdicts`), the page, and the summary of every row.
+ * Without `inventory` it answers as a branch no scan has reported an inventory for. A row's
+ * `verdict` is sent only while `verdicts` is on. A test answers the route itself with `server.on`,
+ * which wins.
+ */
+export class FakeDependencies {
+  rows: DependencyRow[];
+  inventory: boolean;
+  verdicts: boolean;
+
+  constructor(
+    server: FakeServer,
+    options: { rows?: DependencyRow[]; inventory?: boolean; verdicts?: boolean } = {},
+  ) {
+    this.rows = options.rows ?? [dependency()];
+    this.inventory = options.inventory ?? true;
+    this.verdicts = options.verdicts ?? false;
+    server.on('GET', DEPENDENCIES, (r) => ({ body: this.answer(r.query) }));
+  }
+
+  answer(query: URLSearchParams): DependencyAnswer {
+    const page = Number(query.get('page') ?? 1);
+    const pageSize = Number(query.get('pageSize') ?? 50);
+    const rows = this.inventory ? this.rows : [];
+    const members = FAKE_LICENSE_GROUPS.find((g) => g.id === query.get('group'))?.members;
+    const q = query.get('q')?.toLowerCase();
+    const verdict = query.get('verdict');
+    const matching = rows.filter(
+      (row) =>
+        (!query.has('license') || row.licenses.includes(query.get('license') ?? '')) &&
+        (!members || row.licenses.some((l) => members.includes(l))) &&
+        (!query.has('ecosystem') || row.ecosystem === query.get('ecosystem')) &&
+        (query.get('unknown') !== 'true' || row.licenses.length === 0) &&
+        (query.get('direct') !== 'true' || row.direct === true) &&
+        (!q || row.name.toLowerCase().includes(q)) &&
+        (!this.verdicts || verdict === null || row.verdict === verdict),
+    );
+    const counts = new Map<string, number>();
+    for (const row of rows) {
+      for (const l of row.licenses) counts.set(l, (counts.get(l) ?? 0) + 1);
+    }
+    const unknown = rows.filter((row) => row.licenses.length === 0).length;
+    return {
+      rows: matching.slice((page - 1) * pageSize, page * pageSize).map((row) => {
+        const { verdict: judged, ...rest } = row;
+        return this.verdicts && judged ? { ...rest, verdict: judged } : rest;
+      }),
+      page,
+      pageSize,
+      total: matching.length,
+      summary: {
+        total: rows.length,
+        known: rows.length - unknown,
+        unknown,
+        byLicense: [...counts]
+          .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+          .slice(0, 20)
+          .map(([license, count]) => ({ license, count })),
+      },
+      inventory: this.inventory,
+      verdicts: this.verdicts,
+    };
+  }
+}
+
+const LICENSE_POLICY = /^\/api\/v0\/organizations\/([^/]+)\/license-policy$/;
+/** The SPDX ids the fake knows, in their canonical spelling (the server sends the whole list). */
+export const FAKE_SPDX_IDS: OrgLicensePolicy['spdxIds'] = {
+  licenses: [
+    'AGPL-3.0-only',
+    'Apache-2.0',
+    'BSD-3-Clause',
+    'GPL-2.0-only',
+    'GPL-2.0-or-later',
+    'GPL-3.0-only',
+    'GPL-3.0-or-later',
+    'ISC',
+    'LGPL-3.0-only',
+    'MIT',
+    'MPL-2.0',
+  ],
+  exceptions: ['Classpath-exception-2.0', 'LLVM-exception'],
+};
+
+/** An entry in its canonical spelling, as far as the fake knows the ids; null for an unknown one. */
+function canonical(entry: string): string | null {
+  const [id = '', exception] = entry.split(/\s+WITH\s+/i);
+  const known = (list: string[], value: string) =>
+    list.find((v) => v.toLowerCase() === value.trim().toLowerCase()) ?? null;
+  const license = known(FAKE_SPDX_IDS.licenses, id);
+  if (exception === undefined) return license;
+  const extra = known(FAKE_SPDX_IDS.exceptions, exception);
+  return license && extra ? `${license} WITH ${extra}` : null;
+}
+
+/**
+ * The organisation licence policy routes (6M §5, `GET`/`PUT /organizations/{id}/license-policy`)
+ * over in-memory policies: `available` is the feature (else PUT is 403 FEATURE_NOT_LICENSED and GET
+ * says `available: false`, the stored policy kept); an id outside {@link FAKE_SPDX_IDS} is 400
+ * INVALID_LICENSE_ID with `details.invalid`. A stored policy has canonical spellings and sorted
+ * lists, as the server stores it. A test answers a route itself with `server.on`, which wins.
+ */
+export class FakeLicensePolicy {
+  available: boolean;
+  readonly policies: Record<string, LicensePolicy | null>;
+
+  constructor(
+    server: FakeServer,
+    options: { available?: boolean; policies?: Record<string, LicensePolicy | null> } = {},
+  ) {
+    this.available = options.available ?? true;
+    this.policies = { ...options.policies };
+    server.on('GET', LICENSE_POLICY, (r) => {
+      const body: OrgLicensePolicy = {
+        available: this.available,
+        policy: this.policies[LICENSE_POLICY.exec(r.path)?.[1] ?? ''] ?? null,
+        groups: FAKE_LICENSE_GROUPS,
+        spdxIds: FAKE_SPDX_IDS,
+      };
+      return { body };
+    });
+    server.on('PUT', LICENSE_POLICY, (r) => {
+      if (!this.available) return { status: 403, body: problem(403, 'FEATURE_NOT_LICENSED') };
+      const id = LICENSE_POLICY.exec(r.path)?.[1] ?? '';
+      const { policy } = r.body as { policy: LicensePolicy | null };
+      if (policy === null) {
+        this.policies[id] = null;
+        return { body: { available: true, policy: null } };
+      }
+      const invalid = [...policy.forbidden, ...policy.allowed].filter((e) => canonical(e) === null);
+      if (invalid.length > 0) {
+        return {
+          status: 400,
+          body: { ...problem(400, 'INVALID_LICENSE_ID'), details: { invalid } },
+        };
+      }
+      const sorted = (list: string[]) => [...new Set(list.map((e) => canonical(e) ?? e))].sort();
+      const stored: LicensePolicy = {
+        ...policy,
+        forbiddenGroups: [...new Set<LicenseGroupId>(policy.forbiddenGroups)].sort(),
+        forbidden: sorted(policy.forbidden),
+        allowed: sorted(policy.allowed),
+      };
+      this.policies[id] = stored;
+      return { body: { available: true, policy: stored } };
+    });
   }
 }

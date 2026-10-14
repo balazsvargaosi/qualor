@@ -102,6 +102,17 @@
               >
             </li>
           }
+          @if (licensePolicy()) {
+            <li>
+              <a
+                routerLink="license-policy"
+                routerLinkActive="active"
+                ariaCurrentWhenActive="page"
+                i18n="@@settings.tab.licensePolicy"
+                >Licence policy</a
+              >
+            </li>
+          }
           @if (auditLog()) {
             <li>
               <a

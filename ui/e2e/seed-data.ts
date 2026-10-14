@@ -41,6 +41,25 @@ export const LICENSE_KEY_FILE = fileURLToPath(
 );
 
 /**
+ * 6M: the last report of Payments API's main branch, with its dependency inventory, which
+ * `server/scripts/e2e/serve.ts` writes here (playwright.config.ts passes the path) so the Business
+ * test can ingest it again after setting a licence policy. Removed when the server stops.
+ */
+export const PAYMENTS_REPORT_FILE = fileURLToPath(
+  new URL('../../.tmp/playwright/e2e-payments-report.json', import.meta.url),
+);
+/**
+ * 6M: Payments API's dependency inventory (seed.ts PAYMENTS_DEPENDENCIES): seven entries, six with
+ * a known licence; `ledger-gpl` is strong copyleft.
+ */
+export const DEPENDENCIES = {
+  known: 6,
+  total: 7,
+  strongCopyleft: { name: 'ledger-gpl', version: '2.1.0', license: 'GPL-3.0-only' },
+  unknown: { name: 'left-pad-internal', path: 'web/pnpm-lock.yaml' },
+};
+
+/**
  * Plan 4C (rbac-audit.md §17): the licensed e2e server `server/scripts/e2e/serve.ts` starts next
  * to the community one, with the Enterprise plan's features (`ENTERPRISE_FEATURES`, plan 5D:
  * `audit-log.stream` and `sso.multi` among them), its own database and its own admin session

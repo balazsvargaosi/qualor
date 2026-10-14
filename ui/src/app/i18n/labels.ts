@@ -19,7 +19,9 @@ export type LabelKind =
   | 'auditActor'
   | 'auditBreak'
   | 'ssoProtocol'
-  | 'engine';
+  | 'engine'
+  | 'licenseGroup'
+  | 'verdict';
 
 const LABELS: Record<LabelKind, Record<string, string>> = {
   severity: {
@@ -33,6 +35,7 @@ const LABELS: Record<LabelKind, Record<string, string>> = {
     security: $localize`:@@label.quality.security:Security`,
     reliability: $localize`:@@label.quality.reliability:Reliability`,
     maintainability: $localize`:@@label.quality.maintainability:Maintainability`,
+    licensing: $localize`:@@label.quality.licensing:Licensing`,
   },
   kind: {
     issue: $localize`:@@label.kind.issue:Issue`,
@@ -115,6 +118,19 @@ const LABELS: Record<LabelKind, Record<string, string>> = {
   engine: {
     qualor: $localize`:@@label.engine.qualor:Qualor`,
   },
+  /** Qualor's licence groups (6M §3); the server sends their descriptions and members. */
+  licenseGroup: {
+    'network-copyleft': $localize`:@@label.licenseGroup.networkCopyleft:Network copyleft`,
+    'strong-copyleft': $localize`:@@label.licenseGroup.strongCopyleft:Strong copyleft`,
+    'weak-copyleft': $localize`:@@label.licenseGroup.weakCopyleft:Weak copyleft`,
+    'non-commercial-or-source-available': $localize`:@@label.licenseGroup.nonCommercial:Non-commercial or source-available`,
+  },
+  /** The organisation licence policy's verdict on a dependency (6M §8). */
+  verdict: {
+    allowed: $localize`:@@label.verdict.allowed:Allowed`,
+    forbidden: $localize`:@@label.verdict.forbidden:Forbidden`,
+    unknown: $localize`:@@label.verdict.unknown:Unknown`,
+  },
   metric: {
     files: $localize`:@@metric.files:Files`,
     lines: $localize`:@@metric.lines:Lines`,
@@ -134,6 +150,9 @@ const LABELS: Record<LabelKind, Record<string, string>> = {
     security_issues: $localize`:@@metric.securityIssues:Security issues`,
     reliability_issues: $localize`:@@metric.reliabilityIssues:Reliability issues`,
     maintainability_issues: $localize`:@@metric.maintainabilityIssues:Maintainability issues`,
+    licensing_issues: $localize`:@@metric.licensingIssues:Licensing issues`,
+    forbidden_licenses: $localize`:@@metric.forbiddenLicenses:Forbidden licences`,
+    unknown_licenses_ratio: $localize`:@@metric.unknownLicensesRatio:Unknown licences`,
     accepted_issues: $localize`:@@metric.acceptedIssues:Won't fix issues`,
     false_positive_issues: $localize`:@@metric.falsePositiveIssues:False positive issues`,
     security_rating: $localize`:@@metric.securityRating:Security rating`,

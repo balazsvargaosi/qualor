@@ -24,6 +24,12 @@ export const projectRoutes: Routes = [
     loadComponent: () => import('../issues/issue.page').then((m) => m.IssuePage),
   },
   {
+    // 6M §8: the branch's dependency inventory and, with a licence policy, its verdicts.
+    path: 'dependencies',
+    title: $localize`:@@title.dependencies:Dependencies`,
+    loadComponent: () => import('./dependencies/dependencies.page').then((m) => m.DependenciesPage),
+  },
+  {
     path: 'code',
     title: $localize`:@@title.code:Code`,
     loadComponent: () => import('./code/code.page').then((m) => m.CodePage),

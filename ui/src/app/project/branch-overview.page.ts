@@ -304,16 +304,22 @@ export class BranchOverviewPage {
           tone: s,
         })),
   );
-  protected readonly qualityItems = computed<DistributionItem[] | null>(() =>
-    !this.measures.hasValue()
-      ? null
-      : QUALITIES.map((q) => ({
-          key: q,
-          label: label('quality', q),
-          value: this.overallOf(`${q}_issues`) ?? 0,
-          tone: 'accent',
-        })),
-  );
+  /**
+   * The software qualities. Licensing (6M §7) only once the branch has licence measures: some
+   * licensing issues, or the `forbidden_licenses` count that every analysis of a server that judges
+   * licences measures; an analysis of an older server shows the three others alone.
+   */
+  protected readonly qualityItems = computed<DistributionItem[] | null>(() => {
+    if (!this.measures.hasValue()) return null;
+    const licensing =
+      (this.overallOf('licensing_issues') ?? 0) > 0 || this.byMetric().has('forbidden_licenses');
+    return [...QUALITIES, ...(licensing ? (['licensing'] as const) : [])].map((q) => ({
+      key: q,
+      label: label('quality', q),
+      value: this.overallOf(`${q}_issues`) ?? 0,
+      tone: 'accent',
+    }));
+  });
 
   protected readonly view = signal<HistoryView>('severity');
   protected readonly views: { id: HistoryView; label: string }[] = [
