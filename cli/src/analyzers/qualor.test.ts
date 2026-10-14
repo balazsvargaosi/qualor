@@ -1,13 +1,15 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import type { QualorManifest } from '@qualor/shared';
+import { engineMapping, type QualorManifest, type SarifLog } from '@qualor/shared';
 import { describe, expect, it } from 'vitest';
 import { expectedKeys, fakeContext, findingKeys, normalizeRecorded } from '../../test/analyzers';
 import { FIXTURES_DIR } from '../../test/fixtures';
-import { useTempDirs } from '../../test/tmp';
+import { engineSarif, writeEnginePack } from '../../test/taint';
+import { useTempDirs, writeTree } from '../../test/tmp';
 import { MAX_ANALYZED_BYTES, type ScopeFile } from '../discovery/discover';
 import { silentLogger } from '../log';
+import { fileLines, normalizeCaptures } from './normalize';
 import { deadProxyEnv } from './offline';
 import {
   createQualorAnalyzer,
@@ -23,7 +25,7 @@ import {
   OPENGREP_WARM_ARGS,
   opengrepCacheDir,
 } from './semgrep';
-import type { AnalyzerContext } from './types';
+import type { AnalyzerContext, TaintRun } from './types';
 
 const tmp = useTempDirs();
 const OPENGREP = '/opt/qualor/bin/opengrep';
@@ -633,5 +635,228 @@ describe('qualor SARIF through normalisation (synthetic, in the shape OpenGrep 1
   it('without the transform, nothing would be right: the guard against a missing transform', () => {
     const out = normalizeRecorded(sarif(), qualorAnalyzer, 'qualor-security');
     expect(findingKeys(out.findings)).not.toEqual(expectedKeys('qualor-security', 'qualor'));
+  });
+});
+
+describe("qualor with Qualor's Roslyn taint engine under qualor dotnet end (6B-C# R, R-4)", () => {
+  const merged = {
+    sarif: { version: '2.1.0', runs: [] },
+    version: '5.9.0',
+    results: 0,
+    duplicates: 0,
+  };
+  const C_SHARP = [
+    'class A {',
+    '  void Get(string q) {',
+    '    var sql = "SELECT " + q;',
+    '    Run(sql);',
+    '  }',
+    '}',
+    '',
+  ].join('\n');
+
+  /** A checkout with one Python and two C# files, and a pack with two C# rules. */
+  function setup(o: { python?: boolean } = {}) {
+    const root = tmp();
+    writeTree(root, { 'src/A.cs': C_SHARP, 'src/B.cs': C_SHARP, 'app.py': 'print(1)\n' });
+    const files = [
+      ...(o.python === false ? [] : [scopeFile(root, 'app.py', 'python')]),
+      scopeFile(root, 'src/A.cs', 'csharp'),
+      scopeFile(root, 'src/B.cs', 'csharp'),
+    ];
+    const pack = writeEnginePack(tmp(), {
+      ids: ['csharp/sql-injection', 'csharp/tls-verification-disabled'],
+      severity: 'blocker',
+    });
+    return { root, files, pack };
+  }
+
+  const ok = (root: string): TaintRun => ({
+    kind: 'ok',
+    sarif: engineSarif(root, [
+      {
+        rule: 'csharp.sql-injection',
+        uri: 'src/A.cs',
+        line: 4,
+        steps: [
+          ['src/A.cs', 2, 'request data: q'],
+          ['src/A.cs', 3, 'string concatenation'],
+          ['src/A.cs', 4, 'sink: Run'],
+        ],
+        others: [['src/B.cs', 2]],
+      },
+    ]) as SarifLog,
+  });
+
+  function withTaint(
+    root: string,
+    files: ScopeFile[],
+    taint: TaintRun | null,
+    o: { binaries?: Record<string, string> } = {},
+  ): AnalyzerContext {
+    return {
+      ...context(root, { files, ...(o.binaries !== undefined && { binaries: o.binaries }) }),
+      dotnet: { kind: 'collected', merged, taint },
+    };
+  }
+
+  function normalizeIn(root: string, sarif: unknown) {
+    return normalizeCaptures(
+      [
+        {
+          engineId: 'qualor',
+          kind: 'builtin',
+          status: 'ok',
+          reason: null,
+          durationMs: 1,
+          version: null,
+          required: false,
+          sarif,
+          mapping: engineMapping('qualor')!,
+          ruleLanguages: QUALOR_LANGUAGES,
+        },
+      ],
+      {
+        repoRoot: root,
+        readLines: fileLines(root),
+        knownPaths: new Set(['app.py', 'src/A.cs', 'src/B.cs']),
+        log: silentLogger,
+      },
+    );
+  }
+
+  /** OpenGrep's SARIF for the pack, with a C# result the engine replaces. */
+  const opengrepSarif = () => ({
+    version: '2.1.0',
+    runs: [
+      {
+        tool: {
+          driver: {
+            name: 'Opengrep OSS',
+            semanticVersion: '1.30.0',
+            rules: [{ id: 'csharp.sql-injection', properties: { tags: ['CWE-89', 'security'] } }],
+          },
+        },
+        results: [
+          {
+            ruleId: 'csharp.sql-injection',
+            message: { text: 'OpenGrep says so' },
+            locations: [
+              {
+                physicalLocation: {
+                  artifactLocation: { uri: 'src/B.cs', uriBaseId: '%SRCROOT%' },
+                  region: { startLine: 4 },
+                },
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+
+  const at = (p: string, line: number, message: string) => ({
+    path: p,
+    startLine: line,
+    startColumn: 1,
+    endLine: line,
+    endColumn: 1,
+    message,
+  });
+
+  it('does not pass .cs files to OpenGrep, and adds the engine findings with the manifest kind and severity and the flow as related locations', async () => {
+    const { root, files, pack } = setup();
+    const prep = await createQualorAnalyzer({ defaultDir: pack }).prepare(
+      withTaint(root, files, ok(root)),
+    );
+    if (!('run' in prep) || prep.run.transform === undefined) throw new Error(JSON.stringify(prep));
+    expect(prep.run.args.slice(prep.run.args.indexOf('--') + 1)).toEqual(['app.py']);
+    expect(prep.run.warnings).toBeUndefined();
+    expect(prep.run.okExitCodes).toEqual([0]);
+
+    const out = normalizeIn(root, prep.run.transform(opengrepSarif(), ''));
+    expect(out.warnings).toEqual([]);
+    // OpenGrep's own C# result (were it to select the .cs files itself) is dropped.
+    expect(findingKeys(out.findings)).toEqual(['qualor:csharp/sql-injection src/A.cs:4 [blocker]']);
+    // The flow from source to sink (the sink itself is the primary location), then the other sources.
+    expect(out.findings[0]?.secondaryLocations).toEqual([
+      at('src/A.cs', 2, 'request data: q'),
+      at('src/A.cs', 3, 'string concatenation'),
+      at('src/B.cs', 2, 'other request data reaching the same sink'),
+    ]);
+    expect(out.engines[0]?.rules.find((r) => r.id === 'csharp/sql-injection')).toMatchObject({
+      kind: 'issue',
+      defaultSeverity: 'blocker',
+      quality: 'security',
+      cwe: [89],
+    });
+    // The OpenGrep run stays first: the engine's version is OpenGrep's with the pack.
+    expect(out.engines[0]?.version).toBe('1.30.0 + qualor-rules 2026.10.4');
+  });
+
+  it('needs no OpenGrep when only C# files are in scope: the engine findings are the run', async () => {
+    const { root, files, pack } = setup({ python: false });
+    const prep = await createQualorAnalyzer({ defaultDir: pack }).prepare(
+      withTaint(root, files, ok(root), { binaries: {} }),
+    );
+    if (!('collected' in prep)) throw new Error(JSON.stringify(prep));
+    expect(prep.collected.version).toBe('qualor-taint 2026.10.4 + qualor-rules 2026.10.4');
+    const out = normalizeIn(root, prep.collected.sarif);
+    expect(findingKeys(out.findings)).toEqual(['qualor:csharp/sql-injection src/A.cs:4 [blocker]']);
+    expect(out.findings[0]?.secondaryLocations).toHaveLength(3);
+    expect(out.engines[0]?.rules.find((r) => r.id === 'csharp/sql-injection')).toMatchObject({
+      kind: 'issue',
+      defaultSeverity: 'blocker',
+      cwe: [89],
+      helpUri:
+        'https://github.com/qualor-dev/qualor-rules/blob/main/docs/rules/csharp/sql-injection.md',
+    });
+  });
+
+  it('on a fallback runs OpenGrep on the .cs files as without the engine, and the report says why (Review Focus 3 and 4)', async () => {
+    const { root, files, pack } = setup();
+    const analyzer = createQualorAnalyzer({ defaultDir: pack });
+    const plain = await analyzer.prepare(context(root, { files }));
+    if (!('run' in plain)) throw new Error(JSON.stringify(plain));
+    const reasons = [
+      'no-engine',
+      'engine-mismatch',
+      'no-inputs',
+      'budget',
+      'crash',
+      'dotnet-missing',
+    ] as const;
+    for (const reason of reasons) {
+      const prep = await analyzer.prepare(
+        withTaint(root, files, { kind: 'fallback', reason, detail: 'stderr text, never reported' }),
+      );
+      if (!('run' in prep)) throw new Error(JSON.stringify(prep));
+      const { warnings, ...run } = prep.run;
+      // Exactly the run without the engine: the same files and exit codes.
+      expect({ ...run, transform: null }, reason).toEqual({ ...plain.run, transform: null });
+      expect(run.args, reason).toContain('src/A.cs');
+      expect(warnings, reason).toEqual([
+        {
+          code: 'TAINT_ENGINE_FALLBACK',
+          message: expect.stringMatching(
+            new RegExp(
+              `^Qualor's Roslyn taint engine did not run \\(${reason}: [^)]+\\); the OpenGrep C# rules analysed the C# files$`,
+            ),
+          ) as unknown,
+          count: 1,
+        },
+      ]);
+      expect(JSON.stringify(warnings)).not.toContain('stderr text');
+    }
+  });
+
+  it('runs as in a plain scan when the engine was not attempted', async () => {
+    const { root, files, pack } = setup();
+    const prep = await createQualorAnalyzer({ defaultDir: pack }).prepare(
+      withTaint(root, files, null),
+    );
+    if (!('run' in prep)) throw new Error(JSON.stringify(prep));
+    expect(prep.run.args).toContain('src/A.cs');
+    expect(prep.run.warnings).toBeUndefined();
   });
 });

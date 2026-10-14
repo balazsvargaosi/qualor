@@ -162,6 +162,8 @@ The server's variables (such as `QUALOR_PUBLIC_URL`, `QUALOR_SCM_INTERNAL_HOSTS`
 | `QUALOR_RULES_DIR` | directory of Qualor's security rules (default `/opt/qualor/rules/qualor`, where the `qualor/scanner` image installs the rules); absolute and outside the checkout |
 | `QUALOR_RUBOCOP_DIR` | directory of the RuboCop pass (default `/opt/qualor/rubocop`, in the `qualor/scanner` image); absolute and outside the checkout |
 | `QUALOR_DOTNET_ANALYZERS` | directory of the bundled Roslyn analyzer DLLs (set in `qualor/scanner-dotnet`) |
+| `QUALOR_TAINT_TIME_LIMIT` | time budget of Qualor's Roslyn taint engine in `qualor dotnet end`, in seconds (default `600`) |
+| `QUALOR_TAINT_MEMORY_LIMIT` | memory budget of Qualor's Roslyn taint engine in `qualor dotnet end`, in megabytes (default `4096`) |
 | `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` | a proxy between the runner and the server (`http://` proxies) |
 
 `SEMGREP_*` and `OPENGREP_*` variables are not passed to OpenGrep or Semgrep, by the `semgrep` and

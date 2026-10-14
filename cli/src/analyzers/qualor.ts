@@ -8,7 +8,9 @@ import {
   qualorRuleHelpUri,
   qualorRuleId,
   type Language,
+  type NormalizeWarning,
   type QualorManifest,
+  type SarifLog,
 } from '@qualor/shared';
 import { MAX_ANALYZED_BYTES } from '../discovery/discover';
 import { isInside } from './binary';
@@ -22,7 +24,7 @@ import {
   OPENGREP_GROUP,
   warmOpengrep,
 } from './semgrep';
-import type { Analyzer, AnalyzerContext, Preparation } from './types';
+import type { Analyzer, AnalyzerContext, Preparation, TaintFallbackReason } from './types';
 
 /** Where the qualor/scanner image installs Qualor's security rules (install-qualor-rules.sh). */
 export const DEFAULT_QUALOR_RULES_DIR = '/opt/qualor/rules/qualor';
@@ -238,32 +240,173 @@ function opengrepVersion(output: unknown): string | null {
     : null;
 }
 
+/**
+ * config.md §6: the pack in QUALOR_RULES_DIR, else the image's, checked against its manifest; or
+ * why the qualor engine skips (the image's pack is not there) or cannot run. `env` is the
+ * analyzer's (or, in `qualor dotnet end`, the CLI's) environment.
+ */
+export function locateQualorPack(
+  root: string,
+  env: Readonly<Record<string, string | undefined>>,
+  defaultDir: string = DEFAULT_QUALOR_RULES_DIR,
+): QualorPack | { skip: string } | { unavailable: string } {
+  const fromEnv = env['QUALOR_RULES_DIR'];
+  const dir = fromEnv || defaultDir;
+  if (!path.isAbsolute(dir) || isInside(root, dir)) {
+    return { unavailable: 'QUALOR_RULES_DIR must be an absolute path outside the repository' };
+  }
+  // Ruling G6: the image's pack missing on a plain host is a skip; a named directory that does
+  // not exist is a configuration problem.
+  if (!existsSync(dir)) {
+    return fromEnv
+      ? { unavailable: 'QUALOR_RULES_DIR does not exist' }
+      : { skip: QUALOR_RULES_NOT_INSTALLED };
+  }
+  const pack = loadQualorPack(dir);
+  return 'problem' in pack ? { unavailable: pack.problem } : pack;
+}
+
+/** The report warning of R-4 when the taint engine did not replace the OpenGrep C# rules. */
+export const TAINT_ENGINE_FALLBACK = 'TAINT_ENGINE_FALLBACK';
+
+/**
+ * Fixed texts per reason: the engine's own output (its stderr, the files it names) goes to the
+ * log only, never into the report (config.md §6).
+ */
+const FALLBACK_TEXT: Record<TaintFallbackReason, string> = {
+  'no-engine': 'the rules pack has no Roslyn taint engine',
+  'engine-mismatch': 'its files do not match the rules pack manifest',
+  'no-inputs': 'the build recorded no compiler inputs',
+  budget: 'the analysis did not complete within its time or memory budget',
+  crash: 'the engine failed',
+  'dotnet-missing': 'dotnet is not installed',
+};
+
+/** R-4: the report warning naming why the OpenGrep C# rules ran in the engine's place. */
+export function taintFallbackWarning(reason: TaintFallbackReason): NormalizeWarning {
+  return {
+    code: TAINT_ENGINE_FALLBACK,
+    message: `Qualor's Roslyn taint engine did not run (${reason}: ${FALLBACK_TEXT[reason]}); the OpenGrep C# rules analysed the C# files`,
+    count: 1,
+  };
+}
+
+/** Two SARIF locations on the same file and line. */
+function sameLine(a: unknown, b: unknown): boolean {
+  const key = (l: unknown) => {
+    const physical = isObject(l) ? l['physicalLocation'] : undefined;
+    const artifact = isObject(physical) ? physical['artifactLocation'] : undefined;
+    const region = isObject(physical) ? physical['region'] : undefined;
+    return JSON.stringify([
+      isObject(artifact) ? artifact['uri'] : null,
+      isObject(artifact) ? artifact['uriBaseId'] : null,
+      isObject(region) ? region['startLine'] : null,
+    ]);
+  };
+  return key(a) === key(b);
+}
+
+/**
+ * Spec §4.2: the engine's path from source to sink (`codeFlows[].threadFlows[].locations[]
+ * .location`, SARIF §3.38) becomes the result's related locations, ahead of the other sources it
+ * already lists there; the step on the sink's own line is the primary location already.
+ */
+function flowAsRelated(result: Record<string, unknown>): void {
+  const primary: unknown = Array.isArray(result['locations']) ? result['locations'][0] : undefined;
+  const steps: unknown[] = [];
+  for (const flow of Array.isArray(result['codeFlows']) ? result['codeFlows'] : []) {
+    const threads = isObject(flow) ? flow['threadFlows'] : undefined;
+    for (const thread of Array.isArray(threads) ? threads : []) {
+      const locations = isObject(thread) ? thread['locations'] : undefined;
+      for (const step of Array.isArray(locations) ? locations : []) {
+        const location = isObject(step) ? step['location'] : undefined;
+        if (isObject(location) && !sameLine(location, primary)) steps.push(location);
+      }
+    }
+  }
+  if (steps.length === 0) return;
+  const related: unknown[] = Array.isArray(result['relatedLocations'])
+    ? result['relatedLocations']
+    : [];
+  result['relatedLocations'] = [...steps, ...related];
+}
+
+/** The taint engine's SARIF made Qualor's, and the engine version it names. */
+interface TaintEngineLog {
+  sarif: Record<string, unknown>;
+  version: string;
+}
+
+/**
+ * 6B-C# R: the taint engine's SARIF made Qualor's, as OpenGrep's is (`withQualorRules`: ids
+ * `csharp/<name>`, title, kind and severity from the manifest), with the manifest's CWE as the
+ * rules' tags, the flows as related locations and a version naming the engine and the pack.
+ * Works on a copy: `qualor dotnet end`'s run stays as it was.
+ */
+function taintEngineLog(log: SarifLog, manifest: QualorManifest): TaintEngineLog {
+  const sarif = structuredClone(log) as Record<string, unknown>;
+  withQualorRules(sarif, manifest);
+  const byId = new Map(manifest.rules.map((r) => [r.id, r]));
+  const version = `qualor-taint ${manifest.dotnetEngine?.version ?? 'unknown'} + qualor-rules ${manifest.version}`;
+  for (const run of Array.isArray(sarif['runs']) ? sarif['runs'] : []) {
+    if (!isObject(run)) continue;
+    const tool = run['tool'];
+    const driver = isObject(tool) ? tool['driver'] : undefined;
+    if (isObject(driver)) {
+      driver['version'] = version;
+      for (const rule of Array.isArray(driver['rules']) ? driver['rules'] : []) {
+        if (!isObject(rule) || typeof rule['id'] !== 'string') continue;
+        const entry = byId.get(rule['id']);
+        const properties = isObject(rule['properties']) ? rule['properties'] : {};
+        // The CWE as OpenGrep's rules carry it (their tags), for the report's `cwe`.
+        if (entry !== undefined && !Array.isArray(properties['tags'])) {
+          rule['properties'] = { ...properties, tags: [...entry.cwe, 'security'] };
+        }
+      }
+    }
+    for (const result of Array.isArray(run['results']) ? run['results'] : []) {
+      if (isObject(result)) flowAsRelated(result);
+    }
+  }
+  return { sarif, version };
+}
+
+/**
+ * R-4 in a scan with other files too: OpenGrep's C# results are dropped (it selects the files
+ * itself when they do not fit one command line, .cs files among them) and the engine's runs
+ * follow OpenGrep's, so the engine version stays OpenGrep's with the pack.
+ */
+function withTaintEngineRuns(output: unknown, engine: Record<string, unknown>): void {
+  if (!isObject(output) || !Array.isArray(output['runs'])) return;
+  for (const run of output['runs']) {
+    if (!isObject(run) || !Array.isArray(run['results'])) continue;
+    run['results'] = run['results'].filter(
+      (r) => !(isObject(r) && typeof r['ruleId'] === 'string' && r['ruleId'].startsWith('csharp/')),
+    );
+  }
+  const runs: unknown[] = Array.isArray(engine['runs']) ? engine['runs'] : [];
+  output['runs'].push(...runs);
+}
+
 export function createQualorAnalyzer(
   o: { defaultDir?: string; maxTargetArgBytes?: number } = {},
 ): Analyzer {
   const defaultDir = o.defaultDir ?? DEFAULT_QUALOR_RULES_DIR;
   const budget = o.maxTargetArgBytes ?? MAX_TARGET_ARG_BYTES;
   const prepare = (ctx: AnalyzerContext): Preparation => {
-    const fromEnv = ctx.env['QUALOR_RULES_DIR'];
-    const dir = fromEnv || defaultDir;
-    if (!path.isAbsolute(dir) || isInside(ctx.root, dir)) {
-      return { unavailable: 'QUALOR_RULES_DIR must be an absolute path outside the repository' };
-    }
-    // Ruling G6: the image's pack missing on a plain host is a skip; a named directory that does
-    // not exist is a configuration problem.
-    if (!existsSync(dir)) {
-      return fromEnv
-        ? { unavailable: 'QUALOR_RULES_DIR does not exist' }
-        : { skip: QUALOR_RULES_NOT_INSTALLED };
-    }
-    const pack = loadQualorPack(dir);
-    if ('problem' in pack) return { unavailable: pack.problem };
-    const files = ctx.files
-      .filter((f) => QUALOR_LANGUAGES.includes(f.language))
-      .map((f) => path.relative(ctx.root, f.absPath).split(path.sep).join('/'));
-    if (files.length === 0) {
+    const pack = locateQualorPack(ctx.root, ctx.env, defaultDir);
+    if (!('manifest' in pack)) return pack;
+    const inScope = ctx.files.filter((f) => QUALOR_LANGUAGES.includes(f.language));
+    if (inScope.length === 0) {
       return { skip: 'no JavaScript, TypeScript, Python, Java, Go or C# files in scope' };
     }
+    // R-4: the taint engine's complete run replaces the OpenGrep C# rules for the .cs files.
+    const taint = ctx.dotnet?.kind === 'collected' ? ctx.dotnet.taint : null;
+    const engine = taint?.kind === 'ok' ? taintEngineLog(taint.sarif, pack.manifest) : null;
+    const files = inScope
+      .filter((f) => engine === null || f.language !== 'csharp')
+      .map((f) => path.relative(ctx.root, f.absPath).split(path.sep).join('/'));
+    if (engine !== null && files.length === 0) return { collected: engine };
     // Plan 6B-1: only the OpenGrep the pack is tested with, never Semgrep.
     const opengrep = ctx.resolveBinary('opengrep');
     if (opengrep === null) return { unavailable: 'OpenGrep is not installed' };
@@ -309,15 +452,17 @@ export function createQualorAnalyzer(
         okExitCodes: [0],
         version: null,
         transform: (output: unknown) => {
-          const engine = opengrepVersion(output);
-          if (engine !== null && engine !== pack.manifest.opengrep) {
+          const ranWith = opengrepVersion(output);
+          if (ranWith !== null && ranWith !== pack.manifest.opengrep) {
             ctx.log.warn(
-              `qualor: the rules pack ${pack.manifest.version} is tested with OpenGrep ${pack.manifest.opengrep}, not ${engine}`,
+              `qualor: the rules pack ${pack.manifest.version} is tested with OpenGrep ${pack.manifest.opengrep}, not ${ranWith}`,
             );
           }
           withQualorRules(output, pack.manifest);
+          if (engine !== null) withTaintEngineRuns(output, engine.sarif);
           return output;
         },
+        ...(taint?.kind === 'fallback' && { warnings: [taintFallbackWarning(taint.reason)] }),
       },
     };
   };

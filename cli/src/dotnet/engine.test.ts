@@ -1,0 +1,353 @@
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { engineSarif, writeEnginePack } from '../../test/taint';
+import { useTempDirs, writeTree } from '../../test/tmp';
+import { loadQualorPack, type QualorPack } from '../analyzers/qualor';
+import type { ProcessResult, ProcessSpec } from '../analyzers/process';
+import { silentLogger } from '../log';
+import {
+  runTaintEngine,
+  TAINT_MEMORY_LIMIT_MB,
+  TAINT_TIME_LIMIT_S,
+  taintBudgets,
+  type TaintEngineOptions,
+} from './engine';
+
+const tmp = useTempDirs();
+const DOTNET = '/usr/share/dotnet/dotnet';
+
+function pack(o: Parameters<typeof writeEnginePack>[1] = {}): QualorPack {
+  const loaded = loadQualorPack(writeEnginePack(tmp(), o));
+  if ('problem' in loaded) throw new Error(loaded.problem);
+  return loaded;
+}
+
+/** A checkout with a session the hook filled: one project's compiler inputs. */
+function checkout(inputs = true): { root: string; sessionDir: string } {
+  const root = tmp();
+  const sessionDir = path.join(root, '.qualor', 'dotnet');
+  mkdirSync(path.join(sessionDir, 'compilations'), { recursive: true });
+  if (inputs) {
+    writeFileSync(path.join(sessionDir, 'compilations', 'a1b2.txt'), 'format=1\n');
+  }
+  return { root, sessionDir };
+}
+
+interface Fake {
+  calls: ProcessSpec[];
+  run: (spec: ProcessSpec) => Promise<ProcessResult>;
+}
+
+/** A fake engine process: `act` gets the spec and the --sarif path and answers the result. */
+function fake(
+  act: (spec: ProcessSpec, sarif: string) => Partial<ProcessResult> = () => ({}),
+): Fake {
+  const calls: ProcessSpec[] = [];
+  return {
+    calls,
+    run: (spec) => {
+      calls.push(spec);
+      const sarif = spec.args[spec.args.indexOf('--sarif') + 1] ?? '';
+      return Promise.resolve({
+        exitCode: 0,
+        timedOut: false,
+        durationMs: 1,
+        stdout: '',
+        stderr: '',
+        ...act(spec, sarif),
+      });
+    },
+  };
+}
+
+function options(
+  o: Partial<TaintEngineOptions> & { root: string; sessionDir: string },
+): TaintEngineOptions {
+  return {
+    pack: pack(),
+    env: { PATH: '/usr/bin' },
+    timeLimitS: TAINT_TIME_LIMIT_S,
+    memoryLimitMb: TAINT_MEMORY_LIMIT_MB,
+    log: silentLogger,
+    resolveDotnet: () => DOTNET,
+    ...o,
+  };
+}
+
+describe('runTaintEngine (6B-C# R, R-4)', () => {
+  it('falls back without running anything for no pack or a pack without the engine (Review Focus 4)', async () => {
+    const { root, sessionDir } = checkout();
+    const engine = fake();
+    expect(
+      await runTaintEngine(options({ root, sessionDir, pack: null, run: engine.run })),
+    ).toEqual({
+      kind: 'fallback',
+      reason: 'no-engine',
+      detail: 'no valid rules pack',
+    });
+    expect(
+      await runTaintEngine(
+        options({ root, sessionDir, pack: pack({ engine: false }), run: engine.run }),
+      ),
+    ).toEqual({
+      kind: 'fallback',
+      reason: 'no-engine',
+      detail: 'the rules pack 2026.10.4 has no Roslyn taint engine',
+    });
+    expect(engine.calls).toEqual([]);
+  });
+
+  it('never runs an engine whose files differ from the manifest, are missing or are not alone (Review Focus 4)', async () => {
+    const { root, sessionDir } = checkout();
+    const cases: [string, (dir: string) => void, string][] = [
+      [
+        'a changed DLL',
+        (d) => writeFileSync(path.join(d, 'dotnet/engine/Qualor.Taint.Cli.dll'), 'patched\n'),
+        'the engine file dotnet/engine/Qualor.Taint.Cli.dll does not match its manifest checksum',
+      ],
+      [
+        'a changed model',
+        (d) => writeFileSync(path.join(d, 'dotnet/models/csharp/sources.yml'), 'sources: [x]\n'),
+        'the engine file dotnet/models/csharp/sources.yml does not match its manifest checksum',
+      ],
+      [
+        'a missing file',
+        (d) => rmSync(path.join(d, 'dotnet/engine/licenses/YamlDotNet.txt')),
+        'the engine is missing dotnet/engine/licenses/YamlDotNet.txt',
+      ],
+      [
+        'an unlisted model, which the engine would load',
+        (d) => writeTree(d, { 'dotnet/models/csharp/extra.yml': 'sinks: []\n' }),
+        'the engine holds dotnet/models/csharp/extra.yml, which its manifest does not list',
+      ],
+      [
+        'an unlisted assembly',
+        (d) => writeTree(d, { 'dotnet/engine/Evil.dll': 'x' }),
+        'the engine holds dotnet/engine/Evil.dll, which its manifest does not list',
+      ],
+      [
+        'a directory in place of a file',
+        (d) => {
+          rmSync(path.join(d, 'dotnet/engine/Qualor.Taint.Cli.runtimeconfig.json'));
+          mkdirSync(path.join(d, 'dotnet/engine/Qualor.Taint.Cli.runtimeconfig.json'));
+        },
+        'the engine file dotnet/engine/Qualor.Taint.Cli.runtimeconfig.json is not a regular file',
+      ],
+    ];
+    for (const [name, change, detail] of cases) {
+      const p = pack();
+      change(p.dir);
+      const engine = fake();
+      expect(
+        await runTaintEngine(options({ root, sessionDir, pack: p, run: engine.run })),
+        name,
+      ).toEqual({ kind: 'fallback', reason: 'engine-mismatch', detail });
+      expect(engine.calls, name).toEqual([]);
+    }
+  });
+
+  it('falls back without compiler inputs, before running anything', async () => {
+    const empty = checkout(false);
+    const engine = fake();
+    const detail = 'the build recorded no compiler inputs';
+    expect(await runTaintEngine(options({ ...empty, run: engine.run }))).toEqual({
+      kind: 'fallback',
+      reason: 'no-inputs',
+      detail,
+    });
+    rmSync(empty.sessionDir, { recursive: true });
+    expect(await runTaintEngine(options({ ...empty, run: engine.run }))).toEqual({
+      kind: 'fallback',
+      reason: 'no-inputs',
+      detail,
+    });
+    expect(engine.calls).toEqual([]);
+  });
+
+  it('falls back when dotnet is not on PATH or cannot be started', async () => {
+    const { root, sessionDir } = checkout();
+    const engine = fake();
+    expect(
+      await runTaintEngine(
+        options({ root, sessionDir, run: engine.run, resolveDotnet: () => null }),
+      ),
+    ).toEqual({ kind: 'fallback', reason: 'dotnet-missing', detail: 'dotnet is not installed' });
+    expect(engine.calls).toEqual([]);
+    const gone = fake(() => ({
+      exitCode: null,
+      spawnError: 'spawn ENOENT',
+      spawnErrorCode: 'ENOENT',
+    }));
+    expect(await runTaintEngine(options({ root, sessionDir, run: gone.run }))).toEqual({
+      kind: 'fallback',
+      reason: 'dotnet-missing',
+      detail: 'dotnet is not installed',
+    });
+  });
+
+  it('falls back on the budget when the engine reports an incomplete run, or is killed (Review Focus 3)', async () => {
+    const { root, sessionDir } = checkout();
+    // Exit 3: the SARIF is written, marked incomplete; it is never used.
+    const over = fake((_spec, sarif) => {
+      writeFileSync(sarif, JSON.stringify(engineSarif(root, [], { complete: false })));
+      return {
+        exitCode: 3,
+        stderr: 'input: a warning\n12 finding(s); incomplete: time limit of 600 s exceeded\n',
+      };
+    });
+    expect(await runTaintEngine(options({ root, sessionDir, run: over.run }))).toEqual({
+      kind: 'fallback',
+      reason: 'budget',
+      detail: 'time limit of 600 s exceeded',
+    });
+    const killed = fake(() => ({ exitCode: null, timedOut: true }));
+    expect(
+      await runTaintEngine(options({ root, sessionDir, run: killed.run, timeLimitS: 30 })),
+    ).toEqual({
+      kind: 'fallback',
+      reason: 'budget',
+      detail: 'the engine did not finish within 330 s',
+    });
+    // Exit 0 but marked incomplete is never used either.
+    const marked = fake((_spec, sarif) => {
+      writeFileSync(sarif, JSON.stringify(engineSarif(root, [], { complete: false })));
+      return {};
+    });
+    expect(await runTaintEngine(options({ root, sessionDir, run: marked.run }))).toMatchObject({
+      kind: 'fallback',
+      reason: 'budget',
+    });
+  });
+
+  it('falls back when the engine read no project from the inputs: an empty result would hide the OpenGrep findings', async () => {
+    const { root, sessionDir } = checkout();
+    const none = fake((_spec, sarif) => {
+      const log = engineSarif(root, []);
+      log.runs[0]!.properties.analysisStats.projects = 0;
+      writeFileSync(sarif, JSON.stringify(log));
+      return { stderr: 'input: compilations/a1b2.txt: does not start with qualor-compilation=1\n' };
+    });
+    expect(await runTaintEngine(options({ root, sessionDir, run: none.run }))).toEqual({
+      kind: 'fallback',
+      reason: 'no-inputs',
+      detail: 'the engine read no project from the compiler inputs',
+    });
+  });
+
+  it('falls back on a crash with the first line that says why', async () => {
+    const { root, sessionDir } = checkout();
+    const crash = fake(() => ({
+      exitCode: 1,
+      stderr:
+        'input: compilations/a1b2.txt: unknown key x\ncrash: System.InvalidOperationException: boom\n   at Qualor.Taint.X()\n',
+    }));
+    expect(await runTaintEngine(options({ root, sessionDir, run: crash.run }))).toEqual({
+      kind: 'fallback',
+      reason: 'crash',
+      detail: 'exited with code 1: crash: System.InvalidOperationException: boom',
+    });
+    const invalid = fake(() => ({
+      exitCode: 2,
+      stderr: 'invalid models: sources.yml(3): bad\nusage: …\n',
+    }));
+    expect(await runTaintEngine(options({ root, sessionDir, run: invalid.run }))).toEqual({
+      kind: 'fallback',
+      reason: 'crash',
+      detail: 'exited with code 2: invalid models: sources.yml(3): bad',
+    });
+    const signal = fake(() => ({ exitCode: null }));
+    expect(await runTaintEngine(options({ root, sessionDir, run: signal.run }))).toEqual({
+      kind: 'fallback',
+      reason: 'crash',
+      detail: 'exited with code null',
+    });
+    const noSarif = fake();
+    expect(await runTaintEngine(options({ root, sessionDir, run: noSarif.run }))).toEqual({
+      kind: 'fallback',
+      reason: 'crash',
+      detail: "the engine's SARIF could not be read",
+    });
+    const badSarif = fake((_spec, sarif) => {
+      writeFileSync(sarif, '{"version":"1.0"}');
+      return {};
+    });
+    expect(await runTaintEngine(options({ root, sessionDir, run: badSarif.run }))).toEqual({
+      kind: 'fallback',
+      reason: 'crash',
+      detail: "the engine's SARIF could not be read",
+    });
+  });
+
+  it('runs the verified engine on the session inputs and returns its SARIF', async () => {
+    const { root, sessionDir } = checkout();
+    const p = pack();
+    const log = engineSarif(root, [{ rule: 'csharp.sql-injection', uri: 'src/A.cs', line: 3 }]);
+    const engine = fake((_spec, sarif) => {
+      writeFileSync(sarif, JSON.stringify(log));
+      return { stderr: '1 finding(s); complete\n' };
+    });
+    const out = await runTaintEngine(
+      options({
+        root,
+        sessionDir,
+        pack: p,
+        run: engine.run,
+        env: { PATH: '/usr/bin', QUALOR_TOKEN: 'secret', HOME: '/home/ci' },
+        timeLimitS: 90,
+        memoryLimitMb: 2048,
+      }),
+    );
+    expect(out).toEqual({ kind: 'ok', sarif: log });
+    expect(engine.calls).toHaveLength(1);
+    const spec = engine.calls[0]!;
+    const sarif = spec.args[spec.args.indexOf('--sarif') + 1]!;
+    expect(spec).toMatchObject({
+      command: DOTNET,
+      args: [
+        path.join(p.dir, 'dotnet', 'engine', 'Qualor.Taint.Cli.dll'),
+        'analyze',
+        '--inputs',
+        path.join(sessionDir, 'compilations'),
+        '--models',
+        path.join(p.dir, 'dotnet', 'models', 'csharp'),
+        '--sarif',
+        sarif,
+        '--time-limit',
+        '90',
+        '--memory-limit',
+        '2048',
+        '--root',
+        root,
+        '--version',
+        '2026.10.4',
+      ],
+      // Never the checkout: a relative path in the environment must not resolve into it.
+      cwd: p.dir,
+      timeoutMs: 390_000,
+    });
+    // The SARIF goes to a private directory outside the checkout, removed afterwards.
+    expect(path.relative(root, sarif).startsWith('..')).toBe(true);
+    expect(spec.env['QUALOR_TOKEN']).toBeUndefined();
+    expect(spec.env['HOME']).toBe('/home/ci');
+  });
+});
+
+describe('taintBudgets (6B-C# R)', () => {
+  it('defaults to 600 s and 4096 MB, overridable by QUALOR_TAINT_TIME_LIMIT and QUALOR_TAINT_MEMORY_LIMIT', () => {
+    const warnings: string[] = [];
+    const warn = (m: string) => warnings.push(m);
+    expect(taintBudgets({}, warn)).toEqual({ timeLimitS: 600, memoryLimitMb: 4096 });
+    expect(
+      taintBudgets({ QUALOR_TAINT_TIME_LIMIT: '1200', QUALOR_TAINT_MEMORY_LIMIT: '8192' }, warn),
+    ).toEqual({ timeLimitS: 1200, memoryLimitMb: 8192 });
+    expect(warnings).toEqual([]);
+    expect(
+      taintBudgets({ QUALOR_TAINT_TIME_LIMIT: '10m', QUALOR_TAINT_MEMORY_LIMIT: '0' }, warn),
+    ).toEqual({ timeLimitS: 600, memoryLimitMb: 4096 });
+    expect(warnings).toEqual([
+      'QUALOR_TAINT_TIME_LIMIT must be a whole number of seconds from 1 to 86400; using 600',
+      'QUALOR_TAINT_MEMORY_LIMIT must be a whole number of megabytes from 1 to 1048576; using 4096',
+    ]);
+  });
+});

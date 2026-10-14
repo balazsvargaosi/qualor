@@ -7,9 +7,13 @@ import { createLogger, silentLogger } from '../log';
 import { captureIO } from '../../test/io';
 import { commitAll, initRepo } from '../../test/git';
 import { testParsers } from '../../test/parsers';
+import { engineSarif, writeEnginePack } from '../../test/taint';
 import { useTempDirs } from '../../test/tmp';
+import type { SarifLog } from '@qualor/shared';
+import type { TaintRun } from '../analyzers/types';
 import { runDotnetBegin } from './begin';
-import { releaseHook, runDotnetEnd } from './end';
+import { releaseHook, runDotnetEnd, type DotnetEndDeps } from './end';
+import type { TaintEngineOptions } from './engine';
 import { hookPath, installHook, removeHook } from './hook';
 import { addLease, leaseDir } from './leases';
 
@@ -83,13 +87,18 @@ function build(root: string, name: string, tfm: string, withLog = true) {
   if (withLog) writeFileSync(log, SARIF(root));
 }
 
-async function end(root: string, env: Record<string, string>, lines: string[] = []) {
+async function end(
+  root: string,
+  env: Record<string, string>,
+  lines: string[] = [],
+  deps: Pick<DotnetEndDeps, 'runTaint'> = {},
+) {
   const out = path.join(tmp(), 'r.json.gz');
   const code = await runDotnetEnd(
     { sarif: [], coverage: [], wait: true, dryRun: true, output: out, projectKey: 'p' },
     captureIO({ cwd: root, env }).io,
     createLogger('warn', (t) => lines.push(t)),
-    { parsers: await testParsers(), baselineClient: null },
+    { parsers: await testParsers(), baselineClient: null, ...deps },
   );
   const report = existsSync(out)
     ? JSON.parse(gunzipSync(readFileSync(out)).toString('utf8'))
@@ -260,5 +269,116 @@ describe('qualor dotnet end (config.md §6.1, ruling D7)', () => {
       reason:
         'no C# project was compiled between qualor dotnet begin and end (build with --no-incremental)',
     });
+  });
+});
+
+describe("qualor dotnet end with Qualor's Roslyn taint engine (6B-C# R, spec §4.2, R-4)", () => {
+  /** A session whose build recorded one project's compiler inputs, with a pack that has the engine. */
+  function session(o: { config?: string; engine?: boolean } = {}) {
+    const { root, env } = setup();
+    if (o.config !== undefined) writeFileSync(path.join(root, 'qualor.yml'), o.config);
+    const withPack = {
+      ...env,
+      QUALOR_RULES_DIR: writeEnginePack(tmp(), { engine: o.engine ?? true, severity: 'blocker' }),
+      QUALOR_TAINT_TIME_LIMIT: '120',
+    };
+    runDotnetBegin({}, captureIO({ cwd: root, env: withPack }).io, silentLogger);
+    build(root, 'Lib', 'net8.0');
+    const compilations = path.join(root, '.qualor', 'dotnet', 'compilations');
+    mkdirSync(compilations, { recursive: true });
+    writeFileSync(path.join(compilations, 'a1b2.txt'), 'format=1\n');
+    return { root, env: withPack };
+  }
+
+  /** A fake engine run: records what it was given and whether the inputs were still there. */
+  function fakeTaint(answer: (o: TaintEngineOptions) => TaintRun) {
+    const calls: { o: TaintEngineOptions; inputs: boolean }[] = [];
+    const runTaint = (o: TaintEngineOptions) => {
+      calls.push({ o, inputs: existsSync(path.join(o.sessionDir, 'compilations', 'a1b2.txt')) });
+      return Promise.resolve(answer(o));
+    };
+    return { calls, runTaint };
+  }
+
+  it('runs the engine on the recorded inputs before the session is deleted, and its findings are the C# findings of the qualor engine', async () => {
+    const { root, env } = session();
+    const taint = fakeTaint((o) => ({
+      kind: 'ok',
+      sarif: engineSarif(o.root, [
+        {
+          rule: 'csharp.sql-injection',
+          uri: 'src/Hashing.cs',
+          line: 3,
+          steps: [['src/Hashing.cs', 2, 'request data']],
+        },
+      ]) as SarifLog,
+    }));
+    const { code, report } = await end(root, env, [], { runTaint: taint.runTaint });
+    expect(code).toBe(EXIT.OK);
+    expect(taint.calls).toHaveLength(1);
+    expect(taint.calls[0]).toMatchObject({
+      inputs: true,
+      o: {
+        root,
+        sessionDir: path.join(root, '.qualor', 'dotnet'),
+        timeLimitS: 120,
+        memoryLimitMb: 4096,
+      },
+    });
+    expect(taint.calls[0]?.o.pack?.manifest.dotnetEngine?.version).toBe('2026.10.4');
+    expect(existsSync(path.join(root, '.qualor', 'dotnet'))).toBe(false);
+    expect(report.engines.find((e: { id: string }) => e.id === 'qualor')).toMatchObject({
+      status: 'ok',
+      version: 'qualor-taint 2026.10.4 + qualor-rules 2026.10.4',
+    });
+    const findings = report.findings.filter((f: { engineId: string }) => f.engineId === 'qualor');
+    expect(findings).toMatchObject([
+      {
+        ruleId: 'csharp/sql-injection',
+        severity: 'blocker',
+        location: { path: 'src/Hashing.cs', startLine: 3 },
+        secondaryLocations: [{ path: 'src/Hashing.cs', startLine: 2, message: 'request data' }],
+      },
+    ]);
+    expect(report.warnings.map((w: { code: string }) => w.code)).not.toContain(
+      'TAINT_ENGINE_FALLBACK',
+    );
+  });
+
+  it('on a fallback logs why, deletes the session and keeps the exit code (Review Focus 3)', async () => {
+    const { root, env } = session();
+    const taint = fakeTaint(() => ({
+      kind: 'fallback',
+      reason: 'budget',
+      detail: 'time limit of 120 s exceeded',
+    }));
+    const lines: string[] = [];
+    const { code } = await end(root, env, lines, { runTaint: taint.runTaint });
+    expect(code).toBe(EXIT.OK);
+    expect(taint.calls).toHaveLength(1);
+    expect(lines.join('\n')).toContain(
+      "Qualor's Roslyn taint engine did not run (budget: time limit of 120 s exceeded); the OpenGrep C# rules run in its place",
+    );
+    expect(existsSync(path.join(root, '.qualor', 'dotnet'))).toBe(false);
+  });
+
+  it('does not run the engine when the qualor engine is disabled or no rules are installed', async () => {
+    const disabled = session({
+      config:
+        'version: 1\nanalyzers:\n  gitleaks: { enabled: false }\n  qualor: { enabled: false }\n',
+    });
+    const taint = fakeTaint(() => ({ kind: 'fallback', reason: 'crash', detail: 'x' }));
+    expect((await end(disabled.root, disabled.env, [], { runTaint: taint.runTaint })).code).toBe(
+      EXIT.OK,
+    );
+    const none = session();
+    expect(
+      (
+        await end(none.root, { ...none.env, QUALOR_RULES_DIR: path.join(tmp(), 'gone') }, [], {
+          runTaint: taint.runTaint,
+        })
+      ).code,
+    ).toBe(EXIT.OK);
+    expect(taint.calls).toEqual([]);
   });
 });

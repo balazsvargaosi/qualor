@@ -208,10 +208,11 @@ export function emergencyCleanup(signal: CleanupSignal, log: Logger): number {
 }
 
 /**
- * Installed only for the duration of one `runAnalyzers` call (the caller removes the listeners
- * again once it returns), so default signal behaviour applies the rest of the time.
+ * Installed only for the duration of one `runAnalyzers` call, or of the taint engine's run in
+ * `qualor dotnet end` (the caller removes the listeners again once it returns), so default signal
+ * behaviour applies the rest of the time.
  */
-function installEmergencyCleanup(log: Logger): () => void {
+export function installEmergencyCleanup(log: Logger): () => void {
   const installed = CLEANUP_SIGNALS.map((signal) => {
     const handler = () => process.exit(emergencyCleanup(signal, log));
     process.on(signal, handler);

@@ -115,6 +115,57 @@ describe('qualorManifestSchema (plan 6B-1)', () => {
   });
 });
 
+describe('qualorManifestSchema dotnetEngine (6B-C# R, spec §4.1)', () => {
+  const engine = (over: Record<string, unknown> = {}) => ({
+    version: '2026.10.4',
+    entry: 'dotnet/engine/Qualor.Taint.Cli.dll',
+    models: 'dotnet/models',
+    files: [
+      { path: 'dotnet/engine/Qualor.Taint.Cli.dll', sha256: 'a'.repeat(64) },
+      { path: 'dotnet/engine/Qualor.Taint.Cli.runtimeconfig.json', sha256: 'b'.repeat(64) },
+      { path: 'dotnet/engine/licenses/YamlDotNet.txt', sha256: 'c'.repeat(64) },
+      { path: 'dotnet/models/csharp/sql-injection.yml', sha256: 'd'.repeat(64) },
+    ],
+    ...over,
+  });
+
+  it('reads the engine of a pack, and leaves it out for a pack without one', () => {
+    expect(qualorManifestSchema.parse(manifest({ dotnetEngine: engine() })).dotnetEngine).toEqual(
+      engine(),
+    );
+    expect(qualorManifestSchema.parse(manifest()).dotnetEngine).toBeUndefined();
+  });
+
+  it('refuses an engine whose files are not confined to dotnet/, or that does not hold its entry', () => {
+    const file = (p: string) => ({ path: p, sha256: 'e'.repeat(64) });
+    const bad = [
+      engine({ entry: 'dotnet/engine/Other.dll' }),
+      engine({ entry: '../Qualor.Taint.Cli.dll' }),
+      engine({ models: 'models' }),
+      engine({ models: 'dotnet/../models' }),
+      // No listed file below the models directory.
+      engine({ models: 'dotnet/other' }),
+      engine({ files: [] }),
+      engine({ files: [...engine().files, file('rules/csharp/x.yml')] }),
+      engine({ files: [...engine().files, file('dotnet/../x.dll')] }),
+      engine({ files: [...engine().files, file('dotnet/./x.dll')] }),
+      engine({ files: [...engine().files, file('/dotnet/x.dll')] }),
+      engine({ files: [...engine().files, file('dotnet\\engine\\x.dll')] }),
+      engine({ files: [...engine().files, file('dotnet//x.dll')] }),
+      engine({ files: [...engine().files, file('dotnet/engine/Qualor.Taint.Cli.dll')] }),
+      engine({ files: [{ path: 'dotnet/engine/Qualor.Taint.Cli.dll', sha256: 'A'.repeat(64) }] }),
+      engine({ version: '' }),
+      engine({ version: 'x'.repeat(65) }),
+    ];
+    for (const e of bad) {
+      expect(
+        qualorManifestSchema.safeParse(manifest({ dotnetEngine: e })).success,
+        JSON.stringify(e),
+      ).toBe(false);
+    }
+  });
+});
+
 describe('qualorRuleMeta (report-format.md §7.1, plan 6B-1)', () => {
   it('reads the kind and severity the CLI copied from the manifest', () => {
     expect(

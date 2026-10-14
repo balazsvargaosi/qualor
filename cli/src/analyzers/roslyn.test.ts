@@ -51,7 +51,7 @@ describe('roslyn prepare (ruling D7)', () => {
       results: 0,
       duplicates: 0,
     };
-    expect(await prepare({ kind: 'collected', merged })).toEqual({
+    expect(await prepare({ kind: 'collected', merged, taint: null })).toEqual({
       collected: { sarif: merged.sarif, version: '5.9.0' },
     });
   });

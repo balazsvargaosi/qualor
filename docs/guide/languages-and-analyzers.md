@@ -614,7 +614,31 @@ build-command: 'dotnet build MySolution.sln --no-incremental' }`. For GitHub, us
   is used instead of the bundled one, so there is never a duplicate-analyzer build error.
 - Turn the bundled SonarAnalyzer.CSharp off with `analyzers.roslyn.sonarAnalyzer: false`.
 - `qualor dotnet abort` cleans up when the build fails, so no hook is left behind.
-- A plain `qualor scan` does not analyse C#.
+- A plain `qualor scan` does not run the Roslyn analyzers. It still runs Qualor's C# security
+  rules on OpenGrep (see below).
+
+**Qualor's C# security rules under `qualor dotnet begin` and `end`.** The hook also records each
+project's compiler inputs. `qualor dotnet end` then runs Qualor's Roslyn taint engine (part of the
+rules release) on the whole solution, and its findings take the place of the OpenGrep C# rules for
+the `.cs` files, under the same rule keys (`qualor:csharp/<name>`):
+
+- Flows are followed across methods, files and projects, through fields, properties and
+  interface or virtual calls, and into Razor views (`.cshtml`), where findings point at the
+  view's own line.
+- Each finding shows the path from the request data to the dangerous call as its related
+  locations, followed by any other request data that reaches the same call.
+- The engine has a budget: 10 minutes and 4 GB by default. Set `QUALOR_TAINT_TIME_LIMIT` (seconds)
+  and `QUALOR_TAINT_MEMORY_LIMIT` (megabytes) to change it.
+- When the engine cannot give a complete result, the OpenGrep C# rules run as in a plain scan, and
+  the report carries the warning `TAINT_ENGINE_FALLBACK` with the reason: `budget` (over its time
+  or memory budget), `crash`, `no-inputs` (the build recorded no compiler inputs), `dotnet-missing`,
+  `no-engine` (the rules release has no engine) or `engine-mismatch` (its files do not match the
+  release's checksums: the engine is never run then). The log line says more. The scan's exit
+  code is the same either way.
+- The engine follows what the code does, not how the application is wired: services registered
+  for dependency injection are found through their interfaces, but handlers the framework calls by
+  convention (MediatR handlers, hosted services) are not entered from the request. `ViewData` and
+  `ViewBag` are not followed into views.
 
 ## C and C++ (cppcheck, clang-tidy)
 
@@ -720,7 +744,8 @@ your dependencies before the scan: see [Dependency licences](./dependency-licens
 ## Security rules (Qualor)
 
 Qualor has its own security rules for JavaScript, TypeScript, Python, Java, Go and C#: 69 rules that
-run in every edition, as the `qualor` engine on OpenGrep. The `qualor/scanner` image (and
+run in every edition, as the `qualor` engine on OpenGrep (the C# rules under `qualor dotnet end` on
+Qualor's own Roslyn taint engine, see C#). The `qualor/scanner` image (and
 `qualor/scanner-dotnet`, which builds on it) includes them. There are three kinds:
 
 - **Taint rules** follow data from an HTTP request (a query parameter, a form field, a header, a
@@ -827,7 +852,8 @@ rules apply to both):
 | `qualor:csharp/xxe` | an XML parser given an `XmlUrlResolver` while it processes DTDs, whatever the document (it needs no request) | `System.Xml` (`XmlReaderSettings`, `XmlDocument`, `XmlTextReader`) |
 | `qualor:csharp/tls-verification-disabled` | a certificate or host name validation callback that accepts anything | `HttpClientHandler`, `SocketsHttpHandler`, `SslStream`, `ServicePointManager` |
 
-Limits of the C# rules:
+Limits of the C# rules on OpenGrep (a plain `qualor scan`, or a fallback under `qualor dotnet
+end`; the Roslyn taint engine of the C# section above has neither of the first two):
 
 - Razor views (`.cshtml`, `.razor`) are not analysed.
 - Flows are followed within one file, not across files.
@@ -843,10 +869,11 @@ documentation link opens it: on the issue page, in the rules list, and on the ru
 request and pull request comments.
 
 - The engine's version in a scan names the rules release, for example
-  `1.30.0 + qualor-rules 2026.10.4`.
+  `1.30.0 + qualor-rules 2026.10.4`, or `qualor-taint 2026.10.4 + qualor-rules 2026.10.4` when
+  only C# files were analysed, by the Roslyn taint engine.
 - Taint rules follow data **through the functions of one file**: a value that goes into a helper
   function in the same file and comes back out of it is still followed. A value that passes
-  through another file is not followed yet.
+  through another file is not followed yet, except by the C# rules under `qualor dotnet end`.
 - Issues (from taint and misuse rules) are Security issues and count in the quality gate.
   Hotspots are **security hotspots**: listed, never counted. Where another analyzer reports the
   same problem on the same line, Qualor's issue is the one shown and the other is its duplicate.

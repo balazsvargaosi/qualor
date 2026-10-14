@@ -1,11 +1,15 @@
 import { realpathSync } from 'node:fs';
+import path from 'node:path';
+import { locateQualorPack } from '../analyzers/qualor';
 import { readRoslynLogs, mergeRoslynLogs } from '../analyzers/roslyn-logs';
-import type { DotnetRun } from '../analyzers/types';
+import type { DotnetRun, TaintRun } from '../analyzers/types';
 import type { ScanFlags } from '../args';
+import { loadSettings } from '../config/settings';
 import type { ExitCode } from '../errors';
 import type { CliIO } from '../io';
-import type { Logger } from '../log';
+import { silentLogger, type Logger } from '../log';
 import { runScan, type ScanDeps } from '../scan/run';
+import { runTaintEngine, taintBudgets, type TaintEngineOptions } from './engine';
 import { installHook, msbuildUserDir, removeHook } from './hook';
 import { leaseDir, releaseLeases } from './leases';
 import {
@@ -15,6 +19,7 @@ import {
   readProjectRecords,
   readSession,
   removeSession,
+  SESSION_DIR,
   type SessionInfo,
 } from './session';
 
@@ -69,7 +74,7 @@ export function collectDotnetRun(
   log.debug(
     `roslyn: ${logs.length} log(s), ${merged.results} result(s), ${merged.duplicates} repeat(s) across target frameworks dropped`,
   );
-  return { kind: 'collected', merged };
+  return { kind: 'collected', merged, taint: null };
 }
 
 /**
@@ -113,13 +118,61 @@ export function releaseCheckout(root: string, io: CliIO, log: Logger): void {
   }
 }
 
-/** `qualor dotnet end` (config.md §6.1): hook and lease first, then the logs, then the scan. */
+export interface DotnetEndDeps extends ScanDeps {
+  /** Runs Qualor's Roslyn taint engine (tests replace it). */
+  runTaint?: (o: TaintEngineOptions) => Promise<TaintRun>;
+}
+
+/**
+ * 6B-C# R, spec §4.2: the taint engine's run on this session's compiler inputs, while they are
+ * still there; null when it is not attempted (the qualor engine is disabled, or no rules pack is
+ * installed, so the OpenGrep C# rules do not run either). A fallback is logged with its detail;
+ * the report's warning names only the reason (R-4).
+ */
+async function runSessionTaint(
+  root: string,
+  flags: ScanFlags,
+  io: CliIO,
+  log: Logger,
+  runTaint: (o: TaintEngineOptions) => Promise<TaintRun>,
+): Promise<TaintRun | null> {
+  try {
+    const { config } = loadSettings({ cwd: root, env: io.env, flags, log: silentLogger });
+    if (config.analyzers.qualor.enabled === false) return null;
+  } catch {
+    // The scan reports the configuration problem itself.
+  }
+  const pack = locateQualorPack(root, io.env);
+  if (!('manifest' in pack)) return null;
+  const taint = await runTaint({
+    root,
+    pack,
+    sessionDir: path.join(root, ...SESSION_DIR.split('/')),
+    env: io.env,
+    ...taintBudgets(io.env, (message) => log.warn(message)),
+    log,
+  });
+  if (taint.kind === 'ok') {
+    log.info("Qualor's Roslyn taint engine analysed the C# files");
+  } else {
+    log.warn(
+      `Qualor's Roslyn taint engine did not run (${taint.reason}: ${taint.detail}); the OpenGrep C# rules run in its place`,
+    );
+  }
+  return taint;
+}
+
+/**
+ * `qualor dotnet end` (config.md §6.1): hook and lease first, then the logs and the taint engine
+ * (6B-C# R) on what the build left, then the session is deleted and the scan runs.
+ */
 export async function runDotnetEnd(
   flags: ScanFlags,
   io: CliIO,
   log: Logger,
-  deps: ScanDeps = {},
+  deps: DotnetEndDeps = {},
 ): Promise<ExitCode> {
+  const { runTaint = runTaintEngine, ...scanDeps } = deps;
   const root = io.cwd;
   releaseCheckout(root, io, log);
   const warnings: { code: string; message: string }[] = [];
@@ -129,8 +182,11 @@ export async function runDotnetEnd(
       log.warn(message);
       warnings.push({ code, message });
     });
+    if (run.kind === 'collected') {
+      run = { ...run, taint: await runSessionTaint(root, flags, io, log, runTaint) };
+    }
   } finally {
     removeSession(root);
   }
-  return runScan(flags, io, log, { ...deps, dotnet: run, extraWarnings: warnings });
+  return runScan(flags, io, log, { ...scanDeps, dotnet: run, extraWarnings: warnings });
 }

@@ -55,8 +55,7 @@ pollution. For example, `javasecurity:S3649` maps to `qualor:java/sql-injection`
 `pythonsecurity:S2076` to `qualor:python/command-injection`. These mappings are pending review:
 they carry the issue statuses (false positive, accepted) onto the matching Qualor issue, by file
 and line, and do not change your profiles. Taint rules of a kind Qualor has no rule for in that
-language (log injection, for example) are not mapped, and neither are `phpsecurity` and the C#
-security rules.
+language (log injection, for example) are not mapped, and neither is `phpsecurity`.
 
 Qualor runs these bundled rules with their default configuration: eslint-plugin-sonarjs's
 `recommended` set, the SonarAnalyzer.CSharp rules enabled by default, and Ruff's own

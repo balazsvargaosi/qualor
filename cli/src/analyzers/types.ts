@@ -4,6 +4,7 @@ import type {
   NormalizeWarning,
   QualorConfig,
   ReportEngine,
+  SarifLog,
 } from '@qualor/shared';
 import type { ScopeFile } from '../discovery/discover';
 import type { Logger } from '../log';
@@ -12,9 +13,22 @@ import type { MergedLogs } from './roslyn-logs';
 
 export type AnalyzerId = keyof QualorConfig['analyzers'];
 
+/** Why Qualor's Roslyn taint engine did not replace the OpenGrep C# rules (6B-C# R, R-4). */
+export type TaintFallbackReason =
+  'no-engine' | 'engine-mismatch' | 'no-inputs' | 'budget' | 'crash' | 'dotnet-missing';
+
+/**
+ * What Qualor's Roslyn taint engine gave `qualor dotnet end` (6B-C# R, R-4): its complete SARIF,
+ * or why the OpenGrep C# rules run in its place (`detail` is a short line for the report warning).
+ */
+export type TaintRun =
+  | { kind: 'ok'; sarif: SarifLog }
+  | { kind: 'fallback'; reason: TaintFallbackReason; detail: string };
+
 /** What `qualor dotnet end` found for the `roslyn` engine (config.md §6.1, ruling D7). */
 export type DotnetRun =
-  | { kind: 'collected'; merged: MergedLogs }
+  /** `taint`: the taint engine's run for the `qualor` engine; null when it was not attempted. */
+  | { kind: 'collected'; merged: MergedLogs; taint: TaintRun | null }
   | { kind: 'no-session' }
   | { kind: 'no-build' }
   | { kind: 'not-compiled' }

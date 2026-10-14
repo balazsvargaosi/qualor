@@ -39,6 +39,48 @@ const manifestRule = z.looseObject({
 });
 
 /**
+ * A path below the pack's `dotnet/` directory: `/`-separated, no empty, `.` or `..` segment and no
+ * segment starting with a dot, so it can never leave `dotnet/`.
+ */
+const DOTNET_PATH = /^dotnet(?:\/[A-Za-z0-9_][A-Za-z0-9._+-]*)+$/;
+
+/**
+ * Qualor's Roslyn taint engine in the pack (6B-C# R, spec §4.1): the published tool and its models
+ * under `dotnet/`, every file with its SHA-256. The CLI runs `entry` only when every listed file
+ * matches and nothing else is there.
+ */
+const dotnetEngine = z
+  .looseObject({
+    version: z.string().regex(/^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/),
+    entry: z.string().max(512).regex(DOTNET_PATH),
+    models: z.string().max(512).regex(DOTNET_PATH),
+    files: z
+      .array(
+        z.looseObject({
+          path: z.string().max(512).regex(DOTNET_PATH),
+          sha256: z.string().regex(/^[0-9a-f]{64}$/),
+        }),
+      )
+      .min(1)
+      .max(1_000),
+  })
+  .superRefine((e, ctx) => {
+    const paths = new Set<string>();
+    e.files.forEach((f, i) => {
+      if (paths.has(f.path)) {
+        ctx.addIssue({ code: 'custom', path: ['files', i], message: `${f.path} is listed twice` });
+      }
+      paths.add(f.path);
+    });
+    if (!paths.has(e.entry)) {
+      ctx.addIssue({ code: 'custom', path: ['entry'], message: 'is not a listed file' });
+    }
+    if (!e.files.some((f) => f.path.startsWith(`${e.models}/`))) {
+      ctx.addIssue({ code: 'custom', path: ['models'], message: 'holds no listed file' });
+    }
+  });
+
+/**
  * The pack's `manifest.json` (config.md §6): every rule file with its SHA-256 and the metadata the
  * CLI copies into the report. Unknown fields are ignored, so an older CLI reads a newer pack; a rule
  * path must name the rule's own language and name, and ids and paths are unique.
@@ -50,6 +92,8 @@ export const qualorManifestSchema = z
     /** The rules are tested with OpenGrep `--taint-intrafile`, so they run that way (plan 6B-6). */
     taintIntrafile: z.boolean().optional(),
     rules: z.array(manifestRule).min(1).max(2_000),
+    /** Qualor's Roslyn taint engine for the C# rules under `qualor dotnet end` (6B-C# R). */
+    dotnetEngine: dotnetEngine.optional(),
   })
   .superRefine((m, ctx) => {
     const ids = new Set<string>();

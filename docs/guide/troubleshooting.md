@@ -37,6 +37,7 @@ QUALOR_LOG_LEVEL=debug qualor scan     # every analyzer's command line, output a
 | Dependencies tab: most packages have an **Unknown** licence | pnpm, Yarn, Go, NuGet, Maven and Gradle licences are read from the installed packages | install the dependencies in the scan job, before `qualor scan` ([Dependency licences](./dependency-licenses.md#which-ecosystems-give-licences)) |
 | `VULNERABILITY_DB_STALE` | Trivy's database is more than 14 days old | move to a newer scanner release, or fetch a database in the job with `QUALOR_TRIVY_CACHE_DIR` |
 | `ROSLYN_PROJECT_NOT_ANALYZED` | a C# project was not recompiled | build with `--no-incremental` |
+| `TAINT_ENGINE_FALLBACK` | Qualor's Roslyn taint engine did not give a complete result in `qualor dotnet end`; the OpenGrep C# rules ran instead. The reason is in the message, the detail in the log | `budget`: raise `QUALOR_TAINT_TIME_LIMIT` or `QUALOR_TAINT_MEMORY_LIMIT`. `no-inputs`: build between `qualor dotnet begin` and `end`, with `--no-incremental`. `dotnet-missing`: use the `qualor/scanner-dotnet` image. `no-engine`, `engine-mismatch`: use a current image, or unpack the rules release again. `crash`: report it with the log |
 | `no C# project was built between qualor dotnet begin and end` | the build ran elsewhere or not at all | run the build in the same job, between the two commands |
 | `NESTED_REPOSITORY_SKIPPED` | a submodule or nested clone | expected. Scan that repository on its own |
 | Many issues in generated code | generated files are scanned | add them to `sources.exclude` |
