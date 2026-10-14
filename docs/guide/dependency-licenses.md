@@ -1,0 +1,292 @@
+# Dependency licences
+
+Every analysis records which dependencies a project uses and under which licences. You see that
+inventory on a project's **Dependencies** tab, in every edition.
+
+With the Business or Enterprise plan, an organisation admin also sets a **licence policy**, for
+example "no strong or network copyleft". A dependency that breaks the policy then becomes an
+ordinary Qualor issue: it shows on the merge request, gets the new-code treatment, can be accepted
+with won't fix, and fails the quality gate.
+
+| | Community | Business | Enterprise |
+|---|---|---|---|
+| The dependency inventory and the **Dependencies** tab | yes | yes | yes |
+| The share of packages with an unknown licence (`unknown_licenses_ratio`) | yes | yes | yes |
+| A licence policy, its issues and the gate metrics `forbidden_licenses` and `licensing_issues` | no | yes, feature `license-policy` | yes, feature `license-policy` |
+
+## What the scanner collects
+
+When Trivy runs (it does in the `qualor/scanner` image, see
+[Languages and analyzers](./languages-and-analyzers.md#dependencies-trivy)), the scanner runs a
+second, licence-only Trivy pass after the analyzers. It reads the licences that the packages
+themselves declare, in the lockfile or in the installed packages. It runs offline and needs no
+vulnerability database.
+
+For each package it records the name, the version, the ecosystem (`npm`, `pnpm`, `yarn`, `gomod`,
+`nuget`, `composer` and so on), the lockfile and line, the licences, and whether it is a direct or
+a transitive dependency when the lockfile says so.
+
+- **Development dependencies are left out**, as in vulnerability scanning: they are usually not
+  shipped with your product.
+- Your project's own package is not listed.
+- A lockfile under a path you exclude in `sources.exclude` is left out.
+- Licences are written as [SPDX](https://spdx.org/licenses/) identifiers. Common spellings are
+  translated: `GPLv3` becomes `GPL-3.0-only`, `GPL-2.0+` becomes `GPL-2.0-or-later`, `Apache 2.0`
+  becomes `Apache-2.0`, and a bare `BSD` becomes `BSD-3-Clause`. Text that names no licence, such
+  as `SEE LICENSE IN LICENSE.txt`, is kept as written.
+- At most 50 000 packages are recorded per analysis, the direct ones first. Above that, the
+  analysis shows the warning `DEPENDENCIES_TRUNCATED`.
+
+The report carries package names, versions and licences, never the text of your files.
+
+## Which ecosystems give licences
+
+Some lockfiles carry the licences of their packages. For the others, Trivy reads them from the
+installed packages, so **install your dependencies in the scan job, before `qualor scan`**.
+
+| Ecosystem | From the lockfile alone | With the dependencies installed in the job |
+|---|---|---|
+| npm (`package-lock.json`) | yes | yes |
+| Composer (`composer.lock`) | yes | yes |
+| pnpm (`pnpm-lock.yaml`) | no | yes, from `node_modules` |
+| Yarn, classic and Berry (`yarn.lock`) | no | yes, from `node_modules` (for Berry, `nodeLinker: node-modules`: Plug'n'Play installs no `node_modules`) |
+| Go (`go.mod`) | no | yes, from the Go module cache (`go mod download`) |
+| NuGet (`packages.lock.json`) | no | yes, from the NuGet package folder (`~/.nuget/packages`, or `NUGET_PACKAGES`) |
+| Maven (`pom.xml`) and Gradle (`gradle.lockfile`) | no | yes, for the packages whose POM file the build downloaded into the local Maven repository (`~/.m2/repository`) or the Gradle cache (`~/.gradle`, or `GRADLE_USER_HOME`) |
+| pip (`requirements.txt`) | no | no, even with a virtual environment installed |
+| Cargo (`Cargo.lock`) | no | no |
+| Bundler (`Gemfile.lock`) | no | no |
+
+A package without a licence is listed with the licence **Unknown**. The **Dependencies** tab says
+how many packages have a known licence.
+
+The scanner finds the Go module cache through `GOPATH` or `GOMODCACHE`, or in `~/go` when neither
+is set. That is where `go mod download` puts it. A C# build in the `qualor/scanner-dotnet` image
+restores its packages into `~/.nuget/packages`, so `qualor dotnet end` reads them with no extra
+step.
+
+### Install your dependencies before the scan
+
+GitLab CI, in the `qualor/scanner` image (keep the lines for the package managers your repository
+uses):
+
+```yaml
+qualor:
+  stage: test
+  image: { name: qualor/scanner:<version>, entrypoint: [''] }
+  variables: { GIT_DEPTH: 0 }
+  script:
+    - npm ci                                      # npm
+    - corepack pnpm install --frozen-lockfile     # pnpm
+    - corepack yarn install --immutable           # Yarn Berry (Yarn 1: yarn install --frozen-lockfile)
+    - go mod download                             # Go, in each module directory
+    - qualor scan
+```
+
+The image has npm, Yarn 1 and corepack, which fetches the pnpm or Yarn version your
+`package.json` names (`packageManager`).
+
+GitHub Actions, in the workflow of [GitHub](./github.md#2-the-workflow):
+
+```yaml
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - run: corepack pnpm install --frozen-lockfile   # or npm ci, go mod download …
+      - run: qualor scan
+        env:
+          QUALOR_URL: ${{ vars.QUALOR_URL }}
+          QUALOR_TOKEN: ${{ secrets.QUALOR_TOKEN }}
+```
+
+Installing the dependencies is what the JavaScript, TypeScript and Go analyzers need anyway, so
+one install step serves both.
+
+### Settings
+
+```yaml
+analyzers:
+  trivy:
+    licenses: auto                # auto (default), true or false
+    licenseTimeoutSeconds: 300
+```
+
+- `auto` runs the licence pass whenever Trivy runs. `true` does the same, and also warns
+  (`LICENSE_SCAN_FAILED`) when Trivy is not installed. `false` skips the pass: the analysis then
+  records no inventory. `analyzers.trivy.enabled: false` turns off both Trivy passes.
+- The pass reads every installed package, so a large `node_modules` takes time: about 100 seconds
+  for 800 MB in our measurement. `licenseTimeoutSeconds` (default 300) bounds it on its own.
+- A pass that fails or times out never fails the scan. The vulnerability findings are kept, the
+  analysis shows the warning, and the **Dependencies** tab keeps the previous inventory.
+
+The analysis lists the pass as the engine `trivy-licenses`, with its status.
+
+## The Dependencies tab
+
+**Project → Dependencies** lists the packages of a branch or a merge request (choose it in the
+**Branch** picker): package, version, ecosystem, lockfile (a link to that line in the **Code** tab),
+licences, and **Direct** or **Transitive**. The header says how many of the packages have a known
+licence.
+
+Filter by **Licence**, **Licence group** or ecosystem, tick **Unknown only** or **Direct only**, or
+search by package name. Until a scan of the branch has recorded an inventory, the tab says so.
+
+With a licence policy (Business or Enterprise), the tab adds a **Policy** column, **Allowed**,
+**Forbidden** or **Unknown**, and the **Forbidden only** filter. A forbidden package links to its
+issues. The column always shows the current policy, so it reflects a change at once.
+
+## The licence policy (Business and Enterprise)
+
+An organisation admin sets the policy in **Settings → Licence policy**. It applies to every project
+of the organisation, and nobody can weaken it from a `qualor.yml` in their own merge request. There
+is no policy until an admin saves one.
+
+- **Mode.** **Forbid listed licences** (a deny list) forbids the licences of the forbidden groups
+  and the **Forbidden licences** list. **Allow only listed licences** (an allow list) forbids every
+  licence that is not in **Allowed licences**.
+- **Forbidden groups.** Qualor's licence groups, below. Expand a group to see its licences.
+- **Forbidden licences** and **Allowed licences.** SPDX identifiers, such as `GPL-3.0-only`, or
+  terms such as `GPL-2.0-only WITH Classpath-exception-2.0`. In deny-list mode, an allowed licence
+  is allowed even when a forbidden group lists it: forbid **Weak copyleft** and allow
+  `LGPL-2.1-only`, for example. In allow-list mode only **Allowed licences** counts: the groups
+  and the forbidden list do not apply. Each list holds at most 500 entries.
+- **Warn about dependencies with unknown licences.** Each package whose licence the scan could not
+  read becomes an issue of severity Info. It is off by default.
+- **Remove policy.** The next analysis of each project closes its licence issues.
+
+A policy change applies **from each project's next analysis**, like a quality profile change.
+
+### The licence groups
+
+The groups are a starting point, not legal advice. Qualor reviews them by hand and updates them
+with its releases. Permissive licences, such as MIT, Apache-2.0 or BSD-3-Clause, belong to no
+group.
+
+| Group | What its licences have in common | Licences |
+|---|---|---|
+| **Network copyleft** (`network-copyleft`) | the duty to share the source also applies when the software is only offered over a network | `AGPL-1.0-only`, `AGPL-1.0-or-later`, `AGPL-3.0-only`, `AGPL-3.0-or-later`, `SSPL-1.0`, `OSL-1.0`, `OSL-1.1`, `OSL-2.0`, `OSL-2.1`, `OSL-3.0`, `EUPL-1.1`, `EUPL-1.2`, `CPAL-1.0`, `RPL-1.1`, `RPL-1.5` |
+| **Strong copyleft** (`strong-copyleft`) | software combined with the code must be released under the same terms | `GPL-1.0-only`, `GPL-1.0-or-later`, `GPL-2.0-only`, `GPL-2.0-or-later`, `GPL-3.0-only`, `GPL-3.0-or-later`, `Sleepycat`, `QPL-1.0` |
+| **Weak copyleft** (`weak-copyleft`) | changes to the licensed files or library must be shared, but not the programs that use them | `LGPL-2.0-only`, `LGPL-2.0-or-later`, `LGPL-2.1-only`, `LGPL-2.1-or-later`, `LGPL-3.0-only`, `LGPL-3.0-or-later`, `MPL-1.0`, `MPL-1.1`, `MPL-2.0`, `MPL-2.0-no-copyleft-exception`, `EPL-1.0`, `EPL-2.0`, `CDDL-1.0`, `CDDL-1.1`, `CPL-1.0`, `MS-RL`, `GPL-2.0-only WITH Classpath-exception-2.0`, `GPL-2.0-or-later WITH Classpath-exception-2.0` |
+| **Non-commercial or source-available** (`non-commercial-or-source-available`) | they restrict commercial use or competing services, so they are not open source in the usual sense | `CC-BY-NC-1.0`, `CC-BY-NC-2.0`, `CC-BY-NC-2.5`, `CC-BY-NC-3.0`, `CC-BY-NC-4.0`, `CC-BY-NC-ND-1.0`, `CC-BY-NC-ND-2.0`, `CC-BY-NC-ND-2.5`, `CC-BY-NC-ND-3.0`, `CC-BY-NC-ND-3.0-DE`, `CC-BY-NC-ND-3.0-IGO`, `CC-BY-NC-ND-4.0`, `CC-BY-NC-SA-1.0`, `CC-BY-NC-SA-2.0`, `CC-BY-NC-SA-2.0-DE`, `CC-BY-NC-SA-2.0-FR`, `CC-BY-NC-SA-2.0-UK`, `CC-BY-NC-SA-2.5`, `CC-BY-NC-SA-3.0`, `CC-BY-NC-SA-3.0-DE`, `CC-BY-NC-SA-3.0-IGO`, `CC-BY-NC-SA-4.0`, `BUSL-1.1`, `Elastic-2.0`, `Commons-Clause`, `PolyForm-Noncommercial-1.0.0`, `PolyForm-Small-Business-1.0.0` |
+
+`Commons-Clause` is not an SPDX licence but a condition added to one, as in
+`Apache-2.0 WITH Commons-Clause`: any licence with it belongs to the non-commercial group. The
+Classpath exception moves the GPL into weak copyleft. The deprecated spellings count as their
+current ones: `GPL-2.0` is `GPL-2.0-only`, and `GPL-2.0+` is `GPL-2.0-or-later`.
+
+Qualor checks policy entries against the SPDX licence list it ships (version 3.29.0 of
+2026-09-16), updated with each release.
+
+### How a package's licences are judged
+
+A package is **allowed**, **forbidden** or **unknown**:
+
+- **Several licences** on one package all apply: it is forbidden when any of them is.
+- **`A OR B`** (a choice of licences) is forbidden only when every alternative is. So
+  `MIT OR GPL-2.0-or-later` passes a policy that forbids strong copyleft.
+- **`A AND B`** is forbidden when either is forbidden.
+- **`A WITH exception`** is judged as the whole term first, then as `A`. So
+  `GPL-2.0-only WITH Classpath-exception-2.0` is weak copyleft, not strong copyleft.
+- **No licence** at all is unknown.
+- **Text that names no licence** (`SEE LICENSE IN LICENSE.txt`, `Public Domain`) is unknown in
+  deny-list mode, and forbidden in allow-list mode, since it is not on the allowed list.
+
+## Licence issues
+
+With the feature active, each analysis judges the inventory against the policy and reports:
+
+| Rule | Severity | When |
+|---|---|---|
+| `license:forbidden` | high | the package's licence is forbidden, for example "gpl-money 2.1.0 is licensed GPL-3.0-only, which the organisation's licence policy forbids (Strong copyleft)." |
+| `license:unknown` | info | the package has no licence Qualor could read, only with **Warn about dependencies with unknown licences** |
+
+Both rules have the engine `license` and the quality **Licensing**, which has no rating: a
+forbidden licence never lowers the security rating and never counts as a security issue. The
+policy decides which packages are reported, so quality profiles do not apply to these rules.
+
+- The issue sits on the package's line in the lockfile. It is **new code** when that line is: the
+  change added the package or changed its version. A forbidden package that was already there
+  before the policy does not fail merge requests, but it is counted on the branch.
+- A package at a new version is a new issue.
+- Licence issues appear in the merge request decoration like any other issue, but not in the
+  GitLab report artifacts the scanner writes (`--gitlab-code-quality` and the others), since the
+  server makes them.
+- Compliance reports and portfolio reports leave them out.
+
+**Making an exception.** To accept one package, set its issue to **won't fix**, with a comment
+that says why (for example, the legal team's approval). It stays won't fix across analyses, until
+the package changes version. To accept a licence everywhere, add it to **Allowed licences**.
+
+**With `warnUnknown` on**, install your dependencies before the scan. A project scanned without
+them, for example a pnpm project without `node_modules`, gets an Info issue for every package.
+
+## Gate metrics
+
+| Metric | Meaning |
+|---|---|
+| `licensing_issues`, `new_licensing_issues` | open licence issues (`license:forbidden` and `license:unknown`) |
+| `forbidden_licenses`, `new_forbidden_licenses` | open `license:forbidden` issues |
+| `unknown_licenses_ratio` | the share of the inventory, in percent, whose licence is unknown (overall only; no value without an inventory; every edition) |
+
+Licence issues also count in `issues`, `high_issues` and `info_issues`. So the built-in
+"Qualor way" gate, with `new_issues > 0`, already fails a merge request that adds a forbidden
+licence. To check licences on their own, add `new_forbidden_licenses gt 0` to your gate (see
+[Quality gates](./quality-gates.md#metrics-you-can-use-in-conditions)).
+
+## When the licence lapses
+
+Without `license-policy`, the inventory and the **Dependencies** tab keep working. The policy is
+kept but no longer applied: analyses neither add licence issues nor close the open ones, and
+`forbidden_licenses` keeps counting the open ones. **Settings → Licence policy** shows a note that
+the policy needs the Business plan. With a renewed key, the next analysis applies the policy again.
+
+## Who can change the policy
+
+Organisation admins, through the permission `org.licenses.manage`; with a personal token, the token
+needs the **Admin** scope. Every member of the organisation can read the policy. With `audit-log`,
+each change is recorded as `organization.license_policy_changed`, with the policy before and after
+([Roles and the audit log](./roles-and-audit.md#what-is-recorded)).
+
+## The API
+
+```sh
+# the inventory of the main branch (or ?branch=<name>, ?mr=<number>), forbidden packages only
+q "$QUALOR_URL/api/v0/projects/<project id>/dependencies?verdict=forbidden&pageSize=100"
+
+# the policy, the groups with their licences, and the SPDX ids a policy may name
+q "$QUALOR_URL/api/v0/organizations/<org id>/license-policy"
+
+# set the policy (an organisation admin; "policy": null removes it)
+q -X PUT "$QUALOR_URL/api/v0/organizations/<org id>/license-policy" -d '{"policy":{
+  "mode":"denylist","forbiddenGroups":["network-copyleft","strong-copyleft","weak-copyleft"],
+  "forbidden":["CC-BY-SA-4.0"],"allowed":["LGPL-2.1-only","MPL-2.0"],"warnUnknown":false}}'
+```
+
+(`q` is the helper of [Webhooks and REST API](./webhooks-and-api.md#rest-api).)
+
+- `GET /projects/{id}/dependencies` filters by `branch` or `mr`, `license`, `group`, `ecosystem`,
+  `unknown=true|false`, `direct=true|false`, `q` (the package name), and `verdict`
+  (`allowed`, `forbidden` or `unknown`; only with a policy). It pages with `page` and `pageSize`
+  (at most 500). The answer holds `rows`, `page`, `pageSize`, `total`, a `summary` of the whole
+  inventory (`total`, `known`, `unknown` and the 20 most frequent licences), `inventory` (false
+  until a scan recorded one) and `verdicts` (true when the rows carry the policy's `verdict`).
+- `GET /organizations/{id}/license-policy` returns `available` (false without `license-policy`),
+  `policy` (or `null`), `groups` and `spdxIds`.
+- `PUT /organizations/{id}/license-policy` answers 403 `FEATURE_NOT_LICENSED` without
+  `license-policy`, and 400 `INVALID_LICENSE_ID` for an entry that is not an SPDX identifier or
+  `id WITH exception` term; `details.invalid` lists them. Entries are stored in their canonical
+  spelling.
+
+## Warnings
+
+| Warning | Meaning | What to do |
+|---|---|---|
+| `LICENSE_SCAN_FAILED` | the licence pass could not run, or failed; with `licenses: true`, also when Trivy is not installed | read the scan log; the vulnerability findings are not affected |
+| `LICENSE_SCAN_TIMEOUT` | the pass took longer than `licenseTimeoutSeconds` | raise `analyzers.trivy.licenseTimeoutSeconds`, or exclude directories you do not ship |
+| `DEPENDENCIES_TRUNCATED` | more than 50 000 packages; the direct ones are kept first | exclude lockfiles you do not ship (`sources.exclude`) |
+| `DEPENDENCIES_SKIPPED` | packages whose name, version or lockfile path is too long for the report | none needed; they are left out of the inventory |
+| `DEPENDENCY_LICENSES_SKIPPED` | licence strings longer than 256 characters, or beyond 16 for one package, were left out | check those packages' licences by hand |
+| `DEPENDENCY_PATHS_INVALID` | the server could not place some flagged packages, because their lockfile path is not a repository path | only a report written by another tool can cause it; check that tool's lockfile paths |

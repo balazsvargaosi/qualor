@@ -33,6 +33,8 @@ QUALOR_LOG_LEVEL=debug qualor scan     # every analyzer's command line, output a
 | `QUALOR_RULES_DIR must be an absolute path outside the repository` | `QUALOR_RULES_DIR` is a relative path, or points into the checkout | set it to an absolute path outside the checkout, or unset it |
 | `QUALOR_RULES_DIR does not exist` | the directory named by `QUALOR_RULES_DIR` is missing | create or unpack the rules there, or unset `QUALOR_RULES_DIR` |
 | `the rules pack … does not match its manifest checksum` (or another `rules pack` reason) | `QUALOR_RULES_DIR` points at a changed or incomplete copy of the rules | unpack the rules again, or unset `QUALOR_RULES_DIR` |
+| `LICENSE_SCAN_TIMEOUT` or `LICENSE_SCAN_FAILED` | Trivy's licence pass took longer than `analyzers.trivy.licenseTimeoutSeconds`, or failed; the vulnerability findings are not affected | raise the timeout, or read the scan log ([Dependency licences](./dependency-licenses.md#warnings)) |
+| Dependencies tab: most packages have an **Unknown** licence | pnpm, Yarn, Go, NuGet, Maven and Gradle licences are read from the installed packages | install the dependencies in the scan job, before `qualor scan` ([Dependency licences](./dependency-licenses.md#which-ecosystems-give-licences)) |
 | `VULNERABILITY_DB_STALE` | Trivy's database is more than 14 days old | move to a newer scanner release, or fetch a database in the job with `QUALOR_TRIVY_CACHE_DIR` |
 | `ROSLYN_PROJECT_NOT_ANALYZED` | a C# project was not recompiled | build with `--no-incremental` |
 | `no C# project was built between qualor dotnet begin and end` | the build ran elsewhere or not at all | run the build in the same job, between the two commands |

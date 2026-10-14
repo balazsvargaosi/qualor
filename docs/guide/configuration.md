@@ -78,7 +78,11 @@ analyzers:
   semgrep:   { enabled: auto, binary: auto, configs: [qualor-default], timeoutSeconds: 900 }
   qualor:    { enabled: auto, timeoutSeconds: 900 }   # Qualor's security rules
   gitleaks:  { enabled: true, configFile: null, timeoutSeconds: 300 }
-  trivy:     { enabled: auto, timeoutSeconds: 600 }
+  trivy:                             # dependency vulnerabilities, and a second pass for licences
+    enabled: auto
+    timeoutSeconds: 600
+    licenses: auto                   # the licence pass: auto (whenever Trivy runs), true (also warn when it cannot run) or false
+    licenseTimeoutSeconds: 300       # the licence pass's own timeout; it reads node_modules and the Go module cache
   roslyn:    { enabled: auto, bundledAnalyzers: true, sonarAnalyzer: true }
   stylelint: { enabled: auto, configFile: null, timeoutSeconds: 600 }   # configFile: qualor-default forces Qualor's default
   htmlhint:  { enabled: auto, configFile: null, timeoutSeconds: 300 }
@@ -112,6 +116,10 @@ gate:
   timeoutSeconds: 300
   failOnError: true                 # a gate in "error" fails the job
 ```
+
+`analyzers.trivy.licenses` and `licenseTimeoutSeconds` are explained in
+[Dependency licences](./dependency-licenses.md#settings). There is no licence policy in
+`qualor.yml`: an organisation admin sets it on the server.
 
 ### Variables in values
 

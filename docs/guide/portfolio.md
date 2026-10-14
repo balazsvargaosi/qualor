@@ -65,6 +65,9 @@ when Qualor received the upload of that analysis, not the commit date the scanne
   reliability, maintainability) and in new code;
 - secrets (open Gitleaks findings) and vulnerable dependencies (open Trivy findings).
 
+The issues of a [licence policy](./dependency-licenses.md) (the **licensing** quality) are left
+out of every count.
+
 The issue counts and the ratings are the measures recorded with the last analysis, so triage since
 then shows at the next scan. Secrets and vulnerable dependencies are counted from the open
 findings of the main branch as they are now (leaving out the findings that Qualor marks as the

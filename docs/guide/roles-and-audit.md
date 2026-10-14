@@ -24,6 +24,8 @@ This page covers two things:
 | Create organisation compliance reports, delete any compliance report (with `compliance-export`, permission `org.compliance.manage`) | ✓ | | | |
 | Switch automatic fix suggestions on for the organisation and set their threshold (with `llm.auto-fix`, permission `org.ai.manage`) | ✓ | | | |
 | Opt one project out of automatic fix suggestions (with `llm.auto-fix`; part of changing project settings) | ✓ | ✓ | | |
+| Read the project's dependencies and their licences (the **Dependencies** tab), and the organisation's licence policy | ✓ | ✓ | ✓ | ✓ |
+| Set or remove the organisation's licence policy (with `license-policy`, permission `org.licenses.manage`) | ✓ | | | |
 
 - In the API the roles are `admin` (Organization admin), `project_admin`, `member` (Maintainer)
   and `viewer`.
@@ -130,6 +132,9 @@ prefix ending in `.*`, for example `issue.*`):
   on/off, minimum severity and maximum per analysis) and a project opting out or back in
   (`project.auto_fix_changed`). The requests and posts Qualor makes by itself are recorded as
   `ai.requested` and `ai.fix_posted` by `system`, with no user.
+- **The licence policy** (with `license-policy`, [Dependency licences](./dependency-licenses.md)):
+  an organisation's policy set, changed or removed (`organization.license_policy_changed`, with the
+  policy before and after).
 - **The support bundle** (with `support-bundle`, [The support bundle](./support-bundle.md)): a
   download from **Settings → Support** (`support.bundle_downloaded`, with the size). The
   `support-bundle` command records nothing, since nobody is signed in.

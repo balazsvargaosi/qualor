@@ -22,9 +22,11 @@ works in air-gapped networks.
 | Portfolio reports: the quality of every project and organisation, with 12-week or 12-month trends and the projects that need attention, as CSV and PDF | no | no | yes, feature `portfolio` ([Portfolio reports](./portfolio.md)) |
 | Automatic fix suggestions: fixes for the new findings of merge requests, posted without a click | no | no | yes, feature `llm.auto-fix` ([Automatic fix suggestions](./ai-assistant.md#automatic-fix-suggestions-enterprise)) |
 | The support bundle: one zip with versions, configuration without secrets, health and recent failures, for support | no | yes, feature `support-bundle` ([The support bundle](./support-bundle.md)) | yes |
+| Dependency licences: the inventory of every project's dependencies and their licences, on the **Dependencies** tab | yes ([Dependency licences](./dependency-licenses.md)) | yes | yes |
+| A licence policy: forbidden licences become issues and fail the gate | no | yes, feature `license-policy` ([The licence policy](./dependency-licenses.md#the-licence-policy-business-and-enterprise)) | yes |
 
 A licence switches on the features its key lists, and nothing else. A Business key lists `sso`,
-`audit-log`, `llm.fix-quota` and `support-bundle`; an Enterprise key lists those and `sso.multi`,
+`audit-log`, `llm.fix-quota`, `support-bundle` and `license-policy`; an Enterprise key lists those and `sso.multi`,
 `audit-log.stream`, `scim`, `compliance-export`, `portfolio` and `llm.auto-fix` too. **Settings → Licence** lists
 the features the key has under **Enterprise features**, each marked Active or Not active;
 `GET /api/v0/license` shows the same. Roles and project access need no licence: they are part of
@@ -61,7 +63,7 @@ needs a subscription. Everything outside `enterprise/` is MIT.
 | Plan | Price | What you get |
 |---|---|---|
 | Community | free | the community edition (MIT), with no limit on lines of code, users, projects or organisations, including all four roles and project access; no licence key; help from the community |
-| Business | $4,900 a year | single sign-on (OIDC, SAML 2.0) with one enabled connection at a time, the audit log with its JSON Lines export, the higher AI fix suggestion limit and the support bundle; email support |
+| Business | $4,900 a year | single sign-on (OIDC, SAML 2.0) with one enabled connection at a time, the audit log with its JSON Lines export, the higher AI fix suggestion limit, the support bundle and the dependency licence policy; email support |
 | Enterprise | $12,000 a year | everything in Business, plus SCIM 2.0 provisioning, streaming the audit log to a SIEM, several identity providers at once (up to 10 connections), compliance reports, portfolio reports and automatic fix suggestions; SLA support: email only, first reply within 1 business day for critical issues, no phone or 24x7 |
 
 Prices are per server instance, per year, in US dollars. They never depend on lines of code or
@@ -238,6 +240,9 @@ Users who are not instance admins see nothing else about the licence.
    - **Portfolio** leaves the top bar and every `/api/v0/ee/portfolio` route answers 403
      `FEATURE_NOT_LICENSED`; the portfolio keeps no data of its own, so nothing is lost
      ([When the licence lapses](./portfolio.md#when-the-licence-lapses));
+   - the licence policy is kept but no longer applied: analyses neither add nor close licence
+     issues, and changing the policy answers 403 `FEATURE_NOT_LICENSED`; the **Dependencies** tab
+     keeps working ([When the licence lapses](./dependency-licenses.md#when-the-licence-lapses));
    - **nothing is deleted and nothing becomes read-only.** Every organisation, project, issue,
      history and setting stays, and every organisation keeps working as before, with the community
      edition's features;

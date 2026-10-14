@@ -202,7 +202,8 @@ Do this:
    the plain job from gitlab.md. It must have GIT_DEPTH 0, run in
    merge request pipelines and on the default branch, install the
    dependencies (JS/TS, `go mod download` for Go) or build (Java, and C/C++ for clang-tidy)
-   before the scan, produce
+   before the scan, so the analyzers and the dependency licence
+   inventory (dependency-licenses.md) see them, produce
    coverage before the scan (reuse the existing test job's artifact
    through `needs` if one exists, instead of running the tests
    twice), and keep the Code Quality, SAST and Dependency Scanning
@@ -248,7 +249,8 @@ Do this:
    branch, permissions contents: read, the scanner container with
    --user 1001, actions/checkout pinned by SHA with fetch-depth 0,
    persist-credentials false and the PR head ref, the fork guard,
-   and then install/build, tests with coverage, and `qualor scan`.
+   and then install/build (installed dependencies also give Qualor
+   their licences), tests with coverage, and `qualor scan`.
    For C#, use the qualor-dotnet.yml template with our real build
    command. If the image is private, add container credentials and
    packages: read.

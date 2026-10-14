@@ -6,6 +6,41 @@ All notable changes to Qualor are listed here, newest first. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Dependency licences: every scan now records the project's dependencies and their licences,
+  through a second, offline Trivy pass that needs no database. A project's new **Dependencies**
+  tab lists them by branch or merge request, with their lockfile line, licences and whether they
+  are direct, filters, and how many have a known licence; `GET /api/v0/projects/{id}/dependencies`
+  returns the same. npm and Composer lockfiles carry the licences; for pnpm, Yarn, Go, NuGet,
+  Maven and Gradle, install the dependencies in the scan job before `qualor scan`. Development
+  dependencies are left out. The new `qualor.yml` keys `analyzers.trivy.licenses` (`auto`,
+  `true` or `false`) and `analyzers.trivy.licenseTimeoutSeconds` (default 300) control the pass;
+  a failure or a timeout is a warning (`LICENSE_SCAN_FAILED`, `LICENSE_SCAN_TIMEOUT`) and never
+  fails the scan. The measure `unknown_licenses_ratio` gives the share of packages with an
+  unknown licence. This is in every edition. See
+  [Dependency licences](docs/guide/dependency-licenses.md).
+- A licence policy (Business and Enterprise): an organisation admin sets, in **Settings → Licence
+  policy** or through `GET/PUT /api/v0/organizations/{id}/license-policy`, which licences the
+  organisation's projects may use: Qualor's licence groups (network copyleft, strong copyleft,
+  weak copyleft, non-commercial or source-available), SPDX ids to forbid or to allow, or an allow
+  list. A dependency under a forbidden licence becomes an issue `license:forbidden` (severity
+  high) of the new quality **Licensing**, which has no rating; with **Warn about dependencies with
+  unknown licences**, a package without a licence becomes an Info issue `license:unknown`. They
+  get the new-code treatment and the merge request decoration, won't fix accepts one package, and
+  the new gate metrics `licensing_issues`, `forbidden_licenses` and their `new_` forms count them.
+  The built-in "Qualor way" gate is unchanged: its `new_issues > 0` already fails on a new
+  forbidden licence. Compliance and portfolio reports leave licence issues out. A policy change
+  applies from each project's next analysis. It needs a licence key listing the new feature
+  `license-policy`. The new permission `org.licenses.manage` (Organization admin) and the audit
+  action `organization.license_policy_changed` go with it.
+
+### Changed
+
+- **Breaking:** `license` is now a reserved engine id, the engine of the licence policy's issues.
+  A `qualor.yml` `sarif:` entry with `engine: license` is a configuration error (exit 2): rename
+  it. A SARIF file whose tool is named `license` is reported as `ext-license`.
+
 ## [0.8.0] - 2026-10-14
 
 ### Added

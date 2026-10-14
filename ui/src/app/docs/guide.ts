@@ -10,6 +10,7 @@ const PAGES: Readonly<Record<string, () => Promise<{ default: string }>>> = {
   cli: () => import('../../../../docs/guide/cli.md'),
   'compliance-reports': () => import('../../../../docs/guide/compliance-reports.md'),
   configuration: () => import('../../../../docs/guide/configuration.md'),
+  'dependency-licenses': () => import('../../../../docs/guide/dependency-licenses.md'),
   // The guide's page about the enterprise edition (Markdown text), not the enterprise/ package.
   // eslint-disable-next-line no-restricted-syntax
   enterprise: () => import('../../../../docs/guide/enterprise.md'),
