@@ -124,6 +124,11 @@ function normalizeOne(
       fragmentTexts: secrets.fragmentTexts,
     };
   } catch (err) {
+    // A salvaged SARIF that cannot be read leaves the run's own status and reason.
+    if (c.status !== 'ok') {
+      o.log.debug(`${c.engineId}: salvaged SARIF not normalised: ${String(err)}`);
+      return { engine, result: null, secretTexts: [], fragmentTexts: [] };
+    }
     if (!(err instanceof SarifError)) {
       // Fix round 2 of tasks 5-6: anything else (a resource limit, a bug) fails this engine
       // only, with a fixed reason like every other analyzer failure; the detail is debug-only.

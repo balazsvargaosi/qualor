@@ -449,6 +449,27 @@ describe('runAnalyzers', () => {
     },
   );
 
+  it('keeps the tool version of a finished run that has a salvage (Task 24 fix round)', async () => {
+    const { root, files, toolPath } = setup();
+    const base = fake('eslint', toolPath, 'ok');
+    const analyzer: Analyzer = {
+      ...base,
+      prepare: async (ctx) => {
+        const prep = await base.prepare(ctx);
+        if (!('run' in prep)) return prep;
+        return { run: { ...prep.run, salvage: { sarif: SARIF, version: 'engine 1' } } };
+      },
+    };
+    const [c] = await runAnalyzers([analyzer], {
+      root,
+      files,
+      config: config(),
+      log: silentLogger,
+    });
+    expect(c).toMatchObject({ status: 'ok', reason: null, version: '1.2.3' });
+    expect(c?.salvaged).toBeUndefined();
+  });
+
   it('skips disabled analyzers and analyzers whose languages are absent', async () => {
     const { root, files, toolPath } = setup();
     const captures = await runAnalyzers(

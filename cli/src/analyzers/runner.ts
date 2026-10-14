@@ -252,9 +252,17 @@ export function releaseWorkDir(dir: string, log: Logger): void {
 }
 
 /** The SARIF of an analyzer whose process did not finish, kept in the capture. */
-function salvaged(s: SalvagedSarif): { sarif: unknown; version: string | null } {
-  return { sarif: s.sarif, version: s.version };
+function salvaged(s: SalvagedSarif): {
+  sarif: unknown;
+  version: string | null;
+  salvaged: true;
+} {
+  return { sarif: s.sarif, version: s.version, salvaged: true };
 }
+
+/** The reason of a run that did not finish, saying its salvaged findings are still reported. */
+export const SALVAGE_NOTE = "the Roslyn taint engine's findings are included";
+const withNote = (reason: string): string => `${reason}; ${SALVAGE_NOTE}`;
 
 async function capture(
   analyzer: Analyzer,
@@ -345,13 +353,17 @@ async function capture(
     if ('skip' in prep || 'unavailable' in prep) {
       const unavailable = 'unavailable' in prep;
       const reason = 'unavailable' in prep ? prep.unavailable : prep.skip;
-      const kept = 'salvage' in prep && prep.salvage !== undefined ? salvaged(prep.salvage) : {};
-      if (!required) return { ...skipped(reason, required, unavailable), ...kept };
+      const kept: Partial<SarifCapture> =
+        'salvage' in prep && prep.salvage !== undefined ? salvaged(prep.salvage) : {};
+      if (!required) {
+        const s = skipped(reason, required, unavailable);
+        return kept.salvaged === true ? { ...s, ...kept, reason: withNote(reason) } : s;
+      }
       o.log.error(`${analyzer.id}: ${reason}`);
       return {
         ...base,
         status: 'failed',
-        reason,
+        reason: kept.salvaged === true ? withNote(reason) : reason,
         durationMs: performance.now() - started,
         ...(unavailable && { unavailable }),
         ...kept,
@@ -394,17 +406,18 @@ async function capture(
     );
     const done = (status: SarifCapture['status'], reason: string | null): SarifCapture => {
       if (reason !== null) o.log.warn(`${analyzer.id}: ${status} (${reason})`);
+      const keep = status !== 'ok' && run.salvage !== undefined;
       const roots = analyzer.sourceRoots?.(ctx);
       return {
         ...base,
         status,
-        reason,
+        reason: keep && reason !== null ? withNote(reason) : reason,
         durationMs: performance.now() - started,
         version: run.version ?? null,
         ...(roots !== undefined && { sourceRoots: roots }),
         ...(run.database !== undefined && { database: run.database }),
         ...(run.warnings !== undefined && { warnings: run.warnings }),
-        ...(run.salvage !== undefined && salvaged(run.salvage)),
+        ...(keep && run.salvage !== undefined && salvaged(run.salvage)),
       };
     };
     // Fix-round finding 4: `reason` is a fixed message per failure kind, never the analyzer's own

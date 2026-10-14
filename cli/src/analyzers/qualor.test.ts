@@ -932,6 +932,67 @@ describe("qualor with Qualor's Roslyn taint engine under qualor dotnet end (6B-C
     expect(none).toEqual({ unavailable: 'OpenGrep is not installed' });
   });
 
+  it('reports the engine findings of a timed-out or failed OpenGrep run, with its status and reason (fix round 1, I2)', async () => {
+    const { root, files, pack } = setup();
+    const prep = await createQualorAnalyzer({ defaultDir: pack }).prepare(
+      withTaint(root, files, ok(root)),
+    );
+    if (!('run' in prep) || prep.run.salvage === undefined) throw new Error(JSON.stringify(prep));
+    const salvage = prep.run.salvage;
+    for (const [status, reason] of [
+      ['timeout', "timed out after 900 s; the Roslyn taint engine's findings are included"],
+      ['failed', "exited with code 2; the Roslyn taint engine's findings are included"],
+    ] as const) {
+      const out = normalizeCaptures(
+        [
+          {
+            engineId: 'qualor',
+            kind: 'builtin',
+            status,
+            reason,
+            durationMs: 1,
+            version: salvage.version,
+            required: false,
+            sarif: salvage.sarif,
+            salvaged: true,
+            mapping: engineMapping('qualor')!,
+            ruleLanguages: QUALOR_LANGUAGES,
+          },
+        ],
+        {
+          repoRoot: root,
+          readLines: fileLines(root),
+          knownPaths: new Set(['app.py', 'src/A.cs', 'src/B.cs']),
+          log: silentLogger,
+        },
+      );
+      expect(findingKeys(out.findings), status).toEqual([
+        'qualor:csharp/sql-injection src/A.cs:4 [blocker]',
+      ]);
+      expect(out.engines[0], status).toMatchObject({ status, reason });
+    }
+    // A salvage that cannot be read leaves the status and reason as they were.
+    const bad = normalizeCaptures(
+      [
+        {
+          engineId: 'qualor',
+          kind: 'builtin',
+          status: 'timeout',
+          reason: 'timed out after 900 s',
+          durationMs: 1,
+          version: null,
+          required: false,
+          sarif: { runs: 'nonsense' },
+          salvaged: true,
+          mapping: engineMapping('qualor')!,
+        },
+      ],
+      { repoRoot: root, readLines: fileLines(root), knownPaths: new Set(), log: silentLogger },
+    );
+    expect(bad.findings).toEqual([]);
+    expect(bad.engines[0]).toMatchObject({ status: 'timeout', reason: 'timed out after 900 s' });
+  });
+
   it('runs as in a plain scan when the engine was not attempted', async () => {
     const { root, files, pack } = setup();
     const prep = await createQualorAnalyzer({ defaultDir: pack }).prepare(

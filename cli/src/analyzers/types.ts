@@ -207,6 +207,8 @@ export interface SarifCapture {
   required: boolean;
   /** Parsed SARIF JSON when `status` is `ok`. */
   sarif?: unknown;
+  /** `sarif` is a salvaged part of a run that did not finish (`AnalyzerCommand.salvage`). */
+  salvaged?: boolean;
   mapping?: EngineMapping;
   sourceRoots?: readonly string[];
   /** The command's `database`, for the engine entry, when the tool ran. */
