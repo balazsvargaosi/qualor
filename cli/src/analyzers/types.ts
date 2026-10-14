@@ -136,6 +136,18 @@ export interface AnalyzerCommand {
    * copies environment text into them.
    */
   configWarnings?(stderr: string): readonly string[];
+  /**
+   * SARIF that is part of this analyzer's result whatever the process does (the qualor engine's
+   * Roslyn taint findings, which do not depend on OpenGrep): kept when the run times out, fails or
+   * cannot be converted; the engine still reports that status and reason.
+   */
+  salvage?: SalvagedSarif;
+}
+
+/** SARIF a run keeps although the tool did not finish (see `AnalyzerCommand.salvage`). */
+export interface SalvagedSarif {
+  sarif: unknown;
+  version: string | null;
 }
 
 export type Preparation =
@@ -151,7 +163,7 @@ export type Preparation =
    * missing): skipped under auto, failed under true, and marked `unavailable` on the capture, so
    * ruling G6 counts the engine as incomplete.
    */
-  | { unavailable: string }
+  | { unavailable: string; salvage?: SalvagedSarif }
   /**
    * SARIF the tool already wrote outside the CLI (Roslyn, inside the project's build between
    * `qualor dotnet begin` and `end`): recorded as `ok` without running anything.

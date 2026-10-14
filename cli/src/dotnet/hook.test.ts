@@ -144,6 +144,7 @@ describe('the hook text', () => {
       'tfm=',
       'assembly=',
       'output-kind=',
+      "startup-object=$([MSBuild]::Escape('$(StartupObject)'))",
       'lang-version=',
       'nullable=',
       'defines=',

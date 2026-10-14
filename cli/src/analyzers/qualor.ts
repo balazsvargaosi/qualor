@@ -451,7 +451,11 @@ export function createQualorAnalyzer(
     if (engine !== null && files.length === 0) return { collected: engine };
     // Plan 6B-1: only the OpenGrep the pack is tested with, never Semgrep.
     const opengrep = ctx.resolveBinary('opengrep');
-    if (opengrep === null) return { unavailable: 'OpenGrep is not installed' };
+    // The engine's findings stand without OpenGrep (Task 24), whatever happens to its run.
+    const salvage = engine === null ? undefined : { sarif: engine.sarif, version: engine.version };
+    if (opengrep === null) {
+      return { unavailable: 'OpenGrep is not installed', ...(salvage && { salvage }) };
+    }
     // Named files are scanned whatever .gitignore, .semgrepignore or OpenGrep's own ignores say.
     // Each argument costs its bytes, the terminating NUL and a pointer in argv (8 bytes).
     const explicit = files.reduce((n, f) => n + Buffer.byteLength(f) + 1 + 8, 0) <= budget;
@@ -504,6 +508,7 @@ export function createQualorAnalyzer(
           if (engine !== null) withTaintEngineRuns(output, engine.sarif, ctx.root, byEngine);
           return output;
         },
+        ...(salvage !== undefined && { salvage }),
         ...(taint?.kind === 'fallback' && { warnings: [taintFallbackWarning(taint.reason)] }),
       },
     };

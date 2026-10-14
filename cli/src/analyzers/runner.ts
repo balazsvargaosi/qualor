@@ -13,6 +13,7 @@ import type {
   DotnetRun,
   ExecOptions,
   Preparation,
+  SalvagedSarif,
   SarifCapture,
 } from './types';
 
@@ -250,6 +251,11 @@ export function releaseWorkDir(dir: string, log: Logger): void {
   removeWorkDir(dir, log);
 }
 
+/** The SARIF of an analyzer whose process did not finish, kept in the capture. */
+function salvaged(s: SalvagedSarif): { sarif: unknown; version: string | null } {
+  return { sarif: s.sarif, version: s.version };
+}
+
 async function capture(
   analyzer: Analyzer,
   o: RunAnalyzersOptions,
@@ -339,7 +345,8 @@ async function capture(
     if ('skip' in prep || 'unavailable' in prep) {
       const unavailable = 'unavailable' in prep;
       const reason = 'unavailable' in prep ? prep.unavailable : prep.skip;
-      if (!required) return skipped(reason, required, unavailable);
+      const kept = 'salvage' in prep && prep.salvage !== undefined ? salvaged(prep.salvage) : {};
+      if (!required) return { ...skipped(reason, required, unavailable), ...kept };
       o.log.error(`${analyzer.id}: ${reason}`);
       return {
         ...base,
@@ -347,6 +354,7 @@ async function capture(
         reason,
         durationMs: performance.now() - started,
         ...(unavailable && { unavailable }),
+        ...kept,
       };
     }
     if ('collected' in prep) {
@@ -396,6 +404,7 @@ async function capture(
         ...(roots !== undefined && { sourceRoots: roots }),
         ...(run.database !== undefined && { database: run.database }),
         ...(run.warnings !== undefined && { warnings: run.warnings }),
+        ...(run.salvage !== undefined && salvaged(run.salvage)),
       };
     };
     // Fix-round finding 4: `reason` is a fixed message per failure kind, never the analyzer's own

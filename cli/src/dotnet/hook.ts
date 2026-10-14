@@ -127,6 +127,7 @@ export function hookText(): string {
       <_QualorIn Include="tfm=$([MSBuild]::Escape('$(TargetFramework)'))" />
       <_QualorIn Include="assembly=$([MSBuild]::Escape('$(AssemblyName)'))" />
       <_QualorIn Include="output-kind=$([MSBuild]::Escape('$(OutputType)'))" />
+      <_QualorIn Include="startup-object=$([MSBuild]::Escape('$(StartupObject)'))" />
       <_QualorIn Include="lang-version=$([MSBuild]::Escape('$(LangVersion)'))" />
       <_QualorIn Include="nullable=$([MSBuild]::Escape('$(Nullable)'))" />
       <_QualorIn Include="defines=$([MSBuild]::Escape('$(DefineConstants)'))" />

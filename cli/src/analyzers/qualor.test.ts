@@ -900,6 +900,38 @@ describe("qualor with Qualor's Roslyn taint engine under qualor dotnet end (6B-C
     }
   });
 
+  it('hands the engine findings on whatever OpenGrep does: absent, timed out or failed (Task 24)', async () => {
+    const { root, files, pack } = setup();
+    const analyzer = createQualorAnalyzer({ defaultDir: pack });
+    const expected = ['qualor:csharp/sql-injection src/A.cs:4 [blocker]'];
+    const capture = (sarif: unknown): unknown => sarif;
+
+    // OpenGrep is not installed: unavailable, with the engine's SARIF.
+    const absent = await analyzer.prepare(withTaint(root, files, ok(root), { binaries: {} }));
+    if (!('unavailable' in absent) || absent.salvage === undefined) {
+      throw new Error(JSON.stringify(absent));
+    }
+    expect(absent.unavailable).toBe('OpenGrep is not installed');
+    expect(absent.salvage.version).toBe('qualor-taint 2026.10.4 + qualor-rules 2026.10.4');
+    expect(findingKeys(normalizeIn(root, capture(absent.salvage.sarif)).findings)).toEqual(
+      expected,
+    );
+
+    // The OpenGrep run carries the same SARIF for a timeout, a failure or a bad conversion.
+    const prep = await analyzer.prepare(withTaint(root, files, ok(root)));
+    if (!('run' in prep) || prep.run.salvage === undefined) throw new Error(JSON.stringify(prep));
+    expect(findingKeys(normalizeIn(root, capture(prep.run.salvage.sarif)).findings)).toEqual(
+      expected,
+    );
+
+    // Without an engine run there is nothing to keep.
+    const plain = await analyzer.prepare(withTaint(root, files, null));
+    if (!('run' in plain)) throw new Error(JSON.stringify(plain));
+    expect(plain.run.salvage).toBeUndefined();
+    const none = await analyzer.prepare(withTaint(root, files, null, { binaries: {} }));
+    expect(none).toEqual({ unavailable: 'OpenGrep is not installed' });
+  });
+
   it('runs as in a plain scan when the engine was not attempted', async () => {
     const { root, files, pack } = setup();
     const prep = await createQualorAnalyzer({ defaultDir: pack }).prepare(

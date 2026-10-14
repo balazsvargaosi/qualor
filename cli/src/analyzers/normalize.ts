@@ -93,7 +93,8 @@ function normalizeOne(
     rules: [],
     ...(c.database !== undefined && { database: c.database }),
   };
-  if (c.status !== 'ok') return { engine, result: null, secretTexts: [], fragmentTexts: [] };
+  if (c.status !== 'ok' && c.sarif === undefined)
+    return { engine, result: null, secretTexts: [], fragmentTexts: [] };
   try {
     const { result, secrets } = normalizeSarifWithSecrets(c.sarif, {
       engineId: c.engineId,

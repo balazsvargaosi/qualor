@@ -389,6 +389,66 @@ describe('runAnalyzers', () => {
     expect(requiredFailures(captures)).toEqual(['gitleaks']);
   });
 
+  it(
+    'keeps the salvaged SARIF of a run that times out, fails or cannot be converted (Task 24)',
+    { timeout: 20_000 },
+    async () => {
+      const { root, files, toolPath } = setup();
+      const kept = { sarif: SARIF, version: 'engine 1' };
+      const withSalvage = (id: AnalyzerId, mode: string, transform?: boolean): Analyzer => {
+        const base = fake(id, toolPath, mode);
+        return {
+          ...base,
+          prepare: async (ctx) => {
+            const prep = await base.prepare(ctx);
+            if (!('run' in prep)) return prep;
+            return {
+              run: {
+                ...prep.run,
+                salvage: kept,
+                ...(transform === true && {
+                  transform: () => {
+                    throw new Error('bad');
+                  },
+                }),
+              },
+            };
+          },
+        };
+      };
+      const captures = await runAnalyzers(
+        [
+          withSalvage('gitleaks', 'hang'),
+          withSalvage('eslint', 'crash'),
+          withSalvage('pmd', 'ok', true),
+        ],
+        { root, files, config: config({ gitleaks: { timeoutSeconds: 1 } }), log: silentLogger },
+      );
+      expect(captures.map((c) => [c.engineId, c.status, c.sarif, c.version])).toEqual([
+        ['gitleaks', 'timeout', SARIF, 'engine 1'],
+        ['eslint', 'failed', SARIF, 'engine 1'],
+        ['pmd', 'failed', SARIF, 'engine 1'],
+      ]);
+      // A preparation that cannot run keeps it too.
+      const [unavailable] = await runAnalyzers(
+        [
+          {
+            id: 'eslint',
+            languages: [],
+            prepare: () => Promise.resolve({ unavailable: 'not installed', salvage: kept }),
+          },
+        ],
+        { root, files, config: config(), log: silentLogger },
+      );
+      expect(unavailable).toMatchObject({
+        status: 'skipped',
+        unavailable: true,
+        sarif: SARIF,
+        version: 'engine 1',
+      });
+    },
+  );
+
   it('skips disabled analyzers and analyzers whose languages are absent', async () => {
     const { root, files, toolPath } = setup();
     const captures = await runAnalyzers(
