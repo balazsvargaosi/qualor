@@ -129,7 +129,8 @@ caller gets 60 searches a minute (429 `RATE_LIMITED` beyond that); the exact loo
 30.
 
 ```sh
-curl -fsS -H "Authorization: Bearer $QUALOR_ADMIN_TOKEN" \n  "$QUALOR_URL/api/v0/users/search?q=smi&excludeOrganization=<org id>"
+curl -fsS -H "Authorization: Bearer $QUALOR_ADMIN_TOKEN" \
+  "$QUALOR_URL/api/v0/users/search?q=smi&excludeOrganization=<org id>"
 ```
 
 `GET /auth/me` and every project answer (`GET /projects`, `GET /projects/{id}`,

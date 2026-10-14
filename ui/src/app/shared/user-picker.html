@@ -15,6 +15,7 @@
       [attr.aria-controls]="listboxId()"
       [attr.aria-activedescendant]="activeId()"
       [attr.aria-invalid]="invalid() ? true : null"
+      [attr.aria-required]="required() ? true : null"
       [attr.aria-describedby]="describedBy()"
       [value]="text()"
       (input)="onInput($event)"
@@ -22,12 +23,14 @@
       (blur)="onBlur()"
     />
     <ul
+      #list
       class="user-picker-list"
       role="listbox"
       [id]="listboxId()"
       aria-label="Suggestions"
       i18n-aria-label="@@userPicker.list"
       [hidden]="!open()"
+      [style.max-height]="listMax()"
     >
       @for (user of suggestions(); track user.id; let i = $index) {
         <li

@@ -3,10 +3,6 @@
   display: block;
   min-width: 0;
 }
-.user-picker {
-  display: grid;
-  gap: var(--space-1);
-}
 .user-picker-field {
   position: relative;
 }
@@ -19,7 +15,8 @@
   z-index: 10;
   left: 0;
   right: 0;
-  max-height: 15rem;
+  /* About six rows, less on a short screen: the list must not outgrow a dialog. */
+  max-height: min(15rem, 40vh);
   margin: 0;
   padding: 6px;
   overflow-y: auto;
@@ -50,6 +47,9 @@
 .user-picker-name {
   font-weight: 600;
 }
-.user-picker-status:empty {
-  display: none;
+/* The live region is always rendered (a region that appears with its words is often not read);
+   only what it says takes room. */
+.user-picker-status > :not(.visually-hidden) {
+  display: block;
+  margin-top: var(--space-1);
 }

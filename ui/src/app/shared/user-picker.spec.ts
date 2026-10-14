@@ -49,14 +49,20 @@ describe('UserPicker', () => {
     return { root, input, picker: fixture.componentInstance };
   }
 
+  /** Types into the field, which has the focus as a person's typing gives it. */
   function type(input: HTMLInputElement, value: string): void {
+    input.focus();
     input.value = value;
     input.dispatchEvent(new Event('input'));
   }
 
   /** Presses a key in the input; true when the picker took it (its default was prevented). */
-  function press(input: HTMLInputElement, key: string): { prevented: boolean; stopped: boolean } {
-    const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+  function press(
+    input: HTMLInputElement,
+    key: string,
+    init: KeyboardEventInit = {},
+  ): { prevented: boolean; stopped: boolean } {
+    const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...init });
     let stopped = true;
     const outside = () => (stopped = false);
     document.addEventListener('keydown', outside);
@@ -212,7 +218,8 @@ describe('UserPicker', () => {
   });
 
   it('Escape closes the list and only the list; closed, Escape is left to the dialog', async () => {
-    const { input } = await render(async () => [ALICE]);
+    const source = vi.fn<UserSource>(async () => [ALICE]);
+    const { input } = await render(source);
     type(input, 'al');
     await flush(SEARCH_DELAY_MS);
     expect(input.getAttribute('aria-expanded')).toBe('true');
@@ -222,10 +229,96 @@ describe('UserPicker', () => {
     expect(input.value).toBe('al');
     const closed = press(input, 'Escape');
     expect(closed).toEqual({ prevented: false, stopped: false });
-    // ArrowDown asks again at once and opens the list.
+    // ArrowDown opens the list again on the suggestions it had, without asking again.
     press(input, 'ArrowDown');
     await flush();
     expect(input.getAttribute('aria-expanded')).toBe('true');
+    expect(source).toHaveBeenCalledTimes(1);
+  });
+
+  it('scrolls the highlighted suggestion into view as the keys move it', async () => {
+    const many = Array.from({ length: 10 }, (_, i) => ({
+      id: `u-${i}`,
+      username: `user${i}`,
+      displayName: null,
+    }));
+    const scrolled: string[] = [];
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (this: Element, options?: unknown) {
+      expect(options).toEqual({ block: 'nearest' });
+      scrolled.push(this.id);
+    } as typeof Element.prototype.scrollIntoView;
+    try {
+      const { input } = await render(async () => many);
+      type(input, 'us');
+      await flush(SEARCH_DELAY_MS);
+      for (let i = 0; i < 8; i++) press(input, 'ArrowDown');
+      await flush();
+      expect(input.getAttribute('aria-activedescendant')).toBe('who-option-7');
+      expect(scrolled.at(-1)).toBe('who-option-7');
+      press(input, 'ArrowUp');
+      await flush();
+      expect(scrolled.at(-1)).toBe('who-option-6');
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
+  it('keeps an answer that arrives after the field lost the focus, the list closed', async () => {
+    const { source, calls } = heldSource();
+    const { root, input } = await render(source);
+    type(input, 'al');
+    await flush(SEARCH_DELAY_MS);
+    input.blur();
+    calls[0]!.resolve([ALICE]);
+    await flush();
+    expect(input.getAttribute('aria-expanded')).toBe('false');
+    expect(status(root)).toBe('');
+    // Back in the field, ArrowDown opens the kept suggestions, without asking again.
+    input.focus();
+    press(input, 'ArrowDown');
+    await flush();
+    expect(input.getAttribute('aria-expanded')).toBe('true');
+    expect(options(root)).toEqual(['alice — Alice Smith']);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('asks again on ArrowDown after no match or a refusal only when the text changed', async () => {
+    const source = vi.fn<UserSource>(async () => []);
+    const { input } = await render(source);
+    type(input, 'zz');
+    await flush(SEARCH_DELAY_MS);
+    press(input, 'ArrowDown');
+    press(input, 'ArrowDown');
+    await flush();
+    expect(source).toHaveBeenCalledTimes(1);
+    type(input, 'zzz');
+    press(input, 'ArrowDown');
+    await flush();
+    expect(source).toHaveBeenCalledTimes(2);
+    expect(source).toHaveBeenLastCalledWith('zzz');
+  });
+
+  it('leaves Enter to an input method that is composing a character', async () => {
+    const { input, picker } = await render(async () => [ALICE]);
+    type(input, 'al');
+    await flush(SEARCH_DELAY_MS);
+    press(input, 'ArrowDown');
+    expect(press(input, 'Enter', { isComposing: true }).prevented).toBe(false);
+    expect(picker.selected()).toBeNull();
+    expect(input.getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('keeps its live region rendered and shown while it has nothing to say', async () => {
+    const { root, input } = await render(async () => []);
+    const region = root.querySelector<HTMLElement>('[aria-live="polite"]')!;
+    expect(region.textContent?.trim()).toBe('');
+    expect(getComputedStyle(region).display).not.toBe('none');
+    type(input, 'zz');
+    await flush(SEARCH_DELAY_MS);
+    // The same element says it: it was never removed nor hidden.
+    expect(root.querySelector('[aria-live="polite"]')).toBe(region);
+    expect(region.textContent).toContain('No user matches.');
   });
 
   it('keeps free text: Enter without a highlighted suggestion submits, and typing forgets a pick', async () => {
@@ -319,10 +412,13 @@ describe('UserPicker', () => {
     const { input } = await render(async () => []);
     fixture.componentRef.setInput('invalid', true);
     fixture.componentRef.setInput('describedBy', 'who-error');
+    expect(input.hasAttribute('aria-required')).toBe(false);
     fixture.componentRef.setInput('autofocus', true);
+    fixture.componentRef.setInput('required', true);
     fixture.detectChanges();
     expect(input.getAttribute('aria-invalid')).toBe('true');
     expect(input.getAttribute('aria-describedby')).toBe('who-error');
     expect(input.hasAttribute('autofocus')).toBe(true);
+    expect(input.getAttribute('aria-required')).toBe('true');
   });
 });

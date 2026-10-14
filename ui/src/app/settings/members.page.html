@@ -146,7 +146,13 @@
   </section>
 
   @if (canManage()) {
-    <dialog #addDialog id="add-dialog" class="dialog" aria-labelledby="add-dialog-title">
+    <dialog
+      #addDialog
+      id="add-dialog"
+      class="dialog"
+      aria-labelledby="add-dialog-title"
+      (close)="addClosed()"
+    >
       <form novalidate (submit)="add($event)">
         <div class="dialog-head">
           <h2 id="add-dialog-title" i18n="@@members.add">Add a member</h2>
@@ -159,6 +165,7 @@
             <label for="member-username" i18n="@@members.username">User name</label>
             <q-user-picker
               autofocus
+              required
               inputId="member-username"
               [source]="searchUsers"
               [minLength]="searchMin()"

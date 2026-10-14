@@ -1,10 +1,12 @@
 import {
+  afterNextRender,
   booleanAttribute,
   Component,
   computed,
   DestroyRef,
   type ElementRef,
   inject,
+  Injector,
   input,
   model,
   signal,
@@ -29,6 +31,9 @@ export type UserSource = (query: string) => Promise<readonly UserSuggestion[]>;
 export const SEARCH_DELAY_MS = 250;
 /** A user name is 1 to 64 characters (`GET /users/lookup`, `GET /users/search`). */
 const USERNAME_MAX_LENGTH = 64;
+/** The gap between the field and its list, and the least height the list keeps (three rows). */
+const LIST_GAP_PX = 4;
+const LIST_MIN_PX = 112;
 
 type State = 'idle' | 'short' | 'loading' | 'results' | 'empty' | 'error';
 
@@ -40,13 +45,15 @@ type State = 'idle' | 'short' | 'loading' | 'results' | 'empty' | 'error';
  *
  * - It asks `source` once typing has paused for 250 ms, and only from `minLength` characters
  *   (code points, as the server counts them); a shorter name gets a hint, not a request. Only the
- *   answer to the latest request is shown: an earlier one arriving late is dropped.
- * - ArrowDown and ArrowUp move through the suggestions, Enter picks one, Escape closes the list
- *   (and only the list: a dialog around it stays open); a click picks one too.
+ *   answer to the latest request is shown: an earlier one arriving late is dropped. An answer
+ *   that arrives once the field has lost the focus is kept, the list closed, for ArrowDown.
+ * - ArrowDown and ArrowUp move through the suggestions (the highlighted one scrolled into view),
+ *   Enter picks one, Escape closes the list (and only the list: a dialog around it stays open); a
+ *   click picks one too. ArrowDown asks again only when the text changed since the last answer.
  * - Free text stays allowed: `selected` is the suggestion picked, null as soon as the text changes,
  *   and a page that gets a name without a pick resolves it itself (`GET /users/lookup`).
- * - Searching, no match, a short name and a refused search are said in a polite live region; a
- *   refusal (429 RATE_LIMITED among them) is shown, never dropped.
+ * - Searching, no match, a short name and a refused search are said in a polite live region,
+ *   which is always rendered; a refusal (429 RATE_LIMITED among them) is shown, never dropped.
  */
 @Component({
   selector: 'q-user-picker',
@@ -65,6 +72,8 @@ export class UserPicker {
   readonly describedBy = input<string | null>(null);
   /** The input takes the focus when its dialog opens (the dialog's `autofocus`). */
   readonly autofocus = input(false, { transform: booleanAttribute });
+  /** The form needs a name here (`aria-required`; the page checks it on submit). */
+  readonly required = input(false, { transform: booleanAttribute });
 
   /** The text in the field. */
   readonly text = model('');
@@ -84,11 +93,17 @@ export class UserPicker {
     this.open() && this.active() >= 0 ? this.optionId(this.active()) : null,
   );
   protected readonly maxLength = USERNAME_MAX_LENGTH;
+  /** The list's height limit: the room under the field, in its dialog or the window. */
+  protected readonly listMax = signal<string | null>(null);
 
+  private readonly injector = inject(Injector);
   private readonly field = viewChild.required<ElementRef<HTMLInputElement>>('field');
+  private readonly list = viewChild.required<ElementRef<HTMLElement>>('list');
   private timer: ReturnType<typeof setTimeout> | undefined;
   /** Counts requests (and cancellations): only the latest request's answer is shown. */
   private generation = 0;
+  /** The query of the last answer (suggestions, none, or a refusal); null once the text changed. */
+  private answered: string | null = null;
 
   constructor() {
     inject(DestroyRef).onDestroy(() => this.cancel());
@@ -112,6 +127,8 @@ export class UserPicker {
   }
 
   protected onKeydown(event: KeyboardEvent): void {
+    // While an input method composes a character, its keys are its own (Enter confirms it).
+    if (event.isComposing) return;
     switch (event.key) {
       case 'ArrowDown':
         event.preventDefault();
@@ -138,11 +155,12 @@ export class UserPicker {
         return;
       }
       case 'Escape':
-        // The list closes; a dialog around the field must not close with it.
+        // The list closes (its suggestions kept for ArrowDown); a dialog around it stays open.
         if (!this.open()) return;
         event.preventDefault();
         event.stopPropagation();
-        this.close();
+        this.state.set('idle');
+        this.active.set(-1);
         return;
     }
   }
@@ -154,6 +172,7 @@ export class UserPicker {
 
   protected pick(user: UserSuggestion): void {
     this.cancel();
+    this.answered = null;
     this.text.set(user.username);
     this.field().nativeElement.value = user.username;
     this.selected.set(user);
@@ -181,9 +200,10 @@ export class UserPicker {
     this.field().nativeElement.value = '';
   }
 
-  /** Stops a pending or running search and closes the list (the page submits). */
+  /** Stops a pending or running search and closes the list (the page submits, its dialog closed). */
   close(): void {
     this.cancel();
+    this.answered = null;
     this.state.set('idle');
     this.suggestions.set([]);
     this.active.set(-1);
@@ -191,19 +211,48 @@ export class UserPicker {
   }
 
   private reopen(index: number): void {
+    this.fit();
     this.state.set('results');
-    this.active.set(index);
+    this.highlight(index);
   }
 
   private move(step: number): void {
     const count = this.suggestions().length;
     const next = this.active() + step;
     // From the first, ArrowUp wraps to the last; from the last, ArrowDown wraps to the first.
-    this.active.set(next < 0 ? count - 1 : next >= count ? 0 : next);
+    this.highlight(next < 0 ? count - 1 : next >= count ? 0 : next);
+  }
+
+  /** Highlights a suggestion and scrolls the list, once rendered, so that it shows. */
+  private highlight(index: number): void {
+    this.active.set(index);
+    afterNextRender(
+      () => {
+        const option = this.list().nativeElement.children.item(index);
+        if (this.active() === index) option?.scrollIntoView?.({ block: 'nearest' });
+      },
+      { injector: this.injector },
+    );
+  }
+
+  /**
+   * Keeps the list within the room under the field: inside a dialog, down to the dialog's bottom
+   * edge (the list then overlays the dialog instead of making it scroll), else down to the
+   * window's. At least about three rows, at most about six.
+   */
+  private fit(): void {
+    const input = this.field().nativeElement;
+    const dialog = input.closest('dialog');
+    const bottom = dialog
+      ? dialog.getBoundingClientRect().bottom
+      : (input.ownerDocument.defaultView?.innerHeight ?? 0);
+    const room = Math.floor(bottom - input.getBoundingClientRect().bottom - LIST_GAP_PX * 2);
+    this.listMax.set(`min(15rem, ${Math.max(room, LIST_MIN_PX)}px)`);
   }
 
   private schedule(value: string): void {
     this.cancel();
+    this.answered = null;
     this.suggestions.set([]);
     this.active.set(-1);
     this.errorText.set('');
@@ -220,10 +269,13 @@ export class UserPicker {
     this.timer = setTimeout(() => void this.search(query), SEARCH_DELAY_MS);
   }
 
-  /** ArrowDown on a closed list: ask at once for the text as it stands. */
+  /**
+   * ArrowDown on a closed list: ask at once for the text as it stands, unless that text already
+   * has its answer (no match, or a refusal), which pressing again would only ask for again.
+   */
   private searchNow(): void {
     const query = this.text().trim();
-    if (query === '' || [...query].length < this.minLength()) return;
+    if (query === '' || [...query].length < this.minLength() || query === this.answered) return;
     this.cancel();
     this.state.set('loading');
     void this.search(query);
@@ -238,11 +290,17 @@ export class UserPicker {
       const sorted = [...found].sort((a, b) =>
         a.username < b.username ? -1 : a.username > b.username ? 1 : 0,
       );
+      this.answered = query;
       this.suggestions.set(sorted);
       this.active.set(-1);
-      this.state.set(sorted.length > 0 ? 'results' : 'empty');
+      // The field lost the focus meanwhile: no list opens under it; ArrowDown opens it later.
+      const focused =
+        this.field().nativeElement.ownerDocument.activeElement === this.field().nativeElement;
+      if (sorted.length > 0 && focused) this.fit();
+      this.state.set(sorted.length === 0 ? 'empty' : focused ? 'results' : 'idle');
     } catch (err) {
       if (generation !== this.generation) return;
+      this.answered = query;
       this.suggestions.set([]);
       this.errorText.set(
         err instanceof ApiError && err.code === 'RATE_LIMITED'

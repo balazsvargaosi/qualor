@@ -472,6 +472,31 @@ describe('MembersPage (rbac-audit.md §17)', () => {
     );
   });
 
+  it('marks the name required, and closing the dialog drops a search still pending', async () => {
+    const server = setup();
+    new FakeUserDirectory(server, {
+      users: [{ id: CAROL, username: 'carol', displayName: null }],
+    });
+    const { fixture, root } = await render();
+    const add = await openAdd(root, fixture);
+    expect(add.querySelector('#member-username')?.getAttribute('aria-required')).toBe('true');
+    type(root, '#member-username', 'ca');
+    button(add, 'Cancel').click();
+    await settle(fixture);
+    expect(add.open).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, SEARCH_DELAY_MS + 20));
+    await settle(fixture);
+    expect(server.requestsTo('GET', '/api/v0/users/search')).toEqual([]);
+    // Escape closes the dialog through its close event: the same.
+    await openAdd(root, fixture);
+    type(root, '#member-username', 'ca');
+    add.removeAttribute('open');
+    add.dispatchEvent(new Event('close'));
+    await new Promise((resolve) => setTimeout(resolve, SEARCH_DELAY_MS + 20));
+    await settle(fixture);
+    expect(server.requestsTo('GET', '/api/v0/users/search')).toEqual([]);
+  });
+
   it('tells how to add people: by picking a suggestion, or by the whole user name', async () => {
     setup();
     const { root } = await render();

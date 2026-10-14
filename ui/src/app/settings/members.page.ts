@@ -178,7 +178,13 @@ export class MembersPage {
     openAfterRender(this.injector, () => this.addDialog()?.nativeElement);
   }
 
+  /** The dialog closed (Cancel, Escape, an addition): a search still on its way is dropped. */
+  protected addClosed(): void {
+    this.picker()?.close();
+  }
+
   protected closeAdd(): void {
+    this.picker()?.close();
     const dialog = this.addDialog()?.nativeElement;
     if (dialog) closeModal(dialog);
   }

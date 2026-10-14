@@ -247,6 +247,22 @@ describe('AccessPage (rbac-audit.md §16, §17)', () => {
     );
   });
 
+  it('marks the name required, and closing the dialog drops a search still pending', async () => {
+    const server = setup();
+    new FakeUserDirectory(server, {
+      users: [{ id: CAROL, username: 'carol', displayName: null }],
+    });
+    const { fixture, root } = await render();
+    const add = await openAdd(root, fixture);
+    expect(add.querySelector('#grant-username')?.getAttribute('aria-required')).toBe('true');
+    type(root, '#grant-username', 'ca');
+    add.removeAttribute('open');
+    add.dispatchEvent(new Event('close'));
+    await new Promise((resolve) => setTimeout(resolve, SEARCH_DELAY_MS + 20));
+    await settle(fixture);
+    expect(server.requestsTo('GET', '/api/v0/users/search')).toEqual([]);
+  });
+
   it('offers Viewer first for a new grant, and refuses an unknown name on the field', async () => {
     const server = setup();
     server.on('GET', '/api/v0/users/lookup', { status: 404, body: problem(404, 'NOT_FOUND') });

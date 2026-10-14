@@ -178,7 +178,13 @@
   </div>
 
   @if (canManage()) {
-    <dialog #addDialog id="add-dialog" class="dialog" aria-labelledby="add-dialog-title">
+    <dialog
+      #addDialog
+      id="add-dialog"
+      class="dialog"
+      aria-labelledby="add-dialog-title"
+      (close)="addClosed()"
+    >
       <form novalidate (submit)="add($event)">
         <div class="dialog-head">
           <h2 id="add-dialog-title" i18n="@@access.add">Give someone a role on this project</h2>
@@ -191,6 +197,7 @@
             <label for="grant-username" i18n="@@access.username">User name</label>
             <q-user-picker
               autofocus
+              required
               inputId="grant-username"
               [source]="searchUsers"
               [minLength]="searchMin()"
