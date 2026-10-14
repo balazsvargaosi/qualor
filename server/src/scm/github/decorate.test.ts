@@ -12,6 +12,7 @@ const issue = (overrides: Partial<DesiredInlineIssue>): DesiredInlineIssue => ({
   path: 'src/a.ts',
   line: 3,
   message: 'Problem',
+  confidence: null,
   ...overrides,
 });
 const added = new Map([

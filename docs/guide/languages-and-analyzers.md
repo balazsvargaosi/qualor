@@ -637,10 +637,11 @@ the `.cs` files, under the same rule keys (`qualor:csharp/<name>`):
   under a key built at run time, a view the engine could not tell from its name, or an interface
   or virtual call it could not narrow down to one implementation, the finding is marked
   **Possible**: in the issue list, on the issue page (with a **Confidence** line in its details),
-  in a file's issue list, and as `Possible: ` at the start of its entry in the GitLab Code Quality
-  and SAST reports. Check those with more care before you act on them. The engine shows a direct
-  path when it finds one. The other findings have high confidence and no mark. Possible findings
-  count like any other in the quality gate and the issue counts. The OpenGrep rules and the other
+  in a file's issue list, after its quality in merge request comments and pull request annotations,
+  and as `Possible: ` at the start of its entry in the GitLab Code Quality and SAST reports. Check
+  those with more care before you act on them. The engine shows a direct path when it finds one.
+  The other findings have high confidence and no mark. Possible findings count like any other in
+  the quality gate and the issue counts. The OpenGrep rules and the other
   analyzers set no confidence, so their findings never show the mark.
 - The engine has a budget: 10 minutes and 4 GB by default. Set `QUALOR_TAINT_TIME_LIMIT` (seconds)
   and `QUALOR_TAINT_MEMORY_LIMIT` (megabytes) to change it.
@@ -652,8 +653,9 @@ the `.cs` files, under the same rule keys (`qualor:csharp/<name>`):
   code is the same either way.
 - The engine follows what the code does, not how the application is wired: services registered
   for dependency injection are found through their interfaces, but handlers the framework calls by
-  convention (MediatR handlers, hosted services) are not entered from the request. `ViewData` and
-  `ViewBag` are not followed into views.
+  convention (MediatR handlers, hosted services) are not entered from the request. `ViewData`,
+  `ViewBag` and `HttpContext.Items` entries are followed into the views of the same request; an
+  entry under a key built at run time is followed too, and its findings are marked Possible.
 
 ## C and C++ (cppcheck, clang-tidy)
 

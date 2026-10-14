@@ -132,6 +132,7 @@ async function summaryIssues(
       path: issues.path,
       line: issues.startLine,
       message: issues.message,
+      confidence: issues.confidence,
     })
     .from(issues)
     .innerJoin(rules, eq(rules.id, issues.ruleId))
@@ -154,6 +155,7 @@ async function summaryIssues(
       path: r.path,
       line: r.line,
       message: r.message,
+      confidence: r.confidence,
       url: issueUrl(publicUrl, loaded.project.id, r.id),
     })),
     total: total?.n ?? 0,
@@ -222,6 +224,7 @@ export async function desiredInlineIssues(db: Db, branchId: string, limit: numbe
       path: issues.path,
       line: issues.startLine,
       message: issues.message,
+      confidence: issues.confidence,
     })
     .from(issues)
     .innerJoin(rules, eq(rules.id, issues.ruleId))

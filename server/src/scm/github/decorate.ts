@@ -96,6 +96,7 @@ export function annotationsOnDiff(
         ruleKey: issue.ruleKey,
         helpUri: issue.helpUri,
         message: issue.message,
+        confidence: issue.confidence,
         url: url(issue.id),
       }),
     ),

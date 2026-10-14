@@ -5,6 +5,7 @@ import { createIngestHarness, type IngestHarness, type IngestProject } from '../
 import { mainBranchId } from '../../test/issues';
 import { engine, file, finding, reportWith, type ReportParts } from '../../test/reports';
 import { issues } from '../db/schema';
+import { desiredInlineIssues } from '../scm/decoration-data';
 
 /**
  * 6B-C# engine spec R-9: the confidence of Qualor's C# taint engine (`properties.confidence` of
@@ -96,6 +97,38 @@ describe('issue confidence (R-9)', () => {
       [3, 'medium'],
       [5, 'high'],
       [7, null],
+    ]);
+  });
+
+  it('drops the confidence when the OpenGrep fallback reports the issue, and gets it back with the engine (fix round 1, M6)', async () => {
+    const p = await h.project('confidence/fallback');
+    await p.ingestOk(report(p, parts([taint(3, 'medium')])));
+    const [first] = await h.ctx.db.select().from(issues).where(eq(issues.projectId, p.id));
+    await p.ingestOk(report(p, parts([taint(3)])));
+    const fallback = await h.ctx.db.select().from(issues).where(eq(issues.projectId, p.id));
+    await p.ingestOk(report(p, parts([taint(3, 'medium')])));
+    const again = await h.ctx.db.select().from(issues).where(eq(issues.projectId, p.id));
+    expect(fallback.map((i) => [i.id, i.confidence, i.status])).toEqual([
+      [first!.id, null, 'open'],
+    ]);
+    expect(again.map((i) => [i.id, i.confidence, i.status])).toEqual([
+      [first!.id, 'medium', 'open'],
+    ]);
+  });
+
+  it('hands the confidence to the merge request decoration (fix round 1, M5)', async () => {
+    const p = await h.project('confidence/decoration');
+    await p.ingestOk(
+      report(p, {
+        ...parts([taint(3, 'medium'), taint(5, 'high')]),
+        files: [file('src/A.cs', { language: 'csharp', newLines: [[1, 10]] })],
+      }),
+    );
+    const branchId = await mainBranchId(h.ctx.db, p.id);
+    const inline = await desiredInlineIssues(h.ctx.db, branchId, 10);
+    expect(inline.map((i) => [i.line, i.confidence])).toEqual([
+      [3, 'medium'],
+      [5, 'high'],
     ]);
   });
 

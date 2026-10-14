@@ -882,6 +882,33 @@ describe("qualor with Qualor's Roslyn taint engine under qualor dotnet end (6B-C
     expect(findingConfidence(opengrep.findings[0]!)).toBeUndefined();
   });
 
+  it("reads a confidence from the taint engine's SARIF only, never from an OpenGrep result's properties (fix round 1, M4)", async () => {
+    const { root, files, pack } = setup();
+    const taint: TaintRun = {
+      kind: 'ok',
+      sources: ['src/A.cs'],
+      sarif: engineSarif(root, [
+        { rule: 'csharp.sql-injection', uri: 'src/A.cs', line: 4, confidence: 'medium' },
+      ]) as SarifLog,
+    };
+    const prep = await createQualorAnalyzer({ defaultDir: pack }).prepare(
+      withTaint(root, files, taint),
+    );
+    if (!('run' in prep) || prep.run.transform === undefined) throw new Error(JSON.stringify(prep));
+    // An OpenGrep that copied its rules' metadata (`confidence: medium`) into its results.
+    const sarif = opengrepSarif();
+    (sarif.runs[0]!.results[0] as Record<string, unknown>)['properties'] = {
+      confidence: 'medium',
+      other: 1,
+    };
+    const out = normalizeIn(root, prep.run.transform(sarif, ''));
+
+    const byPath = (p: string) => out.findings.find((f) => f.location?.path === p)!;
+    expect(findingConfidence(byPath('src/A.cs'))).toBe('medium');
+    expect(findingConfidence(byPath('src/B.cs'))).toBeUndefined();
+    expect(byPath('src/B.cs').properties).toEqual({ other: 1 });
+  });
+
   it('needs no OpenGrep when only C# files are in scope: the engine findings are the run', async () => {
     const { root, files, pack } = setup({ python: false });
     const prep = await createQualorAnalyzer({ defaultDir: pack }).prepare(

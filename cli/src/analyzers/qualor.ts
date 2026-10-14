@@ -187,9 +187,20 @@ function qualorRule(rule: unknown, byId: Map<string, QualorManifest['rules'][num
   };
 }
 
-/** One OpenGrep result made Qualor's: its rule id mapped, its in-source suppressions removed. */
-function qualorResult(result: unknown): void {
+/**
+ * One OpenGrep result made Qualor's: its rule id mapped, its in-source suppressions removed. Only
+ * the taint engine's results (`engine`) keep a `confidence` property (6B-C# engine spec R-9): an
+ * OpenGrep that copied its rules' metadata (`confidence: high|medium`) into its results would
+ * otherwise mark its findings "possible" (fix round 1 of Task 28, M4).
+ */
+function qualorResult(result: unknown, engine: boolean): void {
   if (!isObject(result)) return;
+  const properties = result['properties'];
+  if (!engine && isObject(properties) && 'confidence' in properties) {
+    const rest = Object.fromEntries(Object.entries(properties).filter(([k]) => k !== 'confidence'));
+    if (Object.keys(rest).length > 0) result['properties'] = rest;
+    else delete result['properties'];
+  }
   if (typeof result['ruleId'] === 'string') {
     result['ruleId'] = qualorRuleId(result['ruleId']) ?? result['ruleId'];
   }
@@ -215,10 +226,15 @@ function qualorDriver(
  * each gets its page in the qualor-rules repository as its help link; a rule the manifest lists gets
  * its title as the short description and its kind and severity as properties (report-format.md
  * §7.1); in-source suppressions (`nosem` comments in the checkout) are
- * removed; the driver version names the pack. Mutates `output` in place; anything that is not a
- * SARIF log is left as it is.
+ * removed; the driver version names the pack; a result keeps a `confidence` property only when
+ * `engine` (the taint engine's SARIF). Mutates `output` in place; anything that is not a SARIF log
+ * is left as it is.
  */
-export function withQualorRules(output: unknown, manifest: QualorManifest): void {
+export function withQualorRules(
+  output: unknown,
+  manifest: QualorManifest,
+  o: { engine?: boolean } = {},
+): void {
   if (!isObject(output) || !Array.isArray(output['runs'])) return;
   const byId = new Map(manifest.rules.map((r) => [r.id, r]));
   for (const run of output['runs']) {
@@ -226,7 +242,9 @@ export function withQualorRules(output: unknown, manifest: QualorManifest): void
     const tool = run['tool'];
     const driver = isObject(tool) ? tool['driver'] : undefined;
     if (isObject(driver)) qualorDriver(driver, manifest, byId);
-    for (const result of Array.isArray(run['results']) ? run['results'] : []) qualorResult(result);
+    for (const result of Array.isArray(run['results']) ? run['results'] : []) {
+      qualorResult(result, o.engine === true);
+    }
   }
 }
 
@@ -346,7 +364,7 @@ interface TaintEngineLog {
  */
 function taintEngineLog(log: SarifLog, manifest: QualorManifest): TaintEngineLog {
   const sarif = structuredClone(log) as Record<string, unknown>;
-  withQualorRules(sarif, manifest);
+  withQualorRules(sarif, manifest, { engine: true });
   const byId = new Map(manifest.rules.map((r) => [r.id, r]));
   const declared = manifest.dotnetEngine;
   const engineVersion =

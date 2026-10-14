@@ -84,8 +84,8 @@ All notable changes to Qualor are listed here, newest first. The format follows
   complete result, the OpenGrep C# rules run as before and the report warns
   (`TAINT_ENGINE_FALLBACK`) with the reason. A finding whose path goes through stored data, a
   lookup by a request key or a call or view the engine could not narrow down is marked
-  **Possible** on the issue list, the issue and file pages and in the GitLab Code Quality and SAST
-  reports; the issues API returns it as `confidence` (`high`, `medium`, or `null` when the analyzer
+  **Possible** on the issue list, the issue and file pages, in merge request comments and pull
+  request annotations, and in the GitLab Code Quality and SAST reports; the issues API returns it as `confidence` (`high`, `medium`, or `null` when the analyzer
   sets none).
 
 ### Changed

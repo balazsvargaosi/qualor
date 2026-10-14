@@ -1,7 +1,13 @@
 import { createHash } from 'node:crypto';
 import type { GateResult, Quality, Severity } from '@qualor/shared';
 import { linesWithinBytes, MAX_MESSAGE_CHARS, plainValue, ruleDocUrl } from '../markdown';
-import { commitStatusFor, qualityLabel, severityLabel, SUMMARY_MAX_BYTES } from '../render';
+import {
+  commitStatusFor,
+  possibleLabel,
+  qualityLabel,
+  severityLabel,
+  SUMMARY_MAX_BYTES,
+} from '../render';
 import type { AnnotationLevel, GitHubAnnotation } from './client';
 
 /** github.md §6.4: GitHub's limit per request, and Qualor's per pull request. */
@@ -61,6 +67,8 @@ export function annotationFor(issue: {
   /** The rule's documentation link, shown when it is a safe https URL. */
   helpUri?: string | null;
   message: string;
+  /** The C# taint engine's confidence (R-9): `medium` is named "Possible" in the title. */
+  confidence?: 'high' | 'medium' | null;
   url: string | null;
 }): GitHubAnnotation {
   const text = plainValue(issue.message, MAX_MESSAGE_CHARS);
@@ -79,7 +87,12 @@ Rule: ${docs}`
     end_line: issue.line,
     annotation_level: Object.hasOwn(LEVEL, issue.severity) ? LEVEL[issue.severity] : 'warning',
     title: plainWithin(
-      `${severityLabel(issue.severity)} · ${qualityLabel(issue.quality)} · ${issue.ruleKey}`,
+      [
+        severityLabel(issue.severity),
+        qualityLabel(issue.quality),
+        ...possibleLabel(issue.confidence),
+        issue.ruleKey,
+      ].join(' · '),
       TITLE_MAX,
     ),
     message: link === null ? message : `${message}\n\nView in Qualor: ${link}`,

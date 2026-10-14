@@ -498,6 +498,50 @@ describe('summary, inline note and commit status (scm.md §5)', () => {
     expect(commitStatusFor(long).description).toHaveLength(255);
   });
 
+  it('marks a medium-confidence finding of the C# taint engine Possible in the summary and the inline note (R-9)', () => {
+    const body = summary({
+      topIssues: [
+        {
+          id: ISSUE,
+          severity: 'high',
+          quality: 'security',
+          ruleKey: 'qualor:csharp/sql-injection',
+          path: 'src/A.cs',
+          line: 4,
+          message: 'csharp.sql-injection: request data reaches the sql-injection sink',
+          url: null,
+          confidence: 'medium',
+        },
+        {
+          id: ISSUE,
+          severity: 'high',
+          quality: 'security',
+          ruleKey: 'qualor:csharp/sql-injection',
+          path: 'src/A.cs',
+          line: 9,
+          message: 'csharp.sql-injection: request data reaches the sql-injection sink',
+          url: null,
+          confidence: 'high',
+        },
+      ],
+      topIssuesTotal: 2,
+    });
+    const items = body.split('\n').filter((l) => /^\d+\. /.test(l));
+    expect(items[0]).toContain('**High** · security · Possible · ');
+    expect(items[1]).not.toContain('Possible');
+    expect(
+      inlineBody({
+        issueId: ISSUE,
+        severity: 'high',
+        quality: 'security',
+        ruleKey: 'qualor:csharp/xss',
+        message: 'm',
+        url: null,
+        confidence: 'medium',
+      }).split('\n')[1],
+    ).toBe('**High** · security · Possible · ` qualor:csharp/xss `');
+  });
+
   it('writes the inline note with the rule key and message in code spans', () => {
     expect(
       inlineBody({

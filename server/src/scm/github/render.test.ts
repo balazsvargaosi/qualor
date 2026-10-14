@@ -44,6 +44,16 @@ describe('annotations (github.md §6.4)', () => {
     });
   });
 
+  it('names a medium-confidence finding of the C# taint engine Possible in the title (R-9)', () => {
+    expect(annotationFor({ ...ISSUE, confidence: 'medium' }).title).toBe(
+      'High · security · Possible · semgrep:x',
+    );
+    expect(annotationFor({ ...ISSUE, confidence: 'high' }).title).toBe(
+      'High · security · semgrep:x',
+    );
+    expect(annotationFor({ ...ISSUE, confidence: null }).title).toBe('High · security · semgrep:x');
+  });
+
   it('strips controls and bidirectional characters and bounds every value', () => {
     const hostile = annotationFor({
       ...ISSUE,

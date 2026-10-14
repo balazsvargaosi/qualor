@@ -72,6 +72,14 @@ export function qualityLabel(quality: Quality): string {
   return (QUALITIES as readonly string[]).includes(quality) ? quality : 'unknown';
 }
 
+/**
+ * "Possible" for a medium-confidence finding of the C# taint engine (6B-C# engine spec R-9), as the
+ * issue screens show it: fixed text, after the quality; nothing for any other finding.
+ */
+export function possibleLabel(confidence: 'high' | 'medium' | null | undefined): string[] {
+  return confidence === 'medium' ? ['Possible'] : [];
+}
+
 /** A metric key as the catalog writes them; anything else could break a table cell. */
 const METRIC_KEY = /^[a-z][a-z0-9_]{0,99}$/;
 
@@ -139,6 +147,8 @@ export interface IssueLine {
   path: string | null;
   line: number | null;
   message: string;
+  /** The C# taint engine's confidence (6B-C# engine spec R-9): `medium` is shown as "Possible". */
+  confidence?: 'high' | 'medium' | null;
   /** The issue in Qualor, or null without `QUALOR_PUBLIC_URL`. */
   url: string | null;
 }
@@ -342,6 +352,7 @@ function issueItem(issue: IssueLine, index: number): string[] {
   const parts = [
     `${index + 1}. ${icon} **${severityLabel(issue.severity)}**`,
     qualityLabel(issue.quality),
+    ...possibleLabel(issue.confidence),
     ruleKeyMarkdown(issue.ruleKey, issue.helpUri),
   ];
   const where =
@@ -464,6 +475,8 @@ export interface InlineInput {
   /** The rule's documentation link: the key links to it when it is a safe https URL. */
   helpUri?: string | null;
   message: string;
+  /** The C# taint engine's confidence (R-9): `medium` is shown as "Possible". */
+  confidence?: 'high' | 'medium' | null;
   url: string | null;
 }
 
@@ -473,7 +486,12 @@ export function inlineBody(input: InlineInput): string {
   return linesWithinBytes(
     [
       issueMarker(input.issueId),
-      `**${severityLabel(input.severity)}** · ${qualityLabel(input.quality)} · ${ruleKeyMarkdown(input.ruleKey, input.helpUri)}`,
+      [
+        `**${severityLabel(input.severity)}**`,
+        qualityLabel(input.quality),
+        ...possibleLabel(input.confidence),
+        ruleKeyMarkdown(input.ruleKey, input.helpUri),
+      ].join(' · '),
       '',
       codeSpan(input.message, MAX_MESSAGE_CHARS),
       ...(link === null ? [] : ['', link]),
