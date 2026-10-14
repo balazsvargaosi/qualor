@@ -249,6 +249,33 @@ describe('collectDependencies: the licence pass in a scan (spec §1)', () => {
     ]);
   });
 
+  it('counts the licences left out by the parser and by merging in one warning', async () => {
+    const licences = (prefix: string) => Array.from({ length: 10 }, (_, i) => `${prefix}-${i}`);
+    const json = JSON.stringify({
+      SchemaVersion: 2,
+      Results: [
+        {
+          Target: 'package-lock.json',
+          Class: 'lang-pkgs',
+          Type: 'npm',
+          Packages: [
+            { Name: 'x', Version: '1', Licenses: [...licences('A'), 'y'.repeat(257)] },
+            { Name: 'x', Version: '1', Licenses: licences('B') },
+          ],
+        },
+      ],
+    });
+    const pass = await collectDependencies(options({ run: fakeTrivy(json).run }));
+    expect(pass?.entries?.map((e) => e.licenses.length)).toEqual([16]);
+    expect(pass?.warnings).toEqual([
+      {
+        code: 'DEPENDENCY_LICENSES_SKIPPED',
+        message: expect.stringContaining('5 licence strings') as string,
+        count: 5,
+      },
+    ]);
+  });
+
   it('leaves no work directory behind when the run throws', async () => {
     const o = options({ run: () => Promise.reject(new Error('boom')) });
     const pass = await collectDependencies(o);

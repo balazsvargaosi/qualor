@@ -266,17 +266,14 @@ describe('Trivy licence JSON to the dependency inventory (spec §1)', () => {
     ]);
   });
 
-  it('normalises, sorts, dedupes and bounds each licence list', () => {
-    const many = Array.from({ length: 20 }, (_, i) => `Custom-${String(i).padStart(2, '0')}`);
-    const { entries } = trivyJsonToInventory(
+  it('normalises, sorts and dedupes each licence list', () => {
+    const { entries, warnings } = trivyJsonToInventory(
       trivyJson([
         {
           Target: 'package-lock.json',
           Type: 'npm',
           Packages: [
             { Name: 'a', Version: '1', Licenses: ['MIT', 'GPLv2+', 'mit', ' MIT ', ''] },
-            { Name: 'b', Version: '1', Licenses: many },
-            { Name: 'c', Version: '1', Licenses: ['x'.repeat(300)] },
             { Name: 'd' },
           ],
         },
@@ -285,9 +282,62 @@ describe('Trivy licence JSON to the dependency inventory (spec §1)', () => {
     );
     expect(entries.map((e) => [e.name, e.version, e.licenses])).toEqual([
       ['a', '1', ['GPL-2.0-or-later', 'MIT']],
-      ['b', '1', many.slice(0, 16)],
-      ['c', '1', ['x'.repeat(256)]],
       ['d', '', []],
+    ]);
+    expect(warnings).toEqual([]);
+  });
+
+  it('drops a licence string over 256 characters rather than cut it, and counts it', () => {
+    // Cut short, this expression would lose its permissive alternative and read as GPL only.
+    const long = `${Array.from({ length: 40 }, () => 'GPL-3.0-only').join(' OR ')} OR MIT`;
+    expect(long.length).toBeGreaterThan(256);
+    const { entries, warnings } = trivyJsonToInventory(
+      trivyJson([
+        {
+          Target: 'package-lock.json',
+          Type: 'npm',
+          Packages: [
+            { Name: 'only-long', Version: '1', Licenses: [long] },
+            { Name: 'with-other', Version: '1', Licenses: ['x'.repeat(300), 'Apache-2.0'] },
+          ],
+        },
+      ]),
+      root(),
+    );
+    // Nothing left is unknown ([]), never a truncated expression.
+    expect(entries.map((e) => [e.name, e.licenses])).toEqual([
+      ['only-long', []],
+      ['with-other', ['Apache-2.0']],
+    ]);
+    expect(warnings).toEqual([
+      {
+        code: 'DEPENDENCY_LICENSES_SKIPPED',
+        message: expect.stringContaining('2 licence strings') as string,
+        count: 2,
+      },
+    ]);
+    expect(warnings[0]?.message).toMatch(/longer than 256 characters/);
+  });
+
+  it('keeps 16 licences of a package and counts the ones left out', () => {
+    const many = Array.from({ length: 20 }, (_, i) => `Custom-${String(i).padStart(2, '0')}`);
+    const { entries, warnings } = trivyJsonToInventory(
+      trivyJson([
+        {
+          Target: 'package-lock.json',
+          Type: 'npm',
+          Packages: [{ Name: 'b', Version: '1', Licenses: many }],
+        },
+      ]),
+      root(),
+    );
+    expect(entries.map((e) => e.licenses)).toEqual([many.slice(0, 16)]);
+    expect(warnings).toEqual([
+      {
+        code: 'DEPENDENCY_LICENSES_SKIPPED',
+        message: expect.stringContaining('4 licence strings') as string,
+        count: 4,
+      },
     ]);
   });
 
@@ -435,14 +485,17 @@ describe('merging and capping the inventory (spec §2)', () => {
     ]);
   });
 
-  it('keeps at most 16 licences when merging', () => {
+  it('keeps at most 16 licences when merging, and counts the ones left out', () => {
     const a = Array.from({ length: 10 }, (_, i) => `A-${i}`);
     const b = Array.from({ length: 10 }, (_, i) => `B-${i}`);
-    const [m] = mergeDuplicates([
-      entry({ name: 'x', licenses: a }),
-      entry({ name: 'x', licenses: b }),
-    ]);
+    const stats = { licensesDropped: 0 };
+    const [m] = mergeDuplicates(
+      [entry({ name: 'x', licenses: a }), entry({ name: 'x', licenses: b })],
+      stats,
+    );
     expect(m?.licenses).toEqual([...a, ...b].sort().slice(0, 16));
+    // Licences are AND-combined: the 4 left out could hold the forbidden one, so they are counted.
+    expect(stats.licensesDropped).toBe(4);
   });
 
   it('puts direct dependencies first, then orders by path, name and version', () => {

@@ -135,6 +135,25 @@ describe('analyzer capabilities (ruling T4)', () => {
     // ...even while the fixture is still listed as pending for another engine.
     expect(verdict([outcome], pending).ok).toBe(true);
   });
+  it('does not check the inventory when the licence pass cannot run here (6M, ruling T4)', () => {
+    const missing = p('dependency', 'web/package-lock.json npm apache-lib@3.1.0: missing from report');
+    const outcome = {
+      name: 'deps-licenses',
+      problems: [p('engine', 'trivy-licenses: expected status ok, got skipped'), missing],
+      unavailable: ['trivy-licenses'],
+    };
+    const v = verdict([outcome], {});
+    expect(v.ok).toBe(true);
+    expect(v.lines).toEqual([
+      '~ deps-licenses: not checked here for trivy-licenses (not installed; CI checks them)',
+    ]);
+    // With the licence pass available, a wrong inventory is a failure.
+    const ran = verdict([{ name: 'deps-licenses', problems: [missing] }], {});
+    expect(ran.ok).toBe(false);
+    expect(ran.lines).toEqual(['✗ deps-licenses:', `    dependency: ${missing.detail}`]);
+    // ...and so is one while another engine is the unavailable one.
+    expect(verdict([{ name: 'x', problems: [missing], unavailable: ['pmd'] }], {}).ok).toBe(false);
+  });
   it('still fails other problems of a fixture with an unavailable engine', () => {
     const v = verdict(
       [{ name: 'a', problems: [p('engine', 'pmd: x'), p('missing-finding', 'eslint:no-var a.ts:1')], unavailable: ['pmd'] }],

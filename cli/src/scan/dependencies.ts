@@ -27,6 +27,7 @@ import {
   capInventory,
   LICENSE_ENGINE_ID,
   licenseCommand,
+  licensesSkippedWarning,
   MAX_DEPENDENCIES,
   mergeDuplicates,
   trivyJsonToInventory,
@@ -206,9 +207,14 @@ export async function collectDependencies(
       );
       return failed('output could not be read', 'the Trivy licence pass output could not be read');
     }
-    const merged = mergeDuplicates(parsed.entries);
+    const stats = { licensesDropped: 0 };
+    const merged = mergeDuplicates(parsed.entries, stats);
     const { entries, truncated } = capInventory(merged, MAX_DEPENDENCIES);
-    const warnings = [...parsed.warnings];
+    // One licence warning for the parser's and the merge's drops together.
+    const parsedLicenses = parsed.warnings.find((w) => w.code === 'DEPENDENCY_LICENSES_SKIPPED');
+    const licensesDropped = (parsedLicenses?.count ?? 0) + stats.licensesDropped;
+    const warnings = parsed.warnings.filter((w) => w !== parsedLicenses);
+    if (licensesDropped > 0) warnings.push(licensesSkippedWarning(licensesDropped));
     if (truncated) {
       const dropped = merged.length - entries.length;
       warnings.push({

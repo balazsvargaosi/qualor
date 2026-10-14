@@ -773,8 +773,10 @@ export function verdict(
   for (const outcome of outcomes) {
     const entry = pending[outcome.name];
     const unavailable = outcome.unavailable ?? [];
+    // 6M: the inventory comes from the licence pass alone, so without it nothing of it is checked.
     const skippedHere = (p: Problem) =>
-      (p.kind === 'engine' || p.kind === 'missing-finding') && unavailable.some((id) => p.detail.startsWith(`${id}:`));
+      ((p.kind === 'engine' || p.kind === 'missing-finding') && unavailable.some((id) => p.detail.startsWith(`${id}:`))) ||
+      (p.kind === 'dependency' && unavailable.includes('trivy-licenses'));
     const o = { ...outcome, problems: outcome.problems.filter((p) => !skippedHere(p)) };
     if (o.problems.length === 0 && unavailable.length > 0) {
       // Ruling T4: without the tool its findings cannot be checked here; CI installs every tool.

@@ -152,13 +152,33 @@ function directOf(p: LicensePackage): boolean | undefined {
   return p.Indirect === true ? false : undefined;
 }
 
-/** Normalised (§3), bounded to 256 characters, sorted, unique, at most 16. */
-function licenseList(raw: readonly string[]): string[] {
-  const normalised = raw
-    .map((l) => normalizeLicense(l))
-    .filter((l) => l !== '')
-    .map((l) => l.slice(0, MAX_LICENSE_CHARS));
-  return [...new Set(normalised)].sort().slice(0, MAX_LICENSES);
+/** Licence strings left out of entries (`trivyJsonToInventory`, `mergeDuplicates`). */
+export interface LicenseStats {
+  licensesDropped: number;
+}
+
+/**
+ * The `DEPENDENCY_LICENSES_SKIPPED` warning: licence strings an entry could not carry. A long SPDX
+ * expression is never cut (cut short, `A OR … OR MIT` could lose its permissive alternative), and
+ * licences are AND-combined, so the ones beyond 16 could hold the forbidden one: both are counted.
+ */
+export function licensesSkippedWarning(count: number): NormalizeWarning {
+  return {
+    code: 'DEPENDENCY_LICENSES_SKIPPED',
+    message: `${count} licence strings were left out of the inventory: longer than ${MAX_LICENSE_CHARS} characters (a shortened expression could change its meaning) or beyond ${MAX_LICENSES} for one package, so those packages' licences are incomplete`,
+    count,
+  };
+}
+
+/**
+ * Normalised (§3), sorted, unique; a string over 256 characters is dropped, never cut, and at most
+ * 16 are kept. What is dropped is counted in `stats`; nothing left is `[]`, unknown.
+ */
+function licenseList(raw: readonly string[], stats: LicenseStats): string[] {
+  const normalised = new Set(raw.map((l) => normalizeLicense(l)).filter((l) => l !== ''));
+  const fitting = [...normalised].filter((l) => l.length <= MAX_LICENSE_CHARS).sort();
+  stats.licensesDropped += normalised.size - Math.min(fitting.length, MAX_LICENSES);
+  return fitting.slice(0, MAX_LICENSES);
 }
 
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -195,7 +215,8 @@ function targetPath(target: string, root: string): string | null {
  * dropped. The line is the version line inside Trivy's range of the package's lock entry (ruling
  * T3), else the `name@version` search of the lockfile, else (Go) the `go.mod` requirement. An entry
  * the report could not carry (an over-long name, version or path, an unusable ecosystem or path) is
- * skipped and counted in one `DEPENDENCIES_SKIPPED` warning. Throws on output that is not Trivy's
+ * skipped and counted in one `DEPENDENCIES_SKIPPED` warning; a licence string it could not carry
+ * is dropped and counted in `DEPENDENCY_LICENSES_SKIPPED`. Throws on output that is not Trivy's
  * JSON report. Entries are neither merged nor capped here (`mergeDuplicates`, `capInventory`).
  */
 export function trivyJsonToInventory(
@@ -205,6 +226,7 @@ export function trivyJsonToInventory(
 ): { entries: DependencyEntry[]; warnings: NormalizeWarning[] } {
   const report = trivyLicenseReportSchema.parse(output);
   const entries: DependencyEntry[] = [];
+  const stats: LicenseStats = { licensesDropped: 0 };
   let skipped = 0;
   for (const result of report.Results ?? []) {
     if (result.Class !== 'lang-pkgs') continue;
@@ -234,21 +256,20 @@ export function trivyJsonToInventory(
         ...(line !== null && { line }),
         name,
         version,
-        licenses: licenseList(p.Licenses ?? []),
+        licenses: licenseList(p.Licenses ?? [], stats),
         ...(direct !== undefined && { direct }),
       });
     }
   }
-  const warnings: NormalizeWarning[] =
-    skipped === 0
-      ? []
-      : [
-          {
-            code: 'DEPENDENCIES_SKIPPED',
-            message: `${skipped} dependencies were left out of the inventory: a name, version or lockfile path longer than the report allows, or a package type it does not accept`,
-            count: skipped,
-          },
-        ];
+  const warnings: NormalizeWarning[] = [];
+  if (skipped > 0) {
+    warnings.push({
+      code: 'DEPENDENCIES_SKIPPED',
+      message: `${skipped} dependencies were left out of the inventory: a name, version or lockfile path longer than the report allows, or a package type it does not accept`,
+      count: skipped,
+    });
+  }
+  if (stats.licensesDropped > 0) warnings.push(licensesSkippedWarning(stats.licensesDropped));
   return { entries, warnings };
 }
 
@@ -280,9 +301,13 @@ const keyOf = (e: DependencyEntry) => `${e.path}\0${e.ecosystem}\0${e.name}\0${e
 
 /**
  * Spec §2: one entry per `(path, ecosystem, name, version)`, with the union of the licences
- * (sorted, unique, at most 16), the first line and `direct` when any says so. First-seen order.
+ * (sorted, unique, at most 16; the ones beyond are counted in `stats`), the first line and `direct`
+ * when any says so. First-seen order.
  */
-export function mergeDuplicates(entries: readonly DependencyEntry[]): DependencyEntry[] {
+export function mergeDuplicates(
+  entries: readonly DependencyEntry[],
+  stats: LicenseStats = { licensesDropped: 0 },
+): DependencyEntry[] {
   const merged = new Map<string, DependencyEntry>();
   for (const e of entries) {
     const key = keyOf(e);
@@ -291,7 +316,9 @@ export function mergeDuplicates(entries: readonly DependencyEntry[]): Dependency
       merged.set(key, { ...e, licenses: [...e.licenses] });
       continue;
     }
-    seen.licenses = [...new Set([...seen.licenses, ...e.licenses])].sort().slice(0, MAX_LICENSES);
+    const union = [...new Set([...seen.licenses, ...e.licenses])].sort();
+    stats.licensesDropped += Math.max(0, union.length - MAX_LICENSES);
+    seen.licenses = union.slice(0, MAX_LICENSES);
     if (e.line !== undefined && (seen.line === undefined || e.line < seen.line)) seen.line = e.line;
     if (e.direct === true || (e.direct === false && seen.direct === undefined)) {
       seen.direct = e.direct;
