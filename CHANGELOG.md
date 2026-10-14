@@ -12,13 +12,14 @@ All notable changes to Qualor are listed here, newest first. The format follows
   through a second, offline Trivy pass that needs no database. A project's new **Dependencies**
   tab lists them by branch or merge request, with their lockfile line, licences and whether they
   are direct, filters, and how many have a known licence; `GET /api/v0/projects/{id}/dependencies`
-  returns the same. npm and Composer lockfiles carry the licences; for pnpm, Yarn, Go, NuGet,
-  Maven and Gradle, install the dependencies in the scan job before `qualor scan`. Development
-  dependencies are left out. The new `qualor.yml` keys `analyzers.trivy.licenses` (`auto`,
-  `true` or `false`) and `analyzers.trivy.licenseTimeoutSeconds` (default 300) control the pass;
-  a failure or a timeout is a warning (`LICENSE_SCAN_FAILED`, `LICENSE_SCAN_TIMEOUT`) and never
-  fails the scan. The measure `unknown_licenses_ratio` gives the share of packages with an
-  unknown licence. This is in every edition. See
+  returns the same. npm and Composer lockfiles carry the licences; for pnpm, Yarn, Go, NuGet and
+  Maven, install the dependencies in the scan job before `qualor scan` (Gradle gives licences only
+  in part). Development dependencies and lockfiles the scan does not analyse are left out. The
+  new `qualor.yml` keys `analyzers.trivy.licenses` (`auto`, `true` or `false`) and
+  `analyzers.trivy.licenseTimeoutSeconds` (default 300) control the pass; a failure or a timeout
+  is a warning (`LICENSE_SCAN_FAILED`, `LICENSE_SCAN_TIMEOUT`) and never fails the scan. The
+  measure `unknown_licenses_ratio` gives the share of packages with an unknown licence. This is
+  in every edition. See
   [Dependency licences](docs/guide/dependency-licenses.md).
 - A licence policy (Business and Enterprise): an organisation admin sets, in **Settings → Licence
   policy** or through `GET/PUT /api/v0/organizations/{id}/license-policy`, which licences the

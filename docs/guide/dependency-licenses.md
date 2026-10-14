@@ -29,7 +29,8 @@ a transitive dependency when the lockfile says so.
 - **Development dependencies are left out**, as in vulnerability scanning: they are usually not
   shipped with your product.
 - Your project's own package is not listed.
-- A lockfile under a path you exclude in `sources.exclude` is left out.
+- A lockfile the scan does not analyse is left out: one in a gitignored or excluded folder, such
+  as a Go module cache kept inside the repository.
 - Licences are written as [SPDX](https://spdx.org/licenses/) identifiers. Common spellings are
   translated: `GPLv3` becomes `GPL-3.0-only`, `GPL-2.0+` becomes `GPL-2.0-or-later`, `Apache 2.0`
   becomes `Apache-2.0`, and a bare `BSD` becomes `BSD-3-Clause`. Text that names no licence, such
@@ -52,7 +53,8 @@ installed packages, so **install your dependencies in the scan job, before `qual
 | Yarn, classic and Berry (`yarn.lock`) | no | yes, from `node_modules` (for Berry, `nodeLinker: node-modules`: Plug'n'Play installs no `node_modules`) |
 | Go (`go.mod`) | no | yes, from the Go module cache (`go mod download`) |
 | NuGet (`packages.lock.json`) | no | yes, from the NuGet package folder (`~/.nuget/packages`, or `NUGET_PACKAGES`) |
-| Maven (`pom.xml`) and Gradle (`gradle.lockfile`) | no | yes, for the packages whose POM file the build downloaded into the local Maven repository (`~/.m2/repository`) or the Gradle cache (`~/.gradle`, or `GRADLE_USER_HOME`) |
+| Maven (`pom.xml`) | no | yes, for the packages whose POM file the build downloaded into the local Maven repository (`~/.m2/repository`) |
+| Gradle (`gradle.lockfile`) | no | partly, even with the Gradle cache (`~/.gradle`, or `GRADLE_USER_HOME`): Trivy reads only a package's own POM, so a licence inherited from a parent POM is missed |
 | pip (`requirements.txt`) | no | no, even with a virtual environment installed |
 | Cargo (`Cargo.lock`) | no | no |
 | Bundler (`Gemfile.lock`) | no | no |
@@ -61,9 +63,12 @@ A package without a licence is listed with the licence **Unknown**. The **Depend
 how many packages have a known licence.
 
 The scanner finds the Go module cache through `GOPATH` or `GOMODCACHE`, or in `~/go` when neither
-is set. That is where `go mod download` puts it. A C# build in the `qualor/scanner-dotnet` image
-restores its packages into `~/.nuget/packages`, so `qualor dotnet end` reads them with no extra
-step.
+is set. That is where `go mod download` puts it. It finds the local Maven repository in `~/.m2`,
+under the scan job's `HOME`. If your job keeps that repository inside the project (for example
+`-Dmaven.repo.local=.m2/repository`, to cache it), set `HOME` to the folder that holds `.m2` for
+the scan, or keep the repository outside the project. A C# build in the `qualor/scanner-dotnet`
+image restores its packages into `~/.nuget/packages`, so `qualor dotnet end` reads them with no
+extra step.
 
 ### Install your dependencies before the scan
 
@@ -287,6 +292,7 @@ q -X PUT "$QUALOR_URL/api/v0/organizations/<org id>/license-policy" -d '{"policy
 | `LICENSE_SCAN_FAILED` | the licence pass could not run, or failed; with `licenses: true`, also when Trivy is not installed | read the scan log; the vulnerability findings are not affected |
 | `LICENSE_SCAN_TIMEOUT` | the pass took longer than `licenseTimeoutSeconds` | raise `analyzers.trivy.licenseTimeoutSeconds`, or exclude directories you do not ship |
 | `DEPENDENCIES_TRUNCATED` | more than 50 000 packages; the direct ones are kept first | exclude lockfiles you do not ship (`sources.exclude`) |
+| `DEPENDENCIES_OUT_OF_SCOPE` | lockfiles in folders the scan does not analyse (gitignored or excluded, such as an in-repository package cache) were left out of the inventory | none needed; add the folder to `sources.exclude` to silence it and let the pass skip it |
 | `DEPENDENCIES_SKIPPED` | packages whose name, version or lockfile path is too long for the report | none needed; they are left out of the inventory |
 | `DEPENDENCY_LICENSES_SKIPPED` | licence strings longer than 256 characters, or beyond 16 for one package, were left out | check those packages' licences by hand |
 | `DEPENDENCY_PATHS_INVALID` | the server could not place some flagged packages, because their lockfile path is not a repository path | only a report written by another tool can cause it; check that tool's lockfile paths |
