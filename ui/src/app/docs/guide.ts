@@ -10,6 +10,7 @@ const PAGES: Readonly<Record<string, () => Promise<{ default: string }>>> = {
   cli: () => import('../../../../docs/guide/cli.md'),
   'compliance-reports': () => import('../../../../docs/guide/compliance-reports.md'),
   configuration: () => import('../../../../docs/guide/configuration.md'),
+  'dependency-licenses': () => import('../../../../docs/guide/dependency-licenses.md'),
   email: () => import('../../../../docs/guide/email.md'),
   // The guide's page about the enterprise edition (Markdown text), not the enterprise/ package.
   // eslint-disable-next-line no-restricted-syntax
@@ -25,6 +26,7 @@ const PAGES: Readonly<Record<string, () => Promise<{ default: string }>>> = {
   'quick-start': () => import('../../../../docs/guide/quick-start.md'),
   'roles-and-audit': () => import('../../../../docs/guide/roles-and-audit.md'),
   'sso-and-scim': () => import('../../../../docs/guide/sso-and-scim.md'),
+  'support-bundle': () => import('../../../../docs/guide/support-bundle.md'),
   telemetry: () => import('../../../../docs/guide/telemetry.md'),
   troubleshooting: () => import('../../../../docs/guide/troubleshooting.md'),
   'users-projects-tokens': () => import('../../../../docs/guide/users-projects-tokens.md'),

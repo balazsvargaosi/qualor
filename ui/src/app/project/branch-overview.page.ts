@@ -304,16 +304,21 @@ export class BranchOverviewPage {
           tone: s,
         })),
   );
-  protected readonly qualityItems = computed<DistributionItem[] | null>(() =>
-    !this.measures.hasValue()
-      ? null
-      : QUALITIES.map((q) => ({
-          key: q,
-          label: label('quality', q),
-          value: this.overallOf(`${q}_issues`) ?? 0,
-          tone: 'accent',
-        })),
-  );
+  /**
+   * The software qualities. Licensing (6M §7) only while the branch has licensing issues: the
+   * server measures `forbidden_licenses` (0 included) on every analysis, so its presence says
+   * nothing, and a "Licensing 0" on every branch would be noise.
+   */
+  protected readonly qualityItems = computed<DistributionItem[] | null>(() => {
+    if (!this.measures.hasValue()) return null;
+    const licensing = (this.overallOf('licensing_issues') ?? 0) > 0;
+    return [...QUALITIES, ...(licensing ? (['licensing'] as const) : [])].map((q) => ({
+      key: q,
+      label: label('quality', q),
+      value: this.overallOf(`${q}_issues`) ?? 0,
+      tone: 'accent',
+    }));
+  });
 
   protected readonly view = signal<HistoryView>('severity');
   protected readonly views: { id: HistoryView; label: string }[] = [

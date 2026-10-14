@@ -8,7 +8,7 @@ export type UiExtension = SystemInfoDto['extensions'][number];
 
 /**
  * The feature each known enterprise entry needs (rbac-audit.md §17, sso-scim.md §18, 4E-1 §4,
- * 4E-2 §4): `compliance` is both a settings entry and a project tab; `portfolio` a main-menu entry.
+ * 4E-2 §4, 4E-3b §5): `compliance` is both a settings entry and a project tab; `portfolio` a main-menu entry.
  */
 const EXTENSION_FEATURES: Readonly<Record<string, string>> = {
   'audit-log': 'audit-log',
@@ -19,6 +19,7 @@ const EXTENSION_FEATURES: Readonly<Record<string, string>> = {
   scim: 'scim',
   compliance: 'compliance-export',
   portfolio: 'portfolio',
+  support: 'support-bundle',
 };
 
 /**

@@ -3,7 +3,10 @@ import { VERSION } from '../index';
 import type { Logger } from '../log';
 import { clean, describeFailure, request, type ServerEndpoint } from './http';
 
-const response = z.object({ version: z.string().min(1).max(64) });
+const response = z.object({
+  version: z.string().min(1).max(64),
+  latest: z.string().min(1).max(64).optional(),
+});
 
 /** A tiny JSON object; anything larger is not a Qualor server's answer. */
 const MAX_VERSION_RESPONSE_BYTES = 4 * 1024;
@@ -16,12 +19,15 @@ export function releaseLine(version: string): string | null {
 /**
  * `GET /api/v0/system/version` when a scan starts: logs the server's version, and warns when it is
  * another release line than this scanner's (the scanner and the server are released together).
+ * It also logs a newer release the server's update check found (`latest`, telemetry on); the
+ * scanner itself never asks the internet.
  * Informational only: a failure here never fails the scan. An older server without the route, a
  * rejected token or an unreachable server is logged at debug level; the requests that matter
  * (baseline, upload) report those problems themselves.
  */
 export async function checkServerVersion(ep: ServerEndpoint, log: Logger): Promise<string | null> {
   let version: string;
+  let latest: string | null;
   try {
     const res = await request(ep, {
       method: 'GET',
@@ -38,6 +44,7 @@ export async function checkServerVersion(ep: ServerEndpoint, log: Logger): Promi
       return null;
     }
     version = clean(parsed.data.version);
+    latest = parsed.data.latest === undefined ? null : clean(parsed.data.latest);
   } catch (err) {
     log.debug(
       `the server did not report its version (${err instanceof Error ? err.message : String(err)})`,
@@ -50,6 +57,12 @@ export async function checkServerVersion(ep: ServerEndpoint, log: Logger): Promi
   if (ours !== null && theirs !== null && ours !== theirs) {
     log.warn(
       `this scanner is ${VERSION} and the server is ${version}: use the scanner of the server's release (qualor/scanner:${theirs})`,
+    );
+  }
+  const latestLine = latest === null ? null : releaseLine(latest);
+  if (latestLine !== null) {
+    log.info(
+      `Qualor ${latest} is available (server ${version}, scanner ${VERSION}): upgrade the server and use qualor/scanner:${latestLine}`,
     );
   }
   return version;

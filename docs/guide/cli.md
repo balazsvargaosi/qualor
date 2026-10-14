@@ -17,11 +17,13 @@ It runs the analyzers, computes metrics, duplication and coverage, and computes 
 baseline. It uploads one gzip report, waits for the gate verdict, prints the failed conditions, and
 exits.
 
-Its first line is its own version (`qualor 0.7.1 (linux-x64)`). With a server configured, it then
-asks the server for its version and logs `server https://qualor.example.com runs Qualor 0.7.1`. When
+Its first line is its own version (`qualor 0.8.0 (linux-x64)`). With a server configured, it then
+asks the server for its version and logs `server https://qualor.example.com runs Qualor 0.8.0`. When
 the two are different releases (`0.3` against `0.4`), it warns and names the scanner tag that
-matches the server. The check never fails a scan: a server that does not answer it is noted only in
-the debug log.
+matches the server. When the server knows of a newer Qualor release (its
+[update check](./telemetry.md#update-check)), the scanner logs `Qualor 0.8.0 is available …` with the
+scanner tag to move to. The check never fails a scan: a server that does not answer it is noted only
+in the debug log.
 
 | Option | Meaning |
 |---|---|

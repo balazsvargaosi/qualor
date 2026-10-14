@@ -4,6 +4,7 @@ import { loadExternalSarif } from '../analyzers/external';
 import { fileLines, normalizeCaptures } from '../analyzers/normalize';
 import { builtinAnalyzers } from '../analyzers/registry';
 import { requiredFailures, runAnalyzers } from '../analyzers/runner';
+import { LICENSE_ENGINE_ID } from '../analyzers/trivy-licenses';
 import type { Analyzer, DotnetRun } from '../analyzers/types';
 import type { ScanFlags } from '../args';
 import { platformId } from '../commands/version';
@@ -25,6 +26,7 @@ import type { ServerEndpoint } from '../server/http';
 import { uploadReport } from '../server/upload';
 import { checkServerVersion } from '../server/version';
 import { Warnings } from '../warnings';
+import { collectDependencies, type DependencyPassHooks } from './dependencies';
 import {
   analyzeFiles,
   duplicationFilter,
@@ -68,6 +70,8 @@ export interface ScanDeps {
   serverVersion?: ((endpoint: ServerEndpoint, log: Logger) => Promise<unknown>) | null;
   /** `qualor dotnet end`'s own warnings (config.md §6.1), added to the report's `warnings`. */
   extraWarnings?: readonly { code: string; message: string }[];
+  /** The Trivy licence pass's process helper and binary lookup (tests fake them). */
+  licensePass?: DependencyPassHooks;
 }
 
 interface BuiltReport {
@@ -143,6 +147,8 @@ async function buildReport(
     log,
   });
   const files = analyzed.map((a) => a.file);
+  // The scan's scope: a finding (and a lockfile of the licence pass) elsewhere is left out.
+  const knownPaths = new Set(files.map((f) => f.path));
   const captures = [
     ...(await runAnalyzers(analyzers, {
       root,
@@ -158,13 +164,26 @@ async function buildReport(
   const engines = normalizeCaptures(captures, {
     repoRoot: root,
     readLines: fileLines(root),
-    knownPaths: new Set(files.map((f) => f.path)),
+    knownPaths,
     log,
     onSecrets: (texts, unknown) => {
       redaction = { texts, unknown };
     },
   });
   warnings.addAll(engines.warnings);
+  // Spec §1: the licence pass, after the analyzers, wherever Trivy runs. Its failure or timeout
+  // is a warning and no inventory; the vulnerability findings above are unaffected.
+  const licenses = analyzers.some((a) => a.id === 'trivy')
+    ? await collectDependencies({
+        root,
+        config,
+        knownPaths,
+        log,
+        env: io.env,
+        ...deps.licensePass,
+      })
+    : null;
+  if (licenses !== null) warnings.addAll(licenses.warnings);
 
   const report = validateReport(
     scrubRuleIds(
@@ -177,8 +196,12 @@ async function buildReport(
           files: analyzed,
           coverage,
           duplications,
-          engines,
+          engines:
+            licenses === null
+              ? engines
+              : { ...engines, engines: [...engines.engines, licenses.engine] },
           warnings,
+          ...(licenses?.entries !== undefined && { dependencies: licenses.entries }),
         }),
         [settings.token],
       ),
@@ -193,7 +216,9 @@ async function buildReport(
     failed: requiredFailures(captures, report.engines),
     gitlab: {
       redaction,
+      // The licence pass puts nothing in GitLab's files, so it never marks them incomplete.
       incomplete: report.engines
+        .filter((e) => e.id !== LICENSE_ENGINE_ID)
         .filter((e) => e.status === 'failed' || e.status === 'timeout' || unavailable.has(e.id))
         .map((e) => e.id),
     },

@@ -25,6 +25,9 @@ built:
 - every issue of the **security** quality;
 - every security hotspot.
 
+The issues of a [licence policy](./dependency-licenses.md) (the **licensing** quality) are not
+security findings and never count.
+
 An issue's status decides where it appears:
 
 | Status | In the report |

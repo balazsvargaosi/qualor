@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import table from '../../rules/swiftlint-rules.json' with { type: 'json' };
-import type { Quality, Severity } from '../report/taxonomy';
+import type { ReportQuality, Severity } from '../report/taxonomy';
 
 /**
  * SwiftLint (plan 8F, config.md §6). `SWIFTLINT_VERSION` is the SwiftLint the qualor/scanner image
@@ -39,7 +39,7 @@ export function swiftlintVersionSupported(version: string): boolean {
 }
 
 /** report-format.md §7.1: `lint` rules are about correctness; every other kind, and a rule the table does not know, is maintainability. */
-export function swiftlintQuality(ruleId: string): Quality {
+export function swiftlintQuality(ruleId: string): ReportQuality {
   return SWIFTLINT_RULES.get(ruleId)?.kind === 'lint' ? 'reliability' : 'maintainability';
 }
 

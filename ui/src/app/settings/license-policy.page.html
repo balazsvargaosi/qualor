@@ -1,0 +1,299 @@
+<div class="settings-head">
+  <div>
+    <h2 #heading tabindex="-1" i18n="@@licensePolicy.title">Licence policy</h2>
+    <p class="muted" i18n="@@licensePolicy.intro">
+      Which dependency licences your projects may use. Each analysis judges the dependencies its
+      scan found, shows the verdicts on the Dependencies tab, and reports a forbidden licence as a
+      Licensing issue.
+    </p>
+  </div>
+</div>
+@if (org.organizations.error()) {
+  <p class="alert alert-error" role="alert" i18n="@@licensePolicy.organizationsFailed">
+    The organizations could not be loaded.
+  </p>
+} @else if (!org.current() && !org.organizations.isLoading()) {
+  <p class="muted" i18n="@@licensePolicy.noOrganization">There is no organization to show.</p>
+} @else if (org.current() && !allowed()) {
+  <p class="muted" i18n="@@licensePolicy.adminsOnly">
+    Only organisation administrators change the licence policy.
+  </p>
+} @else if (loadError(); as message) {
+  <p class="alert alert-error" role="alert">{{ message }}</p>
+} @else if (current(); as settings) {
+  <div role="status">
+    @if (announcement(); as message) {
+      <p class="alert alert-success">{{ message }}</p>
+    }
+  </div>
+  @if (error(); as message) {
+    <p class="alert alert-error" role="alert">{{ message }}</p>
+  }
+  @if (!settings.available) {
+    <p id="license-policy-not-licensed" class="alert alert-info">{{ notLicensed }}</p>
+  } @else {
+    <datalist id="license-policy-spdx">
+      @for (id of settings.spdxIds.licenses; track id) {
+        <option [value]="id"></option>
+      }
+    </datalist>
+    <form class="license-policy" novalidate (submit)="save($event)">
+      <section class="card panel" aria-labelledby="license-policy-org">
+        <div class="panel-head">
+          <h3 id="license-policy-org">{{ org.current()?.name }}</h3>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-text">
+            <span id="license-policy-mode-label" class="setting-name" i18n="@@licensePolicy.mode"
+              >Mode</span
+            >
+            <p id="license-policy-mode-hint" i18n="@@licensePolicy.modeHint">
+              Forbid the licences you list, or allow only those you list and forbid every other one.
+            </p>
+          </div>
+          <div
+            class="setting-field mode-choice"
+            role="radiogroup"
+            aria-labelledby="license-policy-mode-label"
+            aria-describedby="license-policy-mode-hint"
+          >
+            <label class="row">
+              <input
+                type="radio"
+                name="license-policy-mode"
+                value="denylist"
+                [checked]="mode() === 'denylist'"
+                (change)="setMode('denylist')"
+              />
+              <span i18n="@@licensePolicy.denylist">Forbid listed licences</span>
+            </label>
+            <label class="row">
+              <input
+                type="radio"
+                name="license-policy-mode"
+                value="allowlist"
+                [checked]="mode() === 'allowlist'"
+                (change)="setMode('allowlist')"
+              />
+              <span i18n="@@licensePolicy.allowlist">Allow only listed licences</span>
+            </label>
+          </div>
+        </div>
+
+        @if (mode() === 'denylist') {
+          <div
+            class="setting-row groups"
+            role="group"
+            aria-labelledby="license-policy-groups-label"
+            aria-describedby="license-policy-groups-hint"
+          >
+            <div class="setting-text">
+              <span
+                id="license-policy-groups-label"
+                class="setting-name"
+                i18n="@@licensePolicy.groups"
+                >Forbidden groups</span
+              >
+              <p id="license-policy-groups-hint" i18n="@@licensePolicy.groupsHint">
+                Qualor's licence groups, kept up to date with each release. They are a starting
+                point, not legal advice.
+              </p>
+            </div>
+            <ul class="setting-field group-list">
+              @for (g of settings.groups; track g.id) {
+                <li [attr.data-group]="g.id">
+                  <div class="group-head">
+                    <label class="row">
+                      <input
+                        type="checkbox"
+                        [attr.aria-describedby]="'license-policy-group-' + g.id"
+                        [checked]="forbiddenGroups().has(g.id)"
+                        (change)="toggleGroup(g.id, $event)"
+                      />
+                      <span>{{ groupLabel(g) }}</span>
+                    </label>
+                    <button
+                      type="button"
+                      class="btn-quiet"
+                      [attr.aria-expanded]="expanded().has(g.id)"
+                      [attr.aria-controls]="'license-policy-members-' + g.id"
+                      [attr.aria-label]="membersLabel(g)"
+                      (click)="toggleMembers(g.id)"
+                    >
+                      {{ membersText(g) }}
+                    </button>
+                  </div>
+                  <p class="hint" [id]="'license-policy-group-' + g.id">{{ g.description }}</p>
+                  <ul
+                    class="group-members"
+                    [id]="'license-policy-members-' + g.id"
+                    [hidden]="!expanded().has(g.id)"
+                  >
+                    @for (m of g.members; track m) {
+                      <li>
+                        <code>{{ m }}</code>
+                      </li>
+                    }
+                  </ul>
+                </li>
+              }
+            </ul>
+          </div>
+        }
+
+        @for (list of shownLists(); track list) {
+          @let fieldId = 'license-policy-' + list;
+          @let message = fieldErrors()[list];
+          <div class="setting-row">
+            <div class="setting-text">
+              @if (list === 'forbidden') {
+                <label [for]="fieldId" i18n="@@licensePolicy.forbidden">Forbidden licences</label>
+                <p [id]="fieldId + '-hint'" i18n="@@licensePolicy.forbiddenHint">
+                  SPDX licence identifiers, such as GPL-3.0-only, or terms such as GPL-2.0-only WITH
+                  Classpath-exception-2.0. Press Enter to add one.
+                </p>
+              } @else {
+                <label [for]="fieldId" i18n="@@licensePolicy.allowed">Allowed licences</label>
+                <p [id]="fieldId + '-hint'">
+                  @if (mode() === 'denylist') {
+                    <ng-container i18n="@@licensePolicy.allowedExceptionHint"
+                      >Allowed even when a forbidden group lists them. Press Enter to add
+                      one.</ng-container
+                    >
+                  } @else {
+                    <ng-container i18n="@@licensePolicy.allowedOnlyHint"
+                      >The only licences your dependencies may carry. Press Enter to add
+                      one.</ng-container
+                    >
+                  }
+                </p>
+              }
+            </div>
+            <div class="setting-field chip-field">
+              <ul class="chip-list" [id]="fieldId + '-chips'">
+                @for (entry of lists()[list]; track entry) {
+                  <li class="chip" [class.chip-invalid]="invalid().has(entry)">
+                    <code class="chip-text">{{ entry }}</code>
+                    <button
+                      type="button"
+                      class="chip-remove"
+                      [attr.aria-label]="removeLabel(entry)"
+                      (click)="remove(list, entry)"
+                    >
+                      <q-icon name="cross" />
+                    </button>
+                  </li>
+                }
+              </ul>
+              <div class="chip-add">
+                <input
+                  [id]="fieldId"
+                  list="license-policy-spdx"
+                  autocomplete="off"
+                  spellcheck="false"
+                  [value]="drafts()[list]"
+                  [attr.aria-invalid]="message ? true : null"
+                  [attr.aria-describedby]="
+                    message ? fieldId + '-hint ' + fieldId + '-error' : fieldId + '-hint'
+                  "
+                  (input)="setDraft(list, $event)"
+                  (keydown)="onKey(list, $event)"
+                />
+                <button
+                  type="button"
+                  class="btn"
+                  [attr.aria-label]="addLabel(list)"
+                  (click)="add(list)"
+                  i18n="@@licensePolicy.add"
+                >
+                  Add
+                </button>
+              </div>
+              @if (message) {
+                <span [id]="fieldId + '-error'" class="field-error" role="alert">{{
+                  message
+                }}</span>
+              }
+            </div>
+          </div>
+        }
+
+        <div class="setting-row">
+          <div class="setting-text">
+            <label for="license-policy-warn-unknown" i18n="@@licensePolicy.warnUnknown"
+              >Warn about dependencies with unknown licences</label
+            >
+            <p id="license-policy-warn-unknown-hint" i18n="@@licensePolicy.warnUnknownHint">
+              Each dependency whose licence the scan could not read becomes an Info issue. Install
+              the dependencies before the scan, so it can read them.
+            </p>
+          </div>
+          <div class="setting-field">
+            <input
+              id="license-policy-warn-unknown"
+              type="checkbox"
+              aria-describedby="license-policy-warn-unknown-hint"
+              [checked]="warnUnknown()"
+              (change)="setWarnUnknown($event)"
+            />
+          </div>
+        </div>
+
+        <div class="setting-actions">
+          <button
+            type="submit"
+            class="btn btn-primary"
+            [attr.aria-disabled]="busy() ? true : null"
+            i18n="@@licensePolicy.save"
+          >
+            Save
+          </button>
+          @if (settings.policy) {
+            <button
+              type="button"
+              class="btn btn-danger"
+              [attr.aria-disabled]="busy() ? true : null"
+              (click)="askRemove()"
+              i18n="@@licensePolicy.remove"
+            >
+              Remove policy
+            </button>
+          }
+        </div>
+      </section>
+    </form>
+
+    <dialog
+      #removeDialog
+      id="license-policy-remove-dialog"
+      class="dialog"
+      aria-labelledby="license-policy-remove-title"
+      aria-describedby="license-policy-remove-text"
+    >
+      <div class="dialog-head">
+        <h2 id="license-policy-remove-title" i18n="@@licensePolicy.removeTitle">
+          Remove the licence policy
+        </h2>
+      </div>
+      <div class="dialog-body">
+        <p id="license-policy-remove-text" i18n="@@licensePolicy.removeQuestion">
+          Remove the licence policy? Each project's next analysis closes its licence findings.
+        </p>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" class="btn" autofocus (click)="closeRemove()" i18n="@@dialog.cancel">
+          Cancel
+        </button>
+        <button
+          type="button"
+          class="btn btn-danger-solid"
+          (click)="confirmRemove()"
+          i18n="@@licensePolicy.removeConfirm"
+        >
+          Remove
+        </button>
+      </div>
+    </dialog>
+  }
+}

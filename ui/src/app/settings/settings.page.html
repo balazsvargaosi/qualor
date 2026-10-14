@@ -100,6 +100,28 @@
               >
             </li>
           }
+          @if (autoFix()) {
+            <li>
+              <a
+                routerLink="auto-fix"
+                routerLinkActive="active"
+                ariaCurrentWhenActive="page"
+                i18n="@@settings.tab.autoFix"
+                >Automatic fixes</a
+              >
+            </li>
+          }
+          @if (licensePolicy()) {
+            <li>
+              <a
+                routerLink="license-policy"
+                routerLinkActive="active"
+                ariaCurrentWhenActive="page"
+                i18n="@@settings.tab.licensePolicy"
+                >Licence policy</a
+              >
+            </li>
+          }
           @if (auditLog()) {
             <li>
               <a
@@ -208,6 +230,17 @@
                 ariaCurrentWhenActive="page"
                 i18n="@@settings.tab.auditSettings"
                 >Audit settings</a
+              >
+            </li>
+          }
+          @if (support()) {
+            <li>
+              <a
+                routerLink="ee/support"
+                routerLinkActive="active"
+                ariaCurrentWhenActive="page"
+                i18n="@@settings.tab.support"
+                >Support</a
               >
             </li>
           }

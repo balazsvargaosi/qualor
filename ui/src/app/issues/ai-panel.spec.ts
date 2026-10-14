@@ -32,6 +32,7 @@ const request = (over: object) => ({
   id: 'r1',
   issueId: 'i1',
   feature: 'explain',
+  automatic: false,
   status: 'queued',
   model: 'qwen2.5-coder',
   promptVersion: 'explain.v1',
@@ -555,5 +556,27 @@ describe('AiPanel (llm.md §18)', () => {
     await settle(fixture);
     expect(server.requestsTo('GET', '/api/v0/ai-requests/t1')).toHaveLength(0);
     expect(root.querySelector('[role="status"]')?.textContent).not.toContain('Asking the model');
+  });
+});
+
+describe('AiPanel: automatic fix suggestions (4E-3a §4)', () => {
+  it('says a fix suggestion no person asked for was suggested automatically', async () => {
+    const server = setup();
+    server.on('GET', '/api/v0/issues/i1/ai', {
+      body: { explain: null, triage: null, fix: { ...FIX, automatic: true } },
+    });
+    const { root } = await render();
+    expect(root.querySelector('#ai-fix-automatic')?.textContent?.trim()).toBe(
+      'Suggested automatically',
+    );
+    expect(root.querySelector('#ai-fix-before')).not.toBeNull();
+  });
+
+  it("says nothing of the kind for a person's fix suggestion", async () => {
+    const server = setup();
+    server.on('GET', '/api/v0/issues/i1/ai', { body: { explain: null, triage: null, fix: FIX } });
+    const { root } = await render();
+    expect(root.querySelector('#ai-fix-automatic')).toBeNull();
+    expect(root.textContent).not.toContain('Suggested automatically');
   });
 });

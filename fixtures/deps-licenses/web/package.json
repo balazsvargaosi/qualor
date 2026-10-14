@@ -1,0 +1,10 @@
+{
+  "name": "deps-licenses-web",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "apache-lib": "3.1.0",
+    "dual-lib": "2.0.0",
+    "left-pad-gpl": "1.0.0"
+  }
+}

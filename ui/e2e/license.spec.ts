@@ -120,6 +120,9 @@ test.describe('the licence page on a phone', () => {
       'scim',
       'compliance-export',
       'portfolio',
+      'llm.auto-fix',
+      'support-bundle',
+      'license-policy',
     ],
     test: true,
   };

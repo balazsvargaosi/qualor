@@ -35,6 +35,46 @@ All notable changes to Qualor are listed here, newest first. The format follows
   failing-webhook email for their organisation.
 - API: `GET`/`PUT`/`DELETE /projects/{id}/watch`, `GET`/`PUT /me/notifications`, and the public
   `GET` and `POST /notifications/unsubscribe` (RFC 8058 one-click).
+- Dependency licences: every scan now records the project's dependencies and their licences,
+  through a second, offline Trivy pass that needs no database. A project's new **Dependencies**
+  tab lists them by branch or merge request, with their lockfile line, licences and whether they
+  are direct, filters, and how many have a known licence; `GET /api/v0/projects/{id}/dependencies`
+  returns the same. npm and Composer lockfiles carry the licences; for pnpm, Yarn, Go, NuGet and
+  Maven, install the dependencies in the scan job before `qualor scan` (Gradle gives licences only
+  in part). Development dependencies and lockfiles the scan does not analyse are left out. The
+  new `qualor.yml` keys `analyzers.trivy.licenses` (`auto`, `true` or `false`) and
+  `analyzers.trivy.licenseTimeoutSeconds` (default 300) control the pass; a failure or a timeout
+  is a warning (`LICENSE_SCAN_FAILED`, `LICENSE_SCAN_TIMEOUT`) and never fails the scan. The
+  measure `unknown_licenses_ratio` gives the share of packages with an unknown licence. This is
+  in every edition. See
+  [Dependency licences](docs/guide/dependency-licenses.md).
+- A licence policy (Business and Enterprise): an organisation admin sets, in **Settings → Licence
+  policy** or through `GET/PUT /api/v0/organizations/{id}/license-policy`, which licences the
+  organisation's projects may use: Qualor's licence groups (network copyleft, strong copyleft,
+  weak copyleft, non-commercial or source-available), SPDX ids to forbid or to allow, or an allow
+  list. A dependency under a forbidden licence becomes an issue `license:forbidden` (severity
+  high) of the new quality **Licensing**, which has no rating; with **Warn about dependencies with
+  unknown licences**, a package without a licence becomes an Info issue `license:unknown`. They
+  get the new-code treatment and the merge request decoration, won't fix accepts one package, and
+  the new gate metrics `licensing_issues`, `forbidden_licenses` and their `new_` forms count them.
+  The built-in "Qualor way" gate is unchanged: its `new_issues > 0` already fails on a new
+  forbidden licence. Compliance and portfolio reports leave licence issues out. A policy change
+  applies from each project's next analysis. It needs a licence key listing the new feature
+  `license-policy`. The new permission `org.licenses.manage` (Organization admin) and the audit
+  action `organization.license_policy_changed` go with it.
+
+### Changed
+
+- **Breaking:** `license` and `trivy-licenses` are now reserved engine ids: `license` is the engine
+  of the licence policy's issues, `trivy-licenses` the scanner's licence pass. A `qualor.yml`
+  `sarif:` entry with `engine: license` or `engine: trivy-licenses` is a configuration error
+  (exit 2): rename it. A SARIF file whose tool is named `license` or `trivy-licenses` is reported
+  as `ext-license` or `ext-trivy-licenses`.
+
+## [0.8.0] - 2026-10-14
+
+### Added
+
 - Compliance reports (Enterprise): OWASP Top 10 2021 and 2025, CWE Top 25 2025, OWASP ASVS 4.0.3
   and PCI DSS 4.0.1 §6.2.4, for a project branch or an organisation, as JSON, CSV and PDF, kept
   for a year with a SHA-256 to verify them. Create them on a project's **Compliance** tab or in
@@ -52,6 +92,29 @@ All notable changes to Qualor are listed here, newest first. The format follows
   days). Download it as CSV (one row per project) or as PDF, or read it through
   `/api/v0/ee/portfolio`. Each user sees only the projects they can read. It needs a licence key
   listing the new feature `portfolio`. See [Portfolio reports](docs/guide/portfolio.md).
+- Automatic fix suggestions (Enterprise): an organisation admin can switch on, in **Settings →
+  Automatic fixes**, fix suggestions for the new findings of each analysed merge request or pull
+  request. Qualor asks the AI assistant's model on its own and posts the answers as a GitLab
+  suggestion or a GitHub suggested change, with a line saying they were posted automatically.
+  The admin chooses the minimum severity (default high) and the maximum per analysis (1 to 25,
+  default 10); a project admin can opt a project out. Only new-code findings are used, an issue
+  is never suggested twice, the organisation's daily fix budget applies, and the safety checks
+  are those of a person's suggestion. It is off by default and needs a licence key listing the
+  new feature `llm.auto-fix`. This is the one case where Qualor calls the model without a click.
+  The new permission `org.ai.manage` (Organization admin) and the audit actions
+  `organization.auto_fix_changed` and `project.auto_fix_changed` go with it. See
+  [Automatic fix suggestions](docs/guide/ai-assistant.md#automatic-fix-suggestions-enterprise).
+- The support bundle (Business and Enterprise): **Settings → Support** downloads one zip with the
+  versions, the configuration and settings without any secret, the licence state, the health of
+  the database and queues, the recent failed jobs and analyses, the connections to GitLab and
+  GitHub and the recent server logs, for an instance admin; the download is recorded in the audit
+  log (`support.bundle_downloaded`). When the web UI is down, `node dist/main.js support-bundle`
+  in the server image writes the same zip, without logs, and records nothing. It needs a licence
+  key listing the new feature `support-bundle`. See [The support bundle](docs/guide/support-bundle.md).
+- While telemetry is on, the server checks Docker Hub daily for a newer release: it logs it, shows
+  instance admins a dismissible banner and a note in the user menu, and `GET /api/v0/system/version`
+  returns it as `latest`, which `qualor scan` logs. `QUALOR_TELEMETRY=false` turns it off. See
+  [Telemetry](docs/guide/telemetry.md#update-check).
 
 ## [0.7.1] - 2026-10-12
 

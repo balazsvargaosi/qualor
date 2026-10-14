@@ -5,7 +5,7 @@
  */
 import { z } from 'zod';
 import table from '../../rules/go-rules.json' with { type: 'json' };
-import type { IssueKind, Quality, Severity } from '../report/taxonomy';
+import type { IssueKind, ReportQuality, Severity } from '../report/taxonomy';
 
 export const GO_VERSION = '1.27.1';
 /** The oldest `go` the Go engines run with (staticcheck 2026.2 supports the two newest Go releases). */
@@ -66,12 +66,12 @@ export const GOVET_ANALYZERS: ReadonlySet<string> = new Set(TABLE.govet.analyzer
 export const GOSEC_RULES: ReadonlySet<string> = new Set(TABLE.gosec.rules);
 
 export interface GoRuleMeta {
-  quality: Quality;
+  quality: ReportQuality;
   kind: IssueKind;
   defaultSeverity: Severity;
 }
 
-const meta = (quality: Quality, defaultSeverity: Severity): GoRuleMeta => ({
+const meta = (quality: ReportQuality, defaultSeverity: Severity): GoRuleMeta => ({
   quality,
   kind: 'issue',
   defaultSeverity,

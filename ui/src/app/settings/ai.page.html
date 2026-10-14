@@ -12,6 +12,12 @@
         instance, with your own key. Nothing is sent until an organisation and a feature are enabled
         here and a person asks.
       </p>
+      @if (autoFixAvailable()) {
+        <p class="muted" i18n="@@ai.settings.introAutoFix">
+          An organisation with automatic fix suggestions on also gets them for its merge requests
+          without anyone asking.
+        </p>
+      }
     }
   </div>
 </div>
@@ -516,6 +522,84 @@
                   }
                 </fieldset>
               </details>
+              <fieldset
+                class="ai-auto-fix"
+                [attr.aria-describedby]="'ai-org-' + o.id + '-auto-fix-hint'"
+              >
+                <legend i18n="@@ai.settings.autoFix">Automatic fix suggestions</legend>
+                @if (autoFixAvailable()) {
+                  <label class="row">
+                    <input
+                      type="checkbox"
+                      [id]="'ai-org-' + o.id + '-auto-fix'"
+                      [checked]="autoFixOf(o.id).enabled"
+                      (change)="setAutoFixEnabled(o.id, $event)"
+                    />
+                    <span i18n="@@ai.settings.autoFixEnabled">On</span>
+                  </label>
+                  <div class="ai-auto-fix-options">
+                    <div class="row">
+                      <label
+                        [attr.for]="'ai-org-' + o.id + '-auto-fix-severity'"
+                        i18n="@@ai.settings.autoFixSeverity"
+                        >Minimum severity</label
+                      >
+                      <select
+                        [id]="'ai-org-' + o.id + '-auto-fix-severity'"
+                        (change)="setAutoFixSeverity(o.id, $event)"
+                      >
+                        @for (s of severities; track s) {
+                          <option [value]="s" [selected]="s === autoFixOf(o.id).minSeverity">
+                            {{ severityLabel(s) }}
+                          </option>
+                        }
+                      </select>
+                    </div>
+                    <div class="row">
+                      <label
+                        [attr.for]="'ai-org-' + o.id + '-auto-fix-max'"
+                        i18n="@@ai.settings.autoFixMax"
+                        >At most per analysis</label
+                      >
+                      <input
+                        type="number"
+                        inputmode="numeric"
+                        min="1"
+                        [attr.max]="maxAutoFix"
+                        step="1"
+                        [id]="'ai-org-' + o.id + '-auto-fix-max'"
+                        [value]="autoFixOf(o.id).maxPerAnalysis"
+                        [attr.aria-invalid]="autoFixError(o.id) ? true : null"
+                        [attr.aria-describedby]="
+                          autoFixError(o.id) ? 'ai-org-' + o.id + '-auto-fix-error' : null
+                        "
+                        (input)="setAutoFixMax(o.id, $event)"
+                      />
+                    </div>
+                  </div>
+                  @if (autoFixError(o.id); as message) {
+                    <span
+                      [id]="'ai-org-' + o.id + '-auto-fix-error'"
+                      class="field-error"
+                      role="alert"
+                      >{{ message }}</span
+                    >
+                  }
+                  <p
+                    [id]="'ai-org-' + o.id + '-auto-fix-hint'"
+                    class="hint"
+                    i18n="@@ai.settings.autoFixHint"
+                  >
+                    Fix suggestions are posted to the organisation's merge requests without a click,
+                    for new findings at or above the minimum severity, within the fix budget. They
+                    need Suggest a fix; a project admin can switch them off for a project.
+                  </p>
+                } @else {
+                  <p [id]="'ai-org-' + o.id + '-auto-fix-hint'" class="muted">
+                    {{ autoFixNotLicensed }}
+                  </p>
+                }
+              </fieldset>
             </div>
           </div>
         } @empty {

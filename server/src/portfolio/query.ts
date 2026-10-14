@@ -110,7 +110,39 @@ export async function statesAt(
   return out;
 }
 
-/** The state measures of the analyses, by analysis id; a missing measure is absent. */
+/**
+ * The licence measures read only to take licence findings out of the state measures (6M L6): the
+ * issue and severity counts include every quality, and the portfolio leaves `licensing` out.
+ */
+const LICENSING_METRICS = ['licensing_issues', 'forbidden_licenses'] as const;
+type LicensingMetric = (typeof LICENSING_METRICS)[number] | 'new_licensing_issues';
+
+/**
+ * 6M L6: the counts without the licence issues. `license:forbidden` is the licensing rule at
+ * `high` and `license:unknown` the one at `info`, so the forbidden ones come off `high_issues` and
+ * the rest off `info_issues`. An analysis from before 6M has no licence measures: nothing to take.
+ */
+function withoutLicensing(
+  values: MeasureValues,
+  licensing: Partial<Record<LicensingMetric, number | null>>,
+): MeasureValues {
+  const all = licensing.licensing_issues ?? 0;
+  const forbidden = licensing.forbidden_licenses ?? 0;
+  const less = (key: StateMetric, n: number) => {
+    const value = values[key];
+    if (value !== undefined && value !== null && n > 0) values[key] = Math.max(0, value - n);
+  };
+  less('issues', all);
+  less('high_issues', forbidden);
+  less('info_issues', all - forbidden);
+  less('new_issues', licensing.new_licensing_issues ?? 0);
+  return values;
+}
+
+/**
+ * The state measures of the analyses, by analysis id; a missing measure is absent. Licence issues
+ * are left out of the counts (6M L6, {@link withoutLicensing}).
+ */
 export async function measuresOf(
   tx: Executor,
   analysisIds: readonly string[],
@@ -125,14 +157,24 @@ export async function measuresOf(
   }>(sql`
     SELECT analysis_id, metric_key, scope, value FROM measures
      WHERE analysis_id = ANY(${uuidArray(analysisIds)})
-       AND ((scope = 'overall' AND metric_key = ANY(${sql.param([...STATE_METRICS])}::text[]))
-         OR (scope = 'new' AND metric_key = 'issues'))`);
+       AND ((scope = 'overall'
+             AND metric_key = ANY(${sql.param([...STATE_METRICS, ...LICENSING_METRICS])}::text[]))
+         OR (scope = 'new' AND metric_key IN ('issues', 'licensing_issues')))`);
+  const licensing = new Map<string, Partial<Record<LicensingMetric, number | null>>>();
   for (const r of rows) {
+    const key = r.scope === 'new' ? `new_${r.metric_key}` : r.metric_key;
+    const value = r.value === null ? null : Number(r.value);
+    if (key === 'new_licensing_issues' || (LICENSING_METRICS as readonly string[]).includes(key)) {
+      const own = licensing.get(r.analysis_id) ?? {};
+      own[key as LicensingMetric] = value;
+      licensing.set(r.analysis_id, own);
+      continue;
+    }
     const values = out.get(r.analysis_id) ?? {};
-    const key = (r.scope === 'new' ? `new_${r.metric_key}` : r.metric_key) as StateMetric;
-    values[key] = r.value === null ? null : Number(r.value);
+    values[key as StateMetric] = value;
     out.set(r.analysis_id, values);
   }
+  for (const [id, values] of out) withoutLicensing(values, licensing.get(id) ?? {});
   return out;
 }
 

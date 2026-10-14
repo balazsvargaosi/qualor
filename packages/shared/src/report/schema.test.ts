@@ -68,6 +68,22 @@ describe('reportSchema', () => {
   it('rejects an external engine claiming a reserved id', () => {
     const engines = [{ ...must(base.engines[0]), kind: 'external' as const }];
     expect(issues({ ...base, engines }).join()).toMatch(/reserved/);
+    // 6M: the server's licence engine and the CLI's licence pass.
+    for (const id of ['license', 'trivy-licenses']) {
+      const claimed = [{ ...must(base.engines[0]), id, kind: 'external' as const, rules: [] }];
+      expect(issues({ ...base, engines: claimed, findings: [] }).join(), id).toMatch(/reserved/);
+    }
+  });
+
+  it('refuses a rule of quality licensing: only the server makes licence issues (6M, final review I3)', () => {
+    const engine = must(base.engines[0]);
+    const rule = { id: 'forbidden', kind: 'issue' as const, defaultSeverity: 'high' as const };
+    for (const quality of ['security', 'reliability', 'maintainability']) {
+      const engines = [{ ...engine, rules: [{ ...rule, quality }] }];
+      expect(issues({ ...base, engines }), quality).toEqual([]);
+    }
+    const engines = [{ ...engine, rules: [{ ...rule, quality: 'licensing' }] }];
+    expect(issues({ ...base, engines }).join()).toMatch(/engines\.0\.rules\.0\.quality/);
   });
 
   it('rejects invalid engine ids', () => {
@@ -271,5 +287,37 @@ describe('scm.github (github.md §3)', () => {
         ],
       }),
     ).toEqual([]);
+  });
+});
+
+describe('reportSchema dependencies', () => {
+  const entry = {
+    ecosystem: 'npm',
+    path: 'package-lock.json',
+    name: 'a',
+    version: '1.0.0',
+    licenses: ['MIT'],
+  };
+  const with_ = (dependencies: unknown) => issues({ ...base, dependencies });
+
+  it('accepts no field, an empty array and a full entry', () => {
+    expect(issues(base)).toEqual([]);
+    expect(with_([])).toEqual([]);
+    expect(with_([{ ...entry, line: 3, direct: true }])).toEqual([]);
+  });
+
+  it('refuses entries over each limit', () => {
+    expect(with_([{ ...entry, ecosystem: 'NPM' }])).not.toEqual([]);
+    expect(with_([{ ...entry, ecosystem: 'a'.repeat(33) }])).not.toEqual([]);
+    expect(with_([{ ...entry, path: 'a'.repeat(1_025) }])).not.toEqual([]);
+    expect(with_([{ ...entry, name: 'a'.repeat(513) }])).not.toEqual([]);
+    expect(with_([{ ...entry, version: 'a'.repeat(257) }])).not.toEqual([]);
+    expect(with_([{ ...entry, licenses: Array(17).fill('MIT') }])).not.toEqual([]);
+    expect(with_([{ ...entry, licenses: ['a'.repeat(257)] }])).not.toEqual([]);
+  });
+
+  it('refuses more than 50 000 entries', () => {
+    expect(with_(Array(50_000).fill(entry))).toEqual([]);
+    expect(with_(Array(50_001).fill(entry))).not.toEqual([]);
   });
 });

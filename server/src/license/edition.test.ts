@@ -68,6 +68,7 @@ describe('createEdition (enterprise.md §7)', () => {
   it('takes the LLM limits from active overrides; there is no organisation limit', () => {
     expect(createEdition({ boot, plugins, now: () => T0 }).limits()).toEqual({
       llm: { maxFixPerOrganizationPerDay: 100_000, automaticFixSuggestions: false },
+      licenses: { policy: false },
     });
   });
 
@@ -199,9 +200,15 @@ describe('createEdition (enterprise.md §7)', () => {
   });
 
   it('fixedEdition keeps the limits a test passes', () => {
-    const limits = { llm: { maxFixPerOrganizationPerDay: 5, automaticFixSuggestions: false } };
+    const limits = {
+      llm: { maxFixPerOrganizationPerDay: 5, automaticFixSuggestions: false },
+      licenses: { policy: true },
+    };
     const edition = fixedEdition(limits);
     expect(edition.limits()).toEqual(limits);
+    // A copy: a caller cannot change the edition's limits through the answer.
+    edition.limits().licenses.policy = false;
+    expect(edition.limits().licenses.policy).toBe(true);
     expect(edition.edition()).toBe('community');
     expect(edition.state().state).toBe('none');
   });

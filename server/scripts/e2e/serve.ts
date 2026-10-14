@@ -195,6 +195,7 @@ async function main(): Promise<void> {
   const uiDir = env('QUALOR_UI_DIR');
   if (!existsSync(`${uiDir}/index.html`)) throw new Error(`no built UI in ${uiDir}`);
   const licenseKeyFile = env('QUALOR_E2E_LICENSE_KEY_FILE');
+  const paymentsReportFile = env('QUALOR_E2E_PAYMENTS_REPORT_FILE');
   const credentials = {
     adminUsername: 'admin',
     adminPassword: env('QUALOR_E2E_ADMIN_PASSWORD'),
@@ -310,7 +311,9 @@ async function main(): Promise<void> {
   let sso: SsoSeed;
   try {
     const seedUrl = await waitForListening(enterpriseSeeding);
-    await seedDemo(seedUrl, credentials);
+    const demo = await seedDemo(seedUrl, credentials);
+    // 6M: the Business e2e test ingests this report again once it has set a licence policy.
+    writeFileSync(paymentsReportFile, JSON.stringify(demo.paymentsMainReport));
     await seedEnterprise(seedUrl, credentials, roleUsers);
     sso = await seedSso(seedUrl, credentials);
   } finally {
@@ -388,6 +391,7 @@ async function main(): Promise<void> {
     stopping = true;
     await Promise.all([stop(server), stop(enterprise), business.stop()]);
     rmSync(licenseKeyFile, { force: true });
+    rmSync(paymentsReportFile, { force: true });
     await new Promise<void>((resolve) => siem.close(() => resolve()));
     await new Promise<void>((resolve) => mail.close(() => resolve()));
     await closeFakes().catch((err: unknown) => {

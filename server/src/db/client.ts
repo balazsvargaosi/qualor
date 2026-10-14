@@ -17,10 +17,30 @@ export interface Database {
 export interface DatabaseOptions {
   max?: number;
   onError?: (err: Error) => void;
+  /**
+   * Every new session is made read-only with an SQL `SET` before its first query, so nothing can
+   * write: the support-bundle command. A `SET`, not the `options` startup parameter, which
+   * PgBouncer and hosted poolers refuse.
+   */
+  readOnly?: boolean;
 }
 
+/** What `readOnly` runs on each new connection, before the pool hands it out. */
+export const READ_ONLY_SESSION = 'SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY';
+
 export function createDatabase(url: string, options: DatabaseOptions = {}): Database {
-  const pool = new pg.Pool({ connectionString: url, max: options.max ?? 10 });
+  const pool = new pg.Pool({
+    connectionString: url,
+    max: options.max ?? 10,
+    // pg-pool awaits the hook; a failure ends the connection and fails the query (fails closed).
+    ...(options.readOnly
+      ? {
+          onConnect: async (client: pg.ClientBase) => {
+            await client.query(READ_ONLY_SESSION);
+          },
+        }
+      : {}),
+  });
   // An idle client that loses its connection emits 'error' on the pool; with no listener the
   // process would crash.
   pool.on('error', (err) => options.onError?.(err));

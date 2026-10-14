@@ -10,6 +10,13 @@ export const FIX_BODY_MAX_BYTES = 8 * 1024;
 /** The explanation's code span, longest first; 0 leaves it out. */
 const EXPLANATION_CHARS = [600, 300, 100, 0] as const;
 
+/**
+ * 4E-3a §3 step 5: the line after the header of a suggestion posted with no person's click (an
+ * automatic request, with no user). Fixed text, nothing of the request in it.
+ */
+export const AUTO_FIX_NOTICE =
+  "Posted automatically for new findings of this merge request. A person can switch this off in Qualor's AI settings.";
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 export function aiFixMarker(issueId: string, requestId: string): string {
@@ -33,6 +40,8 @@ export interface FixSuggestionInput {
   replacement: string[];
   /** Qualor's own link to the issue (`issueUrl` of decoration-data.ts), or null. */
   issueUrl: string | null;
+  /** An automatic request's (no user): the header is followed by {@link AUTO_FIX_NOTICE}. */
+  automatic?: boolean;
 }
 
 /**
@@ -51,6 +60,7 @@ export function fixSuggestionBody(input: FixSuggestionInput): string {
   const head = [
     aiFixMarker(input.issueId, input.requestId),
     `**AI-generated fix suggestion** from Qualor (model ${codeSpan(input.model)}). It may be wrong: review it before applying.`,
+    ...(input.automatic === true ? [AUTO_FIX_NOTICE] : []),
     '',
     `Issue: ${codeSpan(input.ruleKey)} · ${codeSpan(input.message, MAX_MESSAGE_CHARS)}`,
   ];

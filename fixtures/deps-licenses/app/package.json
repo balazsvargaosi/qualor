@@ -1,0 +1,8 @@
+{
+  "name": "deps-licenses-app",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "tiny-util": "0.4.2"
+  }
+}

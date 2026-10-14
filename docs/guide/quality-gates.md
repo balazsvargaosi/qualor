@@ -76,6 +76,7 @@ press **Watch** on the project's page. See
 | Group | Metrics (add `new_` for the new-code version) |
 |---|---|
 | Issues | `issues`, `blocker_issues`, `high_issues`, `medium_issues`, `low_issues`, `info_issues`, `security_issues`, `reliability_issues`, `maintainability_issues` |
+| Licences ([Dependency licences](./dependency-licenses.md#gate-metrics)) | `licensing_issues`, `forbidden_licenses` (the policy's issues, Business and Enterprise), `unknown_licenses_ratio` (overall only: the share of dependencies with an unknown licence, every edition) |
 | Ratings (1 = A … 5 = E) | `security_rating`, `reliability_rating` (from the worst severity among open issues of that quality) |
 | Coverage | `coverage`, `line_coverage`, `branch_coverage`, `lines_to_cover`, `uncovered_lines`, `conditions_to_cover`, `uncovered_conditions` |
 | Duplication | `duplicated_lines`, `duplicated_blocks`, `duplicated_lines_density` |
@@ -93,6 +94,8 @@ Common additions:
 - `new_blocker_issues gt 0` and `new_high_issues gt 0` instead of `new_issues gt 0`, for a softer
   start on a noisy codebase.
 - `security_rating gt 3` on the main branch: an overall floor.
+- `new_forbidden_licenses gt 0`: no new dependency under a licence your organisation's policy
+  forbids, even when you relax `new_issues` (Business and Enterprise).
 
 ## Quality profiles: which rules count
 
@@ -128,7 +131,9 @@ severity.
 | low | a minor issue |
 | info | information only |
 
-Each rule also has a **quality**: security, reliability or maintainability.
+Each rule also has a **quality**: security, reliability, maintainability or licensing. **Licensing**
+holds the issues of the organisation's [licence policy](./dependency-licenses.md) (Business and
+Enterprise). It has no rating, and those issues never count as security issues.
 
 ## Issue statuses
 

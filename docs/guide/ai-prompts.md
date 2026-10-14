@@ -154,7 +154,7 @@ Steps:
    and disk space. Report what is missing.
 2. Create /opt/qualor/compose.yml exactly as install-server.md
    shows, and check that the host can pull qualor/server:<tag> from
-   Docker Hub (tag: <0.7 | a full version such as 0.7.1>).
+   Docker Hub (tag: <0.8 | a full version such as 0.8.0>).
 3. Create /opt/qualor/.env with QUALOR_VERSION, a value from
    `openssl rand -hex 32` for each secret, QUALOR_PUBLIC_URL,
    QUALOR_TRUST_PROXY=1 and, if needed, QUALOR_SCM_INTERNAL_HOSTS,
@@ -188,7 +188,7 @@ https://qualor.dev/docs/configuration.md first.
 
 Inputs:
 - Qualor server: <https://qualor.example.com>
-- Qualor release: <0.7 | a full version such as 0.7.1>
+- Qualor release: <0.8 | a full version such as 0.8.0>
 - scanner image: <qualor/scanner (qualor/scanner-dotnet for C#) |
   our copy at mirror.acme.internal/qualor/scanner>
 - GitLab: <GitLab.com: use gitlab.com/qualor/qualor/qualor |
@@ -205,7 +205,8 @@ Do this:
    the plain job from gitlab.md. It must have GIT_DEPTH 0, run in
    merge request pipelines and on the default branch, install the
    dependencies (JS/TS, `go mod download` for Go) or build (Java, and C/C++ for clang-tidy)
-   before the scan, produce
+   before the scan, so the analyzers and the dependency licence
+   inventory (dependency-licenses.md) see them, produce
    coverage before the scan (reuse the existing test job's artifact
    through `needs` if one exists, instead of running the tests
    twice), and keep the Code Quality, SAST and Dependency Scanning
@@ -239,7 +240,7 @@ https://qualor.dev/docs/configuration.md first.
 
 Inputs:
 - Qualor server: <https://qualor.example.com>
-- scanner image: <qualor/scanner:0.7 (qualor/scanner-dotnet:0.7 for
+- scanner image: <qualor/scanner:0.8 (qualor/scanner-dotnet:0.8 for
   C#) | a full version | our copy in a private registry>
 
 Do this:
@@ -251,7 +252,8 @@ Do this:
    branch, permissions contents: read, the scanner container with
    --user 1001, actions/checkout pinned by SHA with fetch-depth 0,
    persist-credentials false and the PR head ref, the fork guard,
-   and then install/build, tests with coverage, and `qualor scan`.
+   and then install/build (installed dependencies also give Qualor
+   their licences), tests with coverage, and `qualor scan`.
    For C#, use the qualor-dotnet.yml template with our real build
    command. If the image is private, add container credentials and
    packages: read.

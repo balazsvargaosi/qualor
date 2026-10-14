@@ -24,7 +24,7 @@ type FacetName = 'severity' | 'quality' | 'status' | 'rule' | 'engine';
 export type ListFilter = 'status' | 'severity' | 'quality' | 'kind' | 'rule' | 'engine' | 'path';
 
 export const SEVERITIES = ['blocker', 'high', 'medium', 'low', 'info'];
-export const QUALITIES = ['security', 'reliability', 'maintainability'];
+export const QUALITIES = ['security', 'reliability', 'maintainability', 'licensing'];
 export const STATUSES = ['open', 'resolved', 'wont_fix', 'false_positive', 'closed'];
 export const KINDS = ['issue', 'hotspot'];
 const FACETS: FacetName[] = ['severity', 'quality', 'status', 'rule', 'engine'];
@@ -33,7 +33,7 @@ const SORTS: IssueSort[] = ['severity', 'createdAt', 'path'];
 const BOUNDS: Record<ListFilter, number> = {
   status: 5,
   severity: 5,
-  quality: 3,
+  quality: 4,
   kind: 2,
   rule: 50,
   engine: 20,
@@ -137,7 +137,8 @@ export function apiQuery(f: IssueFilters, branchId: string, cursor: string | nul
     sort: f.sort,
     status: many(f.status) as ('open' | 'resolved' | 'wont_fix' | 'false_positive' | 'closed')[],
     severity: many(f.severity) as ('blocker' | 'high' | 'medium' | 'low' | 'info')[] | undefined,
-    quality: many(f.quality) as ('security' | 'reliability' | 'maintainability')[] | undefined,
+    quality: many(f.quality) as
+      ('security' | 'reliability' | 'maintainability' | 'licensing')[] | undefined,
     kind: many(f.kind) as ('issue' | 'hotspot')[] | undefined,
     rule: many(f.rule),
     engine: many(f.engine),

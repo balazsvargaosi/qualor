@@ -1,4 +1,4 @@
-import type { Quality, Severity } from '../report/taxonomy';
+import type { ReportQuality, Severity } from '../report/taxonomy';
 
 /**
  * C and C++ (plan 9D, config.md §6.2). `CPPCHECK_VERSION` is the cppcheck the qualor/scanner
@@ -78,7 +78,7 @@ export function cppcheckSeverity(severity: string): Severity {
   return 'medium';
 }
 
-export function cppcheckQuality(severity: string): Quality {
+export function cppcheckQuality(severity: string): ReportQuality {
   return severity === 'error' || severity === 'warning' ? 'reliability' : 'maintainability';
 }
 
@@ -113,7 +113,7 @@ export const CLANG_TIDY_DEFAULT_CHECKS = [
 export const CLANG_TIDY_BUILTIN_CHECKS = 'clang-diagnostic-*,clang-analyzer-*';
 
 /** report-format.md §7.1: quality and severity from the check's group. */
-export function clangTidyMeta(check: string): { quality: Quality; severity: Severity } {
+export function clangTidyMeta(check: string): { quality: ReportQuality; severity: Severity } {
   if (
     check.startsWith('clang-analyzer-security.') ||
     check.startsWith('clang-analyzer-optin.taint.')

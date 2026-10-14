@@ -473,6 +473,36 @@ export const branchFiles = pgTable(
   ],
 );
 
+/**
+ * The dependency inventory of a branch's latest analysis that carried one (report `dependencies`),
+ * replaced in the ingestion transaction next to `branch_files`. `licenses` holds the licence
+ * strings as the scanner normalised them; `{}` means unknown.
+ */
+export const branchDependencies = pgTable(
+  'branch_dependencies',
+  {
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'cascade' }),
+    path: text('path').notNull(),
+    ecosystem: text('ecosystem').notNull(),
+    name: text('name').notNull(),
+    version: text('version').notNull(),
+    licenses: text('licenses').array().notNull(),
+    direct: boolean('direct'),
+    line: integer('line'),
+    analysisId: uuid('analysis_id')
+      .notNull()
+      .references(() => analyses.id, { onDelete: 'cascade' }),
+  },
+  (t) => [
+    primaryKey({ columns: [t.branchId, t.path, t.ecosystem, t.name, t.version] }),
+    index('branch_dependencies_licenses').using('gin', t.licenses),
+    // Supporting index for the analyses foreign key (cascades).
+    index('branch_dependencies_analysis_idx').on(t.analysisId),
+  ],
+);
+
 // ─── 4.4 Rules and profiles ─────────────────────────────────────────────────
 
 export const rules = pgTable(
@@ -504,7 +534,10 @@ export const rules = pgTable(
       'rules_default_severity_check',
       sql`default_severity IN ('blocker','high','medium','low','info')`,
     ),
-    check('rules_quality_check', sql`quality IN ('security','reliability','maintainability')`),
+    check(
+      'rules_quality_check',
+      sql`quality IN ('security','reliability','maintainability','licensing')`,
+    ),
     check('rules_kind_check', sql`kind IN ('issue','hotspot')`),
     check('rules_status_check', sql`status IN ('ready','deprecated','removed')`),
     check('rules_origin_check', sql`origin IN ('builtin','reported')`),
@@ -668,7 +701,10 @@ export const issues = pgTable(
       sql`status IN ('open','resolved','wont_fix','false_positive','closed')`,
     ),
     check('issues_severity_check', sql`severity IN ('blocker','high','medium','low','info')`),
-    check('issues_quality_check', sql`quality IN ('security','reliability','maintainability')`),
+    check(
+      'issues_quality_check',
+      sql`quality IN ('security','reliability','maintainability','licensing')`,
+    ),
     check('issues_kind_check', sql`kind IN ('issue','hotspot')`),
   ],
 );
@@ -1223,7 +1259,7 @@ export const ssoStates = pgTable(
 );
 export type SsoStateRow = typeof ssoStates.$inferSelect;
 
-// ─── 4.10 Mail (E1 spec, migration 0008_mail) ───────────────────────────────
+// ─── 4.10 Mail (E1 spec, migration 0009_mail) ───────────────────────────────
 
 export const MAIL_STATUSES = ['pending', 'sent', 'failed'] as const;
 export type MailStatus = (typeof MAIL_STATUSES)[number];
@@ -1276,7 +1312,7 @@ export const mailMessages = pgTable(
 );
 export type MailMessageRow = typeof mailMessages.$inferSelect;
 
-// ─── 4.11 Account tokens (mail E2, migration 0009_account_tokens) ──────────
+// ─── 4.11 Account tokens (mail E2, migration 0010_account_tokens) ──────────
 
 export const ACCOUNT_TOKEN_KINDS = ['password_reset', 'invitation'] as const;
 export type AccountTokenKind = (typeof ACCOUNT_TOKEN_KINDS)[number];

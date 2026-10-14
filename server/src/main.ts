@@ -15,11 +15,13 @@ import {
   scheduleLicenseAlertAtBoot,
 } from './mail/alerts/license-alerts';
 import { createLogger } from './http/logger';
+import { LogBuffer } from './http/log-buffer';
 import { loadUiAssets, UiAssetsError, type UiAssets } from './http/ui';
 import { VERSION } from './index';
 import { jobHandlers } from './ingest/handlers';
 import { reconcileDeadAnalyses } from './ingest/process';
 import { LicenseFileError } from './license/source';
+import { autoFixHandlers } from './llm/auto-fix';
 import {
   createLlmRuntime,
   LLM_LEASE_MS,
@@ -36,6 +38,7 @@ import { ensurePluginSchedules, startPluginWorker } from './plugins/mount';
 import { startWorker } from './queue/worker';
 import { scmHandlers } from './scm/decorate';
 import { createScmRuntime } from './scm/runtime';
+import { supportBundleCommand } from './support/command';
 import { readSignInSettings } from './sso/sign-in-policy';
 import { databaseStartupError, formatStartupError } from './startup-error';
 import {
@@ -45,6 +48,7 @@ import {
   telemetryBootMessage,
   telemetryHandlers,
 } from './telemetry/schedule';
+import { updateCheckerFor } from './update-check/checker';
 import { webhookHandlers } from './webhooks/deliver';
 
 /** Webhook deliveries in flight at once (each waits at most 10 s for its receiver). */
@@ -75,6 +79,18 @@ async function main(): Promise<void> {
     if (err instanceof ConfigError) fail(err.message);
     throw err;
   }
+  // 4E-3b §4: the bundle for when the UI is unreachable. No UI, HTTP, workers or migrations; it
+  // logs to standard error, because standard output may carry the zip.
+  if (process.argv[2] === 'support-bundle') {
+    process.exit(
+      await supportBundleCommand({
+        args: process.argv.slice(3),
+        config,
+        version: VERSION,
+        migrationsDir: MIGRATIONS_DIR,
+      }),
+    );
+  }
   // Plan 1F ruling Y2: a UI directory that is missing or wrong stops the boot, before migrations.
   let ui: UiAssets | undefined;
   if (config.uiDir !== null) {
@@ -85,7 +101,8 @@ async function main(): Promise<void> {
       throw err;
     }
   }
-  const logger = createLogger(config.logLevel);
+  const logBuffer = new LogBuffer();
+  const logger = createLogger(config.logLevel, undefined, logBuffer);
   if (process.argv[2] === 'restore') {
     process.exit(await restoreEmbedded(config, logger));
   }
@@ -144,6 +161,8 @@ async function main(): Promise<void> {
     if (err instanceof BootstrapError) await abort(err.message);
     throw err;
   }
+  // The SCM worker's per-process state; the support bundle reads its circuits (4E-3b §1).
+  const scmRuntime = createScmRuntime();
   // enterprise.md §6, §12: the key is read once; plugins load only while it is active or in grace.
   // The API and the workers share the one frozen registry and the one edition.
   let enterprise: EnterpriseBoot;
@@ -153,6 +172,8 @@ async function main(): Promise<void> {
       db: database.db,
       logger,
       serverVersion: VERSION,
+      // 4E-3b §4: the support bundle reads this replica's log tail and SCM circuits.
+      support: { migrationsDir: MIGRATIONS_DIR, logBuffer, scmRuntime },
     });
   } catch (err) {
     // The message names the variable and the path, never the file's content.
@@ -186,6 +207,8 @@ async function main(): Promise<void> {
       );
     }
   }
+  // telemetry.md "Update check": only while telemetry is on; never fatal, never above info.
+  const updates = updateCheckerFor(config, { currentVersion: VERSION, logger });
   const app = await buildApp({
     config,
     db: database.db,
@@ -193,9 +216,11 @@ async function main(): Promise<void> {
     checkReady: readinessCheck(database.db, MIGRATIONS_DIR),
     ui,
     edition,
+    logBuffer,
     plugins,
     // The recorder the plugin services record through (rbac-audit.md §9, §15).
     audit,
+    ...(updates ? { updates } : {}),
   });
   // data-model.md §7: one daily housekeeping job, (re)scheduled at boot and after every reap.
   await ensureHousekeepingScheduled(database.db);
@@ -204,7 +229,14 @@ async function main(): Promise<void> {
   const worker = startWorker({
     db: database.db,
     handlers: {
-      ...jobHandlers({ db: database.db, upload: config.upload, logger, notify }),
+      // The SCM stage queues a merge request's automatic fix suggestions under the edition's limits.
+      ...jobHandlers({
+        db: database.db,
+        upload: config.upload,
+        logger,
+        notify,
+        limits: () => edition.limits(),
+      }),
       ...housekeepingHandlers({ db: database.db, logger }),
       // scm.md §7: re-evaluations share the analysis worker and its per-project key.
       ...gateHandlers({ db: database.db, logger, notify }),
@@ -254,26 +286,34 @@ async function main(): Promise<void> {
     handlers: scmHandlers({
       db: database.db,
       scm: { secretKey: config.secretKey, internalHosts: config.scmInternalHosts },
-      runtime: createScmRuntime(),
+      runtime: scmRuntime,
       publicUrl: config.publicUrl,
       logger,
+      // An automatic fix post checks the licence's seam again when it runs (4E-3a §3).
+      limits: () => edition.limits(),
     }),
     concurrency: SCM_WORKER_CONCURRENCY,
     leaseMs: SCM_LEASE_MS,
     logger,
   });
   // llm.md §12.3: AI requests have their own worker, so a slow or absent model never delays
-  // analyses, deliveries or decorations.
+  // analyses, deliveries or decorations. It also runs the automatic fix suggestions of an analysed
+  // merge request (4E-3a §3), which queue requests and never call the model themselves.
   const llmWorker = startWorker({
     db: database.db,
-    handlers: llmHandlers({
-      db: database.db,
-      secretKey: config.secretKey,
-      internalHosts: config.llmInternalHosts,
-      runtime: createLlmRuntime(),
-      logger,
-      version: VERSION,
-    }),
+    handlers: {
+      ...llmHandlers({
+        db: database.db,
+        secretKey: config.secretKey,
+        internalHosts: config.llmInternalHosts,
+        runtime: createLlmRuntime(),
+        logger,
+        version: VERSION,
+        limits: () => edition.limits(),
+        audit,
+      }),
+      ...autoFixHandlers({ db: database.db, limits: () => edition.limits(), audit, logger }),
+    },
     concurrency: LLM_WORKER_CONCURRENCY,
     leaseMs: LLM_LEASE_MS,
     logger,
@@ -298,6 +338,7 @@ async function main(): Promise<void> {
   // rbac-audit.md §15: each scheduled plugin queue has its next run waiting (one across replicas).
   await ensurePluginSchedules(database.db, plugins, 'now');
   await app.listen({ host: config.host, port: config.port });
+  updates?.start();
   try {
     if (config.telemetry.enabled) await scheduleTelemetryAtBoot(database.db);
     else await cancelTelemetry(database.db);
@@ -329,6 +370,7 @@ async function main(): Promise<void> {
     stopping = true;
     logger.info({ signal }, 'shutting down');
     try {
+      updates?.stop();
       await app.close();
       await worker.stop();
       await webhookWorker.stop();

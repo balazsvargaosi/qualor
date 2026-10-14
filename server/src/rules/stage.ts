@@ -3,12 +3,15 @@ import { AnalysisFailure, type IngestionStage } from '../ingest/process';
 import type { AcceptedFinding } from '../ingest/state';
 import { ruleKey, upsertReportedRules } from './catalog';
 import { governingLanguage, loadProfileSet, ruleSetting } from './profiles';
+import { SERVER_ENGINES } from './server-engines';
 
 /**
  * Server step 7: upsert the rule catalog from the report, then keep only the findings whose rule
  * is active in the effective profile (profiles filter, they do not configure analyzers),
  * re-graded by the profile's severity override. Dropped findings are counted in one warning and
- * never stored (data-model.md §4.4).
+ * never stored (data-model.md §4.4). A finding of a server engine (rules/server-engines.ts) is
+ * dropped: only the server makes those (the licence policy stage), so a report can neither open
+ * nor keep such an issue.
  */
 export const rulesStage: IngestionStage = {
   name: 'rules',
@@ -25,7 +28,12 @@ export const rulesStage: IngestionStage = {
     const languageOf = new Map(report.files.map((f) => [f.path, f.language]));
     const accepted: AcceptedFinding[] = [];
     let filtered = 0;
+    let serverOnly = 0;
     report.findings.forEach((finding, index) => {
+      if (SERVER_ENGINES.has(finding.engineId)) {
+        serverOnly += 1;
+        return;
+      }
       const key = ruleKey(finding.engineId, finding.ruleId);
       const rule = rules.get(key);
       // upsertReportedRules creates every referenced rule, so this should never happen — but if
@@ -55,6 +63,12 @@ export const rulesStage: IngestionStage = {
         message: `${filtered} finding(s) were dropped because their rule is not active in the quality profile`,
         count: filtered,
       });
+    }
+    if (serverOnly > 0) {
+      ctx.logger.debug(
+        { analysisId: ctx.analysisId, dropped: serverOnly },
+        'dropped report findings of a server-only engine',
+      );
     }
     ctx.state.findings = accepted;
   },

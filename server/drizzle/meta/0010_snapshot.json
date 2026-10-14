@@ -1,6 +1,6 @@
 {
-  "id": "ab818f96-b15d-4a2d-9d03-1a22e3d49e02",
-  "prevId": "0179b895-72a3-4a7b-829f-f74d761036bd",
+  "id": "80583d4d-9968-471c-897c-d80eb5cd454c",
+  "prevId": "896a5b22-a282-4721-9f50-bab7a65360cb",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -929,6 +929,128 @@
           "value": "prev_hash ~ '^[0-9a-f]{64}$'"
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.branch_dependencies": {
+      "name": "branch_dependencies",
+      "schema": "",
+      "columns": {
+        "branch_id": {
+          "name": "branch_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "path": {
+          "name": "path",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ecosystem": {
+          "name": "ecosystem",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "version": {
+          "name": "version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "licenses": {
+          "name": "licenses",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "direct": {
+          "name": "direct",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "line": {
+          "name": "line",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "analysis_id": {
+          "name": "analysis_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "branch_dependencies_licenses": {
+          "name": "branch_dependencies_licenses",
+          "columns": [
+            {
+              "expression": "licenses",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "gin",
+          "with": {}
+        },
+        "branch_dependencies_analysis_idx": {
+          "name": "branch_dependencies_analysis_idx",
+          "columns": [
+            {
+              "expression": "analysis_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "branch_dependencies_branch_id_branches_id_fk": {
+          "name": "branch_dependencies_branch_id_branches_id_fk",
+          "tableFrom": "branch_dependencies",
+          "tableTo": "branches",
+          "columnsFrom": ["branch_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "branch_dependencies_analysis_id_analyses_id_fk": {
+          "name": "branch_dependencies_analysis_id_analyses_id_fk",
+          "tableFrom": "branch_dependencies",
+          "tableTo": "analyses",
+          "columnsFrom": ["analysis_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "branch_dependencies_branch_id_path_ecosystem_name_version_pk": {
+          "name": "branch_dependencies_branch_id_path_ecosystem_name_version_pk",
+          "columns": ["branch_id", "path", "ecosystem", "name", "version"]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.branch_files": {
@@ -2535,7 +2657,7 @@
         },
         "issues_quality_check": {
           "name": "issues_quality_check",
-          "value": "quality IN ('security','reliability','maintainability')"
+          "value": "quality IN ('security','reliability','maintainability','licensing')"
         },
         "issues_kind_check": {
           "name": "issues_kind_check",
@@ -3488,56 +3610,6 @@
       },
       "isRLSEnabled": false
     },
-    "public.notification_preferences": {
-      "name": "notification_preferences",
-      "schema": "",
-      "columns": {
-        "user_id": {
-          "name": "user_id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "email": {
-          "name": "email",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
-        },
-        "org_webhook_failures": {
-          "name": "org_webhook_failures",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "notification_preferences_user_id_users_id_fk": {
-          "name": "notification_preferences_user_id_users_id_fk",
-          "tableFrom": "notification_preferences",
-          "tableTo": "users",
-          "columnsFrom": ["user_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.organizations": {
       "name": "organizations",
       "schema": "",
@@ -3880,118 +3952,6 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.project_watches": {
-      "name": "project_watches",
-      "schema": "",
-      "columns": {
-        "user_id": {
-          "name": "user_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "project_id": {
-          "name": "project_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "branches": {
-          "name": "branches",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'main'"
-        },
-        "gate_failed": {
-          "name": "gate_failed",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
-        },
-        "gate_recovered": {
-          "name": "gate_recovered",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
-        },
-        "analysis_failed": {
-          "name": "analysis_failed",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "project_watches_project_idx": {
-          "name": "project_watches_project_idx",
-          "columns": [
-            {
-              "expression": "project_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "project_watches_user_id_users_id_fk": {
-          "name": "project_watches_user_id_users_id_fk",
-          "tableFrom": "project_watches",
-          "tableTo": "users",
-          "columnsFrom": ["user_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "project_watches_project_id_projects_id_fk": {
-          "name": "project_watches_project_id_projects_id_fk",
-          "tableFrom": "project_watches",
-          "tableTo": "projects",
-          "columnsFrom": ["project_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "project_watches_user_id_project_id_pk": {
-          "name": "project_watches_user_id_project_id_pk",
-          "columns": ["user_id", "project_id"]
-        }
-      },
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "project_watches_branches_check": {
-          "name": "project_watches_branches_check",
-          "value": "branches IN ('main','all')"
-        }
-      },
       "isRLSEnabled": false
     },
     "public.projects": {
@@ -4563,7 +4523,7 @@
         },
         "rules_quality_check": {
           "name": "rules_quality_check",
-          "value": "quality IN ('security','reliability','maintainability')"
+          "value": "quality IN ('security','reliability','maintainability','licensing')"
         },
         "rules_kind_check": {
           "name": "rules_kind_check",

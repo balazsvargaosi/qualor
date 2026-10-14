@@ -17,6 +17,8 @@ import { Icon } from '../shared/icon';
 import { LicenseBanner } from './license-banner';
 import { SsoBanner } from './sso-banner';
 import { SystemInfo } from './system-info';
+import { UpdateBanner } from './update-banner';
+import { UpdateNotice } from './update-notice';
 
 /**
  * The main-menu entries the UI has a screen for (4E-2 §4), by extension id: a plugin's entry for
@@ -38,7 +40,15 @@ const pathOf = (url: string) => url.split(/[?#]/, 1)[0] ?? url;
  */
 @Component({
   selector: 'q-shell',
-  imports: [RouterLink, RouterLinkActive, RouterOutlet, LicenseBanner, SsoBanner, Icon],
+  imports: [
+    RouterLink,
+    RouterLinkActive,
+    RouterOutlet,
+    LicenseBanner,
+    SsoBanner,
+    UpdateBanner,
+    Icon,
+  ],
   templateUrl: './shell.html',
   styleUrl: './shell.css',
 })
@@ -48,6 +58,8 @@ export class Shell {
   protected readonly org = inject(OrgContext);
   /** The server's version and edition, at the foot of the user menu. */
   protected readonly system = inject(SystemInfo);
+  /** A newer release from the server's update check, for instance admins (telemetry.md). */
+  protected readonly updates = inject(UpdateNotice);
   /** The plugins' main-menu entries with a known screen, after "Quality gates". */
   protected readonly mainNav = computed(() =>
     this.system.mainNav().flatMap((e) => {

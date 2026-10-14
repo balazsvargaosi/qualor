@@ -1,0 +1,321 @@
+import { LICENSE_GROUPS } from './groups';
+import { describe, expect, it } from 'vitest';
+import {
+  classify,
+  EMPTY_LICENSE_POLICY,
+  invalidLicenseIds,
+  licenseClassifier,
+  licensePolicySchema,
+  type LicensePolicy,
+} from './evaluate';
+
+const deny = (over: Partial<LicensePolicy> = {}): LicensePolicy => ({
+  ...EMPTY_LICENSE_POLICY,
+  ...over,
+});
+const strong = deny({ forbiddenGroups: ['strong-copyleft'] });
+const weak = deny({ forbiddenGroups: ['weak-copyleft'] });
+
+describe('classify, denylist', () => {
+  it('EMPTY_LICENSE_POLICY is a denylist with nothing listed', () => {
+    expect(EMPTY_LICENSE_POLICY).toEqual({
+      mode: 'denylist',
+      forbiddenGroups: [],
+      forbidden: [],
+      allowed: [],
+      warnUnknown: false,
+    });
+  });
+
+  it('is unknown for no licences', () => {
+    expect(classify([], strong)).toEqual({ verdict: 'unknown', culprits: [], group: null });
+  });
+
+  it('allows a licence outside the forbidden groups', () => {
+    expect(classify(['MIT'], strong).verdict).toBe('allowed');
+  });
+
+  it('forbids a member of a forbidden group', () => {
+    expect(classify(['GPL-3.0-only'], strong)).toEqual({
+      verdict: 'forbidden',
+      culprits: ['GPL-3.0-only'],
+      group: 'strong-copyleft',
+    });
+  });
+
+  it('forbids by the explicit list, whatever the case', () => {
+    expect(classify(['MIT'], deny({ forbidden: ['MIT'] }))).toEqual({
+      verdict: 'forbidden',
+      culprits: ['MIT'],
+      group: null,
+    });
+    expect(classify(['mit'], deny({ forbidden: ['mit'] })).verdict).toBe('forbidden');
+  });
+
+  it('allows an OR with a permitted side', () => {
+    expect(classify(['MIT OR GPL-3.0-only'], strong).verdict).toBe('allowed');
+  });
+
+  it('forbids an OR whose sides are all forbidden', () => {
+    expect(classify(['GPL-2.0-only OR GPL-3.0-only'], strong)).toEqual({
+      verdict: 'forbidden',
+      culprits: ['GPL-2.0-only', 'GPL-3.0-only'],
+      group: 'strong-copyleft',
+    });
+  });
+
+  it('forbids an AND with a forbidden side, and the array is an AND', () => {
+    expect(classify(['MIT AND GPL-3.0-only'], strong).verdict).toBe('forbidden');
+    expect(classify(['LGPL-2.1-only', 'MIT'], weak)).toEqual({
+      verdict: 'forbidden',
+      culprits: ['LGPL-2.1-only'],
+      group: 'weak-copyleft',
+    });
+  });
+
+  it('lifts a forbidden term with `allowed`', () => {
+    const policy = deny({ forbiddenGroups: ['weak-copyleft'], allowed: ['LGPL-2.1-only'] });
+    expect(classify(['LGPL-2.1-only', 'MIT'], policy).verdict).toBe('allowed');
+  });
+
+  it('judges a WITH term by its own group first', () => {
+    const term = ['GPL-2.0-only WITH Classpath-exception-2.0'];
+    expect(classify(term, strong).verdict).toBe('allowed');
+    expect(classify(term, weak)).toEqual({
+      verdict: 'forbidden',
+      culprits: ['GPL-2.0-only WITH Classpath-exception-2.0'],
+      group: 'weak-copyleft',
+    });
+  });
+
+  it('falls back to the rule of the id for a WITH term of no group', () => {
+    expect(classify(['GPL-3.0-only WITH GCC-exception-3.1'], strong).verdict).toBe('forbidden');
+    const p = deny({ forbiddenGroups: ['strong-copyleft'], allowed: ['GPL-3.0-only'] });
+    expect(classify(['GPL-3.0-only WITH GCC-exception-3.1'], p).verdict).toBe('allowed');
+    const exact = deny({ forbidden: ['MIT WITH Classpath-exception-2.0'] });
+    expect(classify(['MIT WITH Classpath-exception-2.0'], exact).verdict).toBe('forbidden');
+  });
+
+  it('treats an unrecognised licence as allowed, but all-unrecognised as unknown', () => {
+    expect(classify(['Public Domain'], strong).verdict).toBe('unknown');
+    expect(classify(['Weird-Licence'], strong).verdict).toBe('unknown');
+    expect(classify(['Weird-Licence', 'MIT'], strong).verdict).toBe('allowed');
+    expect(classify(['Public Domain', 'GPL-3.0-only'], strong).verdict).toBe('forbidden');
+  });
+
+  it('sorts and de-duplicates the culprits', () => {
+    const r = classify(['GPL-3.0-only AND GPL-2.0-only', 'GPL-3.0-only'], strong);
+    expect(r.culprits).toEqual(['GPL-2.0-only', 'GPL-3.0-only']);
+    expect(r.group).toBe('strong-copyleft');
+  });
+
+  it('normalises the manifest spellings before judging them', () => {
+    expect(classify(['GPLv3'], strong).verdict).toBe('forbidden');
+    expect(classify(['Apache License 2.0'], strong).verdict).toBe('allowed');
+  });
+});
+
+describe('classify, unparseable entries', () => {
+  it('denylist: counts them as unrecognised leaves', () => {
+    expect(classify(['Public Domain'], strong).verdict).toBe('unknown');
+    expect(classify(['Some Custom Licence v2'], strong).verdict).toBe('unknown');
+    expect(classify(['MIT OR'], strong).verdict).toBe('unknown');
+    expect(classify(['(MIT'], strong).verdict).toBe('unknown');
+    expect(classify(['Public Domain', 'MIT'], strong).verdict).toBe('allowed');
+    expect(classify(['Public Domain', 'GPL-3.0-only'], strong).verdict).toBe('forbidden');
+  });
+
+  it('allowlist: forbids them, naming the raw string', () => {
+    const only = deny({ mode: 'allowlist', allowed: ['MIT'] });
+    expect(classify(['MIT', 'Public Domain'], only)).toEqual({
+      verdict: 'forbidden',
+      culprits: ['Public Domain'],
+      group: null,
+    });
+    expect(classify(['MIT OR'], only)).toEqual({
+      verdict: 'forbidden',
+      culprits: ['MIT OR'],
+      group: null,
+    });
+    expect(classify(['Some Custom Licence v2'], only).culprits).toEqual(['Some Custom Licence v2']);
+    expect(classify([], only).verdict).toBe('unknown');
+  });
+});
+
+describe('classify, raw text is never taken apart', () => {
+  it('does not read a WITH inside free text', () => {
+    const noCommercial = deny({ forbiddenGroups: ['non-commercial-or-source-available'] });
+    expect(classify(['GPL-3.0-only WITH Foo Bar'], strong).verdict).toBe('unknown');
+    expect(
+      classify(['GPL-3.0-only WITH some exception'], deny({ forbidden: ['GPL-3.0-only'] })).verdict,
+    ).toBe('unknown');
+    expect(classify(['MIT foo WITH Commons-Clause'], noCommercial).verdict).toBe('unknown');
+  });
+
+  it('refuses it under an allowlist, with no group', () => {
+    const only = deny({ mode: 'allowlist', allowed: ['MIT'] });
+    expect(classify(['MIT WITH Foo Bar'], only)).toEqual({
+      verdict: 'forbidden',
+      culprits: ['MIT WITH Foo Bar'],
+      group: null,
+    });
+    const gpl = deny({ mode: 'allowlist', allowed: ['MIT'] });
+    expect(classify(['GPL-3.0-only WITH Foo Bar'], gpl).group).toBeNull();
+  });
+});
+
+describe('classify, deprecated and + spellings', () => {
+  it('keeps the deprecated -with- ids inside the copyleft groups', () => {
+    expect(classify(['GPL-2.0-with-classpath-exception'], weak).verdict).toBe('forbidden');
+    expect(classify(['GPL-2.0-with-classpath-exception'], strong).verdict).toBe('allowed');
+    for (const id of [
+      'GPL-2.0-with-GCC-exception',
+      'GPL-2.0-with-autoconf-exception',
+      'GPL-2.0-with-bison-exception',
+      'GPL-2.0-with-font-exception',
+      'GPL-3.0-with-GCC-exception',
+      'GPL-3.0-with-autoconf-exception',
+    ])
+      expect(classify([id], strong)).toMatchObject({
+        verdict: 'forbidden',
+        group: 'strong-copyleft',
+      });
+  });
+
+  it('resolves a + on an id with no later form to the id', () => {
+    expect(classify(['EUPL-1.2+'], deny({ forbiddenGroups: ['network-copyleft'] })).verdict).toBe(
+      'forbidden',
+    );
+    expect(classify(['MPL-1.1+'], weak).verdict).toBe('forbidden');
+    expect(classify(['EPL-1.0+'], weak).verdict).toBe('forbidden');
+    expect(invalidLicenseIds(deny({ forbidden: ['EUPL-1.2+', 'MPL-1.1+', 'EPL-1.0+'] }))).toEqual(
+      [],
+    );
+  });
+
+  it('treats GPLv2+, GPL-2.0+ and GPL-2.0-or-later as one licence', () => {
+    const policy = deny({ forbidden: ['GPL-2.0-or-later'] });
+    for (const s of ['GPLv2+', 'GPL-2.0+', 'GPL-2.0-or-later'])
+      expect(classify([s], policy)).toEqual({
+        verdict: 'forbidden',
+        culprits: ['GPL-2.0-or-later'],
+        group: 'strong-copyleft',
+      });
+    expect(classify(['GPL-2.0-only'], policy).verdict).toBe('allowed');
+  });
+});
+
+describe('classify, allowlist', () => {
+  const allowOnly = (allowed: string[]) => deny({ mode: 'allowlist', allowed });
+
+  it('allows what is listed and forbids the rest, unrecognised included', () => {
+    expect(classify(['MIT'], allowOnly(['MIT'])).verdict).toBe('allowed');
+    expect(classify(['Apache-2.0'], allowOnly(['MIT']))).toEqual({
+      verdict: 'forbidden',
+      culprits: ['Apache-2.0'],
+      group: null,
+    });
+    expect(classify(['Weird-Licence'], allowOnly(['MIT'])).verdict).toBe('forbidden');
+  });
+
+  it('is unknown for no licences', () => {
+    expect(classify([], allowOnly(['MIT'])).verdict).toBe('unknown');
+  });
+
+  it('combines like the denylist, and accepts a WITH term through its id', () => {
+    expect(classify(['MIT OR Apache-2.0'], allowOnly(['MIT'])).verdict).toBe('allowed');
+    expect(classify(['MIT AND Apache-2.0'], allowOnly(['MIT'])).verdict).toBe('forbidden');
+    const gpl = allowOnly(['GPL-2.0-only']);
+    expect(classify(['GPL-2.0-only WITH Classpath-exception-2.0'], gpl).verdict).toBe('allowed');
+  });
+});
+
+describe('licensePolicySchema', () => {
+  const ok: LicensePolicy = {
+    mode: 'allowlist',
+    forbiddenGroups: ['weak-copyleft'],
+    forbidden: ['GPL-3.0-only'],
+    allowed: ['MIT'],
+    warnUnknown: true,
+  };
+
+  it('accepts a policy and the empty policy', () => {
+    expect(licensePolicySchema.parse(ok)).toEqual(ok);
+    expect(licensePolicySchema.parse(EMPTY_LICENSE_POLICY)).toEqual(EMPTY_LICENSE_POLICY);
+  });
+
+  it('rejects an unknown group, an unknown mode and over-long lists or entries', () => {
+    expect(licensePolicySchema.safeParse({ ...ok, forbiddenGroups: ['nope'] }).success).toBe(false);
+    expect(licensePolicySchema.safeParse({ ...ok, mode: 'other' }).success).toBe(false);
+    expect(
+      licensePolicySchema.safeParse({ ...ok, forbidden: Array(501).fill('MIT') }).success,
+    ).toBe(false);
+    expect(licensePolicySchema.safeParse({ ...ok, allowed: Array(500).fill('MIT') }).success).toBe(
+      true,
+    );
+    expect(licensePolicySchema.safeParse({ ...ok, allowed: ['x'.repeat(257)] }).success).toBe(
+      false,
+    );
+    expect(licensePolicySchema.safeParse({ ...ok, allowed: [''] }).success).toBe(false);
+    expect(licensePolicySchema.safeParse({ ...ok, warnUnknown: undefined }).success).toBe(false);
+  });
+});
+
+describe('invalidLicenseIds', () => {
+  it('accepts every group member, the WITH terms and Commons-Clause included', () => {
+    const members = LICENSE_GROUPS.flatMap((g) => g.members);
+    expect(members).toContain('Commons-Clause');
+    expect(invalidLicenseIds(deny({ forbidden: members, allowed: members }))).toEqual([]);
+  });
+
+  it('returns the entries that are not SPDX ids or terms', () => {
+    const policy = deny({
+      forbidden: ['GPL-3.0-only', 'Nope-1.0', 'GPL-2.0-only WITH Classpath-exception-2.0'],
+      allowed: [
+        'mit',
+        'MIT WITH Not-An-Exception',
+        'Commons-Clause',
+        'Apache-2.0 WITH Commons-Clause',
+      ],
+    });
+    expect(invalidLicenseIds(policy)).toEqual(['Nope-1.0', 'MIT WITH Not-An-Exception']);
+    expect(invalidLicenseIds(EMPTY_LICENSE_POLICY)).toEqual([]);
+  });
+});
+
+describe('licenseClassifier', () => {
+  it('judges like classify, with the policy prepared once', () => {
+    const policies = [
+      strong,
+      weak,
+      deny({ forbidden: ['gpl-3.0'], allowed: ['GPL-2.0-only'] }),
+      deny({ mode: 'allowlist', allowed: ['MIT', 'Apache-2.0'] }),
+    ];
+    const cases = [
+      [],
+      ['MIT'],
+      ['GPL-3.0-only'],
+      ['MIT OR GPL-3.0-only'],
+      ['LGPL-2.1-only AND MIT'],
+      ['GPL-2.0-only WITH Classpath-exception-2.0'],
+      ['Apache-2.0', 'GPL-2.0+'],
+      ['some custom licence'],
+    ];
+    for (const policy of policies) {
+      const judge = licenseClassifier(policy);
+      for (const licenses of cases) {
+        expect(judge(licenses), JSON.stringify([policy, licenses])).toEqual(
+          classify(licenses, policy),
+        );
+      }
+    }
+  });
+
+  it('does not see later changes to the policy object', () => {
+    const policy = deny({ forbidden: ['MIT'] });
+    const judge = licenseClassifier(policy);
+    policy.forbidden.push('Apache-2.0');
+    expect(judge(['Apache-2.0']).verdict).toBe('allowed');
+    expect(judge(['MIT']).verdict).toBe('forbidden');
+  });
+});

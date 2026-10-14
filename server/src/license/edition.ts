@@ -121,5 +121,8 @@ export function createEdition(options: {
 /** For tests and `buildApp` without an edition: no licence, the given limits. */
 export function fixedEdition(limits: Limits = communityLimits()): Edition {
   const edition = createEdition({ boot: { source: null, keyHash: null, verification: null } });
-  return { ...edition, limits: () => ({ ...limits, llm: { ...limits.llm } }) };
+  return {
+    ...edition,
+    limits: () => ({ ...limits, llm: { ...limits.llm }, licenses: { ...limits.licenses } }),
+  };
 }

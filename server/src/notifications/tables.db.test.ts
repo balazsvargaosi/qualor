@@ -13,7 +13,7 @@ import {
 import { expectPgError } from '../../test/db';
 import { notificationPreferences, projects, projectWatches, users } from '../db/schema';
 
-describe('project_watches and notification_preferences (0010_notifications)', () => {
+describe('project_watches and notification_preferences (0011_notifications)', () => {
   let ctx: TestContext;
   let org: string;
   let session: Session;

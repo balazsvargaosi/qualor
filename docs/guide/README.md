@@ -33,32 +33,37 @@ release: **Docs** in the top bar, at `/docs` on your server, for signed-in users
 7. [Languages and analyzers](./languages-and-analyzers.md): JavaScript, TypeScript, Java, Kotlin,
    Swift, C, C++, C#, Python, PHP, Ruby, Go, HTML, CSS, secrets, dependencies, external SARIF files
    and coverage.
-8. [Configuration reference](./configuration.md): `qualor.yml`, environment variables and
+8. [Dependency licences](./dependency-licenses.md): the dependencies of every project and their
+   licences, which ecosystems give them, and a licence policy that turns forbidden licences into
+   issues (Business and Enterprise).
+9. [Configuration reference](./configuration.md): `qualor.yml`, environment variables and
    precedence.
-9. [Quality gates, profiles and issues](./quality-gates.md): metrics, new code, gates, rule
-   profiles and issue statuses.
-10. [AI assistant](./ai-assistant.md): explain issues, suggest triage and fixes with your own
-    model; off by default.
-11. [Email](./email.md): the SMTP server, the test message and the alerts for administrators.
-12. [CLI reference](./cli.md): commands, options and exit codes.
-13. [Migrating from SonarQube](./migrate-from-sonarqube.md): `qualor import sonarqube`.
-14. [Webhooks and REST API](./webhooks-and-api.md): events, signatures and the most useful
+10. [Quality gates, profiles and issues](./quality-gates.md): metrics, new code, gates, rule
+    profiles and issue statuses.
+11. [AI assistant](./ai-assistant.md): explain issues, suggest triage and fixes with your own
+    model; off by default. Enterprise adds automatic fix suggestions for merge requests.
+12. [Email](./email.md): the SMTP server, the test message and the alerts for administrators.
+13. [CLI reference](./cli.md): commands, options and exit codes.
+14. [Migrating from SonarQube](./migrate-from-sonarqube.md): `qualor import sonarqube`.
+15. [Webhooks and REST API](./webhooks-and-api.md): events, signatures and the most useful
     endpoints.
-15. [Enterprise](./enterprise.md): what a licence key adds, how to apply it, and what happens when
+16. [Enterprise](./enterprise.md): what a licence key adds, how to apply it, and what happens when
     it expires.
-16. [Roles and the audit log](./roles-and-audit.md): the four roles and project-level access (every
+17. [Roles and the audit log](./roles-and-audit.md): the four roles and project-level access (every
     edition), and the security audit log with its export, verification and SIEM stream.
-17. [Single sign-on and SCIM](./sso-and-scim.md): OIDC and SAML sign-in, group mapping,
+18. [Single sign-on and SCIM](./sso-and-scim.md): OIDC and SAML sign-in, group mapping,
     break-glass admins, and SCIM provisioning.
-18. [Compliance reports](./compliance-reports.md): OWASP Top 10, CWE Top 25, OWASP ASVS and
+19. [Compliance reports](./compliance-reports.md): OWASP Top 10, CWE Top 25, OWASP ASVS and
     PCI DSS reports of a project or an organisation, as JSON, CSV and PDF, and how to verify them.
-19. [Portfolio reports](./portfolio.md): the quality of every project and organisation in one
+20. [Portfolio reports](./portfolio.md): the quality of every project and organisation in one
     view, with trends and the projects that need attention, as CSV and PDF.
-20. [Troubleshooting](./troubleshooting.md): what common errors mean and how to fix them.
-21. [AI prompts](./ai-prompts.md): ready-made prompts that let an AI agent roll Qualor out in your
+21. [Troubleshooting](./troubleshooting.md): what common errors mean and how to fix them.
+22. [AI prompts](./ai-prompts.md): ready-made prompts that let an AI agent roll Qualor out in your
     company.
-22. [Telemetry](./telemetry.md): the anonymous usage statistics the server sends, and how to turn
+23. [Telemetry](./telemetry.md): the anonymous usage statistics the server sends, and how to turn
     them off.
+24. [The support bundle](./support-bundle.md): one zip with versions, configuration without
+    secrets, health and recent failures, from the web UI or a command.
 
 ## How Qualor works
 

@@ -159,6 +159,11 @@
     @if (ai.features.fix && fix(); as r) {
       <section class="stack" aria-labelledby="ai-fix-heading">
         <h4 id="ai-fix-heading" i18n="@@ai.panel.fixTitle">Fix suggestion</h4>
+        @if (r.automatic) {
+          <p id="ai-fix-automatic" class="muted" i18n="@@ai.panel.fixAutomatic">
+            Suggested automatically
+          </p>
+        }
         @if (r.status === 'succeeded') {
           <p class="row">
             <span class="badge badge-accent" i18n="@@ai.panel.label"

@@ -407,6 +407,50 @@ describe('summary, inline note and commit status (scm.md §5)', () => {
     expect(html).not.toContain('\\');
   });
 
+  it('labels a licence finding with its licensing quality (6M §6)', () => {
+    const message =
+      "gpl-pkg 2.1.0 is licensed GPL-3.0-only, which the organisation's licence policy forbids (Strong copyleft).";
+    expect(
+      inlineBody({
+        issueId: ISSUE,
+        severity: 'high',
+        quality: 'licensing',
+        ruleKey: 'license:forbidden',
+        message,
+        url: 'https://q.example/i',
+      }),
+    ).toMatchInlineSnapshot(`
+      "<!-- qualor:issue 01920000-0000-7000-8000-000000000001 -->
+      **High** · licensing · \` license:forbidden \`
+
+      \` gpl-pkg 2.1.0 is licensed GPL-3.0-only, which the organisation's licence policy forbids (Strong copyleft). \`
+
+      [View in Qualor](https://q.example/i)"
+    `);
+    const body = summary({
+      topIssues: [
+        {
+          id: ISSUE,
+          severity: 'high',
+          quality: 'licensing',
+          ruleKey: 'license:forbidden',
+          path: 'web/package-lock.json',
+          line: 21,
+          message,
+          url: null,
+        },
+      ],
+      topIssuesTotal: 1,
+    });
+    expect(body.split('\n').filter((l) => l.includes('license:forbidden') || l.includes('gpl-pkg')))
+      .toMatchInlineSnapshot(`
+      [
+        "1. 🔴 **High** · licensing · \` license:forbidden \` · \` web/package-lock.json:21 \`\\",
+        "   \` gpl-pkg 2.1.0 is licensed GPL-3.0-only, which the organisation's licence policy forbids (Strong copyleft). \`",
+      ]
+    `);
+  });
+
   it('stays within 16 KiB by listing fewer issues', () => {
     const many = Array.from({ length: 10 }, () => ({
       id: ISSUE,

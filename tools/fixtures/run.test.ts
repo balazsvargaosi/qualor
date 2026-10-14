@@ -71,6 +71,9 @@ describe('analyzer capabilities (ruling T4)', () => {
     expect(unavailableEngines(['trivy'], (t) => t === 'trivy')).toEqual(['trivy']);
     expect(unavailableEngines(['trivy'], (t) => t === TRIVY_DATABASE)).toEqual(['trivy']);
     expect(unavailableEngines(['trivy'], (t) => ['trivy', TRIVY_DATABASE].includes(t))).toEqual([]);
+    // 6M: the licence pass needs the binary only, never the database.
+    expect(unavailableEngines(['trivy-licenses'], () => false)).toEqual(['trivy-licenses']);
+    expect(unavailableEngines(['trivy-licenses'], (t) => t === 'trivy')).toEqual([]);
     // Plan 8A/8B: sonarjs needs node and the image's own pass, like Trivy above.
     expect(unavailableEngines(['sonarjs'], (t) => t === 'node')).toEqual(['sonarjs']);
     expect(unavailableEngines(['sonarjs'], (t) => t === SONARJS_PASS)).toEqual(['sonarjs']);
@@ -131,6 +134,25 @@ describe('analyzer capabilities (ruling T4)', () => {
     expect(v.lines).toEqual(['~ a: not checked here for pmd (not installed; CI checks them)']);
     // ...even while the fixture is still listed as pending for another engine.
     expect(verdict([outcome], pending).ok).toBe(true);
+  });
+  it('does not check the inventory when the licence pass cannot run here (6M, ruling T4)', () => {
+    const missing = p('dependency', 'web/package-lock.json npm apache-lib@3.1.0: missing from report');
+    const outcome = {
+      name: 'deps-licenses',
+      problems: [p('engine', 'trivy-licenses: expected status ok, got skipped'), missing],
+      unavailable: ['trivy-licenses'],
+    };
+    const v = verdict([outcome], {});
+    expect(v.ok).toBe(true);
+    expect(v.lines).toEqual([
+      '~ deps-licenses: not checked here for trivy-licenses (not installed; CI checks them)',
+    ]);
+    // With the licence pass available, a wrong inventory is a failure.
+    const ran = verdict([{ name: 'deps-licenses', problems: [missing] }], {});
+    expect(ran.ok).toBe(false);
+    expect(ran.lines).toEqual(['✗ deps-licenses:', `    dependency: ${missing.detail}`]);
+    // ...and so is one while another engine is the unavailable one.
+    expect(verdict([{ name: 'x', problems: [missing], unavailable: ['pmd'] }], {}).ok).toBe(false);
   });
   it('still fails other problems of a fixture with an unavailable engine', () => {
     const v = verdict(
@@ -483,6 +505,22 @@ describe('checkGitLabReports (scm.md §9)', () => {
       'gitlab: the Code Quality file was written, but an engine failed, timed out or was unavailable (ruling G6)',
     ]);
     expect(checkGitLabReports(incomplete, null, failedScan('failure'), () => source)).toEqual([]);
+    // 6M: the licence pass puts nothing in GitLab's files; its failure leaves them complete.
+    for (const status of ['failed', 'timeout', 'skipped'] as const) {
+      const licences: Report = {
+        ...report,
+        engines: [
+          ...report.engines,
+          {
+            ...report.engines[0]!,
+            id: 'trivy-licenses',
+            status,
+            reason: 'trivy is not installed (trivy on PATH or in the scanner image)',
+          },
+        ],
+      };
+      expect(checkGitLabReports(licences, codeQuality, sast(), () => source), status).toEqual([]);
+    }
     expect(
       checkGitLabReports(report, null, failedScan('failure'), () => source).map((p) => p.detail),
     ).toEqual([

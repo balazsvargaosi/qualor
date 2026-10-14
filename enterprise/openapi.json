@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Qualor Enterprise API",
-    "version": "0.7.1",
+    "version": "0.8.0",
     "description": "The routes of the Qualor Enterprise plugin (/api/v0/ee), mounted while a licence lists their feature; 403 FEATURE_NOT_LICENSED otherwise. Unstable, as the core API."
   },
   "components": {
@@ -43,6 +43,21 @@
           "reason": {
             "type": "string",
             "description": "LICENSE_INVALID: why the key was rejected (malformed, unknown-key, bad-signature, bad-payload, revoked, not-yet-valid). VALIDATION_FAILED of POST /ee/sso/connections/{id}/saml/metadata: what failed (a fetch.<reason> code of the connection Test, or config_invalid, metadata.no_url, metadata.not_saml, metadata.incomplete, metadata.sso_url). MAIL_SEND_FAILED of POST /system/mail/test: why the test message was not sent (connection, auth, rejected, timeout, config). Map the code, not the text"
+          },
+          "details": {
+            "type": "object",
+            "description": "INVALID_LICENSE_ID: `invalid` lists the licence policy entries that are not SPDX licence ids or \"id WITH exception\" terms, as sent",
+            "properties": {
+              "invalid": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "invalid"
+            ]
           },
           "errors": {
             "type": "array",
@@ -9799,6 +9814,56 @@
           },
           "503": {
             "description": "PORTFOLIO_TIMEOUT (the portfolio took longer than its 20-second budget), or the PDF took longer than 60 seconds to render",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v0/ee/support/bundle": {
+      "get": {
+        "summary": "Download the support bundle: one zip with versions, configuration without secrets, health, queues, recent failures and recent server logs",
+        "tags": [
+          "enterprise"
+        ],
+        "responses": {
+          "200": {
+            "description": "The archive, as an attachment named qualor-support-<yyyymmdd-hhmmss>.zip (at most 20 MiB)",
+            "content": {
+              "application/zip": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The feature is not licensed (FEATURE_NOT_LICENSED), or the caller is not an instance administrator (FORBIDDEN)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "A support bundle is already being prepared on this instance (RATE_LIMITED)",
             "content": {
               "application/problem+json": {
                 "schema": {

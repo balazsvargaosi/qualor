@@ -1,0 +1,121 @@
+<div class="settings-head">
+  <div>
+    <h2 #heading tabindex="-1" i18n="@@autoFix.title">Automatic fix suggestions</h2>
+    <p class="muted" i18n="@@autoFix.intro">
+      Qualor suggests fixes for the new findings of each analysed merge request and posts them to it
+      as suggestion comments, without anyone clicking. Reviewers see them labelled as AI-generated;
+      nothing is committed.
+    </p>
+  </div>
+</div>
+@if (org.organizations.error()) {
+  <p class="alert alert-error" role="alert" i18n="@@autoFix.organizationsFailed">
+    The organizations could not be loaded.
+  </p>
+} @else if (!org.current() && !org.organizations.isLoading()) {
+  <p class="muted" i18n="@@autoFix.noOrganization">There is no organization to show.</p>
+} @else if (org.current() && !allowed()) {
+  <p class="muted" i18n="@@autoFix.adminsOnly">
+    Only organisation administrators change the automatic fix suggestions.
+  </p>
+} @else if (loadError(); as message) {
+  <p class="alert alert-error" role="alert">{{ message }}</p>
+} @else if (current(); as settings) {
+  <div role="status">
+    @if (announcement(); as message) {
+      <p class="alert alert-success">{{ message }}</p>
+    }
+  </div>
+  @if (error(); as message) {
+    <p class="alert alert-error" role="alert">{{ message }}</p>
+  }
+  @if (!settings.available) {
+    <p id="auto-fix-not-licensed" class="alert alert-info">{{ notLicensed }}</p>
+  } @else {
+    <form class="auto-fix" novalidate (submit)="save($event)">
+      <section class="card panel" aria-labelledby="auto-fix-org">
+        <div class="panel-head">
+          <h3 id="auto-fix-org">{{ org.current()?.name }}</h3>
+        </div>
+        <div class="setting-row">
+          <div class="setting-text">
+            <label for="auto-fix-enabled" i18n="@@autoFix.enabled"
+              >Post fix suggestions automatically</label
+            >
+            <p id="auto-fix-enabled-hint" i18n="@@autoFix.enabledHint">
+              Suggestions are posted to merge requests without a click. They run only while the AI
+              assistant suggests fixes for this organisation, and never for a project that switched
+              them off.
+            </p>
+          </div>
+          <div class="setting-field">
+            <input
+              id="auto-fix-enabled"
+              type="checkbox"
+              aria-describedby="auto-fix-enabled-hint"
+              [checked]="enabled()"
+              (change)="setEnabled($event)"
+            />
+          </div>
+        </div>
+        <div class="setting-row">
+          <div class="setting-text">
+            <label for="auto-fix-severity" i18n="@@autoFix.minSeverity">Minimum severity</label>
+            <p id="auto-fix-severity-hint" i18n="@@autoFix.minSeverityHint">
+              New findings at or above this severity get a suggestion.
+            </p>
+          </div>
+          <div class="setting-field">
+            <select
+              id="auto-fix-severity"
+              aria-describedby="auto-fix-severity-hint"
+              (change)="setMinSeverity($event)"
+            >
+              @for (s of severities; track s) {
+                <option [value]="s" [selected]="s === minSeverity()">{{ severityLabel(s) }}</option>
+              }
+            </select>
+          </div>
+        </div>
+        <div class="setting-row">
+          <div class="setting-text">
+            <label for="auto-fix-max" i18n="@@autoFix.max">At most per analysis</label>
+            <p id="auto-fix-max-hint" i18n="@@autoFix.maxHint">
+              From 1 to 25, the most severe first. The organisation's daily fix budget applies too.
+            </p>
+          </div>
+          <div class="setting-field">
+            <input
+              id="auto-fix-max"
+              class="short"
+              type="number"
+              inputmode="numeric"
+              min="1"
+              [attr.max]="maxAllowed"
+              step="1"
+              [value]="maxPerAnalysis()"
+              [attr.aria-invalid]="maxError() ? true : null"
+              [attr.aria-describedby]="
+                maxError() ? 'auto-fix-max-hint auto-fix-max-error' : 'auto-fix-max-hint'
+              "
+              (input)="setMaxPerAnalysis($event)"
+            />
+            @if (maxError(); as message) {
+              <span id="auto-fix-max-error" class="field-error" role="alert">{{ message }}</span>
+            }
+          </div>
+        </div>
+        <div class="setting-actions">
+          <button
+            type="submit"
+            class="btn btn-primary"
+            [attr.aria-disabled]="busy() ? true : null"
+            i18n="@@autoFix.save"
+          >
+            Save
+          </button>
+        </div>
+      </section>
+    </form>
+  }
+}

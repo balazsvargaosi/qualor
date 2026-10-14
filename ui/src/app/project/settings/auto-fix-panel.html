@@ -1,0 +1,63 @@
+<section class="card panel" id="auto-fix">
+  <div class="panel-head">
+    <h2 tabindex="-1" i18n="@@project.settings.autoFix">Automatic fix suggestions</h2>
+  </div>
+  <div class="panel-body">
+    @if (!available()) {
+      <p class="muted">{{ notLicensed }}</p>
+    } @else if (!organizationEnabled()) {
+      <p id="auto-fix-organization-off" class="muted" i18n="@@autoFix.project.organizationOff">
+        The organisation has automatic fix suggestions switched off, so none are posted for this
+        project. An organisation administrator switches them on in
+        <a routerLink="/settings/auto-fix">Settings → Automatic fixes</a>.
+      </p>
+    } @else if (excludedFromAi()) {
+      <p id="auto-fix-excluded" class="muted" i18n="@@autoFix.project.excluded">
+        This project is excluded from the AI assistant, so no automatic fix suggestions are posted
+        for it. An instance administrator changes the exclusions in Settings → AI assistant.
+      </p>
+    } @else {
+      <div role="status">
+        @if (announcement(); as message) {
+          <p class="alert alert-success">{{ message }}</p>
+        }
+      </div>
+      @if (error(); as message) {
+        <p class="alert alert-error" role="alert">{{ message }}</p>
+      }
+      <div class="setting-row">
+        <div class="setting-text">
+          <label for="auto-fix-project" i18n="@@autoFix.project.label"
+            >Automatic fix suggestions for this project</label
+          >
+          <p id="auto-fix-project-hint" i18n="@@autoFix.project.hint">
+            Fix suggestions for new findings are posted to this project's merge requests without a
+            click, only while the organisation has automatic fix suggestions switched on. Switch it
+            off to keep them for a person to ask for.
+          </p>
+        </div>
+        <div class="setting-field">
+          <input
+            id="auto-fix-project"
+            type="checkbox"
+            aria-describedby="auto-fix-project-hint"
+            [checked]="enabled()"
+            (change)="setEnabled($event)"
+          />
+          <div class="actions">
+            <button
+              type="button"
+              class="btn"
+              [class.btn-primary]="dirty()"
+              [disabled]="!dirty() || busy()"
+              (click)="save()"
+              i18n="@@autoFix.project.save"
+            >
+              Save
+            </button>
+          </div>
+        </div>
+      </div>
+    }
+  </div>
+</section>

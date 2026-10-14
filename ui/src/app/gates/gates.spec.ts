@@ -766,6 +766,42 @@ describe('GatePage on the band (step 6)', () => {
 });
 
 describe('metricOptions', () => {
+  it('names the licence metrics (6M), the ratio on the whole code only', () => {
+    const options = metricOptions([
+      {
+        key: 'licensing_issues',
+        name: 'Licensing issues',
+        type: 'int',
+        direction: 'lower_is_better',
+        scopes: ['overall', 'new'],
+        domain: 'issues',
+      },
+      {
+        key: 'forbidden_licenses',
+        name: 'Forbidden licences',
+        type: 'int',
+        direction: 'lower_is_better',
+        scopes: ['overall', 'new'],
+        domain: 'issues',
+      },
+      {
+        key: 'unknown_licenses_ratio',
+        name: 'Unknown licences',
+        type: 'percent',
+        direction: 'lower_is_better',
+        scopes: ['overall'],
+        domain: 'issues',
+      },
+    ]);
+    expect(options.map((o) => o.label)).toEqual([
+      'Forbidden licences',
+      'Forbidden licences on new code',
+      'Licensing issues',
+      'Licensing issues on new code',
+      'Unknown licences',
+    ]);
+  });
+
   it('lists each scope of each metric under its localized label', () => {
     expect(
       metricOptions([

@@ -18,6 +18,13 @@ const PROBLEM_SCHEMA = {
       description:
         'LICENSE_INVALID: why the key was rejected (malformed, unknown-key, bad-signature, bad-payload, revoked, not-yet-valid). VALIDATION_FAILED of POST /ee/sso/connections/{id}/saml/metadata: what failed (a fetch.<reason> code of the connection Test, or config_invalid, metadata.no_url, metadata.not_saml, metadata.incomplete, metadata.sso_url). MAIL_SEND_FAILED of POST /system/mail/test: why the test message was not sent (connection, auth, rejected, timeout, config). Map the code, not the text',
     },
+    details: {
+      type: 'object',
+      description:
+        'INVALID_LICENSE_ID: `invalid` lists the licence policy entries that are not SPDX licence ids or "id WITH exception" terms, as sent',
+      properties: { invalid: { type: 'array', items: { type: 'string' } } },
+      required: ['invalid'],
+    },
     errors: {
       type: 'array',
       items: {

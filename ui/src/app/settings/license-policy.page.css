@@ -1,0 +1,101 @@
+/* Licence policy (6M §8): one panel of setting rows, Save and Remove policy at its foot. */
+.license-policy .panel-head {
+  padding-bottom: 14px;
+}
+.license-policy .panel-head h3 {
+  margin: 0;
+}
+.mode-choice {
+  gap: 10px;
+}
+.group-list,
+.group-members,
+.chip-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.group-list {
+  gap: 14px;
+}
+.group-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 12px;
+}
+.group-head label {
+  font-weight: 600;
+}
+.group-list .hint {
+  margin: 2px 0 0 calc(1.05rem + var(--space-2));
+}
+.group-members {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: 8px 0 0 calc(1.05rem + var(--space-2));
+  font-size: 12.5px;
+}
+/* `hidden` must win over the flex display above. */
+.group-members[hidden] {
+  display: none;
+}
+.chip-field {
+  gap: 8px;
+}
+.chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chip-list:empty {
+  display: none;
+}
+.chip-list .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 3px;
+}
+.chip-text {
+  overflow-wrap: anywhere;
+}
+.chip-invalid {
+  border-color: var(--bad);
+  color: var(--bad);
+}
+.chip-remove {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.chip-remove:hover {
+  background: var(--neutral-soft);
+  color: var(--text);
+}
+.chip-remove:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.chip-remove q-icon {
+  width: 12px;
+  height: 12px;
+}
+.chip-add {
+  display: flex;
+  gap: 8px;
+  max-width: 36rem;
+}
+.chip-add input {
+  flex: 1 1 auto;
+  min-width: 0;
+}

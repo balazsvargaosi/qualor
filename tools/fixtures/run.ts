@@ -177,6 +177,9 @@ const ENGINE_TOOLS: Readonly<Record<string, readonly (readonly string[])[]>> = {
   // Plan 2B: the binary and its database, where the scanner image keeps it (the scan environment
   // of a fixture drops every QUALOR_ variable, QUALOR_TRIVY_CACHE_DIR included).
   trivy: [['trivy'], [TRIVY_DATABASE]],
+  // 6M: the licence pass reads the packages' own metadata and needs no database, so a fixture
+  // that expects only it runs wherever the binary does.
+  'trivy-licenses': [['trivy']],
   // Plan 2D: a real build writes the MSBuild hook into the user profile. Linux only (ruling R8):
   // the harness isolates it there with XDG_DATA_HOME (probe P6). Never on Windows, where it would
   // land in the developer's real profile; never on macOS either, since .NET 8 (ruling R6) moved
@@ -448,7 +451,9 @@ const SOURCE_LINE_PROBE_CHARS = 16;
  * cannot run here (the adapters' `unavailable` reasons: "… is not installed", "… needs java",
  * "… needs node"). Every other skip did what the configuration asked.
  */
-function incompleteEngine(e: { status: string; reason?: string | null | undefined }): boolean {
+function incompleteEngine(e: { id: string; status: string; reason?: string | null | undefined }): boolean {
+  // 6M: the licence pass puts nothing in GitLab's files, so it never makes them incomplete.
+  if (e.id === 'trivy-licenses') return false;
   return (
     e.status === 'failed' ||
     e.status === 'timeout' ||
@@ -768,8 +773,10 @@ export function verdict(
   for (const outcome of outcomes) {
     const entry = pending[outcome.name];
     const unavailable = outcome.unavailable ?? [];
+    // 6M: the inventory comes from the licence pass alone, so without it nothing of it is checked.
     const skippedHere = (p: Problem) =>
-      (p.kind === 'engine' || p.kind === 'missing-finding') && unavailable.some((id) => p.detail.startsWith(`${id}:`));
+      ((p.kind === 'engine' || p.kind === 'missing-finding') && unavailable.some((id) => p.detail.startsWith(`${id}:`))) ||
+      (p.kind === 'dependency' && unavailable.includes('trivy-licenses'));
     const o = { ...outcome, problems: outcome.problems.filter((p) => !skippedHere(p)) };
     if (o.problems.length === 0 && unavailable.length > 0) {
       // Ruling T4: without the tool its findings cannot be checked here; CI installs every tool.

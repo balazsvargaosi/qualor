@@ -33,6 +33,8 @@ QUALOR_LOG_LEVEL=debug qualor scan     # every analyzer's command line, output a
 | `QUALOR_RULES_DIR must be an absolute path outside the repository` | `QUALOR_RULES_DIR` is a relative path, or points into the checkout | set it to an absolute path outside the checkout, or unset it |
 | `QUALOR_RULES_DIR does not exist` | the directory named by `QUALOR_RULES_DIR` is missing | create or unpack the rules there, or unset `QUALOR_RULES_DIR` |
 | `the rules pack … does not match its manifest checksum` (or another `rules pack` reason) | `QUALOR_RULES_DIR` points at a changed or incomplete copy of the rules | unpack the rules again, or unset `QUALOR_RULES_DIR` |
+| `LICENSE_SCAN_TIMEOUT` or `LICENSE_SCAN_FAILED` | Trivy's licence pass took longer than `analyzers.trivy.licenseTimeoutSeconds`, or failed; the vulnerability findings are not affected | raise the timeout, or read the scan log ([Dependency licences](./dependency-licenses.md#warnings)) |
+| Dependencies tab: most packages have an **Unknown** licence | pnpm, Yarn, Go, NuGet, Maven and Gradle licences are read from the installed packages | install the dependencies in the scan job, before `qualor scan` ([Dependency licences](./dependency-licenses.md#which-ecosystems-give-licences)) |
 | `VULNERABILITY_DB_STALE` | Trivy's database is more than 14 days old | move to a newer scanner release, or fetch a database in the job with `QUALOR_TRIVY_CACHE_DIR` |
 | `ROSLYN_PROJECT_NOT_ANALYZED` | a C# project was not recompiled | build with `--no-incremental` |
 | `no C# project was built between qualor dotnet begin and end` | the build ran elsewhere or not at all | run the build in the same job, between the two commands |
@@ -80,10 +82,15 @@ mapping. Its message says what is wrong.
 | "The model did not answer in time" | raise the timeout in the settings (up to 600 s) |
 | "The stored API key can no longer be read" | `QUALOR_SECRET_KEY` changed. Enter the API key again |
 | a fix suggestion is "Not posted" | the merge request has a newer commit, or the lines are not lines it added, unchanged |
+| no automatic fix suggestions on a merge request (Enterprise) | see [Automatic fix suggestions](./ai-assistant.md#troubleshooting): the licence, **Settings → Automatic fixes**, the project's opt-out, the minimum severity and the daily fix budget |
 
 Every message and error code is explained in [AI assistant](./ai-assistant.md#troubleshooting).
 
 ## The server
+
+If you ask us for help, send a [support bundle](./support-bundle.md): one zip with the versions,
+the configuration without secrets, the health of the database and the recent failures. It needs a
+Business or Enterprise licence.
 
 | Symptom | Fix |
 |---|---|
@@ -97,6 +104,7 @@ Every message and error code is explained in [AI assistant](./ai-assistant.md#tr
 | users signed out after a restart | `QUALOR_SECRET_KEY` changed |
 | the server stops at start naming `QUALOR_SMTP_URL` or `QUALOR_SMTP_FROM` | the URL is not `smtp://…`/`smtps://…` as [Email](./email.md#set-up-with-environment-variables) shows (URL-encode `@`, `:` and `/` in the user name and password), or `QUALOR_SMTP_FROM` is missing |
 | the server runs out of memory on large reports | give it 4 GiB and keep `QUALOR_WORKER_CONCURRENCY=1` |
+| you need to send us the state of a server (Business and Enterprise) | **Settings → Support**, or `docker compose exec -T server /usr/local/bin/node dist/main.js support-bundle > qualor-support.zip` when the web UI is down ([The support bundle](./support-bundle.md)) |
 
 ## Email
 

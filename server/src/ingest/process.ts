@@ -13,6 +13,7 @@ import {
   type AnalysisWarning,
   type FieldIssue,
 } from '../db/schema';
+import { communityLimits, type Limits } from '../limits';
 import { notifyAnalysisFailed, type BranchHint } from '../notifications/analysis';
 import type { NotifyDeps } from '../notifications/deps';
 import type { ProjectRow } from '../projects/access';
@@ -53,6 +54,8 @@ export interface IngestionContext {
   readonly notify: NotifyDeps | null;
   /** Values earlier stages hand to later ones (see state.ts). */
   readonly state: IngestionState;
+  /** The edition's limits when the ingestion began (enterprise.md §7). */
+  readonly limits: Limits;
 }
 
 /**
@@ -110,6 +113,8 @@ export interface ProcessDeps {
   stages: readonly IngestionStage[];
   logger?: ProcessLogger;
   notify?: NotifyDeps | undefined;
+  /** The edition's limits (main.ts: `edition.limits`); the community limits without it. */
+  limits?: (() => Limits) | undefined;
 }
 
 type BranchTarget =
@@ -413,6 +418,7 @@ async function ingest(
       logger,
       notify: deps.notify ?? null,
       state: {},
+      limits: deps.limits?.() ?? communityLimits(),
     };
     for (const stage of deps.stages) await stage.run(ctx);
     // The database clock, like every stored time (retention compares finished_at with now()).

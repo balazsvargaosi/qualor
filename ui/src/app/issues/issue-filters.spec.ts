@@ -50,6 +50,19 @@ describe('issue filters', () => {
     expect(filtersFromParams({ includeDuplicates: 'true' }).includeDuplicates).toBe(true);
   });
 
+  it('takes the licensing quality (6M) with the three others, and sends all four', () => {
+    const f = filtersFromParams({
+      quality: ['licensing', 'security', 'reliability', 'maintainability', 'beauty'],
+    });
+    expect(f.quality).toEqual(['licensing', 'security', 'reliability', 'maintainability']);
+    expect(apiQuery(f, 'b1', null).quality).toEqual([
+      'licensing',
+      'security',
+      'reliability',
+      'maintainability',
+    ]);
+  });
+
   it('clears a group back to its default: Open for the status, nothing for the others', () => {
     const f = filtersFromParams({ status: ['resolved', 'closed'], severity: 'high', path: 'src/' });
     expect(isFiltered(f, 'status')).toBe(true);

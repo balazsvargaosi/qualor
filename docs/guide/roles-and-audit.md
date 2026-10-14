@@ -22,6 +22,10 @@ This page covers two things:
 | Read and download compliance reports (with `compliance-export`): the project's, and the organisation's for a role in the organisation | ✓ | ✓ | ✓ | ✓ |
 | Create a compliance report of the project (with `compliance-export`, permission `project.compliance.create`) | ✓ | ✓ | | |
 | Create organisation compliance reports, delete any compliance report (with `compliance-export`, permission `org.compliance.manage`) | ✓ | | | |
+| Switch automatic fix suggestions on for the organisation and set their threshold (with `llm.auto-fix`, permission `org.ai.manage`) | ✓ | | | |
+| Opt one project out of automatic fix suggestions (with `llm.auto-fix`; part of changing project settings) | ✓ | ✓ | | |
+| Read the project's dependencies and their licences (the **Dependencies** tab), and the organisation's licence policy | ✓ | ✓ | ✓ | ✓ |
+| Set or remove the organisation's licence policy (with `license-policy`, permission `org.licenses.manage`) | ✓ | | | |
 
 - In the API the roles are `admin` (Organization admin), `project_admin`, `member` (Maintainer)
   and `viewer`.
@@ -126,9 +130,20 @@ prefix ending in `.*`, for example `issue.*`):
   changed, deleted, its secret regenerated, or a delivery resent.
 - **The licence:** a key uploaded or removed (never the key itself).
 - **The AI assistant:** its settings changed (whether a key was set, removed or kept — never the
-  key), a request sent to the provider, a fix suggestion queued to post.
+  key), a request sent to the provider, a fix suggestion queued to post. With `llm.auto-fix`
+  ([Automatic fix suggestions](./ai-assistant.md#automatic-fix-suggestions-enterprise)): an
+  organisation's automatic fix settings changed (`organization.auto_fix_changed`, with the new
+  on/off, minimum severity and maximum per analysis) and a project opting out or back in
+  (`project.auto_fix_changed`). The requests and posts Qualor makes by itself are recorded as
+  `ai.requested` and `ai.fix_posted` by `system`, with no user.
 - **Email:** its settings changed (the names of the changed fields only, never the password), and a
   test message sent (whether it was delivered).
+- **The licence policy** (with `license-policy`, [Dependency licences](./dependency-licenses.md)):
+  an organisation's policy set, changed or removed (`organization.license_policy_changed`, with the
+  policy before and after).
+- **The support bundle** (with `support-bundle`, [The support bundle](./support-bundle.md)): a
+  download from **Settings → Support** (`support.bundle_downloaded`, with the size). The
+  `support-bundle` command records nothing, since nobody is signed in.
 - **The audit log itself:** its retention or SIEM stream settings changed, the stream's secret
   regenerated, an export started, and retention's own removal of old events.
 - **Compliance reports** (with `compliance-export`, [Compliance reports](./compliance-reports.md)):

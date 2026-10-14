@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   acquireLease,
   EmbeddedPostgresError,
+  liveLease,
   prepareCluster,
   socketUrl,
   startEmbeddedPostgres,
@@ -309,5 +310,29 @@ describe('acquireLease', () => {
       }),
     ).rejects.toThrow(/exited before it was ready/);
     expect(() => statSync(leaseFile())).toThrow();
+  });
+});
+
+describe('liveLease', () => {
+  const write = (lease: object): void =>
+    writeFileSync(path.join(dataDir, 'server.lease'), JSON.stringify(lease));
+  beforeEach(() => mkdirSync(dataDir, { recursive: true }));
+
+  it('reports a lease renewed within the TTL, by another host or this one', async () => {
+    for (const host of ['other', os.hostname()]) {
+      write({ instance: 'i', host, renewedAt: 1_000_000 });
+      await expect(liveLease(dataDir, { now: 1_000_000 + 29_999 })).resolves.toEqual({
+        host,
+        renewedAt: 1_000_000,
+      });
+    }
+  });
+
+  it('reports none when the lease is stale, missing or malformed', async () => {
+    await expect(liveLease(dataDir)).resolves.toBeNull();
+    write({ instance: 'i', host: 'other', renewedAt: 1_000_000 });
+    await expect(liveLease(dataDir, { now: 1_000_000 + 30_000 })).resolves.toBeNull();
+    write({ host: 'other' });
+    await expect(liveLease(dataDir, { now: 1_000_000 })).resolves.toBeNull();
   });
 });

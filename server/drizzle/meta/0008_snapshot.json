@@ -1,5 +1,5 @@
 {
-  "id": "a5674360-d3bb-4080-b298-af8833df23d8",
+  "id": "66e85eff-b0c6-4a4e-8a2e-769173dd3939",
   "prevId": "4c89a500-d02b-409c-a81e-368813c3ebfd",
   "version": "7",
   "dialect": "postgresql",
@@ -798,6 +798,128 @@
           "value": "prev_hash ~ '^[0-9a-f]{64}$'"
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.branch_dependencies": {
+      "name": "branch_dependencies",
+      "schema": "",
+      "columns": {
+        "branch_id": {
+          "name": "branch_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "path": {
+          "name": "path",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ecosystem": {
+          "name": "ecosystem",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "version": {
+          "name": "version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "licenses": {
+          "name": "licenses",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "direct": {
+          "name": "direct",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "line": {
+          "name": "line",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "analysis_id": {
+          "name": "analysis_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "branch_dependencies_licenses": {
+          "name": "branch_dependencies_licenses",
+          "columns": [
+            {
+              "expression": "licenses",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "gin",
+          "with": {}
+        },
+        "branch_dependencies_analysis_idx": {
+          "name": "branch_dependencies_analysis_idx",
+          "columns": [
+            {
+              "expression": "analysis_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "branch_dependencies_branch_id_branches_id_fk": {
+          "name": "branch_dependencies_branch_id_branches_id_fk",
+          "tableFrom": "branch_dependencies",
+          "tableTo": "branches",
+          "columnsFrom": ["branch_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "branch_dependencies_analysis_id_analyses_id_fk": {
+          "name": "branch_dependencies_analysis_id_analyses_id_fk",
+          "tableFrom": "branch_dependencies",
+          "tableTo": "analyses",
+          "columnsFrom": ["analysis_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "branch_dependencies_branch_id_path_ecosystem_name_version_pk": {
+          "name": "branch_dependencies_branch_id_path_ecosystem_name_version_pk",
+          "columns": ["branch_id", "path", "ecosystem", "name", "version"]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.branch_files": {
@@ -2404,7 +2526,7 @@
         },
         "issues_quality_check": {
           "name": "issues_quality_check",
-          "value": "quality IN ('security','reliability','maintainability')"
+          "value": "quality IN ('security','reliability','maintainability','licensing')"
         },
         "issues_kind_check": {
           "name": "issues_kind_check",
@@ -2953,228 +3075,6 @@
         "llm_requests_prompt_size": {
           "name": "llm_requests_prompt_size",
           "value": "prompt IS NULL OR octet_length(prompt::text) <= 65536"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.mail_messages": {
-      "name": "mail_messages",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "to_address": {
-          "name": "to_address",
-          "type": "citext",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "subject": {
-          "name": "subject",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'pending'"
-        },
-        "attempts": {
-          "name": "attempts",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "last_error": {
-          "name": "last_error",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "smtp_response": {
-          "name": "smtp_response",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "payload_enc": {
-          "name": "payload_enc",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "dedupe_key": {
-          "name": "dedupe_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "next_attempt_at": {
-          "name": "next_attempt_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "sent_at": {
-          "name": "sent_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "mail_messages_log_idx": {
-          "name": "mail_messages_log_idx",
-          "columns": [
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": false,
-              "nulls": "last"
-            },
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": false,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "mail_messages_dedupe_idx": {
-          "name": "mail_messages_dedupe_idx",
-          "columns": [
-            {
-              "expression": "dedupe_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "dedupe_key IS NOT NULL",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "mail_messages_pending_idx": {
-          "name": "mail_messages_pending_idx",
-          "columns": [
-            {
-              "expression": "status",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "status = 'pending'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "mail_messages_user_idx": {
-          "name": "mail_messages_user_idx",
-          "columns": [
-            {
-              "expression": "user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "user_id IS NOT NULL",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "mail_messages_user_id_users_id_fk": {
-          "name": "mail_messages_user_id_users_id_fk",
-          "tableFrom": "mail_messages",
-          "tableTo": "users",
-          "columnsFrom": ["user_id"],
-          "columnsTo": ["id"],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "mail_messages_kind_check": {
-          "name": "mail_messages_kind_check",
-          "value": "kind ~ '^[a-z0-9.-]{1,64}$'"
-        },
-        "mail_messages_status_check": {
-          "name": "mail_messages_status_check",
-          "value": "status IN ('pending','sent','failed')"
-        },
-        "mail_messages_subject_length": {
-          "name": "mail_messages_subject_length",
-          "value": "char_length(subject) <= 300"
-        },
-        "mail_messages_last_error_length": {
-          "name": "mail_messages_last_error_length",
-          "value": "octet_length(last_error) <= 1024"
-        },
-        "mail_messages_smtp_response_length": {
-          "name": "mail_messages_smtp_response_length",
-          "value": "octet_length(smtp_response) <= 1024"
-        },
-        "mail_messages_dedupe_key_length": {
-          "name": "mail_messages_dedupe_key_length",
-          "value": "char_length(dedupe_key) <= 200"
-        },
-        "mail_messages_payload_check": {
-          "name": "mail_messages_payload_check",
-          "value": "payload_enc IS NULL OR status = 'pending'"
         }
       },
       "isRLSEnabled": false
@@ -4270,7 +4170,7 @@
         },
         "rules_quality_check": {
           "name": "rules_quality_check",
-          "value": "quality IN ('security','reliability','maintainability')"
+          "value": "quality IN ('security','reliability','maintainability','licensing')"
         },
         "rules_kind_check": {
           "name": "rules_kind_check",

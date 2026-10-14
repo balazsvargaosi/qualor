@@ -1,4 +1,4 @@
-import { ENGINE_ID_PATTERN } from '@qualor/shared';
+import { ENGINE_ID_PATTERN, LICENSE_GROUPS, SEVERITIES, type LicenseGroupId } from '@qualor/shared';
 import { z } from 'zod';
 import { ORGANIZATION_KEY_PATTERN, PROJECT_KEY_PATTERN } from '../patterns';
 import type { AuditJson } from './canonical';
@@ -47,6 +47,19 @@ const json: z.ZodType<AuditJson> = z.lazy(() =>
     z.record(z.string().max(64), json),
   ]),
 );
+/** 6M §5: a stored licence policy (`licensePolicySchema`'s bounds), or none. */
+const licensePolicyList = z.array(z.string().max(256)).max(500);
+const licensePolicy = z
+  .strictObject({
+    mode: z.enum(['denylist', 'allowlist']),
+    forbiddenGroups: z
+      .array(z.enum(LICENSE_GROUPS.map((g) => g.id) as [LicenseGroupId, ...LicenseGroupId[]]))
+      .max(LICENSE_GROUPS.length),
+    forbidden: licensePolicyList,
+    allowed: licensePolicyList,
+    warnUnknown: z.boolean(),
+  })
+  .nullable();
 /** A change of one of `fields` (spec §8 names them), so a free field name can never carry a secret. */
 function changesOf<const F extends readonly [string, ...string[]]>(fields: F, max: number) {
   return z.array(z.strictObject({ field: z.enum(fields), from: json, to: json })).max(max);
@@ -512,6 +525,24 @@ export const AUDIT_CATALOGUE = {
     target: 'mail_settings',
     details: z.strictObject({ messageId: id, delivered: z.boolean() }),
   },
+  'organization.auto_fix_changed': {
+    target: 'organization',
+    details: z.strictObject({
+      enabled: z.boolean(),
+      minSeverity: z.enum(SEVERITIES),
+      // 4E-3a §2: 1–25, as llm/settings.ts MAX_AUTO_FIX_PER_ANALYSIS.
+      maxPerAnalysis: z.number().int().min(1).max(25),
+    }),
+  },
+  'project.auto_fix_changed': {
+    target: 'project',
+    details: z.strictObject({ enabled: z.boolean() }),
+  },
+  // 6M §5: PUT /organizations/:id/license-policy changed the policy; `null` is no policy.
+  'organization.license_policy_changed': {
+    target: 'organization',
+    details: z.strictObject({ before: licensePolicy, after: licensePolicy }),
+  },
   'audit.settings_updated': {
     target: 'audit_settings',
     details: z.strictObject({
@@ -536,6 +567,14 @@ export const AUDIT_CATALOGUE = {
   'compliance.report.deleted': {
     target: 'compliance_report',
     details: z.strictObject({ scope: z.enum(['project', 'organization']) }),
+  },
+  // 4E-3b §4: an instance admin downloaded the support bundle; it names no target.
+  'support.bundle_downloaded': {
+    target: null,
+    details: z.strictObject({
+      source: z.literal('ui'),
+      bytes: z.number().int().min(0).refine(Number.isSafeInteger),
+    }),
   },
   'audit.exported': {
     target: null,

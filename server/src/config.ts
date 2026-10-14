@@ -142,24 +142,30 @@ const pluginPathsSchema = z
 /** telemetry.md: where the daily report goes. Not in the guide: for tests and staging. */
 export const DEFAULT_TELEMETRY_URL = 'https://qualor.dev/api/telemetry';
 
-const telemetryUrlSchema = z
-  .string()
-  .optional()
-  .transform((raw, ctx): string => {
-    const value = raw?.trim() ?? '';
-    if (value === '') return DEFAULT_TELEMETRY_URL;
-    let url: URL | undefined;
-    try {
-      url = new URL(value);
-    } catch {
-      url = undefined;
-    }
-    if (url === undefined || (url.protocol !== 'https:' && url.protocol !== 'http:')) {
-      ctx.addIssue({ code: 'custom', message: 'must be an http or https URL' });
-      return z.NEVER;
-    }
-    return url.href;
-  });
+/** telemetry.md "Update check": the tag list read daily. Not in the guide: for tests only. */
+export const DEFAULT_UPDATE_CHECK_URL =
+  'https://hub.docker.com/v2/namespaces/qualor/repositories/server/tags?page_size=100&ordering=last_updated';
+
+/** An http(s) URL; unset or blank means `fallback`. */
+const httpUrlSchema = (fallback: string) =>
+  z
+    .string()
+    .optional()
+    .transform((raw, ctx): string => {
+      const value = raw?.trim() ?? '';
+      if (value === '') return fallback;
+      let url: URL | undefined;
+      try {
+        url = new URL(value);
+      } catch {
+        url = undefined;
+      }
+      if (url === undefined || (url.protocol !== 'https:' && url.protocol !== 'http:')) {
+        ctx.addIssue({ code: 'custom', message: 'must be an http or https URL' });
+        return z.NEVER;
+      }
+      return url.href;
+    });
 
 /** E1 spec: how a message reaches the SMTP server. */
 export const SMTP_SECURITIES = ['starttls', 'tls', 'none'] as const;
@@ -310,7 +316,8 @@ const envSchema = z
           .optional(),
       )
       .transform((v) => !(v === 'false' || v === '0' || v === 'off' || v === 'no')),
-    QUALOR_TELEMETRY_URL: telemetryUrlSchema,
+    QUALOR_TELEMETRY_URL: httpUrlSchema(DEFAULT_TELEMETRY_URL),
+    QUALOR_UPDATE_CHECK_URL: httpUrlSchema(DEFAULT_UPDATE_CHECK_URL),
     // E1 spec (email.md): the SMTP server; overrides the one saved in Settings → Email.
     QUALOR_SMTP_URL: z
       .string()
@@ -414,6 +421,8 @@ export interface Config {
   telemetry: { enabled: boolean; url: string };
   /** E1 spec: QUALOR_SMTP_URL with its sender, or null (Settings → Email decides). */
   smtp: SmtpConfig | null;
+  /** telemetry.md "Update check": QUALOR_UPDATE_CHECK_URL; runs only while telemetry is enabled. */
+  updateCheck: { url: string };
 }
 
 export class ConfigError extends Error {
@@ -477,5 +486,6 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
             fromAddress: e.QUALOR_SMTP_FROM.address,
             replyTo: e.QUALOR_SMTP_REPLY_TO,
           },
+    updateCheck: { url: e.QUALOR_UPDATE_CHECK_URL },
   };
 }

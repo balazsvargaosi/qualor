@@ -95,19 +95,29 @@ export const systemRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (a
   );
 
   // Any authenticated caller, a project analysis token too: the scanner logs the server's version
-  // when a scan starts and warns when its own release differs. Anonymous callers learn nothing.
+  // when a scan starts, warns when its own release differs, and logs `latest` (telemetry.md
+  // "Update check"). Anonymous callers learn nothing.
   app.get(
     '/api/v0/system/version',
     {
       schema: {
         tags: ['system'],
         summary: "The server's version, for any token (the scanner checks it when a scan starts)",
-        response: { 200: z.object({ version: z.string() }) },
+        response: {
+          200: z.object({
+            version: z.string(),
+            latest: z
+              .string()
+              .optional()
+              .describe('A newer release found on Docker Hub; only while telemetry is on'),
+          }),
+        },
       },
     },
     async (request) => {
       requirePrincipal(request);
-      return { version: VERSION };
+      const latest = deps.updates?.latest() ?? null;
+      return latest === null ? { version: VERSION } : { version: VERSION, latest };
     },
   );
 

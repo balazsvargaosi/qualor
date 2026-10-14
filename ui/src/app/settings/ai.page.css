@@ -39,6 +39,35 @@
 .ai-excluded .facet {
   margin-top: 8px;
 }
+/* An organisation's automatic fix suggestions (4E-3a §4): the switch, then its two options. */
+.ai-auto-fix {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.ai-auto-fix legend {
+  margin-bottom: 2px;
+  padding: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.ai-auto-fix > p {
+  margin: 0;
+}
+.ai-auto-fix-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 20px;
+}
+.ai-auto-fix-options .row {
+  flex-wrap: nowrap;
+}
+.ai-auto-fix-options input {
+  width: 5rem;
+}
 .ai-actions {
   position: sticky;
   bottom: 0;
@@ -53,4 +82,7 @@
 }
 .ai-hold {
   margin: 16px 0 0;
+}
+.settings-head p + p {
+  margin-top: 8px;
 }

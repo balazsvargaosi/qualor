@@ -1,4 +1,4 @@
-import type { IssueKind, Quality, Severity } from '../report/taxonomy';
+import type { IssueKind, ReportQuality, Severity } from '../report/taxonomy';
 import type { EngineMapping } from './normalize';
 import type { SarifLevel, SarifResult, SarifRule } from './types';
 import { phpstanRule } from '../rules/phpstan';
@@ -58,7 +58,7 @@ const pmdSeverity = (r: SarifRule | undefined) => PMD_PRIORITY[Number(r?.propert
 const pmd: EngineMapping = {
   rule: (r) => {
     const ruleset = String(r.properties?.['ruleset'] ?? '');
-    const quality: Quality =
+    const quality: ReportQuality =
       ruleset === 'Security'
         ? 'security'
         : ruleset === 'Error Prone' || ruleset === 'Multithreading'
@@ -78,7 +78,7 @@ const spotbugs: EngineMapping = {
       return { quality: 'security', kind: fsb.kind, defaultSeverity: fsb.severity };
     }
     const t = tags(r).map((x) => x.toUpperCase());
-    const quality: Quality = t.includes('SECURITY')
+    const quality: ReportQuality = t.includes('SECURITY')
       ? 'security'
       : t.includes('CORRECTNESS') || t.includes('MT_CORRECTNESS')
         ? 'reliability'
@@ -107,7 +107,7 @@ const semgrep: EngineMapping = {
   rule: (r) => {
     const t = tags(r);
     const lower = t.map((x) => x.toLowerCase());
-    const quality: Quality =
+    const quality: ReportQuality =
       lower.includes('security') || t.some(isCwe)
         ? 'security'
         : lower.includes('correctness')
@@ -193,7 +193,7 @@ const SONAR_SEVERITY: Record<string, Severity> = {
   Minor: 'low',
   Info: 'info',
 };
-const SONAR_TYPE: Record<string, { quality: Quality; kind: IssueKind }> = {
+const SONAR_TYPE: Record<string, { quality: ReportQuality; kind: IssueKind }> = {
   Bug: { quality: 'reliability', kind: 'issue' },
   Vulnerability: { quality: 'security', kind: 'issue' },
   'Security Hotspot': { quality: 'security', kind: 'hotspot' },
@@ -204,7 +204,7 @@ const SONAR_CATEGORY =
 
 export function sonarCategory(
   category: string,
-): { quality: Quality; kind: IssueKind; defaultSeverity: Severity } | null {
+): { quality: ReportQuality; kind: IssueKind; defaultSeverity: Severity } | null {
   const m = SONAR_CATEGORY.exec(category);
   if (m === null) return null;
   // The regex's two groups are mandatory (no `?`), so a match always captures both; the lookups
@@ -225,7 +225,7 @@ const roslyn: EngineMapping = {
     const sonar = sonarCategory(raw);
     if (sonar !== null) return sonar;
     const category = raw.toLowerCase();
-    const quality: Quality =
+    const quality: ReportQuality =
       category === 'security'
         ? 'security'
         : ROSLYN_RELIABILITY.has(category)
@@ -277,7 +277,7 @@ const RUFF_HIGH = new Set([
 
 /** report-format.md §7.1: quality and severity from Ruff's category; always an issue. */
 export function ruffRule(code: string): {
-  quality: Quality;
+  quality: ReportQuality;
   kind: IssueKind;
   defaultSeverity: Severity;
 } {
@@ -315,14 +315,16 @@ const ruff: EngineMapping = {
  * `convention`. The category decides quality and severity; the configured `error`/`warning`
  * does not (stylelint configs set every rule to `error`).
  */
-const STYLELINT_CATEGORIES: ReadonlyMap<string, { quality: Quality; defaultSeverity: Severity }> =
-  new Map([
-    ['possible-error', { quality: 'reliability', defaultSeverity: 'medium' }],
-    ['convention', { quality: 'maintainability', defaultSeverity: 'low' }],
-  ]);
+const STYLELINT_CATEGORIES: ReadonlyMap<
+  string,
+  { quality: ReportQuality; defaultSeverity: Severity }
+> = new Map([
+  ['possible-error', { quality: 'reliability', defaultSeverity: 'medium' }],
+  ['convention', { quality: 'maintainability', defaultSeverity: 'low' }],
+]);
 const STYLELINT_CONVENTION = { quality: 'maintainability', defaultSeverity: 'low' } as const;
 function stylelintMeta(rule: SarifRule | undefined): {
-  quality: Quality;
+  quality: ReportQuality;
   defaultSeverity: Severity;
 } {
   return (
@@ -353,7 +355,7 @@ const HTMLHINT_ACCESSIBILITY = new Set([
   'html-lang-require',
   'input-requires-label',
 ]);
-function htmlhintMeta(id: string): { quality: Quality; defaultSeverity: Severity } {
+function htmlhintMeta(id: string): { quality: ReportQuality; defaultSeverity: Severity } {
   if (HTMLHINT_RELIABILITY.has(id)) return { quality: 'reliability', defaultSeverity: 'medium' };
   if (HTMLHINT_ACCESSIBILITY.has(id))
     return { quality: 'maintainability', defaultSeverity: 'medium' };

@@ -1,10 +1,10 @@
 import { LOCALE_ID, Pipe, type PipeTransform, inject } from '@angular/core';
 
-const PERCENT = /(^|_)(coverage|density)$/;
+const PERCENT = /(^|_)(coverage|density|ratio)$/;
 const RATINGS = ['A', 'B', 'C', 'D', 'E'];
 
 /**
- * A measure as people read it: ratings 1–5 as A–E, coverage and densities as "65.7 %", counts
+ * A measure as people read it: ratings 1–5 as A–E, coverage, densities and ratios as "65.7 %", counts
  * with grouping, and "–" for no value (never analysed, nothing to measure, or not a number).
  */
 export function formatMeasure(

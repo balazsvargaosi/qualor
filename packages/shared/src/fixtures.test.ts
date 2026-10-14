@@ -114,3 +114,46 @@ describe('compareFixture', () => {
     ).toEqual(['coverage']);
   });
 });
+
+describe('compareFixture dependencies', () => {
+  const dep = (name: string, licenses: string[] = ['MIT']) => ({
+    path: 'package-lock.json',
+    ecosystem: 'npm',
+    name,
+    version: '1.0.0',
+    licenses,
+  });
+  const withDeps = (want: ReturnType<typeof dep>[], got: ReturnType<typeof dep>[]) => {
+    const r = makeReport();
+    r.dependencies = got;
+    return compareFixture({ ...expected, dependencies: want }, r).filter(
+      (m) => m.kind === 'dependency',
+    );
+  };
+
+  it('checks nothing when expected has no dependencies', () => {
+    const r = makeReport();
+    r.dependencies = [dep('a')];
+    expect(compareFixture(expected, r)).toEqual([]);
+  });
+
+  it('passes on an exact match regardless of order', () => {
+    expect(withDeps([dep('a'), dep('b')], [dep('b'), dep('a')])).toEqual([]);
+  });
+
+  it('reports a missing dependency', () => {
+    expect(withDeps([dep('a'), dep('b')], [dep('a')])).toHaveLength(1);
+  });
+
+  it('reports an extra dependency', () => {
+    expect(withDeps([dep('a')], [dep('a'), dep('b')])).toHaveLength(1);
+  });
+
+  it('reports a changed licence', () => {
+    expect(withDeps([dep('a')], [dep('a', ['GPL-3.0-only'])])).toHaveLength(1);
+  });
+
+  it('treats a report without the field as empty', () => {
+    expect(compareFixture({ ...expected, dependencies: [dep('a')] }, makeReport())).toHaveLength(1);
+  });
+});

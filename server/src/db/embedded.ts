@@ -169,6 +169,24 @@ export async function acquireLease(
   };
 }
 
+/**
+ * The data directory's lease while its holder (a server, or `restore`) still renews it: renewed
+ * within the TTL, by any host, the same one included. `acquireLease` takes a lease of its own host
+ * over at once (a restarted container); a command run inside the server's own container sees the
+ * server's lease here instead. Null when there is none, or it is stale.
+ */
+export async function liveLease(
+  dataDir: string,
+  options: { ttlMs?: number; now?: number } = {},
+): Promise<{ host: string; renewedAt: number } | null> {
+  const held = await readLease(path.join(dataDir, 'server.lease'));
+  if (!held) return null;
+  const age = (options.now ?? Date.now()) - held.renewedAt;
+  return age < (options.ttlMs ?? LEASE_TTL_MS)
+    ? { host: held.host, renewedAt: held.renewedAt }
+    : null;
+}
+
 /** The socket URL; the directory is percent-encoded into the host, as pg's parser expects. */
 export function socketUrl(runDir: string): string {
   return `postgresql://qualor@${encodeURIComponent(runDir)}/qualor`;

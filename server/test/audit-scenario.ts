@@ -137,7 +137,23 @@ export async function auditScenarioContext(
         checkFile: async (path) => ({ ok: true, realPath: path }),
         importModule: async () => ({ default: RBAC_FIXTURE }),
       }),
-      edition: (frozen) => createEdition({ boot, plugins: frozen, now, verifyOptions }),
+      edition: (frozen) => {
+        const edition = createEdition({ boot, plugins: frozen, now, verifyOptions });
+        // The fixture plugin has neither llm.auto-fix nor license-policy; the seams core reads are
+        // switched on here, as the enterprise plugin does through ctx.limits (enterprise/test
+        // covers that path).
+        return {
+          ...edition,
+          limits: () => {
+            const limits = edition.limits();
+            return {
+              ...limits,
+              llm: { ...limits.llm, automaticFixSuggestions: true },
+              licenses: { policy: true },
+            };
+          },
+        };
+      },
     }),
   });
 }
@@ -526,6 +542,36 @@ export async function runAuditScenario(
     },
   });
   await call('POST', '/system/mail/test', 502, { to: 'scenario@example.com' });
+
+  // organization.auto_fix_changed: the organisation's automatic fix suggestions, kept off (switching
+  // them off needs no licence, so the community run makes the same call)
+  await call('PUT', `/organizations/${org}/ai/auto-fix`, 200, {
+    enabled: false,
+    minSeverity: 'medium',
+    maxPerAnalysis: 5,
+  });
+
+  // project.auto_fix_changed: a project opts out of them. The route answers 403 without the licence
+  // seam, so only a context whose edition has limits.llm.automaticFixSuggestions drives it (the
+  // licensed run enables it, see auditScenarioContext; the community run skips it)
+  if (ctx.edition?.limits().llm.automaticFixSuggestions) {
+    await call('PUT', `/projects/${main.id}/ai/auto-fix`, 200, { enabled: false });
+  }
+
+  // organization.license_policy_changed: the organisation's licence policy (6M). The route answers
+  // 403 without the licence seam, so only a context whose edition has limits.licenses.policy
+  // drives it (the licensed run, see auditScenarioContext; the community run skips it)
+  if (ctx.edition?.limits().licenses.policy) {
+    await call('PUT', `/organizations/${org}/license-policy`, 200, {
+      policy: {
+        mode: 'denylist',
+        forbiddenGroups: ['network-copyleft'],
+        forbidden: ['SSPL-1.0'],
+        allowed: [],
+        warnUnknown: false,
+      },
+    });
+  }
 
   // ai.requested and ai.fix_posted on a merge request of a project mapped to the fake GitLab
   gitlab.addProject({ id: 501, path: 'scenario/ai' });

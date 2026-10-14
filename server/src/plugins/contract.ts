@@ -3,6 +3,7 @@
  * and imports it with `import type` only (enterprise.md §12). Everything a plugin may do goes
  * through the context: it gets no Fastify instance, no configuration and no secret key.
  */
+import type { Readable } from 'node:stream';
 import type { FastifyBaseLogger, FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import type { AuditEventRecord } from '../audit/chain';
 import type { AuditFilter } from '../audit/query';
@@ -193,6 +194,8 @@ export interface PluginContext {
   readonly compliance: PluginCompliance;
   /** 4E-2 §2 (additive): portfolio reports, with core's permission checks. */
   readonly portfolio: PluginPortfolio;
+  /** 4E-3b §4 (additive): the support bundle, with core's permission check. */
+  readonly support: PluginSupport;
 }
 
 export type PluginPage<T> = { items: T[]; nextCursor: string | null };
@@ -339,6 +342,16 @@ export interface PluginPortfolio {
     request: FastifyRequest,
     input: PortfolioScopeInput,
   ): AsyncIterable<PortfolioProjectRow>;
+}
+
+/**
+ * 4E-3b §4: built by core. `bundle` answers 403 FEATURE_NOT_LICENSED while `support-bundle` is
+ * inactive, requires an instance admin, and records `support.bundle_downloaded` (target null,
+ * details `{ source: 'ui', bytes }`). The stream is the whole zip, at most 20 MiB, with no secret
+ * value in it; the plugin's route sends it as `fileName`.
+ */
+export interface PluginSupport {
+  bundle(request: FastifyRequest): Promise<{ fileName: string; stream: Readable }>;
 }
 
 /**

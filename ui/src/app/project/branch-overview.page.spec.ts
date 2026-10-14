@@ -245,6 +245,42 @@ describe('BranchOverviewPage', () => {
     expect(text(sources?.querySelector('.rule-list li'))).toBe('eslint:eqeqeq 2');
   });
 
+  it('adds Licensing to the software qualities only while the branch has licensing issues (6M)', async () => {
+    const qualities = async (extra: { metric: string; overall: number; new: number | null }[]) => {
+      server.on('GET', '/api/v0/branches/b-main/measures', {
+        body: [
+          { metric: 'security_issues', overall: 3, new: null },
+          { metric: 'reliability_issues', overall: 2, new: null },
+          { metric: 'maintainability_issues', overall: 4, new: null },
+          ...extra,
+        ],
+      });
+      const { fixture, root } = await render();
+      const issues = root.querySelector('[aria-labelledby="open-issues-heading"]');
+      const byQuality = issues?.querySelectorAll('q-distribution')[1];
+      const items = [...(byQuality?.querySelectorAll('li') ?? [])].map(text);
+      fixture.destroy();
+      return items;
+    };
+    const others = ['Security 3', 'Reliability 2', 'Maintainability 4'];
+    // Some licensing issues: shown with their count.
+    expect(
+      await qualities([
+        { metric: 'licensing_issues', overall: 2, new: 0 },
+        { metric: 'forbidden_licenses', overall: 1, new: 0 },
+      ]),
+    ).toEqual([...others, 'Licensing 2']);
+    // None: hidden, although every analysis of a server that judges licences measures
+    // forbidden_licenses (0 included); and hidden for an older server's analysis without either.
+    expect(
+      await qualities([
+        { metric: 'licensing_issues', overall: 0, new: 0 },
+        { metric: 'forbidden_licenses', overall: 0, new: 0 },
+      ]),
+    ).toEqual(others);
+    expect(await qualities([])).toEqual(others);
+  });
+
   it('links to the Code tab for the branch it shows, the main branch and a merge request alike', async () => {
     for (const id of ['b-main', 'b-mr']) {
       const { fixture, root } = await render(id);

@@ -26,6 +26,8 @@ export interface ProblemExtensions {
    * MAIL_SEND_FAILED: why the test message was not sent (mail/transport.ts MAIL_ERROR_CODES).
    */
   reason?: string;
+  /** 400 INVALID_LICENSE_ID: the policy entries that are not SPDX ids or terms (6M §5). */
+  details?: { invalid: string[] };
 }
 
 export interface Problem extends ProblemExtensions {

@@ -30,6 +30,8 @@ import { GITLAB_MR_IID, type GitLabClient } from '../scm/gitlab/client';
 import { addedLineTexts, MAX_DIFF_PAGES, MAX_DISCUSSION_PAGES } from '../scm/inline';
 import { ScmError } from '../scm/provider';
 import { decorationRetryDelaySeconds, inSeconds, MAX_DECORATION_ATTEMPTS } from '../scm/queue';
+import { communityLimits } from '../limits';
+import { effectiveAutoFix } from './auto-fix-settings';
 import { aiResultSchema } from './dto';
 import { buildIssueInput } from './input';
 import { aiFixMarker, FIX_BODY_MAX_BYTES, fixSuggestionBody } from './render';
@@ -60,6 +62,11 @@ export const aiFixPayload = z.strictObject({
     .int()
     .min(0)
     .max(MAX_DECORATION_ATTEMPTS - 1),
+  /**
+   * Queued by the automatic fix suggestions (4E-3a §3), never by a person's click: the job then
+   * also needs the automatic rule to hold when it runs (`not_possible` otherwise).
+   */
+  auto: z.literal(true).optional(),
 });
 type AiFixPayload = z.infer<typeof aiFixPayload>;
 
@@ -191,6 +198,8 @@ export async function queueFixPost(
   row: LlmRequestRow,
   charge: () => void = () => undefined,
   audit?: { recorder: AuditRecorder; context: AuditActorContext },
+  /** `auto`: queued by the automatic fix suggestions (4E-3a §3), not by a person. */
+  options: { auto?: boolean } = {},
 ): Promise<{ ok: true; row: LlmRequestRow } | { ok: false; refusal: PostRefusal | 'ai_disabled' }> {
   const checked = await postRefusal(db, row);
   if ('refusal' in checked) return { ok: false, refusal: checked.refusal };
@@ -228,7 +237,11 @@ export async function queueFixPost(
     );
     await enqueue(tx, {
       queue: AI_FIX_QUEUE,
-      payload: { requestId: row.id, attempt: 0 } satisfies AiFixPayload,
+      payload: {
+        requestId: row.id,
+        attempt: 0,
+        ...(options.auto === true ? { auto: true as const } : {}),
+      } satisfies AiFixPayload,
       concurrencyKey: aiFixKey(row.id),
       maxAttempts: 1,
     });
@@ -290,10 +303,11 @@ const sameLines = (a: readonly string[], b: readonly string[]) =>
  * comment's body within its bound. An `Outcome` when nothing may be posted.
  */
 async function loadTarget(
-  db: Db,
+  deps: DecorationDeps,
   row: LlmRequestRow,
-  publicUrl: string | null,
+  auto: boolean,
 ): Promise<Target | Outcome> {
+  const { db, publicUrl } = deps;
   const stored = storedFix(row);
   if (typeof stored === 'string' || row.issueId === null) return failed('not_possible');
   const built = await buildIssueInput(db, row.issueId, 'fix');
@@ -320,8 +334,17 @@ async function loadTarget(
   }
   const fix = checked.value;
   // The admin may have turned the assistant or its fix feature off, or excluded the project or
-  // path, since the click (llm.md §8.2): nothing is posted then.
-  if (!fixFeatureOn(await readLlmSettings(db), row, built.issue.path)) {
+  // path, since the click (llm.md §8.2): nothing is posted then. An automatic post also needs the
+  // automatic rule now (4E-3a §3): the licence, auto-fix itself and the project's opt-out.
+  const settings = await readLlmSettings(db);
+  if (!fixFeatureOn(settings, row, built.issue.path)) return failed('not_possible');
+  if (
+    auto &&
+    !effectiveAutoFix(settings, deps.limits?.() ?? communityLimits(), {
+      id: row.projectId,
+      organizationId: row.organizationId,
+    }).allowed
+  ) {
     return failed('not_possible');
   }
   const analysisId = built.issue.lastSeenAnalysisId;
@@ -348,6 +371,9 @@ async function loadTarget(
     endLine: fix.endLine,
     replacement: fix.replacement,
     issueUrl: issueUrl(publicUrl, loaded.project.id, built.issue.id),
+    // 4E-3a §3: a post the automatic path queued says so; a person posting an automatic
+    // suggestion by hand posts it as their own.
+    automatic: auto,
   });
   return { row, loaded, path: built.issue.path, fix, body, marker };
 }
@@ -523,7 +549,7 @@ async function runPost(deps: DecorationDeps, payload: AiFixPayload): Promise<voi
     if (outcome.kind === 'posted') deps.logger?.info(details, 'AI fix suggestion posted');
     else deps.logger?.warn(details, 'AI fix suggestion not posted');
   };
-  const target = await loadTarget(deps.db, row, deps.publicUrl);
+  const target = await loadTarget(deps, row, payload.auto === true);
   if (!('loaded' in target)) {
     await record(deps.db, row.id, target);
     return log(target, null);
@@ -573,7 +599,7 @@ async function runPost(deps: DecorationDeps, payload: AiFixPayload): Promise<voi
     const next = payload.attempt + 1;
     if (next < MAX_DECORATION_ATTEMPTS) {
       const delay = Math.max(decorationRetryDelaySeconds(next), error.retryAfterSeconds ?? 0);
-      await requeue(deps, target, { requestId: row.id, attempt: next }, delay);
+      await requeue(deps, target, { ...payload, attempt: next }, delay);
       deps.logger?.info(
         { requestId: row.id, connectionId: connection.id, attempt: next, retryInSeconds: delay },
         'AI fix suggestion post retried',

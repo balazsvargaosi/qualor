@@ -7,6 +7,8 @@ describe('formatMeasure', () => {
     expect(formatMeasure(65.74, 'coverage')).toBe('65.7 %');
     expect(formatMeasure(3, 'new_duplicated_lines_density')).toBe('3 %');
     expect(formatMeasure(12345, 'ncloc')).toBe('12,345');
+    expect(formatMeasure(12.5, 'unknown_licenses_ratio')).toBe('12.5 %');
+    expect(formatMeasure(2, 'forbidden_licenses')).toBe('2');
     expect(formatMeasure(null, 'coverage')).toBe('–');
     expect(formatMeasure(undefined, 'issues')).toBe('–');
   });

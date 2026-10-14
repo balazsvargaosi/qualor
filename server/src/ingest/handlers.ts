@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { UploadLimits } from '../config';
 import type { Db } from '../db/client';
+import type { Limits } from '../limits';
 import { notifyAnalysisFailed } from '../notifications/analysis';
 import type { NotifyDeps } from '../notifications/deps';
 import type { JobHandlers } from '../queue/worker';
@@ -16,6 +17,8 @@ export interface JobDeps {
   stages?: readonly IngestionStage[] | undefined;
   logger?: ProcessLogger | undefined;
   notify?: NotifyDeps | undefined;
+  /** The edition's limits, read for each analysis (the auto-fix stage's licence seam). */
+  limits?: (() => Limits) | undefined;
 }
 
 export function jobHandlers(deps: JobDeps): JobHandlers {
@@ -36,7 +39,14 @@ export function jobHandlers(deps: JobDeps): JobHandlers {
       const { analysisId } = parsed.data;
       try {
         await processAnalysis(
-          { db: deps.db, upload: deps.upload, stages, logger: deps.logger, notify: deps.notify },
+          {
+            db: deps.db,
+            upload: deps.upload,
+            stages,
+            logger: deps.logger,
+            notify: deps.notify,
+            limits: deps.limits,
+          },
           analysisId,
         );
       } catch (err) {

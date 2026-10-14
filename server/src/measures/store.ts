@@ -1,8 +1,14 @@
-import { allMetricKeys, type Quality, type Report, type Severity } from '@qualor/shared';
+import {
+  allMetricKeys,
+  type DependencyEntry,
+  type Quality,
+  type Report,
+  type Severity,
+} from '@qualor/shared';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
-import { jsonChunks } from '../db/bulk';
+import { jsonChunks, withoutNul } from '../db/bulk';
 import type { Executor } from '../db/client';
-import { branchFiles, issues } from '../db/schema';
+import { branchDependencies, branchFiles, issues } from '../db/schema';
 import type { MeasureValues } from '../ingest/state';
 import type { NewCodeClassifier } from '../newcode/lines';
 import {
@@ -10,10 +16,23 @@ import {
   fileCoverageCounts,
   newLineRanges,
   type IssueCountRow,
+  type VisibleIssueCounts,
 } from './compute';
 
-/** gates.md §2: visible issues are open, not a duplicate, and of kind `issue`. */
-export async function visibleIssueCounts(tx: Executor, branchId: string): Promise<IssueCountRow[]> {
+/**
+ * gates.md §2: visible issues are open, not a duplicate, and of kind `issue`. Counted by severity,
+ * quality and new code, and (6M §7) the visible issues of rule `license:forbidden` on their own.
+ */
+export async function visibleIssueCounts(
+  tx: Executor,
+  branchId: string,
+): Promise<VisibleIssueCounts> {
+  const visible = and(
+    eq(issues.branchId, branchId),
+    eq(issues.status, 'open'),
+    isNull(issues.duplicateOfIssueId),
+    eq(issues.kind, 'issue'),
+  );
   const rows = await tx
     .select({
       severity: issues.severity,
@@ -22,21 +41,48 @@ export async function visibleIssueCounts(tx: Executor, branchId: string): Promis
       count: sql<number>`count(*)::int`,
     })
     .from(issues)
+    .where(visible)
+    .groupBy(issues.severity, issues.quality, issues.inNewCode);
+  const [forbidden] = await tx
+    .select({
+      overall: sql<number>`count(*)::int`,
+      new: sql<number>`count(*) FILTER (WHERE ${issues.inNewCode})::int`,
+    })
+    .from(issues)
     .where(
       and(
-        eq(issues.branchId, branchId),
-        eq(issues.status, 'open'),
-        isNull(issues.duplicateOfIssueId),
-        eq(issues.kind, 'issue'),
+        visible,
+        sql`${issues.ruleId} = (SELECT id FROM rules WHERE key = ${FORBIDDEN_LICENSE_RULE_KEY})`,
       ),
-    )
-    .groupBy(issues.severity, issues.quality, issues.inNewCode);
-  return rows.map((r) => ({
-    severity: r.severity as Severity,
-    quality: r.quality as Quality,
-    inNewCode: r.inNewCode,
-    count: r.count,
-  }));
+    );
+  return {
+    rows: rows.map((r): IssueCountRow => ({
+      severity: r.severity as Severity,
+      quality: r.quality as Quality,
+      inNewCode: r.inNewCode,
+      count: r.count,
+    })),
+    forbiddenLicenses: { overall: forbidden?.overall ?? 0, new: forbidden?.new ?? 0 },
+  };
+}
+
+/** The rule of 6M's forbidden licence findings (licenses/stage.ts `FORBIDDEN_RULE_KEY`). */
+const FORBIDDEN_LICENSE_RULE_KEY = 'license:forbidden';
+
+/** 6M §7: how many entries the branch's inventory snapshot holds, and how many have no licence. */
+export async function dependencyLicenseCounts(
+  tx: Executor,
+  branchId: string,
+): Promise<{ total: number; unknown: number }> {
+  const d = branchDependencies;
+  const [row] = await tx
+    .select({
+      total: sql<number>`count(*)::int`,
+      unknown: sql<number>`count(*) FILTER (WHERE cardinality(${d.licenses}) = 0)::int`,
+    })
+    .from(d)
+    .where(eq(d.branchId, branchId));
+  return { total: row?.total ?? 0, unknown: row?.unknown ?? 0 };
 }
 
 /** `accepted_issues` (wont_fix) and `false_positive_issues`: kind `issue`, duplicates excluded (ruling M1). */
@@ -252,5 +298,83 @@ export async function replaceBranchFiles(
         r.new_lines, r.duplications, ${analysisId}
       FROM jsonb_to_recordset(${chunk}::jsonb) AS r(path text, language text, kind text,
         sha256 text, metrics jsonb, coverage jsonb, new_lines jsonb, duplications jsonb)`);
+  }
+}
+
+/** Rows per INSERT of {@link replaceBranchDependencies}: a 50 000-entry inventory is 50 statements. */
+const DEPENDENCY_BATCH = 1_000;
+
+/** At most this many licences per stored entry (the report's own bound per entry). */
+const MAX_DEPENDENCY_LICENSES = 16;
+
+/** One stored inventory row before it gets its branch and analysis. */
+export interface DependencyRowInput {
+  path: string;
+  ecosystem: string;
+  name: string;
+  version: string;
+  licenses: string[];
+  direct: boolean | null;
+  line: number | null;
+}
+
+/**
+ * The rows of an inventory, one per key (path, ecosystem, name, version) as the table's primary
+ * key sees it: after the NUL stripping that {@link jsonChunks} applies. The Qualor CLI never sends
+ * a duplicate (spec §2), but nothing in the report schema forbids one, and a primary-key violation
+ * would fail the whole ingestion. Duplicates are merged: the sorted union of their licences (at
+ * most {@link MAX_DEPENDENCY_LICENSES}), `direct` true if any says so, else false if any says
+ * so, and the first known line. An entry without a duplicate is kept as given.
+ */
+export function mergeDependencyEntries(entries: readonly DependencyEntry[]): DependencyRowInput[] {
+  const rows = new Map<string, DependencyRowInput>();
+  for (const e of entries) {
+    const row = {
+      path: withoutNul(e.path),
+      ecosystem: withoutNul(e.ecosystem),
+      name: withoutNul(e.name),
+      version: withoutNul(e.version),
+      licenses: e.licenses.map(withoutNul),
+      direct: e.direct ?? null,
+      line: e.line ?? null,
+    };
+    const key = JSON.stringify([row.path, row.ecosystem, row.name, row.version]);
+    const seen = rows.get(key);
+    if (seen === undefined) {
+      rows.set(key, row);
+      continue;
+    }
+    seen.licenses = [...new Set([...seen.licenses, ...row.licenses])]
+      .sort()
+      .slice(0, MAX_DEPENDENCY_LICENSES);
+    if (row.direct === true) seen.direct = true;
+    else if (row.direct === false && seen.direct === null) seen.direct = false;
+    seen.line ??= row.line;
+  }
+  return [...rows.values()];
+}
+
+/**
+ * 6M §4: `branch_dependencies` is the dependency inventory of the branch's latest analysis that
+ * carried one, replaced in the ingestion transaction. The entries are stored as the report gives
+ * them (the scanner already normalised the licences), except that duplicates are merged
+ * ({@link mergeDependencyEntries}); `path` need not be one of the report's files.
+ */
+export async function replaceBranchDependencies(
+  tx: Executor,
+  branchId: string,
+  analysisId: string,
+  entries: readonly DependencyEntry[],
+): Promise<void> {
+  await tx.delete(branchDependencies).where(eq(branchDependencies.branchId, branchId));
+  const rows = mergeDependencyEntries(entries);
+  for (const chunk of jsonChunks(rows, { maxRows: DEPENDENCY_BATCH })) {
+    await tx.execute(sql`
+      INSERT INTO branch_dependencies (branch_id, path, ecosystem, name, version, licenses,
+        direct, line, analysis_id)
+      SELECT ${branchId}, r.path, r.ecosystem, r.name, r.version, r.licenses, r.direct, r.line,
+        ${analysisId}
+      FROM jsonb_to_recordset(${chunk}::jsonb) AS r(path text, ecosystem text, name text,
+        version text, licenses text[], direct boolean, line integer)`);
   }
 }

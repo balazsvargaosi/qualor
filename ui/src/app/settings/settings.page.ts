@@ -3,6 +3,8 @@ import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { SessionStore } from '../auth/session';
 import { OrgContext } from '../org/org-context';
 import { PageHeader } from '../shared/page-header';
+import { AUTO_FIX_FEATURE } from './auto-fix';
+import { LICENSE_POLICY_FEATURE } from './license-policy';
 import { SystemInfo } from '../shell/system-info';
 
 /** The enterprise settings entries the UI renders with its own screens (rbac-audit.md §17). */
@@ -14,6 +16,7 @@ const KNOWN_EXTENSIONS = new Set([
   'sign-in',
   'scim',
   'compliance',
+  'support',
 ]);
 
 /**
@@ -55,6 +58,8 @@ export class SettingsPage {
   protected readonly sso = computed(() => this.ids().has('sso') && this.instanceAdmin());
   protected readonly signIn = computed(() => this.ids().has('sign-in') && this.instanceAdmin());
   protected readonly scim = computed(() => this.ids().has('scim') && this.instanceAdmin());
+  /** The support bundle (4E-3b §5): instance admins, while `support-bundle` is active. */
+  protected readonly support = computed(() => this.ids().has('support') && this.instanceAdmin());
   /**
    * The organisation's compliance reports (4E-1 §4): for its members (an organisation role, which
    * always holds `org.read`) and instance admins, while `compliance-export` is active.
@@ -63,14 +68,31 @@ export class SettingsPage {
     () => this.ids().has('compliance') && this.org.can('org.read'),
   );
   /**
-   * The organization's entries: members, webhooks, the SCM connections, the audit log and the
-   * compliance reports.
+   * The organisation's automatic fix suggestions (4E-3a §4, ruling R7): for holders of
+   * `org.ai.manage`, while `llm.auto-fix` is active; the address itself says when it is not.
+   */
+  protected readonly autoFix = computed(
+    () => this.info.features().includes(AUTO_FIX_FEATURE) && this.org.can('org.ai.manage'),
+  );
+  /**
+   * The organisation's licence policy (6M §8): for holders of `org.licenses.manage`, while
+   * `license-policy` is active; the address itself shows the Business note when it is not.
+   */
+  protected readonly licensePolicy = computed(
+    () =>
+      this.info.features().includes(LICENSE_POLICY_FEATURE) && this.org.can('org.licenses.manage'),
+  );
+  /**
+   * The organization's entries: members, webhooks, the SCM connections, the automatic fix
+   * suggestions (4E-3a §4), the licence policy (6M §8), the audit log and the compliance reports.
    */
   protected readonly organization = computed(
     () =>
       this.org.can('org.members.read') ||
       this.org.can('org.webhooks.manage') ||
       this.org.can('org.scm.manage') ||
+      this.autoFix() ||
+      this.licensePolicy() ||
       this.auditLog() ||
       this.compliance(),
   );

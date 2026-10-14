@@ -46,11 +46,19 @@ import {
   tokenDto,
   tokenSchema,
 } from '../http/schemas';
+import type { Limits } from '../limits';
+import {
+  organizationAutoFixEnabled,
+  projectAutoFixEnabled,
+  projectExcludedFromAi,
+} from '../llm/auto-fix-settings';
+import { readLlmSettings } from '../llm/settings';
 import { headlineMeasures } from '../measures/read';
 import { containsPattern } from '../issues/query';
 import { PROJECT_KEY_PATTERN } from '../patterns';
 import { projectForUser, type ProjectRow } from '../projects/access';
 import { forgetForeignMergeRequestUrls } from '../scm/connections';
+import { projectAutoFixSchema } from './auto-fix';
 import { projectRefProblem, scmProjectRef } from './scm-connections';
 
 export const newCodeDefinitionSchema = z.discriminatedUnion('type', [
@@ -86,6 +94,11 @@ export const projectSchema = z.object({
   mainBranch: branchSummarySchema.nullable(),
   /** rbac-audit.md §16: the caller's effective permissions on the project (the UI hides the rest). */
   permissions: z.array(z.enum(PROJECT_PERMISSIONS)),
+  /**
+   * 4E-3a §2, §4: whether automatic fix suggestions are available (the enterprise feature
+   * llm.auto-fix), the project is not opted out of them, and the organisation has them on.
+   */
+  autoFix: projectAutoFixSchema,
 });
 export type ProjectDto = z.infer<typeof projectSchema>;
 
@@ -96,6 +109,12 @@ const projectTokenParams = z.strictObject({ id: z.uuid(), tokenId: z.uuid() });
 export interface ProjectViewer {
   access: AccessContext;
   user: UserRow;
+}
+
+/** What the DTOs need beyond the rows: the live limits (enterprise.md §7). */
+export interface ProjectDtoDeps {
+  db: Executor;
+  limits: Limits;
 }
 
 /** The viewer's organisation roles and project grants for `rows`: two queries, none for an admin. */
@@ -139,12 +158,15 @@ async function viewerRoles(
 }
 
 export async function projectDtos(
-  db: Executor,
+  deps: ProjectDtoDeps,
   rows: readonly ProjectRow[],
   viewer: ProjectViewer,
 ): Promise<ProjectDto[]> {
   if (rows.length === 0) return [];
+  const { db } = deps;
   const roles = await viewerRoles(db, rows, viewer);
+  const autoFixAvailable = deps.limits.llm.automaticFixSuggestions;
+  const llmSettings = await readLlmSettings(db);
   const mains = await db
     .select({ branch: branches, gateStatus: analyses.gateStatus })
     .from(branches)
@@ -197,13 +219,20 @@ export async function projectDtos(
           }),
         ),
       ].sort(),
+      autoFix: {
+        available: autoFixAvailable,
+        enabled: projectAutoFixEnabled(llmSettings, p),
+        organizationEnabled: organizationAutoFixEnabled(llmSettings, p.organizationId),
+        excludedFromAi: projectExcludedFromAi(llmSettings, p),
+      },
     };
   });
 }
 
 export const projectRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (app, { deps }) => {
+  const dtoDeps = (): ProjectDtoDeps => ({ db: deps.db, limits: deps.edition.limits() });
   const one = async (row: ProjectRow, viewer: ProjectViewer): Promise<ProjectDto> =>
-    first(await projectDtos(deps.db, [row], viewer));
+    first(await projectDtos(dtoDeps(), [row], viewer));
 
   app.get(
     '/projects',
@@ -244,7 +273,7 @@ export const projectRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (
         .limit(limit + 1);
       const page = toPage(rows, limit);
       return {
-        items: await projectDtos(deps.db, page.items, { access, user: principal.user }),
+        items: await projectDtos(dtoDeps(), page.items, { access, user: principal.user }),
         nextCursor: page.nextCursor,
       };
     },

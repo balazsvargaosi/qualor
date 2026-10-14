@@ -4,13 +4,16 @@ import { issueChangeCharge } from '../issues/rate-limit';
 import { aiRoutes } from './ai';
 import { analysisRoutes } from './analyses';
 import { accountRoutes } from './account';
+import { autoFixRoutes } from './auto-fix';
 import { authRoutes } from './auth';
 import { branchRoutes } from './branches';
+import { dependencyRoutes } from './dependencies';
 import { gateRoutes } from './gates';
 import { githubWebhookRoutes } from './github-webhooks';
 import { issueRoutes } from './issues';
 import { issueStatusImportRoutes } from './issue-status-import';
 import { licenseRoutes } from './license';
+import { licensePolicyRoutes } from './license-policy';
 import { llmSettingsRoutes } from './llm-settings';
 import { mailSettingsRoutes } from './mail-settings';
 import { measureRoutes } from './measures';
@@ -46,6 +49,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   await app.register(analysisRoutes, { prefix: '/api/v0', deps });
   await app.register(newCodeRoutes, { prefix: '/api/v0', deps });
   await app.register(measureRoutes, { prefix: '/api/v0', deps });
+  await app.register(dependencyRoutes, { prefix: '/api/v0', deps });
   await app.register(gateRoutes, { prefix: '/api/v0', deps });
   await app.register(issueRoutes, { prefix: '/api/v0', deps, chargeIssueChanges });
   await app.register(issueStatusImportRoutes, { prefix: '/api/v0', deps });
@@ -57,6 +61,8 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   await app.register(mailSettingsRoutes, { prefix: '/api/v0', deps });
   await app.register(licenseRoutes, { prefix: '/api/v0', deps });
   await app.register(aiRoutes, { prefix: '/api/v0', deps, chargeIssueChanges });
+  await app.register(autoFixRoutes, { prefix: '/api/v0', deps });
+  await app.register(licensePolicyRoutes, { prefix: '/api/v0', deps });
   // Its own plugin: its raw-body JSON parser stays in its encapsulation context (github.md §9).
   await app.register(githubWebhookRoutes, { deps });
 }

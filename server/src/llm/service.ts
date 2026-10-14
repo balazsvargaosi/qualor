@@ -1,5 +1,5 @@
 import { llmIneligibility, PROMPT_VERSIONS, type LlmFeature } from '@qualor/shared';
-import { and, desc, eq, gt, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import type { AuditActorContext, AuditRecorder } from '../audit/recorder';
 import { projectRefs } from '../audit/refs';
 import type { UserPrincipal } from '../auth/principal';
@@ -14,6 +14,7 @@ import { issueForUser } from '../projects/access';
 import { enqueue } from '../queue/queue';
 import type { LlmErrorCode } from './errors';
 import { baseUrlHash, buildIssueInput, cacheKeyOf } from './input';
+import { effectiveAutoFix } from './auto-fix-settings';
 import type { LlmJobPayload } from './job';
 import {
   organizationSettings,
@@ -84,6 +85,22 @@ export interface AiRequestDeps {
    */
   audit?: { recorder: AuditRecorder; context: AuditActorContext };
 }
+
+/**
+ * Who asks: a person (charged to their hourly bound), or the enterprise automatic fix
+ * suggestions (4E-3a §3), which have no person: the row's `user_id` is null and no person's bound
+ * applies, while the organisation's budgets and the request in flight still do.
+ */
+export type AiActor = { kind: 'user'; userId: string; users: AiUserLimits } | { kind: 'automatic' };
+
+/**
+ * A cached answer, the request in flight, a new queued request, or (automatic only) the earlier
+ * automatic fix request of the issue: an issue gets one automatic suggestion, ever.
+ */
+export type AiRequestOutcome = {
+  kind: 'cached' | 'in_flight' | 'queued' | 'already_requested';
+  row: LlmRequestRow;
+};
 
 export function secondsToUtcMidnight(now: Date = new Date()): number {
   const midnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
@@ -179,11 +196,32 @@ export async function requestAi(
   issueId: string,
   feature: LlmFeature,
   options: { refresh: boolean },
-): Promise<{ kind: 'cached' | 'queued'; row: LlmRequestRow }> {
+): Promise<AiRequestOutcome> {
   const visible = await issueForUser({ db: deps.db }, principal, issueId, 'ai.use');
-  const project = first(
-    await deps.db.select().from(projects).where(eq(projects.id, visible.projectId)),
+  return createAiRequest(
+    deps,
+    { kind: 'user', userId: principal.user.id, users: deps.users },
+    { issueId, projectId: visible.projectId },
+    feature,
+    options,
   );
+}
+
+/**
+ * The request of `requestAi` for an issue whose access the caller has settled (a person's
+ * `ai.use`, or the auto-fix job of the issue's own analysis). An automatic request also needs the
+ * organisation's automatic fix suggestions to be in effect for the project now (4E-3a §2).
+ */
+export async function createAiRequest(
+  deps: Omit<AiRequestDeps, 'users'>,
+  actor: AiActor,
+  target: { issueId: string; projectId: string },
+  feature: LlmFeature,
+  options: { refresh: boolean },
+): Promise<AiRequestOutcome> {
+  const { issueId } = target;
+  const [project] = await deps.db.select().from(projects).where(eq(projects.id, target.projectId));
+  if (!project) throw notFound('Issue');
   const orgId = project.organizationId;
   const settings = await readLlmSettings(deps.db);
   const provider = settings.provider;
@@ -192,8 +230,15 @@ export async function requestAi(
   if (!org.enabled || !org.features[feature]) {
     throw conflict('AI_DISABLED', 'This AI feature is not enabled for the organisation');
   }
+  const automatic = actor.kind === 'automatic';
+  if (
+    automatic &&
+    (feature !== 'fix' || !effectiveAutoFix(settings, deps.limits, project).allowed)
+  ) {
+    throw conflict('AI_DISABLED', 'Automatic fix suggestions are not enabled for this project');
+  }
   const built = await buildIssueInput(deps.db, issueId, feature);
-  if (!built) throw notFound('Issue');
+  if (!built || built.issue.projectId !== project.id) throw notFound('Issue');
   const { issue, rule } = built;
   const reason =
     llmIneligibility(
@@ -249,21 +294,39 @@ export async function requestAi(
   }
 
   const budgets = effectiveBudgets(settings, deps.limits);
-  const userId = principal.user.id;
-  // A user over their bound is refused before waiting for the organisation's lock; the token is
-  // still taken under the lock, so this only saves them the wait (and the lock the traffic).
-  const early = deps.users.peek(userId, budgets.perUserPerHour);
+  // A person over their bound is refused before waiting for the organisation's lock; the token is
+  // still taken under the lock, so this only saves them the wait (and the lock the traffic). An
+  // automatic request has no person, so no person's bound (4E-3a §3).
+  const user = actor.kind === 'user' ? actor : null;
+  const early = user?.users.peek(user.userId, budgets.perUserPerHour) ?? null;
   if (early !== null) throw userRateLimited(early);
   let charged = false;
   try {
-    return await deps.db.transaction(async (tx) => {
+    return await deps.db.transaction(async (tx): Promise<AiRequestOutcome> => {
       // One organisation's check-and-insert at a time (llm.md §12.1): concurrent requests can
-      // neither both take the last unit of a budget nor both queue the same question.
+      // neither both take the last unit of a budget nor both queue the same question. Automatic
+      // requests of two merge requests at once take the same lock.
       await tx.execute(sql`SELECT pg_advisory_xact_lock(${LOCKS.llmQuota}, hashtext(${orgId}))`);
+      if (automatic) {
+        // 4E-3a §3: one automatic suggestion per issue, whatever its outcome. Looked at under the
+        // lock, so two runs of one auto-fix job (a lost lease) cannot both ask.
+        const [earlier] = await tx
+          .select()
+          .from(llmRequests)
+          .where(
+            and(
+              eq(llmRequests.issueId, issue.id),
+              eq(llmRequests.feature, 'fix'),
+              isNull(llmRequests.userId),
+            ),
+          )
+          .limit(1);
+        if (earlier) return { kind: 'already_requested', row: earlier };
+      }
       if (!options.refresh) {
         // Again under the lock: the request in flight may have succeeded since the first look.
         const hit = await cached(tx);
-        if (hit) return { kind: 'cached' as const, row: hit };
+        if (hit) return { kind: 'cached', row: hit };
         const [inFlight] = await tx
           .select()
           .from(llmRequests)
@@ -279,7 +342,7 @@ export async function requestAi(
           )
           .orderBy(desc(llmRequests.createdAt))
           .limit(1);
-        if (inFlight) return { kind: 'queued' as const, row: inFlight };
+        if (inFlight) return { kind: 'in_flight', row: inFlight };
       }
       const used = await todayUsage(tx, orgId);
       const perDay = {
@@ -300,9 +363,11 @@ export async function requestAi(
       // Charged only for a request that will be queued (under the lock, so a refused budget costs
       // the user nothing); a refusal rolls the transaction back, and a failure after the charge
       // (the insert, the enqueue, the commit) gives the token back.
-      const wait = deps.users.take(userId, budgets.perUserPerHour);
-      if (wait !== null) throw userRateLimited(wait);
-      charged = true;
+      if (user) {
+        const wait = user.users.take(user.userId, budgets.perUserPerHour);
+        if (wait !== null) throw userRateLimited(wait);
+        charged = true;
+      }
       const inserted = first(
         await tx
           .insert(llmRequests)
@@ -310,7 +375,7 @@ export async function requestAi(
             organizationId: orgId,
             projectId: project.id,
             issueId: issue.id,
-            userId,
+            userId: user?.userId ?? null,
             feature,
             cacheKey,
             provider: provider.kind,
@@ -332,6 +397,8 @@ export async function requestAi(
           requestId: inserted.id,
           attempt: 0,
           baseUrl: baseUrlHash(provider.baseUrl),
+          // The job checks the automatic rule again, and posts a `fixed` answer itself.
+          ...(automatic ? { auto: true as const } : {}),
         } satisfies LlmJobPayload,
         maxAttempts: 1,
       });
@@ -352,10 +419,10 @@ export async function requestAi(
           },
         ]);
       }
-      return { kind: 'queued' as const, row: inserted };
+      return { kind: 'queued', row: inserted };
     });
   } catch (err) {
-    if (charged) deps.users.refund(userId, budgets.perUserPerHour);
+    if (charged && user) user.users.refund(user.userId, budgets.perUserPerHour);
     throw err;
   }
 }

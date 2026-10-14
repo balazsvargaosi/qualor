@@ -2,6 +2,7 @@ import type { IssueKind, Quality, Report, Severity } from '@qualor/shared';
 import { uuidv7 } from '../db/ids';
 import type { AcceptedFinding } from '../ingest/state';
 import type { NewCodeClassifier } from '../newcode/lines';
+import { SERVER_ENGINES } from '../rules/server-engines';
 import { matchFindings, renamer, type Trackable } from './match';
 
 export type IssueStatus = 'open' | 'resolved' | 'wont_fix' | 'false_positive' | 'closed';
@@ -142,6 +143,12 @@ export interface PlanInput {
   now: Date;
   /** By position in `findings`; see data-model.md §5.4. */
   inherited?: ReadonlyMap<number, InheritedIssue>;
+  /**
+   * The server engines (rules/server-engines.ts) that ran for this analysis with status ok.
+   * Whether one ran comes from here, never from the report: a report entry claiming one with
+   * status ok would otherwise close its issues without the server having judged anything.
+   */
+  serverOkEngines?: readonly string[];
 }
 
 export function findingTrackable(f: AcceptedFinding): Trackable {
@@ -226,7 +233,8 @@ function write(
  * matched issues are updated (see {@link reopenedStatus} for how a `closed` or `resolved` one is
  * reopened), unmatched findings become new issues, and an unmatched candidate is closed only when
  * its engine reported `status: ok` in this report — an analyzer that failed, timed out, was
- * skipped or is absent leaves its issues untouched.
+ * skipped or is absent leaves its issues untouched. A server engine's status is the server's
+ * own (`serverOkEngines`), whatever the report says.
  */
 export function planTracking(input: PlanInput): TrackingPlan {
   const { report, findings, candidates, classifier, now } = input;
@@ -235,7 +243,10 @@ export function planTracking(input: PlanInput): TrackingPlan {
     findings.map(findingTrackable),
     candidates.map((c) => candidateTrackable(c, rename)),
   );
-  const okEngines = new Set(report.engines.filter((e) => e.status === 'ok').map((e) => e.id));
+  const okEngines = new Set(
+    report.engines.filter((e) => e.status === 'ok' && !SERVER_ENGINES.has(e.id)).map((e) => e.id),
+  );
+  for (const id of input.serverOkEngines ?? []) if (SERVER_ENGINES.has(id)) okEngines.add(id);
   const plan: TrackingPlan = {
     updates: [],
     inserts: [],

@@ -5,7 +5,7 @@ import {
   ENGINE_ID_PATTERN,
   ISSUE_KINDS,
   LANGUAGES,
-  QUALITIES,
+  REPORT_QUALITIES,
   SEVERITIES,
 } from './taxonomy';
 
@@ -32,6 +32,7 @@ export const REPORT_BOUNDS = {
   ruleTags: 64,
   ruleCwes: 64,
   engineVersionChars: 128,
+  dependencies: 50_000,
 } as const;
 
 const repoPath = z.string().superRefine((p, ctx) => {
@@ -50,7 +51,7 @@ const lineRange = z
 const lineRanges = z.array(lineRange);
 
 const severity = z.enum(SEVERITIES);
-const quality = z.enum(QUALITIES);
+const quality = z.enum(REPORT_QUALITIES);
 
 const location = z
   .object({
@@ -237,6 +238,17 @@ const scm = z.object({
     .optional(),
 });
 
+export const dependencyEntrySchema = z.object({
+  ecosystem: z.string().regex(/^[a-z0-9-]{1,32}$/),
+  path: z.string().max(1_024),
+  line: line.optional(),
+  name: z.string().max(512),
+  version: z.string().max(256),
+  licenses: z.array(z.string().max(256)).max(16),
+  direct: z.boolean().optional(),
+});
+export type DependencyEntry = z.infer<typeof dependencyEntrySchema>;
+
 export const reportSchema = z
   .object({
     schemaVersion: z.literal(REPORT_SCHEMA_VERSION),
@@ -274,6 +286,9 @@ export const reportSchema = z
         }),
       )
       .max(1_000),
+    // Dependency licences (6M). Optional, schemaVersion stays 1: servers older than 6M strip it
+    // (this schema is a plain z.object), so a newer scanner stays compatible with them.
+    dependencies: z.array(dependencyEntrySchema).max(REPORT_BOUNDS.dependencies).optional(),
   })
   .superRefine((r, ctx) => {
     const paths = new Set<string>();

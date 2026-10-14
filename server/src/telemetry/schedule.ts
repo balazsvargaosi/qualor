@@ -23,7 +23,7 @@ export interface TelemetryDeps {
 
 export function telemetryBootMessage(enabled: boolean): string {
   return enabled
-    ? 'Telemetry: enabled — anonymous usage statistics are sent daily to qualor.dev; set QUALOR_TELEMETRY=false to turn off (see /docs/telemetry)'
+    ? 'Telemetry: enabled — anonymous usage statistics are sent daily to qualor.dev and Docker Hub is checked daily for a new version; set QUALOR_TELEMETRY=false to turn off (see /docs/telemetry)'
     : 'Telemetry: disabled';
 }
 

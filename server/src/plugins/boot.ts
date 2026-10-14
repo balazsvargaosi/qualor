@@ -10,7 +10,7 @@ import { productionVerifyOptions, type VerifyOptions } from '../license/verify';
 import { loadPlugins, type LoadPluginsOptions } from './loader';
 import { dropPluginsThatFailToMount, freezePlugins, type LoadedPlugins } from './mount';
 import { PluginError } from './registry';
-import { createPluginServices } from './services';
+import { createPluginServices, type SupportServiceInputs } from './services';
 
 export interface EnterpriseBoot {
   boot: BootLicense;
@@ -42,6 +42,8 @@ export async function bootEnterprise(options: {
   now?: () => Date;
   importModule?: LoadPluginsOptions['importModule'];
   checkFile?: LoadPluginsOptions['checkFile'];
+  /** 4E-3b §4: the support service's inputs (main.ts); without them ctx.support throws. */
+  support?: SupportServiceInputs;
 }): Promise<EnterpriseBoot> {
   const now = options.now ?? (() => new Date());
   const verifyOptions = options.verifyOptions ?? productionVerifyOptions;
@@ -72,6 +74,7 @@ export async function bootEnterprise(options: {
       return bound.edition;
     },
     logger: options.logger,
+    ...(options.support ? { support: options.support } : {}),
   });
   const registry = await loadPlugins({
     paths: options.config.pluginPaths,

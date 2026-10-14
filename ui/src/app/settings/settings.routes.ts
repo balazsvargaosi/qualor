@@ -49,6 +49,18 @@ export const settingsRoutes: Routes = [
     loadComponent: () => import('./repositories.page').then((m) => m.RepositoriesPage),
   },
   {
+    // 4E-3a §4: an organisation's automatic fix suggestions, for its admins (org.ai.manage).
+    path: 'auto-fix',
+    title: $localize`:@@title.autoFix:Automatic fix suggestions`,
+    loadComponent: () => import('./auto-fix.page').then((m) => m.AutoFixPage),
+  },
+  {
+    // 6M §8: the organisation's licence policy, for its admins (org.licenses.manage).
+    path: 'license-policy',
+    title: $localize`:@@title.licensePolicy:Licence policy`,
+    loadComponent: () => import('./license-policy.page').then((m) => m.LicensePolicyPage),
+  },
+  {
     path: 'ai',
     title: $localize`:@@title.ai:AI assistant`,
     loadComponent: () => import('./ai.page').then((m) => m.AiSettingsPage),
@@ -101,6 +113,12 @@ export const settingsRoutes: Routes = [
     path: 'ee/compliance',
     title: $localize`:@@title.complianceReports:Compliance reports`,
     loadComponent: () => import('./compliance.page').then((m) => m.SettingsCompliancePage),
+  },
+  {
+    // 4E-3b §5: the support bundle (instance admins), while `support-bundle` is active.
+    path: 'ee/support',
+    title: $localize`:@@title.support:Support`,
+    loadComponent: () => import('./support.page').then((m) => m.SupportPage),
   },
   {
     path: 'ee/:id',

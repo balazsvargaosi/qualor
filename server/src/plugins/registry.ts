@@ -2,7 +2,12 @@ import type { FastifyPluginAsync } from 'fastify';
 import type { Db } from '../db/client';
 import type { EditionPlugins } from '../license/edition';
 import { FEATURE_PATTERN, type LicensePayload } from '../license/token';
-import { ENTERPRISE_MAX_FIX_PER_DAY, type LlmLimits, type PluginLimitOverride } from '../limits';
+import {
+  ENTERPRISE_MAX_FIX_PER_DAY,
+  type LicenseLimits,
+  type LlmLimits,
+  type PluginLimitOverride,
+} from '../limits';
 import { DEFAULT_MAX_ATTEMPTS, enqueue, type EnqueueOptions } from '../queue/queue';
 import {
   PLUGIN_API_VERSION,
@@ -17,6 +22,7 @@ import {
   type PluginReport,
   type PluginScim,
   type PluginSso,
+  type PluginSupport,
   type QualorPlugin,
   type UiExtension,
 } from './contract';
@@ -155,14 +161,41 @@ export function validatePlugin(value: unknown): QualorPlugin {
   });
 }
 
-/** enterprise.md §10.5: only these LLM limits, within the spec's bounds, checked at registration. */
+/** 6M §5: `licenses.policy`, a boolean, and nothing else. */
+function validateLicenseOverride(value: unknown): Partial<LicenseLimits> {
+  const raw = snapshot(value, 'licenses');
+  const licenses: Partial<LicenseLimits> = {};
+  for (const key of Object.keys(raw)) {
+    if (key !== 'policy') throw new PluginError(`unknown limit licenses.${key}`);
+    const v = raw[key];
+    if (typeof v !== 'boolean') throw new PluginError('licenses.policy must be a boolean');
+    licenses.policy = v;
+  }
+  return Object.freeze(licenses);
+}
+
+/**
+ * enterprise.md §10.5: only these LLM limits, within the spec's bounds, and the licence policy
+ * (6M), checked at registration.
+ */
 function validateOverride(value: unknown): PluginLimitOverride {
   const override = snapshot(value, 'a limit override');
   for (const key of Object.keys(override)) {
-    if (key !== 'llm') throw new PluginError('a plugin may override only llm limits');
+    if (key !== 'llm' && key !== 'licenses') {
+      throw new PluginError('a plugin may override only llm and licenses limits');
+    }
   }
-  if (override.llm === undefined) return Object.freeze({});
-  const raw = snapshot(override.llm, 'llm');
+  const licenses =
+    override.licenses === undefined ? undefined : validateLicenseOverride(override.licenses);
+  const llm = override.llm === undefined ? undefined : validateLlmOverride(override.llm);
+  return Object.freeze({
+    ...(llm === undefined ? {} : { llm }),
+    ...(licenses === undefined ? {} : { licenses }),
+  });
+}
+
+function validateLlmOverride(value: unknown): Partial<LlmLimits> {
+  const raw = snapshot(value, 'llm');
   const llm: Partial<LlmLimits> = {};
   for (const key of Object.keys(raw)) {
     const v = raw[key];
@@ -187,7 +220,7 @@ function validateOverride(value: unknown): PluginLimitOverride {
       throw new PluginError(`unknown limit llm.${key}`);
     }
   }
-  return Object.freeze({ llm: Object.freeze(llm) });
+  return Object.freeze(llm);
 }
 
 /**
@@ -226,9 +259,10 @@ export interface ContextBase {
   logger: PluginLogger;
   license: LicensePayload;
   /**
-   * rbac-audit.md §15, sso-scim.md §17.1, 4E-1 §1.1: the access, audit, sso, scim and compliance services, built
-   * by core (bootEnterprise). A context without them (core tests that load a plugin) gives the
-   * plugin stand-ins that throw, naming the missing service.
+   * rbac-audit.md §15, sso-scim.md §17.1, 4E-1 §1.1, 4E-2 §2, 4E-3b §4: the access, audit, sso,
+   * scim, compliance, portfolio and support services, built by core (bootEnterprise). A context
+   * without them (core tests that load a plugin) gives the plugin stand-ins that throw, naming
+   * the missing service.
    */
   services?: PluginServices;
 }
@@ -296,6 +330,11 @@ export const MISSING_PORTFOLIO: PluginPortfolio = Object.freeze({
   overview: unavailable('portfolio'),
   projects: unavailable('portfolio'),
   exportRows: unavailable('portfolio'),
+});
+
+/** 4E-3b §4: what a context without the support service gets. */
+export const MISSING_SUPPORT: PluginSupport = Object.freeze({
+  bundle: unavailable('support'),
 });
 
 /** 4E-1 §1.1: what a context without the compliance service gets. */
@@ -457,6 +496,7 @@ export class StagedPlugin {
       scim: base.services?.scim ?? MISSING_SCIM,
       compliance: base.services?.compliance ?? MISSING_COMPLIANCE,
       portfolio: base.services?.portfolio ?? MISSING_PORTFOLIO,
+      support: base.services?.support ?? MISSING_SUPPORT,
       schedule: (feature: string, queue: string, everySeconds: number) => {
         const f = this.feature(feature);
         if (typeof queue !== 'string' || !PLUGIN_QUEUE_PATTERN.test(queue)) {

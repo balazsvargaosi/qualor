@@ -25,7 +25,12 @@ describe('parseConfig', () => {
       timeoutSeconds: 900,
     });
     expect(c.analyzers.gitleaks.enabled).toBe(true);
-    expect(c.analyzers.trivy).toEqual({ enabled: 'auto', timeoutSeconds: 600 });
+    expect(c.analyzers.trivy).toEqual({
+      enabled: 'auto',
+      timeoutSeconds: 600,
+      licenses: 'auto',
+      licenseTimeoutSeconds: 300,
+    });
     expect(c.analyzers.semgrep.configs).toEqual(['qualor-default']);
     expect(c.analyzers.spotbugs.classDirs).toEqual(['target/classes', 'build/classes/java/main']);
     expect(c.duplication).toEqual({ enabled: true, minTokens: 100, minLines: 10, exclude: [] });
@@ -370,6 +375,12 @@ describe('BUILTIN_EXCLUDES', () => {
     expect(errorPaths({ version: 1, sarif: [{ path: 'r.sarif', engine: 'detekt' }] })).not.toEqual(
       [],
     );
+    // 6M: so are the server's licence engine and the CLI's licence pass.
+    for (const engine of ['license', 'trivy-licenses']) {
+      expect(() => parseConfig({ version: 1, sarif: [{ path: 'r.sarif', engine }] })).toThrow(
+        /reserved/,
+      );
+    }
     // Android and Kotlin Multiplatform test source sets (ruling E17).
     expect(c.tests.include).toContain('**/src/androidTest/**');
     expect(c.tests.include).toContain('**/src/*Test/**');

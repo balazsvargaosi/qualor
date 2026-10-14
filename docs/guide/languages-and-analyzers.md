@@ -46,8 +46,10 @@ or plugins during a scan.
 ESLint runs **from the project's own `node_modules`** with the project's own config, because that is
 the only way plugin rules resolve. So:
 
-1. Install the dependencies before the scan (`npm ci`, `pnpm install --frozen-lockfile`,
-   `yarn install --immutable`). The scanner image has Node.js, npm and corepack.
+1. Install the dependencies before the scan (`npm ci`, `corepack pnpm install --frozen-lockfile`,
+   `corepack yarn install --immutable`). The scanner image has Node.js, npm, Yarn 1 and corepack.
+   Installed dependencies also give Qualor their licences
+   ([Dependency licences](./dependency-licenses.md)).
 2. Keep an ESLint config at the repository root: `eslint.config.js` (or `.mjs`, `.cjs`, `.ts`), or a
    legacy `.eslintrc*`. ESLint 9+ reads only flat configs. Without a config, ESLint is skipped, because
    no default config is bundled.
@@ -584,7 +586,7 @@ SonarAnalyzer.CSharp 9.32 (SonarQube-compatible rules, LGPL-3.0) to the scanner.
 
 ```yaml
 qualor:
-  image: { name: qualor/scanner-dotnet:0.7, entrypoint: [''] }
+  image: { name: qualor/scanner-dotnet:0.8, entrypoint: [''] }
   variables: { GIT_DEPTH: 0 }
   script:
     - qualor dotnet begin
@@ -692,7 +694,7 @@ merge request that did not touch the dependency.
 
 - Ignore a vulnerability by id in `.trivyignore` at the repository root.
 - The vulnerability database comes from the image and is never downloaded during a scan. It is as
-  old as the scanner release you run, so keep the scanner current (the minor tag `0.7` does that
+  old as the scanner release you run, so keep the scanner current (the minor tag `0.8` does that
   for its patch releases), or fetch a fresh database in the job:
 
 ```yaml
@@ -703,6 +705,13 @@ script:
 
 `QUALOR_TRIVY_CACHE_DIR` must be absolute and outside the checkout. Jobs that run repository code must
 not be able to write it.
+
+A second Trivy pass reads the **licences** of your dependencies, offline and without the database.
+It gives every project a dependency inventory (the **Dependencies** tab) and, with a licence policy
+(Business and Enterprise), licence issues. Which lockfiles give licences, and why you should install
+your dependencies before the scan: see [Dependency licences](./dependency-licenses.md).
+`analyzers.trivy.licenses` and `licenseTimeoutSeconds` control it
+([Configuration](./configuration.md#qualoryml)).
 
 ## Security rules (Qualor)
 
@@ -873,8 +882,12 @@ The engine ids of the built-in analyzers (`eslint`, `ruff`, `semgrep`, `stylelin
 `clang-tidy` and the others) are reserved: `engine: ruff` is a configuration error, and a SARIF
 file from a tool Qualor runs itself is reported under `ext-<tool>` (`ext-ruff`, `ext-stylelint`,
 `ext-htmlhint`, `ext-detekt`, `ext-swiftlint`, `ext-phpstan`, `ext-rubocop`, `ext-staticcheck`,
-`ext-gosec`, `ext-cppcheck`, `ext-clang-tidy`). Don't import Ruff, stylelint, HTMLHint, detekt,
-SwiftLint, PHPStan, RuboCop, staticcheck, gosec, cppcheck or clang-tidy SARIF any more: Qualor runs
+`ext-gosec`, `ext-cppcheck`, `ext-clang-tidy`). `license` and `trivy-licenses` are reserved too:
+they are the engine of the [licence policy](./dependency-licenses.md#licence-issues)'s issues and
+the scanner's licence pass, so `engine: license` and `engine: trivy-licenses` are configuration
+errors, and a SARIF tool of either name is reported as `ext-license` or `ext-trivy-licenses`.
+Don't import Ruff, stylelint, HTMLHint, detekt, SwiftLint, PHPStan, RuboCop, staticcheck, gosec,
+cppcheck or clang-tidy SARIF any more: Qualor runs
 Ruff (see [Python](#python-ruff)), stylelint and HTMLHint (see
 [CSS and SCSS](#css-and-scss-stylelint) and [HTML](#html-htmlhint)), detekt (see
 [Kotlin](#kotlin-detekt)), SwiftLint (see [Swift](#swift-swiftlint)), PHPStan (see

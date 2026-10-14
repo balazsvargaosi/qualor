@@ -75,4 +75,8 @@ export const LOCKS = {
    * "analysis failed" emails are queued one at a time, so the 6-hour dedupe holds (mail E3 N7).
    */
   analysisFailedMail: 7_310_023,
+  /**
+   * `pg_advisory_xact_lock(key)`: one writer of the `licensePolicy` settings row at a time (6M §4).
+   */
+  licensePolicy: 7_310_024,
 } as const;

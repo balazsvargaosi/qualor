@@ -6,6 +6,7 @@ import { createLlmRuntime, llmHandlers, type LlmJobDeps } from '../src/llm/job';
 import type { ProviderKind } from '../src/llm/providers';
 import { LLM_QUEUE } from '../src/llm/service';
 import {
+  DEFAULT_AUTO_FIX,
   DEFAULT_LLM_SETTINGS,
   LLM_API_KEY_AAD,
   writeLlmSettings,
@@ -56,6 +57,8 @@ export async function configureLlm(
         enabled: true,
         features: { explain: true, triage: true, fix: true },
         excludedProjectIds: [],
+        autoFix: { ...DEFAULT_AUTO_FIX },
+        autoFixDisabledProjectIds: [],
       },
     },
     ...rest,

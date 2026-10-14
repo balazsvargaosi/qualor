@@ -172,11 +172,11 @@ test('18 AI assistant settings, 19 issue with the AI panel', async ({ page }) =>
 });
 
 // E1 spec: a configured server (the seed's, which nothing answers) with one failed test message.
-test('40 email settings', async ({ page }) => {
+test('42 email settings', async ({ page }) => {
   await page.goto('/settings/email');
   await expect(page.getByRole('heading', { name: 'Email', level: 2 })).toBeVisible();
   await expect(page.getByText('On · the last message failed')).toBeVisible();
-  await shoot(page, '40-settings-email');
+  await shoot(page, '42-settings-email');
 });
 
 test('20 licence, 21 licence in its grace period with the admin banner', async ({ page }) => {
@@ -257,6 +257,18 @@ test('31 project settings, 32 code tree, 33 code file, 34 issue related, 35 webh
     page.getByRole('region', { name: PROJECT_WEBHOOK_URL }).locator('.webhook-scope'),
   ).toHaveText(`Project: ${PAYMENTS.name}`);
   await shoot(page, '35-webhooks-scope');
+});
+
+// 6M §8: Payments API's dependency inventory on the community server (no policy, no verdicts).
+test('40 project dependencies', async ({ page }) => {
+  await page.goto('/projects');
+  await page.getByRole('link', { name: PAYMENTS.name }).click();
+  await page
+    .getByRole('navigation', { name: 'Project' })
+    .getByRole('link', { name: 'Dependencies' })
+    .click();
+  await expect(page.locator('.deps-summary')).toContainText('packages have a known licence');
+  await shootThemes(page, '40-project-dependencies');
 });
 
 /**
@@ -365,5 +377,21 @@ test.describe('enterprise', () => {
     await expect(page.getByRole('region', { name: 'Organisations', exact: true })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Trend over 12 months' })).toBeVisible();
     await shootThemes(page, '39-portfolio-all');
+  });
+
+  // 6M §8 (`license-policy`): a policy that forbids strong copyleft and one more licence, after
+  // the portfolio, whose figures it must not change.
+  test('41 licence policy', async ({ page }) => {
+    await page.goto('/settings/license-policy');
+    await page.getByRole('checkbox', { name: 'Strong copyleft' }).check();
+    await page.getByRole('checkbox', { name: 'Network copyleft' }).check();
+    const forbidden = page.getByRole('combobox', { name: 'Forbidden licences' });
+    await forbidden.fill('CC-BY-SA-4.0');
+    await forbidden.press('Enter');
+    await page.getByRole('button', { name: /licences in Strong copyleft$/ }).click();
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByRole('status').first()).toContainText('The licence policy was saved.');
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await shootThemes(page, '41-settings-license-policy');
   });
 });

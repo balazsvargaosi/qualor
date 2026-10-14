@@ -173,6 +173,8 @@ export interface paths {
                     content: {
                         "application/json": {
                             version: string;
+                            /** @description A newer release found on Docker Hub; only while telemetry is on */
+                            latest?: string;
                         };
                     };
                 };
@@ -504,7 +506,7 @@ export interface paths {
                                 organizationKey: string;
                                 organizationName: string;
                                 role: ("admin" | "project_admin" | "member" | "viewer") | null;
-                                permissions: ("org.read" | "org.members.read" | "org.members.manage" | "org.projects.create" | "org.gates.manage" | "org.profiles.manage" | "org.webhooks.manage" | "org.scm.manage" | "org.audit.read" | "org.compliance.manage")[];
+                                permissions: ("org.read" | "org.members.read" | "org.members.manage" | "org.projects.create" | "org.gates.manage" | "org.profiles.manage" | "org.webhooks.manage" | "org.scm.manage" | "org.audit.read" | "org.compliance.manage" | "org.ai.manage" | "org.licenses.manage")[];
                             }[];
                             projectGrants: {
                                 /** Format: uuid */
@@ -2687,6 +2689,12 @@ export interface paths {
                                     };
                                 } | null;
                                 permissions: ("project.read" | "project.analyze" | "issue.triage" | "ai.use" | "project.settings" | "project.tokens.manage" | "project.branches.delete" | "project.issues.import" | "project.delete" | "project.compliance.create")[];
+                                autoFix: {
+                                    available: boolean;
+                                    enabled: boolean;
+                                    organizationEnabled: boolean;
+                                    excludedFromAi: boolean;
+                                };
                             }[];
                             nextCursor: string | null;
                         };
@@ -2788,6 +2796,12 @@ export interface paths {
                                 };
                             } | null;
                             permissions: ("project.read" | "project.analyze" | "issue.triage" | "ai.use" | "project.settings" | "project.tokens.manage" | "project.branches.delete" | "project.issues.import" | "project.delete" | "project.compliance.create")[];
+                            autoFix: {
+                                available: boolean;
+                                enabled: boolean;
+                                organizationEnabled: boolean;
+                                excludedFromAi: boolean;
+                            };
                         };
                     };
                 };
@@ -2909,6 +2923,12 @@ export interface paths {
                                 };
                             } | null;
                             permissions: ("project.read" | "project.analyze" | "issue.triage" | "ai.use" | "project.settings" | "project.tokens.manage" | "project.branches.delete" | "project.issues.import" | "project.delete" | "project.compliance.create")[];
+                            autoFix: {
+                                available: boolean;
+                                enabled: boolean;
+                                organizationEnabled: boolean;
+                                excludedFromAi: boolean;
+                            };
                         };
                     };
                 };
@@ -3023,6 +3043,12 @@ export interface paths {
                                 };
                             } | null;
                             permissions: ("project.read" | "project.analyze" | "issue.triage" | "ai.use" | "project.settings" | "project.tokens.manage" | "project.branches.delete" | "project.issues.import" | "project.delete" | "project.compliance.create")[];
+                            autoFix: {
+                                available: boolean;
+                                enabled: boolean;
+                                organizationEnabled: boolean;
+                                excludedFromAi: boolean;
+                            };
                         };
                     };
                 };
@@ -3217,6 +3243,12 @@ export interface paths {
                                 };
                             } | null;
                             permissions: ("project.read" | "project.analyze" | "issue.triage" | "ai.use" | "project.settings" | "project.tokens.manage" | "project.branches.delete" | "project.issues.import" | "project.delete" | "project.compliance.create")[];
+                            autoFix: {
+                                available: boolean;
+                                enabled: boolean;
+                                organizationEnabled: boolean;
+                                excludedFromAi: boolean;
+                            };
                         };
                     };
                 };
@@ -4810,6 +4842,119 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v0/projects/{id}/dependencies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The dependency inventory of a branch or merge request (the main branch by default), filtered and paged */
+        get: {
+            parameters: {
+                query?: {
+                    branch?: string;
+                    mr?: number;
+                    license?: string;
+                    group?: "network-copyleft" | "strong-copyleft" | "weak-copyleft" | "non-commercial-or-source-available";
+                    ecosystem?: string;
+                    unknown?: "true" | "false";
+                    direct?: "true" | "false";
+                    q?: string;
+                    /** @description Entries with this verdict of the organisation's licence policy; ignored (every entry matches) while the answer's `verdicts` is false */
+                    verdict?: "allowed" | "forbidden" | "unknown";
+                    page?: number;
+                    pageSize?: number;
+                };
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            rows: {
+                                ecosystem: string;
+                                path: string;
+                                line: number | null;
+                                name: string;
+                                version: string;
+                                licenses: string[];
+                                direct: boolean | null;
+                                /** @enum {string} */
+                                verdict?: "allowed" | "forbidden" | "unknown";
+                            }[];
+                            page: number;
+                            pageSize: number;
+                            total: number;
+                            summary: {
+                                total: number;
+                                known: number;
+                                unknown: number;
+                                byLicense: {
+                                    license: string;
+                                    count: number;
+                                }[];
+                            };
+                            inventory: boolean;
+                            verdicts: boolean;
+                        };
+                    };
+                };
+                /** @description Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS) */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Authenticated but not allowed (FORBIDDEN, INSUFFICIENT_SCOPE, TOKEN_NOT_ALLOWED, SESSION_REQUIRED, CSRF_FAILED, PASSWORD_CHANGE_REQUIRED) */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Not found, or not visible to the caller */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Validation failed (VALIDATION_FAILED; errors[] names each field) */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v0/metrics": {
         parameters: {
             query?: never;
@@ -5810,7 +5955,7 @@ export interface paths {
                     branchId: string;
                     status?: ("open" | "resolved" | "wont_fix" | "false_positive" | "closed") | ("open" | "resolved" | "wont_fix" | "false_positive" | "closed")[];
                     severity?: ("blocker" | "high" | "medium" | "low" | "info") | ("blocker" | "high" | "medium" | "low" | "info")[];
-                    quality?: ("security" | "reliability" | "maintainability") | ("security" | "reliability" | "maintainability")[];
+                    quality?: ("security" | "reliability" | "maintainability" | "licensing") | ("security" | "reliability" | "maintainability" | "licensing")[];
                     kind?: ("issue" | "hotspot") | ("issue" | "hotspot")[];
                     rule?: string | string[];
                     engine?: string | string[];
@@ -5850,7 +5995,7 @@ export interface paths {
                                 severity: "blocker" | "high" | "medium" | "low" | "info";
                                 severityOverridden: boolean;
                                 /** @enum {string} */
-                                quality: "security" | "reliability" | "maintainability";
+                                quality: "security" | "reliability" | "maintainability" | "licensing";
                                 /** @enum {string} */
                                 kind: "issue" | "hotspot";
                                 /** @enum {string} */
@@ -5969,7 +6114,7 @@ export interface paths {
                                 /** @enum {string} */
                                 defaultSeverity: "blocker" | "high" | "medium" | "low" | "info";
                                 /** @enum {string} */
-                                quality: "security" | "reliability" | "maintainability";
+                                quality: "security" | "reliability" | "maintainability" | "licensing";
                                 /** @enum {string} */
                                 kind: "issue" | "hotspot";
                                 tags: string[];
@@ -5979,7 +6124,7 @@ export interface paths {
                             severity: "blocker" | "high" | "medium" | "low" | "info";
                             severityOverridden: boolean;
                             /** @enum {string} */
-                            quality: "security" | "reliability" | "maintainability";
+                            quality: "security" | "reliability" | "maintainability" | "licensing";
                             /** @enum {string} */
                             kind: "issue" | "hotspot";
                             /** @enum {string} */
@@ -6104,7 +6249,7 @@ export interface paths {
                                 /** @enum {string} */
                                 defaultSeverity: "blocker" | "high" | "medium" | "low" | "info";
                                 /** @enum {string} */
-                                quality: "security" | "reliability" | "maintainability";
+                                quality: "security" | "reliability" | "maintainability" | "licensing";
                                 /** @enum {string} */
                                 kind: "issue" | "hotspot";
                                 tags: string[];
@@ -6114,7 +6259,7 @@ export interface paths {
                             severity: "blocker" | "high" | "medium" | "low" | "info";
                             severityOverridden: boolean;
                             /** @enum {string} */
-                            quality: "security" | "reliability" | "maintainability";
+                            quality: "security" | "reliability" | "maintainability" | "licensing";
                             /** @enum {string} */
                             kind: "issue" | "hotspot";
                             /** @enum {string} */
@@ -6275,7 +6420,7 @@ export interface paths {
                                 /** @enum {string} */
                                 defaultSeverity: "blocker" | "high" | "medium" | "low" | "info";
                                 /** @enum {string} */
-                                quality: "security" | "reliability" | "maintainability";
+                                quality: "security" | "reliability" | "maintainability" | "licensing";
                                 /** @enum {string} */
                                 kind: "issue" | "hotspot";
                                 tags: string[];
@@ -6285,7 +6430,7 @@ export interface paths {
                             severity: "blocker" | "high" | "medium" | "low" | "info";
                             severityOverridden: boolean;
                             /** @enum {string} */
-                            quality: "security" | "reliability" | "maintainability";
+                            quality: "security" | "reliability" | "maintainability" | "licensing";
                             /** @enum {string} */
                             kind: "issue" | "hotspot";
                             /** @enum {string} */
@@ -6759,7 +6904,7 @@ export interface paths {
                     q?: string;
                     engine?: string;
                     language?: string;
-                    quality?: "security" | "reliability" | "maintainability";
+                    quality?: "security" | "reliability" | "maintainability" | "licensing";
                     severity?: "blocker" | "high" | "medium" | "low" | "info";
                 };
                 header?: never;
@@ -6786,7 +6931,7 @@ export interface paths {
                                 /** @enum {string} */
                                 defaultSeverity: "blocker" | "high" | "medium" | "low" | "info";
                                 /** @enum {string} */
-                                quality: "security" | "reliability" | "maintainability";
+                                quality: "security" | "reliability" | "maintainability" | "licensing";
                                 /** @enum {string} */
                                 kind: "issue" | "hotspot";
                                 tags: string[];
@@ -6888,7 +7033,7 @@ export interface paths {
                             /** @enum {string} */
                             defaultSeverity: "blocker" | "high" | "medium" | "low" | "info";
                             /** @enum {string} */
-                            quality: "security" | "reliability" | "maintainability";
+                            quality: "security" | "reliability" | "maintainability" | "licensing";
                             /** @enum {string} */
                             kind: "issue" | "hotspot";
                             tags: string[];
@@ -9331,6 +9476,21 @@ export interface paths {
                                         fix: boolean;
                                     };
                                     excludedProjectIds: string[];
+                                    /**
+                                     * @default {
+                                     *       "enabled": false,
+                                     *       "minSeverity": "high",
+                                     *       "maxPerAnalysis": 10
+                                     *     }
+                                     */
+                                    autoFix: {
+                                        enabled: boolean;
+                                        /** @enum {string} */
+                                        minSeverity: "blocker" | "high" | "medium" | "low" | "info";
+                                        maxPerAnalysis: number;
+                                    };
+                                    /** @default [] */
+                                    autoFixDisabledProjectIds: string[];
                                 };
                             };
                             excludePaths: string[];
@@ -9419,6 +9579,15 @@ export interface paths {
                                     fix: boolean;
                                 };
                                 excludedProjectIds: string[];
+                                /** @description Absent keeps the stored value */
+                                autoFix?: {
+                                    enabled: boolean;
+                                    /** @enum {string} */
+                                    minSeverity: "blocker" | "high" | "medium" | "low" | "info";
+                                    maxPerAnalysis: number;
+                                };
+                                /** @description Absent keeps the stored value */
+                                autoFixDisabledProjectIds?: string[];
                             };
                         };
                         excludePaths: string[];
@@ -9472,6 +9641,21 @@ export interface paths {
                                         fix: boolean;
                                     };
                                     excludedProjectIds: string[];
+                                    /**
+                                     * @default {
+                                     *       "enabled": false,
+                                     *       "minSeverity": "high",
+                                     *       "maxPerAnalysis": 10
+                                     *     }
+                                     */
+                                    autoFix: {
+                                        enabled: boolean;
+                                        /** @enum {string} */
+                                        minSeverity: "blocker" | "high" | "medium" | "low" | "info";
+                                        maxPerAnalysis: number;
+                                    };
+                                    /** @default [] */
+                                    autoFixDisabledProjectIds: string[];
                                 };
                             };
                             excludePaths: string[];
@@ -10289,6 +10473,8 @@ export interface paths {
                             issueId: string | null;
                             /** @enum {string} */
                             feature: "explain" | "triage" | "fix";
+                            /** @description No person asked: an automatic fix suggestion (enterprise feature llm.auto-fix) */
+                            automatic: boolean;
                             /** @enum {string} */
                             status: "queued" | "running" | "succeeded" | "failed";
                             model: string;
@@ -10355,6 +10541,8 @@ export interface paths {
                             issueId: string | null;
                             /** @enum {string} */
                             feature: "explain" | "triage" | "fix";
+                            /** @description No person asked: an automatic fix suggestion (enterprise feature llm.auto-fix) */
+                            automatic: boolean;
                             /** @enum {string} */
                             status: "queued" | "running" | "succeeded" | "failed";
                             model: string;
@@ -10502,6 +10690,8 @@ export interface paths {
                             issueId: string | null;
                             /** @enum {string} */
                             feature: "explain" | "triage" | "fix";
+                            /** @description No person asked: an automatic fix suggestion (enterprise feature llm.auto-fix) */
+                            automatic: boolean;
                             /** @enum {string} */
                             status: "queued" | "running" | "succeeded" | "failed";
                             model: string;
@@ -10639,6 +10829,8 @@ export interface paths {
                             issueId: string | null;
                             /** @enum {string} */
                             feature: "explain" | "triage" | "fix";
+                            /** @description No person asked: an automatic fix suggestion (enterprise feature llm.auto-fix) */
+                            automatic: boolean;
                             /** @enum {string} */
                             status: "queued" | "running" | "succeeded" | "failed";
                             model: string;
@@ -10787,6 +10979,8 @@ export interface paths {
                                 issueId: string | null;
                                 /** @enum {string} */
                                 feature: "explain" | "triage" | "fix";
+                                /** @description No person asked: an automatic fix suggestion (enterprise feature llm.auto-fix) */
+                                automatic: boolean;
                                 /** @enum {string} */
                                 status: "queued" | "running" | "succeeded" | "failed";
                                 model: string;
@@ -10845,6 +11039,8 @@ export interface paths {
                                 issueId: string | null;
                                 /** @enum {string} */
                                 feature: "explain" | "triage" | "fix";
+                                /** @description No person asked: an automatic fix suggestion (enterprise feature llm.auto-fix) */
+                                automatic: boolean;
                                 /** @enum {string} */
                                 status: "queued" | "running" | "succeeded" | "failed";
                                 model: string;
@@ -10903,6 +11099,8 @@ export interface paths {
                                 issueId: string | null;
                                 /** @enum {string} */
                                 feature: "explain" | "triage" | "fix";
+                                /** @description No person asked: an automatic fix suggestion (enterprise feature llm.auto-fix) */
+                                automatic: boolean;
                                 /** @enum {string} */
                                 status: "queued" | "running" | "succeeded" | "failed";
                                 model: string;
@@ -11107,6 +11305,454 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v0/organizations/{id}/ai/auto-fix": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The organisation's automatic fix suggestion settings (org.ai.manage); `available` is false without the enterprise feature llm.auto-fix */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            enabled: boolean;
+                            /** @enum {string} */
+                            minSeverity: "blocker" | "high" | "medium" | "low" | "info";
+                            maxPerAnalysis: number;
+                            available: boolean;
+                        };
+                    };
+                };
+                /** @description Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS) */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Authenticated but not allowed (FORBIDDEN, INSUFFICIENT_SCOPE, TOKEN_NOT_ALLOWED, SESSION_REQUIRED, CSRF_FAILED, PASSWORD_CHANGE_REQUIRED) */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Not found, or not visible to the caller */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Validation failed (VALIDATION_FAILED; errors[] names each field) */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        /** Set the organisation's automatic fix suggestions (org.ai.manage): posted to merge requests for new findings at or above minSeverity, at most maxPerAnalysis per analysis */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        enabled: boolean;
+                        /** @enum {string} */
+                        minSeverity: "blocker" | "high" | "medium" | "low" | "info";
+                        maxPerAnalysis: number;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            enabled: boolean;
+                            /** @enum {string} */
+                            minSeverity: "blocker" | "high" | "medium" | "low" | "info";
+                            maxPerAnalysis: number;
+                            available: boolean;
+                        };
+                    };
+                };
+                /** @description Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS) */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description FEATURE_NOT_LICENSED (switching it on, from off, needs the enterprise feature llm.auto-fix), FORBIDDEN or INSUFFICIENT_SCOPE */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Not found, or not visible to the caller */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description AI_DISABLED (switching it on, from off, needs the AI assistant configured and the organisation enabled with fix suggestions); AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed while no audit event is stored; an administrator must restore it (a retry does not help) */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Validation failed (VALIDATION_FAILED; errors[] names each field) */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v0/projects/{id}/ai/auto-fix": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Opt the project out of its organisation's automatic fix suggestions (enabled: false), or back in (project.settings) */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        enabled: boolean;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            available: boolean;
+                            enabled: boolean;
+                        };
+                    };
+                };
+                /** @description Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS) */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description FEATURE_NOT_LICENSED (the enterprise feature llm.auto-fix is not active), FORBIDDEN or INSUFFICIENT_SCOPE */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Not found, or not visible to the caller */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description AUTO_FIX_OPT_OUT_LIMIT_REACHED (the organisation has 1 000 projects opted out); AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed while no audit event is stored; an administrator must restore it (a retry does not help) */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Validation failed (VALIDATION_FAILED; errors[] names each field) */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v0/organizations/{id}/license-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The organisation's licence policy (org.read), the licence groups and the SPDX ids it may name; `available` is false without the enterprise feature license-policy */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            available: boolean;
+                            policy: {
+                                /** @enum {string} */
+                                mode: "denylist" | "allowlist";
+                                forbiddenGroups: ("network-copyleft" | "strong-copyleft" | "weak-copyleft" | "non-commercial-or-source-available")[];
+                                forbidden: string[];
+                                allowed: string[];
+                                warnUnknown: boolean;
+                            } | null;
+                            groups: {
+                                /** @enum {string} */
+                                id: "network-copyleft" | "strong-copyleft" | "weak-copyleft" | "non-commercial-or-source-available";
+                                label: string;
+                                description: string;
+                                members: string[];
+                            }[];
+                            spdxIds: {
+                                licenses: string[];
+                                exceptions: string[];
+                            };
+                        };
+                    };
+                };
+                /** @description Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS) */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Authenticated but not allowed (FORBIDDEN, INSUFFICIENT_SCOPE, TOKEN_NOT_ALLOWED, SESSION_REQUIRED, CSRF_FAILED, PASSWORD_CHANGE_REQUIRED) */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Not found, or not visible to the caller */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Validation failed (VALIDATION_FAILED; errors[] names each field) */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        /** Set the organisation's licence policy, or remove it with `policy: null` (org.licenses.manage); the ids are stored in their canonical SPDX spelling, each list sorted */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        policy: {
+                            /** @enum {string} */
+                            mode: "denylist" | "allowlist";
+                            forbiddenGroups: ("network-copyleft" | "strong-copyleft" | "weak-copyleft" | "non-commercial-or-source-available")[];
+                            forbidden: string[];
+                            allowed: string[];
+                            warnUnknown: boolean;
+                        } | null;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            available: boolean;
+                            policy: {
+                                /** @enum {string} */
+                                mode: "denylist" | "allowlist";
+                                forbiddenGroups: ("network-copyleft" | "strong-copyleft" | "weak-copyleft" | "non-commercial-or-source-available")[];
+                                forbidden: string[];
+                                allowed: string[];
+                                warnUnknown: boolean;
+                            } | null;
+                        };
+                    };
+                };
+                /** @description INVALID_LICENSE_ID: an entry of `forbidden` or `allowed` is not an SPDX licence id or "id WITH exception" term; `details.invalid` lists them */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS) */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description FEATURE_NOT_LICENSED (the enterprise feature license-policy is not active), FORBIDDEN or INSUFFICIENT_SCOPE */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Not found, or not visible to the caller */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description LICENSE_POLICIES_UNREADABLE: the stored licence policies (instance setting `licensePolicy`) are not an object with an `organizations` object; nothing is changed until an operator fixes or deletes the row; AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed while no audit event is stored; an administrator must restore it (a retry does not help) */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Validation failed (VALIDATION_FAILED; errors[] names each field) */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -11122,6 +11768,10 @@ export interface components {
             detail?: string;
             /** @description LICENSE_INVALID: why the key was rejected (malformed, unknown-key, bad-signature, bad-payload, revoked, not-yet-valid). VALIDATION_FAILED of POST /ee/sso/connections/{id}/saml/metadata: what failed (a fetch.<reason> code of the connection Test, or config_invalid, metadata.no_url, metadata.not_saml, metadata.incomplete, metadata.sso_url). MAIL_SEND_FAILED of POST /system/mail/test: why the test message was not sent (connection, auth, rejected, timeout, config). Map the code, not the text */
             reason?: string;
+            /** @description INVALID_LICENSE_ID: `invalid` lists the licence policy entries that are not SPDX licence ids or "id WITH exception" terms, as sent */
+            details?: {
+                invalid: string[];
+            };
             errors?: {
                 /** @description <body|query|params|headers>.<dotted path> */
                 path: string;

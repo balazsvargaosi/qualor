@@ -41,6 +41,20 @@ describe('label', () => {
     expect(label('engine', 'toString')).toBe('toString');
   });
 
+  it('names the licensing quality, its metrics and the licence groups (6M)', () => {
+    expect(label('quality', 'licensing')).toBe('Licensing');
+    expect(label('metric', 'licensing_issues')).toBe('Licensing issues');
+    expect(label('metric', 'new_licensing_issues')).toBe('Licensing issues on new code');
+    expect(label('metric', 'forbidden_licenses')).toBe('Forbidden licences');
+    expect(label('metric', 'new_forbidden_licenses')).toBe('Forbidden licences on new code');
+    expect(label('metric', 'unknown_licenses_ratio')).toBe('Unknown licences');
+    expect(label('licenseGroup', 'strong-copyleft')).toBe('Strong copyleft');
+    expect(label('licenseGroup', 'non-commercial-or-source-available')).toBe(
+      'Non-commercial or source-available',
+    );
+    expect(label('verdict', 'forbidden')).toBe('Forbidden');
+  });
+
   it('falls back to the raw value for an unknown value, and to empty for none', () => {
     expect(label('severity', 'catastrophic')).toBe('catastrophic');
     expect(label('metric', 'new_mystery')).toBe('mystery on new code');

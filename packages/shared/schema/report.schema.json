@@ -836,6 +836,54 @@
           "message"
         ]
       }
+    },
+    "dependencies": {
+      "maxItems": 50000,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "ecosystem": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$"
+          },
+          "path": {
+            "type": "string",
+            "maxLength": 1024
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "version": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "licenses": {
+            "maxItems": 16,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 256
+            }
+          },
+          "direct": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ecosystem",
+          "path",
+          "name",
+          "version",
+          "licenses"
+        ]
+      }
     }
   },
   "required": [

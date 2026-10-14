@@ -1,5 +1,5 @@
 import table from '../../rules/rubocop-cops.json' with { type: 'json' };
-import type { Quality, Severity } from '../report/taxonomy';
+import type { ReportQuality, Severity } from '../report/taxonomy';
 import {
   departmentOf,
   qualorDefaultCops,
@@ -89,7 +89,7 @@ const RUBOCOP_HIGH = new Set([
 const LOW_DEPARTMENTS = new Set(['Style', 'Layout', 'Naming', 'Gemspec', 'Bundler', 'Migration']);
 
 /** report-format.md §7.1: quality by department; a department RuboCop 1.91 lacks is maintainability. */
-export function rubocopQuality(cop: string): Quality {
+export function rubocopQuality(cop: string): ReportQuality {
   const d = departmentOf(cop);
   if (d === 'Security') return 'security';
   if (d === 'Lint') return 'reliability';

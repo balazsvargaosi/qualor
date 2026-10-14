@@ -272,3 +272,76 @@ describe('compliance report events (4E-1 §2.4)', () => {
     expect(AUDIT_CATALOGUE['compliance.report.deleted'].target).toBe('compliance_report');
   });
 });
+
+describe('the support bundle event (4E-3b §4)', () => {
+  it('names no target and records the source and the size', () => {
+    const d = AUDIT_CATALOGUE['support.bundle_downloaded'];
+    expect(d.target).toBeNull();
+    expect(d.details.safeParse({ source: 'ui', bytes: 1234 }).success).toBe(true);
+    expect(d.details.safeParse({ source: 'command', bytes: 1234 }).success).toBe(false);
+    expect(d.details.safeParse({ source: 'ui', bytes: -1 }).success).toBe(false);
+    expect(d.details.safeParse({ source: 'ui' }).success).toBe(false);
+  });
+});
+
+describe('automatic fix suggestion events (4E-3a §2)', () => {
+  it('records the organisation settings on the organisation', () => {
+    const d = AUDIT_CATALOGUE['organization.auto_fix_changed'];
+    expect(d.target).toBe('organization');
+    expect(
+      d.details.safeParse({ enabled: true, minSeverity: 'high', maxPerAnalysis: 10 }).success,
+    ).toBe(true);
+    expect(
+      d.details.safeParse({ enabled: true, minSeverity: 'critical', maxPerAnalysis: 10 }).success,
+    ).toBe(false);
+    expect(
+      d.details.safeParse({ enabled: true, minSeverity: 'high', maxPerAnalysis: 26 }).success,
+    ).toBe(false);
+    expect(d.details.safeParse({ enabled: true }).success).toBe(false);
+  });
+
+  it('records the project opt-out on the project', () => {
+    const d = AUDIT_CATALOGUE['project.auto_fix_changed'];
+    expect(d.target).toBe('project');
+    expect(d.details.safeParse({ enabled: false }).success).toBe(true);
+    expect(d.details.safeParse({ enabled: 'no' }).success).toBe(false);
+  });
+});
+
+describe('licence policy events (6M §5)', () => {
+  const policy = {
+    mode: 'denylist',
+    forbiddenGroups: ['strong-copyleft'],
+    forbidden: ['SSPL-1.0'],
+    allowed: ['LGPL-2.1-only'],
+    warnUnknown: false,
+  };
+
+  it('records the old and the new policy on the organisation', () => {
+    const d = AUDIT_CATALOGUE['organization.license_policy_changed'];
+    expect(d.target).toBe('organization');
+    expect(d.details.safeParse({ before: null, after: policy }).success).toBe(true);
+    expect(d.details.safeParse({ before: policy, after: null }).success).toBe(true);
+    expect(
+      d.details.safeParse({
+        before: policy,
+        after: { ...policy, mode: 'allowlist', forbidden: Array(500).fill('MIT') },
+      }).success,
+    ).toBe(true);
+    expect(d.details.safeParse({ before: null }).success).toBe(false);
+    expect(d.details.safeParse({ before: null, after: { ...policy, mode: 'open' } }).success).toBe(
+      false,
+    );
+    expect(
+      d.details.safeParse({ before: null, after: { ...policy, forbiddenGroups: ['permissive'] } })
+        .success,
+    ).toBe(false);
+    expect(
+      d.details.safeParse({ before: null, after: { ...policy, allowed: Array(501).fill('MIT') } })
+        .success,
+    ).toBe(false);
+    expect(d.details.safeParse({ before: null, after: { ...policy, extra: 1 } }).success).toBe(
+      false,
+    );
+  });
+});

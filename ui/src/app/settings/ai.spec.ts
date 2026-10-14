@@ -51,6 +51,8 @@ const CONFIGURED = {
       enabled: true,
       features: { explain: true, triage: true, fix: false },
       excludedProjectIds: [],
+      autoFix: { enabled: false, minSeverity: 'high', maxPerAnalysis: 10 },
+      autoFixDisabledProjectIds: [],
     },
   },
 };
@@ -73,8 +75,11 @@ function orgAi(overrides: { enabled?: boolean; usage?: object; budgets?: object 
   };
 }
 
-function setup(settings: object = EMPTY): FakeServer {
+function setup(settings: object = EMPTY, features: string[] = ['llm.auto-fix']): FakeServer {
   const server = new FakeServer();
+  server.on('GET', '/api/v0/system/info', {
+    body: { version: '0.8.0', edition: 'enterprise', features, extensions: [] },
+  });
   server.on('GET', '/api/v0/system/llm', { body: settings });
   server.on('GET', `/api/v0/organizations/${ORG_ID}/ai`, { body: orgAi({ enabled: false }) });
   server.on('GET', '/api/v0/projects', { body: page(PROJECTS) });
@@ -390,6 +395,47 @@ describe('AiSettingsPage (llm.md §3, §18)', () => {
     expect(body.organizations[ORG_ID]?.excludedProjectIds.sort()).toEqual(['p2', 'p9']);
   });
 
+  it('never sends the automatic fix suggestion fields, so a save keeps what other admins set', async () => {
+    const server = setup({
+      ...CONFIGURED,
+      organizations: {
+        [ORG_ID]: {
+          ...CONFIGURED.organizations[ORG_ID],
+          autoFix: { enabled: true, minSeverity: 'medium', maxPerAnalysis: 5 },
+          autoFixDisabledProjectIds: ['p1'],
+        },
+      },
+    });
+    server.on('PUT', '/api/v0/system/llm', { body: CONFIGURED });
+    const { fixture, root } = await render();
+    root.querySelector<HTMLInputElement>(`#ai-org-${ORG_ID}-fix`)!.click();
+    submit(root);
+    await settle(fixture);
+    const body = server.requestsTo('PUT', '/api/v0/system/llm')[0]?.body as {
+      organizations: Record<string, object>;
+    };
+    expect(body.organizations[ORG_ID]).toEqual({
+      enabled: true,
+      features: { explain: true, triage: true, fix: true },
+      excludedProjectIds: [],
+    });
+  });
+
+  it('enables an organisation absent from the settings without the automatic fix fields', async () => {
+    const server = setup({ ...CONFIGURED, organizations: {} });
+    server.on('PUT', '/api/v0/system/llm', { body: CONFIGURED });
+    const { fixture, root } = await render();
+    root.querySelector<HTMLInputElement>(`#ai-org-${ORG_ID}-enabled`)!.click();
+    submit(root);
+    await settle(fixture);
+    const body = server.requestsTo('PUT', '/api/v0/system/llm')[0]?.body as {
+      organizations: Record<string, object>;
+    };
+    expect(body.organizations[ORG_ID]).not.toHaveProperty('autoFix');
+    expect(body.organizations[ORG_ID]).not.toHaveProperty('autoFixDisabledProjectIds');
+    expect(body.organizations[ORG_ID]).toMatchObject({ enabled: true });
+  });
+
   it('refuses a key typed while the kind is None, and says so', async () => {
     const server = setup();
     const { fixture, root } = await render();
@@ -581,5 +627,208 @@ describe('AiSettingsPage: final review', () => {
     });
     const { root } = await render();
     expect(root.querySelector('#ai-today')?.textContent).not.toContain('midnight');
+  });
+});
+
+describe('AiSettingsPage: automatic fix suggestions (4E-3a §4)', () => {
+  const OTHER_ID = '0190a6c2-0000-7000-8000-000000000002';
+  const STORED = { enabled: false, minSeverity: 'high', maxPerAnalysis: 10 };
+  const TWO_ORGS = {
+    ...CONFIGURED,
+    organizations: {
+      [ORG_ID]: { ...CONFIGURED.organizations[ORG_ID], autoFix: STORED },
+      [OTHER_ID]: {
+        enabled: true,
+        features: { explain: false, triage: false, fix: true },
+        excludedProjectIds: [],
+        autoFix: { enabled: true, minSeverity: 'low', maxPerAnalysis: 3 },
+        autoFixDisabledProjectIds: ['p3'],
+      },
+    },
+  };
+  function withTwoOrgs(server: FakeServer): void {
+    server.on('GET', '/api/v0/organizations', {
+      body: page([
+        { id: ORG_ID, key: 'default', name: 'Default', createdAt: '', updatedAt: '' },
+        { id: OTHER_ID, key: 'other', name: 'Other', createdAt: '', updatedAt: '' },
+      ]),
+    });
+  }
+  const put = (server: FakeServer) =>
+    server.requestsTo('PUT', '/api/v0/system/llm')[0]?.body as
+      { organizations: Record<string, Record<string, unknown>> } | undefined;
+
+  it("shows each organisation's stored block", async () => {
+    const server = setup(TWO_ORGS);
+    withTwoOrgs(server);
+    const { root } = await render();
+    const other = (field: string) =>
+      root.querySelector<HTMLInputElement & HTMLSelectElement>(`#ai-org-${OTHER_ID}-${field}`)!;
+    expect(other('auto-fix').checked).toBe(true);
+    expect(other('auto-fix-severity').value).toBe('low');
+    expect(other('auto-fix-max').value).toBe('3');
+    const own = root.querySelector<HTMLInputElement>(`#ai-org-${ORG_ID}-auto-fix`)!;
+    expect(own.checked).toBe(false);
+    expect(root.querySelector(`[data-key="${ORG_ID}"]`)?.textContent).toContain(
+      "Fix suggestions are posted to the organisation's merge requests without a click",
+    );
+  });
+
+  it("sends the block of the organisation edited here, and leaves an unedited one's out", async () => {
+    const server = setup(TWO_ORGS);
+    withTwoOrgs(server);
+    server.on('PUT', '/api/v0/system/llm', { body: TWO_ORGS });
+    const { fixture, root } = await render();
+    root.querySelector<HTMLInputElement>(`#ai-org-${ORG_ID}-auto-fix`)!.click();
+    type(root, `#ai-org-${ORG_ID}-auto-fix-severity`, 'medium');
+    type(root, `#ai-org-${ORG_ID}-auto-fix-max`, '5');
+    submit(root);
+    await settle(fixture);
+    const body = put(server)!;
+    expect(body.organizations[ORG_ID]).toEqual({
+      enabled: true,
+      features: { explain: true, triage: true, fix: false },
+      excludedProjectIds: [],
+      autoFix: { enabled: true, minSeverity: 'medium', maxPerAnalysis: 5 },
+    });
+    // The other organisation was not edited: its stored block and opt-outs stay the server's.
+    expect(body.organizations[OTHER_ID]).toEqual({
+      enabled: true,
+      features: { explain: false, triage: false, fix: true },
+      excludedProjectIds: [],
+    });
+  });
+
+  it('forgets what was edited once saved: the next save sends no block', async () => {
+    const server = setup(TWO_ORGS);
+    withTwoOrgs(server);
+    server.on('PUT', '/api/v0/system/llm', { body: TWO_ORGS });
+    const { fixture, root } = await render();
+    type(root, `#ai-org-${ORG_ID}-auto-fix-max`, '7');
+    submit(root);
+    await settle(fixture);
+    submit(root);
+    await settle(fixture);
+    const [first, second] = server
+      .requestsTo('PUT', '/api/v0/system/llm')
+      .map((r) => r.body as { organizations: Record<string, object> });
+    expect(first?.organizations[ORG_ID]).toHaveProperty('autoFix');
+    expect(second?.organizations[ORG_ID]).not.toHaveProperty('autoFix');
+  });
+
+  it('sends no block for an edit taken back before the save', async () => {
+    const server = setup(TWO_ORGS);
+    withTwoOrgs(server);
+    server.on('PUT', '/api/v0/system/llm', { body: TWO_ORGS });
+    const { fixture, root } = await render();
+    type(root, `#ai-org-${OTHER_ID}-auto-fix-severity`, 'high');
+    type(root, `#ai-org-${OTHER_ID}-auto-fix-severity`, 'low');
+    root.querySelector<HTMLInputElement>(`#ai-org-${OTHER_ID}-auto-fix`)!.click();
+    root.querySelector<HTMLInputElement>(`#ai-org-${OTHER_ID}-auto-fix`)!.click();
+    submit(root);
+    await settle(fixture);
+    expect(put(server)?.organizations[OTHER_ID]).not.toHaveProperty('autoFix');
+  });
+
+  it('counts the maximum as a number: 010 for a stored 10 is no edit', async () => {
+    const server = setup(TWO_ORGS);
+    withTwoOrgs(server);
+    server.on('PUT', '/api/v0/system/llm', { body: TWO_ORGS });
+    const { fixture, root } = await render();
+    type(root, `#ai-org-${ORG_ID}-auto-fix-max`, '010');
+    submit(root);
+    await settle(fixture);
+    expect(put(server)?.organizations[ORG_ID]).not.toHaveProperty('autoFix');
+  });
+
+  it("leaves a refused opt-out list alone: it is not the organisation's block", async () => {
+    const server = setup(TWO_ORGS);
+    withTwoOrgs(server);
+    server.on('PUT', '/api/v0/system/llm', {
+      status: 422,
+      body: problem(422, 'VALIDATION_FAILED', [
+        {
+          path: `body.organizations.${ORG_ID}.autoFixDisabledProjectIds.0`,
+          message: 'Not a project of this organisation',
+        },
+      ]),
+    });
+    const { fixture, root } = await render();
+    submit(root);
+    await settle(fixture);
+    expect(root.querySelector(`#ai-org-${ORG_ID}-auto-fix-error`)).toBeNull();
+    expect(root.querySelector('.alert-error')).not.toBeNull();
+  });
+
+  it('sends an organisation absent from the settings once its block is edited', async () => {
+    const server = setup({ ...CONFIGURED, organizations: {} });
+    server.on('PUT', '/api/v0/system/llm', { body: CONFIGURED });
+    const { fixture, root } = await render();
+    root.querySelector<HTMLInputElement>(`#ai-org-${ORG_ID}-auto-fix`)!.click();
+    submit(root);
+    await settle(fixture);
+    expect(put(server)?.organizations[ORG_ID]).toEqual({
+      enabled: false,
+      features: { explain: false, triage: false, fix: false },
+      excludedProjectIds: [],
+      autoFix: { enabled: true, minSeverity: 'high', maxPerAnalysis: 10 },
+    });
+  });
+
+  it('refuses a maximum outside 1 to 25 on its field and sends nothing', async () => {
+    const server = setup(TWO_ORGS);
+    withTwoOrgs(server);
+    const { fixture, root } = await render();
+    type(root, `#ai-org-${OTHER_ID}-auto-fix-max`, '26');
+    submit(root);
+    await settle(fixture);
+    expect(server.requestsTo('PUT', '/api/v0/system/llm')).toHaveLength(0);
+    const field = root.querySelector(`#ai-org-${OTHER_ID}-auto-fix-max`)!;
+    expect(field.getAttribute('aria-invalid')).toBe('true');
+    expect(root.querySelector(`#ai-org-${OTHER_ID}-auto-fix-error`)?.textContent).toContain(
+      'Use a whole number from 1 to 25.',
+    );
+    expect(document.activeElement).toBe(field);
+    // Typing again clears it.
+    type(root, `#ai-org-${OTHER_ID}-auto-fix-max`, '25');
+    await settle(fixture);
+    expect(root.querySelector(`#ai-org-${OTHER_ID}-auto-fix-error`)).toBeNull();
+  });
+
+  it("maps a refused switch-on (422 …autoFix.enabled) to the organisation's block", async () => {
+    const server = setup(TWO_ORGS);
+    withTwoOrgs(server);
+    server.on('PUT', '/api/v0/system/llm', {
+      status: 422,
+      body: problem(422, 'VALIDATION_FAILED', [
+        { path: `body.organizations.${ORG_ID}.autoFix.enabled`, message: 'Needs the feature' },
+      ]),
+    });
+    const { fixture, root } = await render();
+    root.querySelector<HTMLInputElement>(`#ai-org-${ORG_ID}-auto-fix`)!.click();
+    submit(root);
+    await settle(fixture);
+    expect(root.querySelector(`#ai-org-${ORG_ID}-auto-fix-error`)?.textContent).toContain(
+      'Automatic fix suggestions need the Enterprise plan.',
+    );
+    expect(root.querySelector('.alert-error')).toBeNull();
+  });
+
+  it('shows the Enterprise note in place of the controls without llm.auto-fix, and sends no block', async () => {
+    const server = setup(TWO_ORGS, []);
+    withTwoOrgs(server);
+    server.on('PUT', '/api/v0/system/llm', { body: TWO_ORGS });
+    const { fixture, root } = await render();
+    expect(root.querySelector(`#ai-org-${ORG_ID}-auto-fix`)).toBeNull();
+    expect(root.querySelector(`[data-key="${ORG_ID}"]`)?.textContent).toContain(
+      'Automatic fix suggestions need the Enterprise plan.',
+    );
+    submit(root);
+    await settle(fixture);
+    const body = put(server)!;
+    for (const id of [ORG_ID, OTHER_ID]) {
+      expect(body.organizations[id]).not.toHaveProperty('autoFix');
+      expect(body.organizations[id]).not.toHaveProperty('autoFixDisabledProjectIds');
+    }
   });
 });
