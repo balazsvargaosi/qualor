@@ -1,0 +1,21 @@
+{
+  "description": "C# two-project ASP.NET Core solution for the Roslyn taint engine (plan 6B-C#): a controller (Shop.Web, multi-targeting net8.0 and net10.0) hands a query parameter to a service in a class library (Shop.Core) that builds an SqlCommand from it; a second action builds an SqlCommand in the controller itself",
+  "engines": ["qualor"],
+  "findingsExhaustive": false,
+  "findings": [
+    { "ruleKey": "qualor:csharp/sql-injection", "path": "src/Shop.Core/CustomerLookup.cs", "startLine": 15, "severity": "high", "quality": "security", "kind": "issue" },
+    { "ruleKey": "qualor:csharp/sql-injection", "path": "src/Shop.Web/Controllers/CustomersController.cs", "startLine": 37, "severity": "high", "quality": "security", "kind": "issue" }
+  ],
+  "files": {
+    "src/Shop.Core/CustomerLookup.cs": { "language": "csharp", "kind": "main" },
+    "src/Shop.Web/Controllers/CustomersController.cs": { "language": "csharp", "kind": "main" },
+    "src/Shop.Web/Program.cs": { "language": "csharp", "kind": "main" }
+  },
+  "duplications": [],
+  "coverage": null,
+  "notes": {
+    "src/Shop.Core/CustomerLookup.cs:15": "the sink of the cross-project flow: CustomersController.Count(city) -> CustomerLookup.CountByCity(city) -> text -> new SqlCommand(text, connection). Only the Roslyn taint engine (qualor dotnet end, pack with dotnetEngine) finds it: the OpenGrep rule follows taint inside one file. Without the engine the harness reports this finding as missing",
+    "src/Shop.Web/Controllers/CustomersController.cs:37": "the in-file flow (Exists(name)), found by the engine and, when it falls back (QUALOR_TAINT_MEMORY_LIMIT=1, see cli/src/dotnet/real.test.ts), by the OpenGrep rule. Shop.Web builds for net8.0 and net10.0: one finding, not two",
+    "src/Shop.Core/CustomerLookup.cs:25": "CountByCountry binds a parameter: no finding"
+  }
+}

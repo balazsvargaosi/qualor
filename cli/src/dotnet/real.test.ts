@@ -4,6 +4,7 @@ import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { expect, it } from 'vitest';
 import { describeWithDotnet } from '../../test/analyzers';
+import { DEFAULT_QUALOR_RULES_DIR, loadQualorPack } from '../analyzers/qualor';
 import { commitAll, initRepo } from '../../test/git';
 import { captureIO } from '../../test/io';
 import { testParsers } from '../../test/parsers';
@@ -16,6 +17,17 @@ import { hookPath, installHook } from './hook';
 
 const tmp = useTempDirs();
 const FIXTURE = path.resolve(import.meta.dirname, '../../../fixtures/csharp-basic');
+const ENGINE_FIXTURE = path.resolve(
+  import.meta.dirname,
+  '../../../fixtures/qualor-security-dotnet',
+);
+
+/** The installed rules pack when it carries the Roslyn taint engine (a published pack before the engine release does not). */
+const enginePack = (() => {
+  const pack = loadQualorPack(DEFAULT_QUALOR_RULES_DIR);
+  const declared = 'manifest' in pack ? pack.manifest.dotnetEngine : undefined;
+  return declared !== undefined && !('invalid' in declared);
+})();
 
 describeWithDotnet()('qualor dotnet with a real build (fixtures/csharp-basic)', () => {
   const dotnet = (cwd: string, env: NodeJS.ProcessEnv) =>
@@ -250,3 +262,99 @@ public class Big
     },
   );
 });
+
+interface EngineReport {
+  findings: {
+    engineId: string;
+    ruleId: string;
+    location: { path: string; startLine: number };
+    secondaryLocations?: { path: string; startLine: number; message?: string }[];
+  }[];
+  warnings: { code: string; message: string }[];
+}
+
+const CORE = 'src/Shop.Core/CustomerLookup.cs';
+const WEB = 'src/Shop.Web/Controllers/CustomersController.cs';
+
+// Needs a pack that carries the engine (dotnetEngine in its manifest): skipped, with the reason in
+// the test's name, while the installed pack is one published before the engine's release.
+describeWithDotnet()(
+  'qualor dotnet with the Roslyn taint engine (fixtures/qualor-security-dotnet)',
+  () => {
+    const scan = async (extraEnv: NodeJS.ProcessEnv) => {
+      const root = tmp();
+      cpSync(ENGINE_FIXTURE, root, { recursive: true });
+      initRepo(root);
+      commitAll(root, 'fixture');
+      const env = {
+        ...process.env,
+        XDG_DATA_HOME: tmp(),
+        DOTNET_CLI_TELEMETRY_OPTOUT: '1',
+        DOTNET_NOLOGO: '1',
+        ...extraEnv,
+      };
+      expect(runDotnetBegin({}, captureIO({ cwd: root, env }).io, silentLogger)).toBe(EXIT.OK);
+      const started = Date.now();
+      const build = spawnSync('dotnet', ['build', '--no-incremental', '-nologo', 'Shop.slnx'], {
+        cwd: root,
+        env,
+        encoding: 'utf8',
+        timeout: 600_000,
+      });
+      const buildMs = Date.now() - started;
+      expect(build.status, build.stdout + build.stderr).toBe(0);
+      const out = path.join(tmp(), 'r.json.gz');
+      await runDotnetEnd(
+        { sarif: [], coverage: [], wait: true, dryRun: true, output: out, projectKey: 'p' },
+        captureIO({ cwd: root, env }).io,
+        silentLogger,
+        { parsers: await testParsers(), baselineClient: null },
+      );
+      const report = JSON.parse(gunzipSync(readFileSync(out)).toString('utf8')) as EngineReport;
+      const sql = report.findings.filter(
+        (f) => f.engineId === 'qualor' && f.ruleId === 'csharp/sql-injection',
+      );
+      return { report, sql, buildMs };
+    };
+    const at = (f: { location: { path: string; startLine: number } }) =>
+      `${f.location.path}:${f.location.startLine}`;
+
+    it.runIf(enginePack)(
+      'finds the cross-project flow once, with the controller in its code flow, and builds quickly',
+      { timeout: 600_000 },
+      async () => {
+        const { report, sql, buildMs } = await scan({});
+        // Shop.Web targets net8.0 and net10.0: each finding is reported once, not per framework.
+        expect(sql.map(at).sort()).toEqual([`${CORE}:15`, `${WEB}:37`].sort());
+        const cross = sql.find((f) => f.location.path === CORE)!;
+        expect(cross.secondaryLocations?.some((l) => l.path === WEB && l.startLine === 20)).toBe(
+          true,
+        );
+        expect(cross.secondaryLocations?.some((l) => l.path === WEB && l.startLine === 22)).toBe(
+          true,
+        );
+        expect(report.warnings.map((w) => w.code)).not.toContain('TAINT_ENGINE_FALLBACK');
+        expect(buildMs).toBeLessThan(120_000); // AnalysisMode=Recommended: seconds, not the minutes of All
+      },
+    );
+
+    it.runIf(enginePack)(
+      'falls back to the OpenGrep rules with a warning when the engine goes over its budget',
+      { timeout: 600_000 },
+      async () => {
+        // QUALOR_TAINT_TIME_LIMIT has a minimum of 1 s, which this small solution meets; a memory
+        // limit of 1 MB is over at the engine's first check.
+        const { report, sql } = await scan({ QUALOR_TAINT_MEMORY_LIMIT: '1' });
+        expect(report.warnings.map((w) => w.code)).toContain('TAINT_ENGINE_FALLBACK');
+        // OpenGrep follows taint inside one file only: the controller's own flow, with no code flow.
+        expect(sql.map(at)).toEqual([`${WEB}:37`]);
+        expect(sql[0]!.secondaryLocations ?? []).toEqual([]);
+      },
+    );
+
+    it.skipIf(enginePack)(
+      `skipped: the installed rules pack (${DEFAULT_QUALOR_RULES_DIR}) carries no dotnetEngine`,
+      () => {},
+    );
+  },
+);
