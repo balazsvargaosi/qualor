@@ -38,7 +38,26 @@ test.describe('as people other than the instance admin', () => {
     const role = add.getByLabel('Role', { exact: true });
     await expect(role.locator('option')).toHaveText(['Project admin', 'Maintainer', 'Viewer']);
     await expect(role).toHaveValue('viewer');
-    await page.getByLabel('User name').fill(VICTOR.username);
+    // The name field suggests people as one types: victor is in no organization, yet a grant
+    // may go to him. Two characters are the least an organization admin's search takes.
+    const name = add.getByRole('combobox', { name: 'User name' });
+    await name.pressSequentially('v');
+    await expect(add.getByText('Type at least 2 characters to see suggestions.')).toBeVisible();
+    await name.pressSequentially('ic');
+    const suggestions = add.getByRole('listbox', { name: 'Suggestions' });
+    await expect(suggestions.getByRole('option')).toHaveText(['victor — Victor Hale']);
+    await expect(name).toHaveAttribute('aria-expanded', 'true');
+    await expectAccessible(page);
+    await name.press('ArrowDown');
+    await expect(name).toHaveAttribute(
+      'aria-activedescendant',
+      (await suggestions.getByRole('option').first().getAttribute('id')) ?? '',
+    );
+    await name.press('Enter');
+    await expect(name).toHaveValue(VICTOR.username);
+    await expect(name).toHaveAttribute('aria-expanded', 'false');
+    // Enter picked the suggestion; it did not submit the form.
+    await expect(add).toBeVisible();
     await page.getByRole('button', { name: 'Give the role' }).click();
     await expect(page.getByRole('status')).toHaveText(
       'victor now has the role Viewer on this project.',

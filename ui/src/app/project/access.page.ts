@@ -20,16 +20,15 @@ import { SessionStore } from '../auth/session';
 import { DateTimePipe } from '../shared/date-time.pipe';
 import { closeModal, openAfterRender } from '../shared/dialog';
 import { keepFocus, rowAt, rowByKey } from '../shared/focus';
-import { clearField, inputValue } from '../shared/forms';
+import { inputValue } from '../shared/forms';
 import { Icon } from '../shared/icon';
 import { KeysetList } from '../shared/keyset';
 import { onPhone } from '../shared/media';
+import { UserPicker, type UserSource, type UserSuggestion } from '../shared/user-picker';
 import { CurrentProject } from './current-project';
 
 /** The roles a project grant may carry (rbac-audit.md §3.2: `admin` is organisation-wide only). */
 const GRANT_ROLES: readonly GrantRole[] = ['project_admin', 'member', 'viewer'];
-/** The longest name `GET /users/lookup` accepts (usernames are 1 to 64 characters). */
-const USERNAME_MAX_LENGTH = 64;
 
 /** A change the confirmation dialog asks about. */
 type Pending =
@@ -39,8 +38,11 @@ type Pending =
 /**
  * Project → Access (rbac-audit.md §16, §17): the project's role grants, which add a role on this
  * project only to whatever the person's organisation role gives. In every edition since
- * 5B (§1.3), through the core API. Org admins add a grant by exact user name
- * (`GET /users/lookup`, then `PUT /projects/{id}/members/{userId}`), change and remove one.
+ * 5B (§1.3), through the core API. Org admins add a grant, change and remove one. The name field
+ * suggests the active users without a grant on the project (`GET /users/search`: a grant may go to
+ * anyone active, a member of the organisation or not, §16); a picked one is granted at once, a
+ * name typed without a pick is looked up first (`GET /users/lookup`), then
+ * `PUT /projects/{id}/members/{userId}`.
  * Nothing is asked while the caller cannot read the organisation's members (`org.members.read`).
  *
  * Step 5 of the redesign (spec §7.5): the grants in a panel with since when each role was given,
@@ -50,7 +52,7 @@ type Pending =
  */
 @Component({
   selector: 'q-access-page',
-  imports: [DateTimePipe, Icon],
+  imports: [DateTimePipe, Icon, UserPicker],
   templateUrl: './access.page.html',
   styleUrl: './access.page.css',
 })
@@ -89,6 +91,8 @@ export class AccessPage {
   });
   protected readonly roles = GRANT_ROLES;
   protected readonly username = signal('');
+  /** The suggestion picked in the dialog; null for a name typed without a pick. */
+  protected readonly picked = signal<UserSuggestion | null>(null);
   protected readonly role = signal<GrantRole>('viewer');
   /** The role chosen in each row's select, until it is sent. */
   protected readonly chosen = signal<Readonly<Record<string, GrantRole>>>({});
@@ -96,10 +100,19 @@ export class AccessPage {
   protected readonly error = signal<string | null>(null);
   protected readonly announcement = signal<string | null>(null);
   protected readonly busy = signal(false);
-  protected readonly usernameMax = USERNAME_MAX_LENGTH;
+  /** `GET /users/search` takes 2 characters, or 1 from an instance admin. */
+  protected readonly searchMin = computed(() => (this.session.user()?.isInstanceAdmin ? 1 : 2));
+  /** The suggestions: the active users, less those with a grant on this project already. */
+  protected readonly searchUsers: UserSource = async (q) => {
+    const found = await ok(
+      this.api.client.GET('/api/v0/users/search', { params: { query: { q } } }),
+    );
+    const granted = new Set(this.list.items().map((g) => g.userId));
+    return found.users.filter((u) => !granted.has(u.id));
+  };
   private readonly heading = viewChild.required<ElementRef<HTMLElement>>('heading');
   private readonly table = viewChild<ElementRef<HTMLElement>>('table');
-  private readonly usernameField = viewChild<ElementRef<HTMLInputElement>>('usernameField');
+  private readonly picker = viewChild(UserPicker);
   private readonly addDialog = viewChild<ElementRef<HTMLDialogElement>>('addDialog');
   private readonly confirmDialog = viewChild<ElementRef<HTMLDialogElement>>('confirmDialog');
   /** A refused add, shown in the dialog that is still open. */
@@ -150,8 +163,8 @@ export class AccessPage {
     if (onPhone(this.document)) this.changeRole(grant);
   }
 
-  protected setUsername(event: Event): void {
-    this.username.set(inputValue(event));
+  protected setUsername(value: string): void {
+    this.username.set(value);
     this.usernameError.set(null);
   }
 
@@ -301,6 +314,9 @@ export class AccessPage {
   }
 
   protected openAdd(): void {
+    this.picker()?.clear();
+    this.username.set('');
+    this.picked.set(null);
     this.addError.set(null);
     this.usernameError.set(null);
     // Each grant starts from the least role (the last one chosen may have been Project admin).
@@ -313,13 +329,18 @@ export class AccessPage {
     if (dialog) closeModal(dialog);
   }
 
-  /** Adds a grant by exact name: `GET /users/lookup`, then `PUT` with the chosen role. */
+  /**
+   * Grants the role to the user picked, or to the one of the name typed (`GET /users/lookup`
+   * first), with `PUT`.
+   */
   protected async add(event: Event): Promise<void> {
     event.preventDefault();
     const project = this.project();
     const username = this.username().trim();
+    const picked = this.picked();
     const role = this.role();
     if (this.busy() || !project) return;
+    this.picker()?.close();
     // A refusal of an earlier try is not this one's: the dialog reopens only on its own.
     this.usernameError.set(null);
     if (!username) {
@@ -328,11 +349,14 @@ export class AccessPage {
     }
     await this.run(
       async (current) => {
-        let user;
+        let user: UserSuggestion;
         try {
-          user = await ok(
-            this.api.client.GET('/api/v0/users/lookup', { params: { query: { username } } }),
-          );
+          user =
+            picked?.username === username
+              ? picked
+              : await ok(
+                  this.api.client.GET('/api/v0/users/lookup', { params: { query: { username } } }),
+                );
         } catch (err) {
           if (err instanceof ApiError && (err.status === 404 || err.status === 422)) {
             if (current()) {
@@ -359,7 +383,9 @@ export class AccessPage {
           }),
         );
         if (!current()) return;
-        clearField(this.usernameField(), this.username);
+        this.picker()?.clear();
+        this.username.set('');
+        this.picked.set(null);
         this.closeAdd();
         await this.list.refresh();
         this.announcement.set(this.grantedText(saved));
@@ -378,7 +404,7 @@ export class AccessPage {
 
   private fieldError(message: string): void {
     this.usernameError.set(message);
-    afterNextRender(() => this.usernameField()?.nativeElement.focus(), {
+    afterNextRender(() => this.picker()?.focus(), {
       injector: this.injector,
     });
   }

@@ -6,7 +6,7 @@ import type {
   PortfolioOverview,
   PortfolioProjectRow,
 } from '../app/api/ee';
-import type { Me } from '../app/api/types';
+import type { ItemOf, Me, ResponseBody } from '../app/api/types';
 import type {
   DependencyAnswer,
   DependencyRow,
@@ -726,5 +726,126 @@ export class FakeLicensePolicy {
       this.policies[id] = stored;
       return { body: { available: true, policy: stored } };
     });
+  }
+}
+
+const USERS_SEARCH = '/api/v0/users/search';
+const ORG_MEMBERS = /^\/api\/v0\/organizations\/([^/]+)\/members$/;
+type UserSuggestions = ResponseBody<'/api/v0/users/search', 'get'>;
+type OrgMember = ItemOf<'/api/v0/organizations/{id}/members'>;
+
+/** A user of the fake directory: inactive users are never suggested. */
+export interface DirectoryUser {
+  id: string;
+  username: string;
+  displayName: string | null;
+  active?: boolean;
+}
+
+/** The fake directory's membership of a user in an organisation. */
+export interface DirectoryMembership {
+  organizationId: string;
+  userId: string;
+  role: OrgMember['role'];
+}
+
+/**
+ * The server's user-picker match: the username starts with `q`, or a word of the display name
+ * does (words split at spaces and hyphens), ignoring case.
+ */
+export function userMatches(user: { username: string; displayName: string | null }, q: string) {
+  const start = q.toLowerCase();
+  return (
+    user.username.toLowerCase().startsWith(start) ||
+    (user.displayName ?? '')
+      .toLowerCase()
+      .split(/[ -]+/)
+      .some((word) => word.startsWith(start))
+  );
+}
+
+/**
+ * The user pickers' routes over an in-memory directory: `GET /users/search` (q of 2 to 64
+ * characters, or from 1 for an instance admin, else 422; limit 1 to 10; active users only, by
+ * username; `excludeOrganization` leaves its members out; never an email; 429 RATE_LIMITED while
+ * `rateLimited`) and `GET /organizations/{id}/members` (its members in user id order, in pages of
+ * `limit` after `cursor`; with `q`, the active ones that match). A test answers a route itself with
+ * `server.on` after this, which wins.
+ */
+export class FakeUserDirectory {
+  users: DirectoryUser[];
+  memberships: DirectoryMembership[];
+  /** The caller is an instance admin: a one-character q is accepted. */
+  instanceAdmin: boolean;
+  rateLimited = false;
+
+  constructor(
+    server: FakeServer,
+    options: {
+      users?: DirectoryUser[];
+      memberships?: DirectoryMembership[];
+      instanceAdmin?: boolean;
+    } = {},
+  ) {
+    this.users = options.users ?? [];
+    this.memberships = options.memberships ?? [];
+    this.instanceAdmin = options.instanceAdmin ?? false;
+    server.on('GET', USERS_SEARCH, (r) => this.search(r.query));
+    server.on('GET', ORG_MEMBERS, (r) =>
+      this.members(ORG_MEMBERS.exec(r.path)?.[1] ?? '', r.query),
+    );
+  }
+
+  private search(query: URLSearchParams): FakeReply {
+    if (this.rateLimited) {
+      return { status: 429, body: problem(429, 'RATE_LIMITED'), headers: { 'retry-after': '60' } };
+    }
+    const q = query.get('q') ?? '';
+    const limit = Number(query.get('limit') ?? 10);
+    const length = [...q].length;
+    if (length < (this.instanceAdmin ? 1 : 2) || length > 64 || !(limit >= 1 && limit <= 10)) {
+      return {
+        status: 422,
+        body: problem(422, 'VALIDATION_FAILED', [{ path: 'query.q', message: 'Too short' }]),
+      };
+    }
+    const excluded = query.get('excludeOrganization');
+    const members = new Set(
+      this.memberships.filter((m) => m.organizationId === excluded).map((m) => m.userId),
+    );
+    const body: UserSuggestions = {
+      users: this.users
+        .filter((u) => u.active !== false && !members.has(u.id) && userMatches(u, q))
+        .sort((a, b) => (a.username < b.username ? -1 : a.username > b.username ? 1 : 0))
+        .slice(0, limit)
+        .map(({ id, username, displayName }) => ({ id, username, displayName })),
+    };
+    return { body };
+  }
+
+  private members(organizationId: string, query: URLSearchParams): FakeReply {
+    const q = query.get('q');
+    const limit = Number(query.get('limit') ?? 50);
+    const cursor = query.get('cursor');
+    const rows: OrgMember[] = this.memberships
+      .filter((m) => m.organizationId === organizationId)
+      .flatMap((m) => {
+        const user = this.users.find((u) => u.id === m.userId);
+        if (!user || (q !== null && (user.active === false || !userMatches(user, q)))) return [];
+        return [
+          {
+            userId: user.id,
+            username: user.username,
+            displayName: user.displayName,
+            role: m.role,
+            createdAt: '2026-09-01T00:00:00.000Z',
+            managedBy: null,
+          },
+        ];
+      })
+      .sort((a, b) => (a.userId < b.userId ? -1 : 1))
+      .filter((m) => cursor === null || m.userId > cursor);
+    const items = rows.slice(0, limit);
+    return { body: page(items, rows.length > limit ? (items.at(-1)?.userId ?? null) : null) };
   }
 }

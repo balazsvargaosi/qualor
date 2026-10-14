@@ -189,18 +189,16 @@
           }
           <div class="field">
             <label for="grant-username" i18n="@@access.username">User name</label>
-            <input
-              #usernameField
+            <q-user-picker
               autofocus
-              id="grant-username"
-              required
-              autocomplete="off"
-              spellcheck="false"
-              [attr.maxlength]="usernameMax"
-              [attr.aria-invalid]="usernameError() ? true : null"
-              [attr.aria-describedby]="usernameError() ? 'grant-username-error' : null"
-              [value]="username()"
-              (input)="setUsername($event)"
+              inputId="grant-username"
+              [source]="searchUsers"
+              [minLength]="searchMin()"
+              [invalid]="usernameError() !== null"
+              [describedBy]="usernameError() ? 'grant-username-error' : null"
+              [text]="username()"
+              (textChange)="setUsername($event)"
+              [(selected)]="picked"
             />
             @if (usernameError(); as message) {
               <span id="grant-username-error" class="field-error" role="alert">{{ message }}</span>

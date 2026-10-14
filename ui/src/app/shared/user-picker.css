@@ -1,0 +1,55 @@
+/* The user picker: the field, its suggestions under it as the user menu's panel, a live line. */
+:host {
+  display: block;
+  min-width: 0;
+}
+.user-picker {
+  display: grid;
+  gap: var(--space-1);
+}
+.user-picker-field {
+  position: relative;
+}
+.user-picker input {
+  width: 100%;
+}
+.user-picker-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  z-index: 10;
+  left: 0;
+  right: 0;
+  max-height: 15rem;
+  margin: 0;
+  padding: 6px;
+  overflow-y: auto;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-lift);
+}
+.user-picker-list[hidden] {
+  display: none;
+}
+.user-picker-list li {
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 13.5px;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.user-picker-list li:hover {
+  background: var(--surface-2);
+}
+.user-picker-list li.active {
+  background: var(--accent-soft);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.user-picker-name {
+  font-weight: 600;
+}
+.user-picker-status:empty {
+  display: none;
+}

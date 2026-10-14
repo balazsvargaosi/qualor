@@ -197,15 +197,15 @@
         </div>
         <div class="field">
           <label for="audit-user" i18n="@@audit.user">User name</label>
-          <input
-            id="audit-user"
-            autocomplete="off"
-            spellcheck="false"
-            maxlength="64"
-            [value]="username()"
-            [attr.aria-invalid]="fieldError().user ? true : null"
-            [attr.aria-describedby]="fieldError().user ? 'audit-user-error' : null"
-            (input)="set('username', $event)"
+          <q-user-picker
+            inputId="audit-user"
+            [source]="searchUsers"
+            [minLength]="searchMin()"
+            [invalid]="!!fieldError().user"
+            [describedBy]="fieldError().user ? 'audit-user-error' : null"
+            [text]="username()"
+            (textChange)="setUsername($event)"
+            [(selected)]="picked"
           />
           @if (fieldError().user; as message) {
             <span id="audit-user-error" class="field-error" role="alert">{{ message }}</span>

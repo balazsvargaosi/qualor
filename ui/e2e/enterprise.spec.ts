@@ -188,8 +188,38 @@ test.describe('as people other than the instance admin', () => {
     await expect(page.getByRole('button', { name: 'Verify chain' })).toHaveCount(0);
     // The organisation filter (instance admins only); the settings navigation has an Organization group.
     await expect(page.getByRole('combobox', { name: 'Organization' })).toHaveCount(0);
+    // The user filter suggests people to an organization admin too, from two characters.
+    await page.getByRole('combobox', { name: 'User name' }).fill('vi');
+    await expect(page.getByRole('option', { name: 'victor — Victor Hale' })).toBeVisible();
     await expectAccessible(page);
   });
+});
+
+test('the instance admin filters the audit log by a user picked from the suggestions', async ({
+  page,
+}) => {
+  await page.goto('/settings/ee/audit-log');
+  await expect(page.locator('tbody tr[data-key]').first()).toBeVisible();
+  const user = page.getByRole('combobox', { name: 'User name' });
+  // A word of the display name finds the person too: "Berg" is Olga Berg.
+  await user.fill('Berg');
+  const olga = page.getByRole('option', { name: 'olga — Olga Berg' });
+  await expect(olga).toBeVisible();
+  await olga.click();
+  await expect(user).toHaveValue(OLGA.username);
+  const filtered = page.waitForResponse(
+    (r) =>
+      new URL(r.url()).pathname.endsWith('/api/v0/ee/audit/events') &&
+      new URL(r.url()).searchParams.has('actorUserId'),
+  );
+  await page.getByRole('button', { name: 'Show events' }).click();
+  await filtered;
+  // olga's sign-ins and her grant to victor, and no one else's events.
+  const actors = page.locator('tbody tr[data-key] td:nth-of-type(2)');
+  await expect(actors.first()).toBeVisible();
+  await expect
+    .poll(async () => (await actors.allTextContents()).every((a) => a.includes(OLGA.username)))
+    .toBe(true);
 });
 
 test('the instance admin filters the audit log, exports a day and verifies the chain', async ({

@@ -2,6 +2,7 @@ import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import {
   FakeServer,
+  FakeUserDirectory,
   me,
   ORG_ADMIN_PERMISSIONS,
   ORG_ID,
@@ -13,6 +14,7 @@ import {
 import type { AuditEvent } from '../api/ee';
 import { SessionStore } from '../auth/session';
 import { OrgContext } from '../org/org-context';
+import { SEARCH_DELAY_MS } from '../shared/user-picker';
 import { AuditLogPage } from './audit-log.page';
 import { SettingsPage } from './settings.page';
 
@@ -189,6 +191,39 @@ describe('AuditLogPage (rbac-audit.md §13, §17)', () => {
     expect(
       server.requestsTo('GET', '/api/v0/users/lookup').map((r) => r.query.get('username')),
     ).toEqual(['bob']);
+  });
+
+  it('suggests users as one types, and filters by the one picked without a lookup', async () => {
+    const server = setup({ instanceAdmin: true });
+    new FakeUserDirectory(server, {
+      instanceAdmin: true,
+      users: [
+        { id: BOB, username: 'bob', displayName: 'Bob Stone' },
+        { id: '0190a6c2-0000-7000-8000-0000000000bb', username: 'bart', displayName: null },
+      ],
+    });
+    const { fixture, root } = await render();
+    const field = root.querySelector<HTMLInputElement>('#audit-user')!;
+    expect(field.getAttribute('role')).toBe('combobox');
+    // An instance admin is suggested people from the first character.
+    type(root, '#audit-user', 'b');
+    await new Promise((resolve) => setTimeout(resolve, SEARCH_DELAY_MS + 20));
+    await settle(fixture);
+    const asked = server.requestsTo('GET', '/api/v0/users/search');
+    expect(asked.map((r) => [r.query.get('q'), r.query.get('excludeOrganization')])).toEqual([
+      ['b', null],
+    ]);
+    const offered = [...root.querySelectorAll<HTMLElement>('#audit-user-listbox [role="option"]')];
+    expect(offered.map((o) => o.textContent?.replace(/\s+/g, ' ').trim())).toEqual([
+      'bart',
+      'bob — Bob Stone',
+    ]);
+    offered[1]!.click();
+    await settle(fixture);
+    expect(field.value).toBe('bob');
+    await apply(fixture, root);
+    expect(server.requestsTo('GET', EVENTS).at(-1)?.query.get('actorUserId')).toBe(BOB);
+    expect(server.requestsTo('GET', '/api/v0/users/lookup')).toEqual([]);
   });
 
   it('refuses an action filter that is not a name or a prefix ending in .*, on the field', async () => {

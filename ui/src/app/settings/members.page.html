@@ -8,7 +8,7 @@
     } @else {
       <p class="muted" i18n="@@members.intro">
         Members see the organization's projects; their role decides what they may change. Add people
-        by their exact user name.
+        by name: pick a suggestion, or type the whole user name.
       </p>
     }
   </div>
@@ -157,18 +157,16 @@
           }
           <div class="field">
             <label for="member-username" i18n="@@members.username">User name</label>
-            <input
-              #usernameField
+            <q-user-picker
               autofocus
-              id="member-username"
-              required
-              autocomplete="off"
-              spellcheck="false"
-              [attr.maxlength]="usernameMax"
-              [attr.aria-invalid]="usernameError() ? true : null"
-              [attr.aria-describedby]="usernameError() ? 'member-username-error' : null"
-              [value]="username()"
-              (input)="setUsername($event)"
+              inputId="member-username"
+              [source]="searchUsers"
+              [minLength]="searchMin()"
+              [invalid]="usernameError() !== null"
+              [describedBy]="usernameError() ? 'member-username-error' : null"
+              [text]="username()"
+              (textChange)="setUsername($event)"
+              [(selected)]="picked"
             />
             @if (usernameError(); as message) {
               <span id="member-username-error" class="field-error" role="alert">{{ message }}</span>

@@ -574,7 +574,17 @@ test('an organization admin adds a member by name, changes the role and removes 
     'Maintainer',
     'Viewer',
   ]);
-  await name.fill('dora');
+  // The field suggests the active users who are not members yet: vera is one already.
+  await name.fill('ve');
+  await expect(
+    add.getByText('No user matches. You can still type the whole user name.'),
+  ).toBeVisible();
+  await name.fill('Dor');
+  const suggestion = add.getByRole('option', { name: 'dora' });
+  await expect(suggestion).toBeVisible();
+  await suggestion.click();
+  await expect(name).toHaveValue('dora');
+  await expect(name).toBeFocused();
   await role.selectOption({ label: 'Maintainer' });
   await add.getByRole('button', { name: 'Add member' }).click();
   await expect(add).toBeHidden();

@@ -20,14 +20,13 @@ import { SessionStore } from '../auth/session';
 import { OrgContext } from '../org/org-context';
 import { closeModal, openAfterRender } from '../shared/dialog';
 import { keepFocus, rowAt, rowByKey } from '../shared/focus';
-import { clearField, inputValue } from '../shared/forms';
+import { inputValue } from '../shared/forms';
 import { Icon } from '../shared/icon';
 import { KeysetList } from '../shared/keyset';
 import { onPhone } from '../shared/media';
+import { UserPicker, type UserSource, type UserSuggestion } from '../shared/user-picker';
 
 export type Member = ItemOf<'/api/v0/organizations/{id}/members'>;
-/** The longest name `GET /users/lookup` accepts (usernames are 1 to 64 characters). */
-const USERNAME_MAX_LENGTH = 64;
 /** The role a new member starts with in the "Add member" dialog. */
 const DEFAULT_ROLE: Role = 'member';
 
@@ -39,7 +38,9 @@ type Pending =
 /**
  * Settings → Members (rbac-audit.md §17): the current organisation's members and their
  * roles, for those whose role lists `org.members.read` (org admins, instance admins). Org admins
- * change a role, remove a member, and add a user by exact name (`GET /users/lookup`, then `PUT`).
+ * change a role, remove a member, and add a user: the name field suggests the active users who are
+ * not members yet (`GET /users/search?excludeOrganization=`); a picked one is added at once, a
+ * name typed without a pick is looked up first (`GET /users/lookup`), then `PUT`.
  * Every edition offers the four roles, with the same names (rbac-audit.md §1.3, §6.1).
  * A membership that SSO group sync manages names its connection (sso-scim.md §9.3, §18); changing
  * its role takes it over from the sync, which the confirmation says.
@@ -50,7 +51,7 @@ type Pending =
  */
 @Component({
   selector: 'q-members-page',
-  imports: [Icon],
+  imports: [Icon, UserPicker],
   templateUrl: './members.page.html',
 })
 export class MembersPage {
@@ -78,6 +79,8 @@ export class MembersPage {
   /** The roles a change may choose: the four, in every edition. */
   protected readonly roles: readonly Role[] = ROLES;
   protected readonly username = signal('');
+  /** The suggestion picked in "Add member"; null for a name typed without a pick. */
+  protected readonly picked = signal<UserSuggestion | null>(null);
   protected readonly role = signal<Role>(DEFAULT_ROLE);
   /** The role chosen in each row's select, until it is sent. */
   protected readonly chosen = signal<Readonly<Record<string, Role>>>({});
@@ -100,10 +103,23 @@ export class MembersPage {
       ? $localize`:@@members.removeTitleNamed:Remove ${name}:name:`
       : $localize`:@@members.changeTitleNamed:Change the role of ${name}:name:`;
   });
-  protected readonly usernameMax = USERNAME_MAX_LENGTH;
+  /** `GET /users/search` takes 2 characters, or 1 from an instance admin. */
+  protected readonly searchMin = computed(() => (this.session.user()?.isInstanceAdmin ? 1 : 2));
+  /** The suggestions of "Add member": the active users who are not members of it yet. */
+  protected readonly searchUsers: UserSource = async (q) => {
+    const organizationId = this.org.currentId();
+    const found = await ok(
+      this.api.client.GET('/api/v0/users/search', {
+        params: {
+          query: { q, ...(organizationId ? { excludeOrganization: organizationId } : {}) },
+        },
+      }),
+    );
+    return found.users;
+  };
   private readonly heading = viewChild.required<ElementRef<HTMLElement>>('heading');
   private readonly table = viewChild<ElementRef<HTMLElement>>('table');
-  private readonly usernameField = viewChild<ElementRef<HTMLInputElement>>('usernameField');
+  private readonly picker = viewChild(UserPicker);
   private readonly addDialog = viewChild<ElementRef<HTMLDialogElement>>('addDialog');
   private readonly confirmDialog = viewChild<ElementRef<HTMLDialogElement>>('confirmDialog');
   /** Counts organisation changes: an answer for an earlier organisation is dropped. */
@@ -138,8 +154,8 @@ export class MembersPage {
     if (onPhone(this.document)) this.changeRole(member);
   }
 
-  protected setUsername(event: Event): void {
-    this.username.set(inputValue(event));
+  protected setUsername(value: string): void {
+    this.username.set(value);
     this.usernameError.set(null);
   }
 
@@ -153,7 +169,9 @@ export class MembersPage {
 
   /** Opens "Add member" on an empty name and the default role, never the last choice. */
   protected openAdd(): void {
+    this.picker()?.clear();
     this.username.set('');
+    this.picked.set(null);
     this.role.set(DEFAULT_ROLE);
     this.usernameError.set(null);
     this.addError.set(null);
@@ -320,13 +338,18 @@ export class MembersPage {
     return refusal;
   }
 
-  /** Adds a user by exact name: `GET /users/lookup`, then `PUT` with the chosen role. */
+  /**
+   * Adds the user picked, or the one of the name typed (`GET /users/lookup` first), then `PUT`
+   * with the chosen role.
+   */
   protected async add(event: Event): Promise<void> {
     event.preventDefault();
     const organizationId = this.org.currentId();
     const username = this.username().trim();
+    const picked = this.picked();
     const role = this.role();
     if (this.busy() || !organizationId) return;
+    this.picker()?.close();
     this.addError.set(null);
     // A refusal of an earlier try is not this one's: the dialog reopens only on its own.
     this.usernameError.set(null);
@@ -337,11 +360,14 @@ export class MembersPage {
     }
     await this.run(
       async (current) => {
-        let user;
+        let user: UserSuggestion;
         try {
-          user = await ok(
-            this.api.client.GET('/api/v0/users/lookup', { params: { query: { username } } }),
-          );
+          user =
+            picked?.username === username
+              ? picked
+              : await ok(
+                  this.api.client.GET('/api/v0/users/lookup', { params: { query: { username } } }),
+                );
         } catch (err) {
           if (err instanceof ApiError && (err.status === 404 || err.status === 422)) {
             if (!current()) return;
@@ -369,7 +395,9 @@ export class MembersPage {
           }),
         );
         if (!current()) return;
-        clearField(this.usernameField(), this.username);
+        this.picker()?.clear();
+        this.username.set('');
+        this.picked.set(null);
         this.closeAdd();
         await this.list.refresh();
         this.announcement.set(
@@ -396,7 +424,7 @@ export class MembersPage {
   }
 
   private focusUsername(): void {
-    afterNextRender(() => this.usernameField()?.nativeElement.focus(), {
+    afterNextRender(() => this.picker()?.focus(), {
       injector: this.injector,
     });
   }

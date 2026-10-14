@@ -2,6 +2,7 @@ import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import {
   FakeServer,
+  FakeUserDirectory,
   me,
   MEMBER_PROJECT_PERMISSIONS,
   ORG_ADMIN_PERMISSIONS,
@@ -13,12 +14,14 @@ import {
 } from '../../testing/fake-server';
 import type { ProjectGrant } from '../api/types';
 import { SessionStore } from '../auth/session';
+import { SEARCH_DELAY_MS } from '../shared/user-picker';
 import { AccessPage } from './access.page';
 import { ProjectPage } from './project.page';
 
 const PROJECT = '0190a6c2-0000-7000-8000-0000000000f1';
 const BOB = '0190a6c2-0000-7000-8000-00000000000b';
 const CAROL = '0190a6c2-0000-7000-8000-00000000000c';
+const BEA = '0190a6c2-0000-7000-8000-0000000000be';
 const MEMBERS = `/api/v0/projects/${PROJECT}/members`;
 
 function grant(userId: string, username: string, role: ProjectGrant['role']): ProjectGrant {
@@ -195,6 +198,53 @@ describe('AccessPage (rbac-audit.md §16, §17)', () => {
       'carol now has the role Maintainer on this project.',
     );
     expect(root.querySelector<HTMLInputElement>('#grant-username')?.value).toBe('');
+  });
+
+  it('suggests the active users without a grant here, members or not, and grants the one picked', async () => {
+    const server = setup();
+    // A grant may go to anyone active: carol is in no organization (rbac-audit.md §16).
+    new FakeUserDirectory(server, {
+      users: [
+        { id: BEA, username: 'bea', displayName: 'Bea Boyd' },
+        { id: BOB, username: 'bob', displayName: null },
+        { id: CAROL, username: 'carol', displayName: 'Carol Bond' },
+      ],
+      memberships: [{ organizationId: ORG_ID, userId: BEA, role: 'viewer' }],
+    });
+    server.on('PUT', `${MEMBERS}/${CAROL}`, { body: grant(CAROL, 'carol', 'viewer') });
+    const { fixture, root } = await render();
+    const add = await openAdd(root, fixture);
+    expect(add.querySelector('#grant-username')?.getAttribute('role')).toBe('combobox');
+    type(root, '#grant-username', 'b');
+    await new Promise((resolve) => setTimeout(resolve, SEARCH_DELAY_MS + 20));
+    await settle(fixture);
+    // One character is too few for an organization admin: a hint, no request.
+    expect(server.requestsTo('GET', '/api/v0/users/search')).toEqual([]);
+    expect(add.textContent).toContain('Type at least 2 characters to see suggestions.');
+    type(root, '#grant-username', 'Bo');
+    await new Promise((resolve) => setTimeout(resolve, SEARCH_DELAY_MS + 20));
+    await settle(fixture);
+    const asked = server.requestsTo('GET', '/api/v0/users/search');
+    expect(asked.map((r) => [r.query.get('q'), r.query.get('excludeOrganization')])).toEqual([
+      ['Bo', null],
+    ]);
+    // bob already has a role here: not offered.
+    const offered = [...add.querySelectorAll<HTMLElement>('[role="option"]')];
+    expect(offered.map((o) => o.textContent?.replace(/\s+/g, ' ').trim())).toEqual([
+      'bea — Bea Boyd',
+      'carol — Carol Bond',
+    ]);
+    offered[1]!.click();
+    await settle(fixture);
+    add.querySelector('form')!.dispatchEvent(new Event('submit'));
+    await settle(fixture);
+    expect(server.requestsTo('GET', '/api/v0/users/lookup')).toEqual([]);
+    expect(server.requestsTo('PUT', `${MEMBERS}/${CAROL}`).map((r) => r.body)).toEqual([
+      { role: 'viewer' },
+    ]);
+    expect(root.querySelector('[role="status"]')?.textContent).toContain(
+      'carol now has the role Viewer on this project.',
+    );
   });
 
   it('offers Viewer first for a new grant, and refuses an unknown name on the field', async () => {

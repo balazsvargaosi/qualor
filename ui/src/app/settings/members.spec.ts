@@ -2,6 +2,7 @@ import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import {
   FakeServer,
+  FakeUserDirectory,
   me,
   ORG_ADMIN_PERMISSIONS,
   ORG_ID,
@@ -11,6 +12,7 @@ import {
   settle,
 } from '../../testing/fake-server';
 import { SessionStore } from '../auth/session';
+import { SEARCH_DELAY_MS } from '../shared/user-picker';
 import { type Member, MembersPage } from './members.page';
 import { SettingsPage } from './settings.page';
 
@@ -425,6 +427,57 @@ describe('MembersPage (rbac-audit.md §17)', () => {
     await openAdd(root, fixture);
     expect(root.querySelector<HTMLInputElement>('#member-username')?.value).toBe('');
     expect(root.querySelector<HTMLSelectElement>('#member-role')?.value).toBe('member');
+  });
+
+  it('suggests people who are not members yet, and adds the one picked without a lookup', async () => {
+    const server = setup();
+    new FakeUserDirectory(server, {
+      users: [
+        { id: ALICE, username: 'alice', displayName: 'Alice' },
+        { id: CAROL, username: 'carol', displayName: 'Carol Jones' },
+        { id: DAN, username: 'dan', displayName: 'Dan Carter' },
+      ],
+      memberships: [{ organizationId: ORG_ID, userId: ALICE, role: 'admin' }],
+    });
+    server.on('PUT', `/api/v0/organizations/${ORG_ID}/members/${DAN}`, {
+      body: member(DAN, 'dan', 'member'),
+    });
+    const { fixture, root } = await render();
+    const add = await openAdd(root, fixture);
+    const field = add.querySelector<HTMLInputElement>('#member-username')!;
+    expect(field.getAttribute('role')).toBe('combobox');
+    type(root, '#member-username', 'ca');
+    await new Promise((resolve) => setTimeout(resolve, SEARCH_DELAY_MS + 20));
+    await settle(fixture);
+    const asked = server.requestsTo('GET', '/api/v0/users/search');
+    expect(asked.map((r) => [r.query.get('q'), r.query.get('excludeOrganization')])).toEqual([
+      ['ca', ORG_ID],
+    ]);
+    const offered = [...add.querySelectorAll<HTMLElement>('[role="option"]')];
+    expect(offered.map((o) => o.textContent?.replace(/\s+/g, ' ').trim())).toEqual([
+      'carol — Carol Jones',
+      'dan — Dan Carter',
+    ]);
+    offered[1]!.click();
+    await settle(fixture);
+    expect(field.value).toBe('dan');
+    add.querySelector('form')!.dispatchEvent(new Event('submit'));
+    await settle(fixture);
+    expect(server.requestsTo('GET', '/api/v0/users/lookup')).toEqual([]);
+    expect(
+      server.requestsTo('PUT', `/api/v0/organizations/${ORG_ID}/members/${DAN}`).map((r) => r.body),
+    ).toEqual([{ role: 'member' }]);
+    expect(root.querySelector('[role="status"]')?.textContent).toContain(
+      'dan added as Maintainer.',
+    );
+  });
+
+  it('tells how to add people: by picking a suggestion, or by the whole user name', async () => {
+    setup();
+    const { root } = await render();
+    const intro = root.querySelector('.settings-head p')?.textContent ?? '';
+    expect(intro).not.toContain('exact user name');
+    expect(intro).toContain('Add people by name: pick a suggestion, or type the whole user name.');
   });
 
   it('says so in the dialog when no active user has that name, on the field', async () => {

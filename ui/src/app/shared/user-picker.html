@@ -1,0 +1,76 @@
+<div class="user-picker">
+  <div class="user-picker-field">
+    <input
+      #field
+      type="text"
+      role="combobox"
+      aria-autocomplete="list"
+      autocomplete="off"
+      autocapitalize="none"
+      spellcheck="false"
+      [id]="inputId()"
+      [attr.maxlength]="maxLength"
+      [attr.autofocus]="autofocus() ? '' : null"
+      [attr.aria-expanded]="open()"
+      [attr.aria-controls]="listboxId()"
+      [attr.aria-activedescendant]="activeId()"
+      [attr.aria-invalid]="invalid() ? true : null"
+      [attr.aria-describedby]="describedBy()"
+      [value]="text()"
+      (input)="onInput($event)"
+      (keydown)="onKeydown($event)"
+      (blur)="onBlur()"
+    />
+    <ul
+      class="user-picker-list"
+      role="listbox"
+      [id]="listboxId()"
+      aria-label="Suggestions"
+      i18n-aria-label="@@userPicker.list"
+      [hidden]="!open()"
+    >
+      @for (user of suggestions(); track user.id; let i = $index) {
+        <li
+          role="option"
+          [id]="optionId(i)"
+          [class.active]="i === active()"
+          [attr.aria-selected]="i === active()"
+          (mousedown)="keepFocus($event)"
+          (click)="pick(user)"
+        >
+          <span class="user-picker-name">{{ user.username }}</span>
+          @if (extra(user); as name) {
+            <span class="muted"> — {{ name }}</span>
+          }
+        </li>
+      }
+    </ul>
+  </div>
+  <div class="user-picker-status" aria-live="polite" [id]="statusId()">
+    @switch (state()) {
+      @case ('short') {
+        <span class="hint" i18n="@@userPicker.short">{minLength(), plural,
+          =1 {Type at least 1 character to see suggestions.}
+          other {Type at least {{ minLength() }} characters to see suggestions.}
+        }</span>
+      }
+      @case ('loading') {
+        <span class="visually-hidden" i18n="@@userPicker.loading">Searching…</span>
+      }
+      @case ('results') {
+        <span class="visually-hidden" i18n="@@userPicker.count">{suggestions().length, plural,
+          =1 {1 suggestion: choose it with the arrow keys and Enter.}
+          other {{{ suggestions().length }} suggestions: choose with the arrow keys and Enter.}
+        }</span>
+      }
+      @case ('empty') {
+        <span class="hint" i18n="@@userPicker.empty"
+          >No user matches. You can still type the whole user name.</span
+        >
+      }
+      @case ('error') {
+        <span class="field-error">{{ errorText() }}</span>
+      }
+    }
+  </div>
+</div>

@@ -28,6 +28,7 @@ import { DateTimePipe } from '../shared/date-time.pipe';
 import { keepFocus } from '../shared/focus';
 import { inputValue } from '../shared/forms';
 import { KeysetList } from '../shared/keyset';
+import { UserPicker, type UserSource, type UserSuggestion } from '../shared/user-picker';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** The default period: the last 30 days, today included (UTC, as every date of the app). */
@@ -79,7 +80,7 @@ function queryString(applied: Applied): string {
  */
 @Component({
   selector: 'q-audit-log-page',
-  imports: [DateTimePipe],
+  imports: [DateTimePipe, UserPicker],
   templateUrl: './audit-log.page.html',
   styleUrl: './audit-log.page.css',
 })
@@ -121,6 +122,8 @@ export class AuditLogPage {
   protected readonly actions = signal('');
   protected readonly outcome = signal<Outcome>('');
   protected readonly username = signal('');
+  /** The user picked in the user filter; null for a name typed without a pick. */
+  protected readonly picked = signal<UserSuggestion | null>(null);
   protected readonly projectKey = signal('');
   protected readonly organizationId = signal('');
   protected readonly fieldError = signal<Partial<Record<Field, string>>>({});
@@ -146,7 +149,14 @@ export class AuditLogPage {
   });
   protected readonly exportMaxDays = EXPORT_MAX_DAYS;
 
+  /** `GET /users/search` takes 2 characters, or 1 from an instance admin. */
+  protected readonly searchMin = computed(() => (this.instanceAdmin() ? 1 : 2));
+  /** The user filter's suggestions: the active users whose name starts with what is typed. */
+  protected readonly searchUsers: UserSource = async (q) =>
+    (await ok(this.api.client.GET('/api/v0/users/search', { params: { query: { q } } }))).users;
+
   private readonly heading = viewChild.required<ElementRef<HTMLElement>>('heading');
+  private readonly picker = viewChild(UserPicker);
   /** Counts scope changes (organisation, user): an answer for an earlier one is dropped. */
   private generation = 0;
 
@@ -175,17 +185,15 @@ export class AuditLogPage {
     });
   }
 
-  protected set(field: 'from' | 'to' | 'actions' | 'username' | 'projectKey', event: Event): void {
+  protected set(field: 'from' | 'to' | 'actions' | 'projectKey', event: Event): void {
     this[field].set(inputValue(event));
-    const key: Field =
-      field === 'actions'
-        ? 'action'
-        : field === 'username'
-          ? 'user'
-          : field === 'projectKey'
-            ? 'project'
-            : field;
+    const key: Field = field === 'actions' ? 'action' : field === 'projectKey' ? 'project' : field;
     this.fieldError.update((errors) => ({ ...errors, [key]: undefined }));
+  }
+
+  protected setUsername(value: string): void {
+    this.username.set(value);
+    this.fieldError.update((errors) => ({ ...errors, user: undefined }));
   }
 
   protected setOutcome(event: Event): void {
@@ -198,6 +206,7 @@ export class AuditLogPage {
 
   protected async submit(event: Event): Promise<void> {
     event.preventDefault();
+    this.picker()?.close();
     await this.apply();
   }
 
@@ -261,10 +270,15 @@ export class AuditLogPage {
     }
   }
 
-  /** The id of the user named in the filter, '' for none, null when no such user exists. */
+  /**
+   * The id of the user named in the filter: the one picked, else the name looked up; '' for none,
+   * null when no such user exists.
+   */
   private async userId(): Promise<string | null> {
     const username = this.username().trim();
     if (!username) return '';
+    const picked = this.picked();
+    if (picked?.username === username) return picked.id;
     try {
       const user = await ok(
         this.api.client.GET('/api/v0/users/lookup', { params: { query: { username } } }),
