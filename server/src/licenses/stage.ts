@@ -5,6 +5,7 @@ import {
   LICENSE_GROUPS,
   licenseClassifier,
   normalizeRepoPath,
+  REPORT_BOUNDS,
   validateRepoPath,
   type IssueKind,
   type Quality,
@@ -23,7 +24,7 @@ import {
 } from '../ingest/state';
 import { mergeDependencyEntries, type DependencyRowInput } from '../measures/store';
 import { LICENSE_ENGINE } from '../rules/server-engines';
-import { policyFor } from './settings';
+import { storedPolicyFor } from './settings';
 
 export const FORBIDDEN_RULE_KEY = `${LICENSE_ENGINE}:forbidden`;
 export const UNKNOWN_RULE_KEY = `${LICENSE_ENGINE}:unknown`;
@@ -33,6 +34,12 @@ const LICENSE_PASS_ENGINE = 'trivy-licenses';
 
 /** The analysis warning for inventory entries whose lockfile path is not a repository path. */
 export const DEPENDENCY_PATHS_INVALID = 'DEPENDENCY_PATHS_INVALID';
+
+/** The analysis warning for a stored policy that does not parse: the stage did not run. */
+export const LICENSE_POLICY_INVALID = 'LICENSE_POLICY_INVALID';
+
+/** The CLI's warning for an inventory cut at the report's bound (cli/src/scan/dependencies.ts). */
+const DEPENDENCIES_TRUNCATED = 'DEPENDENCIES_TRUNCATED';
 
 interface BuiltinRule {
   key: string;
@@ -209,6 +216,12 @@ function licenseFinding(
  * nothing, and tracking leaves every open licence issue as it is (a lapsed licence, an older CLI,
  * a failed or timed-out pass). A report's own `license` findings never get here: the rules stage
  * drops them.
+ *
+ * A stored policy that does not parse is not the empty policy: the stage then does nothing but
+ * warn `LICENSE_POLICY_INVALID`. A truncated inventory (the report warns `DEPENDENCIES_TRUNCATED`,
+ * or it is as long as the report's bound) is partial too: its findings are added, so issues open
+ * and update, but tracking is not told the engine ran, so the issues of the packages past the cut
+ * stay as they are.
  */
 export const licensePolicyStage: IngestionStage = {
   name: 'license-policy',
@@ -219,7 +232,22 @@ export const licensePolicyStage: IngestionStage = {
     const pass = ctx.report.engines.filter((e) => e.id === LICENSE_PASS_ENGINE);
     if (pass.some((e) => e.status !== 'ok')) return;
 
-    const policy = (await policyFor(ctx.tx, ctx.project.organizationId)) ?? EMPTY_LICENSE_POLICY;
+    const stored = await storedPolicyFor(ctx.tx, ctx.project.organizationId);
+    if (stored.state === 'invalid') {
+      // Judging against the empty policy would close every licence issue (final review M4).
+      ctx.logger.warn(
+        { analysisId: ctx.analysisId, organizationId: ctx.project.organizationId },
+        "the organisation's stored licence policy does not parse: licences not judged",
+      );
+      ctx.warnings.push({
+        code: LICENSE_POLICY_INVALID,
+        message:
+          "the organisation's stored licence policy could not be read: the dependency licences were not judged, and the licence issues stay as they are",
+        count: 1,
+      });
+      return;
+    }
+    const policy = stored.state === 'policy' ? stored.policy : EMPTY_LICENSE_POLICY;
     const resolved = await ensureLicenseRules(ctx.tx);
     const forbiddenRule = resolved.get(FORBIDDEN_RULE_KEY);
     const unknownRule = resolved.get(UNKNOWN_RULE_KEY);
@@ -275,9 +303,12 @@ export const licensePolicyStage: IngestionStage = {
       fingerprint: fingerprints[i] ?? '',
     }));
     ctx.state.findings = [...findings, ...accepted];
-    ctx.state.serverOkEngines = [LICENSE_ENGINE];
+    const truncated =
+      entries.length >= REPORT_BOUNDS.dependencies ||
+      ctx.report.warnings.some((w) => w.code === DEPENDENCIES_TRUNCATED);
+    if (!truncated) ctx.state.serverOkEngines = [LICENSE_ENGINE];
     ctx.logger.debug(
-      { analysisId: ctx.analysisId, entries: entries.length, findings: accepted.length },
+      { analysisId: ctx.analysisId, entries: entries.length, findings: accepted.length, truncated },
       'judged the dependency licences',
     );
   },

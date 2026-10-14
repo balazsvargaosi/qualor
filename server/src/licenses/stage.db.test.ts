@@ -14,6 +14,7 @@ import {
   branches,
   complianceReports,
   gateConditions,
+  instanceSettings,
   issues,
   measures,
   projects,
@@ -22,7 +23,7 @@ import {
 } from '../db/schema';
 import { communityLimits } from '../limits';
 import { currentFindings, measuresOf } from '../portfolio/query';
-import { writeLicensePolicy } from './settings';
+import { LICENSE_POLICY_SETTINGS_KEY, writeLicensePolicy } from './settings';
 
 /**
  * 6M §6–§7: a dependency whose licence the organisation's policy forbids becomes an ordinary
@@ -314,6 +315,120 @@ describe('licence policy stage (6M §6)', () => {
       }
       const [after] = await licenceIssues(p);
       expect(after).toMatchObject({ id: before!.id, status: 'closed' });
+    });
+
+    it('opens and updates issues from a truncated inventory, but closes none (final review I1)', async () => {
+      const p = await h.project('licenses/truncated');
+      const kept = dep('gpl-kept', '1.0.0', ['GPL-3.0-only'], 15);
+      const cut = dep('gpl-cut', '1.0.0', ['GPL-3.0-only'], 25);
+      await p.ingestOk(report(p, { dependencies: [kept, cut] }));
+      const before = await licenceIssues(p);
+      expect(before.map((i) => [i.message.split(' ')[0], i.status])).toEqual([
+        ['gpl-cut', 'open'],
+        ['gpl-kept', 'open'],
+      ]);
+      const byName = async () =>
+        Object.fromEntries(
+          (await licenceIssues(p)).map((i) => [i.message.split(' ')[0], [i.status, i.startLine]]),
+        );
+
+      // The CLI cut the inventory and said so: gpl-cut fell past the cap.
+      const truncated = {
+        code: 'DEPENDENCIES_TRUNCATED',
+        message: '1 of 50001 dependencies were left out of the inventory',
+        count: 1,
+      };
+      await p.ingestOk(
+        report(p, {
+          warnings: [truncated],
+          dependencies: [{ ...kept, line: 16 }, dep('gpl-new', '1.0.0', ['GPL-3.0-only'], 35)],
+        }),
+      );
+      expect(await byName()).toEqual({
+        'gpl-cut': ['open', 25],
+        'gpl-kept': ['open', 16],
+        'gpl-new': ['open', 35],
+      });
+
+      // An inventory at the report's bound may have been cut without the warning (a report whose
+      // warnings were capped): the same.
+      const full = Array.from({ length: 50_000 }, (_, i) =>
+        dep(`mit-${String(i).padStart(5, '0')}`, '1.0.0', ['MIT']),
+      );
+      full[0] = { ...kept, line: 17 };
+      await p.ingestOk(report(p, { dependencies: full }));
+      expect(await byName()).toEqual({
+        'gpl-cut': ['open', 25],
+        'gpl-kept': ['open', 17],
+        'gpl-new': ['open', 35],
+      });
+
+      // A complete inventory closes what it no longer holds.
+      await p.ingestOk(report(p, { dependencies: [{ ...kept, line: 17 }] }));
+      expect(await byName()).toEqual({
+        'gpl-cut': ['closed', 25],
+        'gpl-kept': ['open', 17],
+        'gpl-new': ['closed', 35],
+      });
+    });
+
+    it('does not judge against a stored policy that does not parse, and keeps every issue (final review M4)', async () => {
+      const p = await h.project('licenses/policy-invalid');
+      const gpl = dep('gpl-pkg', '1.0.0', ['GPL-3.0-only'], 15);
+      await p.ingestOk(report(p, { dependencies: [gpl] }));
+      const [before, ...rest] = await licenceIssues(p);
+      expect(rest).toEqual([]);
+      expect(before).toMatchObject({ status: 'open' });
+
+      const OTHER = '0190a6c2-0000-7000-8000-0000000000ff';
+      const store = (value: unknown) =>
+        h.ctx.db
+          .insert(instanceSettings)
+          .values({ key: LICENSE_POLICY_SETTINGS_KEY, value })
+          .onConflictDoUpdate({ target: instanceSettings.key, set: { value } });
+      const warningsOf = async (id: string) =>
+        ((await h.ctx.db.select().from(analyses).where(eq(analyses.id, id)))[0]!.warnings ??
+          []) as { code: string }[];
+      try {
+        // This organisation's entry no longer parses (a group id a newer version wrote), the
+        // other organisation's does: the inventory without the package must not close its issue.
+        for (const value of [
+          {
+            organizations: {
+              [h.organizationId]: { ...STRONG, forbiddenGroups: ['future-group'] },
+              [OTHER]: STRONG,
+            },
+          },
+          { organizations: { [h.organizationId]: 'not a policy' } },
+          { organizations: [] },
+        ]) {
+          await store(value);
+          const judged = await p.ingestOk(report(p, { dependencies: [] }));
+          expect(await licenceIssues(p), JSON.stringify(value)).toEqual([before]);
+          expect(await warningsOf(judged)).toContainEqual({
+            code: 'LICENSE_POLICY_INVALID',
+            message:
+              "the organisation's stored licence policy could not be read: the dependency licences were not judged, and the licence issues stay as they are",
+            count: 1,
+          });
+          await setPolicy(STRONG);
+        }
+
+        // Another organisation's bad entry does not hide this one's policy (Task 6).
+        await store({ organizations: { [h.organizationId]: STRONG, [OTHER]: { mode: 'open' } } });
+        const fine = await p.ingestOk(report(p, { dependencies: [gpl] }));
+        expect((await licenceIssues(p)).map((i) => [i.id, i.status])).toEqual([
+          [before!.id, 'open'],
+        ]);
+        expect((await warningsOf(fine)).map((w) => w.code)).not.toContain('LICENSE_POLICY_INVALID');
+        // No entry for this organisation at all is no policy: the empty policy runs and closes.
+        await store({ organizations: { [OTHER]: STRONG } });
+        await p.ingestOk(report(p, { dependencies: [gpl] }));
+        const [after] = await licenceIssues(p);
+        expect(after).toMatchObject({ id: before!.id, status: 'closed' });
+      } finally {
+        await setPolicy(STRONG);
+      }
     });
 
     it("drops a report's own licence findings: they neither keep nor reopen an issue", async () => {

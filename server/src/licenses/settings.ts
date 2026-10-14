@@ -1,5 +1,5 @@
 import { canonicalTerm, licensePolicySchema, type LicensePolicy } from '@qualor/shared';
-import { inArray, sql } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Executor } from '../db/client';
 import { LOCKS } from '../db/locks';
@@ -16,13 +16,16 @@ export interface LicensePolicySettings {
 
 export const DEFAULT_LICENSE_POLICY_SETTINGS: LicensePolicySettings = { organizations: {} };
 
+/** The stored row's shape, its entries unchecked. */
+const storedRowSchema = z.object({ organizations: z.record(z.string(), z.unknown()).default({}) });
+
 /**
  * The stored row. An entry that does not parse (an operator's edit) is dropped on its own, so it
- * never takes the other organisations' policies with it, and the next write removes it.
+ * never takes the other organisations' policies with it, and the next write removes it. The
+ * licence stage does not read it through this: see {@link storedPolicyFor}.
  */
-export const licensePolicySettingsSchema: z.ZodType<LicensePolicySettings> = z
-  .object({ organizations: z.record(z.string(), z.unknown()).default({}) })
-  .transform(({ organizations: entries }) => {
+export const licensePolicySettingsSchema: z.ZodType<LicensePolicySettings> =
+  storedRowSchema.transform(({ organizations: entries }) => {
     const valid: Record<string, LicensePolicy> = {};
     for (const [id, entry] of Object.entries(entries)) {
       const parsed = licensePolicySchema.safeParse(entry);
@@ -40,7 +43,34 @@ export async function readLicensePolicies(db: Executor): Promise<LicensePolicySe
   );
 }
 
-/** The organisation's policy, or `null` when it has none. */
+/**
+ * The organisation's stored policy as the licence stage needs it (final review M4): `none` when
+ * nothing is stored for it (no row, or no entry: the empty policy applies), `invalid` when the row
+ * or its entry is stored but does not parse (an operator's edit, or a policy a newer version
+ * wrote: a group id this one does not know). Judging against the empty policy then would close
+ * every licence issue of the organisation, so the stage does not run.
+ */
+export type StoredLicensePolicy =
+  { state: 'none' } | { state: 'policy'; policy: LicensePolicy } | { state: 'invalid' };
+
+export async function storedPolicyFor(
+  db: Executor,
+  organizationId: string,
+): Promise<StoredLicensePolicy> {
+  const [row] = await db
+    .select({ value: instanceSettings.value })
+    .from(instanceSettings)
+    .where(eq(instanceSettings.key, LICENSE_POLICY_SETTINGS_KEY));
+  if (!row) return { state: 'none' };
+  const stored = storedRowSchema.safeParse(row.value);
+  if (!stored.success) return { state: 'invalid' };
+  const entries = stored.data.organizations;
+  if (!Object.hasOwn(entries, organizationId)) return { state: 'none' };
+  const parsed = licensePolicySchema.safeParse(entries[organizationId]);
+  return parsed.success ? { state: 'policy', policy: parsed.data } : { state: 'invalid' };
+}
+
+/** The organisation's policy, or `null` when it has none (or its entry does not parse). */
 export async function policyFor(
   db: Executor,
   organizationId: string,
