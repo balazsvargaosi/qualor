@@ -136,7 +136,7 @@ describe('qualorManifestSchema dotnetEngine (6B-C# R, spec §4.1)', () => {
     expect(qualorManifestSchema.parse(manifest()).dotnetEngine).toBeUndefined();
   });
 
-  it('refuses an engine whose files are not confined to dotnet/, or that does not hold its entry', () => {
+  it('marks an engine whose files are not confined to dotnet/, or that does not hold its entry, as invalid, and keeps the pack (ruling R-E14)', () => {
     const file = (p: string) => ({ path: p, sha256: 'e'.repeat(64) });
     const bad = [
       engine({ entry: 'dotnet/engine/Other.dll' }),
@@ -157,12 +157,21 @@ describe('qualorManifestSchema dotnetEngine (6B-C# R, spec §4.1)', () => {
       engine({ version: '' }),
       engine({ version: 'x'.repeat(65) }),
     ];
-    for (const e of bad) {
-      expect(
-        qualorManifestSchema.safeParse(manifest({ dotnetEngine: e })).success,
-        JSON.stringify(e),
-      ).toBe(false);
+    for (const e of [...bad, null, 'dotnet', []]) {
+      const parsed = qualorManifestSchema.safeParse(manifest({ dotnetEngine: e }));
+      expect(parsed.success, JSON.stringify(e)).toBe(true);
+      expect(parsed.data?.rules, JSON.stringify(e)).toHaveLength(1);
+      expect(parsed.data?.dotnetEngine, JSON.stringify(e)).toEqual({ invalid: expect.any(String) });
     }
+    // The reason names the field that is wrong.
+    const named = (e: unknown) =>
+      qualorManifestSchema.parse(manifest({ dotnetEngine: e })).dotnetEngine;
+    expect(named(engine({ entry: 'dotnet/engine/Other.dll' }))).toEqual({ invalid: 'entry' });
+    expect(named(engine({ files: [...engine().files, file('dotnet/../x.dll')] }))).toEqual({
+      invalid: 'files.4.path',
+    });
+    expect(named(engine({ version: '' }))).toEqual({ invalid: 'version' });
+    expect(named(null)).toEqual({ invalid: '(the field itself)' });
   });
 });
 

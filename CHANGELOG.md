@@ -129,10 +129,11 @@ All notable changes to Qualor are listed here, newest first. The format follows
   XML external entities and disabled TLS verification. They need a newer Qualor: Qualor 0.7.1 and older
   refuse a rules pack that holds C# rules (its images pin their own pack and are unaffected).
 - C#: under `qualor dotnet begin` and `end`, Qualor's own Roslyn taint engine runs these rules on
-  the whole solution in place of OpenGrep. It follows request data across methods, files and
-  projects and into Razor views (`.cshtml`), and shows the path as each finding's related locations. Its
-  budget is 10 minutes and 4 GB (`QUALOR_TAINT_TIME_LIMIT`, `QUALOR_TAINT_MEMORY_LIMIT`). When it
-  cannot give a complete result, the OpenGrep C# rules run as before and the report warns
+  the whole solution in place of OpenGrep, for the files of the projects the build compiled. It
+  follows request data across methods, files and projects and into the code generated for Razor
+  views and components, and shows the path as each finding's related locations. Its budget is 10
+  minutes and 4 GB (`QUALOR_TAINT_TIME_LIMIT`, `QUALOR_TAINT_MEMORY_LIMIT`). When it cannot give a
+  complete result, the OpenGrep C# rules run as before and the report warns
   (`TAINT_ENGINE_FALLBACK`) with the reason.
 
 ### Changed

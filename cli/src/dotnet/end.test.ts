@@ -304,6 +304,7 @@ describe("qualor dotnet end with Qualor's Roslyn taint engine (6B-C# R, spec §4
     const { root, env } = session();
     const taint = fakeTaint((o) => ({
       kind: 'ok',
+      sources: ['src/Hashing.cs'],
       sarif: engineSarif(o.root, [
         {
           rule: 'csharp.sql-injection',
@@ -325,7 +326,7 @@ describe("qualor dotnet end with Qualor's Roslyn taint engine (6B-C# R, spec §4
         memoryLimitMb: 4096,
       },
     });
-    expect(taint.calls[0]?.o.pack?.manifest.dotnetEngine?.version).toBe('2026.10.4');
+    expect(taint.calls[0]?.o.pack?.manifest.dotnetEngine).toMatchObject({ version: '2026.10.4' });
     expect(existsSync(path.join(root, '.qualor', 'dotnet'))).toBe(false);
     expect(report.engines.find((e: { id: string }) => e.id === 'qualor')).toMatchObject({
       status: 'ok',
@@ -343,6 +344,22 @@ describe("qualor dotnet end with Qualor's Roslyn taint engine (6B-C# R, spec §4
     expect(report.warnings.map((w: { code: string }) => w.code)).not.toContain(
       'TAINT_ENGINE_FALLBACK',
     );
+  });
+
+  it('falls back on a crash when the engine step throws, and still scans (fix round 1, I1)', async () => {
+    const { root, env } = session();
+    const lines: string[] = [];
+    const runTaint = () => Promise.reject(new Error('ENOSPC: no space left on device, mkdtemp'));
+    const { code, report } = await end(root, env, lines, { runTaint });
+    expect(code).toBe(EXIT.OK);
+    expect(report).not.toBeNull();
+    expect(report.engines.find((e: { id: string }) => e.id === 'roslyn')).toMatchObject({
+      status: 'ok',
+    });
+    expect(lines.join('\n')).toContain(
+      "Qualor's Roslyn taint engine did not run (crash: ENOSPC: no space left on device, mkdtemp); the OpenGrep C# rules run in its place",
+    );
+    expect(existsSync(path.join(root, '.qualor', 'dotnet'))).toBe(false);
   });
 
   it('on a fallback logs why, deletes the session and keeps the exit code (Review Focus 3)', async () => {

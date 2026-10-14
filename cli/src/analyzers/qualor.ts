@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, opendirSync, readFileSync, type Dir, type Stats } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   QUALOR_KIND_PROPERTY,
   QUALOR_SEVERITY_PROPERTY,
@@ -347,7 +348,10 @@ function taintEngineLog(log: SarifLog, manifest: QualorManifest): TaintEngineLog
   const sarif = structuredClone(log) as Record<string, unknown>;
   withQualorRules(sarif, manifest);
   const byId = new Map(manifest.rules.map((r) => [r.id, r]));
-  const version = `qualor-taint ${manifest.dotnetEngine?.version ?? 'unknown'} + qualor-rules ${manifest.version}`;
+  const declared = manifest.dotnetEngine;
+  const engineVersion =
+    declared !== undefined && !('invalid' in declared) ? declared.version : 'unknown';
+  const version = `qualor-taint ${engineVersion} + qualor-rules ${manifest.version}`;
   for (const run of Array.isArray(sarif['runs']) ? sarif['runs'] : []) {
     if (!isObject(run)) continue;
     const tool = run['tool'];
@@ -371,18 +375,51 @@ function taintEngineLog(log: SarifLog, manifest: QualorManifest): TaintEngineLog
   return { sarif, version };
 }
 
+/** A repository path as compared with the engine's files: case-insensitive on Windows. */
+function pathKey(rel: string): string {
+  return process.platform === 'win32' ? rel.toLowerCase() : rel;
+}
+
+/** The repository path of an OpenGrep result's first location, or null. */
+function resultPath(result: Record<string, unknown>, root: string): string | null {
+  const locations = result['locations'];
+  const first: unknown = Array.isArray(locations) ? locations[0] : undefined;
+  const physical = isObject(first) ? first['physicalLocation'] : undefined;
+  const artifact = isObject(physical) ? physical['artifactLocation'] : undefined;
+  const uri = isObject(artifact) ? artifact['uri'] : undefined;
+  if (typeof uri !== 'string') return null;
+  try {
+    const rel = uri.startsWith('file:')
+      ? path.relative(root, fileURLToPath(uri)).split(path.sep).join('/')
+      : decodeURIComponent(uri).replace(/^(\.\/)+/, '');
+    return rel;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * R-4 in a scan with other files too: OpenGrep's C# results are dropped (it selects the files
- * itself when they do not fit one command line, .cs files among them) and the engine's runs
- * follow OpenGrep's, so the engine version stays OpenGrep's with the pack.
+ * R-4 in a scan with other files too: OpenGrep's C# results on the files the engine analysed are
+ * dropped (OpenGrep selects the files itself when they do not fit one command line, those among
+ * them) and the engine's runs follow OpenGrep's, so the engine version stays OpenGrep's with the
+ * pack.
  */
-function withTaintEngineRuns(output: unknown, engine: Record<string, unknown>): void {
+function withTaintEngineRuns(
+  output: unknown,
+  engine: Record<string, unknown>,
+  root: string,
+  byEngine: (rel: string) => boolean,
+): void {
   if (!isObject(output) || !Array.isArray(output['runs'])) return;
   for (const run of output['runs']) {
     if (!isObject(run) || !Array.isArray(run['results'])) continue;
-    run['results'] = run['results'].filter(
-      (r) => !(isObject(r) && typeof r['ruleId'] === 'string' && r['ruleId'].startsWith('csharp/')),
-    );
+    run['results'] = run['results'].filter((r) => {
+      if (!isObject(r) || typeof r['ruleId'] !== 'string' || !r['ruleId'].startsWith('csharp/')) {
+        return true;
+      }
+      const rel = resultPath(r, root);
+      return rel === null || !byEngine(rel);
+    });
   }
   const runs: unknown[] = Array.isArray(engine['runs']) ? engine['runs'] : [];
   output['runs'].push(...runs);
@@ -403,9 +440,14 @@ export function createQualorAnalyzer(
     // R-4: the taint engine's complete run replaces the OpenGrep C# rules for the .cs files.
     const taint = ctx.dotnet?.kind === 'collected' ? ctx.dotnet.taint : null;
     const engine = taint?.kind === 'ok' ? taintEngineLog(taint.sarif, pack.manifest) : null;
+    // Only the files the engine analysed (those of a compilation the build recorded) leave
+    // OpenGrep: a .cs file of no built project keeps the OpenGrep C# rules (fix round 1, I2).
+    const analysed = new Set(taint?.kind === 'ok' ? taint.sources.map(pathKey) : []);
+    const byEngine = (rel: string) => analysed.has(pathKey(rel));
     const files = inScope
-      .filter((f) => engine === null || f.language !== 'csharp')
-      .map((f) => path.relative(ctx.root, f.absPath).split(path.sep).join('/'));
+      .map((f) => ({ f, rel: path.relative(ctx.root, f.absPath).split(path.sep).join('/') }))
+      .filter(({ f, rel }) => engine === null || f.language !== 'csharp' || !byEngine(rel))
+      .map(({ rel }) => rel);
     if (engine !== null && files.length === 0) return { collected: engine };
     // Plan 6B-1: only the OpenGrep the pack is tested with, never Semgrep.
     const opengrep = ctx.resolveBinary('opengrep');
@@ -459,7 +501,7 @@ export function createQualorAnalyzer(
             );
           }
           withQualorRules(output, pack.manifest);
-          if (engine !== null) withTaintEngineRuns(output, engine.sarif);
+          if (engine !== null) withTaintEngineRuns(output, engine.sarif, ctx.root, byEngine);
           return output;
         },
         ...(taint?.kind === 'fallback' && { warnings: [taintFallbackWarning(taint.reason)] }),

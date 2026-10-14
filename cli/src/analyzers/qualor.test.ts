@@ -91,6 +91,22 @@ describe('loadQualorPack (config.md §6, plan 6B-1)', () => {
     expect(pack.manifest.rules.map((r) => r.id)).toEqual(['python/sql-injection']);
   });
 
+  it('keeps the pack, and its OpenGrep rules, when its dotnetEngine is malformed (ruling R-E14)', () => {
+    const dir = writePack(tmp(), undefined, (m) => ({
+      ...m,
+      dotnetEngine: {
+        version: '2026.10.4',
+        entry: '../evil.dll',
+        models: 'dotnet/models',
+        files: [],
+      },
+    }));
+    const pack = loadQualorPack(dir);
+    if ('problem' in pack) throw new Error(pack.problem);
+    expect(pack.manifest.rules.map((r) => r.id)).toEqual(['python/sql-injection']);
+    expect(pack.manifest.dotnetEngine).toEqual({ invalid: 'entry' });
+  });
+
   it('refuses a missing, malformed, partial or changed pack, with a fixed reason', () => {
     const cases: [string, (dir: string) => void, RegExp][] = [
       ['no manifest', (d) => rmSync(path.join(d, 'manifest.json')), /has no manifest\.json/],
@@ -671,8 +687,9 @@ describe("qualor with Qualor's Roslyn taint engine under qualor dotnet end (6B-C
     return { root, files, pack };
   }
 
-  const ok = (root: string): TaintRun => ({
+  const ok = (root: string, sources: readonly string[] = ['src/A.cs', 'src/B.cs']): TaintRun => ({
     kind: 'ok',
+    sources,
     sarif: engineSarif(root, [
       {
         rule: 'csharp.sql-injection',
@@ -792,6 +809,39 @@ describe("qualor with Qualor's Roslyn taint engine under qualor dotnet end (6B-C
     });
     // The OpenGrep run stays first: the engine's version is OpenGrep's with the pack.
     expect(out.engines[0]?.version).toBe('1.30.0 + qualor-rules 2026.10.4');
+  });
+
+  it('leaves on OpenGrep the .cs files no recorded compilation holds, with their OpenGrep findings (fix round 1, I2)', async () => {
+    const { root, files, pack } = setup();
+    // src/B.cs belongs to no project the build compiled: the engine never saw it.
+    const prep = await createQualorAnalyzer({ defaultDir: pack }).prepare(
+      withTaint(root, files, ok(root, ['src/A.cs', 'src/obj/Debug/App.AssemblyInfo.cs'])),
+    );
+    if (!('run' in prep) || prep.run.transform === undefined) throw new Error(JSON.stringify(prep));
+    expect(prep.run.args.slice(prep.run.args.indexOf('--') + 1)).toEqual(['app.py', 'src/B.cs']);
+    const sarif = opengrepSarif();
+    const onA = structuredClone(sarif.runs[0]!.results[0]!);
+    onA.locations[0]!.physicalLocation.artifactLocation.uri = 'src/A.cs';
+    sarif.runs[0]!.results.push(onA);
+    const out = normalizeIn(root, prep.run.transform(sarif, ''));
+    // OpenGrep's finding on src/B.cs stays; its finding on src/A.cs gives way to the engine's.
+    expect(findingKeys(out.findings)).toEqual([
+      'qualor:csharp/sql-injection src/A.cs:4 [blocker]',
+      'qualor:csharp/sql-injection src/B.cs:4 [blocker]',
+    ]);
+    expect(out.findings.find((f) => f.location?.path === 'src/A.cs')?.message).not.toBe(
+      'OpenGrep says so',
+    );
+
+    // C# only, with a file the engine did not see: OpenGrep runs on that file alone.
+    const only = setup({ python: false });
+    const csharp = await createQualorAnalyzer({ defaultDir: only.pack }).prepare(
+      withTaint(only.root, only.files, ok(only.root, ['src/A.cs']), {
+        binaries: { opengrep: OPENGREP },
+      }),
+    );
+    if (!('run' in csharp)) throw new Error(JSON.stringify(csharp));
+    expect(csharp.run.args.slice(csharp.run.args.indexOf('--') + 1)).toEqual(['src/B.cs']);
   });
 
   it('needs no OpenGrep when only C# files are in scope: the engine findings are the run', async () => {

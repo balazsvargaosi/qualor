@@ -142,16 +142,23 @@ async function runSessionTaint(
   } catch {
     // The scan reports the configuration problem itself.
   }
-  const pack = locateQualorPack(root, io.env);
-  if (!('manifest' in pack)) return null;
-  const taint = await runTaint({
-    root,
-    pack,
-    sessionDir: path.join(root, ...SESSION_DIR.split('/')),
-    env: io.env,
-    ...taintBudgets(io.env, (message) => log.warn(message)),
-    log,
-  });
+  let taint: TaintRun;
+  try {
+    const pack = locateQualorPack(root, io.env);
+    if (!('manifest' in pack)) return null;
+    taint = await runTaint({
+      root,
+      pack,
+      sessionDir: path.join(root, ...SESSION_DIR.split('/')),
+      env: io.env,
+      ...taintBudgets(io.env, (message) => log.warn(message)),
+      log,
+    });
+  } catch (err) {
+    // R-4 (fix round 1, I1): whatever goes wrong here, OpenGrep runs and the scan goes on.
+    const message = err instanceof Error ? err.message : String(err);
+    taint = { kind: 'fallback', reason: 'crash', detail: message.split(/\r?\n/)[0] ?? '' };
+  }
   if (taint.kind === 'ok') {
     log.info("Qualor's Roslyn taint engine analysed the C# files");
   } else {

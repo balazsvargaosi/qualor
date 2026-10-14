@@ -29,7 +29,29 @@ function checkout(inputs = true): { root: string; sessionDir: string } {
   const sessionDir = path.join(root, '.qualor', 'dotnet');
   mkdirSync(path.join(sessionDir, 'compilations'), { recursive: true });
   if (inputs) {
-    writeFileSync(path.join(sessionDir, 'compilations', 'a1b2.txt'), 'format=1\n');
+    // Two projects, as the hook writes them (CRLF on a Windows runner): sources in and out of
+    // the checkout, and the SDK's generated files under obj/.
+    writeFileSync(
+      path.join(sessionDir, 'compilations', 'a1b2.txt'),
+      [
+        'qualor-compilation=1',
+        `project=${path.join(root, 'src', 'App.csproj')}`,
+        `source=${path.join(root, 'src', 'A.cs')}`,
+        `source=${path.join(root, 'src', 'obj', 'Debug', 'App.AssemblyInfo.cs')}`,
+        `source=${path.join(path.dirname(root), 'elsewhere', 'Shared.cs')}`,
+        'reference=/usr/share/dotnet/System.Runtime.dll',
+        '',
+      ].join('\r\n'),
+    );
+    writeFileSync(
+      path.join(sessionDir, 'compilations', 'c3d4.txt'),
+      `qualor-compilation=1\nsource=${path.join(root, 'lib', 'B.cs')}\nsource=${path.join(root, 'src', 'A.cs')}\n`,
+    );
+    // Not the format: ignored.
+    writeFileSync(
+      path.join(sessionDir, 'compilations', 'e5f6.txt'),
+      `source=${path.join(root, 'x.cs')}\n`,
+    );
   }
   return { root, sessionDir };
 }
@@ -95,6 +117,41 @@ describe('runTaintEngine (6B-C# R, R-4)', () => {
       reason: 'no-engine',
       detail: 'the rules pack 2026.10.4 has no Roslyn taint engine',
     });
+    const bad = pack();
+    expect(
+      await runTaintEngine(
+        options({
+          root,
+          sessionDir,
+          pack: {
+            ...bad,
+            manifest: { ...bad.manifest, dotnetEngine: { invalid: 'files.4.path' } },
+          },
+          run: engine.run,
+        }),
+      ),
+    ).toEqual({
+      kind: 'fallback',
+      reason: 'no-engine',
+      detail: "the rules pack's dotnetEngine is not valid (files.4.path)",
+    });
+    expect(engine.calls).toEqual([]);
+  });
+
+  it('falls back on a crash when something throws on the way, without running the engine', async () => {
+    const { root, sessionDir } = checkout();
+    const engine = fake();
+    const out = await runTaintEngine(
+      options({
+        root,
+        sessionDir,
+        run: engine.run,
+        resolveDotnet: () => {
+          throw new Error('EACCES: permission denied');
+        },
+      }),
+    );
+    expect(out).toEqual({ kind: 'fallback', reason: 'crash', detail: 'EACCES: permission denied' });
     expect(engine.calls).toEqual([]);
   });
 
@@ -298,7 +355,12 @@ describe('runTaintEngine (6B-C# R, R-4)', () => {
         memoryLimitMb: 2048,
       }),
     );
-    expect(out).toEqual({ kind: 'ok', sarif: log });
+    // The files the engine analysed: the recorded sources inside the checkout, once each.
+    expect(out).toEqual({
+      kind: 'ok',
+      sarif: log,
+      sources: ['lib/B.cs', 'src/A.cs', 'src/obj/Debug/App.AssemblyInfo.cs'],
+    });
     expect(engine.calls).toHaveLength(1);
     const spec = engine.calls[0]!;
     const sarif = spec.args[spec.args.indexOf('--sarif') + 1]!;

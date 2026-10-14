@@ -22,7 +22,8 @@ export type TaintFallbackReason =
  * or why the OpenGrep C# rules run in its place (`detail` is a short line for the report warning).
  */
 export type TaintRun =
-  | { kind: 'ok'; sarif: SarifLog }
+  /** `sources`: the checkout's files the engine analysed (recorded as compiled), `/`-separated. */
+  | { kind: 'ok'; sarif: SarifLog; sources: readonly string[] }
   | { kind: 'fallback'; reason: TaintFallbackReason; detail: string };
 
 /** What `qualor dotnet end` found for the `roslyn` engine (config.md §6.1, ruling D7). */

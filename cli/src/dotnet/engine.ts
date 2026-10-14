@@ -5,6 +5,7 @@ import {
   opendirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   type Dir,
@@ -124,8 +125,10 @@ function engineEntries(dir: string): { files: string[] } | { problem: string } {
  */
 export function verifyTaintEngine(pack: QualorPack): string | null {
   const engine = pack.manifest.dotnetEngine;
-  if (engine === undefined)
+  if (engine === undefined) {
     return `the rules pack ${pack.manifest.version} has no Roslyn taint engine`;
+  }
+  if ('invalid' in engine) return `the rules pack's dotnetEngine is not valid (${engine.invalid})`;
   for (const { path: file, sha256 } of engine.files) {
     const full = path.join(pack.dir, ...file.split('/'));
     let s: Stats;
@@ -229,6 +232,50 @@ const fallback = (reason: TaintFallbackReason, detail: string): TaintRun => ({
  * engine never runs unless every one of its files matches the pack manifest.
  */
 export async function runTaintEngine(o: TaintEngineOptions): Promise<TaintRun> {
+  try {
+    return await attempt(o);
+  } catch (err) {
+    // A file that cannot be read after its checks, a full temporary directory, a spawn that
+    // throws: R-4 falls back to OpenGrep whatever went wrong, and the scan still runs.
+    const message = err instanceof Error ? err.message : String(err);
+    return fallback('crash', detailLine(message.split(/\r?\n/)[0] ?? '') || 'unexpected error');
+  }
+}
+
+/** The files the hook recorded as compiled (`source=` of every compilation input, format v1). */
+function recordedSources(inputs: string, root: string): string[] {
+  const roots = [path.resolve(root)];
+  try {
+    roots.push(realpathSync.native(root));
+  } catch {
+    // The written path only.
+  }
+  const found = new Set<string>();
+  for (const name of readdirSync(inputs).filter((n) => n.endsWith('.txt'))) {
+    const file = path.join(inputs, name);
+    const s = lstatSync(file);
+    if (!s.isFile() || s.size > MAX_ENGINE_FILE_BYTES) continue;
+    const lines = readFileSync(file, 'utf8')
+      .replace(/^\uFEFF/, '')
+      .split(/\r?\n/);
+    if (lines[0] !== 'qualor-compilation=1') continue;
+    for (const line of lines) {
+      if (!line.startsWith('source=') || line.length === 'source='.length) continue;
+      const source = path.resolve(line.slice('source='.length));
+      for (const base of roots) {
+        const rel = path.relative(base, source);
+        if (rel === '' || rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)) {
+          continue;
+        }
+        found.add(rel.split(path.sep).join('/'));
+        break;
+      }
+    }
+  }
+  return [...found].sort();
+}
+
+async function attempt(o: TaintEngineOptions): Promise<TaintRun> {
   if (o.pack === null) return fallback('no-engine', 'no valid rules pack');
   const engine = o.pack.manifest.dotnetEngine;
   if (engine === undefined) {
@@ -236,6 +283,9 @@ export async function runTaintEngine(o: TaintEngineOptions): Promise<TaintRun> {
       'no-engine',
       `the rules pack ${o.pack.manifest.version} has no Roslyn taint engine`,
     );
+  }
+  if ('invalid' in engine) {
+    return fallback('no-engine', `the rules pack's dotnetEngine is not valid (${engine.invalid})`);
   }
   const problem = verifyTaintEngine(o.pack);
   if (problem !== null) return fallback('engine-mismatch', problem);
@@ -298,7 +348,7 @@ export async function runTaintEngine(o: TaintEngineOptions): Promise<TaintRun> {
     if (projectsRead(log) === 0) {
       return fallback('no-inputs', 'the engine read no project from the compiler inputs');
     }
-    return { kind: 'ok', sarif: log };
+    return { kind: 'ok', sarif: log, sources: recordedSources(inputs, o.root) };
   } finally {
     uninstall();
     rmSync(work, { recursive: true, force: true });

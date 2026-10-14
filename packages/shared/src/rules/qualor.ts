@@ -80,6 +80,17 @@ const dotnetEngine = z
     }
   });
 
+/** The first field a failed parse names, as `files.4.path`, for a fallback reason. */
+function invalidField(issues: readonly z.core.$ZodIssue[]): string {
+  // A union reports its members' issues nested; the engine object's own are the useful ones.
+  const first = issues[0];
+  const nested =
+    first !== undefined && first.code === 'invalid_union' ? first.errors[0]?.[0] : undefined;
+  const issue = nested ?? first;
+  const field = issue?.path.join('.') ?? '';
+  return field === '' ? '(the field itself)' : field.slice(0, 200);
+}
+
 /**
  * The pack's `manifest.json` (config.md §6): every rule file with its SHA-256 and the metadata the
  * CLI copies into the report. Unknown fields are ignored, so an older CLI reads a newer pack; a rule
@@ -92,8 +103,15 @@ export const qualorManifestSchema = z
     /** The rules are tested with OpenGrep `--taint-intrafile`, so they run that way (plan 6B-6). */
     taintIntrafile: z.boolean().optional(),
     rules: z.array(manifestRule).min(1).max(2_000),
-    /** Qualor's Roslyn taint engine for the C# rules under `qualor dotnet end` (6B-C# R). */
-    dotnetEngine: dotnetEngine.optional(),
+    /**
+     * Qualor's Roslyn taint engine for the C# rules under `qualor dotnet end` (6B-C# R). A
+     * malformed one never refuses the pack (ruling R-E14): it reads as `{ invalid: <field> }`, the
+     * engine does not run and the OpenGrep rules still do.
+     */
+    dotnetEngine: z
+      .union([dotnetEngine, z.strictObject({ invalid: z.string().max(200) })])
+      .catch((ctx) => ({ invalid: invalidField(ctx.error.issues) }))
+      .optional(),
   })
   .superRefine((m, ctx) => {
     const ids = new Set<string>();
@@ -118,6 +136,8 @@ export const qualorManifestSchema = z
 
 export type QualorManifest = z.infer<typeof qualorManifestSchema>;
 export type QualorManifestRule = QualorManifest['rules'][number];
+/** A valid `dotnetEngine` of the manifest (6B-C# R). */
+export type QualorDotnetEngine = z.infer<typeof dotnetEngine>;
 
 /** The SARIF rule properties the CLI's transform writes from the manifest (config.md §6). */
 export const QUALOR_KIND_PROPERTY = 'qualorKind';

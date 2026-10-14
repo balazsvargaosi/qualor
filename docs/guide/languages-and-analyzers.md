@@ -623,8 +623,13 @@ rules release) on the whole solution, and its findings take the place of the Ope
 the `.cs` files, under the same rule keys (`qualor:csharp/<name>`):
 
 - Flows are followed across methods, files and projects, through fields, properties and
-  interface or virtual calls, and into Razor views (`.cshtml`), where findings point at the
-  view's own line.
+  interface or virtual calls.
+- Razor views and components are analysed through the C# code the build generates for them: MVC
+  and Razor Pages views (`.cshtml`), where findings point at the view's own line, and the
+  generated code of Blazor components (`.razor`). Blazor's `MarkupString` is not modelled as a
+  sink, so raw HTML in a component is not reported.
+- A `.cs` file that belongs to no project the build compiled (a script, a project left out of the
+  build) is still analysed by the OpenGrep C# rules.
 - Each finding shows the path from the request data to the dangerous call as its related
   locations, followed by any other request data that reaches the same call.
 - The engine has a budget: 10 minutes and 4 GB by default. Set `QUALOR_TAINT_TIME_LIMIT` (seconds)
@@ -632,7 +637,7 @@ the `.cs` files, under the same rule keys (`qualor:csharp/<name>`):
 - When the engine cannot give a complete result, the OpenGrep C# rules run as in a plain scan, and
   the report carries the warning `TAINT_ENGINE_FALLBACK` with the reason: `budget` (over its time
   or memory budget), `crash`, `no-inputs` (the build recorded no compiler inputs), `dotnet-missing`,
-  `no-engine` (the rules release has no engine) or `engine-mismatch` (its files do not match the
+  `no-engine` (the rules release has no engine, or its manifest describes it wrongly) or `engine-mismatch` (its files do not match the
   release's checksums: the engine is never run then). The log line says more. The scan's exit
   code is the same either way.
 - The engine follows what the code does, not how the application is wired: services registered
@@ -852,8 +857,9 @@ rules apply to both):
 | `qualor:csharp/xxe` | an XML parser given an `XmlUrlResolver` while it processes DTDs, whatever the document (it needs no request) | `System.Xml` (`XmlReaderSettings`, `XmlDocument`, `XmlTextReader`) |
 | `qualor:csharp/tls-verification-disabled` | a certificate or host name validation callback that accepts anything | `HttpClientHandler`, `SocketsHttpHandler`, `SslStream`, `ServicePointManager` |
 
-Limits of the C# rules on OpenGrep (a plain `qualor scan`, or a fallback under `qualor dotnet
-end`; the Roslyn taint engine of the C# section above has neither of the first two):
+Limits of the C# rules on OpenGrep (a plain `qualor scan`, a fallback under `qualor dotnet end`,
+or a `.cs` file of no compiled project). The Roslyn taint engine of the C# section above follows
+flows across files and through the code generated for Razor views and components:
 
 - Razor views (`.cshtml`, `.razor`) are not analysed.
 - Flows are followed within one file, not across files.
