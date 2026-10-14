@@ -21,6 +21,7 @@ const TABLES = [
   'analysis_reports',
   'api_tokens',
   'audit_events',
+  'branch_dependencies',
   'branch_files',
   'branches',
   'compliance_reports',

@@ -106,6 +106,8 @@ export interface ReportParts extends ReportOverrides {
   baseline?: Report['scm']['baseline'];
   renames?: Report['scm']['renames'];
   version?: string;
+  /** The dependency inventory (6M); left out of the report when undefined. */
+  dependencies?: Report['dependencies'];
 }
 
 /** {@link sampleReport} with whole sections replaced. */
@@ -125,6 +127,7 @@ export function reportWith(parts: ReportParts): Report {
     findings: parts.findings ?? base.findings,
     duplications: parts.duplications ?? base.duplications,
     warnings: parts.warnings ?? [],
+    ...(parts.dependencies === undefined ? {} : { dependencies: parts.dependencies }),
   };
 }
 

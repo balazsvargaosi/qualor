@@ -1,7 +1,7 @@
 export const SEVERITIES = ['blocker', 'high', 'medium', 'low', 'info'] as const;
 export type Severity = (typeof SEVERITIES)[number];
 
-export const QUALITIES = ['security', 'reliability', 'maintainability'] as const;
+export const QUALITIES = ['security', 'reliability', 'maintainability', 'licensing'] as const;
 export type Quality = (typeof QUALITIES)[number];
 
 export const ISSUE_KINDS = ['issue', 'hotspot'] as const;

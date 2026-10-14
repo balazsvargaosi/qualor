@@ -6,6 +6,7 @@ import { analysisRoutes } from './analyses';
 import { autoFixRoutes } from './auto-fix';
 import { authRoutes } from './auth';
 import { branchRoutes } from './branches';
+import { dependencyRoutes } from './dependencies';
 import { gateRoutes } from './gates';
 import { githubWebhookRoutes } from './github-webhooks';
 import { issueRoutes } from './issues';
@@ -40,6 +41,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   await app.register(analysisRoutes, { prefix: '/api/v0', deps });
   await app.register(newCodeRoutes, { prefix: '/api/v0', deps });
   await app.register(measureRoutes, { prefix: '/api/v0', deps });
+  await app.register(dependencyRoutes, { prefix: '/api/v0', deps });
   await app.register(gateRoutes, { prefix: '/api/v0', deps });
   await app.register(issueRoutes, { prefix: '/api/v0', deps, chargeIssueChanges });
   await app.register(issueStatusImportRoutes, { prefix: '/api/v0', deps });

@@ -3855,6 +3855,114 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v0/projects/{key}/dependencies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The dependency inventory of a branch or merge request (the main branch by default), filtered and paged */
+        get: {
+            parameters: {
+                query?: {
+                    branch?: string;
+                    mr?: number;
+                    license?: string;
+                    group?: "network-copyleft" | "strong-copyleft" | "weak-copyleft" | "non-commercial-or-source-available";
+                    ecosystem?: string;
+                    unknown?: "true" | "false";
+                    direct?: "true" | "false";
+                    q?: string;
+                    page?: number;
+                    pageSize?: number;
+                };
+                header?: never;
+                path: {
+                    key: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            rows: {
+                                ecosystem: string;
+                                path: string;
+                                line: number | null;
+                                name: string;
+                                version: string;
+                                licenses: string[];
+                                direct: boolean | null;
+                            }[];
+                            page: number;
+                            pageSize: number;
+                            total: number;
+                            summary: {
+                                total: number;
+                                known: number;
+                                unknown: number;
+                                byLicense: {
+                                    license: string;
+                                    count: number;
+                                }[];
+                            };
+                            inventory: boolean;
+                        };
+                    };
+                };
+                /** @description Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS) */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Authenticated but not allowed (FORBIDDEN, INSUFFICIENT_SCOPE, TOKEN_NOT_ALLOWED, SESSION_REQUIRED, CSRF_FAILED, PASSWORD_CHANGE_REQUIRED) */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Not found, or not visible to the caller */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Validation failed (VALIDATION_FAILED; errors[] names each field) */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v0/metrics": {
         parameters: {
             query?: never;
@@ -4855,7 +4963,7 @@ export interface paths {
                     branchId: string;
                     status?: ("open" | "resolved" | "wont_fix" | "false_positive" | "closed") | ("open" | "resolved" | "wont_fix" | "false_positive" | "closed")[];
                     severity?: ("blocker" | "high" | "medium" | "low" | "info") | ("blocker" | "high" | "medium" | "low" | "info")[];
-                    quality?: ("security" | "reliability" | "maintainability") | ("security" | "reliability" | "maintainability")[];
+                    quality?: ("security" | "reliability" | "maintainability" | "licensing") | ("security" | "reliability" | "maintainability" | "licensing")[];
                     kind?: ("issue" | "hotspot") | ("issue" | "hotspot")[];
                     rule?: string | string[];
                     engine?: string | string[];
@@ -4895,7 +5003,7 @@ export interface paths {
                                 severity: "blocker" | "high" | "medium" | "low" | "info";
                                 severityOverridden: boolean;
                                 /** @enum {string} */
-                                quality: "security" | "reliability" | "maintainability";
+                                quality: "security" | "reliability" | "maintainability" | "licensing";
                                 /** @enum {string} */
                                 kind: "issue" | "hotspot";
                                 /** @enum {string} */
@@ -5014,7 +5122,7 @@ export interface paths {
                                 /** @enum {string} */
                                 defaultSeverity: "blocker" | "high" | "medium" | "low" | "info";
                                 /** @enum {string} */
-                                quality: "security" | "reliability" | "maintainability";
+                                quality: "security" | "reliability" | "maintainability" | "licensing";
                                 /** @enum {string} */
                                 kind: "issue" | "hotspot";
                                 tags: string[];
@@ -5024,7 +5132,7 @@ export interface paths {
                             severity: "blocker" | "high" | "medium" | "low" | "info";
                             severityOverridden: boolean;
                             /** @enum {string} */
-                            quality: "security" | "reliability" | "maintainability";
+                            quality: "security" | "reliability" | "maintainability" | "licensing";
                             /** @enum {string} */
                             kind: "issue" | "hotspot";
                             /** @enum {string} */
@@ -5149,7 +5257,7 @@ export interface paths {
                                 /** @enum {string} */
                                 defaultSeverity: "blocker" | "high" | "medium" | "low" | "info";
                                 /** @enum {string} */
-                                quality: "security" | "reliability" | "maintainability";
+                                quality: "security" | "reliability" | "maintainability" | "licensing";
                                 /** @enum {string} */
                                 kind: "issue" | "hotspot";
                                 tags: string[];
@@ -5159,7 +5267,7 @@ export interface paths {
                             severity: "blocker" | "high" | "medium" | "low" | "info";
                             severityOverridden: boolean;
                             /** @enum {string} */
-                            quality: "security" | "reliability" | "maintainability";
+                            quality: "security" | "reliability" | "maintainability" | "licensing";
                             /** @enum {string} */
                             kind: "issue" | "hotspot";
                             /** @enum {string} */
@@ -5320,7 +5428,7 @@ export interface paths {
                                 /** @enum {string} */
                                 defaultSeverity: "blocker" | "high" | "medium" | "low" | "info";
                                 /** @enum {string} */
-                                quality: "security" | "reliability" | "maintainability";
+                                quality: "security" | "reliability" | "maintainability" | "licensing";
                                 /** @enum {string} */
                                 kind: "issue" | "hotspot";
                                 tags: string[];
@@ -5330,7 +5438,7 @@ export interface paths {
                             severity: "blocker" | "high" | "medium" | "low" | "info";
                             severityOverridden: boolean;
                             /** @enum {string} */
-                            quality: "security" | "reliability" | "maintainability";
+                            quality: "security" | "reliability" | "maintainability" | "licensing";
                             /** @enum {string} */
                             kind: "issue" | "hotspot";
                             /** @enum {string} */
@@ -5804,7 +5912,7 @@ export interface paths {
                     q?: string;
                     engine?: string;
                     language?: string;
-                    quality?: "security" | "reliability" | "maintainability";
+                    quality?: "security" | "reliability" | "maintainability" | "licensing";
                     severity?: "blocker" | "high" | "medium" | "low" | "info";
                 };
                 header?: never;
@@ -5831,7 +5939,7 @@ export interface paths {
                                 /** @enum {string} */
                                 defaultSeverity: "blocker" | "high" | "medium" | "low" | "info";
                                 /** @enum {string} */
-                                quality: "security" | "reliability" | "maintainability";
+                                quality: "security" | "reliability" | "maintainability" | "licensing";
                                 /** @enum {string} */
                                 kind: "issue" | "hotspot";
                                 tags: string[];
@@ -5933,7 +6041,7 @@ export interface paths {
                             /** @enum {string} */
                             defaultSeverity: "blocker" | "high" | "medium" | "low" | "info";
                             /** @enum {string} */
-                            quality: "security" | "reliability" | "maintainability";
+                            quality: "security" | "reliability" | "maintainability" | "licensing";
                             /** @enum {string} */
                             kind: "issue" | "hotspot";
                             tags: string[];

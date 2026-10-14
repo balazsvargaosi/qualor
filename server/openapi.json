@@ -7665,6 +7665,317 @@
         }
       }
     },
+    "/api/v0/projects/{key}/dependencies": {
+      "get": {
+        "summary": "The dependency inventory of a branch or merge request (the main branch by default), filtered and paged",
+        "tags": [
+          "dependencies"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            },
+            "in": "query",
+            "name": "branch",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "in": "query",
+            "name": "mr",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "in": "query",
+            "name": "license",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "network-copyleft",
+                "strong-copyleft",
+                "weak-copyleft",
+                "non-commercial-or-source-available"
+              ]
+            },
+            "in": "query",
+            "name": "group",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-z0-9-]{1,32}$"
+            },
+            "in": "query",
+            "name": "ecosystem",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            },
+            "in": "query",
+            "name": "unknown",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            },
+            "in": "query",
+            "name": "direct",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "in": "query",
+            "name": "q",
+            "required": false
+          },
+          {
+            "schema": {
+              "default": 1,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100000
+            },
+            "in": "query",
+            "name": "page",
+            "required": false
+          },
+          {
+            "schema": {
+              "default": 50,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500
+            },
+            "in": "query",
+            "name": "pageSize",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._/:-]{1,255}$"
+            },
+            "in": "path",
+            "name": "key",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "rows": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "ecosystem": {
+                            "type": "string"
+                          },
+                          "path": {
+                            "type": "string"
+                          },
+                          "line": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "version": {
+                            "type": "string"
+                          },
+                          "licenses": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "direct": {
+                            "type": [
+                              "boolean",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "ecosystem",
+                          "path",
+                          "line",
+                          "name",
+                          "version",
+                          "licenses",
+                          "direct"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "page": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "pageSize": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "total": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "summary": {
+                      "type": "object",
+                      "properties": {
+                        "total": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "known": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "unknown": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "byLicense": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "license": {
+                                "type": "string"
+                              },
+                              "count": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": [
+                              "license",
+                              "count"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "total",
+                        "known",
+                        "unknown",
+                        "byLicense"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "inventory": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "rows",
+                    "page",
+                    "pageSize",
+                    "total",
+                    "summary",
+                    "inventory"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated but not allowed (FORBIDDEN, INSUFFICIENT_SCOPE, TOKEN_NOT_ALLOWED, SESSION_REQUIRED, CSRF_FAILED, PASSWORD_CHANGE_REQUIRED)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed (VALIDATION_FAILED; errors[] names each field)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v0/metrics": {
       "get": {
         "summary": "The metric catalog",
@@ -9327,19 +9638,21 @@
                   "enum": [
                     "security",
                     "reliability",
-                    "maintainability"
+                    "maintainability",
+                    "licensing"
                   ]
                 },
                 {
                   "minItems": 1,
-                  "maxItems": 3,
+                  "maxItems": 4,
                   "type": "array",
                   "items": {
                     "type": "string",
                     "enum": [
                       "security",
                       "reliability",
-                      "maintainability"
+                      "maintainability",
+                      "licensing"
                     ]
                   }
                 }
@@ -9573,7 +9886,8 @@
                             "enum": [
                               "security",
                               "reliability",
-                              "maintainability"
+                              "maintainability",
+                              "licensing"
                             ]
                           },
                           "kind": {
@@ -9906,7 +10220,8 @@
                           "enum": [
                             "security",
                             "reliability",
-                            "maintainability"
+                            "maintainability",
+                            "licensing"
                           ]
                         },
                         "kind": {
@@ -9963,7 +10278,8 @@
                       "enum": [
                         "security",
                         "reliability",
-                        "maintainability"
+                        "maintainability",
+                        "licensing"
                       ]
                     },
                     "kind": {
@@ -10370,7 +10686,8 @@
                           "enum": [
                             "security",
                             "reliability",
-                            "maintainability"
+                            "maintainability",
+                            "licensing"
                           ]
                         },
                         "kind": {
@@ -10427,7 +10744,8 @@
                       "enum": [
                         "security",
                         "reliability",
-                        "maintainability"
+                        "maintainability",
+                        "licensing"
                       ]
                     },
                     "kind": {
@@ -10874,7 +11192,8 @@
                           "enum": [
                             "security",
                             "reliability",
-                            "maintainability"
+                            "maintainability",
+                            "licensing"
                           ]
                         },
                         "kind": {
@@ -10931,7 +11250,8 @@
                       "enum": [
                         "security",
                         "reliability",
-                        "maintainability"
+                        "maintainability",
+                        "licensing"
                       ]
                     },
                     "kind": {
@@ -12086,7 +12406,8 @@
               "enum": [
                 "security",
                 "reliability",
-                "maintainability"
+                "maintainability",
+                "licensing"
               ]
             },
             "in": "query",
@@ -12167,7 +12488,8 @@
                             "enum": [
                               "security",
                               "reliability",
-                              "maintainability"
+                              "maintainability",
+                              "licensing"
                             ]
                           },
                           "kind": {
@@ -12378,7 +12700,8 @@
                       "enum": [
                         "security",
                         "reliability",
-                        "maintainability"
+                        "maintainability",
+                        "licensing"
                       ]
                     },
                     "kind": {

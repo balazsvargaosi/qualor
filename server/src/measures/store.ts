@@ -1,8 +1,14 @@
-import { allMetricKeys, type Quality, type Report, type Severity } from '@qualor/shared';
+import {
+  allMetricKeys,
+  type DependencyEntry,
+  type Quality,
+  type Report,
+  type Severity,
+} from '@qualor/shared';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { jsonChunks } from '../db/bulk';
 import type { Executor } from '../db/client';
-import { branchFiles, issues } from '../db/schema';
+import { branchDependencies, branchFiles, issues } from '../db/schema';
 import type { MeasureValues } from '../ingest/state';
 import type { NewCodeClassifier } from '../newcode/lines';
 import {
@@ -252,5 +258,41 @@ export async function replaceBranchFiles(
         r.new_lines, r.duplications, ${analysisId}
       FROM jsonb_to_recordset(${chunk}::jsonb) AS r(path text, language text, kind text,
         sha256 text, metrics jsonb, coverage jsonb, new_lines jsonb, duplications jsonb)`);
+  }
+}
+
+/** Rows per INSERT of {@link replaceBranchDependencies}: a 50 000-entry inventory is 50 statements. */
+const DEPENDENCY_BATCH = 1_000;
+
+/**
+ * 6M §4: `branch_dependencies` is the dependency inventory of the branch's latest analysis that
+ * carried one, replaced in the ingestion transaction. The entries are stored as the report gives
+ * them: the scanner already normalised the licences and merged duplicates by
+ * (path, ecosystem, name, version), and `path` need not be one of the report's files.
+ */
+export async function replaceBranchDependencies(
+  tx: Executor,
+  branchId: string,
+  analysisId: string,
+  entries: readonly DependencyEntry[],
+): Promise<void> {
+  await tx.delete(branchDependencies).where(eq(branchDependencies.branchId, branchId));
+  const rows = entries.map((e) => ({
+    path: e.path,
+    ecosystem: e.ecosystem,
+    name: e.name,
+    version: e.version,
+    licenses: e.licenses,
+    direct: e.direct ?? null,
+    line: e.line ?? null,
+  }));
+  for (const chunk of jsonChunks(rows, { maxRows: DEPENDENCY_BATCH })) {
+    await tx.execute(sql`
+      INSERT INTO branch_dependencies (branch_id, path, ecosystem, name, version, licenses,
+        direct, line, analysis_id)
+      SELECT ${branchId}, r.path, r.ecosystem, r.name, r.version, r.licenses, r.direct, r.line,
+        ${analysisId}
+      FROM jsonb_to_recordset(${chunk}::jsonb) AS r(path text, ecosystem text, name text,
+        version text, licenses text[], direct boolean, line integer)`);
   }
 }
