@@ -197,14 +197,20 @@ public class Big
     <None Remove="Views/Shared/Lay out.cshtml;Excluded.cshtml" />
     <Content Include="Views/Shared/Lay out.cshtml" />
     <AdditionalFiles Include="Views/Shared/Lay out.cshtml" />
+    <None Update="Views/Home/Copied.cshtml" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Plugins/**" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
 `,
       );
       write('app dir/Program.cs', 'System.Console.WriteLine(Lib.L.N);\n');
-      // R-11: the Razor views among the project's items are recorded once each (a plain SDK
-      // project's None items take every file); a file in no item and other extensions are not.
+      // R-11: the Razor views among the project's items are recorded once each; a None item only
+      // when the project copies it to its output (a plain SDK project's None items take every
+      // file, and an application may hold other projects' built views as None, as nopCommerce's
+      // Nop.Web does with its Plugins folder); a file in no item and other extensions are not.
       write('app dir/Views/Home/Ïndex.cshtml', '<p>@Model</p>\n');
+      write('app dir/Views/Home/Copied.cshtml', '<p>@Model</p>\n');
+      write('app dir/Plugins/Other/Views/Configure.cshtml', '<p>@Model</p>\n');
       write('app dir/Views/Shared/Lay out.cshtml', '@RenderBody()\n');
       write('app dir/Views/readme.txt', 'not a view\n');
       write('app dir/Excluded.cshtml', '<p>in no item</p>\n');
@@ -272,7 +278,7 @@ public class Big
       expect(defines[0]!.split(';')).toEqual(expect.arrayContaining(['A', 'B']));
       expect(app.get('razor-view').sort()).toEqual(
         [
-          path.join(root, 'app dir', 'Views', 'Home', 'Ïndex.cshtml'),
+          path.join(root, 'app dir', 'Views', 'Home', 'Copied.cshtml'),
           path.join(root, 'app dir', 'Views', 'Shared', 'Lay out.cshtml'),
         ].sort(),
       );

@@ -163,11 +163,16 @@ describe('the hook text', () => {
   it('records the Razor views of the project items as razor-view lines, absolute and once each (R-11)', () => {
     // The format stays v1: the engine's reader ignores keys it does not know.
     expect(text).toContain('qualor-compilation=1');
-    for (const item of ['Content', 'None', 'RazorGenerate', 'RazorCompile', 'AdditionalFiles']) {
+    for (const item of ['Content', 'RazorGenerate', 'RazorCompile', 'AdditionalFiles']) {
       expect(text).toContain(
         `<_QualorRazorView Include="@(${item})" Condition="'%(${item}.Extension)' == '.cshtml'" />`,
       );
     }
+    // A None view only when the project copies it to its own output: nopCommerce's Nop.Web holds
+    // the plugins' built views as None items (published only), which are no views of its own.
+    expect(text).toContain(
+      `<_QualorRazorView Include="@(None)" Condition="'%(None.Extension)' == '.cshtml' and '%(None.CopyToOutputDirectory)' != '' and '%(None.CopyToOutputDirectory)' != 'Never'" />`,
+    );
     expect(text).toContain(
       `<_QualorIn Include="@(_QualorRazorView->'razor-view=%(FullPath)'->Distinct())" />`,
     );
