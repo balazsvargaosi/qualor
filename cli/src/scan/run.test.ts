@@ -1166,11 +1166,12 @@ copyFileSync(${JSON.stringify(
       // New-code classification of a licence finding needs its lockfile among the files.
       const files = new Set(report.files.map((f) => f.path));
       for (const d of report.dependencies ?? []) expect(files, d.path).toContain(d.path);
+      // The gitignored module cache counts; web/testdata/ is a built-in exclude, left out silently.
       expect(report.warnings.filter((w) => w.code === 'DEPENDENCIES_OUT_OF_SCOPE')).toEqual([
         {
           code: 'DEPENDENCIES_OUT_OF_SCOPE',
-          message: expect.stringContaining('2 dependencies from 2 lockfiles') as string,
-          count: 2,
+          message: expect.stringContaining('1 dependencies from 1 lockfiles') as string,
+          count: 1,
         },
       ]);
     },
