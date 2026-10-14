@@ -48,14 +48,20 @@ This page covers two things:
 ### Managing members
 
 **Settings → Members** (Organization admins) lists the organisation's members and their roles. Add
-someone by their **exact** user name (looked up with `GET /users/lookup`, which needs the same
-permission), change a role to any of the four, or remove a member. An organisation always keeps at
+someone by name: as you type, the field suggests the active users who are not members yet, whose
+user name starts with what you typed or whose display name has a word that does (from two
+characters, or one for an instance admin). Pick one with the arrow keys and Enter, or click it. You
+can also type the whole user name and press **Add member**: Qualor then looks it up
+(`GET /users/lookup`). Both requests need the same permission as the screen. Change a role to any
+of the four, or remove a member. An organisation always keeps at
 least one Organization admin: demoting or removing its last one answers 409 `LAST_ADMIN` (an
 instance admin does not count unless they hold that role in the organisation). Make someone else
 Organization admin first.
 
 **Project → Access** (Organization admins only — a Project admin cannot grant roles) does the same
-for a role on one project: give someone a role by exact user name, change it, or remove it. The tab
+for a role on one project: give someone a role, change it, or remove it. The name field suggests
+active users the same way, members of the organisation or not (a role on one project can go to
+anyone), and leaves out those who already have a role on the project. The tab
 reminds you that organisation roles apply on top of these. A project accepts at most **1 000**
 roles granted directly on it; beyond that, `PUT` answers 409 `PROJECT_GRANT_LIMIT_REACHED`.
 
@@ -174,6 +180,10 @@ as retention keeps the event — worth knowing for your own privacy notice.
 (sign-ins, user and licence changes, single sign-on and SCIM, AI and audit settings). Organisation
 admins read and export only their own organisation's events, in **Settings → Audit log**; naming another organisation, or
 one that does not exist, answers 404, the same as elsewhere in the API.
+
+The **User name** filter of **Settings → Audit log** suggests active users as you type, as
+**Settings → Members** does; pick one, or type the whole user name. The API's `actorUserId` takes
+the user's id.
 
 ### Retention
 

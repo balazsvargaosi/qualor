@@ -40,7 +40,8 @@ needs one to get [project notifications](./email.md#project-notifications); an i
 administrator sets it in **Settings → Users**.
 
 Organization admins manage organisation membership and roles in **Settings → Members**: add
-someone by their exact user name, change their role, or remove them. An organisation always keeps
+someone by name (the field suggests people who are not members yet as you type, or type the whole
+user name), change their role, or remove them. An organisation always keeps
 at least one Organization admin: demoting or removing the last one answers 409 `LAST_ADMIN`, so
 make someone else Organization admin first. The same screen calls the API:
 

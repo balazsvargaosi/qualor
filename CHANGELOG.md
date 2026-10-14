@@ -62,6 +62,15 @@ All notable changes to Qualor are listed here, newest first. The format follows
   applies from each project's next analysis. It needs a licence key listing the new feature
   `license-policy`. The new permission `org.licenses.manage` (Organization admin) and the audit
   action `organization.license_policy_changed` go with it.
+- Name suggestions: the user name fields of **Settings → Members** (Add member), **Project →
+  Access** and the **Settings → Audit log** filter suggest active users as you type, by the start
+  of their user name or of a word of their display name. Pick one with the arrow keys and Enter, or
+  click it; typing the whole user name still works. Add member leaves out the organisation's
+  members, and Access leaves out the people who already have a role on the project.
+- API: `GET /users/search?q=` returns up to 10 matching active users (id, user name and display
+  name; never the email address), with `limit` and `excludeOrganization`. It has the permission of
+  `GET /users/lookup` and allows 60 requests a minute per caller. `GET /organizations/{id}/members`
+  takes `q` with the same match.
 
 ### Changed
 
