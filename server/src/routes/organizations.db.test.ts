@@ -281,6 +281,11 @@ describe('organizations and members', () => {
         .sort();
     expect(await names('q=QU')).toEqual(['Quentin', 'quinn', 'rita']);
     expect(await names('q=zed')).toEqual(['quinn']);
+    // q is trimmed; nothing left is refused, as an empty q is.
+    expect(await names('q=%20zed%20')).toEqual(['quinn']);
+    expect(
+      paths(await call('GET', `/organizations/${org}/members?q=%20%20`, admin.headers)),
+    ).toEqual(['query.q']);
     expect(await names('q=quinn')).toEqual(['quinn']);
     // any word of the display name, not the middle of one.
     expect(await names('q=RIT')).toEqual(['rita']);

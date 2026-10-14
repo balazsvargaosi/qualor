@@ -37,7 +37,7 @@ import type { Executor } from '../db/client';
 import { PG_UNIQUE_VIOLATION, pgConstraint, pgErrorCode } from '../db/errors';
 import { LOCKS } from '../db/locks';
 import { first } from '../db/rows';
-import { apiTokens, identities, memberships, users } from '../db/schema';
+import { apiTokens, identities, memberships, projectMemberships, users } from '../db/schema';
 import { decodeCursor, pageQuery, pageSchema, toPage } from '../http/pagination';
 import { conflict, type FieldError, forbidden, notFound, validationFailed } from '../http/problem';
 import {
@@ -61,6 +61,7 @@ import { mailDeps, queueMail } from '../mail/outbox';
 import { renderInvitationMail } from '../mail/templates/account-invitation';
 import { instanceHost } from '../mail/templates/text';
 import { USERNAME_PATTERN } from '../patterns';
+import { projectForUser } from '../projects/access';
 import {
   assertBreakGlassKept,
   effectivePasswordPolicy,
@@ -326,16 +327,26 @@ export const userRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (app
       schema: {
         tags: ['users'],
         summary:
-          'Suggest active users whose username or display name starts with q, ignoring case (org admins, to add a member); only id, username and display name',
+          'Suggest active users whose username starts with q, or a word of whose display name does, ignoring case (org admins, to add a member or a project role); only id, username and display name',
         querystring: z.strictObject({
           q: text(SEARCH_MAX).meta({
             description:
-              'The start of a username or display name, ignoring case: at least 2 characters (1 for an instance admin); % and _ match themselves',
+              'The start of a username, or of a word of a display name (words split at spaces and hyphens), ignoring case; trimmed, then at least 2 characters (1 for an instance admin), at most 64 UTF-16 units; % and _ match themselves',
           }),
-          limit: z.coerce.number().int().min(1).max(SEARCH_LIMIT).default(SEARCH_LIMIT),
+          limit: z.coerce
+            .number()
+            .int()
+            .min(1)
+            .max(SEARCH_LIMIT)
+            .default(SEARCH_LIMIT)
+            .meta({ description: '1 to 10 users; 10 by default' }),
           excludeOrganization: z.uuid().optional().meta({
             description:
               'Leave out the members of this organisation; the caller must be allowed to manage its members',
+          }),
+          excludeProject: z.uuid().optional().meta({
+            description:
+              "Leave out the users with a role granted on this project; the caller must be allowed to manage its grants (org.members.manage on the project's organisation)",
           }),
         }),
         response: { 200: z.object({ users: z.array(userSuggestionSchema) }) },
@@ -345,7 +356,9 @@ export const userRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (app
       const principal = requireUser(request, 'admin');
       const access = accessOf(deps);
       await requireMembersManager(access, principal);
-      const { q, limit, excludeOrganization } = request.query;
+      const { limit, excludeOrganization, excludeProject } = request.query;
+      // spaces around the name are not part of it: " a" is one character, not two.
+      const q = request.query.q.trim();
       const min = principal.user.isInstanceAdmin ? 1 : 2;
       // characters as a person counts them (code points), not UTF-16 units.
       if ([...q].length < min) {
@@ -356,6 +369,17 @@ export const userRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (app
           access,
           principal,
           excludeOrganization,
+          'org.members.manage',
+        );
+      }
+      if (excludeProject !== undefined) {
+        // as PUT /projects/{id}/members/{userId}: 404 for a project the caller cannot see, 403
+        // when it may not manage the members of the project's organisation.
+        const project = await projectForUser(access, principal, excludeProject, 'project.read');
+        await requireOrganizationAccess(
+          access,
+          principal,
+          project.organizationId,
           'org.members.manage',
         );
       }
@@ -377,6 +401,19 @@ export const userRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (app
                       and(
                         eq(memberships.organizationId, excludeOrganization),
                         eq(memberships.userId, users.id),
+                      ),
+                    ),
+                ),
+            excludeProject === undefined
+              ? undefined
+              : notExists(
+                  deps.db
+                    .select({ one: sql`1` })
+                    .from(projectMemberships)
+                    .where(
+                      and(
+                        eq(projectMemberships.projectId, excludeProject),
+                        eq(projectMemberships.userId, users.id),
                       ),
                     ),
                 ),

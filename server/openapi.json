@@ -1774,7 +1774,7 @@
     },
     "/api/v0/users/search": {
       "get": {
-        "summary": "Suggest active users whose username or display name starts with q, ignoring case (org admins, to add a member); only id, username and display name",
+        "summary": "Suggest active users whose username starts with q, or a word of whose display name does, ignoring case (org admins, to add a member or a project role); only id, username and display name",
         "tags": [
           "users"
         ],
@@ -1788,7 +1788,7 @@
             "in": "query",
             "name": "q",
             "required": true,
-            "description": "The start of a username or display name, ignoring case: at least 2 characters (1 for an instance admin); % and _ match themselves"
+            "description": "The start of a username, or of a word of a display name (words split at spaces and hyphens), ignoring case; trimmed, then at least 2 characters (1 for an instance admin), at most 64 UTF-16 units; % and _ match themselves"
           },
           {
             "schema": {
@@ -1799,7 +1799,8 @@
             },
             "in": "query",
             "name": "limit",
-            "required": false
+            "required": false,
+            "description": "1 to 10 users; 10 by default"
           },
           {
             "schema": {
@@ -1811,6 +1812,17 @@
             "name": "excludeOrganization",
             "required": false,
             "description": "Leave out the members of this organisation; the caller must be allowed to manage its members"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            "in": "query",
+            "name": "excludeProject",
+            "required": false,
+            "description": "Leave out the users with a role granted on this project; the caller must be allowed to manage its grants (org.members.manage on the project's organisation)"
           }
         ],
         "responses": {
@@ -3889,7 +3901,7 @@
             "in": "query",
             "name": "q",
             "required": false,
-            "description": "Only active members whose username, or a word of whose display name, starts with this, ignoring case; % and _ match themselves"
+            "description": "Only active members whose username, or a word of whose display name, starts with this, ignoring case; trimmed, then at least 1 character; % and _ match themselves"
           },
           {
             "schema": {

@@ -1208,15 +1208,18 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Suggest active users whose username or display name starts with q, ignoring case (org admins, to add a member); only id, username and display name */
+        /** Suggest active users whose username starts with q, or a word of whose display name does, ignoring case (org admins, to add a member or a project role); only id, username and display name */
         get: {
             parameters: {
                 query: {
-                    /** @description The start of a username or display name, ignoring case: at least 2 characters (1 for an instance admin); % and _ match themselves */
+                    /** @description The start of a username, or of a word of a display name (words split at spaces and hyphens), ignoring case; trimmed, then at least 2 characters (1 for an instance admin), at most 64 UTF-16 units; % and _ match themselves */
                     q: string;
+                    /** @description 1 to 10 users; 10 by default */
                     limit?: number;
                     /** @description Leave out the members of this organisation; the caller must be allowed to manage its members */
                     excludeOrganization?: string;
+                    /** @description Leave out the users with a role granted on this project; the caller must be allowed to manage its grants (org.members.manage on the project's organisation) */
+                    excludeProject?: string;
                 };
                 header?: never;
                 path?: never;
@@ -2462,7 +2465,7 @@ export interface paths {
                 query?: {
                     limit?: number;
                     cursor?: string;
-                    /** @description Only active members whose username, or a word of whose display name, starts with this, ignoring case; % and _ match themselves */
+                    /** @description Only active members whose username, or a word of whose display name, starts with this, ignoring case; trimmed, then at least 1 character; % and _ match themselves */
                     q?: string;
                 };
                 header?: never;

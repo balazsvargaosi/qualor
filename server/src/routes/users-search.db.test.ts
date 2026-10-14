@@ -3,6 +3,7 @@ import {
   addMember,
   ADMIN_PASSWORD,
   bearer,
+  createProject,
   createTestContext,
   createUser,
   login,
@@ -239,6 +240,69 @@ describe('GET /users/search', () => {
     expect(unknown.statusCode).toBe(404);
     expect(paths(await get(root.headers, '/users/search?q=al&excludeOrganization=nope'))).toEqual([
       'query.excludeOrganization',
+    ]);
+  });
+
+  it('trims q before counting its characters and matching', async () => {
+    // " a " is one character: too short for an org admin, as "a" is.
+    expect(paths(await get(orgAdmin.headers, '/users/search?q=%20a%20'))).toEqual(['query.q']);
+    expect(paths(await get(root.headers, '/users/search?q=%20%20'))).toEqual(['query.q']);
+    expect(names(await get(orgAdmin.headers, '/users/search?q=%20%20smi%20'))).toEqual(['alice']);
+    expect(names(await get(root.headers, '/users/search?q=%20a'))).toEqual(
+      names(await get(root.headers, '/users/search?q=a')),
+    );
+  });
+
+  it('hides the users with a grant on excludeProject, whose grants the caller must manage', async () => {
+    const granted = await createUser(ctx, { username: 'exa' });
+    await createUser(ctx, { username: 'exb', displayName: 'Ex Bee' });
+    const shop = await createProject(ctx, root, { organizationId: defaultOrg, key: 'ex/shop' });
+    const viewedProject = await createProject(ctx, root, {
+      organizationId: viewedOrg,
+      key: 'ex/viewed',
+    });
+    const hiddenProject = await createProject(ctx, root, {
+      organizationId: hiddenOrg,
+      key: 'ex/hidden',
+    });
+    const grant = await ctx.app.inject({
+      method: 'PUT',
+      url: `/api/v0/projects/${shop.id}/members/${granted.id}`,
+      headers: root.headers,
+      payload: { role: 'viewer' },
+    });
+    expect(grant.statusCode).toBe(200);
+    expect(names(await get(orgAdmin.headers, '/users/search?q=ex'))).toEqual(['exa', 'exb']);
+    expect(
+      names(await get(orgAdmin.headers, `/users/search?q=ex&excludeProject=${shop.id}`)),
+    ).toEqual(['exb']);
+    // a grant elsewhere hides no one here.
+    expect(
+      names(await get(root.headers, `/users/search?q=ex&excludeProject=${hiddenProject.id}`)),
+    ).toEqual(['exa', 'exb']);
+    // as PUT /projects/{id}/members: visible but not managed is 403, invisible or unknown 404.
+    const viewed = await get(
+      orgAdmin.headers,
+      `/users/search?q=ex&excludeProject=${viewedProject.id}`,
+    );
+    expect([viewed.statusCode, (viewed.json() as { code: string }).code]).toEqual([
+      403,
+      'FORBIDDEN',
+    ]);
+    expect(
+      (await get(orgAdmin.headers, `/users/search?q=ex&excludeProject=${hiddenProject.id}`))
+        .statusCode,
+    ).toBe(404);
+    expect(
+      (
+        await get(
+          root.headers,
+          '/users/search?q=ex&excludeProject=00000000-0000-4000-8000-000000000000',
+        )
+      ).statusCode,
+    ).toBe(404);
+    expect(paths(await get(root.headers, '/users/search?q=ex&excludeProject=nope'))).toEqual([
+      'query.excludeProject',
     ]);
   });
 

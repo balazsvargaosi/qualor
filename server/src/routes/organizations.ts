@@ -21,7 +21,7 @@ import {
   users,
 } from '../db/schema';
 import { decodeCursor, pageQuery, pageSchema, toPage } from '../http/pagination';
-import { conflict, notFound } from '../http/problem';
+import { conflict, notFound, validationFailed } from '../http/problem';
 import { iso, idParams, noContent, text, timestamp } from '../http/schemas';
 import { createOrganization, type OrganizationRow } from '../orgs/service';
 import { ORGANIZATION_KEY_PATTERN } from '../patterns';
@@ -170,7 +170,7 @@ export const organizationRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = as
           ...pageQuery,
           q: text(64).optional().meta({
             description:
-              'Only active members whose username, or a word of whose display name, starts with this, ignoring case; % and _ match themselves',
+              'Only active members whose username, or a word of whose display name, starts with this, ignoring case; trimmed, then at least 1 character; % and _ match themselves',
           }),
         }),
         response: { 200: pageSchema(memberSchema) },
@@ -184,6 +184,11 @@ export const organizationRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = as
         request.params.id,
         'org.members.read',
       );
+      // spaces around the name are not part of it; nothing left is no filter at all: refused.
+      const q = request.query.q?.trim();
+      if (q === '') {
+        throw validationFailed([{ path: 'query.q', message: 'Type at least 1 character' }]);
+      }
       const after = decodeCursor(request.query.cursor);
       const rows = await deps.db
         .select({
@@ -203,9 +208,7 @@ export const organizationRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = as
             eq(memberships.organizationId, request.params.id),
             after ? gt(users.id, after) : undefined,
             // the user pickers' match; a search suggests active members only.
-            request.query.q === undefined
-              ? undefined
-              : and(eq(users.active, true), userNameMatches(request.query.q)),
+            q === undefined ? undefined : and(eq(users.active, true), userNameMatches(q)),
           ),
         )
         .orderBy(asc(users.id))
