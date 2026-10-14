@@ -5,11 +5,14 @@ export const BULK_MAX_ROWS = 5_000;
 export const BULK_MAX_BYTES = 4 * 1024 * 1024;
 
 /** Postgres `text` and `jsonb` both reject U+0000; report text (a snippet of a binary-ish file,
- *  a message) may contain it. Every string written through {@link jsonChunks} loses it. */
-function withoutNul(_key: string, value: unknown): unknown {
-  return typeof value === 'string' && value.includes('\u0000')
-    ? value.replaceAll('\u0000', '')
-    : value;
+ *  a message) may contain it. The string without it. */
+export function withoutNul(value: string): string {
+  return value.includes('\u0000') ? value.replaceAll('\u0000', '') : value;
+}
+
+/** The `JSON.stringify` replacer: every string written through {@link jsonChunks} loses U+0000. */
+function nulReplacer(_key: string, value: unknown): unknown {
+  return typeof value === 'string' ? withoutNul(value) : value;
 }
 
 /**
@@ -33,7 +36,7 @@ export function* jsonChunks(
   let current: string[] = [];
   let size = 2;
   for (const row of rows) {
-    const json = JSON.stringify(row, withoutNul);
+    const json = JSON.stringify(row, nulReplacer);
     if (current.length > 0 && (current.length >= maxRows || size + json.length + 1 > maxBytes)) {
       yield `[${current.join(',')}]`;
       current = [];
@@ -47,7 +50,7 @@ export function* jsonChunks(
 
 /** `(SELECT … FROM jsonb_array_elements_text($1))`: an IN-list of any length as one parameter. */
 export function textList(values: readonly string[]): SQL {
-  return sql`(SELECT jsonb_array_elements_text(${JSON.stringify(values, withoutNul)}::jsonb))`;
+  return sql`(SELECT jsonb_array_elements_text(${JSON.stringify(values, nulReplacer)}::jsonb))`;
 }
 
 /** {@link textList} for uuid columns. */

@@ -6,7 +6,7 @@ import {
   type Severity,
 } from '@qualor/shared';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
-import { jsonChunks } from '../db/bulk';
+import { jsonChunks, withoutNul } from '../db/bulk';
 import type { Executor } from '../db/client';
 import { branchDependencies, branchFiles, issues } from '../db/schema';
 import type { MeasureValues } from '../ingest/state';
@@ -317,8 +317,6 @@ export interface DependencyRowInput {
   direct: boolean | null;
   line: number | null;
 }
-
-const withoutNul = (s: string) => (s.includes(' ') ? s.replaceAll(' ', '') : s);
 
 /**
  * The rows of an inventory, one per key (path, ecosystem, name, version) as the table's primary
