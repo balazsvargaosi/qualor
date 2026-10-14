@@ -285,7 +285,9 @@ q -X PUT "$QUALOR_URL/api/v0/organizations/<org id>/license-policy" -d '{"policy
 - `PUT /organizations/{id}/license-policy` answers 403 `FEATURE_NOT_LICENSED` without
   `license-policy`, and 400 `INVALID_LICENSE_ID` for an entry that is not an SPDX identifier or
   `id WITH exception` term; `details.invalid` lists them. Entries are stored in their canonical
-  spelling.
+  spelling. `{"policy":null}` removes the policy, also one that can no longer be read. It answers
+  409 `LICENSE_POLICIES_UNREADABLE` when the stored policies of all organisations (the instance
+  setting `licensePolicy`) cannot be read; nothing is changed until that row is fixed or deleted.
 
 ## Warnings
 
@@ -297,5 +299,5 @@ q -X PUT "$QUALOR_URL/api/v0/organizations/<org id>/license-policy" -d '{"policy
 | `DEPENDENCIES_OUT_OF_SCOPE` | lockfiles in folders the scan does not analyse (gitignored, such as an in-repository package cache) were left out of the inventory; lockfiles under `sources.exclude` or the built-in excludes (such as a .NET build's `bin/Debug/`) are left out without it | none needed; add the folder to `sources.exclude` to silence it and let the pass skip it |
 | `DEPENDENCIES_SKIPPED` | packages whose name, version or lockfile path is too long for the report | none needed; they are left out of the inventory |
 | `DEPENDENCY_LICENSES_SKIPPED` | licence strings longer than 256 characters, or beyond 16 for one package, were left out | check those packages' licences by hand |
-| `LICENSE_POLICY_INVALID` | the organisation's stored licence policy could not be read, so the licences were not judged; open licence issues stay as they are | set the policy again in **Settings → Licence policy**, which shows it as missing |
+| `LICENSE_POLICY_INVALID` | the organisation's stored licence policy could not be read, so the licences were not judged; open licence issues stay as they are | set the policy again in **Settings → Licence policy**, which shows it as missing, or remove it (`PUT … {"policy":null}`); if saving answers `LICENSE_POLICIES_UNREADABLE`, an operator must fix or delete the instance setting `licensePolicy` first |
 | `DEPENDENCY_PATHS_INVALID` | the server could not place some flagged packages, because their lockfile path is not a repository path | only a report written by another tool can cause it; check that tool's lockfile paths |
