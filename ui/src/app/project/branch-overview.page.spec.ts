@@ -245,7 +245,7 @@ describe('BranchOverviewPage', () => {
     expect(text(sources?.querySelector('.rule-list li'))).toBe('eslint:eqeqeq 2');
   });
 
-  it('adds Licensing to the software qualities once a branch has licence measures (6M)', async () => {
+  it('adds Licensing to the software qualities only while the branch has licensing issues (6M)', async () => {
     const qualities = async (extra: { metric: string; overall: number; new: number | null }[]) => {
       server.on('GET', '/api/v0/branches/b-main/measures', {
         body: [
@@ -262,25 +262,23 @@ describe('BranchOverviewPage', () => {
       fixture.destroy();
       return items;
     };
-    // A server that counts licence findings measures forbidden_licenses, 0 included.
-    expect(await qualities([{ metric: 'forbidden_licenses', overall: 0, new: 0 }])).toEqual([
-      'Security 3',
-      'Reliability 2',
-      'Maintainability 4',
-      'Licensing 0',
-    ]);
-    expect(await qualities([{ metric: 'licensing_issues', overall: 2, new: 0 }])).toEqual([
-      'Security 3',
-      'Reliability 2',
-      'Maintainability 4',
-      'Licensing 2',
-    ]);
-    // An analysis of an older server: no licensing at all.
-    expect(await qualities([{ metric: 'licensing_issues', overall: 0, new: 0 }])).toEqual([
-      'Security 3',
-      'Reliability 2',
-      'Maintainability 4',
-    ]);
+    const others = ['Security 3', 'Reliability 2', 'Maintainability 4'];
+    // Some licensing issues: shown with their count.
+    expect(
+      await qualities([
+        { metric: 'licensing_issues', overall: 2, new: 0 },
+        { metric: 'forbidden_licenses', overall: 1, new: 0 },
+      ]),
+    ).toEqual([...others, 'Licensing 2']);
+    // None: hidden, although every analysis of a server that judges licences measures
+    // forbidden_licenses (0 included); and hidden for an older server's analysis without either.
+    expect(
+      await qualities([
+        { metric: 'licensing_issues', overall: 0, new: 0 },
+        { metric: 'forbidden_licenses', overall: 0, new: 0 },
+      ]),
+    ).toEqual(others);
+    expect(await qualities([])).toEqual(others);
   });
 
   it('links to the Code tab for the branch it shows, the main branch and a merge request alike', async () => {

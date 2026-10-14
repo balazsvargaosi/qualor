@@ -305,14 +305,13 @@ export class BranchOverviewPage {
         })),
   );
   /**
-   * The software qualities. Licensing (6M §7) only once the branch has licence measures: some
-   * licensing issues, or the `forbidden_licenses` count that every analysis of a server that judges
-   * licences measures; an analysis of an older server shows the three others alone.
+   * The software qualities. Licensing (6M §7) only while the branch has licensing issues: the
+   * server measures `forbidden_licenses` (0 included) on every analysis, so its presence says
+   * nothing, and a "Licensing 0" on every branch would be noise.
    */
   protected readonly qualityItems = computed<DistributionItem[] | null>(() => {
     if (!this.measures.hasValue()) return null;
-    const licensing =
-      (this.overallOf('licensing_issues') ?? 0) > 0 || this.byMetric().has('forbidden_licenses');
+    const licensing = (this.overallOf('licensing_issues') ?? 0) > 0;
     return [...QUALITIES, ...(licensing ? (['licensing'] as const) : [])].map((q) => ({
       key: q,
       label: label('quality', q),
