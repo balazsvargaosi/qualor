@@ -82,6 +82,8 @@ export function engineSarif(
   findings: readonly EngineFinding[],
   o: {
     complete?: boolean;
+    /** The engine's `analysisStats.incompleteKind`. */
+    kind?: string;
     /** The R-E42 stats and the per-project warning notifications. */
     problems?: {
       withErrors?: number;
@@ -150,6 +152,7 @@ export function engineSarif(
             projects: 1,
             methods: 10,
             failedMethods: 0,
+            ...(o.kind !== undefined && { incompleteKind: o.kind }),
             ...(o.problems !== undefined && {
               projectsWithErrors: o.problems.withErrors ?? 0,
               projectsWithoutSources: o.problems.withoutSources ?? 0,

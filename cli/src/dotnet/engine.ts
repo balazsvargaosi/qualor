@@ -188,6 +188,8 @@ function incompleteReason(stderr: string): string {
 const LOAD_REASON = /^the sources of \d+ project\(s\) could not be loaded/;
 
 interface LoadStats {
+  /** `analysisStats.incompleteKind` of an engine that writes it: budget, load or failed. */
+  kind: string | null;
   withErrors: number;
   withoutSources: number;
   unresolved: number;
@@ -203,10 +205,26 @@ function loadStats(log: SarifLog | null): LoadStats {
   const stats = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>;
   const count = (k: string) => (typeof stats[k] === 'number' ? (stats[k] as number) : 0);
   return {
+    kind: typeof stats['incompleteKind'] === 'string' ? stats['incompleteKind'] : null,
     withErrors: count('projectsWithErrors'),
     withoutSources: count('projectsWithoutSources'),
     unresolved: count('unresolvedReferences'),
   };
+}
+
+const BUDGET_REASON = /\b(time|memory) limit\b/i;
+
+/**
+ * Why an incomplete run falls back: the engine's own `incompleteKind` (budget first) when it
+ * writes one; else, for an older engine, `load` when the reason says so, or when sources are
+ * missing and the stop was not a budget stop.
+ */
+function incompleteFallback(why: string, stats: LoadStats): TaintFallbackReason {
+  if (stats.kind === 'budget') return 'budget';
+  if (stats.kind === 'load') return 'load';
+  if (stats.kind === 'failed') return 'crash';
+  if (LOAD_REASON.test(why)) return 'load';
+  return stats.withoutSources > 0 && !BUDGET_REASON.test(why) ? 'load' : 'budget';
 }
 
 const MAX_LOGGED_PROJECTS = 20;
@@ -384,8 +402,7 @@ async function attempt(o: TaintEngineOptions): Promise<TaintRun> {
     }
     if (result.exitCode === 3) {
       const why = incompleteReason(result.stderr);
-      const stopped = loadStats(readEngineSarif(sarif));
-      return fallback(LOAD_REASON.test(why) || stopped.withoutSources > 0 ? 'load' : 'budget', why);
+      return fallback(incompleteFallback(why, loadStats(readEngineSarif(sarif))), why);
     }
     if (result.exitCode !== 0) {
       const line = failureLine(result.stderr);
@@ -396,11 +413,13 @@ async function attempt(o: TaintEngineOptions): Promise<TaintRun> {
     if (log === null) return fallback('crash', "the engine's SARIF could not be read");
     const stats = loadStats(log);
     if (!executionSuccessful(log)) {
+      const why = incompleteReason(result.stderr);
+      const kind = incompleteFallback(why, stats);
       return fallback(
-        stats.withoutSources > 0 ? 'load' : 'budget',
-        stats.withoutSources > 0
+        kind,
+        why === 'the analysis was incomplete' && kind === 'load'
           ? 'the sources of a project could not be loaded'
-          : 'the analysis was incomplete',
+          : why,
       );
     }
     if (projectsRead(log) === 0) {

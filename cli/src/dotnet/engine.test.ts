@@ -329,6 +329,43 @@ describe('runTaintEngine (6B-C# R, R-4)', () => {
     });
   });
 
+  it('trusts the incompleteKind of the engine, and without it chooses load only for a stop that was not a budget stop (RC2)', async () => {
+    const { root, sessionDir } = checkout();
+    const run = (o: Parameters<typeof engineSarif>[2], stderr: string, exitCode = 3) =>
+      runTaintEngine(
+        options({
+          root,
+          sessionDir,
+          run: fake((_spec, sarif) => {
+            writeFileSync(sarif, JSON.stringify(engineSarif(root, [], o)));
+            return { exitCode, stderr };
+          }).run,
+        }),
+      );
+    const budget = '1 finding(s); incomplete: time limit of 600 s exceeded\n';
+    // Budget first: missing sources do not turn a budget stop into a load fallback.
+    expect(
+      await run({ complete: false, kind: 'budget', problems: { withoutSources: 1 } }, budget),
+    ).toMatchObject({ reason: 'budget' });
+    expect(
+      await run({ complete: false, kind: 'load', problems: { withoutSources: 1 } }, ''),
+    ).toMatchObject({
+      reason: 'load',
+    });
+    expect(await run({ complete: false, kind: 'failed' }, '')).toMatchObject({ reason: 'crash' });
+    // Exit 0 marked incomplete uses the field too.
+    expect(
+      await run({ complete: false, kind: 'budget', problems: { withoutSources: 1 } }, '', 0),
+    ).toMatchObject({ reason: 'budget' });
+    // An older engine: no field. A budget reason stays budget, even with missing sources.
+    expect(await run({ complete: false, problems: { withoutSources: 1 } }, budget)).toMatchObject({
+      reason: 'budget',
+    });
+    expect(await run({ complete: false, problems: {} }, budget)).toMatchObject({
+      reason: 'budget',
+    });
+  });
+
   it('keeps a complete run with compile errors, and counts them for the report (R-E42)', async () => {
     const { root, sessionDir } = checkout();
     const warned: string[] = [];
