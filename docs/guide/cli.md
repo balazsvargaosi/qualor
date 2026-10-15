@@ -51,7 +51,7 @@ The C# route ([Languages and analyzers](./languages-and-analyzers.md#c)):
 ```sh
 qualor dotnet begin [--config PATH]      # before your build: install the MSBuild hook
 dotnet build --no-incremental            # your own build
-qualor dotnet end [qualor scan options]  # remove the hook, read the Roslyn logs, then run qualor scan
+qualor dotnet end [qualor scan options]  # remove the hook, read the Roslyn logs, run Qualor's Roslyn taint engine (C# rules), then run qualor scan
 qualor dotnet abort                      # after a failed build: clean up, scan nothing
 ```
 

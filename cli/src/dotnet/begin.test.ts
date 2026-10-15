@@ -290,6 +290,25 @@ describe('qualor dotnet begin (config.md §6.1)', () => {
     expect(readSession(root)).not.toBeNull();
   });
 
+  it('refuses a checkout path with a semicolon: csc rejects it in /errorlog (final review M1)', () => {
+    const parent = tmp();
+    const root = path.join(parent, 'a;b');
+    mkdirSync(path.join(root, '.git'), { recursive: true });
+    const lines: string[] = [];
+    expect(
+      runDotnetBegin(
+        {},
+        captureIO({ cwd: root, env: env() }).io,
+        createLogger('warn', (t) => lines.push(t)),
+      ),
+    ).toBe(EXIT.OK);
+    expect(lines.join('')).toMatch(/semicolon/);
+    expect(readSession(root)).toBeNull();
+    expect(readFileSync(path.join(root, '.qualor', 'dotnet', 'hook-failed'), 'utf8')).toMatch(
+      /semicolon/,
+    );
+  });
+
   it('warns when dotnet telemetry is not turned off', () => {
     const lines: string[] = [];
     const e = env();

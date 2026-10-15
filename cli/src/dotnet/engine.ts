@@ -1,24 +1,26 @@
 import { createHash } from 'node:crypto';
 import {
   lstatSync,
-  mkdtempSync,
   opendirSync,
   readdirSync,
   readFileSync,
   realpathSync,
-  rmSync,
   statSync,
   type Dir,
   type Stats,
 } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { sarifLogSchema, type SarifLog } from '@qualor/shared';
 import { resolveBinary } from '../analyzers/binary';
 import { runProcess, type ProcessResult, type ProcessSpec } from '../analyzers/process';
 import type { QualorPack } from '../analyzers/qualor';
 import { detailLine } from '../analyzers/reason';
-import { execEnv, installEmergencyCleanup } from '../analyzers/runner';
+import {
+  createWorkDir,
+  execEnv,
+  installEmergencyCleanup,
+  releaseWorkDir,
+} from '../analyzers/runner';
 import type { TaintFallbackReason, TaintRun } from '../analyzers/types';
 import type { Logger } from '../log';
 
@@ -296,7 +298,8 @@ async function attempt(o: TaintEngineOptions): Promise<TaintRun> {
   )();
   if (dotnet === null) return fallback('dotnet-missing', 'dotnet is not installed');
 
-  const work = mkdtempSync(path.join(os.tmpdir(), 'qualor-taint-'));
+  // Tracked, so Ctrl+C removes it too.
+  const work = createWorkDir('taint');
   const sarif = path.join(work, 'taint.sarif');
   const timeoutS = o.timeLimitS + KILL_GRACE_S;
   const uninstall = installEmergencyCleanup(o.log);
@@ -351,6 +354,6 @@ async function attempt(o: TaintEngineOptions): Promise<TaintRun> {
     return { kind: 'ok', sarif: log, sources: recordedSources(inputs, o.root) };
   } finally {
     uninstall();
-    rmSync(work, { recursive: true, force: true });
+    releaseWorkDir(work, o.log);
   }
 }

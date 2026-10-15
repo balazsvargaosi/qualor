@@ -651,6 +651,20 @@ the `.cs` files, under the same rule keys (`qualor:csharp/<name>`):
   `no-engine` (the rules release has no engine, or its manifest describes it wrongly) or `engine-mismatch` (its files do not match the
   release's checksums: the engine is never run then). The log line says more. The scan's exit
   code is the same either way.
+- A fallback run closes the issues only the engine finds (flows across files, or through
+  generated Razor code), because the OpenGrep rules cannot see them. They reopen with their
+  earlier status at the next run in which the engine completes.
+- Files of a project the engine could not load are analysed by neither engine: they leave the
+  OpenGrep rules because the build compiled them.
+- A checkout path that contains a semicolon (`;`) makes the compiler reject its log option, so
+  `qualor dotnet begin` refuses it (C# is not analysed; exit code 3 under `enabled: true`). A comma
+  in the path only warns that the Roslyn logs will be missing.
+- On Windows, the build writes the code it generates for Razor views under
+  `.qualor\dotnet\generated` in the checkout. A deep checkout path with long view names can pass
+  the 260-character path limit (`MAX_PATH`) and make the compiler fail to write the file. Check out
+  to a short path (for example `C:\wepo`) or turn on long paths in Windows.
+- If the scan is interrupted (Ctrl+C or a cancelled job), the engine's temporary directory is
+  removed.
 - The engine follows what the code does, not how the application is wired: services registered
   for dependency injection are found through their interfaces, but handlers the framework calls by
   convention (MediatR handlers, hosted services) are not entered from the request. `ViewData`,
@@ -879,7 +893,10 @@ flows across files and through the code generated for Razor views and components
   expressions, so parts of such files are skipped.
 - Data does not flow out of expression-bodied members or property getters.
 
-Each finding's message says why the code is unsafe and how to fix it. Each rule also has its own
+The messages of the OpenGrep rules say why the code is unsafe and how to fix it. The C# findings of
+the Roslyn taint engine (`qualor dotnet end`) name the sink they reach, with the engine's internal
+rule id (`csharp.sql-injection`, with a dot, for the rule `csharp/sql-injection`), and the rule's
+page gives the fix. Each rule has its own
 page in the qualor-rules repository, under `docs/rules/<lang>/<name>.md` (for
 `qualor:go/sql-injection`,
 <https://github.com/qualor-dev/qualor-rules/blob/main/docs/rules/go/sql-injection.md>). The rule's

@@ -1,10 +1,11 @@
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { engineSarif, writeEnginePack } from '../../test/taint';
 import { useTempDirs, writeTree } from '../../test/tmp';
 import { loadQualorPack, type QualorPack } from '../analyzers/qualor';
 import type { ProcessResult, ProcessSpec } from '../analyzers/process';
+import { removeActiveWorkDirs } from '../analyzers/runner';
 import { silentLogger } from '../log';
 import {
   runTaintEngine,
@@ -392,6 +393,24 @@ describe('runTaintEngine (6B-C# R, R-4)', () => {
     expect(path.relative(root, sarif).startsWith('..')).toBe(true);
     expect(spec.env['QUALOR_TOKEN']).toBeUndefined();
     expect(spec.env['HOME']).toBe('/home/ci');
+  });
+});
+
+describe('runTaintEngine work directory (final review M5)', () => {
+  it('tracks the temporary directory, so the signal handler removes it, and releases it afterwards', async () => {
+    const { root, sessionDir } = checkout();
+    let work = '';
+    const engine = fake((spec, sarif) => {
+      work = path.dirname(sarif);
+      expect(existsSync(work)).toBe(true);
+      removeActiveWorkDirs(silentLogger); // what Ctrl+C does
+      expect(existsSync(work)).toBe(false);
+      writeFileSync(sarif, '{}');
+      return { exitCode: 1 };
+    });
+    await runTaintEngine(options({ root, sessionDir, pack: pack(), run: engine.run }));
+    expect(work).not.toBe('');
+    expect(existsSync(work)).toBe(false);
   });
 });
 

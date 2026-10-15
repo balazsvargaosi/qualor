@@ -302,10 +302,19 @@ const FALLBACK_TEXT: Record<TaintFallbackReason, string> = {
 };
 
 /** R-4: the report warning naming why the OpenGrep C# rules ran in the engine's place. */
-export function taintFallbackWarning(reason: TaintFallbackReason): NormalizeWarning {
+export function taintFallbackWarning(
+  reason: TaintFallbackReason,
+  manifest?: QualorManifest,
+): NormalizeWarning {
+  // A pack without C# rules (before 2026.10.5) leaves nothing to analyse the C# files.
+  const csharpRules =
+    manifest === undefined || manifest.rules.some((r) => r.id.startsWith('csharp/'));
+  const then = csharpRules
+    ? 'the OpenGrep C# rules analysed the C# files'
+    : 'the rules pack has no OpenGrep C# rules, so Qualor did not analyse the C# files';
   return {
     code: TAINT_ENGINE_FALLBACK,
-    message: `Qualor's Roslyn taint engine did not run (${reason}: ${FALLBACK_TEXT[reason]}); the OpenGrep C# rules analysed the C# files`,
+    message: `Qualor's Roslyn taint engine did not run (${reason}: ${FALLBACK_TEXT[reason]}); ${then}`,
     count: 1,
   };
 }
@@ -471,8 +480,14 @@ export function createQualorAnalyzer(
     const opengrep = ctx.resolveBinary('opengrep');
     // The engine's findings stand without OpenGrep (Task 24), whatever happens to its run.
     const salvage = engine === null ? undefined : { sarif: engine.sarif, version: engine.version };
+    const fallbackWarnings =
+      taint?.kind === 'fallback' ? [taintFallbackWarning(taint.reason, pack.manifest)] : undefined;
     if (opengrep === null) {
-      return { unavailable: 'OpenGrep is not installed', ...(salvage && { salvage }) };
+      return {
+        unavailable: 'OpenGrep is not installed',
+        ...(salvage && { salvage }),
+        ...(fallbackWarnings && { warnings: fallbackWarnings }),
+      };
     }
     // Named files are scanned whatever .gitignore, .semgrepignore or OpenGrep's own ignores say.
     // Each argument costs its bytes, the terminating NUL and a pointer in argv (8 bytes).
@@ -527,7 +542,7 @@ export function createQualorAnalyzer(
           return output;
         },
         ...(salvage !== undefined && { salvage }),
-        ...(taint?.kind === 'fallback' && { warnings: [taintFallbackWarning(taint.reason)] }),
+        ...(fallbackWarnings && { warnings: fallbackWarnings }),
       },
     };
   };

@@ -163,7 +163,7 @@ export type Preparation =
    * missing): skipped under auto, failed under true, and marked `unavailable` on the capture, so
    * ruling G6 counts the engine as incomplete.
    */
-  | { unavailable: string; salvage?: SalvagedSarif }
+  | { unavailable: string; salvage?: SalvagedSarif; warnings?: readonly NormalizeWarning[] }
   /**
    * SARIF the tool already wrote outside the CLI (Roslyn, inside the project's build between
    * `qualor dotnet begin` and `end`): recorded as `ok` without running anything.

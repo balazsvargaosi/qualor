@@ -135,6 +135,14 @@ export function runDotnetBegin(
       `the checkout path ${realRoot} contains a comma: the compiler cannot write its Roslyn logs there, so C# findings will be missing`,
     );
   }
+  if (realRoot.includes(';')) {
+    // csc rejects /errorlog:<path>,version=2.1 with CS2046 when the path holds a semicolon, which
+    // would break a build that passes without the hook.
+    return fail(
+      `the checkout path ${realRoot} contains a semicolon: the compiler rejects it in its Roslyn log option (CS2046)`,
+      'C# will not be analysed; move the checkout to a path without ";"',
+    );
+  }
   try {
     createSession(root, {
       version: 1,

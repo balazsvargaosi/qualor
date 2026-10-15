@@ -353,11 +353,13 @@ async function capture(
     if ('skip' in prep || 'unavailable' in prep) {
       const unavailable = 'unavailable' in prep;
       const reason = 'unavailable' in prep ? prep.unavailable : prep.skip;
-      const kept: Partial<SarifCapture> =
-        'salvage' in prep && prep.salvage !== undefined ? salvaged(prep.salvage) : {};
+      const kept: Partial<SarifCapture> = {
+        ...('salvage' in prep && prep.salvage !== undefined && salvaged(prep.salvage)),
+        ...('warnings' in prep && prep.warnings !== undefined && { warnings: prep.warnings }),
+      };
       if (!required) {
         const s = skipped(reason, required, unavailable);
-        return kept.salvaged === true ? { ...s, ...kept, reason: withNote(reason) } : s;
+        return { ...s, ...kept, ...(kept.salvaged === true && { reason: withNote(reason) }) };
       }
       o.log.error(`${analyzer.id}: ${reason}`);
       return {
