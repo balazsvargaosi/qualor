@@ -13,6 +13,7 @@ import { parseAllDocuments } from 'yaml';
 import { MAX_ANALYZED_BYTES } from '../discovery/discover';
 import { real, staysInside, within } from './binary';
 import { type FileLockOptions, withFileLock } from './file-lock';
+import type { Logger } from '../log';
 import { deadProxyEnv } from './offline';
 import { shown } from './reason';
 import type { Analyzer, AnalyzerContext, Preparation } from './types';
@@ -402,14 +403,36 @@ function findBinary(ctx: AnalyzerContext): { command: string; flavour: Flavour }
   return null;
 }
 
+/** The most bytes of the project's own patterns passed to OpenGrep (the whole line stays far below Windows' 32,767). */
+export const MAX_USER_EXCLUDE_BYTES = 8192;
+
 /**
  * `--exclude` arguments for a scan that selects the files itself (below `.`): the built-in excludes
- * and the project's `sources.exclude`, as written (OpenGrep takes these glob forms). The findings
- * on such files are dropped afterwards anyway; this keeps the tool from parsing vendored and
- * minified bundles, which can take it past its time limit.
+ * and the project's `sources.exclude` patterns that start with `**` + `/`. OpenGrep matches every
+ * pattern at any depth (a leading `/` does not anchor it), while Qualor's scope matches from the
+ * root, so any other pattern (`gen/**`) would also drop `a/gen/**`, which Qualor scans. The findings
+ * on the files left out are dropped afterwards anyway. The project part is capped at 8 kB so the
+ * command line stays short; what was left out is logged at debug.
  */
-export function excludeFlags(config: QualorConfig): string[] {
-  return [...BUILTIN_EXCLUDES, ...config.sources.exclude].flatMap((g) => ['--exclude', g]);
+export function excludeFlags(config: QualorConfig, log?: Logger): string[] {
+  const user: string[] = [];
+  let bytes = 0;
+  let left = 0;
+  for (const g of config.sources.exclude) {
+    const size = Buffer.byteLength(g) + 1;
+    if (!g.startsWith('**/') || bytes + size > MAX_USER_EXCLUDE_BYTES) {
+      left += 1;
+      continue;
+    }
+    bytes += size;
+    user.push(g);
+  }
+  if (left > 0) {
+    log?.debug(
+      `${left} sources.exclude pattern(s) not passed to OpenGrep (only patterns starting with **/ that fit 8 kB are); their findings are dropped after the scan`,
+    );
+  }
+  return [...BUILTIN_EXCLUDES, ...user].flatMap((g) => ['--exclude', g]);
 }
 
 export function createSemgrepAnalyzer(defaultRulesDir = DEFAULT_SEMGREP_RULES_DIR): Analyzer {
@@ -444,7 +467,7 @@ export function createSemgrepAnalyzer(defaultRulesDir = DEFAULT_SEMGREP_RULES_DI
           // Below `.` the tool skips files over 1,000,000 bytes silently; scan up to the CLI's limit.
           '--max-target-bytes',
           String(MAX_ANALYZED_BYTES),
-          ...excludeFlags(ctx.config),
+          ...excludeFlags(ctx.config, ctx.log),
           '.',
         ],
         cwd: ctx.root,

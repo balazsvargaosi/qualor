@@ -407,7 +407,10 @@ describe('qualorAnalyzer.prepare (config.md §6, plan 6B-1)', () => {
       args.flatMap((a, i) => (args[i - 1] === '--exclude' ? [a] : []));
     // Past the command line: the whole list, the built-in ones first, as written.
     const dot = await run(10);
-    expect(excludes(dot)).toEqual([...BUILTIN_EXCLUDES, 'gen/**', '**/*.snap']);
+    // OpenGrep matches every pattern at any depth, so only the `**/` ones (equal there) are passed:
+    // `gen/**` would also drop `a/gen/**`, which Qualor scans.
+    expect(excludes(dot)).toEqual([...BUILTIN_EXCLUDES, '**/*.snap']);
+    expect(excludes(dot)).not.toContain('gen/**');
     expect(dot.indexOf('--exclude')).toBeLessThan(dot.indexOf('.'));
     expect(excludes(dot)).toEqual(expect.arrayContaining(['**/*.min.mjs', '**/*.min.cjs']));
     // A short list names its files: no excludes needed, the arguments unchanged.

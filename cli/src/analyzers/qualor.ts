@@ -550,7 +550,7 @@ export function createQualorAnalyzer(
             : [
                 // OpenGrep parses vendored and minified bundles very slowly: tell it what a scan
                 // never analyses (their findings are dropped afterwards anyway).
-                ...excludeFlags(ctx.config),
+                ...excludeFlags(ctx.config, ctx.log),
                 // Below `.` the tool skips files over 1,000,000 bytes silently; named files are
                 // always scanned.
                 '--max-target-bytes',

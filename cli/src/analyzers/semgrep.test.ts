@@ -31,7 +31,7 @@ import { parseCommandLine } from '../args';
 import { runScan } from '../scan/run';
 import { useTempDirs, writeTree } from '../../test/tmp';
 import { MAX_ANALYZED_BYTES } from '../discovery/discover';
-import { silentLogger } from '../log';
+import { silentLogger, type Logger } from '../log';
 import { resolveBinary } from './binary';
 import { deadProxyEnv } from './offline';
 import { runProcess } from './process';
@@ -39,6 +39,7 @@ import { runAnalyzers } from './runner';
 import {
   checkSemgrepConfig,
   createSemgrepAnalyzer,
+  excludeFlags,
   isOpengrepVariable,
   MAX_RULE_FILE_BYTES,
   MAX_SEMGREP_CONFIGS,
@@ -66,6 +67,37 @@ const RULE = (id: string, extra = '') =>
 const JOIN_RULE = (ref: string) =>
   'rules:\n  - id: joined\n    mode: join\n    message: m\n    severity: ERROR\n    join:\n' +
   `      refs:\n        - rule: ${ref}\n          as: a\n      on:\n        - 'a.$X == a.$X'\n`;
+
+describe('excludeFlags (OpenGrep --exclude)', () => {
+  const flags = (exclude: string[], log?: Logger) =>
+    excludeFlags(parseConfig({ version: 1, sources: { exclude } }), log);
+  const values = (args: string[]) => args.filter((_, i) => i % 2 === 1);
+
+  it('passes the built-in excludes and only the project patterns that match at any depth', () => {
+    const args = flags(['gen/**', '/gen', 'src/other.js', '**/*.snap', '**/fixtures/**']);
+    expect(args.filter((_, i) => i % 2 === 0).every((a) => a === '--exclude')).toBe(true);
+    expect(values(args)).toEqual([...BUILTIN_EXCLUDES, '**/*.snap', '**/fixtures/**']);
+  });
+
+  it('caps the project part at 8 kB and logs what it left out', () => {
+    const lines: string[] = [];
+    const log = { ...silentLogger, debug: (m: string) => void lines.push(m) };
+    const many = Array.from(
+      { length: 400 },
+      (_, i) => `**/${String(i).padStart(3, '0')}-${'x'.repeat(30)}/**`,
+    );
+    const kept = values(flags(many, log)).slice(BUILTIN_EXCLUDES.length);
+    expect(kept.length).toBeGreaterThan(100);
+    expect(kept.length).toBeLessThan(400);
+    expect(kept.reduce((n, g) => n + g.length + 1, 0)).toBeLessThanOrEqual(8192);
+    expect(kept).toEqual(many.slice(0, kept.length));
+    expect(lines.join('\n')).toContain(`${400 - kept.length} sources.exclude pattern(s)`);
+    // Patterns that are not passed for their form are logged too.
+    lines.length = 0;
+    flags(['gen/**'], log);
+    expect(lines.join('\n')).toContain('1 sources.exclude pattern(s)');
+  });
+});
 
 describe('Semgrep/OpenGrep inputs', () => {
   it('keeps both tools offline and the rule ids stable', () => {

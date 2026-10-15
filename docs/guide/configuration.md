@@ -141,8 +141,10 @@ repositories. Files over 1 MiB are skipped for metrics and duplication, but anal
 
 When OpenGrep selects the files itself, because the file list is too long for one command line (about
 1 MB on Linux, about 24 kB on Windows) or because of the `semgrep` analyzer, it is given the built-in
-excludes and your `sources.exclude` as `--exclude` arguments. It then does not parse vendored and
-minified bundles at all, which can take it minutes.
+excludes and those of your `sources.exclude` patterns that start with `**/` as `--exclude`
+arguments (OpenGrep matches every pattern at any depth, so other patterns are not passed; their
+findings are still dropped after the scan). It then does not parse vendored and minified bundles
+at all, which can take it minutes.
 
 ## Environment variables (scanner)
 
