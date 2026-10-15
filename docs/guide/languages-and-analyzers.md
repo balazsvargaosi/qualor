@@ -662,7 +662,7 @@ the `.cs` files, under the same rule keys (`qualor:csharp/<name>`):
 - On Windows, the build writes the code it generates for Razor views under
   `.qualor\dotnet\generated` in the checkout. A deep checkout path with long view names can pass
   the 260-character path limit (`MAX_PATH`) and make the compiler fail to write the file. Check out
-  to a short path (for example `C:\wepo`) or turn on long paths in Windows.
+  to a short path (for example `C:\w\repo`) or turn on long paths in Windows.
 - If the scan is interrupted (Ctrl+C or a cancelled job), the engine's temporary directory is
   removed.
 - The engine follows what the code does, not how the application is wired: services registered
