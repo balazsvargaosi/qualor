@@ -617,8 +617,8 @@ build-command: 'dotnet build MySolution.sln --no-incremental' }`. For GitHub, us
 - A plain `qualor scan` does not run the Roslyn analyzers. It still runs Qualor's C# security
   rules on OpenGrep (see below).
 
-**Qualor's C# security rules under `qualor dotnet begin` and `end`.** The hook also records each
-project's compiler inputs. `qualor dotnet end` then runs Qualor's Roslyn taint engine (part of the
+**Qualor's C# security rules under `qualor dotnet begin` and `end`** (Qualor 0.9.0 or later). The
+hook also records each project's compiler inputs. `qualor dotnet end` then runs Qualor's Roslyn taint engine (part of the
 rules release) on the whole solution, and its findings take the place of the OpenGrep C# rules for
 the `.cs` files, under the same rule keys (`qualor:csharp/<name>`):
 
@@ -632,7 +632,7 @@ the `.cs` files, under the same rule keys (`qualor:csharp/<name>`):
   build) is still analysed by the OpenGrep C# rules.
 - Each finding shows the path from the request data to the dangerous call as its related
   locations, followed by any other request data that reaches the same call.
-- Each finding has a confidence. When the path goes through stored data (a field or property set
+- Each finding has a confidence (Qualor 0.9.0 or later). When the path goes through stored data (a field or property set
   elsewhere in the same request), a lookup whose key comes from the request, a `ViewData` entry
   under a key built at run time, a view the engine could not tell from its name, or an interface
   or virtual call it could not narrow down to one implementation, the finding is marked
@@ -954,8 +954,8 @@ request and pull request comments.
   `QUALOR_RULES_DIR` to it and put the OpenGrep version that its `manifest.json` names
   (`opengrep`) on the `PATH`; with another version the scan logs a warning. Without the rules the
   engine is skipped with the message "Qualor's security rules are not installed" (see
-  Troubleshooting), and nothing else changes. A rules release that holds C# rules needs a Qualor
-  release after 0.8.0: Qualor 0.8.0 and older refuse the whole pack (the images pin their own pack, so
+  Troubleshooting), and nothing else changes. A rules release that holds C# rules needs Qualor
+  0.9.0 or later: Qualor 0.8.0 and older refuse the whole pack (the images pin their own pack, so
   they are unaffected).
 
 ## SAST patterns (OpenGrep / Semgrep)

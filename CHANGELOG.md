@@ -73,7 +73,7 @@ All notable changes to Qualor are listed here, newest first. The format follows
   `GET /organizations/{id}/members` takes `q` with the same match.
 - Qualor's security rules cover C# (ASP.NET Core): 12 rules for SQL, command, LDAP, XPath and
   regular expression injection, path traversal, SSRF, XSS, open redirects, unsafe deserialization,
-  XML external entities and disabled TLS verification. They need a Qualor release after 0.8.0:
+  XML external entities and disabled TLS verification. They need Qualor 0.9.0 or later:
   Qualor 0.8.0 and older refuse a rules pack that holds C# rules (its images pin their own pack and
   are unaffected).
 - C#: under `qualor dotnet begin` and `end`, Qualor's own Roslyn taint engine runs these rules on
