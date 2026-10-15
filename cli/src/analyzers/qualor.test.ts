@@ -1087,6 +1087,9 @@ describe("qualor with Qualor's Roslyn taint engine under qualor dotnet end (6B-C
     if (!('unavailable' in missing)) throw new Error(JSON.stringify(missing));
     expect(missing.unavailable).toBe('OpenGrep is not installed');
     expect(missing.warnings?.map((w) => w.code)).toEqual(['TAINT_ENGINE_FALLBACK']);
+    expect(missing.warnings?.[0]?.message).toBe(
+      "Qualor's Roslyn taint engine did not run (crash: the engine failed); OpenGrep is not installed, so Qualor's C# security rules did not run",
+    );
 
     // A pack with no C# rules: nothing analysed the C# files, and the warning says so.
     const plainPack = writePack(tmp());
@@ -1096,7 +1099,9 @@ describe("qualor with Qualor's Roslyn taint engine under qualor dotnet end (6B-C
     if (!('run' in prep)) throw new Error(JSON.stringify(prep));
     const message = prep.run.warnings?.[0]?.message ?? '';
     expect(message).toContain('did not run (crash:');
-    expect(message).toContain('no OpenGrep C# rules');
+    expect(message).toBe(
+      "Qualor's Roslyn taint engine did not run (crash: the engine failed); the rules pack has no OpenGrep C# rules, so Qualor's C# security rules did not run",
+    );
     expect(message).not.toContain('OpenGrep C# rules analysed');
   });
 

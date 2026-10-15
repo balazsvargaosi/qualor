@@ -305,13 +305,16 @@ const FALLBACK_TEXT: Record<TaintFallbackReason, string> = {
 export function taintFallbackWarning(
   reason: TaintFallbackReason,
   manifest?: QualorManifest,
+  opengrepMissing = false,
 ): NormalizeWarning {
   // A pack without C# rules (before 2026.10.5) leaves nothing to analyse the C# files.
   const csharpRules =
     manifest === undefined || manifest.rules.some((r) => r.id.startsWith('csharp/'));
-  const then = csharpRules
-    ? 'the OpenGrep C# rules analysed the C# files'
-    : 'the rules pack has no OpenGrep C# rules, so Qualor did not analyse the C# files';
+  const then = !csharpRules
+    ? "the rules pack has no OpenGrep C# rules, so Qualor's C# security rules did not run"
+    : opengrepMissing
+      ? "OpenGrep is not installed, so Qualor's C# security rules did not run"
+      : 'the OpenGrep C# rules analysed the C# files';
   return {
     code: TAINT_ENGINE_FALLBACK,
     message: `Qualor's Roslyn taint engine did not run (${reason}: ${FALLBACK_TEXT[reason]}); ${then}`,
@@ -481,7 +484,9 @@ export function createQualorAnalyzer(
     // The engine's findings stand without OpenGrep (Task 24), whatever happens to its run.
     const salvage = engine === null ? undefined : { sarif: engine.sarif, version: engine.version };
     const fallbackWarnings =
-      taint?.kind === 'fallback' ? [taintFallbackWarning(taint.reason, pack.manifest)] : undefined;
+      taint?.kind === 'fallback'
+        ? [taintFallbackWarning(taint.reason, pack.manifest, opengrep === null)]
+        : undefined;
     if (opengrep === null) {
       return {
         unavailable: 'OpenGrep is not installed',
