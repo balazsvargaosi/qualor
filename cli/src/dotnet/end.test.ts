@@ -323,7 +323,7 @@ describe("qualor dotnet end with Qualor's Roslyn taint engine (6B-C# R, spec §4
         root,
         sessionDir: path.join(root, '.qualor', 'dotnet'),
         timeLimitS: 120,
-        memoryLimitMb: 4096,
+        memoryLimitMb: expect.any(Number) as unknown,
       },
     });
     expect(taint.calls[0]?.o.pack?.manifest.dotnetEngine).toMatchObject({ version: '2026.10.4' });

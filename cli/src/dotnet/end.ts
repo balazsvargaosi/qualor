@@ -151,7 +151,9 @@ async function runSessionTaint(
       pack,
       sessionDir: path.join(root, ...SESSION_DIR.split('/')),
       env: io.env,
-      ...taintBudgets(io.env, (message) => log.warn(message)),
+      ...taintBudgets(io.env, (message) => log.warn(message), {
+        info: (message) => log.info(message),
+      }),
       log,
     });
   } catch (err) {

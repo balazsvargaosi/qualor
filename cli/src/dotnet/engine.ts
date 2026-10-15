@@ -9,6 +9,7 @@ import {
   type Dir,
   type Stats,
 } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { sarifLogSchema, type SarifLog } from '@qualor/shared';
 import { resolveBinary } from '../analyzers/binary';
@@ -27,6 +28,9 @@ import type { Logger } from '../log';
 /** The engine's budgets (spec §6): 10 minutes and 4 GB, as on nopCommerce in `scanner-dotnet`. */
 export const TAINT_TIME_LIMIT_S = 600;
 export const TAINT_MEMORY_LIMIT_MB = 4096;
+/** What the build and the other analyzers keep, and the least the engine is given. */
+const MEMORY_KEPT_FREE_MB = 1024;
+const MIN_MEMORY_LIMIT_MB = 1024;
 
 /**
  * Past its own time limit the engine still writes its SARIF; loading the compilations comes before
@@ -56,39 +60,115 @@ export interface TaintEngineOptions {
   resolveDotnet?: () => string | null;
 }
 
-/** A budget variable's value: a whole number from 1 to `max`, else the default with a warning. */
-function budget(
+/** Where the memory figures come from (tests replace it). */
+export interface MemorySources {
+  totalmem(): number;
+  /** The file's text, or null when it does not exist; it may throw. */
+  readFile(path: string): string | null;
+}
+
+const realMemory: MemorySources = {
+  totalmem: () => os.totalmem(),
+  readFile: (p) => {
+    try {
+      return readFileSync(p, 'utf8');
+    } catch {
+      return null;
+    }
+  },
+};
+
+/** A cgroup v1 "no limit" is a value near 2^63; anything above 1 PB is none. */
+const UNLIMITED_BYTES = 2 ** 50;
+
+function cgroupBytes(memory: MemorySources, file: string): number | null {
+  let text: string | null;
+  try {
+    text = memory.readFile(file);
+  } catch {
+    return null;
+  }
+  const raw = text?.trim() ?? '';
+  if (!/^\d{1,19}$/.test(raw)) return null; // "max", empty or garbage
+  const bytes = Number(raw);
+  return bytes > 0 && bytes < UNLIMITED_BYTES ? bytes : null;
+}
+
+/** The smaller of the host's memory and the container's cgroup limit, in MB, with its source. */
+export function effectiveMemory(memory: MemorySources = realMemory): {
+  mb: number;
+  source: string;
+} {
+  let best = { bytes: memory.totalmem(), source: 'host memory' };
+  const v2 = cgroupBytes(memory, '/sys/fs/cgroup/memory.max');
+  const v1 = cgroupBytes(memory, '/sys/fs/cgroup/memory/memory.limit_in_bytes');
+  if (v2 !== null && v2 < best.bytes) best = { bytes: v2, source: 'cgroup v2 memory' };
+  if (v1 !== null && v1 < best.bytes) best = { bytes: v1, source: 'cgroup v1 memory' };
+  return { mb: Math.floor(best.bytes / (1024 * 1024)), source: best.source };
+}
+
+/**
+ * The default memory limit: half of the effective memory, at least 4096 MB, but always leaving
+ * 1024 MB for the build and the other analyzers, and never below 1024 MB.
+ */
+export function defaultMemoryLimitMb(effectiveMb: number): number {
+  const wanted = Math.max(TAINT_MEMORY_LIMIT_MB, Math.floor(effectiveMb / 2));
+  return Math.max(MIN_MEMORY_LIMIT_MB, Math.min(wanted, effectiveMb - MEMORY_KEPT_FREE_MB));
+}
+
+/** A budget variable's value: a whole number from 1 to `max`, else null (with a warning if set). */
+function envBudget(
   env: Readonly<Record<string, string | undefined>>,
   name: string,
   unit: string,
   max: number,
   fallback: number,
   warn: (message: string) => void,
-): number {
+): number | null {
   const raw = env[name];
-  if (raw === undefined || raw.trim() === '') return fallback;
+  if (raw === undefined || raw.trim() === '') return null;
   const value = /^\d{1,9}$/.test(raw.trim()) ? Number(raw.trim()) : NaN;
   if (value >= 1 && value <= max) return value;
   warn(`${name} must be a whole number of ${unit} from 1 to ${max}; using ${fallback}`);
-  return fallback;
+  return null;
 }
 
-/** The engine's budgets: QUALOR_TAINT_TIME_LIMIT (s) and QUALOR_TAINT_MEMORY_LIMIT (MB). */
+/**
+ * The engine's budgets: QUALOR_TAINT_TIME_LIMIT (s) and QUALOR_TAINT_MEMORY_LIMIT (MB). Without
+ * the memory variable the limit is adaptive (`defaultMemoryLimitMb`), and `info` says which.
+ */
 export function taintBudgets(
   env: Readonly<Record<string, string | undefined>>,
   warn: (message: string) => void,
+  o: { memory?: MemorySources; info?: (message: string) => void } = {},
 ): { timeLimitS: number; memoryLimitMb: number } {
-  return {
-    timeLimitS: budget(env, 'QUALOR_TAINT_TIME_LIMIT', 'seconds', 86_400, TAINT_TIME_LIMIT_S, warn),
-    memoryLimitMb: budget(
-      env,
-      'QUALOR_TAINT_MEMORY_LIMIT',
-      'megabytes',
-      1_048_576,
-      TAINT_MEMORY_LIMIT_MB,
-      warn,
-    ),
-  };
+  const time = envBudget(
+    env,
+    'QUALOR_TAINT_TIME_LIMIT',
+    'seconds',
+    86_400,
+    TAINT_TIME_LIMIT_S,
+    warn,
+  );
+  const machine = effectiveMemory(o.memory);
+  const adaptive = defaultMemoryLimitMb(machine.mb);
+  const fromEnv = envBudget(
+    env,
+    'QUALOR_TAINT_MEMORY_LIMIT',
+    'megabytes',
+    1_048_576,
+    adaptive,
+    warn,
+  );
+  const memoryLimitMb = fromEnv ?? adaptive;
+  o.info?.(
+    `taint engine memory limit: ${memoryLimitMb} MB (${
+      fromEnv !== null
+        ? 'QUALOR_TAINT_MEMORY_LIMIT'
+        : `adaptive, from ${machine.mb} MB of ${machine.source}`
+    })`,
+  );
+  return { timeLimitS: time ?? TAINT_TIME_LIMIT_S, memoryLimitMb };
 }
 
 /** Every entry below `<dir>/dotnet` that is not a directory, as `dotnet/…` paths; or why not. */
@@ -229,7 +309,7 @@ function incompleteFallback(why: string, stats: LoadStats): TaintFallbackReason 
 
 const MAX_LOGGED_PROJECTS = 20;
 
-/** The engine's per-project warning lines (`project: �`), for the log only. */
+/** The engine's per-project warning lines (`project: �`), for the log only. */
 function projectWarnings(log: SarifLog): string[] {
   const invocations = (log.runs[0] as { invocations?: unknown } | undefined)?.invocations;
   const first: unknown = Array.isArray(invocations) ? invocations[0] : undefined;

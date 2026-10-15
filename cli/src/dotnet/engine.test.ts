@@ -295,8 +295,7 @@ describe('runTaintEngine (6B-C# R, R-4)', () => {
       return {
         exitCode: 3,
         stderr: `project: x
-3 finding(s); incomplete: ${reason}
-`,
+3 finding(s); incomplete: ${reason}\n`,
       };
     });
     expect(await runTaintEngine(options({ root, sessionDir, run: lost.run }))).toEqual({
@@ -538,20 +537,78 @@ describe('runTaintEngine work directory (final review M5)', () => {
 });
 
 describe('taintBudgets (6B-C# R)', () => {
-  it('defaults to 600 s and 4096 MB, overridable by QUALOR_TAINT_TIME_LIMIT and QUALOR_TAINT_MEMORY_LIMIT', () => {
+  const GB = 1024 ** 3;
+  /** Memory sources of a machine: `total` bytes of host memory, files by path. */
+  const machine = (total: number, files: Record<string, string> = {}) => ({
+    totalmem: () => total,
+    readFile: (p: string) => files[p] ?? null,
+  });
+  const V2 = '/sys/fs/cgroup/memory.max';
+  const V1 = '/sys/fs/cgroup/memory/memory.limit_in_bytes';
+  const limit = (m: ReturnType<typeof machine>, env: Record<string, string> = {}) => {
+    const info: string[] = [];
+    const out = taintBudgets(env, () => undefined, { memory: m, info: (l) => info.push(l) });
+    return { ...out, info };
+  };
+
+  it('defaults to 600 s and an adaptive memory limit, overridable by QUALOR_TAINT_TIME_LIMIT and QUALOR_TAINT_MEMORY_LIMIT', () => {
     const warnings: string[] = [];
     const warn = (m: string) => warnings.push(m);
-    expect(taintBudgets({}, warn)).toEqual({ timeLimitS: 600, memoryLimitMb: 4096 });
+    const memory = machine(16 * GB);
+    expect(taintBudgets({}, warn, { memory })).toEqual({ timeLimitS: 600, memoryLimitMb: 8192 });
     expect(
-      taintBudgets({ QUALOR_TAINT_TIME_LIMIT: '1200', QUALOR_TAINT_MEMORY_LIMIT: '8192' }, warn),
-    ).toEqual({ timeLimitS: 1200, memoryLimitMb: 8192 });
+      taintBudgets({ QUALOR_TAINT_TIME_LIMIT: '1200', QUALOR_TAINT_MEMORY_LIMIT: '2048' }, warn, {
+        memory,
+      }),
+    ).toEqual({ timeLimitS: 1200, memoryLimitMb: 2048 });
     expect(warnings).toEqual([]);
     expect(
-      taintBudgets({ QUALOR_TAINT_TIME_LIMIT: '10m', QUALOR_TAINT_MEMORY_LIMIT: '0' }, warn),
-    ).toEqual({ timeLimitS: 600, memoryLimitMb: 4096 });
+      taintBudgets({ QUALOR_TAINT_TIME_LIMIT: '10m', QUALOR_TAINT_MEMORY_LIMIT: '0' }, warn, {
+        memory,
+      }),
+    ).toEqual({ timeLimitS: 600, memoryLimitMb: 8192 });
     expect(warnings).toEqual([
       'QUALOR_TAINT_TIME_LIMIT must be a whole number of seconds from 1 to 86400; using 600',
-      'QUALOR_TAINT_MEMORY_LIMIT must be a whole number of megabytes from 1 to 1048576; using 4096',
+      'QUALOR_TAINT_MEMORY_LIMIT must be a whole number of megabytes from 1 to 1048576; using 8192',
+    ]);
+  });
+
+  it('takes half the machine, never below 4096 MB unless it is too small, and leaves 1024 MB free', () => {
+    expect(limit(machine(16 * GB)).memoryLimitMb).toBe(8192);
+    expect(limit(machine(64 * GB)).memoryLimitMb).toBe(32_768);
+    expect(limit(machine(8 * GB)).memoryLimitMb).toBe(4096);
+    expect(limit(machine(64 * GB, { [V2]: `${6 * GB}\n` })).memoryLimitMb).toBe(4096);
+    expect(limit(machine(64 * GB, { [V2]: `${4 * GB}\n` })).memoryLimitMb).toBe(3072);
+    expect(limit(machine(64 * GB, { [V2]: `${2 * GB}\n` })).memoryLimitMb).toBe(1024);
+    expect(limit(machine(GB / 2)).memoryLimitMb).toBe(1024); // never below 1024
+  });
+
+  it('reads the container limit of cgroup v2 and v1, and ignores "max", the unlimited v1 value and unreadable files', () => {
+    expect(limit(machine(64 * GB, { [V1]: `${4 * GB}\n` })).memoryLimitMb).toBe(3072);
+    // The smaller of the two cgroups and the host.
+    expect(limit(machine(3 * GB, { [V2]: `${16 * GB}\n` })).memoryLimitMb).toBe(2048);
+    expect(limit(machine(16 * GB, { [V2]: 'max\n' })).memoryLimitMb).toBe(8192);
+    expect(limit(machine(16 * GB, { [V1]: '9223372036854771712\n' })).memoryLimitMb).toBe(8192);
+    expect(limit(machine(16 * GB, { [V2]: 'garbage' })).memoryLimitMb).toBe(8192);
+    expect(limit(machine(16 * GB, {})).memoryLimitMb).toBe(8192);
+    const throwing = {
+      totalmem: () => 16 * GB,
+      readFile: () => {
+        throw new Error('EACCES');
+      },
+    };
+    expect(limit(throwing).memoryLimitMb).toBe(8192);
+  });
+
+  it('logs the chosen limit and where it came from', () => {
+    expect(limit(machine(16 * GB)).info).toEqual([
+      'taint engine memory limit: 8192 MB (adaptive, from 16384 MB of host memory)',
+    ]);
+    expect(limit(machine(64 * GB, { [V2]: `${4 * GB}\n` })).info).toEqual([
+      'taint engine memory limit: 3072 MB (adaptive, from 4096 MB of cgroup v2 memory)',
+    ]);
+    expect(limit(machine(16 * GB), { QUALOR_TAINT_MEMORY_LIMIT: '2048' }).info).toEqual([
+      'taint engine memory limit: 2048 MB (QUALOR_TAINT_MEMORY_LIMIT)',
     ]);
   });
 });

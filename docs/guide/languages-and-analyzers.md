@@ -643,8 +643,19 @@ the `.cs` files, under the same rule keys (`qualor:csharp/<name>`):
   The other findings have high confidence and no mark. Possible findings count like any other in
   the quality gate and the issue counts. The OpenGrep rules and the other
   analyzers set no confidence, so their findings never show the mark.
-- The engine has a budget: 10 minutes and 4 GB by default. Set `QUALOR_TAINT_TIME_LIMIT` (seconds)
-  and `QUALOR_TAINT_MEMORY_LIMIT` (megabytes) to change it.
+- The engine has a budget of time and memory. A solution the size of nopCommerce needs about
+  3.5 GB; smaller ones need far less.
+  - Time: 10 minutes by default. Set `QUALOR_TAINT_TIME_LIMIT` (seconds) to change it.
+  - Memory: by default half of the memory the job has, but at least 4096 MB (when the machine
+    has that much) and never so much that less than 1024 MB is left for the build and the other
+    analyzers. The job's memory is the smaller of the machine's and the container's limit, so a
+    16 GB runner gives 8192 MB, a 6 GB container 4096 MB, a 4 GB container 3072 MB and a 2 GB
+    container 1024 MB. The log line `taint engine memory limit` in `qualor dotnet end` shows the
+    value and where it came from. Set `QUALOR_TAINT_MEMORY_LIMIT` (megabytes) to choose it
+    yourself, and give the job more memory if the solution is large.
+  - When the engine goes over a limit, its run is incomplete: the OpenGrep C# rules run in its
+    place, and the report carries `TAINT_ENGINE_FALLBACK` with the reason `budget`. Raise
+    `QUALOR_TAINT_TIME_LIMIT` or `QUALOR_TAINT_MEMORY_LIMIT` and run again.
 - When the engine cannot give a complete result, the OpenGrep C# rules run as in a plain scan, and
   the report carries the warning `TAINT_ENGINE_FALLBACK` with the reason: `budget` (over its time
   or memory budget), `load` (the sources of a project could not all be loaded, so part of its code
