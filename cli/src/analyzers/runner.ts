@@ -379,6 +379,7 @@ async function capture(
         durationMs: performance.now() - started,
         version: prep.collected.version,
         sarif: prep.collected.sarif,
+        ...(prep.collected.warnings !== undefined && { warnings: prep.collected.warnings }),
       };
     }
     const run = prep.run;

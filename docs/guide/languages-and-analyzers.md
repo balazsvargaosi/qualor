@@ -647,10 +647,15 @@ the `.cs` files, under the same rule keys (`qualor:csharp/<name>`):
   and `QUALOR_TAINT_MEMORY_LIMIT` (megabytes) to change it.
 - When the engine cannot give a complete result, the OpenGrep C# rules run as in a plain scan, and
   the report carries the warning `TAINT_ENGINE_FALLBACK` with the reason: `budget` (over its time
-  or memory budget), `crash`, `no-inputs` (the build recorded no compiler inputs), `dotnet-missing`,
+  or memory budget), `load` (the sources of a project could not all be loaded, so part of its code
+  would go unanalysed), `crash`, `no-inputs` (the build recorded no compiler inputs), `dotnet-missing`,
   `no-engine` (the rules release has no engine, or its manifest describes it wrongly) or `engine-mismatch` (its files do not match the
   release's checksums: the engine is never run then). The log line says more. The scan's exit
   code is the same either way.
+- A project that loads but has compile errors or unresolved references is still analysed as far as
+  its compilation allows. The report then carries the warning `TAINT_ENGINE_PROJECT_ERRORS` (the
+  number of projects), and the log names each project with its first error. Restore the packages
+  and build the project without errors to get its full analysis.
 - A fallback run closes the issues only the engine finds (flows across files, or through
   generated Razor code), because the OpenGrep rules cannot see them. They reopen with their
   earlier status at the next run in which the engine completes.

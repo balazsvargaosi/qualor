@@ -278,6 +278,92 @@ describe('runTaintEngine (6B-C# R, R-4)', () => {
     });
   });
 
+  it('falls back with the load reason when the sources of a project did not all load (R-E42)', async () => {
+    const { root, sessionDir } = checkout();
+    const reason =
+      'the sources of 1 project(s) could not be loaded; first: /r/App.csproj (net8.0): 1 source(s) not loaded, 1 error(s) while loading or compiling';
+    const lost = fake((_spec, sarif) => {
+      writeFileSync(
+        sarif,
+        JSON.stringify(
+          engineSarif(root, [], {
+            complete: false,
+            problems: { withErrors: 1, withoutSources: 1 },
+          }),
+        ),
+      );
+      return {
+        exitCode: 3,
+        stderr: `project: x
+3 finding(s); incomplete: ${reason}
+`,
+      };
+    });
+    expect(await runTaintEngine(options({ root, sessionDir, run: lost.run }))).toEqual({
+      kind: 'fallback',
+      reason: 'load',
+      detail: reason,
+    });
+    // The stats alone are enough (an engine whose stderr carries no reason line).
+    const stats = fake((_spec, sarif) => {
+      writeFileSync(
+        sarif,
+        JSON.stringify(engineSarif(root, [], { complete: false, problems: { withoutSources: 2 } })),
+      );
+      return { exitCode: 3 };
+    });
+    expect(await runTaintEngine(options({ root, sessionDir, run: stats.run }))).toMatchObject({
+      kind: 'fallback',
+      reason: 'load',
+    });
+    // A budget stop with clean stats stays a budget fallback.
+    const slow = fake((_spec, sarif) => {
+      writeFileSync(
+        sarif,
+        JSON.stringify(engineSarif(root, [], { complete: false, problems: {} })),
+      );
+      return { exitCode: 3, stderr: '1 finding(s); incomplete: time limit of 600 s exceeded\n' };
+    });
+    expect(await runTaintEngine(options({ root, sessionDir, run: slow.run }))).toMatchObject({
+      reason: 'budget',
+    });
+  });
+
+  it('keeps a complete run with compile errors, and counts them for the report (R-E42)', async () => {
+    const { root, sessionDir } = checkout();
+    const warned: string[] = [];
+    const run = fake((_spec, sarif) => {
+      writeFileSync(
+        sarif,
+        JSON.stringify(
+          engineSarif(root, [], {
+            problems: {
+              withErrors: 2,
+              unresolved: 3,
+              notes: [
+                'project: /r/App.csproj (net8.0): 1 error(s) while loading or compiling; first: CS0246',
+              ],
+            },
+          }),
+        ),
+      );
+      return {};
+    });
+    const out = await runTaintEngine(
+      options({
+        root,
+        sessionDir,
+        run: run.run,
+        log: { ...silentLogger, warn: (m: string) => void warned.push(m) },
+      }),
+    );
+    expect(out).toMatchObject({
+      kind: 'ok',
+      problems: { projects: 2, unresolvedReferences: 3 },
+    });
+    expect(warned.join('\n')).toContain('App.csproj');
+  });
+
   it('falls back when the engine read no project from the inputs: an empty result would hide the OpenGrep findings', async () => {
     const { root, sessionDir } = checkout();
     const none = fake((_spec, sarif) => {

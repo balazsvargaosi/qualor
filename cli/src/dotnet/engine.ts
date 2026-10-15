@@ -184,6 +184,49 @@ function incompleteReason(stderr: string): string {
   return reason !== undefined && reason !== '' ? reason : 'the analysis was incomplete';
 }
 
+/** R-E42: the engine's reason when a project's sources did not all load. */
+const LOAD_REASON = /^the sources of \d+ project\(s\) could not be loaded/;
+
+interface LoadStats {
+  withErrors: number;
+  withoutSources: number;
+  unresolved: number;
+}
+
+/** The R-E42 counts of the engine's `analysisStats` (0 when missing, as from an older engine). */
+function loadStats(log: SarifLog | null): LoadStats {
+  const properties = (log?.runs[0] as { properties?: unknown } | undefined)?.properties;
+  const raw =
+    typeof properties === 'object' && properties !== null
+      ? (properties as { analysisStats?: unknown }).analysisStats
+      : undefined;
+  const stats = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>;
+  const count = (k: string) => (typeof stats[k] === 'number' ? (stats[k] as number) : 0);
+  return {
+    withErrors: count('projectsWithErrors'),
+    withoutSources: count('projectsWithoutSources'),
+    unresolved: count('unresolvedReferences'),
+  };
+}
+
+const MAX_LOGGED_PROJECTS = 20;
+
+/** The engine's per-project warning lines (`project: …`), for the log only. */
+function projectWarnings(log: SarifLog): string[] {
+  const invocations = (log.runs[0] as { invocations?: unknown } | undefined)?.invocations;
+  const first: unknown = Array.isArray(invocations) ? invocations[0] : undefined;
+  const notes =
+    typeof first === 'object' && first !== null
+      ? (first as { toolExecutionNotifications?: unknown }).toolExecutionNotifications
+      : undefined;
+  const lines: string[] = [];
+  for (const n of Array.isArray(notes) ? notes : []) {
+    const text = (n as { message?: { text?: unknown } } | null)?.message?.text;
+    if (typeof text === 'string' && text.startsWith('project: ')) lines.push(detailLine(text));
+  }
+  return lines.slice(0, MAX_LOGGED_PROJECTS);
+}
+
 /** The engine's SARIF, or null when it is missing, too large or not SARIF 2.1.0. */
 function readEngineSarif(file: string): SarifLog | null {
   try {
@@ -339,7 +382,11 @@ async function attempt(o: TaintEngineOptions): Promise<TaintRun> {
         ? fallback('dotnet-missing', 'dotnet is not installed')
         : fallback('crash', 'dotnet could not be started');
     }
-    if (result.exitCode === 3) return fallback('budget', incompleteReason(result.stderr));
+    if (result.exitCode === 3) {
+      const why = incompleteReason(result.stderr);
+      const stopped = loadStats(readEngineSarif(sarif));
+      return fallback(LOAD_REASON.test(why) || stopped.withoutSources > 0 ? 'load' : 'budget', why);
+    }
     if (result.exitCode !== 0) {
       const line = failureLine(result.stderr);
       const code = `exited with code ${result.exitCode ?? 'null'}`;
@@ -347,11 +394,27 @@ async function attempt(o: TaintEngineOptions): Promise<TaintRun> {
     }
     const log = readEngineSarif(sarif);
     if (log === null) return fallback('crash', "the engine's SARIF could not be read");
-    if (!executionSuccessful(log)) return fallback('budget', 'the analysis was incomplete');
+    const stats = loadStats(log);
+    if (!executionSuccessful(log)) {
+      return fallback(
+        stats.withoutSources > 0 ? 'load' : 'budget',
+        stats.withoutSources > 0
+          ? 'the sources of a project could not be loaded'
+          : 'the analysis was incomplete',
+      );
+    }
     if (projectsRead(log) === 0) {
       return fallback('no-inputs', 'the engine read no project from the compiler inputs');
     }
-    return { kind: 'ok', sarif: log, sources: recordedSources(inputs, o.root) };
+    for (const line of projectWarnings(log)) o.log.warn(`taint engine: ${line}`);
+    return {
+      kind: 'ok',
+      sarif: log,
+      sources: recordedSources(inputs, o.root),
+      ...(stats.withErrors > 0 || stats.unresolved > 0
+        ? { problems: { projects: stats.withErrors, unresolvedReferences: stats.unresolved } }
+        : {}),
+    };
   } finally {
     uninstall();
     releaseWorkDir(work, o.log);

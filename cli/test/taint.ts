@@ -80,7 +80,16 @@ export interface EngineFinding {
 export function engineSarif(
   root: string,
   findings: readonly EngineFinding[],
-  o: { complete?: boolean } = {},
+  o: {
+    complete?: boolean;
+    /** The R-E42 stats and the per-project warning notifications. */
+    problems?: {
+      withErrors?: number;
+      withoutSources?: number;
+      unresolved?: number;
+      notes?: string[];
+    };
+  } = {},
 ) {
   const ids = [...new Set(findings.map((f) => f.rule))].sort();
   return {
@@ -125,8 +134,29 @@ export function engineSarif(
           }),
           ...(f.confidence !== undefined && { properties: { confidence: f.confidence } }),
         })),
-        invocations: [{ executionSuccessful: o.complete ?? true }],
-        properties: { analysisStats: { projects: 1, methods: 10, failedMethods: 0 } },
+        invocations: [
+          {
+            executionSuccessful: o.complete ?? true,
+            ...(o.problems?.notes !== undefined && {
+              toolExecutionNotifications: o.problems.notes.map((text) => ({
+                level: 'warning',
+                message: { text },
+              })),
+            }),
+          },
+        ],
+        properties: {
+          analysisStats: {
+            projects: 1,
+            methods: 10,
+            failedMethods: 0,
+            ...(o.problems !== undefined && {
+              projectsWithErrors: o.problems.withErrors ?? 0,
+              projectsWithoutSources: o.problems.withoutSources ?? 0,
+              unresolvedReferences: o.problems.unresolved ?? 0,
+            }),
+          },
+        },
       },
     ],
   };

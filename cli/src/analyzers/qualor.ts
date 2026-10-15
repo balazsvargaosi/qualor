@@ -25,7 +25,13 @@ import {
   OPENGREP_GROUP,
   warmOpengrep,
 } from './semgrep';
-import type { Analyzer, AnalyzerContext, Preparation, TaintFallbackReason } from './types';
+import type {
+  Analyzer,
+  AnalyzerContext,
+  Preparation,
+  TaintFallbackReason,
+  TaintRun,
+} from './types';
 
 /** Where the qualor/scanner image installs Qualor's security rules (install-qualor-rules.sh). */
 export const DEFAULT_QUALOR_RULES_DIR = '/opt/qualor/rules/qualor';
@@ -299,7 +305,24 @@ const FALLBACK_TEXT: Record<TaintFallbackReason, string> = {
   budget: 'the analysis did not complete within its time or memory budget',
   crash: 'the engine failed',
   'dotnet-missing': 'dotnet is not installed',
+  load: 'the sources of a project could not be loaded',
 };
+
+/** The report warning of R-E42: projects the engine analysed with load or compile errors. */
+export const TAINT_ENGINE_PROJECT_ERRORS = 'TAINT_ENGINE_PROJECT_ERRORS';
+
+function taintProblemWarning(taint: TaintRun | null): NormalizeWarning[] {
+  if (taint?.kind !== 'ok' || taint.problems === undefined) return [];
+  const { projects, unresolvedReferences } = taint.problems;
+  const refs = unresolvedReferences > 0 ? ` (${unresolvedReferences} unresolved reference(s))` : '';
+  return [
+    {
+      code: TAINT_ENGINE_PROJECT_ERRORS,
+      message: `Qualor's Roslyn taint engine analysed ${projects} project(s) with load or compile errors${refs}; their findings may be incomplete`,
+      count: projects,
+    },
+  ];
+}
 
 /** R-4: the report warning naming why the OpenGrep C# rules ran in the engine's place. */
 export function taintFallbackWarning(
@@ -478,20 +501,25 @@ export function createQualorAnalyzer(
       .map((f) => ({ f, rel: path.relative(ctx.root, f.absPath).split(path.sep).join('/') }))
       .filter(({ f, rel }) => engine === null || f.language !== 'csharp' || !byEngine(rel))
       .map(({ rel }) => rel);
-    if (engine !== null && files.length === 0) return { collected: engine };
+    if (engine !== null && files.length === 0) {
+      const warned = taintProblemWarning(taint);
+      return { collected: { ...engine, ...(warned.length > 0 && { warnings: warned }) } };
+    }
     // Plan 6B-1: only the OpenGrep the pack is tested with, never Semgrep.
     const opengrep = ctx.resolveBinary('opengrep');
     // The engine's findings stand without OpenGrep (Task 24), whatever happens to its run.
     const salvage = engine === null ? undefined : { sarif: engine.sarif, version: engine.version };
-    const fallbackWarnings =
-      taint?.kind === 'fallback'
+    const fallbackWarnings = [
+      ...taintProblemWarning(taint),
+      ...(taint?.kind === 'fallback'
         ? [taintFallbackWarning(taint.reason, pack.manifest, opengrep === null)]
-        : undefined;
+        : []),
+    ];
     if (opengrep === null) {
       return {
         unavailable: 'OpenGrep is not installed',
         ...(salvage && { salvage }),
-        ...(fallbackWarnings && { warnings: fallbackWarnings }),
+        ...(fallbackWarnings.length > 0 && { warnings: fallbackWarnings }),
       };
     }
     // Named files are scanned whatever .gitignore, .semgrepignore or OpenGrep's own ignores say.
@@ -547,7 +575,7 @@ export function createQualorAnalyzer(
           return output;
         },
         ...(salvage !== undefined && { salvage }),
-        ...(fallbackWarnings && { warnings: fallbackWarnings }),
+        ...(fallbackWarnings.length > 0 && { warnings: fallbackWarnings }),
       },
     };
   };

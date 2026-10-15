@@ -940,6 +940,7 @@ describe("qualor with Qualor's Roslyn taint engine under qualor dotnet end (6B-C
       'budget',
       'crash',
       'dotnet-missing',
+      'load',
     ] as const;
     for (const reason of reasons) {
       const prep = await analyzer.prepare(
@@ -1103,6 +1104,44 @@ describe("qualor with Qualor's Roslyn taint engine under qualor dotnet end (6B-C
       "Qualor's Roslyn taint engine did not run (crash: the engine failed); the rules pack has no OpenGrep C# rules, so Qualor's C# security rules did not run",
     );
     expect(message).not.toContain('OpenGrep C# rules analysed');
+  });
+
+  it('names the load fallback and reports the projects with load or compile errors (R-E42)', async () => {
+    const { root, files, pack } = setup();
+    const analyzer = createQualorAnalyzer({ defaultDir: pack });
+    const load = await analyzer.prepare(
+      withTaint(root, files, { kind: 'fallback', reason: 'load', detail: 'x' }),
+    );
+    if (!('run' in load)) throw new Error(JSON.stringify(load));
+    expect(load.run.warnings?.[0]?.message).toBe(
+      "Qualor's Roslyn taint engine did not run (load: the sources of a project could not be loaded); the OpenGrep C# rules analysed the C# files",
+    );
+
+    const problems = { projects: 2, unresolvedReferences: 3 };
+    const text =
+      "Qualor's Roslyn taint engine analysed 2 project(s) with load or compile errors (3 unresolved reference(s)); their findings may be incomplete";
+    const withProblems = { ...ok(root), problems } as TaintRun;
+    const run = await analyzer.prepare(withTaint(root, files, withProblems));
+    if (!('run' in run)) throw new Error(JSON.stringify(run));
+    expect(run.run.warnings).toEqual([
+      { code: 'TAINT_ENGINE_PROJECT_ERRORS', message: text, count: 2 },
+    ]);
+    // Without OpenGrep, and with only C# files (the engine's findings are the run).
+    const missing = await analyzer.prepare(withTaint(root, files, withProblems, { binaries: {} }));
+    if (!('unavailable' in missing)) throw new Error(JSON.stringify(missing));
+    expect(missing.warnings?.map((w) => w.code)).toEqual(['TAINT_ENGINE_PROJECT_ERRORS']);
+    const only = setup({ python: false });
+    const collected = await createQualorAnalyzer({ defaultDir: only.pack }).prepare(
+      withTaint(only.root, only.files, { ...ok(only.root), problems } as TaintRun),
+    );
+    if (!('collected' in collected)) throw new Error(JSON.stringify(collected));
+    expect(collected.collected.warnings?.map((w) => w.code)).toEqual([
+      'TAINT_ENGINE_PROJECT_ERRORS',
+    ]);
+    // A clean run has none.
+    const clean = await analyzer.prepare(withTaint(root, files, ok(root)));
+    if (!('run' in clean)) throw new Error(JSON.stringify(clean));
+    expect(clean.run.warnings).toBeUndefined();
   });
 
   it('runs as in a plain scan when the engine was not attempted', async () => {

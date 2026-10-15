@@ -15,7 +15,7 @@ export type AnalyzerId = keyof QualorConfig['analyzers'];
 
 /** Why Qualor's Roslyn taint engine did not replace the OpenGrep C# rules (6B-C# R, R-4). */
 export type TaintFallbackReason =
-  'no-engine' | 'engine-mismatch' | 'no-inputs' | 'budget' | 'crash' | 'dotnet-missing';
+  'no-engine' | 'engine-mismatch' | 'no-inputs' | 'budget' | 'crash' | 'dotnet-missing' | 'load';
 
 /**
  * What Qualor's Roslyn taint engine gave `qualor dotnet end` (6B-C# R, R-4): its complete SARIF,
@@ -23,7 +23,13 @@ export type TaintFallbackReason =
  */
 export type TaintRun =
   /** `sources`: the checkout's files the engine analysed (recorded as compiled), `/`-separated. */
-  | { kind: 'ok'; sarif: SarifLog; sources: readonly string[] }
+  | {
+      kind: 'ok';
+      sarif: SarifLog;
+      sources: readonly string[];
+      /** R-E42: projects with load or compile errors in a run that is complete anyway. */
+      problems?: { projects: number; unresolvedReferences: number };
+    }
   | { kind: 'fallback'; reason: TaintFallbackReason; detail: string };
 
 /** What `qualor dotnet end` found for the `roslyn` engine (config.md §6.1, ruling D7). */
@@ -168,7 +174,13 @@ export type Preparation =
    * SARIF the tool already wrote outside the CLI (Roslyn, inside the project's build between
    * `qualor dotnet begin` and `end`): recorded as `ok` without running anything.
    */
-  | { collected: { sarif: unknown; version: string | null } };
+  | {
+      collected: {
+        sarif: unknown;
+        version: string | null;
+        warnings?: readonly NormalizeWarning[];
+      };
+    };
 
 /** What the step 8–12 adapters implement. */
 export interface Analyzer {
