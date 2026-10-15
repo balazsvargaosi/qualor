@@ -81,7 +81,7 @@ All notable changes to Qualor are listed here, newest first. The format follows
   follows request data across methods, files and projects and into the code generated for Razor
   views and components, and shows the path as each finding's related locations. Its budget is 10
   minutes and, by default, half of the job's memory (at least 4 GB where the machine has it,
-  and 1 GB always left free; `QUALOR_TAINT_TIME_LIMIT`, `QUALOR_TAINT_MEMORY_LIMIT`). When it cannot give a
+  and 1024 MB left free where the job has at least 2 GB; `QUALOR_TAINT_TIME_LIMIT`, `QUALOR_TAINT_MEMORY_LIMIT`). When it cannot give a
   complete result, the OpenGrep C# rules run as before and the report warns
   (`TAINT_ENGINE_FALLBACK`) with the reason. A finding whose path goes through stored data, a
   lookup by a request key or a call or view the engine could not narrow down is marked

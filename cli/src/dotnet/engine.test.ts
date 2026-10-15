@@ -600,6 +600,33 @@ describe('taintBudgets (6B-C# R)', () => {
     expect(limit(throwing).memoryLimitMb).toBe(8192);
   });
 
+  it('resolves the own cgroup of the process, walking up to the parents (RC4)', () => {
+    // v2: the limit sits on a parent of the process's group.
+    const nested = machine(64 * GB, {
+      '/proc/self/cgroup': '0::/kubepods/pod1/ctr\n',
+      '/sys/fs/cgroup/kubepods/pod1/memory.max': 'max\n',
+      '/sys/fs/cgroup/kubepods/memory.max': `${4 * GB}\n`,
+    });
+    expect(limit(nested).memoryLimitMb).toBe(3072);
+    expect(limit(nested).info[0]).toContain('cgroup v2 memory');
+    // The smallest limit on the way wins.
+    const two = machine(64 * GB, {
+      '/proc/self/cgroup': '0::/a/b\n',
+      '/sys/fs/cgroup/a/b/memory.max': `${2 * GB}\n`,
+      '/sys/fs/cgroup/a/memory.max': `${8 * GB}\n`,
+    });
+    expect(limit(two).memoryLimitMb).toBe(1024);
+    // v1: the memory controller's line.
+    const v1 = machine(64 * GB, {
+      '/proc/self/cgroup': '12:cpu,cpuacct:/x\n7:memory:/docker/abc\n',
+      '/sys/fs/cgroup/memory/docker/abc/memory.limit_in_bytes': `${4 * GB}\n`,
+    });
+    expect(limit(v1).memoryLimitMb).toBe(3072);
+    expect(limit(v1).info[0]).toContain('cgroup v1 memory');
+    // Unreadable /proc: the top-level files, then the host.
+    expect(limit(machine(16 * GB, { '/proc/self/cgroup': '???' })).memoryLimitMb).toBe(8192);
+  });
+
   it('logs the chosen limit and where it came from', () => {
     expect(limit(machine(16 * GB)).info).toEqual([
       'taint engine memory limit: 8192 MB (adaptive, from 16384 MB of host memory)',

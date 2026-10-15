@@ -94,16 +94,60 @@ function cgroupBytes(memory: MemorySources, file: string): number | null {
   return bytes > 0 && bytes < UNLIMITED_BYTES ? bytes : null;
 }
 
+/** The `memory` limits above `path` (itself, then each parent) below `base`, as bytes. */
+function walkLimits(
+  memory: MemorySources,
+  base: string,
+  groupPath: string,
+  file: string,
+): number[] {
+  const out: number[] = [];
+  const parts = groupPath.split('/').filter((p) => p !== '' && p !== '..' && p !== '.');
+  for (let n = parts.length; n >= 0; n--) {
+    const bytes = cgroupBytes(
+      memory,
+      `${base}/${parts.slice(0, n).join('/')}/${file}`.replace('//', '/'),
+    );
+    if (bytes !== null) out.push(bytes);
+  }
+  return out;
+}
+
 /** The smaller of the host's memory and the container's cgroup limit, in MB, with its source. */
 export function effectiveMemory(memory: MemorySources = realMemory): {
   mb: number;
   source: string;
 } {
   let best = { bytes: memory.totalmem(), source: 'host memory' };
-  const v2 = cgroupBytes(memory, '/sys/fs/cgroup/memory.max');
-  const v1 = cgroupBytes(memory, '/sys/fs/cgroup/memory/memory.limit_in_bytes');
-  if (v2 !== null && v2 < best.bytes) best = { bytes: v2, source: 'cgroup v2 memory' };
-  if (v1 !== null && v1 < best.bytes) best = { bytes: v1, source: 'cgroup v1 memory' };
+  const take = (bytes: number[], source: string) => {
+    for (const b of bytes) if (b < best.bytes) best = { bytes: b, source };
+  };
+  // The top-level files (a container sees its own limit there), then the process's own group
+  // from /proc/self/cgroup and its parents.
+  take(walkLimits(memory, '/sys/fs/cgroup', '', 'memory.max'), 'cgroup v2 memory');
+  take(
+    walkLimits(memory, '/sys/fs/cgroup/memory', '', 'memory.limit_in_bytes'),
+    'cgroup v1 memory',
+  );
+  let own: string | null;
+  try {
+    own = memory.readFile('/proc/self/cgroup');
+  } catch {
+    own = null;
+  }
+  for (const line of own?.split(/\r?\n/) ?? []) {
+    const [, controllers, ...rest] = line.split(':');
+    const groupPath = rest.join(':');
+    if (controllers === undefined) continue;
+    if (controllers === '') {
+      take(walkLimits(memory, '/sys/fs/cgroup', groupPath, 'memory.max'), 'cgroup v2 memory');
+    } else if (controllers.split(',').includes('memory')) {
+      take(
+        walkLimits(memory, '/sys/fs/cgroup/memory', groupPath, 'memory.limit_in_bytes'),
+        'cgroup v1 memory',
+      );
+    }
+  }
   return { mb: Math.floor(best.bytes / (1024 * 1024)), source: best.source };
 }
 
@@ -309,7 +353,7 @@ function incompleteFallback(why: string, stats: LoadStats): TaintFallbackReason 
 
 const MAX_LOGGED_PROJECTS = 20;
 
-/** The engine's per-project warning lines (`project: �`), for the log only. */
+/** The engine's per-project warning lines (`project: …`), for the log only. */
 function projectWarnings(log: SarifLog): string[] {
   const invocations = (log.runs[0] as { invocations?: unknown } | undefined)?.invocations;
   const first: unknown = Array.isArray(invocations) ? invocations[0] : undefined;

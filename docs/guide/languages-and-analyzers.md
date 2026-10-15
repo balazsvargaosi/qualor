@@ -648,11 +648,13 @@ the `.cs` files, under the same rule keys (`qualor:csharp/<name>`):
   - Time: 10 minutes by default. Set `QUALOR_TAINT_TIME_LIMIT` (seconds) to change it.
   - Memory: by default half of the memory the job has, but at least 4096 MB (when the machine
     has that much) and never so much that less than 1024 MB is left for the build and the other
-    analyzers. The job's memory is the smaller of the machine's and the container's limit, so a
+    analyzers (where the job has at least 2 GB; below that the engine gets 1024 MB). The job's memory is the smaller of the machine's and the container's limit, so a
     16 GB runner gives 8192 MB, a 6 GB container 4096 MB, a 4 GB container 3072 MB and a 2 GB
     container 1024 MB. The log line `taint engine memory limit` in `qualor dotnet end` shows the
     value and where it came from. Set `QUALOR_TAINT_MEMORY_LIMIT` (megabytes) to choose it
-    yourself, and give the job more memory if the solution is large.
+    yourself, and give the job more memory if the solution is large. The limit is read from the
+    process's own cgroup and its parents; when the runner hides it, set
+    `QUALOR_TAINT_MEMORY_LIMIT` yourself.
   - When the engine goes over a limit, its run is incomplete: the OpenGrep C# rules run in its
     place, and the report carries `TAINT_ENGINE_FALLBACK` with the reason `budget`. Raise
     `QUALOR_TAINT_TIME_LIMIT` or `QUALOR_TAINT_MEMORY_LIMIT` and run again.
