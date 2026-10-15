@@ -8,6 +8,10 @@ All notable changes to Qualor are listed here, newest first. The format follows
 
 ### Added
 
+- OpenGrep is given the built-in excludes and `sources.exclude` as `--exclude` arguments whenever it
+  selects the files itself (a file list too long for one command line, mostly on Windows, and the
+  `semgrep` analyzer). Vendored and minified bundles are no longer parsed, which kept large repositories
+  from finishing within the analyzer's time limit. `*.min.mjs` and `*.min.cjs` are built-in excludes.
 - Email. Instance administrators set up an SMTP server in **Settings → Email**, or the operator
   sets `QUALOR_SMTP_URL` and `QUALOR_SMTP_FROM` (Helm: `secrets.smtpUrl` and `config.smtpFrom`).
   **Send test** shows the server's answer, and **Recent messages** lists every message with its

@@ -297,6 +297,10 @@ describe('HTML and CSS settings (plan 8D)', () => {
     ]);
   });
 
+  it('excludes minified ES and CommonJS modules like minified JS', () => {
+    expect(BUILTIN_EXCLUDES).toEqual(expect.arrayContaining(['**/*.min.mjs', '**/*.min.cjs']));
+  });
+
   it('excludes minified CSS like minified JS (config.md §3.1)', () => {
     expect(BUILTIN_EXCLUDES).toContain('**/*.min.css');
     expect(BUILTIN_EXCLUDES.indexOf('**/*.min.css')).toBe(

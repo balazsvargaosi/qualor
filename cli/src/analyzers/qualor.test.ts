@@ -2,8 +2,10 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import {
+  BUILTIN_EXCLUDES,
   engineMapping,
   findingConfidence,
+  parseConfig,
   type QualorManifest,
   type SarifLog,
 } from '@qualor/shared';
@@ -387,6 +389,31 @@ describe('qualorAnalyzer.prepare (config.md §6, plan 6B-1)', () => {
       '.',
     ]);
     expect(prep.run.args).not.toContain('--');
+  });
+
+  it("gives OpenGrep the built-in excludes and the project's own when it selects the files itself", async () => {
+    const root = tmp();
+    const config = parseConfig({ version: 1, sources: { exclude: ['gen/**', '**/*.snap'] } });
+    const files = [scopeFile(root, 'src/a-long-enough-name.py', 'python')];
+    const run = async (maxTargetArgBytes: number) => {
+      const prep = await createQualorAnalyzer({
+        defaultDir: writePack(tmp()),
+        maxTargetArgBytes,
+      }).prepare({ ...context(root, { files }), config });
+      if (!('run' in prep)) throw new Error(JSON.stringify(prep));
+      return prep.run.args;
+    };
+    const excludes = (args: readonly string[]) =>
+      args.flatMap((a, i) => (args[i - 1] === '--exclude' ? [a] : []));
+    // Past the command line: the whole list, the built-in ones first, as written.
+    const dot = await run(10);
+    expect(excludes(dot)).toEqual([...BUILTIN_EXCLUDES, 'gen/**', '**/*.snap']);
+    expect(dot.indexOf('--exclude')).toBeLessThan(dot.indexOf('.'));
+    expect(excludes(dot)).toEqual(expect.arrayContaining(['**/*.min.mjs', '**/*.min.cjs']));
+    // A short list names its files: no excludes needed, the arguments unchanged.
+    const listed = await run(1_000_000);
+    expect(listed).toContain('--');
+    expect(listed).not.toContain('--exclude');
   });
 
   it('warns when the files do not fit one command line, and only then', async () => {

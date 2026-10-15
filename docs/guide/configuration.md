@@ -130,7 +130,7 @@ an empty string. That keeps a secret from leaking into the report through the co
 ### Built-in excludes
 
 These always apply, and you can only add to them: `node_modules`, `.git`, `dist`, `build`, `target`
-(sources only; SpotBugs still reads the classes), `vendor`, `*.min.js`, `*.min.css`, `.qualor/`,
+(sources only; SpotBugs still reads the classes), `vendor`, `*.min.js`, `*.min.css`, `*.min.mjs`, `*.min.cjs`, `.qualor/`,
 .NET `obj/`, `bin/Debug`, `bin/Release`, generated C# (`*.g.cs`, `*.g.i.cs`, `*.Designer.cs`),
 Python virtual environments and caches (`.venv`, `venv`, `.tox`, `.nox`, `__pycache__`,
 `__pypackages__`, `.eggs`, `site-packages`), Swift's `Pods/`, `Carthage/` and `.build/`, Bundler's
@@ -138,6 +138,11 @@ Python virtual environments and caches (`.venv`, `venv`, `.tox`, `.nox`, `__pyca
 dependency scanning skip them too) and generated `*.pb.go` files, binary files, and nested git
 repositories. Files over 1 MiB are skipped for metrics and duplication, but analyzers still see them
 (detekt and SwiftLint are the exception: they are not given Kotlin or Swift files over 1 MiB).
+
+When OpenGrep selects the files itself, because the file list is too long for one command line (about
+1 MB on Linux, about 24 kB on Windows) or because of the `semgrep` analyzer, it is given the built-in
+excludes and your `sources.exclude` as `--exclude` arguments. It then does not parse vendored and
+minified bundles at all, which can take it minutes.
 
 ## Environment variables (scanner)
 

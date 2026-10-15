@@ -10,7 +10,7 @@ import {
 } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import path from 'node:path';
-import { parseConfig, reportSchema } from '@qualor/shared';
+import { BUILTIN_EXCLUDES, parseConfig, reportSchema } from '@qualor/shared';
 import { describe, expect, it } from 'vitest';
 import {
   describeWithTools,
@@ -294,6 +294,8 @@ describe('semgrepAnalyzer.prepare', () => {
         '--quiet',
         '--max-target-bytes',
         String(MAX_ANALYZED_BYTES),
+        // Scanning `.`, the tool is told what a scan never analyses, so it does not parse it.
+        ...BUILTIN_EXCLUDES.flatMap((g) => ['--exclude', g]),
         '.',
       ],
       cwd: root,

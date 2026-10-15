@@ -42,6 +42,8 @@ export const BUILTIN_EXCLUDES: readonly string[] = [
   '**/target/**',
   '**/*.min.js',
   '**/*.min.css',
+  '**/*.min.mjs',
+  '**/*.min.cjs',
   '**/vendor/**',
   // The scanner's own session files (config.md §6.1).
   '.qualor/**',

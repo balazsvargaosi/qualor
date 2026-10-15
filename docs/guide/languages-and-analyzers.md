@@ -1073,7 +1073,7 @@ directory the report names, for example `pathPrefixes: [/build/src]`.
 
 Every file in the working tree (`sources.include`, default `**/*`), minus what `.gitignore` ignores,
 minus the built-in excludes (`node_modules`, `dist`, `build`, `target`, `vendor`, `*.min.js`,
-`*.min.css`, .NET `obj/` and generated `*.g.cs` / `*.Designer.cs`, CMake's `CMakeFiles/`,
+`*.min.css`, `*.min.mjs`, `*.min.cjs`, .NET `obj/` and generated `*.g.cs` / `*.Designer.cs`, CMake's `CMakeFiles/`,
 `cmake-build-*/` and `_deps/`, Python's `.venv`, `venv`, `.tox`, `.nox`, `__pycache__`,
 `__pypackages__`, `.eggs` and `site-packages`, Bundler's `.bundle` directories, Rails' generated
 `db/schema.rb`, Go's `testdata/` directories and generated `*.pb.go` files, and binary files), minus

@@ -8,7 +8,7 @@ import {
   type Stats,
 } from 'node:fs';
 import path from 'node:path';
-import { isUrl, type QualorConfig } from '@qualor/shared';
+import { BUILTIN_EXCLUDES, isUrl, type QualorConfig } from '@qualor/shared';
 import { parseAllDocuments } from 'yaml';
 import { MAX_ANALYZED_BYTES } from '../discovery/discover';
 import { real, staysInside, within } from './binary';
@@ -402,6 +402,16 @@ function findBinary(ctx: AnalyzerContext): { command: string; flavour: Flavour }
   return null;
 }
 
+/**
+ * `--exclude` arguments for a scan that selects the files itself (below `.`): the built-in excludes
+ * and the project's `sources.exclude`, as written (OpenGrep takes these glob forms). The findings
+ * on such files are dropped afterwards anyway; this keeps the tool from parsing vendored and
+ * minified bundles, which can take it past its time limit.
+ */
+export function excludeFlags(config: QualorConfig): string[] {
+  return [...BUILTIN_EXCLUDES, ...config.sources.exclude].flatMap((g) => ['--exclude', g]);
+}
+
 export function createSemgrepAnalyzer(defaultRulesDir = DEFAULT_SEMGREP_RULES_DIR): Analyzer {
   const prepare = async (ctx: AnalyzerContext): Promise<Preparation> => {
     // `qualor scan` stops with exit 2 on these before any analyzer runs (checkConfig); this is
@@ -434,6 +444,7 @@ export function createSemgrepAnalyzer(defaultRulesDir = DEFAULT_SEMGREP_RULES_DI
           // Below `.` the tool skips files over 1,000,000 bytes silently; scan up to the CLI's limit.
           '--max-target-bytes',
           String(MAX_ANALYZED_BYTES),
+          ...excludeFlags(ctx.config),
           '.',
         ],
         cwd: ctx.root,
