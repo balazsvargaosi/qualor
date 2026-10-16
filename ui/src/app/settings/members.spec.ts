@@ -431,7 +431,7 @@ describe('MembersPage (rbac-audit.md §17)', () => {
 
   it('suggests people who are not members yet, and adds the one picked without a lookup', async () => {
     const server = setup();
-    new FakeUserDirectory(server, {
+    FakeUserDirectory.install(server, {
       users: [
         { id: ALICE, username: 'alice', displayName: 'Alice' },
         { id: CAROL, username: 'carol', displayName: 'Carol Jones' },
@@ -474,7 +474,7 @@ describe('MembersPage (rbac-audit.md §17)', () => {
 
   it('marks the name required, and closing the dialog drops a search still pending', async () => {
     const server = setup();
-    new FakeUserDirectory(server, {
+    FakeUserDirectory.install(server, {
       users: [{ id: CAROL, username: 'carol', displayName: null }],
     });
     const { fixture, root } = await render();

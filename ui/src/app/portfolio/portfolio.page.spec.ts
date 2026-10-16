@@ -74,7 +74,7 @@ describe('PortfolioPage (4E-2 §4)', () => {
 
   it('loads the current organisation by week and shows the totals as cards', async () => {
     await setup();
-    new FakePortfolio(server);
+    FakePortfolio.install(server);
     const root = await open();
     expect(text(root.querySelector('h1'))).toBe('Portfolio');
     const request = server.requestsTo('GET', OVERVIEW)[0];
@@ -108,7 +108,7 @@ describe('PortfolioPage (4E-2 §4)', () => {
 
   it('groups the counts in the notes as the measures are', async () => {
     await setup();
-    new FakePortfolio(
+    FakePortfolio.install(
       server,
       portfolioOverview({
         totals: {
@@ -144,7 +144,7 @@ describe('PortfolioPage (4E-2 §4)', () => {
 
   it('shows a dash for the gate pass share when nothing was analyzed', async () => {
     await setup();
-    new FakePortfolio(
+    FakePortfolio.install(
       server,
       portfolioOverview({
         totals: {
@@ -162,7 +162,7 @@ describe('PortfolioPage (4E-2 §4)', () => {
 
   it('gives every trend chart a table of its values', async () => {
     await setup();
-    new FakePortfolio(server);
+    FakePortfolio.install(server);
     const root = await open();
     const charts = [...root.querySelectorAll('[data-trend]')].map((c) =>
       c.getAttribute('data-trend'),
@@ -206,7 +206,7 @@ describe('PortfolioPage (4E-2 §4)', () => {
 
   it('switches scope and granularity through the query and asks for them', async () => {
     await setup();
-    const portfolio = new FakePortfolio(server);
+    const portfolio = FakePortfolio.install(server);
     let root = await open();
     expect(button(root, 'This organisation')?.getAttribute('aria-pressed')).toBe('true');
     expect(button(root, 'Weeks')?.getAttribute('aria-pressed')).toBe('true');
@@ -251,7 +251,7 @@ describe('PortfolioPage (4E-2 §4)', () => {
 
   it('reads the scope and granularity from the URL', async () => {
     await setup();
-    new FakePortfolio(server);
+    FakePortfolio.install(server);
     await open('/portfolio?scope=all&granularity=month');
     const request = server.requestsTo('GET', OVERVIEW)[0];
     expect(request?.query.get('scope')).toBe('all');
@@ -260,7 +260,7 @@ describe('PortfolioPage (4E-2 §4)', () => {
 
   it('lists the attention lists with links to the projects', async () => {
     await setup();
-    new FakePortfolio(server);
+    FakePortfolio.install(server);
     const root = await open();
     const lists = [...root.querySelectorAll('[data-attention]')];
     expect(lists.map((l) => l.getAttribute('data-attention'))).toEqual([
@@ -279,7 +279,7 @@ describe('PortfolioPage (4E-2 §4)', () => {
 
   it('shows a dash, not 0 blocker and high, for a listed project with no measures', async () => {
     await setup();
-    new FakePortfolio(
+    FakePortfolio.install(
       server,
       portfolioOverview({
         attention: {
@@ -296,7 +296,7 @@ describe('PortfolioPage (4E-2 §4)', () => {
   it('sorts the projects on the server and appends the next page', async () => {
     await setup();
     const rows = Array.from({ length: 3 }, (_, i) => portfolioRow(`p${i}`));
-    new FakePortfolio(server, portfolioOverview(), rows);
+    FakePortfolio.install(server, portfolioOverview(), rows);
     server.on('GET', PROJECTS, (r) => {
       const cursor = r.query.get('cursor');
       return { body: cursor ? page([rows[2]!]) : page(rows.slice(0, 2), 'next-page') };
@@ -339,7 +339,7 @@ describe('PortfolioPage (4E-2 §4)', () => {
 
   it('links the CSV and PDF downloads to the export of the scope shown', async () => {
     await setup();
-    new FakePortfolio(server);
+    FakePortfolio.install(server);
     const root = await open();
     const links = () =>
       [...root.querySelectorAll<HTMLAnchorElement>('a[download]')].map((a) => [
@@ -366,7 +366,7 @@ describe('PortfolioPage (4E-2 §4)', () => {
 
   it('says when there is no project to read, and asks for no projects page', async () => {
     await setup();
-    new FakePortfolio(
+    FakePortfolio.install(
       server,
       portfolioOverview({
         totals: {
@@ -402,7 +402,7 @@ describe('PortfolioPage (4E-2 §4)', () => {
 
   it('shows the error, not an empty portfolio, when the organisations fail to load', async () => {
     await setup();
-    new FakePortfolio(server);
+    FakePortfolio.install(server);
     server.on('GET', '/api/v0/organizations', {
       status: 500,
       body: problem(500, 'INTERNAL_ERROR'),

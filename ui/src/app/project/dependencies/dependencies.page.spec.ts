@@ -88,7 +88,7 @@ describe('DependenciesPage (6M §8)', () => {
     server.on('GET', `/api/v0/projects/${PROJECT}`, {
       body: { id: PROJECT, organizationId: ORG_ID, permissions: [...VIEWER_PROJECT_PERMISSIONS] },
     });
-    fake = new FakeDependencies(server, { rows: ROWS });
+    fake = FakeDependencies.install(server, { rows: ROWS });
     TestBed.configureTestingModule({
       imports: [DependenciesPage],
       providers: [provideRouter([{ path: '**', children: [] }]), provideFakeServer(server)],

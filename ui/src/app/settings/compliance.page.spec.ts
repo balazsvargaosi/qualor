@@ -78,7 +78,7 @@ async function render(): Promise<HTMLElement> {
 describe('SettingsCompliancePage (4E-1 §4)', () => {
   it("lists the current organisation's reports, with Create report for org.compliance.manage", async () => {
     const server = setup('orgAdmin');
-    new FakeCompliance(server, [
+    FakeCompliance.install(server, [
       complianceReport({ scope: 'organization', project: null, branch: null, canDelete: true }),
     ]);
     const root = await render();
@@ -90,7 +90,7 @@ describe('SettingsCompliancePage (4E-1 §4)', () => {
 
   it('shows a member the list without Create report', async () => {
     const server = setup('member');
-    new FakeCompliance(server, []);
+    FakeCompliance.install(server, []);
     const root = await render();
     expect(root.querySelector('.empty-state')?.textContent?.trim()).toBe(
       'No compliance reports yet.',

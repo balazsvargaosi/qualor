@@ -95,7 +95,7 @@ async function save(fixture: { whenStable(): Promise<unknown> }, root: HTMLEleme
 describe('LicensePolicyPage (6M §8)', () => {
   it("shows the organisation's stored policy", async () => {
     const server = setup();
-    new FakeLicensePolicy(server, { policies: { [ORG_ID]: STORED } });
+    FakeLicensePolicy.install(server, { policies: { [ORG_ID]: STORED } });
     const { root } = await render();
     expect(root.querySelector('h2')?.textContent?.trim()).toBe('Licence policy');
     const modes = [...root.querySelectorAll<HTMLInputElement>('input[name="license-policy-mode"]')];
@@ -133,7 +133,7 @@ describe('LicensePolicyPage (6M §8)', () => {
 
   it("shows each group's members on demand", async () => {
     const server = setup();
-    new FakeLicensePolicy(server);
+    FakeLicensePolicy.install(server);
     const { fixture, root } = await render();
     const group = root.querySelector('[data-group="strong-copyleft"]')!;
     const toggle = group.querySelector<HTMLButtonElement>('button')!;
@@ -153,7 +153,7 @@ describe('LicensePolicyPage (6M §8)', () => {
 
   it('saves a denylist that forbids strong copyleft, and says so', async () => {
     const server = setup();
-    const fake = new FakeLicensePolicy(server);
+    const fake = FakeLicensePolicy.install(server);
     const { fixture, root } = await render();
     // No policy yet: nothing to remove.
     expect([...root.querySelectorAll('button')].map(text)).not.toContain('Remove policy');
@@ -183,7 +183,7 @@ describe('LicensePolicyPage (6M §8)', () => {
 
   it('removes a chip, and adds an entry only once', async () => {
     const server = setup();
-    new FakeLicensePolicy(server, { policies: { [ORG_ID]: STORED } });
+    FakeLicensePolicy.install(server, { policies: { [ORG_ID]: STORED } });
     const { fixture, root } = await render();
     await add(fixture, root, 'forbidden', 'GPL-3.0-only');
     expect(chips(root, 'forbidden')).toEqual(['GPL-3.0-only']);
@@ -196,7 +196,7 @@ describe('LicensePolicyPage (6M §8)', () => {
 
   it('allows only listed licences: no groups and no forbidden list, and at least one allowed', async () => {
     const server = setup();
-    new FakeLicensePolicy(server, { policies: { [ORG_ID]: STORED } });
+    FakeLicensePolicy.install(server, { policies: { [ORG_ID]: STORED } });
     const { fixture, root } = await render();
     root
       .querySelector<HTMLInputElement>('input[name="license-policy-mode"][value="allowlist"]')!
@@ -231,7 +231,7 @@ describe('LicensePolicyPage (6M §8)', () => {
   it('refuses more than 500 entries in a list', async () => {
     const server = setup();
     const many = Array.from({ length: 500 }, (_, i) => `LicenseRef-${i}`);
-    new FakeLicensePolicy(server, {
+    FakeLicensePolicy.install(server, {
       policies: { [ORG_ID]: { ...STORED, forbidden: many } },
     });
     const { fixture, root } = await render();
@@ -244,7 +244,7 @@ describe('LicensePolicyPage (6M §8)', () => {
 
   it('marks the entries the server refuses (400 INVALID_LICENSE_ID) on their field', async () => {
     const server = setup();
-    new FakeLicensePolicy(server);
+    FakeLicensePolicy.install(server);
     const { fixture, root } = await render();
     await add(fixture, root, 'forbidden', 'GPL-3.0-only');
     await add(fixture, root, 'forbidden', 'Not-A-Licence');
@@ -268,7 +268,7 @@ describe('LicensePolicyPage (6M §8)', () => {
 
   it('removes the policy after a designed confirmation, never confirm()', async () => {
     const server = setup();
-    const fake = new FakeLicensePolicy(server, { policies: { [ORG_ID]: STORED } });
+    const fake = FakeLicensePolicy.install(server, { policies: { [ORG_ID]: STORED } });
     const confirm = vi.spyOn(window, 'confirm');
     const { fixture, root } = await render();
     const remove = [...root.querySelectorAll<HTMLButtonElement>('button')].find(
@@ -302,7 +302,7 @@ describe('LicensePolicyPage (6M §8)', () => {
 
   it('shows the Business note in place of the controls without the licence', async () => {
     const server = setup();
-    new FakeLicensePolicy(server, { available: false, policies: { [ORG_ID]: STORED } });
+    FakeLicensePolicy.install(server, { available: false, policies: { [ORG_ID]: STORED } });
     const { root } = await render();
     expect(text(field(root, 'license-policy-not-licensed'))).toBe(
       'A licence policy needs the Business plan.',
@@ -312,7 +312,7 @@ describe('LicensePolicyPage (6M §8)', () => {
 
   it('says a licence that lapsed while saving refuses the change (403 FEATURE_NOT_LICENSED)', async () => {
     const server = setup();
-    const fake = new FakeLicensePolicy(server);
+    const fake = FakeLicensePolicy.install(server);
     const { fixture, root } = await render();
     fake.available = false;
     await add(fixture, root, 'forbidden', 'MIT');
@@ -325,7 +325,7 @@ describe('LicensePolicyPage (6M §8)', () => {
   it('reads the organisation chosen in the header', async () => {
     const server = setup();
     TestBed.inject(SessionStore).set(me({ admin: true }));
-    new FakeLicensePolicy(server, { policies: { [OTHER_ID]: STORED } });
+    FakeLicensePolicy.install(server, { policies: { [OTHER_ID]: STORED } });
     const { fixture, root } = await render();
     expect(chips(root, 'forbidden')).toEqual([]);
     TestBed.inject(OrgContext).select(OTHER_ID);
@@ -336,7 +336,7 @@ describe('LicensePolicyPage (6M §8)', () => {
 
   it('tells a member who is not an organisation admin, and asks the server nothing', async () => {
     const server = setup('member');
-    new FakeLicensePolicy(server);
+    FakeLicensePolicy.install(server);
     const { root } = await render();
     expect(root.textContent).toContain(
       'Only organisation administrators change the licence policy.',

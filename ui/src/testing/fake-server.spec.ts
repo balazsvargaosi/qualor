@@ -22,7 +22,7 @@ describe('FakeUserDirectory', () => {
 
   it('counts the maximum in UTF-16 units, the minimum in characters of q trimmed', async () => {
     const server = new FakeServer();
-    new FakeUserDirectory(server, { users: [ALICE] });
+    FakeUserDirectory.install(server, { users: [ALICE] });
     // 33 emoji are 33 characters but 66 UTF-16 units: over 64.
     const emoji = encodeURIComponent(String.fromCodePoint(0x1f600).repeat(33));
     expect((await search(server, `q=${emoji}`)).status).toBe(422);
@@ -35,7 +35,7 @@ describe('FakeUserDirectory', () => {
 
   it('leaves out the members of excludeOrganization and the grantees of excludeProject', async () => {
     const server = new FakeServer();
-    new FakeUserDirectory(server, {
+    FakeUserDirectory.install(server, {
       users: [ALICE, { id: 'u-alan', username: 'alan', displayName: null }],
       memberships: [{ organizationId: 'org', userId: 'u-alice', role: 'member' }],
       grants: [{ projectId: 'p', userId: 'u-alan' }],

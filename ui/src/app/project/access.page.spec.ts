@@ -203,7 +203,7 @@ describe('AccessPage (rbac-audit.md §16, §17)', () => {
   it('suggests the active users without a grant here, members or not, and grants the one picked', async () => {
     const server = setup();
     // A grant may go to anyone active: carol is in no organization (rbac-audit.md §16).
-    new FakeUserDirectory(server, {
+    FakeUserDirectory.install(server, {
       users: [
         { id: BEA, username: 'bea', displayName: 'Bea Boyd' },
         { id: BOB, username: 'bob', displayName: null },
@@ -255,7 +255,7 @@ describe('AccessPage (rbac-audit.md §16, §17)', () => {
 
   it('marks the name required, and closing the dialog drops a search still pending', async () => {
     const server = setup();
-    new FakeUserDirectory(server, {
+    FakeUserDirectory.install(server, {
       users: [{ id: CAROL, username: 'carol', displayName: null }],
     });
     const { fixture, root } = await render();

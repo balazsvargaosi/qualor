@@ -195,7 +195,7 @@ describe('AuditLogPage (rbac-audit.md §13, §17)', () => {
 
   it('suggests users as one types, and filters by the one picked without a lookup', async () => {
     const server = setup({ instanceAdmin: true });
-    new FakeUserDirectory(server, {
+    FakeUserDirectory.install(server, {
       instanceAdmin: true,
       users: [
         { id: BOB, username: 'bob', displayName: 'Bob Stone' },

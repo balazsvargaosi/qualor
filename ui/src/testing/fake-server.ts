@@ -72,9 +72,7 @@ export class FakeServer {
         (typeof r.path === 'string' ? r.path === url.pathname : r.path.test(url.pathname)),
     );
     const reply: FakeReply = route
-      ? typeof route.responder === 'function'
-        ? await route.responder(recorded)
-        : route.responder
+      ? await answer(route.responder, recorded)
       : { status: 404, body: problem(404, 'NOT_FOUND') };
     const status = reply.status ?? 200;
     const headers = reply.headers ?? {};
@@ -87,6 +85,11 @@ export class FakeServer {
       },
     });
   };
+}
+
+/** The reply of a responder: itself, or what the function answers for the request. */
+async function answer(responder: Responder, request: RecordedRequest): Promise<FakeReply> {
+  return typeof responder === 'function' ? responder(request) : responder;
 }
 
 export function problem(
@@ -261,7 +264,12 @@ export class FakeCompliance {
   readonly reports: ComplianceReport[];
   private created = 0;
 
-  constructor(server: FakeServer, reports: ComplianceReport[] = []) {
+  /** Answers the compliance report routes on `server` over `reports`. */
+  static install(server: FakeServer, reports: ComplianceReport[] = []): FakeCompliance {
+    return new FakeCompliance(server, reports);
+  }
+
+  private constructor(server: FakeServer, reports: ComplianceReport[]) {
     this.reports = [...reports];
     server.on('GET', COMPLIANCE, (r) => {
       const organizationId = r.query.get('organizationId');
@@ -439,10 +447,19 @@ export class FakePortfolio {
   overview: PortfolioOverview;
   rows: PortfolioProjectRow[];
 
-  constructor(
+  /** Answers the portfolio routes on `server` with `overview` and `rows`. */
+  static install(
     server: FakeServer,
     overview: PortfolioOverview = portfolioOverview(),
     rows: PortfolioProjectRow[] = [portfolioRow('alpha'), portfolioRow('beta')],
+  ): FakePortfolio {
+    return new FakePortfolio(server, overview, rows);
+  }
+
+  private constructor(
+    server: FakeServer,
+    overview: PortfolioOverview,
+    rows: PortfolioProjectRow[],
   ) {
     this.overview = overview;
     this.rows = rows;
@@ -465,6 +482,13 @@ export class FakePortfolio {
 const ORG_AUTO_FIX = /^\/api\/v0\/organizations\/([^/]+)\/ai\/auto-fix$/;
 const PROJECT_AUTO_FIX = /^\/api\/v0\/projects\/([^/]+)\/ai\/auto-fix$/;
 
+/** The starting state of a {@link FakeAutoFix}: licensed and AI-enabled, nothing stored, by default. */
+export interface FakeAutoFixOptions {
+  available?: boolean;
+  fixEnabled?: boolean;
+  organizations?: Record<string, AutoFix>;
+}
+
 /**
  * The automatic fix suggestion routes (4E-3a §2) over in-memory settings: the organisation route
  * (`GET`/`PUT /organizations/{id}/ai/auto-fix`) and the project opt-out (`PUT
@@ -482,14 +506,12 @@ export class FakeAutoFix {
   /** The projects opted out. */
   readonly optedOut = new Set<string>();
 
-  constructor(
-    server: FakeServer,
-    options: {
-      available?: boolean;
-      fixEnabled?: boolean;
-      organizations?: Record<string, AutoFix>;
-    } = {},
-  ) {
+  /** Answers the automatic fix suggestion routes on `server`. */
+  static install(server: FakeServer, options: FakeAutoFixOptions = {}): FakeAutoFix {
+    return new FakeAutoFix(server, options);
+  }
+
+  private constructor(server: FakeServer, options: FakeAutoFixOptions) {
     this.available = options.available ?? true;
     this.fixEnabled = options.fixEnabled ?? true;
     this.organizations = { ...options.organizations };
@@ -577,6 +599,13 @@ export const FAKE_LICENSE_GROUPS: OrgLicensePolicy['groups'] = [
   },
 ];
 
+/** The starting state of a {@link FakeDependencies}: one row, an inventory, no verdicts, by default. */
+export interface FakeDependenciesOptions {
+  rows?: DependencyRow[];
+  inventory?: boolean;
+  verdicts?: boolean;
+}
+
 /**
  * The dependencies route (6M §8, `GET /projects/{id}/dependencies`) over in-memory `rows`: the
  * filters (an exact licence string, a group by {@link FAKE_LICENSE_GROUPS}, the ecosystem, unknown
@@ -590,10 +619,12 @@ export class FakeDependencies {
   inventory: boolean;
   verdicts: boolean;
 
-  constructor(
-    server: FakeServer,
-    options: { rows?: DependencyRow[]; inventory?: boolean; verdicts?: boolean } = {},
-  ) {
+  /** Answers the dependencies route on `server`. */
+  static install(server: FakeServer, options: FakeDependenciesOptions = {}): FakeDependencies {
+    return new FakeDependencies(server, options);
+  }
+
+  private constructor(server: FakeServer, options: FakeDependenciesOptions = {}) {
     this.rows = options.rows ?? [dependency()];
     this.inventory = options.inventory ?? true;
     this.verdicts = options.verdicts ?? false;
@@ -675,6 +706,12 @@ function canonical(entry: string): string | null {
   return license && extra ? `${license} WITH ${extra}` : null;
 }
 
+/** The starting state of a {@link FakeLicensePolicy}: licensed, no policy stored, by default. */
+export interface FakeLicensePolicyOptions {
+  available?: boolean;
+  policies?: Record<string, LicensePolicy | null>;
+}
+
 /**
  * The organisation licence policy routes (6M §5, `GET`/`PUT /organizations/{id}/license-policy`)
  * over in-memory policies: `available` is the feature (else PUT is 403 FEATURE_NOT_LICENSED and GET
@@ -686,10 +723,12 @@ export class FakeLicensePolicy {
   available: boolean;
   readonly policies: Record<string, LicensePolicy | null>;
 
-  constructor(
-    server: FakeServer,
-    options: { available?: boolean; policies?: Record<string, LicensePolicy | null> } = {},
-  ) {
+  /** Answers the organisation licence policy routes on `server`. */
+  static install(server: FakeServer, options: FakeLicensePolicyOptions = {}): FakeLicensePolicy {
+    return new FakeLicensePolicy(server, options);
+  }
+
+  private constructor(server: FakeServer, options: FakeLicensePolicyOptions) {
     this.available = options.available ?? true;
     this.policies = { ...options.policies };
     server.on('GET', LICENSE_POLICY, (r) => {
@@ -771,6 +810,20 @@ export function userMatches(user: { username: string; displayName: string | null
   );
 }
 
+/** The starting directory of a {@link FakeUserDirectory}: empty, not an instance admin, by default. */
+export interface FakeUserDirectoryOptions {
+  users?: DirectoryUser[];
+  memberships?: DirectoryMembership[];
+  grants?: DirectoryGrant[];
+  instanceAdmin?: boolean;
+}
+
+/** Orders users by username, as the search route answers them. */
+function byUsername(a: { username: string }, b: { username: string }): number {
+  if (a.username < b.username) return -1;
+  return a.username > b.username ? 1 : 0;
+}
+
 /**
  * The user pickers' routes over an in-memory directory, as the server answers them:
  * - `GET /users/search`: q of at most 64 UTF-16 units, then trimmed, of at least 2 characters
@@ -789,15 +842,12 @@ export class FakeUserDirectory {
   instanceAdmin: boolean;
   rateLimited = false;
 
-  constructor(
-    server: FakeServer,
-    options: {
-      users?: DirectoryUser[];
-      memberships?: DirectoryMembership[];
-      grants?: DirectoryGrant[];
-      instanceAdmin?: boolean;
-    } = {},
-  ) {
+  /** Answers the user pickers' routes on `server` over the directory in `options`. */
+  static install(server: FakeServer, options: FakeUserDirectoryOptions = {}): FakeUserDirectory {
+    return new FakeUserDirectory(server, options);
+  }
+
+  private constructor(server: FakeServer, options: FakeUserDirectoryOptions) {
     this.users = options.users ?? [];
     this.memberships = options.memberships ?? [];
     this.grants = options.grants ?? [];
@@ -832,7 +882,7 @@ export class FakeUserDirectory {
     const body: UserSuggestions = {
       users: this.users
         .filter((u) => u.active !== false && !members.has(u.id) && userMatches(u, q))
-        .sort((a, b) => (a.username < b.username ? -1 : a.username > b.username ? 1 : 0))
+        .sort(byUsername)
         .slice(0, limit)
         .map(({ id, username, displayName }) => ({ id, username, displayName })),
     };

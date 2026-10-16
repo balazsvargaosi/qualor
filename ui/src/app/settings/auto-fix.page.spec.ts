@@ -74,7 +74,7 @@ async function save(fixture: { whenStable(): Promise<unknown> }, root: HTMLEleme
 describe('AutoFixPage (4E-3a §2, §4)', () => {
   it("shows the organisation's stored settings and says suggestions are posted without a click", async () => {
     const server = setup();
-    new FakeAutoFix(server, {
+    FakeAutoFix.install(server, {
       organizations: { [ORG_ID]: { enabled: true, minSeverity: 'medium', maxPerAnalysis: 4 } },
     });
     const { root } = await render();
@@ -95,7 +95,7 @@ describe('AutoFixPage (4E-3a §2, §4)', () => {
 
   it('switches them on with a threshold and a maximum, and says so', async () => {
     const server = setup();
-    const fake = new FakeAutoFix(server);
+    const fake = FakeAutoFix.install(server);
     const { fixture, root } = await render();
     field<HTMLInputElement>(root, 'auto-fix-enabled').click();
     type(root, 'auto-fix-severity', 'blocker');
@@ -118,7 +118,7 @@ describe('AutoFixPage (4E-3a §2, §4)', () => {
 
   it.each(['0', '26', '2.5', ''])('refuses %j as the maximum and sends nothing', async (value) => {
     const server = setup();
-    new FakeAutoFix(server);
+    FakeAutoFix.install(server);
     const { fixture, root } = await render();
     type(root, 'auto-fix-max', value);
     await save(fixture, root);
@@ -132,7 +132,7 @@ describe('AutoFixPage (4E-3a §2, §4)', () => {
 
   it('says why switching on was refused when the assistant does not suggest fixes (409 AI_DISABLED)', async () => {
     const server = setup();
-    new FakeAutoFix(server, { fixEnabled: false });
+    FakeAutoFix.install(server, { fixEnabled: false });
     const { fixture, root } = await render();
     field<HTMLInputElement>(root, 'auto-fix-enabled').click();
     await save(fixture, root);
@@ -143,7 +143,7 @@ describe('AutoFixPage (4E-3a §2, §4)', () => {
 
   it('shows the Enterprise note in place of the controls without the licence', async () => {
     const server = setup();
-    new FakeAutoFix(server, {
+    FakeAutoFix.install(server, {
       available: false,
       organizations: { [ORG_ID]: { enabled: true, minSeverity: 'low', maxPerAnalysis: 2 } },
     });
@@ -157,7 +157,7 @@ describe('AutoFixPage (4E-3a §2, §4)', () => {
 
   it('says a licence that lapsed while saving refuses the switch-on (403 FEATURE_NOT_LICENSED)', async () => {
     const server = setup();
-    const fake = new FakeAutoFix(server);
+    const fake = FakeAutoFix.install(server);
     const { fixture, root } = await render();
     fake.available = false;
     field<HTMLInputElement>(root, 'auto-fix-enabled').click();
@@ -171,7 +171,7 @@ describe('AutoFixPage (4E-3a §2, §4)', () => {
     const server = setup();
     // An instance admin manages every organisation's.
     TestBed.inject(SessionStore).set(me({ admin: true }));
-    new FakeAutoFix(server, {
+    FakeAutoFix.install(server, {
       organizations: { [OTHER_ID]: { enabled: true, minSeverity: 'info', maxPerAnalysis: 1 } },
     });
     const { fixture, root } = await render();
@@ -185,7 +185,7 @@ describe('AutoFixPage (4E-3a §2, §4)', () => {
   it('drops the answer for an organisation left before it arrived', async () => {
     const server = setup();
     TestBed.inject(SessionStore).set(me({ admin: true }));
-    new FakeAutoFix(server, {
+    FakeAutoFix.install(server, {
       organizations: { [OTHER_ID]: { enabled: true, minSeverity: 'info', maxPerAnalysis: 1 } },
     });
     let release: () => void = () => undefined;
@@ -207,7 +207,7 @@ describe('AutoFixPage (4E-3a §2, §4)', () => {
 
   it("tells an admin of another organisation that this one's are not theirs to change", async () => {
     const server = setup();
-    new FakeAutoFix(server);
+    FakeAutoFix.install(server);
     const { fixture, root } = await render();
     TestBed.inject(OrgContext).select(OTHER_ID);
     await settle(fixture);
@@ -223,7 +223,7 @@ describe('AutoFixPage (4E-3a §2, §4)', () => {
   it('says so when there is no organisation to show, instead of loading forever', async () => {
     const server = setup();
     server.on('GET', '/api/v0/organizations', { body: page([]) });
-    new FakeAutoFix(server);
+    FakeAutoFix.install(server);
     const { root } = await render();
     expect(root.textContent).toContain('There is no organization to show');
     expect(root.querySelector('form')).toBeNull();
@@ -232,7 +232,7 @@ describe('AutoFixPage (4E-3a §2, §4)', () => {
 
   it('tells a member who is not an organisation admin, and asks the server nothing', async () => {
     const server = setup('member');
-    new FakeAutoFix(server);
+    FakeAutoFix.install(server);
     const { root } = await render();
     expect(root.textContent).toContain(
       'Only organisation administrators change the automatic fix suggestions.',

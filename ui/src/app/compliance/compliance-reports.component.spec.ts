@@ -23,6 +23,11 @@ const BRANCHES = [
   { id: '0190a6c2-0000-7000-8000-0000000000b1', name: 'main', isMain: true },
 ];
 
+/** The trimmed text of each header and data cell of a table row. */
+function cellTexts(row: Element): (string | undefined)[] {
+  return [...row.querySelectorAll('th, td')].map((c) => c.textContent?.trim());
+}
+
 interface Render {
   scope?: { organizationId: string } | { projectId: string };
   canCreate?: boolean;
@@ -80,7 +85,7 @@ describe('ComplianceReportsComponent (4E-1 §4)', () => {
   }
 
   it('lists the reports newest first, and polls a pending one every 3 s until it is ready', async () => {
-    const store = new FakeCompliance(server, [
+    const store = FakeCompliance.install(server, [
       complianceReport({ id: OLD, createdAt: '2026-10-10T10:00:00.000Z' }),
       complianceReport({
         id: NEW,
@@ -134,7 +139,7 @@ describe('ComplianceReportsComponent (4E-1 §4)', () => {
   });
 
   it('stops polling when it is destroyed', async () => {
-    new FakeCompliance(server, [
+    FakeCompliance.install(server, [
       complianceReport({ id: NEW, status: 'pending', summary: null, sha256: null }),
     ]);
     const { fixture } = await render();
@@ -145,7 +150,7 @@ describe('ComplianceReportsComponent (4E-1 §4)', () => {
   });
 
   it('shows Create report only to those who may, with the main branch chosen', async () => {
-    const store = new FakeCompliance(server, [complianceReport({ id: OLD })]);
+    const store = FakeCompliance.install(server, [complianceReport({ id: OLD })]);
     let { root } = await render();
     expect(root.textContent).not.toContain('Create report');
     expect(root.querySelector('select')).toBeNull();
@@ -183,7 +188,7 @@ describe('ComplianceReportsComponent (4E-1 §4)', () => {
   });
 
   it('creates an organisation report with a single button', async () => {
-    new FakeCompliance(server, []);
+    FakeCompliance.install(server, []);
     const { root } = await render({ scope: { organizationId: ORG_ID }, canCreate: true });
     expect(server.requestsTo('GET', REPORTS)[0]?.query.get('organizationId')).toBe(ORG_ID);
     expect(root.querySelector('select')).toBeNull();
@@ -196,7 +201,7 @@ describe('ComplianceReportsComponent (4E-1 §4)', () => {
   });
 
   it('replaces "being built" once the created report is ready, and drops it when one fails', async () => {
-    const store = new FakeCompliance(server, []);
+    const store = FakeCompliance.install(server, []);
     const { root } = await render({ canCreate: true });
     const status = () => root.querySelector('.compliance-status')?.textContent?.trim();
 
@@ -230,7 +235,7 @@ describe('ComplianceReportsComponent (4E-1 §4)', () => {
   });
 
   it('offers Delete only when the report says so, and deletes after confirmation', async () => {
-    const store = new FakeCompliance(server, [complianceReport({ id: OLD, canDelete: false })]);
+    const store = FakeCompliance.install(server, [complianceReport({ id: OLD, canDelete: false })]);
     let { root } = await render();
     expect(rows(root)).toHaveLength(1);
     expect(
@@ -296,7 +301,7 @@ describe('ComplianceReportsComponent (4E-1 §4)', () => {
       ],
       summary,
     });
-    new FakeCompliance(server, [report]);
+    FakeCompliance.install(server, [report]);
     const { root } = await render();
     expect(root.querySelector('.compliance-preview')).toBeNull();
 
@@ -310,9 +315,7 @@ describe('ComplianceReportsComponent (4E-1 §4)', () => {
     ]);
     expect(switcher[0]?.getAttribute('aria-pressed')).toBe('true');
     const categoryRows = () =>
-      [...preview.querySelectorAll('.compliance-categories tbody tr')].map((tr) =>
-        [...tr.querySelectorAll('th, td')].map((c) => c.textContent?.trim()),
-      );
+      [...preview.querySelectorAll('.compliance-categories tbody tr')].map(cellTexts);
     expect(categoryRows()[0]?.slice(0, 9)).toEqual([
       'A03',
       'Injection',
@@ -339,7 +342,7 @@ describe('ComplianceReportsComponent (4E-1 §4)', () => {
   });
 
   it('says when there is no report yet', async () => {
-    new FakeCompliance(server, []);
+    FakeCompliance.install(server, []);
     const { root } = await render();
     expect(root.querySelector('.empty-state')?.textContent?.trim()).toBe(
       'No compliance reports yet.',

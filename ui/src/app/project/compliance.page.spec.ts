@@ -74,7 +74,7 @@ async function render(): Promise<HTMLElement> {
 describe('ProjectCompliancePage (4E-1 §4)', () => {
   it("offers the project's branches for a new report to a holder of project.compliance.create", async () => {
     const server = setup(['project.read', 'project.compliance.create']);
-    new FakeCompliance(server, []);
+    FakeCompliance.install(server, []);
     const root = await render();
     const branches = server.requestsTo('GET', `/api/v0/projects/${ID}/branches`);
     expect(branches[0]?.query.get('kind')).toBe('branch');
@@ -91,7 +91,7 @@ describe('ProjectCompliancePage (4E-1 §4)', () => {
 
   it('shows a reader the list without Create report', async () => {
     const server = setup(['project.read']);
-    new FakeCompliance(server, []);
+    FakeCompliance.install(server, []);
     const root = await render();
     expect(root.querySelector('.empty-state')?.textContent?.trim()).toBe(
       'No compliance reports yet.',

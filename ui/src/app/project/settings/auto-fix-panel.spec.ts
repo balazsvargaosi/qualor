@@ -75,7 +75,7 @@ describe('AutoFixPanel (4E-3a §2, §4)', () => {
 
   it('opts the project out, says so and tells the page', async () => {
     const server = setup();
-    const fake = new FakeAutoFix(server);
+    const fake = FakeAutoFix.install(server);
     const { fixture, root, saved } = await render();
     toggle(root).click();
     await settle(fixture);
@@ -92,7 +92,7 @@ describe('AutoFixPanel (4E-3a §2, §4)', () => {
 
   it('opts a project back in', async () => {
     const server = setup();
-    new FakeAutoFix(server);
+    FakeAutoFix.install(server);
     const { fixture, root } = await render({
       available: true,
       enabled: false,
