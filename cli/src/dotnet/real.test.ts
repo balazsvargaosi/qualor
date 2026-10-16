@@ -29,6 +29,11 @@ const enginePack = (() => {
   return declared !== undefined && !('invalid' in declared);
 })();
 
+/** The values of a compilation record's `key=` lines, in order. */
+function recordValues(lines: readonly string[], key: string): string[] {
+  return lines.filter((l) => l.startsWith(`${key}=`)).map((l) => l.slice(key.length + 1));
+}
+
 describeWithDotnet()('qualor dotnet with a real build (fixtures/csharp-basic)', () => {
   const dotnet = (cwd: string, env: NodeJS.ProcessEnv) =>
     spawnSync('dotnet', ['build', '--no-incremental', '-nologo', 'Fixture.slnx'], {
@@ -233,8 +238,7 @@ public class Big
         const lines = raw.split('\n').filter((l) => l !== '');
         return {
           lines,
-          get: (k: string) =>
-            lines.filter((l) => l.startsWith(`${k}=`)).map((l) => l.slice(k.length + 1)),
+          get: (k: string) => recordValues(lines, k),
         };
       });
       for (const c of parsed) {

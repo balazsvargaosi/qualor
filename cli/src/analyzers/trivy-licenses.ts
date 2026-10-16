@@ -236,49 +236,88 @@ export function trivyJsonToInventory(
   o: InventoryOptions = {},
 ): { entries: DependencyEntry[]; warnings: NormalizeWarning[] } {
   const report = trivyLicenseReportSchema.parse(output);
-  const entries: DependencyEntry[] = [];
-  const stats: LicenseStats = { licensesDropped: 0 };
-  let skipped = 0;
-  let outOfScope = 0;
-  const outOfScopePaths = new Set<string>();
-  for (const result of report.Results ?? []) {
-    if (result.Class !== 'lang-pkgs') continue;
-    const packages = (result.Packages ?? []).filter((p) => p.Relationship !== 'root');
-    if (packages.length === 0) continue;
-    const ecosystem = result.Type ?? '';
-    const repoPath = targetPath(result.Target, root);
-    if (repoPath !== null && o.exclude?.(repoPath) === true) continue;
-    if (repoPath !== null && o.knownPaths !== undefined && !o.knownPaths.has(repoPath)) {
-      outOfScope += packages.length;
-      outOfScopePaths.add(repoPath);
-      continue;
-    }
-    if (!ECOSYSTEM.test(ecosystem) || repoPath === null || repoPath.length > MAX_PATH_CHARS) {
-      skipped += packages.length;
-      continue;
-    }
-    let cached: readonly string[] | null | undefined;
-    const lines = () => (cached === undefined ? (cached = lockfileLines(root, repoPath)) : cached);
-    for (const p of packages) {
-      const name = p.Name ?? '';
-      const version = p.Version ?? '';
-      if (name === '' || name.length > MAX_NAME_CHARS || version.length > MAX_VERSION_CHARS) {
-        skipped += 1;
-        continue;
-      }
-      const line = lineOf(p, ecosystem, name, version, lines);
-      const direct = directOf(p);
-      entries.push({
-        ecosystem,
-        path: repoPath,
-        ...(line !== null && { line }),
-        name,
-        version,
-        licenses: licenseList(p.Licenses ?? [], stats),
-        ...(direct !== undefined && { direct }),
-      });
-    }
+  const tally: InventoryTally = {
+    entries: [],
+    stats: { licensesDropped: 0 },
+    skipped: 0,
+    outOfScope: 0,
+    outOfScopePaths: new Set<string>(),
+  };
+  for (const result of report.Results ?? []) addResultEntries(result, root, o, tally);
+  return { entries: tally.entries, warnings: inventoryWarnings(tally) };
+}
+
+type LicenseResult = z.infer<typeof licenseResult>;
+
+/** What `trivyJsonToInventory` gathers across Trivy's results. */
+interface InventoryTally {
+  entries: DependencyEntry[];
+  stats: LicenseStats;
+  skipped: number;
+  outOfScope: number;
+  outOfScopePaths: Set<string>;
+}
+
+/**
+ * One Trivy result's packages into `tally`: nothing for a result that is not `lang-pkgs`, has no
+ * package beyond the root project or is excluded; counted out of scope or skipped when the
+ * lockfile cannot be carried.
+ */
+function addResultEntries(
+  result: LicenseResult,
+  root: string,
+  o: InventoryOptions,
+  tally: InventoryTally,
+): void {
+  if (result.Class !== 'lang-pkgs') return;
+  const packages = (result.Packages ?? []).filter((p) => p.Relationship !== 'root');
+  if (packages.length === 0) return;
+  const ecosystem = result.Type ?? '';
+  const repoPath = targetPath(result.Target, root);
+  if (repoPath !== null && o.exclude?.(repoPath) === true) return;
+  if (repoPath !== null && o.knownPaths !== undefined && !o.knownPaths.has(repoPath)) {
+    tally.outOfScope += packages.length;
+    tally.outOfScopePaths.add(repoPath);
+    return;
   }
+  if (!ECOSYSTEM.test(ecosystem) || repoPath === null || repoPath.length > MAX_PATH_CHARS) {
+    tally.skipped += packages.length;
+    return;
+  }
+  const lines = lazyLockfileLines(root, repoPath);
+  for (const p of packages) {
+    const name = p.Name ?? '';
+    const version = p.Version ?? '';
+    if (name === '' || name.length > MAX_NAME_CHARS || version.length > MAX_VERSION_CHARS) {
+      tally.skipped += 1;
+      continue;
+    }
+    const line = lineOf(p, ecosystem, name, version, lines);
+    const direct = directOf(p);
+    tally.entries.push({
+      ecosystem,
+      path: repoPath,
+      ...(line !== null && { line }),
+      name,
+      version,
+      licenses: licenseList(p.Licenses ?? [], tally.stats),
+      ...(direct !== undefined && { direct }),
+    });
+  }
+}
+
+/** The lockfile's lines, read once on first use: most packages carry Trivy's own position. */
+function lazyLockfileLines(root: string, repoPath: string): () => readonly string[] | null {
+  let cached: readonly string[] | null | undefined;
+  return () => {
+    if (cached === undefined) cached = lockfileLines(root, repoPath);
+    return cached;
+  };
+}
+
+/** The inventory's warnings: the skipped and out-of-scope dependencies, the dropped licences. */
+function inventoryWarnings(tally: InventoryTally): NormalizeWarning[] {
+  const { skipped, outOfScope, outOfScopePaths, stats } = tally;
   const warnings: NormalizeWarning[] = [];
   if (skipped > 0) {
     warnings.push({
@@ -295,7 +334,7 @@ export function trivyJsonToInventory(
     });
   }
   if (stats.licensesDropped > 0) warnings.push(licensesSkippedWarning(stats.licensesDropped));
-  return { entries, warnings };
+  return warnings;
 }
 
 function lineOf(
@@ -352,7 +391,10 @@ export function mergeDuplicates(
   return [...merged.values()];
 }
 
-const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+function compare(a: string, b: string): number {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+}
 
 /**
  * Spec §2: the inventory in report order (the direct dependencies first, then by path, name and

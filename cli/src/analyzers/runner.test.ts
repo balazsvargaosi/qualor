@@ -146,6 +146,11 @@ function spanning(
   };
 }
 
+/** A command `transform` that cannot convert the output. */
+function failingTransform(): never {
+  throw new Error('bad');
+}
+
 const config = (analyzers: QualorConfigInput['analyzers'] = {}) =>
   parseConfig({ version: 1, analyzers });
 
@@ -407,11 +412,7 @@ describe('runAnalyzers', () => {
               run: {
                 ...prep.run,
                 salvage: kept,
-                ...(transform === true && {
-                  transform: () => {
-                    throw new Error('bad');
-                  },
-                }),
+                ...(transform === true && { transform: failingTransform }),
               },
             };
           },

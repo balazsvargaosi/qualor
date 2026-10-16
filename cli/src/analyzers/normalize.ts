@@ -124,39 +124,49 @@ function normalizeOne(
       fragmentTexts: secrets.fragmentTexts,
     };
   } catch (err) {
-    // A salvaged SARIF that cannot be read leaves the run's own status and reason.
-    if (c.status !== 'ok' && c.salvaged === true) {
-      o.log.debug(`${c.engineId}: salvaged SARIF not normalised: ${String(err)}`);
-      return { engine, result: null, secretTexts: [], fragmentTexts: [] };
-    }
-    if (!(err instanceof SarifError)) {
-      // Fix round 2 of tasks 5-6: anything else (a resource limit, a bug) fails this engine
-      // only, with a fixed reason like every other analyzer failure; the detail is debug-only.
-      o.log.debug(
-        `${c.engineId}: normalisation failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`,
-      );
-      return {
-        engine: { ...engine, status: 'failed', reason: 'SARIF output could not be normalised' },
-        result: null,
-        secretTexts: [],
-        fragmentTexts: [],
-      };
-    }
-    // Fix-round-2 finding 1: a zod schema-validation message can quote fragments of the input it
-    // rejected (e.g. a malformed result whose `ruleId` field holds a leaked token), so `reason`
-    // stays a fixed string; the detailed message is available in the debug log only.
-    o.log.debug(`${c.engineId}: invalid SARIF: ${err.message}`);
+    return unreadOutcome(c, o, engine, err);
+  }
+}
+
+/** `normalizeOne`'s outcome when the capture's SARIF could not be normalised (`err`). */
+function unreadOutcome(
+  c: SarifCapture,
+  o: NormalizeCapturesOptions,
+  engine: ReportEngine,
+  err: unknown,
+): Outcome {
+  // A salvaged SARIF that cannot be read leaves the run's own status and reason.
+  if (c.status !== 'ok' && c.salvaged === true) {
+    o.log.debug(`${c.engineId}: salvaged SARIF not normalised: ${String(err)}`);
+    return { engine, result: null, secretTexts: [], fragmentTexts: [] };
+  }
+  if (!(err instanceof SarifError)) {
+    // Fix round 2 of tasks 5-6: anything else (a resource limit, a bug) fails this engine
+    // only, with a fixed reason like every other analyzer failure; the detail is debug-only.
+    o.log.debug(
+      `${c.engineId}: normalisation failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`,
+    );
     return {
-      engine: {
-        ...engine,
-        status: 'failed',
-        reason: 'SARIF output does not match SARIF 2.1.0',
-      },
+      engine: { ...engine, status: 'failed', reason: 'SARIF output could not be normalised' },
       result: null,
       secretTexts: [],
       fragmentTexts: [],
     };
   }
+  // Fix-round-2 finding 1: a zod schema-validation message can quote fragments of the input it
+  // rejected (e.g. a malformed result whose `ruleId` field holds a leaked token), so `reason`
+  // stays a fixed string; the detailed message is available in the debug log only.
+  o.log.debug(`${c.engineId}: invalid SARIF: ${err.message}`);
+  return {
+    engine: {
+      ...engine,
+      status: 'failed',
+      reason: 'SARIF output does not match SARIF 2.1.0',
+    },
+    result: null,
+    secretTexts: [],
+    fragmentTexts: [],
+  };
 }
 
 /** An engine whose results can carry secret text (Gitleaks, Semgrep's secret rules). */

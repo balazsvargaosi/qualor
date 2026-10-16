@@ -9,6 +9,7 @@ import { confineAnalyzerEnv, mergeAnalyzerEnv, sanitizeAnalyzerEnv } from './env
 import { killActiveProcesses, runProcess } from './process';
 import type {
   Analyzer,
+  AnalyzerCommand,
   AnalyzerContext,
   DotnetRun,
   ExecOptions,
@@ -264,6 +265,23 @@ function salvaged(s: SalvagedSarif): {
 export const SALVAGE_NOTE = "the Roslyn taint engine's findings are included";
 const withNote = (reason: string): string => `${reason}; ${SALVAGE_NOTE}`;
 
+/** The fields every capture of one analyzer shares. */
+type CaptureBase = Pick<
+  SarifCapture,
+  'engineId' | 'kind' | 'version' | 'required' | 'mapping' | 'ruleLanguages'
+>;
+
+/** One analyzer's capture once it has started: what its steps share. */
+interface CaptureState {
+  analyzer: Analyzer;
+  log: Logger;
+  base: CaptureBase;
+  started: number;
+}
+
+/** A capture's result for a run that ended with `status` (and a fixed `reason`, or null). */
+type FinishRun = (status: SarifCapture['status'], reason: string | null) => SarifCapture;
+
 async function capture(
   analyzer: Analyzer,
   o: RunAnalyzersOptions,
@@ -274,188 +292,271 @@ async function capture(
   const timeoutSeconds = 'timeoutSeconds' in settings ? settings.timeoutSeconds : 0;
   const required = settings.enabled === true;
   const mapping = engineMapping(analyzer.id);
-  const base = {
+  const base: CaptureBase = {
     engineId: analyzer.id,
-    kind: 'builtin' as const,
+    kind: 'builtin',
     version: null,
     required,
     ...(mapping !== undefined && { mapping }),
     ...(analyzer.ruleLanguages !== undefined && { ruleLanguages: analyzer.ruleLanguages }),
   };
-  const skipped = (reason: string, isRequired = required, unavailable = false): SarifCapture => {
-    o.log.info(`${analyzer.id}: skipped (${reason})`);
-    return {
-      ...base,
-      required: isRequired,
-      status: 'skipped',
-      reason,
-      durationMs: 0,
-      ...(unavailable && { unavailable }),
-    };
-  };
-  if (settings.enabled === false) return skipped('disabled in qualor.yml', false);
+  if (settings.enabled === false) {
+    return skippedCapture(base, o.log, 'disabled in qualor.yml', false);
+  }
   if (
     settings.enabled === 'auto' &&
     analyzer.languages.length > 0 &&
     !analyzer.languages.some((l) => languages.has(l))
   ) {
-    return skipped(`no ${analyzer.languages.join('/')} files in scope`);
+    return skippedCapture(
+      base,
+      o.log,
+      `no ${analyzer.languages.join('/')} files in scope`,
+      required,
+    );
   }
 
   const workDir = createWorkDir(analyzer.id, o.tempRoot);
-  const started = performance.now();
+  const state: CaptureState = { analyzer, log: o.log, base, started: performance.now() };
   const parentEnv = o.env ?? process.env;
   // Secrets stripped, and PATH/CLASSPATH never pointing into the checkout (ruling V3).
   const analyzerEnv = confineAnalyzerEnv(sanitizeAnalyzerEnv(parentEnv), o.root);
   try {
-    const ctx: AnalyzerContext = {
-      root: o.root,
-      config: o.config,
-      languages,
-      files: o.files,
-      workDir,
-      log: o.log,
-      dotnet: o.dotnet ?? null,
-      // Ruling V3: every built-in analyzer binary comes from PATH or the scanner image, never
-      // from the repository being scanned.
-      resolveBinary: (name) => resolveBinary(name, { root: o.root, env: parentEnv }),
-      repoBinary: (name) => findRepoBinary(name, { root: o.root, env: parentEnv }),
-      env: analyzerEnv,
-      exec: (command, args, options) =>
-        runProcess(
-          {
-            command,
-            args,
-            cwd: options.cwd ?? o.root,
-            env: execEnv(analyzerEnv, options, o.root),
-            timeoutMs: options.timeoutMs,
-          },
-          o.log,
-        ),
-    };
-    let prep: Preparation;
-    try {
-      prep = await analyzer.prepare(ctx);
-    } catch (err) {
-      // Fix-round finding 9: a throwing adapter must not crash the whole analyzer batch (which
-      // `mapLimit`'s `Promise.all` would otherwise propagate as a full-scan failure) — record it
-      // as a failed engine and let the other analyzers continue.
-      const message = err instanceof Error ? (err.stack ?? err.message) : String(err);
-      o.log.debug(`${analyzer.id}: prepare() threw: ${message}`);
-      o.log.error(`${analyzer.id}: failed to prepare`);
-      return {
-        ...base,
-        status: 'failed',
-        reason: 'failed to prepare',
-        durationMs: performance.now() - started,
-      };
-    }
-    if ('skip' in prep || 'unavailable' in prep) {
-      const unavailable = 'unavailable' in prep;
-      const reason = 'unavailable' in prep ? prep.unavailable : prep.skip;
-      const kept: Partial<SarifCapture> = {
-        ...('salvage' in prep && prep.salvage !== undefined && salvaged(prep.salvage)),
-        ...('warnings' in prep && prep.warnings !== undefined && { warnings: prep.warnings }),
-      };
-      if (!required) {
-        const s = skipped(reason, required, unavailable);
-        return { ...s, ...kept, ...(kept.salvaged === true && { reason: withNote(reason) }) };
-      }
-      o.log.error(`${analyzer.id}: ${reason}`);
-      return {
-        ...base,
-        status: 'failed',
-        reason: kept.salvaged === true ? withNote(reason) : reason,
-        durationMs: performance.now() - started,
-        ...(unavailable && { unavailable }),
-        ...kept,
-      };
-    }
-    if ('collected' in prep) {
-      return {
-        ...base,
-        status: 'ok',
-        reason: null,
-        durationMs: performance.now() - started,
-        version: prep.collected.version,
-        sarif: prep.collected.sarif,
-        ...(prep.collected.warnings !== undefined && { warnings: prep.collected.warnings }),
-      };
-    }
-    const run = prep.run;
-    // Fix-round finding 3: analyzers run repo-controlled code (ESLint plugins, PMD rulesets,
-    // Semgrep rules), so the server token (and anything else that looks like a Qualor secret)
-    // must never reach their process environment.
-    // An adapter's own `env` is merged in and then sanitized again, so it cannot re-add one.
-    const childEnv = execEnv(
-      parentEnv,
-      {
-        ...(run.env !== undefined && { env: run.env }),
-        ...(run.dropEnv !== undefined && { dropEnv: run.dropEnv }),
-      },
-      o.root,
-    );
-    const result = await serialise(run.exclusive, () =>
-      runProcess(
-        {
-          command: run.command,
-          args: run.args,
-          cwd: run.cwd,
-          env: childEnv,
-          timeoutMs: timeoutSeconds * 1000,
-        },
-        o.log,
-      ),
-    );
-    const done = (status: SarifCapture['status'], reason: string | null): SarifCapture => {
-      if (reason !== null) o.log.warn(`${analyzer.id}: ${status} (${reason})`);
-      const keep = status !== 'ok' && run.salvage !== undefined;
-      const roots = analyzer.sourceRoots?.(ctx);
-      return {
-        ...base,
-        status,
-        reason: keep && reason !== null ? withNote(reason) : reason,
-        durationMs: performance.now() - started,
-        version: run.version ?? null,
-        ...(roots !== undefined && { sourceRoots: roots }),
-        ...(run.database !== undefined && { database: run.database }),
-        ...(run.warnings !== undefined && { warnings: run.warnings }),
-        ...(keep && run.salvage !== undefined && salvaged(run.salvage)),
-      };
-    };
-    // Fix-round finding 4: `reason` is a fixed message per failure kind, never the analyzer's own
-    // stdout/stderr (config.md §6): that stays in the debug log only (`runProcess` already logs
-    // it there).
-    if (result.timedOut) return done('timeout', `timed out after ${timeoutSeconds} s`);
-    if (result.spawnError !== undefined)
-      return done('failed', spawnFailureReason(result.spawnErrorCode));
-    if (result.exitCode === null || !run.okExitCodes.includes(result.exitCode)) {
-      const detail = run.failureDetail?.(result.exitCode, result.stderr) ?? null;
-      if (detail !== null) o.log.warn(`${analyzer.id}: ${detail}`);
-      return done('failed', `exited with code ${result.exitCode ?? 'null'}`);
-    }
-    for (const line of run.configWarnings?.(result.stderr) ?? []) {
-      o.log.warn(`${analyzer.id}: ${line}`);
-    }
-    const sarif = readSarif(run.sarifPath, o.log, run.outputFormat ?? 'json');
-    if (typeof sarif === 'string') return done('failed', sarif);
-    if (run.outputFormat === 'text' && run.transform === undefined)
-      return done('failed', 'output could not be converted to SARIF');
-    if (run.transform === undefined) return { ...done('ok', null), sarif: sarif.value };
-    let converted: unknown;
-    try {
-      converted = run.transform(sarif.value, result.stdout);
-    } catch (err) {
-      // Same rule as for invalid JSON: the detail (which may quote tool output) is debug-only.
-      o.log.debug(
-        `${analyzer.id}: output conversion failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return done('failed', 'output could not be converted to SARIF');
-    }
-    return { ...done('ok', null), sarif: converted };
+    const ctx = analyzerContext(o, languages, workDir, parentEnv, analyzerEnv);
+    const prep = await prepareSafely(state, ctx);
+    if ('status' in prep) return prep;
+    if ('skip' in prep || 'unavailable' in prep) return notRunCapture(state, prep);
+    if ('collected' in prep) return collectedCapture(state, prep.collected);
+    return await runCapture(state, ctx, prep.run, { parentEnv, timeoutSeconds, serialise });
   } finally {
     releaseWorkDir(workDir, o.log);
   }
+}
+
+/** The capture of an analyzer that did not run (`reason`), logged at info. */
+function skippedCapture(
+  base: CaptureBase,
+  log: Logger,
+  reason: string,
+  required: boolean,
+  unavailable = false,
+): SarifCapture {
+  log.info(`${base.engineId}: skipped (${reason})`);
+  return {
+    ...base,
+    required,
+    status: 'skipped',
+    reason,
+    durationMs: 0,
+    ...(unavailable && { unavailable }),
+  };
+}
+
+/** What an analyzer's `prepare` and `exec` see. */
+function analyzerContext(
+  o: RunAnalyzersOptions,
+  languages: ReadonlySet<Language>,
+  workDir: string,
+  parentEnv: Readonly<Record<string, string | undefined>>,
+  analyzerEnv: Record<string, string>,
+): AnalyzerContext {
+  return {
+    root: o.root,
+    config: o.config,
+    languages,
+    files: o.files,
+    workDir,
+    log: o.log,
+    dotnet: o.dotnet ?? null,
+    // Ruling V3: every built-in analyzer binary comes from PATH or the scanner image, never
+    // from the repository being scanned.
+    resolveBinary: (name) => resolveBinary(name, { root: o.root, env: parentEnv }),
+    repoBinary: (name) => findRepoBinary(name, { root: o.root, env: parentEnv }),
+    env: analyzerEnv,
+    exec: (command, args, options) =>
+      runProcess(
+        {
+          command,
+          args,
+          cwd: options.cwd ?? o.root,
+          env: execEnv(analyzerEnv, options, o.root),
+          timeoutMs: options.timeoutMs,
+        },
+        o.log,
+      ),
+  };
+}
+
+/** The analyzer's preparation, or its failed capture when `prepare` threw. */
+async function prepareSafely(
+  state: CaptureState,
+  ctx: AnalyzerContext,
+): Promise<Preparation | SarifCapture> {
+  const id = state.analyzer.id;
+  try {
+    return await state.analyzer.prepare(ctx);
+  } catch (err) {
+    // Fix-round finding 9: a throwing adapter must not crash the whole analyzer batch (which
+    // `mapLimit`'s `Promise.all` would otherwise propagate as a full-scan failure) — record it
+    // as a failed engine and let the other analyzers continue.
+    const message = err instanceof Error ? (err.stack ?? err.message) : String(err);
+    state.log.debug(`${id}: prepare() threw: ${message}`);
+    state.log.error(`${id}: failed to prepare`);
+    return {
+      ...state.base,
+      status: 'failed',
+      reason: 'failed to prepare',
+      durationMs: performance.now() - state.started,
+    };
+  }
+}
+
+/**
+ * A preparation of `skip` or `unavailable`: skipped when the analyzer is not required, else
+ * failed; a salvaged SARIF and the warnings are kept either way.
+ */
+function notRunCapture(
+  state: CaptureState,
+  prep: Extract<Preparation, { skip: string } | { unavailable: string }>,
+): SarifCapture {
+  const unavailable = 'unavailable' in prep;
+  const reason = 'unavailable' in prep ? prep.unavailable : prep.skip;
+  const kept: Partial<SarifCapture> = {
+    ...('salvage' in prep && prep.salvage !== undefined && salvaged(prep.salvage)),
+    ...('warnings' in prep && prep.warnings !== undefined && { warnings: prep.warnings }),
+  };
+  if (!state.base.required) {
+    const s = skippedCapture(state.base, state.log, reason, false, unavailable);
+    return { ...s, ...kept, ...(kept.salvaged === true && { reason: withNote(reason) }) };
+  }
+  state.log.error(`${state.analyzer.id}: ${reason}`);
+  return {
+    ...state.base,
+    status: 'failed',
+    reason: kept.salvaged === true ? withNote(reason) : reason,
+    durationMs: performance.now() - state.started,
+    ...(unavailable && { unavailable }),
+    ...kept,
+  };
+}
+
+/** A preparation of `collected`: the SARIF written outside the CLI, recorded as `ok`. */
+function collectedCapture(
+  state: CaptureState,
+  collected: Extract<Preparation, { collected: unknown }>['collected'],
+): SarifCapture {
+  return {
+    ...state.base,
+    status: 'ok',
+    reason: null,
+    durationMs: performance.now() - state.started,
+    version: collected.version,
+    sarif: collected.sarif,
+    ...(collected.warnings !== undefined && { warnings: collected.warnings }),
+  };
+}
+
+/** Runs a preparation's command and reads its SARIF. */
+async function runCapture(
+  state: CaptureState,
+  ctx: AnalyzerContext,
+  run: AnalyzerCommand,
+  o: {
+    parentEnv: Readonly<Record<string, string | undefined>>;
+    timeoutSeconds: number;
+    serialise: Serialiser;
+  },
+): Promise<SarifCapture> {
+  const id = state.analyzer.id;
+  // Fix-round finding 3: analyzers run repo-controlled code (ESLint plugins, PMD rulesets,
+  // Semgrep rules), so the server token (and anything else that looks like a Qualor secret)
+  // must never reach their process environment.
+  // An adapter's own `env` is merged in and then sanitized again, so it cannot re-add one.
+  const childEnv = execEnv(
+    o.parentEnv,
+    {
+      ...(run.env !== undefined && { env: run.env }),
+      ...(run.dropEnv !== undefined && { dropEnv: run.dropEnv }),
+    },
+    ctx.root,
+  );
+  const result = await o.serialise(run.exclusive, () =>
+    runProcess(
+      {
+        command: run.command,
+        args: run.args,
+        cwd: run.cwd,
+        env: childEnv,
+        timeoutMs: o.timeoutSeconds * 1000,
+      },
+      state.log,
+    ),
+  );
+  const done: FinishRun = (status, reason) => finishedCapture(state, ctx, run, status, reason);
+  // Fix-round finding 4: `reason` is a fixed message per failure kind, never the analyzer's own
+  // stdout/stderr (config.md §6): that stays in the debug log only (`runProcess` already logs
+  // it there).
+  if (result.timedOut) return done('timeout', `timed out after ${o.timeoutSeconds} s`);
+  if (result.spawnError !== undefined)
+    return done('failed', spawnFailureReason(result.spawnErrorCode));
+  if (result.exitCode === null || !run.okExitCodes.includes(result.exitCode)) {
+    const detail = run.failureDetail?.(result.exitCode, result.stderr) ?? null;
+    if (detail !== null) state.log.warn(`${id}: ${detail}`);
+    return done('failed', `exited with code ${result.exitCode ?? 'null'}`);
+  }
+  for (const line of run.configWarnings?.(result.stderr) ?? []) {
+    state.log.warn(`${id}: ${line}`);
+  }
+  return outputCapture(state, run, result.stdout, done);
+}
+
+/** The capture of a finished run, `status` logged at warn with its `reason`. */
+function finishedCapture(
+  state: CaptureState,
+  ctx: AnalyzerContext,
+  run: AnalyzerCommand,
+  status: SarifCapture['status'],
+  reason: string | null,
+): SarifCapture {
+  if (reason !== null) state.log.warn(`${state.analyzer.id}: ${status} (${reason})`);
+  const keep = status !== 'ok' && run.salvage !== undefined;
+  const roots = state.analyzer.sourceRoots?.(ctx);
+  return {
+    ...state.base,
+    status,
+    reason: keep && reason !== null ? withNote(reason) : reason,
+    durationMs: performance.now() - state.started,
+    version: run.version ?? null,
+    ...(roots !== undefined && { sourceRoots: roots }),
+    ...(run.database !== undefined && { database: run.database }),
+    ...(run.warnings !== undefined && { warnings: run.warnings }),
+    ...(keep && run.salvage !== undefined && salvaged(run.salvage)),
+  };
+}
+
+/** The SARIF a run that exited well wrote, converted by the command's `transform`. */
+function outputCapture(
+  state: CaptureState,
+  run: AnalyzerCommand,
+  stdout: string,
+  done: FinishRun,
+): SarifCapture {
+  const sarif = readSarif(run.sarifPath, state.log, run.outputFormat ?? 'json');
+  if (typeof sarif === 'string') return done('failed', sarif);
+  if (run.outputFormat === 'text' && run.transform === undefined)
+    return done('failed', 'output could not be converted to SARIF');
+  if (run.transform === undefined) return { ...done('ok', null), sarif: sarif.value };
+  let converted: unknown;
+  try {
+    converted = run.transform(sarif.value, stdout);
+  } catch (err) {
+    // Same rule as for invalid JSON: the detail (which may quote tool output) is debug-only.
+    state.log.debug(
+      `${state.analyzer.id}: output conversion failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return done('failed', 'output could not be converted to SARIF');
+  }
+  return { ...done('ok', null), sarif: converted };
 }
 
 export async function runAnalyzers(

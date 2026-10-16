@@ -334,16 +334,32 @@ export function taintFallbackWarning(
   // A pack without C# rules (before 2026.10.5) leaves nothing to analyse the C# files.
   const csharpRules =
     manifest === undefined || manifest.rules.some((r) => r.id.startsWith('csharp/'));
-  const then = !csharpRules
-    ? "the rules pack has no OpenGrep C# rules, so Qualor's C# security rules did not run"
-    : opengrepMissing
-      ? "OpenGrep is not installed, so Qualor's C# security rules did not run"
-      : 'the OpenGrep C# rules analysed the C# files';
+  const then = fallbackOutcome(csharpRules, opengrepMissing);
   return {
     code: TAINT_ENGINE_FALLBACK,
     message: `Qualor's Roslyn taint engine did not run (${reason}: ${FALLBACK_TEXT[reason]}); ${then}`,
     count: 1,
   };
+}
+
+/** What analysed the C# files in the engine's place, for `taintFallbackWarning`. */
+function fallbackOutcome(csharpRules: boolean, opengrepMissing: boolean): string {
+  if (!csharpRules) {
+    return "the rules pack has no OpenGrep C# rules, so Qualor's C# security rules did not run";
+  }
+  if (opengrepMissing)
+    return "OpenGrep is not installed, so Qualor's C# security rules did not run";
+  return 'the OpenGrep C# rules analysed the C# files';
+}
+
+/** `value` when it is an array, else an empty one (an absent or malformed SARIF property). */
+function arrayOf(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+/** The array property `key` of a SARIF object, or an empty one. */
+function arrayProperty(o: unknown, key: string): unknown[] {
+  return isObject(o) ? arrayOf(o[key]) : [];
 }
 
 /** Two SARIF locations on the same file and line. */
@@ -367,23 +383,24 @@ function sameLine(a: unknown, b: unknown): boolean {
  * already lists there; the step on the sink's own line is the primary location already.
  */
 function flowAsRelated(result: Record<string, unknown>): void {
-  const primary: unknown = Array.isArray(result['locations']) ? result['locations'][0] : undefined;
-  const steps: unknown[] = [];
-  for (const flow of Array.isArray(result['codeFlows']) ? result['codeFlows'] : []) {
-    const threads = isObject(flow) ? flow['threadFlows'] : undefined;
-    for (const thread of Array.isArray(threads) ? threads : []) {
-      const locations = isObject(thread) ? thread['locations'] : undefined;
-      for (const step of Array.isArray(locations) ? locations : []) {
-        const location = isObject(step) ? step['location'] : undefined;
-        if (isObject(location) && !sameLine(location, primary)) steps.push(location);
-      }
+  const primary: unknown = arrayOf(result['locations'])[0];
+  const steps = arrayOf(result['codeFlows'])
+    .flatMap(flowLocations)
+    .filter((location) => !sameLine(location, primary));
+  if (steps.length === 0) return;
+  result['relatedLocations'] = [...steps, ...arrayOf(result['relatedLocations'])];
+}
+
+/** The locations of a code flow's steps (`threadFlows[].locations[].location`), in order. */
+function flowLocations(flow: unknown): Record<string, unknown>[] {
+  const locations: Record<string, unknown>[] = [];
+  for (const thread of arrayProperty(flow, 'threadFlows')) {
+    for (const step of arrayProperty(thread, 'locations')) {
+      const location = isObject(step) ? step['location'] : undefined;
+      if (isObject(location)) locations.push(location);
     }
   }
-  if (steps.length === 0) return;
-  const related: unknown[] = Array.isArray(result['relatedLocations'])
-    ? result['relatedLocations']
-    : [];
-  result['relatedLocations'] = [...steps, ...related];
+  return locations;
 }
 
 /** The taint engine's SARIF made Qualor's, and the engine version it names. */
@@ -406,27 +423,34 @@ function taintEngineLog(log: SarifLog, manifest: QualorManifest): TaintEngineLog
   const engineVersion =
     declared !== undefined && !('invalid' in declared) ? declared.version : 'unknown';
   const version = `qualor-taint ${engineVersion} + qualor-rules ${manifest.version}`;
-  for (const run of Array.isArray(sarif['runs']) ? sarif['runs'] : []) {
+  for (const run of arrayOf(sarif['runs'])) {
     if (!isObject(run)) continue;
     const tool = run['tool'];
     const driver = isObject(tool) ? tool['driver'] : undefined;
-    if (isObject(driver)) {
-      driver['version'] = version;
-      for (const rule of Array.isArray(driver['rules']) ? driver['rules'] : []) {
-        if (!isObject(rule) || typeof rule['id'] !== 'string') continue;
-        const entry = byId.get(rule['id']);
-        const properties = isObject(rule['properties']) ? rule['properties'] : {};
-        // The CWE as OpenGrep's rules carry it (their tags), for the report's `cwe`.
-        if (entry !== undefined && !Array.isArray(properties['tags'])) {
-          rule['properties'] = { ...properties, tags: [...entry.cwe, 'security'] };
-        }
-      }
-    }
-    for (const result of Array.isArray(run['results']) ? run['results'] : []) {
+    if (isObject(driver)) withEngineDriver(driver, version, byId);
+    for (const result of arrayOf(run['results'])) {
       if (isObject(result)) flowAsRelated(result);
     }
   }
   return { sarif, version };
+}
+
+/** The engine run's driver: the version naming engine and pack, the manifest's CWE as tags. */
+function withEngineDriver(
+  driver: Record<string, unknown>,
+  version: string,
+  byId: ReadonlyMap<string, QualorManifest['rules'][number]>,
+): void {
+  driver['version'] = version;
+  for (const rule of arrayOf(driver['rules'])) {
+    if (!isObject(rule) || typeof rule['id'] !== 'string') continue;
+    const entry = byId.get(rule['id']);
+    const properties = isObject(rule['properties']) ? rule['properties'] : {};
+    // The CWE as OpenGrep's rules carry it (their tags), for the report's `cwe`.
+    if (entry !== undefined && !Array.isArray(properties['tags'])) {
+      rule['properties'] = { ...properties, tags: [...entry.cwe, 'security'] };
+    }
+  }
 }
 
 /** A repository path as compared with the engine's files: case-insensitive on Windows. */
@@ -479,6 +503,69 @@ function withTaintEngineRuns(
   output['runs'].push(...runs);
 }
 
+/** The engine's run alone, when it analysed every file in scope. */
+function engineOnly(engine: TaintEngineLog, taint: TaintRun | null): Preparation {
+  const warned = taintProblemWarning(taint);
+  return { collected: { ...engine, ...(warned.length > 0 && { warnings: warned }) } };
+}
+
+/**
+ * Whether the named files fit one OpenGrep command line of `budget` bytes, warning when they do
+ * not. Each argument costs its bytes, the terminating NUL and a pointer in argv (8 bytes).
+ */
+function fitsCommandLine(files: readonly string[], budget: number, ctx: AnalyzerContext): boolean {
+  const fits = files.reduce((n, f) => n + Buffer.byteLength(f) + 1 + 8, 0) <= budget;
+  if (!fits) {
+    ctx.log.warn(
+      `qualor: ${files.length} files do not fit one command line; OpenGrep selects the files itself and findings outside the scan's scope are dropped`,
+    );
+  }
+  return fits;
+}
+
+/** The taint engine's report warnings: its projects with errors, and why it did not run. */
+function taintWarnings(
+  taint: TaintRun | null,
+  manifest: QualorManifest,
+  opengrepMissing: boolean,
+): NormalizeWarning[] {
+  const warnings = taintProblemWarning(taint);
+  if (taint?.kind === 'fallback') {
+    warnings.push(taintFallbackWarning(taint.reason, manifest, opengrepMissing));
+  }
+  return warnings;
+}
+
+/** OpenGrep's targets: the named files, or `.` with the scan's excludes when they do not fit. */
+function opengrepTargets(
+  explicit: boolean,
+  files: readonly string[],
+  ctx: AnalyzerContext,
+): string[] {
+  if (explicit) return ['--', ...files];
+  return [
+    // OpenGrep parses vendored and minified bundles very slowly: tell it what a scan never
+    // analyses (their findings are dropped afterwards anyway).
+    ...excludeFlags(ctx.config, ctx.log),
+    // Below `.` the tool skips files over 1,000,000 bytes silently; named files are always
+    // scanned.
+    '--max-target-bytes',
+    String(MAX_ANALYZED_BYTES),
+    '--x-ignore-semgrepignore-files',
+    '.',
+  ];
+}
+
+/** Warns when OpenGrep is not the version the rules pack is tested with. */
+function warnOtherOpengrep(output: unknown, manifest: QualorManifest, ctx: AnalyzerContext): void {
+  const ranWith = opengrepVersion(output);
+  if (ranWith !== null && ranWith !== manifest.opengrep) {
+    ctx.log.warn(
+      `qualor: the rules pack ${manifest.version} is tested with OpenGrep ${manifest.opengrep}, not ${ranWith}`,
+    );
+  }
+}
+
 export function createQualorAnalyzer(
   o: { defaultDir?: string; maxTargetArgBytes?: number } = {},
 ): Analyzer {
@@ -502,20 +589,12 @@ export function createQualorAnalyzer(
       .map((f) => ({ f, rel: path.relative(ctx.root, f.absPath).split(path.sep).join('/') }))
       .filter(({ f, rel }) => engine === null || f.language !== 'csharp' || !byEngine(rel))
       .map(({ rel }) => rel);
-    if (engine !== null && files.length === 0) {
-      const warned = taintProblemWarning(taint);
-      return { collected: { ...engine, ...(warned.length > 0 && { warnings: warned }) } };
-    }
+    if (engine !== null && files.length === 0) return engineOnly(engine, taint);
     // Plan 6B-1: only the OpenGrep the pack is tested with, never Semgrep.
     const opengrep = ctx.resolveBinary('opengrep');
     // The engine's findings stand without OpenGrep (Task 24), whatever happens to its run.
     const salvage = engine === null ? undefined : { sarif: engine.sarif, version: engine.version };
-    const fallbackWarnings = [
-      ...taintProblemWarning(taint),
-      ...(taint?.kind === 'fallback'
-        ? [taintFallbackWarning(taint.reason, pack.manifest, opengrep === null)]
-        : []),
-    ];
+    const fallbackWarnings = taintWarnings(taint, pack.manifest, opengrep === null);
     if (opengrep === null) {
       return {
         unavailable: 'OpenGrep is not installed',
@@ -524,13 +603,7 @@ export function createQualorAnalyzer(
       };
     }
     // Named files are scanned whatever .gitignore, .semgrepignore or OpenGrep's own ignores say.
-    // Each argument costs its bytes, the terminating NUL and a pointer in argv (8 bytes).
-    const explicit = files.reduce((n, f) => n + Buffer.byteLength(f) + 1 + 8, 0) <= budget;
-    if (!explicit) {
-      ctx.log.warn(
-        `qualor: ${files.length} files do not fit one command line; OpenGrep selects the files itself and findings outside the scan's scope are dropped`,
-      );
-    }
+    const explicit = fitsCommandLine(files, budget, ctx);
     const out = path.join(ctx.workDir, 'qualor.sarif');
     return {
       run: {
@@ -545,19 +618,7 @@ export function createQualorAnalyzer(
           '--output',
           out,
           ...offlineFlags('opengrep'),
-          ...(explicit
-            ? ['--', ...files]
-            : [
-                // OpenGrep parses vendored and minified bundles very slowly: tell it what a scan
-                // never analyses (their findings are dropped afterwards anyway).
-                ...excludeFlags(ctx.config, ctx.log),
-                // Below `.` the tool skips files over 1,000,000 bytes silently; named files are
-                // always scanned.
-                '--max-target-bytes',
-                String(MAX_ANALYZED_BYTES),
-                '--x-ignore-semgrepignore-files',
-                '.',
-              ]),
+          ...opengrepTargets(explicit, files, ctx),
         ],
         cwd: ctx.root,
         env: deadProxyEnv(),
@@ -568,12 +629,7 @@ export function createQualorAnalyzer(
         okExitCodes: [0],
         version: null,
         transform: (output: unknown) => {
-          const ranWith = opengrepVersion(output);
-          if (ranWith !== null && ranWith !== pack.manifest.opengrep) {
-            ctx.log.warn(
-              `qualor: the rules pack ${pack.manifest.version} is tested with OpenGrep ${pack.manifest.opengrep}, not ${ranWith}`,
-            );
-          }
+          warnOtherOpengrep(output, pack.manifest, ctx);
           withQualorRules(output, pack.manifest);
           if (engine !== null) withTaintEngineRuns(output, engine.sarif, ctx.root, byEngine);
           return output;

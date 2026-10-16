@@ -84,6 +84,50 @@ function readOutput(file: string): unknown {
   return JSON.parse(readFileSync(file, 'utf8')) as unknown;
 }
 
+/** Trivy's licence report as read: the inventory before merging, and Trivy's version. */
+interface TrivyInventory {
+  parsed: ReturnType<typeof trivyJsonToInventory>;
+  version: string | null;
+}
+
+/** Reads the licence pass's output `file` into the inventory; throws when it cannot. */
+function readInventory(file: string, o: CollectDependenciesOptions): TrivyInventory {
+  const output = readOutput(file);
+  // The built-in excludes too: Trivy reports a .NET build's `bin/Debug/**/*.deps.json`, which
+  // would otherwise count as out of scope on every scan after a build.
+  const exclude = globMatcher([...BUILTIN_EXCLUDES, ...o.config.sources.exclude], true);
+  const parsed = trivyJsonToInventory(output, o.root, { exclude, knownPaths: o.knownPaths });
+  const v = (output as { Trivy?: { Version?: unknown } }).Trivy?.Version;
+  const fits = typeof v === 'string' && v.length <= REPORT_BOUNDS.engineVersionChars;
+  return { parsed, version: fits ? v : null };
+}
+
+/**
+ * The inventory merged and capped (spec §2), with its warnings: one licence warning for the
+ * parser's and the merge's drops together, and `DEPENDENCIES_TRUNCATED` when entries were cut.
+ */
+function finishInventory(parsed: ReturnType<typeof trivyJsonToInventory>): {
+  entries: DependencyEntry[];
+  warnings: NormalizeWarning[];
+} {
+  const stats = { licensesDropped: 0 };
+  const merged = mergeDuplicates(parsed.entries, stats);
+  const { entries, truncated } = capInventory(merged, MAX_DEPENDENCIES);
+  const parsedLicenses = parsed.warnings.find((w) => w.code === 'DEPENDENCY_LICENSES_SKIPPED');
+  const licensesDropped = (parsedLicenses?.count ?? 0) + stats.licensesDropped;
+  const warnings = parsed.warnings.filter((w) => w !== parsedLicenses);
+  if (licensesDropped > 0) warnings.push(licensesSkippedWarning(licensesDropped));
+  if (truncated) {
+    const dropped = merged.length - entries.length;
+    warnings.push({
+      code: 'DEPENDENCIES_TRUNCATED',
+      message: `${dropped} of ${merged.length} dependencies were left out of the inventory (at most ${MAX_DEPENDENCIES} are reported, the direct ones first)`,
+      count: dropped,
+    });
+  }
+  return { entries, warnings };
+}
+
 /**
  * The Trivy licence pass of a scan (spec §1), after the analyzers: null when it is switched off
  * (`analyzers.trivy.enabled` or `licenses` false). It never fails the scan: a missing Trivy is a
@@ -198,39 +242,17 @@ export async function collectDependencies(
       if (first !== undefined) o.log.warn(`${LICENSE_ENGINE_ID}: ${scrubLine(detailLine(first))}`);
       return failed(reason, `the Trivy licence pass ${reason}: no dependency inventory`);
     }
-    let parsed: ReturnType<typeof trivyJsonToInventory>;
-    let version: string | null = null;
+    let read: TrivyInventory;
     try {
-      const output = readOutput(run.sarifPath);
-      // The built-in excludes too: Trivy reports a .NET build's `bin/Debug/**/*.deps.json`, which
-      // would otherwise count as out of scope on every scan after a build.
-      const exclude = globMatcher([...BUILTIN_EXCLUDES, ...o.config.sources.exclude], true);
-      parsed = trivyJsonToInventory(output, o.root, { exclude, knownPaths: o.knownPaths });
-      const v = (output as { Trivy?: { Version?: unknown } }).Trivy?.Version;
-      if (typeof v === 'string' && v.length <= REPORT_BOUNDS.engineVersionChars) version = v;
+      read = readInventory(run.sarifPath, o);
     } catch (err) {
       o.log.debug(
         `${LICENSE_ENGINE_ID}: output not read: ${err instanceof Error ? err.message : String(err)}`,
       );
       return failed('output could not be read', 'the Trivy licence pass output could not be read');
     }
-    const stats = { licensesDropped: 0 };
-    const merged = mergeDuplicates(parsed.entries, stats);
-    const { entries, truncated } = capInventory(merged, MAX_DEPENDENCIES);
-    // One licence warning for the parser's and the merge's drops together.
-    const parsedLicenses = parsed.warnings.find((w) => w.code === 'DEPENDENCY_LICENSES_SKIPPED');
-    const licensesDropped = (parsedLicenses?.count ?? 0) + stats.licensesDropped;
-    const warnings = parsed.warnings.filter((w) => w !== parsedLicenses);
-    if (licensesDropped > 0) warnings.push(licensesSkippedWarning(licensesDropped));
-    if (truncated) {
-      const dropped = merged.length - entries.length;
-      warnings.push({
-        code: 'DEPENDENCIES_TRUNCATED',
-        message: `${dropped} of ${merged.length} dependencies were left out of the inventory (at most ${MAX_DEPENDENCIES} are reported, the direct ones first)`,
-        count: dropped,
-      });
-    }
-    return { engine: engine('ok', null, version), entries, warnings };
+    const { entries, warnings } = finishInventory(read.parsed);
+    return { engine: engine('ok', null, read.version), entries, warnings };
   } catch (err) {
     o.log.debug(
       `${LICENSE_ENGINE_ID}: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`,

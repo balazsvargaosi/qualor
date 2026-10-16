@@ -439,27 +439,37 @@ function recordedSources(inputs: string, root: string): string[] {
   }
   const found = new Set<string>();
   for (const name of readdirSync(inputs).filter((n) => n.endsWith('.txt'))) {
-    const file = path.join(inputs, name);
-    const s = lstatSync(file);
-    if (!s.isFile() || s.size > MAX_ENGINE_FILE_BYTES) continue;
-    const lines = readFileSync(file, 'utf8')
-      .replace(/^\uFEFF/, '')
-      .split(/\r?\n/);
-    if (lines[0] !== 'qualor-compilation=1') continue;
-    for (const line of lines) {
-      if (!line.startsWith('source=') || line.length === 'source='.length) continue;
-      const source = path.resolve(line.slice('source='.length));
-      for (const base of roots) {
-        const rel = path.relative(base, source);
-        if (rel === '' || rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)) {
-          continue;
-        }
-        found.add(rel.split(path.sep).join('/'));
-        break;
-      }
+    for (const source of compilationSources(path.join(inputs, name))) {
+      const rel = rootRelative(source, roots);
+      if (rel !== null) found.add(rel);
     }
   }
   return [...found].sort();
+}
+
+/** The `source=` paths of one compilation input file, resolved; none when it is not format v1. */
+function compilationSources(file: string): string[] {
+  const s = lstatSync(file);
+  if (!s.isFile() || s.size > MAX_ENGINE_FILE_BYTES) return [];
+  const lines = readFileSync(file, 'utf8')
+    .replace(/^\uFEFF/, '')
+    .split(/\r?\n/);
+  if (lines[0] !== 'qualor-compilation=1') return [];
+  return lines
+    .filter((line) => line.startsWith('source=') && line.length !== 'source='.length)
+    .map((line) => path.resolve(line.slice('source='.length)));
+}
+
+/** `source` relative to the first of `roots` it lies inside, with `/` separators, or null. */
+function rootRelative(source: string, roots: readonly string[]): string | null {
+  for (const base of roots) {
+    const rel = path.relative(base, source);
+    if (rel === '' || rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)) {
+      continue;
+    }
+    return rel.split(path.sep).join('/');
+  }
+  return null;
 }
 
 async function attempt(o: TaintEngineOptions): Promise<TaintRun> {
@@ -517,49 +527,68 @@ async function attempt(o: TaintEngineOptions): Promise<TaintRun> {
       },
       o.log,
     );
-    if (result.timedOut)
-      return fallback('budget', `the engine did not finish within ${timeoutS} s`);
-    if (result.spawnError !== undefined) {
-      return result.spawnErrorCode === 'ENOENT'
-        ? fallback('dotnet-missing', 'dotnet is not installed')
-        : fallback('crash', 'dotnet could not be started');
-    }
-    if (result.exitCode === 3) {
-      const why = incompleteReason(result.stderr);
-      return fallback(incompleteFallback(why, loadStats(readEngineSarif(sarif))), why);
-    }
-    if (result.exitCode !== 0) {
-      const line = failureLine(result.stderr);
-      const code = `exited with code ${result.exitCode ?? 'null'}`;
-      return fallback('crash', line === null ? code : `${code}: ${line}`);
-    }
-    const log = readEngineSarif(sarif);
-    if (log === null) return fallback('crash', "the engine's SARIF could not be read");
-    const stats = loadStats(log);
-    if (!executionSuccessful(log)) {
-      const why = incompleteReason(result.stderr);
-      const kind = incompleteFallback(why, stats);
-      return fallback(
-        kind,
-        why === 'the analysis was incomplete' && kind === 'load'
-          ? 'the sources of a project could not be loaded'
-          : why,
-      );
-    }
-    if (projectsRead(log) === 0) {
-      return fallback('no-inputs', 'the engine read no project from the compiler inputs');
-    }
-    for (const line of projectWarnings(log)) o.log.warn(`taint engine: ${line}`);
-    return {
-      kind: 'ok',
-      sarif: log,
-      sources: recordedSources(inputs, o.root),
-      ...(stats.withErrors > 0 || stats.unresolved > 0
-        ? { problems: { projects: stats.withErrors, unresolvedReferences: stats.unresolved } }
-        : {}),
-    };
+    return taintOutcome(o, result, { sarif, inputs, timeoutS });
   } finally {
     uninstall();
     releaseWorkDir(work, o.log);
   }
+}
+
+/** The engine's run read: `ok` only for a complete analysis, else the fallback with its reason. */
+function taintOutcome(
+  o: TaintEngineOptions,
+  result: ProcessResult,
+  run: { sarif: string; inputs: string; timeoutS: number },
+): TaintRun {
+  const { sarif, timeoutS } = run;
+  if (result.timedOut) return fallback('budget', `the engine did not finish within ${timeoutS} s`);
+  if (result.spawnError !== undefined) {
+    return result.spawnErrorCode === 'ENOENT'
+      ? fallback('dotnet-missing', 'dotnet is not installed')
+      : fallback('crash', 'dotnet could not be started');
+  }
+  if (result.exitCode === 3) {
+    const why = incompleteReason(result.stderr);
+    return fallback(incompleteFallback(why, loadStats(readEngineSarif(sarif))), why);
+  }
+  if (result.exitCode !== 0) {
+    const line = failureLine(result.stderr);
+    const code = `exited with code ${result.exitCode ?? 'null'}`;
+    return fallback('crash', line === null ? code : `${code}: ${line}`);
+  }
+  const log = readEngineSarif(sarif);
+  if (log === null) return fallback('crash', "the engine's SARIF could not be read");
+  return analysedOutcome(o, log, result.stderr, run.inputs);
+}
+
+/** The outcome of an engine run that exited 0 with a readable SARIF log. */
+function analysedOutcome(
+  o: TaintEngineOptions,
+  log: SarifLog,
+  stderr: string,
+  inputs: string,
+): TaintRun {
+  const stats = loadStats(log);
+  if (!executionSuccessful(log)) {
+    const why = incompleteReason(stderr);
+    const kind = incompleteFallback(why, stats);
+    return fallback(
+      kind,
+      why === 'the analysis was incomplete' && kind === 'load'
+        ? 'the sources of a project could not be loaded'
+        : why,
+    );
+  }
+  if (projectsRead(log) === 0) {
+    return fallback('no-inputs', 'the engine read no project from the compiler inputs');
+  }
+  for (const line of projectWarnings(log)) o.log.warn(`taint engine: ${line}`);
+  return {
+    kind: 'ok',
+    sarif: log,
+    sources: recordedSources(inputs, o.root),
+    ...(stats.withErrors > 0 || stats.unresolved > 0
+      ? { problems: { projects: stats.withErrors, unresolvedReferences: stats.unresolved } }
+      : {}),
+  };
 }
