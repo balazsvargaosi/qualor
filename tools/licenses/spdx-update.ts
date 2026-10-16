@@ -21,8 +21,13 @@ async function fetchJson(name: string): Promise<ListFile> {
   return (await res.json()) as ListFile;
 }
 
-const sort = (ids: string[]): string[] =>
-  [...new Set(ids)].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+/** The order of two ids by code unit, as the JSON file lists them. */
+function compareIds(a: string, b: string): number {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+}
+
+const sort = (ids: string[]): string[] => [...new Set(ids)].sort(compareIds);
 
 const [licenses, exceptions] = await Promise.all([
   fetchJson('licenses.json'),

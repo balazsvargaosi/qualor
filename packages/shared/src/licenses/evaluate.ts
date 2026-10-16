@@ -102,34 +102,31 @@ export function licenseClassifier(
   return (licenses) => judge(licenses, mode, forbidsLeaf);
 }
 
+/** What `judge` gathers over a dependency's licence entries. */
+interface Judgement {
+  forbidden: boolean;
+  allUnrecognised: boolean;
+  parsed: number;
+  culprits: Set<string>;
+  /** Culprits that are text, not an expression: they belong to no group. */
+  rawCulprits: Set<string>;
+}
+
 function judge(
   licenses: readonly string[],
   mode: LicensePolicy['mode'],
   forbidsLeaf: (term: string) => boolean,
 ): Classification {
-  let forbidden = false;
-  let allUnrecognised = true;
-  let parsed = 0;
-  const culprits = new Set<string>();
-  const rawCulprits = new Set<string>();
-  for (const entry of licenses) {
-    const text = normalizeLicense(entry);
-    if (text === '') continue; // an empty entry names nothing
-    parsed++;
-    const expr = parseLicenseExpression(text);
-    let node: Node;
-    if (expr === null) {
-      // Text that is not an expression is one unrecognised term and is never taken apart: no rule
-      // or group applies to it, so a denylist lets it through and an allowlist refuses it.
-      const refused = mode === 'allowlist';
-      node = { forbidden: refused, allUnrecognised: true, culprits: refused ? [text] : [] };
-      if (refused) rawCulprits.add(text);
-    } else node = evaluateExpr(expr, forbidsLeaf);
-    if (node.forbidden) forbidden = true;
-    if (!node.allUnrecognised) allUnrecognised = false;
-    for (const c of node.culprits) culprits.add(c);
-  }
+  const j: Judgement = {
+    forbidden: false,
+    allUnrecognised: true,
+    parsed: 0,
+    culprits: new Set<string>(),
+    rawCulprits: new Set<string>(),
+  };
+  for (const entry of licenses) judgeEntry(entry, mode, forbidsLeaf, j);
 
+  const { forbidden, allUnrecognised, parsed, culprits, rawCulprits } = j;
   if (parsed === 0) return { verdict: 'unknown', culprits: [], group: null };
   if (forbidden) {
     const sorted = [...culprits].sort();
@@ -141,6 +138,30 @@ function judge(
     };
   }
   return { verdict: allUnrecognised ? 'unknown' : 'allowed', culprits: [], group: null };
+}
+
+/** One licence entry of a dependency judged into `j`. */
+function judgeEntry(
+  entry: string,
+  mode: LicensePolicy['mode'],
+  forbidsLeaf: (term: string) => boolean,
+  j: Judgement,
+): void {
+  const text = normalizeLicense(entry);
+  if (text === '') return; // an empty entry names nothing
+  j.parsed++;
+  const expr = parseLicenseExpression(text);
+  let node: Node;
+  if (expr === null) {
+    // Text that is not an expression is one unrecognised term and is never taken apart: no rule
+    // or group applies to it, so a denylist lets it through and an allowlist refuses it.
+    const refused = mode === 'allowlist';
+    node = { forbidden: refused, allUnrecognised: true, culprits: refused ? [text] : [] };
+    if (refused) j.rawCulprits.add(text);
+  } else node = evaluateExpr(expr, forbidsLeaf);
+  if (node.forbidden) j.forbidden = true;
+  if (!node.allUnrecognised) j.allUnrecognised = false;
+  for (const c of node.culprits) j.culprits.add(c);
 }
 
 const GROUP_IDS = [

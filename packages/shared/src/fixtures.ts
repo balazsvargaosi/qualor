@@ -81,6 +81,12 @@ export interface Mismatch {
 const findingKey = (ruleKey: string, path: string | null, line: number, severity?: string) =>
   `${ruleKey} ${path ?? '(project)'}:${line}${severity ? ` [${severity}]` : ''}`;
 
+/** The order of two strings by code unit, for sorting. */
+function compareText(a: string, b: string): number {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+}
+
 function rangeLength(ranges: readonly (readonly [number, number])[]): number {
   return ranges.reduce((n, [a, b]) => n + (b - a + 1), 0);
 }
@@ -207,7 +213,7 @@ export function compareFixture(expected: Expected, report: Report): Mismatch[] {
       licenses: [...d.licenses],
     });
     const byKey = (a: ReturnType<typeof view>, b: ReturnType<typeof view>) =>
-      depKey(a) < depKey(b) ? -1 : depKey(a) > depKey(b) ? 1 : 0;
+      compareText(depKey(a), depKey(b));
     const want = expected.dependencies.map(view).sort(byKey);
     const got = (report.dependencies ?? []).map(view).sort(byKey);
     const wantByKey = new Map(want.map((d) => [depKey(d), d]));

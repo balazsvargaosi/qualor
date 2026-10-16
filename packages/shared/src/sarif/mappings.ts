@@ -70,6 +70,14 @@ const pmd: EngineMapping = {
   severity: (_result, r) => pmdSeverity(r),
 };
 
+/** The quality of a SpotBugs rule from its (upper-cased) category tags. */
+function spotbugsQuality(categories: readonly string[]): ReportQuality {
+  if (categories.includes('SECURITY')) return 'security';
+  if (categories.includes('CORRECTNESS') || categories.includes('MT_CORRECTNESS'))
+    return 'reliability';
+  return 'maintainability';
+}
+
 const spotbugs: EngineMapping = {
   rule: (r) => {
     // FindSecBugs (plan 6A): kind and default severity from the curated table.
@@ -77,13 +85,7 @@ const spotbugs: EngineMapping = {
     if (fsb !== undefined) {
       return { quality: 'security', kind: fsb.kind, defaultSeverity: fsb.severity };
     }
-    const t = tags(r).map((x) => x.toUpperCase());
-    const quality: ReportQuality = t.includes('SECURITY')
-      ? 'security'
-      : t.includes('CORRECTNESS') || t.includes('MT_CORRECTNESS')
-        ? 'reliability'
-        : 'maintainability';
-    return { quality };
+    return { quality: spotbugsQuality(tags(r).map((x) => x.toUpperCase())) };
   },
   severity: (result, r) => {
     const fsb = findsecbugsPattern(result.ruleId ?? r?.id ?? '');
