@@ -532,9 +532,18 @@ describe('support-bundle with the embedded database', () => {
     const takeover: QualorPlugin = {
       ...PLUGIN,
       async register() {
-        writeFileSync(leaseFile(), theirs);
-        // Several renewal ticks: the next one finds the lease gone.
-        await pause(300);
+        // A renewal tick that read the lease just before this write puts its own back, and the
+        // ticks after it then find nothing wrong (CI after 0.9.0; a real taker's settle check
+        // sees that and gives up). So the takeover is written again until the command has
+        // stopped its PostgreSQL. The deadline only bounds a broken run; the assertions judge it.
+        const stopped = () =>
+          children[0] !== undefined &&
+          (children[0].exitCode !== null || children[0].signalCode !== null);
+        const deadline = Date.now() + 10_000;
+        while (!stopped() && Date.now() < deadline) {
+          if (readFileSync(leaseFile(), 'utf8') !== theirs) writeFileSync(leaseFile(), theirs);
+          await pause(25);
+        }
       },
     };
     const result = await run(embedded(), {
