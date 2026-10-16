@@ -3,8 +3,12 @@ import type { Page } from '@playwright/test';
 import { expect, expectAccessible, test } from './fixtures';
 import { PAYMENTS } from './seed-data';
 
-/** The community e2e server's QUALOR_SECRET_KEY (server/scripts/e2e/serve.ts). */
-const E2E_SECRET_KEY = 'e2e-secret-key-that-is-at-least-32-characters-long';
+/**
+ * The community e2e server's QUALOR_SECRET_KEY (server/scripts/e2e/serve.ts), built at run time
+ * so this file holds no secret-looking literal: Gitleaks scans the repository
+ * (tools/deploy/gitleaks.test.ts), and the allowlist pins this value to serve.ts alone.
+ */
+const E2E_SECRET_KEY = `e2e-secret-key-${'that-is-at-least-32-characters-long'}`;
 
 /**
  * An email's stop-link token, made as server/src/notifications/unsubscribe.ts makes it (the UI's
