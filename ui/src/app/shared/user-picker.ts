@@ -37,6 +37,18 @@ const LIST_MIN_PX = 112;
 
 type State = 'idle' | 'short' | 'loading' | 'results' | 'empty' | 'error';
 
+/** An index one step past either end wrapped to the other end of a list of `count`. */
+function wrapIndex(index: number, count: number): number {
+  if (index < 0) return count - 1;
+  return index >= count ? 0 : index;
+}
+
+/** Orders suggestions by username, by UTF-16 code units. */
+function byUsername(a: UserSuggestion, b: UserSuggestion): number {
+  if (a.username < b.username) return -1;
+  return a.username > b.username ? 1 : 0;
+}
+
 /**
  * `q-user-picker`: a user name field that suggests people as one types, in the ARIA 1.2 combobox
  * pattern (an input with role combobox, aria-expanded, aria-controls and aria-activedescendant,
@@ -141,16 +153,11 @@ export class UserPicker {
         return;
       case 'ArrowDown':
         event.preventDefault();
-        if (this.open()) this.move(1);
-        else if (this.suggestions().length > 0 && this.state() === 'idle') this.reopen(0);
-        else this.searchNow();
+        this.arrowDown();
         return;
       case 'ArrowUp':
         event.preventDefault();
-        if (this.open()) this.move(-1);
-        else if (this.suggestions().length > 0 && this.state() === 'idle') {
-          this.reopen(this.suggestions().length - 1);
-        }
+        this.arrowUp();
         return;
       case 'Enter': {
         const user = this.open() ? this.suggestions()[this.active()] : undefined;
@@ -219,6 +226,24 @@ export class UserPicker {
     this.errorText.set('');
   }
 
+  /** ArrowDown: the next suggestion, else the closed list again, else a search at once. */
+  private arrowDown(): void {
+    if (this.open()) this.move(1);
+    else if (this.canReopen()) this.reopen(0);
+    else this.searchNow();
+  }
+
+  /** ArrowUp: the previous suggestion, else the closed list again at its last suggestion. */
+  private arrowUp(): void {
+    if (this.open()) this.move(-1);
+    else if (this.canReopen()) this.reopen(this.suggestions().length - 1);
+  }
+
+  /** The list is closed with its suggestions kept, so an arrow key opens it again. */
+  private canReopen(): boolean {
+    return this.suggestions().length > 0 && this.state() === 'idle';
+  }
+
   private reopen(index: number): void {
     this.fit();
     this.state.set('results');
@@ -226,10 +251,8 @@ export class UserPicker {
   }
 
   private move(step: number): void {
-    const count = this.suggestions().length;
-    const next = this.active() + step;
     // From the first, ArrowUp wraps to the last; from the last, ArrowDown wraps to the first.
-    this.highlight(next < 0 ? count - 1 : next >= count ? 0 : next);
+    this.highlight(wrapIndex(this.active() + step, this.suggestions().length));
   }
 
   /** Highlights a suggestion and scrolls the list, once rendered, so that it shows. */
@@ -296,17 +319,21 @@ export class UserPicker {
     try {
       const found = await this.source()(query);
       if (generation !== this.generation) return;
-      const sorted = [...found].sort((a, b) =>
-        a.username < b.username ? -1 : a.username > b.username ? 1 : 0,
-      );
+      const sorted = [...found].sort(byUsername);
       this.answered = query;
       this.suggestions.set(sorted);
       this.active.set(-1);
       // The field lost the focus meanwhile: no list opens under it; ArrowDown opens it later.
       const focused =
         this.field().nativeElement.ownerDocument.activeElement === this.field().nativeElement;
-      if (sorted.length > 0 && focused) this.fit();
-      this.state.set(sorted.length === 0 ? 'empty' : focused ? 'results' : 'idle');
+      if (sorted.length === 0) {
+        this.state.set('empty');
+      } else if (focused) {
+        this.fit();
+        this.state.set('results');
+      } else {
+        this.state.set('idle');
+      }
     } catch (err) {
       if (generation !== this.generation) return;
       this.answered = query;

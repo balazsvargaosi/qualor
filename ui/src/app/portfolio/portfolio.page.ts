@@ -232,7 +232,7 @@ export class PortfolioPage {
     effect(() => {
       const scope = this.request();
       const sort = this.sort();
-      const state = this.empty() || this.failure() !== null ? 'none' : this.data() ? 'ready' : null;
+      const state = this.tableState();
       untracked(() => {
         if (scope === null || state === 'none') {
           this.projectsOf = null;
@@ -246,6 +246,15 @@ export class PortfolioPage {
         void this.projects.reset({ scope, sort });
       });
     });
+  }
+
+  /**
+   * What the projects table does for the overview: goes ('none') with an empty or failed one,
+   * loads ('ready') once it answered, and waits (null) while it loads.
+   */
+  private tableState(): 'none' | 'ready' | null {
+    if (this.empty() || this.failure() !== null) return 'none';
+    return this.data() ? 'ready' : null;
   }
 
   protected choose(change: { scope?: 'organization' | 'all'; granularity?: PortfolioGranularity }) {

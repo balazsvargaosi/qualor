@@ -604,76 +604,95 @@ export class AiSettingsPage {
     errors: Partial<Record<Field, string>>,
     autoFixErrors: Record<string, string>,
   ): SettingsBody | null {
-    const refuse = (field: Field) => {
-      errors[field] ??= refusal(field);
-      return 0;
-    };
-    const int = (field: Field, raw: string, min: number, max: number): number => {
-      const value = raw.trim();
-      if (!/^\d{1,10}$/.test(value)) return refuse(field);
-      const n = Number(value);
-      return n >= min && n <= max ? n : refuse(field);
-    };
-    const decimal = (field: Field, raw: string, min: number, max: number): number => {
-      const value = raw.trim();
-      const n = value === '' ? Number.NaN : Number(value);
-      return Number.isFinite(n) && n >= min && n <= max ? n : refuse(field);
-    };
-
-    let provider: SettingsBody['provider'] = null;
-    const kind = this.kind();
-    // A key typed with no provider would be dropped silently: refuse it instead.
-    if (kind === '' && apiKey !== '') errors.key = keyWithoutKind();
-    if (kind !== '') {
-      const baseUrl = this.url().trim();
-      const model = this.model().trim();
-      if (baseUrl === '') refuse('url');
-      if (!/^[A-Za-z0-9._:/@+-]{1,200}$/.test(model)) refuse('model');
-      if (apiKey !== '' && this.removeKey()) errors.key = keyAndRemove();
-      else if (apiKey !== '' && !/^[\x21-\x7e]{1,4096}$/.test(apiKey)) errors.key = keyFormat();
-      const temperature =
-        this.temperature().trim() === ''
-          ? null
-          : decimal('temperature', this.temperature(), 0, this.maxTemperature());
-      provider = {
-        kind,
-        baseUrl,
-        model,
-        ...(kind === 'openai'
-          ? { auth: this.auth(), jsonMode: this.jsonMode(), maxTokensField: this.maxTokensField() }
-          : {}),
-        temperature,
-        timeoutSeconds: int('timeout', this.timeout(), 5, 600),
-        ...(apiKey !== '' ? { apiKey } : this.removeKey() ? { apiKey: null } : {}),
-      };
-    }
+    const provider = this.providerBody(apiKey, errors);
 
     const excludePaths = this.exclude()
       .split('\n')
       .map((line) => line.trim())
       .filter((line) => line !== '');
-    if (excludePaths.length > MAX_EXCLUDE_PATHS) refuse('exclude');
+    if (excludePaths.length > MAX_EXCLUDE_PATHS) refuse(errors, 'exclude');
 
-    const costRaw = this.budget('costPerDayUsd').trim();
-    const budgets = {
-      explainPerDay: int('budget-explain', this.budget('explainPerDay'), 0, 100_000),
-      triagePerDay: int('budget-triage', this.budget('triagePerDay'), 0, 100_000),
-      fixPerDay: int('budget-fix', this.budget('fixPerDay'), 0, this.maxFixAllowed()),
-      tokensPerDay: int('budget-tokens', this.budget('tokensPerDay'), 0, 1_000_000_000),
-      costPerDayUsd: costRaw === '' ? null : decimal('budget-cost', costRaw, 0, 1_000_000),
-      perUserPerHour: int('budget-user', this.budget('perUserPerHour'), 1, 10_000),
+    const budgets = this.budgetsBody(errors);
+    const pricing = this.pricingBody(errors);
+    const organizations = this.organizationsBody(autoFixErrors);
+
+    const body: SettingsBody = {
+      provider,
+      organizations,
+      excludePaths,
+      budgets,
+      pricing,
+      storePrompts: this.storePrompts(),
+      promptRetentionDays: wholeNumber(errors, 'retention', this.retention(), 1, 90),
     };
+    return Object.keys(errors).length === 0 && Object.keys(autoFixErrors).length === 0
+      ? body
+      : null;
+  }
 
+  /** The provider part of the body: null for None, with `errors` filled for a refused field. */
+  private providerBody(
+    apiKey: string,
+    errors: Partial<Record<Field, string>>,
+  ): SettingsBody['provider'] {
+    const kind = this.kind();
+    if (kind === '') {
+      // A key typed with no provider would be dropped silently: refuse it instead.
+      if (apiKey !== '') errors.key = keyWithoutKind();
+      return null;
+    }
+    const baseUrl = this.url().trim();
+    const model = this.model().trim();
+    if (baseUrl === '') refuse(errors, 'url');
+    if (!/^[A-Za-z0-9._:/@+-]{1,200}$/.test(model)) refuse(errors, 'model');
+    if (apiKey !== '' && this.removeKey()) errors.key = keyAndRemove();
+    else if (apiKey !== '' && !/^[\x21-\x7e]{1,4096}$/.test(apiKey)) errors.key = keyFormat();
+    const temperature =
+      this.temperature().trim() === ''
+        ? null
+        : decimalNumber(errors, 'temperature', this.temperature(), 0, this.maxTemperature());
+    return {
+      kind,
+      baseUrl,
+      model,
+      ...(kind === 'openai'
+        ? { auth: this.auth(), jsonMode: this.jsonMode(), maxTokensField: this.maxTokensField() }
+        : {}),
+      temperature,
+      timeoutSeconds: wholeNumber(errors, 'timeout', this.timeout(), 5, 600),
+      ...keyChange(apiKey, this.removeKey()),
+    };
+  }
+
+  /** The budgets part of the body, with `errors` filled for a refused budget. */
+  private budgetsBody(errors: Partial<Record<Field, string>>): SettingsBody['budgets'] {
+    const budget = (field: Field, key: keyof SettingsBody['budgets'], min: number, max: number) =>
+      wholeNumber(errors, field, this.budget(key), min, max);
+    const costRaw = this.budget('costPerDayUsd').trim();
+    return {
+      explainPerDay: budget('budget-explain', 'explainPerDay', 0, 100_000),
+      triagePerDay: budget('budget-triage', 'triagePerDay', 0, 100_000),
+      fixPerDay: budget('budget-fix', 'fixPerDay', 0, this.maxFixAllowed()),
+      tokensPerDay: budget('budget-tokens', 'tokensPerDay', 0, 1_000_000_000),
+      costPerDayUsd:
+        costRaw === '' ? null : decimalNumber(errors, 'budget-cost', costRaw, 0, 1_000_000),
+      perUserPerHour: budget('budget-user', 'perUserPerHour', 1, 10_000),
+    };
+  }
+
+  /** The prices part of the body: null when neither is given, with `errors` filled for a refusal. */
+  private pricingBody(errors: Partial<Record<Field, string>>): SettingsBody['pricing'] {
     const inputPrice = this.priceInput().trim();
     const outputPrice = this.priceOutput().trim();
-    const pricing =
-      inputPrice === '' && outputPrice === ''
-        ? null
-        : {
-            inputUsdPerMTok: decimal('price-input', inputPrice, 0, 10_000),
-            outputUsdPerMTok: decimal('price-output', outputPrice, 0, 10_000),
-          };
+    if (inputPrice === '' && outputPrice === '') return null;
+    return {
+      inputUsdPerMTok: decimalNumber(errors, 'price-input', inputPrice, 0, 10_000),
+      outputUsdPerMTok: decimalNumber(errors, 'price-output', outputPrice, 0, 10_000),
+    };
+  }
 
+  /** The organisations part of the body, with `autoFixErrors` filled for a refused maximum. */
+  private organizationsBody(autoFixErrors: Record<string, string>): SettingsBody['organizations'] {
     // An organisation's automatic fix block goes only when it was edited here (ruling R1), so a
     // save keeps what an organisation admin changed meanwhile; the projects opted out never go.
     const edited = new Set(Object.keys(this.autoFix()).filter((id) => this.autoFixEdited(id)));
@@ -694,19 +713,7 @@ export class AiSettingsPage {
       };
       organizations[id] = { ...settings, autoFix };
     }
-
-    const body: SettingsBody = {
-      provider,
-      organizations,
-      excludePaths,
-      budgets,
-      pricing,
-      storePrompts: this.storePrompts(),
-      promptRetentionDays: int('retention', this.retention(), 1, 90),
-    };
-    return Object.keys(errors).length === 0 && Object.keys(autoFixErrors).length === 0
-      ? body
-      : null;
+    return organizations;
   }
 
   private emptyKey(): void {
@@ -718,13 +725,18 @@ export class AiSettingsPage {
     const errors = this.errors();
     const first = FIELDS.find((field) => errors[field] !== undefined);
     // Else the first organisation (in the page's order) whose automatic fix block was refused.
-    const autoFix = this.organizations().find((o) => this.autoFixError(o.id) !== null);
-    const id = first ? `ai-${first}` : autoFix ? `ai-org-${autoFix.id}-auto-fix-max` : null;
+    const id = first ? `ai-${first}` : this.firstRefusedAutoFix();
     if (!id) return;
     // After the render that marks it invalid (and, for the key, shows its error text).
     afterNextRender(() => this.host.nativeElement.querySelector<HTMLElement>(`#${id}`)?.focus(), {
       injector: this.injector,
     });
+  }
+
+  /** The maximum's input of the first organisation whose automatic fix block was refused. */
+  private firstRefusedAutoFix(): string | null {
+    const autoFix = this.organizations().find((o) => this.autoFixError(o.id) !== null);
+    return autoFix ? `ai-org-${autoFix.id}-auto-fix-max` : null;
   }
 
   /**
@@ -789,6 +801,45 @@ function refusal(field: Field): string {
     case 'retention':
       return $localize`:@@ai.settings.badRetention:Use a whole number of days from 1 to 90.`;
   }
+}
+
+/** Records the refusal of `field` (its first refusal stays) and stands in 0 for its value. */
+function refuse(errors: Partial<Record<Field, string>>, field: Field): number {
+  errors[field] ??= refusal(field);
+  return 0;
+}
+
+/** A whole number from `min` to `max` as typed in `field`, else refused. */
+function wholeNumber(
+  errors: Partial<Record<Field, string>>,
+  field: Field,
+  raw: string,
+  min: number,
+  max: number,
+): number {
+  const value = raw.trim();
+  if (!/^\d{1,10}$/.test(value)) return refuse(errors, field);
+  const n = Number(value);
+  return n >= min && n <= max ? n : refuse(errors, field);
+}
+
+/** A number from `min` to `max` as typed in `field`, else refused. */
+function decimalNumber(
+  errors: Partial<Record<Field, string>>,
+  field: Field,
+  raw: string,
+  min: number,
+  max: number,
+): number {
+  const value = raw.trim();
+  const n = value === '' ? Number.NaN : Number(value);
+  return Number.isFinite(n) && n >= min && n <= max ? n : refuse(errors, field);
+}
+
+/** The key part of the provider: the key typed, its removal, or else the stored key kept. */
+function keyChange(apiKey: string, remove: boolean): { apiKey?: string | null } {
+  if (apiKey !== '') return { apiKey };
+  return remove ? { apiKey: null } : {};
 }
 
 /**

@@ -12,7 +12,7 @@ import {
 } from '@angular/core';
 import { Api, done, ok } from '../api/api';
 import { ApiError, fieldErrors, problemMessage } from '../api/errors';
-import type { ItemOf } from '../api/types';
+import type { AuthMethods, ItemOf } from '../api/types';
 import { AuthService } from '../auth/auth.service';
 import { PASSWORD_MIN_LENGTH } from '../auth/change-password.page';
 import { SessionStore } from '../auth/session';
@@ -26,6 +26,8 @@ import { KeysetList } from '../shared/keyset';
 export type User = ItemOf<'/api/v0/users'>;
 type UserPatch = { active: boolean } | { isInstanceAdmin: boolean };
 type Field = 'username' | 'displayName' | 'email' | 'password';
+/** Whether "New user" can invite: it can, or the server has no email, or passwords are break-glass. */
+type InviteState = 'available' | 'no-mail' | 'break-glass';
 /** A change to one's own account the confirmation dialog asks about. */
 type Pending = { kind: 'active' | 'admin'; user: User; question: string };
 
@@ -69,14 +71,8 @@ export class UsersPage {
    * Mail E2 A8, from `GET /auth/methods`: invitations work with email and QUALOR_PUBLIC_URL set
    * (`passwordReset`) while password sign-in is open to everyone.
    */
-  protected readonly inviteState = signal<'available' | 'no-mail' | 'break-glass'>('no-mail');
-  protected readonly inviteHint = computed(() =>
-    this.inviteState() === 'no-mail'
-      ? inviteRefusal('MAIL_NOT_CONFIGURED')
-      : this.inviteState() === 'break-glass'
-        ? inviteRefusal('PASSWORD_SIGN_IN_DISABLED')
-        : null,
-  );
+  protected readonly inviteState = signal<InviteState>('no-mail');
+  protected readonly inviteHint = computed(() => inviteHintOf(this.inviteState()));
   /** How the new user gets a password: an invitation email, or an initial password typed here. */
   protected readonly mode = signal<'invite' | 'password'>('password');
   private readonly injector = inject(Injector);
@@ -149,13 +145,7 @@ export class UsersPage {
   private async loadInviteState(): Promise<void> {
     try {
       const methods = await this.auth.methods();
-      this.inviteState.set(
-        methods.password === 'break_glass_only'
-          ? 'break-glass'
-          : methods.passwordReset
-            ? 'available'
-            : 'no-mail',
-      );
+      this.inviteState.set(inviteStateOf(methods));
     } catch {
       this.inviteState.set('no-mail');
     }
@@ -455,11 +445,17 @@ export class UsersPage {
    */
   private createFailed(err: unknown): boolean {
     const refused = err instanceof ApiError ? inviteRefusal(err.code) : null;
-    if (refused !== null) {
+    if (refused === null) {
+      this.showRefusedFields(err);
+    } else {
       this.errors.set({});
       this.dialogError.set(refused);
-      return true;
     }
+    return true;
+  }
+
+  /** Puts a refused new user's errors on its fields (else in the dialog) and focuses the first. */
+  private showRefusedFields(err: unknown): void {
     const fields = fieldErrors(err);
     const errors: Partial<Record<Field, string>> = {};
     if (fields['body.username'] !== undefined) errors.username = usernameMessage();
@@ -477,7 +473,6 @@ export class UsersPage {
     this.errors.set(errors);
     if (Object.keys(errors).length === 0) this.dialogError.set(problemMessage(err));
     this.focusFirstInvalid();
-    return true;
   }
 
   /** Moves focus to the first field of the new-user form with an error. */
@@ -526,6 +521,24 @@ function passwordShort(): string {
 
 function usernameMessage(): string {
   return $localize`:@@users.badUsername:Use 1 to 64 letters, digits, dots, dashes or underscores for the username.`;
+}
+
+/** What the server's sign-in methods allow "New user" to do. */
+function inviteStateOf(methods: AuthMethods): InviteState {
+  if (methods.password === 'break_glass_only') return 'break-glass';
+  return methods.passwordReset ? 'available' : 'no-mail';
+}
+
+/** Why "New user" cannot invite, or null when it can. */
+function inviteHintOf(state: InviteState): string | null {
+  switch (state) {
+    case 'no-mail':
+      return inviteRefusal('MAIL_NOT_CONFIGURED');
+    case 'break-glass':
+      return inviteRefusal('PASSWORD_SIGN_IN_DISABLED');
+    case 'available':
+      return null;
+  }
 }
 
 /** Why the server refused an invitation (mail E2 A8), in the page's words; null for other codes. */

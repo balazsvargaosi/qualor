@@ -110,6 +110,11 @@ function branchQuery(branch: Branch): { branch: string } | { mr: number } | Reco
     : { branch: branch.name };
 }
 
+/** The branch is the one shown: the URL's branch when it names one, else the main branch. */
+function isShown(branch: Branch, wanted: string | null): boolean {
+  return wanted ? branch.id === wanted : branch.isMain;
+}
+
 /**
  * Project → Dependencies (6M §8), in every edition: the dependency inventory the last scan of a
  * branch or merge request reported, with how many entries have a known licence, filters (licence,
@@ -171,10 +176,10 @@ export class DependenciesPage {
   /** The branch shown: the URL's, else the main one; null until known. */
   protected readonly branch = computed<Branch | null>(() => {
     const wanted = this.urlBranch();
-    const listed = this.branchList().find((b) => (wanted ? b.id === wanted : b.isMain));
+    const listed = this.branchList().find((b) => isShown(b, wanted));
     if (listed) return listed;
     const extra = this.extraBranch.hasValue() ? this.extraBranch.value() : undefined;
-    return extra && (wanted ? extra.id === wanted : extra.isMain) ? extra : null;
+    return extra && isShown(extra, wanted) ? extra : null;
   });
   protected readonly branchOptions = computed(() => {
     const options = this.branchList().map((b) => ({ id: b.id, title: branchTitle(b) }));

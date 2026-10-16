@@ -55,6 +55,12 @@ const DEFAULT_PORT: Readonly<Record<Security, string>> = {
 };
 const MESSAGES_PER_PAGE = 20;
 
+/** The password part of a save: removed, replaced by the one typed, or else left as stored. */
+function passwordChange(remove: boolean, typed: string): { password?: string | null } {
+  if (remove) return { password: null };
+  return typed === '' ? {} : { password: typed };
+}
+
 /**
  * Settings → Email (E1 spec), for instance admins: the state, the SMTP server (read-only when
  * QUALOR_SMTP_URL sets it; the password write-only: read from its field at a save that goes out,
@@ -243,11 +249,7 @@ export class EmailSettingsPage {
               fromName: this.values['from-name']().trim(),
               fromAddress: this.values['from-address']().trim(),
               replyTo: this.values['reply-to']().trim() || null,
-              ...(this.removePassword()
-                ? { password: null }
-                : typed !== ''
-                  ? { password: typed }
-                  : {}),
+              ...passwordChange(this.removePassword(), typed),
             },
     };
     this.saving.set(true);

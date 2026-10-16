@@ -29,6 +29,15 @@ const PASSWORD_ONLY: AuthMethods = {
   passwordReset: false,
 };
 
+/** The notice above the form: a reset link or an invitation link has just set a password. */
+function noticeOf(
+  reset: string | undefined,
+  invite: string | undefined,
+): 'reset' | 'invite' | null {
+  if (reset === 'done') return 'reset';
+  return invite === 'done' ? 'invite' : null;
+}
+
 @Component({
   selector: 'q-login-page',
   imports: [AuthLayout, Icon, RouterLink],
@@ -54,9 +63,7 @@ export class LoginPage implements OnInit {
   readonly invite = input<string>();
   /** `?username=`: who just set a password, filled in for them. */
   readonly prefill = input<string | undefined>(undefined, { alias: 'username' });
-  protected readonly notice = computed(() =>
-    this.reset() === 'done' ? 'reset' : this.invite() === 'done' ? 'invite' : null,
-  );
+  protected readonly notice = computed(() => noticeOf(this.reset(), this.invite()));
 
   /**
    * `GET /auth/methods`; undefined while it loads, so a folded password form never appears and

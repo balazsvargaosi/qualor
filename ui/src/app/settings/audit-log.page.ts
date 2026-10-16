@@ -44,6 +44,13 @@ const HASH_PREFIX = 12;
 
 type Outcome = '' | 'success' | 'failure';
 type Field = 'from' | 'to' | 'action' | 'user' | 'project';
+/** The field whose error an input clears. */
+const FIELD_OF_INPUT: Readonly<Record<'from' | 'to' | 'actions' | 'projectKey', Field>> = {
+  from: 'from',
+  to: 'to',
+  actions: 'action',
+  projectKey: 'project',
+};
 /** The query the list and the export use: the filters with their names resolved to ids. */
 type Applied = Omit<AuditEventsQuery, 'limit' | 'cursor'> & { from: string; to: string };
 
@@ -187,7 +194,7 @@ export class AuditLogPage {
 
   protected set(field: 'from' | 'to' | 'actions' | 'projectKey', event: Event): void {
     this[field].set(inputValue(event));
-    const key: Field = field === 'actions' ? 'action' : field === 'projectKey' ? 'project' : field;
+    const key = FIELD_OF_INPUT[field];
     this.fieldError.update((errors) => ({ ...errors, [key]: undefined }));
   }
 
