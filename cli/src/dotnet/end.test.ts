@@ -53,7 +53,17 @@ const SARIF = (root: string) =>
     ],
   });
 
-function setup() {
+/** Gitleaks off; the qualor engine stays on (the taint engine's tests). */
+const WITH_QUALOR = 'version: 1\nanalyzers:\n  gitleaks: { enabled: false }\n';
+
+/**
+ * Also the qualor engine off: the hook, lease and log tests need none of its work, and where a
+ * rules pack is installed (CI, the analyzers image) it would scan the C# file with OpenGrep and
+ * the whole pack, about 8 s a scan, and run the real taint engine on a collected session.
+ */
+const WITHOUT_QUALOR = `${WITH_QUALOR}  qualor: { enabled: false }\n`;
+
+function setup(config: string = WITHOUT_QUALOR) {
   const root = tmp();
   initRepo(root);
   mkdirSync(path.join(root, 'src'));
@@ -61,10 +71,7 @@ function setup() {
     path.join(root, 'src', 'Hashing.cs'),
     'class H {\n  byte[] F() {\n    return System.Security.Cryptography.MD5.HashData(new byte[0]);\n  }\n}\n',
   );
-  writeFileSync(
-    path.join(root, 'qualor.yml'),
-    'version: 1\nanalyzers:\n  gitleaks: { enabled: false }\n',
-  );
+  writeFileSync(path.join(root, 'qualor.yml'), config);
   commitAll(root, 'init');
   const env = {
     QUALOR_MSBUILD_USER_DIR: tmp(),
@@ -275,8 +282,7 @@ describe('qualor dotnet end (config.md §6.1, ruling D7)', () => {
 describe("qualor dotnet end with Qualor's Roslyn taint engine (6B-C# R, spec §4.2, R-4)", () => {
   /** A session whose build recorded one project's compiler inputs, with a pack that has the engine. */
   function session(o: { config?: string; engine?: boolean } = {}) {
-    const { root, env } = setup();
-    if (o.config !== undefined) writeFileSync(path.join(root, 'qualor.yml'), o.config);
+    const { root, env } = setup(o.config ?? WITH_QUALOR);
     const withPack = {
       ...env,
       QUALOR_RULES_DIR: writeEnginePack(tmp(), { engine: o.engine ?? true, severity: 'blocker' }),
