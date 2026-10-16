@@ -51,6 +51,14 @@ const SNIPPET = { startLine: 1, lines: LINES };
 const DIFF = `@@ -1,1 +1,6 @@\n ${LINES[0]}\n${LINES.slice(1)
   .map((l) => `+${l}`)
   .join('\n')}`;
+/** The jobs whose payload names one of the requests, in their order. */
+function jobsOfRequests<J extends { payload: unknown }>(
+  queued: readonly J[],
+  requests: readonly { id: string }[],
+): J[] {
+  const ids = new Set(requests.map((r) => r.id));
+  return queued.filter((j) => ids.has((j.payload as { requestId: string }).requestId));
+}
 /** Verbatim (4E-3a §3 step 5). */
 const AUTO_LINE =
   "Posted automatically for new findings of this merge request. A person can switch this off in Qualor's AI settings.";
@@ -648,9 +656,7 @@ describe('automatic fix suggestions (4E-3a §3)', () => {
         await runLlm();
         const queued = await h.ctx.db.select().from(jobs).where(eq(jobs.queue, AI_FIX_QUEUE));
         const rows = await fixRows(project.id);
-        const mine = queued.filter((j) =>
-          rows.some((r) => r.id === (j.payload as { requestId: string }).requestId),
-        );
+        const mine = jobsOfRequests(queued, rows);
         // Queued by the automatic path, and marked so.
         expect(mine.map((j) => (j.payload as { auto?: boolean }).auto)).toEqual([true, true, true]);
         await change(project);

@@ -17,6 +17,15 @@ const plugin = (over: Partial<QualorPlugin> = {}): QualorPlugin => ({
   ...over,
 });
 
+/** A database whose inserts land in `inserted`, each returning the job id `job-<count>`. */
+function jobInsertDb(inserted: Record<string, unknown>[]) {
+  const values = (row: Record<string, unknown>) => {
+    inserted.push(row);
+    return { returning: async () => [{ id: `job-${inserted.length}` }] };
+  };
+  return { insert: () => ({ values }) };
+}
+
 describe('validatePlugin (enterprise.md §10)', () => {
   it.each([
     ['not an object', 42],
@@ -387,14 +396,7 @@ describe('StagedPlugin (ruling EE4)', () => {
 
   it('queues a job with an ee. concurrency key and at most five attempts, none by default (4E-1 §2.4)', async () => {
     const inserted: Record<string, unknown>[] = [];
-    const db = {
-      insert: () => ({
-        values: (values: Record<string, unknown>) => {
-          inserted.push(values);
-          return { returning: async () => [{ id: `job-${inserted.length}` }] };
-        },
-      }),
-    };
+    const db = jobInsertDb(inserted);
     const registry = emptyRegistry();
     const staged = new StagedPlugin(plugin(), registry);
     const ctx = staged.context({ ...base, db: db as never }, registry);

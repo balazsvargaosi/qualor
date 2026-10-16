@@ -20,7 +20,7 @@ import { inSeconds } from '../scm/queue';
 import { CircuitBreaker, OrganizationSlots } from '../scm/runtime';
 import { effectiveAutoFix } from './auto-fix-settings';
 import { errorCodeOf, TRANSIENT_FAILURES, type LlmErrorCode } from './errors';
-import { baseUrlHash, buildIssueInput, cacheKeyOf } from './input';
+import { baseUrlHash, buildIssueInput, cacheKeyOf, type BuiltInput } from './input';
 import { queueFixPost } from './post';
 import { callProvider, LlmError, type LlmAnswer } from './providers';
 import { LLM_QUEUE } from './service';
@@ -30,6 +30,8 @@ import {
   providerApiKey,
   providerConfig,
   readLlmSettings,
+  type StoredLlmSettings,
+  type StoredProvider,
 } from './settings';
 
 export const LLM_WORKER_CONCURRENCY = 2;
@@ -283,14 +285,9 @@ async function postAutomatically(deps: LlmJobDeps, requestId: string): Promise<v
     id: row.projectId,
     organizationId: row.organizationId,
   });
+  const audit = deps.audit ? { recorder: deps.audit, context: SYSTEM_ACTOR } : undefined;
   const queued = rule.allowed
-    ? await queueFixPost(
-        deps.db,
-        row,
-        undefined,
-        deps.audit ? { recorder: deps.audit, context: SYSTEM_ACTOR } : undefined,
-        { auto: true },
-      )
+    ? await queueFixPost(deps.db, row, undefined, audit, { auto: true })
     : ({ ok: false, refusal: 'ai_disabled' } as const);
   if (queued.ok) {
     deps.logger?.info(
@@ -306,6 +303,211 @@ async function postAutomatically(deps: LlmJobDeps, requestId: string): Promise<v
 }
 
 const limitsOf = (deps: LlmJobDeps): Limits => deps.limits?.() ?? communityLimits();
+
+/** The automatic post of a `fixed` answer (4E-3a §3), a failure to queue it logged. */
+async function postAutomaticallyLogged(deps: LlmJobDeps, row: LlmRequestRow): Promise<void> {
+  try {
+    await postAutomatically(deps, row.id);
+  } catch (err) {
+    // The request is finished and stays so: a throw would only fail the job, never retry
+    // the post, so the failure is logged (class only) and the suggestion is not posted.
+    deps.logger?.warn(
+      {
+        requestId: row.id,
+        organizationId: row.organizationId,
+        errorClass: err instanceof Error ? err.constructor.name : typeof err,
+      },
+      'automatic fix post could not be queued',
+    );
+  }
+}
+
+/** Why a request is not sent after all, as the code it fails with. */
+interface Refused {
+  ok: false;
+  code: LlmErrorCode;
+}
+
+/** What a request that may still be sent is sent with. */
+interface Prepared {
+  ok: true;
+  provider: StoredProvider;
+  key: string | null;
+  built: BuiltInput;
+}
+
+const refused = (code: LlmErrorCode): Refused => ({ ok: false, code });
+
+/**
+ * Whether the organisation still takes this request: AI on, the feature on, the project not
+ * excluded, and, for an automatic request (no person), the automatic rule still holding (4E-3a §3).
+ */
+function organizationAllows(
+  deps: LlmJobDeps,
+  row: LlmRequestRow,
+  settings: StoredLlmSettings,
+  automatic: boolean,
+): boolean {
+  const org = organizationSettings(settings, row.organizationId);
+  if (!org.enabled || !org.features[row.feature]) return false;
+  if (org.excludedProjectIds.includes(row.projectId)) return false;
+  return (
+    !automatic ||
+    effectiveAutoFix(settings, limitsOf(deps), {
+      id: row.projectId,
+      organizationId: row.organizationId,
+    }).allowed
+  );
+}
+
+/** Whether the provider is no longer the one the request was made for (llm.md §14). */
+function providerChanged(
+  provider: StoredProvider,
+  row: LlmRequestRow,
+  payload: LlmJobPayload,
+): boolean {
+  return (
+    provider.kind !== row.provider ||
+    provider.model !== row.model ||
+    new URL(provider.baseUrl).host !== row.providerHost ||
+    baseUrlHash(provider.baseUrl) !== payload.baseUrl
+  );
+}
+
+/** Whether the issue is no longer eligible, or no longer the input the request was made of. */
+function issueChanged(row: LlmRequestRow, provider: StoredProvider, built: BuiltInput): boolean {
+  const ineligible = llmIneligibility(
+    row.feature,
+    {
+      status: built.issue.status,
+      path: built.issue.path,
+      startLine: built.issue.startLine,
+      hasSnippet: built.input.snippet !== null,
+    },
+    { engineId: built.rule.engineId, cwe: built.rule.cwe, tags: built.rule.tags },
+  );
+  const cacheKey = cacheKeyOf(
+    row.organizationId,
+    row.feature,
+    provider,
+    built.rule.key,
+    built.issue.fingerprint,
+    built.inputSha256,
+  );
+  return ineligible !== null || cacheKey !== row.cacheKey;
+}
+
+/**
+ * Everything is read again (llm.md §14): the admin or the analysis may have changed it all since
+ * the click, and then nothing is sent. The provider, its key and the issue's input, or why not.
+ */
+async function prepare(
+  deps: LlmJobDeps,
+  row: LlmRequestRow,
+  payload: LlmJobPayload,
+  settings: StoredLlmSettings,
+  automatic: boolean,
+): Promise<Prepared | Refused> {
+  const provider = settings.provider;
+  if (provider === null || !organizationAllows(deps, row, settings, automatic)) {
+    return refused('AI_DISABLED');
+  }
+  if (providerChanged(provider, row, payload)) return refused('SETTINGS_CHANGED');
+  const key = providerApiKey(settings, deps.secretKey);
+  if (!key.ok) return refused('KEY_UNDECRYPTABLE');
+  if (row.issueId === null) return refused('ISSUE_GONE');
+  const built = await buildIssueInput(deps.db, row.issueId, row.feature);
+  if (!built) return refused('ISSUE_GONE');
+  if (pathExcluded(settings, built.issue.path)) return refused('AI_DISABLED');
+  if (issueChanged(row, provider, built)) return refused('ISSUE_CHANGED');
+  return { ok: true, provider, key: key.key, built };
+}
+
+/**
+ * Tells the circuit how a failed call went: a transient failure counts against the provider, a
+ * call the provider answered (with a status) counts for it, and anything else only releases the
+ * probe. Whether the failure is transient.
+ */
+function noteCallFailure(circuit: CircuitBreaker, circuitKey: string, err: LlmError): boolean {
+  const transient = TRANSIENT_FAILURES.has(err.failure);
+  if (transient) circuit.failure(circuitKey);
+  else if (err.status !== null) circuit.success(circuitKey);
+  else circuit.release(circuitKey);
+  return transient;
+}
+
+/** Sends a claimed request and finishes it, or queues it again. */
+async function sendClaimed(
+  deps: LlmJobDeps,
+  row: LlmRequestRow,
+  payload: LlmJobPayload,
+  started: number,
+): Promise<void> {
+  const settings = await readLlmSettings(deps.db);
+  const automatic = payload.auto === true && row.userId === null;
+  const prepared = await prepare(deps, row, payload, settings, automatic);
+  if (!prepared.ok) return await finish(deps, row, started, { ok: false, code: prepared.code });
+  const { provider, key, built } = prepared;
+  // Built before the circuit is asked: a prompt that cannot be built must not hold a probe.
+  const prompt = buildPrompt(
+    row.feature,
+    built.input,
+    deps.nonce?.() ?? randomBytes(16).toString('hex'),
+  );
+  const circuitKey = provider.baseUrl;
+  if (!deps.runtime.circuit.tryPass(circuitKey)) {
+    // llm.md §14: an open circuit sends nothing, and the request fails at once.
+    return await finish(deps, row, started, { ok: false, code: 'PROVIDER_UNAVAILABLE' });
+  }
+  let answer: LlmAnswer;
+  try {
+    answer = await callProvider(
+      providerConfig(provider),
+      key,
+      {
+        system: prompt.system,
+        user: prompt.user,
+        maxOutputTokens: MAX_OUTPUT_TOKENS[row.feature],
+      },
+      {
+        internalHosts: deps.internalHosts,
+        version: deps.version,
+        ...(deps.resolve ? { resolve: deps.resolve } : {}),
+      },
+    );
+    deps.runtime.circuit.success(circuitKey);
+  } catch (err) {
+    if (!(err instanceof LlmError)) {
+      deps.runtime.circuit.release(circuitKey);
+      throw err;
+    }
+    const transient = noteCallFailure(deps.runtime.circuit, circuitKey, err);
+    return await retryOrFail(deps, row, payload, started, err, transient);
+  }
+  const tokens = {
+    inputTokens: answer.usage.inputTokens,
+    outputTokens: answer.usage.outputTokens,
+  };
+  const costMicroUsd = costOf(settings.pricing, tokens);
+  const checked = validate(row.feature, answer, key, built.input);
+  if (!checked.ok) {
+    return await finish(deps, row, started, {
+      ok: false,
+      code: checked.code,
+      ...tokens,
+      costMicroUsd,
+    });
+  }
+  await finish(deps, row, started, {
+    ok: true,
+    result: checked.result,
+    ...tokens,
+    costMicroUsd,
+  });
+  // Read back by the post: a row this job no longer finished (a lost lease) is not posted.
+  const fixed = (checked.result as { status?: unknown }).status === 'fixed';
+  if (automatic && row.feature === 'fix' && fixed) await postAutomaticallyLogged(deps, row);
+}
 
 async function runLlmJob(deps: LlmJobDeps, payload: LlmJobPayload): Promise<void> {
   const [row] = await deps.db
@@ -332,142 +534,7 @@ async function runLlmJob(deps: LlmJobDeps, payload: LlmJobPayload): Promise<void
       .returning({ id: llmRequests.id });
     // Finished meanwhile (the sweep failed it): nothing to send.
     if (claimed.length === 0) return;
-    // Everything is read again (llm.md §14): the admin or the analysis may have changed it all
-    // since the click, and then nothing is sent.
-    const settings = await readLlmSettings(deps.db);
-    const provider = settings.provider;
-    const org = organizationSettings(settings, row.organizationId);
-    // An automatic request (no person) is sent only while the automatic rule holds (4E-3a §3).
-    const automatic = payload.auto === true && row.userId === null;
-    if (
-      provider === null ||
-      !org.enabled ||
-      !org.features[row.feature] ||
-      org.excludedProjectIds.includes(row.projectId) ||
-      (automatic &&
-        !effectiveAutoFix(settings, limitsOf(deps), {
-          id: row.projectId,
-          organizationId: row.organizationId,
-        }).allowed)
-    ) {
-      return await finish(deps, row, started, { ok: false, code: 'AI_DISABLED' });
-    }
-    if (
-      provider.kind !== row.provider ||
-      provider.model !== row.model ||
-      new URL(provider.baseUrl).host !== row.providerHost ||
-      baseUrlHash(provider.baseUrl) !== payload.baseUrl
-    ) {
-      return await finish(deps, row, started, { ok: false, code: 'SETTINGS_CHANGED' });
-    }
-    const key = providerApiKey(settings, deps.secretKey);
-    if (!key.ok) return await finish(deps, row, started, { ok: false, code: 'KEY_UNDECRYPTABLE' });
-    if (row.issueId === null) {
-      return await finish(deps, row, started, { ok: false, code: 'ISSUE_GONE' });
-    }
-    const built = await buildIssueInput(deps.db, row.issueId, row.feature);
-    if (!built) return await finish(deps, row, started, { ok: false, code: 'ISSUE_GONE' });
-    if (pathExcluded(settings, built.issue.path)) {
-      return await finish(deps, row, started, { ok: false, code: 'AI_DISABLED' });
-    }
-    const ineligible = llmIneligibility(
-      row.feature,
-      {
-        status: built.issue.status,
-        path: built.issue.path,
-        startLine: built.issue.startLine,
-        hasSnippet: built.input.snippet !== null,
-      },
-      { engineId: built.rule.engineId, cwe: built.rule.cwe, tags: built.rule.tags },
-    );
-    const cacheKey = cacheKeyOf(
-      row.organizationId,
-      row.feature,
-      provider,
-      built.rule.key,
-      built.issue.fingerprint,
-      built.inputSha256,
-    );
-    if (ineligible !== null || cacheKey !== row.cacheKey) {
-      return await finish(deps, row, started, { ok: false, code: 'ISSUE_CHANGED' });
-    }
-    // Built before the circuit is asked: a prompt that cannot be built must not hold a probe.
-    const prompt = buildPrompt(
-      row.feature,
-      built.input,
-      deps.nonce?.() ?? randomBytes(16).toString('hex'),
-    );
-    const circuitKey = provider.baseUrl;
-    if (!deps.runtime.circuit.tryPass(circuitKey)) {
-      // llm.md §14: an open circuit sends nothing, and the request fails at once.
-      return await finish(deps, row, started, { ok: false, code: 'PROVIDER_UNAVAILABLE' });
-    }
-    let answer: LlmAnswer;
-    try {
-      answer = await callProvider(
-        providerConfig(provider),
-        key.key,
-        {
-          system: prompt.system,
-          user: prompt.user,
-          maxOutputTokens: MAX_OUTPUT_TOKENS[row.feature],
-        },
-        {
-          internalHosts: deps.internalHosts,
-          version: deps.version,
-          ...(deps.resolve ? { resolve: deps.resolve } : {}),
-        },
-      );
-      deps.runtime.circuit.success(circuitKey);
-    } catch (err) {
-      if (!(err instanceof LlmError)) {
-        deps.runtime.circuit.release(circuitKey);
-        throw err;
-      }
-      const transient = TRANSIENT_FAILURES.has(err.failure);
-      if (transient) deps.runtime.circuit.failure(circuitKey);
-      else if (err.status !== null) deps.runtime.circuit.success(circuitKey);
-      else deps.runtime.circuit.release(circuitKey);
-      return await retryOrFail(deps, row, payload, started, err, transient);
-    }
-    const tokens = {
-      inputTokens: answer.usage.inputTokens,
-      outputTokens: answer.usage.outputTokens,
-    };
-    const costMicroUsd = costOf(settings.pricing, tokens);
-    const checked = validate(row.feature, answer, key.key, built.input);
-    if (!checked.ok) {
-      return await finish(deps, row, started, {
-        ok: false,
-        code: checked.code,
-        ...tokens,
-        costMicroUsd,
-      });
-    }
-    await finish(deps, row, started, {
-      ok: true,
-      result: checked.result,
-      ...tokens,
-      costMicroUsd,
-    });
-    // Read back by the post: a row this job no longer finished (a lost lease) is not posted.
-    const fixed = (checked.result as { status?: unknown }).status === 'fixed';
-    if (automatic && row.feature === 'fix' && fixed) {
-      try {
-        await postAutomatically(deps, row.id);
-      } catch (err) {
-        // The request is finished and stays so: a throw would only fail the job, never retry
-        // the post, so the failure is logged (class only) and the suggestion is not posted.
-        deps.logger?.warn(
-          {
-            requestId: row.id,
-            organizationId: row.organizationId,
-            errorClass: err instanceof Error ? err.constructor.name : typeof err,
-          },
-          'automatic fix post could not be queued',
-        );
-      }
-    }
+    await sendClaimed(deps, row, payload, started);
   } finally {
     deps.runtime.slots.release(row.organizationId);
   }

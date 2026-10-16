@@ -9,7 +9,7 @@ import type { Limits } from '../limits';
 import { enqueue } from '../queue/queue';
 import type { JobHandlers, WorkerLogger } from '../queue/worker';
 import { effectiveAutoFix } from './auto-fix-settings';
-import { createAiRequest } from './service';
+import { createAiRequest, type AiRequestDeps } from './service';
 import { pathExcluded, readLlmSettings, type StoredLlmSettings } from './settings';
 
 /** 4E-3a §3: the automatic fix suggestions of one analysis are a job of their own. */
@@ -110,6 +110,37 @@ function refusalOf(err: unknown): 'skip' | 'budget_exhausted' | 'disabled' | nul
 }
 
 /**
+ * One automatic request per candidate, in order, until `max` were queued or a refusal stops the
+ * job; how many were queued, and what stopped it (null: the candidates or `max` ran out).
+ */
+async function requestFixes(
+  deps: Omit<AiRequestDeps, 'users'>,
+  projectId: string,
+  candidates: readonly string[],
+  max: number,
+): Promise<{ requested: number; stopped: 'budget_exhausted' | 'disabled' | null }> {
+  let requested = 0;
+  for (const issueId of candidates) {
+    if (requested >= max) break;
+    try {
+      const outcome = await createAiRequest(
+        deps,
+        { kind: 'automatic' },
+        { issueId, projectId },
+        'fix',
+        { refresh: false },
+      );
+      if (outcome.kind === 'queued') requested += 1;
+    } catch (err) {
+      const refusal = refusalOf(err);
+      if (refusal === null) throw err;
+      if (refusal !== 'skip') return { requested, stopped: refusal };
+    }
+  }
+  return { requested, stopped: null };
+}
+
+/**
  * 4E-3a §3 steps 1–3: the effective rule and the analysis checked again (it must still be the
  * merge request's latest), then one automatic request per candidate, through the function a
  * person's request uses, until `maxPerAnalysis` were queued or the organisation's fix budget for
@@ -138,28 +169,14 @@ async function runAutoFix(deps: AutoFixDeps, analysisId: string): Promise<void> 
   if (!rule.allowed) return;
   const candidates = await autoFixCandidates(deps.db, branch.id, settings, rule.minSeverity);
   const audit = deps.audit ? { recorder: deps.audit, context: SYSTEM_ACTOR } : undefined;
-  let requested = 0;
-  let stopped: 'budget_exhausted' | 'disabled' | null = null;
-  for (const issueId of candidates) {
-    if (requested >= rule.maxPerAnalysis) break;
-    try {
-      const outcome = await createAiRequest(
-        // The limits read once per job: what was checked above is what is used.
-        { db: deps.db, limits, ...(audit ? { audit } : {}) },
-        { kind: 'automatic' },
-        { issueId, projectId: project.id },
-        'fix',
-        { refresh: false },
-      );
-      if (outcome.kind === 'queued') requested += 1;
-    } catch (err) {
-      const refusal = refusalOf(err);
-      if (refusal === null) throw err;
-      if (refusal === 'skip') continue;
-      stopped = refusal;
-      break;
-    }
-  }
+  // The limits read once per job: what was checked above is what is used.
+  const requestDeps = { db: deps.db, limits, ...(audit ? { audit } : {}) };
+  const { requested, stopped } = await requestFixes(
+    requestDeps,
+    project.id,
+    candidates,
+    rule.maxPerAnalysis,
+  );
   const details = { analysisId, organizationId: project.organizationId, requested };
   if (stopped === 'budget_exhausted') {
     deps.logger?.warn(

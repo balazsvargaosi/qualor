@@ -5,7 +5,7 @@ import {
   type LicensePolicy,
   type LicenseVerdict,
 } from '@qualor/shared';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, type SQL } from 'drizzle-orm';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import type { RouteDeps } from '../app';
@@ -101,6 +101,31 @@ const querySchema = z
 
 const EMPTY_SUMMARY = { total: 0, known: 0, unknown: 0, byLicense: [] };
 
+type DependencyQuery = z.infer<typeof querySchema>;
+
+/** The branch the query names: the merge request, the branch, or else the main branch. */
+function branchOfQuery(query: DependencyQuery): SQL | undefined {
+  if (query.mr !== undefined) {
+    return and(eq(branches.kind, 'merge_request'), eq(branches.name, String(query.mr)));
+  }
+  if (query.branch !== undefined) {
+    return and(eq(branches.kind, 'branch'), eq(branches.name, query.branch));
+  }
+  return eq(branches.isMain, true);
+}
+
+/** The inventory filter of the query's filter parameters, each one given. */
+function filterOfQuery(query: DependencyQuery): DependencyFilter {
+  return {
+    ...(query.license !== undefined && { license: query.license }),
+    ...(query.group !== undefined && { group: query.group }),
+    ...(query.ecosystem !== undefined && { ecosystem: query.ecosystem }),
+    ...(query.unknown !== undefined && { unknown: query.unknown === 'true' }),
+    ...(query.direct !== undefined && { direct: query.direct === 'true' }),
+    ...(query.q !== undefined && { q: query.q }),
+  };
+}
+
 /**
  * The policy's verdict on a row's licences: the policy prepared once, and each distinct set of
  * licences judged once (an inventory repeats a few licence sets many times).
@@ -149,16 +174,7 @@ export const dependencyRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asyn
       const [branch] = await deps.db
         .select({ id: branches.id })
         .from(branches)
-        .where(
-          and(
-            eq(branches.projectId, project.id),
-            query.mr !== undefined
-              ? and(eq(branches.kind, 'merge_request'), eq(branches.name, String(query.mr)))
-              : query.branch !== undefined
-                ? and(eq(branches.kind, 'branch'), eq(branches.name, query.branch))
-                : eq(branches.isMain, true),
-          ),
-        );
+        .where(and(eq(branches.projectId, project.id), branchOfQuery(query)));
       const paging = { page: query.page, pageSize: query.pageSize };
       // 6M §8: the verdicts need the feature and a policy of the project's organisation.
       const policy = deps.edition.limits().licenses.policy
@@ -178,14 +194,7 @@ export const dependencyRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asyn
         };
       }
 
-      const filter: DependencyFilter = {
-        ...(query.license !== undefined && { license: query.license }),
-        ...(query.group !== undefined && { group: query.group }),
-        ...(query.ecosystem !== undefined && { ecosystem: query.ecosystem }),
-        ...(query.unknown !== undefined && { unknown: query.unknown === 'true' }),
-        ...(query.direct !== undefined && { direct: query.direct === 'true' }),
-        ...(query.q !== undefined && { q: query.q }),
-      };
+      const filter = filterOfQuery(query);
       const judge = policy === null ? null : verdictOf(policy);
       const [list, summary] = await Promise.all([
         judge !== null && query.verdict !== undefined

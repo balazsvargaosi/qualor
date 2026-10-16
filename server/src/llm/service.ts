@@ -13,7 +13,7 @@ import type { Limits } from '../limits';
 import { issueForUser } from '../projects/access';
 import { enqueue } from '../queue/queue';
 import type { LlmErrorCode } from './errors';
-import { baseUrlHash, buildIssueInput, cacheKeyOf } from './input';
+import { baseUrlHash, buildIssueInput, cacheKeyOf, type BuiltInput } from './input';
 import { effectiveAutoFix } from './auto-fix-settings';
 import type { LlmJobPayload } from './job';
 import {
@@ -21,7 +21,9 @@ import {
   pathExcluded,
   readLlmSettings,
   type Budgets,
+  type OrgLlmSettings,
   type StoredLlmSettings,
+  type StoredProvider,
 } from './settings';
 
 export const LLM_QUEUE = 'llm';
@@ -208,6 +210,104 @@ export async function requestAi(
 }
 
 /**
+ * The provider and the organisation's settings when the feature is on for the organisation and,
+ * for an automatic request, automatic fix suggestions are in effect for the project (4E-3a §2);
+ * else 409 AI_DISABLED.
+ */
+function enabledFor(
+  settings: StoredLlmSettings,
+  limits: Limits,
+  project: { id: string; organizationId: string },
+  feature: LlmFeature,
+  automatic: boolean,
+): { provider: StoredProvider; org: OrgLlmSettings } {
+  const provider = settings.provider;
+  if (provider === null) throw conflict('AI_DISABLED', 'No LLM provider is configured');
+  const org = organizationSettings(settings, project.organizationId);
+  if (!org.enabled || !org.features[feature]) {
+    throw conflict('AI_DISABLED', 'This AI feature is not enabled for the organisation');
+  }
+  if (automatic && (feature !== 'fix' || !effectiveAutoFix(settings, limits, project).allowed)) {
+    throw conflict('AI_DISABLED', 'Automatic fix suggestions are not enabled for this project');
+  }
+  return { provider, org };
+}
+
+/** Why the issue is not sent to the AI assistant: the issue or its rule, the project, the path. */
+function ineligibleReason(
+  feature: LlmFeature,
+  built: BuiltInput,
+  org: OrgLlmSettings,
+  settings: StoredLlmSettings,
+  projectId: string,
+): string | null {
+  const { issue, rule } = built;
+  const reason = llmIneligibility(
+    feature,
+    {
+      status: issue.status,
+      path: issue.path,
+      startLine: issue.startLine,
+      hasSnippet: built.input.snippet !== null,
+    },
+    { engineId: rule.engineId, cwe: rule.cwe, tags: rule.tags },
+  );
+  if (reason !== null) return reason;
+  if (org.excludedProjectIds.includes(projectId)) return 'excluded_project';
+  return pathExcluded(settings, issue.path) ? 'excluded_path' : null;
+}
+
+/** 429 AI_QUOTA_EXCEEDED when the organisation's budget for `feature` today is used up. */
+async function checkBudgets(
+  tx: Executor,
+  organizationId: string,
+  feature: LlmFeature,
+  budgets: Budgets,
+): Promise<void> {
+  const used = await todayUsage(tx, organizationId);
+  const perDay = {
+    explain: budgets.explainPerDay,
+    triage: budgets.triagePerDay,
+    fix: budgets.fixPerDay,
+  }[feature];
+  const overCost =
+    budgets.costPerDayUsd !== null && used.costMicroUsd >= budgets.costPerDayUsd * 1_000_000;
+  if (used[feature] >= perDay || used.tokens >= budgets.tokensPerDay || overCost) {
+    throw new ProblemError(
+      429,
+      'AI_QUOTA_EXCEEDED',
+      "The organisation's AI budget for today is used up",
+      { headers: { 'retry-after': String(secondsToUtcMidnight()) } },
+    );
+  }
+}
+
+/** rbac-audit.md §8: `ai.requested` for a new request, in the insert's transaction. */
+async function recordRequested(
+  tx: Executor,
+  audit: NonNullable<AiRequestDeps['audit']>,
+  target: { projectId: string; issueId: string },
+  inserted: LlmRequestRow,
+  feature: LlmFeature,
+): Promise<void> {
+  const refs = await projectRefs(tx, target.projectId);
+  await audit.recorder.record(tx, audit.context, [
+    {
+      action: 'ai.requested',
+      organization: refs.organization,
+      project: refs.project,
+      target: { type: 'issue', id: target.issueId, label: null },
+      details: {
+        requestId: inserted.id,
+        feature,
+        providerHost: inserted.providerHost,
+        model: inserted.model,
+      },
+    },
+  ]);
+}
+
+/**
  * The request of `requestAi` for an issue whose access the caller has settled (a person's
  * `ai.use`, or the auto-fix job of the issue's own analysis). An automatic request also needs the
  * organisation's automatic fix suggestions to be in effect for the project now (4E-3a §2).
@@ -224,35 +324,12 @@ export async function createAiRequest(
   if (!project) throw notFound('Issue');
   const orgId = project.organizationId;
   const settings = await readLlmSettings(deps.db);
-  const provider = settings.provider;
-  if (provider === null) throw conflict('AI_DISABLED', 'No LLM provider is configured');
-  const org = organizationSettings(settings, orgId);
-  if (!org.enabled || !org.features[feature]) {
-    throw conflict('AI_DISABLED', 'This AI feature is not enabled for the organisation');
-  }
   const automatic = actor.kind === 'automatic';
-  if (
-    automatic &&
-    (feature !== 'fix' || !effectiveAutoFix(settings, deps.limits, project).allowed)
-  ) {
-    throw conflict('AI_DISABLED', 'Automatic fix suggestions are not enabled for this project');
-  }
+  const { provider, org } = enabledFor(settings, deps.limits, project, feature, automatic);
   const built = await buildIssueInput(deps.db, issueId, feature);
   if (!built || built.issue.projectId !== project.id) throw notFound('Issue');
   const { issue, rule } = built;
-  const reason =
-    llmIneligibility(
-      feature,
-      {
-        status: issue.status,
-        path: issue.path,
-        startLine: issue.startLine,
-        hasSnippet: built.input.snippet !== null,
-      },
-      { engineId: rule.engineId, cwe: rule.cwe, tags: rule.tags },
-    ) ??
-    (org.excludedProjectIds.includes(project.id) ? 'excluded_project' : null) ??
-    (pathExcluded(settings, issue.path) ? 'excluded_path' : null);
+  const reason = ineligibleReason(feature, built, org, settings, project.id);
   if (reason) throw notEligible(reason);
 
   const cacheKey = cacheKeyOf(
@@ -344,22 +421,7 @@ export async function createAiRequest(
           .limit(1);
         if (inFlight) return { kind: 'in_flight', row: inFlight };
       }
-      const used = await todayUsage(tx, orgId);
-      const perDay = {
-        explain: budgets.explainPerDay,
-        triage: budgets.triagePerDay,
-        fix: budgets.fixPerDay,
-      }[feature];
-      const overCost =
-        budgets.costPerDayUsd !== null && used.costMicroUsd >= budgets.costPerDayUsd * 1_000_000;
-      if (used[feature] >= perDay || used.tokens >= budgets.tokensPerDay || overCost) {
-        throw new ProblemError(
-          429,
-          'AI_QUOTA_EXCEEDED',
-          "The organisation's AI budget for today is used up",
-          { headers: { 'retry-after': String(secondsToUtcMidnight()) } },
-        );
-      }
+      await checkBudgets(tx, orgId, feature, budgets);
       // Charged only for a request that will be queued (under the lock, so a refused budget costs
       // the user nothing); a refusal rolls the transaction back, and a failure after the charge
       // (the insert, the enqueue, the commit) gives the token back.
@@ -403,21 +465,13 @@ export async function createAiRequest(
         maxAttempts: 1,
       });
       if (deps.audit?.recorder.active()) {
-        const refs = await projectRefs(tx, project.id);
-        await deps.audit.recorder.record(tx, deps.audit.context, [
-          {
-            action: 'ai.requested',
-            organization: refs.organization,
-            project: refs.project,
-            target: { type: 'issue', id: issue.id, label: null },
-            details: {
-              requestId: inserted.id,
-              feature,
-              providerHost: inserted.providerHost,
-              model: inserted.model,
-            },
-          },
-        ]);
+        await recordRequested(
+          tx,
+          deps.audit,
+          { projectId: project.id, issueId: issue.id },
+          inserted,
+          feature,
+        );
       }
       return { kind: 'queued', row: inserted };
     });

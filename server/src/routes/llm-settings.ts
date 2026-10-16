@@ -408,6 +408,27 @@ function changedTopLevelKeys(current: StoredLlmSettings, next: StoredLlmSettings
   return [...fields, ...settingsFieldsChanged(current, next, differs)];
 }
 
+/** The projects an organisation's lists name that belong to another organisation (`owners`). */
+function foreignProjectProblems(
+  id: string,
+  o: SettingsBody['organizations'][string],
+  owners: ReadonlyMap<string, string>,
+): FieldError[] {
+  const errors: FieldError[] = [];
+  for (const list of ['excludedProjectIds', 'autoFixDisabledProjectIds'] as const) {
+    (o[list] ?? []).forEach((projectId, i) => {
+      const owner = owners.get(projectId);
+      if (owner !== undefined && owner !== id) {
+        errors.push({
+          path: `body.organizations.${id}.${list}.${i}`,
+          message: 'Not a project of this organisation',
+        });
+      }
+    });
+  }
+  return errors;
+}
+
 export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (
   app,
   { deps },
@@ -452,17 +473,7 @@ export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
         errors.push({ path: `body.organizations.${id}`, message: 'No such organisation' });
         continue;
       }
-      for (const list of ['excludedProjectIds', 'autoFixDisabledProjectIds'] as const) {
-        (o[list] ?? []).forEach((projectId, i) => {
-          const owner = owners.get(projectId);
-          if (owner !== undefined && owner !== id) {
-            errors.push({
-              path: `body.organizations.${id}.${list}.${i}`,
-              message: 'Not a project of this organisation',
-            });
-          }
-        });
-      }
+      errors.push(...foreignProjectProblems(id, o, owners));
       // 4E-3a §2: as the budget above, a switch-on saved while the licence allowed it is kept;
       // only switching it on needs the feature.
       if (

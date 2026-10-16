@@ -223,6 +223,13 @@ function validateLlmOverride(value: unknown): Partial<LlmLimits> {
   return Object.freeze(llm);
 }
 
+/** Whether a UI extension's path is one its point takes (see validateExtension). */
+function extensionPathValid(point: unknown, id: string, path: string): boolean {
+  if (point === 'settings.nav') return path === `/settings/ee/${id}`;
+  if (point === 'main.nav') return MAIN_NAV_PATH_PATTERN.test(path);
+  return PROJECT_TAB_PATH_PATTERN.test(path);
+}
+
 /**
  * enterprise.md §10.4, 4E-1 §4: a `settings.nav` path is `/settings/ee/<id>`; a `project.tab`
  * path is a relative tab path under the project page.
@@ -239,11 +246,7 @@ function validateExtension(value: unknown): UiExtension {
     label.trim().length >= 1 &&
     label.length <= 40 &&
     typeof path === 'string' &&
-    (point === 'settings.nav'
-      ? path === `/settings/ee/${id}`
-      : point === 'main.nav'
-        ? MAIN_NAV_PATH_PATTERN.test(path)
-        : PROJECT_TAB_PATH_PATTERN.test(path));
+    extensionPathValid(point, id, path);
   if (!valid) throw new PluginError('invalid UI extension');
   return Object.freeze({
     point: point as UiExtension['point'],

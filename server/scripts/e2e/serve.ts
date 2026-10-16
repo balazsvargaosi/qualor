@@ -455,18 +455,20 @@ function lazyServer(port: number, launch: () => ChildProcess): Promise<LazyServe
       () => socket.destroy(),
     );
   });
+  /** Closes the port, and stops the server if it started. */
+  const stopProxy = async (): Promise<void> => {
+    // A kept-alive connection would hold close() open: end them all.
+    const closed = new Promise<void>((done) => proxy.close(() => done()));
+    for (const socket of sockets) socket.destroy();
+    await closed;
+    const target = await started?.catch(() => undefined);
+    if (target) await stop(target.child);
+  };
   return new Promise((resolve, reject) => {
     proxy.once('error', reject);
     proxy.listen(port, '127.0.0.1', () =>
       resolve({
-        stop: async () => {
-          // A kept-alive connection would hold close() open: end them all.
-          const closed = new Promise<void>((done) => proxy.close(() => done()));
-          for (const socket of sockets) socket.destroy();
-          await closed;
-          const target = await started?.catch(() => undefined);
-          if (target) await stop(target.child);
-        },
+        stop: stopProxy,
         onExit: (listener) => void exitListeners.push(listener),
       }),
     );

@@ -208,34 +208,53 @@ export function parseSmtpUrl(
   if ((url.pathname !== '' && url.pathname !== '/') || url.hash !== '' || raw.includes('#')) {
     return fail(SMTP_URL_FORM);
   }
-  let security: SmtpSecurity = scheme === 'smtps:' ? 'tls' : 'starttls';
-  if (url.search !== '') {
-    const params = [...url.searchParams.entries()];
-    const only = params.length === 1 ? params[0] : undefined;
-    if (scheme !== 'smtp:' || only?.[0] !== 'security' || only[1] !== 'none') {
-      return fail('the only query it takes is ?security=none, on smtp://');
-    }
-    security = 'none';
-  }
+  const security = smtpSecurityOf(url);
+  if (security === null) return fail('the only query it takes is ?security=none, on smtp://');
   let host = url.hostname.toLowerCase();
   if (host.startsWith('[') && host.endsWith(']')) host = host.slice(1, -1);
   if (!isHostName(host)) return fail('must name a host');
-  const port = url.port === '' ? (scheme === 'smtps:' ? 465 : 587) : Number(url.port);
+  const port = smtpPortOf(url);
   if (!Number.isInteger(port) || port < 1 || port > 65_535)
     return fail('the port must be 1 to 65535');
+  const credentials = smtpCredentialsOf(url);
+  if (typeof credentials === 'string') return fail(credentials);
+  return { ok: true, server: { host, port, security, ...credentials } };
+}
+
+/**
+ * The security of an smtp:// or smtps:// URL: TLS for smtps://, STARTTLS for smtp://, none for
+ * smtp://…?security=none; null for any other query.
+ */
+function smtpSecurityOf(url: URL): SmtpSecurity | null {
+  const smtps = url.protocol === 'smtps:';
+  if (url.search === '') return smtps ? 'tls' : 'starttls';
+  const params = [...url.searchParams.entries()];
+  const only = params.length === 1 ? params[0] : undefined;
+  if (smtps || only?.[0] !== 'security' || only[1] !== 'none') return null;
+  return 'none';
+}
+
+/** The port of an smtp:// or smtps:// URL: its own, else 465 for smtps:// and 587 for smtp://. */
+function smtpPortOf(url: URL): number {
+  if (url.port !== '') return Number(url.port);
+  return url.protocol === 'smtps:' ? 465 : 587;
+}
+
+/** The URL's user name and password, URL-decoded, or the rule they break. */
+function smtpCredentialsOf(url: URL): Pick<SmtpUrlParts, 'username' | 'password'> | string {
   let username: string | null;
   let password: string | null;
   try {
     username = url.username === '' ? null : decodeURIComponent(url.username);
     password = url.password === '' ? null : decodeURIComponent(url.password);
   } catch {
-    return fail('the user name and password must be URL-encoded');
+    return 'the user name and password must be URL-encoded';
   }
-  if (password !== null && username === null) return fail('a password needs a user name');
+  if (password !== null && username === null) return 'a password needs a user name';
   if ((username !== null && !isOneLine(username)) || (password !== null && !isOneLine(password))) {
-    return fail('the user name and password must not contain line breaks');
+    return 'the user name and password must not contain line breaks';
   }
-  return { ok: true, server: { host, port, security, username, password } };
+  return { username, password };
 }
 
 const envSchema = z

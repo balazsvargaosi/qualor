@@ -59,6 +59,12 @@ function textArray(values: readonly string[]): SQL {
   return sql`(SELECT coalesce(array_agg(v), '{}'::text[]) FROM jsonb_array_elements_text(${JSON.stringify(values)}::jsonb) AS v)`;
 }
 
+/** The condition of a yes-or-no filter: none when it is not given. */
+function whenGiven(value: boolean | undefined, yes: SQL, no: SQL): SQL | undefined {
+  if (value === undefined) return undefined;
+  return value ? yes : no;
+}
+
 function dependencyFilter(branchId: string, f: DependencyFilter): SQL | undefined {
   const d = branchDependencies;
   return and(
@@ -68,16 +74,8 @@ function dependencyFilter(branchId: string, f: DependencyFilter): SQL | undefine
       ? undefined
       : sql`${d.licenses} && ${textArray(GROUP_MEMBERS.get(f.group) ?? [])}`,
     f.ecosystem === undefined ? undefined : eq(d.ecosystem, f.ecosystem),
-    f.unknown === undefined
-      ? undefined
-      : f.unknown
-        ? sql`cardinality(${d.licenses}) = 0`
-        : sql`cardinality(${d.licenses}) > 0`,
-    f.direct === undefined
-      ? undefined
-      : f.direct
-        ? sql`${d.direct} IS TRUE`
-        : sql`${d.direct} IS NOT TRUE`,
+    whenGiven(f.unknown, sql`cardinality(${d.licenses}) = 0`, sql`cardinality(${d.licenses}) > 0`),
+    whenGiven(f.direct, sql`${d.direct} IS TRUE`, sql`${d.direct} IS NOT TRUE`),
     f.q === undefined ? undefined : ilike(d.name, containsPattern(f.q)),
   );
 }

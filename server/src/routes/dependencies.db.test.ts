@@ -8,6 +8,11 @@ import { branches, instanceSettings } from '../db/schema';
 import { fixedEdition } from '../license/edition';
 import { LICENSE_POLICY_SETTINGS_KEY, writeLicensePolicy } from '../licenses/settings';
 
+/** A URL's query part: `?` and the query, or nothing for none. */
+function queryPart(query: string): string {
+  return query === '' ? '' : `?${query}`;
+}
+
 /** 6M §8: the community dependency inventory API, `GET /projects/{id}/dependencies`. */
 describe('GET /projects/{id}/dependencies (6M)', () => {
   let h: IngestHarness;
@@ -34,7 +39,7 @@ describe('GET /projects/{id}/dependencies (6M)', () => {
       ...(session === null ? {} : { headers: session.headers }),
     });
   const url = (project: IngestProject, query = '') =>
-    `/projects/${project.id}/dependencies${query === '' ? '' : `?${query}`}`;
+    `/projects/${project.id}/dependencies${queryPart(query)}`;
   const names = async (query: string) => {
     const res = await get(url(p, query));
     expect(res.statusCode, res.body).toBe(200);
@@ -333,7 +338,7 @@ describe('GET /projects/{id}/dependencies with a licence policy (6M)', () => {
   const get = async (query = '') => {
     const res = await h.ctx.app.inject({
       method: 'GET',
-      url: `/api/v0/projects/${p.id}/dependencies${query === '' ? '' : `?${query}`}`,
+      url: `/api/v0/projects/${p.id}/dependencies${queryPart(query)}`,
       headers: h.orgAdmin.headers,
     });
     expect(res.statusCode, res.body).toBe(200);

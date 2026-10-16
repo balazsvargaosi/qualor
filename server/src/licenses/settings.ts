@@ -161,8 +161,14 @@ export async function writeLicensePolicy(
     .onConflictDoUpdate({ target: instanceSettings.key, set: { value, updatedAt: sql`now()` } });
 }
 
+/** Code-unit order (not locale-dependent). */
+function byCodeUnits(a: string, b: string): number {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+}
+
 const sortedUnique = <T extends string>(values: readonly T[]): T[] =>
-  [...new Set(values)].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  [...new Set(values)].sort(byCodeUnits);
 
 /**
  * 6M §5: the policy as it is stored: every id in its canonical spelling (`gpl-3.0` is

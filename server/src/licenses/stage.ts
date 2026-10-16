@@ -7,7 +7,10 @@ import {
   normalizeRepoPath,
   REPORT_BOUNDS,
   validateRepoPath,
+  type Classification,
+  type DependencyEntry,
   type IssueKind,
+  type LicensePolicy,
   type Quality,
   type Severity,
 } from '@qualor/shared';
@@ -152,7 +155,10 @@ export async function ensureLicenseRules(tx: Executor): Promise<Map<string, Reso
 
 const GROUP_LABELS = new Map(LICENSE_GROUPS.map((g) => [g.id, g.label]));
 
-const byCodeUnits = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+function byCodeUnits(a: string, b: string): number {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+}
 
 function compareEntries(a: DependencyRowInput, b: DependencyRowInput): number {
   return (
@@ -204,6 +210,71 @@ function licenseFinding(
   };
 }
 
+/** The message of a forbidden entry, naming the licence group that forbids it, if one does. */
+function forbiddenMessage(entry: DependencyRowInput, version: string, group: string | undefined) {
+  const by = group ? ` (${group})` : '';
+  return `${entry.name} ${version} is licensed ${entry.licenses.join(' AND ')}, which the organisation's licence policy forbids${by}.`;
+}
+
+/** The rule and message of the finding one entry's verdict asks for, or null when it asks none. */
+function flagOf(
+  entry: DependencyRowInput,
+  verdict: Classification,
+  warnUnknown: boolean,
+  forbiddenRule: ResolvedRule,
+  unknownRule: ResolvedRule,
+): { rule: ResolvedRule; message: string } | null {
+  const version = entry.version || 'unknown version';
+  if (verdict.verdict === 'forbidden') {
+    const group = verdict.group === null ? undefined : GROUP_LABELS.get(verdict.group);
+    return { rule: forbiddenRule, message: forbiddenMessage(entry, version, group) };
+  }
+  if (verdict.verdict === 'unknown' && warnUnknown) {
+    return {
+      rule: unknownRule,
+      message: `${entry.name} ${version} has no licence Qualor could read.`,
+    };
+  }
+  return null;
+}
+
+/**
+ * The findings of the inventory under the policy, and how many flagged entries had no repository
+ * path to put a finding on.
+ */
+function judgeEntries(
+  entries: readonly DependencyEntry[],
+  policy: LicensePolicy,
+  forbiddenRule: ResolvedRule,
+  unknownRule: ResolvedRule,
+): { made: { finding: IngestedFinding; rule: ResolvedRule }[]; unplaced: number } {
+  const classify = licenseClassifier(policy);
+  const made: { finding: IngestedFinding; rule: ResolvedRule }[] = [];
+  let unplaced = 0;
+  // Merged as the inventory store merges them: one finding per (path, ecosystem, name, version).
+  for (const entry of mergeDependencyEntries(entries).sort(compareEntries)) {
+    const flag = flagOf(
+      entry,
+      classify(entry.licenses),
+      policy.warnUnknown,
+      forbiddenRule,
+      unknownRule,
+    );
+    if (flag === null) continue;
+    const location = locationOf(entry);
+    // Never file-less: a file-less finding first seen now would count as new code.
+    if (location === null) {
+      unplaced += 1;
+      continue;
+    }
+    made.push({
+      rule: flag.rule,
+      finding: licenseFinding(entry, location, flag.rule, flag.message),
+    });
+  }
+  return { made, unplaced };
+}
+
 /**
  * 6M §6: judges the report's dependency inventory against the organisation's licence policy and
  * adds a finding of engine `license` per forbidden entry (and per unknown one when the policy
@@ -253,29 +324,7 @@ export const licensePolicyStage: IngestionStage = {
     const unknownRule = resolved.get(UNKNOWN_RULE_KEY);
     if (!forbiddenRule || !unknownRule) throw new Error('the licence rules were not created');
 
-    const classify = licenseClassifier(policy);
-    const made: { finding: IngestedFinding; rule: ResolvedRule }[] = [];
-    let unplaced = 0;
-    // Merged as the inventory store merges them: one finding per (path, ecosystem, name, version).
-    for (const entry of mergeDependencyEntries(entries).sort(compareEntries)) {
-      const verdict = classify(entry.licenses);
-      const version = entry.version || 'unknown version';
-      const add = (rule: ResolvedRule, message: string) => {
-        const location = locationOf(entry);
-        // Never file-less: a file-less finding first seen now would count as new code.
-        if (location === null) unplaced += 1;
-        else made.push({ rule, finding: licenseFinding(entry, location, rule, message) });
-      };
-      if (verdict.verdict === 'forbidden') {
-        const group = verdict.group === null ? undefined : GROUP_LABELS.get(verdict.group);
-        add(
-          forbiddenRule,
-          `${entry.name} ${version} is licensed ${entry.licenses.join(' AND ')}, which the organisation's licence policy forbids${group ? ` (${group})` : ''}.`,
-        );
-      } else if (verdict.verdict === 'unknown' && policy.warnUnknown) {
-        add(unknownRule, `${entry.name} ${version} has no licence Qualor could read.`);
-      }
-    }
+    const { made, unplaced } = judgeEntries(entries, policy, forbiddenRule, unknownRule);
     if (unplaced > 0) {
       ctx.warnings.push({
         code: DEPENDENCY_PATHS_INVALID,

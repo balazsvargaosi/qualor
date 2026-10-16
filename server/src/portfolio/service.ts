@@ -143,6 +143,32 @@ function projectState(
 
 const ratingCounts = (): Record<Rating, number> => ({ A: 0, B: 0, C: 0, D: 0, E: 0 });
 
+/** The sums and weights the ncloc-weighted shares (coverage, duplication) are made of. */
+type Weighted = Record<'coverage' | 'duplication', { sum: number; weight: number }>;
+
+/** Counts one row into the aggregate's counts and sums, and its shares into `weighted`. */
+function tally(out: PortfolioAggregate, weighted: Weighted, r: ProjectState): void {
+  if (r.lastAnalysisAt !== null) out.analysed += 1;
+  if (r.abandoned) out.abandoned += 1;
+  if (r.gate !== null) out.gate[r.gate] += 1;
+  if (r.securityRating !== null) out.securityRating[r.securityRating] += 1;
+  if (r.reliabilityRating !== null) out.reliabilityRating[r.reliabilityRating] += 1;
+  out.ncloc += r.ncloc ?? 0;
+  for (const key of ['coverage', 'duplication'] as const) {
+    const value = r[key];
+    if (value !== null && r.ncloc !== null) {
+      weighted[key].sum += value * r.ncloc;
+      weighted[key].weight += r.ncloc;
+    }
+  }
+  out.issues += r.issues ?? 0;
+  for (const s of SEVERITIES) out.bySeverity[s] += r.severities[s] ?? 0;
+  out.securityIssues += r.securityIssues ?? 0;
+  out.reliabilityIssues += r.reliabilityIssues ?? 0;
+  out.maintainabilityIssues += r.maintainabilityIssues ?? 0;
+  out.newIssues += r.newIssues ?? 0;
+}
+
 /**
  * 4E-2 §1: the aggregates over a set of projects. Nulls are left out of every one; coverage and
  * duplication are weighted by ncloc over the projects that have both, and a share with nothing
@@ -167,28 +193,11 @@ export function aggregate(rows: readonly ProjectState[]): PortfolioAggregate {
     maintainabilityIssues: 0,
     newIssues: 0,
   };
-  const weighted = { coverage: { sum: 0, weight: 0 }, duplication: { sum: 0, weight: 0 } };
-  for (const r of rows) {
-    if (r.lastAnalysisAt !== null) out.analysed += 1;
-    if (r.abandoned) out.abandoned += 1;
-    if (r.gate !== null) out.gate[r.gate] += 1;
-    if (r.securityRating !== null) out.securityRating[r.securityRating] += 1;
-    if (r.reliabilityRating !== null) out.reliabilityRating[r.reliabilityRating] += 1;
-    out.ncloc += r.ncloc ?? 0;
-    for (const key of ['coverage', 'duplication'] as const) {
-      const value = r[key];
-      if (value !== null && r.ncloc !== null) {
-        weighted[key].sum += value * r.ncloc;
-        weighted[key].weight += r.ncloc;
-      }
-    }
-    out.issues += r.issues ?? 0;
-    for (const s of SEVERITIES) out.bySeverity[s] += r.severities[s] ?? 0;
-    out.securityIssues += r.securityIssues ?? 0;
-    out.reliabilityIssues += r.reliabilityIssues ?? 0;
-    out.maintainabilityIssues += r.maintainabilityIssues ?? 0;
-    out.newIssues += r.newIssues ?? 0;
-  }
+  const weighted: Weighted = {
+    coverage: { sum: 0, weight: 0 },
+    duplication: { sum: 0, weight: 0 },
+  };
+  for (const r of rows) tally(out, weighted, r);
   out.passedShare = out.analysed === 0 ? null : out.gate.passed / out.analysed;
   for (const key of ['coverage', 'duplication'] as const) {
     const { sum, weight } = weighted[key];
@@ -218,11 +227,31 @@ function rowOf(s: ProjectState): PortfolioProjectRow {
   };
 }
 
+/** R5: code-unit (byte) order, as SQL's `COLLATE "C"`. */
+function byteOrder(a: string, b: string): number {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+}
+
+/**
+ * The order of two values either of which may be missing: equal ones tie, a missing one goes
+ * first (`missing` -1) or last (1), and `present` orders the rest.
+ */
+function withMissing<T>(
+  a: T | null,
+  b: T | null,
+  missing: 1 | -1,
+  present: (a: T, b: T) => number,
+): number {
+  if (a === b) return 0;
+  if (a === null) return missing;
+  if (b === null) return -missing;
+  return present(a, b);
+}
+
 /** Descending, a missing value last. */
-const desc = (a: number | null, b: number | null): number =>
-  a === b ? 0 : a === null ? 1 : b === null ? -1 : b - a;
-const byKey = (a: ProjectState, b: ProjectState): number =>
-  a.project.key < b.project.key ? -1 : a.project.key > b.project.key ? 1 : 0;
+const desc = (a: number | null, b: number | null): number => withMissing(a, b, 1, (x, y) => y - x);
+const byKey = (a: ProjectState, b: ProjectState): number => byteOrder(a.project.key, b.project.key);
 /** blocker_issues + high_issues, a missing one left out; null when both are missing. */
 const severe = ({ severities: { blocker, high } }: ProjectState): number | null =>
   blocker === null && high === null ? null : (blocker ?? 0) + (high ?? 0);
@@ -267,15 +296,19 @@ function attention(rows: readonly ProjectState[]): PortfolioOverview['attention'
       rows,
       (s) => s.abandoned,
       (a, b) =>
-        a.lastAnalysisAt === b.lastAnalysisAt
-          ? 0
-          : a.lastAnalysisAt === null
-            ? -1
-            : b.lastAnalysisAt === null
-              ? 1
-              : Date.parse(a.lastAnalysisAt) - Date.parse(b.lastAnalysisAt),
+        withMissing(
+          a.lastAnalysisAt,
+          b.lastAnalysisAt,
+          -1,
+          (x, y) => Date.parse(x) - Date.parse(y),
+        ),
     ),
   };
+}
+
+/** The sum of a count over the rows. */
+function total(rows: readonly ProjectState[], key: 'secrets' | 'vulnerableDependencies'): number {
+  return rows.reduce((n, r) => n + r[key], 0);
 }
 
 /** The all scope's organisations: those with a visible project, sorted by key. */
@@ -289,18 +322,16 @@ function byOrganization(
     groups.set(r.organizationId, group);
   }
   return [...groups]
-    .sort(([, a], [, b]) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+    .sort(([, a], [, b]) => byteOrder(a.key, b.key))
     .map(([id, g]) => ({ id, key: g.key, name: g.name, ...aggregate(g.rows) }));
 }
 
-/** R5: code-unit (byte) order, as SQL's `COLLATE "C"`. */
-const byteOrder = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 /** Ascending, a missing value last. */
 const ascNullLast = (a: number | null, b: number | null): number =>
-  a === b ? 0 : a === null ? 1 : b === null ? -1 : a - b;
+  withMissing(a, b, 1, (x, y) => x - y);
 /** Ascending, a missing value first. */
 const ascNullFirst = (a: string | null, b: string | null): number =>
-  a === b ? 0 : a === null ? -1 : b === null ? 1 : byteOrder(a, b);
+  withMissing(a, b, -1, byteOrder);
 /** A rating as its measure, 1 (A) to 5 (E). */
 const ratingValue = (r: Rating | null): number | null =>
   r === null ? null : RATINGS.indexOf(r) + 1;
@@ -504,16 +535,14 @@ export function createPortfolioService(deps: {
 
       // The last bucket ends at generatedAt: its state is the state now, over every visible project.
       const now = rowsAt(buckets.length - 1, 'all');
-      const sum = (key: 'secrets' | 'vulnerableDependencies') =>
-        now.reduce((n, r) => n + r[key], 0);
       return {
         generatedAt: generatedAt.toISOString(),
         scope: { kind: organization === null ? 'all' : 'organization', organization },
         granularity,
         totals: {
           ...aggregate(now),
-          secrets: sum('secrets'),
-          vulnerableDependencies: sum('vulnerableDependencies'),
+          secrets: total(now, 'secrets'),
+          vulnerableDependencies: total(now, 'vulnerableDependencies'),
         },
         organizations: organization === null ? byOrganization(now) : null,
         trend: buckets.map((b, i) => ({

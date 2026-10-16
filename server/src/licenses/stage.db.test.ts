@@ -26,6 +26,13 @@ import { communityLimits } from '../limits';
 import { currentFindings, measuresOf } from '../portfolio/query';
 import { LICENSE_POLICY_SETTINGS_KEY, writeLicensePolicy } from './settings';
 
+/** Each issue's status and start line, by the package name its message starts with. */
+function statusByPackage(
+  found: readonly Pick<typeof issues.$inferSelect, 'message' | 'status' | 'startLine'>[],
+) {
+  return Object.fromEntries(found.map((i) => [i.message.split(' ')[0], [i.status, i.startLine]]));
+}
+
 /**
  * 6M §6–§7: a dependency whose licence the organisation's policy forbids becomes an ordinary
  * issue of engine `license` at ingestion. Its identity is the package (name@version) in its
@@ -345,10 +352,7 @@ describe('licence policy stage (6M §6)', () => {
         ['gpl-cut', 'open'],
         ['gpl-kept', 'open'],
       ]);
-      const byName = async () =>
-        Object.fromEntries(
-          (await licenceIssues(p)).map((i) => [i.message.split(' ')[0], [i.status, i.startLine]]),
-        );
+      const byName = async () => statusByPackage(await licenceIssues(p));
 
       // The CLI cut the inventory and said so: gpl-cut fell past the cap.
       const truncated = {
