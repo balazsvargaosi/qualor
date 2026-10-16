@@ -78,6 +78,40 @@ function databasePassword(url: string | null): string[] {
   }
 }
 
+/** The secret values of the configuration itself, the licence file's key included. */
+async function configSecrets(config: Config): Promise<string[]> {
+  const found: string[] = [config.secretKey, ...databasePassword(config.databaseUrl)];
+  if (config.bootstrapAdmin.password !== undefined) found.push(config.bootstrapAdmin.password);
+  // E1: QUALOR_SMTP_URL's password; the one saved in Settings → Email is a settings envelope.
+  if (config.smtp?.password) found.push(config.smtp.password);
+  if (config.license.text !== null) found.push(...licenseParts(config.license.text));
+  if (config.license.file !== null) {
+    const text = await licenseFileText(config.license.file);
+    if (text !== null) found.push(...licenseParts(text));
+  }
+  return found;
+}
+
+/** An envelope's plain text and its PEM parts; nothing when it is absent or does not decrypt. */
+function opened(key: Buffer, value: unknown, aad: string): string[] {
+  if (value === null || value === undefined) return [];
+  const plain = decryptSecret(key, value as never, aad);
+  return plain === null ? [] : [plain, ...pemParts(plain)];
+}
+
+/** The licence key of an `instance_settings` row and every envelope in it that decrypts. */
+function settingsRowSecrets(key: Buffer, row: { key: string; value: unknown }): string[] {
+  const found: string[] = [];
+  if (row.key === LICENSE_SETTING_KEY) {
+    const text = (row.value as { key?: unknown } | null)?.key;
+    if (typeof text === 'string') found.push(...licenseParts(text));
+  }
+  for (const envelope of envelopes(row.value)) {
+    for (const aad of SETTINGS_AADS) found.push(...opened(key, envelope, aad));
+  }
+  return found;
+}
+
 /**
  * 4E-3b §2: every secret value this server is configured with, decrypted where it is stored
  * encrypted, so the bundle can search its texts for them. Held in memory for one bundle only.
@@ -88,32 +122,16 @@ function databasePassword(url: string | null): string[] {
  */
 export async function configuredSecrets(db: Executor, config: Config): Promise<string[]> {
   const key = encryptionKey(config.secretKey);
-  const found: string[] = [config.secretKey, ...databasePassword(config.databaseUrl)];
+  const found = await configSecrets(config);
   const decrypt = (value: unknown, aad: string): void => {
-    if (value === null || value === undefined) return;
-    const plain = decryptSecret(key, value as never, aad);
-    if (plain !== null) found.push(plain, ...pemParts(plain));
+    found.push(...opened(key, value, aad));
   };
-  if (config.bootstrapAdmin.password !== undefined) found.push(config.bootstrapAdmin.password);
-  // E1: QUALOR_SMTP_URL's password; the one saved in Settings → Email is a settings envelope.
-  if (config.smtp?.password) found.push(config.smtp.password);
-  if (config.license.text !== null) found.push(...licenseParts(config.license.text));
-  if (config.license.file !== null) {
-    const text = await licenseFileText(config.license.file);
-    if (text !== null) found.push(...licenseParts(text));
-  }
   // The rows as stored, not as their readers parse them: a row an operator edited out of shape
   // still holds its secrets. Every envelope in them is tried under the settings' AADs.
   for (const row of await db
     .select({ key: instanceSettings.key, value: instanceSettings.value })
     .from(instanceSettings)) {
-    if (row.key === LICENSE_SETTING_KEY) {
-      const text = (row.value as { key?: unknown } | null)?.key;
-      if (typeof text === 'string') found.push(...licenseParts(text));
-    }
-    for (const envelope of envelopes(row.value)) {
-      for (const aad of SETTINGS_AADS) decrypt(envelope, aad);
-    }
+    found.push(...settingsRowSecrets(key, row));
   }
 
   for (const row of await db

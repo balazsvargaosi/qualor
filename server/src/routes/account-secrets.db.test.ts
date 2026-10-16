@@ -105,12 +105,13 @@ describe('account link secrets never leak (mail E2 A2)', () => {
     );
     expect(answers).toHaveLength(6);
     for (const secret of [resetToken, inviteToken]) {
+      const holdsSecret = `%${secret}%`;
       expect(answers.filter((answer) => answer.includes(secret))).toEqual([]);
       expect(ctx.logs.filter((line) => line.includes(secret))).toEqual([]);
       expect(workerLines.filter((line) => line.includes(secret))).toEqual([]);
       for (const table of tables) {
         const found = await ctx.db.execute<{ n: number }>(
-          sql`SELECT count(*)::int AS n FROM ${sql.identifier(table)} x WHERE to_jsonb(x)::text LIKE ${`%${secret}%`}`,
+          sql`SELECT count(*)::int AS n FROM ${sql.identifier(table)} x WHERE to_jsonb(x)::text LIKE ${holdsSecret}`,
         );
         expect(found.rows[0]?.n, `${table} holds a link secret`).toBe(0);
       }

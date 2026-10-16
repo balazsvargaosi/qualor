@@ -80,16 +80,13 @@ export function metricValue(key: string, value: number | null): string {
   return type === 'percent' ? `${shown}%` : shown;
 }
 
+const RATING_OPERATORS = { gt: 'worse than', lt: 'better than' } as const;
+const NUMBER_OPERATORS = { gt: 'greater than', lt: 'less than' } as const;
+
 /** The operator in words: "greater than 0", "less than 80%", "worse than A". */
 export function failsWhen(c: { metric: string; operator: 'gt' | 'lt'; threshold: number }): string {
   const rating = resolveMetricKey(c.metric)?.definition.type === 'rating';
-  const word = rating
-    ? c.operator === 'gt'
-      ? 'worse than'
-      : 'better than'
-    : c.operator === 'gt'
-      ? 'greater than'
-      : 'less than';
+  const word = (rating ? RATING_OPERATORS : NUMBER_OPERATORS)[c.operator];
   return `${word} ${metricValue(c.metric, c.threshold)}`;
 }
 
@@ -143,14 +140,19 @@ export function branchLinks(input: Pick<GateMailInput, 'project' | 'branch' | 'l
   };
 }
 
+/** For a merge request, the sentence that names it, its title and its target; else nothing. */
+function mergeRequestSentence(branch: MailBranch, label: string): SafeHtml | '' {
+  if (branch.kind !== 'merge_request') return '';
+  const title = branch.mrTitle ? html` “${branch.mrTitle}”` : '';
+  const target = branch.mrTargetBranch ? html` targets ${branch.mrTargetBranch}` : '';
+  return html` Merge request ${label}${title}${target}.`;
+}
+
 export function gateIntro(input: GateMailInput, outcome: 'failed' | 'passes again'): SafeHtml {
   const label = branchLabel(input.branch);
   const gateName = input.gate.gate?.name;
   const changed = input.cause === 'reevaluation' ? ' after issues were changed' : '';
-  const mr =
-    input.branch.kind === 'merge_request'
-      ? html` Merge request ${label}${input.branch.mrTitle ? html` “${input.branch.mrTitle}”` : ''}${input.branch.mrTargetBranch ? html` targets ${input.branch.mrTargetBranch}` : ''}.`
-      : '';
+  const mr = mergeRequestSentence(input.branch, label);
   // Practically unreachable without a gate (`evaluateGate(null)` is status `none`), but never
   // "The quality gate quality gate failed".
   const gate = gateName === undefined ? '' : html` <strong>${gateName}</strong>`;

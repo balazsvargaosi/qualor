@@ -100,12 +100,17 @@ class CommandError extends Error {
 
 function parseArgs(args: readonly string[]): { out: string | null } | { error: string } {
   let out: string | null = null;
-  for (let i = 0; i < args.length; i++) {
+  let i = 0;
+  while (i < args.length) {
     const arg = args[i] ?? '';
     let value: string | undefined;
-    if (arg === '--out') value = args[++i];
-    else if (arg.startsWith('--out=')) value = arg.slice('--out='.length);
-    else return { error: `unknown argument ${JSON.stringify(arg)}` };
+    if (arg === '--out') {
+      value = args[i + 1];
+      i += 2;
+    } else if (arg.startsWith('--out=')) {
+      value = arg.slice('--out='.length);
+      i += 1;
+    } else return { error: `unknown argument ${JSON.stringify(arg)}` };
     if (value === undefined || value === '') return { error: '--out needs a file name' };
     if (out !== null) return { error: '--out is given twice' };
     out = value;

@@ -12,6 +12,10 @@ const USER = '0190a6c2-0000-7000-8000-00000000000a';
 const OTHER_USER = '0190a6c2-0000-7000-8000-00000000000c';
 const PROJECT = '0190a6c2-0000-7000-8000-0000000000b1';
 
+/** A token's first part, as the token module writes it: `<user>:<project>` in base64url. */
+const payloadOf = (user: string, project: string): string =>
+  Buffer.from(`${user}:${project}`).toString('base64url');
+
 describe('unsubscribe tokens (mail E3 N5)', () => {
   it('round-trips a user and a project, URL-safe and short', () => {
     const token = unsubscribeToken(KEY, USER, PROJECT);
@@ -31,7 +35,7 @@ describe('unsubscribe tokens (mail E3 N5)', () => {
   it('refuses another user put in front of a real tag, and a changed tag', () => {
     const token = unsubscribeToken(KEY, USER, PROJECT);
     const [payload, tag] = token.split('.') as [string, string];
-    const forged = `${Buffer.from(`${OTHER_USER}:${PROJECT}`).toString('base64url')}.${tag}`;
+    const forged = `${payloadOf(OTHER_USER, PROJECT)}.${tag}`;
     expect(verifyUnsubscribeToken(KEY, forged)).toBeNull();
     // The tag's first character (its last one holds only padding bits, which decoding ignores).
     const flipped = `${payload}.${tag.startsWith('A') ? 'B' : 'A'}${tag.slice(1)}`;
@@ -45,7 +49,7 @@ describe('unsubscribe tokens (mail E3 N5)', () => {
     'a.b.c',
     `${'a'.repeat(300)}.${'b'.repeat(43)}`,
     `not base64!.${'b'.repeat(43)}`,
-    `${Buffer.from(`${USER}:${PROJECT}`).toString('base64url')}.${'b'.repeat(42)}`,
+    `${payloadOf(USER, PROJECT)}.${'b'.repeat(42)}`,
   ])('refuses the malformed token %j', (token) => {
     expect(verifyUnsubscribeToken(KEY, token)).toBeNull();
   });

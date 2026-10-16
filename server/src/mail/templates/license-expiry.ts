@@ -1,6 +1,6 @@
 import type { RenderedMail } from '../payload';
-import { html } from './html';
-import { renderLayout } from './layout';
+import { html, type SafeHtml } from './html';
+import { renderLayout, type LayoutInput } from './layout';
 import { adminAlertReason, formatDay, instanceHost, publicLink } from './text';
 
 /** E1 spec: 30, 7 and 1 day before expiry, the grace period, and its end. */
@@ -28,34 +28,51 @@ const daysUntil = (to: Date, from: Date) =>
 const WHAT_STOPS =
   'single sign-on stops (people with a password sign in with it), SCIM requests are refused, the audit log stops recording new events, and AI fix suggestions are limited to 25 per organisation per day';
 
+interface LicenseWording {
+  subject: string;
+  intro: SafeHtml;
+  title: string;
+  badge: NonNullable<LayoutInput['badge']>;
+}
+
+/** The words of each stage: before expiry, in the grace period, and after it. */
+function wording(input: LicenseExpiryInput, expires: string, graceEnds: string): LicenseWording {
+  if (input.variant === '30d' || input.variant === '7d' || input.variant === '1d') {
+    return {
+      subject: `Your Qualor licence expires in ${days(daysUntil(input.expires, input.now))}`,
+      intro: html`<p style="margin:0">The Qualor licence of ${input.licensee} expires on ${expires}. Renew it to keep the enterprise features. After that date a 14-day grace period starts, and everything keeps working until ${graceEnds}.</p>`,
+      title: `The licence expires on ${expires}`,
+      badge: { text: 'Expires soon', tone: 'warn' },
+    };
+  }
+  if (input.variant === 'grace') {
+    return {
+      subject: `Your Qualor licence has expired: ${days(daysUntil(input.graceEndsAt, input.now))} of grace left`,
+      intro: html`<p style="margin:0">The Qualor licence of ${input.licensee} expired on ${expires}. Everything keeps working during the grace period, until ${graceEnds}. Then Qualor runs as the community edition: ${WHAT_STOPS}. Nothing is deleted.</p>`,
+      title: 'The licence has expired',
+      badge: { text: 'Grace period', tone: 'bad' },
+    };
+  }
+  return {
+    subject: 'Your Qualor licence has expired',
+    intro: html`<p style="margin:0">The grace period of the Qualor licence of ${input.licensee} ended on ${graceEnds}. Enterprise features are off: Qualor runs as the community edition until the licence is renewed, so ${WHAT_STOPS}. Nothing was deleted.</p>`,
+    title: 'Enterprise features are off',
+    badge: { text: 'Expired', tone: 'bad' },
+  };
+}
+
 /** E1 spec: the licence expiry alert for instance administrators. */
 export function renderLicenseExpiry(input: LicenseExpiryInput): RenderedMail {
   const host = instanceHost(input.publicUrl);
   const expires = formatDay(input.expires);
   const graceEnds = formatDay(input.graceEndsAt);
-  const expiring = input.variant === '30d' || input.variant === '7d' || input.variant === '1d';
-  const subject = expiring
-    ? `Your Qualor licence expires in ${days(daysUntil(input.expires, input.now))}`
-    : input.variant === 'grace'
-      ? `Your Qualor licence has expired: ${days(daysUntil(input.graceEndsAt, input.now))} of grace left`
-      : 'Your Qualor licence has expired';
-  const intro = expiring
-    ? html`<p style="margin:0">The Qualor licence of ${input.licensee} expires on ${expires}. Renew it to keep the enterprise features. After that date a 14-day grace period starts, and everything keeps working until ${graceEnds}.</p>`
-    : input.variant === 'grace'
-      ? html`<p style="margin:0">The Qualor licence of ${input.licensee} expired on ${expires}. Everything keeps working during the grace period, until ${graceEnds}. Then Qualor runs as the community edition: ${WHAT_STOPS}. Nothing is deleted.</p>`
-      : html`<p style="margin:0">The grace period of the Qualor licence of ${input.licensee} ended on ${graceEnds}. Enterprise features are off: Qualor runs as the community edition until the licence is renewed, so ${WHAT_STOPS}. Nothing was deleted.</p>`;
+  const { subject, intro, title, badge } = wording(input, expires, graceEnds);
   return {
     subject,
     ...renderLayout({
       preheader: subject,
-      title: expiring
-        ? `The licence expires on ${expires}`
-        : input.variant === 'grace'
-          ? 'The licence has expired'
-          : 'Enterprise features are off',
-      badge: expiring
-        ? { text: 'Expires soon', tone: 'warn' }
-        : { text: input.variant === 'grace' ? 'Grace period' : 'Expired', tone: 'bad' },
+      title,
+      badge,
       intro,
       facts: [
         ['Licensee', input.licensee],

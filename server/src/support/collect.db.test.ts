@@ -355,14 +355,14 @@ describe('collectSupportBundle with a numeric secret (Ruling R11)', () => {
   afterAll(async () => ctx.close());
 
   /** Every string and key of a JSON value. */
-  const texts = (value: unknown): string[] =>
-    typeof value === 'string'
-      ? [value]
-      : Array.isArray(value)
-        ? value.flatMap(texts)
-        : typeof value === 'object' && value !== null
-          ? Object.entries(value).flatMap(([key, item]) => [key, ...texts(item)])
-          : [];
+  function texts(value: unknown): string[] {
+    if (typeof value === 'string') return [value];
+    if (Array.isArray(value)) return value.flatMap(texts);
+    if (typeof value === 'object' && value !== null) {
+      return Object.entries(value).flatMap(([key, item]) => [key, ...texts(item)]);
+    }
+    return [];
+  }
 
   it('keeps every file valid JSON, with the value redacted inside strings only', async () => {
     const bundle = await collectSupportBundle(depsOf(ctx), {

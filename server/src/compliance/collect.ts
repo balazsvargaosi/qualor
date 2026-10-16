@@ -27,10 +27,12 @@ export class ComplianceCollectError extends Error {
   override name = 'ComplianceCollectError';
 }
 
-const iso = (d: Date | string | null): string | null =>
-  d === null ? null : (d instanceof Date ? d : new Date(d)).toISOString();
-
 const isoReq = (d: Date | string): string => new Date(d).toISOString();
+
+function iso(d: Date | string | null): string | null {
+  if (d === null) return null;
+  return isoReq(d);
+}
 
 function sectionOf(engineId: string): FindingSection {
   if (engineId === 'gitleaks') return 'secret';
@@ -95,17 +97,7 @@ export async function collectCompliance(
         throw new ComplianceCollectError('too many projects for one report');
       }
       const projectIds = scopeProjects.map((p) => p.id);
-      const branchRows =
-        projectIds.length === 0
-          ? []
-          : await tx
-              .select({ id: branches.id, name: branches.name, projectId: branches.projectId })
-              .from(branches)
-              .where(
-                report.branchId !== null
-                  ? eq(branches.id, report.branchId)
-                  : and(inArray(branches.projectId, projectIds), eq(branches.isMain, true)),
-              );
+      const branchRows = await scopeBranches(tx, projectIds, report.branchId);
       const branchOf = new Map(branchRows.map((b) => [b.projectId, b]));
       const branchIds = branchRows.map((b) => b.id);
       abortCheck(options.signal);
@@ -305,6 +297,23 @@ export async function collectCompliance(
     },
     { isolationLevel: 'repeatable read', accessMode: 'read only' },
   );
+}
+
+/** The branch of each project in scope: the report's own branch, or else each main branch. */
+async function scopeBranches(
+  tx: Executor,
+  projectIds: string[],
+  branchId: string | null,
+): Promise<{ id: string; name: string; projectId: string }[]> {
+  if (projectIds.length === 0) return [];
+  const which =
+    branchId === null
+      ? and(inArray(branches.projectId, projectIds), eq(branches.isMain, true))
+      : eq(branches.id, branchId);
+  return tx
+    .select({ id: branches.id, name: branches.name, projectId: branches.projectId })
+    .from(branches)
+    .where(which);
 }
 
 async function projectSource(

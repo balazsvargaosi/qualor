@@ -11,7 +11,7 @@ import {
   uploadReport,
   type ReportOverrides,
 } from '../../test/reports';
-import type { Db } from '../db/client';
+import type { Db, Tx } from '../db/client';
 import { analyses, analysisReports, jobs, mailMessages } from '../db/schema';
 import { jobHandlers } from '../ingest/handlers';
 import {
@@ -28,6 +28,32 @@ import { analysisFailedKey, notifyAnalysesFailed, notifyAnalysisFailed } from '.
 import { notifyDeps } from './deps';
 
 const MAIN = { name: 'main', kind: 'branch' as const };
+
+/**
+ * A Db whose transactions throw at the `failAt`-th insert into mail_messages (a render bug or a
+ * refused row looks the same to the caller); `inserts()` counts the mail_messages inserts tried.
+ */
+function failingOnMailInsert(db: Db, failAt: number): { db: Db; inserts: () => number } {
+  let rows = 0;
+  const insertInto = (target: Tx) => (table: unknown) => {
+    if (table === mailMessages && ++rows === failAt) {
+      throw new Error('could not queue mira@example.com');
+    }
+    return target.insert(table as typeof mailMessages);
+  };
+  const handler: ProxyHandler<Tx> = {
+    get(target, prop) {
+      if (prop === 'insert') return insertInto(target);
+      const value: unknown = Reflect.get(target, prop, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  };
+  const failing = {
+    transaction: (fn: (tx: unknown) => Promise<number>) =>
+      db.transaction((tx) => fn(new Proxy(tx, handler))),
+  } as unknown as Db;
+  return { db: failing, inserts: () => rows };
+}
 
 describe('analysis failure notifications (mail E3 N2, N7)', () => {
   let h: IngestHarness;
@@ -248,36 +274,17 @@ describe('analysis failure notifications (mail E3 N2, N7)', () => {
     ).toBe(true);
     // The second watcher's outbox row fails (a render bug or a refused row looks the same here):
     // the first one, already inserted, rolls back with it.
-    let rows = 0;
-    const failing = {
-      transaction: (fn: (tx: unknown) => Promise<number>) =>
-        h.ctx.db.transaction((tx) =>
-          fn(
-            new Proxy(tx, {
-              get(target, prop) {
-                if (prop === 'insert')
-                  return (table: unknown) => {
-                    if (table === mailMessages && ++rows === 2)
-                      throw new Error('could not queue mira@example.com');
-                    return target.insert(table as typeof mailMessages);
-                  };
-                const value: unknown = Reflect.get(target, prop, target);
-                return typeof value === 'function' ? value.bind(target) : value;
-              },
-            }),
-          ),
-        ),
-    } as unknown as Db;
+    const failing = failingOnMailInsert(h.ctx.db, 2);
     const warn = vi.fn();
     expect(
       await notifyAnalysisFailed(
-        failing,
+        failing.db,
         notifyDeps(h.ctx.config),
         { analysisId: id, branchHint: { ...MAIN, isMain: true } },
         { warn },
       ),
     ).toBe(0);
-    expect(rows).toBe(2);
+    expect(failing.inserts()).toBe(2);
     expect(warn).toHaveBeenCalledExactlyOnceWith(
       { analysisId: id, errorClass: 'Error' },
       'analysis failure notifications could not be queued',

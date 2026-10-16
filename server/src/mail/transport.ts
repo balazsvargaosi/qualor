@@ -183,12 +183,13 @@ interface SmtpFailure {
 /** A certificate that does not verify, or a TLS handshake that fails: retrying does not help. */
 const TLS_FAILURE = /CERT|SIGNATURE|^ERR_TLS_|^ERR_SSL_|^EPROTO$/;
 
-/**
- * E1 spec: network errors, timeouts and 4xx replies (421 too) are transient; other 5xx replies,
- * auth failures, a refused or unverifiable TLS connection and bad settings are permanent.
- */
-export function toMailSendError(err: unknown): MailSendError {
-  if (err instanceof MailSendError) return err;
+/** The parts of a failure that toMailSendError reads, each of the expected type or empty. */
+function readFailure(err: unknown): {
+  code: string;
+  original: string;
+  smtpCode: number | null;
+  reply: string | null;
+} {
   const e: SmtpFailure = typeof err === 'object' && err !== null ? (err as SmtpFailure) : {};
   const code = typeof e.code === 'string' ? e.code : '';
   const original = typeof e.originalCode === 'string' ? e.originalCode : '';
@@ -198,6 +199,16 @@ export function toMailSendError(err: unknown): MailSendError {
     typeof e.response === 'string' && e.response.trim() !== ''
       ? clipUtf8(oneLine(e.response), MAX_SMTP_TEXT_BYTES)
       : null;
+  return { code, original, smtpCode, reply };
+}
+
+/**
+ * E1 spec: network errors, timeouts and 4xx replies (421 too) are transient; other 5xx replies,
+ * auth failures, a refused or unverifiable TLS connection and bad settings are permanent.
+ */
+export function toMailSendError(err: unknown): MailSendError {
+  if (err instanceof MailSendError) return err;
+  const { code, original, smtpCode, reply } = readFailure(err);
   if (code === 'EAUTH' || code === 'ENOAUTH') {
     // A 4xx reply (454 temporary authentication failure) is worth a retry; 5xx or no code is not.
     return new MailSendError('auth', reply ?? 'The SMTP server refused the user name or password', {

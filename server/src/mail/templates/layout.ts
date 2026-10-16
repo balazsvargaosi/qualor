@@ -63,12 +63,7 @@ export function renderLayout(input: LayoutInput): { html: string; text: string }
             html`<tr><td style="padding:8px 14px;width:38%;vertical-align:top;font-family:${FONT};font-size:13px;color:#4a5b73">${label}</td><td style="padding:8px 14px;vertical-align:top;font-family:${FONT};font-size:13px;color:#0a1b33;word-break:break-word">${value}</td></tr>`,
         )}</table></td></tr>`
       : null;
-  const cta =
-    input.cta === undefined
-      ? null
-      : url !== null
-        ? html`<tr><td style="padding:24px 0 0"><table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td bgcolor="#1f5fbf" style="background:#1f5fbf;border-radius:8px"><a href="${url}" style="display:inline-block;font-family:${FONT};font-size:14px;font-weight:600;line-height:20px;color:#ffffff;text-decoration:none;border-top:12px solid #1f5fbf;border-bottom:12px solid #1f5fbf;border-left:22px solid #1f5fbf;border-right:22px solid #1f5fbf;border-radius:8px">${input.cta.label}</a></td></tr></table><p style="margin:12px 0 0;font-family:${FONT};font-size:12px;line-height:1.5;color:#4a5b73;word-break:break-all">Or open: <a href="${url}" style="color:#1f5fbf">${url}</a></p></td></tr>`
-        : html`<tr><td style="padding:20px 0 0;font-family:${FONT};font-size:14px;line-height:1.6;color:#33455f">${input.cta.fallbackText}</td></tr>`;
+  const cta = ctaRow(input.cta, url);
   const after = input.after
     ? html`<tr><td style="padding:20px 0 0;font-family:${FONT};font-size:14px;line-height:1.6;color:#33455f">${input.after}</td></tr>`
     : null;
@@ -118,6 +113,15 @@ ${after}
 </html>
 `;
   return { html: page.toString(), text: textPart(input, url) };
+}
+
+/** The button row; without a usable URL, the fallback text that says where to go instead. */
+function ctaRow(cta: LayoutInput['cta'], url: string | null): SafeHtml | null {
+  if (cta === undefined) return null;
+  if (url === null) {
+    return html`<tr><td style="padding:20px 0 0;font-family:${FONT};font-size:14px;line-height:1.6;color:#33455f">${cta.fallbackText}</td></tr>`;
+  }
+  return html`<tr><td style="padding:24px 0 0"><table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td bgcolor="#1f5fbf" style="background:#1f5fbf;border-radius:8px"><a href="${url}" style="display:inline-block;font-family:${FONT};font-size:14px;font-weight:600;line-height:20px;color:#ffffff;text-decoration:none;border-top:12px solid #1f5fbf;border-bottom:12px solid #1f5fbf;border-left:22px solid #1f5fbf;border-right:22px solid #1f5fbf;border-radius:8px">${cta.label}</a></td></tr></table><p style="margin:12px 0 0;font-family:${FONT};font-size:12px;line-height:1.5;color:#4a5b73;word-break:break-all">Or open: <a href="${url}" style="color:#1f5fbf">${url}</a></p></td></tr>`;
 }
 
 /** The footer links whose URL is http(s). */

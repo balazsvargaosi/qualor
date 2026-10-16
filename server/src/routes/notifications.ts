@@ -79,15 +79,19 @@ async function preferencesOf(db: Executor, userId: string): Promise<Preferences>
   return { email: row?.email ?? true, orgWebhookFailures: row?.orgWebhookFailures ?? true };
 }
 
+/** Why no notification mail reaches the user, checked in this order; null when it does. */
+async function emailBlocker(
+  deps: RouteDeps,
+  user: UserRow,
+): Promise<'no_address' | 'not_configured' | 'preference_off' | null> {
+  if (user.email === null) return 'no_address';
+  if (!(await mailConfigured(deps.db, deps.config))) return 'not_configured';
+  if (!(await preferencesOf(deps.db, user.id)).email) return 'preference_off';
+  return null;
+}
+
 async function emailState(deps: RouteDeps, user: UserRow) {
-  const blocker =
-    user.email === null
-      ? ('no_address' as const)
-      : !(await mailConfigured(deps.db, deps.config))
-        ? ('not_configured' as const)
-        : !(await preferencesOf(deps.db, user.id)).email
-          ? ('preference_off' as const)
-          : null;
+  const blocker = await emailBlocker(deps, user);
   return { emailReady: blocker === null, emailBlocker: blocker };
 }
 

@@ -112,7 +112,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 /** Byte order, never the locale's: the files compare the same on every machine. */
 function byteOrder(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
 }
 
 function plain(value: unknown): unknown {

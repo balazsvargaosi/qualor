@@ -75,8 +75,6 @@ interface SectionContext {
   clean: (text: string) => string;
 }
 
-type Json = unknown;
-
 const iso = (value: Date | null): string | null => (value === null ? null : value.toISOString());
 const databaseKind = (config: Config): 'embedded' | 'external' =>
   config.databaseUrl === null ? 'embedded' : 'external';
@@ -85,7 +83,8 @@ const databaseKind = (config: Config): 'embedded' | 'external' =>
 function describeError(err: unknown): string {
   if (err instanceof Error && ('query' in err || 'params' in err)) {
     const code = pgErrorCode(err);
-    return `${err.constructor.name}: database query failed${code ? ` (${code})` : ''}`;
+    const withCode = code ? ` (${code})` : '';
+    return `${err.constructor.name}: database query failed${withCode}`;
   }
   return err instanceof Error ? `${err.name}: ${err.message}` : String(err);
 }
@@ -101,7 +100,7 @@ async function inContainer(): Promise<boolean> {
 }
 
 /** `versions.json`. */
-async function versionsSection({ deps }: SectionContext): Promise<Json> {
+async function versionsSection({ deps }: SectionContext): Promise<unknown> {
   const pg = await deps.db.execute<{ server_version: string }>(sql`SHOW server_version`);
   return {
     server: deps.version,
@@ -123,7 +122,7 @@ async function versionsSection({ deps }: SectionContext): Promise<Json> {
 }
 
 /** `license.json`: the state and the payload's fields, never the key text. */
-async function licenseSection({ deps }: SectionContext): Promise<Json> {
+async function licenseSection({ deps }: SectionContext): Promise<unknown> {
   const state = deps.edition.state();
   const license = state.license;
   return {
@@ -146,7 +145,7 @@ async function licenseSection({ deps }: SectionContext): Promise<Json> {
 }
 
 /** `plugins.json`: the plugin reports. */
-async function pluginsSection({ deps, clean }: SectionContext): Promise<Json> {
+async function pluginsSection({ deps, clean }: SectionContext): Promise<unknown> {
   return {
     plugins: deps.edition.plugins().map((p) => ({
       name: p.name,
@@ -158,7 +157,7 @@ async function pluginsSection({ deps, clean }: SectionContext): Promise<Json> {
 }
 
 /** `migrations.json`: drizzle keeps each migration's own timestamp, not the time it was applied. */
-async function migrationsSection({ deps }: SectionContext): Promise<Json> {
+async function migrationsSection({ deps }: SectionContext): Promise<unknown> {
   const tags = new Map<number, string>();
   if (deps.migrationsDir !== null) {
     try {
@@ -195,12 +194,12 @@ async function migrationsSection({ deps }: SectionContext): Promise<Json> {
 }
 
 /** `config.json`: the effective configuration through the allowlist (4E-3b §2). */
-async function configSection({ deps, clean }: SectionContext): Promise<Json> {
+async function configSection({ deps, clean }: SectionContext): Promise<unknown> {
   return { database: databaseKind(deps.config), values: allowlistedConfig(deps.config, clean) };
 }
 
 /** `settings.json`: every `instance_settings` row through its allowlist, and the SSO connections. */
-async function settingsSection({ deps, clean }: SectionContext): Promise<Json> {
+async function settingsSection({ deps, clean }: SectionContext): Promise<unknown> {
   const rows = await deps.db
     .select({ key: instanceSettings.key, value: instanceSettings.value })
     .from(instanceSettings)
@@ -241,7 +240,7 @@ function poolCounts(db: Db): { total: number; idle: number; waiting: number } | 
 }
 
 /** `health.json`: readiness, the pool, the database size and the largest tables. */
-async function healthSection({ deps }: SectionContext): Promise<Json> {
+async function healthSection({ deps }: SectionContext): Promise<unknown> {
   const { db } = deps;
   const started = performance.now();
   await db.execute(sql`SELECT 1`);
@@ -278,7 +277,7 @@ async function healthSection({ deps }: SectionContext): Promise<Json> {
 
 interface JobsSection {
   counts: { queue: string; status: string; count: number }[];
-  failed: Json[];
+  failed: unknown[];
 }
 
 /** `jobs.json`: counts by queue and status, and the last failed or dead jobs, without payloads. */
@@ -314,7 +313,7 @@ async function jobsSection({ deps, clean }: SectionContext): Promise<JobsSection
 }
 
 /** `analyses.json`: the last failed analyses, with their error code and message. */
-async function analysesSection({ deps, clean }: SectionContext): Promise<{ failed: Json[] }> {
+async function analysesSection({ deps, clean }: SectionContext): Promise<{ failed: unknown[] }> {
   const rows = await deps.db
     .select({
       projectKey: projects.key,
@@ -346,8 +345,22 @@ async function analysesSection({ deps, clean }: SectionContext): Promise<{ faile
   };
 }
 
+/**
+ * A connection's status in `scm.json`: unknown without an SCM worker in this process or before its
+ * first health check, failing while its circuit is open or its last check failed.
+ */
+function connectionStatus(
+  hasRuntime: boolean,
+  circuitOpen: boolean,
+  healthOk: boolean | undefined,
+): 'ok' | 'failing' | 'unknown' {
+  if (!hasRuntime) return 'unknown';
+  if (circuitOpen || healthOk === false) return 'failing';
+  return healthOk ? 'ok' : 'unknown';
+}
+
 /** `scm.json`: each connection's host and, where an SCM worker runs here, its circuit. */
-async function scmSection({ deps, clean }: SectionContext): Promise<Json> {
+async function scmSection({ deps, clean }: SectionContext): Promise<unknown> {
   const rows = await deps.db
     .select({
       id: scmConnections.id,
@@ -361,14 +374,7 @@ async function scmSection({ deps, clean }: SectionContext): Promise<Json> {
     connections: rows.map((row) => {
       const circuit = runtime?.circuit.inspect(row.id) ?? null;
       const health = runtime?.health.get(row.id) ?? null;
-      const status =
-        runtime === undefined
-          ? 'unknown'
-          : circuit?.state === 'open' || health?.ok === false
-            ? 'failing'
-            : health?.ok
-              ? 'ok'
-              : 'unknown';
+      const status = connectionStatus(runtime !== undefined, circuit?.state === 'open', health?.ok);
       return {
         id: row.id,
         provider: row.provider,
@@ -381,7 +387,7 @@ async function scmSection({ deps, clean }: SectionContext): Promise<Json> {
   };
 }
 
-const SECTIONS: readonly [string, (c: SectionContext) => Promise<Json>][] = [
+const SECTIONS: readonly [string, (c: SectionContext) => Promise<unknown>][] = [
   ['versions.json', versionsSection],
   ['license.json', licenseSection],
   ['plugins.json', pluginsSection],
@@ -418,6 +424,163 @@ function enoughToCover(sizes: readonly number[], bytes: number): number {
   return Math.max(1, n);
 }
 
+/** The bundle while it is trimmed to size: its fixed parts, and the lists that may shrink. */
+interface BundleDraft {
+  now: Date;
+  source: SupportBundleOptions['source'];
+  maxBytes: number;
+  redact: (text: string) => string;
+  /** The notes of the collection; each build adds what trimming dropped. */
+  notes: string[];
+  /** The sections that are never trimmed, encoded once. */
+  encoded: Map<string, Buffer>;
+  fileNames: string[];
+  jobsData: Partial<JobsSection>;
+  analysesData: { failed?: unknown[] };
+  failedJobs: unknown[] | null;
+  failedAnalyses: unknown[] | null;
+  logLines: string[] | null;
+  dropped: { logs: number; jobs: number; analyses: number };
+  overCap: boolean;
+}
+
+/** A file of the archive: the value redacted inside its strings and keys, as indented JSON. */
+function encodeJson(value: unknown, redact: (text: string) => string): Buffer {
+  return Buffer.from(`${JSON.stringify(redactTree(value, redact), null, 2)}\n`, 'utf8');
+}
+
+/** Every section, each on its own: one that fails holds its error and adds a note. */
+async function collectSections(
+  ctx: SectionContext,
+  notes: string[],
+): Promise<Map<string, unknown>> {
+  const sections = new Map<string, unknown>();
+  for (const [name, collect] of SECTIONS) {
+    try {
+      sections.set(name, await collect(ctx));
+    } catch (err) {
+      sections.set(name, { error: ctx.clean(describeError(err)) });
+      notes.push(`${name}: could not be collected`);
+    }
+  }
+  return sections;
+}
+
+/** The draft of the collected sections, nothing trimmed yet. */
+function draftOf(
+  sections: Map<string, unknown>,
+  base: Pick<BundleDraft, 'now' | 'source' | 'maxBytes' | 'redact' | 'notes' | 'logLines'>,
+): BundleDraft {
+  const jobsData = sections.get('jobs.json') as Partial<JobsSection>;
+  const analysesData = sections.get('analyses.json') as { failed?: unknown[] };
+  // The sections that are never trimmed are encoded once.
+  const encoded = new Map<string, Buffer>();
+  for (const [name, value] of sections) {
+    if (name !== 'jobs.json' && name !== 'analyses.json') {
+      encoded.set(name, encodeJson(value, base.redact));
+    }
+  }
+  return {
+    ...base,
+    encoded,
+    fileNames: [...SECTIONS.map(([name]) => name), ...(base.logLines ? ['logs.jsonl'] : [])],
+    jobsData,
+    analysesData,
+    failedJobs: Array.isArray(jobsData.failed) ? [...jobsData.failed] : null,
+    failedAnalyses: Array.isArray(analysesData.failed) ? [...analysesData.failed] : null,
+    dropped: { logs: 0, jobs: 0, analyses: 0 },
+    overCap: false,
+  };
+}
+
+/** The notes that say what trimming dropped so far. */
+function trimNotes({ dropped, maxBytes }: BundleDraft): string[] {
+  const under = `to stay under ${maxBytes} bytes`;
+  return [
+    ...(dropped.logs > 0
+      ? [`logs trimmed: the ${dropped.logs} oldest lines were dropped ${under}`]
+      : []),
+    ...(dropped.jobs > 0
+      ? [`jobs trimmed: the ${dropped.jobs} oldest failed jobs were dropped ${under}`]
+      : []),
+    ...(dropped.analyses > 0
+      ? [`analyses trimmed: the ${dropped.analyses} oldest failed analyses were dropped ${under}`]
+      : []),
+  ];
+}
+
+/** The archive's files as the draft stands, the manifest first, and the manifest's notes. */
+function buildFiles(draft: BundleDraft): {
+  files: { name: string; data: Buffer }[];
+  notes: string[];
+} {
+  const { jobsData, analysesData, failedJobs, failedAnalyses, logLines, redact } = draft;
+  const allNotes = [
+    ...draft.notes,
+    ...trimNotes(draft),
+    ...(draft.overCap ? [`nothing left to trim: the archive is over ${draft.maxBytes} bytes`] : []),
+  ];
+  const data = new Map(draft.encoded);
+  data.set(
+    'jobs.json',
+    encodeJson(failedJobs ? { ...jobsData, failed: failedJobs } : jobsData, redact),
+  );
+  data.set(
+    'analyses.json',
+    encodeJson(failedAnalyses ? { ...analysesData, failed: failedAnalyses } : analysesData, redact),
+  );
+  if (logLines) {
+    data.set('logs.jsonl', Buffer.from(logLines.map((line) => `${line}\n`).join(''), 'utf8'));
+  }
+  const manifest = {
+    format: SUPPORT_BUNDLE_FORMAT,
+    generatedAt: draft.now.toISOString(),
+    source: draft.source,
+    replica: hostname(),
+    sections: draft.fileNames,
+    notes: allNotes,
+  };
+  return {
+    files: [
+      { name: 'manifest.json', data: encodeJson(manifest, redact) },
+      ...draft.fileNames.map((name) => ({ name, data: data.get(name) ?? Buffer.alloc(0) })),
+    ],
+    notes: allNotes,
+  };
+}
+
+/** The encoded sizes of a newest-first list, the oldest first. */
+function entrySizes(entries: readonly unknown[]): number[] {
+  return entries.map((entry) => Buffer.byteLength(JSON.stringify(entry, null, 2))).reverse();
+}
+
+/**
+ * Drops enough of the oldest log lines to save `over` bytes, else of the oldest failed jobs, else
+ * of the oldest failed analyses. False when there is nothing left to drop.
+ */
+function trimOldest(draft: BundleDraft, over: number): boolean {
+  const { logLines, failedJobs, failedAnalyses, dropped } = draft;
+  if (logLines && logLines.length > 0) {
+    const n = enoughToCover(
+      logLines.map((line) => Buffer.byteLength(line) + 1),
+      over,
+    );
+    draft.logLines = logLines.slice(n);
+    dropped.logs += n;
+  } else if (failedJobs && failedJobs.length > 0) {
+    const n = enoughToCover(entrySizes(failedJobs), over);
+    failedJobs.splice(failedJobs.length - n, n);
+    dropped.jobs += n;
+  } else if (failedAnalyses && failedAnalyses.length > 0) {
+    const n = enoughToCover(entrySizes(failedAnalyses), over);
+    failedAnalyses.splice(failedAnalyses.length - n, n);
+    dropped.analyses += n;
+  } else {
+    return false;
+  }
+  return true;
+}
+
 /**
  * 4E-3b §1, §2: the support bundle. Every section is collected on its own; one that fails holds
  * its error, and the others are still written. Error texts and log lines are cleaned (configured
@@ -438,104 +601,19 @@ export async function collectSupportBundle(
   const notes: string[] = [opts.logs === undefined ? COMMAND_LOGS_NOTE : UI_LOGS_NOTE];
   if (deps.scmRuntime === undefined) notes.push(NO_SCM_WORKER_NOTE);
 
-  const sections = new Map<string, Json>();
-  for (const [name, collect] of SECTIONS) {
-    try {
-      sections.set(name, await collect(ctx));
-    } catch (err) {
-      sections.set(name, { error: ctx.clean(describeError(err)) });
-      notes.push(`${name}: could not be collected`);
-    }
-  }
-  const jobsData = sections.get('jobs.json') as Partial<JobsSection>;
-  const analysesData = sections.get('analyses.json') as { failed?: Json[] };
-  const failedJobs = Array.isArray(jobsData.failed) ? [...jobsData.failed] : null;
-  const failedAnalyses = Array.isArray(analysesData.failed) ? [...analysesData.failed] : null;
-  let logLines = opts.logs?.map((line) => cleanLogLine(line, redact)) ?? null;
-  const dropped = { logs: 0, jobs: 0, analyses: 0 };
-  let overCap = false;
-
-  const text = (value: Json): Buffer =>
-    Buffer.from(`${JSON.stringify(redactTree(value, redact), null, 2)}\n`, 'utf8');
-  // The sections that are never trimmed are encoded once.
-  const encoded = new Map<string, Buffer>();
-  for (const [name, value] of sections) {
-    if (name !== 'jobs.json' && name !== 'analyses.json') encoded.set(name, text(value));
-  }
-  const fileNames = [...SECTIONS.map(([name]) => name), ...(logLines ? ['logs.jsonl'] : [])];
-  const trimNotes = (): string[] => {
-    const under = `to stay under ${maxBytes} bytes`;
-    return [
-      ...(dropped.logs > 0
-        ? [`logs trimmed: the ${dropped.logs} oldest lines were dropped ${under}`]
-        : []),
-      ...(dropped.jobs > 0
-        ? [`jobs trimmed: the ${dropped.jobs} oldest failed jobs were dropped ${under}`]
-        : []),
-      ...(dropped.analyses > 0
-        ? [`analyses trimmed: the ${dropped.analyses} oldest failed analyses were dropped ${under}`]
-        : []),
-    ];
-  };
-  const build = (): { files: { name: string; data: Buffer }[]; notes: string[] } => {
-    const allNotes = [
-      ...notes,
-      ...trimNotes(),
-      ...(overCap ? [`nothing left to trim: the archive is over ${maxBytes} bytes`] : []),
-    ];
-    const data = new Map(encoded);
-    data.set('jobs.json', text(failedJobs ? { ...jobsData, failed: failedJobs } : jobsData));
-    data.set(
-      'analyses.json',
-      text(failedAnalyses ? { ...analysesData, failed: failedAnalyses } : analysesData),
-    );
-    if (logLines) {
-      data.set('logs.jsonl', Buffer.from(logLines.map((line) => `${line}\n`).join(''), 'utf8'));
-    }
-    const manifest = {
-      format: SUPPORT_BUNDLE_FORMAT,
-      generatedAt: now.toISOString(),
-      source: opts.source,
-      replica: hostname(),
-      sections: fileNames,
-      notes: allNotes,
-    };
-    return {
-      files: [
-        { name: 'manifest.json', data: text(manifest) },
-        ...fileNames.map((name) => ({ name, data: data.get(name) ?? Buffer.alloc(0) })),
-      ],
-      notes: allNotes,
-    };
-  };
-  const entrySizes = (entries: readonly Json[]): number[] =>
-    entries.map((entry) => Buffer.byteLength(JSON.stringify(entry, null, 2))).reverse();
-
+  const sections = await collectSections(ctx, notes);
+  const logLines = opts.logs?.map((line) => cleanLogLine(line, redact)) ?? null;
+  const draft = draftOf(sections, { now, source: opts.source, maxBytes, redact, notes, logLines });
   for (;;) {
-    const { files, notes: finalNotes } = build();
+    const { files, notes: finalNotes } = buildFiles(draft);
     const over = archiveBytes(files) - maxBytes;
     if (over <= 0) {
       return { fileName: supportBundleFileName(now), data: zipStore(files), notes: finalNotes };
     }
-    if (logLines && logLines.length > 0) {
-      const n = enoughToCover(
-        logLines.map((line) => Buffer.byteLength(line) + 1),
-        over,
-      );
-      logLines = logLines.slice(n);
-      dropped.logs += n;
-    } else if (failedJobs && failedJobs.length > 0) {
-      const n = enoughToCover(entrySizes(failedJobs), over);
-      failedJobs.splice(failedJobs.length - n, n);
-      dropped.jobs += n;
-    } else if (failedAnalyses && failedAnalyses.length > 0) {
-      const n = enoughToCover(entrySizes(failedAnalyses), over);
-      failedAnalyses.splice(failedAnalyses.length - n, n);
-      dropped.analyses += n;
-    } else {
+    if (!trimOldest(draft, over)) {
       // Every other section is small and bounded; it is written as it is, and says so.
-      overCap = true;
-      const last = build();
+      draft.overCap = true;
+      const last = buildFiles(draft);
       return {
         fileName: supportBundleFileName(now),
         data: zipStore(last.files),

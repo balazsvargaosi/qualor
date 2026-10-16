@@ -124,6 +124,17 @@ export interface MailSettingsPatch {
   alerts?: Partial<MailAlerts>;
 }
 
+/** The stored password after a server write: kept when absent, removed when null, else sealed. */
+function nextPasswordEnc(
+  password: string | null | undefined,
+  current: StoredMailServer['passwordEnc'],
+  secretKey: string,
+): StoredMailServer['passwordEnc'] {
+  if (password === undefined) return current;
+  if (password === null) return null;
+  return encryptSecret(encryptionKey(secretKey), password, MAIL_PASSWORD_AAD);
+}
+
 /**
  * Applies `patch` to the row under LOCKS.mailSettings (one writer at a time) and returns the row
  * before and after, for the audit's field names. The caller validated the patch (routes/mail-settings.ts).
@@ -140,12 +151,7 @@ export async function writeMailSettings(
     server = null;
   } else if (patch.server !== undefined) {
     const { password, ...rest } = patch.server;
-    const passwordEnc =
-      password === undefined
-        ? (before.server?.passwordEnc ?? null)
-        : password === null
-          ? null
-          : encryptSecret(encryptionKey(secretKey), password, MAIL_PASSWORD_AAD);
+    const passwordEnc = nextPasswordEnc(password, before.server?.passwordEnc ?? null, secretKey);
     server = { ...rest, host: rest.host.toLowerCase(), passwordEnc };
   }
   const alerts: MailAlerts = { ...before.alerts };

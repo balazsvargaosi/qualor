@@ -4,7 +4,8 @@ import { adminAlertReason, htmlToText, instanceHost, publicLink, wrapText } from
 
 describe('the html tag (E1 spec, M7)', () => {
   it('escapes every interpolated string', () => {
-    expect(html`<p title="${'"x"'}">${`<script>alert('y')</script> & more`}</p>`.toString()).toBe(
+    const text = `<script>alert('y')</script> & more`;
+    expect(html`<p title="${'"x"'}">${text}</p>`.toString()).toBe(
       '<p title="&quot;x&quot;">&lt;script&gt;alert(&#39;y&#39;)&lt;/script&gt; &amp; more</p>',
     );
     expect(escapeHtml(`&<>"'`)).toBe('&amp;&lt;&gt;&quot;&#39;');
@@ -12,9 +13,10 @@ describe('the html tag (E1 spec, M7)', () => {
 
   it('passes SafeHtml through, joins arrays, prints numbers, and drops null, undefined and false', () => {
     const inner = html`<b>${'a<b'}</b>`;
-    expect(
-      html`${inner}|${[html`<i>1</i>`, 'x&y', 2]}|${null}${undefined}${false}`.toString(),
-    ).toBe('<b>a&lt;b</b>|<i>1</i>x&amp;y2|');
+    const list = [html`<i>1</i>`, 'x&y', 2];
+    expect(html`${inner}|${list}|${null}${undefined}${false}`.toString()).toBe(
+      '<b>a&lt;b</b>|<i>1</i>x&amp;y2|',
+    );
   });
 
   it('cannot be made outside html``', () => {

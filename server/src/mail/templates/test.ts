@@ -22,6 +22,7 @@ export interface TestMailInput {
 export function renderTestMail(input: TestMailInput): RenderedMail {
   const host = instanceHost(input.publicUrl);
   const server = `${input.server.host}:${input.server.port}`;
+  const onHost = host === null ? '' : ` on ${host}`;
   return {
     subject: 'Qualor test message',
     ...renderLayout({
@@ -33,7 +34,7 @@ export function renderTestMail(input: TestMailInput): RenderedMail {
         ['Server', `${server}, ${SECURITY[input.server.security]}`],
         ['Sent by', input.sentBy],
       ],
-      reason: `You get this because ${input.sentBy} sent a test message from Settings → Email${host === null ? '' : ` on ${host}`}.`,
+      reason: `You get this because ${input.sentBy} sent a test message from Settings → Email${onHost}.`,
       instanceHost: host,
     }),
   };

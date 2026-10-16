@@ -53,6 +53,16 @@ function readPayload(row: MailMessageRow, secretKey: string): MailPayload | null
   }
 }
 
+/** The row's status after an attempt, and the result the run reports for it. */
+function attemptStatus(
+  ok: boolean,
+  retry: boolean,
+): { status: 'sent' | 'pending' | 'failed'; result: MailDeliveryResult } {
+  if (ok) return { status: 'sent', result: 'sent' };
+  if (retry) return { status: 'pending', result: 'retrying' };
+  return { status: 'failed', result: 'failed' };
+}
+
 /**
  * Records one attempt, fenced on `status = 'pending' AND attempts = previous` (a duplicate run of
  * the same attempt records nothing), and enqueues the retry in the same transaction. The body is
@@ -65,8 +75,7 @@ async function recordAttempt(
 ): Promise<MailDeliveryResult> {
   const attempts = row.attempts + 1;
   const retry = !outcome.ok && outcome.error.transient && attempts < MAIL_MAX_ATTEMPTS;
-  const status = outcome.ok ? 'sent' : retry ? 'pending' : 'failed';
-  const result: MailDeliveryResult = outcome.ok ? 'sent' : retry ? 'retrying' : 'failed';
+  const { status, result } = attemptStatus(outcome.ok, retry);
   return deps.db.transaction(async (tx) => {
     const [updated] = await tx
       .update(mailMessages)

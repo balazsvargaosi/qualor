@@ -229,7 +229,8 @@ export function userNameMatches(q: string): SQL {
     ilike(users.displayName, `% ${word}%`),
     ilike(users.displayName, `%-${word}%`),
   ];
-  return sql`(${sql.join(alternatives, sql` or `)})`;
+  const anyOf = sql.join(alternatives, sql` or `);
+  return sql`(${anyOf})`;
 }
 
 /** GET /users/search: at most 64 characters of q (a username's length) and 10 suggestions. */

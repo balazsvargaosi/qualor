@@ -22,6 +22,11 @@ export function renderGateFailed(input: GateMailInput): RenderedMail {
   const urls = branchLinks(input);
   const conditions = failingConditions(input.gate);
   const counts = newCodeCounts(input.measures);
+  const countsLine = counts === null ? '' : paragraph(html`<strong>New code:</strong> ${counts}`);
+  const newIssuesLine =
+    urls.newIssues === null
+      ? ''
+      : paragraph(html`<a href="${urls.newIssues}" style="color:#1f5fbf">New issues</a>`);
   const { html: body, text } = renderLayout({
     preheader: oneLine(`${input.project.name}: the quality gate failed on ${label}.`),
     title: oneLine(`The quality gate failed on ${label}`),
@@ -35,7 +40,7 @@ export function renderGateFailed(input: GateMailInput): RenderedMail {
         `Open ${input.project.name} in Qualor, then ${label} under Branches and merge requests.`,
       ),
     },
-    after: html`${conditions ?? ''}${counts === null ? '' : paragraph(html`<strong>New code:</strong> ${counts}`)}${urls.newIssues === null ? '' : paragraph(html`<a href="${urls.newIssues}" style="color:#1f5fbf">New issues</a>`)}`,
+    after: html`${conditions ?? ''}${countsLine}${newIssuesLine}`,
     reason: watchReason(input.project.name),
     footerLinks: watchFooterLinks(input.links),
     instanceHost: input.links.instanceHost,
