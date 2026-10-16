@@ -454,6 +454,46 @@
       "reason": "Request data parsed as an EL expression; both on the createValueExpression call. FindSecBugs gives CWE-94, the qualor rule CWE-917 (qualor/scanner 0.5.0 probe, 2026-10-06)."
     },
     {
+      "rules": ["qualor:csharp/sql-injection", "roslyn:CA2100"],
+      "reason": "Request data in a SQL command text; both on the SqlCommand construction. CA2100 carries no CWE in the Roslyn log (qualor/scanner-dotnet 2026.10.5 probe, 2026-10-16)."
+    },
+    {
+      "rules": ["qualor:csharp/sql-injection", "roslyn:CA3001"],
+      "reason": "Request data reaching a SQL command; both on the SqlCommand call. CA3001 carries no CWE in the Roslyn log (qualor/scanner-dotnet 2026.10.5 probe, 2026-10-16)."
+    },
+    {
+      "rules": ["qualor:csharp/command-injection", "roslyn:CA3006"],
+      "reason": "Request data in a process command; both on the Process.Start call. CA3006 carries no CWE in the Roslyn log (qualor/scanner-dotnet 2026.10.5 probe, 2026-10-16)."
+    },
+    {
+      "rules": ["qualor:csharp/ldap-injection", "roslyn:CA3005"],
+      "reason": "Request data in an LDAP filter; both on the DirectorySearcher filter. CA3005 carries no CWE in the Roslyn log (qualor/scanner-dotnet 2026.10.5 probe, 2026-10-16)."
+    },
+    {
+      "rules": ["qualor:csharp/path-traversal", "roslyn:CA3003"],
+      "reason": "Request data in a file path; both on the file call. CA3003 carries no CWE in the Roslyn log (qualor/scanner-dotnet 2026.10.5 probe, 2026-10-16)."
+    },
+    {
+      "rules": ["qualor:csharp/regex-injection", "roslyn:CA3012"],
+      "reason": "Request data used as a regular expression; both on the Regex call. CA3012 carries no CWE in the Roslyn log (qualor/scanner-dotnet 2026.10.5 probe, 2026-10-16)."
+    },
+    {
+      "rules": ["qualor:csharp/xpath-injection", "roslyn:CA3008"],
+      "reason": "Request data in an XPath query; both on the SelectSingleNode call. CA3008 carries no CWE in the Roslyn log (qualor/scanner-dotnet 2026.10.5 probe, 2026-10-16)."
+    },
+    {
+      "rules": ["qualor:csharp/xxe", "roslyn:S2755"],
+      "reason": "An XML parser that resolves external entities; both on the parser setup. S2755 carries no CWE in the Roslyn log (qualor/scanner-dotnet 2026.10.5 probe, 2026-10-16)."
+    },
+    {
+      "rules": ["qualor:csharp/unsafe-deserialization", "roslyn:CA2327"],
+      "reason": "Request data deserialized with an unsafe JSON.NET type handling; both on the deserializing call. CA2327 carries no CWE in the Roslyn log (qualor/scanner-dotnet 2026.10.5 probe, 2026-10-16)."
+    },
+    {
+      "rules": ["qualor:csharp/tls-verification-disabled", "roslyn:S4830"],
+      "reason": "A certificate validation callback that accepts anything; both on the callback. S4830 carries no CWE in the Roslyn log (qualor/scanner-dotnet 2026.10.5 probe, 2026-10-16)."
+    },
+    {
       "rules": ["eslint:sonarjs/function-name", "sonarjs:S100"],
       "reason": "The project's own eslint-plugin-sonarjs reports S100 as sonarjs/function-name"
     },

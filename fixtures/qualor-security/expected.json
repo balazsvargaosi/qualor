@@ -3,6 +3,7 @@
   "engines": ["qualor"],
   "findingsExhaustive": true,
   "findings": [
+    { "ruleKey": "qualor:csharp/sql-injection", "path": "csharp/OrdersController.cs", "startLine": 17, "severity": "high", "quality": "security", "kind": "issue" },
     { "ruleKey": "qualor:go/sql-injection", "path": "go/orders.go", "startLine": 15, "severity": "high", "quality": "security", "kind": "issue" },
     { "ruleKey": "qualor:java/sql-injection", "path": "java/OrderServlet.java", "startLine": 20, "severity": "high", "quality": "security", "kind": "issue" },
     { "ruleKey": "qualor:js/sql-injection", "path": "js/orders.js", "startLine": 9, "severity": "high", "quality": "security", "kind": "issue" },

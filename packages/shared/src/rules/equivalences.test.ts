@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import ruffKeys from '../../rules/ruff-keys.json' with { type: 'json' };
+import sonarAnalyzerKeys from '../../rules/sonaranalyzer-csharp-keys.json' with { type: 'json' };
 import sonarjsKeys from '../../rules/sonarjs-keys.json' with { type: 'json' };
 import {
   effectiveCwe,
@@ -408,6 +409,9 @@ describe("Qualor's own rules paired with the other engines' (plan 6B)", () => {
     if (engine === 'ruff') return (ruffKeys as string[]).includes(id);
     if (engine === 'sonarjs') return (sonarjsKeys as string[]).includes(id);
     if (engine === 'gosec') return GOSEC_RULES.has(id);
+    // Roslyn: the SDK's CA rules (a CA plus four digits) and SonarAnalyzer.CSharp's S rules.
+    if (engine === 'roslyn')
+      return /^CA\d{4}$/.test(id) || (sonarAnalyzerKeys as string[]).includes(id);
     if (engine === 'spotbugs') return FINDSECBUGS_PATTERNS.has(id) || CORE_SPOTBUGS.has(key);
     if (engine === 'eslint') return OWN_ESLINT_SONARJS.has(key) || key === 'eslint:no-eval';
     return false;
@@ -444,6 +448,18 @@ describe("Qualor's own rules paired with the other engines' (plan 6B)", () => {
     // Go: gosec's CWE differs or is missing.
     ['qualor:go/ssrf', [918], 'gosec:G107', [88]],
     ['qualor:go/open-redirect', [601], 'gosec:G710', []],
+    // C#: the SDK's CA security rules and SonarAnalyzer.CSharp carry no CWE in the Roslyn SARIF
+    // (qualor/scanner-dotnet 2026.10.5 probe, 2026-10-16: each on the same line as the Qualor finding).
+    ['qualor:csharp/sql-injection', [89], 'roslyn:CA2100', []],
+    ['qualor:csharp/sql-injection', [89], 'roslyn:CA3001', []],
+    ['qualor:csharp/command-injection', [78], 'roslyn:CA3006', []],
+    ['qualor:csharp/ldap-injection', [90], 'roslyn:CA3005', []],
+    ['qualor:csharp/path-traversal', [22], 'roslyn:CA3003', []],
+    ['qualor:csharp/regex-injection', [400, 1333], 'roslyn:CA3012', []],
+    ['qualor:csharp/xpath-injection', [643], 'roslyn:CA3008', []],
+    ['qualor:csharp/xxe', [611, 776], 'roslyn:S2755', []],
+    ['qualor:csharp/unsafe-deserialization', [502], 'roslyn:CA2327', []],
+    ['qualor:csharp/tls-verification-disabled', [295], 'roslyn:S4830', []],
     // Java: a core SpotBugs rule without CWE-79, FindSecBugs' SpEL rule with CWE-94.
     ['qualor:java/xss', [79], 'spotbugs:XSS_REQUEST_PARAMETER_TO_SERVLET_WRITER', []],
     ['qualor:java/expression-injection', [917], 'spotbugs:SPEL_INJECTION', [94]],
