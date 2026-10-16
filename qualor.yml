@@ -10,8 +10,9 @@ sources:
   exclude:
     # The reference repositories with known findings; the fixture suite checks each of them.
     - fixtures/**
-    # Generated from server/openapi.json (CI checks it is current).
+    # Generated from server/openapi.json and enterprise/openapi.json (CI checks they are current).
     - ui/src/app/api/schema.ts
+    - ui/src/app/api/schema-ee.ts
     # Recorded analyzer output and SARIF samples: test data.
     - cli/test/analyzer-output/**
     - packages/shared/test/sarif-samples/**
