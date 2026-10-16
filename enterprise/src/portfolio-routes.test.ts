@@ -414,7 +414,12 @@ describe('GET /portfolio/export (4E-2 §3)', () => {
     expect(await statusOf(url)).toBe(429);
     pdf.hold = undefined;
     render.resolve();
-    await vi.waitFor(async () => expect(await statusOf(url)).toBe(200));
+    // Two real renders come first (the held one, then this request's own), about half a second
+    // each on a loaded CI runner: waitFor's default 1 s is too short (CI after 0.9.0).
+    await vi.waitFor(async () => expect(await statusOf(url)).toBe(200), {
+      timeout: 15_000,
+      interval: 50,
+    });
   });
 
   it('frees the slot when the PDF data is refused', async () => {
