@@ -922,7 +922,7 @@ documentation link opens it: on the issue page, in the rules list, and on the ru
 request and pull request comments.
 
 - The engine's version in a scan names the rules release, for example
-  `1.30.0 + qualor-rules 2026.10.4`, or `qualor-taint 2026.10.4 + qualor-rules 2026.10.4` when
+  `1.30.0 + qualor-rules 2026.10.5`, or `qualor-taint 2026.10.5 + qualor-rules 2026.10.5` when
   only C# files were analysed, by the Roslyn taint engine.
 - Taint rules follow data **through the functions of one file**: a value that goes into a helper
   function in the same file and comes back out of it is still followed. A value that passes
