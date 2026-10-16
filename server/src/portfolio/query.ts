@@ -88,8 +88,8 @@ export async function statesAt(
   projectIds: readonly string[],
   ends: readonly Date[],
 ): Promise<Map<string, BranchState>[]> {
+  if (projectIds.length === 0 || ends.length === 0) return ends.map(() => new Map());
   const out = ends.map(() => new Map<string, BranchState>());
-  if (projectIds.length === 0 || ends.length === 0) return out;
   const { rows } = await tx.execute<{
     i: number;
     project_id: string;
