@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createTestDatabase, expectPgError, type TestDatabase } from '../../test/db';
+import { createTestDatabase, sqlStateOf, type TestDatabase } from '../../test/db';
 import { PG_CHECK_VIOLATION, PG_UNIQUE_VIOLATION } from './errors';
 import { uuidv7 } from './ids';
 
@@ -26,24 +26,27 @@ describe('migration 0010: account tokens (mail E2 A1)', () => {
     await exec(sql`INSERT INTO account_tokens (key, kind, user_id, expires_at)
       VALUES (${KEY('a')}, 'password_reset', ${userId}, now() + interval '1 hour'),
              (${KEY('b')}, 'invitation', ${userId}, now() + interval '1 hour')`);
-    await expectPgError(
-      exec(sql`INSERT INTO account_tokens (key, kind, user_id, expires_at)
+    expect(
+      await sqlStateOf(
+        exec(sql`INSERT INTO account_tokens (key, kind, user_id, expires_at)
         VALUES (${KEY('c')}, 'password_reset', ${userId}, now())`),
-      PG_UNIQUE_VIOLATION,
-    );
+      ),
+    ).toBe(PG_UNIQUE_VIOLATION);
   });
 
   it('accepts only the two kinds and a SHA-256 hex key', async () => {
-    await expectPgError(
-      exec(sql`INSERT INTO account_tokens (key, kind, user_id, expires_at)
+    expect(
+      await sqlStateOf(
+        exec(sql`INSERT INTO account_tokens (key, kind, user_id, expires_at)
         VALUES (${KEY('d')}, 'magic_link', ${adminId}, now())`),
-      PG_CHECK_VIOLATION,
-    );
-    await expectPgError(
-      exec(sql`INSERT INTO account_tokens (key, kind, user_id, expires_at)
+      ),
+    ).toBe(PG_CHECK_VIOLATION);
+    expect(
+      await sqlStateOf(
+        exec(sql`INSERT INTO account_tokens (key, kind, user_id, expires_at)
         VALUES ('not-a-hash', 'invitation', ${adminId}, now())`),
-      PG_CHECK_VIOLATION,
-    );
+      ),
+    ).toBe(PG_CHECK_VIOLATION);
   });
 
   it('goes with its user and forgets a deleted creator', async () => {

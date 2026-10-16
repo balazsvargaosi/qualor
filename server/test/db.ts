@@ -44,10 +44,17 @@ export async function createTestDatabase(
   };
 }
 
-export async function expectPgError(action: PromiseLike<unknown>, code: string): Promise<void> {
-  const error = await Promise.resolve(action).then(
-    () => null,
-    (err: unknown) => err,
+/**
+ * The SQLSTATE `action` fails with, or undefined when it succeeds or fails without one: for a test
+ * that asserts it itself, `expect(await sqlStateOf(insert)).toBe(PG_UNIQUE_VIOLATION)`.
+ */
+export async function sqlStateOf(action: PromiseLike<unknown>): Promise<string | undefined> {
+  return Promise.resolve(action).then(
+    () => undefined,
+    (err: unknown) => pgErrorCode(err),
   );
-  expect(pgErrorCode(error), `expected SQLSTATE ${code}`).toBe(code);
+}
+
+export async function expectPgError(action: PromiseLike<unknown>, code: string): Promise<void> {
+  expect(await sqlStateOf(action), `expected SQLSTATE ${code}`).toBe(code);
 }

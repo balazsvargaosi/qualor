@@ -41,8 +41,12 @@ describe('accepting an invitation (mail E2)', () => {
   const inspect = (token: string) => post('/api/v0/auth/invitations/inspect', { token });
   const accept = (token: string, newPassword = 'my own first passphrase') =>
     post('/api/v0/auth/invitations/accept', { token, newPassword });
-  const expectInvalid = (res: { statusCode: number; json(): { code?: string } }) =>
-    expect([res.statusCode, res.json().code]).toEqual([400, 'TOKEN_INVALID']);
+  /** A response's status and problem code, compared with INVALID in the tests below. */
+  const outcome = (res: { statusCode: number; json(): { code?: string } }) => [
+    res.statusCode,
+    res.json().code,
+  ];
+  const INVALID = [400, 'TOKEN_INVALID'];
 
   it('shows who is invited and by whom, without using the link up', async () => {
     const { token } = await invite('ida', 'Ida Lane');
@@ -61,8 +65,8 @@ describe('accepting an invitation (mail E2)', () => {
     expect([res.statusCode, res.json()]).toEqual([200, { username: 'jon' }]);
     expect(res.cookies).toEqual([]);
     expect((await login(ctx, 'jon', 'my own first passphrase')).cookie).toBeTruthy();
-    expectInvalid(await accept(token));
-    expectInvalid(await inspect(token));
+    expect(outcome(await accept(token))).toEqual(INVALID);
+    expect(outcome(await inspect(token))).toEqual(INVALID);
     expect(await mailsTo(ctx, 'jon@example.test', 'account.password-changed')).toEqual([]);
     expect(
       (await auditRows(ctx)).find((e) => e.action === 'auth.invitation_accepted'),
@@ -79,8 +83,8 @@ describe('accepting an invitation (mail E2)', () => {
       .update(users)
       .set({ passwordHash: await hashPassword('set elsewhere meanwhile') })
       .where(eq(users.id, id));
-    expectInvalid(await inspect(token));
-    expectInvalid(await accept(token));
+    expect(outcome(await inspect(token))).toEqual(INVALID);
+    expect(outcome(await accept(token))).toEqual(INVALID);
     expect(await peekAccountToken(ctx.db, token, 'invitation')).toBeNull();
   });
 
@@ -92,8 +96,8 @@ describe('accepting an invitation (mail E2)', () => {
       createdBy: null,
       ttlMinutes: 60,
     });
-    expectInvalid(await inspect(token));
-    expectInvalid(await accept(token));
+    expect(outcome(await inspect(token))).toEqual(INVALID);
+    expect(outcome(await accept(token))).toEqual(INVALID);
     expect(await peekAccountToken(ctx.db, token, 'password_reset')).not.toBeNull();
   });
 
@@ -104,8 +108,8 @@ describe('accepting an invitation (mail E2)', () => {
       value: { passwordSignIn: 'break_glass_only', breakGlassUserIds: [ctx.adminId] },
     });
     try {
-      expectInvalid(await inspect(token));
-      expectInvalid(await accept(token));
+      expect(outcome(await inspect(token))).toEqual(INVALID);
+      expect(outcome(await accept(token))).toEqual(INVALID);
     } finally {
       await ctx.db.delete(instanceSettings).where(eq(instanceSettings.key, 'sign-in'));
     }
@@ -129,21 +133,21 @@ describe('accepting an invitation (mail E2)', () => {
         })
       ).token;
     });
-    expectInvalid(await answer!);
+    expect(outcome(await answer!)).toEqual(INVALID);
     expect((await inspect(fresh)).statusCode).toBe(200);
   });
 
   it('refuses malformed and unknown links', async () => {
-    expectInvalid(await inspect('not a token'));
-    expectInvalid(await inspect('A'.repeat(43)));
-    expectInvalid(await accept('A'.repeat(43)));
+    expect(outcome(await inspect('not a token'))).toEqual(INVALID);
+    expect(outcome(await inspect('A'.repeat(43)))).toEqual(INVALID);
+    expect(outcome(await accept('A'.repeat(43)))).toEqual(INVALID);
   });
 
   it('refuses a deactivated user, uses the link up, and sets no password', async () => {
     const { id, token } = await invite('nia');
     await ctx.db.update(users).set({ active: false }).where(eq(users.id, id));
-    expectInvalid(await inspect(token));
-    expectInvalid(await accept(token));
+    expect(outcome(await inspect(token))).toEqual(INVALID);
+    expect(outcome(await accept(token))).toEqual(INVALID);
     expect(await peekAccountToken(ctx.db, token, 'invitation')).toBeNull();
     const [row] = await ctx.db.select().from(users).where(eq(users.id, id));
     expect(row!.passwordHash).toBeNull();
@@ -152,8 +156,8 @@ describe('accepting an invitation (mail E2)', () => {
   it('refuses the demo user, uses the link up, and sets no password', async () => {
     const { id, token } = await invite('guest');
     expect(ctx.config.demoUser).toBe('guest');
-    expectInvalid(await inspect(token));
-    expectInvalid(await accept(token));
+    expect(outcome(await inspect(token))).toEqual(INVALID);
+    expect(outcome(await accept(token))).toEqual(INVALID);
     expect(await peekAccountToken(ctx.db, token, 'invitation')).toBeNull();
     const [row] = await ctx.db.select().from(users).where(eq(users.id, id));
     expect(row!.passwordHash).toBeNull();
@@ -165,9 +169,9 @@ describe('accepting an invitation (mail E2)', () => {
     await ctx.db
       .insert(identities)
       .values({ connectionId, userId: id, subject: 'sub-sso-pat', linkedBy: 'verified_email' });
-    expectInvalid(await inspect(token));
+    expect(outcome(await inspect(token))).toEqual(INVALID);
     expect(await peekAccountToken(ctx.db, token, 'invitation')).not.toBeNull();
-    expectInvalid(await accept(token));
+    expect(outcome(await accept(token))).toEqual(INVALID);
     expect(await peekAccountToken(ctx.db, token, 'invitation')).toBeNull();
     const [row] = await ctx.db.select().from(users).where(eq(users.id, id));
     expect(row!.passwordHash).toBeNull();
@@ -176,7 +180,7 @@ describe('accepting an invitation (mail E2)', () => {
   it('answers a malformed link without hashing, and a short password without using the link', async () => {
     const { token } = await invite('oli');
     const started = Date.now();
-    expectInvalid(await accept('x'.repeat(200)));
+    expect(outcome(await accept('x'.repeat(200)))).toEqual(INVALID);
     expect(Date.now() - started).toBeLessThan(500);
     const short = await accept(token, 'short');
     expect(short.statusCode).toBe(422);

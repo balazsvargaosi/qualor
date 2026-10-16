@@ -231,12 +231,17 @@ describe('finishing a reset (mail E2)', () => {
     ).token;
   const hashOf = async (userId: string) =>
     (await ctx.db.select().from(users).where(eq(users.id, userId)))[0]!.passwordHash;
-  const expectInvalid = (res: Awaited<ReturnType<typeof complete>>) =>
-    expect([res.statusCode, res.json().code, res.json().title]).toEqual([
-      400,
-      'TOKEN_INVALID',
-      'This link has expired or was already used. Ask for a new one.',
-    ]);
+  /** A response's status, problem code and title, compared with INVALID in the tests below. */
+  const outcome = (res: Awaited<ReturnType<typeof complete>>) => [
+    res.statusCode,
+    res.json().code,
+    res.json().title,
+  ];
+  const INVALID = [
+    400,
+    'TOKEN_INVALID',
+    'This link has expired or was already used. Ask for a new one.',
+  ];
 
   it('sets the password, ends every session, keeps personal tokens, clears the forced change, and does not sign in', async () => {
     const pia = await createUser(ctx, {
@@ -295,7 +300,7 @@ describe('finishing a reset (mail E2)', () => {
     const token = await resetLink(quinn.id);
     const [a, b] = await Promise.all([complete(token), complete(token)]);
     expect([a.statusCode, b.statusCode].sort()).toEqual([200, 400]);
-    expectInvalid(await complete(token));
+    expect(outcome(await complete(token))).toEqual(INVALID);
   });
 
   it('waits behind a change to the same account (user row, then its links), never deadlocking', async () => {
@@ -309,7 +314,7 @@ describe('finishing a reset (mail E2)', () => {
       await untilLockWait(ctx);
       await deleteAccountTokens(tx, rae.id);
     });
-    expectInvalid(await answer!);
+    expect(outcome(await answer!)).toEqual(INVALID);
   });
 
   it('refuses an expired link, a link of another kind and a malformed one', async () => {
@@ -319,17 +324,17 @@ describe('finishing a reset (mail E2)', () => {
     await ctx.db.execute(
       sql`UPDATE account_tokens SET expires_at = now() - interval '1 second' WHERE user_id = ${ross.id}`,
     );
-    expectInvalid(await complete(expired));
+    expect(outcome(await complete(expired))).toEqual(INVALID);
     const { token: invitation } = await issueAccountToken(ctx.db, {
       userId: ross.id,
       kind: 'invitation',
       createdBy: null,
       ttlMinutes: 60,
     });
-    expectInvalid(await complete(invitation));
+    expect(outcome(await complete(invitation))).toEqual(INVALID);
     expect(await countRows(ctx, 'account_tokens')).toBeGreaterThan(0); // the invitation stays
-    expectInvalid(await complete('not-a-token!'));
-    expectInvalid(await complete('x'.repeat(101)));
+    expect(outcome(await complete('not-a-token!'))).toEqual(INVALID);
+    expect(outcome(await complete('x'.repeat(101)))).toEqual(INVALID);
     expect(await hashOf(ross.id)).toBe(before);
   });
 
@@ -342,11 +347,11 @@ describe('finishing a reset (mail E2)', () => {
       value: { passwordSignIn: 'break_glass_only', breakGlassUserIds: [ctx.adminId] },
     });
     try {
-      expectInvalid(await complete(token));
+      expect(outcome(await complete(token))).toEqual(INVALID);
     } finally {
       await ctx.db.delete(instanceSettings).where(eq(instanceSettings.key, 'sign-in'));
     }
-    expectInvalid(await complete(token));
+    expect(outcome(await complete(token))).toEqual(INVALID);
     expect(await hashOf(sara.id)).toBe(before);
   });
 
@@ -382,8 +387,8 @@ describe('finishing a reset (mail E2)', () => {
     }
     expect(rowsWhileHashing).toBe(1);
     hashing.calls = 0;
-    expectInvalid(await complete('not-a-token!'));
-    expectInvalid(await complete('x'.repeat(101)));
+    expect(outcome(await complete('not-a-token!'))).toEqual(INVALID);
+    expect(outcome(await complete('x'.repeat(101)))).toEqual(INVALID);
     expect(hashing.calls).toBe(0);
   });
 
@@ -397,7 +402,7 @@ describe('finishing a reset (mail E2)', () => {
       [gone, tokens[1]!],
     ] as const) {
       const before = await hashOf(user.id);
-      expectInvalid(await complete(token));
+      expect(outcome(await complete(token))).toEqual(INVALID);
       expect(await hashOf(user.id), user.username).toBe(before);
       expect(
         await ctx.db.select().from(accountTokens).where(eq(accountTokens.userId, user.id)),

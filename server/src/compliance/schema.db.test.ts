@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createTestDatabase, expectPgError, type TestDatabase } from '../../test/db';
+import { createTestDatabase, sqlStateOf, type TestDatabase } from '../../test/db';
+import { PG_CHECK_VIOLATION, PG_UNIQUE_VIOLATION } from '../db/errors';
 import { complianceReports, organizations, projects } from '../db/schema';
 
 describe('compliance_reports (4E-1 §1)', () => {
@@ -33,13 +34,16 @@ describe('compliance_reports (4E-1 §1)', () => {
 
   it('allows one pending report per scope', async () => {
     await tdb.db.insert(complianceReports).values(row());
-    await expectPgError(tdb.db.insert(complianceReports).values(row()), '23505');
+    expect(await sqlStateOf(tdb.db.insert(complianceReports).values(row()))).toBe(
+      PG_UNIQUE_VIOLATION,
+    );
     // a project scope of the same organisation is another scope
     await tdb.db.insert(complianceReports).values(row({ scope: 'project', projectId: project }));
-    await expectPgError(
-      tdb.db.insert(complianceReports).values(row({ scope: 'project', projectId: project })),
-      '23505',
-    );
+    expect(
+      await sqlStateOf(
+        tdb.db.insert(complianceReports).values(row({ scope: 'project', projectId: project })),
+      ),
+    ).toBe(PG_UNIQUE_VIOLATION);
   });
 
   it('allows several finished reports per scope', async () => {
@@ -53,19 +57,20 @@ describe('compliance_reports (4E-1 §1)', () => {
   });
 
   it('checks scope against project_id, the status, and what ready needs', async () => {
-    await expectPgError(
-      tdb.db.insert(complianceReports).values(row({ scope: 'project' })),
-      '23514',
-    );
-    await expectPgError(
-      tdb.db.insert(complianceReports).values(row({ projectId: project })),
-      '23514',
-    );
-    await expectPgError(tdb.db.insert(complianceReports).values(row({ status: 'ready' })), '23514');
-    await expectPgError(
-      tdb.db.insert(complianceReports).values(row({ status: 'failed', sha256: 'XYZ' })),
-      '23514',
-    );
+    expect(
+      await sqlStateOf(tdb.db.insert(complianceReports).values(row({ scope: 'project' }))),
+    ).toBe(PG_CHECK_VIOLATION);
+    expect(
+      await sqlStateOf(tdb.db.insert(complianceReports).values(row({ projectId: project }))),
+    ).toBe(PG_CHECK_VIOLATION);
+    expect(
+      await sqlStateOf(tdb.db.insert(complianceReports).values(row({ status: 'ready' }))),
+    ).toBe(PG_CHECK_VIOLATION);
+    expect(
+      await sqlStateOf(
+        tdb.db.insert(complianceReports).values(row({ status: 'failed', sha256: 'XYZ' })),
+      ),
+    ).toBe(PG_CHECK_VIOLATION);
   });
 
   it('is deleted with its project', async () => {
