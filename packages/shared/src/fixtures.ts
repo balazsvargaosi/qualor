@@ -78,8 +78,10 @@ export interface Mismatch {
   detail: string;
 }
 
-const findingKey = (ruleKey: string, path: string | null, line: number, severity?: string) =>
-  `${ruleKey} ${path ?? '(project)'}:${line}${severity ? ` [${severity}]` : ''}`;
+const findingKey = (ruleKey: string, path: string | null, line: number, severity?: string) => {
+  const suffix = severity ? ` [${severity}]` : '';
+  return `${ruleKey} ${path ?? '(project)'}:${line}${suffix}`;
+};
 
 /** The order of two strings by code unit, for sorting. */
 function compareText(a: string, b: string): number {
