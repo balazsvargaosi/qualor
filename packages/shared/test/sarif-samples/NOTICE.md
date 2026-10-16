@@ -28,6 +28,11 @@ not SonarSource's descriptive text, and are kept as the real run produced them. 
 rules in the same sample, `CA5351` (Microsoft, MIT) and `RCS1118` (Roslynator, Apache-2.0), keep
 their real text as `roslyn.sarif` already does for the same rule ids.
 
+**`roslyn.sarif`.** It was recorded in the SDK's _All_ analysis mode. Since 0.9.0, `qualor dotnet
+begin` runs the _Recommended_ mode with all security rules. Its build of the fixture (compiler
+5.9.0, 2026-10-16) reports the same results without CA2000 (`Reader.cs:9`) and CA1062 (`Names.cs:9`,
+`Labels.cs:10`), so those three results were removed. Nothing else was changed.
+
 **`ruff.sarif`.** The rule descriptions in it are Ruff's own documentation, MIT; unlike
 `roslyn-sonar.sarif`, nothing is SonarSource text.
 

@@ -143,58 +143,6 @@
           }
         },
         {
-          "ruleId": "CA1062",
-          "ruleIndex": 38,
-          "level": "warning",
-          "message": {
-            "text": "In externally visible method 'string Names.Describe(string[] items)', validate parameter 'items' is non-null before using it. If appropriate, throw an 'ArgumentNullException' when the argument is 'null'."
-          },
-          "locations": [
-            {
-              "physicalLocation": {
-                "artifactLocation": {
-                  "uri": "file:///fixture-root/src/Acme.Store/Names.cs"
-                },
-                "region": {
-                  "startLine": 9,
-                  "startColumn": 13,
-                  "endLine": 9,
-                  "endColumn": 18
-                }
-              }
-            }
-          ],
-          "properties": {
-            "warningLevel": 1
-          }
-        },
-        {
-          "ruleId": "CA1062",
-          "ruleIndex": 38,
-          "level": "warning",
-          "message": {
-            "text": "In externally visible method 'string Labels.Describe(string[] items)', validate parameter 'items' is non-null before using it. If appropriate, throw an 'ArgumentNullException' when the argument is 'null'."
-          },
-          "locations": [
-            {
-              "physicalLocation": {
-                "artifactLocation": {
-                  "uri": "file:///fixture-root/src/Acme.Store/Labels.cs"
-                },
-                "region": {
-                  "startLine": 10,
-                  "startColumn": 13,
-                  "endLine": 10,
-                  "endColumn": 18
-                }
-              }
-            }
-          ],
-          "properties": {
-            "warningLevel": 1
-          }
-        },
-        {
           "ruleId": "CA1850",
           "ruleIndex": 132,
           "level": "warning",
@@ -239,32 +187,6 @@
               "HashCreationIndexPropertyKey": "0",
               "TargetHashTypeDiagnosticPropertyKey": "MD5"
             }
-          }
-        },
-        {
-          "ruleId": "CA2000",
-          "ruleIndex": 158,
-          "level": "warning",
-          "message": {
-            "text": "Call System.IDisposable.Dispose on object created by 'new StreamReader(path)' before all references to it are out of scope"
-          },
-          "locations": [
-            {
-              "physicalLocation": {
-                "artifactLocation": {
-                  "uri": "file:///fixture-root/src/Acme.Store/Reader.cs"
-                },
-                "region": {
-                  "startLine": 9,
-                  "startColumn": 22,
-                  "endLine": 9,
-                  "endColumn": 44
-                }
-              }
-            }
-          ],
-          "properties": {
-            "warningLevel": 1
           }
         }
       ],

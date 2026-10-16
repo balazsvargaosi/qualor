@@ -7540,66 +7540,6 @@
     },
     {
       "engineId": "roslyn",
-      "ruleId": "CA1062",
-      "message": "In externally visible method 'string Names.Describe(string[] items)', validate parameter 'items' is non-null before using it. If appropriate, throw an 'ArgumentNullException' when the argument is 'null'.",
-      "severity": "medium",
-      "location": {
-        "path": "src/Acme.Store/Names.cs",
-        "startLine": 9,
-        "startColumn": 13,
-        "endLine": 9,
-        "endColumn": 17
-      },
-      "lineHash": "bc12c5ede2cf703dd89efd5c52ce0d41",
-      "contextHash": "9285b6a2f281a49d170bf27142686473",
-      "snippet": {
-        "startLine": 6,
-        "lines": [
-          "",
-          "    public static string Describe(string[] items)",
-          "    {",
-          "        if (items.Length == 0)",
-          "        {",
-          "            return \"none\";",
-          "        }"
-        ]
-      },
-      "properties": {
-        "warningLevel": 1
-      }
-    },
-    {
-      "engineId": "roslyn",
-      "ruleId": "CA1062",
-      "message": "In externally visible method 'string Labels.Describe(string[] items)', validate parameter 'items' is non-null before using it. If appropriate, throw an 'ArgumentNullException' when the argument is 'null'.",
-      "severity": "medium",
-      "location": {
-        "path": "src/Acme.Store/Labels.cs",
-        "startLine": 10,
-        "startColumn": 13,
-        "endLine": 10,
-        "endColumn": 17
-      },
-      "lineHash": "bc12c5ede2cf703dd89efd5c52ce0d41",
-      "contextHash": "9285b6a2f281a49d170bf27142686473",
-      "snippet": {
-        "startLine": 7,
-        "lines": [
-          "",
-          "    public static string Describe(string[] items)",
-          "    {",
-          "        if (items.Length == 0)",
-          "        {",
-          "            return \"none\";",
-          "        }"
-        ]
-      },
-      "properties": {
-        "warningLevel": 1
-      }
-    },
-    {
-      "engineId": "roslyn",
       "ruleId": "CA1850",
       "message": "Prefer static 'System.Security.Cryptography.MD5.HashData' method over 'ComputeHash'",
       "severity": "medium",
@@ -7640,36 +7580,6 @@
           "HashCreationIndexPropertyKey": "0",
           "TargetHashTypeDiagnosticPropertyKey": "MD5"
         }
-      }
-    },
-    {
-      "engineId": "roslyn",
-      "ruleId": "CA2000",
-      "message": "Call System.IDisposable.Dispose on object created by 'new StreamReader(path)' before all references to it are out of scope",
-      "severity": "medium",
-      "location": {
-        "path": "src/Acme.Store/Reader.cs",
-        "startLine": 9,
-        "startColumn": 22,
-        "endLine": 9,
-        "endColumn": 43
-      },
-      "lineHash": "1441e272678311aafb3f92f8922eb799",
-      "contextHash": "a952464a3dbcea71ddb830ae82eca504",
-      "snippet": {
-        "startLine": 6,
-        "lines": [
-          "{",
-          "    public static string FirstLine(string path)",
-          "    {",
-          "        var reader = new StreamReader(path);",
-          "        return reader.ReadLine() ?? string.Empty;",
-          "    }",
-          "}"
-        ]
-      },
-      "properties": {
-        "warningLevel": 1
       }
     }
   ],
