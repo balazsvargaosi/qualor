@@ -6,6 +6,8 @@ All notable changes to Qualor are listed here, newest first. The format follows
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-16
+
 ### Added
 
 - OpenGrep is given the built-in excludes and the `sources.exclude` patterns starting with `**/` as
@@ -97,6 +99,11 @@ All notable changes to Qualor are listed here, newest first. The format follows
 
 ### Changed
 
+- C#: a project the engine could not load falls back to the OpenGrep rules (fallback reason `load`); a project
+  with compile errors or unresolved references is still analysed and reported once as
+  `TAINT_ENGINE_PROJECT_ERRORS`. The engine's memory limit defaults to half of the job's memory (the container's
+  limit counts). `qualor dotnet begin` refuses a checkout path that contains a semicolon, which the compiler
+  rejects in its Roslyn log option.
 - **Breaking:** `license` and `trivy-licenses` are now reserved engine ids: `license` is the engine
   of the licence policy's issues, `trivy-licenses` the scanner's licence pass. A `qualor.yml`
   `sarif:` entry with `engine: license` or `engine: trivy-licenses` is a configuration error
