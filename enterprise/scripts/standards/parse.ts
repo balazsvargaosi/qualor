@@ -65,33 +65,52 @@ export function parseCweTop25Html(html: string): ParsedCategory[] {
   return categories;
 }
 
+/** What parseCsv has read so far: the finished records, the open record and its open field. */
+interface CsvState {
+  records: string[][];
+  record: string[];
+  field: string;
+  quoted: boolean;
+}
+
+/** Reads the character at `i` inside a quoted field and returns how many characters it used. */
+function readQuotedChar(text: string, i: number, state: CsvState): number {
+  const c = text[i];
+  if (c === '"' && text[i + 1] === '"') {
+    state.field += '"';
+    return 2;
+  }
+  if (c === '"') state.quoted = false;
+  else state.field += c;
+  return 1;
+}
+
+/** Reads the character at `i` outside a quoted field and returns how many characters it used. */
+function readUnquotedChar(text: string, i: number, state: CsvState): number {
+  const c = text[i];
+  if (c === '"') state.quoted = true;
+  else if (c === ',') {
+    state.record.push(state.field);
+    state.field = '';
+  } else if (c === '\n' || c === '\r') {
+    state.record.push(state.field);
+    state.records.push(state.record);
+    state.record = [];
+    state.field = '';
+    if (c === '\r' && text[i + 1] === '\n') return 2;
+  } else state.field += c;
+  return 1;
+}
+
 /** RFC 4180: comma-separated fields, double-quoted fields may hold commas, `""` and line breaks. */
 function parseCsv(text: string): string[][] {
-  const records: string[][] = [];
-  let record: string[] = [];
-  let field = '';
-  let quoted = false;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (quoted) {
-      if (c === '"' && text[i + 1] === '"') {
-        field += '"';
-        i++;
-      } else if (c === '"') quoted = false;
-      else field += c;
-    } else if (c === '"') quoted = true;
-    else if (c === ',') {
-      record.push(field);
-      field = '';
-    } else if (c === '\n' || c === '\r') {
-      if (c === '\r' && text[i + 1] === '\n') i++;
-      record.push(field);
-      records.push(record);
-      record = [];
-      field = '';
-    } else field += c;
+  const state: CsvState = { records: [], record: [], field: '', quoted: false };
+  let i = 0;
+  while (i < text.length) {
+    i += state.quoted ? readQuotedChar(text, i, state) : readUnquotedChar(text, i, state);
   }
-  if (quoted) throw new Error('the CSV ends inside a quoted field');
+  const { records, record, field } = state;
+  if (state.quoted) throw new Error('the CSV ends inside a quoted field');
   if (field !== '' || record.length > 0) records.push([...record, field]);
   return records.filter((r) => r.length > 1 || r[0] !== '');
 }

@@ -51,6 +51,20 @@ function dropAfter(url: string, ms: number): Promise<void> {
   });
 }
 
+/** A GET on a real socket that the client drops once the first body bytes come: its status. */
+function dropAfterFirstData(url: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const req = http.get(url, { agent: false }, (res) => {
+      res.once('data', () => {
+        req.destroy();
+        resolve(res.statusCode ?? 0);
+      });
+    });
+    req.on('error', () => undefined);
+    setTimeout(() => reject(new Error('no data')), 5_000);
+  });
+}
+
 /** The status of a GET on a real socket, its body read to the end. */
 function statusOf(url: string): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -166,17 +180,7 @@ describe('GET /support/bundle (4E-3b §4)', () => {
     app = h.app;
     const url = `${await listening(app)}/support/bundle`;
     // The headers and some bytes have come; the body is still open, so the slot is held.
-    await new Promise<void>((resolve, reject) => {
-      const req = http.get(url, { agent: false }, (res) => {
-        res.once('data', () => {
-          expect(res.statusCode).toBe(200);
-          req.destroy();
-          resolve();
-        });
-      });
-      req.on('error', () => undefined);
-      setTimeout(() => reject(new Error('no data')), 5_000);
-    });
+    expect(await dropAfterFirstData(url)).toBe(200);
     await vi.waitFor(() => expect(stream.destroyed).toBe(true));
     await vi.waitFor(async () => expect(await statusOf(url)).toBe(200));
   });

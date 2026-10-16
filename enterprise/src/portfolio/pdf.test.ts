@@ -116,10 +116,14 @@ describe('renderPortfolioPdf (4E-2 §3)', () => {
       return { calls: () => ticks };
     }
 
+    /** Fifty project rows, enough for the project table to span pages. */
+    function fiftyRows(): PortfolioProjectRow[] {
+      return Array.from({ length: 50 }, (_, i) => sampleRow(i));
+    }
+
     it('stops when the deadline passes in the middle of the project table', async () => {
       const overview = sampleOverview();
       overview.totals.projects = 50;
-      const rows = (): PortfolioProjectRow[] => Array.from({ length: 50 }, (_, i) => sampleRow(i));
       const readings = async (projects: PortfolioProjectRow[]): Promise<number> => {
         const clock = tickingClock();
         await renderPortfolioPdf(overview, projects, { ...OPTIONS, deadline: Infinity });
@@ -128,12 +132,12 @@ describe('renderPortfolioPdf (4E-2 §3)', () => {
       };
       // Every section start and every table row reads the clock once; the project table, the last
       // thing that does, accounts for the last 50 readings.
-      const total = await readings(rows());
+      const total = await readings(fiftyRows());
       expect(total - (await readings([]))).toBe(50);
       // With a deadline 10 readings before the end, the 42nd row's reading is the first past it.
       const clock = tickingClock();
       await expect(
-        renderPortfolioPdf(overview, rows(), { ...OPTIONS, deadline: total - 10 }),
+        renderPortfolioPdf(overview, fiftyRows(), { ...OPTIONS, deadline: total - 10 }),
       ).rejects.toBeInstanceOf(RenderTimeoutError);
       expect(clock.calls()).toBe(total - 8);
     });

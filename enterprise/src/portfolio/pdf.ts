@@ -246,8 +246,9 @@ async function trend(layout: Layout, overview: PortfolioOverview): Promise<void>
   const unit = overview.granularity === 'week' ? 'week' : 'month';
   layout.page();
   layout.heading('Trend');
+  const periods = plural(points.length, unit, `${unit}s`);
   layout.text(
-    `${plural(points.length, unit, `${unit}s`)}, oldest first. Each point is the state at the ` +
+    `${periods}, oldest first. Each point is the state at the ` +
       `end of its ${unit}; the last is the current ${unit}, up to ${time(overview.generatedAt)}.`,
     COLOR.muted,
   );
