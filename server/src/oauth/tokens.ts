@@ -9,7 +9,11 @@ const PREFIX: Record<OAuthSecretKind, string> = {
   code: 'qlr_oac_',
 };
 const SECRET_PATTERN = /^qlr_(oat|ort|oac)_[0-9A-Za-z]{32}$/;
-const KIND_OF: Partial<Record<string, OAuthSecretKind>> = { oat: 'access', ort: 'refresh', oac: 'code' };
+const KIND_OF: Partial<Record<string, OAuthSecretKind>> = {
+  oat: 'access',
+  ort: 'refresh',
+  oac: 'code',
+};
 
 export const MCP_SCOPES = ['mcp:read', 'mcp:write'] as const;
 export type McpScope = (typeof MCP_SCOPES)[number];
