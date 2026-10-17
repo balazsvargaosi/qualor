@@ -3,9 +3,12 @@ import type { Db, Executor } from '../db/client';
 import { first } from '../db/rows';
 import { oauthClients, oauthGrants, oauthRequests } from '../db/schema';
 import { redirectTargetLabel } from './redirect';
+import { clientAllowed } from './clients';
+import { readMcpPolicy } from './policy';
 import {
   CODE_TTL_SECONDS,
   generateOAuthSecret,
+  GRANT_IDLE_DAYS,
   MCP_SCOPES,
   PENDING_TTL_SECONDS,
   type McpScope,
@@ -17,6 +20,15 @@ export function parseScopes(raw: string | null): McpScope[] | null {
   const asked = raw.trim().split(/ +/);
   if (!asked.every((s) => (MCP_SCOPES as readonly string[]).includes(s))) return null;
   return asked.includes('mcp:write') ? ['mcp:read', 'mcp:write'] : ['mcp:read'];
+}
+
+/** Spec §4.5: a grant unused for GRANT_IDLE_DAYS (since its creation, if never used) has expired. */
+export function isGrantIdle(
+  grant: { lastUsedAt: Date | null; createdAt: Date },
+  now: Date,
+): boolean {
+  const last = grant.lastUsedAt ?? grant.createdAt;
+  return now.getTime() - last.getTime() > GRANT_IDLE_DAYS * 86_400_000;
 }
 
 /** The client's redirect URI with the response parameters added; null parameters are left out. */
@@ -93,7 +105,11 @@ export async function pendingRequestFor(
     .where(eq(oauthClients.id, request.clientRowId));
   if (!client) return null;
   const [grant] = await db
-    .select({ scopes: oauthGrants.scopes })
+    .select({
+      scopes: oauthGrants.scopes,
+      lastUsedAt: oauthGrants.lastUsedAt,
+      createdAt: oauthGrants.createdAt,
+    })
     .from(oauthGrants)
     .where(
       and(
@@ -116,7 +132,8 @@ export async function pendingRequestFor(
     },
     scopes,
     expiresAt: request.expiresAt,
-    coveredByGrant: !!grant && scopes.every((s) => grant.scopes.includes(s)),
+    coveredByGrant:
+      !!grant && !isGrantIdle(grant, now) && scopes.every((s) => grant.scopes.includes(s)),
   };
 }
 
@@ -129,7 +146,7 @@ export interface GrantChange {
 
 export type DecisionResult =
   | { ok: true; redirectTo: string; grant: (GrantChange & { created: boolean }) | null }
-  | { ok: false; reason: 'not_found' | 'scope_not_requested' };
+  | { ok: false; reason: 'not_found' | 'scope_not_requested' | 'client_not_allowed' };
 
 /**
  * Approve (a grant and a 60 s code) or deny a pending request of this user (spec §6 step 6).
@@ -186,37 +203,70 @@ export async function decide(
       .from(oauthClients)
       .where(eq(oauthClients.id, request.clientRowId));
     if (!client) return { ok: false, reason: 'not_found' };
-    const [live] = await tx
-      .select()
-      .from(oauthGrants)
-      .where(
-        and(
-          eq(oauthGrants.userId, userId),
-          eq(oauthGrants.clientRowId, request.clientRowId),
-          isNull(oauthGrants.revokedAt),
-        ),
-      )
-      .for('update');
+    // The administrator may have changed the client policy since the request was made.
+    const policy = await readMcpPolicy(tx);
+    if (
+      !clientAllowed(policy, client.clientId) ||
+      (client.source === 'dcr' ? !policy.dcr : !policy.cimd)
+    ) {
+      return { ok: false, reason: 'client_not_allowed' };
+    }
+    const lockLive = async () =>
+      (
+        await tx
+          .select()
+          .from(oauthGrants)
+          .where(
+            and(
+              eq(oauthGrants.userId, userId),
+              eq(oauthGrants.clientRowId, request.clientRowId),
+              isNull(oauthGrants.revokedAt),
+            ),
+          )
+          .for('update')
+      )[0];
+    let live = await lockLive();
+    if (live && isGrantIdle(live, now)) {
+      // Expired: replace it, or the client would loop into invalid_grant on it for ever.
+      await tx.update(oauthGrants).set({ revokedAt: now }).where(eq(oauthGrants.id, live.id));
+      live = undefined;
+    }
     let grantId: string;
+    let granted: McpScope[] = scopes;
     let created = false;
-    if (live) {
-      grantId = live.id;
-      if (live.scopes.join(' ') !== scopes.join(' ')) {
-        await tx.update(oauthGrants).set({ scopes }).where(eq(oauthGrants.id, live.id));
+    if (!live) {
+      // A concurrent approval of the same user and client may win the unique live-grant index.
+      const [inserted] = await tx
+        .insert(oauthGrants)
+        .values({ userId, clientRowId: request.clientRowId, scopes })
+        .onConflictDoNothing()
+        .returning({ id: oauthGrants.id });
+      if (inserted) {
+        grantId = inserted.id;
         created = true;
+      } else {
+        live = await lockLive();
+        if (!live) return { ok: false, reason: 'not_found' };
+        grantId = live.id;
       }
     } else {
-      grantId = first(
-        await tx
-          .insert(oauthGrants)
-          .values({ userId, clientRowId: request.clientRowId, scopes })
-          .returning({ id: oauthGrants.id }),
-      ).id;
-      created = true;
+      grantId = live.id;
+    }
+    if (live) {
+      // Never narrow a live grant (an auto-approved read-only request keeps mcp:write).
+      const union: McpScope[] =
+        scopes.includes('mcp:write') || live.scopes.includes('mcp:write')
+          ? ['mcp:read', 'mcp:write']
+          : ['mcp:read'];
+      granted = union;
+      if (union.length !== live.scopes.length) {
+        await tx.update(oauthGrants).set({ scopes: union }).where(eq(oauthGrants.id, live.id));
+        created = true;
+      }
     }
     const grant: GrantChange = {
       id: grantId,
-      scopes,
+      scopes: granted,
       clientId: client.clientId,
       clientName: client.name,
     };

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { RouteDeps } from '../app';
 import { actorOf } from '../audit/recorder';
 import { requireSession } from '../auth/access';
-import { notFound, validationFailed } from '../http/problem';
+import { forbidden, notFound, validationFailed } from '../http/problem';
 import { idParams, timestamp } from '../http/schemas';
 import { decide, pendingRequestFor } from '../oauth/grants';
 import { MCP_SCOPES } from '../oauth/tokens';
@@ -33,6 +33,10 @@ export const oauthConsentRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = as
 ) => {
   const issuer = () => mcpUrls(deps.config.publicUrl)?.issuer ?? null;
 
+  /**
+   * Reading binds the request to the caller: the first signed-in user to open it is the only one
+   * who can see or answer it afterwards (intended, spec §6 step 5).
+   */
   app.get(
     '/oauth/requests/:id',
     {
@@ -97,6 +101,9 @@ export const oauthConsentRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = as
         throw validationFailed([
           { path: 'body.scopes', message: 'Only the scopes the client asked for' },
         ]);
+      }
+      if (!result.ok && result.reason === 'client_not_allowed') {
+        throw forbidden('CLIENT_NOT_ALLOWED', 'The administrator no longer allows this client');
       }
       if (!result.ok) throw notFound('Authorization request');
       return { redirectTo: result.redirectTo };

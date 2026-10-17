@@ -2,6 +2,8 @@ import { desc, eq, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   addMember,
+  ADMIN_PASSWORD,
+  bearer,
   createTestContext,
   createUser,
   login,
@@ -12,7 +14,8 @@ import {
 } from '../../test/app';
 import { rbacContext } from '../../test/rbac';
 import { SESSION_COOKIE } from '../auth/sessions';
-import { auditEvents } from '../db/schema';
+import { auditEvents, oauthGrants, oauthRequests } from '../db/schema';
+import { decide } from './grants';
 import { pkceS256 } from './tokens';
 
 const VERIFIER = 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk';
@@ -282,5 +285,172 @@ describe('POST /oauth/requests/:id/decision audit', () => {
     } finally {
       await ctx.close();
     }
+  });
+});
+
+describe('grants, policy and request hygiene', () => {
+  let ctx: TestContext;
+  let dave: Session;
+  let daveId: string;
+  let clientId: string;
+  let authorize: ReturnType<typeof authorizeWith>;
+  beforeAll(async () => {
+    ctx = await createTestContext({ config: { publicUrl: 'https://q.example' } });
+    const u = await createUser(ctx, { username: 'dave' });
+    daveId = u.id;
+    dave = await login(ctx, u.username, u.password);
+    clientId = await registerClient(ctx);
+    authorize = authorizeWith(ctx, clientId, 'https://q.example');
+  });
+  afterAll(async () => {
+    await ctx.close();
+  });
+
+  const open = async (over: Record<string, string | undefined> = {}) => {
+    const id = consentRequestId((await authorize(over)).headers.location);
+    const res = await ctx.app.inject({
+      method: 'GET',
+      url: `/api/v0/oauth/requests/${id}`,
+      headers: dave.headers,
+    });
+    return { id, view: res.json() };
+  };
+  const approve = (id: string, scopes: string[], headers: Record<string, string> = dave.headers) =>
+    ctx.app.inject({
+      method: 'POST',
+      url: `/api/v0/oauth/requests/${id}/decision`,
+      headers,
+      payload: { decision: 'approve', scopes },
+    });
+  const grants = () => ctx.db.select().from(oauthGrants).where(eq(oauthGrants.userId, daveId));
+
+  it('never narrows a live grant, and a covered read-only request is no new grant', async () => {
+    const wide = await open();
+    expect((await approve(wide.id, ['mcp:read', 'mcp:write'])).statusCode).toBe(200);
+    const narrow = await open({ scope: 'mcp:read' });
+    expect(narrow.view.coveredByGrant).toBe(true);
+    expect((await approve(narrow.id, ['mcp:read'])).statusCode).toBe(200);
+    const rows = await grants();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.scopes).toEqual(['mcp:read', 'mcp:write']);
+    expect(rows[0]?.revokedAt).toBeNull();
+  });
+
+  it('replaces a grant that has been idle for 90 days', async () => {
+    const [old] = await grants();
+    await ctx.db.execute(
+      sql`UPDATE oauth_grants SET created_at = now() - interval '100 days', last_used_at = now() - interval '91 days' WHERE id = ${old?.id}`,
+    );
+    const { id, view } = await open({ scope: 'mcp:read' });
+    expect(view.coveredByGrant).toBe(false);
+    expect((await approve(id, ['mcp:read'])).statusCode).toBe(200);
+    const rows = await grants();
+    const live = rows.filter((g) => g.revokedAt === null);
+    expect(live).toHaveLength(1);
+    expect(live[0]?.id).not.toBe(old?.id);
+    expect(live[0]?.scopes).toEqual(['mcp:read']);
+    expect(rows.find((g) => g.id === old?.id)?.revokedAt).not.toBeNull();
+  });
+
+  it('serves two concurrent approvals of a new grant with one grant', async () => {
+    const eve = await createUser(ctx, { username: 'eve' });
+    const eveSession = await login(ctx, eve.username, eve.password);
+    const ids: string[] = [];
+    for (let i = 0; i < 2; i += 1) {
+      const id = consentRequestId((await authorize({ scope: 'mcp:read' })).headers.location);
+      await ctx.app.inject({
+        method: 'GET',
+        url: `/api/v0/oauth/requests/${id}`,
+        headers: eveSession.headers,
+      });
+      ids.push(id);
+    }
+    const results = await Promise.all(
+      ids.map((id) =>
+        decide(
+          ctx.db,
+          id,
+          eve.id,
+          { approve: true, scopes: ['mcp:read'] },
+          'https://q.example',
+          () => Promise.resolve(),
+        ),
+      ),
+    );
+    expect(results.every((r) => r.ok)).toBe(true);
+    const rows = await ctx.db.select().from(oauthGrants).where(eq(oauthGrants.userId, eve.id));
+    expect(rows).toHaveLength(1);
+  });
+
+  it('answers a repeated parameter with an error, never with a default', async () => {
+    const redirect = encodeURIComponent(REDIRECT);
+    const q = (extra: string) =>
+      ctx.app.inject({
+        method: 'GET',
+        url: `/oauth/authorize?client_id=${clientId}&redirect_uri=${redirect}&response_type=code&code_challenge=${pkceS256(VERIFIER)}&code_challenge_method=S256&state=s${extra}`,
+      });
+    for (const extra of ['&client_id=x', `&redirect_uri=${redirect}`]) {
+      const res = await q(extra);
+      expect(res.statusCode).toBe(400);
+      expect(res.headers.location).toBeUndefined();
+    }
+    for (const extra of [
+      '&scope=mcp:read&scope=mcp:write',
+      '&response_type=code',
+      '&resource=a&resource=b',
+    ]) {
+      const res = await q(extra);
+      expect(res.statusCode).toBe(302);
+      expect(new URL(res.headers.location as string).searchParams.get('error')).toBe(
+        'invalid_request',
+      );
+    }
+  });
+
+  it('refuses a client the administrator has disallowed since, with 403 CLIENT_NOT_ALLOWED', async () => {
+    const { id } = await open({ scope: 'mcp:read' });
+    const admin = await login(ctx, 'admin', ADMIN_PASSWORD);
+    const put = (allowedClients: string[]) =>
+      ctx.app.inject({
+        method: 'PUT',
+        url: '/api/v0/system/mcp',
+        headers: admin.headers,
+        payload: { dcr: true, cimd: true, allowedClients },
+      });
+    await put(['https://other.example/']);
+    const res = await approve(id, ['mcp:read']);
+    expect(res.statusCode).toBe(403);
+    expect(res.json()).toMatchObject({ code: 'CLIENT_NOT_ALLOWED' });
+    await put([]);
+    expect((await approve(id, ['mcp:read'])).statusCode).toBe(200);
+  });
+
+  it('needs the CSRF header and a session, and stores only the code hash', async () => {
+    const { id } = await open({ scope: 'mcp:read' });
+    const noCsrf = await approve(id, ['mcp:read'], { cookie: dave.headers.cookie ?? '' });
+    expect(noCsrf.statusCode).toBe(403);
+    expect(noCsrf.json()).toMatchObject({ code: 'CSRF_FAILED' });
+    const created = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/v0/tokens',
+      headers: dave.headers,
+      payload: { name: 'pat', scopes: ['read'] },
+    });
+    expect(created.statusCode).toBe(201);
+    const viaToken = await approve(id, ['mcp:read'], bearer(created.json().token));
+    expect(viaToken.statusCode).toBe(403);
+    expect(viaToken.json()).toMatchObject({ code: 'SESSION_REQUIRED' });
+
+    const before = Date.now();
+    const res = await approve(id, ['mcp:read']);
+    const code = new URL(res.json().redirectTo).searchParams.get('code') ?? '';
+    const [row] = await ctx.db.select().from(oauthRequests).where(eq(oauthRequests.id, id));
+    expect(row?.status).toBe('code_issued');
+    expect(row?.codePrefix).toBe(code.slice(0, 12));
+    expect(row?.codeHash?.length).toBe(32);
+    expect(JSON.stringify(row)).not.toContain(code);
+    const ttl = (row?.expiresAt.getTime() ?? 0) - before;
+    expect(ttl).toBeGreaterThan(50_000);
+    expect(ttl).toBeLessThan(70_000);
   });
 });

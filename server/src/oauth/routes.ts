@@ -101,6 +101,11 @@ export const oauthRoutes: FastifyPluginAsync<{ deps: RouteDeps; urls: McpUrls }>
   app.get('/oauth/authorize', { config: { public: true } }, async (request, reply) => {
     const q = request.query as Record<string, unknown>;
     const str = (k: string) => (typeof q[k] === 'string' ? q[k] : null);
+    // Present but not a single string (a repeated parameter): never fall back to a default.
+    const malformed = (k: string) => k in q && typeof q[k] !== 'string';
+    if (malformed('client_id') || malformed('redirect_uri')) {
+      return errorPage(reply, 400, 'Cannot connect', 'The request is malformed.');
+    }
     const clientIdParam = str('client_id');
     if (!clientIdParam)
       return errorPage(reply, 400, 'Cannot connect', 'The request names no client.');
@@ -135,6 +140,15 @@ export const oauthRoutes: FastifyPluginAsync<{ deps: RouteDeps; urls: McpUrls }>
         }),
         302,
       );
+    const REST = [
+      'response_type',
+      'scope',
+      'state',
+      'code_challenge',
+      'code_challenge_method',
+      'resource',
+    ];
+    if (REST.some(malformed)) return fail('invalid_request', 'A parameter is repeated');
     if (str('response_type') !== 'code')
       return fail('unsupported_response_type', 'Only code is supported');
     const challenge = str('code_challenge');
