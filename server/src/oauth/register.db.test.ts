@@ -99,13 +99,49 @@ describe('POST /oauth/register (RFC 7591)', () => {
     });
   });
 
-  it('limits registrations per address', async () => {
+  it('limits registrations per address, answering in OAuth JSON', async () => {
     const ip = nextIp();
-    let last = 0;
-    for (let i = 0; i < 21; i += 1) {
-      last = (await register({ redirect_uris: ['https://a.example/cb'] }, ip)).statusCode;
+    let last = await register({ redirect_uris: ['https://a.example/cb'] }, ip);
+    for (let i = 1; i < 21; i += 1) {
+      last = await register({ redirect_uris: ['https://a.example/cb'] }, ip);
     }
-    expect(last).toBe(429);
+    expect(last.statusCode).toBe(429);
+    expect(last.headers['content-type']).toContain('application/json');
+    expect(last.headers['content-type']).not.toContain('problem');
+    expect(last.json()).toEqual({
+      error: 'temporarily_unavailable',
+      error_description: expect.any(String),
+    });
+  });
+
+  it('answers malformed JSON in OAuth JSON', async () => {
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: '/oauth/register',
+      headers: { 'content-type': 'application/json' },
+      payload: '{not json',
+      remoteAddress: nextIp(),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.headers['content-type']).not.toContain('problem');
+    expect(res.json().error).toBe('invalid_request');
+  });
+
+  it('stores only the validated metadata fields', async () => {
+    const res = await register({
+      client_name: 'Lean',
+      redirect_uris: ['https://a.example/cb'],
+      junk: 'x'.repeat(5000),
+      contacts: ['a@b.example'],
+    });
+    expect(res.statusCode).toBe(201);
+    const [row] = await ctx.db
+      .select()
+      .from(oauthClients)
+      .where(eq(oauthClients.clientId, res.json().client_id));
+    expect(row?.metadata).not.toHaveProperty('junk');
+    expect(row?.metadata).not.toHaveProperty('contacts');
+    expect(row?.metadata).toMatchObject({ client_name: 'Lean' });
   });
 });
 

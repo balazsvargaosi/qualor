@@ -1,6 +1,7 @@
-import type { FastifyPluginAsync } from 'fastify';
+import type { FastifyError, FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import type { RouteDeps } from '../app';
+import { ProblemError } from '../http/problem';
 import { anonymousActor } from '../audit/recorder';
 import { registerDcrClient } from './clients';
 import { corsPreflight, installCors, installFormParser, oauthError } from './http';
@@ -29,6 +30,19 @@ export const oauthRoutes: FastifyPluginAsync<{ deps: RouteDeps; urls: McpUrls }>
   app,
   { deps, urls },
 ) => {
+  // Spec §4.1: framework-level failures (rate limit, bad JSON, size, media type) answer in OAuth
+  // JSON here too. Encapsulated in this plugin; /api/v0 keeps problem+json.
+  app.setErrorHandler((error: FastifyError, request, reply) => {
+    const status = error instanceof ProblemError ? error.status : (error.statusCode ?? 500);
+    if (status === 429) {
+      return oauthError(reply, 429, 'temporarily_unavailable', 'Too many requests; retry later');
+    }
+    if (status >= 400 && status < 500) {
+      return oauthError(reply, status, 'invalid_request', 'The request could not be understood');
+    }
+    request.log.error({ err: error }, 'unhandled error');
+    return oauthError(reply, 500, 'server_error', 'Internal server error');
+  });
   installFormParser(app);
   installCors(app, (path) => CORS_PATHS.has(path) || path.startsWith('/.well-known/'));
   const wellKnownAs = new URL(urls.authorizationServerMetadata).pathname;
@@ -109,7 +123,15 @@ export const oauthRoutes: FastifyPluginAsync<{ deps: RouteDeps; urls: McpUrls }>
           redirectUris: body.redirect_uris,
           logoUri: httpsOrNull(body.logo_uri),
           clientUri: httpsOrNull(body.client_uri),
-          metadata: body,
+          metadata: {
+            redirect_uris: body.redirect_uris,
+            client_name: body.client_name,
+            client_uri: body.client_uri,
+            logo_uri: body.logo_uri,
+            token_endpoint_auth_method: body.token_endpoint_auth_method,
+            grant_types: body.grant_types,
+            response_types: body.response_types,
+          },
         });
         await deps.audit.record(tx, anonymousActor(request, null), [
           {

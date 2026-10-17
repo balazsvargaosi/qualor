@@ -23,9 +23,9 @@ export function installFormParser(app: FastifyInstance): void {
     'application/x-www-form-urlencoded',
     { parseAs: 'string', bodyLimit: 16 * 1024 },
     (_request, body, done) => {
-      const out: FormBody = {};
+      const out: FormBody = Object.create(null) as FormBody;
       for (const [key, value] of new URLSearchParams(body as string)) {
-        out[key] = key in out ? DUPLICATE : value;
+        out[key] = Object.hasOwn(out, key) ? DUPLICATE : value;
       }
       done(null, out);
     },
