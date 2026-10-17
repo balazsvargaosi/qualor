@@ -4,6 +4,7 @@ import rateLimit from '@fastify/rate-limit';
 import swagger from '@fastify/swagger';
 import Fastify, { type FastifyBaseLogger, type FastifyInstance } from 'fastify';
 import { serializerCompiler, validatorCompiler } from 'fastify-type-provider-zod';
+import { InternalCalls } from './mcp/internal';
 import { installAuthentication } from './auth/authenticate';
 import { createAuditRecorder, type AuditRecorder } from './audit/recorder';
 import { warmPasswordHashing } from './auth/password';
@@ -116,7 +117,9 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       new ProblemError(429, 'RATE_LIMITED', `Too many requests; retry in ${context.after}`),
   });
   await app.register(swagger, openApiOptions());
-  installAuthentication(app, routeDeps);
+  const internalCalls = new InternalCalls();
+  app.decorate('internalCalls', internalCalls);
+  installAuthentication(app, routeDeps, internalCalls);
   await registerRoutes(app, routeDeps);
   const urls = mcpUrls(deps.config.publicUrl);
   if (urls) await app.register(oauthRoutes, { deps: routeDeps, urls });

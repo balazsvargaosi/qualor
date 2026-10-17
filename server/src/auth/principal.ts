@@ -2,12 +2,26 @@ import { and, eq } from 'drizzle-orm';
 import type { Executor } from '../db/client';
 import { apiTokens, users, type TokenScope } from '../db/schema';
 import { resolveSession, type UserRow } from './sessions';
+import type { McpScope } from '../oauth/tokens';
 import { hashesEqual, hashToken, parseToken } from './tokens';
 
 export type Principal =
   | { kind: 'session'; user: UserRow; sessionSecret: string }
   | { kind: 'personal'; user: UserRow; tokenId: string; scopes: TokenScope[] }
-  | { kind: 'project'; tokenId: string; projectId: string };
+  | { kind: 'project'; tokenId: string; projectId: string }
+  | {
+      kind: 'oauth';
+      user: UserRow;
+      grantId: string;
+      clientId: string;
+      clientName: string;
+      /** What the user granted the client (spec §4.3). */
+      mcpScopes: McpScope[];
+      /** The REST scopes this one internal call runs with (the tool's, Task 9). */
+      scopes: TokenScope[];
+    };
+
+export type OAuthPrincipal = Extract<Principal, { kind: 'oauth' }>;
 
 export type UserPrincipal = Extract<Principal, { user: UserRow }>;
 

@@ -158,7 +158,10 @@ export const analysisRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async 
         }
         const analysisId = await createQueuedAnalysis(deps.db, {
           projectId: project.id,
-          uploadedByTokenId: principal.kind === 'session' ? null : principal.tokenId,
+          uploadedByTokenId:
+            principal.kind === 'personal' || principal.kind === 'project'
+              ? principal.tokenId
+              : null,
           body: upload.body,
         });
         return reply.code(202).send({

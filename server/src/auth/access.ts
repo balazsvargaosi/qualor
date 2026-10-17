@@ -19,6 +19,7 @@ const RANK: Record<AccessScope, number> = { read: 1, write: 2, admin: 3 };
 export function hasScope(principal: Principal, scope: TokenScope): boolean {
   if (principal.kind === 'session') return true;
   if (principal.kind === 'project') return scope === 'analysis:write';
+  // personal and oauth (the internal call's effective scopes) share this generic branch.
   if (scope === 'analysis:write') return principal.scopes.includes('analysis:write');
   return principal.scopes.some((s) => s !== 'analysis:write' && RANK[s] >= RANK[scope]);
 }

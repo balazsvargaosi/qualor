@@ -1,6 +1,7 @@
 import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import type { Db, Executor } from '../db/client';
 import { first } from '../db/rows';
+import type { OAuthPrincipal } from '../auth/principal';
 import { hashesEqual, hashToken } from '../auth/tokens';
 import { oauthClients, oauthGrants, oauthRequests, oauthTokens, users } from '../db/schema';
 import { redirectTargetLabel } from './redirect';
@@ -233,7 +234,7 @@ export async function decide(
     let live = await lockLive();
     if (live && isGrantIdle(live, now)) {
       // Expired: replace it, or the client would loop into invalid_grant on it for ever.
-      await tx.update(oauthGrants).set({ revokedAt: now }).where(eq(oauthGrants.id, live.id));
+      await revokeGrant(tx, live.id, null, now);
       live = undefined;
     }
     let grantId: string;
@@ -398,8 +399,11 @@ export async function exchangeCode(
   const parsed = parseOAuthSecret(input.code);
   if (!parsed || parsed.kind !== 'code') return INVALID;
   return db.transaction(async (tx): Promise<TokenResult> => {
-    // Lock order everywhere: the grant row first, then its request/token rows (revokeGrant takes
-    // the grant first too), so a reuse race cannot deadlock. Find the match unlocked, lock, re-read.
+    // Lock order: the grant row first, then its request/token rows (revokeGrant takes the grant
+    // first too), so a reuse race cannot deadlock. The one exception is decide(), which locks its
+    // pending request and then the grant; that is safe because a pending request is not among the
+    // rows the grant-first paths lock (they lock only code_issued/used ones). Find the match
+    // unlocked, lock, re-read.
     const candidates = await tx
       .select({ request: oauthRequests, client: oauthClients })
       .from(oauthRequests)
@@ -481,9 +485,10 @@ export async function refresh(
   const parsed = parseOAuthSecret(input.refreshToken);
   if (!parsed || parsed.kind !== 'refresh') return INVALID;
   return db.transaction(async (tx): Promise<TokenResult> => {
-    // Lock order: grant first, then the token row (see exchangeCode). Two simultaneous
-    // presentations of one token serialise on the grant; the loser re-reads the token as replaced,
-    // which is reuse, so the grant is revoked (the safe outcome).
+    // Lock order: grant first, then the token row (see exchangeCode, which also states decide()'s
+    // request-then-grant
+    // exception). Two simultaneous presentations of one token serialise on the grant; the loser
+    // re-reads the token as replaced, which is reuse, so the grant is revoked (the safe outcome).
     const candidates = await tx
       .select({ token: oauthTokens, clientId: oauthClients.clientId, source: oauthClients.source })
       .from(oauthTokens)
@@ -576,4 +581,48 @@ export async function revokeToken(
     await tx.update(oauthTokens).set({ revokedAt: now }).where(eq(oauthTokens.id, match.token.id));
     return null;
   });
+}
+
+const TOUCH_INTERVAL_MS = 60_000;
+
+/** Spec §4.3: a live `qlr_oat_` of a live grant whose user is active; else null. */
+export async function resolveAccessToken(
+  db: Executor,
+  token: string,
+  now = new Date(),
+): Promise<Omit<OAuthPrincipal, 'scopes'> | null> {
+  const parsed = parseOAuthSecret(token);
+  if (!parsed || parsed.kind !== 'access') return null;
+  const candidates = await db
+    .select({ token: oauthTokens, grant: oauthGrants, client: oauthClients, user: users })
+    .from(oauthTokens)
+    .innerJoin(oauthGrants, eq(oauthGrants.id, oauthTokens.grantId))
+    .innerJoin(oauthClients, eq(oauthClients.id, oauthGrants.clientRowId))
+    .innerJoin(users, eq(users.id, oauthGrants.userId))
+    .where(and(eq(oauthTokens.prefix, parsed.prefix), eq(oauthTokens.kind, 'access')));
+  const presented = hashToken(token);
+  let match: (typeof candidates)[number] | undefined;
+  for (const c of candidates) if (hashesEqual(c.token.secretHash, presented)) match = c;
+  if (!match) return null;
+  const { token: row, grant, client, user } = match;
+  if (
+    row.revokedAt ||
+    row.expiresAt.getTime() <= now.getTime() ||
+    grant.revokedAt ||
+    isGrantIdle(grant, now) ||
+    !user.active
+  ) {
+    return null;
+  }
+  if (!grant.lastUsedAt || now.getTime() - grant.lastUsedAt.getTime() >= TOUCH_INTERVAL_MS) {
+    await db.update(oauthGrants).set({ lastUsedAt: now }).where(eq(oauthGrants.id, grant.id));
+  }
+  return {
+    kind: 'oauth',
+    user,
+    grantId: grant.id,
+    clientId: client.clientId,
+    clientName: client.name,
+    mcpScopes: grant.scopes as McpScope[],
+  };
 }

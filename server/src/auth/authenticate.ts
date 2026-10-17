@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { RouteDeps } from '../app';
+import { INTERNAL_HEADER, type InternalCalls } from '../mcp/internal';
 import { ProblemError, unauthenticated } from '../http/problem';
 import { isDemoUser } from './demo';
 import { resolveRequestPrincipal, type UserPrincipal } from './principal';
@@ -27,15 +28,26 @@ const ALLOWED_BEFORE_PASSWORD_CHANGE = new Set([
  * handful of routes that let them change it (403), unless an SSO sign-in made the session. The
  * demo account (QUALOR_DEMO_USER) may change nothing but sign out (403), whatever its role.
  */
-export function installAuthentication(app: FastifyInstance, deps: RouteDeps): void {
+export function installAuthentication(
+  app: FastifyInstance,
+  deps: RouteDeps,
+  internalCalls: InternalCalls,
+): void {
   app.decorateRequest('principal', null);
   app.addHook('onRequest', async (request) => {
     if (request.is404 || request.routeOptions.config.public === true) return;
-    const principal = await resolveRequestPrincipal(
-      deps.db,
-      request.headers.authorization,
-      request.cookies[SESSION_COOKIE],
-    );
+    // Ruling R4: the header is guarded by its one-time key alone; an OAuth bearer never gets here.
+    const internal = request.headers[INTERNAL_HEADER];
+    const principal =
+      internal !== undefined
+        ? typeof internal === 'string'
+          ? internalCalls.take(internal)
+          : null
+        : await resolveRequestPrincipal(
+            deps.db,
+            request.headers.authorization,
+            request.cookies[SESSION_COOKIE],
+          );
     request.principal = principal;
     if (!principal) throw unauthenticated();
     if (principal.kind === 'session' && MUTATING.has(request.method)) {
