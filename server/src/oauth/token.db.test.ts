@@ -10,7 +10,9 @@ import {
 } from '../../test/app';
 import { authorizeAndApprove, oauthTokens, registerClient, tokenRequest } from '../../test/oauth';
 import { rbacContext } from '../../test/rbac';
-import { auditEvents, oauthGrants, users } from '../db/schema';
+import { auditEvents, oauthGrants, oauthTokens as tokensTable, users } from '../db/schema';
+import { revokeGrant } from './grants';
+import { writeMcpPolicy } from './policy';
 
 const FORM = { 'content-type': 'application/x-www-form-urlencoded' };
 
@@ -250,6 +252,86 @@ describe('POST /oauth/token and /oauth/revoke', () => {
       expect(next.json().error).toBe('invalid_grant');
     }
     expect([a, b].filter((r) => r.statusCode === 400)).toHaveLength(2 - ok.length);
+  });
+
+  const refreshForm = (t: { refreshToken: string; clientId: string }) => ({
+    grant_type: 'refresh_token',
+    refresh_token: t.refreshToken,
+    client_id: t.clientId,
+  });
+
+  it('survives a refresh racing a replayed old token: no 500, grant revoked', async () => {
+    const iterations = 8;
+    for (let i = 0; i < iterations; i += 1) {
+      const t = await oauthTokens(ctx, alice);
+      const first = await tokenRequest(ctx, refreshForm(t));
+      expect(first.statusCode).toBe(200);
+      const current = first.json().refresh_token as string;
+      const [a, b] = await Promise.all([
+        tokenRequest(ctx, refreshForm({ ...t, refreshToken: current })),
+        tokenRequest(ctx, refreshForm(t)),
+      ]);
+      expect(a.statusCode).toBeLessThan(500);
+      expect(b.statusCode).toBeLessThan(500);
+      const [grant] = await ctx.db
+        .select({ revokedAt: oauthGrants.revokedAt })
+        .from(oauthGrants)
+        .innerJoin(tokensTable, eq(tokensTable.grantId, oauthGrants.id))
+        .where(eq(tokensTable.prefix, t.refreshToken.slice(0, 12)));
+      expect(grant?.revokedAt).not.toBeNull();
+    }
+  });
+
+  it('refuses a refresh from another client, an expired token, a wrong resource and a revoked grant', async () => {
+    const t = await oauthTokens(ctx, alice);
+    const other = await registerClient(ctx);
+    expect((await tokenRequest(ctx, { ...refreshForm(t), client_id: other })).json().error).toBe(
+      'invalid_grant',
+    );
+    expect(
+      (await tokenRequest(ctx, { ...refreshForm(t), resource: 'https://other.example/mcp' })).json()
+        .error,
+    ).toBe('invalid_target');
+    await ctx.db
+      .update(tokensTable)
+      .set({ expiresAt: new Date(Date.now() - 1000) })
+      .where(eq(tokensTable.prefix, t.refreshToken.slice(0, 12)));
+    expect((await tokenRequest(ctx, refreshForm(t))).json().error).toBe('invalid_grant');
+
+    const u = await oauthTokens(ctx, alice);
+    const [row] = await ctx.db
+      .select({ grantId: tokensTable.grantId })
+      .from(tokensTable)
+      .where(eq(tokensTable.prefix, u.refreshToken.slice(0, 12)));
+    expect(await revokeGrant(ctx.db, row?.grantId ?? '', null)).toBe(true);
+    expect((await tokenRequest(ctx, refreshForm(u))).json().error).toBe('invalid_grant');
+  });
+
+  it('refuses a refresh once the administrator blocked the client, keeping the grant', async () => {
+    const t = await oauthTokens(ctx, alice);
+    await writeMcpPolicy(ctx.db, { dcr: false, cimd: true, allowedClients: [] });
+    try {
+      expect((await tokenRequest(ctx, refreshForm(t))).json().error).toBe('invalid_grant');
+    } finally {
+      await writeMcpPolicy(ctx.db, { dcr: true, cimd: true, allowedClients: [] });
+    }
+    const [row] = await ctx.db
+      .select({ revokedAt: oauthGrants.revokedAt })
+      .from(oauthGrants)
+      .innerJoin(tokensTable, eq(tokensTable.grantId, oauthGrants.id))
+      .where(eq(tokensTable.prefix, t.refreshToken.slice(0, 12)));
+    expect(row?.revokedAt).toBeNull();
+    expect((await tokenRequest(ctx, refreshForm(t))).statusCode).toBe(200);
+  });
+
+  it('rejects a repeated parameter on /oauth/revoke', async () => {
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: '/oauth/revoke',
+      headers: FORM,
+      payload: 'token=a&token=b&client_id=x',
+    });
+    expect([res.statusCode, res.json().error]).toEqual([400, 'invalid_request']);
   });
 
   it('answers two simultaneous exchanges of one code with at most one pair', async () => {

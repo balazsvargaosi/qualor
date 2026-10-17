@@ -369,6 +369,9 @@ export const oauthRoutes: FastifyPluginAsync<{ deps: RouteDeps; urls: McpUrls }>
     '/oauth/revoke',
     { config: { public: true, rateLimit: { max: 120, timeWindow: '1 minute' } } },
     async (request, reply) => {
+      if (hasDuplicate(request.body)) {
+        return oauthError(reply, 400, 'invalid_request', 'A parameter was repeated');
+      }
       const token = param(request.body, 'token');
       const clientId = param(request.body, 'client_id');
       if (token && clientId) {

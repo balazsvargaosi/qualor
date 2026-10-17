@@ -398,20 +398,31 @@ export async function exchangeCode(
   const parsed = parseOAuthSecret(input.code);
   if (!parsed || parsed.kind !== 'code') return INVALID;
   return db.transaction(async (tx): Promise<TokenResult> => {
-    // Locks the request rows only: a second presentation of the code waits here, then sees 'used'.
+    // Lock order everywhere: the grant row first, then its request/token rows (revokeGrant takes
+    // the grant first too), so a reuse race cannot deadlock. Find the match unlocked, lock, re-read.
     const candidates = await tx
       .select({ request: oauthRequests, client: oauthClients })
       .from(oauthRequests)
       .innerJoin(oauthClients, eq(oauthClients.id, oauthRequests.clientRowId))
-      .where(eq(oauthRequests.codePrefix, parsed.prefix))
-      .for('update', { of: oauthRequests });
+      .where(eq(oauthRequests.codePrefix, parsed.prefix));
     const presented = hashToken(input.code);
     let match: (typeof candidates)[number] | undefined;
     for (const c of candidates) {
       if (c.request.codeHash && hashesEqual(c.request.codeHash, presented)) match = c;
     }
-    if (!match) return INVALID;
-    const { request, client } = match;
+    if (!match?.request.grantId) return INVALID;
+    const { client } = match;
+    await tx
+      .select({ id: oauthGrants.id })
+      .from(oauthGrants)
+      .where(eq(oauthGrants.id, match.request.grantId))
+      .for('update');
+    const [request] = await tx
+      .select()
+      .from(oauthRequests)
+      .where(eq(oauthRequests.id, match.request.id))
+      .for('update');
+    if (!request) return INVALID;
     if (request.status === 'used') {
       if (request.grantId && (await revokeGrant(tx, request.grantId, null, now))) {
         await onRevoked?.(tx, {
@@ -470,21 +481,32 @@ export async function refresh(
   const parsed = parseOAuthSecret(input.refreshToken);
   if (!parsed || parsed.kind !== 'refresh') return INVALID;
   return db.transaction(async (tx): Promise<TokenResult> => {
-    // Locks the token rows only: two simultaneous presentations of one token serialise here, and
-    // the loser re-reads it as replaced, which is reuse, so the grant is revoked (the safe outcome).
+    // Lock order: grant first, then the token row (see exchangeCode). Two simultaneous
+    // presentations of one token serialise on the grant; the loser re-reads the token as replaced,
+    // which is reuse, so the grant is revoked (the safe outcome).
     const candidates = await tx
-      .select({ token: oauthTokens, clientId: oauthClients.clientId })
+      .select({ token: oauthTokens, clientId: oauthClients.clientId, source: oauthClients.source })
       .from(oauthTokens)
       .innerJoin(oauthGrants, eq(oauthGrants.id, oauthTokens.grantId))
       .innerJoin(oauthClients, eq(oauthClients.id, oauthGrants.clientRowId))
-      .where(and(eq(oauthTokens.prefix, parsed.prefix), eq(oauthTokens.kind, 'refresh')))
-      .for('update', { of: oauthTokens });
+      .where(and(eq(oauthTokens.prefix, parsed.prefix), eq(oauthTokens.kind, 'refresh')));
     const presented = hashToken(input.refreshToken);
     let match: (typeof candidates)[number] | undefined;
     for (const c of candidates) if (hashesEqual(c.token.secretHash, presented)) match = c;
     if (!match) return INVALID;
-    const { token, clientId } = match;
+    const { clientId, source } = match;
     if (clientId !== input.clientId) return INVALID;
+    await tx
+      .select({ id: oauthGrants.id })
+      .from(oauthGrants)
+      .where(eq(oauthGrants.id, match.token.grantId))
+      .for('update');
+    const [token] = await tx
+      .select()
+      .from(oauthTokens)
+      .where(eq(oauthTokens.id, match.token.id))
+      .for('update');
+    if (!token) return INVALID;
     if (token.replacedBy !== null) {
       if (await revokeGrant(tx, token.grantId, null, now)) {
         await onRevoked?.(tx, { id: token.grantId, clientId, reason: 'refresh_reuse' });
@@ -498,6 +520,11 @@ export async function refresh(
     if (token.revokedAt || token.expiresAt.getTime() <= now.getTime()) return INVALID;
     const grant = await liveGrant(tx, token.grantId, now);
     if (!grant) return INVALID;
+    // The administrator may have blocked the client since (as decide() re-checks); the grant stays.
+    const policy = await readMcpPolicy(tx);
+    if (!clientAllowed(policy, clientId) || !(source === 'dcr' ? policy.dcr : policy.cimd)) {
+      return INVALID;
+    }
     const granted = grant.scopes as McpScope[];
     if (input.scopes && !input.scopes.every((s) => granted.includes(s))) {
       return { ok: false, error: 'invalid_scope' };
