@@ -151,7 +151,10 @@ describe('POST /mcp', () => {
   it('refuses arguments outside the input schema', async () => {
     const r = await callTool(ctx, readToken, 'qualor_projects', { query: '' });
     expect(r.status).toBe(200);
-    expect(r.isError || r.error !== null).toBe(true);
+    expect(r.isError).toBe(true);
+    expect(r.error).toBeNull();
+    expect(r.text).toContain('Input validation error');
+    expect(r.text).toContain('query');
   });
 
   it('answers 405 to GET and DELETE', async () => {
@@ -288,6 +291,7 @@ describe('POST /mcp scope and route checks', () => {
       tools,
       prompts: [],
       version: VERSION,
+      failedAuth: { max: 3, windowMs: 60_000 },
     });
     await bare.ready();
   });
@@ -317,14 +321,27 @@ describe('POST /mcp scope and route checks', () => {
   });
 
   it('checks the scope in the 2026-07-28 era too', async () => {
+    const before = ran.length;
     const { client, statuses } = await sdkClient(bare, readToken, { pin: '2026-07-28' });
     try {
       await expect(client.callTool({ name: 'test_write', arguments: {} })).rejects.toThrow();
       expect(statuses.at(-1)).toBe(403);
-      expect(ran).toEqual(['test_write']);
+      expect(ran).toHaveLength(before);
     } finally {
       await client.close();
     }
+  });
+
+  it('answers 429 once one address has failed the bearer check too often', async () => {
+    const bad = () => mcpCall({ ...ctx, app: bare }, 'qlr_oat_nonsense', 'tools/list');
+    const statuses: number[] = [];
+    for (let i = 0; i < 5; i += 1) statuses.push((await bad()).status);
+    expect(statuses).toEqual([401, 401, 401, 429, 429]);
+    const limited = await bad();
+    expect(limited.headers['retry-after']).toBe('60');
+    expect(limited.body).toMatchObject({ error: { code: -32000 } });
+    // A good token from the same address still works: only failures are counted.
+    expect((await call(readToken, 'test_sneaky')).status).toBe(200);
   });
 
   it('turns a call to an undeclared route into an opaque tool error', async () => {

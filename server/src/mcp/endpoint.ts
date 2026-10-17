@@ -14,8 +14,9 @@ import { corsPreflight, installCors } from '../oauth/http';
 import { resolveAccessToken } from '../oauth/grants';
 import type { McpScope } from '../oauth/tokens';
 import type { McpUrls } from '../oauth/urls';
-import { callerFor } from './inject';
-import { requiredScope, ToolError, type McpTool } from './tool';
+import { callerFor, mcpUserAgent } from './inject';
+import { requiredScope, ToolError, type McpTool, type ToolAccess } from './tool';
+import { LoginThrottle } from '../auth/throttle';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -29,6 +30,9 @@ const INSTRUCTIONS =
   'Qualor is a code quality and security server. Use qualor_gate_status to see what blocks a branch or merge request, ' +
   'qualor_issues and qualor_issue to read findings, fix the code, push, wait for CI to analyse the commit, then call ' +
   'qualor_gate_status again with the pushed commit SHA. Mark an issue false positive only with a reason a reviewer would accept.';
+
+/** Spec §5: failed bearer checks per address and minute. */
+const FAILED_AUTH = { max: 60, windowMs: 60_000 };
 
 /** What an agent reads when a tool breaks for a reason that is not its own (the log has the rest). */
 const UNEXPECTED = 'The tool failed unexpectedly. Try again later.';
@@ -73,6 +77,11 @@ export function missingScope(
   return null;
 }
 
+/** Whether `granted` covers what a tool of this access needs (the check inside the tool callback). */
+export function scopeCovers(granted: readonly McpScope[], access: ToolAccess): boolean {
+  return granted.includes(requiredScope(access));
+}
+
 /**
  * Spec §4.2: `POST /mcp`, stateless, one JSON response per request, for both protocol eras. The
  * bearer must be a live `qlr_oat_` (spec §4.3); a PAT, a session or nothing answers 401 with the
@@ -93,7 +102,12 @@ export const mcpEndpoint: FastifyPluginAsync<{
   /** The `fix_quality_gate` prompt arrives in Task 12. */
   prompts: readonly unknown[];
   version: string;
-}> = async (app, { deps, urls, tools, version }) => {
+  /** Failed bearer checks one address may make per window before it gets 429 (tests lower it). */
+  failedAuth?: { max: number; windowMs: number };
+}> = async (app, { deps, urls, tools, version, failedAuth }) => {
+  // Requests without a live token cost a lookup each; per-grant limits cannot apply to them, so
+  // they are counted per client address.
+  const failures = new LoginThrottle(failedAuth ?? FAILED_AUTH);
   // Framework failures (bad JSON, media type, size, rate limit) answer in JSON-RPC, the shape an
   // MCP client reads, never problem+json; the details stay in the log.
   app.setErrorHandler((error: FastifyError, request, reply) => {
@@ -147,13 +161,23 @@ export const mcpEndpoint: FastifyPluginAsync<{
           ...(tool.annotations ? { annotations: tool.annotations } : {}),
         },
         async (input: unknown) => {
+          // Defence in depth: the request-level check above already refused this, but a tool must
+          // never run on a token that lacks its scope, whatever path the call arrived by.
+          if (!scopeCovers(principal.mcpScopes, tool.access)) {
+            return {
+              isError: true,
+              content: [
+                { type: 'text' as const, text: `This tool needs ${requiredScope(tool.access)}` },
+              ],
+            };
+          }
           try {
             const call = callerFor(
               app,
               principal,
               tool.access,
               request.ip,
-              `qualor-mcp (${principal.clientName})`,
+              mcpUserAgent(principal.clientName),
             );
             const out = await tool.run(input as never, { call, principal });
             return {
@@ -232,13 +256,26 @@ export const mcpEndpoint: FastifyPluginAsync<{
           max: 600,
           timeWindow: '1 minute',
           hook: 'preHandler',
-          keyGenerator: (request: FastifyRequest) => request.mcpPrincipal?.grantId ?? request.ip,
+          keyGenerator: (request: FastifyRequest) => {
+            if (!request.mcpPrincipal) throw new Error('rate limit ran before the bearer check');
+            return request.mcpPrincipal.grantId;
+          },
         },
       },
       onRequest: async (request, reply) => {
         const match = /^Bearer\s+(\S+)$/i.exec(request.headers.authorization ?? '');
         const principal = match?.[1] ? await resolveAccessToken(deps.db, match[1]) : null;
-        if (!principal) return challenge(reply, request.headers.authorization !== undefined);
+        if (!principal) {
+          if (!failures.hit(request.ip)) {
+            return rpcError(
+              reply.header('retry-after', '60'),
+              429,
+              -32000,
+              'Too many requests; retry later',
+            );
+          }
+          return challenge(reply, request.headers.authorization !== undefined);
+        }
         request.mcpPrincipal = principal;
       },
     },

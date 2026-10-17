@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { missingScope } from './endpoint';
+import { missingScope, scopeCovers } from './endpoint';
 
 describe('missingScope (the tools/call check before the SDK runs)', () => {
   const scopes = new Map([
@@ -37,5 +37,15 @@ describe('missingScope (the tools/call check before the SDK runs)', () => {
     expect(missingScope('junk', scopes, [])).toBeNull();
     expect(missingScope(null, scopes, [])).toBeNull();
     expect(missingScope({ method: 'tools/call', params: { name: 7 } }, scopes, [])).toBeNull();
+  });
+});
+
+describe('scopeCovers (the check inside the tool callback)', () => {
+  it('needs mcp:write for a write tool and mcp:read for the others', () => {
+    expect(scopeCovers(['mcp:read'], 'write')).toBe(false);
+    expect(scopeCovers(['mcp:read', 'mcp:write'], 'write')).toBe(true);
+    expect(scopeCovers(['mcp:read'], 'read')).toBe(true);
+    expect(scopeCovers(['mcp:read'], 'ai')).toBe(true);
+    expect(scopeCovers([], 'read')).toBe(false);
   });
 });
