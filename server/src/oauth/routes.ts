@@ -28,7 +28,8 @@ import { redirectUriAllowed, redirectUriMatches } from './redirect';
 import { isCodeChallenge, MCP_SCOPES } from './tokens';
 import type { McpUrls } from './urls';
 
-const CORS_PATHS = new Set(['/oauth/register', '/oauth/token', '/oauth/revoke', '/mcp']);
+/** `/mcp` has its own CORS in the MCP plugin (mcp/endpoint.ts). */
+const CORS_PATHS = new Set(['/oauth/register', '/oauth/token', '/oauth/revoke']);
 
 const registrationSchema = z.looseObject({
   redirect_uris: z.array(z.string().max(2048)).max(20),

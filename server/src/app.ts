@@ -4,7 +4,10 @@ import rateLimit from '@fastify/rate-limit';
 import swagger from '@fastify/swagger';
 import Fastify, { type FastifyBaseLogger, type FastifyInstance } from 'fastify';
 import { serializerCompiler, validatorCompiler } from 'fastify-type-provider-zod';
+import { VERSION } from './index';
+import { mcpEndpoint } from './mcp/endpoint';
 import { InternalCalls } from './mcp/internal';
+import { MCP_TOOLS } from './mcp/tools';
 import { installAuthentication } from './auth/authenticate';
 import { createAuditRecorder, type AuditRecorder } from './audit/recorder';
 import { warmPasswordHashing } from './auth/password';
@@ -122,7 +125,16 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   installAuthentication(app, routeDeps, internalCalls);
   await registerRoutes(app, routeDeps);
   const urls = mcpUrls(deps.config.publicUrl);
-  if (urls) await app.register(oauthRoutes, { deps: routeDeps, urls });
+  if (urls) {
+    await app.register(oauthRoutes, { deps: routeDeps, urls });
+    await app.register(mcpEndpoint, {
+      deps: routeDeps,
+      urls,
+      tools: MCP_TOOLS,
+      prompts: [],
+      version: VERSION,
+    });
+  }
   if (plugins) await mountPluginRoutes(app, plugins, routeDeps.edition);
   if (deps.ui) registerUi(app, deps.ui);
   await warmPasswordHashing();
