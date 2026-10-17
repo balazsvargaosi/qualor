@@ -42,8 +42,8 @@ describe('runMigrations / pendingMigrations', () => {
     // 0007_compliance_reports (4E-1 §1), 0008_branch_dependencies (6M §4), 0009_mail (E1 spec,
     // approved 2026-10-13), 0010_account_tokens (mail E2 A1, 2026-10-13), 0011_notifications
     // (mail E3 N8, 2026-10-13), 0012_issues_confidence (6B-C# engine spec R-9, approved
-    // 2026-10-15).
-    expect(await pendingMigrations(t.db, MIGRATIONS_DIR)).toBe(13);
+    // 2026-10-15), 0013_oauth (phase 6N, OAuth clients, requests, grants and tokens).
+    expect(await pendingMigrations(t.db, MIGRATIONS_DIR)).toBe(14);
     expect(await readinessCheck(t.db, MIGRATIONS_DIR)()).toBe(false);
     await runMigrations(t.pool, MIGRATIONS_DIR);
     expect(await pendingMigrations(t.db, MIGRATIONS_DIR)).toBe(0);
@@ -302,6 +302,10 @@ describe('runMigrations / pendingMigrations', () => {
       'mail_messages', // 0009_mail
       'account_tokens', // 0010_account_tokens
       'notification_preferences', // 0011_notifications
+      'oauth_clients', // 0013_oauth
+      'oauth_grants', // 0013_oauth
+      'oauth_requests', // 0013_oauth
+      'oauth_tokens', // 0013_oauth
       'project_watches',
     ].sort();
     expect(Object.keys(after).filter((name) => !(name in before))).toEqual(added);

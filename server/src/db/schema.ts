@@ -1442,6 +1442,9 @@ export const oauthGrants = pgTable(
   (t) => [
     index('oauth_grants_user_idx').on(t.userId),
     index('oauth_grants_client_idx').on(t.clientRowId),
+    index('oauth_grants_revoked_by_idx')
+      .on(t.revokedBy)
+      .where(sql`revoked_by IS NOT NULL`),
     uniqueIndex('oauth_grants_live_idx')
       .on(t.userId, t.clientRowId)
       .where(sql`revoked_at IS NULL`),
@@ -1474,6 +1477,13 @@ export const oauthRequests = pgTable(
     index('oauth_requests_code_prefix_idx')
       .on(t.codePrefix)
       .where(sql`code_prefix IS NOT NULL`),
+    index('oauth_requests_client_idx').on(t.clientRowId),
+    index('oauth_requests_grant_idx')
+      .on(t.grantId)
+      .where(sql`grant_id IS NOT NULL`),
+    index('oauth_requests_user_idx')
+      .on(t.userId)
+      .where(sql`user_id IS NOT NULL`),
     index('oauth_requests_expires_idx').on(t.expiresAt),
     check('oauth_requests_status_check', sql`status IN ('pending','code_issued','used','denied')`),
   ],

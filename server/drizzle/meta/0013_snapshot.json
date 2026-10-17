@@ -1,5 +1,5 @@
 {
-  "id": "82aa6048-aa9e-4bd5-9d06-4505dce15fd8",
+  "id": "0e43270e-8bf8-4ccd-8410-2d758aac2cfc",
   "prevId": "f185636a-b4ff-47f2-911b-745adae5429f",
   "version": "7",
   "dialect": "postgresql",
@@ -3862,6 +3862,22 @@
           "method": "btree",
           "with": {}
         },
+        "oauth_grants_revoked_by_idx": {
+          "name": "oauth_grants_revoked_by_idx",
+          "columns": [
+            {
+              "expression": "revoked_by",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "revoked_by IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "oauth_grants_live_idx": {
           "name": "oauth_grants_live_idx",
           "columns": [
@@ -4024,6 +4040,53 @@
           ],
           "isUnique": false,
           "where": "code_prefix IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "oauth_requests_client_idx": {
+          "name": "oauth_requests_client_idx",
+          "columns": [
+            {
+              "expression": "client_row_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "oauth_requests_grant_idx": {
+          "name": "oauth_requests_grant_idx",
+          "columns": [
+            {
+              "expression": "grant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "grant_id IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "oauth_requests_user_idx": {
+          "name": "oauth_requests_user_idx",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "user_id IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}

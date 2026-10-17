@@ -66,8 +66,12 @@ ALTER TABLE "oauth_tokens" ADD CONSTRAINT "oauth_tokens_grant_id_oauth_grants_id
 CREATE UNIQUE INDEX "oauth_clients_client_id_idx" ON "oauth_clients" USING btree ("client_id");--> statement-breakpoint
 CREATE INDEX "oauth_grants_user_idx" ON "oauth_grants" USING btree ("user_id");--> statement-breakpoint
 CREATE INDEX "oauth_grants_client_idx" ON "oauth_grants" USING btree ("client_row_id");--> statement-breakpoint
+CREATE INDEX "oauth_grants_revoked_by_idx" ON "oauth_grants" USING btree ("revoked_by") WHERE revoked_by IS NOT NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "oauth_grants_live_idx" ON "oauth_grants" USING btree ("user_id","client_row_id") WHERE revoked_at IS NULL;--> statement-breakpoint
 CREATE INDEX "oauth_requests_code_prefix_idx" ON "oauth_requests" USING btree ("code_prefix") WHERE code_prefix IS NOT NULL;--> statement-breakpoint
+CREATE INDEX "oauth_requests_client_idx" ON "oauth_requests" USING btree ("client_row_id");--> statement-breakpoint
+CREATE INDEX "oauth_requests_grant_idx" ON "oauth_requests" USING btree ("grant_id") WHERE grant_id IS NOT NULL;--> statement-breakpoint
+CREATE INDEX "oauth_requests_user_idx" ON "oauth_requests" USING btree ("user_id") WHERE user_id IS NOT NULL;--> statement-breakpoint
 CREATE INDEX "oauth_requests_expires_idx" ON "oauth_requests" USING btree ("expires_at");--> statement-breakpoint
 CREATE INDEX "oauth_tokens_prefix_idx" ON "oauth_tokens" USING btree ("prefix");--> statement-breakpoint
 CREATE INDEX "oauth_tokens_grant_idx" ON "oauth_tokens" USING btree ("grant_id");
