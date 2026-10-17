@@ -3,11 +3,12 @@ import { z } from 'zod';
 import type { RouteDeps } from '../app';
 import { ProblemError } from '../http/problem';
 import { anonymousActor } from '../audit/recorder';
-import { registerDcrClient } from './clients';
-import { corsPreflight, installCors, installFormParser, oauthError } from './http';
+import { registerDcrClient, resolveClient } from './clients';
+import { authorizationRedirect, createPendingRequest, parseScopes } from './grants';
+import { corsPreflight, errorPage, installCors, installFormParser, oauthError } from './http';
 import { readMcpPolicy } from './policy';
-import { redirectUriAllowed } from './redirect';
-import { MCP_SCOPES } from './tokens';
+import { redirectUriAllowed, redirectUriMatches } from './redirect';
+import { isCodeChallenge, MCP_SCOPES } from './tokens';
 import type { McpUrls } from './urls';
 
 const CORS_PATHS = new Set(['/oauth/register', '/oauth/token', '/oauth/revoke', '/mcp']);
@@ -21,6 +22,21 @@ const registrationSchema = z.looseObject({
   grant_types: z.array(z.string().max(64)).max(10).optional(),
   response_types: z.array(z.string().max(64)).max(10).optional(),
 });
+
+function clientErrorText(
+  error: 'unknown_client' | 'client_not_allowed' | 'cimd_disabled' | 'cimd_invalid',
+): string {
+  switch (error) {
+    case 'unknown_client':
+      return 'This client is not registered with this Qualor server.';
+    case 'client_not_allowed':
+      return 'The administrator of this Qualor server does not allow this client.';
+    case 'cimd_disabled':
+      return 'This Qualor server does not accept clients identified by a metadata URL.';
+    default:
+      return 'The client’s metadata could not be read or is not valid.';
+  }
+}
 
 const httpsOrNull = (uri: string | undefined): string | null =>
   uri?.startsWith('https://') ? uri : null;
@@ -79,6 +95,71 @@ export const oauthRoutes: FastifyPluginAsync<{ deps: RouteDeps; urls: McpUrls }>
     bearer_methods_supported: ['header'],
     resource_name: 'Qualor',
   }));
+
+  // Spec §6 steps 1-3: validate, then hand the browser to the consent screen. Until the client and
+  // its redirect URI are trusted, errors are pages that never redirect (RFC 6749 §4.1.2.1).
+  app.get('/oauth/authorize', { config: { public: true } }, async (request, reply) => {
+    const q = request.query as Record<string, unknown>;
+    const str = (k: string) => (typeof q[k] === 'string' ? q[k] : null);
+    const clientIdParam = str('client_id');
+    if (!clientIdParam)
+      return errorPage(reply, 400, 'Cannot connect', 'The request names no client.');
+    const policy = await readMcpPolicy(deps.db);
+    const resolved = await resolveClient({ db: deps.db, policy }, clientIdParam);
+    if (!resolved.ok) {
+      return errorPage(reply, 400, 'Cannot connect', clientErrorText(resolved.error));
+    }
+    const client = resolved.client;
+    const presented = str('redirect_uri');
+    const redirectUri =
+      presented ?? (client.redirectUris.length === 1 ? client.redirectUris[0] : null);
+    if (!redirectUri || !redirectUriMatches(client.redirectUris, redirectUri)) {
+      return errorPage(
+        reply,
+        400,
+        'Cannot connect',
+        'The redirect URI is not registered for this client.',
+      );
+    }
+    const state = str('state');
+    if (state !== null && state.length > 2048) {
+      return errorPage(reply, 400, 'Cannot connect', 'The state parameter is too long.');
+    }
+    const fail = (error: string, description: string) =>
+      reply.header('cache-control', 'no-store').redirect(
+        authorizationRedirect(redirectUri, {
+          error,
+          error_description: description,
+          state,
+          iss: urls.issuer,
+        }),
+        302,
+      );
+    if (str('response_type') !== 'code')
+      return fail('unsupported_response_type', 'Only code is supported');
+    const challenge = str('code_challenge');
+    if (!challenge || !isCodeChallenge(challenge) || str('code_challenge_method') !== 'S256') {
+      return fail('invalid_request', 'PKCE with S256 is required');
+    }
+    const scopes = parseScopes(str('scope'));
+    if (!scopes) return fail('invalid_scope', 'Only mcp:read and mcp:write exist');
+    const resource = str('resource') ?? urls.resource;
+    if (resource !== urls.resource)
+      return fail('invalid_target', `The only resource is ${urls.resource}`);
+    const pending = await createPendingRequest(deps.db, {
+      clientRowId: client.id,
+      redirectUri,
+      state,
+      scopes,
+      codeChallenge: challenge,
+      resource,
+    });
+    // The UI lives next to the API under the public URL's path (the proxy strips it before us).
+    const basePath = new URL(urls.issuer).pathname.replace(/\/+$/, '');
+    return reply
+      .header('cache-control', 'no-store')
+      .redirect(`${basePath}/oauth/consent?request=${pending.id}`, 302);
+  });
 
   app.post(
     '/oauth/register',

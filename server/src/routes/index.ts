@@ -17,6 +17,7 @@ import { licensePolicyRoutes } from './license-policy';
 import { llmSettingsRoutes } from './llm-settings';
 import { mailSettingsRoutes } from './mail-settings';
 import { mcpSettingsRoutes } from './mcp-settings';
+import { oauthConsentRoutes } from './oauth';
 import { measureRoutes } from './measures';
 import { newCodeRoutes } from './newcode';
 import { notificationRoutes, unsubscribeRoutes } from './notifications';
@@ -61,6 +62,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   await app.register(llmSettingsRoutes, { prefix: '/api/v0', deps });
   await app.register(mailSettingsRoutes, { prefix: '/api/v0', deps });
   await app.register(mcpSettingsRoutes, { prefix: '/api/v0', deps });
+  await app.register(oauthConsentRoutes, { prefix: '/api/v0', deps });
   await app.register(licenseRoutes, { prefix: '/api/v0', deps });
   await app.register(aiRoutes, { prefix: '/api/v0', deps, chargeIssueChanges });
   await app.register(autoFixRoutes, { prefix: '/api/v0', deps });
