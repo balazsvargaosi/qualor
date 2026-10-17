@@ -1389,3 +1389,116 @@ export const notificationPreferences = pgTable('notification_preferences', {
   orgWebhookFailures: boolean('org_webhook_failures').notNull().default(true),
   updatedAt: updatedAt(),
 });
+
+// ─── OAuth and MCP (Phase 6N, migration 0013_oauth) ──────────────────────────
+
+export type OAuthClientSource = 'cimd' | 'dcr';
+export type OAuthRequestStatus = 'pending' | 'code_issued' | 'used' | 'denied';
+export type OAuthTokenKind = 'access' | 'refresh';
+
+/** An OAuth client: a fetched CIMD document (cached) or a DCR registration (spec §4.5). */
+export const oauthClients = pgTable(
+  'oauth_clients',
+  {
+    id: id(),
+    /** The CIMD URL, or `qlr_cli_…` for DCR. */
+    clientId: text('client_id').notNull(),
+    source: text('source').notNull().$type<OAuthClientSource>(),
+    name: text('name').notNull(),
+    redirectUris: text('redirect_uris').array().notNull(),
+    logoUri: text('logo_uri'),
+    clientUri: text('client_uri'),
+    /** The CIMD document or the DCR request as received (validated). */
+    metadata: jsonb('metadata').notNull().$type<Record<string, unknown>>(),
+    fetchedAt: at('fetched_at'),
+    /** CIMD only: when the cached document must be fetched again. */
+    expiresAt: at('expires_at'),
+    lastUsedAt: at('last_used_at'),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('oauth_clients_client_id_idx').on(t.clientId),
+    check('oauth_clients_source_check', sql`source IN ('cimd','dcr')`),
+  ],
+);
+
+/** What a user allowed a client (spec §4.5); one live grant per user and client. */
+export const oauthGrants = pgTable(
+  'oauth_grants',
+  {
+    id: id(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    clientRowId: uuid('client_row_id')
+      .notNull()
+      .references(() => oauthClients.id, { onDelete: 'cascade' }),
+    scopes: text('scopes').array().notNull(),
+    createdAt: createdAt(),
+    lastUsedAt: at('last_used_at'),
+    revokedAt: at('revoked_at'),
+    revokedBy: uuid('revoked_by').references(() => users.id, { onDelete: 'set null' }),
+  },
+  (t) => [
+    index('oauth_grants_user_idx').on(t.userId),
+    index('oauth_grants_client_idx').on(t.clientRowId),
+    uniqueIndex('oauth_grants_live_idx')
+      .on(t.userId, t.clientRowId)
+      .where(sql`revoked_at IS NULL`),
+  ],
+);
+
+/** A pending authorization request, then its code (spec §4.5, §6). */
+export const oauthRequests = pgTable(
+  'oauth_requests',
+  {
+    id: id(),
+    clientRowId: uuid('client_row_id')
+      .notNull()
+      .references(() => oauthClients.id, { onDelete: 'cascade' }),
+    redirectUri: text('redirect_uri').notNull(),
+    state: text('state'),
+    scopes: text('scopes').array().notNull(),
+    codeChallenge: text('code_challenge').notNull(),
+    resource: text('resource').notNull(),
+    /** Set when a signed-in user first opens the consent screen; nobody else may answer it. */
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
+    grantId: uuid('grant_id').references(() => oauthGrants.id, { onDelete: 'cascade' }),
+    codePrefix: text('code_prefix'),
+    codeHash: bytea('code_hash'),
+    status: text('status').notNull().default('pending').$type<OAuthRequestStatus>(),
+    createdAt: createdAt(),
+    expiresAt: at('expires_at').notNull(),
+  },
+  (t) => [
+    index('oauth_requests_code_prefix_idx')
+      .on(t.codePrefix)
+      .where(sql`code_prefix IS NOT NULL`),
+    index('oauth_requests_expires_idx').on(t.expiresAt),
+    check('oauth_requests_status_check', sql`status IN ('pending','code_issued','used','denied')`),
+  ],
+);
+
+/** Access and refresh tokens of a grant, stored as hashes (spec §4.5). */
+export const oauthTokens = pgTable(
+  'oauth_tokens',
+  {
+    id: id(),
+    grantId: uuid('grant_id')
+      .notNull()
+      .references(() => oauthGrants.id, { onDelete: 'cascade' }),
+    kind: text('kind').notNull().$type<OAuthTokenKind>(),
+    prefix: text('prefix').notNull(),
+    secretHash: bytea('secret_hash').notNull(),
+    expiresAt: at('expires_at').notNull(),
+    /** Refresh rotation: the token that replaced this one; presenting a replaced one is reuse. */
+    replacedBy: uuid('replaced_by'),
+    revokedAt: at('revoked_at'),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index('oauth_tokens_prefix_idx').on(t.prefix),
+    index('oauth_tokens_grant_idx').on(t.grantId),
+    check('oauth_tokens_kind_check', sql`kind IN ('access','refresh')`),
+  ],
+);
