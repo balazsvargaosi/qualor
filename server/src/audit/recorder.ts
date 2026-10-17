@@ -225,6 +225,7 @@ export const ACCESS_REMOVING_ACTIONS: ReadonlySet<AuditAction> = new Set<AuditAc
   'auth.sign_out',
   'token.revoked',
   'project_token.revoked',
+  'oauth.grant_revoked',
   'user.updated',
   'member.removed',
   'member.role_changed',

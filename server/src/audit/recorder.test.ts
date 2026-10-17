@@ -95,6 +95,7 @@ describe('the access-removing events (rbac-audit.md §10.2.1)', () => {
         'auth.sign_out',
         'token.revoked',
         'project_token.revoked',
+        'oauth.grant_revoked',
         'user.updated',
         'member.removed',
         'member.role_changed',

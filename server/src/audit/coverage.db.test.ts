@@ -68,6 +68,18 @@ const NOT_FROM_CORE_ROUTES = new Map<string, string>([
   ],
   ['audit.pruned', 'recorded by retention in housekeeping (Task 11), not by a request'],
   [
+    'oauth.client_registered',
+    'recorded by the OAuth registration endpoint (6N), not an /api/v0 core route; covered by its own tests',
+  ],
+  [
+    'oauth.grant_created',
+    'recorded by the OAuth consent flow (6N), not an /api/v0 core route; covered by its own tests',
+  ],
+  [
+    'oauth.grant_revoked',
+    'recorded by the OAuth revocation and grant routes (6N); covered by their own tests',
+  ],
+  [
     'support.bundle_downloaded',
     'recorded by ctx.support (4E-3b), reached through the enterprise support route; covered by support/service.db.test.ts',
   ],

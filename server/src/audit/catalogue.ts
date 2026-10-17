@@ -25,6 +25,9 @@ export const AUDIT_TARGET_TYPES = [
   'sign_in_settings',
   'mail_settings',
   'compliance_report',
+  'oauth_client',
+  'oauth_grant',
+  'mcp_settings',
 ] as const;
 export type AuditTargetType = (typeof AUDIT_TARGET_TYPES)[number];
 
@@ -345,6 +348,34 @@ export const AUDIT_CATALOGUE = {
     details: z.strictObject({ name: str, prefix: z.string().max(16), expiresAt: iso.nullable() }),
   },
   'project_token.revoked': { target: 'token', details: tokenRef },
+  /** 6N: an MCP client registered itself (RFC 7591). */
+  'oauth.client_registered': {
+    target: 'oauth_client',
+    details: z.strictObject({ clientId: url, name: str, source: z.enum(['dcr']) }),
+  },
+  'oauth.grant_created': {
+    target: 'oauth_grant',
+    details: z.strictObject({
+      clientId: url,
+      clientName: str,
+      scopes: z.array(z.enum(['mcp:read', 'mcp:write'])).max(2),
+    }),
+  },
+  'oauth.grant_revoked': {
+    target: 'oauth_grant',
+    details: z.strictObject({
+      clientId: url,
+      reason: z.enum(['user', 'admin', 'refresh_reuse', 'code_reuse']),
+    }),
+  },
+  'oauth.settings_changed': {
+    target: 'mcp_settings',
+    details: z.strictObject({
+      dcr: z.boolean(),
+      cimd: z.boolean(),
+      allowedClients: z.number().int().min(0).max(100),
+    }),
+  },
   'organization.created': {
     target: 'organization',
     details: z.strictObject({ key: organizationKey, name: str }),
@@ -444,6 +475,7 @@ export const AUDIT_CATALOGUE = {
       mirrored: z.boolean(),
       commented: z.boolean(),
       suggestionId: nullableId,
+      mcpClientId: url.nullable().optional(),
     }),
   },
   'issue.severity_changed': {

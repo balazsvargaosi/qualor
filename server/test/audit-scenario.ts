@@ -543,6 +543,9 @@ export async function runAuditScenario(
   });
   await call('POST', '/system/mail/test', 502, { to: 'scenario@example.com' });
 
+  // oauth.settings_changed (6N): the instance's MCP client policy
+  await call('PUT', '/system/mcp', 200, { dcr: false, cimd: true, allowedClients: [] });
+
   // organization.auto_fix_changed: the organisation's automatic fix suggestions, kept off (switching
   // them off needs no licence, so the community run makes the same call)
   await call('PUT', `/organizations/${org}/ai/auto-fix`, 200, {
