@@ -8,6 +8,11 @@ const FORBIDDEN_SCHEMES = new Set([
   'blob:',
   'about:',
   'vbscript:',
+  'view-source:',
+  'intent:',
+  'ftp:',
+  'ws:',
+  'wss:',
 ]);
 
 function parse(uri: string): URL | null {
@@ -19,6 +24,14 @@ function parse(uri: string): URL | null {
   }
 }
 
+function hasControlOrSpace(uri: string): boolean {
+  for (let i = 0; i < uri.length; i += 1) {
+    const code = uri.charCodeAt(i);
+    if (code <= 0x20 || code === 0x7f) return true;
+  }
+  return false;
+}
+
 function isLoopback(url: URL): boolean {
   return url.protocol === 'http:' && LOOPBACK_HOSTS.has(url.hostname);
 }
@@ -28,6 +41,8 @@ function isLoopback(url: URL): boolean {
  * (`cursor://`); never a fragment, user info or a browser-internal scheme.
  */
 export function redirectUriAllowed(uri: string): boolean {
+  // `new URL` silently strips tab, CR and LF, so refuse control and whitespace characters first.
+  if (hasControlOrSpace(uri)) return false;
   const url = parse(uri);
   if (!url || url.hash !== '' || uri.includes('#') || url.username || url.password) return false;
   if (url.protocol === 'https:') return url.hostname !== '';
@@ -38,6 +53,7 @@ export function redirectUriAllowed(uri: string): boolean {
 
 /** Exact string match, except that a loopback URI matches with any port (RFC 8252 §7.3). */
 export function redirectUriMatches(registered: readonly string[], presented: string): boolean {
+  if (!redirectUriAllowed(presented)) return false;
   if (registered.includes(presented)) return true;
   const p = parse(presented);
   if (!p || !isLoopback(p)) return false;

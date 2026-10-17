@@ -13,12 +13,19 @@ const MIN_AGE = 300;
 const MAX_AGE = 86_400;
 const DEFAULT_AGE = 3_600;
 
+/** Shown to the user and linked to: https only, never `javascript:` or `data:`. */
+const httpsUrl = z
+  .url()
+  .max(2048)
+  .refine((value) => value.startsWith('https://'), 'must be an https URL')
+  .optional();
+
 /** The fields Qualor reads from a Client ID Metadata Document; others are kept but ignored. */
 export const cimdDocumentSchema = z.looseObject({
   client_id: z.string().max(2048),
   client_name: z.string().min(1).max(200).optional(),
-  client_uri: z.url().max(2048).optional(),
-  logo_uri: z.url().max(2048).optional(),
+  client_uri: httpsUrl,
+  logo_uri: httpsUrl,
   redirect_uris: z.array(z.string().max(2048)).min(1).max(20),
   token_endpoint_auth_method: z.literal('none').optional(),
   grant_types: z.array(z.string().max(64)).max(10).optional(),
@@ -33,10 +40,18 @@ type Request = (request: OutboundRequest, options: OutboundOptions) => Promise<O
 
 /** A client id that is a CIMD URL: https, a path beyond `/`, no fragment or user info. */
 export function isCimdClientId(clientId: string): boolean {
-  if (clientId.length > 2048 || !clientId.startsWith('https://')) return false;
+  if (clientId.length > 2048 || !clientId.startsWith('https://') || clientId.includes('#')) {
+    return false;
+  }
   try {
     const url = new URL(clientId);
-    return url.pathname !== '/' && !url.hash && !url.username && !url.password;
+    return (
+      url.pathname !== '/' &&
+      !url.username &&
+      !url.password &&
+      !/(?:^|\/)\.{1,2}(?:\/|$)/.test(url.pathname.replace(/%2e/gi, '.')) &&
+      !/\/\.{1,2}(?:\/|$)/.test(clientId.slice('https://'.length))
+    );
   } catch {
     return false;
   }

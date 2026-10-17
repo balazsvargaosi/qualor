@@ -23,6 +23,13 @@ describe('redirectUriAllowed (spec §7, ruling R5)', () => {
     'data:text/html,hi',
     'file:///etc/passwd',
     'not a url',
+    'ftp://example.com/cb',
+    'ws://127.0.0.1/cb',
+    'wss://example.com/cb',
+    'view-source:https://a.example/',
+    'intent://x#Intent;end',
+    'https://a.example/\ncb',
+    'https://a.example/\tcb',
     'https://' + 'a'.repeat(2050) + '.com/',
   ])('refuses %s', (uri) => {
     expect(redirectUriAllowed(uri)).toBe(false);
@@ -42,6 +49,14 @@ describe('redirectUriMatches', () => {
     expect(redirectUriMatches(['http://127.0.0.1/cb'], 'http://127.0.0.1:61234/other')).toBe(false);
     expect(redirectUriMatches(['https://a.example:1/cb'], 'https://a.example:2/cb')).toBe(false);
     expect(redirectUriMatches(['http://127.0.0.1/cb'], 'http://localhost/cb')).toBe(false);
+  });
+});
+
+describe('redirectUriMatches (presented URI must itself be allowed)', () => {
+  it('refuses user info or a fragment on loopback', () => {
+    expect(redirectUriMatches(['http://127.0.0.1/cb'], 'http://u:p@127.0.0.1:5/cb')).toBe(false);
+    expect(redirectUriMatches(['http://127.0.0.1/cb'], 'http://127.0.0.1:5/cb#x')).toBe(false);
+    expect(redirectUriMatches(['javascript:alert(1)'], 'javascript:alert(1)')).toBe(false);
   });
 });
 
