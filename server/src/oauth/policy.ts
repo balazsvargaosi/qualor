@@ -5,10 +5,10 @@ import { instanceSetting } from '../settings';
 
 export const MCP_POLICY_KEY = 'mcp.oauth';
 
-/** An exact client id (`qlr_cli_�` or a CIMD URL), or a URL prefix ending in `/`. */
+/** An exact client id (`qlr_cli_…` or a CIMD URL), or a URL prefix ending in `/`. */
 const allowEntry = z.string().min(1).max(2048).regex(/^\S+$/);
 
-/** Spec �9: which OAuth clients may connect to the MCP endpoint. */
+/** Spec §9: which OAuth clients may connect to the MCP endpoint. */
 export const mcpPolicySchema = z.strictObject({
   dcr: z.boolean(),
   cimd: z.boolean(),

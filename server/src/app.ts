@@ -19,6 +19,8 @@ import { helmetOptions } from './http/security-headers';
 import { registerUi, type UiAssets } from './http/ui';
 import { fixedEdition, type Edition } from './license/edition';
 import { communityLimits, type Limits } from './limits';
+import { oauthRoutes } from './oauth/routes';
+import { mcpUrls } from './oauth/urls';
 import { mountPluginRoutes, type LoadedPlugins } from './plugins/mount';
 import type { PluginRegistry } from './plugins/registry';
 import { registerRoutes } from './routes';
@@ -116,6 +118,8 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   await app.register(swagger, openApiOptions());
   installAuthentication(app, routeDeps);
   await registerRoutes(app, routeDeps);
+  const urls = mcpUrls(deps.config.publicUrl);
+  if (urls) await app.register(oauthRoutes, { deps: routeDeps, urls });
   if (plugins) await mountPluginRoutes(app, plugins, routeDeps.edition);
   if (deps.ui) registerUi(app, deps.ui);
   await warmPasswordHashing();
