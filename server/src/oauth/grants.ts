@@ -1,7 +1,7 @@
 import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import type { Db, Executor } from '../db/client';
 import { first } from '../db/rows';
-import type { OAuthPrincipal } from '../auth/principal';
+import { TOUCH_INTERVAL_MS, type OAuthPrincipal } from '../auth/principal';
 import { hashesEqual, hashToken } from '../auth/tokens';
 import { oauthClients, oauthGrants, oauthRequests, oauthTokens, users } from '../db/schema';
 import { redirectTargetLabel } from './redirect';
@@ -486,9 +486,9 @@ export async function refresh(
   if (!parsed || parsed.kind !== 'refresh') return INVALID;
   return db.transaction(async (tx): Promise<TokenResult> => {
     // Lock order: grant first, then the token row (see exchangeCode, which also states decide()'s
-    // request-then-grant
-    // exception). Two simultaneous presentations of one token serialise on the grant; the loser
-    // re-reads the token as replaced, which is reuse, so the grant is revoked (the safe outcome).
+    // request-then-grant exception). Two simultaneous presentations of one token serialise on the
+    // grant; the loser re-reads the token as replaced, which is reuse, so the grant is revoked (the
+    // safe outcome).
     const candidates = await tx
       .select({ token: oauthTokens, clientId: oauthClients.clientId, source: oauthClients.source })
       .from(oauthTokens)
@@ -582,8 +582,6 @@ export async function revokeToken(
     return null;
   });
 }
-
-const TOUCH_INTERVAL_MS = 60_000;
 
 /** Spec §4.3: a live `qlr_oat_` of a live grant whose user is active; else null. */
 export async function resolveAccessToken(

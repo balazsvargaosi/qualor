@@ -31,7 +31,8 @@ declare module 'fastify' {
   }
 }
 
-const TOUCH_INTERVAL_MS = 60_000;
+/** How often a token's `last_used_at` is written at most (PATs here, OAuth grants in grants.ts). */
+export const TOUCH_INTERVAL_MS = 60_000;
 
 /**
  * Prefix lookup, then a constant-time SHA-256 comparison against every candidate row sharing that

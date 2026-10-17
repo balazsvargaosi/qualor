@@ -5,11 +5,12 @@ import {
   createTestContext,
   createUser,
   login,
+  organizationId,
   type Session,
   type TestContext,
 } from '../../test/app';
 import { authorizeAndApprove, oauthTokens as runOAuth, registerClient } from '../../test/oauth';
-import { oauthGrants, oauthTokens, users } from '../db/schema';
+import { oauthGrants, oauthTokens, users, type TokenScope } from '../db/schema';
 import { resolveAccessToken } from '../oauth/grants';
 import { INTERNAL_HEADER } from '../mcp/internal';
 
@@ -91,6 +92,50 @@ describe('OAuth tokens and the REST API (Review Focus 1, 2)', () => {
     expect(res.json()).toMatchObject({ user: { username: 'alice' }, csrfToken: null });
   });
 
+  async function internalKey(username: string, scopes: TokenScope[]): Promise<string> {
+    const [user] = await ctx.db.select().from(users).where(eq(users.username, username));
+    if (!user) throw new Error(`${username} missing`);
+    return ctx.app.internalCalls.issue({
+      kind: 'oauth',
+      user,
+      grantId: 'g',
+      clientId: 'c',
+      clientName: 'Test agent',
+      mcpScopes: ['mcp:read', 'mcp:write'],
+      scopes,
+    });
+  }
+
+  it('lets an internal key mutate without X-Qualor-CSRF', async () => {
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/v0/auth/logout',
+      headers: { [INTERNAL_HEADER]: await internalKey('alice', ['write']) },
+    });
+    expect(res.statusCode).toBe(204);
+  });
+
+  it('holds an internal key to the password change its user still owes', async () => {
+    await createUser(ctx, { username: 'must-change', passwordChangeRequired: true });
+    const res = await ctx.app.inject({
+      method: 'GET',
+      url: '/api/v0/projects',
+      headers: { [INTERNAL_HEADER]: await internalKey('must-change', ['read']) },
+    });
+    expect([res.statusCode, res.json().code]).toEqual([403, 'PASSWORD_CHANGE_REQUIRED']);
+  });
+
+  it('holds an internal key to its REST scopes', async () => {
+    const org = await organizationId(ctx, 'default');
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/v0/projects',
+      headers: { [INTERNAL_HEADER]: await internalKey('admin', ['read']) },
+      payload: { organizationId: org, key: 'nope', name: 'Nope' },
+    });
+    expect([res.statusCode, res.json().code]).toEqual([403, 'INSUFFICIENT_SCOPE']);
+  });
+
   it('keeps a PAT and a session working as before', async () => {
     const pat = await ctx.app.inject({
       method: 'POST',
@@ -170,8 +215,8 @@ describe('resolveAccessToken (spec §4.3)', () => {
       .update(oauthGrants)
       .set({ lastUsedAt: new Date(Date.now() - 91 * 86_400_000) })
       .where(eq(oauthGrants.userId, idle.userId));
-    // Far-future "now" keeps the access token itself unexpired only if it were, so use a past
-    // lastUsedAt with the present clock: the grant is idle, the token is not expired.
+    // A lastUsedAt 91 days back with the present clock: the grant is idle while its access token
+    // is still unexpired, so only the idle check can refuse it.
     expect(await resolveAccessToken(ctx.db, idle.accessToken)).toBeNull();
 
     const gone = await fresh('rv-inactive');
