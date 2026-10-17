@@ -2,10 +2,27 @@ import type { FastifyError, FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import type { RouteDeps } from '../app';
 import { ProblemError } from '../http/problem';
-import { anonymousActor } from '../audit/recorder';
+import { anonymousActor, SYSTEM_ACTOR } from '../audit/recorder';
 import { registerDcrClient, resolveClient } from './clients';
-import { authorizationRedirect, createPendingRequest, parseScopes } from './grants';
-import { corsPreflight, errorPage, installCors, installFormParser, oauthError } from './http';
+import {
+  authorizationRedirect,
+  createPendingRequest,
+  exchangeCode,
+  parseScopes,
+  refresh,
+  revokeToken,
+  type OnGrantRevoked,
+  type TokenResult,
+} from './grants';
+import {
+  corsPreflight,
+  errorPage,
+  hasDuplicate,
+  installCors,
+  installFormParser,
+  oauthError,
+  param,
+} from './http';
 import { readMcpPolicy } from './policy';
 import { redirectUriAllowed, redirectUriMatches } from './redirect';
 import { isCodeChallenge, MCP_SCOPES } from './tokens';
@@ -249,6 +266,115 @@ export const oauthRoutes: FastifyPluginAsync<{ deps: RouteDeps; urls: McpUrls }>
           response_types: ['code'],
           token_endpoint_auth_method: 'none',
         });
+    },
+  );
+
+  // Nobody acted on a reuse (the server detected it); the event commits with the revocation.
+  const onRevoked: OnGrantRevoked = (tx, grant) =>
+    deps.audit.recordOrSkipWhenAnchorMalformed(tx, SYSTEM_ACTOR, [
+      {
+        action: 'oauth.grant_revoked',
+        target: { type: 'oauth_grant', id: grant.id, label: null },
+        details: { clientId: grant.clientId, reason: grant.reason },
+      },
+    ]);
+
+  // Spec §6 steps 7-8: public clients, so no client authentication; PKCE and the code bind the call.
+  app.post(
+    '/oauth/token',
+    { config: { public: true, rateLimit: { max: 120, timeWindow: '1 minute' } } },
+    async (request, reply) => {
+      const body = request.body;
+      if (hasDuplicate(body)) {
+        return oauthError(reply, 400, 'invalid_request', 'A parameter was repeated');
+      }
+      const grantType = param(body, 'grant_type');
+      const clientId = param(body, 'client_id');
+      const resource = param(body, 'resource');
+      const answer = (result: TokenResult) => {
+        if (!result.ok) return oauthError(reply, 400, result.error, 'The grant is not valid');
+        return reply
+          .header('cache-control', 'no-store')
+          .header('pragma', 'no-cache')
+          .send({
+            access_token: result.accessToken,
+            token_type: 'Bearer',
+            expires_in: result.expiresIn,
+            refresh_token: result.refreshToken,
+            scope: result.scopes.join(' '),
+          });
+      };
+      if (grantType === 'authorization_code') {
+        const code = param(body, 'code');
+        const verifier = param(body, 'code_verifier');
+        if (!code || !verifier || !clientId) {
+          return oauthError(
+            reply,
+            400,
+            'invalid_request',
+            'code, code_verifier and client_id are required',
+          );
+        }
+        return answer(
+          await exchangeCode(
+            deps.db,
+            {
+              code,
+              clientId,
+              verifier,
+              redirectUri: param(body, 'redirect_uri'),
+              resource,
+              resourceExpected: urls.resource,
+            },
+            new Date(),
+            onRevoked,
+          ),
+        );
+      }
+      if (grantType === 'refresh_token') {
+        const token = param(body, 'refresh_token');
+        if (!token || !clientId) {
+          return oauthError(
+            reply,
+            400,
+            'invalid_request',
+            'refresh_token and client_id are required',
+          );
+        }
+        const scopeParam = param(body, 'scope');
+        const scopes = scopeParam === null ? null : parseScopes(scopeParam);
+        if (scopeParam !== null && !scopes) {
+          return oauthError(reply, 400, 'invalid_scope', 'Unknown scope');
+        }
+        return answer(
+          await refresh(
+            deps.db,
+            { refreshToken: token, clientId, scopes, resource, resourceExpected: urls.resource },
+            new Date(),
+            onRevoked,
+          ),
+        );
+      }
+      return oauthError(
+        reply,
+        400,
+        'unsupported_grant_type',
+        'authorization_code or refresh_token',
+      );
+    },
+  );
+
+  // RFC 7009: always 200, whatever the token was.
+  app.post(
+    '/oauth/revoke',
+    { config: { public: true, rateLimit: { max: 120, timeWindow: '1 minute' } } },
+    async (request, reply) => {
+      const token = param(request.body, 'token');
+      const clientId = param(request.body, 'client_id');
+      if (token && clientId) {
+        await revokeToken(deps.db, { token, clientId }, new Date(), onRevoked);
+      }
+      return reply.code(200).header('cache-control', 'no-store').send();
     },
   );
 };

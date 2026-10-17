@@ -1,16 +1,21 @@
 import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import type { Db, Executor } from '../db/client';
 import { first } from '../db/rows';
-import { oauthClients, oauthGrants, oauthRequests } from '../db/schema';
+import { hashesEqual, hashToken } from '../auth/tokens';
+import { oauthClients, oauthGrants, oauthRequests, oauthTokens, users } from '../db/schema';
 import { redirectTargetLabel } from './redirect';
 import { clientAllowed } from './clients';
 import { readMcpPolicy } from './policy';
 import {
+  ACCESS_TTL_SECONDS,
   CODE_TTL_SECONDS,
   generateOAuthSecret,
   GRANT_IDLE_DAYS,
   MCP_SCOPES,
+  parseOAuthSecret,
   PENDING_TTL_SECONDS,
+  pkceMatches,
+  REFRESH_TTL_DAYS,
   type McpScope,
 } from './tokens';
 
@@ -288,5 +293,260 @@ export async function decide(
       redirectTo: authorizationRedirect(request.redirectUri, { code: code.token, ...base }),
       grant: { ...grant, created },
     };
+  });
+}
+
+export type RevokeReason = 'code_reuse' | 'refresh_reuse';
+
+export type TokenResult =
+  | {
+      ok: true;
+      accessToken: string;
+      refreshToken: string;
+      expiresIn: number;
+      scopes: McpScope[];
+      grantId: string;
+    }
+  | {
+      ok: false;
+      error: 'invalid_grant' | 'invalid_target' | 'invalid_scope';
+      revokedGrant?: { id: string; clientId: string; reason: RevokeReason };
+    };
+
+/** Runs inside the transaction that revoked a grant, so its audit event commits with it. */
+export type OnGrantRevoked = (
+  tx: Executor,
+  grant: { id: string; clientId: string; reason: RevokeReason | 'user' },
+) => Promise<void>;
+
+const INVALID = { ok: false, error: 'invalid_grant' } as const;
+const DAY_MS = 86_400_000;
+
+async function issuePair(tx: Executor, grantId: string, now: Date) {
+  const access = generateOAuthSecret('access');
+  const refreshSecret = generateOAuthSecret('refresh');
+  await tx.insert(oauthTokens).values({
+    grantId,
+    kind: 'access',
+    prefix: access.prefix,
+    secretHash: access.secretHash,
+    expiresAt: new Date(now.getTime() + ACCESS_TTL_SECONDS * 1000),
+  });
+  const refreshRow = first(
+    await tx
+      .insert(oauthTokens)
+      .values({
+        grantId,
+        kind: 'refresh',
+        prefix: refreshSecret.prefix,
+        secretHash: refreshSecret.secretHash,
+        expiresAt: new Date(now.getTime() + REFRESH_TTL_DAYS * DAY_MS),
+      })
+      .returning({ id: oauthTokens.id }),
+  );
+  await tx.update(oauthGrants).set({ lastUsedAt: now }).where(eq(oauthGrants.id, grantId));
+  return { accessToken: access.token, refreshToken: refreshSecret.token, refreshId: refreshRow.id };
+}
+
+/** A grant that may still issue tokens: live, used within 90 days, its user active. */
+async function liveGrant(tx: Executor, grantId: string, now: Date) {
+  const [row] = await tx
+    .select({ grant: oauthGrants, active: users.active })
+    .from(oauthGrants)
+    .innerJoin(users, eq(users.id, oauthGrants.userId))
+    .where(eq(oauthGrants.id, grantId));
+  if (!row || row.grant.revokedAt || !row.active || isGrantIdle(row.grant, now)) return null;
+  return row.grant;
+}
+
+/** Revokes a grant and every token of it; false when it was already revoked. */
+export async function revokeGrant(
+  db: Executor,
+  grantId: string,
+  by: string | null,
+  now = new Date(),
+): Promise<boolean> {
+  const rows = await db
+    .update(oauthGrants)
+    .set({ revokedAt: now, revokedBy: by })
+    .where(and(eq(oauthGrants.id, grantId), isNull(oauthGrants.revokedAt)))
+    .returning({ id: oauthGrants.id });
+  await db
+    .update(oauthTokens)
+    .set({ revokedAt: now })
+    .where(and(eq(oauthTokens.grantId, grantId), isNull(oauthTokens.revokedAt)));
+  return rows.length > 0;
+}
+
+/** Spec §6 step 7: the code is single-use; presenting it again revokes the grant it opened (R6). */
+export async function exchangeCode(
+  db: Db,
+  input: {
+    code: string;
+    clientId: string;
+    redirectUri: string | null;
+    verifier: string;
+    resource: string | null;
+    resourceExpected: string;
+  },
+  now = new Date(),
+  onRevoked?: OnGrantRevoked,
+): Promise<TokenResult> {
+  if (input.resource !== null && input.resource !== input.resourceExpected) {
+    return { ok: false, error: 'invalid_target' };
+  }
+  const parsed = parseOAuthSecret(input.code);
+  if (!parsed || parsed.kind !== 'code') return INVALID;
+  return db.transaction(async (tx): Promise<TokenResult> => {
+    // Locks the request rows only: a second presentation of the code waits here, then sees 'used'.
+    const candidates = await tx
+      .select({ request: oauthRequests, client: oauthClients })
+      .from(oauthRequests)
+      .innerJoin(oauthClients, eq(oauthClients.id, oauthRequests.clientRowId))
+      .where(eq(oauthRequests.codePrefix, parsed.prefix))
+      .for('update', { of: oauthRequests });
+    const presented = hashToken(input.code);
+    let match: (typeof candidates)[number] | undefined;
+    for (const c of candidates) {
+      if (c.request.codeHash && hashesEqual(c.request.codeHash, presented)) match = c;
+    }
+    if (!match) return INVALID;
+    const { request, client } = match;
+    if (request.status === 'used') {
+      if (request.grantId && (await revokeGrant(tx, request.grantId, null, now))) {
+        await onRevoked?.(tx, {
+          id: request.grantId,
+          clientId: client.clientId,
+          reason: 'code_reuse',
+        });
+        return {
+          ...INVALID,
+          revokedGrant: { id: request.grantId, clientId: client.clientId, reason: 'code_reuse' },
+        };
+      }
+      return INVALID;
+    }
+    if (request.status !== 'code_issued' || request.expiresAt.getTime() <= now.getTime()) {
+      return INVALID;
+    }
+    if (!request.grantId || client.clientId !== input.clientId) return INVALID;
+    if (input.redirectUri !== null && input.redirectUri !== request.redirectUri) return INVALID;
+    if (!pkceMatches(input.verifier, request.codeChallenge)) return INVALID;
+    await tx.update(oauthRequests).set({ status: 'used' }).where(eq(oauthRequests.id, request.id));
+    const grant = await liveGrant(tx, request.grantId, now);
+    if (!grant) return INVALID;
+    const pair = await issuePair(tx, grant.id, now);
+    return {
+      ok: true,
+      accessToken: pair.accessToken,
+      refreshToken: pair.refreshToken,
+      expiresIn: ACCESS_TTL_SECONDS,
+      scopes: grant.scopes as McpScope[],
+      grantId: grant.id,
+    };
+  });
+}
+
+/**
+ * Spec §6 step 8: rotates the refresh token. A replaced token coming back means it leaked: the
+ * grant is revoked. Ruling P2: a wider `scope` is refused, an equal or narrower one accepted, and
+ * the answer carries the grant's scopes (nothing is stored per token).
+ */
+export async function refresh(
+  db: Db,
+  input: {
+    refreshToken: string;
+    clientId: string;
+    scopes: McpScope[] | null;
+    resource: string | null;
+    resourceExpected: string;
+  },
+  now = new Date(),
+  onRevoked?: OnGrantRevoked,
+): Promise<TokenResult> {
+  if (input.resource !== null && input.resource !== input.resourceExpected) {
+    return { ok: false, error: 'invalid_target' };
+  }
+  const parsed = parseOAuthSecret(input.refreshToken);
+  if (!parsed || parsed.kind !== 'refresh') return INVALID;
+  return db.transaction(async (tx): Promise<TokenResult> => {
+    // Locks the token rows only: two simultaneous presentations of one token serialise here, and
+    // the loser re-reads it as replaced, which is reuse, so the grant is revoked (the safe outcome).
+    const candidates = await tx
+      .select({ token: oauthTokens, clientId: oauthClients.clientId })
+      .from(oauthTokens)
+      .innerJoin(oauthGrants, eq(oauthGrants.id, oauthTokens.grantId))
+      .innerJoin(oauthClients, eq(oauthClients.id, oauthGrants.clientRowId))
+      .where(and(eq(oauthTokens.prefix, parsed.prefix), eq(oauthTokens.kind, 'refresh')))
+      .for('update', { of: oauthTokens });
+    const presented = hashToken(input.refreshToken);
+    let match: (typeof candidates)[number] | undefined;
+    for (const c of candidates) if (hashesEqual(c.token.secretHash, presented)) match = c;
+    if (!match) return INVALID;
+    const { token, clientId } = match;
+    if (clientId !== input.clientId) return INVALID;
+    if (token.replacedBy !== null) {
+      if (await revokeGrant(tx, token.grantId, null, now)) {
+        await onRevoked?.(tx, { id: token.grantId, clientId, reason: 'refresh_reuse' });
+        return {
+          ...INVALID,
+          revokedGrant: { id: token.grantId, clientId, reason: 'refresh_reuse' },
+        };
+      }
+      return INVALID;
+    }
+    if (token.revokedAt || token.expiresAt.getTime() <= now.getTime()) return INVALID;
+    const grant = await liveGrant(tx, token.grantId, now);
+    if (!grant) return INVALID;
+    const granted = grant.scopes as McpScope[];
+    if (input.scopes && !input.scopes.every((s) => granted.includes(s))) {
+      return { ok: false, error: 'invalid_scope' };
+    }
+    const pair = await issuePair(tx, grant.id, now);
+    await tx
+      .update(oauthTokens)
+      .set({ replacedBy: pair.refreshId })
+      .where(eq(oauthTokens.id, token.id));
+    return {
+      ok: true,
+      accessToken: pair.accessToken,
+      refreshToken: pair.refreshToken,
+      expiresIn: ACCESS_TTL_SECONDS,
+      scopes: granted,
+      grantId: grant.id,
+    };
+  });
+}
+
+/**
+ * RFC 7009: a refresh token revokes its grant, an access token only itself. Never tells the
+ * caller which; the grant is returned (when one was revoked) for the audit event.
+ */
+export async function revokeToken(
+  db: Db,
+  input: { token: string; clientId: string },
+  now = new Date(),
+  onRevoked?: OnGrantRevoked,
+): Promise<{ grantId: string; clientId: string } | null> {
+  const parsed = parseOAuthSecret(input.token);
+  if (!parsed || parsed.kind === 'code') return null;
+  return db.transaction(async (tx) => {
+    const candidates = await tx
+      .select({ token: oauthTokens, clientId: oauthClients.clientId })
+      .from(oauthTokens)
+      .innerJoin(oauthGrants, eq(oauthGrants.id, oauthTokens.grantId))
+      .innerJoin(oauthClients, eq(oauthClients.id, oauthGrants.clientRowId))
+      .where(eq(oauthTokens.prefix, parsed.prefix));
+    const presented = hashToken(input.token);
+    let match: (typeof candidates)[number] | undefined;
+    for (const c of candidates) if (hashesEqual(c.token.secretHash, presented)) match = c;
+    if (!match || match.clientId !== input.clientId) return null;
+    if (match.token.kind === 'refresh') {
+      if (!(await revokeGrant(tx, match.token.grantId, null, now))) return null;
+      await onRevoked?.(tx, { id: match.token.grantId, clientId: match.clientId, reason: 'user' });
+      return { grantId: match.token.grantId, clientId: match.clientId };
+    }
+    await tx.update(oauthTokens).set({ revokedAt: now }).where(eq(oauthTokens.id, match.token.id));
+    return null;
   });
 }
