@@ -31,7 +31,7 @@ test('a Slack webhook: create, masked in the list, Send test reaches the receive
   await expect(panel.getByRole('button', { name: 'Rotate secret' })).toHaveCount(0);
 
   await panel.getByRole('button', { name: 'Send test' }).click();
-  await expect(page.getByText('Test message sent. Check the channel.')).toBeVisible();
+  await expect(page.getByText(/^Test message queued\./)).toBeVisible();
   await expect
     .poll(async () => (await request.get(`${CHAT_URL}/last`)).status(), { timeout: 15_000 })
     .toBe(200);
