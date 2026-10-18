@@ -156,8 +156,9 @@ export type DecisionResult =
 
 /**
  * Approve (a grant and a 60 s code) or deny a pending request of this user (spec §6 step 6).
- * `onGrantChange` runs inside the transaction when a grant was created or its scopes changed, so
- * the audit event commits or rolls back with the grant.
+ * `onGrantChange` runs inside the transaction when a grant was created or its scopes changed, and
+ * `onIdleRevoked` when an idle grant was revoked to be replaced, so the audit events commit or roll
+ * back with the grant.
  */
 export async function decide(
   db: Db,
@@ -167,6 +168,7 @@ export async function decide(
   issuer: string,
   onGrantChange: (tx: Executor, grant: GrantChange) => Promise<void>,
   now = new Date(),
+  onIdleRevoked?: (tx: Executor, grant: Omit<GrantChange, 'scopes'>) => Promise<void>,
 ): Promise<DecisionResult> {
   return db.transaction(async (tx): Promise<DecisionResult> => {
     const [request] = await tx
@@ -234,7 +236,13 @@ export async function decide(
     let live = await lockLive();
     if (live && isGrantIdle(live, now)) {
       // Expired: replace it, or the client would loop into invalid_grant on it for ever.
-      await revokeGrant(tx, live.id, null, now);
+      if (await revokeGrant(tx, live.id, null, now)) {
+        await onIdleRevoked?.(tx, {
+          id: live.id,
+          clientId: client.clientId,
+          clientName: client.name,
+        });
+      }
       live = undefined;
     }
     let grantId: string;

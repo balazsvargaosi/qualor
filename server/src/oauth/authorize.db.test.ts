@@ -282,6 +282,20 @@ describe('POST /oauth/requests/:id/decision audit', () => {
         clientName: 'Test agent',
         scopes: ['mcp:read', 'mcp:write'],
       });
+      // An idle grant the approval replaces is recorded as revoked by the user, in the same commit.
+      await ctx.db.execute(
+        sql`UPDATE oauth_grants SET created_at = now() - interval '100 days', last_used_at = now() - interval '91 days' WHERE user_id = ${user.id}`,
+      );
+      const [idle] = await ctx.db.select().from(oauthGrants).where(eq(oauthGrants.userId, user.id));
+      await approve('mcp:read', ['mcp:read']);
+      const [revoked] = await ctx.db
+        .select()
+        .from(auditEvents)
+        .where(eq(auditEvents.action, 'oauth.grant_revoked'));
+      expect(revoked?.actorType).toBe('user');
+      expect(revoked?.targetId).toBe(idle?.id);
+      expect(revoked?.details).toMatchObject({ clientId, reason: 'user' });
+      expect(await events()).toHaveLength(3);
     } finally {
       await ctx.close();
     }

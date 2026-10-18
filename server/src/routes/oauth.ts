@@ -69,7 +69,15 @@ export const oauthConsentRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = as
   app.post(
     '/oauth/requests/:id/decision',
     {
-      config: { openapi: { problems: [404] } },
+      config: {
+        openapi: {
+          problems: [404],
+          problemDescriptions: {
+            403: 'Authenticated but not allowed (FORBIDDEN, SESSION_REQUIRED, CSRF_FAILED, PASSWORD_CHANGE_REQUIRED), or CLIENT_NOT_ALLOWED: the administrator no longer allows this client',
+            422: 'Validation failed (VALIDATION_FAILED; errors[] names each field), also when body.scopes names a scope the client did not ask for',
+          },
+        },
+      },
       schema: {
         tags: ['oauth'],
         summary: 'Approve or deny a pending OAuth authorization request',
@@ -103,6 +111,16 @@ export const oauthConsentRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = as
                 clientName: grant.clientName,
                 scopes: grant.scopes,
               },
+            },
+          ]),
+        new Date(),
+        // An idle grant the approval replaces: the user's own approval ended it, hence 'user'.
+        (tx, grant) =>
+          deps.audit.recordOrSkipWhenAnchorMalformed(tx, actorOf(request), [
+            {
+              action: 'oauth.grant_revoked',
+              target: { type: 'oauth_grant', id: grant.id, label: grant.clientName },
+              details: { clientId: grant.clientId, reason: 'user' },
             },
           ]),
       );

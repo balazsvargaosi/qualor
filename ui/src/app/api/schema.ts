@@ -10566,7 +10566,7 @@ export interface paths {
                         "application/problem+json": components["schemas"]["Problem"];
                     };
                 };
-                /** @description Authenticated but not allowed (FORBIDDEN, INSUFFICIENT_SCOPE, TOKEN_NOT_ALLOWED, SESSION_REQUIRED, CSRF_FAILED, PASSWORD_CHANGE_REQUIRED) */
+                /** @description Authenticated but not allowed (FORBIDDEN, SESSION_REQUIRED, CSRF_FAILED, PASSWORD_CHANGE_REQUIRED), or CLIENT_NOT_ALLOWED: the administrator no longer allows this client */
                 403: {
                     headers: {
                         [name: string]: unknown;
@@ -10593,7 +10593,7 @@ export interface paths {
                         "application/problem+json": components["schemas"]["Problem"];
                     };
                 };
-                /** @description Validation failed (VALIDATION_FAILED; errors[] names each field) */
+                /** @description Validation failed (VALIDATION_FAILED; errors[] names each field), also when body.scopes names a scope the client did not ask for */
                 422: {
                     headers: {
                         [name: string]: unknown;
