@@ -295,6 +295,7 @@ describe('MCP read tools', () => {
       issueId: '00000000-0000-4000-8000-000000000000',
     });
     expect(r.isError).toBe(true);
+    expect(r.text).toContain('(NOT_FOUND)');
   });
 
   it('qualor_rule: by key in the organisation of the project', async () => {
@@ -310,6 +311,7 @@ describe('MCP read tools', () => {
       rule: 'eslint:nope',
     });
     expect(none.isError).toBe(true);
+    expect(none.text).toContain('(NOT_FOUND)');
   });
 
   it('qualor_measures: metric: value lines for the branch', async () => {

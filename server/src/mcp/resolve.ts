@@ -45,7 +45,9 @@ export async function projectByKey(call: McpCaller, key: string): Promise<Projec
   return { id: p.id, key: p.key, name: p.name, organizationId: p.organizationId };
 }
 
-const MAX_PAGES = 10;
+/** Pages of 500 branches searched before giving up (10 000 branches). */
+export const MAX_BRANCH_PAGES = 20;
+const PAGE_SIZE = 500;
 
 /** A branch by name, a merge request by number, or the main branch. */
 export async function branchOf(
@@ -59,15 +61,17 @@ export async function branchOf(
   const kind = target.mergeRequest ? 'merge_request' : 'branch';
   const wanted = target.mergeRequest ?? target.branch;
   let cursor: string | undefined;
-  for (let page = 0; page < MAX_PAGES; page += 1) {
+  let more = false;
+  for (let page = 0; page < MAX_BRANCH_PAGES; page += 1) {
     const res = unwrap(
       await call.get<{ items: BranchRef[]; nextCursor: string | null }>(
         `/api/v0/projects/${project.id}/branches`,
-        { kind, limit: 500, cursor },
+        { kind, limit: PAGE_SIZE, cursor },
       ),
     );
     const found = res.items.find((b) => (wanted === undefined ? b.isMain : b.name === wanted));
     if (found) return found;
+    more = res.nextCursor !== null;
     if (!res.nextCursor) break;
     cursor = res.nextCursor;
   }
@@ -76,6 +80,12 @@ export async function branchOf(
     : wanted
       ? `branch "${wanted}"`
       : 'a main branch';
+  if (more) {
+    throw new ToolError(
+      `Searched the first ${MAX_BRANCH_PAGES * PAGE_SIZE} branches of project ${project.key}; ${what} was not among them. Name it exactly or ask a person to look it up in Qualor.`,
+      'SEARCH_INCOMPLETE',
+    );
+  }
   throw new ToolError(
     `Project ${project.key} has no analysed ${what}. It appears after CI runs qualor scan on it.`,
     'NOT_FOUND',
