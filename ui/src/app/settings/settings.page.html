@@ -20,6 +20,15 @@
         </li>
         <li>
           <a
+            routerLink="connected-apps"
+            routerLinkActive="active"
+            ariaCurrentWhenActive="page"
+            i18n="@@settings.tab.connectedApps"
+            >Connected apps</a
+          >
+        </li>
+        <li>
+          <a
             routerLink="notifications"
             routerLinkActive="active"
             ariaCurrentWhenActive="page"
@@ -220,6 +229,15 @@
               ariaCurrentWhenActive="page"
               i18n="@@settings.tab.email"
               >Email</a
+            >
+          </li>
+          <li>
+            <a
+              routerLink="mcp"
+              routerLinkActive="active"
+              ariaCurrentWhenActive="page"
+              i18n="@@settings.tab.mcp"
+              >MCP</a
             >
           </li>
           @if (auditSettings()) {

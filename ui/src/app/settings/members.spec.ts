@@ -560,7 +560,7 @@ describe('SettingsPage navigation for members and enterprise entries (rbac-audit
     const admin = TestBed.createComponent(SettingsPage);
     await settle(admin);
     expect(groups(admin.nativeElement as HTMLElement)).toEqual([
-      { title: 'Your account', links: ['Access tokens', 'Notifications'] },
+      { title: 'Your account', links: ['Access tokens', 'Connected apps', 'Notifications'] },
       { title: 'Organization', links: ['Members', 'Webhooks', 'GitLab', 'GitHub', 'Repositories'] },
     ]);
     TestBed.resetTestingModule();
@@ -568,7 +568,7 @@ describe('SettingsPage navigation for members and enterprise entries (rbac-audit
     const other = TestBed.createComponent(SettingsPage);
     await settle(other);
     expect(groups(other.nativeElement as HTMLElement)).toEqual([
-      { title: 'Your account', links: ['Access tokens', 'Notifications'] },
+      { title: 'Your account', links: ['Access tokens', 'Connected apps', 'Notifications'] },
     ]);
   });
 
@@ -585,6 +585,7 @@ describe('SettingsPage navigation for members and enterprise entries (rbac-audit
       'Users',
       'AI assistant',
       'Email',
+      'MCP',
       'Licence',
     ]);
   });

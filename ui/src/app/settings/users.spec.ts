@@ -265,3 +265,75 @@ describe('UsersPage: invitations (mail E2 A8)', () => {
     );
   });
 });
+
+describe('UsersPage: a user’s connected apps (6N spec §8)', () => {
+  const G1 = '0190a6c2-0000-7000-8000-0000000000f1';
+  const GRANTS = '/api/v0/users/u2/oauth-grants';
+  const grant = {
+    id: G1,
+    client: {
+      clientId: 'qlr_cli_abc',
+      name: 'Agent Studio',
+      source: 'dcr',
+      logoUri: null,
+      clientUri: null,
+    },
+    scopes: ['mcp:read'],
+    createdAt: '2026-10-01T10:00:00.000Z',
+    lastUsedAt: null,
+  };
+
+  async function open(server: FakeServer) {
+    server.on('GET', '/api/v0/users', { body: page([user('u1', 'admin'), user('u2', 'bob')]) });
+    const fixture = TestBed.createComponent(UsersPage);
+    await settle(fixture);
+    const root = fixture.nativeElement as HTMLElement;
+    const show = row(root, 'u2').querySelector<HTMLButtonElement>('[data-test=show-apps]')!;
+    expect(show.getAttribute('aria-label')).toBe('Connected apps of bob');
+    show.click();
+    await settle(fixture);
+    return { fixture, root };
+  }
+
+  it('lists the apps of the chosen user, and disconnects one after a confirmation', async () => {
+    const server = setup();
+    server.on('GET', GRANTS, { body: { items: [grant] } });
+    server.on('DELETE', `${GRANTS}/${G1}`, { status: 204 });
+    const { fixture, root } = await open(server);
+    const section = root.querySelector<HTMLElement>('[data-test=user-apps]')!;
+    expect(section.querySelector('h3')?.textContent?.trim()).toBe('Connected apps of bob');
+    expect(document.activeElement).toBe(section.querySelector('h3'));
+    const app = section.querySelector<HTMLElement>(`tr[data-key="${G1}"]`)!;
+    expect(app.textContent).toContain('Agent Studio');
+    expect(app.textContent).toContain('Not verified');
+    server.on('GET', GRANTS, { body: { items: [] } });
+    [...app.querySelectorAll('button')]
+      .find((b) => b.textContent?.trim() === 'Disconnect')!
+      .click();
+    await settle(fixture);
+    const ask = section.querySelector<HTMLDialogElement>('dialog[data-test=disconnect-dialog]')!;
+    expect(ask.querySelector('#disconnect-text')?.textContent?.trim()).toBe(
+      'Disconnect Agent Studio from bob? Its access stops at once.',
+    );
+    [...ask.querySelectorAll('button')]
+      .find((b) => b.textContent?.trim() === 'Disconnect')!
+      .click();
+    await settle(fixture);
+    expect(server.requestsTo('DELETE', `${GRANTS}/${G1}`)).toHaveLength(1);
+    expect(section.querySelector('[data-test=grants-empty]')?.textContent?.trim()).toBe(
+      'bob has no connected apps.',
+    );
+  });
+
+  it('closes the section and gives focus back to the row', async () => {
+    const server = setup();
+    server.on('GET', GRANTS, { body: { items: [] } });
+    const { fixture, root } = await open(server);
+    [...root.querySelectorAll<HTMLButtonElement>('[data-test=user-apps] button')]
+      .find((b) => b.textContent?.trim() === 'Close')!
+      .click();
+    await settle(fixture);
+    expect(root.querySelector('[data-test=user-apps]')).toBeNull();
+    expect(document.activeElement).toBe(row(root, 'u2').querySelector('[data-test=show-apps]'));
+  });
+});

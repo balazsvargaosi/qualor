@@ -1,0 +1,14 @@
+/* A user's connected apps (6N spec §8), below the list. */
+.user-apps {
+  margin-top: 16px;
+}
+.user-apps .panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+.user-apps .panel-head h3 {
+  margin: 0;
+}

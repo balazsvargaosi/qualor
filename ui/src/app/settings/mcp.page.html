@@ -1,0 +1,124 @@
+<div class="settings-head">
+  <div>
+    <h2 #heading tabindex="-1" i18n="@@mcp.title">MCP</h2>
+    @if (!instanceAdmin()) {
+      <p class="muted" i18n="@@mcp.adminsOnly">
+        Only instance administrators change the MCP settings.
+      </p>
+    } @else {
+      <p class="muted" i18n="@@mcp.intro">
+        AI agents such as Claude Code and Cursor connect to Qualor through MCP. Each person signs in
+        and allows the app, which then works with that person's rights.
+      </p>
+    }
+  </div>
+</div>
+@if (!instanceAdmin()) {
+  <!-- Nothing more: the server is asked nothing. -->
+} @else if (loadError(); as message) {
+  <p class="alert alert-error" role="alert">{{ message }}</p>
+} @else if (current(); as s) {
+  <div role="status">
+    @if (announcement(); as message) {
+      <p class="alert alert-success">{{ message }}</p>
+    }
+  </div>
+  @if (error(); as message) {
+    <p class="alert alert-error" role="alert">{{ message }}</p>
+  }
+  <div class="mcp-panels">
+    <section class="card panel" aria-labelledby="mcp-endpoint-title">
+      <div class="panel-head">
+        <h3 id="mcp-endpoint-title" i18n="@@mcp.endpoint">Endpoint</h3>
+      </div>
+      <div class="panel-body">
+        @if (s.url; as url) {
+          <q-copy-value fieldId="mcp-url" label="MCP URL" i18n-label="@@mcp.url" [value]="url" />
+          <p class="hint" i18n="@@mcp.urlHint">Add this URL to the app as a remote MCP server.</p>
+        } @else {
+          <p class="alert alert-warn" data-test="public-url-missing" i18n="@@mcp.publicUrlMissing">
+            Set QUALOR_PUBLIC_URL to turn the MCP endpoint on.
+          </p>
+        }
+      </div>
+    </section>
+    <form class="card panel" aria-labelledby="mcp-clients-title" novalidate (submit)="save($event)">
+      <div class="panel-head">
+        <h3 id="mcp-clients-title" i18n="@@mcp.clients">Apps that may connect</h3>
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <label for="mcp-dcr" i18n="@@mcp.dcr"
+            >Let apps register themselves (dynamic registration)</label
+          >
+          <p id="mcp-dcr-hint" i18n="@@mcp.dcrHint">
+            Most agents register this way. Their consent screen says they are not verified.
+          </p>
+        </div>
+        <div class="setting-field">
+          <input
+            id="mcp-dcr"
+            type="checkbox"
+            aria-describedby="mcp-dcr-hint"
+            [checked]="dcr()"
+            (change)="setDcr($event)"
+          />
+        </div>
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <label for="mcp-cimd" i18n="@@mcp.cimd"
+            >Accept apps identified by a metadata URL (CIMD)</label
+          >
+          <p id="mcp-cimd-hint" i18n="@@mcp.cimdHint">
+            The app's id is an https address that describes it.
+          </p>
+        </div>
+        <div class="setting-field">
+          <input
+            id="mcp-cimd"
+            type="checkbox"
+            aria-describedby="mcp-cimd-hint"
+            [checked]="cimd()"
+            (change)="setCimd($event)"
+          />
+        </div>
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <label for="mcp-allowed" i18n="@@mcp.allowed">Allowed apps</label>
+          <p id="mcp-allowed-hint" i18n="@@mcp.allowedHint">
+            One client id per line, or a URL prefix ending in /. Empty allows every app.
+          </p>
+        </div>
+        <div class="setting-field">
+          <textarea
+            id="mcp-allowed"
+            rows="5"
+            autocomplete="off"
+            spellcheck="false"
+            [value]="allowed()"
+            [attr.aria-invalid]="allowedError() ? true : null"
+            [attr.aria-describedby]="
+              allowedError() ? 'mcp-allowed-hint mcp-allowed-error' : 'mcp-allowed-hint'
+            "
+            (input)="setAllowed($event)"
+          ></textarea>
+          @if (allowedError(); as message) {
+            <span id="mcp-allowed-error" class="field-error" role="alert">{{ message }}</span>
+          }
+        </div>
+      </div>
+      <div class="setting-actions">
+        <button
+          type="submit"
+          class="btn btn-primary"
+          [attr.aria-disabled]="busy() ? true : null"
+          i18n="@@mcp.save"
+        >
+          Save
+        </button>
+      </div>
+    </form>
+  </div>
+}

@@ -20,17 +20,17 @@ const KNOWN_EXTENSIONS = new Set([
 ]);
 
 /**
- * Settings (plan 1F ruling Y7): personal tokens for everyone, users for instance admins, members
- * for those whose role lists `org.members.read` (rbac-audit.md §17), webhooks and SCM connections
- * (plan 2A, scm.md §2) for those whose role manages them; the licence and the plugins' entries
- * (enterprise.md §10.4, §11) for instance admins. The audit log (feature `audit-log`) is also
- * listed for org admins, whose role has `org.audit.read`, and the compliance reports (feature
- * `compliance-export`, 4E-1 §4) for the organisation's members; the entries the UI knows carry its
- * own labels. Only `settings.nav` entries are listed here, never a plugin's project tab. Linked
- * accounts (feature `sso`, sso-scim.md §18) are listed for every user. The navigation only hides
- * what a user cannot use; each page checks the role again and the server decides. Its entries
- * sit under Your account, Organization and Instance (UI redesign spec §7.8); a group with nothing
- * to show is left out.
+ * Settings (plan 1F ruling Y7): personal tokens and connected apps (6N spec §8) for everyone, users
+ * and MCP for instance admins, members for those whose role lists `org.members.read` (rbac-audit.md
+ * §17), webhooks and SCM connections (plan 2A, scm.md §2) for those whose role manages them; the
+ * licence and the plugins' entries (enterprise.md §10.4, §11) for instance admins. The audit log
+ * (feature `audit-log`) is also listed for org admins, whose role has `org.audit.read`, and the
+ * compliance reports (feature `compliance-export`, 4E-1 §4) for the organisation's members; the
+ * entries the UI knows carry its own labels. Only `settings.nav` entries are listed here, never a
+ * plugin's project tab. Linked accounts (feature `sso`, sso-scim.md §18) are listed for every user.
+ * The navigation only hides what a user cannot use; each page checks the role again and the server
+ * decides. Its entries sit under Your account, Organization and Instance (UI redesign spec §7.8); a
+ * group with nothing to show is left out.
  */
 @Component({
   selector: 'q-settings-page',

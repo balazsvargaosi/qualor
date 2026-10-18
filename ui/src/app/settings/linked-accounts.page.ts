@@ -5,7 +5,6 @@ import {
   effect,
   type ElementRef,
   inject,
-  InjectionToken,
   Injector,
   input,
   signal,
@@ -23,18 +22,7 @@ import { SystemInfo } from '../shell/system-info';
 import { DateTimePipe } from '../shared/date-time.pipe';
 import { closeModal, openAfterRender } from '../shared/dialog';
 import { keepFocus } from '../shared/focus';
-
-/**
- * Leaves the app for another address with a full navigation (linking goes through the identity
- * provider). A token, so tests can see the address without leaving the test page.
- */
-export const LEAVE_APP = new InjectionToken<(url: string) => void>('LEAVE_APP', {
-  providedIn: 'root',
-  factory: () => {
-    const document = inject(DOCUMENT);
-    return (url: string) => document.location.assign(url);
-  },
-});
+import { LEAVE_APP } from '../shared/leave-app';
 
 /** A refused link or unlink in this page's words (sso-scim.md §7.3, §8.5). */
 function linkProblem(err: unknown): string {

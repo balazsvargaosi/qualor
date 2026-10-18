@@ -1,0 +1,106 @@
+<div role="status">
+  @if (announcement(); as message) {
+    <p class="alert alert-success">{{ message }}</p>
+  }
+</div>
+@if (loadError() ?? error(); as message) {
+  <p class="alert alert-error" role="alert">{{ message }}</p>
+}
+@if (grants(); as list) {
+  <div class="panel-scroll">
+    <table #table>
+      <caption class="visually-hidden">
+        {{
+          caption()
+        }}
+      </caption>
+      <thead>
+        <tr>
+          <th scope="col" i18n="@@oauthGrants.col.app">App</th>
+          <th scope="col" i18n="@@oauthGrants.col.access">Access</th>
+          <th scope="col" i18n="@@oauthGrants.col.connected">Connected</th>
+          <th scope="col" i18n="@@oauthGrants.col.lastUsed">Last used</th>
+          <th scope="col" class="actions-col">
+            <span class="visually-hidden" i18n="@@oauthGrants.col.actions">Actions</span>
+          </th>
+        </tr>
+      </thead>
+      <tbody>
+        @for (g of list; track g.id) {
+          <tr [attr.data-key]="g.id">
+            <th scope="row">
+              <div class="name-stack">
+                <span>{{ g.client.name }}</span>
+                @if (g.client.source === 'dcr') {
+                  <span class="muted" i18n="@@oauthGrants.unverified">Not verified</span>
+                }
+              </div>
+            </th>
+            <td>
+              <span class="badge badge-tag">{{ scopeLabel(g) }}</span>
+            </td>
+            <td class="nowrap">{{ g.createdAt | dateTime: 'date' }}</td>
+            <td class="nowrap">
+              @if (g.lastUsedAt; as at) {
+                {{ at | dateTime }}
+              } @else {
+                <span class="muted" i18n="@@oauthGrants.unused">Not used yet</span>
+              }
+            </td>
+            <td class="actions-col">
+              @if (!readOnly()) {
+                <div class="row-actions">
+                  <button
+                    type="button"
+                    class="btn-quiet danger"
+                    [attr.aria-label]="disconnectLabel(g)"
+                    [attr.aria-disabled]="busy() ? true : null"
+                    (click)="disconnect(g)"
+                    i18n="@@oauthGrants.disconnect"
+                  >
+                    Disconnect
+                  </button>
+                </div>
+              }
+            </td>
+          </tr>
+        } @empty {
+          <tr>
+            <td colspan="5" class="muted" data-test="grants-empty"><ng-content /></td>
+          </tr>
+        }
+      </tbody>
+    </table>
+  </div>
+}
+
+@if (!readOnly()) {
+  <dialog
+    #confirmDialog
+    class="dialog"
+    aria-labelledby="disconnect-title"
+    aria-describedby="disconnect-text"
+    data-test="disconnect-dialog"
+    (close)="cancel()"
+  >
+    <div class="dialog-head">
+      <h2 id="disconnect-title" i18n="@@oauthGrants.disconnectTitle">Disconnect the app</h2>
+    </div>
+    <div class="dialog-body">
+      <p id="disconnect-text">{{ pending()?.question }}</p>
+    </div>
+    <div class="dialog-actions">
+      <button type="button" class="btn" autofocus (click)="cancel()" i18n="@@dialog.cancel">
+        Cancel
+      </button>
+      <button
+        type="button"
+        class="btn btn-danger-solid"
+        (click)="confirm()"
+        i18n="@@oauthGrants.disconnect"
+      >
+        Disconnect
+      </button>
+    </div>
+  </dialog>
+}

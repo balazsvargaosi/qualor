@@ -9,6 +9,12 @@ export const settingsRoutes: Routes = [
     loadComponent: () => import('./tokens.page').then((m) => m.TokensPage),
   },
   {
+    // 6N spec §8: the MCP clients you connected (OAuth grants).
+    path: 'connected-apps',
+    title: $localize`:@@title.connectedApps:Connected apps`,
+    loadComponent: () => import('./connected-apps.page').then((m) => m.ConnectedAppsPage),
+  },
+  {
     path: 'notifications',
     title: $localize`:@@title.notifications:Notifications`,
     loadComponent: () => import('./notifications.page').then((m) => m.NotificationsPage),
@@ -69,6 +75,12 @@ export const settingsRoutes: Routes = [
     path: 'email',
     title: $localize`:@@title.email:Email`,
     loadComponent: () => import('./email.page').then((m) => m.EmailSettingsPage),
+  },
+  {
+    // 6N spec §8: the MCP endpoint and which OAuth clients may connect (instance admins).
+    path: 'mcp',
+    title: $localize`:@@title.mcp:MCP`,
+    loadComponent: () => import('./mcp.page').then((m) => m.McpPage),
   },
   {
     path: 'license',

@@ -1,0 +1,22 @@
+/* Settings â†’ MCP (6N spec Â§9): the endpoint, then the client policy as setting rows. */
+.mcp-panels {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+}
+.mcp-panels > * {
+  margin: 0;
+}
+.mcp-panels .panel-head {
+  padding-bottom: 14px;
+}
+.mcp-panels .panel-head h3 {
+  margin: 0;
+}
+.mcp-panels .panel-body > .hint {
+  margin: 8px 0 0;
+}
+.mcp-panels textarea {
+  width: 100%;
+  font-family: var(--mono);
+}

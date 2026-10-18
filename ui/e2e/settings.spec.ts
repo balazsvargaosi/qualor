@@ -68,6 +68,7 @@ test.describe('on a tablet', () => {
   // Each settings page fits a tablet too once its data is in (Task 2 of step 11: 390 and 768px).
   for (const path of [
     '/settings/tokens',
+    '/settings/connected-apps',
     '/settings/organizations',
     '/settings/users',
     '/settings/members',
@@ -77,6 +78,7 @@ test.describe('on a tablet', () => {
     '/settings/repositories',
     '/settings/ai',
     '/settings/email',
+    '/settings/mcp',
     '/settings/notifications',
     '/settings/license',
   ]) {

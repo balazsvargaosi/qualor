@@ -1,0 +1,27 @@
+<div class="settings-head">
+  <div>
+    <h2 #heading tabindex="-1" i18n="@@connectedApps.title">Connected apps</h2>
+    <p class="muted" i18n="@@connectedApps.intro">
+      AI agents and other MCP apps you allowed to use Qualor as you. An app never has more rights
+      than you.
+    </p>
+  </div>
+</div>
+<section
+  class="card panel"
+  aria-label="Your connected apps"
+  i18n-aria-label="@@connectedApps.yours"
+>
+  <q-oauth-grants
+    [source]="source"
+    caption="Your connected apps"
+    i18n-caption="@@connectedApps.yours"
+    [readOnly]="demo()"
+    [fallbackFocus]="headingFocus"
+  >
+    <ng-container i18n="@@connectedApps.empty"
+      >No apps are connected. <a routerLink="/docs/mcp">The guide</a> shows how to connect an AI
+      agent.</ng-container
+    >
+  </q-oauth-grants>
+</section>

@@ -161,6 +161,16 @@
                       Reset password
                     </button>
                   }
+                  <button
+                    type="button"
+                    class="btn-quiet"
+                    data-test="show-apps"
+                    [attr.aria-label]="appsLabel(u)"
+                    (click)="showApps(u)"
+                    i18n="@@users.apps.open"
+                  >
+                    Connected apps
+                  </button>
                   @if (canInvite(u)) {
                     <button
                       type="button"
@@ -214,6 +224,36 @@
       </p>
     }
   </section>
+
+  @if (appsUser(); as u) {
+    @if (appsSource(); as source) {
+      <section
+        id="user-apps"
+        class="card panel user-apps"
+        aria-labelledby="user-apps-title"
+        data-test="user-apps"
+      >
+        <div class="panel-head">
+          <h3 #appsHeading id="user-apps-title" tabindex="-1" i18n="@@users.apps.title">
+            Connected apps of {{ u.username }}
+          </h3>
+          <button type="button" class="btn-quiet" (click)="closeApps()" i18n="@@users.apps.close">
+            Close
+          </button>
+        </div>
+        <q-oauth-grants
+          [source]="source"
+          caption="Connected apps of the user"
+          i18n-caption="@@users.apps.caption"
+          [fallbackFocus]="appsFocus"
+        >
+          <ng-container i18n="@@users.apps.empty"
+            >{{ u.username }} has no connected apps.</ng-container
+          >
+        </q-oauth-grants>
+      </section>
+    }
+  }
 
   <dialog
     #createDialog

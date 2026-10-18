@@ -10,7 +10,8 @@ import {
 } from '../../testing/fake-server';
 import type { LinkedIdentity } from '../api/ee';
 import { SessionStore } from '../auth/session';
-import { LEAVE_APP, LinkedAccountsPage } from './linked-accounts.page';
+import { LEAVE_APP } from '../shared/leave-app';
+import { LinkedAccountsPage } from './linked-accounts.page';
 import { SettingsPage } from './settings.page';
 
 const C1 = '0190a6c2-0000-7000-8000-0000000000c1';

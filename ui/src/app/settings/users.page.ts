@@ -1,5 +1,6 @@
 import { DOCUMENT } from '@angular/common';
 import {
+  afterNextRender,
   Component,
   computed,
   effect,
@@ -22,6 +23,7 @@ import { keepFocus, rowByKey } from '../shared/focus';
 import { clearField, inputValue, isChecked } from '../shared/forms';
 import { Icon } from '../shared/icon';
 import { KeysetList } from '../shared/keyset';
+import { type GrantSource, OAuthGrants } from './oauth-grants';
 
 export type User = ItemOf<'/api/v0/users'>;
 type UserPatch = { active: boolean } | { isInstanceAdmin: boolean };
@@ -57,11 +59,15 @@ const PASSWORD_MAX_LENGTH = 256;
  * opens a dialog holding the form; each other user's row resets their password in a dialog that
  * names them (it replaces the separate form with its user list); asking about your own account
  * uses the page's dialog instead of the browser's `confirm()`.
+ *
+ * - 6N spec §8: a row's "Connected apps" opens, below the list, the MCP apps that user connected
+ *   (`GET /users/{id}/oauth-grants`), each with a Disconnect that asks first.
  */
 @Component({
   selector: 'q-users-page',
-  imports: [DateTimePipe, Icon],
+  imports: [DateTimePipe, Icon, OAuthGrants],
   templateUrl: './users.page.html',
+  styleUrl: './users.page.css',
 })
 export class UsersPage {
   private readonly api = inject(Api);
@@ -128,7 +134,15 @@ export class UsersPage {
   private readonly createDialog = viewChild<ElementRef<HTMLDialogElement>>('createDialog');
   private readonly resetDialog = viewChild<ElementRef<HTMLDialogElement>>('resetDialog');
   private readonly confirmDialog = viewChild<ElementRef<HTMLDialogElement>>('confirmDialog');
+  private readonly appsHeading = viewChild<ElementRef<HTMLElement>>('appsHeading');
   private started = false;
+  /** The user whose connected apps the section below the list shows; null while it is closed. */
+  protected readonly appsUser = signal<User | null>(null);
+  protected readonly appsSource = computed(() => {
+    const user = this.appsUser();
+    return user ? this.grantsOf(user) : null;
+  });
+  protected readonly appsFocus = () => this.appsHeading()?.nativeElement;
 
   constructor() {
     effect(() => {
@@ -140,6 +154,46 @@ export class UsersPage {
         });
       }
     });
+  }
+
+  /** Shows the user's connected apps below the list, and moves focus to them. */
+  protected showApps(user: User): void {
+    this.appsUser.set(user);
+    afterNextRender(() => this.appsHeading()?.nativeElement.focus(), { injector: this.injector });
+  }
+
+  /** Closes the section; focus goes back to the row's button. */
+  protected closeApps(): void {
+    const user = this.appsUser();
+    this.appsUser.set(null);
+    if (!user) return;
+    afterNextRender(
+      () =>
+        rowByKey(this.table()?.nativeElement, user.id)
+          ?.querySelector<HTMLElement>('[data-test=show-apps]')
+          ?.focus(),
+      { injector: this.injector },
+    );
+  }
+
+  protected appsLabel(user: User): string {
+    return $localize`:@@users.apps.openNamed:Connected apps of ${user.username}:username:`;
+  }
+
+  private grantsOf(user: User): GrantSource {
+    const path = { params: { path: { id: user.id } } };
+    return {
+      list: async () =>
+        (await ok(this.api.client.GET('/api/v0/users/{id}/oauth-grants', path))).items,
+      revoke: (grant) =>
+        done(
+          this.api.client.DELETE('/api/v0/users/{id}/oauth-grants/{grantId}', {
+            params: { path: { id: user.id, grantId: grant.id } },
+          }),
+        ),
+      question: (grant) =>
+        $localize`:@@users.apps.confirmDisconnect:Disconnect ${grant.client.name}:app: from ${user.username}:username:? Its access stops at once.`,
+    };
   }
 
   private async loadInviteState(): Promise<void> {

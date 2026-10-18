@@ -269,6 +269,22 @@ describe('buildApp', () => {
       expect((await instance.inject({ method: 'POST', url: '/projects' })).statusCode).toBe(404);
     });
 
+    it('serves the OAuth consent screen next to the OAuth routes (6N spec §6 step 4)', async () => {
+      const instance = await app(undefined, { publicUrl: 'https://qualor.example' }, ui);
+      const consent = await instance.inject({
+        method: 'GET',
+        url: '/oauth/consent?request=0190a6c2-0000-7000-8000-000000000000',
+      });
+      expect([consent.statusCode, consent.headers['content-type']]).toEqual([
+        200,
+        'text/html; charset=utf-8',
+      ]);
+      // The server's own endpoint still answers itself (its error page), never with the UI.
+      const authorize = await instance.inject({ method: 'GET', url: '/oauth/authorize' });
+      expect(authorize.statusCode).toBe(400);
+      expect(authorize.body).not.toContain('ngCspNonce');
+    });
+
     it('never answers an API-looking path with the page (encoded, doubled slash, any case)', async () => {
       const instance = await app(undefined, {}, ui);
       for (const url of ['/%61pi/v0/nope', '//api/v0/nope', '/API/v0/nope', '/Api', '/api?x=1']) {

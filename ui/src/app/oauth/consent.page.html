@@ -1,0 +1,93 @@
+<q-auth-layout>
+  <div class="card auth-card consent">
+    @if (gone()) {
+      <h1 i18n="@@consent.goneTitle">Connect an app</h1>
+      <p
+        #gonePanel
+        class="alert alert-error"
+        role="alert"
+        tabindex="-1"
+        data-test="gone"
+        i18n="@@consent.gone"
+      >
+        This request has expired or was already answered. Start the connection again from the app.
+      </p>
+    } @else if (pending(); as p) {
+      <div class="consent-app">
+        <span class="avatar" aria-hidden="true">{{ p.client.name.charAt(0) }}</span>
+        <h1>{{ p.client.name }}</h1>
+      </div>
+      <p i18n="@@consent.wants">wants to access Qualor as {{ username() }}.</p>
+      @if (p.client.source === 'dcr') {
+        <p class="alert alert-warn" i18n="@@consent.unverified">
+          Not verified: this app registered itself.
+        </p>
+      }
+      @if (error(); as message) {
+        <p class="alert alert-error" role="alert">{{ message }}</p>
+      }
+      @if (automatic() || left()) {
+        <p class="muted" role="status" i18n="@@consent.connecting">Connecting…</p>
+      } @else {
+        <p class="consent-can" i18n="@@consent.canDo">It will be able to:</p>
+        <ul class="consent-scopes">
+          <li i18n="@@consent.scope.read">Read projects, quality gates, issues and measures</li>
+          <li i18n="@@consent.scope.ai">Ask the AI assistant</li>
+          @if (asksWrite()) {
+            <li class="consent-write">
+              <input
+                id="consent-write"
+                type="checkbox"
+                [checked]="write()"
+                (change)="setWrite($event)"
+              />
+              <label for="consent-write" i18n="@@consent.scope.write"
+                >Change issue statuses (false positive, won’t fix) with a comment</label
+              >
+            </li>
+          }
+        </ul>
+        <p class="hint" i18n="@@consent.goesTo">
+          After you answer, your browser goes to {{ target() }}.
+        </p>
+        @if (fullRedirect(); as uri) {
+          <p class="consent-uri">
+            <code data-test="redirect-uri">{{ uri }}</code>
+          </p>
+        }
+        @if (demo()) {
+          <p class="alert alert-info" i18n="@@consent.demo">
+            The demo is read-only, so it cannot connect apps.
+          </p>
+        } @else {
+          <div class="consent-actions">
+            @if (!refused()) {
+              <button
+                type="button"
+                class="btn btn-primary"
+                [attr.aria-disabled]="busy() ? true : null"
+                (click)="answer('approve')"
+                i18n="@@consent.allow"
+              >
+                Allow
+              </button>
+            }
+            <button
+              #denyButton
+              type="button"
+              class="btn"
+              [attr.aria-disabled]="busy() ? true : null"
+              (click)="answer('deny')"
+              i18n="@@consent.deny"
+            >
+              Deny
+            </button>
+          </div>
+        }
+      }
+    } @else if (error(); as message) {
+      <h1 i18n="@@consent.goneTitle">Connect an app</h1>
+      <p class="alert alert-error" role="alert">{{ message }}</p>
+    }
+  </div>
+</q-auth-layout>
