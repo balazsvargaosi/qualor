@@ -25,6 +25,7 @@ describe('MCP read tools', () => {
   let mainId: string;
   let mrId: string;
   let newIssueId: string;
+  let hotspotId: string;
 
   beforeAll(async () => {
     ctx = await createTestContext({ config: { publicUrl: 'https://q.example' } });
@@ -76,6 +77,18 @@ describe('MCP read tools', () => {
       path: 'src/b.ts',
       startLine: 9,
       inNewCode: false,
+    });
+    hotspotId = await seedIssue(ctx.db, {
+      projectId: project.id,
+      branchId: mainId,
+      ruleId,
+      message: 'review this credential',
+      path: 'src/h.ts',
+      startLine: 4,
+      severity: 'low',
+      quality: 'security',
+      kind: 'hotspot',
+      inNewCode: true,
     });
 
     const gateResult = {
@@ -245,6 +258,22 @@ describe('MCP read tools', () => {
       newCodeOnly: false,
     });
     expect(all.text).toContain('old eval');
+  });
+
+  it('qualor_issues: hotspots only when asked for, as hotspots', async () => {
+    const issues = await callTool(ctx, token, 'qualor_issues', { project: 'shop' });
+    expect(issues.text).not.toContain('review this credential');
+    const hotspots = await callTool(ctx, token, 'qualor_issues', {
+      project: 'shop',
+      kind: 'hotspot',
+    });
+    expect(hotspots.text).toContain(
+      '1 security hotspot(s) on branch main (new code; the gate does not count them):',
+    );
+    expect(hotspots.text).toContain('src/h.ts:4 [low security hotspot] eslint:no-eval');
+    expect(hotspots.structured).toMatchObject({
+      issues: [{ id: hotspotId, kind: 'hotspot' }],
+    });
   });
 
   it('qualor_issues: filters by severity and path with repeated query keys, and pages', async () => {

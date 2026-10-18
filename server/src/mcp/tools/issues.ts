@@ -13,6 +13,12 @@ const input = z.object({
     .boolean()
     .default(true)
     .describe('Only issues in new code (what the gate counts). Default true.'),
+  kind: z
+    .enum(['issue', 'hotspot'])
+    .default('issue')
+    .describe(
+      'issue (default): what the quality gate counts. hotspot: security-sensitive code to review, which the gate does not count.',
+    ),
   severity: z.array(z.enum(SEVERITIES)).max(5).optional(),
   quality: z.array(z.enum(QUALITIES)).max(3).optional(),
   rule: z.array(z.string().max(512)).max(20).optional().describe('Rule keys, e.g. eslint:no-eval'),
@@ -31,12 +37,22 @@ interface IssuePage {
   nextCursor: string | null;
 }
 
+/** `3 issue(s) on main (new code):`; hotspots say that the gate does not count them. */
+function headLine(count: number, target: string, args: { kind: string; newCodeOnly: boolean }) {
+  if (args.kind === 'hotspot') {
+    const scope = args.newCodeOnly ? 'new code; ' : '';
+    return `${count} security hotspot(s) on ${target} (${scope}the gate does not count them):`;
+  }
+  return `${count} issue(s) on ${target}${args.newCodeOnly ? ' (new code)' : ''}:`;
+}
+
 /** Spec §5: the issues of a branch or merge request, most severe first. */
 export const issuesTool: McpTool<typeof input> = {
   name: 'qualor_issues',
   title: 'List issues',
   description:
     'Issues of a branch or merge request, most severe first; by default only open issues in new code, which is what the quality gate counts. ' +
+    'Security hotspots (code to review, not counted by the gate) are listed only with kind hotspot. ' +
     'Each line has path:line, severity, quality, rule and the issue id for qualor_issue.',
   access: 'read',
   inputSchema: input,
@@ -50,6 +66,7 @@ export const issuesTool: McpTool<typeof input> = {
         limit: args.limit,
         cursor: args.cursor,
         inNewCode: args.newCodeOnly ? true : undefined,
+        kind: args.kind,
         severity: args.severity,
         quality: args.quality,
         rule: args.rule,
@@ -58,7 +75,7 @@ export const issuesTool: McpTool<typeof input> = {
         sort: 'severity',
       }),
     );
-    const head = `${page.items.length} issue(s) on ${describeBranch(branch)}${args.newCodeOnly ? ' (new code)' : ''}:`;
+    const head = headLine(page.items.length, describeBranch(branch), args);
     const more = page.nextCursor ? `\nMore: call again with cursor "${page.nextCursor}".` : '';
     return {
       text: truncate([head, ...page.items.map(issueLine)].join('\n') + more),
@@ -74,6 +91,7 @@ export const issuesTool: McpTool<typeof input> = {
           message: i.message,
           inNewCode: i.inNewCode,
           status: i.status,
+          kind: i.kind ?? 'issue',
         })),
         nextCursor: page.nextCursor,
       },

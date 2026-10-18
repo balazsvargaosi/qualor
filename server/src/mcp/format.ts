@@ -14,6 +14,8 @@ export interface IssueListItem {
   startLine: number | null;
   inNewCode: boolean;
   status: string;
+  /** A hotspot is security-sensitive code to review; the quality gate does not count it. */
+  kind?: 'issue' | 'hotspot';
 }
 
 /** `src/db.ts:42 [high security] qualor:js.sqli — message (new code; id …)`: one line to act on. */
@@ -21,7 +23,8 @@ export function issueLine(i: IssueListItem): string {
   const line = i.startLine ? `:${i.startLine}` : '';
   const where = i.path ? i.path + line : '(project)';
   const tags = i.inNewCode ? `new code; id ${i.id}` : `id ${i.id}`;
-  return `${where} [${i.severity} ${i.quality}] ${i.rule.key} — ${i.message} (${tags})`;
+  const hotspot = i.kind === 'hotspot' ? ' hotspot' : '';
+  return `${where} [${i.severity} ${i.quality}${hotspot}] ${i.rule.key} — ${i.message} (${tags})`;
 }
 
 /** `new_coverage is 61.5, must not be below 80`. */
