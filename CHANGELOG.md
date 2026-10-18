@@ -6,6 +6,14 @@ All notable changes to Qualor are listed here, newest first. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- The GitHub Action [`qualor-dev/scan-action`](https://github.com/qualor-dev/scan-action) scans,
+  uploads and fails on the quality gate in one step (`@v0.10`, `@v0` or `@v0.10.0`), and
+  `qualor-dev/scan-action/dotnet` does the same for C# around your build. See
+  [the guide](docs/guide/github.md).
+- The GitLab CI/CD component is released again as 0.10.0, so `@0.10` resolves.
+
 ## [0.10.0] - 2026-10-18
 
 ### Added

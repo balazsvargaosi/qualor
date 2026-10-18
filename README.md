@@ -143,27 +143,25 @@ For merge request comments, inline discussions and a commit status, connect the 
 GitLab in Qualor (Settings, GitLab: the GitLab URL and a project access token with the `api` scope
 and the Maintainer role) and map each project to its GitLab project there.
 
-GitHub Actions: copy the whole workflow
-[integrations/github/qualor.yml](integrations/github/qualor.yml) to `.github/workflows/qualor.yml`
-(not only its job: it also sets `permissions: { contents: read }` and the triggers) and set the
-`QUALOR_URL` and `QUALOR_SCANNER_IMAGE` variables and the `QUALOR_TOKEN` secret. Its job:
+GitHub Actions: use the [Qualor Action](https://github.com/qualor-dev/scan-action) and set the
+`QUALOR_URL` variable and the `QUALOR_TOKEN` secret. Its steps:
 
 ```yaml
-qualor:
-  if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
-  runs-on: ubuntu-latest
-  container: { image: '${{ vars.QUALOR_SCANNER_IMAGE }}', options: --user 1001 }
-  steps:
-    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      with:
-        fetch-depth: 0
-        persist-credentials: false
-        ref: '${{ github.event.pull_request.head.sha || github.sha }}'
-    - run: qualor scan
-      env: { QUALOR_URL: '${{ vars.QUALOR_URL }}', QUALOR_TOKEN: '${{ secrets.QUALOR_TOKEN }}' }
+- uses: actions/checkout@v4
+  with:
+    fetch-depth: 0
+    persist-credentials: false
+    ref: '${{ github.event.pull_request.head.sha || github.sha }}'
+- uses: qualor-dev/scan-action@v0.10
+  with:
+    server-url: '${{ vars.QUALOR_URL }}'
+    token: '${{ secrets.QUALOR_TOKEN }}'
 ```
 
-It checks out the pull request's head (so annotations land on its lines) with the full history and
+The [guide](docs/guide/github.md) has the complete workflow (triggers, `permissions: { contents: read }`,
+skipping fork pull requests) and the template
+[integrations/github/qualor.yml](integrations/github/qualor.yml) for your own image or a mirror.
+The checkout takes the pull request's head (so annotations land on its lines) with the full history and
 without leaving the job's token in `.git/config`, and skips pull requests from forks, which GitHub
 gives no secrets. For check runs, pull request comments and annotations, create a GitHub App
 (Checks: read and write, Pull requests: read and write, Metadata: read;
@@ -248,7 +246,8 @@ With the CI/CD component, set `inputs: { dotnet: true, image: qualor/scanner-dot
 optionally `build-command`, default `dotnet build --no-incremental`); the component then runs the
 same three steps instead of a plain `qualor scan`, and `qualor dotnet abort` in its `after_script`.
 
-On GitHub Actions, copy
+On GitHub Actions, use `qualor-dev/scan-action/dotnet@v0.10` (inputs as for the main action, plus
+`build-command`), or copy
 [`integrations/github/qualor-dotnet.yml`](integrations/github/qualor-dotnet.yml) to
 `.github/workflows/qualor.yml` and set the variable `QUALOR_SCANNER_DOTNET_IMAGE` to
 `qualor/scanner-dotnet:<tag>`. It runs `qualor dotnet begin`, the build (replace
