@@ -1,0 +1,105 @@
+import { SEVERITIES, type Severity } from '@qualor/shared';
+import { clip, failsWhen, metricLabel, metricValue } from '../../mail/templates/notify-common';
+import { oneLine } from '../../mail/text';
+import type { ChatGateMessage, DigestGate } from './messages';
+
+const Z = '​';
+/** Names longer than this are clipped in every message (fits Slack's and Teams' limits). */
+export const MAX_NAME = 80;
+
+/** One line, at most `max` characters, as plain text (Slack `plain_text`, never parsed). */
+export function plainText(s: string, max: number): string {
+  return clip(oneLine(s), max);
+}
+
+/**
+ * R13: text for Slack mrkdwn (and the top-level `text`): `&`, `<`, `>` escaped as Slack asks,
+ * so `<!channel>` or `<@U1>` never mention anyone, and `* _ ~ \`` between zero-width spaces, so
+ * they render as themselves instead of opening bold, italics, strike or code.
+ */
+export function slackText(s: string, max = MAX_NAME): string {
+  return plainText(s, max)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/[*_~`]/g, (c) => `${Z}${c}${Z}`);
+}
+
+/**
+ * R13: text for an Adaptive Card TextBlock or Fact (Teams' markdown subset): emphasis and link
+ * brackets between zero-width spaces, and a leading list or heading marker made inert. Teams
+ * ignores HTML, so `<`, `>` stay.
+ */
+export function teamsText(s: string, max = MAX_NAME): string {
+  const text = plainText(s, max).replace(/[*_~`[\]]/g, (c) => `${Z}${c}${Z}`);
+  return /^([-+#>]|\d+\.)/.test(text) ? `${Z}${text}` : text;
+}
+
+/** `Quality gate failed — <project> · <branch>` (spec §4), raw: each formatter escapes it. */
+export function gateTitle(m: ChatGateMessage, esc: (s: string, max?: number) => string): string {
+  const what = m.event === 'gate.failed' ? 'Quality gate failed' : 'Quality gate passes again';
+  return `${what} — ${esc(m.project.name, 60)} · ${esc(m.branch.name, 40)}`;
+}
+
+/** R6: the email's wording, "Coverage on new code: 61.5% (fails when less than 80%)". */
+export function conditionText(c: ChatGateMessage['failed'][number]): string {
+  return `${metricLabel(c.metric)}: ${metricValue(c.metric, c.value)} (fails when ${failsWhen(c)})`;
+}
+
+/** "Security 2 · Reliability 0 · Maintainability 0"; null when no count is known. */
+export function newCodeText(m: ChatGateMessage): string | null {
+  const parts = (
+    [
+      ['Security', m.newIssues.security],
+      ['Reliability', m.newIssues.reliability],
+      ['Maintainability', m.newIssues.maintainability],
+    ] as const
+  ).flatMap(([label, n]) => (n === null ? [] : [`${label} ${n}`]));
+  return parts.length === 0 ? null : parts.join(' · ');
+}
+
+/** `2026-10-19 07:05 UTC`. */
+export function utcTime(iso: string): string {
+  return `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
+}
+
+/** The calendar date of an instant in a zone, `2026-10-19`. */
+export function localDate(iso: string, zone: string): string {
+  // en-CA writes dates as YYYY-MM-DD.
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: zone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date(iso));
+}
+
+const GATE_LABELS: Record<DigestGate, string> = {
+  passed: 'gate passed',
+  failed: 'gate failed',
+  error: 'gate error',
+  none: 'no gate',
+  never: 'not analysed yet',
+};
+
+export function digestGateLabel(g: DigestGate): string {
+  return GATE_LABELS[g];
+}
+
+const SEVERITY_LABELS: Record<Severity, string> = {
+  blocker: 'Blocker',
+  high: 'High',
+  medium: 'Medium',
+  low: 'Low',
+  info: 'Info',
+};
+
+export function severityLabel(s: Severity): string {
+  return SEVERITY_LABELS[s];
+}
+
+/** "High 2 · Medium 1": only the severities that have issues; "none" when none has. */
+export function severityCounts(c: Record<Severity, number>): string {
+  const parts = SEVERITIES.filter((s) => c[s] > 0).map((s) => `${SEVERITY_LABELS[s]} ${c[s]}`);
+  return parts.length === 0 ? 'none' : parts.join(' · ');
+}
