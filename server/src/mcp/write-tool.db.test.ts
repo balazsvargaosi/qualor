@@ -7,12 +7,13 @@ import {
   createUser,
   login,
   organizationId,
+  type Session,
   type TestContext,
 } from '../../test/app';
 import { mainBranchId, seedIssue, seedRule } from '../../test/issues';
 import { callTool, mcpCall, sdkClient } from '../../test/mcp';
 import { oauthTokens as runOAuth } from '../../test/oauth';
-import { issueChanges, issues } from '../db/schema';
+import { issueChanges, issues, oauthClients } from '../db/schema';
 import { MCP_VIA_LINE } from './tools/transition';
 
 describe('qualor_transition_issue (spec §5, ruling R2)', () => {
@@ -20,6 +21,7 @@ describe('qualor_transition_issue (spec §5, ruling R2)', () => {
   let writer: string;
   let reader: string;
   let viewer: string;
+  let maint: Session;
   let issueId: string;
   beforeAll(async () => {
     ctx = await createTestContext({ config: { publicUrl: 'https://q.example' } });
@@ -36,7 +38,7 @@ describe('qualor_transition_issue (spec §5, ruling R2)', () => {
       branchId: await mainBranchId(ctx.db, projectId),
       ruleId,
     });
-    const maint = await login(ctx, m.username, m.password);
+    maint = await login(ctx, m.username, m.password);
     const view = await login(ctx, v.username, v.password);
     writer = (await runOAuth(ctx, maint, ['mcp:read', 'mcp:write'])).accessToken;
     reader = (await runOAuth(ctx, maint, ['mcp:read'])).accessToken;
@@ -82,6 +84,37 @@ describe('qualor_transition_issue (spec §5, ruling R2)', () => {
     expect(r.error ?? r.isError).toBeTruthy();
   });
 
+  it('refuses a whitespace-only comment', async () => {
+    const r = await callTool(ctx, writer, 'qualor_transition_issue', {
+      issueId,
+      to: 'open',
+      comment: '   \n\t ',
+    });
+    expect(r.error ?? r.isError).toBeTruthy();
+  });
+
+  it('stores at most 2000 characters for a longest comment and a longest client name', async () => {
+    const t = await runOAuth(ctx, maint, ['mcp:read', 'mcp:write']);
+    // 70 code points of 2 UTF-16 units each: cut to 64 without splitting a pair.
+    await ctx.db
+      .update(oauthClients)
+      .set({ name: '\u{1F600}'.repeat(70) })
+      .where(eq(oauthClients.clientId, t.clientId));
+    const r = await callTool(ctx, t.accessToken, 'qualor_transition_issue', {
+      issueId,
+      to: 'open',
+      comment: 'x'.repeat(1_850),
+    });
+    expect(r.isError).toBe(false);
+    const changes = await ctx.db
+      .select()
+      .from(issueChanges)
+      .where(eq(issueChanges.issueId, issueId));
+    const stored = changes.at(-1)?.comment ?? '';
+    expect(stored.length).toBeLessThanOrEqual(2_000);
+    expect(stored.endsWith(`via MCP · ${'\u{1F600}'.repeat(64)}`)).toBe(true);
+  });
+
   it('answers 403 insufficient_scope with only mcp:read (Review Focus 3)', async () => {
     const res = await mcpCall(ctx, reader, 'tools/call', {
       name: 'qualor_transition_issue',
@@ -98,7 +131,7 @@ describe('qualor_transition_issue (spec §5, ruling R2)', () => {
       comment: 'reopen',
     });
     expect(r.isError).toBe(true);
-    expect(r.text).toMatch(/FORBIDDEN|NOT_FOUND/);
+    expect(r.text).toContain('FORBIDDEN');
   });
 
   for (const mode of ['legacy', { pin: '2026-07-28' }] as const) {
@@ -127,5 +160,11 @@ describe('MCP_VIA_LINE', () => {
   it('strips control characters and caps a long client name', () => {
     expect(MCP_VIA_LINE('Bad\r\nname\u0000')).toBe('via MCP · Badname');
     expect(MCP_VIA_LINE('n'.repeat(500)).length).toBe('via MCP · '.length + 64);
+  });
+
+  it('drops format and separator characters, keeps surrogate pairs whole, names an empty client', () => {
+    expect(MCP_VIA_LINE('a‮b​c d e')).toBe('via MCP · abcde');
+    expect(MCP_VIA_LINE('\u{1F600}'.repeat(65))).toBe(`via MCP · ${'\u{1F600}'.repeat(64)}`);
+    expect(MCP_VIA_LINE(' ​\u0000 ')).toBe('via MCP · unnamed client');
   });
 });

@@ -5,13 +5,14 @@ import type { McpTool } from '../tool';
 
 /** The line appended to every comment the tool stores, so reviewers see the change came from an agent. */
 export const MCP_VIA_LINE = (clientName: string): string =>
-  `via MCP · ${cleanClientName(clientName)}`;
+  `via MCP · ${cleanClientName(clientName) || 'unnamed client'}`;
 
 /**
- * Room left for the agent's own words: the route stores at most 2 000 characters per change
- * comment (data-model.md §6), and the via line is at most 10 + 64 characters after a blank line.
+ * Room left for the agent's own words: the route stores at most 2 000 characters (UTF-16 units)
+ * per change comment (data-model.md §6), and the via line is a blank line, 10 units of prefix and
+ * a client name of at most 64 code points (128 units): 1 850 + 2 + 10 + 128 <= 2 000.
  */
-const COMMENT_MAX = 1_900;
+const COMMENT_MAX = 1_850;
 
 const input = z.object({
   issueId: z.uuid().describe('From qualor_issues'),

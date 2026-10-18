@@ -57,18 +57,16 @@ const SCOPES: Record<ToolAccess, TokenScope[]> = {
 };
 
 const CLIENT_NAME_MAX = 64;
+const UNSAFE_CHARS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
 
 /**
- * A client name safe to show and log. It is chosen by whoever registered the client, so control
- * characters (header and log injection) are dropped and the length is capped.
+ * A client name safe to show and log. It is chosen by whoever registered the client, so control,
+ * format (zero-width, bidi) and line or paragraph separator characters (header and log injection)
+ * are dropped and the length is capped at CLIENT_NAME_MAX code points, never splitting a pair.
  */
 export function cleanClientName(clientName: string): string {
-  let clean = '';
-  for (const ch of clientName) {
-    const code = ch.codePointAt(0) ?? 0;
-    if (code >= 0x20 && code !== 0x7f && !(code >= 0x80 && code <= 0x9f)) clean += ch;
-  }
-  return clean.trim().slice(0, CLIENT_NAME_MAX);
+  const clean = clientName.replace(UNSAFE_CHARS, '').trim();
+  return Array.from(clean).slice(0, CLIENT_NAME_MAX).join('').trim();
 }
 
 /** The user agent of an internal call: `qualor-mcp (<client name>)`. */
