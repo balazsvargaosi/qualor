@@ -19,6 +19,7 @@ const PAGES: Readonly<Record<string, () => Promise<{ default: string }>>> = {
   gitlab: () => import('../../../../docs/guide/gitlab.md'),
   'install-server': () => import('../../../../docs/guide/install-server.md'),
   'languages-and-analyzers': () => import('../../../../docs/guide/languages-and-analyzers.md'),
+  mcp: () => import('../../../../docs/guide/mcp.md'),
   'migrate-from-sonarqube': () => import('../../../../docs/guide/migrate-from-sonarqube.md'),
   'other-ci': () => import('../../../../docs/guide/other-ci.md'),
   portfolio: () => import('../../../../docs/guide/portfolio.md'),

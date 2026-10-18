@@ -56,6 +56,37 @@ describe('/readyz against PostgreSQL', () => {
   });
 });
 
+describe('GET /system/info: the MCP server (6N spec §3)', () => {
+  async function mcpOf(config: { publicUrl: string | null }): Promise<unknown> {
+    const ctx = await createTestContext({ config });
+    try {
+      const session = await login(ctx, 'admin', ADMIN_PASSWORD);
+      const res = await ctx.app.inject({
+        method: 'GET',
+        url: '/api/v0/system/info',
+        headers: session.headers,
+      });
+      return (res.json() as { mcp: unknown }).mcp;
+    } finally {
+      await ctx.close();
+    }
+  }
+
+  it('is off, with its reason, without QUALOR_PUBLIC_URL', async () => {
+    expect(await mcpOf({ publicUrl: null })).toEqual({
+      enabled: false,
+      reason: 'PUBLIC_URL_MISSING',
+    });
+  });
+
+  it('is on with QUALOR_PUBLIC_URL', async () => {
+    expect(await mcpOf({ publicUrl: 'https://qualor.example' })).toEqual({
+      enabled: true,
+      reason: null,
+    });
+  });
+});
+
 describe('GET /system/info with a licence (enterprise.md §7.3)', () => {
   it('reports the enterprise edition, its active features and extensions, and no limits', async () => {
     const license = testPayload({ features: ['llm.fix-quota'] });
@@ -100,6 +131,7 @@ describe('GET /system/info with a licence (enterprise.md §7.3)', () => {
         'edition',
         'extensions',
         'features',
+        'mcp',
         'version',
       ]);
       // Only the fields of the spec: no customer, licence id, key id or key hash (§7.3).
@@ -110,6 +142,7 @@ describe('GET /system/info with a licence (enterprise.md §7.3)', () => {
         extensions: [
           { point: 'settings.nav', id: 'quota', label: 'Quota', path: '/settings/ee/quota' },
         ],
+        mcp: { enabled: false, reason: 'PUBLIC_URL_MISSING' },
       });
       for (const secret of [license.customer, license.id, 'test-a', 'boot-key-hash']) {
         expect(res.body).not.toContain(secret);

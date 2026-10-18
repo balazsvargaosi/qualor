@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { RouteDeps } from '../app';
 import { requirePrincipal, requireUser } from '../auth/access';
 import { ProblemError } from '../http/problem';
+import { mcpUrls } from '../oauth/urls';
 import { VERSION } from '../index';
 
 const status = z.object({ status: z.literal('ok') });
@@ -65,7 +66,7 @@ export const systemRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (a
     {
       schema: {
         tags: ['system'],
-        summary: 'Version, edition, active plugin features and UI extensions',
+        summary: 'Version, edition, active plugin features, UI extensions and the MCP server',
         response: {
           200: z.object({
             version: z.string(),
@@ -79,6 +80,14 @@ export const systemRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (a
                 path: z.string(),
               }),
             ),
+            mcp: z
+              .object({
+                enabled: z.boolean(),
+                reason: z.enum(['PUBLIC_URL_MISSING']).nullable(),
+              })
+              .describe(
+                'Whether /mcp and the OAuth endpoints are on (they need QUALOR_PUBLIC_URL)',
+              ),
           }),
         },
       },
@@ -90,6 +99,10 @@ export const systemRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (a
         edition: deps.edition.edition(),
         features: deps.edition.activeFeatures(),
         extensions: deps.edition.uiExtensions(),
+        mcp:
+          mcpUrls(deps.config.publicUrl) === null
+            ? { enabled: false, reason: 'PUBLIC_URL_MISSING' as const }
+            : { enabled: true, reason: null },
       };
     },
   );

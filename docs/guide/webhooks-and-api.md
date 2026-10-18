@@ -78,6 +78,10 @@ The API lives under `/api/v0`. It is JSON over HTTPS, described by OpenAPI 3.1 i
 [`server/openapi.json`](../../server/openapi.json). Authenticate with
 `Authorization: Bearer <token>`. Version 0 may still change between releases.
 
+The [MCP server](./mcp.md) for AI agents and its OAuth sign-in endpoints (`/mcp`, `/oauth/*` and
+`/.well-known/*`) are outside `/api/v0`. Their tokens belong to the app a person allowed and work
+only on `/mcp`: they are not API tokens, and an API token does not work there.
+
 ```sh
 export QUALOR_URL=https://qualor.example.com QUALOR_TOKEN=qlr_pat_…
 q() { curl -fsS -H "Authorization: Bearer $QUALOR_TOKEN" -H 'Content-Type: application/json' "$@"; }

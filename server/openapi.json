@@ -157,7 +157,7 @@
     },
     "/api/v0/system/info": {
       "get": {
-        "summary": "Version, edition, active plugin features and UI extensions",
+        "summary": "Version, edition, active plugin features, UI extensions and the MCP server",
         "tags": [
           "system"
         ],
@@ -216,13 +216,41 @@
                         ],
                         "additionalProperties": false
                       }
+                    },
+                    "mcp": {
+                      "type": "object",
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean"
+                        },
+                        "reason": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "PUBLIC_URL_MISSING"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "enabled",
+                        "reason"
+                      ],
+                      "additionalProperties": false,
+                      "description": "Whether /mcp and the OAuth endpoints are on (they need QUALOR_PUBLIC_URL)"
                     }
                   },
                   "required": [
                     "version",
                     "edition",
                     "features",
-                    "extensions"
+                    "extensions",
+                    "mcp"
                   ],
                   "additionalProperties": false
                 }

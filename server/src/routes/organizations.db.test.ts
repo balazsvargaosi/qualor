@@ -253,6 +253,7 @@ describe('organizations and members', () => {
       edition: 'community',
       features: [],
       extensions: [],
+      mcp: { enabled: false, reason: 'PUBLIC_URL_MISSING' },
     });
     expect((await call('GET', '/system/info', {})).statusCode).toBe(401);
   });

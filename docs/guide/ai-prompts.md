@@ -16,6 +16,10 @@ The prompts point the agent to this documentation as raw Markdown, which is easy
   anything outward-facing or hard to undo. Keep those lines when you edit a prompt.
 - Review the agent's merge requests like any other change.
 
+These prompts have the agent configure Qualor from outside. Once Qualor runs, the agent can also
+call it directly: with the [MCP server](./mcp.md) your agent reads the quality gate and issues,
+asks the AI assistant and, if you allow it, marks false positives, signed in as you.
+
 ## Full rollout in a company
 
 The complete path: inventory, server, pilot repositories, merge request comments, gate tuning,

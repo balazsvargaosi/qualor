@@ -89,7 +89,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Version, edition, active plugin features and UI extensions */
+        /** Version, edition, active plugin features, UI extensions and the MCP server */
         get: {
             parameters: {
                 query?: never;
@@ -117,6 +117,11 @@ export interface paths {
                                 label: string;
                                 path: string;
                             }[];
+                            /** @description Whether /mcp and the OAuth endpoints are on (they need QUALOR_PUBLIC_URL) */
+                            mcp: {
+                                enabled: boolean;
+                                reason: "PUBLIC_URL_MISSING" | null;
+                            };
                         };
                     };
                 };

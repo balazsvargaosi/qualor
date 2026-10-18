@@ -64,6 +64,8 @@ release: **Docs** in the top bar, at `/docs` on your server, for signed-in users
     them off.
 24. [The support bundle](./support-bundle.md): one zip with versions, configuration without
     secrets, health and recent failures, from the web UI or a command.
+25. [MCP server for AI agents](./mcp.md): Claude Code, Cursor and claude.ai read the quality gate
+    and issues, ask the AI assistant and mark false positives, signed in as the user.
 
 ## How Qualor works
 

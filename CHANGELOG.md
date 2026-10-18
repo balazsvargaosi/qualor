@@ -6,6 +6,13 @@ All notable changes to Qualor are listed here, newest first. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- MCP server at `/mcp` with OAuth sign-in (Claude Code, Cursor, claude.ai and other MCP clients):
+  quality gate status, issues, rules, measures, the AI assistant and issue status changes;
+  **Connected apps** and **Settings → MCP**. It needs `QUALOR_PUBLIC_URL`; see
+  [the guide](docs/guide/mcp.md). `GET /api/v0/system/info` reports whether it is on (`mcp`).
+
 ## [0.9.0] - 2026-10-16
 
 ### Added

@@ -220,6 +220,14 @@ curl -fsS -X POST -H "Authorization: Bearer $QUALOR_ADMIN_TOKEN" -H 'Content-Typ
 
 List and revoke project tokens with `GET` and `DELETE /api/v0/projects/<id>/tokens[/<token id>]`.
 
+### Apps connected through MCP
+
+AI agents such as Claude Code or Cursor do not use a personal token. They sign in through your
+browser, you allow the app on a consent page, and Qualor gives it its own short-lived login that
+works only on the [MCP address](./mcp.md). You see these apps in **Settings → Connected apps** and
+disconnect them there, and an administrator can do the same for any user. They are not personal
+tokens and do not appear under **Access tokens**.
+
 ### Which token where
 
 | Use | Token |
