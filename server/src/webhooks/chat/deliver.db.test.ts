@@ -218,4 +218,40 @@ describe('chat webhook delivery (6G spec §4)', () => {
     });
     expect(received).toHaveLength(0);
   });
+  it('never keeps the secret path of the URL in a delivery row (Review Focus 1)', async () => {
+    const ids: string[] = [];
+    for (const status of [500, 400, 404, 410]) {
+      respond = (res) => void res.writeHead(status).end(`error at ${received.at(-1)?.path}`);
+      const row = await deliver(await chatHook('slack'));
+      ids.push(row.id);
+    }
+    // A refused connection: the error text of the network failure names the address it tried.
+    const dead = await new Promise<number>((resolve) => {
+      const s = createServer();
+      s.listen(0, '127.0.0.1', () => {
+        const { port: free } = s.address() as AddressInfo;
+        s.close(() => resolve(free));
+      });
+    });
+    const saved = deps;
+    deps = { ...deps, chatTestHosts: parseInternalHosts(`127.0.0.1:${dead}`) };
+    try {
+      const url = `http://127.0.0.1:${dead}/services/T0001/B0001/SECRETpartdead`;
+      const row = await deliver(
+        await chatHook('slack', {
+          urlEnc: encryptSecret(encryptionKey(t.config.secretKey), url, WEBHOOK_URL_AAD),
+        }),
+      );
+      ids.push(row.id);
+    } finally {
+      deps = saved;
+    }
+    const rows = await t.db.select().from(webhookDeliveries);
+    const mine = rows.filter((r) => ids.includes(r.id));
+    expect(mine).toHaveLength(5);
+    for (const r of mine) {
+      expect(r.responseExcerpt ?? '').not.toContain('SECRETpart');
+      expect(r.responseExcerpt ?? '').not.toContain('T0001');
+    }
+  });
 });
