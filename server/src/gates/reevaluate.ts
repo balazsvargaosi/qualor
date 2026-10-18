@@ -18,6 +18,7 @@ import type { JobHandlers } from '../queue/worker';
 import { readScmContext } from '../scm/context';
 import { enqueueDecoration } from '../scm/queue';
 import { createDeliveries, type NewDelivery } from '../webhooks/deliveries';
+import { chatGateDeliveries } from '../webhooks/chat/gate';
 import { subscriptionsToNotify } from '../webhooks/stage';
 
 /** scm.md §7: re-evaluations run on their own queue, in the analysis worker. */
@@ -189,23 +190,34 @@ export async function reevaluateBranch(
     }
     const statusChanged = previous.status !== next.status;
     if (statusChanged) {
-      const subscriptions = (await subscriptionsToNotify(tx, project)).filter((s) =>
-        s.events.includes('gate.status_changed'),
-      );
+      const subscriptions = await subscriptionsToNotify(tx, project);
       const payload = {
         ...analysisDto({ ...analysis, gateStatus: next.status, gateResult: next }, branch),
         project: { id: project.id, key: project.key, name: project.name },
         branch: { id: branch.id, kind: branch.kind, name: branch.name, isMain: branch.isMain },
         previousGateStatus: previous.status,
       };
-      await createDeliveries(
-        tx,
-        subscriptions.map((s): NewDelivery => ({
-          subscriptionId: s.id,
-          event: 'gate.status_changed',
-          payload,
-        })),
-      );
+      await createDeliveries(tx, [
+        ...subscriptions
+          .filter((s) => s.kind === 'generic' && s.events.includes('gate.status_changed'))
+          .map((s): NewDelivery => ({
+            subscriptionId: s.id,
+            event: 'gate.status_changed',
+            payload,
+          })),
+        // 6G: the same transition for Slack and Teams webhooks, main branch only.
+        ...chatGateDeliveries(subscriptions, {
+          project: { id: project.id, key: project.key, name: project.name },
+          branch: { id: branch.id, name: branch.name, isMain: branch.isMain },
+          analysisId: analysis.id,
+          revision: analysis.revision,
+          at: new Date(),
+          previous: previous.status,
+          next,
+          measures: { ...stored, ...fresh },
+          cause: 'reevaluation',
+        }),
+      ]);
       // mail E3: the same change mailed to the branch's watchers, in this transaction.
       await notifyGateChangeSafely(
         tx,

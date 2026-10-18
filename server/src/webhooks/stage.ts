@@ -1,7 +1,7 @@
 import type { GateResult } from '@qualor/shared';
 import { and, asc, eq, isNull, or, sql } from 'drizzle-orm';
 import type { Executor } from '../db/client';
-import { webhookSubscriptions } from '../db/schema';
+import { webhookSubscriptions, type WebhookKind } from '../db/schema';
 import {
   analysisFields,
   capWarnings,
@@ -10,6 +10,7 @@ import {
 } from '../ingest/process';
 import { requireState } from '../ingest/state';
 import { analysisDto } from '../analyses/dto';
+import { chatGateDeliveries } from './chat/gate';
 import { createDeliveries, type NewDelivery } from './deliveries';
 
 /** `statement_timestamp()`: the time the ingestion will store as `finished_at` (see below). */
@@ -59,9 +60,13 @@ export function analysisPayload(ctx: IngestionContext, gate: GateResult, finishe
 export async function subscriptionsToNotify(
   tx: Executor,
   project: { id: string; organizationId: string },
-): Promise<{ id: string; events: string[] }[]> {
+): Promise<{ id: string; kind: WebhookKind; events: string[] }[]> {
   return tx
-    .select({ id: webhookSubscriptions.id, events: webhookSubscriptions.events })
+    .select({
+      id: webhookSubscriptions.id,
+      kind: webhookSubscriptions.kind,
+      events: webhookSubscriptions.events,
+    })
     .from(webhookSubscriptions)
     .where(
       and(
@@ -81,7 +86,8 @@ export async function subscriptionsToNotify(
  * sends after commit). `gate.status_changed` fires when the gate status differs from the branch's
  * previous analysis, including a branch's first analysis (previous status `null`). At most 50
  * webhooks per organisation (routes/webhooks.ts), so at most 100 deliveries, written in bounded
- * batches (deliveries.ts).
+ * batches (deliveries.ts). Slack and Teams webhooks get no generic events, only `gate.failed` /
+ * `gate.recovered` of the main branch (6G spec §4).
  *
  * It must stay the last stage that touches the analysis (ingest/stages.ts, checked by
  * stages.test.ts; only the notification stage, which writes none, follows it): its payload is the
@@ -100,6 +106,7 @@ export const webhookStage: IngestionStage = {
     const statusChanged = previousGateStatus !== gate.status;
     const deliveries: NewDelivery[] = [];
     for (const subscription of subscriptions) {
+      if (subscription.kind !== 'generic') continue;
       if (subscription.events.includes('analysis.completed')) {
         deliveries.push({ subscriptionId: subscription.id, event: 'analysis.completed', payload });
       }
@@ -111,6 +118,19 @@ export const webhookStage: IngestionStage = {
         });
       }
     }
+    deliveries.push(
+      ...chatGateDeliveries(subscriptions, {
+        project: { id: ctx.project.id, key: ctx.project.key, name: ctx.project.name },
+        branch: { id: ctx.branch.id, name: ctx.branch.name, isMain: ctx.branch.isMain },
+        analysisId: ctx.analysisId,
+        revision: ctx.report.scm.revision,
+        at: finishedAt,
+        previous: previousGateStatus,
+        next: gate,
+        measures: requireState(ctx.state, 'measures'),
+        cause: 'analysis',
+      }),
+    );
     await createDeliveries(ctx.tx, deliveries);
   },
 };
