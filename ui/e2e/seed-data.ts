@@ -82,6 +82,9 @@ export const BUSINESS_URL = `http://127.0.0.1:${BUSINESS_PORT}`;
 /** Mail E2: serve.ts's reader of pending account emails (community server). */
 export const MAIL_PORT = E2E_PORT + 4;
 export const MAIL_URL = `http://127.0.0.1:${MAIL_PORT}`;
+/** 6G: the fake Slack receiver (server/scripts/e2e/serve.ts `chatReceiver`). */
+export const CHAT_PORT = E2E_PORT + 5;
+export const CHAT_URL = `http://127.0.0.1:${CHAT_PORT}`;
 /** An organisation admin of Default who is not an instance admin, on both servers (seedRoles). */
 export const OLGA = { username: 'olga', password: 'olga e2e passphrase' };
 /** A user in no organisation, with a Viewer grant on Web Shop only (seed.ts seedRoles). */

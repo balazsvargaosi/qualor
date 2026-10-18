@@ -353,7 +353,7 @@ test('an organization admin adds a webhook and sees its secret once', async ({ p
   // The form is in the "New webhook" dialog (step 8), which then shows the secret.
   await page.getByRole('button', { name: 'New webhook' }).click();
   const create = page.getByRole('dialog', { name: 'New webhook', exact: true });
-  await expect(create.getByLabel('URL')).toBeFocused();
+  await expect(create.getByRole('radio', { name: 'Generic (signed JSON)' })).toBeFocused();
   // Every project unless the admin picks one (Task 10's "Applies to").
   await expect(create.getByLabel('Applies to')).toHaveValue('');
   await create.getByLabel('URL').fill('https://ci.example.com/qualor-hook');
@@ -372,9 +372,9 @@ test('an organization admin adds a webhook and sees its secret once', async ({ p
   );
   await expect(hook.getByText('Switched off', { exact: true })).toBeVisible();
   await expect(hook.getByRole('button', { name: 'Switch on' })).toBeFocused();
-  // The server's SSRF checks refuse a loopback address: the URL field says why, in the dialog.
+  // The server refuses a URL with credentials (the instance allows loopback for the 6G receiver): the URL field says why, in the dialog.
   await page.getByRole('button', { name: 'New webhook' }).click();
-  await create.getByLabel('URL').fill('https://127.0.0.1/internal');
+  await create.getByLabel('URL').fill('https://user:pass@ci.example.com/internal');
   await create.getByRole('button', { name: 'Add webhook' }).click();
   await expect(create.getByText('Use an https URL of a public host')).toBeVisible();
   await expect(create.getByLabel('URL')).toHaveAttribute('aria-invalid', 'true');

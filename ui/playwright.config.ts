@@ -5,6 +5,7 @@ import {
   ALICE,
   BUSINESS_PORT,
   BUSINESS_URL,
+  CHAT_PORT,
   ENTERPRISE_PORT,
   ENTERPRISE_STORAGE_STATE,
   ENTERPRISE_URL,
@@ -103,6 +104,7 @@ export default defineConfig({
       QUALOR_E2E_SIEM_PORT: String(SIEM_PORT),
       QUALOR_E2E_BUSINESS_PORT: String(BUSINESS_PORT),
       QUALOR_E2E_MAIL_PORT: String(MAIL_PORT),
+      QUALOR_E2E_CHAT_PORT: String(CHAT_PORT),
       // Built by the command above (`pnpm --filter @qualor/enterprise build`).
       QUALOR_E2E_ENTERPRISE_PLUGIN: fileURLToPath(
         new URL('../enterprise/dist/plugin.js', import.meta.url),

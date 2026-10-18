@@ -203,6 +203,7 @@ async function main(): Promise<void> {
   };
   const enterprisePort = Number(process.env.QUALOR_E2E_ENTERPRISE_PORT ?? String(port + 1));
   const siemPort = Number(process.env.QUALOR_E2E_SIEM_PORT ?? String(port + 2));
+  const chatPort = Number(process.env.QUALOR_E2E_CHAT_PORT ?? String(port + 5));
   const businessPort = Number(process.env.QUALOR_E2E_BUSINESS_PORT ?? String(port + 3));
   const mailPort = Number(process.env.QUALOR_E2E_MAIL_PORT ?? String(port + 4));
   const plugin = path.resolve(env('QUALOR_E2E_ENTERPRISE_PLUGIN'));
@@ -321,18 +322,22 @@ async function main(): Promise<void> {
   }
   await seedSsoIdentity(enterpriseEnv.DATABASE_URL, sso);
   // Stream URLs on this machine's receiver (http, loopback), as an administrator would allow them.
-  const settings = new pg.Client({ connectionString: enterpriseEnv.DATABASE_URL });
-  await settings.connect();
-  try {
-    await settings.query(
-      `INSERT INTO instance_settings (key, value) VALUES ('webhooks', $1)
-       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
-      [JSON.stringify({ allowHttp: true, allowInternalHosts: true })],
-    );
-  } finally {
-    await settings.end();
+  // 6G: the same for the community database, whose chat webhooks point at the fake receiver.
+  for (const connectionString of [enterpriseEnv.DATABASE_URL, databaseUrl(adminUrl, name)]) {
+    const settings = new pg.Client({ connectionString });
+    await settings.connect();
+    try {
+      await settings.query(
+        `INSERT INTO instance_settings (key, value) VALUES ('webhooks', $1)
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+        [JSON.stringify({ allowHttp: true, allowInternalHosts: true })],
+      );
+    } finally {
+      await settings.end();
+    }
   }
   const siem = await siemReceiver(siemPort);
+  const chat = await chatReceiver(chatPort);
   const mail = await mailReader(mailPort, databaseUrl(adminUrl, name), serverEnv.QUALOR_SECRET_KEY);
 
   const enterprise = start({
@@ -368,6 +373,8 @@ async function main(): Promise<void> {
     PORT: String(port),
     QUALOR_UI_DIR: uiDir,
     QUALOR_PUBLIC_URL: `http://127.0.0.1:${port}`,
+    // 6G R7: chat kinds may post to the fake Slack receiver.
+    QUALOR_CHAT_TEST_HOSTS: `127.0.0.1:${chatPort}`,
   });
   const url = await waitForListening(server);
   process.stdout.write(`qualor e2e server ready at ${url}\n`);
@@ -393,6 +400,7 @@ async function main(): Promise<void> {
     rmSync(licenseKeyFile, { force: true });
     rmSync(paymentsReportFile, { force: true });
     await new Promise<void>((resolve) => siem.close(() => resolve()));
+    await new Promise<void>((resolve) => chat.close(() => resolve()));
     await new Promise<void>((resolve) => mail.close(() => resolve()));
     await closeFakes().catch((err: unknown) => {
       process.stderr.write(`qualor e2e fakes did not close: ${String(err)}\n`);
@@ -540,6 +548,34 @@ function mailReader(port: number, connectionString: string, secretKey: string): 
     });
   });
   return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve(server)));
+}
+
+/**
+ * 6G: a stand-in for Slack on 127.0.0.1 (QUALOR_E2E_CHAT_PORT): `POST /services/…` answers 200
+ * `ok` and keeps the body; `GET /last` hands the tests the last one.
+ */
+function chatReceiver(port: number): Promise<Server> {
+  let last: string | null = null;
+  const server = createServer((request, response) => {
+    const chunks: Buffer[] = [];
+    request.on('data', (c: Buffer) => chunks.push(c));
+    request.on('end', () => {
+      if (request.method === 'POST' && request.url?.startsWith('/services/')) {
+        last = Buffer.concat(chunks).toString('utf8');
+        response.writeHead(200, { 'content-type': 'text/plain' }).end('ok');
+      } else if (request.method === 'GET' && request.url === '/last') {
+        response
+          .writeHead(last === null ? 404 : 200, { 'content-type': 'application/json' })
+          .end(last ?? '');
+      } else {
+        response.writeHead(405).end();
+      }
+    });
+  });
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', () => resolve(server));
+  });
 }
 
 /**
