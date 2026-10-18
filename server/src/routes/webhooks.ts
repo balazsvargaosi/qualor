@@ -65,11 +65,12 @@ export const MAX_WEBHOOKS_PER_ORGANIZATION = 50;
  */
 export const MAX_PENDING_DELIVERIES_FOR_REDELIVERY = 5;
 /**
- * ... or when this many redeliveries of it were created in the last hour. Deliveries the
- * ingestion stage creates are not counted: a busy project does not use up an admin's
- * redeliveries. A stage delivery is created in the transaction its analysis finishes in, so its
- * `created_at` is at most the payload's `finishedAt`; a redelivery copies that payload later.
- * A delivery whose payload has no `finishedAt` counts as a redelivery.
+ * ... or when this many redeliveries or test messages of it were created in the last hour.
+ * Deliveries the ingestion stage creates for a generic webhook are not counted: a busy project
+ * does not use up an admin's redeliveries. Such a delivery is created in the transaction its
+ * analysis finishes in, so its `created_at` is at most the payload's `finishedAt`; a redelivery
+ * copies that payload later. A delivery whose payload has no `finishedAt` counts, which includes
+ * every Slack and Teams delivery (their messages carry `at`, not `finishedAt`) and every test.
  */
 export const MAX_RECENT_DELIVERIES_FOR_REDELIVERY = 100;
 const REDELIVERY_RETRY_AFTER_SECONDS = 60;
@@ -190,11 +191,11 @@ export async function redeliveryBoundsReached(tx: Executor, webhookId: string): 
   );
 }
 
-function redeliveryLimit(): ProblemError {
+function redeliveryLimit(action: 'a redelivery' | 'a test message'): ProblemError {
   return new ProblemError(
     429,
     'REDELIVERY_LIMIT_REACHED',
-    `A webhook may have at most ${MAX_PENDING_DELIVERIES_FOR_REDELIVERY} pending deliveries, and ${MAX_RECENT_DELIVERIES_FOR_REDELIVERY} deliveries in the last hour, for a redelivery; retry later`,
+    `A webhook may have at most ${MAX_PENDING_DELIVERIES_FOR_REDELIVERY} pending deliveries, and ${MAX_RECENT_DELIVERIES_FOR_REDELIVERY} deliveries in the last hour, for ${action}; retry later`,
     { headers: { 'retry-after': String(REDELIVERY_RETRY_AFTER_SECONDS) } },
   );
 }
@@ -629,7 +630,7 @@ export const webhookRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (
             ),
           );
         if (!original) throw notFound('Delivery');
-        if (await redeliveryBoundsReached(tx, webhook.id)) throw redeliveryLimit();
+        if (await redeliveryBoundsReached(tx, webhook.id)) throw redeliveryLimit('a redelivery');
         const id = await createDelivery(tx, {
           subscriptionId: webhook.id,
           event: original.event as DeliveryEvent,
@@ -680,7 +681,7 @@ export const webhookRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (
           .where(eq(webhookSubscriptions.id, webhook.id))
           .for('no key update');
         if (!locked) throw notFound('Webhook');
-        if (await redeliveryBoundsReached(tx, webhook.id)) throw redeliveryLimit();
+        if (await redeliveryBoundsReached(tx, webhook.id)) throw redeliveryLimit('a test message');
         // The names the message shows (audit refs carry keys only).
         const [organization] = await tx
           .select({ name: organizations.name })

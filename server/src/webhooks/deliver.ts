@@ -145,6 +145,20 @@ export interface DeliveryDeps {
   chatTestHosts?: ReadonlySet<string>;
 }
 
+/**
+ * 6G R3: the path of a chat webhook URL is its secret. A receiver (or a proxy, or a network error
+ * text) may echo it; the excerpt stored and shown with the delivery never keeps it.
+ */
+export function withoutSecretPath(excerpt: string | null, href: string): string | null {
+  if (excerpt === null) return null;
+  const { pathname, search } = new URL(href);
+  let text = excerpt.split(href).join('…');
+  for (const secret of [pathname + search, pathname]) {
+    if (secret.length > 1) text = text.split(secret).join('/…');
+  }
+  return text;
+}
+
 /** 6G R10: how a chat delivery answered 404 or 410 is recorded (then the receiver's answer). */
 export function goneExcerpt(kind: ChatKind): string {
   return `The ${chatServiceName(kind)} webhook no longer exists; create a new one`;
@@ -363,6 +377,7 @@ export async function deliverWebhook(
       ...(deps.connectTimeoutMs === undefined ? {} : { connectTimeoutMs: deps.connectTimeoutMs }),
       ...(deps.resolve ? { resolve: deps.resolve } : {}),
     });
+    if (isChatKind(webhook.kind)) outcome.excerpt = withoutSecretPath(outcome.excerpt, request.url);
     // 6G R10: Slack and Teams answer 404/410 for a webhook that was removed; retrying cannot help.
     if (isChatKind(webhook.kind) && (outcome.status === 404 || outcome.status === 410)) {
       const answer = outcome.excerpt === null ? '' : `. Answer: ${outcome.excerpt}`;

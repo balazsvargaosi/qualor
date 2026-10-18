@@ -31,6 +31,8 @@ describe('chatUrlProblem (6G R1)', () => {
     ['teams', 'https://environment.api.powerplatform.com/x', /Teams Workflows webhook URL/],
     ['teams', 'https://acme.webhook.office.com/webhookb2/abc', /Office 365 connectors/],
     ['teams', 'https://outlook.office.com/webhook/abc', /Office 365 connectors/],
+    ['teams', 'https://outlook.office365.com/webhook/abc', /Office 365 connectors/],
+    ['teams', 'https://acme.outlook.office.com/webhook/abc', /Office 365 connectors/],
     ['teams', 'https://hooks.slack.com/services/T/B/x', /Teams Workflows webhook URL/],
     [
       'slack',
