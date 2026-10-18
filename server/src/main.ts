@@ -274,6 +274,8 @@ async function main(): Promise<void> {
       secretKey: config.secretKey,
       logger,
       mail: mailDeps(config),
+      publicUrl: config.publicUrl,
+      chatTestHosts: config.chatTestHosts,
     }),
     concurrency: WEBHOOK_WORKER_CONCURRENCY,
     leaseMs: WEBHOOK_LEASE_MS,

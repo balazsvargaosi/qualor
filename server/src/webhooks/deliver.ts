@@ -10,8 +10,23 @@ import { alertWebhookFailed } from '../mail/alerts/webhook-alerts';
 import type { MailDeps } from '../mail/outbox';
 import { enqueue } from '../queue/queue';
 import type { JobHandlers } from '../queue/worker';
-import { DELIVERY_JOB_MAX_ATTEMPTS, WEBHOOK_QUEUE, WEBHOOK_SECRET_AAD } from './deliveries';
-import { sendWebhook, UNREACHABLE_EXCERPT_PREFIXES, type Resolver, type SendOutcome } from './send';
+import { chatLinks, formatChat } from './chat/format';
+import { chatServiceName, chatUrlProblem, isChatKind, type ChatKind } from './chat/kinds';
+import { parseChatMessage } from './chat/messages';
+import {
+  DELIVERY_JOB_MAX_ATTEMPTS,
+  WEBHOOK_QUEUE,
+  WEBHOOK_SECRET_AAD,
+  WEBHOOK_URL_AAD,
+  type DeliveryEvent,
+} from './deliveries';
+import {
+  excerptOf,
+  sendWebhook,
+  UNREACHABLE_EXCERPT_PREFIXES,
+  type Resolver,
+  type SendOutcome,
+} from './send';
 import { signatureHeaders } from './sign';
 import { webhookSettings, webhookUrlProblem } from './url';
 
@@ -124,6 +139,15 @@ export interface DeliveryDeps {
   resolve?: Resolver;
   /** E1 spec: alerts instance administrators when a delivery gives up; absent, nothing is sent. */
   mail?: MailDeps | undefined;
+  /** 6G: links in chat messages; null or absent, messages carry none (spec D6). */
+  publicUrl?: string | null;
+  /** 6G R7: QUALOR_CHAT_TEST_HOSTS. */
+  chatTestHosts?: ReadonlySet<string>;
+}
+
+/** 6G R10: how a chat delivery answered 404 or 410 is recorded (then the receiver's answer). */
+export function goneExcerpt(kind: ChatKind): string {
+  return `The ${chatServiceName(kind)} webhook no longer exists; create a new one`;
 }
 
 /** `busy`: another attempt of the same webhook is in flight; the job is to run again later. */
@@ -142,6 +166,8 @@ export type DeliveryResult = 'gone' | 'settled' | 'busy' | 'succeeded' | 'retryi
  * - A delivery whose row is gone (webhook deleted, or housekeeping after 30 days) or that is no
  *   longer `pending` completes as a no-op (read again under the lock, so a duplicate job that ran
  *   after the attempt it duplicates sends nothing).
+ * - A Slack or Teams webhook (6G): its URL decrypted, checked against its kind's hosts, the stored
+ *   message formatted for it, no signature headers; a 404 or 410 is final.
  * - An inactive webhook, a secret that no longer decrypts (`QUALOR_SECRET_KEY` changed) or a URL
  *   the instance settings no longer allow fail the delivery at once, without a request.
  * - Ruling X7: while the webhook's circuit is open ({@link circuitOpenUntil}) the attempt fails at
@@ -278,27 +304,42 @@ export async function deliverWebhook(
     const refuse = (excerpt: string) => record({ ok: false, status: null, excerpt }, true);
 
     if (!webhook.active) return refuse('The webhook is inactive');
-    const secret =
-      webhook.secretEnc === null
-        ? null
-        : decryptSecret(encryptionKey(deps.secretKey), webhook.secretEnc, WEBHOOK_SECRET_AAD);
-    if (secret === null) {
-      return refuse(
-        'The webhook secret cannot be decrypted (QUALOR_SECRET_KEY changed?); set a new secret',
-      );
-    }
     const settings = await webhookSettings(tx);
-    const problem = webhookUrlProblem(webhook.url, settings);
-    if (problem) return refuse(problem);
-    const openUntil = await circuitOpenUntil(tx, webhook.id);
-    if (openUntil) {
-      const excerpt = `${CIRCUIT_OPEN_EXCERPT_PREFIX}${openUntil.toISOString()})`;
-      return record({ ok: false, status: null, excerpt }, false);
-    }
-
-    const body = JSON.stringify(delivery.payload);
-    const outcome = await sendWebhook(
-      {
+    let request: { url: string; body: string; headers: Record<string, string> };
+    if (isChatKind(webhook.kind)) {
+      const url =
+        webhook.urlEnc === null
+          ? null
+          : decryptSecret(encryptionKey(deps.secretKey), webhook.urlEnc, WEBHOOK_URL_AAD);
+      if (url === null) {
+        return refuse(
+          'The webhook URL cannot be decrypted (QUALOR_SECRET_KEY changed?); enter the URL again',
+        );
+      }
+      const problem = chatUrlProblem(webhook.kind, url, settings, deps.chatTestHosts ?? new Set());
+      if (problem) return refuse(problem);
+      const message = parseChatMessage(delivery.event as DeliveryEvent, delivery.payload);
+      if (message === null) return refuse('The message could not be formatted');
+      request = {
+        url,
+        body: JSON.stringify(formatChat(webhook.kind, message, chatLinks(deps.publicUrl ?? null))),
+        // 6G spec D5: no signature; the receiver is Slack or Teams.
+        headers: { 'content-type': 'application/json', 'user-agent': `Qualor-Webhook/${VERSION}` },
+      };
+    } else {
+      const secret =
+        webhook.secretEnc === null
+          ? null
+          : decryptSecret(encryptionKey(deps.secretKey), webhook.secretEnc, WEBHOOK_SECRET_AAD);
+      if (secret === null) {
+        return refuse(
+          'The webhook secret cannot be decrypted (QUALOR_SECRET_KEY changed?); set a new secret',
+        );
+      }
+      const problem = webhookUrlProblem(webhook.url, settings);
+      if (problem) return refuse(problem);
+      const body = JSON.stringify(delivery.payload);
+      request = {
         url: webhook.url,
         body,
         headers: {
@@ -308,14 +349,26 @@ export async function deliverWebhook(
           'x-qualor-delivery': delivery.id,
           ...signatureHeaders(secret, body, Math.floor(Date.now() / 1000)),
         },
-      },
-      {
-        allowInternalHosts: settings.allowInternalHosts,
-        timeoutMs: deps.timeoutMs ?? DELIVERY_TIMEOUT_MS,
-        ...(deps.connectTimeoutMs === undefined ? {} : { connectTimeoutMs: deps.connectTimeoutMs }),
-        ...(deps.resolve ? { resolve: deps.resolve } : {}),
-      },
-    );
+      };
+    }
+    const openUntil = await circuitOpenUntil(tx, webhook.id);
+    if (openUntil) {
+      const excerpt = `${CIRCUIT_OPEN_EXCERPT_PREFIX}${openUntil.toISOString()})`;
+      return record({ ok: false, status: null, excerpt }, false);
+    }
+
+    const outcome = await sendWebhook(request, {
+      allowInternalHosts: settings.allowInternalHosts,
+      timeoutMs: deps.timeoutMs ?? DELIVERY_TIMEOUT_MS,
+      ...(deps.connectTimeoutMs === undefined ? {} : { connectTimeoutMs: deps.connectTimeoutMs }),
+      ...(deps.resolve ? { resolve: deps.resolve } : {}),
+    });
+    // 6G R10: Slack and Teams answer 404/410 for a webhook that was removed; retrying cannot help.
+    if (isChatKind(webhook.kind) && (outcome.status === 404 || outcome.status === 410)) {
+      const answer = outcome.excerpt === null ? '' : `. Answer: ${outcome.excerpt}`;
+      const excerpt = excerptOf(Buffer.from(`${goneExcerpt(webhook.kind)}${answer}`, 'utf8'));
+      return record({ ok: false, status: outcome.status, excerpt }, true);
+    }
     return record(outcome, false);
   });
 }

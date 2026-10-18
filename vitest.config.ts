@@ -24,6 +24,11 @@ const liveLlm =
   (process.env.QUALOR_LIVE_LLM_URL ?? '') !== '' &&
   (process.env.QUALOR_LIVE_LLM_MODEL ?? '') !== '';
 
+/** 6G: the opt-in check against a real Slack and/or Teams channel (`pnpm chat:live`). */
+const liveChat =
+  (process.env.QUALOR_SLACK_WEBHOOK_URL ?? '') !== '' ||
+  (process.env.QUALOR_TEAMS_WEBHOOK_URL ?? '') !== '';
+
 /**
  * Plan 4A (ruling RE5): tests that run Helm, cosign or Syft in the release toolbox (Docker). Never
  * part of `pnpm test`: the project exists only when `pnpm helm:test` or `pnpm release:test` sets
@@ -140,6 +145,17 @@ export default defineConfig({
                 include: ['tools/llm/ollama.live.test.ts'],
                 // Up to 10 runs × 3 features × the fixture's cases, a slow CPU model each.
                 testTimeout: 3_600_000,
+              },
+            },
+          ]
+        : []),
+      ...(liveChat
+        ? [
+            {
+              test: {
+                name: 'chat-live',
+                include: ['server/src/webhooks/chat/live.live.test.ts'],
+                testTimeout: 60_000,
               },
             },
           ]
