@@ -33,9 +33,20 @@ describe('chatUrlProblem (6G R1)', () => {
     ['teams', 'https://outlook.office.com/webhook/abc', /Office 365 connectors/],
     ['teams', 'https://hooks.slack.com/services/T/B/x', /Teams Workflows webhook URL/],
     ['slack', 'https://u:p@hooks.slack.com/services/T/B/x', /credentials/],
+    ['slack', 'https://hooks.slack.com./services/T/B/x', /trailing dot/],
+    ['slack', 'https://hooks.slack.com@evil.example/services/x', /credentials/],
+    ['slack', 'https://hооks.slack.com/services/T/B/x', /Slack incoming webhook URL/],
+    ['slack', 'https://hooks.slack.com/services/../api/x', /Slack incoming webhook URL/],
   ] as const)('refuses a %s URL %s', (kind, url, message) => {
     expect(chatUrlProblem(kind, url, strict, none)).toMatch(message);
   });
+
+  it.each(['https://HOOKS.Slack.COM/services/T/B/x', 'https://hooks.slack.com:443/services/T/B/x'])(
+    'accepts %s',
+    (url) => {
+      expect(chatUrlProblem('slack', url, strict, none)).toBeNull();
+    },
+  );
 
   it('accepts a listed test host, still under the instance URL settings (R7)', () => {
     const hosts = parseInternalHosts('127.0.0.1:4285');
@@ -98,10 +109,17 @@ describe('canonicalTimeZone', () => {
     expect(canonicalTimeZone(zone)).toBe(canonical);
   });
 
-  it.each(['', 'Mars/Olympus', 'Europe/Berlin\u0000', 'x'.repeat(65), '+02:00x'])(
-    'refuses %j',
-    (zone) => {
-      expect(canonicalTimeZone(zone)).toBeNull();
-    },
-  );
+  it.each([
+    '',
+    'Mars/Olympus',
+    'Europe/Berlin\u0000',
+    'x'.repeat(65),
+    '+02:00x',
+    '+0200',
+    '+02',
+    '-05',
+    '+02:00',
+  ])('refuses %j', (zone) => {
+    expect(canonicalTimeZone(zone)).toBeNull();
+  });
 });

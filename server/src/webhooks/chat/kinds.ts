@@ -50,7 +50,8 @@ export function chatUrlProblem(
   if (base) return base;
   const url = new URL(raw);
   if (testHosts.size > 0 && isInternalHostAllowed(url, testHosts)) return null;
-  const host = hostOf(url).toLowerCase().replace(/\.$/, '');
+  const host = hostOf(url).toLowerCase();
+  if (host.endsWith('.')) return 'Remove the trailing dot from the host name';
   const httpsDefaultPort = url.protocol === 'https:' && url.port === '';
   if (kind === 'slack') {
     const ok =
@@ -91,11 +92,11 @@ export function maskChatUrl(kind: ChatKind, href: string): string {
 const MAX_ZONE_LENGTH = 64;
 
 /**
- * The IANA zone as the runtime spells it (`europe/berlin` → `Europe/Berlin`, `utc` → `UTC`), or
+ * The IANA zone name (offset forms such as `+02:00` are refused) as the runtime spells it (`europe/berlin` → `Europe/Berlin`, `utc` → `UTC`), or
  * null for a zone it does not know. `Intl.DateTimeFormat` throws a RangeError for an unknown one.
  */
 export function canonicalTimeZone(zone: string): string | null {
-  if (zone === '' || zone.length > MAX_ZONE_LENGTH || !/^[A-Za-z0-9_+\-/]+$/.test(zone)) {
+  if (zone === '' || zone.length > MAX_ZONE_LENGTH || !/^[A-Za-z][A-Za-z0-9_+\-/]*$/.test(zone)) {
     return null;
   }
   try {
