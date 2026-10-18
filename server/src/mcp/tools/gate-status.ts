@@ -58,18 +58,26 @@ function unmetConditions(gateResult: unknown): ConditionResult[] {
 }
 
 interface CommitSearch {
-  /** Newest first: the matches on the first page that has any. */
+  /** Newest first. */
   hits: Analysis[];
   latestRevision: string | null;
   searched: number;
+  /** The search reached the end of the history, or a full SHA matched; false when the budget ended it. */
   complete: boolean;
 }
 
-/** Pages through a branch's analyses (newest first) until a page holds a match, or the budget ends. */
+const FULL_SHA = 40;
+
+/**
+ * Pages through a branch's analyses (newest first). A full SHA stops at the first page with a hit;
+ * a shorter prefix goes on to the end (or the budget) so a second commit with the same prefix is
+ * seen, not hidden behind the first.
+ */
 async function searchCommit(call: McpCaller, branchId: string, sha: string): Promise<CommitSearch> {
   let cursor: string | undefined;
   let searched = 0;
   let latestRevision: string | null = null;
+  const hits: Analysis[] = [];
   for (let page = 0; page < MAX_ANALYSIS_PAGES; page += 1) {
     const res = unwrap(
       await call.get<{ items: Analysis[]; nextCursor: string | null }>(
@@ -79,12 +87,13 @@ async function searchCommit(call: McpCaller, branchId: string, sha: string): Pro
     );
     searched += res.items.length;
     latestRevision ??= res.items.find((a) => a.status === 'succeeded')?.revision ?? null;
-    const hits = res.items.filter((a) => matches(a.revision, sha));
-    if (hits.length) return { hits, latestRevision, searched, complete: true };
-    if (!res.nextCursor) return { hits: [], latestRevision, searched, complete: true };
+    hits.push(...res.items.filter((a) => matches(a.revision, sha)));
+    if (hits.length && sha.length >= FULL_SHA)
+      return { hits, latestRevision, searched, complete: true };
+    if (!res.nextCursor) return { hits, latestRevision, searched, complete: true };
     cursor = res.nextCursor;
   }
-  return { hits: [], latestRevision, searched, complete: false };
+  return { hits, latestRevision, searched, complete: false };
 }
 
 /** Spec §5, ruling R3: the gate of a branch or merge request, and whether CI has reached a commit. */
@@ -131,13 +140,28 @@ export const gateStatusTool: McpTool<typeof input> = {
           complete: found.complete,
         };
       } else if (hit.status === 'succeeded') {
-        commit = { sha: args.commit, state: 'analyzed' };
+        commit = {
+          sha: args.commit,
+          state: 'analyzed',
+          searched: found.searched,
+          complete: found.complete,
+        };
         analysis = hit;
       } else if (hit.status === 'failed') {
-        commit = { sha: args.commit, state: 'failed' };
+        commit = {
+          sha: args.commit,
+          state: 'failed',
+          searched: found.searched,
+          complete: found.complete,
+        };
         analysis = hit;
       } else {
-        commit = { sha: args.commit, state: 'in_progress' };
+        commit = {
+          sha: args.commit,
+          state: 'in_progress',
+          searched: found.searched,
+          complete: found.complete,
+        };
       }
     } else if (branch.lastAnalysisId) {
       analysis = unwrap(await call.get<Analysis>(`/api/v0/analyses/${branch.lastAnalysisId}`));
@@ -162,6 +186,13 @@ export const gateStatusTool: McpTool<typeof input> = {
         commit.complete
           ? `Commit ${commit.sha} is not analysed yet; the latest analysed is ${commit.latestRevision ?? 'none'}.`
           : `Commit ${commit.sha} was not found among the newest ${commit.searched} analyses of this branch; older ones were not searched, so it may still have been analysed earlier.`,
+      );
+    }
+    if (commit && commit.state !== 'not_yet' && commit.complete === false) {
+      lines.push(
+        'Only the newest ' +
+          commit.searched +
+          ' analyses were searched; another commit with the same prefix may exist further back, so give more characters of the SHA to be sure.',
       );
     }
     if (commit?.state === 'in_progress') {

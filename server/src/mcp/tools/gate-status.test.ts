@@ -113,6 +113,37 @@ describe('qualor_gate_status commit search', () => {
     expect(out.text).not.toContain('is not analysed yet');
   });
 
+  it('refuses a short prefix whose two commits sit on different pages', async () => {
+    const a = `abc1${'0'.repeat(36)}`;
+    const b = `abc2${'0'.repeat(36)}`;
+    const filler = Array.from({ length: 99 }, (_, i) => analysis(i + 10, sha('1')));
+    const pages = [[analysis(1, a), ...filler], [analysis(2, b)]];
+    const err = await run(callerWith(pages), 'abc').catch((e: unknown) => e);
+    expect((err as ToolError).code).toBe('AMBIGUOUS_COMMIT');
+    expect((err as ToolError).message).toContain('matches 2 commits');
+  });
+
+  it('stops after the first page with a hit for a full SHA', async () => {
+    const a = `abc1${'0'.repeat(36)}`;
+    const seen: Query[] = [];
+    const filler = Array.from({ length: 99 }, (_, i) => analysis(i + 10, sha('1')));
+    const out = await run(callerWith([[analysis(1, a), ...filler], [analysis(2, a)]], seen), a);
+    expect(out.structured).toMatchObject({ commit: { state: 'analyzed', complete: true } });
+    expect(seen).toHaveLength(1);
+  });
+
+  it('answers for the single commit found but says the search was partial', async () => {
+    const a = `abc1${'0'.repeat(36)}`;
+    const filler = Array.from({ length: 100 }, (_, i) => analysis(i + 10, sha('1')));
+    const pages = [
+      [analysis(1, a), ...filler.slice(1)],
+      ...Array.from({ length: 12 }, () => filler),
+    ];
+    const out = await run(callerWith(pages), 'abc1');
+    expect(out.structured).toMatchObject({ commit: { state: 'analyzed', complete: false } });
+    expect(out.text).toContain('Only the newest 1000 analyses were searched');
+  });
+
   it('reports a complete search as complete', async () => {
     const out = await run(callerWith([[analysis(1, sha('1'))]]), sha('9'));
     expect(out.structured).toMatchObject({ commit: { state: 'not_yet', complete: true } });
