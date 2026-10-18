@@ -87,6 +87,7 @@ describe('Slack gate messages (golden)', () => {
           type: 'section',
           text: {
             type: 'mrkdwn',
+            verbatim: true,
             text:
               '*Failing conditions*\n' +
               '• Issues on new code: 2 (fails when greater than 0)\n' +
@@ -97,6 +98,7 @@ describe('Slack gate messages (golden)', () => {
           type: 'section',
           text: {
             type: 'mrkdwn',
+            verbatim: true,
             text: '*New code:* Security 2 · Reliability 0 · Maintainability 0',
           },
         },
@@ -105,6 +107,7 @@ describe('Slack gate messages (golden)', () => {
           elements: [
             {
               type: 'mrkdwn',
+              verbatim: true,
               text: 'Gate Qualor way · commit `3f9c2e1` · 2026-10-19 07:05 UTC',
             },
           ],
@@ -181,8 +184,34 @@ describe('Slack gate messages (golden)', () => {
       ...(b.elements ?? []).map((e) => e.text ?? ''),
     ]);
     for (const text of mrkdwn) expect(text).not.toContain('<!channel>');
+    // verbatim: Slack skips its own auto-linking and mention parsing of the text.
+    for (const b of body.blocks) {
+      if (b.text?.type === 'mrkdwn') expect(b.text).toMatchObject({ verbatim: true });
+      for (const e of b.elements ?? []) {
+        if (typeof e.text === 'string') expect(e).toMatchObject({ verbatim: true });
+      }
+    }
     // Slack mrkdwn has no `[text](url)` links: the gate name reaches the context as it is.
     expect(mrkdwn.join('\n')).toContain('Gate [x](https://evil.example)');
+  });
+
+  it('Slack: bare mentions, channel names and URLs in names stay inert', () => {
+    const hostile: ChatGateMessage = {
+      ...failed,
+      project: { ...failed.project, name: '@here #general https://evil.example' },
+      gate: { name: '@channel', status: 'failed' },
+    };
+    const body = formatChat('slack', hostile, LINKS) as {
+      text: string;
+      blocks: { text?: { type: string; text: string; verbatim?: boolean } }[];
+    };
+    expect(body.text).not.toMatch(/@here|#general/);
+    for (const b of body.blocks) {
+      if (b.text?.type === 'mrkdwn') {
+        expect(b.text.verbatim).toBe(true);
+        expect(b.text.text).not.toMatch(/@(here|channel|everyone)|#general/);
+      }
+    }
   });
 
   it('Teams: a hostile name renders as text, not a link or bold', () => {

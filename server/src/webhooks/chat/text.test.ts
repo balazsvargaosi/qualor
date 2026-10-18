@@ -5,7 +5,11 @@ const Z = '\u200B';
 
 describe('slackText (6G R13)', () => {
   it('escapes the three characters Slack requires, so a mention never pings', () => {
-    expect(slackText('<!channel> & <@U123>')).toBe('&lt;!channel&gt; &amp; &lt;@U123&gt;');
+    expect(slackText('<!channel> & <@U123>')).toBe(`&lt;!channel&gt; &amp; &lt;@${Z}U123&gt;`);
+  });
+
+  it('breaks bare mentions and channel names, which Slack parses without brackets', () => {
+    expect(slackText('@here @channel #general')).toBe(`@${Z}here @${Z}channel #${Z}general`);
   });
 
   it('neutralises markup characters without dropping them', () => {

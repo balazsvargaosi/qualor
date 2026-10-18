@@ -16,7 +16,8 @@ import {
 } from './text';
 
 type Text =
-  { type: 'mrkdwn'; text: string } | { type: 'plain_text'; text: string; emoji?: boolean };
+  | { type: 'mrkdwn'; text: string; verbatim: true }
+  | { type: 'plain_text'; text: string; emoji?: boolean };
 export type SlackBlock =
   | { type: 'header'; text: { type: 'plain_text'; text: string; emoji: false } }
   | { type: 'section'; text: Text }
@@ -44,13 +45,17 @@ const header = (text: string): SlackBlock => ({
   type: 'header',
   text: { type: 'plain_text', text: plainText(text, HEADER_MAX), emoji: false },
 });
+/**
+ * Every mrkdwn text is `verbatim`: Slack then skips its own parsing (bare URLs into links,
+ * `@here` and `#channel` into mentions), while the `<url|text>` links we write still work.
+ */
 const section = (text: string): SlackBlock => ({
   type: 'section',
-  text: { type: 'mrkdwn', text: [...text].slice(0, SECTION_MAX).join('') },
+  text: { type: 'mrkdwn', text: [...text].slice(0, SECTION_MAX).join(''), verbatim: true },
 });
 const context = (text: string): SlackBlock => ({
   type: 'context',
-  elements: [{ type: 'mrkdwn', text: [...text].slice(0, SECTION_MAX).join('') }],
+  elements: [{ type: 'mrkdwn', text: [...text].slice(0, SECTION_MAX).join(''), verbatim: true }],
 });
 const button = (url: string | null, style?: 'primary' | 'danger'): SlackBlock[] =>
   url === null

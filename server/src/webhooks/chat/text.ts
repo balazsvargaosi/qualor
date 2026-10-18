@@ -22,7 +22,8 @@ export function slackText(s: string, max = MAX_NAME): string {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/[*_~`]/g, (c) => `${Z}${c}${Z}`);
+    .replace(/[*_~`]/g, (c) => `${Z}${c}${Z}`)
+    .replace(/[@#]/g, (c) => `${c}${Z}`);
 }
 
 /**
