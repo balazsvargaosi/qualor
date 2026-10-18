@@ -158,7 +158,7 @@ Steps:
    and disk space. Report what is missing.
 2. Create /opt/qualor/compose.yml exactly as install-server.md
    shows, and check that the host can pull qualor/server:<tag> from
-   Docker Hub (tag: <0.10 | a full version such as 0.10.0>).
+   Docker Hub (tag: <0.11 | a full version such as 0.11.0>).
 3. Create /opt/qualor/.env with QUALOR_VERSION, a value from
    `openssl rand -hex 32` for each secret, QUALOR_PUBLIC_URL,
    QUALOR_TRUST_PROXY=1 and, if needed, QUALOR_SCM_INTERNAL_HOSTS,
@@ -192,7 +192,7 @@ https://qualor.dev/docs/configuration.md first.
 
 Inputs:
 - Qualor server: <https://qualor.example.com>
-- Qualor release: <0.10 | a full version such as 0.10.0>
+- Qualor release: <0.11 | a full version such as 0.11.0>
 - scanner image: <qualor/scanner (qualor/scanner-dotnet for C#) |
   our copy at mirror.acme.internal/qualor/scanner>
 - GitLab: <GitLab.com: use gitlab.com/qualor/qualor/qualor |
@@ -244,7 +244,7 @@ https://qualor.dev/docs/configuration.md first.
 
 Inputs:
 - Qualor server: <https://qualor.example.com>
-- scanner image: <qualor/scanner:0.10 (qualor/scanner-dotnet:0.10 for
+- scanner image: <qualor/scanner:0.11 (qualor/scanner-dotnet:0.11 for
   C#) | a full version | our copy in a private registry>
 
 Do this:

@@ -66,7 +66,7 @@ Save the compose file of [Install the server](docs/guide/install-server.md#the-c
 ```sh
 umask 077
 cat > .env <<EOF
-QUALOR_VERSION=0.10
+QUALOR_VERSION=0.11
 QUALOR_SECRET_KEY=$(openssl rand -hex 32)
 QUALOR_BOOTSTRAP_ADMIN_PASSWORD=$(openssl rand -hex 16)
 EOF
@@ -94,7 +94,7 @@ The answer's `token` is shown once.
 
 ## Scan in CI: one line
 
-The scanner image is `qualor/scanner:<tag>` on Docker Hub (`0.10`, or a full version such as `0.10.0`).
+The scanner image is `qualor/scanner:<tag>` on Docker Hub (`0.11`, or a full version such as `0.11.0`).
 It carries the `qualor` CLI and the pinned analyzers; its entrypoint is `qualor`. Set `QUALOR_URL`
 and `QUALOR_TOKEN` as CI variables (the token masked), then:
 
@@ -109,7 +109,7 @@ include:
 A self-managed GitLab includes components only from its own instance: import
 `https://gitlab.com/qualor/qualor.git` into a project there once (New project → Import project →
 Repository by URL) and include it by its full version
-(`component: $CI_SERVER_FQDN/<path of the copy>/qualor@0.10.0`); a short version such as `@0.10`
+(`component: $CI_SERVER_FQDN/<path of the copy>/qualor@0.11.0`); a short version such as `@0.11`
 resolves only in a CI/CD catalog project with releases
 ([docs/guide/gitlab.md](docs/guide/gitlab.md)). It runs in merge request
 pipelines and on the default branch, fails with the quality gate, and keeps GitLab's Code Quality,
@@ -152,7 +152,7 @@ GitHub Actions: use the [Qualor Action](https://github.com/qualor-dev/scan-actio
     fetch-depth: 0
     persist-credentials: false
     ref: '${{ github.event.pull_request.head.sha || github.sha }}'
-- uses: qualor-dev/scan-action@v0.10
+- uses: qualor-dev/scan-action@v0.11
   with:
     server-url: '${{ vars.QUALOR_URL }}'
     token: '${{ secrets.QUALOR_TOKEN }}'
@@ -246,7 +246,7 @@ With the CI/CD component, set `inputs: { dotnet: true, image: qualor/scanner-dot
 optionally `build-command`, default `dotnet build --no-incremental`); the component then runs the
 same three steps instead of a plain `qualor scan`, and `qualor dotnet abort` in its `after_script`.
 
-On GitHub Actions, use `qualor-dev/scan-action/dotnet@v0.10` (inputs as for the main action, plus
+On GitHub Actions, use `qualor-dev/scan-action/dotnet@v0.11` (inputs as for the main action, plus
 `build-command`), or copy
 [`integrations/github/qualor-dotnet.yml`](integrations/github/qualor-dotnet.yml) to
 `.github/workflows/qualor.yml` and set the variable `QUALOR_SCANNER_DOTNET_IMAGE` to

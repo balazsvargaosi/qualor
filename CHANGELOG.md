@@ -6,6 +6,8 @@ All notable changes to Qualor are listed here, newest first. The format follows
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-19
+
 ### Added
 
 - The GitHub Action [`qualor-dev/scan-action`](https://github.com/qualor-dev/scan-action) scans,
