@@ -58,8 +58,6 @@ release: **Docs** in the top bar, at `/docs` on your server, for signed-in users
 20. [Portfolio reports](./portfolio.md): the quality of every project and organisation in one
     view, with trends and the projects that need attention, as CSV and PDF.
 21. [Troubleshooting](./troubleshooting.md): what common errors mean and how to fix them.
-22. [Slack and Microsoft Teams](./chat-notifications.md): gate failures, recoveries and a weekly
-    security digest in a channel.
 22. [AI prompts](./ai-prompts.md): ready-made prompts that let an AI agent roll Qualor out in your
     company.
 23. [Telemetry](./telemetry.md): the anonymous usage statistics the server sends, and how to turn
@@ -68,6 +66,8 @@ release: **Docs** in the top bar, at `/docs` on your server, for signed-in users
     secrets, health and recent failures, from the web UI or a command.
 25. [MCP server for AI agents](./mcp.md): Claude Code, Cursor and claude.ai read the quality gate
     and issues, ask the AI assistant and mark false positives, signed in as the user.
+26. [Slack and Microsoft Teams](./chat-notifications.md): gate failures, recoveries and a weekly
+    security digest in a channel.
 
 ## How Qualor works
 

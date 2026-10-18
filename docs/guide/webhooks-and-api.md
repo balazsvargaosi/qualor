@@ -41,7 +41,7 @@ function verify(rawBody, headers, secret, maxAgeSeconds = 300) {
 }
 ```
 
-- A Slack or Microsoft Teams webhook has no secret and sends no `X-Qualor-*` headers: the secret, **Rotate secret** and the signature below are for generic webhooks.
+- A Slack or Microsoft Teams webhook has no secret and sends no `X-Qualor-*` headers: the secret, **Rotate secret** and the signature described above are for generic webhooks.
 - Qualor generates the secret (`whsec_…`) and shows it **once**, when the webhook is created. To replace
   it, press **Rotate secret** on the webhook (API: `POST /api/v0/webhooks/{id}/regenerate-secret`).
   The old secret stops signing at once, so update the receiver with the new one, which is shown

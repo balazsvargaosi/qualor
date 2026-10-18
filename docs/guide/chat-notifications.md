@@ -49,6 +49,9 @@ their URLs.
    zone, and press **Add webhook**.
 5. Press **Send test**. The channel shows a card "Qualor is connected".
 
+An Azure Logic Apps workflow with an HTTP trigger that posts cards to Teams also works: its
+`….logic.azure.com` URL is accepted too.
+
 A workflow belongs to the person who created it. If they leave, add a co-owner in the Workflows
 app, or the webhook stops.
 
