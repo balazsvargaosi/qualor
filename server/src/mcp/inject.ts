@@ -59,17 +59,21 @@ const SCOPES: Record<ToolAccess, TokenScope[]> = {
 const CLIENT_NAME_MAX = 64;
 
 /**
- * The user agent of an internal call: `qualor-mcp (<client name>)`. The client name is chosen by
- * whoever registered the client, so control characters (header and log injection) are dropped and
- * the length is capped.
+ * A client name safe to show and log. It is chosen by whoever registered the client, so control
+ * characters (header and log injection) are dropped and the length is capped.
  */
-export function mcpUserAgent(clientName: string): string {
+export function cleanClientName(clientName: string): string {
   let clean = '';
   for (const ch of clientName) {
     const code = ch.codePointAt(0) ?? 0;
     if (code >= 0x20 && code !== 0x7f && !(code >= 0x80 && code <= 0x9f)) clean += ch;
   }
-  return `qualor-mcp (${clean.trim().slice(0, CLIENT_NAME_MAX)})`;
+  return clean.trim().slice(0, CLIENT_NAME_MAX);
+}
+
+/** The user agent of an internal call: `qualor-mcp (<client name>)`. */
+export function mcpUserAgent(clientName: string): string {
+  return `qualor-mcp (${cleanClientName(clientName)})`;
 }
 
 /** Repeated keys for arrays: the issue list's `many(...)` filters parse repeated parameters. */

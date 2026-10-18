@@ -15,6 +15,7 @@ import { resolveAccessToken } from '../oauth/grants';
 import type { McpScope } from '../oauth/tokens';
 import type { McpUrls } from '../oauth/urls';
 import { callerFor, mcpUserAgent } from './inject';
+import type { McpPrompt } from './prompts';
 import { requiredScope, ToolError, type McpTool, type ToolAccess } from './tool';
 import { LoginThrottle } from '../auth/throttle';
 
@@ -99,12 +100,11 @@ export const mcpEndpoint: FastifyPluginAsync<{
   deps: RouteDeps;
   urls: McpUrls;
   tools: readonly McpTool[];
-  /** The `fix_quality_gate` prompt arrives in Task 12. */
-  prompts: readonly unknown[];
+  prompts: readonly McpPrompt[];
   version: string;
   /** Failed bearer checks one address may make per window before it gets 429 (tests lower it). */
   failedAuth?: { max: number; windowMs: number };
-}> = async (app, { deps, urls, tools, version, failedAuth }) => {
+}> = async (app, { deps, urls, tools, prompts, version, failedAuth }) => {
   // Requests without a live token cost a lookup each; per-grant limits cannot apply to them, so
   // they are counted per client address.
   const failures = new LoginThrottle(failedAuth ?? FAILED_AUTH);
@@ -195,6 +195,15 @@ export const mcpEndpoint: FastifyPluginAsync<{
             return { isError: true, content: [{ type: 'text' as const, text: UNEXPECTED }] };
           }
         },
+      );
+    }
+    for (const prompt of prompts) {
+      server.registerPrompt(
+        prompt.name,
+        { title: prompt.title, description: prompt.description, argsSchema: prompt.argsSchema },
+        (args: Record<string, unknown>) => ({
+          messages: prompt.messages(args as Record<string, string | undefined>),
+        }),
       );
     }
     return server;

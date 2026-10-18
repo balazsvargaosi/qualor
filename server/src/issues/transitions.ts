@@ -103,6 +103,8 @@ export interface TransitionAudit {
   bulk: boolean;
   /** The accepted AI triage suggestion (llm.md §7), or null. */
   suggestionId: string | null;
+  /** The OAuth client of an MCP call (Phase 6N, ruling R8); absent for other callers. */
+  mcpClientId?: string | null;
 }
 
 export interface TransitionOptions {
@@ -332,6 +334,7 @@ async function recordStatusChanges(
         mirrored: !requested.has(change.issue_id),
         commented: change.comment !== null,
         suggestionId: audit.suggestionId,
+        ...(audit.mcpClientId ? { mcpClientId: audit.mcpClientId } : {}),
       },
     };
   });

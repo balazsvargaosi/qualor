@@ -1,3 +1,5 @@
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import type { FastifyInstance } from 'fastify';
 import type { TestContext } from './app';
 
 let rpcId = 0;
@@ -61,4 +63,33 @@ export async function callTool(
     structured: result?.structuredContent ?? null,
     error: (res.body?.error ?? null) as { code: number; message: string } | null,
   };
+}
+
+/** The SDK's own client over `app.inject`: `legacy` speaks 2025-11-25, the pin 2026-07-28. */
+export async function sdkClient(
+  app: FastifyInstance,
+  token: string,
+  mode: 'legacy' | { pin: '2026-07-28' },
+): Promise<{ client: Client; statuses: number[] }> {
+  const statuses: number[] = [];
+  const fetchLike = async (url: string | URL, init?: RequestInit): Promise<Response> => {
+    const res = await app.inject({
+      method: (init?.method ?? 'GET') as 'GET' | 'POST' | 'DELETE',
+      url: new URL(String(url)).pathname,
+      headers: {
+        ...Object.fromEntries(new Headers(init?.headers).entries()),
+        authorization: `Bearer ${token}`,
+      },
+      ...(typeof init?.body === 'string' ? { payload: init.body } : {}),
+    });
+    statuses.push(res.statusCode);
+    const headers = new Headers();
+    for (const [k, v] of Object.entries(res.headers)) if (typeof v === 'string') headers.set(k, v);
+    return new Response(res.body === '' ? null : res.body, { status: res.statusCode, headers });
+  };
+  const client = new Client({ name: 'test', version: '1' }, { versionNegotiation: { mode } });
+  await client.connect(
+    new StreamableHTTPClientTransport(new URL('https://q.example/mcp'), { fetch: fetchLike }),
+  );
+  return { client, statuses };
 }

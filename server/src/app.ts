@@ -6,6 +6,7 @@ import Fastify, { type FastifyBaseLogger, type FastifyInstance } from 'fastify';
 import { serializerCompiler, validatorCompiler } from 'fastify-type-provider-zod';
 import { VERSION } from './index';
 import { mcpEndpoint } from './mcp/endpoint';
+import { MCP_PROMPTS } from './mcp/prompts';
 import { InternalCalls } from './mcp/internal';
 import { MCP_TOOLS } from './mcp/tools';
 import { installAuthentication } from './auth/authenticate';
@@ -131,7 +132,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       deps: routeDeps,
       urls,
       tools: MCP_TOOLS,
-      prompts: [],
+      prompts: MCP_PROMPTS,
       version: VERSION,
     });
   }

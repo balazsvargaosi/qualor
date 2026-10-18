@@ -6,8 +6,9 @@ import { issuesTool } from './issues';
 import { measuresTool } from './measures';
 import { projectsTool } from './projects';
 import { ruleTool } from './rule';
+import { transitionTool } from './transition';
 
-/** Every tool `/mcp` serves (spec §5); Tasks 11–13 append theirs. */
+/** Every tool `/mcp` serves (spec §5); Task 13 appends its own. */
 export const MCP_TOOLS: readonly McpTool[] = [
   projectsTool,
   gateStatusTool,
@@ -17,4 +18,5 @@ export const MCP_TOOLS: readonly McpTool[] = [
   measuresTool,
   explainTool,
   suggestFixTool,
+  transitionTool,
 ] as readonly McpTool[];

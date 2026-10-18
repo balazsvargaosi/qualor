@@ -1,4 +1,3 @@
-import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { eq } from 'drizzle-orm';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -14,7 +13,7 @@ import {
   type Session,
   type TestContext,
 } from '../../test/app';
-import { callTool, mcpCall } from '../../test/mcp';
+import { callTool, mcpCall, sdkClient } from '../../test/mcp';
 import { oauthTokens as runOAuth } from '../../test/oauth';
 import type { RouteDeps } from '../app';
 import { users } from '../db/schema';
@@ -25,35 +24,6 @@ import { InternalCalls } from './internal';
 import type { McpTool } from './tool';
 
 const RESOURCE_METADATA = 'https://q.example/.well-known/oauth-protected-resource/mcp';
-
-/** The SDK's own client over `app.inject`: `legacy` speaks 2025-11-25, the pin 2026-07-28. */
-async function sdkClient(
-  app: FastifyInstance,
-  token: string,
-  mode: 'legacy' | { pin: '2026-07-28' },
-): Promise<{ client: Client; statuses: number[] }> {
-  const statuses: number[] = [];
-  const fetchLike = async (url: string | URL, init?: RequestInit): Promise<Response> => {
-    const res = await app.inject({
-      method: (init?.method ?? 'GET') as 'GET' | 'POST' | 'DELETE',
-      url: new URL(String(url)).pathname,
-      headers: {
-        ...Object.fromEntries(new Headers(init?.headers).entries()),
-        authorization: `Bearer ${token}`,
-      },
-      ...(typeof init?.body === 'string' ? { payload: init.body } : {}),
-    });
-    statuses.push(res.statusCode);
-    const headers = new Headers();
-    for (const [k, v] of Object.entries(res.headers)) if (typeof v === 'string') headers.set(k, v);
-    return new Response(res.body === '' ? null : res.body, { status: res.statusCode, headers });
-  };
-  const client = new Client({ name: 'test', version: '1' }, { versionNegotiation: { mode } });
-  await client.connect(
-    new StreamableHTTPClientTransport(new URL('https://q.example/mcp'), { fetch: fetchLike }),
-  );
-  return { client, statuses };
-}
 
 describe('POST /mcp', () => {
   let ctx: TestContext;

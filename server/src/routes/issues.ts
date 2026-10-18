@@ -381,6 +381,7 @@ export const issueRoutes: FastifyPluginAsyncZod<{
             context: actorOf(request),
             bulk: false,
             suggestionId: request.body.suggestionId ?? null,
+            mcpClientId: principal.kind === 'oauth' ? principal.clientId : null,
           },
         },
       );
