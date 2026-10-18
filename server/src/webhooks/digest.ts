@@ -40,6 +40,11 @@ export function isQuiet(m: ChatDigestMessage): boolean {
   return m.totals.newSecurity === 0 && m.totals.failing === 0;
 }
 
+/** The result column holding the new issues of one severity (a fixed name, never user input). */
+function newColumn(severity: string) {
+  return sql.raw(`new_${severity}`);
+}
+
 /**
  * 6G spec §4, R8: the digest of one scope (the organisation's projects, or one project) over
  * `[since, until)`. One query for the per-project counts (main branch only) and one for the top
@@ -53,8 +58,7 @@ export async function buildDigest(
   const projectFilter = scope.projectId === null ? sql`` : sql`AND p.id = ${scope.projectId}`;
   const isNew = sql`i.first_seen_at >= ${window.since} AND i.first_seen_at < ${window.until}`;
   const perSeverity = SEVERITIES.map(
-    (s) =>
-      sql`count(i.id) FILTER (WHERE ${isNew} AND i.severity = ${s})::int AS ${sql.raw(`new_${s}`)}`,
+    (s) => sql`count(i.id) FILTER (WHERE ${isNew} AND i.severity = ${s})::int AS ${newColumn(s)}`,
   );
   const result = await tx.execute<Record<string, unknown>>(sql`
     SELECT p.id, left(p.name, ${NAME_MAX}) AS name,

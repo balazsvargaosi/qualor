@@ -77,21 +77,24 @@ const button = (url: string | null, style?: 'primary' | 'danger'): SlackBlock[] 
 const link = (url: string | null, text: string): string =>
   url === null ? text : `<${url}|${text}>`;
 
+function failingConditions(m: ChatGateMessage): string {
+  return [
+    '*Failing conditions*',
+    ...m.failed.map((c) => `• ${conditionText(c, slackText)}`),
+    ...(m.failedCount > m.failed.length ? [`…and ${m.failedCount - m.failed.length} more`] : []),
+  ].join('\n');
+}
+
+function passingConditions(m: ChatGateMessage): string {
+  if (m.cause === 'reevaluation') return 'All conditions pass after issues were changed.';
+  return 'All conditions pass.';
+}
+
 function gate(m: ChatGateMessage, links: ChatLinks): SlackBody {
   // The header is plain_text (never parsed): the raw names, one line, clipped.
   const raw = gateTitle(m, (s, max) => plainText(s, max ?? 80));
   const failed = m.event === 'gate.failed';
-  const conditions = failed
-    ? [
-        '*Failing conditions*',
-        ...m.failed.map((c) => `• ${conditionText(c, slackText)}`),
-        ...(m.failedCount > m.failed.length
-          ? [`…and ${m.failedCount - m.failed.length} more`]
-          : []),
-      ].join('\n')
-    : m.cause === 'reevaluation'
-      ? 'All conditions pass after issues were changed.'
-      : 'All conditions pass.';
+  const conditions = failed ? failingConditions(m) : passingConditions(m);
   const counts = newCodeText(m);
   const facts = [
     m.gate.name === null ? null : `Gate ${slackText(m.gate.name)}`,
@@ -122,6 +125,16 @@ function packLines(lines: string[], used: number): string[] {
   return kept;
 }
 
+function pathAt(path: string, line: number | null): string {
+  return line === null ? path : `${path}:${line}`;
+}
+
+/** The line for the projects with nothing new; `more` when other projects are listed above it. */
+function quietLine(count: number, more: boolean): string {
+  const noun = count === 1 ? 'project' : 'projects';
+  return `${count} ${more ? 'more ' : ''}${noun}: no new security issues, gate passed`;
+}
+
 function digest(m: ChatDigestMessage, links: ChatLinks): SlackBody {
   const scopeName = m.scope.project?.name ?? m.scope.organization.name;
   const title = `Weekly security digest — ${plainText(scopeName, 80)}`;
@@ -143,16 +156,11 @@ function digest(m: ChatDigestMessage, links: ChatLinks): SlackBody {
   const tail = [
     ...(moreProjects > 0 ? [`…and ${moreProjects} more projects`] : []),
     ...(m.quietProjects > 0
-      ? [
-          `${m.quietProjects} ${allRows.length + m.moreProjects > 0 ? 'more ' : ''}project${m.quietProjects === 1 ? '' : 's'}: no new security issues, gate passed`,
-        ]
+      ? [quietLine(m.quietProjects, allRows.length + m.moreProjects > 0)]
       : []),
   ];
   const allTop = m.top.map((i) => {
-    const where =
-      i.path === null
-        ? ''
-        : ` — \`${slackText(i.path + (i.line === null ? '' : `:${i.line}`), 120)}\``;
+    const where = i.path === null ? '' : ` — \`${slackText(pathAt(i.path, i.line), 120)}\``;
     const rule = link(issueUrl(links, i.projectId, i.id), slackText(i.ruleName, 80));
     return `• ${severityLabel(i.severity)} · ${slackText(i.projectName, 50)} · ${rule}${where}`;
   });

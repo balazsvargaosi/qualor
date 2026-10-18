@@ -121,6 +121,16 @@ function gate(m: ChatGateMessage, links: ChatLinks): TeamsBody {
   return message(body, branchUrl(links, m.project.id, m.branch.id));
 }
 
+function pathAt(path: string, line: number | null): string {
+  return line === null ? path : `${path}:${line}`;
+}
+
+/** The text for the projects with nothing new; `more` when other projects are listed above it. */
+function quietText(count: number, more: boolean): string {
+  const noun = count === 1 ? 'project' : 'projects';
+  return `${count} ${more ? 'more ' : ''}${noun}: no new security issues, gate passed`;
+}
+
 function digest(m: ChatDigestMessage, links: ChatLinks): TeamsBody {
   const scopeName = m.scope.project?.name ?? m.scope.organization.name;
   const t = m.totals;
@@ -133,14 +143,11 @@ function digest(m: ChatDigestMessage, links: ChatLinks): TeamsBody {
   const tail = [
     ...(m.moreProjects > 0 ? [`- …and ${m.moreProjects} more projects`] : []),
     ...(m.quietProjects > 0
-      ? [
-          `- ${m.quietProjects} ${m.rows.length + m.moreProjects > 0 ? 'more ' : ''}project${m.quietProjects === 1 ? '' : 's'}: no new security issues, gate passed`,
-        ]
+      ? [`- ${quietText(m.quietProjects, m.rows.length + m.moreProjects > 0)}`]
       : []),
   ];
   const top = m.top.map((i) => {
-    const where =
-      i.path === null ? '' : ` — ${teamsText(i.path + (i.line === null ? '' : `:${i.line}`), 120)}`;
+    const where = i.path === null ? '' : ` — ${teamsText(pathAt(i.path, i.line), 120)}`;
     const rule = link(issueUrl(links, i.projectId, i.id), teamsText(i.ruleName, 80));
     return `- ${severityLabel(i.severity)} · ${teamsText(i.projectName, 50)} · ${rule}${where}`;
   });

@@ -75,7 +75,7 @@ function eventsOf(kind: WebhookKind): WebhookEvent[] {
 /** The browser's IANA zone, the default of a new chat webhook (6G spec §5). */
 export function browserTimeZone(): string {
   try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    return new Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
   } catch {
     return 'UTC';
   }

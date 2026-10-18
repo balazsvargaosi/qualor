@@ -31,6 +31,17 @@ const GATE: ChatGateMessage = {
   newIssues: { security: 1, reliability: 0, maintainability: 0 },
 };
 
+/** A port nothing listens on: bind one, read its number, close it again. */
+function freePort(): Promise<number> {
+  return new Promise<number>((resolve) => {
+    const s = createServer();
+    s.listen(0, '127.0.0.1', () => {
+      const { port } = s.address() as AddressInfo;
+      s.close(() => resolve(port));
+    });
+  });
+}
+
 describe('chat webhook delivery (6G spec §4)', () => {
   let t: TestContext;
   let org: string;
@@ -226,13 +237,7 @@ describe('chat webhook delivery (6G spec §4)', () => {
       ids.push(row.id);
     }
     // A refused connection: the error text of the network failure names the address it tried.
-    const dead = await new Promise<number>((resolve) => {
-      const s = createServer();
-      s.listen(0, '127.0.0.1', () => {
-        const { port: free } = s.address() as AddressInfo;
-        s.close(() => resolve(free));
-      });
-    });
+    const dead = await freePort();
     const saved = deps;
     deps = { ...deps, chatTestHosts: parseInternalHosts(`127.0.0.1:${dead}`) };
     try {
