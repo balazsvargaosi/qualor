@@ -25,12 +25,18 @@ import { clearField, inputValue, isChecked } from '../shared/forms';
 import { Icon } from '../shared/icon';
 import { KeysetList } from '../shared/keyset';
 import { RouterLink } from '@angular/router';
+import { SystemInfo } from '../shell/system-info';
 import { SecretOnce } from './secret-once';
 
 export type Webhook = ItemOf<'/api/v0/webhooks'>;
 type Delivery = ItemOf<'/api/v0/webhooks/{id}/deliveries'>;
 type WebhookEvent = Webhook['events'][number];
-const EVENTS: WebhookEvent[] = ['analysis.completed', 'gate.status_changed'];
+type DeliveryEvent = Delivery['event'];
+export type WebhookKind = Webhook['kind'];
+/** The events each kind may subscribe to (6G spec §4; the test message's `chat.test` never is). */
+const GENERIC_EVENTS: WebhookEvent[] = ['analysis.completed', 'gate.status_changed'];
+const CHAT_EVENTS: WebhookEvent[] = ['gate.failed', 'gate.recovered', 'digest.weekly'];
+const KINDS: WebhookKind[] = ['generic', 'slack', 'teams'];
 /** How many deliveries a webhook shows: its strip's 20 (spec §6.8). */
 const DELIVERIES_SHOWN = 20;
 /** The server keeps at most 1 KiB of a receiver's answer (api.md `GET /webhooks/{id}/deliveries`). */
@@ -62,10 +68,54 @@ export function inScope(w: Webhook, projectId: string | null): boolean {
   return projectId === null || w.projectId === projectId;
 }
 
-function eventLabel(event: WebhookEvent): string {
-  return event === 'analysis.completed'
-    ? $localize`:@@webhooks.event.analysis:Analysis completed`
-    : $localize`:@@webhooks.event.gate:Quality gate status changed`;
+function eventsOf(kind: WebhookKind): WebhookEvent[] {
+  return kind === 'generic' ? GENERIC_EVENTS : CHAT_EVENTS;
+}
+
+/** The browser's IANA zone, the default of a new chat webhook (6G spec §5). */
+export function browserTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch {
+    return 'UTC';
+  }
+}
+
+/** The zones the browser knows, for the searchable list; `UTC` first (the list leaves it out). */
+export const TIME_ZONES: readonly string[] = (() => {
+  try {
+    return ['UTC', ...Intl.supportedValuesOf('timeZone').filter((z) => z !== 'UTC')];
+  } catch {
+    return ['UTC'];
+  }
+})();
+
+function kindLabel(kind: WebhookKind): string {
+  switch (kind) {
+    case 'slack':
+      return $localize`:@@webhooks.kind.slack:Slack`;
+    case 'teams':
+      return $localize`:@@webhooks.kind.teams:Microsoft Teams`;
+    default:
+      return $localize`:@@webhooks.kind.generic:Generic (signed JSON)`;
+  }
+}
+
+function eventLabel(event: DeliveryEvent): string {
+  switch (event) {
+    case 'analysis.completed':
+      return $localize`:@@webhooks.event.analysis:Analysis completed`;
+    case 'gate.status_changed':
+      return $localize`:@@webhooks.event.gate:Quality gate status changed`;
+    case 'gate.failed':
+      return $localize`:@@webhooks.event.gateFailed:Quality gate failed (main branch)`;
+    case 'gate.recovered':
+      return $localize`:@@webhooks.event.gateRecovered:Quality gate passes again (main branch)`;
+    case 'digest.weekly':
+      return $localize`:@@webhooks.event.digest:Weekly security digest`;
+    case 'chat.test':
+      return $localize`:@@webhooks.event.test:Test message`;
+  }
 }
 
 /**
@@ -93,6 +143,11 @@ export function excerptText(excerpt: string | null): string {
  * success rate (loaded with the list), and the same deliveries in a table ("Recent deliveries",
  * read again when opened). "New webhook" opens a dialog holding the form, which then shows the
  * secret; a deletion asks in the page's dialog instead of the browser's `confirm()`.
+ *
+ * 6G: the form asks the kind first. A Slack or Microsoft Teams webhook subscribes to the chat
+ * events, has a time zone for its weekly digest (the browser's by default) and no secret (the
+ * dialog closes on success); its URL is shown masked, and its panel offers Send test instead of
+ * Rotate secret. Without `QUALOR_PUBLIC_URL` the form warns that messages carry no links (R11).
  */
 @Component({
   selector: 'q-webhook-list',
@@ -104,6 +159,11 @@ export class WebhookList {
   private readonly api = inject(Api);
   private readonly injector = inject(Injector);
   private readonly document = inject(DOCUMENT);
+  private readonly system = inject(SystemInfo);
+  /** R11: without QUALOR_PUBLIC_URL chat messages carry no links. */
+  protected readonly publicUrlMissing = computed(
+    () => this.system.info()?.mcp.reason === 'PUBLIC_URL_MISSING',
+  );
   /** The organisation whose webhooks are listed. */
   readonly organizationId = input<string | null>(null);
   /** The role may add, switch and delete webhooks. */
@@ -150,7 +210,18 @@ export class WebhookList {
     return strips;
   });
   protected readonly url = signal('');
-  protected readonly events = signal<ReadonlySet<WebhookEvent>>(new Set(EVENTS));
+  protected readonly events = signal<ReadonlySet<WebhookEvent>>(new Set(GENERIC_EVENTS));
+  /** The new webhook's kind; it never changes later (R4). */
+  protected readonly kind = signal<WebhookKind>('generic');
+  protected readonly kinds = KINDS;
+  protected readonly kindLabel = kindLabel;
+  protected readonly kindEvents = computed(() => eventsOf(this.kind()));
+  /** The weekly digest's zone of a new chat webhook. */
+  protected readonly timezone = signal(browserTimeZone());
+  protected readonly timeZones = TIME_ZONES;
+  protected readonly timezoneError = signal<string | null>(null);
+  /** Webhooks whose test message is being queued, by id. */
+  protected readonly testing = signal<ReadonlySet<string>>(new Set());
   /** The new webhook's secret, until "Done", the next addition or leaving the page. */
   private readonly secretValue = signal<string | null>(null);
   readonly secret = this.secretValue.asReadonly();
@@ -167,7 +238,6 @@ export class WebhookList {
   private secretShown = false;
   /** The deletion the confirmation dialog asks about; null while it is closed. */
   protected readonly pendingDelete = signal<{ webhook: Webhook; question: string } | null>(null);
-  protected readonly allEvents = EVENTS;
   protected readonly eventLabel = eventLabel;
   protected readonly deliveryStatusLabel = deliveryStatusLabel;
   protected readonly excerptText = excerptText;
@@ -208,6 +278,7 @@ export class WebhookList {
         this.deliveryRequests.clear();
         this.cancelRereads();
         this.redelivering.set(new Set());
+        this.testing.set(new Set());
         this.redeliverErrors.set({});
         this.rotatedSecret.set(null);
         this.rotating.set(null);
@@ -277,6 +348,20 @@ export class WebhookList {
     this.urlError.set(null);
   }
 
+  /** Another kind: its own events, all chosen, and no error of the previous kind's answer. */
+  protected setKind(kind: WebhookKind): void {
+    this.kind.set(kind);
+    this.events.set(new Set(eventsOf(kind)));
+    this.urlError.set(null);
+    this.eventsError.set(null);
+    this.timezoneError.set(null);
+  }
+
+  protected setTimezone(event: Event): void {
+    this.timezone.set(inputValue(event));
+    this.timezoneError.set(null);
+  }
+
   protected toggleEvent(event: WebhookEvent, change: Event): void {
     const next = new Set(this.events());
     if (isChecked(change)) next.add(event);
@@ -285,12 +370,15 @@ export class WebhookList {
     this.eventsError.set(null);
   }
 
-  /** Opens "New webhook" on an empty URL and both events. */
+  /** Opens "New webhook" as a generic one, on an empty URL, all its events and the browser's zone. */
   openCreate(): void {
     this.secretValue.set(null);
     this.url.set('');
     this.scope.set('');
-    this.events.set(new Set(EVENTS));
+    this.kind.set('generic');
+    this.events.set(new Set(GENERIC_EVENTS));
+    this.timezone.set(browserTimeZone());
+    this.timezoneError.set(null);
     this.urlError.set(null);
     this.eventsError.set(null);
     this.createError.set(null);
@@ -318,24 +406,42 @@ export class WebhookList {
     const organizationId = this.organizationId();
     if (!organizationId || this.busy()) return;
     const url = this.url().trim();
-    const events = EVENTS.filter((e) => this.events().has(e));
+    const kind = this.kind();
+    const events = eventsOf(kind).filter((e) => this.events().has(e));
+    const timezone = this.timezone().trim();
     if (!url) this.urlError.set(badUrl());
     if (events.length === 0) this.eventsError.set(noEvent());
     if (!url || events.length === 0) return;
     this.secretValue.set(null);
     this.createError.set(null);
+    this.timezoneError.set(null);
     const generation = this.orgGeneration;
     const projectId = this.projectId() ?? (this.scope() || null);
     await this.run(
       async () => {
         const created = await ok(
           this.api.client.POST('/api/v0/webhooks', {
-            body: { organizationId, url, events, ...(projectId ? { projectId } : {}) },
+            body: {
+              organizationId,
+              ...(kind === 'generic' ? {} : { kind }),
+              url,
+              events,
+              ...(kind === 'generic' ? {} : { timezone: timezone || 'UTC' }),
+              ...(projectId ? { projectId } : {}),
+            },
           }),
         );
         // Added to the organisation that was current when asked: never shown under another one,
         // nor kept by a page that was left meanwhile.
         if (generation !== this.orgGeneration || this.destroyed) return;
+        if (created.secret === undefined || created.secret === null) {
+          // 6G: Slack and Teams webhooks have no secret: nothing to copy, the dialog closes.
+          clearField(this.urlField(), this.url);
+          this.closeCreate();
+          this.announcement.set($localize`:@@webhooks.createdChat:Webhook added.`);
+          await this.refreshList();
+          return;
+        }
         this.secretValue.set(created.secret ?? null);
         this.secretShown = created.secret !== undefined && created.secret !== null;
         clearField(this.urlField(), this.url);
@@ -349,7 +455,12 @@ export class WebhookList {
     if (generation !== this.orgGeneration || this.destroyed) return;
     // Closed while the server answered (Escape, Cancel): the dialog opens again on the outcome, or
     // the secret of a webhook it made could never be copied.
-    const outcome = this.secret() ?? this.createError() ?? this.urlError() ?? this.eventsError();
+    const outcome =
+      this.secret() ??
+      this.createError() ??
+      this.urlError() ??
+      this.eventsError() ??
+      this.timezoneError();
     if (outcome !== null) {
       openAfterRender(this.injector, () => this.createDialog()?.nativeElement);
     }
@@ -510,6 +621,51 @@ export class WebhookList {
     }
   }
 
+  /** 6G R2: a test message through the delivery queue; the deliveries are read again soon. */
+  protected async sendTest(webhook: Webhook): Promise<void> {
+    if (this.testing().has(webhook.id)) return;
+    const generation = this.orgGeneration;
+    const mark = (on: boolean) =>
+      this.testing.update((set) => {
+        const next = new Set(set);
+        if (on) next.add(webhook.id);
+        else next.delete(webhook.id);
+        return next;
+      });
+    mark(true);
+    this.announcement.set(null);
+    this.error.set(null);
+    try {
+      const queued = await ok(
+        this.api.client.POST('/api/v0/webhooks/{id}/test', {
+          params: { path: { id: webhook.id } },
+        }),
+      );
+      if (generation !== this.orgGeneration || this.destroyed) return;
+      this.deliveries.update((all) => {
+        const known = all[webhook.id];
+        const rest = Array.isArray(known) ? known : [];
+        return { ...all, [webhook.id]: [queued, ...rest].slice(0, DELIVERIES_SHOWN) };
+      });
+      this.announcement.set($localize`:@@webhooks.testSent:Test message sent. Check the channel.`);
+      this.rereads.get(webhook.id)?.();
+      this.rereads.set(
+        webhook.id,
+        this.rereadAfter(() => {
+          this.rereads.delete(webhook.id);
+          if (generation === this.orgGeneration && !this.destroyed) {
+            void this.loadDeliveries(webhook, true);
+          }
+        }),
+      );
+    } catch (err) {
+      if (generation !== this.orgGeneration || this.destroyed) return;
+      this.error.set(testMessage(err));
+    } finally {
+      if (generation === this.orgGeneration) mark(false);
+    }
+  }
+
   /** Asks in the rotation dialog; nothing is sent until its "Rotate secret". */
   protected askRotate(webhook: Webhook): void {
     if (this.busy()) return;
@@ -601,7 +757,12 @@ export class WebhookList {
     } catch (err) {
       const fields = fieldErrors(err);
       if (fields['body.url'] !== undefined) {
-        this.urlError.set(badUrl());
+        // A chat URL's refusal names its host rule (or the retired connectors): the server's words.
+        this.urlError.set(this.kind() === 'generic' ? badUrl() : fields['body.url']);
+      } else if (fields['body.timezone'] !== undefined) {
+        this.timezoneError.set(
+          $localize`:@@webhooks.badZone:Choose a time zone from the list, such as Europe/Berlin or UTC.`,
+        );
       } else if (fields['body.events'] !== undefined) {
         this.eventsError.set(noEvent());
       } else if (onError) {
@@ -632,6 +793,19 @@ function redeliverMessage(err: unknown): string {
         return $localize`:@@webhooks.redeliverOff:The webhook is switched off: switch it on to send again.`;
       case 429:
         return $localize`:@@webhooks.redeliverRate:Too many redeliveries; try again in a minute.`;
+    }
+  }
+  return problemMessage(err);
+}
+
+/** What a refused test message says (R2). */
+function testMessage(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.code === 'WEBHOOK_INACTIVE') {
+      return $localize`:@@webhooks.testOff:The webhook is switched off: switch it on to send a test message.`;
+    }
+    if (err.status === 429) {
+      return $localize`:@@webhooks.testRate:Too many messages for this webhook; try again in a minute.`;
     }
   }
   return problemMessage(err);

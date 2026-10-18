@@ -7,9 +7,10 @@
       </p>
     } @else {
       <p class="muted" i18n="@@webhooks.intro">
-        Qualor posts a signed JSON message to each active webhook when an analysis completes or a
-        quality gate status changes, for every project of the organization or for the one it is
-        added to.
+        Qualor posts a signed JSON message to each generic webhook when an analysis completes or a
+        quality gate status changes. Slack and Microsoft Teams webhooks get a formatted message when
+        the main branch's quality gate fails or passes again, and a weekly security digest. A
+        webhook covers every project of the organization or the one it is added to.
       </p>
     }
   </div>

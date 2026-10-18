@@ -11,7 +11,14 @@ import {
   settle,
 } from '../../testing/fake-server';
 import { SessionStore } from '../auth/session';
-import { inScope, REREAD_AFTER_REDELIVERY, type Webhook, WebhookList } from './webhook-list';
+import {
+  browserTimeZone,
+  inScope,
+  REREAD_AFTER_REDELIVERY,
+  TIME_ZONES,
+  type Webhook,
+  WebhookList,
+} from './webhook-list';
 import { WebhooksPage } from './webhooks.page';
 
 const PAYMENTS = '0190a6c2-0000-7000-8000-0000000000a1';
@@ -26,8 +33,11 @@ function webhook(id: string, url: string, overrides: Partial<Webhook> = {}): Web
     id,
     organizationId: ORG_ID,
     projectId: null,
+    kind: 'generic',
     url,
+    urlMasked: false,
     events: ['analysis.completed'],
+    timezone: 'UTC',
     active: true,
     createdAt: '',
     updatedAt: '',
@@ -581,5 +591,243 @@ describe('WebhookList: send a delivery again, rotate the secret', () => {
     await settle(fixture);
     expect(dialog.querySelector('q-secret-once')).toBeNull();
     expect(root.textContent).not.toContain('whsec_new');
+  });
+});
+
+function chooseKind(root: HTMLElement, kind: 'generic' | 'slack' | 'teams'): void {
+  const radio = root.querySelector<HTMLInputElement>(`#webhook-kind-${kind}`)!;
+  radio.checked = true;
+  radio.dispatchEvent(new Event('change'));
+}
+
+function chatWebhook(): Webhook {
+  return webhook('w1', 'https://hooks.slack.com/services/T…/…/UVWX', {
+    kind: 'slack',
+    urlMasked: true,
+    events: ['gate.failed'],
+  });
+}
+
+describe('time zones (6G)', () => {
+  it('lists UTC first and once, then the zones the browser knows', () => {
+    expect(TIME_ZONES[0]).toBe('UTC');
+    expect(TIME_ZONES.filter((z) => z === 'UTC')).toHaveLength(1);
+    expect(TIME_ZONES).toContain('Europe/Berlin');
+    expect(browserTimeZone()).not.toBe('');
+  });
+});
+
+describe('WebhookList: Slack and Teams (6G)', () => {
+  it('asks the kind, then shows the chat events, the time zone and the guide link', async () => {
+    const server = setup();
+    server.on('GET', '/api/v0/webhooks', { body: page([]) });
+    const fixture = render();
+    await settle(fixture);
+    const root = fixture.nativeElement as HTMLElement;
+    fixture.componentInstance.openCreate();
+    await settle(fixture);
+    const kinds = [...root.querySelectorAll('dialog#create-dialog fieldset.webhook-kinds label')];
+    expect(kinds.map((l) => l.textContent!.trim())).toEqual([
+      'Generic (signed JSON)',
+      'Slack',
+      'Microsoft Teams',
+    ]);
+    expect(root.querySelector<HTMLInputElement>('#webhook-kind-generic')!.checked).toBe(true);
+    expect(root.querySelector('#webhook-timezone')).toBeNull();
+    chooseKind(root, 'slack');
+    await settle(fixture);
+    const labels = [
+      ...root.querySelectorAll('dialog#create-dialog fieldset.webhook-event-choice label'),
+    ].map((l) => l.textContent!.trim());
+    expect(labels).toEqual([
+      'Quality gate failed (main branch)',
+      'Quality gate passes again (main branch)',
+      'Weekly security digest',
+    ]);
+    expect(root.querySelector<HTMLInputElement>('#webhook-timezone')!.value).toBe(
+      browserTimeZone(),
+    );
+    const guide = root.querySelector<HTMLAnchorElement>('a.webhook-guide')!;
+    expect(guide.textContent!.trim()).toBe('How to get a Slack webhook URL');
+    expect(guide.getAttribute('href')).toBe('/docs/chat-notifications#slack');
+    expect(root.textContent).not.toContain('Qualor generates the signing secret');
+    chooseKind(root, 'teams');
+    await settle(fixture);
+    expect(root.querySelector('a.webhook-guide')!.textContent!.trim()).toBe(
+      'How to get a Teams webhook URL',
+    );
+    expect(root.querySelector('a.webhook-guide')!.getAttribute('href')).toBe(
+      '/docs/chat-notifications#microsoft-teams',
+    );
+    chooseKind(root, 'generic');
+    await settle(fixture);
+    expect(root.querySelector('a.webhook-guide')).toBeNull();
+    expect(root.textContent).toContain('Qualor generates the signing secret');
+  });
+
+  it('creates a Slack webhook with its kind, events and zone; no secret to copy', async () => {
+    const server = setup();
+    server.on('GET', '/api/v0/webhooks', { body: page([]) });
+    server.on('POST', '/api/v0/webhooks', {
+      status: 201,
+      body: webhook('w7', 'https://hooks.slack.com/services/T…/…/UVWX', {
+        kind: 'slack',
+        urlMasked: true,
+        events: ['gate.failed', 'gate.recovered', 'digest.weekly'],
+        timezone: 'Europe/Berlin',
+      }),
+    });
+    const fixture = render();
+    await settle(fixture);
+    const root = fixture.nativeElement as HTMLElement;
+    fixture.componentInstance.openCreate();
+    await settle(fixture);
+    chooseKind(root, 'slack');
+    await settle(fixture);
+    const zone = root.querySelector<HTMLInputElement>('#webhook-timezone')!;
+    zone.value = 'Europe/Berlin';
+    zone.dispatchEvent(new Event('input'));
+    fillAndSubmit(root, 'https://hooks.slack.com/services/T1/B1/abcdUVWX');
+    await settle(fixture);
+    expect(server.requestsTo('POST', '/api/v0/webhooks')[0]?.body).toEqual({
+      organizationId: ORG_ID,
+      kind: 'slack',
+      url: 'https://hooks.slack.com/services/T1/B1/abcdUVWX',
+      events: ['gate.failed', 'gate.recovered', 'digest.weekly'],
+      timezone: 'Europe/Berlin',
+    });
+    expect(root.querySelector<HTMLDialogElement>('dialog#create-dialog')!.open).toBe(false);
+    expect(root.textContent).toContain('Webhook added.');
+    expect(root.textContent).not.toContain('Copy its secret');
+    expect(root.querySelector('q-secret-once')).toBeNull();
+  });
+
+  it('shows the server message on a refused chat URL, and the zone error on a refused zone', async () => {
+    const server = setup();
+    server.on('GET', '/api/v0/webhooks', { body: page([]) });
+    let reply = problem(422, 'VALIDATION_FAILED', [
+      {
+        path: 'body.url',
+        message: 'Office 365 connectors are retired; create a Workflows webhook in Teams instead',
+      },
+    ]);
+    server.on('POST', '/api/v0/webhooks', () => ({ status: 422, body: reply }));
+    const fixture = render();
+    await settle(fixture);
+    const root = fixture.nativeElement as HTMLElement;
+    fixture.componentInstance.openCreate();
+    await settle(fixture);
+    chooseKind(root, 'teams');
+    await settle(fixture);
+    fillAndSubmit(root, 'https://acme.webhook.office.com/webhookb2/x');
+    await settle(fixture);
+    expect(root.querySelector('#webhook-url-error')!.textContent).toContain(
+      'Office 365 connectors are retired',
+    );
+    reply = problem(422, 'VALIDATION_FAILED', [{ path: 'body.timezone', message: 'Unknown' }]);
+    fillAndSubmit(root, 'https://x.environment.api.powerplatform.com/a');
+    await settle(fixture);
+    expect(root.querySelector('#webhook-url-error')).toBeNull();
+    expect(root.querySelector('#webhook-timezone-error')!.textContent).toContain(
+      'Choose a time zone from the list',
+    );
+  });
+
+  it('lists a chat webhook with its kind and masked URL, Send test and no Rotate secret', async () => {
+    const server = setup();
+    server.on('GET', '/api/v0/webhooks', { body: page([chatWebhook()]) });
+    server.on('GET', '/api/v0/webhooks/w1/deliveries', { body: page([]) });
+    server.on('POST', '/api/v0/webhooks/w1/test', {
+      status: 202,
+      body: {
+        id: 'd9',
+        event: 'chat.test',
+        status: 'pending',
+        attempts: 0,
+        responseCode: null,
+        responseExcerpt: null,
+        nextAttemptAt: null,
+        createdAt: '',
+      },
+    });
+    const fixture = render();
+    await settle(fixture);
+    const root = fixture.nativeElement as HTMLElement;
+    const panel = root.querySelector('section')!;
+    expect(panel.querySelector('.webhook-kind')!.textContent!.trim()).toBe('Slack');
+    expect(panel.querySelector('.webhook-url')!.textContent).toBe(
+      'https://hooks.slack.com/services/T…/…/UVWX',
+    );
+    const buttons = [...panel.querySelectorAll('button')].map((b) => b.textContent!.trim());
+    expect(buttons).toContain('Send test');
+    expect(buttons).not.toContain('Rotate secret');
+    [...panel.querySelectorAll('button')]
+      .find((b) => b.textContent!.trim() === 'Send test')!
+      .click();
+    await settle(fixture);
+    expect(server.requestsTo('POST', '/api/v0/webhooks/w1/test')).toHaveLength(1);
+    expect(root.textContent).toContain('Test message sent. Check the channel.');
+    // The queued test message is on top of the deliveries, under its own name.
+    expect(panel.querySelector('tbody td:nth-child(2)')!.textContent).toBe('Test message');
+  });
+
+  it('shows no kind badge and no Send test for a generic webhook', async () => {
+    const server = setup();
+    server.on('GET', '/api/v0/webhooks', { body: page([webhook('w1', 'https://a.example.com/')]) });
+    server.on('GET', '/api/v0/webhooks/w1/deliveries', { body: page([]) });
+    const fixture = render();
+    await settle(fixture);
+    const panel = (fixture.nativeElement as HTMLElement).querySelector('section')!;
+    expect(panel.querySelector('.webhook-kind')).toBeNull();
+    const buttons = [...panel.querySelectorAll('button')].map((b) => b.textContent!.trim());
+    expect(buttons).not.toContain('Send test');
+    expect(buttons).toContain('Rotate secret');
+  });
+
+  it('says why a test was refused', async () => {
+    const server = setup();
+    server.on('GET', '/api/v0/webhooks', { body: page([chatWebhook()]) });
+    server.on('GET', '/api/v0/webhooks/w1/deliveries', { body: page([]) });
+    server.on('POST', '/api/v0/webhooks/w1/test', {
+      status: 409,
+      body: problem(409, 'WEBHOOK_INACTIVE'),
+    });
+    const fixture = render();
+    await settle(fixture);
+    const root = fixture.nativeElement as HTMLElement;
+    [...root.querySelectorAll<HTMLButtonElement>('section button')]
+      .find((b) => b.textContent!.trim() === 'Send test')!
+      .click();
+    await settle(fixture);
+    expect(root.querySelector('.alert-error')!.textContent).toContain(
+      'The webhook is switched off: switch it on to send a test message.',
+    );
+  });
+
+  it('warns in the dialog when QUALOR_PUBLIC_URL is not set (R11)', async () => {
+    const server = setup();
+    server.on('GET', '/api/v0/webhooks', { body: page([]) });
+    server.on('GET', '/api/v0/system/info', {
+      body: {
+        version: '0.11.0',
+        edition: 'community',
+        features: [],
+        extensions: [],
+        mcp: { enabled: false, reason: 'PUBLIC_URL_MISSING' },
+      },
+    });
+    const fixture = render();
+    await settle(fixture);
+    const root = fixture.nativeElement as HTMLElement;
+    fixture.componentInstance.openCreate();
+    await settle(fixture);
+    chooseKind(root, 'teams');
+    await settle(fixture);
+    expect(root.querySelector('.webhook-public-url')!.textContent).toContain(
+      'QUALOR_PUBLIC_URL is not set',
+    );
+    chooseKind(root, 'generic');
+    await settle(fixture);
+    expect(root.querySelector('.webhook-public-url')).toBeNull();
   });
 });

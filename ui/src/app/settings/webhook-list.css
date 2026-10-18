@@ -29,6 +29,10 @@
   flex-wrap: wrap;
   gap: 6px;
 }
+/* A Slack or Teams webhook's kind (6G): first among its tags, with the chat icon (`.badge` sizes it). */
+.webhook-kind {
+  gap: 4px;
+}
 .webhook-side {
   display: flex;
   flex-wrap: wrap;

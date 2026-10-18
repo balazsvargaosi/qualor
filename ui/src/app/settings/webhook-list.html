@@ -13,6 +13,11 @@
         <div class="webhook-title">
           <code class="webhook-url">{{ w.url }}</code>
           <div class="webhook-events">
+            @if (w.kind !== 'generic') {
+              <span class="badge badge-tag webhook-kind"
+                ><q-icon name="chat" />{{ kindLabel(w.kind) }}</span
+              >
+            }
             @for (e of w.events; track e) {
               <span class="badge badge-tag">{{ eventLabel(e) }}</span>
             }
@@ -72,15 +77,27 @@
                   <ng-container i18n="@@webhooks.switchOn">Switch on</ng-container>
                 }
               </button>
-              <button
-                type="button"
-                class="btn-quiet"
-                [attr.aria-disabled]="busy() ? true : null"
-                (click)="askRotate(w)"
-                i18n="@@webhooks.rotate"
-              >
-                Rotate secret
-              </button>
+              @if (w.kind === 'generic') {
+                <button
+                  type="button"
+                  class="btn-quiet"
+                  [attr.aria-disabled]="busy() ? true : null"
+                  (click)="askRotate(w)"
+                  i18n="@@webhooks.rotate"
+                >
+                  Rotate secret
+                </button>
+              } @else {
+                <button
+                  type="button"
+                  class="btn-quiet"
+                  [attr.aria-disabled]="busy() || testing().has(w.id) ? true : null"
+                  (click)="sendTest(w)"
+                  i18n="@@webhooks.sendTest"
+                >
+                  Send test
+                </button>
+              }
               <button
                 type="button"
                 class="btn-quiet danger"
@@ -260,6 +277,21 @@
           @if (createError(); as message) {
             <p class="alert alert-error" role="alert">{{ message }}</p>
           }
+          <fieldset class="facet webhook-kinds">
+            <legend i18n="@@webhooks.kind">Type</legend>
+            @for (k of kinds; track k) {
+              <label>
+                <input
+                  type="radio"
+                  name="webhook-kind"
+                  [id]="'webhook-kind-' + k"
+                  [checked]="kind() === k"
+                  (change)="setKind(k)"
+                />
+                <span>{{ kindLabel(k) }}</span>
+              </label>
+            }
+          </fieldset>
           <div class="field">
             <label for="webhook-url" i18n="@@webhooks.url">URL</label>
             <input
@@ -281,6 +313,28 @@
             @if (urlError(); as message) {
               <span id="webhook-url-error" class="field-error" role="alert">{{ message }}</span>
             }
+            @if (kind() !== 'generic') {
+              <span class="hint">
+                <a
+                  class="webhook-guide"
+                  [routerLink]="['/docs', 'chat-notifications']"
+                  [fragment]="kind() === 'slack' ? 'slack' : 'microsoft-teams'"
+                >
+                  @if (kind() === 'slack') {
+                    <ng-container i18n="@@webhooks.guideSlack"
+                      >How to get a Slack webhook URL</ng-container
+                    >
+                  } @else {
+                    <ng-container i18n="@@webhooks.guideTeams"
+                      >How to get a Teams webhook URL</ng-container
+                    >
+                  }</a
+                >.&ngsp;<ng-container i18n="@@webhooks.urlSecret"
+                  >The URL is a secret: Qualor stores it encrypted and shows only its
+                  end.</ng-container
+                >
+              </span>
+            }
           </div>
           @if (projectId() === null) {
             <div class="field">
@@ -296,11 +350,11 @@
             </div>
           }
           <fieldset
-            class="facet"
+            class="facet webhook-event-choice"
             [attr.aria-describedby]="eventsError() ? 'webhook-events-error' : null"
           >
             <legend i18n="@@webhooks.events">Events</legend>
-            @for (e of allEvents; track e) {
+            @for (e of kindEvents(); track e) {
               <label>
                 <input
                   type="checkbox"
@@ -314,9 +368,43 @@
               <span id="webhook-events-error" class="field-error" role="alert">{{ message }}</span>
             }
           </fieldset>
-          <p class="hint" i18n="@@webhooks.secretHint">
-            Qualor generates the signing secret and shows it once.
-          </p>
+          @if (kind() === 'generic') {
+            <p class="hint" i18n="@@webhooks.secretHint">
+              Qualor generates the signing secret and shows it once.
+            </p>
+          } @else {
+            <div class="field">
+              <label for="webhook-timezone" i18n="@@webhooks.timezone"
+                >Time zone of the weekly digest (Monday 09:00)</label
+              >
+              <input
+                id="webhook-timezone"
+                list="webhook-timezones"
+                autocomplete="off"
+                spellcheck="false"
+                [attr.aria-invalid]="timezoneError() ? true : null"
+                [attr.aria-describedby]="timezoneError() ? 'webhook-timezone-error' : null"
+                [value]="timezone()"
+                (input)="setTimezone($event)"
+              />
+              <datalist id="webhook-timezones">
+                @for (z of timeZones; track z) {
+                  <option [value]="z"></option>
+                }
+              </datalist>
+              @if (timezoneError(); as message) {
+                <span id="webhook-timezone-error" class="field-error" role="alert">{{
+                  message
+                }}</span>
+              }
+            </div>
+            @if (publicUrlMissing()) {
+              <p class="alert alert-warn webhook-public-url" i18n="@@webhooks.noPublicUrl">
+                QUALOR_PUBLIC_URL is not set, so messages have no links to Qualor. Ask your
+                administrator to set it.
+              </p>
+            }
+          }
         </div>
         <div class="dialog-actions">
           <button type="button" class="btn" (click)="closeCreate()" i18n="@@dialog.cancel">

@@ -8365,9 +8365,15 @@ export interface paths {
                                 /** Format: uuid */
                                 organizationId: string;
                                 projectId: string | null;
+                                /** @enum {string} */
+                                kind: "generic" | "slack" | "teams";
+                                /** @description For Slack and Teams webhooks, the URL masked (it is a secret) */
                                 url: string;
-                                events: ("analysis.completed" | "gate.status_changed")[];
+                                urlMasked: boolean;
+                                events: ("analysis.completed" | "gate.status_changed" | "gate.failed" | "gate.recovered" | "digest.weekly")[];
                                 active: boolean;
+                                /** @description The IANA time zone of the weekly digest (Slack and Teams) */
+                                timezone: string;
                                 /** Format: date-time */
                                 createdAt: string;
                                 /** Format: date-time */
@@ -8416,7 +8422,7 @@ export interface paths {
             };
         };
         put?: never;
-        /** Create a webhook for an organisation or one of its projects; a generated secret is returned once */
+        /** Create a webhook (generic, Slack or Teams) for an organisation or one of its projects; a generated secret (generic only) is returned once */
         post: {
             parameters: {
                 query?: never;
@@ -8430,9 +8436,12 @@ export interface paths {
                         /** Format: uuid */
                         organizationId: string;
                         projectId?: string | null;
+                        /** @enum {string} */
+                        kind?: "generic" | "slack" | "teams";
                         url: string;
                         secret?: string;
-                        events: ("analysis.completed" | "gate.status_changed")[];
+                        timezone?: string;
+                        events: ("analysis.completed" | "gate.status_changed" | "gate.failed" | "gate.recovered" | "digest.weekly")[];
                         active?: boolean;
                     };
                 };
@@ -8450,9 +8459,15 @@ export interface paths {
                             /** Format: uuid */
                             organizationId: string;
                             projectId: string | null;
+                            /** @enum {string} */
+                            kind: "generic" | "slack" | "teams";
+                            /** @description For Slack and Teams webhooks, the URL masked (it is a secret) */
                             url: string;
-                            events: ("analysis.completed" | "gate.status_changed")[];
+                            urlMasked: boolean;
+                            events: ("analysis.completed" | "gate.status_changed" | "gate.failed" | "gate.recovered" | "digest.weekly")[];
                             active: boolean;
+                            /** @description The IANA time zone of the weekly digest (Slack and Teams) */
+                            timezone: string;
                             /** Format: date-time */
                             createdAt: string;
                             /** Format: date-time */
@@ -8545,9 +8560,15 @@ export interface paths {
                             /** Format: uuid */
                             organizationId: string;
                             projectId: string | null;
+                            /** @enum {string} */
+                            kind: "generic" | "slack" | "teams";
+                            /** @description For Slack and Teams webhooks, the URL masked (it is a secret) */
                             url: string;
-                            events: ("analysis.completed" | "gate.status_changed")[];
+                            urlMasked: boolean;
+                            events: ("analysis.completed" | "gate.status_changed" | "gate.failed" | "gate.recovered" | "digest.weekly")[];
                             active: boolean;
+                            /** @description The IANA time zone of the weekly digest (Slack and Teams) */
+                            timezone: string;
                             /** Format: date-time */
                             createdAt: string;
                             /** Format: date-time */
@@ -8663,7 +8684,7 @@ export interface paths {
         };
         options?: never;
         head?: never;
-        /** Change the URL, secret (to a provided value), events or active flag */
+        /** Change the URL, secret (to a provided value), events, active flag or time zone */
         patch: {
             parameters: {
                 query?: never;
@@ -8678,8 +8699,9 @@ export interface paths {
                     "application/json": {
                         url?: string;
                         secret?: string;
-                        events?: ("analysis.completed" | "gate.status_changed")[];
+                        events?: ("analysis.completed" | "gate.status_changed" | "gate.failed" | "gate.recovered" | "digest.weekly")[];
                         active?: boolean;
+                        timezone?: string;
                     };
                 };
             };
@@ -8696,9 +8718,15 @@ export interface paths {
                             /** Format: uuid */
                             organizationId: string;
                             projectId: string | null;
+                            /** @enum {string} */
+                            kind: "generic" | "slack" | "teams";
+                            /** @description For Slack and Teams webhooks, the URL masked (it is a secret) */
                             url: string;
-                            events: ("analysis.completed" | "gate.status_changed")[];
+                            urlMasked: boolean;
+                            events: ("analysis.completed" | "gate.status_changed" | "gate.failed" | "gate.recovered" | "digest.weekly")[];
                             active: boolean;
+                            /** @description The IANA time zone of the weekly digest (Slack and Teams) */
+                            timezone: string;
                             /** Format: date-time */
                             createdAt: string;
                             /** Format: date-time */
@@ -8788,9 +8816,15 @@ export interface paths {
                             /** Format: uuid */
                             organizationId: string;
                             projectId: string | null;
+                            /** @enum {string} */
+                            kind: "generic" | "slack" | "teams";
+                            /** @description For Slack and Teams webhooks, the URL masked (it is a secret) */
                             url: string;
-                            events: ("analysis.completed" | "gate.status_changed")[];
+                            urlMasked: boolean;
+                            events: ("analysis.completed" | "gate.status_changed" | "gate.failed" | "gate.recovered" | "digest.weekly")[];
                             active: boolean;
+                            /** @description The IANA time zone of the weekly digest (Slack and Teams) */
+                            timezone: string;
                             /** Format: date-time */
                             createdAt: string;
                             /** Format: date-time */
@@ -8826,7 +8860,7 @@ export interface paths {
                         "application/problem+json": components["schemas"]["Problem"];
                     };
                 };
-                /** @description AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed while no audit event is stored; an administrator must restore it (a retry does not help) */
+                /** @description Conflicts with the current state; AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed while no audit event is stored; an administrator must restore it (a retry does not help) */
                 409: {
                     headers: {
                         [name: string]: unknown;
@@ -8885,7 +8919,7 @@ export interface paths {
                                 /** Format: uuid */
                                 id: string;
                                 /** @enum {string} */
-                                event: "analysis.completed" | "gate.status_changed";
+                                event: "analysis.completed" | "gate.status_changed" | "gate.failed" | "gate.recovered" | "digest.weekly" | "chat.test";
                                 /** @enum {string} */
                                 status: "pending" | "succeeded" | "failed";
                                 attempts: number;
@@ -8977,7 +9011,7 @@ export interface paths {
                             /** Format: uuid */
                             id: string;
                             /** @enum {string} */
-                            event: "analysis.completed" | "gate.status_changed";
+                            event: "analysis.completed" | "gate.status_changed" | "gate.failed" | "gate.recovered" | "digest.weekly" | "chat.test";
                             /** @enum {string} */
                             status: "pending" | "succeeded" | "failed";
                             attempts: number;
@@ -9017,6 +9051,111 @@ export interface paths {
                     };
                 };
                 /** @description AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed while no audit event is stored; an administrator must restore it (a retry does not help) */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Validation failed (VALIDATION_FAILED; errors[] names each field) */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Rate limited (RATE_LIMITED); see Retry-After */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v0/webhooks/{id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Send a test message to a Slack or Teams webhook (a delivery like any other; bounded like redeliveries) */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** Format: uuid */
+                            id: string;
+                            /** @enum {string} */
+                            event: "analysis.completed" | "gate.status_changed" | "gate.failed" | "gate.recovered" | "digest.weekly" | "chat.test";
+                            /** @enum {string} */
+                            status: "pending" | "succeeded" | "failed";
+                            attempts: number;
+                            responseCode: number | null;
+                            responseExcerpt: string | null;
+                            nextAttemptAt: string | null;
+                            /** Format: date-time */
+                            createdAt: string;
+                        };
+                    };
+                };
+                /** @description Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS) */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Authenticated but not allowed (FORBIDDEN, INSUFFICIENT_SCOPE, TOKEN_NOT_ALLOWED, SESSION_REQUIRED, CSRF_FAILED, PASSWORD_CHANGE_REQUIRED) */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Not found, or not visible to the caller */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Conflicts with the current state */
                 409: {
                     headers: {
                         [name: string]: unknown;
