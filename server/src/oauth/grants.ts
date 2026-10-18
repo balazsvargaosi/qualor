@@ -154,22 +154,92 @@ export type DecisionResult =
   | { ok: true; redirectTo: string; grant: (GrantChange & { created: boolean }) | null }
   | { ok: false; reason: 'not_found' | 'scope_not_requested' | 'client_not_allowed' };
 
+/** What `decide` runs inside its transaction, so the audit events commit or roll back with the grant. */
+export interface DecisionHooks {
+  /** A grant was created or its scopes changed. */
+  onGrantChange: (tx: Executor, grant: GrantChange) => Promise<void>;
+  /** An idle grant was revoked to be replaced. */
+  onIdleRevoked?: (tx: Executor, grant: Omit<GrantChange, 'scopes'>) => Promise<void>;
+}
+
+type RequestRow = typeof oauthRequests.$inferSelect;
+type ClientRow = typeof oauthClients.$inferSelect;
+
+/** Read-only, or read and write: a write grant always carries read. */
+const scopeSet = (write: boolean): McpScope[] => (write ? ['mcp:read', 'mcp:write'] : ['mcp:read']);
+
+/**
+ * The live grant of this user and client after an approval of `scopes`: an idle one is replaced,
+ * a live one is never narrowed (an auto-approved read-only request keeps mcp:write). `changed`
+ * says whether a grant was created or its scopes widened.
+ */
+async function upsertGrant(
+  tx: Executor,
+  ctx: { request: RequestRow; client: ClientRow; userId: string; scopes: McpScope[]; now: Date },
+  onIdleRevoked: DecisionHooks['onIdleRevoked'],
+): Promise<{ id: string; scopes: McpScope[]; changed: boolean } | null> {
+  const { request, client, userId, scopes, now } = ctx;
+  const lockLive = async () =>
+    (
+      await tx
+        .select()
+        .from(oauthGrants)
+        .where(
+          and(
+            eq(oauthGrants.userId, userId),
+            eq(oauthGrants.clientRowId, request.clientRowId),
+            isNull(oauthGrants.revokedAt),
+          ),
+        )
+        .for('update')
+    )[0];
+  let live = await lockLive();
+  if (live && isGrantIdle(live, now)) {
+    // Expired: replace it, or the client would loop into invalid_grant on it for ever.
+    if (await revokeGrant(tx, live.id, null, now)) {
+      await onIdleRevoked?.(tx, {
+        id: live.id,
+        clientId: client.clientId,
+        clientName: client.name,
+      });
+    }
+    live = undefined;
+  }
+  if (!live) {
+    // A concurrent approval of the same user and client may win the unique live-grant index.
+    const [inserted] = await tx
+      .insert(oauthGrants)
+      .values({ userId, clientRowId: request.clientRowId, scopes })
+      .onConflictDoNothing()
+      .returning({ id: oauthGrants.id });
+    if (inserted) return { id: inserted.id, scopes, changed: true };
+    live = await lockLive();
+    if (!live) return null;
+  }
+  const union = scopeSet(scopes.includes('mcp:write') || live.scopes.includes('mcp:write'));
+  if (union.length === live.scopes.length) return { id: live.id, scopes: union, changed: false };
+  await tx.update(oauthGrants).set({ scopes: union }).where(eq(oauthGrants.id, live.id));
+  return { id: live.id, scopes: union, changed: true };
+}
+
 /**
  * Approve (a grant and a 60 s code) or deny a pending request of this user (spec §6 step 6).
- * `onGrantChange` runs inside the transaction when a grant was created or its scopes changed, and
- * `onIdleRevoked` when an idle grant was revoked to be replaced, so the audit events commit or roll
- * back with the grant.
+ * `hooks.onGrantChange` runs inside the transaction when a grant was created or its scopes changed,
+ * and `hooks.onIdleRevoked` when an idle grant was revoked to be replaced, so the audit events
+ * commit or roll back with the grant.
  */
 export async function decide(
   db: Db,
-  requestId: string,
-  userId: string,
-  decision: { approve: true; scopes: McpScope[] } | { approve: false },
-  issuer: string,
-  onGrantChange: (tx: Executor, grant: GrantChange) => Promise<void>,
-  now = new Date(),
-  onIdleRevoked?: (tx: Executor, grant: Omit<GrantChange, 'scopes'>) => Promise<void>,
+  input: {
+    requestId: string;
+    userId: string;
+    decision: { approve: true; scopes: McpScope[] } | { approve: false };
+    issuer: string;
+    now?: Date;
+  },
+  hooks: DecisionHooks,
 ): Promise<DecisionResult> {
+  const { requestId, userId, decision, issuer, now = new Date() } = input;
   return db.transaction(async (tx): Promise<DecisionResult> => {
     const [request] = await tx
       .select()
@@ -200,9 +270,7 @@ export async function decide(
         grant: null,
       };
     }
-    const scopes: McpScope[] = decision.scopes.includes('mcp:write')
-      ? ['mcp:read', 'mcp:write']
-      : ['mcp:read'];
+    const scopes = scopeSet(decision.scopes.includes('mcp:write'));
     if (!scopes.every((s) => request.scopes.includes(s))) {
       return { ok: false, reason: 'scope_not_requested' };
     }
@@ -213,78 +281,24 @@ export async function decide(
     if (!client) return { ok: false, reason: 'not_found' };
     // The administrator may have changed the client policy since the request was made.
     const policy = await readMcpPolicy(tx);
-    if (
-      !clientAllowed(policy, client.clientId) ||
-      (client.source === 'dcr' ? !policy.dcr : !policy.cimd)
-    ) {
+    const sourceOn = client.source === 'dcr' ? policy.dcr : policy.cimd;
+    if (!clientAllowed(policy, client.clientId) || !sourceOn) {
       return { ok: false, reason: 'client_not_allowed' };
     }
-    const lockLive = async () =>
-      (
-        await tx
-          .select()
-          .from(oauthGrants)
-          .where(
-            and(
-              eq(oauthGrants.userId, userId),
-              eq(oauthGrants.clientRowId, request.clientRowId),
-              isNull(oauthGrants.revokedAt),
-            ),
-          )
-          .for('update')
-      )[0];
-    let live = await lockLive();
-    if (live && isGrantIdle(live, now)) {
-      // Expired: replace it, or the client would loop into invalid_grant on it for ever.
-      if (await revokeGrant(tx, live.id, null, now)) {
-        await onIdleRevoked?.(tx, {
-          id: live.id,
-          clientId: client.clientId,
-          clientName: client.name,
-        });
-      }
-      live = undefined;
-    }
-    let grantId: string;
-    let granted: McpScope[] = scopes;
-    let created = false;
-    if (!live) {
-      // A concurrent approval of the same user and client may win the unique live-grant index.
-      const [inserted] = await tx
-        .insert(oauthGrants)
-        .values({ userId, clientRowId: request.clientRowId, scopes })
-        .onConflictDoNothing()
-        .returning({ id: oauthGrants.id });
-      if (inserted) {
-        grantId = inserted.id;
-        created = true;
-      } else {
-        live = await lockLive();
-        if (!live) return { ok: false, reason: 'not_found' };
-        grantId = live.id;
-      }
-    } else {
-      grantId = live.id;
-    }
-    if (live) {
-      // Never narrow a live grant (an auto-approved read-only request keeps mcp:write).
-      const union: McpScope[] =
-        scopes.includes('mcp:write') || live.scopes.includes('mcp:write')
-          ? ['mcp:read', 'mcp:write']
-          : ['mcp:read'];
-      granted = union;
-      if (union.length !== live.scopes.length) {
-        await tx.update(oauthGrants).set({ scopes: union }).where(eq(oauthGrants.id, live.id));
-        created = true;
-      }
-    }
+    const upserted = await upsertGrant(
+      tx,
+      { request, client, userId, scopes, now },
+      hooks.onIdleRevoked,
+    );
+    if (!upserted) return { ok: false, reason: 'not_found' };
+    const grantId = upserted.id;
     const grant: GrantChange = {
       id: grantId,
-      scopes: granted,
+      scopes: upserted.scopes,
       clientId: client.clientId,
       clientName: client.name,
     };
-    if (created) await onGrantChange(tx, grant);
+    if (upserted.changed) await hooks.onGrantChange(tx, grant);
     // Housekeeping keeps a client used within 30 days (spec §4.5); the grant row is locked already.
     await tx
       .update(oauthClients)
@@ -305,7 +319,7 @@ export async function decide(
     return {
       ok: true,
       redirectTo: authorizationRedirect(request.redirectUri, { code: code.token, ...base }),
-      grant: { ...grant, created },
+      grant: { ...grant, created: upserted.changed },
     };
   });
 }
@@ -480,6 +494,36 @@ export async function revokeGrant(
   return rows.length > 0;
 }
 
+/** A used code presented again: the grant it opened is revoked (R6). */
+async function revokeReusedCode(
+  tx: Executor,
+  ctx: { request: RequestRow; client: ClientRow; now: Date },
+  onRevoked: OnGrantRevoked | undefined,
+): Promise<TokenResult> {
+  const { request, client, now } = ctx;
+  if (!request.grantId || !(await revokeGrant(tx, request.grantId, null, now))) return INVALID;
+  await onRevoked?.(tx, { id: request.grantId, clientId: client.clientId, reason: 'code_reuse' });
+  return {
+    ...INVALID,
+    revokedGrant: { id: request.grantId, clientId: client.clientId, reason: 'code_reuse' },
+  };
+}
+
+/** An issued, unexpired code of this client, its redirect URI (when given) and its PKCE verifier. */
+function codeRedeemable(
+  found: { request: RequestRow; client: ClientRow },
+  input: { clientId: string; redirectUri: string | null; verifier: string },
+  now: Date,
+): boolean {
+  const { request, client } = found;
+  if (request.status !== 'code_issued' || request.expiresAt.getTime() <= now.getTime()) {
+    return false;
+  }
+  if (client.clientId !== input.clientId) return false;
+  if (input.redirectUri !== null && input.redirectUri !== request.redirectUri) return false;
+  return pkceMatches(input.verifier, request.codeChallenge);
+}
+
 /** Spec §6 step 7: the code is single-use; presenting it again revokes the grant it opened (R6). */
 export async function exchangeCode(
   db: Db,
@@ -529,26 +573,8 @@ export async function exchangeCode(
       .where(eq(oauthRequests.id, match.request.id))
       .for('update');
     if (!request) return INVALID;
-    if (request.status === 'used') {
-      if (request.grantId && (await revokeGrant(tx, request.grantId, null, now))) {
-        await onRevoked?.(tx, {
-          id: request.grantId,
-          clientId: client.clientId,
-          reason: 'code_reuse',
-        });
-        return {
-          ...INVALID,
-          revokedGrant: { id: request.grantId, clientId: client.clientId, reason: 'code_reuse' },
-        };
-      }
-      return INVALID;
-    }
-    if (request.status !== 'code_issued' || request.expiresAt.getTime() <= now.getTime()) {
-      return INVALID;
-    }
-    if (!request.grantId || client.clientId !== input.clientId) return INVALID;
-    if (input.redirectUri !== null && input.redirectUri !== request.redirectUri) return INVALID;
-    if (!pkceMatches(input.verifier, request.codeChallenge)) return INVALID;
+    if (request.status === 'used') return revokeReusedCode(tx, { request, client, now }, onRevoked);
+    if (!request.grantId || !codeRedeemable({ request, client }, input, now)) return INVALID;
     await tx.update(oauthRequests).set({ status: 'used' }).where(eq(oauthRequests.id, request.id));
     const grant = await liveGrant(tx, request.grantId, now);
     if (!grant) return INVALID;

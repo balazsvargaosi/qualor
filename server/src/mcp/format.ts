@@ -18,7 +18,8 @@ export interface IssueListItem {
 
 /** `src/db.ts:42 [high security] qualor:js.sqli — message (new code; id …)`: one line to act on. */
 export function issueLine(i: IssueListItem): string {
-  const where = i.path ? `${i.path}${i.startLine ? `:${i.startLine}` : ''}` : '(project)';
+  const line = i.startLine ? `:${i.startLine}` : '';
+  const where = i.path ? i.path + line : '(project)';
   const tags = i.inNewCode ? `new code; id ${i.id}` : `id ${i.id}`;
   return `${where} [${i.severity} ${i.quality}] ${i.rule.key} — ${i.message} (${tags})`;
 }

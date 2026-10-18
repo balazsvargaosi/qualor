@@ -23,11 +23,9 @@ export const fixQualityGatePrompt: McpPrompt = {
     mergeRequest: z.string().optional().describe('A merge or pull request number'),
   }),
   messages: ({ project, branch, mergeRequest }) => {
-    const target = mergeRequest
-      ? `merge request ${mergeRequest}`
-      : branch
-        ? `branch ${branch}`
-        : 'the current git branch';
+    let target = 'the current git branch';
+    if (mergeRequest) target = `merge request ${mergeRequest}`;
+    else if (branch) target = `branch ${branch}`;
     return [
       {
         role: 'user',

@@ -75,11 +75,9 @@ export async function branchOf(
     if (!res.nextCursor) break;
     cursor = res.nextCursor;
   }
-  const what = target.mergeRequest
-    ? `merge request ${wanted}`
-    : wanted
-      ? `branch "${wanted}"`
-      : 'a main branch';
+  let what = 'a main branch';
+  if (target.mergeRequest) what = `merge request ${wanted}`;
+  else if (wanted) what = `branch "${wanted}"`;
   if (more) {
     throw new ToolError(
       `Searched the first ${MAX_BRANCH_PAGES * PAGE_SIZE} branches of project ${project.key}; ${what} was not among them. Name it exactly or ask a person to look it up in Qualor.`,

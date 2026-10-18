@@ -51,7 +51,8 @@ function changeLine(c: Change): string {
     c.field === 'comment'
       ? 'commented'
       : `${c.field} ${c.oldValue ?? '(none)'} → ${c.newValue ?? '(none)'}`;
-  return `- ${c.createdAt} ${who}: ${what}${c.comment ? `: ${c.comment}` : ''}`;
+  const comment = c.comment ? `: ${c.comment}` : '';
+  return `- ${c.createdAt} ${who}: ${what}${comment}`;
 }
 
 /** Spec §5: one issue in full. */
@@ -72,18 +73,20 @@ export const issueTool: McpTool<typeof input> = {
       ),
     );
     const code = snippetText(issue.snippet, issue.startLine, issue.endLine);
+    const more = changes.nextCursor ? '\n… (older entries only; more exist)' : '';
+    const history = changes.items.length
+      ? `History:\n${changes.items.map(changeLine).join('\n')}${more}`
+      : '';
     const parts = [
       issueLine(issue),
-      issue.rule.cwe.length ? `CWE: ${issue.rule.cwe.map((c) => `CWE-${c}`).join(', ')}` : '',
+      issue.rule.cwe.length ? `CWE: ${issue.rule.cwe.map((c) => 'CWE-' + c).join(', ')}` : '',
       code ? `Code:\n${code}` : '',
       ...issue.secondaryLocations.map(
-        (l) => `Related: ${l.path}:${l.startLine}${l.message ? ` ${l.message}` : ''}`,
+        (l) => `Related: ${l.path}:${l.startLine}` + (l.message ? ` ${l.message}` : ''),
       ),
       issue.rule.descriptionMd ? `Rule:\n${issue.rule.descriptionMd}` : '',
       issue.rule.helpUri ? `More: ${issue.rule.helpUri}` : '',
-      changes.items.length
-        ? `History:\n${changes.items.map(changeLine).join('\n')}${changes.nextCursor ? '\n… (older entries only; more exist)' : ''}`
-        : '',
+      history,
     ].filter(Boolean);
     return { text: truncate(parts.join('\n\n')), structured: { issue, history: changes.items } };
   },

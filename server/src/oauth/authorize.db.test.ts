@@ -383,11 +383,13 @@ describe('grants, policy and request hygiene', () => {
       ids.map((id) =>
         decide(
           ctx.db,
-          id,
-          eve.id,
-          { approve: true, scopes: ['mcp:read'] },
-          'https://q.example',
-          () => Promise.resolve(),
+          {
+            requestId: id,
+            userId: eve.id,
+            decision: { approve: true, scopes: ['mcp:read'] },
+            issuer: 'https://q.example',
+          },
+          { onGrantChange: () => Promise.resolve() },
         ),
       ),
     );

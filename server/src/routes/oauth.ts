@@ -96,33 +96,39 @@ export const oauthConsentRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = as
       const body = request.body;
       const result = await decide(
         deps.db,
-        request.params.id,
-        principal.user.id,
-        body.decision === 'approve' ? { approve: true, scopes: body.scopes } : { approve: false },
-        iss,
-        // In the grant's transaction: the event commits or rolls back with it.
-        (tx, grant) =>
-          deps.audit.record(tx, actorOf(request), [
-            {
-              action: 'oauth.grant_created',
-              target: { type: 'oauth_grant', id: grant.id, label: grant.clientName },
-              details: {
-                clientId: grant.clientId,
-                clientName: grant.clientName,
-                scopes: grant.scopes,
+        {
+          requestId: request.params.id,
+          userId: principal.user.id,
+          decision:
+            body.decision === 'approve'
+              ? { approve: true, scopes: body.scopes }
+              : { approve: false },
+          issuer: iss,
+        },
+        {
+          // In the grant's transaction: the event commits or rolls back with it.
+          onGrantChange: (tx, grant) =>
+            deps.audit.record(tx, actorOf(request), [
+              {
+                action: 'oauth.grant_created',
+                target: { type: 'oauth_grant', id: grant.id, label: grant.clientName },
+                details: {
+                  clientId: grant.clientId,
+                  clientName: grant.clientName,
+                  scopes: grant.scopes,
+                },
               },
-            },
-          ]),
-        new Date(),
-        // An idle grant the approval replaces: the user's own approval ended it, hence 'user'.
-        (tx, grant) =>
-          deps.audit.recordOrSkipWhenAnchorMalformed(tx, actorOf(request), [
-            {
-              action: 'oauth.grant_revoked',
-              target: { type: 'oauth_grant', id: grant.id, label: grant.clientName },
-              details: { clientId: grant.clientId, reason: 'user' },
-            },
-          ]),
+            ]),
+          // An idle grant the approval replaces: the user's own approval ended it, hence 'user'.
+          onIdleRevoked: (tx, grant) =>
+            deps.audit.recordOrSkipWhenAnchorMalformed(tx, actorOf(request), [
+              {
+                action: 'oauth.grant_revoked',
+                target: { type: 'oauth_grant', id: grant.id, label: grant.clientName },
+                details: { clientId: grant.clientId, reason: 'user' },
+              },
+            ]),
+        },
       );
       if (!result.ok && result.reason === 'scope_not_requested') {
         throw validationFailed([

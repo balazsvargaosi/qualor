@@ -38,7 +38,7 @@ export const ruleTool: McpTool<typeof input> = {
     );
     const text = [
       `${rule.key} — ${rule.name} [${rule.defaultSeverity} ${rule.quality}]`,
-      rule.cwe.length ? `CWE: ${rule.cwe.map((c) => `CWE-${c}`).join(', ')}` : '',
+      rule.cwe.length ? `CWE: ${rule.cwe.map((c) => 'CWE-' + c).join(', ')}` : '',
       rule.descriptionMd ?? 'No description.',
       rule.helpUri ? `More: ${rule.helpUri}` : '',
     ]

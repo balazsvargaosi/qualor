@@ -96,6 +96,70 @@ async function searchCommit(call: McpCaller, branchId: string, sha: string): Pro
   return { hits, latestRevision, searched, complete: false };
 }
 
+interface CommitInfo {
+  sha: string;
+  state: CommitState;
+  latestRevision?: string | null;
+  searched?: number;
+  complete?: boolean;
+}
+
+/** Where CI is with a commit, and its analysis when that has a gate to show (succeeded or failed). */
+async function commitAnalysis(
+  call: McpCaller,
+  branchId: string,
+  sha: string,
+): Promise<{ commit: CommitInfo; analysis: Analysis | null }> {
+  const found = await searchCommit(call, branchId, sha);
+  const revisions = [...new Set(found.hits.map((a) => (a.revision ?? '').toLowerCase()))];
+  if (revisions.length > 1) {
+    const shown = revisions.slice(0, 5).map((r) => r.slice(0, 12));
+    const rest = revisions.length > shown.length ? ', …' : '';
+    throw new ToolError(
+      `The commit prefix ${sha} matches ${revisions.length} commits (${shown.join(', ')}${rest}). Give more characters of the SHA.`,
+      'AMBIGUOUS_COMMIT',
+    );
+  }
+  const searchedPart = { searched: found.searched, complete: found.complete };
+  // Newest first, so the first hit is the latest analysis of that commit.
+  const hit = found.hits[0];
+  if (!hit) {
+    return {
+      commit: { sha, state: 'not_yet', latestRevision: found.latestRevision, ...searchedPart },
+      analysis: null,
+    };
+  }
+  if (hit.status === 'succeeded') {
+    return { commit: { sha, state: 'analyzed', ...searchedPart }, analysis: hit };
+  }
+  if (hit.status === 'failed') {
+    return { commit: { sha, state: 'failed', ...searchedPart }, analysis: hit };
+  }
+  return { commit: { sha, state: 'in_progress', ...searchedPart }, analysis: null };
+}
+
+function commitLines(commit: CommitInfo): string[] {
+  if (commit.state === 'not_yet') {
+    return [
+      commit.complete
+        ? `Commit ${commit.sha} is not analysed yet; the latest analysed is ${commit.latestRevision ?? 'none'}.`
+        : `Commit ${commit.sha} was not found among the newest ${commit.searched} analyses of this branch; older ones were not searched, so it may still have been analysed earlier.`,
+    ];
+  }
+  const lines: string[] = [];
+  if (commit.complete === false) {
+    lines.push(
+      'Only the newest ' +
+        commit.searched +
+        ' analyses were searched; another commit with the same prefix may exist further back, so give more characters of the SHA to be sure.',
+    );
+  }
+  if (commit.state === 'in_progress') {
+    lines.push(`Commit ${commit.sha} is being analysed; ask again in a minute.`);
+  }
+  return lines;
+}
+
 /** Spec §5, ruling R3: the gate of a branch or merge request, and whether CI has reached a commit. */
 export const gateStatusTool: McpTool<typeof input> = {
   name: 'qualor_gate_status',
@@ -112,57 +176,9 @@ export const gateStatusTool: McpTool<typeof input> = {
     const project = await projectByKey(call, args.project);
     const branch = await branchOf(call, project, args);
     let analysis: Analysis | null = null;
-    let commit: {
-      sha: string;
-      state: CommitState;
-      latestRevision?: string | null;
-      searched?: number;
-      complete?: boolean;
-    } | null = null;
+    let commit: CommitInfo | null = null;
     if (args.commit) {
-      const found = await searchCommit(call, branch.id, args.commit);
-      const revisions = [...new Set(found.hits.map((a) => (a.revision ?? '').toLowerCase()))];
-      if (revisions.length > 1) {
-        const shown = revisions.slice(0, 5).map((r) => r.slice(0, 12));
-        throw new ToolError(
-          `The commit prefix ${args.commit} matches ${revisions.length} commits (${shown.join(', ')}${revisions.length > shown.length ? ', …' : ''}). Give more characters of the SHA.`,
-          'AMBIGUOUS_COMMIT',
-        );
-      }
-      // Newest first, so the first hit is the latest analysis of that commit.
-      const hit = found.hits[0];
-      if (!hit) {
-        commit = {
-          sha: args.commit,
-          state: 'not_yet',
-          latestRevision: found.latestRevision,
-          searched: found.searched,
-          complete: found.complete,
-        };
-      } else if (hit.status === 'succeeded') {
-        commit = {
-          sha: args.commit,
-          state: 'analyzed',
-          searched: found.searched,
-          complete: found.complete,
-        };
-        analysis = hit;
-      } else if (hit.status === 'failed') {
-        commit = {
-          sha: args.commit,
-          state: 'failed',
-          searched: found.searched,
-          complete: found.complete,
-        };
-        analysis = hit;
-      } else {
-        commit = {
-          sha: args.commit,
-          state: 'in_progress',
-          searched: found.searched,
-          complete: found.complete,
-        };
-      }
+      ({ commit, analysis } = await commitAnalysis(call, branch.id, args.commit));
     } else if (branch.lastAnalysisId) {
       analysis = unwrap(await call.get<Analysis>(`/api/v0/analyses/${branch.lastAnalysisId}`));
     }
@@ -181,23 +197,7 @@ export const gateStatusTool: McpTool<typeof input> = {
     if (analysis?.status === 'failed' && analysis.error) {
       lines.push(`The analysis failed: ${analysis.error.message}`);
     }
-    if (commit?.state === 'not_yet') {
-      lines.push(
-        commit.complete
-          ? `Commit ${commit.sha} is not analysed yet; the latest analysed is ${commit.latestRevision ?? 'none'}.`
-          : `Commit ${commit.sha} was not found among the newest ${commit.searched} analyses of this branch; older ones were not searched, so it may still have been analysed earlier.`,
-      );
-    }
-    if (commit && commit.state !== 'not_yet' && commit.complete === false) {
-      lines.push(
-        'Only the newest ' +
-          commit.searched +
-          ' analyses were searched; another commit with the same prefix may exist further back, so give more characters of the SHA to be sure.',
-      );
-    }
-    if (commit?.state === 'in_progress') {
-      lines.push(`Commit ${commit.sha} is being analysed; ask again in a minute.`);
-    }
+    if (commit) lines.push(...commitLines(commit));
     return {
       text: lines.join('\n'),
       structured: {

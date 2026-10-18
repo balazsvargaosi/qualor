@@ -34,15 +34,16 @@ export function installAuthentication(
   internalCalls: InternalCalls,
 ): void {
   app.decorateRequest('principal', null);
+  /** A repeated header is no key at all. */
+  const internalPrincipal = (key: string | string[]) =>
+    typeof key === 'string' ? internalCalls.take(key) : null;
   app.addHook('onRequest', async (request) => {
     if (request.is404 || request.routeOptions.config.public === true) return;
     // Ruling R4: the header is guarded by its one-time key alone; an OAuth bearer never gets here.
     const internal = request.headers[INTERNAL_HEADER];
     const principal =
       internal !== undefined
-        ? typeof internal === 'string'
-          ? internalCalls.take(internal)
-          : null
+        ? internalPrincipal(internal)
         : await resolveRequestPrincipal(
             deps.db,
             request.headers.authorization,
