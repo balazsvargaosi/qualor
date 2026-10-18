@@ -79,4 +79,6 @@ export const LOCKS = {
    * `pg_advisory_xact_lock(key)`: one writer of the `licensePolicy` settings row at a time (6M §4).
    */
   licensePolicy: 7_310_024,
+  /** `pg_advisory_xact_lock(key)`: the weekly digest's schedule, one writer at a time (6G R14). */
+  chatDigest: 7_310_025,
 } as const;

@@ -50,6 +50,7 @@ import {
 } from './telemetry/schedule';
 import { updateCheckerFor } from './update-check/checker';
 import { webhookHandlers } from './webhooks/deliver';
+import { digestHandlers, ensureDigestScheduled, scheduleDigestAtBoot } from './webhooks/digest';
 
 /** Webhook deliveries in flight at once (each waits at most 10 s for its receiver). */
 const WEBHOOK_WORKER_CONCURRENCY = 4;
@@ -252,6 +253,8 @@ async function main(): Promise<void> {
         : {}),
       // E1 spec: the daily licence expiry check (it queues email; the mail worker sends it).
       ...licenseAlertHandlers({ db: database.db, edition, config, logger }),
+      // 6G R14: the hourly weekly-digest check (it queues deliveries; the webhook worker sends them).
+      ...digestHandlers({ db: database.db, logger }),
     },
     concurrency: config.workerConcurrency,
     logger,
@@ -262,6 +265,7 @@ async function main(): Promise<void> {
       await notifyAnalysesFailed(db, notify, await reconcileDeadAnalyses(db), logger);
       await ensureHousekeepingScheduled(db);
       await ensureLicenseAlertScheduled(db);
+      await ensureDigestScheduled(db);
       if (config.telemetry.enabled) await ensureTelemetryScheduled(db);
     },
   });
@@ -364,6 +368,18 @@ async function main(): Promise<void> {
         errorClass: err instanceof Error ? err.constructor.name : typeof err,
       },
       'the licence expiry check could not be scheduled',
+    );
+  }
+  try {
+    await scheduleDigestAtBoot(database.db);
+  } catch (err) {
+    // Never fatal: the worker's afterReap re-creates the run within 30 s.
+    logger.warn(
+      {
+        component: 'digest',
+        errorClass: err instanceof Error ? err.constructor.name : typeof err,
+      },
+      'the weekly digest could not be scheduled',
     );
   }
 
