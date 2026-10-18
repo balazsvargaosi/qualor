@@ -65,7 +65,8 @@ browser.
 ## What the agent can do
 
 The page where you allow the app lists what it can do. Reading is always included. Changing issue
-statuses is a separate box that you can leave unchecked.
+statuses is a separate box, **Change issue statuses**, which appears only if the app asks for it;
+untick it to let the app read only.
 
 | Tool | What it does | Needs |
 |---|---|---|
@@ -92,8 +93,8 @@ its number. Without either, the agent looks at the project's main branch.
   assistant and changing an issue's status need the same role as in the web UI (Maintainer or
   above, see [Roles](./roles-and-audit.md#roles)). The agent is told "forbidden" for anything you
   could not do yourself.
-- **Reading and changing are separate.** On the consent page the box **Change issue statuses** is
-  yours to leave unchecked. An agent that only reads cannot change an issue, whatever it tries.
+- **Reading and changing are separate.** On the consent page the box **Change issue statuses**
+  appears only if the app asks for it, and it is yours to untick. An agent that only reads cannot change an issue, whatever it tries.
 - **A status change by the agent says so.** Its comment ends with a line naming the app, so
   reviewers can tell it from your own.
 - **The token works only on the MCP address.** It is not an API token: it cannot call the REST API,
@@ -162,13 +163,13 @@ reused) and `oauth.settings_changed`. Each is in the audit log and in its export
 | **Settings → MCP** says "Set `QUALOR_PUBLIC_URL`", and `/mcp` answers 404 | The server has no public address. Set `QUALOR_PUBLIC_URL` and restart |
 | The client signs in, then asks again and again (a 401 loop) | `QUALOR_PUBLIC_URL` differs from the address the client uses: a different host, `http` instead of `https` or a path the proxy changes. The token is issued for one exact address. Fix the variable or the proxy |
 | The client says it cannot connect or refuses the address | The server is on plain `http://` away from `localhost`, or claude.ai cannot reach it from the internet |
-| "This app is not allowed" on the consent page | An administrator set an allow-list in **Settings → MCP** that does not include the app |
+| "The administrator of this server does not allow this app." on the consent page | An administrator set an allow-list in **Settings → MCP** that does not include the app |
 | This request has expired or was already answered | A sign-in request lives for 10 minutes. Start the connection again from the app |
 | A tool says the AI assistant is off (`AI_DISABLED`) | An administrator has not switched on the [AI assistant](./ai-assistant.md) for the organisation, or the issue's project or path is excluded. The other tools work |
 | "Project … has no analysed branch" | CI has not run `qualor scan` on that branch or merge request yet. It appears after the first analysis |
 | "Matches several commits" (`AMBIGUOUS_COMMIT`) | The short SHA the agent gave fits more than one commit. It should send more characters |
 | "Searched the first … branches" (`SEARCH_INCOMPLETE`) | The project has very many branches or analyses and the one asked for was not among the newest. Name it exactly |
-| Forbidden when changing an issue | Your role in the project cannot triage, or the agent was allowed to read only. Connect the app again and leave **Change issue statuses** checked |
+| Forbidden when changing an issue | Your role in the project cannot triage, or the agent was allowed to read only. Connect the app again and tick **Change issue statuses** (the box appears only if the app asks for it) |
 | An agent that runs several processes with one login is signed out from time to time | Qualor ends a login when the same refresh token is used twice, which is what a stolen token looks like. If several processes of one agent share a login and renew at the same moment, one of them loses it. Connect again; if it happens often, run the agent's MCP connection in one process |
 
 More errors are in [Troubleshooting](./troubleshooting.md).
