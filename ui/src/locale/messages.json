@@ -553,6 +553,7 @@
     "consent.goneTitle": "Connect an app",
     "consent.gone": " This request has expired or was already answered. Start the connection again from the app. ",
     "consent.wants": "wants to access Qualor as {$INTERPOLATION}.",
+    "consent.identifiedBy": " Identified by {$INTERPOLATION} ",
     "consent.unverified": " Not verified: this app registered itself. ",
     "consent.connecting": "Connecting…",
     "consent.canDo": "It will be able to:",
