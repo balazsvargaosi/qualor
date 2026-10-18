@@ -13,6 +13,13 @@ All notable changes to Qualor are listed here, newest first. The format follows
   `qualor-dev/scan-action/dotnet` does the same for C# around your build. See
   [the guide](docs/guide/github.md).
 - The GitLab CI/CD component is released again as 0.10.0, so `@0.10` resolves.
+- Slack and Microsoft Teams notifications: in **Settings → Webhooks** (or a project's settings),
+  **New webhook** now asks the type. A Slack or Teams webhook posts a formatted message when the
+  main branch's quality gate fails or passes again, and a weekly security digest on Monday at 09:00
+  in its time zone; **Send test** checks it. The URL is stored encrypted and shown masked. Teams
+  uses a Workflows webhook (Office 365 connector URLs are refused). See
+  [the guide](docs/guide/chat-notifications.md). The webhooks API gains `kind`, `timezone`,
+  `urlMasked` and `POST /api/v0/webhooks/{id}/test`.
 
 ## [0.10.0] - 2026-10-18
 

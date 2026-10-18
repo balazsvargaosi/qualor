@@ -16,6 +16,8 @@ The payload is the analysis as `GET /api/v0/analyses/{id}` returns it: status, r
 and result, engines and warnings. It also carries `project` (`id`, `key`, `name`) and `branch` (`id`,
 `kind`, `name`, `isMain`), and, for `gate.status_changed`, `previousGateStatus`.
 
+For Slack and Microsoft Teams, choose the type **Slack** or **Microsoft Teams** instead: Qualor sends formatted messages for the main branch's quality gate and a weekly security digest, without a receiver of your own ([Slack and Microsoft Teams](./chat-notifications.md)).
+
 Every request is a `POST` with a JSON body and these headers:
 
 | Header | Value |
@@ -39,6 +41,7 @@ function verify(rawBody, headers, secret, maxAgeSeconds = 300) {
 }
 ```
 
+- A Slack or Microsoft Teams webhook has no secret and sends no `X-Qualor-*` headers: the secret, **Rotate secret** and the signature below are for generic webhooks.
 - Qualor generates the secret (`whsec_…`) and shows it **once**, when the webhook is created. To replace
   it, press **Rotate secret** on the webhook (API: `POST /api/v0/webhooks/{id}/regenerate-secret`).
   The old secret stops signing at once, so update the receiver with the new one, which is shown
@@ -59,8 +62,8 @@ function verify(rawBody, headers, secret, maxAgeSeconds = 300) {
   ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now();
   ```
 
-Typical uses: post gate failures on `main` to Slack or Teams, open a ticket when the security rating
-drops, or feed a dashboard.
+Typical uses: open a ticket when the security rating drops, or feed a dashboard. For Slack and
+Teams use the built-in types above.
 
 ### Audit event streaming (enterprise)
 
@@ -105,7 +108,7 @@ q "$QUALOR_URL/api/v0/issues?branchId=<id>&severity=blocker&severity=high&inNewC
 | Users and organisations | `GET/POST/PATCH /users` (each user with `hasPassword` and `sso`; `GET /users?signIn=no-password`), `GET /users/lookup?username=`, `GET /users/search?q=` (see below), `GET /organizations`, `…/members` (each with `managedBy`; `?q=`, trimmed, keeps the active members that match, as `/users/search` does) |
 | Sign-in | `POST /auth/login`, `POST /auth/logout`, `GET /auth/me`, `GET /auth/methods` (public: the password policy, the single sign-on buttons and whether there is a demo), `POST /auth/demo` (public: signs in to the [read-only demo](./users-projects-tokens.md#a-public-read-only-demo)) |
 | SCM | `GET/POST/PATCH/DELETE /scm-connections`, `POST /scm-connections/{id}/test` |
-| Webhooks | `/webhooks…`, `/webhooks/{id}/deliveries`, `…/redeliver`, `…/regenerate-secret` |
+| Webhooks | `/webhooks…`, `/webhooks/{id}/deliveries`, `…/redeliver`, `…/regenerate-secret`, `POST /webhooks/{id}/test` (Slack and Teams webhooks). A webhook has `kind` (`generic`, `slack` or `teams`; set when it is created), `timezone` (Slack and Teams) and `urlMasked` (`true` when `url` shows only the end of the real URL) |
 | AI assistant | `POST /issues/{id}/ai/{explain,triage,fix}`, `GET /issues/{id}/ai`, `GET /ai-requests/{id}`, `POST /ai-requests/{id}/post`, `GET /organizations/{id}/ai`; instance admins: `GET/PUT /system/llm`, `POST /system/llm/test` ([AI assistant](./ai-assistant.md)) |
 | Email (instance admins) | `GET/PUT /system/mail`, `POST /system/mail/test`, `GET /system/mail/messages` ([Email](./email.md)) |
 | Automatic fix suggestions (enterprise) | `GET/PUT /organizations/{id}/ai/auto-fix` (organisation admins), `PUT /projects/{id}/ai/auto-fix` (project settings); without `llm.auto-fix`, the organisation `GET` answers with `available: false`, its `PUT` answers 403 `FEATURE_NOT_LICENSED` only when it would switch suggestions on, and the project `PUT` always answers 403 `FEATURE_NOT_LICENSED`. The project object carries `autoFix` ([Automatic fix suggestions](./ai-assistant.md#automatic-fix-suggestions-enterprise)) |

@@ -73,6 +73,7 @@ mapping. Its message says what is wrong.
 | GitHub: `not_installed` / `permission_missing` | install the App on the repository, and grant Checks and Pull requests write |
 | GitHub: no annotations | the workflow checked out the merge commit. Use `ref: ${{ github.event.pull_request.head.sha }}` |
 | GitHub: Re-run does nothing | the webhook is inactive, the secret differs, or `QUALOR_PUBLIC_URL` is not set |
+| Slack or Teams: a webhook is refused, a message does not arrive, or there is no digest | [Slack and Microsoft Teams: Troubleshooting](./chat-notifications.md#troubleshooting) |
 
 ## The AI assistant
 

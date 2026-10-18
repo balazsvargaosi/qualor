@@ -12,7 +12,7 @@ a server. Qualor never tracks whether a message was opened or a link clicked.
 |---|---|---|
 | Test message | the address you type | **Send test** in **Settings → Email** |
 | Licence expiry | every instance administrator with an email address | 30, 7 and 1 day before the licence expires, when its 14-day grace period starts, and when it ends ([When a licence expires](./enterprise.md#when-a-licence-expires)). Each once per licence key; a step that was missed (email was off then) is not sent late |
-| Failing webhook | every instance administrator with an email address, and the organisation's administrators ([below](#failing-webhooks-for-organisation-administrators)) | when a webhook delivery gives up after its 7 attempts; at most one a day for each webhook, and only for a webhook that is switched on ([Webhooks](./webhooks-and-api.md#webhooks)) |
+| Failing webhook | every instance administrator with an email address, and the organisation's administrators ([below](#failing-webhooks-for-organisation-administrators)) | when a delivery of any webhook, Slack and Teams ones too, gives up after its 7 attempts; at most one a day for each webhook, and only for a webhook that is switched on ([Webhooks](./webhooks-and-api.md#webhooks)) |
 | Password reset link | the account's email address | **Forgot password?** on the sign-in page ([Account emails](#account-emails)) |
 | Invitation | the invited user's email address | an instance administrator invites a new user in **Settings → Users** |
 | Password changed | the account's email address | after a reset through a link, a change of one's own password, or a reset by an administrator |
@@ -102,8 +102,8 @@ so a mail scanner that opens links stops nothing. Mail apps with a one-click uns
 
 ### Failing webhooks for organisation administrators
 
-Organisation administrators also get the failing-webhook email for their organisation's webhooks
-(see [Webhooks](./webhooks-and-api.md#webhooks)), at most once a day per webhook. Turn it off in
+Organisation administrators also get the failing-webhook email for their organisation's webhooks,
+Slack and Teams ones too (see [Webhooks](./webhooks-and-api.md#webhooks)), at most once a day per webhook. Turn it off in
 **Settings → Notifications** with **Failing webhooks in organisations I administer**; turning off
 **Email me at …** stops it too. An instance administrator who is also an organisation
 administrator gets it once, not twice.
