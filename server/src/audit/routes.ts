@@ -33,6 +33,8 @@ export const ACCESS_REMOVING_MUTATIONS: ReadonlySet<string> = new Set([
   'DELETE /projects/:id/tokens/:tokenId',
   'DELETE /organizations/:id/members/:userId',
   'DELETE /projects/:id/members/:userId',
+  'DELETE /me/oauth-grants/:id',
+  'DELETE /users/:id/oauth-grants/:grantId',
 ]);
 
 const API_PREFIX = '/api/v0';

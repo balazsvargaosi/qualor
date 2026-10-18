@@ -1,4 +1,4 @@
-import { sql, type SQL } from 'drizzle-orm';
+import { and, lt, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { pruneAccountTokens } from '../auth/account-tokens';
 import { pruneAuditEvents } from '../audit/retention';
@@ -6,6 +6,7 @@ import { AuditAnchorMalformedError, readAuditSettings } from '../audit/settings'
 import type { Db, Executor } from '../db/client';
 import { uuidv7 } from '../db/ids';
 import { LOCKS } from '../db/locks';
+import { oauthClients, oauthRequests, oauthTokens } from '../db/schema';
 import { ANALYSIS_QUEUE } from '../ingest/service';
 import { readLlmSettings } from '../llm/settings';
 import { STALLED_DELIVERY_MINUTES, WEBHOOK_QUEUE } from '../webhooks/deliveries';
@@ -103,6 +104,10 @@ export interface HousekeepingResult {
   mailMessages: number;
   /** Pending messages failed after MAIL_GIVE_UP_DAYS, their body dropped. */
   abandonedMailMessages: number;
+  /** Expired OAuth authorization requests, expired OAuth tokens, and clients nothing uses any more. */
+  oauthRequests: number;
+  oauthTokens: number;
+  oauthClients: number;
 }
 
 export interface HousekeepingLogger {
@@ -133,6 +138,39 @@ async function pruneAuditStep(db: Db, logger: HousekeepingLogger | undefined): P
   }
 }
 
+/** How long a client may sit without a live grant (DCR: after registering; CIMD: after its cache expired). */
+const OAUTH_CLIENT_GRACE_DAYS = 30;
+
+/**
+ * MCP spec §4.5: expired requests and tokens; DCR clients that hold no live grant 30 days after
+ * registering, and CIMD clients that hold none 30 days after their cached document expired.
+ */
+export async function cleanOAuth(
+  db: Executor,
+  now: Date,
+): Promise<{ requests: number; tokens: number; clients: number }> {
+  const requests = await db
+    .delete(oauthRequests)
+    .where(lt(oauthRequests.expiresAt, now))
+    .returning({ id: oauthRequests.id });
+  const tokens = await db
+    .delete(oauthTokens)
+    .where(lt(oauthTokens.expiresAt, now))
+    .returning({ id: oauthTokens.id });
+  const cutoff = new Date(now.getTime() - OAUTH_CLIENT_GRACE_DAYS * 86_400_000);
+  const clients = await db
+    .delete(oauthClients)
+    .where(
+      and(
+        sql`NOT EXISTS (SELECT 1 FROM oauth_grants g WHERE g.client_row_id = ${oauthClients.id} AND g.revoked_at IS NULL)`,
+        sql`((${oauthClients.source} = 'dcr' AND ${oauthClients.createdAt} < ${cutoff})
+          OR (${oauthClients.source} = 'cimd' AND ${oauthClients.expiresAt} < ${cutoff}))`,
+      ),
+    )
+    .returning({ id: oauthClients.id });
+  return { requests: requests.length, tokens: tokens.length, clients: clients.length };
+}
+
 /**
  * data-model.md §7: applies every retention rule once. Idempotent, and the database clock decides.
  * Nothing a running or future job still needs is deleted:
@@ -157,7 +195,8 @@ async function pruneAuditStep(db: Db, logger: HousekeepingLogger | undefined): P
  * - expired SSO flow state (sso-scim.md §7.1), skipping a row a sign-in is taking at that moment;
  * - an email log row after mailMessagesDays; a message pending for 2 days is failed and its body
  *   dropped (its job was lost);
- * - expired account links (mail E2), skipping a row a request is taking at that moment.
+ * - expired account links (mail E2), skipping a row a request is taking at that moment;
+ * - expired OAuth requests and tokens, and clients without a live grant (cleanOAuth).
  */
 export async function runHousekeeping(
   db: Db,
@@ -310,6 +349,8 @@ export async function runHousekeeping(
   const auditEvents = await pruneAuditStep(db, logger);
   const ssoStates = await pruneSsoStates(db);
   const accountTokens = await pruneAccountTokens(db);
+  const clock = await db.execute<{ now: Date | string }>(sql`SELECT now() AS now`);
+  const oauth = await cleanOAuth(db, new Date(clock.rows[0]?.now ?? Date.now()));
   return {
     analysisReports,
     closedIssues,
@@ -325,6 +366,9 @@ export async function runHousekeeping(
     accountTokens,
     mailMessages,
     abandonedMailMessages,
+    oauthRequests: oauth.requests,
+    oauthTokens: oauth.tokens,
+    oauthClients: oauth.clients,
   };
 }
 

@@ -1,11 +1,20 @@
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import type { RouteDeps } from '../app';
+import type { Executor } from '../db/client';
 import { actorOf } from '../audit/recorder';
-import { requireSession } from '../auth/access';
+import { requireInstanceAdmin, requireSession } from '../auth/access';
 import { forbidden, notFound, validationFailed } from '../http/problem';
-import { idParams, timestamp } from '../http/schemas';
-import { decide, pendingRequestFor } from '../oauth/grants';
+import { idParams, noContent, timestamp } from '../http/schemas';
+import {
+  decide,
+  listGrants,
+  pendingRequestFor,
+  revokeGrant,
+  userGrant,
+  type GrantView,
+  type RevokedGrant,
+} from '../oauth/grants';
 import { MCP_SCOPES } from '../oauth/tokens';
 import { mcpUrls } from '../oauth/urls';
 
@@ -107,6 +116,125 @@ export const oauthConsentRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = as
       }
       if (!result.ok) throw notFound('Authorization request');
       return { redirectTo: result.redirectTo };
+    },
+  );
+
+  const grantSchema = z.object({
+    id: z.uuid(),
+    client: z.object({
+      clientId: z.string(),
+      name: z.string(),
+      source: z.enum(['cimd', 'dcr']),
+      logoUri: z.string().nullable(),
+      clientUri: z.string().nullable(),
+    }),
+    scopes: z.array(scope),
+    createdAt: timestamp,
+    lastUsedAt: timestamp.nullable(),
+  });
+  const grantsResponse = z.object({ items: z.array(grantSchema) });
+  const dto = (g: GrantView) => ({
+    ...g,
+    createdAt: g.createdAt.toISOString(),
+    lastUsedAt: g.lastUsedAt?.toISOString() ?? null,
+  });
+
+  /**
+   * Revokes the user's live grant; `record` runs in the same transaction, so the event commits
+   * with the revocation. 404 when the user has no such grant.
+   */
+  const revoke = async (
+    userId: string,
+    grantId: string,
+    by: string,
+    record: (tx: Executor, grant: RevokedGrant) => Promise<void>,
+  ) => {
+    const revoked = await deps.db.transaction(async (tx) => {
+      const grant = await userGrant(tx, userId, grantId);
+      if (!grant || !(await revokeGrant(tx, grant.id, by))) return false;
+      await record(tx, grant);
+      return true;
+    });
+    if (!revoked) throw notFound('Connected app');
+  };
+  const revokedEvent = (grant: RevokedGrant, reason: 'user' | 'admin') => ({
+    action: 'oauth.grant_revoked' as const,
+    target: { type: 'oauth_grant' as const, id: grant.id, label: grant.name },
+    details: { clientId: grant.clientId, reason },
+  });
+
+  app.get(
+    '/me/oauth-grants',
+    {
+      schema: {
+        tags: ['oauth'],
+        summary: 'The apps connected to your account through OAuth (MCP clients)',
+        response: { 200: grantsResponse },
+      },
+    },
+    async (request) => {
+      const principal = requireSession(request);
+      return { items: (await listGrants(deps.db, principal.user.id)).map(dto) };
+    },
+  );
+
+  app.delete(
+    '/me/oauth-grants/:id',
+    {
+      config: { openapi: { problems: [404] } },
+      schema: {
+        tags: ['oauth'],
+        summary: 'Disconnect an app: its tokens stop at once',
+        params: idParams,
+        response: { 204: noContent },
+      },
+    },
+    async (request, reply) => {
+      const principal = requireSession(request);
+      await revoke(principal.user.id, request.params.id, principal.user.id, (tx, grant) =>
+        deps.audit.recordOrSkipWhenAnchorMalformed(tx, actorOf(request), [
+          revokedEvent(grant, 'user'),
+        ]),
+      );
+      return reply.code(204).send();
+    },
+  );
+
+  app.get(
+    '/users/:id/oauth-grants',
+    {
+      schema: {
+        tags: ['oauth'],
+        summary: 'A user’s connected apps',
+        params: idParams,
+        response: { 200: grantsResponse },
+      },
+    },
+    async (request) => {
+      requireInstanceAdmin(request);
+      return { items: (await listGrants(deps.db, request.params.id)).map(dto) };
+    },
+  );
+
+  app.delete(
+    '/users/:id/oauth-grants/:grantId',
+    {
+      config: { openapi: { problems: [404] } },
+      schema: {
+        tags: ['oauth'],
+        summary: 'Disconnect one of a user’s apps',
+        params: z.strictObject({ id: z.uuid(), grantId: z.uuid() }),
+        response: { 204: noContent },
+      },
+    },
+    async (request, reply) => {
+      const admin = requireInstanceAdmin(request);
+      await revoke(request.params.id, request.params.grantId, admin.user.id, (tx, grant) =>
+        deps.audit.recordOrSkipWhenAnchorMalformed(tx, actorOf(request), [
+          revokedEvent(grant, 'admin'),
+        ]),
+      );
+      return reply.code(204).send();
     },
   );
 };

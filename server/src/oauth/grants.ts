@@ -360,6 +360,87 @@ async function liveGrant(tx: Executor, grantId: string, now: Date) {
   return row.grant;
 }
 
+export interface GrantView {
+  id: string;
+  client: {
+    clientId: string;
+    name: string;
+    source: 'cimd' | 'dcr';
+    logoUri: string | null;
+    clientUri: string | null;
+  };
+  scopes: McpScope[];
+  createdAt: Date;
+  lastUsedAt: Date | null;
+}
+
+/** The user's live grants for the Connected apps page; an idle grant no longer works, so it is left out. */
+export async function listGrants(
+  db: Executor,
+  userId: string,
+  now = new Date(),
+): Promise<GrantView[]> {
+  const rows = await db
+    .select({ grant: oauthGrants, client: oauthClients })
+    .from(oauthGrants)
+    .innerJoin(oauthClients, eq(oauthClients.id, oauthGrants.clientRowId))
+    .where(and(eq(oauthGrants.userId, userId), isNull(oauthGrants.revokedAt)))
+    .orderBy(oauthGrants.createdAt);
+  return rows
+    .filter(({ grant }) => !isGrantIdle(grant, now))
+    .map(({ grant, client }) => ({
+      id: grant.id,
+      client: {
+        clientId: client.clientId,
+        name: client.name,
+        source: client.source,
+        logoUri: client.logoUri,
+        clientUri: client.clientUri,
+      },
+      scopes: grant.scopes as McpScope[],
+      createdAt: grant.createdAt,
+      lastUsedAt: grant.lastUsedAt,
+    }));
+}
+
+export interface RevokedGrant {
+  id: string;
+  clientId: string;
+  name: string;
+}
+
+/**
+ * The grant if it is this user's, live and not idle (an idle grant is not listed, so it is not
+ * revocable by id either), its row locked (grant first, as the token paths do) inside a transaction.
+ */
+export async function userGrant(
+  db: Executor,
+  userId: string,
+  grantId: string,
+  now = new Date(),
+): Promise<RevokedGrant | null> {
+  const [row] = await db
+    .select({
+      id: oauthGrants.id,
+      clientId: oauthClients.clientId,
+      name: oauthClients.name,
+      lastUsedAt: oauthGrants.lastUsedAt,
+      createdAt: oauthGrants.createdAt,
+    })
+    .from(oauthGrants)
+    .innerJoin(oauthClients, eq(oauthClients.id, oauthGrants.clientRowId))
+    .where(
+      and(
+        eq(oauthGrants.id, grantId),
+        eq(oauthGrants.userId, userId),
+        isNull(oauthGrants.revokedAt),
+      ),
+    )
+    .for('update', { of: oauthGrants });
+  if (!row || isGrantIdle(row, now)) return null;
+  return { id: row.id, clientId: row.clientId, name: row.name };
+}
+
 /** Revokes a grant and every token of it; false when it was already revoked. */
 export async function revokeGrant(
   db: Executor,
