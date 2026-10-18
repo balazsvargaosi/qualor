@@ -9,7 +9,9 @@ import {
   plainText,
   severityCounts,
   severityLabel,
+  shortRevision,
   slackText,
+  displayZone,
   utcTime,
 } from './text';
 
@@ -77,7 +79,7 @@ function gate(m: ChatGateMessage, links: ChatLinks): SlackBody {
   const conditions = failed
     ? [
         '*Failing conditions*',
-        ...m.failed.map((c) => `• ${conditionText(c)}`),
+        ...m.failed.map((c) => `• ${conditionText(c, slackText)}`),
         ...(m.failedCount > m.failed.length
           ? [`…and ${m.failedCount - m.failed.length} more`]
           : []),
@@ -88,7 +90,7 @@ function gate(m: ChatGateMessage, links: ChatLinks): SlackBody {
   const counts = newCodeText(m);
   const facts = [
     m.gate.name === null ? null : `Gate ${slackText(m.gate.name)}`,
-    m.revision === null ? null : `commit \`${m.revision.slice(0, 7)}\``,
+    shortRevision(m.revision) === null ? null : `commit \`${shortRevision(m.revision)}\``,
     utcTime(m.at),
   ].filter((f): f is string => f !== null);
   return {
@@ -103,12 +105,25 @@ function gate(m: ChatGateMessage, links: ChatLinks): SlackBody {
   };
 }
 
+/** The leading lines that fit in a section after `used` characters; stops at the first misfit. */
+function packLines(lines: string[], used: number): string[] {
+  const kept: string[] = [];
+  let total = used;
+  for (const line of lines) {
+    total += [...line].length + 1;
+    if (total > SECTION_MAX) break;
+    kept.push(line);
+  }
+  return kept;
+}
+
 function digest(m: ChatDigestMessage, links: ChatLinks): SlackBody {
   const scopeName = m.scope.project?.name ?? m.scope.organization.name;
   const title = `Weekly security digest — ${plainText(scopeName, 80)}`;
   const t = m.totals;
+  const zone = displayZone(m.timezone);
   const summary =
-    `*Last 7 days* · ${localDate(m.since, m.timezone)} – ${localDate(m.until, m.timezone)} (${m.timezone})\n` +
+    `*Last 7 days* · ${localDate(m.since, m.timezone)} – ${localDate(m.until, m.timezone)} (${zone})\n` +
     `*${t.newSecurity}* new security issues · *${t.failing}* failing quality gate${t.failing === 1 ? '' : 's'} · *${t.openSecurity}* open security issues\n` +
     `New by severity: ${severityCounts(t.newBySeverity)}`;
   const allRows = m.rows.map((r) => {
@@ -118,8 +133,7 @@ function digest(m: ChatDigestMessage, links: ChatLinks): SlackBody {
   });
   // A section holds 3000 characters: rows that do not fit are counted into "…and N more", never
   // cut in the middle (which would also lose the lines after them). 200 is room for the tail.
-  let used = '*Projects*'.length + 200;
-  const rows = allRows.filter((row) => (used += [...row].length + 1) <= SECTION_MAX);
+  const rows = packLines(allRows, '*Projects*'.length + 200);
   const moreProjects = m.moreProjects + (allRows.length - rows.length);
   const tail = [
     ...(moreProjects > 0 ? [`…and ${moreProjects} more projects`] : []),
@@ -129,7 +143,7 @@ function digest(m: ChatDigestMessage, links: ChatLinks): SlackBody {
         ]
       : []),
   ];
-  const top = m.top.map((i) => {
+  const allTop = m.top.map((i) => {
     const where =
       i.path === null
         ? ''
@@ -137,6 +151,7 @@ function digest(m: ChatDigestMessage, links: ChatLinks): SlackBody {
     const rule = link(issueUrl(links, i.projectId, i.id), slackText(i.ruleName, 80));
     return `• ${severityLabel(i.severity)} · ${slackText(i.projectName, 50)} · ${rule}${where}`;
   });
+  const top = packLines(allTop, '*Top new issues*'.length);
   const scopeUrl =
     m.scope.project === null ? projectsUrl(links) : projectUrl(links, m.scope.project.id);
   return {
@@ -148,7 +163,7 @@ function digest(m: ChatDigestMessage, links: ChatLinks): SlackBody {
         ? [section(['*Projects*', ...rows, ...tail].join('\n'))]
         : []),
       ...(top.length > 0 ? [section(['*Top new issues*', ...top].join('\n'))] : []),
-      context(`Sent every Monday at 09:00 ${m.timezone}`),
+      context(`Sent every Monday at 09:00 ${zone}`),
       ...button(scopeUrl),
     ],
   };

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { localDate, slackText, teamsText, utcTime } from './text';
 
-const Z = '​';
+const Z = '\u200B';
 
 describe('slackText (6G R13)', () => {
   it('escapes the three characters Slack requires, so a mention never pings', () => {

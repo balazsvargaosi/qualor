@@ -9,7 +9,7 @@ const A = '0190a6c2-0000-7000-8000-0000000000c1';
 const O = '0190a6c2-0000-7000-8000-0000000000d1';
 const LINKS = { publicUrl: 'https://qualor.example.com' };
 const NO_LINKS = { publicUrl: null };
-const Z = '​';
+const Z = '\u200B';
 
 const failed: ChatGateMessage = {
   type: 'gate',
@@ -293,8 +293,75 @@ describe('digests', () => {
     expect(body.blocks.length).toBeLessThanOrEqual(50);
     for (const b of body.blocks) expect([...(b.text?.text ?? '')].length).toBeLessThanOrEqual(3000);
     // Rows that do not fit in 3000 characters are counted into the "more" line, not cut off.
-    const more = /…and (\d+) more projects/.exec(JSON.stringify(body));
-    expect(Number(more?.[1])).toBeGreaterThanOrEqual(7);
+    const json = JSON.stringify(body);
+    const shown = json.split('• <https').length - 1;
+    const more = Number(/…and (\d+) more projects/.exec(json)?.[1]);
+    expect(shown).toBeLessThan(20);
+    expect(shown + more).toBe(27);
+  });
+
+  it('Slack: the top issues are whole items within 3000 characters', () => {
+    const big: ChatDigestMessage = {
+      ...digest,
+      top: Array.from({ length: 3 }, () => ({
+        ...digest.top[0]!,
+        projectName: '*'.repeat(500),
+        ruleName: '_'.repeat(500),
+        path: '`'.repeat(500),
+      })),
+    };
+    const body = formatChat('slack', big, LINKS) as { blocks: { text?: { text: string } }[] };
+    for (const b of body.blocks) expect([...(b.text?.text ?? '')].length).toBeLessThanOrEqual(3000);
+    const topText = body.blocks.map((b) => b.text?.text ?? '').find((t) => t.startsWith('*Top'));
+    for (const line of (topText ?? '').split('\n').slice(1)) expect(line.endsWith('`')).toBe(true);
+  });
+
+  it('Teams: the worst case of markup characters stays under 28 KB', () => {
+    const big: ChatDigestMessage = {
+      ...digest,
+      scope: { ...digest.scope, organization: { id: O, name: '*'.repeat(500) } },
+      rows: Array.from({ length: 20 }, (_, i) => row(i + 1, { name: '[*_`'.repeat(125) })),
+      top: Array.from({ length: 3 }, () => ({
+        ...digest.top[0]!,
+        projectName: '*'.repeat(500),
+        ruleName: '_'.repeat(500),
+        path: '[]'.repeat(250),
+      })),
+      moreProjects: 7,
+    };
+    const json = JSON.stringify(formatChat('teams', big, LINKS));
+    expect(Buffer.byteLength(json, 'utf8')).toBeLessThan(28_000);
+  });
+
+  it('Teams: a digest without a public URL has no links and no actions', () => {
+    const json = JSON.stringify(formatChat('teams', digest, NO_LINKS));
+    expect(json).not.toContain('https://');
+    expect(json).not.toContain('Action.OpenUrl');
+    expect(json).toContain('Payments');
+  });
+
+  it('a bad time zone does not throw and reads as UTC; markup in it is not shown', () => {
+    const bad: ChatDigestMessage = { ...digest, timezone: '*<!channel>*' };
+    for (const kind of ['slack', 'teams'] as const) {
+      const json = JSON.stringify(formatChat(kind, bad, LINKS));
+      expect(json).toContain('(UTC)');
+      expect(json).not.toContain('channel');
+    }
+  });
+
+  it('shows only a hex revision, and escapes an unknown metric key (both kinds)', () => {
+    const hostile: ChatGateMessage = {
+      ...failed,
+      revision: '*<!channel>*',
+      failed: [{ metric: '<!channel> *x*', operator: 'gt', threshold: 1, value: 2 }],
+      failedCount: 1,
+    };
+    const slack = JSON.stringify(formatChat('slack', hostile, LINKS));
+    expect(slack).not.toContain('<!channel>');
+    expect(slack).not.toContain('commit');
+    const teams = JSON.stringify(formatChat('teams', hostile, LINKS));
+    expect(teams).not.toContain('*x*');
+    expect(teams).not.toContain('"Commit"');
   });
 
   it('Teams: the same digest within 28 KB', () => {

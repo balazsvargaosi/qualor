@@ -3,7 +3,7 @@ import { clip, failsWhen, metricLabel, metricValue } from '../../mail/templates/
 import { oneLine } from '../../mail/text';
 import type { ChatGateMessage, DigestGate } from './messages';
 
-const Z = '​';
+const Z = '\u200B';
 /** Names longer than this are clipped in every message (fits Slack's and Teams' limits). */
 export const MAX_NAME = 80;
 
@@ -42,8 +42,34 @@ export function gateTitle(m: ChatGateMessage, esc: (s: string, max?: number) => 
 }
 
 /** R6: the email's wording, "Coverage on new code: 61.5% (fails when less than 80%)". */
-export function conditionText(c: ChatGateMessage['failed'][number]): string {
-  return `${metricLabel(c.metric)}: ${metricValue(c.metric, c.value)} (fails when ${failsWhen(c)})`;
+export function conditionText(
+  c: ChatGateMessage['failed'][number],
+  esc: (s: string, max?: number) => string,
+): string {
+  // An unknown metric key is shown as it is: it comes from the sender, so it is escaped.
+  const label = esc(metricLabel(c.metric), 100);
+  return `${label}: ${metricValue(c.metric, c.value)} (fails when ${failsWhen(c)})`;
+}
+
+/** The short commit id, only for a hex revision (anything else could carry markup): else null. */
+export function shortRevision(revision: string | null): string | null {
+  return revision !== null && /^[0-9a-f]{7,64}$/i.test(revision)
+    ? [...revision].slice(0, 7).join('')
+    : null;
+}
+
+function validZone(zone: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-CA', { timeZone: zone });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The zone as written in a message: a valid IANA name (no markup possible), else UTC. */
+export function displayZone(zone: string): string {
+  return validZone(zone) ? zone : 'UTC';
 }
 
 /** "Security 2 · Reliability 0 · Maintainability 0"; null when no count is known. */
@@ -67,7 +93,7 @@ export function utcTime(iso: string): string {
 export function localDate(iso: string, zone: string): string {
   // en-CA writes dates as YYYY-MM-DD.
   return new Intl.DateTimeFormat('en-CA', {
-    timeZone: zone,
+    timeZone: displayZone(zone),
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',

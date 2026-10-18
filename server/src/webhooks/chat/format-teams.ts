@@ -8,6 +8,8 @@ import {
   newCodeText,
   severityCounts,
   severityLabel,
+  shortRevision,
+  displayZone,
   teamsText,
   utcTime,
 } from './text';
@@ -89,7 +91,7 @@ function gate(m: ChatGateMessage, links: ChatLinks): TeamsBody {
       heading('Failing conditions'),
       block(
         [
-          ...m.failed.map((c) => `- ${conditionText(c)}`),
+          ...m.failed.map((c) => `- ${conditionText(c, teamsText)}`),
           ...(m.failedCount > m.failed.length
             ? [`- …and ${m.failedCount - m.failed.length} more`]
             : []),
@@ -110,7 +112,9 @@ function gate(m: ChatGateMessage, links: ChatLinks): TeamsBody {
     facts: [
       ...(counts === null ? [] : [{ title: 'New code', value: counts }]),
       ...(m.gate.name === null ? [] : [{ title: 'Gate', value: teamsText(m.gate.name) }]),
-      ...(m.revision === null ? [] : [{ title: 'Commit', value: m.revision.slice(0, 7) }]),
+      ...(shortRevision(m.revision) === null
+        ? []
+        : [{ title: 'Commit', value: shortRevision(m.revision) ?? '' }]),
       { title: 'Time', value: utcTime(m.at) },
     ],
   });
@@ -120,6 +124,7 @@ function gate(m: ChatGateMessage, links: ChatLinks): TeamsBody {
 function digest(m: ChatDigestMessage, links: ChatLinks): TeamsBody {
   const scopeName = m.scope.project?.name ?? m.scope.organization.name;
   const t = m.totals;
+  const zone = displayZone(m.timezone);
   const rows = m.rows.map((r) => {
     const name = link(projectUrl(links, r.projectId), teamsText(r.name, 50));
     const sev = r.newSecurity > 0 ? ` (${severityCounts(r.newBySeverity)})` : '';
@@ -142,7 +147,7 @@ function digest(m: ChatDigestMessage, links: ChatLinks): TeamsBody {
   const body: Element[] = [
     block(`Weekly security digest — ${teamsText(scopeName)}`, { weight: 'Bolder', size: 'Medium' }),
     block(
-      `Last 7 days · ${localDate(m.since, m.timezone)} – ${localDate(m.until, m.timezone)} (${m.timezone})`,
+      `Last 7 days · ${localDate(m.since, m.timezone)} – ${localDate(m.until, m.timezone)} (${zone})`,
     ),
     {
       type: 'FactSet',
@@ -157,7 +162,7 @@ function digest(m: ChatDigestMessage, links: ChatLinks): TeamsBody {
       ? [heading('Projects'), block([...rows, ...tail].join('\n'))]
       : []),
     ...(top.length > 0 ? [heading('Top new issues'), block(top.join('\n'))] : []),
-    block(`Sent every Monday at 09:00 ${m.timezone}`),
+    block(`Sent every Monday at 09:00 ${zone}`),
   ];
   const url = m.scope.project === null ? projectsUrl(links) : projectUrl(links, m.scope.project.id);
   return message(body, url);
