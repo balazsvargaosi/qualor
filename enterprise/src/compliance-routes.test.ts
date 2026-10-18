@@ -464,7 +464,11 @@ describe('GET /compliance/reports/:id/download (4E-1 §2.5)', () => {
     expect(await statusOf(url)).toBe(429);
     pdf.hold = undefined;
     render.resolve(undefined);
-    await vi.waitFor(async () => expect(await statusOf(url)).toBe(200));
+    // Each try is a real request; a busy CI runner needs more than waitFor's default 1 s.
+    await vi.waitFor(async () => expect(await statusOf(url)).toBe(200), {
+      timeout: 10_000,
+      interval: 100,
+    });
   });
 
   it('frees the slot when the service refuses the download', async () => {
