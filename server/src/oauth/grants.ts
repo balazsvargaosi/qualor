@@ -277,6 +277,11 @@ export async function decide(
       clientName: client.name,
     };
     if (created) await onGrantChange(tx, grant);
+    // Housekeeping keeps a client used within 30 days (spec §4.5); the grant row is locked already.
+    await tx
+      .update(oauthClients)
+      .set({ lastUsedAt: now })
+      .where(eq(oauthClients.id, request.clientRowId));
     const code = generateOAuthSecret('code');
     await tx
       .update(oauthRequests)
@@ -323,7 +328,9 @@ export type OnGrantRevoked = (
 const INVALID = { ok: false, error: 'invalid_grant' } as const;
 const DAY_MS = 86_400_000;
 
-async function issuePair(tx: Executor, grantId: string, now: Date) {
+/** Called with the grant row locked; the client row comes after it (lock order, see exchangeCode). */
+async function issuePair(tx: Executor, grant: { id: string; clientRowId: string }, now: Date) {
+  const grantId = grant.id;
   const access = generateOAuthSecret('access');
   const refreshSecret = generateOAuthSecret('refresh');
   await tx.insert(oauthTokens).values({
@@ -346,6 +353,11 @@ async function issuePair(tx: Executor, grantId: string, now: Date) {
       .returning({ id: oauthTokens.id }),
   );
   await tx.update(oauthGrants).set({ lastUsedAt: now }).where(eq(oauthGrants.id, grantId));
+  // Housekeeping keeps a client used within 30 days (spec §4.5).
+  await tx
+    .update(oauthClients)
+    .set({ lastUsedAt: now })
+    .where(eq(oauthClients.id, grant.clientRowId));
   return { accessToken: access.token, refreshToken: refreshSecret.token, refreshId: refreshRow.id };
 }
 
@@ -480,11 +492,12 @@ export async function exchangeCode(
   const parsed = parseOAuthSecret(input.code);
   if (!parsed || parsed.kind !== 'code') return INVALID;
   return db.transaction(async (tx): Promise<TokenResult> => {
-    // Lock order: the grant row first, then its request/token rows (revokeGrant takes the grant
-    // first too), so a reuse race cannot deadlock. The one exception is decide(), which locks its
-    // pending request and then the grant; that is safe because a pending request is not among the
-    // rows the grant-first paths lock (they lock only code_issued/used ones). Find the match
-    // unlocked, lock, re-read.
+    // Lock order: the grant row first, then its request/token rows and last its client row
+    // (revokeGrant takes the grant first too), so a reuse race cannot deadlock. The one exception
+    // is decide(), which locks its pending request and then the grant (then the client); that is
+    // safe because a pending request is not among the rows the grant-first paths lock (they lock
+    // only code_issued/used ones). Housekeeping deletes a client only with no live grant and no
+    // request, skipping a locked client row (cleanOAuth). Find the match unlocked, lock, re-read.
     const candidates = await tx
       .select({ request: oauthRequests, client: oauthClients })
       .from(oauthRequests)
@@ -531,7 +544,7 @@ export async function exchangeCode(
     await tx.update(oauthRequests).set({ status: 'used' }).where(eq(oauthRequests.id, request.id));
     const grant = await liveGrant(tx, request.grantId, now);
     if (!grant) return INVALID;
-    const pair = await issuePair(tx, grant.id, now);
+    const pair = await issuePair(tx, grant, now);
     return {
       ok: true,
       accessToken: pair.accessToken,
@@ -615,7 +628,7 @@ export async function refresh(
     if (input.scopes && !input.scopes.every((s) => granted.includes(s))) {
       return { ok: false, error: 'invalid_scope' };
     }
-    const pair = await issuePair(tx, grant.id, now);
+    const pair = await issuePair(tx, grant, now);
     await tx
       .update(oauthTokens)
       .set({ replacedBy: pair.refreshId })

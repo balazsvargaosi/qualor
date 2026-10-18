@@ -1,10 +1,11 @@
-import { and, lt, sql, type SQL } from 'drizzle-orm';
+import { lt, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { pruneAccountTokens } from '../auth/account-tokens';
 import { pruneAuditEvents } from '../audit/retention';
 import { AuditAnchorMalformedError, readAuditSettings } from '../audit/settings';
 import type { Db, Executor } from '../db/client';
 import { uuidv7 } from '../db/ids';
+import { pgErrorCode } from '../db/errors';
 import { LOCKS } from '../db/locks';
 import { oauthClients, oauthRequests, oauthTokens } from '../db/schema';
 import { ANALYSIS_QUEUE } from '../ingest/service';
@@ -138,12 +139,20 @@ async function pruneAuditStep(db: Db, logger: HousekeepingLogger | undefined): P
   }
 }
 
-/** How long a client may sit without a live grant (DCR: after registering; CIMD: after its cache expired). */
+/** How long a client may sit unused without a live grant (DCR: since its last use; CIMD: since its cache expired). */
 const OAUTH_CLIENT_GRACE_DAYS = 30;
 
 /**
- * MCP spec §4.5: expired requests and tokens; DCR clients that hold no live grant 30 days after
- * registering, and CIMD clients that hold none 30 days after their cached document expired.
+ * MCP spec §4.5: expired requests and tokens; clients that hold no live grant and no unexpired
+ * request: DCR ones unused for 30 days (the latest of registration, last approval or token
+ * exchange, and the creation or revocation of a grant), CIMD ones 30 days after their cached
+ * document expired (an authorize fetches it again).
+ *
+ * The client delete skips rows someone holds (`SKIP LOCKED`: an approval or authorize in flight
+ * locks its client row), and a client used meanwhile fails the re-checked `last_used_at` test. A
+ * deadlock with an approval that started inside this one statement (it locks its pending request,
+ * then wants the client row this statement holds) is possible only in that instant; the step then
+ * deletes nothing and the next run retries.
  */
 export async function cleanOAuth(
   db: Executor,
@@ -158,16 +167,27 @@ export async function cleanOAuth(
     .where(lt(oauthTokens.expiresAt, now))
     .returning({ id: oauthTokens.id });
   const cutoff = new Date(now.getTime() - OAUTH_CLIENT_GRACE_DAYS * 86_400_000);
-  const clients = await db
-    .delete(oauthClients)
-    .where(
-      and(
-        sql`NOT EXISTS (SELECT 1 FROM oauth_grants g WHERE g.client_row_id = ${oauthClients.id} AND g.revoked_at IS NULL)`,
-        sql`((${oauthClients.source} = 'dcr' AND ${oauthClients.createdAt} < ${cutoff})
-          OR (${oauthClients.source} = 'cimd' AND ${oauthClients.expiresAt} < ${cutoff}))`,
-      ),
-    )
-    .returning({ id: oauthClients.id });
+  let clients: { id: string }[] = [];
+  try {
+    clients = await db
+      .delete(oauthClients)
+      .where(
+        sql`${oauthClients.id} IN (
+          SELECT c.id FROM oauth_clients c
+           WHERE NOT EXISTS (SELECT 1 FROM oauth_grants g WHERE g.client_row_id = c.id AND g.revoked_at IS NULL)
+             AND NOT EXISTS (SELECT 1 FROM oauth_requests r WHERE r.client_row_id = c.id)
+             AND ((c.source = 'dcr' AND greatest(c.created_at, c.last_used_at,
+                    (SELECT max(greatest(g.created_at, g.revoked_at)) FROM oauth_grants g
+                      WHERE g.client_row_id = c.id)) < ${cutoff})
+               OR (c.source = 'cimd' AND greatest(c.expires_at, c.last_used_at) < ${cutoff}))
+           FOR UPDATE SKIP LOCKED)
+        -- Re-checked on the locked row: a use recorded meanwhile keeps it.
+        AND (${oauthClients.lastUsedAt} IS NULL OR ${oauthClients.lastUsedAt} < ${cutoff})`,
+      )
+      .returning({ id: oauthClients.id });
+  } catch (err) {
+    if (pgErrorCode(err) !== '40P01') throw err;
+  }
   return { requests: requests.length, tokens: tokens.length, clients: clients.length };
 }
 
