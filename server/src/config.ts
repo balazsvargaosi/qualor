@@ -309,6 +309,8 @@ const envSchema = z
     QUALOR_LLM_INTERNAL_HOSTS: internalHostsSchema,
     // sso-scim.md §14: its own list, as QUALOR_SCM_INTERNAL_HOSTS and QUALOR_LLM_INTERNAL_HOSTS are.
     QUALOR_SSO_INTERNAL_HOSTS: internalHostsSchema,
+    // 6G R7: chat webhook hosts besides Slack's and Teams' (tests and fake receivers only).
+    QUALOR_CHAT_TEST_HOSTS: internalHostsSchema,
     // sso-scim.md §10.4: the emergency switch; anything but true/false/empty stops the boot.
     QUALOR_FORCE_PASSWORD_SIGN_IN: z
       .enum(['true', 'false', ''], {
@@ -428,6 +430,8 @@ export interface Config {
   llmInternalHosts: ReadonlySet<string>;
   /** QUALOR_SSO_INTERNAL_HOSTS, normalised (sso-scim.md §14). */
   ssoInternalHosts: ReadonlySet<string>;
+  /** QUALOR_CHAT_TEST_HOSTS, normalised: extra hosts a Slack or Teams webhook may use (6G R7). */
+  chatTestHosts: ReadonlySet<string>;
   /** QUALOR_FORCE_PASSWORD_SIGN_IN=true: re-enables password sign-in for everyone (sso-scim.md §10.4). */
   forcePasswordSignIn: boolean;
   /** enterprise.md §6: the key text (QUALOR_LICENSE) or a file holding it (QUALOR_LICENSE_FILE). */
@@ -488,6 +492,7 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     scmInternalHosts: e.QUALOR_SCM_INTERNAL_HOSTS,
     llmInternalHosts: e.QUALOR_LLM_INTERNAL_HOSTS,
     ssoInternalHosts: e.QUALOR_SSO_INTERNAL_HOSTS,
+    chatTestHosts: e.QUALOR_CHAT_TEST_HOSTS,
     forcePasswordSignIn: e.QUALOR_FORCE_PASSWORD_SIGN_IN,
     license: {
       text: e.QUALOR_LICENSE,

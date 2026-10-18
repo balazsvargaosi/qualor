@@ -22,6 +22,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     scmInternalHosts: new Set(),
     llmInternalHosts: new Set(),
     ssoInternalHosts: new Set(),
+    chatTestHosts: new Set(),
     forcePasswordSignIn: false,
     license: { text: null, file: null },
     pluginPaths: [],

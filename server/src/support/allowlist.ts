@@ -36,6 +36,7 @@ export const SUPPORT_CONFIG_ALLOWLIST: Readonly<Record<string, SupportRule>> = O
   scmInternalHosts: 'value',
   llmInternalHosts: 'value',
   ssoInternalHosts: 'value',
+  chatTestHosts: 'value',
   forcePasswordSignIn: 'value',
   'license.file': 'value',
   pluginPaths: 'value',

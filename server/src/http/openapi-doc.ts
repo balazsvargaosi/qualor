@@ -40,6 +40,7 @@ export async function openApiDocument(plugins?: OpenApiPlugins): Promise<unknown
     scmInternalHosts: new Set(),
     llmInternalHosts: new Set(),
     ssoInternalHosts: new Set(),
+    chatTestHosts: new Set(),
     forcePasswordSignIn: false,
     // The committed document is generated without a licence or plugins (enterprise.md §10.2).
     license: { text: null, file: null },

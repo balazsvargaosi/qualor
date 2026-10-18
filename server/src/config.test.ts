@@ -38,6 +38,7 @@ describe('loadConfig', () => {
       scmInternalHosts: new Set(),
       llmInternalHosts: new Set(),
       ssoInternalHosts: new Set(),
+      chatTestHosts: new Set(),
       forcePasswordSignIn: false,
       license: { text: null, file: null },
       pluginPaths: [],
@@ -308,6 +309,12 @@ describe('SSO variables (sso-scim.md §10.4, §14)', () => {
       QUALOR_SSO_INTERNAL_HOSTS: 'Keycloak.corp:8443, 127.0.0.1:18080',
     });
     expect([...config.ssoInternalHosts].sort()).toEqual(['127.0.0.1:18080', 'keycloak.corp:8443']);
+  });
+
+  it('parses QUALOR_CHAT_TEST_HOSTS like the SCM internal hosts (6G R7)', () => {
+    const config = loadConfig({ ...base, QUALOR_CHAT_TEST_HOSTS: '127.0.0.1:4285, chat.test' });
+    expect([...config.chatTestHosts].sort()).toEqual(['127.0.0.1:4285', 'chat.test']);
+    expect(loadConfig(base).chatTestHosts.size).toBe(0);
   });
 
   it.each([
