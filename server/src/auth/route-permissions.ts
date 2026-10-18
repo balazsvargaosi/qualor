@@ -144,6 +144,7 @@ export const ROUTE_PERMISSIONS: Readonly<Record<string, RouteRule>> = Object.fre
   'DELETE /webhooks/:id': 'org.webhooks.manage',
   'GET /webhooks/:id/deliveries': 'org.webhooks.manage',
   'POST /webhooks/:id/deliveries/:deliveryId/redeliver': 'org.webhooks.manage',
+  'POST /webhooks/:id/test': 'org.webhooks.manage',
 });
 
 /** The helpers that resolve an object and ask the policy (rbac-audit.md §5). */

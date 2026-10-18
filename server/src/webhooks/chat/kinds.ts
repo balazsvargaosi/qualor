@@ -47,7 +47,8 @@ export function chatUrlProblem(
   testHosts: ReadonlySet<string>,
 ): string | null {
   const base = webhookUrlProblem(raw, settings);
-  if (base) return base;
+  // Chat webhooks have no secret to move credentials to; the base message points at one.
+  if (base) return base.replace('; use the webhook secret', '');
   const url = new URL(raw);
   if (testHosts.size > 0 && isInternalHostAllowed(url, testHosts)) return null;
   const host = hostOf(url).toLowerCase();

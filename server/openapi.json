@@ -16940,8 +16940,20 @@
                               }
                             ]
                           },
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "generic",
+                              "slack",
+                              "teams"
+                            ]
+                          },
                           "url": {
-                            "type": "string"
+                            "type": "string",
+                            "description": "For Slack and Teams webhooks, the URL masked (it is a secret)"
+                          },
+                          "urlMasked": {
+                            "type": "boolean"
                           },
                           "events": {
                             "type": "array",
@@ -16959,6 +16971,10 @@
                           "active": {
                             "type": "boolean"
                           },
+                          "timezone": {
+                            "type": "string",
+                            "description": "The IANA time zone of the weekly digest (Slack and Teams)"
+                          },
                           "createdAt": {
                             "type": "string",
                             "format": "date-time",
@@ -16974,9 +16990,12 @@
                           "id",
                           "organizationId",
                           "projectId",
+                          "kind",
                           "url",
+                          "urlMasked",
                           "events",
                           "active",
+                          "timezone",
                           "createdAt",
                           "updatedAt"
                         ],
@@ -17042,7 +17061,7 @@
         }
       },
       "post": {
-        "summary": "Create a webhook for an organisation or one of its projects; a generated secret is returned once",
+        "summary": "Create a webhook (generic, Slack or Teams) for an organisation or one of its projects; a generated secret (generic only) is returned once",
         "tags": [
           "webhooks"
         ],
@@ -17070,6 +17089,14 @@
                       }
                     ]
                   },
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "generic",
+                      "slack",
+                      "teams"
+                    ]
+                  },
                   "url": {
                     "type": "string",
                     "minLength": 1,
@@ -17079,6 +17106,11 @@
                     "type": "string",
                     "minLength": 16,
                     "maxLength": 256
+                  },
+                  "timezone": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
                   },
                   "events": {
                     "minItems": 1,
@@ -17139,8 +17171,20 @@
                         }
                       ]
                     },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "generic",
+                        "slack",
+                        "teams"
+                      ]
+                    },
                     "url": {
-                      "type": "string"
+                      "type": "string",
+                      "description": "For Slack and Teams webhooks, the URL masked (it is a secret)"
+                    },
+                    "urlMasked": {
+                      "type": "boolean"
                     },
                     "events": {
                       "type": "array",
@@ -17157,6 +17201,10 @@
                     },
                     "active": {
                       "type": "boolean"
+                    },
+                    "timezone": {
+                      "type": "string",
+                      "description": "The IANA time zone of the weekly digest (Slack and Teams)"
                     },
                     "createdAt": {
                       "type": "string",
@@ -17176,9 +17224,12 @@
                     "id",
                     "organizationId",
                     "projectId",
+                    "kind",
                     "url",
+                    "urlMasked",
                     "events",
                     "active",
+                    "timezone",
                     "createdAt",
                     "updatedAt"
                   ],
@@ -17288,8 +17339,20 @@
                         }
                       ]
                     },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "generic",
+                        "slack",
+                        "teams"
+                      ]
+                    },
                     "url": {
-                      "type": "string"
+                      "type": "string",
+                      "description": "For Slack and Teams webhooks, the URL masked (it is a secret)"
+                    },
+                    "urlMasked": {
+                      "type": "boolean"
                     },
                     "events": {
                       "type": "array",
@@ -17307,6 +17370,10 @@
                     "active": {
                       "type": "boolean"
                     },
+                    "timezone": {
+                      "type": "string",
+                      "description": "The IANA time zone of the weekly digest (Slack and Teams)"
+                    },
                     "createdAt": {
                       "type": "string",
                       "format": "date-time",
@@ -17322,9 +17389,12 @@
                     "id",
                     "organizationId",
                     "projectId",
+                    "kind",
                     "url",
+                    "urlMasked",
                     "events",
                     "active",
+                    "timezone",
                     "createdAt",
                     "updatedAt"
                   ],
@@ -17376,7 +17446,7 @@
         }
       },
       "patch": {
-        "summary": "Change the URL, secret (to a provided value), events or active flag",
+        "summary": "Change the URL, secret (to a provided value), events, active flag or time zone",
         "tags": [
           "webhooks"
         ],
@@ -17414,6 +17484,11 @@
                   },
                   "active": {
                     "type": "boolean"
+                  },
+                  "timezone": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
                   }
                 },
                 "additionalProperties": false
@@ -17463,8 +17538,20 @@
                         }
                       ]
                     },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "generic",
+                        "slack",
+                        "teams"
+                      ]
+                    },
                     "url": {
-                      "type": "string"
+                      "type": "string",
+                      "description": "For Slack and Teams webhooks, the URL masked (it is a secret)"
+                    },
+                    "urlMasked": {
+                      "type": "boolean"
                     },
                     "events": {
                       "type": "array",
@@ -17482,6 +17569,10 @@
                     "active": {
                       "type": "boolean"
                     },
+                    "timezone": {
+                      "type": "string",
+                      "description": "The IANA time zone of the weekly digest (Slack and Teams)"
+                    },
                     "createdAt": {
                       "type": "string",
                       "format": "date-time",
@@ -17497,9 +17588,12 @@
                     "id",
                     "organizationId",
                     "projectId",
+                    "kind",
                     "url",
+                    "urlMasked",
                     "events",
                     "active",
+                    "timezone",
                     "createdAt",
                     "updatedAt"
                   ],
@@ -17682,8 +17776,20 @@
                         }
                       ]
                     },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "generic",
+                        "slack",
+                        "teams"
+                      ]
+                    },
                     "url": {
-                      "type": "string"
+                      "type": "string",
+                      "description": "For Slack and Teams webhooks, the URL masked (it is a secret)"
+                    },
+                    "urlMasked": {
+                      "type": "boolean"
                     },
                     "events": {
                       "type": "array",
@@ -17700,6 +17806,10 @@
                     },
                     "active": {
                       "type": "boolean"
+                    },
+                    "timezone": {
+                      "type": "string",
+                      "description": "The IANA time zone of the weekly digest (Slack and Teams)"
                     },
                     "createdAt": {
                       "type": "string",
@@ -17719,9 +17829,12 @@
                     "id",
                     "organizationId",
                     "projectId",
+                    "kind",
                     "url",
+                    "urlMasked",
                     "events",
                     "active",
+                    "timezone",
                     "createdAt",
                     "updatedAt",
                     "secret"
@@ -17762,7 +17875,7 @@
             }
           },
           "409": {
-            "description": "AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed while no audit event is stored; an administrator must restore it (a retry does not help)",
+            "description": "Conflicts with the current state; AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed while no audit event is stored; an administrator must restore it (a retry does not help)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -18120,6 +18233,175 @@
           },
           "409": {
             "description": "AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed while no audit event is stored; an administrator must restore it (a retry does not help)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed (VALIDATION_FAILED; errors[] names each field)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited (RATE_LIMITED); see Retry-After",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v0/webhooks/{id}/test": {
+      "post": {
+        "summary": "Send a test message to a Slack or Teams webhook (a delivery like any other; bounded like redeliveries)",
+        "tags": [
+          "webhooks"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "event": {
+                      "type": "string",
+                      "enum": [
+                        "analysis.completed",
+                        "gate.status_changed",
+                        "gate.failed",
+                        "gate.recovered",
+                        "digest.weekly",
+                        "chat.test"
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "succeeded",
+                        "failed"
+                      ]
+                    },
+                    "attempts": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "responseCode": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "responseExcerpt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "nextAttemptAt": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "event",
+                    "status",
+                    "attempts",
+                    "responseCode",
+                    "responseExcerpt",
+                    "nextAttemptAt",
+                    "createdAt"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated but not allowed (FORBIDDEN, INSUFFICIENT_SCOPE, TOKEN_NOT_ALLOWED, SESSION_REQUIRED, CSRF_FAILED, PASSWORD_CHANGE_REQUIRED)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with the current state",
             "content": {
               "application/problem+json": {
                 "schema": {

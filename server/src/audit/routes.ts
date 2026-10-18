@@ -8,8 +8,9 @@
 export const UNAUDITED_MUTATIONS: ReadonlySet<string> = new Set([
   // Report uploads are not audited.
   'POST /analyses',
-  // Connection tests change nothing.
+  // Connection and webhook tests change nothing.
   'POST /scm-connections/:id/test',
+  'POST /webhooks/:id/test',
   'POST /system/llm/test',
   // Mail E2: reading who an invitation is for changes nothing (POST keeps the secret in the body).
   'POST /auth/invitations/inspect',

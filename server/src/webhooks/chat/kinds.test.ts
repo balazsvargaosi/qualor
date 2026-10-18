@@ -32,7 +32,11 @@ describe('chatUrlProblem (6G R1)', () => {
     ['teams', 'https://acme.webhook.office.com/webhookb2/abc', /Office 365 connectors/],
     ['teams', 'https://outlook.office.com/webhook/abc', /Office 365 connectors/],
     ['teams', 'https://hooks.slack.com/services/T/B/x', /Teams Workflows webhook URL/],
-    ['slack', 'https://u:p@hooks.slack.com/services/T/B/x', /credentials/],
+    [
+      'slack',
+      'https://u:p@hooks.slack.com/services/T/B/x',
+      /^The URL must not contain credentials$/,
+    ],
     ['slack', 'https://hooks.slack.com./services/T/B/x', /trailing dot/],
     ['slack', 'https://hooks.slack.com@evil.example/services/x', /credentials/],
     ['slack', 'https://hооks.slack.com/services/T/B/x', /Slack incoming webhook URL/],

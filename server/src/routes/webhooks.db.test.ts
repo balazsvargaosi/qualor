@@ -10,7 +10,7 @@ import {
   webhookDeliveries,
   webhookSubscriptions,
 } from '../db/schema';
-import { WEBHOOK_QUEUE, WEBHOOK_SECRET_AAD } from '../webhooks/deliveries';
+import { WEBHOOK_QUEUE, WEBHOOK_SECRET_AAD, WEBHOOK_URL_AAD } from '../webhooks/deliveries';
 import {
   MAX_PENDING_DELIVERIES_FOR_REDELIVERY,
   MAX_RECENT_DELIVERIES_FOR_REDELIVERY,
@@ -476,5 +476,199 @@ describe('webhooks API (api.md §3, server step 13)', () => {
       MAX_PENDING_DELIVERIES_FOR_REDELIVERY,
     );
     expect(results.filter((r) => r.statusCode === 429)).toHaveLength(3);
+  });
+});
+
+describe('chat webhooks API (6G)', () => {
+  let h: IngestHarness;
+  let key: Buffer;
+  const SLACK = 'https://hooks.slack.com/services/T0001/B0001/abcdEFGHijklMNOPqrstUVWX';
+  const TEAMS =
+    'https://default0a1b.d1.environment.api.powerplatform.com/powerautomate/automations/direct/workflows/abc/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=TOPsecretSIG1234';
+  const call = (method: 'GET' | 'POST' | 'PATCH' | 'DELETE', url: string, payload?: unknown) =>
+    h.ctx.app.inject({
+      method,
+      url: `/api/v0${url}`,
+      headers: h.orgAdmin.headers,
+      ...(payload === undefined ? {} : { payload: payload as object }),
+    });
+  const chat = async (body: Record<string, unknown> = {}) => {
+    const res = await call('POST', '/webhooks', {
+      organizationId: h.organizationId,
+      kind: 'slack',
+      url: SLACK,
+      events: ['gate.failed', 'gate.recovered', 'digest.weekly'],
+      ...body,
+    });
+    expect(res.statusCode, res.body).toBe(201);
+    return res.json() as Record<string, unknown> & { id: string };
+  };
+
+  beforeAll(async () => {
+    h = await createIngestHarness();
+    key = encryptionKey(h.ctx.config.secretKey);
+  });
+  afterAll(async () => {
+    await h.close();
+  });
+
+  it('creates a Slack webhook: masked URL, no secret, encrypted URL stored (R3)', async () => {
+    const created = await chat({ timezone: 'europe/berlin' });
+    expect(created).toMatchObject({
+      kind: 'slack',
+      url: 'https://hooks.slack.com/services/T…/…/UVWX',
+      urlMasked: true,
+      timezone: 'Europe/Berlin',
+      events: ['gate.failed', 'gate.recovered', 'digest.weekly'],
+    });
+    expect(created).not.toHaveProperty('secret');
+    const [row] = await h.ctx.db
+      .select()
+      .from(webhookSubscriptions)
+      .where(eq(webhookSubscriptions.id, created.id));
+    expect(row!.secretEnc).toBeNull();
+    expect(decryptSecret(key, row!.urlEnc!, WEBHOOK_URL_AAD)).toBe(SLACK);
+    // Never the real URL anywhere a person or a log can read (Review Focus 1).
+    const list = await call('GET', `/webhooks?organizationId=${h.organizationId}`);
+    const one = await call('GET', `/webhooks/${created.id}`);
+    for (const text of [JSON.stringify(created), list.body, one.body, h.ctx.logs.join('\n')]) {
+      expect(text).not.toContain('abcdEFGH');
+    }
+  });
+
+  it('creates a Teams webhook and never shows its signature', async () => {
+    const created = await chat({ kind: 'teams', url: TEAMS });
+    expect(created.url).toBe('https://default0a1b.d1.environment.api.powerplatform.com/…1234');
+    expect(JSON.stringify(created)).not.toContain('TOPsecret');
+  });
+
+  it.each([
+    [{ url: 'https://hooks.example.com/x' }, 'body.url', /Slack incoming webhook URL/],
+    [
+      { kind: 'teams', url: 'https://acme.webhook.office.com/webhookb2/abc' },
+      'body.url',
+      /Office 365 connectors are retired/,
+    ],
+    [{ kind: 'teams', url: 'https://xlogic.azure.com/w' }, 'body.url', /Teams Workflows/],
+    [
+      { url: 'https://u:p@hooks.slack.com/services/T/B/x' },
+      'body.url',
+      /^The URL must not contain credentials$/,
+    ],
+    [{ events: ['analysis.completed'] }, 'body.events', /gate.failed/],
+    [{ timezone: 'Mars/Olympus' }, 'body.timezone', /time zone/],
+    [{ secret: 'a-provided-secret-value' }, 'body.secret', /no secret/],
+    [
+      { kind: 'generic', url: 'https://hooks.example.com/x', events: ['gate.failed'] },
+      'body.events',
+      /analysis.completed/,
+    ],
+    [
+      {
+        kind: 'generic',
+        url: 'https://hooks.example.com/x',
+        events: ['analysis.completed'],
+        timezone: 'UTC',
+      },
+      'body.timezone',
+      /Only Slack and Teams/,
+    ],
+    [{ kind: 'discord' }, 'body.kind', /./],
+  ] as const)('refuses %j with 422 on %s', async (body, path, message) => {
+    const res = await call('POST', '/webhooks', {
+      organizationId: h.organizationId,
+      kind: 'slack',
+      url: SLACK,
+      events: ['gate.failed'],
+      ...body,
+    });
+    expect(res.statusCode, res.body).toBe(422);
+    const error = (res.json() as { errors: { path: string; message: string }[] }).errors[0]!;
+    expect(error.path).toBe(path);
+    expect(error.message).toMatch(message);
+  });
+
+  it('changes a chat webhook URL (re-encrypted, re-masked) and time zone; never its kind', async () => {
+    const created = await chat();
+    const next = 'https://hooks.slack.com/services/T0002/B0002/zzzzzzzzzzzzzzzzzzzz9876';
+    const res = await call('PATCH', `/webhooks/${created.id}`, {
+      url: next,
+      timezone: 'America/New_York',
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toMatchObject({
+      url: 'https://hooks.slack.com/services/T…/…/9876',
+      timezone: 'America/New_York',
+    });
+    const [row] = await h.ctx.db
+      .select()
+      .from(webhookSubscriptions)
+      .where(eq(webhookSubscriptions.id, created.id));
+    expect(decryptSecret(key, row!.urlEnc!, WEBHOOK_URL_AAD)).toBe(next);
+    const kindChange = await call('PATCH', `/webhooks/${created.id}`, { kind: 'teams' });
+    expect(kindChange.statusCode).toBe(422);
+    const teamsUrl = await call('PATCH', `/webhooks/${created.id}`, { url: TEAMS });
+    expect(teamsUrl.statusCode).toBe(422);
+    expect(teamsUrl.json().errors[0].path).toBe('body.url');
+    const secret = await call('PATCH', `/webhooks/${created.id}`, {
+      secret: 'a-provided-secret-value',
+    });
+    expect(secret.statusCode).toBe(422);
+    const regen = await call('POST', `/webhooks/${created.id}/regenerate-secret`);
+    expect(regen.statusCode).toBe(409);
+    expect(regen.json().code).toBe('WEBHOOK_HAS_NO_SECRET');
+  });
+
+  it('queues a test message for a chat webhook (R2), bounded like redeliveries', async () => {
+    const created = await chat();
+    const res = await call('POST', `/webhooks/${created.id}/test`);
+    expect(res.statusCode, res.body).toBe(202);
+    expect(res.json()).toMatchObject({ event: 'chat.test', status: 'pending', attempts: 0 });
+    const [delivery] = await h.ctx.db
+      .select()
+      .from(webhookDeliveries)
+      .where(eq(webhookDeliveries.subscriptionId, created.id));
+    expect(delivery!.payload).toEqual({
+      type: 'test',
+      organization: { id: h.organizationId, name: expect.any(String) },
+      project: null,
+    });
+    for (let i = 1; i < MAX_PENDING_DELIVERIES_FOR_REDELIVERY; i++) {
+      expect((await call('POST', `/webhooks/${created.id}/test`)).statusCode).toBe(202);
+    }
+    const limited = await call('POST', `/webhooks/${created.id}/test`);
+    expect(limited.statusCode).toBe(429);
+    expect(limited.json().code).toBe('REDELIVERY_LIMIT_REACHED');
+  });
+
+  it('refuses a test for a generic or switched-off webhook', async () => {
+    const generic = await call('POST', '/webhooks', {
+      organizationId: h.organizationId,
+      url: 'https://hooks.example.com/qualor',
+      events: ['analysis.completed'],
+    });
+    const g = await call('POST', `/webhooks/${(generic.json() as { id: string }).id}/test`);
+    expect(g.statusCode).toBe(409);
+    expect(g.json().code).toBe('WEBHOOK_TEST_CHAT_ONLY');
+    const off = await chat({ active: false });
+    const o = await call('POST', `/webhooks/${off.id}/test`);
+    expect(o.statusCode).toBe(409);
+    expect(o.json().code).toBe('WEBHOOK_INACTIVE');
+  });
+
+  it('keeps generic webhooks as they were, with kind and UTC in the answer', async () => {
+    const res = await call('POST', '/webhooks', {
+      organizationId: h.organizationId,
+      url: 'https://hooks.example.com/qualor',
+      events: ['analysis.completed'],
+    });
+    expect(res.statusCode).toBe(201);
+    expect(res.json()).toMatchObject({
+      kind: 'generic',
+      urlMasked: false,
+      timezone: 'UTC',
+      url: 'https://hooks.example.com/qualor',
+    });
+    expect(res.json().secret).toMatch(/^whsec_/);
   });
 });

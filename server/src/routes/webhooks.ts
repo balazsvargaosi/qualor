@@ -36,9 +36,19 @@ import {
   DELIVERY_EVENTS,
   WEBHOOK_EVENTS,
   WEBHOOK_SECRET_AAD,
+  WEBHOOK_URL_AAD,
   type DeliveryEvent,
   type WebhookEvent,
 } from '../webhooks/deliveries';
+import {
+  canonicalTimeZone,
+  chatUrlProblem,
+  eventsProblem,
+  isChatKind,
+  maskChatUrl,
+  WEBHOOK_KINDS,
+} from '../webhooks/chat/kinds';
+import type { ChatTestMessage } from '../webhooks/chat/messages';
 import { webhookSettings, webhookUrlProblem } from '../webhooks/url';
 
 type WebhookRow = typeof webhookSubscriptions.$inferSelect;
@@ -75,9 +85,12 @@ const webhookSchema = z.object({
   id: z.uuid(),
   organizationId: z.uuid(),
   projectId: z.uuid().nullable(),
-  url: z.string(),
+  kind: z.enum(WEBHOOK_KINDS),
+  url: z.string().describe('For Slack and Teams webhooks, the URL masked (it is a secret)'),
+  urlMasked: z.boolean(),
   events: z.array(z.enum(WEBHOOK_EVENTS)),
   active: z.boolean(),
+  timezone: z.string().describe('The IANA time zone of the weekly digest (Slack and Teams)'),
   createdAt: timestamp,
   updatedAt: timestamp,
 });
@@ -102,9 +115,12 @@ function webhookDto(row: WebhookRow): z.infer<typeof webhookSchema> {
     id: row.id,
     organizationId: row.organizationId,
     projectId: row.projectId,
+    kind: row.kind,
     url: row.url,
+    urlMasked: row.kind !== 'generic',
     events: row.events as WebhookEvent[],
     active: row.active,
+    timezone: row.timezone,
     createdAt: iso(row.createdAt),
     updatedAt: iso(row.updatedAt),
   };
@@ -130,11 +146,12 @@ function webhookAudit(row: WebhookRow): AuditDetails<'webhook.created'> {
     projectId: row.projectId,
     events: [...row.events],
     active: row.active,
+    kind: row.kind,
   };
 }
 
 /** The fields `webhook.updated` names (never their values). */
-const WEBHOOK_FIELDS = ['url', 'secret', 'events', 'active'] as const;
+const WEBHOOK_FIELDS = ['url', 'secret', 'events', 'active', 'timezone'] as const;
 
 const events = z
   .array(z.enum(WEBHOOK_EVENTS))
@@ -143,6 +160,44 @@ const events = z
   .refine((list) => new Set(list).size === list.length, { message: 'Each event at most once' });
 const secret = noNul(z.string().min(16).max(256));
 const url = noNul(z.string().min(1).max(2_048));
+const timezone = noNul(z.string().min(1).max(64));
+
+/**
+ * True when a webhook already has MAX_PENDING_DELIVERIES_FOR_REDELIVERY pending deliveries or
+ * MAX_RECENT_DELIVERIES_FOR_REDELIVERY redeliveries or tests in the last hour (see above).
+ */
+export async function redeliveryBoundsReached(tx: Executor, webhookId: string): Promise<boolean> {
+  const bounds = await tx.execute<{ pending: number; recent: number }>(sql`
+          SELECT
+            (SELECT count(*)::int FROM (
+               SELECT 1 FROM webhook_deliveries
+                WHERE subscription_id = ${webhookId} AND status = 'pending'
+                  AND (next_attempt_at IS NULL
+                       OR next_attempt_at >= now() - make_interval(mins => ${STALLED_DELIVERY_MINUTES}))
+                LIMIT ${MAX_PENDING_DELIVERIES_FOR_REDELIVERY}) p) AS pending,
+            (SELECT count(*)::int FROM (
+               SELECT 1 FROM webhook_deliveries
+                WHERE subscription_id = ${webhookId} AND created_at > now() - interval '1 hour'
+                  AND CASE WHEN payload ->> 'finishedAt' ~ ${ISO_INSTANT}
+                           THEN created_at > (payload ->> 'finishedAt')::timestamptz + interval '1 second'
+                           ELSE true END
+                LIMIT ${MAX_RECENT_DELIVERIES_FOR_REDELIVERY}) r) AS recent`);
+  const [counts] = bounds.rows;
+  return (
+    !counts ||
+    counts.pending >= MAX_PENDING_DELIVERIES_FOR_REDELIVERY ||
+    counts.recent >= MAX_RECENT_DELIVERIES_FOR_REDELIVERY
+  );
+}
+
+function redeliveryLimit(): ProblemError {
+  return new ProblemError(
+    429,
+    'REDELIVERY_LIMIT_REACHED',
+    `A webhook may have at most ${MAX_PENDING_DELIVERIES_FOR_REDELIVERY} pending deliveries, and ${MAX_RECENT_DELIVERIES_FOR_REDELIVERY} deliveries in the last hour, for a redelivery; retry later`,
+    { headers: { 'retry-after': String(REDELIVERY_RETRY_AFTER_SECONDS) } },
+  );
+}
 
 /**
  * The webhook named in the path. Every webhook route is 🛡 (api.md §3): a missing webhook and one
@@ -204,6 +259,56 @@ export const webhookRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (
     return new URL(raw).href;
   };
 
+  /**
+   * 6G: the stored `url` and `urlEnc` of a URL given for `kind`, after its checks (422 on
+   * `body.url`). Generic URLs are stored as they are; a chat URL is a secret (R3), stored
+   * encrypted with its masked form in `url`.
+   */
+  const storedUrl = async (
+    kind: WebhookRow['kind'],
+    raw: string,
+  ): Promise<{ url: string; urlEnc: WebhookRow['urlEnc'] }> => {
+    if (!isChatKind(kind)) return { url: await checkedUrl(raw), urlEnc: null };
+    const problem = chatUrlProblem(
+      kind,
+      raw,
+      await webhookSettings(deps.db),
+      deps.config.chatTestHosts,
+    );
+    if (problem) throw validationFailed([{ path: 'body.url', message: problem }]);
+    const href = new URL(raw).href;
+    return { url: maskChatUrl(kind, href), urlEnc: encryptSecret(key, href, WEBHOOK_URL_AAD) };
+  };
+
+  /** 422 on `body.timezone` unless the zone is known; its canonical spelling is stored. */
+  const checkedZone = (zone: string): string => {
+    const canonical = canonicalTimeZone(zone);
+    if (canonical === null) {
+      throw validationFailed([{ path: 'body.timezone', message: 'Not a known IANA time zone' }]);
+    }
+    return canonical;
+  };
+
+  /** 6G R4: what a kind does not take, as field errors (422). */
+  const kindRules = (
+    kind: WebhookRow['kind'],
+    body: { events?: readonly string[]; secret?: string; timezone?: string },
+  ): void => {
+    const errors: { path: string; message: string }[] = [];
+    const events = body.events === undefined ? null : eventsProblem(kind, body.events);
+    if (events) errors.push({ path: 'body.events', message: events });
+    if (isChatKind(kind) && body.secret !== undefined) {
+      errors.push({ path: 'body.secret', message: 'Slack and Teams webhooks have no secret' });
+    }
+    if (!isChatKind(kind) && body.timezone !== undefined) {
+      errors.push({
+        path: 'body.timezone',
+        message: 'Only Slack and Teams webhooks have a time zone',
+      });
+    }
+    if (errors.length > 0) throw validationFailed(errors);
+  };
+
   app.get(
     '/webhooks',
     {
@@ -248,12 +353,14 @@ export const webhookRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (
       schema: {
         tags: ['webhooks'],
         summary:
-          'Create a webhook for an organisation or one of its projects; a generated secret is returned once',
+          'Create a webhook (generic, Slack or Teams) for an organisation or one of its projects; a generated secret (generic only) is returned once',
         body: z.strictObject({
           organizationId: z.uuid(),
           projectId: z.uuid().nullable().optional(),
+          kind: z.enum(WEBHOOK_KINDS).optional(),
           url,
           secret: secret.optional(),
+          timezone: timezone.optional(),
           events,
           active: z.boolean().optional(),
         }),
@@ -269,7 +376,10 @@ export const webhookRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (
         body.organizationId,
         'org.webhooks.manage',
       );
-      const webhookUrl = await checkedUrl(body.url);
+      const kind = body.kind ?? 'generic';
+      kindRules(kind, body);
+      const zone = body.timezone === undefined ? 'UTC' : checkedZone(body.timezone);
+      const stored = await storedUrl(kind, body.url);
       const projectId = body.projectId ?? null;
       if (projectId !== null) {
         const [project] = await deps.db
@@ -282,7 +392,8 @@ export const webhookRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (
           ]);
         }
       }
-      const generated = body.secret === undefined ? generateSecret() : undefined;
+      const generated =
+        isChatKind(kind) || body.secret !== undefined ? undefined : generateSecret();
       const plaintext = body.secret ?? generated ?? '';
       const created = await deps.db.transaction(async (tx) => {
         // Serialises concurrent creations for the organisation, so the bound below holds (NO KEY
@@ -308,10 +419,15 @@ export const webhookRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (
             .values({
               organizationId: body.organizationId,
               projectId,
-              url: webhookUrl,
-              secretEnc: encryptSecret(key, plaintext, WEBHOOK_SECRET_AAD),
+              kind,
+              url: stored.url,
+              urlEnc: stored.urlEnc,
+              secretEnc: isChatKind(kind)
+                ? null
+                : encryptSecret(key, plaintext, WEBHOOK_SECRET_AAD),
               events: [...body.events],
               active: body.active ?? true,
+              timezone: zone,
             })
             .returning(),
         );
@@ -344,7 +460,7 @@ export const webhookRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (
     {
       schema: {
         tags: ['webhooks'],
-        summary: 'Change the URL, secret (to a provided value), events or active flag',
+        summary: 'Change the URL, secret (to a provided value), events, active flag or time zone',
         params: idParams,
         body: z
           .strictObject({
@@ -352,6 +468,7 @@ export const webhookRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (
             secret: secret.optional(),
             events: events.optional(),
             active: z.boolean().optional(),
+            timezone: timezone.optional(),
           })
           .refine((b) => Object.keys(b).length > 0, { message: 'At least one field is required' }),
         response: { 200: webhookSchema },
@@ -360,17 +477,20 @@ export const webhookRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (
     async (request) => {
       const webhook = await webhookFor(accessOf(deps), requireUser(request), request.params.id);
       const body = request.body;
-      const webhookUrl = body.url === undefined ? undefined : await checkedUrl(body.url);
+      kindRules(webhook.kind, body);
+      const stored = body.url === undefined ? undefined : await storedUrl(webhook.kind, body.url);
+      const zone = body.timezone === undefined ? undefined : checkedZone(body.timezone);
       const updated = await deps.db.transaction(async (tx) => {
         const [row] = await tx
           .update(webhookSubscriptions)
           .set({
-            ...(webhookUrl === undefined ? {} : { url: webhookUrl }),
+            ...(stored === undefined ? {} : { url: stored.url, urlEnc: stored.urlEnc }),
             ...(body.secret === undefined
               ? {}
               : { secretEnc: encryptSecret(key, body.secret, WEBHOOK_SECRET_AAD) }),
             ...(body.events === undefined ? {} : { events: [...body.events] }),
             ...(body.active === undefined ? {} : { active: body.active }),
+            ...(zone === undefined ? {} : { timezone: zone }),
           })
           .where(eq(webhookSubscriptions.id, webhook.id))
           .returning();
@@ -379,6 +499,10 @@ export const webhookRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (
         const changed = WEBHOOK_FIELDS.filter((field) => {
           if (field === 'secret') return body.secret !== undefined;
           if (field === 'events') return row.events.join(',') !== webhook.events.join(',');
+          // A chat URL is a secret: sending one is a change even when its masked form is equal.
+          if (field === 'url') {
+            return stored !== undefined && (isChatKind(row.kind) || row.url !== webhook.url);
+          }
           return row[field] !== webhook[field];
         });
         if (changed.length > 0) await audit(tx, request, row, 'webhook.updated', { changed });
@@ -391,6 +515,7 @@ export const webhookRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (
   app.post(
     '/webhooks/:id/regenerate-secret',
     {
+      config: { openapi: { problems: [404, 409] } },
       schema: {
         tags: ['webhooks'],
         summary: 'Replace the secret with a generated one, returned once in this response',
@@ -400,6 +525,9 @@ export const webhookRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (
     },
     async (request) => {
       const webhook = await webhookFor(accessOf(deps), requireUser(request), request.params.id);
+      if (isChatKind(webhook.kind)) {
+        throw conflict('WEBHOOK_HAS_NO_SECRET', 'Slack and Teams webhooks have no secret');
+      }
       const generated = generateSecret();
       const updated = await deps.db.transaction(async (tx) => {
         const [row] = await tx
@@ -501,34 +629,7 @@ export const webhookRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (
             ),
           );
         if (!original) throw notFound('Delivery');
-        const bounds = await tx.execute<{ pending: number; recent: number }>(sql`
-          SELECT
-            (SELECT count(*)::int FROM (
-               SELECT 1 FROM webhook_deliveries
-                WHERE subscription_id = ${webhook.id} AND status = 'pending'
-                  AND (next_attempt_at IS NULL
-                       OR next_attempt_at >= now() - make_interval(mins => ${STALLED_DELIVERY_MINUTES}))
-                LIMIT ${MAX_PENDING_DELIVERIES_FOR_REDELIVERY}) p) AS pending,
-            (SELECT count(*)::int FROM (
-               SELECT 1 FROM webhook_deliveries
-                WHERE subscription_id = ${webhook.id} AND created_at > now() - interval '1 hour'
-                  AND CASE WHEN payload ->> 'finishedAt' ~ ${ISO_INSTANT}
-                           THEN created_at > (payload ->> 'finishedAt')::timestamptz + interval '1 second'
-                           ELSE true END
-                LIMIT ${MAX_RECENT_DELIVERIES_FOR_REDELIVERY}) r) AS recent`);
-        const [counts] = bounds.rows;
-        if (
-          !counts ||
-          counts.pending >= MAX_PENDING_DELIVERIES_FOR_REDELIVERY ||
-          counts.recent >= MAX_RECENT_DELIVERIES_FOR_REDELIVERY
-        ) {
-          throw new ProblemError(
-            429,
-            'REDELIVERY_LIMIT_REACHED',
-            `A webhook may have at most ${MAX_PENDING_DELIVERIES_FOR_REDELIVERY} pending deliveries, and ${MAX_RECENT_DELIVERIES_FOR_REDELIVERY} deliveries in the last hour, for a redelivery; retry later`,
-            { headers: { 'retry-after': String(REDELIVERY_RETRY_AFTER_SECONDS) } },
-          );
-        }
+        if (await redeliveryBoundsReached(tx, webhook.id)) throw redeliveryLimit();
         const id = await createDelivery(tx, {
           subscriptionId: webhook.id,
           event: original.event as DeliveryEvent,
@@ -545,6 +646,66 @@ export const webhookRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (
         return created;
       });
       return reply.code(202).send(deliveryDto(redelivered));
+    },
+  );
+
+  app.post(
+    '/webhooks/:id/test',
+    {
+      config: { openapi: { problems: [404, 409, 429] } },
+      schema: {
+        tags: ['webhooks'],
+        summary:
+          'Send a test message to a Slack or Teams webhook (a delivery like any other; bounded like redeliveries)',
+        params: idParams,
+        response: { 202: deliverySchema },
+      },
+    },
+    async (request, reply) => {
+      const webhook = await webhookFor(accessOf(deps), requireUser(request), request.params.id);
+      if (!isChatKind(webhook.kind)) {
+        throw conflict(
+          'WEBHOOK_TEST_CHAT_ONLY',
+          'Only Slack and Teams webhooks have a test message',
+        );
+      }
+      if (!webhook.active) {
+        throw conflict('WEBHOOK_INACTIVE', 'Switch the webhook on to send a test message');
+      }
+      const queued = await deps.db.transaction(async (tx) => {
+        // The same serialisation as a redelivery, so the bounds hold under concurrency.
+        const [locked] = await tx
+          .select({ id: webhookSubscriptions.id })
+          .from(webhookSubscriptions)
+          .where(eq(webhookSubscriptions.id, webhook.id))
+          .for('no key update');
+        if (!locked) throw notFound('Webhook');
+        if (await redeliveryBoundsReached(tx, webhook.id)) throw redeliveryLimit();
+        // The names the message shows (audit refs carry keys only).
+        const [organization] = await tx
+          .select({ name: organizations.name })
+          .from(organizations)
+          .where(eq(organizations.id, webhook.organizationId));
+        const [project] =
+          webhook.projectId === null
+            ? [undefined]
+            : await tx
+                .select({ id: projects.id, name: projects.name })
+                .from(projects)
+                .where(eq(projects.id, webhook.projectId));
+        const payload: ChatTestMessage = {
+          type: 'test',
+          organization: { id: webhook.organizationId, name: organization?.name ?? '' },
+          project: project === undefined ? null : { id: project.id, name: project.name },
+        };
+        const id = await createDelivery(tx, {
+          subscriptionId: webhook.id,
+          event: 'chat.test',
+          payload,
+        });
+        return first(await tx.select().from(webhookDeliveries).where(eq(webhookDeliveries.id, id)));
+      });
+      return reply.code(202).send(deliveryDto(queued));
     },
   );
 };

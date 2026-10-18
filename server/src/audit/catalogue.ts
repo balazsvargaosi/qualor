@@ -170,6 +170,8 @@ const webhookRef = z.strictObject({
   projectId: nullableId,
   events: z.array(z.string().max(64)).max(10),
   active: z.boolean(),
+  /** 6G: the webhook's kind. */
+  kind: z.enum(['generic', 'slack', 'teams']),
 });
 const tokenRef = z.strictObject({ name: str, prefix: z.string().max(16) });
 /** sso-scim.md §12.8: every SCIM event names the token and the connection that made it. */

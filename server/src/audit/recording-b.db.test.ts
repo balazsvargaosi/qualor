@@ -486,6 +486,7 @@ describe('audit recording B (rbac-audit.md §8, §9): gates, profiles, issues, S
         projectId: p.id,
         events: ['analysis.completed'],
         active: true,
+        kind: 'generic',
       },
     });
 
@@ -529,6 +530,25 @@ describe('audit recording B (rbac-audit.md §8, §9): gates, profiles, issues, S
     ]) {
       expect(all).not.toContain(hidden);
     }
+  });
+
+  it('webhook.created of a Slack webhook: its kind and origin, never the URL (6G)', async () => {
+    const res = await call('POST', '/webhooks', {
+      organizationId: org,
+      kind: 'slack',
+      url: 'https://hooks.slack.com/services/T0AUD/B0AUD/AUDITsecretPART1234',
+      events: ['gate.failed'],
+    });
+    expect(res.statusCode, res.body).toBe(201);
+    const { id } = res.json() as { id: string };
+    const e = await latest('webhook.created');
+    expect(e).toMatchObject({
+      targetType: 'webhook',
+      targetId: id,
+      details: { kind: 'slack', origin: 'https://hooks.slack.com', events: ['gate.failed'] },
+    });
+    expect(JSON.stringify(e)).not.toContain('AUDITsecret');
+    expect(JSON.stringify(await h.ctx.db.select().from(auditEvents))).not.toContain('AUDITsecret');
   });
 
   it('records an AI request sent to the provider (not a cached answer) and a queued fix post', async () => {
