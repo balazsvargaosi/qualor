@@ -286,6 +286,7 @@
                   name="webhook-kind"
                   [id]="'webhook-kind-' + k"
                   [checked]="kind() === k"
+                  [attr.autofocus]="kind() === k ? '' : null"
                   (change)="setKind(k)"
                 />
                 <span>{{ kindLabel(k) }}</span>
@@ -299,7 +300,6 @@
               id="webhook-url"
               type="url"
               required
-              autofocus
               maxlength="2048"
               autocomplete="off"
               spellcheck="false"

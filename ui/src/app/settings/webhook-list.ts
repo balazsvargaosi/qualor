@@ -623,7 +623,7 @@ export class WebhookList {
 
   /** 6G R2: a test message through the delivery queue; the deliveries are read again soon. */
   protected async sendTest(webhook: Webhook): Promise<void> {
-    if (this.testing().has(webhook.id)) return;
+    if (this.busy() || this.testing().has(webhook.id)) return;
     const generation = this.orgGeneration;
     const mark = (on: boolean) =>
       this.testing.update((set) => {

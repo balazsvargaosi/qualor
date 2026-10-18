@@ -633,6 +633,9 @@ describe('WebhookList: Slack and Teams (6G)', () => {
       'Microsoft Teams',
     ]);
     expect(root.querySelector<HTMLInputElement>('#webhook-kind-generic')!.checked).toBe(true);
+    // The dialog opens on the Type choice, not on the URL field.
+    expect(root.querySelector('#webhook-kind-generic')!.hasAttribute('autofocus')).toBe(true);
+    expect(root.querySelector('#webhook-url')!.hasAttribute('autofocus')).toBe(false);
     expect(root.querySelector('#webhook-timezone')).toBeNull();
     chooseKind(root, 'slack');
     await settle(fixture);
@@ -782,6 +785,32 @@ describe('WebhookList: Slack and Teams (6G)', () => {
     const buttons = [...panel.querySelectorAll('button')].map((b) => b.textContent!.trim());
     expect(buttons).not.toContain('Send test');
     expect(buttons).toContain('Rotate secret');
+  });
+
+  it('does not send a test while another change runs', async () => {
+    const server = setup();
+    server.on('GET', '/api/v0/webhooks', { body: page([chatWebhook()]) });
+    server.on('GET', '/api/v0/webhooks/w1/deliveries', { body: page([]) });
+    let release: () => void = () => undefined;
+    server.on('PATCH', '/api/v0/webhooks/w1', () => {
+      const hold = held({ body: { ...chatWebhook(), active: false } });
+      release = hold.release;
+      return hold.promise;
+    });
+    const fixture = render();
+    await settle(fixture);
+    const root = fixture.nativeElement as HTMLElement;
+    const button = (name: string) =>
+      [...root.querySelectorAll<HTMLButtonElement>('section button')].find(
+        (b) => b.textContent!.trim() === name,
+      )!;
+    button('Switch off').click();
+    await settle(fixture);
+    button('Send test').click();
+    await settle(fixture);
+    expect(server.requestsTo('POST', '/api/v0/webhooks/w1/test')).toHaveLength(0);
+    release();
+    await settle(fixture);
   });
 
   it('says why a test was refused', async () => {
