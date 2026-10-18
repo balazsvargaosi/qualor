@@ -6,6 +6,8 @@ All notable changes to Qualor are listed here, newest first. The format follows
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-18
+
 ### Added
 
 - MCP server at `/mcp` with OAuth sign-in (Claude Code, Cursor, claude.ai and other MCP clients):
