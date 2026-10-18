@@ -1,4 +1,5 @@
 import type { McpTool } from '../tool';
+import { explainTool, suggestFixTool } from './ai';
 import { gateStatusTool } from './gate-status';
 import { issueTool } from './issue';
 import { issuesTool } from './issues';
@@ -14,4 +15,6 @@ export const MCP_TOOLS: readonly McpTool[] = [
   issueTool,
   ruleTool,
   measuresTool,
+  explainTool,
+  suggestFixTool,
 ] as readonly McpTool[];
