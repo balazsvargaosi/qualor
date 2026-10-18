@@ -9,7 +9,7 @@ import {
   type TestContext,
 } from '../../test/app';
 import { mcpCall } from '../../test/mcp';
-import { oauthTokens as runOAuth } from '../../test/oauth';
+import { oauthTokens as runOAuth, tokenRequest } from '../../test/oauth';
 import { rbacContext } from '../../test/rbac';
 import { auditEvents, oauthGrants } from '../db/schema';
 
@@ -58,6 +58,14 @@ describe('connected apps', () => {
     });
     expect(del.statusCode).toBe(204);
     expect((await mcpCall(ctx, t.accessToken, 'tools/list')).status).toBe(401);
+    // The refresh token dies with the grant, so the app cannot mint a new access token either.
+    const refresh = await tokenRequest(ctx, {
+      grant_type: 'refresh_token',
+      refresh_token: t.refreshToken,
+      client_id: t.clientId,
+    });
+    expect(refresh.statusCode).toBe(400);
+    expect(refresh.json()).toMatchObject({ error: 'invalid_grant' });
     expect(await mine()).toEqual([]);
     // Already revoked: gone.
     const again = await ctx.app.inject({

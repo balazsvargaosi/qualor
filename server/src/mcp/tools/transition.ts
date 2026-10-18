@@ -1,11 +1,10 @@
 import { z } from 'zod';
 import { issueLine, type IssueListItem } from '../format';
-import { cleanClientName, unwrap } from '../inject';
+import { clientLabel, unwrap } from '../inject';
 import type { McpTool } from '../tool';
 
 /** The line appended to every comment the tool stores, so reviewers see the change came from an agent. */
-export const MCP_VIA_LINE = (clientName: string): string =>
-  `via MCP · ${cleanClientName(clientName) || 'unnamed client'}`;
+export const MCP_VIA_LINE = (clientName: string): string => `via MCP · ${clientLabel(clientName)}`;
 
 /**
  * Room left for the agent's own words: the route stores at most 2 000 characters (UTF-16 units)

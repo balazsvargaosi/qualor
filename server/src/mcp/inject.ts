@@ -69,9 +69,14 @@ export function cleanClientName(clientName: string): string {
   return Array.from(clean).slice(0, CLIENT_NAME_MAX).join('').trim();
 }
 
-/** The user agent of an internal call: `qualor-mcp (<client name>)`. */
+/** The cleaned client name, or `unnamed client` when nothing printable is left. */
+export function clientLabel(clientName: string): string {
+  return cleanClientName(clientName) || 'unnamed client';
+}
+
+/** The user agent of an internal call: `qualor-mcp (<client label>)`. */
 export function mcpUserAgent(clientName: string): string {
-  return `qualor-mcp (${cleanClientName(clientName)})`;
+  return `qualor-mcp (${clientLabel(clientName)})`;
 }
 
 /** Repeated keys for arrays: the issue list's `many(...)` filters parse repeated parameters. */
