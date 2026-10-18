@@ -35,7 +35,11 @@ export async function authorizeAndApprove(
     code_challenge: pkceS256(TEST_VERIFIER),
     code_challenge_method: 'S256',
   });
-  const auth = await ctx.app.inject({ method: 'GET', url: `/oauth/authorize?${q}` });
+  const auth = await ctx.app.inject({
+    method: 'GET',
+    url: `/oauth/authorize?${q}`,
+    remoteAddress: nextIp(),
+  });
   const id = new URL(auth.headers.location as string, 'https://x').searchParams.get('request');
   if (!id) throw new Error(`authorize failed: ${auth.statusCode} ${auth.body}`);
   // Reading binds the request to this user.

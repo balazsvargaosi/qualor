@@ -1,8 +1,9 @@
-import type { FastifyError, FastifyPluginAsync } from 'fastify';
+import type { FastifyError, FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { RouteDeps } from '../app';
 import { ProblemError } from '../http/problem';
-import { anonymousActor, SYSTEM_ACTOR } from '../audit/recorder';
+import { anonymousActor } from '../audit/recorder';
+import { LoginThrottle } from '../auth/throttle';
 import { registerDcrClient, resolveClient } from './clients';
 import {
   authorizationRedirect,
@@ -30,6 +31,13 @@ import type { McpUrls } from './urls';
 
 /** `/mcp` has its own CORS in the MCP plugin (mcp/endpoint.ts). */
 const CORS_PATHS = new Set(['/oauth/register', '/oauth/token', '/oauth/revoke']);
+
+/** Authorize calls one address may make per minute; each inserts a pending request. */
+const AUTHORIZE_PER_MINUTE = 60;
+/** Of those, the ones that fetch a client's metadata document (a CIMD cache miss). */
+const CIMD_FETCHES = { max: 10, windowMs: 60_000 };
+
+const TOO_MANY = 'Too many connection attempts from this address. Try again in a minute.';
 
 const registrationSchema = z.looseObject({
   redirect_uris: z.array(z.string().max(2048)).max(20),
@@ -68,6 +76,10 @@ export const oauthRoutes: FastifyPluginAsync<{ deps: RouteDeps; urls: McpUrls }>
   // JSON here too. Encapsulated in this plugin; /api/v0 keeps problem+json.
   app.setErrorHandler((error: FastifyError, request, reply) => {
     const status = error instanceof ProblemError ? error.status : (error.statusCode ?? 500);
+    // The browser endpoint answers in pages, never a redirect to a client not yet trusted.
+    if (status === 429 && request.routeOptions.url === '/oauth/authorize') {
+      return errorPage(reply, 429, 'Cannot connect', TOO_MANY);
+    }
     if (status === 429) {
       return oauthError(reply, 429, 'temporarily_unavailable', 'Too many requests; retry later');
     }
@@ -114,84 +126,99 @@ export const oauthRoutes: FastifyPluginAsync<{ deps: RouteDeps; urls: McpUrls }>
     resource_name: 'Qualor',
   }));
 
+  // Each address's CIMD fetches (outbound requests, then a client upsert) are counted on their own.
+  const cimdFetches = new LoginThrottle(CIMD_FETCHES);
+
   // Spec §6 steps 1-3: validate, then hand the browser to the consent screen. Until the client and
   // its redirect URI are trusted, errors are pages that never redirect (RFC 6749 §4.1.2.1).
-  app.get('/oauth/authorize', { config: { public: true } }, async (request, reply) => {
-    const q = request.query as Record<string, unknown>;
-    const str = (k: string) => (typeof q[k] === 'string' ? q[k] : null);
-    // Present but not a single string (a repeated parameter): never fall back to a default.
-    const malformed = (k: string) => k in q && typeof q[k] !== 'string';
-    if (malformed('client_id') || malformed('redirect_uri')) {
-      return errorPage(reply, 400, 'Cannot connect', 'The request is malformed.');
-    }
-    const clientIdParam = str('client_id');
-    if (!clientIdParam)
-      return errorPage(reply, 400, 'Cannot connect', 'The request names no client.');
-    const policy = await readMcpPolicy(deps.db);
-    const resolved = await resolveClient({ db: deps.db, policy }, clientIdParam);
-    if (!resolved.ok) {
-      return errorPage(reply, 400, 'Cannot connect', clientErrorText(resolved.error));
-    }
-    const client = resolved.client;
-    const presented = str('redirect_uri');
-    const redirectUri =
-      presented ?? (client.redirectUris.length === 1 ? client.redirectUris[0] : null);
-    if (!redirectUri || !redirectUriMatches(client.redirectUris, redirectUri)) {
-      return errorPage(
-        reply,
-        400,
-        'Cannot connect',
-        'The redirect URI is not registered for this client.',
+  // Unauthenticated and each call writes a row, so it is limited per address.
+  app.get(
+    '/oauth/authorize',
+    { config: { public: true, rateLimit: { max: AUTHORIZE_PER_MINUTE, timeWindow: '1 minute' } } },
+    async (request, reply) => {
+      const q = request.query as Record<string, unknown>;
+      const str = (k: string) => (typeof q[k] === 'string' ? q[k] : null);
+      // Present but not a single string (a repeated parameter): never fall back to a default.
+      const malformed = (k: string) => k in q && typeof q[k] !== 'string';
+      if (malformed('client_id') || malformed('redirect_uri')) {
+        return errorPage(reply, 400, 'Cannot connect', 'The request is malformed.');
+      }
+      const clientIdParam = str('client_id');
+      if (!clientIdParam)
+        return errorPage(reply, 400, 'Cannot connect', 'The request names no client.');
+      const policy = await readMcpPolicy(deps.db);
+      const resolved = await resolveClient(
+        { db: deps.db, policy, allowFetch: () => cimdFetches.hit(request.ip) },
+        clientIdParam,
       );
-    }
-    const state = str('state');
-    if (state !== null && state.length > 2048) {
-      return errorPage(reply, 400, 'Cannot connect', 'The state parameter is too long.');
-    }
-    const fail = (error: string, description: string) =>
-      reply.header('cache-control', 'no-store').redirect(
-        authorizationRedirect(redirectUri, {
-          error,
-          error_description: description,
-          state,
-          iss: urls.issuer,
-        }),
-        302,
-      );
-    const REST = [
-      'response_type',
-      'scope',
-      'state',
-      'code_challenge',
-      'code_challenge_method',
-      'resource',
-    ];
-    if (REST.some(malformed)) return fail('invalid_request', 'A parameter is repeated');
-    if (str('response_type') !== 'code')
-      return fail('unsupported_response_type', 'Only code is supported');
-    const challenge = str('code_challenge');
-    if (!challenge || !isCodeChallenge(challenge) || str('code_challenge_method') !== 'S256') {
-      return fail('invalid_request', 'PKCE with S256 is required');
-    }
-    const scopes = parseScopes(str('scope'));
-    if (!scopes) return fail('invalid_scope', 'Only mcp:read and mcp:write exist');
-    const resource = str('resource') ?? urls.resource;
-    if (resource !== urls.resource)
-      return fail('invalid_target', `The only resource is ${urls.resource}`);
-    const pending = await createPendingRequest(deps.db, {
-      clientRowId: client.id,
-      redirectUri,
-      state,
-      scopes,
-      codeChallenge: challenge,
-      resource,
-    });
-    // The UI lives next to the API under the public URL's path (the proxy strips it before us).
-    const basePath = new URL(urls.issuer).pathname.replace(/\/+$/, '');
-    return reply
-      .header('cache-control', 'no-store')
-      .redirect(`${basePath}/oauth/consent?request=${pending.id}`, 302);
-  });
+      if (!resolved.ok) {
+        const { error } = resolved;
+        if (error === 'cimd_rate_limited') {
+          return errorPage(reply.header('retry-after', '60'), 429, 'Cannot connect', TOO_MANY);
+        }
+        return errorPage(reply, 400, 'Cannot connect', clientErrorText(error));
+      }
+      const client = resolved.client;
+      const presented = str('redirect_uri');
+      const redirectUri =
+        presented ?? (client.redirectUris.length === 1 ? client.redirectUris[0] : null);
+      if (!redirectUri || !redirectUriMatches(client.redirectUris, redirectUri)) {
+        return errorPage(
+          reply,
+          400,
+          'Cannot connect',
+          'The redirect URI is not registered for this client.',
+        );
+      }
+      const state = str('state');
+      if (state !== null && state.length > 2048) {
+        return errorPage(reply, 400, 'Cannot connect', 'The state parameter is too long.');
+      }
+      const fail = (error: string, description: string) =>
+        reply.header('cache-control', 'no-store').redirect(
+          authorizationRedirect(redirectUri, {
+            error,
+            error_description: description,
+            state,
+            iss: urls.issuer,
+          }),
+          302,
+        );
+      const REST = [
+        'response_type',
+        'scope',
+        'state',
+        'code_challenge',
+        'code_challenge_method',
+        'resource',
+      ];
+      if (REST.some(malformed)) return fail('invalid_request', 'A parameter is repeated');
+      if (str('response_type') !== 'code')
+        return fail('unsupported_response_type', 'Only code is supported');
+      const challenge = str('code_challenge');
+      if (!challenge || !isCodeChallenge(challenge) || str('code_challenge_method') !== 'S256') {
+        return fail('invalid_request', 'PKCE with S256 is required');
+      }
+      const scopes = parseScopes(str('scope'));
+      if (!scopes) return fail('invalid_scope', 'Only mcp:read and mcp:write exist');
+      const resource = str('resource') ?? urls.resource;
+      if (resource !== urls.resource)
+        return fail('invalid_target', `The only resource is ${urls.resource}`);
+      const pending = await createPendingRequest(deps.db, {
+        clientRowId: client.id,
+        redirectUri,
+        state,
+        scopes,
+        codeChallenge: challenge,
+        resource,
+      });
+      // The UI lives next to the API under the public URL's path (the proxy strips it before us).
+      const basePath = new URL(urls.issuer).pathname.replace(/\/+$/, '');
+      return reply
+        .header('cache-control', 'no-store')
+        .redirect(`${basePath}/oauth/consent?request=${pending.id}`, 302);
+    },
+  );
 
   app.post(
     '/oauth/register',
@@ -270,15 +297,18 @@ export const oauthRoutes: FastifyPluginAsync<{ deps: RouteDeps; urls: McpUrls }>
     },
   );
 
-  // Nobody acted on a reuse (the server detected it); the event commits with the revocation.
-  const onRevoked: OnGrantRevoked = (tx, grant) =>
-    deps.audit.recordOrSkipWhenAnchorMalformed(tx, SYSTEM_ACTOR, [
-      {
-        action: 'oauth.grant_revoked',
-        target: { type: 'oauth_grant', id: grant.id, label: null },
-        details: { clientId: grant.clientId, reason: grant.reason },
-      },
-    ]);
+  // No signed-in user acts here (a reuse is detected, a revocation comes from the client); the
+  // caller's address and user agent are kept, and the event commits with the revocation.
+  const onRevoked =
+    (request: FastifyRequest): OnGrantRevoked =>
+    (tx, grant) =>
+      deps.audit.recordOrSkipWhenAnchorMalformed(tx, anonymousActor(request, null), [
+        {
+          action: 'oauth.grant_revoked',
+          target: { type: 'oauth_grant', id: grant.id, label: null },
+          details: { clientId: grant.clientId, reason: grant.reason },
+        },
+      ]);
 
   // Spec §6 steps 7-8: public clients, so no client authentication; PKCE and the code bind the call.
   app.post(
@@ -328,7 +358,7 @@ export const oauthRoutes: FastifyPluginAsync<{ deps: RouteDeps; urls: McpUrls }>
               resourceExpected: urls.resource,
             },
             new Date(),
-            onRevoked,
+            onRevoked(request),
           ),
         );
       }
@@ -352,7 +382,7 @@ export const oauthRoutes: FastifyPluginAsync<{ deps: RouteDeps; urls: McpUrls }>
             deps.db,
             { refreshToken: token, clientId, scopes, resource, resourceExpected: urls.resource },
             new Date(),
-            onRevoked,
+            onRevoked(request),
           ),
         );
       }
@@ -376,7 +406,7 @@ export const oauthRoutes: FastifyPluginAsync<{ deps: RouteDeps; urls: McpUrls }>
       const token = param(request.body, 'token');
       const clientId = param(request.body, 'client_id');
       if (token && clientId) {
-        await revokeToken(deps.db, { token, clientId }, new Date(), onRevoked);
+        await revokeToken(deps.db, { token, clientId }, new Date(), onRevoked(request));
       }
       return reply.code(200).header('cache-control', 'no-store').send();
     },

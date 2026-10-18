@@ -12,7 +12,12 @@ export type ClientResolution =
   | { ok: true; client: ClientRow }
   | {
       ok: false;
-      error: 'unknown_client' | 'client_not_allowed' | 'cimd_disabled' | 'cimd_invalid';
+      error:
+        | 'unknown_client'
+        | 'client_not_allowed'
+        | 'cimd_disabled'
+        | 'cimd_invalid'
+        | 'cimd_rate_limited';
       reason?: string;
     };
 
@@ -30,6 +35,8 @@ export interface ClientDeps {
   resolve?: Resolver;
   /** Tests substitute the CIMD fetch. */
   fetchDocument?: (url: string) => Promise<CimdResult>;
+  /** Asked before each CIMD fetch (a cache miss); false refuses it as `cimd_rate_limited`. */
+  allowFetch?: () => boolean;
   now?: () => Date;
 }
 
@@ -58,6 +65,7 @@ export async function resolveClient(deps: ClientDeps, clientId: string): Promise
   if (row && row.expiresAt && row.expiresAt.getTime() > now.getTime()) {
     return { ok: true, client: row };
   }
+  if (deps.allowFetch && !deps.allowFetch()) return { ok: false, error: 'cimd_rate_limited' };
   const fetchDocument =
     deps.fetchDocument ??
     ((url: string) => fetchCimd(url, deps.resolve ? { resolve: deps.resolve } : {}));

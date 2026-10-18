@@ -386,7 +386,10 @@ describe('OAuth grant revocation audit', () => {
       expect((await tokenRequest(ctx, form)).statusCode).toBe(200);
       expect((await tokenRequest(ctx, form)).statusCode).toBe(400);
       const reuse = await latest();
-      expect(reuse?.actorType).toBe('system');
+      // The request context is kept: no user acted, but the address and user agent are known.
+      expect(reuse?.actorType).toBe('anonymous');
+      expect(reuse?.ip).toBe('127.0.0.1');
+      expect(reuse?.userAgent).toBe('lightMyRequest');
       expect(reuse?.targetType).toBe('oauth_grant');
       expect(reuse?.details).toMatchObject({ clientId: t.clientId, reason: 'refresh_reuse' });
 
@@ -401,7 +404,9 @@ describe('OAuth grant revocation audit', () => {
       };
       expect((await tokenRequest(ctx, exchange)).statusCode).toBe(200);
       expect((await tokenRequest(ctx, exchange)).statusCode).toBe(400);
-      expect((await latest())?.details).toMatchObject({ clientId, reason: 'code_reuse' });
+      const codeReuse = await latest();
+      expect(codeReuse?.details).toMatchObject({ clientId, reason: 'code_reuse' });
+      expect(codeReuse?.ip).toBe('127.0.0.1');
 
       const u = await oauthTokens(ctx, admin);
       const res = await ctx.app.inject({
@@ -411,7 +416,9 @@ describe('OAuth grant revocation audit', () => {
         payload: new URLSearchParams({ token: u.refreshToken, client_id: u.clientId }).toString(),
       });
       expect(res.statusCode).toBe(200);
-      expect((await latest())?.details).toMatchObject({ clientId: u.clientId, reason: 'user' });
+      const revoked = await latest();
+      expect(revoked?.details).toMatchObject({ clientId: u.clientId, reason: 'user' });
+      expect(revoked?.ip).toBe('127.0.0.1');
     } finally {
       await ctx.close();
     }

@@ -14,7 +14,7 @@ import {
 } from '../../test/app';
 import { rbacContext } from '../../test/rbac';
 import { SESSION_COOKIE } from '../auth/sessions';
-import { auditEvents, oauthGrants, oauthRequests } from '../db/schema';
+import { auditEvents, oauthClients, oauthGrants, oauthRequests } from '../db/schema';
 import { decide } from './grants';
 import { pkceS256 } from './tokens';
 
@@ -49,7 +49,7 @@ const authorizeWith =
       ...over,
     };
     for (const [k, v] of Object.entries(params)) if (v !== undefined) q.set(k, v);
-    return ctx.app.inject({ method: 'GET', url: `/oauth/authorize?${q}` });
+    return ctx.app.inject({ method: 'GET', url: `/oauth/authorize?${q}`, remoteAddress: nextIp() });
   };
 
 /** The request id out of the consent redirect an authorize call answered with. */
@@ -452,5 +452,64 @@ describe('grants, policy and request hygiene', () => {
     const ttl = (row?.expiresAt.getTime() ?? 0) - before;
     expect(ttl).toBeGreaterThan(50_000);
     expect(ttl).toBeLessThan(70_000);
+  });
+});
+
+describe('GET /oauth/authorize rate limits', () => {
+  let ctx: TestContext;
+  let clientId: string;
+  beforeAll(async () => {
+    ctx = await createTestContext({ config: { publicUrl: 'https://q.example' } });
+    clientId = await registerClient(ctx);
+  });
+  afterAll(async () => {
+    await ctx.close();
+  });
+
+  const call = (id: string, ip: string) =>
+    ctx.app.inject({
+      method: 'GET',
+      url: `/oauth/authorize?${new URLSearchParams({
+        response_type: 'code',
+        client_id: id,
+        redirect_uri: 'http://127.0.0.1/callback',
+        code_challenge: pkceS256(VERIFIER),
+        code_challenge_method: 'S256',
+      })}`,
+      remoteAddress: ip,
+    });
+
+  it('answers the 61st call a minute from one address with a 429 page, never a redirect', async () => {
+    const ip = nextIp();
+    for (let i = 0; i < 60; i += 1) expect((await call(clientId, ip)).statusCode).toBe(302);
+    const limited = await call(clientId, ip);
+    expect(limited.statusCode).toBe(429);
+    expect(limited.headers.location).toBeUndefined();
+    expect(limited.headers['content-type']).toContain('text/html');
+    expect(limited.body).toContain('Too many connection attempts');
+    // Another address is not affected.
+    expect((await call(clientId, nextIp())).statusCode).toBe(302);
+  });
+
+  it('allows one address 10 CIMD fetches a minute; cached documents and DCR clients are not counted', async () => {
+    const ip = nextIp();
+    // A public-address check refuses the fetch at once: each call is a cache miss that fetched.
+    const uncached = 'https://127.0.0.1/client.json';
+    for (let i = 0; i < 10; i += 1) expect((await call(uncached, ip)).statusCode).toBe(400);
+    const limited = await call(uncached, ip);
+    expect(limited.statusCode).toBe(429);
+    expect(limited.headers['retry-after']).toBe('60');
+    expect(limited.headers.location).toBeUndefined();
+    expect(limited.body).toContain('Too many connection attempts');
+    await ctx.db.insert(oauthClients).values({
+      clientId: 'https://cached.example/client.json',
+      source: 'cimd',
+      name: 'Cached',
+      redirectUris: ['http://127.0.0.1/callback'],
+      metadata: {},
+      expiresAt: new Date(Date.now() + 3_600_000),
+    });
+    expect((await call('https://cached.example/client.json', ip)).statusCode).toBe(302);
+    expect((await call(clientId, ip)).statusCode).toBe(302);
   });
 });
