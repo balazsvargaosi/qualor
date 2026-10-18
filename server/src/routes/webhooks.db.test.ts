@@ -58,7 +58,7 @@ describe('webhooks API (api.md §3, server step 13)', () => {
       .select()
       .from(webhookSubscriptions)
       .where(eq(webhookSubscriptions.id, id));
-    return decryptSecret(key, row!.secretEnc, WEBHOOK_SECRET_AAD);
+    return decryptSecret(key, row!.secretEnc!, WEBHOOK_SECRET_AAD);
   };
 
   beforeAll(async () => {

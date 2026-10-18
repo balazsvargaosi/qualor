@@ -743,6 +743,9 @@ export const issueChanges = pgTable(
 
 // ─── 4.6 Webhooks, jobs, settings ───────────────────────────────────────────
 
+/** 6G: a generic signed webhook, or a Slack / Microsoft Teams incoming webhook. */
+export type WebhookKind = 'generic' | 'slack' | 'teams';
+
 export const webhookSubscriptions = pgTable(
   'webhook_subscriptions',
   {
@@ -751,10 +754,20 @@ export const webhookSubscriptions = pgTable(
       .notNull()
       .references(() => organizations.id, { onDelete: 'cascade' }),
     projectId: uuid('project_id').references(() => projects.id, { onDelete: 'cascade' }),
+    /** 6G spec §3: set at creation, never changed. */
+    kind: text('kind').notNull().default('generic').$type<WebhookKind>(),
+    /** The URL deliveries go to; for chat kinds its masked form (the real one is `url_enc`). */
     url: text('url').notNull(),
-    secretEnc: jsonb('secret_enc').notNull().$type<EncryptedValue>(),
+    /** Chat kinds only: the real URL, a secret (AAD `webhook_subscriptions.url_enc`). */
+    urlEnc: jsonb('url_enc').$type<EncryptedValue>(),
+    /** Generic only: the signing secret. Chat kinds are not signed (6G spec D5). */
+    secretEnc: jsonb('secret_enc').$type<EncryptedValue>(),
     events: text('events').array().notNull(),
     active: boolean('active').notNull().default(true),
+    /** The IANA zone the weekly digest is due in (Monday 09:00 local). */
+    timezone: text('timezone').notNull().default('UTC'),
+    /** The local ISO week (`2026-W43`) of the last digest sent or skipped as quiet. */
+    digestLastWeek: text('digest_last_week'),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -763,6 +776,12 @@ export const webhookSubscriptions = pgTable(
     index('webhook_subscriptions_project_idx')
       .on(t.projectId)
       .where(sql`project_id IS NOT NULL`),
+    check('webhook_subscriptions_kind_check', sql`kind IN ('generic','slack','teams')`),
+    check(
+      'webhook_subscriptions_secret_by_kind',
+      sql`(kind = 'generic') = (secret_enc IS NOT NULL)`,
+    ),
+    check('webhook_subscriptions_url_enc_by_kind', sql`(kind = 'generic') = (url_enc IS NULL)`),
   ],
 );
 

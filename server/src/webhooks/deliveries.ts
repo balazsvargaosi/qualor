@@ -4,9 +4,16 @@ import { first } from '../db/rows';
 import { webhookDeliveries } from '../db/schema';
 import { enqueueMany } from '../queue/queue';
 
-/** api.md §3: the webhook events of v0. */
-export const WEBHOOK_EVENTS = ['analysis.completed', 'gate.status_changed'] as const;
+/** api.md §3: the events of a generic (signed JSON) webhook. */
+export const GENERIC_EVENTS = ['analysis.completed', 'gate.status_changed'] as const;
+/** 6G spec D2: the events of a Slack or Teams webhook. */
+export const CHAT_EVENTS = ['gate.failed', 'gate.recovered', 'digest.weekly'] as const;
+/** Every event a webhook can subscribe to (each kind its own subset, checked by the API). */
+export const WEBHOOK_EVENTS = [...GENERIC_EVENTS, ...CHAT_EVENTS] as const;
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number];
+/** What a delivery row can carry: the events, and the test message of `POST /webhooks/:id/test`. */
+export const DELIVERY_EVENTS = [...WEBHOOK_EVENTS, 'chat.test'] as const;
+export type DeliveryEvent = (typeof DELIVERY_EVENTS)[number];
 
 /** Deliveries run on their own queue and worker, so a slow receiver never delays analyses. */
 export const WEBHOOK_QUEUE = 'webhook';
@@ -20,9 +27,12 @@ export const DELIVERY_JOB_MAX_ATTEMPTS = 3;
 /** The `aad` of `webhook_subscriptions.secret_enc` (crypto/secrets.ts). */
 export const WEBHOOK_SECRET_AAD = 'webhook_subscriptions.secret_enc';
 
+/** The `aad` of `webhook_subscriptions.url_enc` (6G: a chat webhook's URL is a secret). */
+export const WEBHOOK_URL_AAD = 'webhook_subscriptions.url_enc';
+
 export interface NewDelivery {
   subscriptionId: string;
-  event: WebhookEvent;
+  event: DeliveryEvent;
   payload: unknown;
 }
 

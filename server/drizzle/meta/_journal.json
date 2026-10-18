@@ -99,6 +99,13 @@
       "when": 1792280561803,
       "tag": "0013_oauth",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1792337126272,
+      "tag": "0014_chat_webhooks",
+      "breakpoints": true
     }
   ]
 }

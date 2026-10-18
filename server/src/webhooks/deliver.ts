@@ -278,11 +278,10 @@ export async function deliverWebhook(
     const refuse = (excerpt: string) => record({ ok: false, status: null, excerpt }, true);
 
     if (!webhook.active) return refuse('The webhook is inactive');
-    const secret = decryptSecret(
-      encryptionKey(deps.secretKey),
-      webhook.secretEnc,
-      WEBHOOK_SECRET_AAD,
-    );
+    const secret =
+      webhook.secretEnc === null
+        ? null
+        : decryptSecret(encryptionKey(deps.secretKey), webhook.secretEnc, WEBHOOK_SECRET_AAD);
     if (secret === null) {
       return refuse(
         'The webhook secret cannot be decrypted (QUALOR_SECRET_KEY changed?); set a new secret',

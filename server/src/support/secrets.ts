@@ -16,7 +16,7 @@ import { MAIL_PASSWORD_AAD } from '../mail/settings';
 import { SCM_TOKEN_AAD } from '../scm/connections';
 import { WEBHOOK_SECRET_AAD as SCM_WEBHOOK_SECRET_AAD } from '../scm/github/credentials';
 import { SECRET_AAD as SSO_SECRET_AAD, SP_KEY_AAD } from '../sso/connection-config';
-import { WEBHOOK_SECRET_AAD } from '../webhooks/deliveries';
+import { WEBHOOK_SECRET_AAD, WEBHOOK_URL_AAD } from '../webhooks/deliveries';
 
 export const REDACTED = '[redacted]';
 /**
@@ -116,7 +116,8 @@ function settingsRowSecrets(key: Buffer, row: { key: string; value: unknown }): 
  * 4E-3b §2: every secret value this server is configured with, decrypted where it is stored
  * encrypted, so the bundle can search its texts for them. Held in memory for one bundle only.
  * Covers QUALOR_SECRET_KEY, the database password, the bootstrap password, the licence key text
- * (variable, file or upload), the LLM API key, the audit stream secret, webhook secrets, SSO
+ * (variable, file or upload), the LLM API key, the audit stream secret, webhook secrets and chat
+ * webhook URLs, SSO
  * client secrets and SP keys, SCM tokens, GitHub App private keys and webhook secrets, and the
  * SMTP password of QUALOR_SMTP_URL and of Settings → Email.
  */
@@ -135,9 +136,11 @@ export async function configuredSecrets(db: Executor, config: Config): Promise<s
   }
 
   for (const row of await db
-    .select({ secretEnc: webhookSubscriptions.secretEnc })
+    .select({ secretEnc: webhookSubscriptions.secretEnc, urlEnc: webhookSubscriptions.urlEnc })
     .from(webhookSubscriptions)) {
     decrypt(row.secretEnc, WEBHOOK_SECRET_AAD);
+    // 6G: a Slack or Teams URL is itself the secret.
+    decrypt(row.urlEnc, WEBHOOK_URL_AAD);
   }
   for (const row of await db
     .select({ secretEnc: ssoConnections.secretEnc, spKeyEnc: ssoConnections.spKeyEnc })

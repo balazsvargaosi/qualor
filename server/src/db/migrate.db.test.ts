@@ -42,8 +42,9 @@ describe('runMigrations / pendingMigrations', () => {
     // 0007_compliance_reports (4E-1 §1), 0008_branch_dependencies (6M §4), 0009_mail (E1 spec,
     // approved 2026-10-13), 0010_account_tokens (mail E2 A1, 2026-10-13), 0011_notifications
     // (mail E3 N8, 2026-10-13), 0012_issues_confidence (6B-C# engine spec R-9, approved
-    // 2026-10-15), 0013_oauth (phase 6N, OAuth clients, requests, grants and tokens).
-    expect(await pendingMigrations(t.db, MIGRATIONS_DIR)).toBe(14);
+    // 2026-10-15), 0013_oauth (phase 6N, OAuth clients, requests, grants and tokens),
+    // 0014_chat_webhooks (phase 6G, Slack and Teams webhooks).
+    expect(await pendingMigrations(t.db, MIGRATIONS_DIR)).toBe(15);
     expect(await readinessCheck(t.db, MIGRATIONS_DIR)()).toBe(false);
     await runMigrations(t.pool, MIGRATIONS_DIR);
     expect(await pendingMigrations(t.db, MIGRATIONS_DIR)).toBe(0);

@@ -16949,7 +16949,10 @@
                               "type": "string",
                               "enum": [
                                 "analysis.completed",
-                                "gate.status_changed"
+                                "gate.status_changed",
+                                "gate.failed",
+                                "gate.recovered",
+                                "digest.weekly"
                               ]
                             }
                           },
@@ -17079,13 +17082,16 @@
                   },
                   "events": {
                     "minItems": 1,
-                    "maxItems": 2,
+                    "maxItems": 5,
                     "type": "array",
                     "items": {
                       "type": "string",
                       "enum": [
                         "analysis.completed",
-                        "gate.status_changed"
+                        "gate.status_changed",
+                        "gate.failed",
+                        "gate.recovered",
+                        "digest.weekly"
                       ]
                     }
                   },
@@ -17142,7 +17148,10 @@
                         "type": "string",
                         "enum": [
                           "analysis.completed",
-                          "gate.status_changed"
+                          "gate.status_changed",
+                          "gate.failed",
+                          "gate.recovered",
+                          "digest.weekly"
                         ]
                       }
                     },
@@ -17288,7 +17297,10 @@
                         "type": "string",
                         "enum": [
                           "analysis.completed",
-                          "gate.status_changed"
+                          "gate.status_changed",
+                          "gate.failed",
+                          "gate.recovered",
+                          "digest.weekly"
                         ]
                       }
                     },
@@ -17387,13 +17399,16 @@
                   },
                   "events": {
                     "minItems": 1,
-                    "maxItems": 2,
+                    "maxItems": 5,
                     "type": "array",
                     "items": {
                       "type": "string",
                       "enum": [
                         "analysis.completed",
-                        "gate.status_changed"
+                        "gate.status_changed",
+                        "gate.failed",
+                        "gate.recovered",
+                        "digest.weekly"
                       ]
                     }
                   },
@@ -17457,7 +17472,10 @@
                         "type": "string",
                         "enum": [
                           "analysis.completed",
-                          "gate.status_changed"
+                          "gate.status_changed",
+                          "gate.failed",
+                          "gate.recovered",
+                          "digest.weekly"
                         ]
                       }
                     },
@@ -17673,7 +17691,10 @@
                         "type": "string",
                         "enum": [
                           "analysis.completed",
-                          "gate.status_changed"
+                          "gate.status_changed",
+                          "gate.failed",
+                          "gate.recovered",
+                          "digest.weekly"
                         ]
                       }
                     },
@@ -17823,7 +17844,11 @@
                             "type": "string",
                             "enum": [
                               "analysis.completed",
-                              "gate.status_changed"
+                              "gate.status_changed",
+                              "gate.failed",
+                              "gate.recovered",
+                              "digest.weekly",
+                              "chat.test"
                             ]
                           },
                           "status": {
@@ -17992,7 +18017,11 @@
                       "type": "string",
                       "enum": [
                         "analysis.completed",
-                        "gate.status_changed"
+                        "gate.status_changed",
+                        "gate.failed",
+                        "gate.recovered",
+                        "digest.weekly",
+                        "chat.test"
                       ]
                     },
                     "status": {

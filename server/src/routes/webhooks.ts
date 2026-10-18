@@ -33,8 +33,10 @@ import { idParams, iso, isoOrNull, noContent, noNul, timestamp } from '../http/s
 import {
   createDelivery,
   STALLED_DELIVERY_MINUTES,
+  DELIVERY_EVENTS,
   WEBHOOK_EVENTS,
   WEBHOOK_SECRET_AAD,
+  type DeliveryEvent,
   type WebhookEvent,
 } from '../webhooks/deliveries';
 import { webhookSettings, webhookUrlProblem } from '../webhooks/url';
@@ -86,7 +88,7 @@ const regeneratedWebhookSchema = webhookSchema.extend({ secret: z.string() });
 
 const deliverySchema = z.object({
   id: z.uuid(),
-  event: z.enum(WEBHOOK_EVENTS),
+  event: z.enum(DELIVERY_EVENTS),
   status: z.enum(['pending', 'succeeded', 'failed']),
   attempts: z.number().int(),
   responseCode: z.number().int().nullable(),
@@ -111,7 +113,7 @@ function webhookDto(row: WebhookRow): z.infer<typeof webhookSchema> {
 function deliveryDto(row: DeliveryRow): z.infer<typeof deliverySchema> {
   return {
     id: row.id,
-    event: row.event as WebhookEvent,
+    event: row.event as DeliveryEvent,
     status: row.status,
     attempts: row.attempts,
     responseCode: row.responseCode,
@@ -529,7 +531,7 @@ export const webhookRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (
         }
         const id = await createDelivery(tx, {
           subscriptionId: webhook.id,
-          event: original.event as WebhookEvent,
+          event: original.event as DeliveryEvent,
           payload: original.payload,
         });
         const created = first(
