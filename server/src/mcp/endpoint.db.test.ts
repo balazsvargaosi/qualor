@@ -16,7 +16,7 @@ import {
 import { callTool, mcpCall, sdkClient } from '../../test/mcp';
 import { oauthTokens as runOAuth } from '../../test/oauth';
 import type { RouteDeps } from '../app';
-import { users } from '../db/schema';
+import { oauthTokens, users } from '../db/schema';
 import { VERSION } from '../index';
 import { mcpUrls } from '../oauth/urls';
 import { mcpEndpoint } from './endpoint';
@@ -300,6 +300,30 @@ describe('POST /mcp scope and route checks', () => {
     } finally {
       await client.close();
     }
+  });
+
+  it('does not count expired or revoked genuine tokens as failed bearer checks', async () => {
+    const a = await createUser(ctx, { username: 'dora' });
+    const dora = await login(ctx, a.username, a.password);
+    const expired = (await runOAuth(ctx, dora, ['mcp:read'])).accessToken;
+    const revoked = (await runOAuth(ctx, dora, ['mcp:read'])).accessToken;
+    await ctx.db
+      .update(oauthTokens)
+      .set({ expiresAt: new Date(Date.now() - 1000) })
+      .where(eq(oauthTokens.prefix, expired.slice(0, 12)));
+    await ctx.db
+      .update(oauthTokens)
+      .set({ revokedAt: new Date() })
+      .where(eq(oauthTokens.prefix, revoked.slice(0, 12)));
+    const statuses: number[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      for (const token of [expired, revoked]) {
+        statuses.push((await mcpCall({ ...ctx, app: bare }, token, 'tools/list')).status);
+      }
+    }
+    // Eight presentations, more than the limit of 3: all 401, and none used the address's budget
+    // (the next test still sees its first three unknown tokens answered 401).
+    expect(statuses).toEqual(Array(8).fill(401));
   });
 
   it('answers 429 once one address has failed the bearer check too often', async () => {

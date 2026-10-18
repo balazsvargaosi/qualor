@@ -11,7 +11,7 @@ import type { RouteDeps } from '../app';
 import type { OAuthPrincipal } from '../auth/principal';
 import { ProblemError } from '../http/problem';
 import { corsPreflight, installCors } from '../oauth/http';
-import { resolveAccessToken } from '../oauth/grants';
+import { lookupAccessToken } from '../oauth/grants';
 import type { McpScope } from '../oauth/tokens';
 import type { McpUrls } from '../oauth/urls';
 import { callerFor, mcpUserAgent } from './inject';
@@ -32,7 +32,11 @@ const INSTRUCTIONS =
   'qualor_issues and qualor_issue to read findings, fix the code, push, wait for CI to analyse the commit, then call ' +
   'qualor_gate_status again with the pushed commit SHA. Mark an issue false positive only with a reason a reviewer would accept.';
 
-/** Spec §5: failed bearer checks per address and minute. */
+/**
+ * Spec §5: failed bearer checks per address and minute. Only tokens Qualor never issued (missing,
+ * malformed, unknown) count: an expired or revoked genuine token is normal hourly traffic, and many
+ * clients behind one egress address present them at once.
+ */
 const FAILED_AUTH = { max: 60, windowMs: 60_000 };
 
 /** What an agent reads when a tool breaks for a reason that is not its own (the log has the rest). */
@@ -273,9 +277,11 @@ export const mcpEndpoint: FastifyPluginAsync<{
       },
       onRequest: async (request, reply) => {
         const match = /^Bearer\s+(\S+)$/i.exec(request.headers.authorization ?? '');
-        const principal = match?.[1] ? await resolveAccessToken(deps.db, match[1]) : null;
+        const { principal, known } = match?.[1]
+          ? await lookupAccessToken(deps.db, match[1])
+          : { principal: null, known: false };
         if (!principal) {
-          if (!failures.hit(request.ip)) {
+          if (!known && !failures.hit(request.ip)) {
             return rpcError(
               reply.header('retry-after', '60'),
               429,

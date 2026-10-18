@@ -691,8 +691,20 @@ export async function resolveAccessToken(
   token: string,
   now = new Date(),
 ): Promise<Omit<OAuthPrincipal, 'scopes'> | null> {
+  return (await lookupAccessToken(db, token, now)).principal;
+}
+
+/**
+ * resolveAccessToken, and whether the token is one Qualor issued (`known`) even when it no longer
+ * works (expired, revoked, idle grant, inactive user): /mcp counts only unknown ones as failures.
+ */
+export async function lookupAccessToken(
+  db: Executor,
+  token: string,
+  now = new Date(),
+): Promise<{ principal: Omit<OAuthPrincipal, 'scopes'> | null; known: boolean }> {
   const parsed = parseOAuthSecret(token);
-  if (!parsed || parsed.kind !== 'access') return null;
+  if (!parsed || parsed.kind !== 'access') return { principal: null, known: false };
   const candidates = await db
     .select({ token: oauthTokens, grant: oauthGrants, client: oauthClients, user: users })
     .from(oauthTokens)
@@ -703,7 +715,7 @@ export async function resolveAccessToken(
   const presented = hashToken(token);
   let match: (typeof candidates)[number] | undefined;
   for (const c of candidates) if (hashesEqual(c.token.secretHash, presented)) match = c;
-  if (!match) return null;
+  if (!match) return { principal: null, known: false };
   const { token: row, grant, client, user } = match;
   if (
     row.revokedAt ||
@@ -712,17 +724,20 @@ export async function resolveAccessToken(
     isGrantIdle(grant, now) ||
     !user.active
   ) {
-    return null;
+    return { principal: null, known: true };
   }
   if (!grant.lastUsedAt || now.getTime() - grant.lastUsedAt.getTime() >= TOUCH_INTERVAL_MS) {
     await db.update(oauthGrants).set({ lastUsedAt: now }).where(eq(oauthGrants.id, grant.id));
   }
   return {
-    kind: 'oauth',
-    user,
-    grantId: grant.id,
-    clientId: client.clientId,
-    clientName: client.name,
-    mcpScopes: grant.scopes as McpScope[],
+    principal: {
+      kind: 'oauth',
+      user,
+      grantId: grant.id,
+      clientId: client.clientId,
+      clientName: client.name,
+      mcpScopes: grant.scopes as McpScope[],
+    },
+    known: true,
   };
 }
