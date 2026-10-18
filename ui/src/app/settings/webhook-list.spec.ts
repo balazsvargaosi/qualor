@@ -769,7 +769,9 @@ describe('WebhookList: Slack and Teams (6G)', () => {
       .click();
     await settle(fixture);
     expect(server.requestsTo('POST', '/api/v0/webhooks/w1/test')).toHaveLength(1);
-    expect(root.textContent).toContain('Test message sent. Check the channel.');
+    expect(root.textContent).toContain(
+      'Test message queued. It appears in the channel within a minute; see Recent deliveries.',
+    );
     // The queued test message is on top of the deliveries, under its own name.
     expect(panel.querySelector('tbody td:nth-child(2)')!.textContent).toBe('Test message');
   });

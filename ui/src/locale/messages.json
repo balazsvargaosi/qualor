@@ -2307,7 +2307,7 @@
     "webhooks.confirmDelete": "Delete the webhook to {$url}? Its delivery history goes too.",
     "webhooks.deleted": "Webhook {$url} deleted.",
     "webhooks.redelivered": "Delivery sent again.",
-    "webhooks.testSent": "Test message sent. Check the channel.",
+    "webhooks.testSent": "Test message queued. It appears in the channel within a minute; see Recent deliveries.",
     "webhooks.badZone": "Choose a time zone from the list, such as Europe/Berlin or UTC.",
     "webhooks.redeliverGone": "This delivery is no longer kept.",
     "webhooks.redeliverOff": "The webhook is switched off: switch it on to send again.",

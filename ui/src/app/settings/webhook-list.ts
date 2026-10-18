@@ -647,7 +647,9 @@ export class WebhookList {
         const rest = Array.isArray(known) ? known : [];
         return { ...all, [webhook.id]: [queued, ...rest].slice(0, DELIVERIES_SHOWN) };
       });
-      this.announcement.set($localize`:@@webhooks.testSent:Test message sent. Check the channel.`);
+      this.announcement.set(
+        $localize`:@@webhooks.testSent:Test message queued. It appears in the channel within a minute; see Recent deliveries.`,
+      );
       this.rereads.get(webhook.id)?.();
       this.rereads.set(
         webhook.id,
