@@ -4,7 +4,7 @@ import type { RouteDeps } from '../app';
 import { ProblemError } from '../http/problem';
 import { anonymousActor } from '../audit/recorder';
 import { LoginThrottle } from '../auth/throttle';
-import { registerDcrClient, resolveClient } from './clients';
+import { cleanClientName, registerDcrClient, resolveClient } from './clients';
 import {
   authorizationRedirect,
   createPendingRequest,
@@ -256,7 +256,7 @@ export const oauthRoutes: FastifyPluginAsync<{ deps: RouteDeps; urls: McpUrls }>
       if (!(body.response_types ?? ['code']).every((r) => r === 'code')) {
         return oauthError(reply, 400, 'invalid_client_metadata', 'Unsupported response type');
       }
-      const name = body.client_name ?? 'Unnamed MCP client';
+      const name = cleanClientName(body.client_name ?? '') || 'Unnamed MCP client';
       const client = await deps.db.transaction(async (tx) => {
         const created = await registerDcrClient(tx, {
           name,

@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { OAuthPrincipal } from '../auth/principal';
 import type { TokenScope } from '../db/schema';
+import { cleanClientName } from '../oauth/clients';
 import { INTERNAL_HEADER } from './internal';
 import { ToolError, type ToolAccess } from './tool';
 
@@ -56,18 +57,8 @@ const SCOPES: Record<ToolAccess, TokenScope[]> = {
   write: ['write'],
 };
 
-const CLIENT_NAME_MAX = 64;
-const UNSAFE_CHARS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
-
-/**
- * A client name safe to show and log. It is chosen by whoever registered the client, so control,
- * format (zero-width, bidi) and line or paragraph separator characters (header and log injection)
- * are dropped and the length is capped at CLIENT_NAME_MAX code points, never splitting a pair.
- */
-export function cleanClientName(clientName: string): string {
-  const clean = clientName.replace(UNSAFE_CHARS, '').trim();
-  return Array.from(clean).slice(0, CLIENT_NAME_MAX).join('').trim();
-}
+/** Names are cleaned when stored too; this guards rows stored before that (and any other path). */
+export { cleanClientName };
 
 /** The cleaned client name, or `unnamed client` when nothing printable is left. */
 export function clientLabel(clientName: string): string {

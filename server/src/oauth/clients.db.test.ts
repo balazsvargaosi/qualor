@@ -85,6 +85,46 @@ describe('resolveClient', () => {
     expect(rows).toHaveLength(1);
   });
 
+  it('stores a CIMD client name cleaned, or the host when nothing printable is left', async () => {
+    const doc = (url: string, name: string) => async () => ({
+      ok: true as const,
+      maxAgeSeconds: 300,
+      document: { client_id: url, client_name: name, redirect_uris: ['https://client.example/cb'] },
+    });
+    const named = 'https://client.example/named.json';
+    expect(
+      await resolveClient(
+        { db: database.db, policy: OPEN, fetchDocument: doc(named, 'Meta\u202e\r\nclient') },
+        named,
+      ),
+    ).toMatchObject({ ok: true, client: { name: 'Metaclient' } });
+    const blank = 'https://client.example/blank.json';
+    expect(
+      await resolveClient(
+        { db: database.db, policy: OPEN, fetchDocument: doc(blank, '\u200b\u2029') },
+        blank,
+      ),
+    ).toMatchObject({ ok: true, client: { name: 'client.example' } });
+  });
+
+  it('asks allowFetch before a CIMD fetch and refuses when it says no', async () => {
+    let fetches = 0;
+    const deps = {
+      db: database.db,
+      policy: OPEN,
+      allowFetch: () => false,
+      fetchDocument: async () => {
+        fetches += 1;
+        return { ok: false as const, reason: 'unreached' };
+      },
+    };
+    expect(await resolveClient(deps, 'https://client.example/limited.json')).toEqual({
+      ok: false,
+      error: 'cimd_rate_limited',
+    });
+    expect(fetches).toBe(0);
+  });
+
   it('answers cimd_invalid with the reason when the document is bad', async () => {
     const deps = {
       db: database.db,

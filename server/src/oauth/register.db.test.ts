@@ -143,6 +143,26 @@ describe('POST /oauth/register (RFC 7591)', () => {
     expect(row?.metadata).not.toHaveProperty('contacts');
     expect(row?.metadata).toMatchObject({ client_name: 'Lean' });
   });
+
+  it('stores a clean client name: no control, format or separator characters, 64 code points', async () => {
+    const res = await register({
+      client_name: `Evil\u202e\u200b\u2028\nAgent${'x'.repeat(100)}`,
+      redirect_uris: ['https://a.example/cb'],
+    });
+    expect(res.statusCode).toBe(201);
+    const expected = `EvilAgent${'x'.repeat(55)}`;
+    expect(res.json().client_name).toBe(expected);
+    const [row] = await ctx.db
+      .select()
+      .from(oauthClients)
+      .where(eq(oauthClients.clientId, res.json().client_id));
+    expect(row?.name).toBe(expected);
+    const blank = await register({
+      client_name: '\u200b\u0007',
+      redirect_uris: ['https://a.example/cb'],
+    });
+    expect(blank.json().client_name).toBe('Unnamed MCP client');
+  });
 });
 
 describe('POST /oauth/register audit', () => {

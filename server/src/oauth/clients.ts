@@ -40,6 +40,20 @@ export interface ClientDeps {
   now?: () => Date;
 }
 
+const CLIENT_NAME_MAX = 64;
+const UNSAFE_CHARS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+
+/**
+ * A client name safe to show and log. It is chosen by whoever registered the client, so control,
+ * format (zero-width, bidi) and line or paragraph separator characters (header and log injection)
+ * are dropped and the length is capped at CLIENT_NAME_MAX code points, never splitting a pair.
+ * Applied when a name is stored (DCR, CIMD), so every surface shows the clean name.
+ */
+export function cleanClientName(clientName: string): string {
+  const clean = clientName.replace(UNSAFE_CHARS, '').trim();
+  return Array.from(clean).slice(0, CLIENT_NAME_MAX).join('').trim();
+}
+
 /** An empty list allows every client; else an exact client id, or a URL prefix ending in `/`. */
 export function clientAllowed(policy: McpPolicy, clientId: string): boolean {
   if (policy.allowedClients.length === 0) return true;
@@ -75,7 +89,7 @@ export async function resolveClient(deps: ClientDeps, clientId: string): Promise
   const values = {
     clientId,
     source: 'cimd' as const,
-    name: document.client_name ?? new URL(clientId).hostname,
+    name: cleanClientName(document.client_name ?? '') || new URL(clientId).hostname,
     redirectUris: document.redirect_uris,
     logoUri: document.logo_uri ?? null,
     clientUri: document.client_uri ?? null,
