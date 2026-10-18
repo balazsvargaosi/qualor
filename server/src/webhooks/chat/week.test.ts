@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { digestDue, isoWeekOf, localClock } from './week';
+import { digestDue, digestWindow, isoWeekOf, localClock } from './week';
 
 describe('isoWeekOf', () => {
   it.each([
@@ -64,5 +64,59 @@ describe('digestDue (6G spec D3)', () => {
   it('treats a zone the runtime no longer knows as UTC', () => {
     expect(digestDue(new Date('2026-10-19T09:00:00Z'), 'Mars/Olympus', null)).toBe('2026-W43');
     expect(digestDue(new Date('2026-10-19T08:59:00Z'), 'Mars/Olympus', null)).toBeNull();
+  });
+});
+
+describe('digestWindow (6G spec §4: the 7 local days before this Monday 09:00)', () => {
+  const iso = (w: { since: Date; until: Date }) => ({
+    since: w.since.toISOString(),
+    until: w.until.toISOString(),
+  });
+
+  it('is the same window for a late run on the same Monday', () => {
+    const window = {
+      since: '2026-10-12T07:00:00.000Z',
+      until: '2026-10-19T07:00:00.000Z',
+    };
+    expect(iso(digestWindow(new Date('2026-10-19T07:00:00Z'), 'Europe/Berlin'))).toEqual(window);
+    expect(iso(digestWindow(new Date('2026-10-19T07:30:00Z'), 'Europe/Berlin'))).toEqual(window);
+    expect(iso(digestWindow(new Date('2026-10-19T21:59:00Z'), 'Europe/Berlin'))).toEqual(window);
+  });
+
+  it.each([
+    // The week Berlin leaves CEST (2026-10-25): 7 local days are 169 hours.
+    [
+      '2026-10-26T08:30:00Z',
+      'Europe/Berlin',
+      '2026-10-19T07:00:00.000Z',
+      '2026-10-26T08:00:00.000Z',
+    ],
+    // New York leaves EDT on 2026-11-01.
+    [
+      '2026-11-02T15:00:00Z',
+      'America/New_York',
+      '2026-10-26T13:00:00.000Z',
+      '2026-11-02T14:00:00.000Z',
+    ],
+    // Berlin enters CEST on 2027-03-28: 167 hours.
+    [
+      '2027-03-29T07:00:00Z',
+      'Europe/Berlin',
+      '2027-03-22T08:00:00.000Z',
+      '2027-03-29T07:00:00.000Z',
+    ],
+    // Sunday in UTC is already Monday in Tokyo.
+    ['2026-10-19T00:30:00Z', 'Asia/Tokyo', '2026-10-12T00:00:00.000Z', '2026-10-19T00:00:00.000Z'],
+    // Across the year boundary.
+    ['2027-01-04T12:00:00Z', 'UTC', '2026-12-28T09:00:00.000Z', '2027-01-04T09:00:00.000Z'],
+    // A zone the runtime no longer knows is read as UTC.
+    [
+      '2026-10-19T10:00:00Z',
+      'Mars/Olympus',
+      '2026-10-12T09:00:00.000Z',
+      '2026-10-19T09:00:00.000Z',
+    ],
+  ])('at %s in %s: [%s, %s)', (now, zone, since, until) => {
+    expect(iso(digestWindow(new Date(now), zone))).toEqual({ since, until });
   });
 });

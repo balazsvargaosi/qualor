@@ -3,6 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createIngestHarness, type IngestHarness, type IngestProject } from '../../test/ingest';
 import { finding, reportWith } from '../../test/reports';
 import { encryptionKey, encryptSecret } from '../crypto/secrets';
+import { createDatabase } from '../db/client';
 import { branches, issues, jobs, webhookDeliveries, webhookSubscriptions } from '../db/schema';
 import { runUntilIdle } from '../queue/worker';
 import { WEBHOOK_URL_AAD } from './deliveries';
@@ -121,8 +122,9 @@ describe('weekly security digest (6G spec §4)', () => {
     expect(sent[0]).toMatchObject({
       week: '2026-W43',
       timezone: 'Europe/Berlin',
-      until: MONDAY_BERLIN.toISOString(),
-      since: new Date(MONDAY_BERLIN.getTime() - 7 * 86_400_000).toISOString(),
+      // Anchored at Monday 09:00 local, not at the run's time.
+      until: '2026-10-19T07:00:00.000Z',
+      since: '2026-10-12T07:00:00.000Z',
       scope: { organization: { id: h.organizationId }, project: null },
       totals: { projects: 2, newSecurity: 2, openSecurity: 2 },
     });
@@ -171,6 +173,36 @@ describe('weekly security digest (6G spec §4)', () => {
     expect(digest!.scope.project).toEqual({ id: payments.id, name: 'acme/payments' });
     expect(digest!.totals.projects).toBe(1);
     expect(digest!.quietProjects).toBe(0);
+  });
+
+  it('a late run covers the same window: issues after Monday 09:00 wait for next week', async () => {
+    const [main] = await h.ctx.db
+      .select()
+      .from(branches)
+      .where(sql`${branches.projectId} = ${payments.id} AND ${branches.isMain}`);
+    const paymentsIssues = await h.ctx.db
+      .select()
+      .from(issues)
+      .where(eq(issues.branchId, main!.id));
+    // One first seen on Sunday, one on Monday 10:00 Berlin (after the window's end).
+    await h.ctx.db
+      .update(issues)
+      .set({ quality: 'security', severity: 'high', firstSeenAt: new Date('2026-10-18T12:00:00Z') })
+      .where(eq(issues.id, paymentsIssues[0]!.id));
+    await h.ctx.db
+      .update(issues)
+      .set({ quality: 'security', severity: 'high', firstSeenAt: new Date('2026-10-19T08:00:00Z') })
+      .where(eq(issues.id, paymentsIssues[1]!.id));
+    const id = await hook();
+    // The server was down until Monday 23:00 Berlin.
+    await runDigests({ db: h.ctx.db, now: () => new Date('2026-10-19T21:00:00Z') });
+    const [digest] = await digestsOf(id);
+    expect(digest).toMatchObject({
+      until: '2026-10-19T07:00:00.000Z',
+      since: '2026-10-12T07:00:00.000Z',
+      totals: { newSecurity: 1, openSecurity: 2 },
+    });
+    expect(digest!.top.map((t) => t.id)).toEqual([paymentsIssues[0]!.id]);
   });
 
   it('a failed gate is not a quiet week, even with nothing new', async () => {
@@ -246,7 +278,6 @@ describe('weekly security digest (6G spec §4)', () => {
     expect(digest!.rows).toHaveLength(20);
     expect(digest!.moreProjects).toBe(3);
     expect(digest!.quietProjects).toBe(1);
-    // Most new issues first (payments has 2), then by name.
     // A failed gate first, then most new issues (payments has 2), then by name.
     expect(digest!.rows.map((r) => [r.name, r.gate])).toEqual([
       ['acme/many-21', 'failed'],
@@ -334,6 +365,23 @@ describe('weekly security digest (6G spec §4)', () => {
       expect(runAt.getUTCSeconds()).toBe(0);
       expect(runAt.getTime()).toBeGreaterThan(before.getTime());
       expect(runAt.getTime() - before.getTime()).toBeLessThanOrEqual(61 * 60_000);
+    });
+
+    it("keeps minute 1 in UTC whatever the session's time zone (+05:30)", async () => {
+      const url = new URL(h.ctx.config.databaseUrl!);
+      url.searchParams.set('options', '-c TimeZone=Asia/Kolkata');
+      const kolkata = createDatabase(url.toString(), { max: 1 });
+      try {
+        const zone = await kolkata.db.execute<{ TimeZone: string }>(sql`SHOW TimeZone`);
+        expect(zone.rows[0]!.TimeZone).toBe('Asia/Kolkata');
+        expect(await ensureDigestScheduled(kolkata.db)).toBe(true);
+      } finally {
+        await kolkata.close();
+      }
+      const rows = await queued();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.runAt.getUTCMinutes()).toBe(1);
+      expect(rows[0]!.runAt.getUTCSeconds()).toBe(0);
     });
 
     it('schedules at once beside many replicas', async () => {

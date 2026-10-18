@@ -13,12 +13,10 @@ import {
   type DigestGate,
   type DigestRow,
 } from './chat/messages';
-import { digestDue } from './chat/week';
+import { digestDue, digestWindow } from './chat/week';
 import { createDeliveries } from './deliveries';
 
 export const DIGEST_QUEUE = 'webhook.digest';
-/** 6G spec §4: the digest covers the last 7 days. */
-const WINDOW_MS = 7 * 86_400_000;
 /** The message schema's bound on names (chat/messages.ts). */
 const NAME_MAX = 500;
 const zero = (): Record<Severity, number> => ({ blocker: 0, high: 0, medium: 0, low: 0, info: 0 });
@@ -207,7 +205,7 @@ export async function runDigests(
         const message = await buildDigest(
           tx,
           { organizationId: c.organizationId, projectId: c.projectId },
-          { since: new Date(now.getTime() - WINDOW_MS), until: now, week, timezone: c.timezone },
+          { ...digestWindow(now, c.timezone), week, timezone: c.timezone },
         );
         if (isQuiet(message)) return 'quiet' as const;
         await createDeliveries(tx, [
@@ -218,6 +216,8 @@ export async function runDigests(
       if (outcome === 'sent') result.sent += 1;
       if (outcome === 'quiet') result.quiet += 1;
     } catch (err) {
+      // Its week stays unmarked: a lasting failure is retried, and logged, every hour until the
+      // local Monday ends (then the week is skipped, R8).
       result.failed += 1;
       deps.logger?.warn(
         {
@@ -243,11 +243,12 @@ async function schedule(db: Db, alsoRunning: boolean): Promise<boolean> {
     const existing = await tx.execute(sql`
       SELECT 1 FROM jobs WHERE queue = ${DIGEST_QUEUE} AND status IN ${statuses} LIMIT 1`);
     if (existing.rows.length > 0) return false;
-    // At 10:20 this is 11:01.
+    // At 10:20 UTC this is 11:01 UTC; truncated in UTC, so a session time zone with a
+    // half-hour offset (Asia/Kolkata) cannot move it to minute 31.
     await tx.execute(sql`
       INSERT INTO jobs (id, queue, concurrency_key, payload, run_at)
       VALUES (${uuidv7()}, ${DIGEST_QUEUE}, ${DIGEST_QUEUE}, '{}'::jsonb,
-              date_trunc('hour', now()) + interval '61 minutes')`);
+              date_trunc('hour', now(), 'UTC') + interval '61 minutes')`);
     return true;
   });
 }

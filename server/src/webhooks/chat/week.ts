@@ -29,6 +29,7 @@ function formatter(zone: string): Intl.DateTimeFormat {
     month: 'numeric',
     day: 'numeric',
     hour: 'numeric',
+    minute: 'numeric',
     hourCycle: 'h23',
   };
   try {
@@ -39,17 +40,73 @@ function formatter(zone: string): Intl.DateTimeFormat {
   }
 }
 
-/** The weekday, hour and ISO week of `now` on the wall clock of `zone` (UTC if unknown). */
-export function localClock(now: Date, zone: string): LocalClock {
+interface WallClock {
+  year: number;
+  month: number;
+  day: number;
+  weekday: number;
+  hour: number;
+  minute: number;
+}
+
+/** The wall clock of `zone` (UTC if unknown) at `now`. */
+function wallClock(now: Date, zone: string): WallClock {
   const parts = Object.fromEntries(
     formatter(zone)
       .formatToParts(now)
       .map((p) => [p.type, p.value]),
   );
   return {
+    year: Number(parts.year),
+    month: Number(parts.month),
+    day: Number(parts.day),
     weekday: WEEKDAYS[parts.weekday ?? ''] ?? 0,
     hour: Number(parts.hour),
-    isoWeek: isoWeekOf(Number(parts.year), Number(parts.month), Number(parts.day)),
+    minute: Number(parts.minute),
+  };
+}
+
+/** The weekday, hour and ISO week of `now` on the wall clock of `zone` (UTC if unknown). */
+export function localClock(now: Date, zone: string): LocalClock {
+  const wall = wallClock(now, zone);
+  return {
+    weekday: wall.weekday,
+    hour: wall.hour,
+    isoWeek: isoWeekOf(wall.year, wall.month, wall.day),
+  };
+}
+
+/** How far the wall clock of `zone` is ahead of UTC at `instant`, in ms (whole minutes). */
+function offsetAt(instant: number, zone: string): number {
+  const wall = wallClock(new Date(instant), zone);
+  const asUtc = Date.UTC(wall.year, wall.month - 1, wall.day, wall.hour, wall.minute);
+  return asUtc - Math.floor(instant / 60_000) * 60_000;
+}
+
+/**
+ * The instant the wall clock of `zone` reads `date` (a UTC midnight standing for a calendar day)
+ * at `hour`:00. The offset is read twice, so an hour on the other side of a DST change than
+ * the first guess still comes out right.
+ */
+function localInstant(date: number, hour: number, zone: string): Date {
+  const wall = date + hour * 3_600_000;
+  let instant = wall - offsetAt(wall, zone);
+  instant = wall - offsetAt(instant, zone);
+  return new Date(instant);
+}
+
+/**
+ * 6G spec §4: the digest's window, `[since, until)`: until is this local week's Monday at
+ * DIGEST_HOUR in `zone`, since the Monday before at the same local hour (7 local days, 167 or
+ * 169 hours in a DST week). Anchored to the week, not to the run, so a late run (an outage, a
+ * retry) covers the same days.
+ */
+export function digestWindow(now: Date, zone: string): { since: Date; until: Date } {
+  const wall = wallClock(now, zone);
+  const monday = Date.UTC(wall.year, wall.month - 1, wall.day) - (wall.weekday - 1) * DAY_MS;
+  return {
+    since: localInstant(monday - 7 * DAY_MS, DIGEST_HOUR, zone),
+    until: localInstant(monday, DIGEST_HOUR, zone),
   };
 }
 
