@@ -14,10 +14,15 @@
       </p>
     } @else if (pending(); as p) {
       <div class="consent-app">
-        <span class="avatar" aria-hidden="true">{{ p.client.name.charAt(0) }}</span>
+        <span class="avatar" aria-hidden="true">{{ initial() }}</span>
         <h1>{{ p.client.name }}</h1>
       </div>
       <p i18n="@@consent.wants">wants to access Qualor as {{ username() }}.</p>
+      @if (identifiedBy(); as host) {
+        <p class="hint" data-test="identified-by" i18n="@@consent.identifiedBy">
+          Identified by {{ host }}
+        </p>
+      }
       @if (p.client.source === 'dcr') {
         <p class="alert alert-warn" i18n="@@consent.unverified">
           Not verified: this app registered itself.

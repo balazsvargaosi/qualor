@@ -79,6 +79,43 @@ describe('ConsentPage (spec §6 step 6)', () => {
     expect(root.textContent).not.toContain('Not verified');
   });
 
+  it('names the host of a metadata-URL client id, and none for a registered app', async () => {
+    setup();
+    const { root } = await render();
+    expect(root.querySelector('[data-test=identified-by]')?.textContent).toContain(
+      'Identified by agent.example',
+    );
+    TestBed.resetTestingModule();
+    setup(pending({}, { source: 'dcr', clientId: 'qlr_cli_abc' }));
+    const dcr = await render();
+    expect(dcr.root.querySelector('[data-test=identified-by]')).toBeNull();
+  });
+
+  it('shows a whole code point as the initial', async () => {
+    setup(pending({}, { name: '🤖 Robot' }));
+    const { root } = await render();
+    expect(root.querySelector('.avatar')?.textContent?.trim()).toBe('🤖');
+  });
+
+  it('forgets the previous request when the request changes', async () => {
+    const { server, leave } = setup();
+    server.on('POST', DECISION, { body: { redirectTo: BACK } });
+    const { fixture, root } = await render();
+    button(root, 'Allow')?.click();
+    await settle(fixture);
+    expect(leave).toHaveBeenCalledTimes(1);
+    expect(root.textContent).toContain('Connecting…');
+    const other = '0190a6c2-0000-7000-8000-0000000000a2';
+    server.on('GET', `/api/v0/oauth/requests/${other}`, {
+      body: pending({ id: other }, { name: 'Second App' }),
+    });
+    fixture.componentRef.setInput('request', other);
+    await settle(fixture);
+    expect(root.textContent).toContain('Second App');
+    expect(root.textContent).not.toContain('Connecting…');
+    expect(button(root, 'Allow')).toBeDefined();
+  });
+
   it('marks an app that registered itself, and shows a redirect that is not https in full', async () => {
     setup(
       pending(

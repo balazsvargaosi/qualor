@@ -96,6 +96,20 @@ export class ConsentPage {
     const uri = this.pending()?.client.redirectUri;
     return uri === undefined ? '' : redirectLabel(uri);
   });
+  /** The first character as a whole code point (a name may start with an emoji). */
+  protected readonly initial = computed(
+    () => Array.from(this.pending()?.client.name ?? '')[0] ?? '',
+  );
+  /** CIMD only: the client id is an https address, whose host identifies the app better than its name. */
+  protected readonly identifiedBy = computed(() => {
+    const client = this.pending()?.client;
+    if (client?.source !== 'cimd') return null;
+    try {
+      return new URL(client.clientId).host;
+    } catch {
+      return null;
+    }
+  });
   protected readonly fullRedirect = computed(() => {
     const uri = this.pending()?.client.redirectUri;
     return uri === undefined ? null : unlessHttps(uri);
@@ -111,6 +125,10 @@ export class ConsentPage {
         this.gone.set(false);
         this.refused.set(false);
         this.error.set(null);
+        this.left.set(false);
+        this.busy.set(false);
+        this.automatic.set(false);
+        this.write.set(false);
         if (id) void this.start(id);
         else this.showGone();
       });

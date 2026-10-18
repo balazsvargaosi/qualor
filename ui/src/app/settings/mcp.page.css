@@ -1,4 +1,4 @@
-/* Settings â†’ MCP (6N spec Â§9): the endpoint, then the client policy as setting rows. */
+/* Settings → MCP (6N spec §9): the endpoint, then the client policy as setting rows. */
 .mcp-panels {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
