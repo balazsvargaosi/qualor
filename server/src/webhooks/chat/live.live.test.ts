@@ -30,8 +30,8 @@ const MESSAGE: ChatGateMessage = {
   newIssues: { security: 2, reliability: 0, maintainability: 1 },
 };
 
-async function deliverLive(kind: 'slack' | 'teams', url: string): Promise<void> {
-  const outcome = await sendWebhook(
+async function deliverLive(kind: 'slack' | 'teams', url: string) {
+  return sendWebhook(
     {
       url,
       body: JSON.stringify(formatChat(kind, MESSAGE, chatLinks('https://qualor.example.com'))),
@@ -39,7 +39,6 @@ async function deliverLive(kind: 'slack' | 'teams', url: string): Promise<void> 
     },
     { allowInternalHosts: false, timeoutMs: 15_000 },
   );
-  expect(outcome.ok, `${outcome.status} ${outcome.excerpt}`).toBe(true);
 }
 
 describe('live webhooks', () => {
@@ -47,10 +46,12 @@ describe('live webhooks', () => {
   const teams = process.env.QUALOR_TEAMS_WEBHOOK_URL;
   it('slack accepts a gate message', async (ctx) => {
     if (!slack) return ctx.skip();
-    await deliverLive('slack', slack);
+    const outcome = await deliverLive('slack', slack);
+    expect(outcome.ok, `${outcome.status} ${outcome.excerpt}`).toBe(true);
   });
   it('teams accepts a gate message', async (ctx) => {
     if (!teams) return ctx.skip();
-    await deliverLive('teams', teams);
+    const outcome = await deliverLive('teams', teams);
+    expect(outcome.ok, `${outcome.status} ${outcome.excerpt}`).toBe(true);
   });
 });
