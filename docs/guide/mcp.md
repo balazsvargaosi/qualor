@@ -15,6 +15,9 @@ connects their own agent.
   it the MCP server is off, and **Settings → MCP** says so.
 - Qualor is served over **HTTPS**, usually by a reverse proxy in front of it. AI clients refuse to
   sign in over plain `http://`, except for `localhost`.
+- If Qualor is served under a path, such as `https://example.com/qualor`, the proxy also sends the
+  addresses that start with `/.well-known/oauth-` at the root of the host to Qualor, unchanged
+  ([Reverse proxy and TLS](./install-server.md#reverse-proxy-and-tls)).
 - The person has a Qualor account. Single sign-on works as usual: the sign-in page of the browser is
   the one you already use.
 
@@ -66,7 +69,9 @@ browser.
 
 The page where you allow the app lists what it can do. Reading is always included. Changing issue
 statuses is a separate box, **Change issue statuses**, which appears only if the app asks for it;
-untick it to let the app read only.
+untick it to let the app read only. This choice holds the first time you allow an app: once it may
+change statuses, allowing it again keeps that right. To take it away, disconnect the app
+([Disconnect an app](#disconnect-an-app)) and connect it again with the box unticked.
 
 | Tool | What it does | Needs |
 |---|---|---|
@@ -149,6 +154,8 @@ for example when someone leaves or a laptop is lost.
   request.
 - **Allowed apps.** One client id per line, or a URL prefix ending in `/`. When the list has entries,
   only those apps can connect, and an app that is not on it cannot sign in or renew its login any more.
+  An app that is already connected keeps working for up to an hour, until its current login runs out.
+  To stop it at once, disconnect it in **Settings → Users → Connected apps**.
 
 The page also shows the MCP address, or tells you to set `QUALOR_PUBLIC_URL`.
 

@@ -449,6 +449,14 @@ location / {
 A cloud load balancer works too. Give it the same body size limit and a 300 s timeout, and set
 `QUALOR_TRUST_PROXY` to its hop count or address range.
 
+If Qualor is served under a path, for example `QUALOR_PUBLIC_URL=https://example.com/qualor`, the
+proxy removes `/qualor` before it passes a request to Qualor. Two addresses are different: the
+documents AI agents read before they sign in to the [MCP server](./mcp.md) are at the root of the
+host, `https://example.com/.well-known/oauth-authorization-server/qualor` and
+`https://example.com/.well-known/oauth-protected-resource/qualor/mcp`. Send every address that starts
+with `/.well-known/oauth-` to Qualor as it is, without removing anything. Otherwise agents cannot
+sign in.
+
 If CI runners reach Qualor through a certificate from a private CA, give them that CA: set
 `QUALOR_CA_FILE` (a path outside the checkout) or `NODE_EXTRA_CA_CERTS` in the job.
 
