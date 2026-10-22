@@ -273,7 +273,7 @@ Do this:
 
 Finally, remind me that the Qualor GitHub App must be installed on
 this repository, and the repository mapped to its Qualor project,
-for the pull request annotations and summary comment (github.md,
+for the pull request review comments and summary comment (github.md,
 "The GitHub App").
 ```
 

@@ -27,7 +27,7 @@ release: **Docs** in the top bar, at `/docs` on your server, for signed-in users
    tokens CI uses.
 4. [GitLab](./gitlab.md): the CI job or CI/CD component, and merge request comments with a commit
    status.
-5. [GitHub](./github.md): the Actions workflow and a GitHub App for check runs, annotations and
+5. [GitHub](./github.md): the Actions workflow and a GitHub App for check runs and pull request
    comments.
 6. [Other CI systems and local scans](./other-ci.md): Jenkins, Bitbucket, TeamCity or a laptop.
 7. [Languages and analyzers](./languages-and-analyzers.md): JavaScript, TypeScript, Java, Kotlin,

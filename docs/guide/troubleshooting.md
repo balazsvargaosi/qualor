@@ -69,9 +69,9 @@ mapping. Its message says what is wrong.
 | "The token lacks a permission" | the token lacks the `api` scope or the Maintainer role. Developer is enough for comments, but not for a commit status on a protected branch |
 | "The stored token can no longer be read" | `QUALOR_SECRET_KEY` changed. Enter the token again |
 | comments have no links | `QUALOR_PUBLIC_URL` is not set |
-| no inline discussion for an issue | it is not on an added line of the diff, or it is past the 50 per MR. The summary counts both |
+| no inline discussion or review comment for an issue | it is not on an added line of the diff, or it is past the 50 per merge or pull request. The summary counts both |
 | GitHub: `not_installed` / `permission_missing` | install the App on the repository, and grant Checks and Pull requests write |
-| GitHub: no annotations | the workflow checked out the merge commit. Use `ref: ${{ github.event.pull_request.head.sha }}` |
+| GitHub: no inline comments | the workflow checked out the merge commit. Use `ref: ${{ github.event.pull_request.head.sha }}` |
 | GitHub: Re-run does nothing | the webhook is inactive, the secret differs, or `QUALOR_PUBLIC_URL` is not set |
 | Slack or Teams: a webhook is refused, a message does not arrive, or there is no digest | [Slack and Microsoft Teams: Troubleshooting](./chat-notifications.md#troubleshooting) |
 

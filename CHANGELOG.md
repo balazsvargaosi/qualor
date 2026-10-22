@@ -6,6 +6,13 @@ All notable changes to Qualor are listed here, newest first. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- GitHub: findings on changed lines are now pull request review comments instead of check run
+  annotations. Qualor resolves a comment when its issue is fixed or marked in Qualor, and reopens
+  it when the issue comes back, unless a person resolved it. The check run keeps the status and
+  the summary.
+
 ## [0.11.0] - 2026-10-19
 
 ### Added

@@ -161,9 +161,10 @@ GitHub Actions: use the [Qualor Action](https://github.com/qualor-dev/scan-actio
 The [guide](docs/guide/github.md) has the complete workflow (triggers, `permissions: { contents: read }`,
 skipping fork pull requests) and the template
 [integrations/github/qualor.yml](integrations/github/qualor.yml) for your own image or a mirror.
-The checkout takes the pull request's head (so annotations land on its lines) with the full history and
-without leaving the job's token in `.git/config`, and skips pull requests from forks, which GitHub
-gives no secrets. For check runs, pull request comments and annotations, create a GitHub App
+The checkout takes the pull request's head (so review comments land on its lines) with the full
+history and without leaving the job's token in `.git/config`, and skips pull requests from forks,
+which GitHub gives no secrets. For check runs and pull request comments (a summary, and a review
+comment on each new issue), create a GitHub App
 (Checks: read and write, Pull requests: read and write, Metadata: read;
 [integrations/github/app-manifest.json](integrations/github/app-manifest.json) has these settings),
 install it on the repositories, add it in Qualor (Settings, GitHub: the API URL, the App id and the

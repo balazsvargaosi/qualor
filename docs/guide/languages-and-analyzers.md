@@ -637,8 +637,8 @@ the `.cs` files, under the same rule keys (`qualor:csharp/<name>`):
   under a key built at run time, a view the engine could not tell from its name, or an interface
   or virtual call it could not narrow down to one implementation, the finding is marked
   **Possible**: in the issue list, on the issue page (with a **Confidence** line in its details),
-  in a file's issue list, after its quality in merge request comments and pull request annotations,
-  and as `Possible: ` at the start of its entry in the GitLab Code Quality and SAST reports. Check
+  in a file's issue list, after its quality in merge request and pull request comments, and as
+  `Possible: ` at the start of its entry in the GitLab Code Quality and SAST reports. Check
   those with more care before you act on them. The engine shows a direct path when it finds one.
   The other findings have high confidence and no mark. Possible findings count like any other in
   the quality gate and the issue counts. The OpenGrep rules and the other
