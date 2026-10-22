@@ -664,6 +664,37 @@ describe('AI requests (llm.md §5, §10, §12, §16)', () => {
     expect(off).toMatchObject({ enabled: false, features: { explain: false } });
   });
 
+  it('does not serve the record of a review call as an AI request (6I-3): 404, like a missing one', async () => {
+    const [call] = await h.ctx.db
+      .insert(llmRequests)
+      .values({
+        organizationId: h.organizationId,
+        projectId: p.id,
+        feature: 'review',
+        cacheKey: 'a'.repeat(64),
+        provider: 'openai',
+        providerHost: fake.host,
+        model: 'fake-model',
+        promptVersion: 'review.v1',
+        status: 'succeeded',
+        inputSha256: 'b'.repeat(64),
+        inputBytes: 10,
+        fields: ['review'],
+      })
+      .returning();
+    const missing = await get('/api/v0/ai-requests/01900000-0000-7000-8000-000000000000');
+    expect(missing.statusCode).toBe(404);
+    const read = await get(`/api/v0/ai-requests/${call!.id}`);
+    expect([read.statusCode, read.json().title]).toEqual([404, missing.json().title]);
+    const post = await h.ctx.app.inject({
+      method: 'POST',
+      url: `/api/v0/ai-requests/${call!.id}/post`,
+      headers: h.orgAdmin.headers,
+      payload: {},
+    });
+    expect([post.statusCode, post.json().title]).toEqual([404, missing.json().title]);
+  });
+
   it('writes neither the snippet nor the key to the log', async () => {
     await configure({ storePrompts: true });
     await ask(eqIssue, 'explain');

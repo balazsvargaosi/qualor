@@ -1,3 +1,4 @@
+import type { LlmFeature } from '@qualor/shared';
 import { sql } from 'drizzle-orm';
 import {
   type AnyPgColumn,
@@ -877,7 +878,9 @@ export const llmRequests = pgTable(
     // Closed issues are pruned (§7); the audit row stays.
     issueId: uuid('issue_id').references(() => issues.id, { onDelete: 'set null' }),
     userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
-    feature: text('feature').notNull().$type<'explain' | 'triage' | 'fix'>(),
+    // The three single-shot features, and `review` (6I-3, migration 0016_review_runs): the
+    // provider calls of an AI review run.
+    feature: text('feature').notNull().$type<LlmFeature | 'review'>(),
     cacheKey: char('cache_key', { length: 64 }).notNull(),
     provider: text('provider').notNull(),
     providerHost: text('provider_host').notNull(),
@@ -916,7 +919,7 @@ export const llmRequests = pgTable(
     index('llm_requests_user_idx')
       .on(t.userId)
       .where(sql`user_id IS NOT NULL`),
-    check('llm_requests_feature_check', sql`feature IN ('explain','triage','fix')`),
+    check('llm_requests_feature_check', sql`feature IN ('explain','triage','fix','review')`),
     check('llm_requests_status_check', sql`status IN ('queued','running','succeeded','failed')`),
     check('llm_requests_result_check', sql`result IS NULL OR status = 'succeeded'`),
     check('llm_requests_result_size', sql`result IS NULL OR octet_length(result::text) <= 16384`),
@@ -1652,3 +1655,214 @@ export const reviewSnapshotFiles = pgTable(
   ],
 );
 export type ReviewSnapshotFileRow = typeof reviewSnapshotFiles.$inferSelect;
+
+// ─── AI review runs and findings (Phase 6I-3, migration 0016_review_runs) ────
+
+export const REVIEW_RUN_STATUSES = [
+  'waiting',
+  'running',
+  'done',
+  'skipped',
+  'failed',
+  'superseded',
+] as const;
+export type ReviewRunStatus = (typeof REVIEW_RUN_STATUSES)[number];
+
+/** Why a run ended `skipped`: `reason` is one of these exactly when the status is `skipped`. */
+export const REVIEW_SKIP_REASONS = [
+  'no_snapshot',
+  'snapshot_rejected',
+  'draft',
+  'closed',
+  'inactive',
+  'empty_diff',
+  'unchanged',
+  'budget_spent',
+] as const;
+export type ReviewSkipReason = (typeof REVIEW_SKIP_REASONS)[number];
+
+/** Why a run ended `failed`: `reason` is one of these exactly when the status is `failed`. */
+export const REVIEW_FAILURE_REASONS = [
+  'provider_error',
+  'provider_no_tools',
+  'bad_answer',
+  'internal',
+] as const;
+export type ReviewFailureReason = (typeof REVIEW_FAILURE_REASONS)[number];
+
+/** What a `running` run is doing; `phase` is null in every other status. */
+export const REVIEW_PHASES = ['specialists', 'judge', 'verification', 'storing'] as const;
+export type ReviewPhase = (typeof REVIEW_PHASES)[number];
+
+/** How much review the size of the change earned. */
+export const REVIEW_TIERS = ['trivial', 'lite', 'full'] as const;
+export type ReviewTier = (typeof REVIEW_TIERS)[number];
+
+/** The categories of an AI finding; the rule of its issue is `ai:<category>`. */
+export const AI_CATEGORIES = [
+  'logic',
+  'error-handling',
+  'compatibility',
+  'concurrency',
+  'security',
+  'performance',
+  'tests',
+  'docs',
+] as const;
+export type AiCategory = (typeof AI_CATEGORIES)[number];
+
+/**
+ * One AI review of one merge request analysis (6I-3, R15). The ingestion stage creates it
+ * `waiting` for the scanner's snapshot; the `ai-review` worker runs it and ends it `done`,
+ * `skipped` (`reason` says why), `failed`, or `superseded` by a newer analysis of the merge
+ * request. It keeps the lifecycle, the spend and the summary; the findings themselves are issues
+ * of engine `ai`, each with a `review_findings` row.
+ */
+export const reviewRuns = pgTable(
+  'review_runs',
+  {
+    id: id(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'cascade' }),
+    analysisId: uuid('analysis_id')
+      .notNull()
+      .unique()
+      .references(() => analyses.id, { onDelete: 'cascade' }),
+    /** The snapshot the run reads: null until it has one, and after the snapshot was deleted. */
+    snapshotId: uuid('snapshot_id').references(() => reviewSnapshots.id, { onDelete: 'set null' }),
+    status: text('status').notNull().default('waiting').$type<ReviewRunStatus>(),
+    /** Set only while `running`. */
+    phase: text('phase').$type<ReviewPhase>(),
+    /** A skip reason exactly when `skipped`, a failure reason exactly when `failed`, else null. */
+    reason: text('reason').$type<ReviewSkipReason | ReviewFailureReason>(),
+    /** At most 200 characters: a code such as `SNAPSHOT_INVALID`, never content. */
+    detail: text('detail'),
+    /** The merge request's head commit the review is of, and the last reviewed commit before it. */
+    headSha: text('head_sha'),
+    sinceSha: text('since_sha'),
+    /** sha256 of the reviewable changes, to recognise a diff that has not changed. */
+    diffDigest: char('diff_digest', { length: 64 }),
+    tier: text('tier').$type<ReviewTier>(),
+    /** The specialist reviewers that ran. */
+    reviewers: text('reviewers').array().notNull().default(emptyTextArray),
+    /** Where the provider calls went. */
+    providerHost: text('provider_host'),
+    model: text('model'),
+    modelCalls: integer('model_calls').notNull().default(0),
+    toolCalls: integer('tool_calls').notNull().default(0),
+    inputTokens: bigint('input_tokens', { mode: 'number' }).notNull().default(0),
+    outputTokens: bigint('output_tokens', { mode: 'number' }).notNull().default(0),
+    /** Estimated, as in `llm_requests`: null when no prices are set. */
+    costMicroUsd: bigint('cost_micro_usd', { mode: 'number' }),
+    /** A stage used up its share of the token budget and answered with what it had. */
+    tokenLimitReached: boolean('token_limit_reached').notNull().default(false),
+    /** The scanner left files out of the snapshot to stay within its limits. */
+    snapshotPartial: boolean('snapshot_partial').notNull().default(false),
+    /** `{ verdict, walkthrough[], notes[] }`, validated by `reviewSummarySchema`. */
+    summary: jsonb('summary').$type<unknown>(),
+    findingsNew: integer('findings_new').notNull().default(0),
+    findingsOpen: integer('findings_open').notNull().default(0),
+    findingsFixed: integer('findings_fixed').notNull().default(0),
+    /** When a `waiting` run stops waiting for its snapshot. */
+    deadlineAt: at('deadline_at').notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    startedAt: at('started_at'),
+    finishedAt: at('finished_at'),
+  },
+  (t) => [
+    // The branch FK's index; a branch's runs, newest first (its last reviewed commit and digest).
+    // NULLS FIRST is what DESC means without a clause: only then is a plain `ORDER BY created_at
+    // DESC` read from the index in order (drizzle's `.desc()` alone adds NULLS LAST).
+    index('review_runs_branch_idx').on(t.branchId, t.createdAt.desc().nullsFirst()),
+    // The project FK's index (§2).
+    index('review_runs_project_idx').on(t.projectId),
+    // The snapshot FK's index (§2).
+    index('review_runs_snapshot_idx')
+      .on(t.snapshotId)
+      .where(sql`snapshot_id IS NOT NULL`),
+    // The runs still to do: the deadline, the supersede and the worker look only at these.
+    index('review_runs_active_idx')
+      .on(t.status)
+      .where(sql`status IN ('waiting','running')`),
+    check(
+      'review_runs_status_check',
+      sql`status IN ('waiting','running','done','skipped','failed','superseded')`,
+    ),
+    check(
+      'review_runs_phase_check',
+      sql`phase IN ('specialists','judge','verification','storing')`,
+    ),
+    check('review_runs_phase_only_while_running', sql`phase IS NULL OR status = 'running'`),
+    // `reason IS NOT NULL AND` keeps a missing reason a violation: a NULL result would pass a CHECK.
+    check(
+      'review_runs_reason_by_status',
+      sql`CASE status WHEN 'skipped' THEN reason IS NOT NULL AND reason IN ('no_snapshot','snapshot_rejected','draft','closed','inactive','empty_diff','unchanged','budget_spent') WHEN 'failed' THEN reason IS NOT NULL AND reason IN ('provider_error','provider_no_tools','bad_answer','internal') ELSE reason IS NULL END`,
+    ),
+    check('review_runs_detail_length', sql`char_length(detail) <= 200`),
+    check('review_runs_head_sha_format', sql`head_sha ~ '^[0-9a-f]{40}([0-9a-f]{24})?$'`),
+    check('review_runs_since_sha_format', sql`since_sha ~ '^[0-9a-f]{40}([0-9a-f]{24})?$'`),
+    check('review_runs_diff_digest_format', sql`diff_digest ~ '^[0-9a-f]{64}$'`),
+    check('review_runs_tier_check', sql`tier IN ('trivial','lite','full')`),
+  ],
+);
+export type ReviewRunRow = typeof reviewRuns.$inferSelect;
+
+/**
+ * What an AI finding keeps beside its issue (6I-3, R18): the text, the one-click suggestion and
+ * where its thread sits. One row per issue of engine `ai`, deleted with the issue. `run_id` is
+ * the run that last emitted or re-checked the finding, and goes null when that run is deleted.
+ */
+export const reviewFindings = pgTable(
+  'review_findings',
+  {
+    issueId: uuid('issue_id')
+      .primaryKey()
+      .references(() => issues.id, { onDelete: 'cascade' }),
+    runId: uuid('run_id').references(() => reviewRuns.id, { onDelete: 'set null' }),
+    category: text('category').notNull().$type<AiCategory>(),
+    /** At most 2 000 characters. */
+    body: text('body').notNull(),
+    /** At most 300 characters: what the finding takes for granted. */
+    assumption: text('assumption'),
+    /** The independent verification of a security finding; null when it was not verified. */
+    verification: text('verification').$type<'confirmed' | 'needs_validation'>(),
+    /** A one-click replacement: the head lines `startLine` to `endLine` become `lines`. */
+    suggestion: jsonb('suggestion').$type<{
+      startLine: number;
+      endLine: number;
+      lines: string[];
+    }>(),
+    /** The added line a thread sits on; null when the finding cannot be placed inline. */
+    anchorLine: integer('anchor_line'),
+    /** The head commit the finding was last emitted or re-checked at. */
+    reviewedHeadSha: text('reviewed_head_sha').notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    // The run FK's index (§2); the issue FK is the primary key.
+    index('review_findings_run_idx')
+      .on(t.runId)
+      .where(sql`run_id IS NOT NULL`),
+    check(
+      'review_findings_category_check',
+      sql`category IN ('logic','error-handling','compatibility','concurrency','security','performance','tests','docs')`,
+    ),
+    check('review_findings_body_length', sql`char_length(body) <= 2000`),
+    check('review_findings_assumption_length', sql`char_length(assumption) <= 300`),
+    check(
+      'review_findings_verification_check',
+      sql`verification IN ('confirmed','needs_validation')`,
+    ),
+    check(
+      'review_findings_reviewed_head_sha_format',
+      sql`reviewed_head_sha ~ '^[0-9a-f]{40}([0-9a-f]{24})?$'`,
+    ),
+  ],
+);
+export type ReviewFindingRow = typeof reviewFindings.$inferSelect;

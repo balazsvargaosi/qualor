@@ -3,6 +3,7 @@ import {
   buildPrompt,
   checkFix,
   llmIneligibility,
+  type LlmFeature,
   MAX_OUTPUT_TOKENS,
   parseAnswer,
   REDACTED,
@@ -164,6 +165,13 @@ export function costOf(
   );
 }
 
+/**
+ * A request of one of the three single-shot features, which is all this queue holds: a `review`
+ * row is the record of a provider call of a review run (6I-3), finished when it is written.
+ */
+type SingleShotRow = LlmRequestRow & { feature: LlmFeature };
+const isSingleShot = (row: LlmRequestRow): row is SingleShotRow => row.feature !== 'review';
+
 type Outcome =
   | {
       ok: true;
@@ -245,7 +253,7 @@ async function finish(
  * bounded; what is stored, or why nothing is. None of these failures is retried.
  */
 function validate(
-  feature: LlmRequestRow['feature'],
+  feature: LlmFeature,
   answer: LlmAnswer,
   key: string | null,
   input: Parameters<typeof checkFix>[1],
@@ -344,7 +352,7 @@ const refused = (code: LlmErrorCode): Refused => ({ ok: false, code });
  */
 function organizationAllows(
   deps: LlmJobDeps,
-  row: LlmRequestRow,
+  row: SingleShotRow,
   settings: StoredLlmSettings,
   automatic: boolean,
 ): boolean {
@@ -375,7 +383,7 @@ function providerChanged(
 }
 
 /** Whether the issue is no longer eligible, or no longer the input the request was made of. */
-function issueChanged(row: LlmRequestRow, provider: StoredProvider, built: BuiltInput): boolean {
+function issueChanged(row: SingleShotRow, provider: StoredProvider, built: BuiltInput): boolean {
   const ineligible = llmIneligibility(
     row.feature,
     {
@@ -403,7 +411,7 @@ function issueChanged(row: LlmRequestRow, provider: StoredProvider, built: Built
  */
 async function prepare(
   deps: LlmJobDeps,
-  row: LlmRequestRow,
+  row: SingleShotRow,
   payload: LlmJobPayload,
   settings: StoredLlmSettings,
   automatic: boolean,
@@ -439,7 +447,7 @@ function noteCallFailure(circuit: CircuitBreaker, circuitKey: string, err: LlmEr
 /** Sends a claimed request and finishes it, or queues it again. */
 async function sendClaimed(
   deps: LlmJobDeps,
-  row: LlmRequestRow,
+  row: SingleShotRow,
   payload: LlmJobPayload,
   started: number,
 ): Promise<void> {
@@ -514,7 +522,7 @@ async function runLlmJob(deps: LlmJobDeps, payload: LlmJobPayload): Promise<void
     .select()
     .from(llmRequests)
     .where(eq(llmRequests.id, payload.requestId));
-  if (!row || row.status === 'succeeded' || row.status === 'failed') return;
+  if (!row || !isSingleShot(row) || row.status === 'succeeded' || row.status === 'failed') return;
   if (!deps.runtime.slots.tryTake(row.organizationId)) {
     // llm.md §12.3: one request per organisation per process; this one waits its turn.
     await enqueue(deps.db, {

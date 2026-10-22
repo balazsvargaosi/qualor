@@ -44,8 +44,9 @@ describe('runMigrations / pendingMigrations', () => {
     // (mail E3 N8, 2026-10-13), 0012_issues_confidence (6B-C# engine spec R-9, approved
     // 2026-10-15), 0013_oauth (phase 6N, OAuth clients, requests, grants and tokens),
     // 0014_chat_webhooks (phase 6G, Slack and Teams webhooks), 0015_review_snapshots (phase 6I-2,
-    // the repository snapshots of the AI review).
-    expect(await pendingMigrations(t.db, MIGRATIONS_DIR)).toBe(16);
+    // the repository snapshots of the AI review), 0016_review_runs (phase 6I-3, the review runs
+    // and the AI findings).
+    expect(await pendingMigrations(t.db, MIGRATIONS_DIR)).toBe(17);
     expect(await readinessCheck(t.db, MIGRATIONS_DIR)()).toBe(false);
     await runMigrations(t.pool, MIGRATIONS_DIR);
     expect(await pendingMigrations(t.db, MIGRATIONS_DIR)).toBe(0);
@@ -309,6 +310,8 @@ describe('runMigrations / pendingMigrations', () => {
       'oauth_requests', // 0013_oauth
       'oauth_tokens', // 0013_oauth
       'project_watches',
+      'review_findings', // 0016_review_runs
+      'review_runs', // 0016_review_runs
       'review_snapshot_files', // 0015_review_snapshots
       'review_snapshots', // 0015_review_snapshots
     ].sort();
@@ -321,5 +324,58 @@ describe('runMigrations / pendingMigrations', () => {
               (SELECT count(*)::int FROM project_memberships WHERE managed_by_connection_id IS NULL) AS p`,
     );
     expect(managed).toEqual([{ m: 2, p: 1 }]);
+  });
+
+  it('adds the review tables to a database that holds AI requests and keeps every request (0016, phase 6I-3)', async () => {
+    const db = await createTestDatabase({ migrated: false });
+    t = db;
+    const upTo15 = migrationsUpTo(16); // 0000_extensions … 0015_review_snapshots
+    try {
+      await runMigrations(db.pool, upTo15.dir);
+    } finally {
+      upTo15.remove();
+    }
+    // 0016 and every later migration.
+    expect(await pendingMigrations(db.db, MIGRATIONS_DIR)).toBe(journalLength() - 16);
+    const org = randomUUID();
+    const project = randomUUID();
+    await db.pool.query(`INSERT INTO organizations (id, key, name) VALUES ($1, 'mig-6i3', 'Mig')`, [
+      org,
+    ]);
+    await db.pool.query(
+      `INSERT INTO projects (id, organization_id, key, name) VALUES ($1, $2, 'mig/6i3', 'P')`,
+      [project, org],
+    );
+    const insertRequest = (feature: string) =>
+      db.pool.query(
+        `INSERT INTO llm_requests (id, organization_id, project_id, feature, cache_key, provider,
+           provider_host, model, prompt_version, input_sha256, input_bytes, fields)
+         VALUES ($1, $2, $3, $4, $5, 'openai', 'api.example.com', 'm', $6, $7, 10, '{rule}')`,
+        [randomUUID(), org, project, feature, 'a'.repeat(64), `${feature}.v1`, 'b'.repeat(64)],
+      );
+    for (const feature of ['explain', 'triage', 'fix']) await insertRequest(feature);
+    const requests = async () =>
+      (
+        await db.pool.query(
+          'SELECT id, feature, status, prompt_version, cache_key FROM llm_requests ORDER BY feature',
+        )
+      ).rows;
+    const before = await requests();
+    expect(before).toHaveLength(3);
+
+    await runMigrations(db.pool, MIGRATIONS_DIR);
+    expect(await pendingMigrations(db.db, MIGRATIONS_DIR)).toBe(0);
+    // Dropping and adding the feature check changed no request, and the new tables are empty.
+    expect(await requests()).toEqual(before);
+    for (const table of ['review_runs', 'review_findings']) {
+      const { rows } = await db.pool.query(`SELECT count(*)::int AS n FROM ${table}`);
+      expect(rows, table).toEqual([{ n: 0 }]);
+    }
+    // The widened check lists review, and still refuses any other value.
+    await insertRequest('review');
+    await expect(insertRequest('poem')).rejects.toMatchObject({
+      code: '23514',
+      constraint: 'llm_requests_feature_check',
+    });
   });
 });

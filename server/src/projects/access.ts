@@ -1,4 +1,5 @@
-import { eq } from 'drizzle-orm';
+import { LLM_FEATURES } from '@qualor/shared';
+import { and, eq, inArray } from 'drizzle-orm';
 import { hasScope, requirePermission, type AccessContext } from '../auth/access';
 import { grantOf, memberOf, projectFacts } from '../auth/facts';
 import { projectPermissions, type ProjectPermission } from '../auth/policy';
@@ -175,7 +176,8 @@ export async function analysisForPrincipal(
 /**
  * An AI request, through its project (rbac-audit.md §3.4 notes), so a project grant counts: read
  * it with `project.read`, post it with `ai.use`. A missing request and one of a project the
- * caller cannot see are the same 404 (`Request not found`), answered by one query either way.
+ * caller cannot see are the same 404 (`Request not found`), answered by one query either way. The
+ * record of a review call (6I-3) is not an AI request of this API: it reads as missing.
  */
 export async function aiRequestFor(
   access: AccessContext,
@@ -189,7 +191,7 @@ export async function aiRequestFor(
     .innerJoin(projects, eq(projects.id, llmRequests.projectId))
     .leftJoin(memberships, memberOf(principal.user, projects.organizationId))
     .leftJoin(projectMemberships, grantOf(principal.user, projects.id))
-    .where(eq(llmRequests.id, requestId));
+    .where(and(eq(llmRequests.id, requestId), inArray(llmRequests.feature, [...LLM_FEATURES])));
   if (!row) throw notFound('Request');
   requirePermission(principal, granted(principal.user, row), permission, 'project.read', 'Request');
   return row.request;
