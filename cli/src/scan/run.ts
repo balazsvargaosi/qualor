@@ -1,5 +1,5 @@
 import path from 'node:path';
-import type { Report } from '@qualor/shared';
+import { engineMapping, type Language, type QualorConfig, type Report } from '@qualor/shared';
 import { loadExternalSarif } from '../analyzers/external';
 import { fileLines, normalizeCaptures } from '../analyzers/normalize';
 import { builtinAnalyzers } from '../analyzers/registry';
@@ -26,7 +26,7 @@ import { VERSION } from '../index';
 import type { CliIO } from '../io';
 import type { Logger } from '../log';
 import { loadParsers, type Parsers } from '../parse/grammars';
-import { baseSecretScan } from '../review/base-secrets';
+import { baseSecretScan, SECRET_ENGINE } from '../review/base-secrets';
 import { fetchReviewContext, type ReviewContext } from '../review/context';
 import { maskSecrets, prepareSecrets } from '../review/redact';
 import { buildReviewSnapshot, type BuiltSnapshot } from '../review/snapshot';
@@ -364,8 +364,8 @@ interface ReviewSnapshotOptions {
   projectKey: string;
   /** The analysis of the report just uploaded. */
   analysisId: string;
-  /** The report's merge request: CI's, or the one `--mr` and `--mr-target` name. */
-  reported: Report['scm']['mergeRequest'];
+  /** The report uploaded: its merge request (CI's, or the one `--mr` names) and engine records. */
+  report: Report;
   /** The secrets the scan's analyzers found, or that they are unknown. */
   redaction: GitLabRedaction;
   /** The scan's analyzers: its secret engine scans the merge base's files too (ruling R13). */
@@ -374,6 +374,37 @@ interface ReviewSnapshotOptions {
   env: CliIO['env'];
   log: Logger;
   deps: ScanDeps;
+}
+
+/** An engine whose findings are secrets the report masks (its mapping's `redactRegion`). */
+function redactsSecrets(engineId: string): boolean {
+  const redact = engineMapping(engineId)?.redactRegion;
+  return redact !== undefined && redact !== false;
+}
+
+/**
+ * Review Focus 2: the scan's secret scans that did not complete, read from the report's engine
+ * records and the analyzers the scan ran. Every one whose findings are secrets the report masks
+ * (Gitleaks, and the secret rules of Semgrep and of Qualor's rules) that qualor.yml does not
+ * switch off must be `ok`: one that failed, timed out, could not run here or whose output could not
+ * be read left its secrets unknown. One with languages, none of which the scan has, had nothing
+ * to scan.
+ */
+function incompleteSecretScans(
+  analyzers: readonly Analyzer[],
+  report: Report,
+  config: QualorConfig,
+): string[] {
+  // The languages the analyzers' runner saw: those of the report's files.
+  const languages = new Set<Language>(
+    report.files.map((f) => f.language).filter((l) => l !== 'other'),
+  );
+  const status = new Map(report.engines.map((e) => [e.id, e.status]));
+  return analyzers
+    .filter((a) => redactsSecrets(a.id) && config.analyzers[a.id].enabled !== false)
+    .filter((a) => a.languages.length === 0 || a.languages.some((l) => languages.has(l)))
+    .filter((a) => status.get(a.id) !== 'ok')
+    .map((a) => a.id);
 }
 
 /** What CI lacks when it does not name the merge request's head commit, for the warning. */
@@ -473,7 +504,8 @@ async function buildAndUpload(
  * analyzers and secrets (the token among them), the merge base's files scanned by the same secret
  * engine from the same root (ruling R13), and is always removed afterwards (on Ctrl+C or a
  * cancelled job too). A scan that exits 3 sends none (`runScan` returns first). No snapshot goes
- * when the scan's secret-engine output could not be read (Review Focus 2) or the merge request's
+ * when a secret scan of the scan did not complete or its output could not be read (Review Focus
+ * 2; one qualor.yml switches off is the user's choice, said once), or when the merge request's
  * head is unknown or not in the clone (ruling R12); each of those, a snapshot that cannot be
  * built, a refused upload (said by `uploadReviewSnapshot`) and any failure is one warning. It
  * never throws and never decides the exit code. Nothing it logs holds a secret, the token or
@@ -500,7 +532,8 @@ async function sendReviewSnapshot(o: ReviewSnapshotOptions): Promise<void> {
     }
     // The snapshot is of the merge request CI runs for (its head, title and description): never
     // sent with the analysis of another one.
-    if (o.reported?.id !== mr.id || o.reported.targetBranch !== mr.targetBranch) {
+    const reported = o.report.scm.mergeRequest;
+    if (reported?.id !== mr.id || reported.targetBranch !== mr.targetBranch) {
       log.warn(
         'AI review: no snapshot sent, --mr and --mr-target name another merge request than the one CI runs for',
       );
@@ -511,11 +544,28 @@ async function sendReviewSnapshot(o: ReviewSnapshotOptions): Promise<void> {
       log.warn("AI review: no snapshot sent, the secret scan's output could not be read");
       return;
     }
+    const incomplete = incompleteSecretScans(o.analyzers, o.report, settings.config);
+    if (incomplete.length > 0) {
+      log.warn(
+        `AI review: no snapshot sent, the secret scan (${incomplete.join(', ')}) did not complete`,
+      );
+      return;
+    }
     if (mr.headSha === null) {
       log.warn(
         `AI review: no snapshot sent, the merge request's head commit is unknown (${unnamedHead(settings.ci)})`,
       );
       return;
+    }
+    // Switched off by the user: the shared patterns, and the secrets the other analyzers found,
+    // mask the snapshot (and no line the merge request removes is sent, ruling R13).
+    if (
+      o.analyzers.some((a) => a.id === SECRET_ENGINE) &&
+      settings.config.analyzers[SECRET_ENGINE].enabled === false
+    ) {
+      log.info(
+        'AI review: the secret scan is off in qualor.yml; only built-in patterns mask secrets in the snapshot',
+      );
     }
     const head = { ...mr, headSha: mr.headSha };
     // Everything the snapshot writes goes below one private directory, which Ctrl+C or a cancelled
@@ -628,7 +678,7 @@ export async function runScan(
       settings,
       projectKey,
       analysisId,
-      reported: report.scm.mergeRequest,
+      report,
       redaction: gitlab.redaction,
       analyzers,
       env: io.env,

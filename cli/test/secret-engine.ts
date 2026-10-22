@@ -19,8 +19,9 @@ export const fakeSecret = (name: string): string => `qk7-${name}`;
  * - `.gitleaksignore`: the `--gitleaks-ignore-path` file, or one in that directory (default `.`),
  *   and one in the source, with `<path>:<rule>:<line>` entries;
  * - the secret itself in `region.snippet.text`.
- * It writes what it ran with to FAKE_GITLEAKS_RECORD, fails when FAKE_GITLEAKS_MODE is `fail`, and
- * writes JSON that is no SARIF log (its secrets cannot be read) when it is `unreadable`.
+ * It writes what it ran with to FAKE_GITLEAKS_RECORD, fails when FAKE_GITLEAKS_MODE is `fail`,
+ * writes JSON that is no SARIF log (its secrets cannot be read) when it is `unreadable`, and never
+ * ends (until the runner's timeout stops it) when it is `hang`.
  */
 const TOOL = `
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
@@ -39,6 +40,9 @@ if (source === undefined || process.env.FAKE_GITLEAKS_MODE === 'fail') process.e
 if (process.env.FAKE_GITLEAKS_MODE === 'unreadable') {
   writeFileSync(option('--report-path'), JSON.stringify({ version: '2.1.0', runs: 'none' }));
   process.exit(0);
+}
+if (process.env.FAKE_GITLEAKS_MODE === 'hang') {
+  await new Promise(() => setInterval(() => undefined, 60_000));
 }
 
 const DEFAULT_RULE = { id: 'fake-secret', regex: 'qk7-[A-Za-z0-9-]{8,}', path: null };
@@ -143,12 +147,12 @@ export interface FakeSecretEngine {
  * A stand-in for the scan's Gitleaks (id `gitleaks`), its tool written to `dir`: Gitleaks' own
  * preparation (its configuration as the scan resolves it, its command line), with the small
  * Gitleaks above for its binary, run by the analyzers' runner like any analyzer. `fail` exits 1;
- * `unavailable` cannot run here; `unreadable` exits 0 with output that is not SARIF;
- * `extraArgs` go at the end of its command line.
+ * `unavailable` cannot run here; `unreadable` exits 0 with output that is not SARIF; `hang` runs
+ * until the runner times it out; `extraArgs` go at the end of its command line.
  */
 export function fakeSecretEngine(
   dir: string,
-  mode: 'ok' | 'fail' | 'unavailable' | 'unreadable' = 'ok',
+  mode: 'ok' | 'fail' | 'unavailable' | 'unreadable' | 'hang' = 'ok',
   extraArgs: readonly string[] = [],
 ): FakeSecretEngine {
   const tool = path.join(dir, 'fake-gitleaks.mjs');

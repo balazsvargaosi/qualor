@@ -49,7 +49,7 @@ export interface BaseSecretScanOptions {
 }
 
 /** The engine whose findings are secrets the report redacts (its mapping's `redactRegion`). */
-const SECRET_ENGINE = 'gitleaks';
+export const SECRET_ENGINE = 'gitleaks';
 
 /** `log` with every line at debug: what the snapshot lacks, it says itself, once. */
 function debugOnly(log: Logger): Logger {

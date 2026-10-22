@@ -6,6 +6,7 @@ import {
   REDACTED,
   reportSchema,
   REVIEW_SNAPSHOT_CONTENT_TYPE,
+  type Language,
   type Report,
   type SnapshotChangeLine,
   type SnapshotFileLine,
@@ -500,6 +501,110 @@ describe('qualor scan: the AI review snapshot of a merge request (6I-2)', () => 
       );
       expect(code, stderr).toBe(3);
       expect(server.paths).toEqual(UNTIL_REPORT);
+    },
+  );
+
+  /** An analyzer `id` with `languages` that cannot run here (its tool is not installed). */
+  const notInstalled = (id: 'semgrep' | 'qualor', languages: Language[]): Analyzer => ({
+    id,
+    languages,
+    prepare: () => Promise.resolve({ unavailable: `${id} is not installed here` }),
+  });
+  /** `qualor.yml` with these lines under `analyzers:`. */
+  const withAnalyzers = (lines: string) =>
+    lines === '' ? MR_YML : `${MR_YML}analyzers:\n${lines}`;
+
+  it.each([
+    [
+      'Gitleaks failed',
+      '  gitleaks:\n    enabled: auto\n',
+      (dir: string) => [fakeSecretEngine(dir, 'fail').analyzer],
+      'gitleaks',
+    ],
+    [
+      'Gitleaks timed out',
+      '  gitleaks:\n    enabled: auto\n    timeoutSeconds: 1\n',
+      (dir: string) => [fakeSecretEngine(dir, 'hang').analyzer],
+      'gitleaks',
+    ],
+    [
+      'Gitleaks is not installed',
+      '  gitleaks:\n    enabled: auto\n',
+      (dir: string) => [fakeSecretEngine(dir, 'unavailable').analyzer],
+      'gitleaks',
+    ],
+    [
+      'Semgrep, whose secret rules mask too, is not installed',
+      '',
+      () => [notInstalled('semgrep', [])],
+      'semgrep',
+    ],
+    [
+      "Qualor's rules did not run over files of their languages",
+      '',
+      () => [notInstalled('qualor', ['typescript'])],
+      'qualor',
+    ],
+  ])(
+    'a secret scan enabled for the scan that did not complete (%s): no snapshot and a warning (Review Focus 2)',
+    { timeout: 60_000 },
+    async (_name, lines, analyzers, engine) => {
+      // Not required, so the scan does not exit 3 on it.
+      const mr = mrRepo({ yml: withAnalyzers(lines) });
+      const server = await fakeServer([done('passed')], undefined, { context: REVIEW_ON });
+      const { code, stderr } = await scan(
+        mr.root,
+        server,
+        [],
+        { analyzers: analyzers(tmp()) },
+        gitlabMr(mr.head),
+      );
+      expect(code, stderr).toBe(0);
+      expect(server.paths).toEqual([...UNTIL_REPORT, CONTEXT, GATE]);
+      expect(reviewWarnings(stderr)).toEqual([
+        `warn: AI review: no snapshot sent, the secret scan (${engine}) did not complete`,
+      ]);
+    },
+  );
+
+  it.each([
+    ['Gitleaks completed', '', (dir: string) => [fakeSecretEngine(dir).analyzer], false],
+    [
+      "Gitleaks is off in qualor.yml, the user's choice",
+      '  gitleaks:\n    enabled: false\n',
+      (dir: string) => [fakeSecretEngine(dir).analyzer],
+      true,
+    ],
+    [
+      "Qualor's rules had no file of their languages to scan",
+      '',
+      () => [notInstalled('qualor', ['python'])],
+      false,
+    ],
+  ])(
+    'the secret scans are complete (%s): the snapshot is sent',
+    { timeout: 60_000 },
+    async (_name, lines, analyzers, off) => {
+      const mr = mrRepo({ yml: withAnalyzers(lines) });
+      const server = await fakeServer([done('passed')], undefined, { context: REVIEW_ON });
+      const { code, stderr } = await scan(
+        mr.root,
+        server,
+        [],
+        { analyzers: analyzers(tmp()) },
+        gitlabMr(mr.head),
+      );
+      expect(code, stderr).toBe(0);
+      expect(server.paths).toEqual([...UNTIL_REPORT, CONTEXT, SNAPSHOT, GATE]);
+      expect(reviewWarnings(stderr)).toEqual([]);
+      const said = stderr
+        .split('\n')
+        .filter(
+          (l) =>
+            l ===
+            'AI review: the secret scan is off in qualor.yml; only built-in patterns mask secrets in the snapshot',
+        );
+      expect(said).toHaveLength(off ? 1 : 0);
     },
   );
 
