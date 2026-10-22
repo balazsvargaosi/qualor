@@ -677,7 +677,8 @@ describe('AiReviewPage (6I-2 Task 9)', () => {
       setup('orgAdmin', { organizations: { [ORG_ID]: { enabled: true, consentFor: A } } });
       const { fixture, root } = await render();
       await click(fixture, button(root, 'Save'));
-      expect(root.innerHTML).not.toContain('tenant-7f3a');
+      // The whole markup, attributes included (ui/tools/templates.test.ts bars reading it as HTML).
+      expect(new XMLSerializer().serializeToString(root)).not.toContain('tenant-7f3a');
       expect(root.textContent).not.toContain('https://');
     });
   });
