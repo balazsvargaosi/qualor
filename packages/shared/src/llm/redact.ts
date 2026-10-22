@@ -380,6 +380,8 @@ const BODY_LEADING = new Set([' ', '\t', '#', '*', ';', '+', '-', '"', "'", '`']
 const BODY_TRAILING = new Set([' ', '\t', '\r', '"', "'", '`', ',', '+', '\\']);
 /** A body line longer than this, decoration off, is no PEM line (they are 64 or 76 characters). */
 const BODY_LINE_MAX_CHARS = 4_096;
+/** Room for the decoration around the longest body line, so that a longer line is not scanned. */
+const BODY_LINE_DECORATION_CHARS = 256;
 /** A line of base64: the body of a PEM key. 16 characters or more, so a short word is not one. */
 const BODY_BASE64 = /^[A-Za-z0-9+/=]{16,4096}$/;
 /** The header fields of an encrypted PEM key. */
@@ -408,7 +410,7 @@ function undecorated(line: string): string {
 
 /** What a line of a key body can be: a header field, the blank line that ends the fields, base64. */
 function bodyLineKind(line: string): 'field' | 'blank' | 'base64' | null {
-  if (line.length > BODY_LINE_MAX_CHARS + 256) return null;
+  if (line.length > BODY_LINE_MAX_CHARS + BODY_LINE_DECORATION_CHARS) return null;
   const text = undecorated(line);
   if (text === '') return 'blank';
   if (BODY_FIELD.test(text)) return 'field';
