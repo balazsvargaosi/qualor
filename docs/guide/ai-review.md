@@ -221,7 +221,8 @@ snapshots cannot fail the report uploads of other scans. With only one slot, sna
 share it. When no slot is free for a snapshot the server answers 503, and the scanner waits and
 retries. In a Helm install both variables go into `extraEnv`.
 
-Fixed limits: 1 MiB per file, 50 000 files, 256 KiB per diff, 1 024 bytes per path.
+Fixed limits: 1 MiB per file, 50 000 files, 256 KiB per diff and 64 MiB of diffs in all, 1 024
+bytes per path.
 
 ## Budgets and the instance ceiling
 

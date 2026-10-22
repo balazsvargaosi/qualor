@@ -31,6 +31,15 @@ export interface PatchPair {
 }
 
 /**
+ * The most bytes of patches the scanner holds at once (M4), whatever inflated size the server
+ * accepts (up to 500 MiB): the raw patches are kept as buffers and then decoded and masked as
+ * strings, so the peak is about twice this, and a runner that runs out of memory ends the job.
+ * 64 MiB of diffs is already more than a review can use. A merge request with more is `too_large`,
+ * as one over the server's limits is.
+ */
+export const MAX_PATCH_BUDGET_BYTES = 64 * 1024 * 1024;
+
+/**
  * The patch of each pair as git wrote it, from one `git diff` against the merge base read as a
  * stream and cut per `diff --git` header (a type change has two pieces, joined here). A patch over
  * MAX_SNAPSHOT_PATCH_BYTES is never held and has no entry; the patches held stay within `budget`,

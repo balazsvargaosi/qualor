@@ -36,7 +36,13 @@ import {
   type MergeBaseScan,
 } from './base-secrets';
 import { instructionLines, readInstructionFiles, type InstructionsFile } from './instructions';
-import { DIFF_OPTIONS, finishPatch, readRawPatches, type Patch } from './patches';
+import {
+  DIFF_OPTIONS,
+  finishPatch,
+  MAX_PATCH_BUDGET_BYTES,
+  readRawPatches,
+  type Patch,
+} from './patches';
 import { mergeRequestText, prepareSecrets, redactSnapshotText, secretLines } from './redact';
 import { planSnapshot, writeSnapshot, type Candidate, type SnapshotParts } from './snapshot-plan';
 
@@ -910,7 +916,9 @@ async function readSources(
     if (c.reason === null && fromHead.unscanned.has(c.path)) c.reason = 'excluded';
   }
   const shown = showable.filter((c) => !fromHead.unscanned.has(c.path));
-  const raw = await readRawPatches(git, { base, head }, shown, { budget, log });
+  // The patches are held in memory: they get the inflated limit, up to a cap of their own (M4).
+  const patchBudget = Math.min(budget, MAX_PATCH_BUDGET_BYTES);
+  const raw = await readRawPatches(git, { base, head }, shown, { budget: patchBudget, log });
   if (raw === 'too_large') return 'too_large';
   const instructions = await readInstructionFiles(git, base);
   const oldSides = [
