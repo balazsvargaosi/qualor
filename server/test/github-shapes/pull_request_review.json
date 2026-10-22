@@ -1,0 +1,16 @@
+{
+  "id": 80,
+  "node_id": "PRR_kwDOAAABc84AAABQ",
+  "user": { "login": "qualor-acme[bot]", "id": 41898282, "type": "Bot" },
+  "body": "<!-- qualor:review 0190c3b2-7a00-7000-8000-000000000003 -->\nQualor: 2 new issues on changed lines.",
+  "state": "COMMENTED",
+  "html_url": "https://github.com/acme/api/pull/7#pullrequestreview-80",
+  "pull_request_url": "https://api.github.com/repos/acme/api/pulls/7",
+  "_links": {
+    "html": { "href": "https://github.com/acme/api/pull/7#pullrequestreview-80" },
+    "pull_request": { "href": "https://api.github.com/repos/acme/api/pulls/7" }
+  },
+  "submitted_at": "2026-09-26T10:00:00Z",
+  "commit_id": "6dcb09b5b57875f334f61aebed695e2e4193db5e",
+  "author_association": "NONE"
+}

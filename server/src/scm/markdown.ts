@@ -145,6 +145,15 @@ export function issueMarker(issueId: string): string {
 }
 
 /**
+ * github.md §6.4: the first line of the pull request review that carries a decoration's new
+ * threads. Nothing reads it back: a review's body is no review comment, so it is never taken for
+ * a thread ({@link markerOf} does not know it).
+ */
+export function reviewMarker(projectId: string): string {
+  return `<!-- qualor:review ${uuid(projectId)} -->`;
+}
+
+/**
  * What a note body's first line marks, or null. Only the first line counts: a marker quoted in a
  * reply or inside a value (always on a later line) is ignored. The caller also checks the author.
  */

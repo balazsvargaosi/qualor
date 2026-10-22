@@ -28,6 +28,11 @@ import { fileURLToPath } from 'node:url';
  * does: Qualor sends none now, but a check run of 0.11 carries some, and GitHub never removes
  * them); `filter=latest` and `app_id` of the check-run listing; `Link` headers with `rel="next"`.
  *
+ * A pull request review (`POST /pulls/{n}/reviews`) is all or nothing, as GitHub's: one comment
+ * GitHub would not place refuses it (422) and makes none of its comments. GitHub requires a body
+ * with `event: COMMENT`; a review without an event would stay pending, which Qualor never makes
+ * and the fake does not model (a 422 too). A review's body is no review comment.
+ *
  * Review comment ids are past 2^31, as github.com's are (from 3 000 000 001), and each comment has
  * a node id of its own (`PRRC_` and its id in base 62, {@link reviewCommentNodeId}), which REST
  * lists as `node_id` and GraphQL as the comment's `id`. GraphQL offers neither `databaseId`
@@ -113,6 +118,21 @@ export interface FakeReviewThread {
    */
   resolvedBy: string | null;
 }
+/**
+ * A pull request review (`POST /pulls/{n}/reviews`): a body of its own, which is no review
+ * comment and starts no thread, and the review comments it made, each the first of a thread.
+ */
+export interface FakeReview {
+  id: number;
+  repoId: number;
+  pull: number;
+  body: string;
+  /** `COMMENT`, `APPROVE` or `REQUEST_CHANGES`: a pending review (no event) is not modelled. */
+  event: string;
+  commitId: string;
+  /** The REST ids of the review comments it made. */
+  commentIds: number[];
+}
 export interface FakeCheckRun {
   id: number;
   repoId: number;
@@ -149,8 +169,13 @@ export interface FakeGitHub {
   comments: FakeComment[];
   /** Pull request review comments (`/pulls/{n}/comments`). */
   reviewComments: FakeReviewComment[];
-  /** One thread per first review comment, which `POST /pulls/{n}/comments` starts. */
+  /**
+   * One thread per first review comment, which `POST /pulls/{n}/comments` starts, and each
+   * comment of a `POST /pulls/{n}/reviews`.
+   */
   reviewThreads: FakeReviewThread[];
+  /** Pull request reviews (`POST /pulls/{n}/reviews`), with their own bodies. */
+  reviews: FakeReview[];
   checkRuns: FakeCheckRun[];
   /** Issued installation tokens and their scope. */
   tokens: Map<
@@ -210,6 +235,28 @@ interface CheckRunBody {
   details_url?: string;
   output?: { title?: string; summary?: string; annotations?: Record<string, unknown>[] };
 }
+/** A review comment as a client may send it, alone or in a review (types unchecked). */
+interface ReviewCommentBody {
+  body?: unknown;
+  path?: unknown;
+  side?: unknown;
+  line?: unknown;
+  start_line?: unknown;
+  start_side?: unknown;
+}
+/** A pull request review as a client may send it (types unchecked). */
+interface ReviewBody {
+  commit_id?: unknown;
+  event?: unknown;
+  body?: unknown;
+  comments?: unknown;
+}
+/** What a review's `event` makes of it; without one it would stay pending (not modelled). */
+const REVIEW_STATES: Readonly<Record<string, string>> = {
+  COMMENT: 'COMMENTED',
+  APPROVE: 'APPROVED',
+  REQUEST_CHANGES: 'CHANGES_REQUESTED',
+};
 
 const DEFAULT_PERMISSIONS: Record<string, Access> = {
   checks: 'write',
@@ -329,6 +376,7 @@ export async function createFakeGitHub(
     comments: [],
     reviewComments: [],
     reviewThreads: [],
+    reviews: [],
     checkRuns: [],
     tokens: new Map(),
     addRepository: (repo) => repos.set(`${repo.owner}/${repo.name}`.toLowerCase(), repo),
@@ -538,6 +586,98 @@ export async function createFakeGitHub(
     }
     return null;
   };
+
+  /**
+   * Whether GitHub places a review comment as its body asks: a body of at most 65 536 characters
+   * on RIGHT-side lines (one, or `start_line`..`line`) that the file's patch shows.
+   */
+  const placeable = (pull: FakePull, b: ReviewCommentBody): boolean => {
+    const line = Number(b.line);
+    const start = b.start_line === undefined ? line : Number(b.start_line);
+    const patch = pull.files.find((f) => f.filename === b.path)?.patch;
+    const lines = patch === undefined ? new Set<number>() : rightSideLines(patch);
+    const placed = Array.from({ length: Math.max(0, line - start + 1) }, (_, i) => start + i);
+    return (
+      typeof b.body === 'string' &&
+      b.body !== '' &&
+      b.body.length <= 65_536 &&
+      b.side === 'RIGHT' &&
+      Number.isInteger(line) &&
+      Number.isInteger(start) &&
+      start <= line &&
+      (b.start_line === undefined || b.start_side === 'RIGHT') &&
+      placed.length > 0 &&
+      placed.every((n) => lines.has(n))
+    );
+  };
+
+  /** A review comment of the App at the pull request's head, the first of a new thread. */
+  const startThread = (
+    repo: FakeRepository,
+    pull: FakePull,
+    b: ReviewCommentBody,
+  ): FakeReviewComment => {
+    const created: FakeReviewComment = {
+      id: nextReviewComment++,
+      repoId: repo.id,
+      pull: pull.number,
+      body: String(b.body),
+      path: String(b.path),
+      line: Number(b.line),
+      startLine: b.start_line === undefined ? null : Number(b.start_line),
+      side: 'RIGHT',
+      commitId: pull.headSha,
+      user: { login: `${slug}[bot]`, id: 41898282, type: 'Bot' },
+      inReplyToId: null,
+    };
+    fake.reviewComments.push(created);
+    fake.reviewThreads.push({
+      id: `PRRT_kwDOFake${nextThread++}`,
+      repoId: repo.id,
+      pull: pull.number,
+      commentIds: [created.id],
+      resolved: false,
+      resolvedBy: null,
+    });
+    return created;
+  };
+
+  /**
+   * Whether GitHub refuses a review (a 422), which then makes none of its comments: an event that
+   * is not one of the three (none would leave it pending, which the fake does not model), no body
+   * with `COMMENT` or `REQUEST_CHANGES` (GitHub requires one), a commit other than the head, or a
+   * comment GitHub would not place.
+   */
+  const reviewRefused = (pull: FakePull, b: ReviewBody): boolean => {
+    const event = typeof b.event === 'string' ? b.event : '';
+    const bodyNeeded = event !== 'APPROVE';
+    const body = typeof b.body === 'string' ? b.body : undefined;
+    const comments: unknown[] = Array.isArray(b.comments) ? b.comments : [];
+    return (
+      !Object.hasOwn(REVIEW_STATES, event) ||
+      (bodyNeeded && (body === undefined || body === '')) ||
+      (body !== undefined && body.length > 65_536) ||
+      (b.body !== undefined && body === undefined) ||
+      (b.commit_id !== undefined && b.commit_id !== pull.headSha) ||
+      (b.comments !== undefined && !Array.isArray(b.comments)) ||
+      !comments.every(
+        (c) => typeof c === 'object' && c !== null && placeable(pull, c as ReviewCommentBody),
+      )
+    );
+  };
+
+  const reviewJson = (repo: FakeRepository, r: FakeReview) => ({
+    ...githubShape('pull_request_review'),
+    id: r.id,
+    node_id: `PRR_kwDOFake${r.id}`,
+    user: { login: `${slug}[bot]`, id: 41898282, type: 'Bot' },
+    body: r.body,
+    state: REVIEW_STATES[r.event],
+    html_url: `${webBase()}/${repo.owner}/${repo.name}/pull/${r.pull}#pullrequestreview-${r.id}`,
+    pull_request_url: `${fake.url}/repos/${repo.owner}/${repo.name}/pulls/${r.pull}`,
+    commit_id: r.commitId,
+    submitted_at: new Date(now()).toISOString().replace(/\.\d{3}Z$/, 'Z'),
+  });
 
   /**
    * GraphQL (the operations 6I-1 sends, picked by the name in the document): review threads and
@@ -977,58 +1117,33 @@ export async function createFakeGitHub(
       if (!need('pull_requests', 'write')) return forbidden();
       const pull = pulls.get(`${repo.id}#${reviewComments[1]}`);
       if (!pull) return deny(res, 404, 'Not Found');
-      const b = json() as {
-        body?: unknown;
-        commit_id?: unknown;
-        path?: unknown;
-        side?: unknown;
-        line?: unknown;
-        start_line?: unknown;
-        start_side?: unknown;
-      };
-      const line = Number(b.line);
-      const start = b.start_line === undefined ? line : Number(b.start_line);
-      const patch = pull.files.find((f) => f.filename === b.path)?.patch;
-      const lines = patch === undefined ? new Set<number>() : rightSideLines(patch);
-      const placed = Array.from({ length: Math.max(0, line - start + 1) }, (_, i) => start + i);
-      if (
-        typeof b.body !== 'string' ||
-        b.body === '' ||
-        b.body.length > 65_536 ||
-        b.commit_id !== pull.headSha ||
-        b.side !== 'RIGHT' ||
-        !Number.isInteger(line) ||
-        !Number.isInteger(start) ||
-        start > line ||
-        (b.start_line !== undefined && b.start_side !== 'RIGHT') ||
-        placed.length === 0 ||
-        !placed.every((n) => lines.has(n))
-      ) {
+      const b = json() as ReviewCommentBody & { commit_id?: unknown };
+      if (b.commit_id !== pull.headSha || !placeable(pull, b)) {
         return deny(res, 422, 'Validation Failed');
       }
-      const created: FakeReviewComment = {
-        id: nextReviewComment++,
+      return send(res, 201, reviewCommentJson(repo)(startThread(repo, pull, b)));
+    }
+    const pullReviews = /^\/pulls\/(\d+)\/reviews$/.exec(rest);
+    if (pullReviews && method === 'POST') {
+      if (!need('pull_requests', 'write')) return forbidden();
+      const pull = pulls.get(`${repo.id}#${pullReviews[1]}`);
+      if (!pull) return deny(res, 404, 'Not Found');
+      const b = json() as ReviewBody;
+      // All or nothing: a comment GitHub would not place refuses the review and makes none.
+      if (reviewRefused(pull, b)) return deny(res, 422, 'Unprocessable Entity');
+      const comments = (Array.isArray(b.comments) ? b.comments : []) as ReviewCommentBody[];
+      const made = comments.map((c) => startThread(repo, pull, c));
+      const review: FakeReview = {
+        id: nextId++,
         repoId: repo.id,
         pull: pull.number,
-        body: b.body,
-        path: String(b.path),
-        line,
-        startLine: b.start_line === undefined ? null : start,
-        side: 'RIGHT',
+        body: typeof b.body === 'string' ? b.body : '',
+        event: String(b.event),
         commitId: pull.headSha,
-        user: { login: `${slug}[bot]`, id: 41898282, type: 'Bot' },
-        inReplyToId: null,
+        commentIds: made.map((c) => c.id),
       };
-      fake.reviewComments.push(created);
-      fake.reviewThreads.push({
-        id: `PRRT_kwDOFake${nextThread++}`,
-        repoId: repo.id,
-        pull: pull.number,
-        commentIds: [created.id],
-        resolved: false,
-        resolvedBy: null,
-      });
-      return send(res, 201, reviewCommentJson(repo)(created));
+      fake.reviews.push(review);
+      return send(res, 200, reviewJson(repo, review));
     }
     const issueComments = /^\/issues\/(\d+)\/comments$/.exec(rest);
     if (issueComments && method === 'GET') {

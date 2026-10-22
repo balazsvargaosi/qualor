@@ -15,6 +15,7 @@ import {
   checkRunVerdict,
   NO_ANNOTATIONS_DIGEST,
   parseCheckRunExternalId,
+  reviewBody,
 } from './render';
 
 const PROJECT = '0190c3b2-7a00-7000-8000-000000000001';
@@ -53,6 +54,22 @@ describe('the check run’s external id (github.md §6.1, ruling T4)', () => {
     const annotated = `qualor:v1:${PROJECT}:0123456789abcdef`;
     expect(parseCheckRunExternalId(annotated)?.digest).toBe('0123456789abcdef');
     expect(parseCheckRunExternalId(annotated)?.digest).not.toBe(NO_ANNOTATIONS_DIGEST);
+  });
+});
+
+describe('the review that carries a run’s new threads (github.md §6.4)', () => {
+  it('is a marker line, then the count in plain words', () => {
+    expect(reviewBody(PROJECT, 3)).toBe(
+      `<!-- qualor:review ${PROJECT} -->\nQualor: 3 new issues on changed lines.`,
+    );
+    expect(reviewBody(PROJECT, 1)).toBe(
+      `<!-- qualor:review ${PROJECT} -->\nQualor: 1 new issue on changed lines.`,
+    );
+  });
+
+  it('is neither a summary nor the thread of an issue, and holds only a project id', () => {
+    expect(markerOf(reviewBody(PROJECT, 2))).toBeNull();
+    expect(() => reviewBody('x -->\n/merge', 1)).toThrow();
   });
 });
 

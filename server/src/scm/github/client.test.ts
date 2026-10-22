@@ -355,6 +355,106 @@ describe('GitHub REST client (github.md §4–§6)', () => {
     expect(fake.requests).toHaveLength(0);
   });
 
+  it('posts review comments together as one review, in one paced request (github.md §6.4)', async () => {
+    const tokens = new InstallationTokenCache(() => clock);
+    await clientFor({ tokens }).useRepository(REPO); // a token, now cached
+    const pacer = new SpyPacer(
+      () => clock,
+      async (ms) => void (clock += ms),
+    );
+    const client = clientFor({ tokens, pacer });
+    await client.useRepository(REPO);
+    const comments = fake.reviewComments.length;
+    const reviews = fake.reviews.length;
+    fake.clearRequests();
+    const review = await client.createReview('7', {
+      commitId: SHA,
+      body: 'Qualor: 2 new issues on changed lines.',
+      comments: [
+        { path: 'f2.ts', line: 1, body: 'two' },
+        { path: 'f3.ts', line: 1, body: 'three' },
+      ],
+    });
+    expect(review).toMatchObject({ state: 'COMMENTED' });
+    // One request and one pacing wait for both: GitHub notifies once, with one timeline entry.
+    expect(fake.requests.map((r) => `${r.method} ${r.path}`)).toEqual([
+      'POST /repos/acme/api/pulls/7/reviews',
+    ]);
+    expect(pacer.waits).toHaveLength(1);
+    // `event: COMMENT` needs a `body` (GitHub's REST reference); each comment is on the RIGHT side.
+    expect(JSON.parse(fake.requests[0]?.body ?? '{}')).toEqual({
+      commit_id: SHA,
+      event: 'COMMENT',
+      body: 'Qualor: 2 new issues on changed lines.',
+      comments: [
+        { path: 'f2.ts', line: 1, side: 'RIGHT', body: 'two' },
+        { path: 'f3.ts', line: 1, side: 'RIGHT', body: 'three' },
+      ],
+    });
+    // Its comments are review comments of the App, each the first of a thread; its body is none.
+    expect(
+      fake.reviewComments
+        .slice(comments)
+        .map((c) => [c.path, c.line, c.body, c.user.login, c.inReplyToId]),
+    ).toEqual([
+      ['f2.ts', 1, 'two', `${fake.slug}[bot]`, null],
+      ['f3.ts', 1, 'three', `${fake.slug}[bot]`, null],
+    ]);
+    expect(fake.reviews.slice(reviews)).toEqual([
+      expect.objectContaining({ body: 'Qualor: 2 new issues on changed lines.', event: 'COMMENT' }),
+    ]);
+    // A position GitHub will not place refuses the whole review: none of its comments is made.
+    const refused = await client.createReview('7', {
+      commitId: SHA,
+      body: 'x',
+      comments: [
+        { path: 'f4.ts', line: 1, body: 'on the diff' },
+        { path: 'f4.ts', line: 9, body: 'off the diff' },
+      ],
+    });
+    expect(refused).toBe('position_rejected');
+    expect(fake.reviewComments).toHaveLength(comments + 2);
+    // Nothing reaches GitHub with a line that is no line number.
+    fake.clearRequests();
+    const bad = await failure(
+      client.createReview('7', {
+        commitId: SHA,
+        body: 'x',
+        comments: [{ path: 'f5.ts', line: 0, body: 'x' }],
+      }),
+    );
+    expect([bad.kind, bad.reason]).toEqual(['refused', 'invalid_input']);
+    expect(fake.requests).toHaveLength(0);
+  });
+
+  it('is served by a fake that refuses a review GitHub would refuse', async () => {
+    await clientFor().useRepository(REPO);
+    const [token] = [...fake.tokens.keys()].slice(-1);
+    const post = async (body: Record<string, unknown>) =>
+      (
+        await fetch(`${fake.url}/repos/acme/api/pulls/7/reviews`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token!}`, 'user-agent': 'test' },
+          body: JSON.stringify(body),
+        })
+      ).status;
+    const comment = { path: 'f6.ts', line: 1, side: 'RIGHT', body: 'x' };
+    const review = { commit_id: SHA, event: 'COMMENT', body: 'b', comments: [comment] };
+    const before = fake.reviewComments.length;
+    // GitHub requires a body with COMMENT.
+    expect(await post({ ...review, body: undefined })).toBe(422);
+    expect(await post({ ...review, body: '' })).toBe(422);
+    // A review without an event stays pending, which Qualor never makes and the fake does not model.
+    expect(await post({ ...review, event: undefined })).toBe(422);
+    expect(await post({ ...review, event: 'MERGE' })).toBe(422);
+    expect(await post({ ...review, commit_id: 'b'.repeat(40) })).toBe(422);
+    expect(await post({ ...review, comments: [{ ...comment, side: 'LEFT' }] })).toBe(422);
+    expect(await post({ ...review, comments: [{ ...comment, body: '' }] })).toBe(422);
+    expect(fake.reviewComments).toHaveLength(before);
+    expect(await post(review)).toBe(200);
+    expect(fake.reviewComments).toHaveLength(before + 1);
+  });
+
   it('reads a review comment whose in_reply_to_id is null, and needs its node id', async () => {
     const client = clientFor();
     await client.useRepository(REPO);
@@ -1061,6 +1161,7 @@ describe('recorded shapes', () => {
       issueComment: 'issue_comment',
       issueComments: 'issue_comments',
       reviewComment: 'pull_request_review_comment',
+      review: 'pull_request_review',
       reviewThreads: 'graphql_review_threads',
       resolveThread: 'graphql_resolve_thread',
     }),

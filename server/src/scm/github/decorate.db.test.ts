@@ -102,7 +102,11 @@ describe('GitHub decoration (github.md §5–§6)', () => {
   const writes = () => githubWrites(fake.requests);
   /** The writes that touch the pull request's threads: review comments and GraphQL mutations. */
   const threadWrites = () => writes().filter((w) => w.includes('/pulls/') || w.includes(GRAPHQL));
-  const reviewCommentPost = (repoName: string) => `POST /repos/acme/${repoName}/pulls/7/comments`;
+  /** The pull request review that carries a decoration's new threads. */
+  const reviewPost = (repoName: string) => `POST /repos/acme/${repoName}/pulls/7/reviews`;
+  const reviews = (repoName: string) => new RegExp(`^/repos/acme/${repoName}/pulls/7/reviews$`);
+  const singleComments = (repoName: string) =>
+    new RegExp(`^/repos/acme/${repoName}/pulls/7/comments$`);
 
   /** Enqueues the decoration of `analysisId` again, as its ingestion did: the same job. */
   const enqueueAgain = async (analysisId: string, repoId: number) => {
@@ -162,10 +166,9 @@ describe('GitHub decoration (github.md §5–§6)', () => {
     const { repo, ingest } = await setup('gh/pr');
     const analysisId = await ingest([1, 3, 4]); // line 1 is new code for Qualor, but not an added line of the diff
     await runDecorations(h, githubDeps(h));
-    // The threads first, then the check run and the summary.
+    // The threads first, both in one review, then the check run and the summary.
     expect(writes()).toEqual([
-      reviewCommentPost(repo.name),
-      reviewCommentPost(repo.name),
+      reviewPost(repo.name),
       `POST /repos/acme/${repo.name}/check-runs`,
       `POST /repos/acme/${repo.name}/issues/7/comments`,
     ]);
@@ -466,9 +469,11 @@ describe('GitHub decoration (github.md §5–§6)', () => {
 
   it('counts a position GitHub refuses as not placed, and sets the check run once as usual', async () => {
     const { repo, ingest } = await setup('gh/refused');
+    // GitHub refuses the review, then each comment posted alone.
+    fake.inject('POST', reviews(repo.name), { status: 422, body: { message: 'Unprocessable' } });
     fake.inject(
       'POST',
-      new RegExp(`^/repos/acme/${repo.name}/pulls/7/comments$`),
+      singleComments(repo.name),
       { status: 422, body: { message: 'Validation Failed' } },
       { status: 422, body: { message: 'Validation Failed' } },
     );
@@ -591,7 +596,7 @@ describe('GitHub decoration (github.md §5–§6)', () => {
 
   it('sets the check run, and no summary, when the review comments are refused', async () => {
     const { repo, ingest } = await setup('gh/no-permission');
-    fake.inject('POST', new RegExp(`^/repos/acme/${repo.name}/pulls/7/comments$`), {
+    fake.inject('POST', reviews(repo.name), {
       status: 403,
       body: { message: 'Resource not accessible by integration' },
     });

@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   createFakeGitHub,
   githubShape,
+  githubWrites,
   reviewCommentNodeId,
   type FakeFile,
   type FakeGitHub,
@@ -26,9 +27,10 @@ import { credentialsId, MutationPacer, parseAppPrivateKey } from './app-auth';
 import { GitHubClient, MAX_THREAD_PAGES } from './client';
 import { MAX_COMMENT_PAGES as MAX_COMMENT_PAGES_OF_DECORATE } from './decorate';
 import {
+  applyReviewThreads,
   MAX_COMMENT_PAGES,
   MAX_GITHUB_THREAD_UPDATES,
-  reconcileReviewThreads,
+  planReviewThreads,
   type ReviewThreadContext,
 } from './threads';
 
@@ -73,13 +75,23 @@ interface GraphqlCall {
   /** The thread a mutation is about. */
   id: string | undefined;
 }
-/** A review comment as the reconciliation POSTs it. */
+/** A review comment as the reconciliation POSTs it, in a review or alone. */
 interface Creation {
   body: string;
-  commit_id: string;
   path: string;
   side: string;
   line: number;
+}
+/** A review comment POSTed alone, after GitHub refused the review. */
+interface Single extends Creation {
+  commit_id: string;
+}
+/** A pull request review as the reconciliation POSTs it: the run's new threads, together. */
+interface Review {
+  commit_id: string;
+  event: string;
+  body: string;
+  comments: Creation[];
 }
 type ReportExtra = NonNullable<Parameters<typeof pullRequestReport>[2]>;
 
@@ -91,9 +103,11 @@ interface Scenario {
   /** Ingests a pull request report of #7 at the head with findings on `lines` of src/a.ts. */
   ingest(lines: number[], extra?: ReportExtra): Promise<string>;
   /**
-   * One run of `reconcileReviewThreads` on #7 with a client of its own. The requests of the setup
-   * are forgotten first, so `fake.requests` afterwards holds what the run itself sent.
+   * The context of a run on #7, with a client of its own and the pull request's files. The
+   * requests of the setup are forgotten, so `fake.requests` afterwards holds what the run sent.
    */
+  context(overrides?: Partial<ReviewThreadContext>): Promise<ReviewThreadContext>;
+  /** One run: `planReviewThreads`, then `applyReviewThreads` of its plan. */
   reconcile(overrides?: Partial<ReviewThreadContext>): Promise<InlineResult>;
 }
 
@@ -153,12 +167,12 @@ describe('GitHub review threads (github.md §6.4)', () => {
         }
         return analysisId;
       },
-      reconcile: async (overrides = {}) => {
+      context: async (overrides = {}) => {
         const client = clientFor(fake);
         await client.useRepository({ owner: 'acme', repo: repo.name });
         const files = await client.pullRequestFiles('7', 30);
         fake.clearRequests();
-        return reconcileReviewThreads({
+        return {
           db: h.ctx.db,
           client,
           number: '7',
@@ -169,7 +183,11 @@ describe('GitHub review threads (github.md §6.4)', () => {
           botLogin,
           issueUrl: (issueId) => issueUrl(PUBLIC_URL, project.id, issueId),
           ...overrides,
-        });
+        };
+      },
+      reconcile: async (overrides = {}) => {
+        const ctx = await scenario.context(overrides);
+        return applyReviewThreads(ctx, await planReviewThreads(ctx));
       },
     };
     return scenario;
@@ -205,11 +223,16 @@ describe('GitHub review threads (github.md §6.4)', () => {
       });
   /** The resolve and reopen mutations of the run. */
   const mutations = () => graphqlCalls().filter((c) => c.operation !== 'QualorReviewThreads');
-  /** The review comments the run POSTed. */
-  const creations = (): Creation[] =>
+  const posted = <T>(path: RegExp): T[] =>
     fake.requests
-      .filter((r) => r.method === 'POST' && /\/pulls\/7\/comments$/.test(r.path))
-      .map((r) => JSON.parse(r.body) as Creation);
+      .filter((r) => r.method === 'POST' && path.test(r.path))
+      .map((r) => JSON.parse(r.body) as T);
+  /** The reviews the run POSTed. */
+  const reviews = () => posted<Review>(/\/pulls\/7\/reviews$/);
+  /** The review comments the run POSTed one at a time. */
+  const singles = () => posted<Single>(/\/pulls\/7\/comments$/);
+  /** Every review comment the run POSTed: in its review, then any posted alone. */
+  const creations = (): Creation[] => [...reviews().flatMap((r) => r.comments), ...singles()];
   const requests = () => fake.requests.map((r) => `${r.method} ${r.path}`);
   const issueIdsByLine = async (projectId: string): Promise<Record<number, string>> =>
     Object.fromEntries(
@@ -341,22 +364,44 @@ describe('GitHub review threads (github.md §6.4)', () => {
     expect(MAX_COMMENT_PAGES_OF_DECORATE).toBe(MAX_COMMENT_PAGES);
   });
 
-  it('creates one thread per new issue on an added line, at the head', async () => {
+  it('creates one thread per new issue on an added line, at the head, all in one review', async () => {
     const s = await setup('threads/create');
     // Line 1 is new code for Qualor, but a context line of the diff.
     await s.ingest([1, 3, 4, 5]);
     expect(await s.reconcile()).toEqual({ commented: 3, unplaced: 1 });
-    const posted = creations();
-    expect(posted.map((c) => c.line).sort((a, b) => a - b)).toEqual([3, 4, 5]);
+    // One review carries the three comments: GitHub notifies once and adds one timeline entry.
+    const [review, ...more] = reviews();
+    expect(more).toEqual([]);
+    expect(singles()).toEqual([]);
+    expect(review).toMatchObject({ commit_id: HEAD, event: 'COMMENT' });
+    // Its body is plain text after a marker line; GitHub requires one with COMMENT.
+    expect(review!.body).toBe(
+      `<!-- qualor:review ${s.project.id} -->\nQualor: 3 new issues on changed lines.`,
+    );
+    expect(review!.comments.map((c) => c.line).sort((a, b) => a - b)).toEqual([3, 4, 5]);
     const ids = await issueIdsByLine(s.project.id);
-    for (const c of posted) {
-      expect(c).toMatchObject({ commit_id: HEAD, side: 'RIGHT', path: 'src/a.ts' });
+    for (const c of review!.comments) {
+      expect(Object.keys(c).sort()).toEqual(['body', 'line', 'path', 'side']);
+      expect(c).toMatchObject({ side: 'RIGHT', path: 'src/a.ts' });
       expect(c.body.split('\n')[0]).toBe(`<!-- qualor:issue ${ids[c.line]} -->`);
       expect(markerOf(c.body)).toEqual({ kind: 'issue', issueId: ids[c.line] });
       expect(c.body).toContain(`${PUBLIC_URL}/projects/${s.project.id}/issues/${ids[c.line]}`);
     }
-    // GitHub made a thread of each, opened by the App, still open.
+    // GitHub made a thread of each comment, by the App, still open. The review's own body is no
+    // review comment, so no thread: the next run finds the three, and posts nothing.
     expect(resolvedByLine(s.repo.id)).toEqual({ 3: false, 4: false, 5: false });
+    expect(fake.reviewComments.filter((c) => c.body.includes('qualor:review'))).toEqual([]);
+    expect(await s.reconcile()).toEqual({ commented: 3, unplaced: 1 });
+    expect(creations()).toEqual([]);
+  });
+
+  it('says one new issue in the review’s body when there is one', async () => {
+    const s = await setup('threads/create-one');
+    await s.ingest([4]);
+    expect(await s.reconcile()).toEqual({ commented: 1, unplaced: 0 });
+    expect(reviews().map((r) => [r.body, r.comments.length])).toEqual([
+      [`<!-- qualor:review ${s.project.id} -->\nQualor: 1 new issue on changed lines.`, 1],
+    ]);
   });
 
   it(`creates at most ${MAX_INLINE_THREADS} threads, the most severe first`, async () => {
@@ -368,6 +413,8 @@ describe('GitHub review threads (github.md §6.4)', () => {
       ),
     });
     expect(await s.reconcile()).toEqual({ commented: 50, unplaced: 0 });
+    // All 50 in one review: one paced request.
+    expect(reviews().map((r) => r.comments.length)).toEqual([50]);
     expect(creations().map((c) => c.line)).toEqual(lines.slice(0, 50));
     // The next job has nothing to add: the 50 have their threads and the 10 least severe stay out.
     expect(await s.reconcile()).toEqual({ commented: 50, unplaced: 0 });
@@ -870,14 +917,68 @@ describe('GitHub review threads (github.md §6.4)', () => {
     expect(thread.resolved).toBe(true);
   });
 
-  it('counts a position GitHub refuses as not placed', async () => {
+  it('posts the comments one at a time when GitHub refuses the review, and counts a refused position as not placed', async () => {
     const s = await setup('threads/refused');
     await s.ingest([3, 4]);
+    // A position of the review GitHub will not place: it makes none of the review's comments.
+    fake.inject('POST', new RegExp(`^/repos/acme/${s.repo.name}/pulls/7/reviews$`), {
+      status: 422,
+      body: { message: 'Unprocessable Entity', errors: ['Line could not be resolved'] },
+    });
     fake.inject('POST', new RegExp(`^/repos/acme/${s.repo.name}/pulls/7/comments$`), {
       status: 422,
       body: { message: 'Validation Failed' },
     });
     expect(await s.reconcile()).toEqual({ commented: 1, unplaced: 1 });
-    expect(appThreads(s.repo.id)).toHaveLength(1);
+    // The review, then each comment alone, as before: GitHub refused line 3, and placed line 4.
+    expect(reviews().map((r) => r.comments.map((c) => c.line))).toEqual([[3, 4]]);
+    expect(singles().map((c) => [c.line, c.commit_id, c.side])).toEqual([
+      [3, HEAD, 'RIGHT'],
+      [4, HEAD, 'RIGHT'],
+    ]);
+    expect(appThreads(s.repo.id).map((t) => commentOf(t).line)).toEqual([4]);
+    // The next run tries the refused one again (there is no memory of it, as on GitLab).
+    expect(await s.reconcile()).toEqual({ commented: 2, unplaced: 0 });
+    expect(reviews().map((r) => r.comments.map((c) => c.line))).toEqual([[3]]);
+    expect(singles()).toEqual([]);
+  });
+
+  it('places every comment alone when only the review was refused', async () => {
+    const s = await setup('threads/refused-review');
+    await s.ingest([3, 4, 5]);
+    fake.inject('POST', new RegExp(`^/repos/acme/${s.repo.name}/pulls/7/reviews$`), {
+      status: 422,
+      body: { message: 'Unprocessable Entity' },
+    });
+    expect(await s.reconcile()).toEqual({ commented: 3, unplaced: 0 });
+    expect(singles().map((c) => c.line)).toEqual([3, 4, 5]);
+    expect(resolvedByLine(s.repo.id)).toEqual({ 3: false, 4: false, 5: false });
+    expect(await s.reconcile()).toEqual({ commented: 3, unplaced: 0 });
+    expect(creations()).toEqual([]);
+  });
+
+  it('plans from the listings with reads only, and writes when the plan is applied', async () => {
+    const s = await setup('threads/plan');
+    await s.ingest([3, 4]);
+    await s.reconcile();
+    // Line 4 is fixed, line 5 is new.
+    await s.ingest([3, 5]);
+    const ctx = await s.context();
+    const plan = await planReviewThreads(ctx);
+    expect(githubWrites(fake.requests)).toEqual([]);
+    expect(plan).toMatchObject({
+      updates: [{ threadId: threadAt(s.repo.id, 4).id, resolve: true }],
+      creations: [{ path: 'src/a.ts', line: 5 }],
+      // What the counts are once the plan is applied: the check run's first text.
+      commented: 2,
+      unplaced: 0,
+    });
+    expect(resolvedByLine(s.repo.id)).toEqual({ 3: false, 4: false });
+    expect(await applyReviewThreads(ctx, plan)).toEqual({ commented: 2, unplaced: 0 });
+    expect(githubWrites(fake.requests)).toEqual([
+      'POST /api/graphql QualorResolveThread',
+      `POST /repos/acme/${s.repo.name}/pulls/7/reviews`,
+    ]);
+    expect(resolvedByLine(s.repo.id)).toEqual({ 3: false, 4: true, 5: false });
   });
 });

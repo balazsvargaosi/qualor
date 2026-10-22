@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { GateResult } from '@qualor/shared';
-import { linesWithinBytes, plainValue } from '../markdown';
+import { linesWithinBytes, plainValue, reviewMarker } from '../markdown';
 import { commitStatusFor, SUMMARY_MAX_BYTES } from '../render';
 
 /** GitHub's bound on a check run's `output.title`. */
@@ -74,4 +74,14 @@ export function checkRunSummary(body: string): string {
     lines[0]?.startsWith('<!-- qualor:') ? lines.slice(1) : lines,
     SUMMARY_MAX_BYTES,
   );
+}
+
+/**
+ * github.md §6.4: the body of the pull request review that carries a decoration's `count` new
+ * threads, so GitHub notifies once and shows one timeline entry for them: a marker line, then
+ * fixed text and a number. GitHub requires a body with `event: COMMENT`.
+ */
+export function reviewBody(projectId: string, count: number): string {
+  const issues = count === 1 ? '1 new issue' : `${count} new issues`;
+  return `${reviewMarker(projectId)}\nQualor: ${issues} on changed lines.`;
 }

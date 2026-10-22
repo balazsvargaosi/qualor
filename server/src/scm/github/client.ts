@@ -167,6 +167,9 @@ const reviewComment = z.looseObject({
   path: z.string().optional(),
 });
 export type GitHubReviewComment = z.infer<typeof reviewComment>;
+/** A pull request review (github.md §6.4): only that GitHub made one is read. */
+const review = z.looseObject({ id: z.number().int(), state: z.string() });
+export type GitHubReview = z.infer<typeof review>;
 const errorBody = z.looseObject({ message: z.unknown().optional() });
 
 // GraphQL answers (github.md §5.3): `data` and, when it fails, `errors` around it. Each document
@@ -224,6 +227,7 @@ export const GITHUB_SHAPES = {
   issueComments: z.array(comment),
   reviewComment,
   reviewComments: z.array(reviewComment),
+  review,
   reviewThreads: z.looseObject({ data: reviewThreadsData }),
   resolveThread: z.looseObject({ data: resolveThreadData }),
 } as const;
@@ -323,6 +327,14 @@ export function githubRateLimit(
 
 /** Longer than any `Link` header GitHub sends (at most four relations of one URL each). */
 const MAX_LINK_HEADER_CHARS = 4_096;
+
+/** A line number of a file, as a review comment's `line` or `start_line` takes it. */
+const lineNumber = (n: number) => Number.isSafeInteger(n) && n > 0;
+
+/** github.md §5.3: a 422 on a review comment or review is a position GitHub will not place. */
+function positionRefused(err: unknown): boolean {
+  return err instanceof ScmError && err.kind === 'refused' && err.status === 422;
+}
 
 /**
  * Whether a `Link` header has a `rel="next"` entry; null when it is too long to read, which the
@@ -840,10 +852,10 @@ export class GitHubClient {
     number: string,
     input: { body: string; commitId: string; path: string; line: number; startLine?: number },
   ): Promise<GitHubReviewComment | 'position_rejected'> {
-    const lineOk = (n: number) => Number.isSafeInteger(n) && n > 0;
     if (
-      !lineOk(input.line) ||
-      (input.startLine !== undefined && (!lineOk(input.startLine) || input.startLine > input.line))
+      !lineNumber(input.line) ||
+      (input.startLine !== undefined &&
+        (!lineNumber(input.startLine) || input.startLine > input.line))
     ) {
       throw this.invalid(GITHUB_TEXT.line);
     }
@@ -866,9 +878,48 @@ export class GitHubClient {
       );
       return this.parse(reviewComment, json);
     } catch (err) {
-      if (err instanceof ScmError && err.kind === 'refused' && err.status === 422) {
-        return 'position_rejected';
-      }
+      if (positionRefused(err)) return 'position_rejected';
+      throw err;
+    }
+  }
+
+  /**
+   * github.md §6.4: one pull request review (`event: COMMENT`) at `commitId` that holds a review
+   * comment on the RIGHT side of `line` of `path` for each of `comments`, each the first of a
+   * thread: one request, one notification and one timeline entry for them all. `body` is the
+   * review's own text, which GitHub requires with `COMMENT`; it is no review comment.
+   * `position_rejected` on a 422: GitHub will not place a position of the batch (or refused the
+   * request as spam), and made none of the comments.
+   */
+  async createReview(
+    number: string,
+    input: {
+      body: string;
+      commitId: string;
+      comments: readonly { path: string; line: number; body: string }[];
+    },
+  ): Promise<GitHubReview | 'position_rejected'> {
+    if (input.comments.length === 0) throw new Error('a review of no comments');
+    if (!input.comments.every((c) => lineNumber(c.line))) throw this.invalid(GITHUB_TEXT.line);
+    try {
+      const { json } = await this.repoCall(
+        'POST',
+        `${this.repoPath()}/pulls/${this.number(number)}/reviews`,
+        {
+          commit_id: this.sha(input.commitId),
+          event: 'COMMENT',
+          body: input.body,
+          comments: input.comments.map((c) => ({
+            path: c.path,
+            line: c.line,
+            side: 'RIGHT',
+            body: c.body,
+          })),
+        },
+      );
+      return this.parse(review, json);
+    } catch (err) {
+      if (positionRefused(err)) return 'position_rejected';
       throw err;
     }
   }
