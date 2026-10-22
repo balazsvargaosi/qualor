@@ -69,6 +69,23 @@ describe('withoutRemovedLines', () => {
     ]);
   });
 
+  it('reads a hunk header whatever its function context holds: a CR, a line or paragraph separator', () => {
+    for (const tail of [' f() {\rmore', ' para\u2028graph', ' para\u2029graph']) {
+      const patch = [...HEAD, `@@ -1,3 +1,2 @@${tail}`, ' a', '-gone', ' b', ''].join('\n');
+      expect(withoutRemovedLines(patch).split('\n').slice(4), JSON.stringify(tail)).toEqual([
+        `@@ -1,3 +1,2 @@${tail}`,
+        ' a',
+        '-[1 removed line not sent]',
+        ' b',
+        '',
+      ]);
+    }
+    const counted = [...HEAD, '@@ -1,3 +1,1 @@ f() {\rx', ' a', '-gone', '-gone too', ''].join(
+      '\n',
+    );
+    expect(withoutRemovedLines(counted).split('\n')[4]).toBe('@@ -1,2 +1,1 @@ f() {\rx');
+  });
+
   it('keeps a patch without removed lines as it is', () => {
     const added = [...HEAD, '@@ -0,0 +1,2 @@', '+a', '+-not removed: an added line', ''].join('\n');
     expect(withoutRemovedLines(added)).toBe(added);
@@ -107,6 +124,30 @@ describe('finishPatch', () => {
       '-[3 removed lines not sent]',
       '',
     ]);
+  });
+
+  it('sends no patch with a hunk it cannot read, or a removed line left out of every hunk', () => {
+    const unsent = { secrets: [], removedLinesScanned: false };
+    const patches = [
+      [...HEAD, '@@ -x +y @@', '-gone', ''],
+      // A header it cannot read (a combined diff's) is enough, with no removed line after it.
+      [...HEAD, '@@@ -1,2 -1,2 +1,3 @@@', '  kept', '++added', ''],
+      // A hunk that ends before a removed line: the line is in no hunk.
+      [...HEAD, '@@ -1,1 +1,1 @@', '-gone', '+new', '-also gone', ''],
+      // A run of removed lines longer than the hunk's old side: the rest is in no hunk either.
+      [...HEAD, '@@ -1,1 +1,2 @@', '-gone', '-gone too', '+a', '+b', ''],
+      // A removed `-- comment` reads `--- comment`: a file header only before a `+++ ` line.
+      [...HEAD, '@@ -1,1 +1,1 @@', '-a', '+b', '--- comment', ''],
+    ];
+    for (const lines of patches) {
+      expect(finishPatch(Buffer.from(lines.join('\n')), unsent), lines.at(-2)).toBeNull();
+    }
+    // The scan held the old side: its removed lines go, so there is nothing to check.
+    const sent = finishPatch(Buffer.from(patches[0]?.join('\n') ?? ''), {
+      secrets: [],
+      removedLinesScanned: true,
+    });
+    expect(sent?.text).toContain('\n-gone\n');
   });
 
   it('masks the secrets, and is null for a patch with a NUL, not UTF-8, or over the bound', () => {

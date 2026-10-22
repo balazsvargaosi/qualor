@@ -80,15 +80,31 @@ export async function readRawPatches(
   return patches;
 }
 
-const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? (\+\d+(?:,(\d+))?) @@(.*)$/;
+/**
+ * A hunk header's ranges, from the start of the line: what follows is kept as it is, since git
+ * copies up to 80 bytes of the line above the hunk there, a CR or a line separator included.
+ */
+const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? (\+\d+(?:,(\d+))?) @@/;
+const MARKER = /^-\[\d+ removed lines? not sent\]$/;
 
 const marker = (n: number): string => `-[${n} removed ${n === 1 ? 'line' : 'lines'} not sent]`;
 
+/** One line of a hunk's body counted off its sides: `-` the old, `+` the new, `\` neither. */
+function countOff(line: string, left: { old: number; new: number }): void {
+  if (line.startsWith('-')) left.old -= 1;
+  else if (line.startsWith('+')) left.new -= 1;
+  else if (!line.startsWith('\\')) {
+    left.old -= 1;
+    left.new -= 1;
+  }
+}
+
 /**
- * The body of the hunk that starts at `lines[start]`, `oldLeft` and `newLeft` lines on each side,
- * with each run of removed lines as one marker line (a `\` line about a removed line goes with
- * it); `removed` and `markers` count them. A line that is empty where a context line is due is
- * one (`diff.suppressBlankEmpty`).
+ * The body of the hunk that starts at `lines[start]`, `left` lines on each side, with each run of
+ * removed lines as one marker line (a `\` line about a removed line goes with it); `removed` and
+ * `markers` count them. A line that is empty where a context line is due is one
+ * (`diff.suppressBlankEmpty`). A removed line past the old side's count ends the hunk: it is in
+ * none, and the patch is then not sent (`onlyMarkersRemoved`).
  */
 function hunkBody(
   lines: readonly string[],
@@ -102,6 +118,7 @@ function hunkBody(
   while (i < lines.length && (left.old > 0 || left.new > 0)) {
     const line = lines[i] ?? '';
     if (line.startsWith('-')) {
+      if (left.old <= 0) break;
       let run = 0;
       while (i < lines.length && (lines[i] ?? '').startsWith('-') && left.old > 0) {
         run += 1;
@@ -114,11 +131,7 @@ function hunkBody(
       markers += 1;
       continue;
     }
-    if (line.startsWith('+')) left.new -= 1;
-    else if (!line.startsWith('\\')) {
-      left.old -= 1;
-      left.new -= 1;
-    }
+    countOff(line, left);
     body.push(line);
     i += 1;
   }
@@ -146,13 +159,39 @@ export function withoutRemovedLines(patch: string): string {
     const oldCount = Number(m[2] ?? '1');
     const hunk = hunkBody(lines, i + 1, { old: oldCount, new: Number(m[4] ?? '1') });
     const counted = oldCount - hunk.removed + hunk.markers;
-    out.push(
-      counted === oldCount ? line : `@@ -${m[1] ?? ''},${counted} ${m[3] ?? ''} @@${m[5] ?? ''}`,
-      ...hunk.body,
-    );
+    const header = `@@ -${m[1] ?? ''},${counted} ${m[3] ?? ''} @@${line.slice(m[0].length)}`;
+    out.push(counted === oldCount ? line : header, ...hunk.body);
     i = hunk.next;
   }
   return out.join('\n');
+}
+
+/**
+ * Whether `patch` holds no removed line but markers: each `@@` line is a hunk header it reads,
+ * each hunk's `-` lines are markers, and a `-` line outside the hunks is a file header (`--- `,
+ * followed by its `+++ ` line). A patch it cannot read so is not sent: it fails closed.
+ */
+function onlyMarkersRemoved(patch: string): boolean {
+  const lines = patch.split('\n');
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i] ?? '';
+    if (line.startsWith('@@')) {
+      const m = HUNK_HEADER.exec(line);
+      if (m === null) return false;
+      const left = { old: Number(m[2] ?? '1'), new: Number(m[4] ?? '1') };
+      for (i += 1; i < lines.length && (left.old > 0 || left.new > 0); i++) {
+        const body = lines[i] ?? '';
+        if (body.startsWith('-') && !MARKER.test(body)) return false;
+        countOff(body, left);
+      }
+      continue;
+    }
+    const fileHeader = line.startsWith('--- ') && (lines[i + 1] ?? '').startsWith('+++ ');
+    if (line.startsWith('-') && !fileHeader) return false;
+    i += 1;
+  }
+  return true;
 }
 
 export interface Patch {
@@ -164,8 +203,9 @@ export interface Patch {
 /**
  * A patch as sent, or null: over the bound, with a NUL, or not UTF-8. Its removed lines go only
  * when the scan of the merge base held its old side (`removedLinesScanned`); else each run of them
- * is a marker line. Then the secrets are masked (`secrets` with the lines of the multi-line ones,
- * which a patch shows apart) and the shared redaction runs.
+ * is a marker line, and a patch where one could still be left (a hunk it cannot read) is not sent.
+ * Then the secrets are masked (`secrets` with the lines of the multi-line ones, which a patch shows
+ * apart) and the shared redaction runs.
  */
 export function finishPatch(
   bytes: Buffer,
@@ -179,14 +219,13 @@ export function finishPatch(
     return null;
   }
   const shown = o.removedLinesScanned ? text : withoutRemovedLines(text);
+  if (!o.removedLinesScanned && !onlyMarkersRemoved(shown)) return null;
   const masked = maskSecrets(shown, o.secrets);
   const redacted = redactLongText(masked.text);
   const sent = keepPrefixes(masked.text.split('\n'), redacted.text.split('\n')).join('\n');
   if (Buffer.byteLength(sent, 'utf8') > MAX_SNAPSHOT_PATCH_BYTES) return null;
   return { text: sent, redactions: masked.count + redacted.count };
 }
-
-const HUNK_RANGE = /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/;
 
 /**
  * The lines the redaction masked whole (a key block, a secret split over lines) with the diff
@@ -197,7 +236,7 @@ function keepPrefixes(before: readonly string[], after: readonly string[]): stri
   return after.map((line, i) => {
     const was = before[i] ?? '';
     if (line !== REDACTED || was === REDACTED) return line;
-    const range = HUNK_RANGE.exec(was)?.[0];
+    const range = HUNK_HEADER.exec(was)?.[0];
     if (range !== undefined) return `${range} ${REDACTED}`;
     const prefix = was.charAt(0);
     return prefix === '+' || prefix === '-' || prefix === ' ' ? `${prefix}${REDACTED}` : line;

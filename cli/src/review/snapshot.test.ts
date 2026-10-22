@@ -17,7 +17,7 @@ import { describe, expect, it } from 'vitest';
 import { fileUrl, GIT_TEST_ENV, gitSync, initRepo } from '../../test/git';
 import { FAKE_KEY, snapshotLines, snapshotText } from '../../test/review-snapshot';
 import { fakeSecret, fakeSecretEngine } from '../../test/secret-engine';
-import { useTempDirs } from '../../test/tmp';
+import { useTempDirs, writeTree } from '../../test/tmp';
 import { createGit } from '../git/git';
 import { VERSION } from '../index';
 import { createLogger, silentLogger } from '../log';
@@ -402,6 +402,18 @@ describe('buildReviewSnapshot: what a merge request sends', () => {
     expect(changesOf(lines).get('AGENTS.md')?.status).toBe('modified');
   });
 
+  it('masks a key block of an instructions file that runs over the cut, whole', async () => {
+    // A commented PGP block from byte 50 000 on, its END past the 64 KiB cut.
+    const filler = `${`${'x'.repeat(99)}\n`.repeat(500)}`;
+    const body = Array.from({ length: 450 }, (_, i) => FAKE_KEY.line(i));
+    const block = [`# ${FAKE_KEY.pgpBegin}`, ...body.map((l) => `# ${l}`), `# ${FAKE_KEY.pgpEnd}`];
+    const agents = `${filler}${block.join('\n')}\nafter\n`;
+    const mr = mergeRequest({ 'AGENTS.md': agents }, { 'AGENTS.md': agents, 'a.ts': 'a\n' });
+    const text = linesOf(await build(mr)).filter(isInstructions)[0]?.text ?? '';
+    expect(text.startsWith(filler)).toBe(true);
+    expect(body.filter((line) => text.includes(line))).toEqual([]);
+  });
+
   it('redacts an instructions file past its cut, so a secret split over the cut is masked', async () => {
     // 65 512 bytes, then a key split over two lines: its first half ends just within the cut.
     const filler = `${`${'x'.repeat(99)}\n`.repeat(655)}${'y'.repeat(11)}\n`;
@@ -682,6 +694,67 @@ describe("buildReviewSnapshot: the merge base's secrets (R13)", () => {
       oldPath: null,
       patch: null,
     });
+  });
+
+  it('sends no removed line of a hunk whose header holds a CR or a line separator', async () => {
+    // git copies the hunk's function context (the line above it) into its header, whole.
+    const around = (n: number, tag: string) =>
+      Array.from({ length: n }, (_, i) => `- ${tag} ${i}`).join('\n');
+    const notes = (secret: string) =>
+      `Para one\u2028two.\n${around(5, 'a')}\n${secret}${around(3, 'b')}\n`;
+    const code = (secret: string) =>
+      `function f() {\rconst hidden = 1;\n${around(5, '  c')}\n${secret}${around(3, '  d')}\n`;
+    const mr = mergeRequest(
+      { 'docs/notes.md': notes(`- remember ${SECRET}\n`), 'src/f.ts': code(`  // ${SECRET}\n`) },
+      { 'docs/notes.md': notes(''), 'src/f.ts': code('') },
+    );
+    const built = await build(mr, { engine: 'none' });
+    expect(textOf(built)).not.toContain(SECRET);
+    const changes = changesOf(linesOf(built));
+    for (const p of ['docs/notes.md', 'src/f.ts']) {
+      const patch = changes.get(p)?.patch;
+      // The header parses (a marker), or the patch is not sent: never the removed line.
+      expect(patch === null || patch?.includes('\n-[1 removed line not sent]\n'), p).toBe(true);
+    }
+    // Both headers hold their function context whole, and both parse.
+    expect(changes.get('docs/notes.md')?.patch).toContain('\n@@ -4,7 +4,6 @@ Para one\u2028two.\n');
+    expect(changes.get('src/f.ts')?.patch).toContain(
+      '\n@@ -4,7 +4,6 @@ function f() {\rconst hidden = 1;\n',
+    );
+  });
+
+  it('never places a .gitleaks file of the merge base, whatever its case', async () => {
+    // A dotless i (U+0131) has the capital I, as a file system that ignores case may fold it.
+    const dotless = '.g\u0131tleaksignore';
+    const mr = mergeRequest(
+      { '.GITLEAKS.TOML': 'title = "old"\n', [dotless]: 'old-entry\n', 'a.ts': 'x\ny\n' },
+      { 'a.ts': 'x\nz\n' },
+    );
+    const changes = changesOf(linesOf(await build(mr)));
+    for (const p of ['.GITLEAKS.TOML', dotless]) {
+      expect(changes.get(p)?.patch, p).toContain('\n-[1 removed line not sent]\n');
+    }
+    expect(changes.get('a.ts')?.patch).toContain('\n-y\n+z\n');
+  });
+
+  it('sends no removed line when the scan of the merge base cannot be the scan’s own', async () => {
+    // The scan's .gitleaks.toml extends gl/rules.toml, which the merge request changes: the merge
+    // base's version would sit where Gitleaks opens the extended file.
+    const mr = mergeRequest(
+      { 'gl/rules.toml': 'title = "old rules"\n', 'src/old.ts': `x\n// ${SECRET}\n` },
+      { 'gl/rules.toml': 'title = "new rules"\n', 'src/old.ts': 'x\n' },
+    );
+    writeTree(mr.root, {
+      '.gitleaks.toml': '[extend]\npath = "gl/rules.toml"\n',
+      'gl/rules.toml': 'title = "new rules"\n',
+    });
+    const logs: string[] = [];
+    const built = await build(mr, { log: createLogger('info', (t) => logs.push(t)) });
+    expect(textOf(built)).not.toContain(SECRET);
+    expect(changesOf(linesOf(built)).get('src/old.ts')?.patch).toContain(
+      '\n-[1 removed line not sent]\n',
+    );
+    expect(logs.filter((l) => l.startsWith('warn: '))).toHaveLength(1);
   });
 
   it('removes the merge base files when the snapshot is too large', async () => {

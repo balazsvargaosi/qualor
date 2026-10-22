@@ -40,15 +40,15 @@ export function prepareSecrets(secrets: readonly string[]): string[] {
 }
 
 /**
- * The lines of every multi-line secret, each without its `\r` and of 8 characters or more: a
- * patch shows a secret's lines apart, each behind its `+`, `-` or space, so the whole never occurs
- * in it.
+ * The lines of every multi-line secret, trimmed (so a copy indented anew matches too), each of 8
+ * characters or more that are not blank (a run of spaces is no secret): a patch shows a secret's
+ * lines apart, each behind its `+`, `-` or space, so the whole never occurs in it.
  */
 export function secretLines(secrets: readonly string[]): string[] {
   const lines = secrets
     .filter((s) => s.includes('\n'))
-    .flatMap((s) => s.split('\n').map(withoutCr))
-    .filter((line) => line.length >= MIN_SECRET_CHARS);
+    .flatMap((s) => s.split('\n').map((line) => line.trim()))
+    .filter((line) => line.replace(/\s/g, '').length >= MIN_SECRET_CHARS);
   return [...new Set(lines)];
 }
 

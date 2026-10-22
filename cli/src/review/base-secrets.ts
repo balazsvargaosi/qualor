@@ -2,11 +2,18 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { QualorConfig } from '@qualor/shared';
 import { fileLines, normalizeCaptures } from '../analyzers/normalize';
-import { createWorkDir, releaseWorkDir, runAnalyzers } from '../analyzers/runner';
-import type { Analyzer, AnalyzerCommand } from '../analyzers/types';
+import {
+  createWorkDir,
+  execEnv,
+  releaseWorkDir,
+  runAnalyzers,
+  withEmergencyCleanup,
+} from '../analyzers/runner';
+import type { Analyzer } from '../analyzers/types';
 import { gitText, type Git } from '../git/git';
 import { parseLsTreeLong, readObjects, type TreeEntry } from '../git/objects';
 import type { Logger } from '../log';
+import { gitleaksOverMergeBase } from './base-gitleaks';
 
 /*
  * The secrets of the merge base (ruling R13). The analyzers scan the merge request's head, so a
@@ -16,14 +23,17 @@ import type { Logger } from '../log';
  */
 
 /**
- * The secrets in `dir`, a directory of files of the merge base (`paths`, relative to it): the
- * texts the scan's secret engine finds there, or null when it did not run there to the end (not
- * installed, failed, timed out) or its output could not be read.
+ * What the scan's secret engine found in a directory of the merge base's files: the secrets' texts,
+ * or why it did not run there to the end (not installed, cannot run there as in the scan, failed,
+ * timed out) or its output could not be read.
  */
+export type BaseSecretScanResult = { secrets: readonly string[] } | { failed: string };
+
+/** The scan of `dir`, a directory of files of the merge base (`paths`, relative to it). */
 export type BaseSecretScan = (
   dir: string,
   paths: readonly string[],
-) => Promise<readonly string[] | null>;
+) => Promise<BaseSecretScanResult>;
 
 export interface BaseSecretScanOptions {
   /** The scan's analyzers: its secret engine is Gitleaks, when the scan runs it. */
@@ -53,23 +63,14 @@ function debugOnly(log: Logger): Logger {
 }
 
 /**
- * The engine's command pointed at `dir`: Gitleaks scans the directory its `dir` argument names
- * (the scan's is `.`, the checkout), while its working directory, against which it resolves its
- * configuration's `[extend] path` and reads `.gitleaksignore`, stays the checkout, as in the scan.
- * Null for a command of another shape, which is then not run at all.
- */
-function pointedAt(run: AnalyzerCommand, dir: string): AnalyzerCommand | null {
-  const at = run.args.findIndex((arg, i) => arg === 'dir' && run.args[i + 1] === '.');
-  if (at === -1) return null;
-  return { ...run, args: [...run.args.slice(0, at + 1), dir, ...run.args.slice(at + 2)] };
-}
-
-/**
  * The scan's secret engine for the merge base's files, or null when the scan runs none (Gitleaks
  * is not among its analyzers, or is disabled in qualor.yml). The engine is the scan's analyzer,
- * prepared against the checkout as the scan prepares it (so its configuration file, its extends,
- * `GITLEAKS_CONFIG` and `.gitleaksignore` are the scan's), and run by the analyzers' runner over
- * `dir` (`pointedAt`). Its secrets are collected as the report collects them (`normalizeCaptures`).
+ * prepared against the checkout as the scan prepares it, then run by the analyzers' runner in
+ * `dir` as it ran in the checkout (`gitleaksOverMergeBase`): over `.`, so the paths it reports and
+ * its rules and allowlists match are the repository's, with the scan's configuration file, its
+ * extends, `GITLEAKS_CONFIG` and `.gitleaksignore`. When it cannot run there exactly as in the
+ * scan, it does not run, as when it is not installed. Its secrets are collected as the report
+ * collects them (`normalizeCaptures`).
  */
 export function baseSecretScan(o: BaseSecretScanOptions): BaseSecretScan | null {
   const engine = o.analyzers.find((a) => a.id === SECRET_ENGINE);
@@ -81,8 +82,18 @@ export function baseSecretScan(o: BaseSecretScanOptions): BaseSecretScan | null 
       prepare: async (ctx) => {
         const prep = await engine.prepare(ctx);
         if (!('run' in prep)) return prep;
-        const run = pointedAt(prep.run, dir);
-        return run === null ? { unavailable: 'cannot scan another directory' } : { run };
+        // The environment the scan's run had: the runner's, with the command's own on top.
+        const env = execEnv(
+          ctx.env,
+          {
+            ...(prep.run.env !== undefined && { env: prep.run.env }),
+            ...(prep.run.dropEnv !== undefined && { dropEnv: prep.run.dropEnv }),
+          },
+          ctx.root,
+        );
+        const there = gitleaksOverMergeBase(prep.run, { dir, env });
+        if ('run' in there) return there;
+        return { unavailable: `${engine.id} cannot run there as in the scan: ${there.cannot}` };
       },
     };
     const [capture] = await runAnalyzers([inDir], {
@@ -94,7 +105,7 @@ export function baseSecretScan(o: BaseSecretScanOptions): BaseSecretScan | null 
       ...(o.env !== undefined && { env: o.env }),
       ...(o.tempRoot !== undefined && { tempRoot: o.tempRoot }),
     });
-    if (capture?.status !== 'ok') return null;
+    if (capture?.status !== 'ok') return { failed: capture?.reason ?? 'it did not run' };
     const found: { texts: readonly string[] | null } = { texts: null };
     normalizeCaptures([capture], {
       repoRoot: dir,
@@ -105,7 +116,9 @@ export function baseSecretScan(o: BaseSecretScanOptions): BaseSecretScan | null 
         found.texts = unknown ? null : texts;
       },
     });
-    return found.texts;
+    return found.texts === null
+      ? { failed: 'its output could not be read' }
+      : { secrets: found.texts };
   };
 }
 
@@ -121,11 +134,13 @@ const WINDOWS_FORBIDDEN = /[<>:"|?*]|[. ]$/;
 
 /**
  * Whether the merge base's version of `p` can go into the scanned directory as itself: never a root
- * `.gitleaksignore` or `.gitleaks.*`, which Gitleaks would read as its own there; on Windows, never
- * a name the file system would turn into something else (a device, a stream).
+ * `.gitleaksignore` or `.gitleaks.*` in any case, which Gitleaks would read as its own there on a
+ * file system that ignores case (`.GITLEAKS.TOML`, or a dotless i, U+0131, whose capital is `I`);
+ * on Windows, never a name the file system would turn into something else (a device, a stream).
  */
 function placeable(p: string): boolean {
-  if (p === '.gitleaksignore' || p.startsWith('.gitleaks.')) return false;
+  const names = [p.toLowerCase(), p.toUpperCase().toLowerCase()];
+  if (names.some((n) => n === '.gitleaksignore' || n.startsWith('.gitleaks.'))) return false;
   if (process.platform !== 'win32') return true;
   return p.split('/').every((s) => !WINDOWS_RESERVED.test(s) && !WINDOWS_FORBIDDEN.test(s));
 }
@@ -196,11 +211,28 @@ export interface MergeBaseFiles {
   instructions: readonly { name: string; content: Buffer }[];
 }
 
+/** `scan` over `dir`: a scan that throws did not run to the end either. */
+async function scanned(
+  scan: BaseSecretScan,
+  dir: string,
+  paths: readonly string[],
+  log: Logger,
+): Promise<BaseSecretScanResult> {
+  try {
+    return await scan(dir, paths);
+  } catch (err) {
+    log.debug(`AI review: the secret scan of the merge base threw: ${String(err)}`);
+    return { failed: 'the scan threw' };
+  }
+}
+
 /**
- * Runs `scan` over the merge base's `files`, written to a private work directory removed on every
- * path (and by the analyzers' signal handler). With no secret engine (`scan` null), or one that
- * did not run to the end (or threw), nothing is found and no old side is held: the patches then
- * send no removed line, and the instructions files go with the shared patterns only.
+ * Runs `scan` over the merge base's `files`, written to a private work directory that the
+ * analyzers' signal handler covers for its whole life and that is removed on every path. With no
+ * secret engine (`scan` null), or one that did not run to the end, could not run there as in the
+ * scan, or threw, nothing is found and no old side is held (said once, at warn, but for no
+ * engine): the patches then send no removed line, and the instructions files go with the shared
+ * patterns only.
  */
 export async function scanMergeBase(
   git: Git,
@@ -211,37 +243,36 @@ export async function scanMergeBase(
   const none: MergeBaseScan = { secrets: [], scanned: new Set() };
   if (files.paths.length === 0 && files.instructions.length === 0) return none;
   const cut = 'so the snapshot sends none of the lines the merge request removes';
-  if (o.scan === null) {
+  const scan = o.scan;
+  if (scan === null) {
     if (files.paths.length > 0) o.log.info(`AI review: the scan runs no secret engine, ${cut}`);
     return none;
   }
-  const dir = createWorkDir('review-base', o.tempRoot);
-  try {
-    const names = new Set<string>();
-    const written = await writeBaseFiles(git, base, {
-      dir,
-      paths: files.paths,
-      budget: o.budget,
-      names,
-    });
-    const instructions = files.instructions
-      .map((f) => `${INSTRUCTIONS_DIR}/${f.name}`)
-      .filter((rel, i) =>
-        writeBelow(dir, rel, files.instructions[i]?.content ?? Buffer.alloc(0), names),
-      );
-    let found: readonly string[] | null;
+  return withEmergencyCleanup(o.log, async () => {
+    const dir = createWorkDir('review-base', o.tempRoot);
     try {
-      found = await o.scan(dir, [...written, ...instructions]);
-    } catch (err) {
-      o.log.debug(`AI review: the secret scan of the merge base threw: ${String(err)}`);
-      found = null;
+      const names = new Set<string>();
+      const written = await writeBaseFiles(git, base, {
+        dir,
+        paths: files.paths,
+        budget: o.budget,
+        names,
+      });
+      const instructions = files.instructions
+        .map((f) => `${INSTRUCTIONS_DIR}/${f.name}`)
+        .filter((rel, i) =>
+          writeBelow(dir, rel, files.instructions[i]?.content ?? Buffer.alloc(0), names),
+        );
+      const result = await scanned(scan, dir, [...written, ...instructions], o.log);
+      if ('failed' in result) {
+        o.log.warn(
+          `AI review: the merge base's files could not be scanned for secrets (${result.failed}), ${cut}`,
+        );
+        return none;
+      }
+      return { secrets: result.secrets, scanned: written };
+    } finally {
+      releaseWorkDir(dir, o.log);
     }
-    if (found === null) {
-      o.log.warn(`AI review: the secret scan of the merge base's files did not complete, ${cut}`);
-      return none;
-    }
-    return { secrets: found, scanned: written };
-  } finally {
-    releaseWorkDir(dir, o.log);
-  }
+  });
 }

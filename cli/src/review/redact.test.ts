@@ -42,6 +42,18 @@ describe('secretLines', () => {
       secretLines(['single-line-secret', 'first-half-of-it\r\nshort\nsecond-half-of-it']),
     ).toEqual(['first-half-of-it', 'second-half-of-it']);
   });
+
+  it('trims each line, and keeps only one of 8 or more characters that are not blank', () => {
+    const lines = secretLines([
+      '  first-line-of-it  \n        \n\tsecond-line\n x y z w v u t s \n a   b   c   d ',
+    ]);
+    expect(lines).toEqual(['first-line-of-it', 'second-line', 'x y z w v u t s']);
+    // A copy indented anew is masked; a run of spaces never is.
+    const patch = '+first-line-of-it\n+      second-line\n+        indented code';
+    expect(maskSecrets(patch, lines).text).toBe(
+      `+${REDACTED}\n+      ${REDACTED}\n+        indented code`,
+    );
+  });
 });
 
 describe('maskSecrets', () => {

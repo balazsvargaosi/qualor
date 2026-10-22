@@ -18,11 +18,6 @@ import { maskSecrets, redactLongText } from './redact';
 const REGULAR_FILE = /^100\d{3}$/;
 /** An instructions file is cut to MAX_INSTRUCTIONS_BYTES; one beyond this is not read at all. */
 const MAX_INSTRUCTIONS_READ = 16 * 1024 * 1024;
-/**
- * The lines past the cut the redaction reads, so a secret split over the cut is seen whole (the
- * shared redaction joins up to four lines).
- */
-const PAST_THE_CUT = 8;
 const UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 
 export interface InstructionsFile {
@@ -77,19 +72,10 @@ export function cutAtLine(text: string, maxBytes: number): string {
   return bytes.subarray(0, end).toString('utf8');
 }
 
-/** `text` to the end of the line its first `maxBytes` UTF-8 bytes end in, and `extra` more. */
-function throughCut(text: string, maxBytes: number, extra: number): string {
-  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text;
-  const bytes = Buffer.from(text, 'utf8');
-  let end = bytes.indexOf(0x0a, maxBytes - 1);
-  for (let k = 0; k < extra && end !== -1; k++) end = bytes.indexOf(0x0a, end + 1);
-  return end === -1 ? text : bytes.subarray(0, end + 1).toString('utf8');
-}
-
 /**
- * An instructions file as sent, or null (a NUL, or not UTF-8): its secrets masked over the whole
- * text, then the shared redaction over the text up to the cut and a few lines past it, so it sees
- * a secret split over the cut whole; then cut at a line's end within the bound.
+ * An instructions file as sent, or null (a NUL, or not UTF-8): its secrets masked and the shared
+ * redaction run over the whole text (at most MAX_INSTRUCTIONS_READ), so a secret or a key block
+ * over the cut is seen whole; then cut at a line's end within the bound.
  */
 function instructionsText(
   content: Buffer,
@@ -103,7 +89,7 @@ function instructionsText(
     return null;
   }
   const masked = maskSecrets(text, secrets);
-  const redacted = redactLongText(throughCut(masked.text, MAX_INSTRUCTIONS_BYTES, PAST_THE_CUT));
+  const redacted = redactLongText(masked.text);
   return {
     text: cutAtLine(redacted.text, MAX_INSTRUCTIONS_BYTES),
     count: masked.count + redacted.count,
