@@ -43,8 +43,9 @@ describe('runMigrations / pendingMigrations', () => {
     // approved 2026-10-13), 0010_account_tokens (mail E2 A1, 2026-10-13), 0011_notifications
     // (mail E3 N8, 2026-10-13), 0012_issues_confidence (6B-C# engine spec R-9, approved
     // 2026-10-15), 0013_oauth (phase 6N, OAuth clients, requests, grants and tokens),
-    // 0014_chat_webhooks (phase 6G, Slack and Teams webhooks).
-    expect(await pendingMigrations(t.db, MIGRATIONS_DIR)).toBe(15);
+    // 0014_chat_webhooks (phase 6G, Slack and Teams webhooks), 0015_review_snapshots (phase 6I-2,
+    // the repository snapshots of the AI review).
+    expect(await pendingMigrations(t.db, MIGRATIONS_DIR)).toBe(16);
     expect(await readinessCheck(t.db, MIGRATIONS_DIR)()).toBe(false);
     await runMigrations(t.pool, MIGRATIONS_DIR);
     expect(await pendingMigrations(t.db, MIGRATIONS_DIR)).toBe(0);
@@ -308,6 +309,8 @@ describe('runMigrations / pendingMigrations', () => {
       'oauth_requests', // 0013_oauth
       'oauth_tokens', // 0013_oauth
       'project_watches',
+      'review_snapshot_files', // 0015_review_snapshots
+      'review_snapshots', // 0015_review_snapshots
     ].sort();
     expect(Object.keys(after).filter((name) => !(name in before))).toEqual(added);
     for (const name of added) expect(after[name], name).toEqual([]);

@@ -49,6 +49,8 @@ const TABLES = [
   'projects',
   'quality_gates',
   'quality_profiles',
+  'review_snapshot_files',
+  'review_snapshots',
   'rules',
   'scim_group_members',
   'scim_groups',

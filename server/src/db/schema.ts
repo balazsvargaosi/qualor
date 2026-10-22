@@ -1531,3 +1531,122 @@ export const oauthTokens = pgTable(
     check('oauth_tokens_kind_check', sql`kind IN ('access','refresh')`),
   ],
 );
+
+// ─── AI review snapshots (Phase 6I-2, migration 0015_review_snapshots) ───────
+
+export const REVIEW_SNAPSHOT_STATUSES = ['uploaded', 'ready', 'rejected'] as const;
+export type ReviewSnapshotStatus = (typeof REVIEW_SNAPSHOT_STATUSES)[number];
+
+/** What a snapshot's change line says happened to a path since the merge base. */
+export const SNAPSHOT_CHANGES = ['added', 'modified', 'renamed', 'deleted'] as const;
+export type SnapshotChange = (typeof SNAPSHOT_CHANGES)[number];
+
+/** An instruction file (`AGENTS.md`, `CLAUDE.md`, `REVIEW.md`) as the merge base held it. */
+export interface SnapshotInstruction {
+  name: string;
+  text: string;
+}
+
+/**
+ * The copy of a merge request's repository the scanner uploads for the AI review (6I-2 R2, R3):
+ * gzip'd JSON Lines, kept as sent in `body` while `uploaded`, then unpacked by a job into
+ * `review_snapshot_files` (`ready`, `body` cleared) or refused (`rejected`, `error` says why).
+ * One per analysis; `branch_id` is set when the analysis has succeeded on a merge request branch,
+ * and the newest snapshot of a branch replaces the older ones. Not encrypted, like
+ * `analysis_reports.body`; never served back through the API.
+ */
+export const reviewSnapshots = pgTable(
+  'review_snapshots',
+  {
+    id: id(),
+    analysisId: uuid('analysis_id')
+      .notNull()
+      .unique()
+      .references(() => analyses.id, { onDelete: 'cascade' }),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    branchId: uuid('branch_id').references(() => branches.id, { onDelete: 'cascade' }),
+    status: text('status').notNull().default('uploaded').$type<ReviewSnapshotStatus>(),
+    /** `SNAPSHOT_INVALID:<reason>` on a rejected snapshot. */
+    error: text('error'),
+    /** The upload as sent: present exactly while the status is `uploaded`. */
+    body: bytea('body'),
+    compressedBytes: integer('compressed_bytes').notNull(),
+    inflatedBytes: bigint('inflated_bytes', { mode: 'number' }),
+    /** The merge request's head commit, the merge base, and the last reviewed commit. */
+    headSha: text('head_sha'),
+    baseSha: text('base_sha'),
+    sinceSha: text('since_sha'),
+    targetBranch: text('target_branch'),
+    mrTitle: text('mr_title'),
+    mrDescription: text('mr_description'),
+    instructions: jsonb('instructions')
+      .notNull()
+      .default(emptyJsonArray)
+      .$type<SnapshotInstruction[]>(),
+    /** The scanner left files out to stay within the limits (the review says so). */
+    partial: boolean('partial').notNull().default(false),
+    fileCount: integer('file_count').notNull().default(0),
+    createdAt: createdAt(),
+    unpackedAt: at('unpacked_at'),
+  },
+  (t) => [
+    // The branch FK's index, and the other snapshots of one merge request.
+    index('review_snapshots_branch_idx')
+      .on(t.branchId)
+      .where(sql`branch_id IS NOT NULL`),
+    // The project FK's index (§2).
+    index('review_snapshots_project_idx').on(t.projectId),
+    // Housekeeping's retention.
+    index('review_snapshots_created_idx').on(t.createdAt),
+    check('review_snapshots_status_check', sql`status IN ('uploaded','ready','rejected')`),
+    check('review_snapshots_body_by_status', sql`(status = 'uploaded') = (body IS NOT NULL)`),
+    check('review_snapshots_head_sha_format', sql`head_sha ~ '^[0-9a-f]{40}([0-9a-f]{24})?$'`),
+    check('review_snapshots_base_sha_format', sql`base_sha ~ '^[0-9a-f]{40}([0-9a-f]{24})?$'`),
+    check('review_snapshots_since_sha_format', sql`since_sha ~ '^[0-9a-f]{40}([0-9a-f]{24})?$'`),
+  ],
+);
+export type ReviewSnapshotRow = typeof reviewSnapshots.$inferSelect;
+
+/**
+ * One row per path of an unpacked snapshot: the file's text at the head, an omission (a file the
+ * scanner did not send, with the reason), and the change line (status, old path, patch and the
+ * line ranges changed since the last review), merged by path. The reasons are 6I-2 ruling P3's.
+ */
+export const reviewSnapshotFiles = pgTable(
+  'review_snapshot_files',
+  {
+    snapshotId: uuid('snapshot_id')
+      .notNull()
+      .references(() => reviewSnapshots.id, { onDelete: 'cascade' }),
+    path: text('path').notNull(),
+    /** UTF-8 text, secrets masked by the scanner; null for an omitted or deleted file. */
+    text: text('text'),
+    bytes: integer('bytes').notNull().default(0),
+    /** Why the text was not sent: one of the eight reasons the CHECK lists (ruling P3). */
+    omitted: text('omitted'),
+    change: text('change').$type<SnapshotChange>(),
+    oldPath: text('old_path'),
+    patch: text('patch'),
+    /** 1-based inclusive line ranges changed since the last reviewed commit. */
+    since: jsonb('since').$type<[number, number][]>(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.snapshotId, t.path] }),
+    check(
+      'review_snapshot_files_omitted_check',
+      sql`omitted IN ('binary','too_large','excluded','credentials','symlink','submodule','limit','not_utf8')`,
+    ),
+    check(
+      'review_snapshot_files_change_check',
+      sql`change IN ('added','modified','renamed','deleted')`,
+    ),
+    check('review_snapshot_files_omitted_has_no_text', sql`text IS NULL OR omitted IS NULL`),
+    check(
+      'review_snapshot_files_deleted_has_no_text',
+      sql`change IS DISTINCT FROM 'deleted' OR text IS NULL`,
+    ),
+  ],
+);
+export type ReviewSnapshotFileRow = typeof reviewSnapshotFiles.$inferSelect;

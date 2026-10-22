@@ -106,6 +106,13 @@
       "when": 1792337126272,
       "tag": "0014_chat_webhooks",
       "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1792632191149,
+      "tag": "0015_review_snapshots",
+      "breakpoints": true
     }
   ]
 }
