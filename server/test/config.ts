@@ -14,6 +14,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     bootstrapAdmin: { username: 'admin', password: undefined },
     sessionTtlHours: 168,
     upload: { maxCompressedBytes: 50 * MiB, maxDecompressedBytes: 500 * MiB },
+    reviewSnapshot: { maxCompressedBytes: 50 * MiB, maxDecompressedBytes: 500 * MiB },
     workerConcurrency: 1,
     requestTimeoutMs: 300_000,
     maxConcurrentUploads: 4,

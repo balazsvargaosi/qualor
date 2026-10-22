@@ -68,6 +68,9 @@ export const ROUTE_PERMISSIONS: Readonly<Record<string, RouteRule>> = Object.fre
   'GET /organizations/:id/ai': 'org.read',
   'GET /organizations/:id/ai/auto-fix': 'org.ai.manage',
   'PUT /organizations/:id/ai/auto-fix': 'org.ai.manage',
+  // 6I-2: AI review's settings and data-sharing consent, and what the scanner asks before it uploads.
+  'GET /organizations/:id/ai/review': 'org.ai.manage',
+  'PUT /organizations/:id/ai/review': 'org.ai.manage',
   'GET /organizations/:id/license-policy': 'org.read',
   'PUT /organizations/:id/license-policy': 'org.licenses.manage',
   'GET /projects': 'list:project.read',
@@ -88,6 +91,7 @@ export const ROUTE_PERMISSIONS: Readonly<Record<string, RouteRule>> = Object.fre
   'GET /analyses/:id': 'project.read',
   'GET /branches/:id/analyses': 'project.read',
   'GET /projects/new-code-baseline': 'project.analyze',
+  'GET /projects/review-context': 'project.analyze',
   'GET /branches/:id/measures': 'project.read',
   'GET /branches/:id/measures/history': 'project.read',
   'GET /branches/:id/files': 'project.read',

@@ -57,8 +57,10 @@ import { headlineMeasures } from '../measures/read';
 import { containsPattern } from '../issues/query';
 import { PROJECT_KEY_PATTERN } from '../patterns';
 import { projectForUser, type ProjectRow } from '../projects/access';
+import { projectAiReview } from '../review/settings';
 import { forgetForeignMergeRequestUrls } from '../scm/connections';
 import { projectAutoFixSchema } from './auto-fix';
+import { projectAiReviewSchema } from './review';
 import { projectRefProblem, scmProjectRef } from './scm-connections';
 
 export const newCodeDefinitionSchema = z.discriminatedUnion('type', [
@@ -99,6 +101,11 @@ export const projectSchema = z.object({
    * llm.auto-fix), the project is not opted out of them, and the organisation has them on.
    */
   autoFix: projectAutoFixSchema,
+  /**
+   * 6I-2: whether AI review runs for the project, and whether its organisation has it on (the
+   * organisation admin switches it on in Settings → AI review).
+   */
+  aiReview: projectAiReviewSchema,
 });
 export type ProjectDto = z.infer<typeof projectSchema>;
 
@@ -225,6 +232,7 @@ export async function projectDtos(
         organizationEnabled: organizationAutoFixEnabled(llmSettings, p.organizationId),
         excludedFromAi: projectExcludedFromAi(llmSettings, p),
       },
+      aiReview: projectAiReview(llmSettings, p),
     };
   });
 }

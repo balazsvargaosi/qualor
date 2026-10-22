@@ -308,6 +308,49 @@ describe('automatic fix suggestion events (4E-3a §2)', () => {
   });
 });
 
+describe('AI review events (6I-2)', () => {
+  const details = {
+    enabled: true,
+    scope: 'selected',
+    projects: 2,
+    consentGiven: true,
+    providerHost: 'llm.example:8443',
+    model: 'gpt-x',
+  };
+
+  it('records the organisation’s AI review on the organisation, with the provider it names', () => {
+    const d = AUDIT_CATALOGUE['organization.ai_review_changed'];
+    expect(d.target).toBe('organization');
+    expect(d.details.safeParse(details).success).toBe(true);
+    // Without a provider (a switch-off after it was removed) there is no host and no model.
+    expect(
+      d.details.safeParse({ ...details, providerHost: null, model: null, consentGiven: false })
+        .success,
+    ).toBe(true);
+    expect(d.details.safeParse({ ...details, scope: 'all', projects: 1_000 }).success).toBe(true);
+  });
+
+  it.each([
+    ['a scope that is neither', { scope: 'some' }],
+    ['a negative project count', { projects: -1 }],
+    ['more than 1 000 projects', { projects: 1_001 }],
+    ['a fractional project count', { projects: 1.5 }],
+    ['the consent as text', { consentGiven: 'yes' }],
+    ['a field of its own', { acknowledged: true }],
+  ])('refuses %s', (_name, over) => {
+    const d = AUDIT_CATALOGUE['organization.ai_review_changed'];
+    expect(d.details.safeParse({ ...details, ...over }).success).toBe(false);
+  });
+
+  it('refuses details with a field missing', () => {
+    const d = AUDIT_CATALOGUE['organization.ai_review_changed'];
+    for (const key of Object.keys(details)) {
+      const rest = Object.fromEntries(Object.entries(details).filter(([k]) => k !== key));
+      expect(d.details.safeParse(rest).success, key).toBe(false);
+    }
+  });
+});
+
 describe('licence policy events (6M §5)', () => {
   const policy = {
     mode: 'denylist',

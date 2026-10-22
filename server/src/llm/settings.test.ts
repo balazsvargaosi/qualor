@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { encryptionKey, encryptSecret } from '../crypto/secrets';
+import { defaultReview } from '../review/settings';
 import {
   DEFAULT_LLM_SETTINGS,
   LLM_API_KEY_AAD,
@@ -81,6 +82,7 @@ describe('LLM settings (llm.md §3)', () => {
       excludedProjectIds: [],
       autoFix: { enabled: false, minSeverity: 'high', maxPerAnalysis: 10 },
       autoFixDisabledProjectIds: [],
+      review: defaultReview(),
     });
   });
 

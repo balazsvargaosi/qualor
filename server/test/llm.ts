@@ -14,6 +14,7 @@ import {
   type StoredProvider,
 } from '../src/llm/settings';
 import { runUntilIdle } from '../src/queue/worker';
+import { defaultReview } from '../src/review/settings';
 import type { FakeLlm } from './fake-llm';
 import type { IngestHarness } from './ingest';
 import { silentLogger } from './scm';
@@ -59,6 +60,7 @@ export async function configureLlm(
         excludedProjectIds: [],
         autoFix: { ...DEFAULT_AUTO_FIX },
         autoFixDisabledProjectIds: [],
+        review: defaultReview(),
       },
     },
     ...rest,

@@ -292,6 +292,16 @@ const envSchema = z
       .min(1024)
       .max(500 * MiB)
       .default(500 * MiB),
+    // 6I-2 (ruling P4, spec §5): the AI review snapshot a scanner uploads next to its report has
+    // limits of its own, which the review-context route tells the scanner. As for the report, the
+    // inflated size is capped at 500 MiB whatever is set; it is never less than 1 MiB.
+    QUALOR_REVIEW_SNAPSHOT_MAX_COMPRESSED_BYTES: bytes(50 * MiB),
+    QUALOR_REVIEW_SNAPSHOT_MAX_DECOMPRESSED_BYTES: z.coerce
+      .number()
+      .int()
+      .min(MiB)
+      .max(500 * MiB)
+      .default(500 * MiB),
     // Ruling S13 #3: defaults to 1 — see the memory note above; each concurrent slot can hold
     // several GB while decoding a report near the decompressed-bytes ceiling, and decoding runs
     // synchronously on the event loop (moving it to a worker thread is deferred).
@@ -417,6 +427,8 @@ export interface Config {
   bootstrapAdmin: { username: string; password: string | undefined };
   sessionTtlHours: number;
   upload: UploadLimits;
+  /** 6I-2: the AI review snapshot's limits, QUALOR_REVIEW_SNAPSHOT_MAX_* (as sent, and inflated). */
+  reviewSnapshot: UploadLimits;
   workerConcurrency: number;
   requestTimeoutMs: number;
   maxConcurrentUploads: number;
@@ -483,6 +495,10 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     upload: {
       maxCompressedBytes: e.QUALOR_UPLOAD_MAX_COMPRESSED_BYTES,
       maxDecompressedBytes: e.QUALOR_UPLOAD_MAX_DECOMPRESSED_BYTES,
+    },
+    reviewSnapshot: {
+      maxCompressedBytes: e.QUALOR_REVIEW_SNAPSHOT_MAX_COMPRESSED_BYTES,
+      maxDecompressedBytes: e.QUALOR_REVIEW_SNAPSHOT_MAX_DECOMPRESSED_BYTES,
     },
     workerConcurrency: e.QUALOR_WORKER_CONCURRENCY,
     requestTimeoutMs: e.QUALOR_REQUEST_TIMEOUT_MS,

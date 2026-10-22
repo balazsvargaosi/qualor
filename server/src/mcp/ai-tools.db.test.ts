@@ -9,6 +9,7 @@ import { oauthTokens } from '../../test/oauth';
 import { engine, file, finding, reportWith } from '../../test/reports';
 import { issues, llmRequests, rules } from '../db/schema';
 import { DEFAULT_AUTO_FIX } from '../llm/settings';
+import { defaultReview } from '../review/settings';
 import { parseInternalHosts } from '../scm/url';
 import { aiWait } from './tools/ai';
 
@@ -157,6 +158,7 @@ describe('MCP AI tools (ruling R1)', () => {
           excludedProjectIds: [],
           autoFix: { ...DEFAULT_AUTO_FIX },
           autoFixDisabledProjectIds: [],
+          review: defaultReview(),
         },
       },
     });

@@ -32,6 +32,7 @@ export async function openApiDocument(plugins?: OpenApiPlugins): Promise<unknown
     bootstrapAdmin: { username: 'admin', password: undefined },
     sessionTtlHours: 1,
     upload: { maxCompressedBytes: 50 * MiB, maxDecompressedBytes: 500 * MiB },
+    reviewSnapshot: { maxCompressedBytes: 50 * MiB, maxDecompressedBytes: 500 * MiB },
     workerConcurrency: 1,
     requestTimeoutMs: 300_000,
     maxConcurrentUploads: 4,

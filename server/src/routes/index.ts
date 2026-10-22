@@ -25,6 +25,7 @@ import { organizationRoutes } from './organizations';
 import { profileRoutes } from './profiles';
 import { projectMemberRoutes } from './project-members';
 import { projectRoutes } from './projects';
+import { reviewRoutes } from './review';
 import { ruleRoutes } from './rules';
 import { systemRoutes } from './system';
 import { tokenRoutes } from './tokens';
@@ -66,6 +67,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   await app.register(licenseRoutes, { prefix: '/api/v0', deps });
   await app.register(aiRoutes, { prefix: '/api/v0', deps, chargeIssueChanges });
   await app.register(autoFixRoutes, { prefix: '/api/v0', deps });
+  await app.register(reviewRoutes, { prefix: '/api/v0', deps });
   await app.register(licensePolicyRoutes, { prefix: '/api/v0', deps });
   // Its own plugin: its raw-body JSON parser stays in its encapsulation context (github.md §9).
   await app.register(githubWebhookRoutes, { deps });

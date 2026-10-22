@@ -6,6 +6,7 @@ import { decryptSecret, encryptionKey } from '../crypto/secrets';
 import type { Executor } from '../db/client';
 import { uuidList } from '../db/bulk';
 import { instanceSettings, projects } from '../db/schema';
+import { defaultReview, reviewSettingsSchema } from '../review/schema';
 import { instanceSetting } from '../settings';
 import { PROVIDER_KINDS, type ProviderConfig } from './providers';
 
@@ -27,6 +28,18 @@ export const budgetsSchema = z.strictObject({
   tokensPerDay: z.number().int().min(0).max(1_000_000_000),
   costPerDayUsd: z.number().min(0).max(1_000_000).nullable(),
   perUserPerHour: z.number().int().min(1).max(10_000),
+  /**
+   * 6I-2: the instance ceiling on an organisation's AI review tokens per UTC day; the effective
+   * budget of an organisation is the smaller of this and its own. Null: no ceiling. A row stored
+   * before it reads with null.
+   */
+  reviewTokensPerOrganizationPerDay: z
+    .number()
+    .int()
+    .min(0)
+    .max(1_000_000_000)
+    .nullable()
+    .default(null),
 });
 export type Budgets = z.infer<typeof budgetsSchema>;
 export const DEFAULT_BUDGETS: Budgets = {
@@ -36,6 +49,7 @@ export const DEFAULT_BUDGETS: Budgets = {
   tokensPerDay: 1_000_000,
   costPerDayUsd: null,
   perUserPerHour: 30,
+  reviewTokensPerOrganizationPerDay: null,
 };
 
 /** 4E-3a §2: at most this many automatic fix suggestions per analysis. */
@@ -63,7 +77,8 @@ const projectIds = z.array(z.uuid()).max(MAX_ORGANIZATION_PROJECT_IDS);
 
 /**
  * llm.md §3.3: an organisation's switches; at most 1 000 excluded and 1 000 opted-out projects. A
- * row stored before 4E-3 has neither auto-fix field and reads with the defaults.
+ * row stored before 4E-3 has neither auto-fix field and reads with the defaults, and one stored
+ * before 6I-2 has no `review` block (its AI review: off, no consent).
  */
 export const orgLlmSettingsSchema = z.strictObject({
   enabled: z.boolean(),
@@ -71,6 +86,7 @@ export const orgLlmSettingsSchema = z.strictObject({
   excludedProjectIds: projectIds,
   autoFix: autoFixSettingsSchema.default(() => ({ ...DEFAULT_AUTO_FIX })),
   autoFixDisabledProjectIds: projectIds.default(() => []),
+  review: reviewSettingsSchema.default(() => defaultReview()),
 });
 export type OrgLlmSettings = z.infer<typeof orgLlmSettingsSchema>;
 export const DISABLED_ORGANIZATION: OrgLlmSettings = {
@@ -79,6 +95,7 @@ export const DISABLED_ORGANIZATION: OrgLlmSettings = {
   excludedProjectIds: [],
   autoFix: { ...DEFAULT_AUTO_FIX },
   autoFixDisabledProjectIds: [],
+  review: defaultReview(),
 };
 
 /** llm.md §3.3: at most this many organisations in the map. */

@@ -8,6 +8,7 @@ import { engine, file, finding, reportWith } from '../../test/reports';
 import { LOCKS } from '../db/locks';
 import { issues, llmRequests, organizations, projects, rules } from '../db/schema';
 import { DEFAULT_AUTO_FIX, DEFAULT_LLM_SETTINGS, type StoredLlmSettings } from '../llm/settings';
+import { defaultReview } from '../review/settings';
 import { parseInternalHosts } from '../scm/url';
 
 const LINES = ['const a = 1;', 'if (a == 1) {}', 'export {};'];
@@ -17,6 +18,7 @@ const ALL_ON = {
   excludedProjectIds: [] as string[],
   autoFix: { ...DEFAULT_AUTO_FIX },
   autoFixDisabledProjectIds: [] as string[],
+  review: defaultReview(),
 };
 
 describe('AI requests (llm.md §5, §10, §12, §16)', () => {

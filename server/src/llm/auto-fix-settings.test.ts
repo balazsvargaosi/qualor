@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { communityLimits, type Limits } from '../limits';
+import { defaultReview } from '../review/settings';
 import { effectiveAutoFix, withOrganizationAutoFix, withProjectAutoFix } from './auto-fix-settings';
 import {
   DEFAULT_AUTO_FIX,
@@ -37,6 +38,7 @@ const ON: OrgLlmSettings = {
   excludedProjectIds: [],
   autoFix: { enabled: true, minSeverity: 'medium', maxPerAnalysis: 5 },
   autoFixDisabledProjectIds: [],
+  review: defaultReview(),
 };
 
 const settingsWith = (org: Partial<OrgLlmSettings> = {}): StoredLlmSettings => ({
@@ -70,6 +72,7 @@ describe('the automatic fix suggestion settings (4E-3a §2)', () => {
       ...old.organizations[ORG],
       autoFix: { enabled: false, minSeverity: 'high', maxPerAnalysis: 10 },
       autoFixDisabledProjectIds: [],
+      review: defaultReview(),
     });
     expect(DEFAULT_AUTO_FIX).toEqual({ enabled: false, minSeverity: 'high', maxPerAnalysis: 10 });
   });
@@ -173,6 +176,7 @@ describe('the auto-fix mutations', () => {
       excludedProjectIds: [],
       autoFix: next,
       autoFixDisabledProjectIds: [],
+      review: defaultReview(),
     });
     expect(DEFAULT_LLM_SETTINGS.organizations).toEqual({});
   });

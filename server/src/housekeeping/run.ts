@@ -28,6 +28,11 @@ export const DEFAULT_RETENTION = {
   llmRequestsDays: 90,
   /** The email delivery log (E1 spec). */
   mailMessagesDays: 30,
+  /**
+   * AI review snapshots (6I-2, spec §5): the most days the server keeps a merge request's copy of
+   * the repository. The data-sharing notice names it, so the number shown is read from here.
+   */
+  reviewSnapshotsDays: 14,
   /** Not in §7: finished jobs are only useful for debugging (ruling H1). */
   finishedJobsDays: 7,
 };
@@ -42,6 +47,7 @@ const retentionSchema = z
     webhookDeliveriesDays: days,
     llmRequestsDays: days,
     mailMessagesDays: days,
+    reviewSnapshotsDays: days,
     finishedJobsDays: days,
   })
   .partial();

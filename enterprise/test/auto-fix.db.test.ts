@@ -33,6 +33,7 @@ import {
 import { loadPlugins } from '../../server/src/plugins/loader';
 import { dropPluginsThatFailToMount } from '../../server/src/plugins/mount';
 import { createPluginServices } from '../../server/src/plugins/services';
+import { defaultReview } from '../../server/src/review/settings';
 import { buildEnterprise } from '../scripts/bundle';
 
 // Under enterprise/, so the bundle resolves its external packages from enterprise/node_modules.
@@ -128,6 +129,7 @@ describe('Qualor Enterprise: the llm.auto-fix feature through the built plugin (
           excludedProjectIds: [],
           autoFix: { ...DEFAULT_AUTO_FIX },
           autoFixDisabledProjectIds: [],
+          review: defaultReview(),
         },
       },
     });

@@ -28,6 +28,8 @@ export const SUPPORT_CONFIG_ALLOWLIST: Readonly<Record<string, SupportRule>> = O
   sessionTtlHours: 'value',
   'upload.maxCompressedBytes': 'value',
   'upload.maxDecompressedBytes': 'value',
+  'reviewSnapshot.maxCompressedBytes': 'value',
+  'reviewSnapshot.maxDecompressedBytes': 'value',
   workerConcurrency: 'value',
   requestTimeoutMs: 'value',
   maxConcurrentUploads: 'value',

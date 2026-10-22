@@ -41,6 +41,7 @@ import {
   type StoredProvider,
 } from '../llm/settings';
 import { llmBaseUrlProblem } from '../llm/url';
+import { isDefaultReview } from '../review/settings';
 import { normalBaseUrl } from '../scm/url';
 
 /** llm.md §16: at most this many Test button presses per admin and minute. */
@@ -73,10 +74,18 @@ const providerBody = z.strictObject({
 });
 
 /**
+ * An organisation as this route reads and writes it. 6I-2: without its `review` block, which only
+ * `PUT /organizations/{id}/ai/review` changes: AI review is the organisation admin's to switch on,
+ * and acknowledging the data-sharing notice is theirs to give, so the instance admin's save neither
+ * shows nor sets it and always keeps what is stored.
+ */
+const orgSettingsWithoutReview = orgLlmSettingsSchema.omit({ review: true });
+
+/**
  * An organisation in the body. 4E-3a §2: the auto-fix fields may be left out (a form that does not
  * know them), which keeps what is stored, so a save never undoes an organisation admin's choice.
  */
-const orgBody = orgLlmSettingsSchema.extend({
+const orgBody = orgSettingsWithoutReview.extend({
   autoFix: autoFixSettingsSchema.optional().meta({ description: 'Absent keeps the stored value' }),
   autoFixDisabledProjectIds: z
     .array(z.uuid())
@@ -141,7 +150,7 @@ const settingsDto = z.object({
       apiKeyReadable: z.boolean(),
     })
     .nullable(),
-  organizations: z.record(z.string(), orgLlmSettingsSchema),
+  organizations: z.record(z.string(), orgSettingsWithoutReview),
   excludePaths: z.array(z.string()),
   budgets: budgetsSchema,
   pricing: pricingSchema,
@@ -239,14 +248,19 @@ const hasAutoFixChoice = (o: OrgLlmSettings) =>
   o.autoFix.maxPerAnalysis !== DEFAULT_AUTO_FIX.maxPerAnalysis ||
   o.autoFixDisabledProjectIds.length > 0;
 
+/** Whether a stored entry holds an AI review setting other than the defaults (6I-2). */
+const hasReviewChoice = (o: OrgLlmSettings) => !isDefaultReview(o.review);
+
 /**
- * The body's organisations, an auto-fix field left out keeping the stored one (4E-3a §2). An
- * organisation the body leaves out loses its switches and exclusions, as before, but keeps its
- * auto-fix choice: a form loaded before an organisation admin made it must not undo it. Its entry
- * is then the one the organisation's auto-fix route creates (disabled, the choice kept). `kept`:
- * those organisations ({@link omittedWithAutoFix}) that still exist.
+ * The body's organisations, an auto-fix field left out keeping the stored one (4E-3a §2), and the
+ * AI review block always the stored one (6I-2: the body cannot carry it). An organisation the body
+ * leaves out loses its switches and exclusions, as before, but keeps its auto-fix choice and its AI
+ * review: a form loaded before an organisation admin made them must not undo them. Its entry is
+ * then the one the organisation's own routes create (disabled, the choices kept; review then
+ * reports `organization_disabled`). `kept`: those organisations ({@link omittedWithChoice}) that
+ * still exist.
  */
-function withStoredAutoFix(
+function withStoredChoices(
   organizations: Record<string, OrgBody>,
   current: StoredLlmSettings,
   kept: ReadonlySet<string>,
@@ -262,6 +276,7 @@ function withStoredAutoFix(
           excludedProjectIds: [],
           autoFix: stored.autoFix,
           autoFixDisabledProjectIds: stored.autoFixDisabledProjectIds,
+          review: stored.review,
         },
       ];
     }),
@@ -274,19 +289,25 @@ function withStoredAutoFix(
           autoFix: o.autoFix ?? stored.autoFix,
           autoFixDisabledProjectIds:
             o.autoFixDisabledProjectIds ?? stored.autoFixDisabledProjectIds,
+          review: stored.review,
         },
       ];
     }),
   ]);
 }
 
-/** The ids of the organisations the body leaves out whose stored entry holds an auto-fix choice. */
-const omittedWithAutoFix = (
+/**
+ * The ids of the organisations the body leaves out whose stored entry holds an auto-fix choice or
+ * an AI review setting.
+ */
+const omittedWithChoice = (
   organizations: Record<string, OrgBody>,
   current: StoredLlmSettings,
 ): string[] =>
   Object.entries(current.organizations)
-    .filter(([id, o]) => !Object.hasOwn(organizations, id) && hasAutoFixChoice(o))
+    .filter(
+      ([id, o]) => !Object.hasOwn(organizations, id) && (hasAutoFixChoice(o) || hasReviewChoice(o)),
+    )
     .map(([id]) => id);
 
 /** 4E-3a §2: the organisations without their auto-fix fields, and with only those. */
@@ -305,6 +326,15 @@ const autoFixOf = (organizations: Record<string, OrgLlmSettings>) =>
     ]),
   );
 
+/** The organisation as this route shows it: all of it but its AI review block (6I-2). */
+const withoutReview = (o: OrgLlmSettings): z.infer<typeof orgSettingsWithoutReview> => ({
+  enabled: o.enabled,
+  features: o.features,
+  excludedProjectIds: o.excludedProjectIds,
+  autoFix: o.autoFix,
+  autoFixDisabledProjectIds: o.autoFixDisabledProjectIds,
+});
+
 function dto(s: StoredLlmSettings, secretKey: string): z.infer<typeof settingsDto> {
   return {
     provider: s.provider && {
@@ -312,7 +342,9 @@ function dto(s: StoredLlmSettings, secretKey: string): z.infer<typeof settingsDt
       apiKeySet: s.provider.apiKeyEnc !== null,
       apiKeyReadable: providerApiKey(s, secretKey).ok,
     },
-    organizations: s.organizations,
+    organizations: Object.fromEntries(
+      Object.entries(s.organizations).map(([id, o]) => [id, withoutReview(o)]),
+    ),
     excludePaths: s.excludePaths,
     budgets: s.budgets,
     pricing: s.pricing,
@@ -549,9 +581,9 @@ export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
         }
         const kept = await existingOrganizations(
           tx,
-          omittedWithAutoFix(body.organizations, current),
+          omittedWithChoice(body.organizations, current),
         );
-        const organizations = withStoredAutoFix(body.organizations, current, kept);
+        const organizations = withStoredChoices(body.organizations, current, kept);
         // A project deleted meanwhile (or since the page read the settings) is dropped, a stored
         // opt-out the body left out included.
         const listed = await projectOwners(tx, listedProjectIdsOf(organizations));

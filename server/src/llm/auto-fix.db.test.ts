@@ -21,6 +21,7 @@ import { auditEvents, branches, issues, jobs, llmRequests } from '../db/schema';
 import type { Limits } from '../limits';
 import { claimJob, type Job } from '../queue/queue';
 import { runUntilIdle, type JobHandlers } from '../queue/worker';
+import { defaultReview } from '../review/settings';
 import { scmHandlers, type DecorationDeps } from '../scm/decorate';
 import { SCM_QUEUE } from '../scm/queue';
 import { parseInternalHosts } from '../scm/url';
@@ -147,6 +148,7 @@ describe('automatic fix suggestions (4E-3a §3)', () => {
           excludedProjectIds: [],
           autoFix: { ...DEFAULT_AUTO_FIX, enabled: true },
           autoFixDisabledProjectIds: [],
+          review: defaultReview(),
           ...org,
         },
       },

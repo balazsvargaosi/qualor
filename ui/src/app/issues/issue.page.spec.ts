@@ -365,6 +365,7 @@ describe('IssuePage', () => {
           tokensPerDay: 1_000_000,
           costPerDayUsd: null,
           perUserPerHour: 30,
+          reviewTokensPerOrganizationPerDay: null,
         },
       },
     });

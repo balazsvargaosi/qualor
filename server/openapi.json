@@ -4653,6 +4653,22 @@
                               "excludedFromAi"
                             ],
                             "additionalProperties": false
+                          },
+                          "aiReview": {
+                            "type": "object",
+                            "properties": {
+                              "enabled": {
+                                "type": "boolean"
+                              },
+                              "organizationEnabled": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "enabled",
+                              "organizationEnabled"
+                            ],
+                            "additionalProperties": false
                           }
                         },
                         "required": [
@@ -4669,7 +4685,8 @@
                           "updatedAt",
                           "mainBranch",
                           "permissions",
-                          "autoFix"
+                          "autoFix",
+                          "aiReview"
                         ],
                         "additionalProperties": false
                       }
@@ -5021,6 +5038,22 @@
                         "excludedFromAi"
                       ],
                       "additionalProperties": false
+                    },
+                    "aiReview": {
+                      "type": "object",
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean"
+                        },
+                        "organizationEnabled": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "enabled",
+                        "organizationEnabled"
+                      ],
+                      "additionalProperties": false
                     }
                   },
                   "required": [
@@ -5037,7 +5070,8 @@
                     "updatedAt",
                     "mainBranch",
                     "permissions",
-                    "autoFix"
+                    "autoFix",
+                    "aiReview"
                   ],
                   "additionalProperties": false
                 }
@@ -5371,6 +5405,22 @@
                         "excludedFromAi"
                       ],
                       "additionalProperties": false
+                    },
+                    "aiReview": {
+                      "type": "object",
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean"
+                        },
+                        "organizationEnabled": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "enabled",
+                        "organizationEnabled"
+                      ],
+                      "additionalProperties": false
                     }
                   },
                   "required": [
@@ -5387,7 +5437,8 @@
                     "updatedAt",
                     "mainBranch",
                     "permissions",
-                    "autoFix"
+                    "autoFix",
+                    "aiReview"
                   ],
                   "additionalProperties": false
                 }
@@ -5712,6 +5763,22 @@
                         "excludedFromAi"
                       ],
                       "additionalProperties": false
+                    },
+                    "aiReview": {
+                      "type": "object",
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean"
+                        },
+                        "organizationEnabled": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "enabled",
+                        "organizationEnabled"
+                      ],
+                      "additionalProperties": false
                     }
                   },
                   "required": [
@@ -5728,7 +5795,8 @@
                     "updatedAt",
                     "mainBranch",
                     "permissions",
-                    "autoFix"
+                    "autoFix",
+                    "aiReview"
                   ],
                   "additionalProperties": false
                 }
@@ -6178,6 +6246,22 @@
                         "excludedFromAi"
                       ],
                       "additionalProperties": false
+                    },
+                    "aiReview": {
+                      "type": "object",
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean"
+                        },
+                        "organizationEnabled": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "enabled",
+                        "organizationEnabled"
+                      ],
+                      "additionalProperties": false
                     }
                   },
                   "required": [
@@ -6194,7 +6278,8 @@
                     "updatedAt",
                     "mainBranch",
                     "permissions",
-                    "autoFix"
+                    "autoFix",
+                    "aiReview"
                   ],
                   "additionalProperties": false
                 }
@@ -19568,6 +19653,19 @@
                           "type": "integer",
                           "minimum": 1,
                           "maximum": 10000
+                        },
+                        "reviewTokensPerOrganizationPerDay": {
+                          "default": null,
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 1000000000
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "required": [
@@ -19576,7 +19674,8 @@
                         "fixPerDay",
                         "tokensPerDay",
                         "costPerDayUsd",
-                        "perUserPerHour"
+                        "perUserPerHour",
+                        "reviewTokensPerOrganizationPerDay"
                       ],
                       "additionalProperties": false
                     },
@@ -19892,6 +19991,19 @@
                         "type": "integer",
                         "minimum": 1,
                         "maximum": 10000
+                      },
+                      "reviewTokensPerOrganizationPerDay": {
+                        "default": null,
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 1000000000
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
                       }
                     },
                     "required": [
@@ -20178,6 +20290,19 @@
                           "type": "integer",
                           "minimum": 1,
                           "maximum": 10000
+                        },
+                        "reviewTokensPerOrganizationPerDay": {
+                          "default": null,
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 1000000000
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "required": [
@@ -20186,7 +20311,8 @@
                         "fixPerDay",
                         "tokensPerDay",
                         "costPerDayUsd",
-                        "perUserPerHour"
+                        "perUserPerHour",
+                        "reviewTokensPerOrganizationPerDay"
                       ],
                       "additionalProperties": false
                     },
@@ -25810,6 +25936,19 @@
                           "type": "integer",
                           "minimum": 1,
                           "maximum": 10000
+                        },
+                        "reviewTokensPerOrganizationPerDay": {
+                          "default": null,
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 1000000000
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "required": [
@@ -25818,7 +25957,8 @@
                         "fixPerDay",
                         "tokensPerDay",
                         "costPerDayUsd",
-                        "perUserPerHour"
+                        "perUserPerHour",
+                        "reviewTokensPerOrganizationPerDay"
                       ],
                       "additionalProperties": false
                     }
@@ -26220,6 +26360,772 @@
           },
           "409": {
             "description": "AUTO_FIX_OPT_OUT_LIMIT_REACHED (the organisation has 1 000 projects opted out); AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed while no audit event is stored; an administrator must restore it (a retry does not help)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed (VALIDATION_FAILED; errors[] names each field)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v0/organizations/{id}/ai/review": {
+      "get": {
+        "summary": "The organisation's AI review settings and the data-sharing notice (org.ai.manage); `available` is false without a provider or an enabled organisation",
+        "tags": [
+          "ai"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "available": {
+                      "type": "boolean"
+                    },
+                    "unavailableReason": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "no_provider",
+                            "organization_disabled"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "provider": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "host": {
+                              "type": "string"
+                            },
+                            "model": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "host",
+                            "model"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "notice": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "scope": {
+                      "type": "string",
+                      "enum": [
+                        "all",
+                        "selected"
+                      ]
+                    },
+                    "projectIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "format": "uuid",
+                        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                      }
+                    },
+                    "budgets": {
+                      "type": "object",
+                      "properties": {
+                        "tokensPerDay": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 1000000000
+                        },
+                        "costPerDayUsd": {
+                          "anyOf": [
+                            {
+                              "type": "number",
+                              "minimum": 0,
+                              "maximum": 1000000
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "perProjectTokensPerDay": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 1000000000
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "maxTokensPerReview": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 10000000
+                        }
+                      },
+                      "required": [
+                        "tokensPerDay",
+                        "costPerDayUsd",
+                        "perProjectTokensPerDay",
+                        "maxTokensPerReview"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "consent": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "providerHost": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 300
+                            },
+                            "model": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 200
+                            },
+                            "userId": {
+                              "type": "string",
+                              "format": "uuid",
+                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                            },
+                            "at": {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            }
+                          },
+                          "required": [
+                            "providerHost",
+                            "model",
+                            "userId",
+                            "at"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "consentCurrent": {
+                      "type": "boolean"
+                    },
+                    "instanceCeiling": {
+                      "type": "object",
+                      "properties": {
+                        "tokensPerDay": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "tokensPerDay"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "available",
+                    "unavailableReason",
+                    "provider",
+                    "notice",
+                    "enabled",
+                    "scope",
+                    "projectIds",
+                    "budgets",
+                    "consent",
+                    "consentCurrent",
+                    "instanceCeiling"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated but not allowed (FORBIDDEN, INSUFFICIENT_SCOPE, TOKEN_NOT_ALLOWED, SESSION_REQUIRED, CSRF_FAILED, PASSWORD_CHANGE_REQUIRED)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed (VALIDATION_FAILED; errors[] names each field)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Set the organisation's AI review (org.ai.manage). Switching it on needs acknowledgeDataSharing: true, which records the provider's host and model, the user and the time; a change of the provider's host or model makes the consent outdated until it is given again",
+        "tags": [
+          "ai"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "scope": {
+                    "type": "string",
+                    "enum": [
+                      "all",
+                      "selected"
+                    ]
+                  },
+                  "projectIds": {
+                    "maxItems": 1000,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "budgets": {
+                    "type": "object",
+                    "properties": {
+                      "tokensPerDay": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 1000000000
+                      },
+                      "costPerDayUsd": {
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 1000000
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "perProjectTokensPerDay": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 1000000000
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "maxTokensPerReview": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 10000000
+                      }
+                    },
+                    "required": [
+                      "tokensPerDay",
+                      "costPerDayUsd",
+                      "perProjectTokensPerDay",
+                      "maxTokensPerReview"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "acknowledgeDataSharing": {
+                    "description": "true confirms the notice in the answer. Needed to switch review on from off, and while consentCurrent is false; ignored otherwise",
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "scope",
+                  "projectIds",
+                  "budgets"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "available": {
+                      "type": "boolean"
+                    },
+                    "unavailableReason": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "no_provider",
+                            "organization_disabled"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "provider": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "host": {
+                              "type": "string"
+                            },
+                            "model": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "host",
+                            "model"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "notice": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "scope": {
+                      "type": "string",
+                      "enum": [
+                        "all",
+                        "selected"
+                      ]
+                    },
+                    "projectIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "format": "uuid",
+                        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                      }
+                    },
+                    "budgets": {
+                      "type": "object",
+                      "properties": {
+                        "tokensPerDay": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 1000000000
+                        },
+                        "costPerDayUsd": {
+                          "anyOf": [
+                            {
+                              "type": "number",
+                              "minimum": 0,
+                              "maximum": 1000000
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "perProjectTokensPerDay": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 1000000000
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "maxTokensPerReview": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 10000000
+                        }
+                      },
+                      "required": [
+                        "tokensPerDay",
+                        "costPerDayUsd",
+                        "perProjectTokensPerDay",
+                        "maxTokensPerReview"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "consent": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "providerHost": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 300
+                            },
+                            "model": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 200
+                            },
+                            "userId": {
+                              "type": "string",
+                              "format": "uuid",
+                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                            },
+                            "at": {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            }
+                          },
+                          "required": [
+                            "providerHost",
+                            "model",
+                            "userId",
+                            "at"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "consentCurrent": {
+                      "type": "boolean"
+                    },
+                    "instanceCeiling": {
+                      "type": "object",
+                      "properties": {
+                        "tokensPerDay": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "tokensPerDay"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "available",
+                    "unavailableReason",
+                    "provider",
+                    "notice",
+                    "enabled",
+                    "scope",
+                    "projectIds",
+                    "budgets",
+                    "consent",
+                    "consentCurrent",
+                    "instanceCeiling"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN or INSUFFICIENT_SCOPE",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "AI_DISABLED (switching it on needs a provider and the organisation enabled for the AI assistant), or AI_REVIEW_CONSENT_REQUIRED (switching it on, from off or while consentCurrent is false, needs acknowledgeDataSharing: true); AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed while no audit event is stored; an administrator must restore it (a retry does not help)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "VALIDATION_FAILED, or PROJECT_NOT_IN_ORGANIZATION (a project id belongs to another organisation; errors[] names it)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v0/projects/review-context": {
+      "get": {
+        "summary": "Whether the scanner should upload a repository snapshot of a merge request (AI review is on for the project), and the limits of a snapshot; the CLI calls this before a merge request scan uploads",
+        "tags": [
+          "projects"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._/:-]{1,255}$"
+            },
+            "in": "query",
+            "name": "projectKey",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9]{1,10}$"
+            },
+            "in": "query",
+            "name": "mergeRequest",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "review": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "no_provider",
+                            "organization_disabled",
+                            "review_disabled",
+                            "consent_outdated",
+                            "project_not_selected",
+                            "not_mapped"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "lastReviewedCommit": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "limits": {
+                      "type": "object",
+                      "properties": {
+                        "maxCompressedBytes": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "maxDecompressedBytes": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "maxFileBytes": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "maxFiles": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "maxCompressedBytes",
+                        "maxDecompressedBytes",
+                        "maxFileBytes",
+                        "maxFiles"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "review",
+                    "reason",
+                    "lastReviewedCommit",
+                    "limits"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated but not allowed (FORBIDDEN, INSUFFICIENT_SCOPE, TOKEN_NOT_ALLOWED, SESSION_REQUIRED, CSRF_FAILED, PASSWORD_CHANGE_REQUIRED)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "PROJECT_NOT_FOUND: the project does not exist, the token belongs to another project, or the caller cannot see it (a server without this route answers NOT_FOUND)",
             "content": {
               "application/problem+json": {
                 "schema": {

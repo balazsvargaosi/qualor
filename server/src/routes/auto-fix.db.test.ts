@@ -21,6 +21,7 @@ import {
   type OrgLlmSettings,
   type StoredProvider,
 } from '../llm/settings';
+import { defaultReview } from '../review/settings';
 
 const NOW = new Date('2027-01-01T00:00:00Z');
 
@@ -42,6 +43,7 @@ const ORG_ON: OrgLlmSettings = {
   excludedProjectIds: [],
   autoFix: { ...DEFAULT_AUTO_FIX },
   autoFixDisabledProjectIds: [],
+  review: defaultReview(),
 };
 
 type Event = typeof auditEvents.$inferSelect;
@@ -590,6 +592,7 @@ describe('automatic fix suggestion settings (4E-3a §2)', () => {
         excludedProjectIds: [],
         autoFix: on,
         autoFixDisabledProjectIds: [otherProject.id],
+        review: defaultReview(),
       });
       expect(Object.keys(saved).sort()).toEqual([org, otherOrg].sort());
       expect((await getOrg(admin, otherOrg)).json()).toMatchObject(on);

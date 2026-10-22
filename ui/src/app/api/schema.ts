@@ -2799,6 +2799,10 @@ export interface paths {
                                     organizationEnabled: boolean;
                                     excludedFromAi: boolean;
                                 };
+                                aiReview: {
+                                    enabled: boolean;
+                                    organizationEnabled: boolean;
+                                };
                             }[];
                             nextCursor: string | null;
                         };
@@ -2905,6 +2909,10 @@ export interface paths {
                                 enabled: boolean;
                                 organizationEnabled: boolean;
                                 excludedFromAi: boolean;
+                            };
+                            aiReview: {
+                                enabled: boolean;
+                                organizationEnabled: boolean;
                             };
                         };
                     };
@@ -3033,6 +3041,10 @@ export interface paths {
                                 organizationEnabled: boolean;
                                 excludedFromAi: boolean;
                             };
+                            aiReview: {
+                                enabled: boolean;
+                                organizationEnabled: boolean;
+                            };
                         };
                     };
                 };
@@ -3152,6 +3164,10 @@ export interface paths {
                                 enabled: boolean;
                                 organizationEnabled: boolean;
                                 excludedFromAi: boolean;
+                            };
+                            aiReview: {
+                                enabled: boolean;
+                                organizationEnabled: boolean;
                             };
                         };
                     };
@@ -3352,6 +3368,10 @@ export interface paths {
                                 enabled: boolean;
                                 organizationEnabled: boolean;
                                 excludedFromAi: boolean;
+                            };
+                            aiReview: {
+                                enabled: boolean;
+                                organizationEnabled: boolean;
                             };
                         };
                     };
@@ -9749,6 +9769,8 @@ export interface paths {
                                 tokensPerDay: number;
                                 costPerDayUsd: number | null;
                                 perUserPerHour: number;
+                                /** @default null */
+                                reviewTokensPerOrganizationPerDay: number | null;
                             };
                             pricing: {
                                 inputUsdPerMTok: number;
@@ -9845,6 +9867,8 @@ export interface paths {
                             tokensPerDay: number;
                             costPerDayUsd: number | null;
                             perUserPerHour: number;
+                            /** @default null */
+                            reviewTokensPerOrganizationPerDay?: number | null;
                         };
                         pricing: {
                             inputUsdPerMTok: number;
@@ -9913,6 +9937,8 @@ export interface paths {
                                 tokensPerDay: number;
                                 costPerDayUsd: number | null;
                                 perUserPerHour: number;
+                                /** @default null */
+                                reviewTokensPerOrganizationPerDay: number | null;
                             };
                             pricing: {
                                 inputUsdPerMTok: number;
@@ -12131,6 +12157,8 @@ export interface paths {
                                 tokensPerDay: number;
                                 costPerDayUsd: number | null;
                                 perUserPerHour: number;
+                                /** @default null */
+                                reviewTokensPerOrganizationPerDay: number | null;
                             };
                         };
                     };
@@ -12428,6 +12456,309 @@ export interface paths {
                 };
             };
         };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v0/organizations/{id}/ai/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The organisation's AI review settings and the data-sharing notice (org.ai.manage); `available` is false without a provider or an enabled organisation */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            available: boolean;
+                            unavailableReason: ("no_provider" | "organization_disabled") | null;
+                            provider: {
+                                host: string;
+                                model: string;
+                            } | null;
+                            notice: string | null;
+                            enabled: boolean;
+                            /** @enum {string} */
+                            scope: "all" | "selected";
+                            projectIds: string[];
+                            budgets: {
+                                tokensPerDay: number;
+                                costPerDayUsd: number | null;
+                                perProjectTokensPerDay: number | null;
+                                maxTokensPerReview: number;
+                            };
+                            consent: {
+                                providerHost: string;
+                                model: string;
+                                /** Format: uuid */
+                                userId: string;
+                                /** Format: date-time */
+                                at: string;
+                            } | null;
+                            consentCurrent: boolean;
+                            instanceCeiling: {
+                                tokensPerDay: number | null;
+                            };
+                        };
+                    };
+                };
+                /** @description Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS) */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Authenticated but not allowed (FORBIDDEN, INSUFFICIENT_SCOPE, TOKEN_NOT_ALLOWED, SESSION_REQUIRED, CSRF_FAILED, PASSWORD_CHANGE_REQUIRED) */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Not found, or not visible to the caller */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Validation failed (VALIDATION_FAILED; errors[] names each field) */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        /** Set the organisation's AI review (org.ai.manage). Switching it on needs acknowledgeDataSharing: true, which records the provider's host and model, the user and the time; a change of the provider's host or model makes the consent outdated until it is given again */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        enabled: boolean;
+                        /** @enum {string} */
+                        scope: "all" | "selected";
+                        projectIds: string[];
+                        budgets: {
+                            tokensPerDay: number;
+                            costPerDayUsd: number | null;
+                            perProjectTokensPerDay: number | null;
+                            maxTokensPerReview: number;
+                        };
+                        /** @description true confirms the notice in the answer. Needed to switch review on from off, and while consentCurrent is false; ignored otherwise */
+                        acknowledgeDataSharing?: boolean;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            available: boolean;
+                            unavailableReason: ("no_provider" | "organization_disabled") | null;
+                            provider: {
+                                host: string;
+                                model: string;
+                            } | null;
+                            notice: string | null;
+                            enabled: boolean;
+                            /** @enum {string} */
+                            scope: "all" | "selected";
+                            projectIds: string[];
+                            budgets: {
+                                tokensPerDay: number;
+                                costPerDayUsd: number | null;
+                                perProjectTokensPerDay: number | null;
+                                maxTokensPerReview: number;
+                            };
+                            consent: {
+                                providerHost: string;
+                                model: string;
+                                /** Format: uuid */
+                                userId: string;
+                                /** Format: date-time */
+                                at: string;
+                            } | null;
+                            consentCurrent: boolean;
+                            instanceCeiling: {
+                                tokensPerDay: number | null;
+                            };
+                        };
+                    };
+                };
+                /** @description Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS) */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description FORBIDDEN or INSUFFICIENT_SCOPE */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Not found, or not visible to the caller */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description AI_DISABLED (switching it on needs a provider and the organisation enabled for the AI assistant), or AI_REVIEW_CONSENT_REQUIRED (switching it on, from off or while consentCurrent is false, needs acknowledgeDataSharing: true); AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed while no audit event is stored; an administrator must restore it (a retry does not help) */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description VALIDATION_FAILED, or PROJECT_NOT_IN_ORGANIZATION (a project id belongs to another organisation; errors[] names it) */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v0/projects/review-context": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Whether the scanner should upload a repository snapshot of a merge request (AI review is on for the project), and the limits of a snapshot; the CLI calls this before a merge request scan uploads */
+        get: {
+            parameters: {
+                query: {
+                    projectKey: string;
+                    mergeRequest: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            review: boolean;
+                            reason: ("no_provider" | "organization_disabled" | "review_disabled" | "consent_outdated" | "project_not_selected" | "not_mapped") | null;
+                            lastReviewedCommit: string | null;
+                            limits: {
+                                maxCompressedBytes: number;
+                                maxDecompressedBytes: number;
+                                maxFileBytes: number;
+                                maxFiles: number;
+                            };
+                        };
+                    };
+                };
+                /** @description Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS) */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Authenticated but not allowed (FORBIDDEN, INSUFFICIENT_SCOPE, TOKEN_NOT_ALLOWED, SESSION_REQUIRED, CSRF_FAILED, PASSWORD_CHANGE_REQUIRED) */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description PROJECT_NOT_FOUND: the project does not exist, the token belongs to another project, or the caller cannot see it (a server without this route answers NOT_FOUND) */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Validation failed (VALIDATION_FAILED; errors[] names each field) */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;

@@ -13,6 +13,7 @@ import { LLM_QUEUE } from '../src/llm/service';
 import { DEFAULT_BUDGETS } from '../src/llm/settings';
 import { loadPlugins } from '../src/plugins/loader';
 import { runUntilIdle } from '../src/queue/worker';
+import { DEFAULT_REVIEW_BUDGETS } from '../src/review/settings';
 import { parseInternalHosts } from '../src/scm/url';
 import { createDelivery } from '../src/webhooks/deliveries';
 import {
@@ -526,6 +527,16 @@ export async function runAuditScenario(
     pricing: null,
     storePrompts: false,
     promptRetentionDays: 7,
+  });
+
+  // organization.ai_review_changed (6I-2): the organisation switches AI review on for every project,
+  // acknowledging the data-sharing notice (the provider and the organisation are set up above)
+  await call('PUT', `/organizations/${org}/ai/review`, 200, {
+    enabled: true,
+    scope: 'all',
+    projectIds: [],
+    budgets: { ...DEFAULT_REVIEW_BUDGETS },
+    acknowledgeDataSharing: true,
   });
 
   // mail.settings_updated (with a password) and mail.test_sent (refused: nothing listens there)

@@ -1,6 +1,7 @@
 import { ENGINE_ID_PATTERN, LICENSE_GROUPS, SEVERITIES, type LicenseGroupId } from '@qualor/shared';
 import { z } from 'zod';
 import { ORGANIZATION_KEY_PATTERN, PROJECT_KEY_PATTERN } from '../patterns';
+import { REVIEW_SCOPES } from '../review/schema';
 import type { AuditJson } from './canonical';
 import { auditHashString, auditSeqString } from './settings';
 
@@ -571,6 +572,21 @@ export const AUDIT_CATALOGUE = {
   'project.auto_fix_changed': {
     target: 'project',
     details: z.strictObject({ enabled: z.boolean() }),
+  },
+  // 6I-2 (D4, C1): PUT /organizations/:id/ai/review changed the organisation's AI review.
+  // `consentGiven`: the change recorded the data-sharing acknowledgement; the provider is the one
+  // configured when it was made (null without one).
+  'organization.ai_review_changed': {
+    target: 'organization',
+    details: z.strictObject({
+      enabled: z.boolean(),
+      scope: z.enum(REVIEW_SCOPES),
+      // The projects listed (llm.md §3.3: at most 1 000).
+      projects: z.number().int().min(0).max(1_000),
+      consentGiven: z.boolean(),
+      providerHost: str.nullable(),
+      model: str.nullable(),
+    }),
   },
   // 6M §5: PUT /organizations/:id/license-policy changed the policy; `null` is no policy.
   'organization.license_policy_changed': {

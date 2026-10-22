@@ -30,6 +30,7 @@ describe('loadConfig', () => {
       bootstrapAdmin: { username: 'admin', password: undefined },
       sessionTtlHours: 168,
       upload: { maxCompressedBytes: 52_428_800, maxDecompressedBytes: 524_288_000 },
+      reviewSnapshot: { maxCompressedBytes: 52_428_800, maxDecompressedBytes: 524_288_000 },
       workerConcurrency: 1,
       requestTimeoutMs: 300_000,
       maxConcurrentUploads: 4,
@@ -233,6 +234,65 @@ describe('loadConfig', () => {
       loadConfig({ ...base, QUALOR_UPLOAD_MAX_DECOMPRESSED_BYTES: String(500 * MiB) }).upload
         .maxDecompressedBytes,
     ).toBe(500 * MiB);
+  });
+
+  describe('the review snapshot limits (6I-2 ruling P4)', () => {
+    const MiB = 1024 * 1024;
+    const limits = (env: Record<string, string | undefined>) =>
+      loadConfig({ ...base, ...env }).reviewSnapshot;
+
+    it('are 50 MiB as sent and 500 MiB inflated unless set', () => {
+      expect(limits({})).toEqual({ maxCompressedBytes: 50 * MiB, maxDecompressedBytes: 500 * MiB });
+    });
+
+    it('read their own variables, apart from the report upload’s', () => {
+      const c = loadConfig({
+        ...base,
+        QUALOR_REVIEW_SNAPSHOT_MAX_COMPRESSED_BYTES: '10485760',
+        QUALOR_REVIEW_SNAPSHOT_MAX_DECOMPRESSED_BYTES: '104857600',
+      });
+      expect(c.reviewSnapshot).toEqual({
+        maxCompressedBytes: 10 * MiB,
+        maxDecompressedBytes: 100 * MiB,
+      });
+      expect(c.upload).toEqual({ maxCompressedBytes: 50 * MiB, maxDecompressedBytes: 500 * MiB });
+      const upload = loadConfig({
+        ...base,
+        QUALOR_UPLOAD_MAX_COMPRESSED_BYTES: '1048576',
+        QUALOR_UPLOAD_MAX_DECOMPRESSED_BYTES: '2097152',
+      });
+      expect(upload.reviewSnapshot).toEqual({
+        maxCompressedBytes: 50 * MiB,
+        maxDecompressedBytes: 500 * MiB,
+      });
+    });
+
+    it('hold the inflated size to 1 MiB … 500 MiB, whatever is configured', () => {
+      for (const bad of [String(MiB - 1), String(500 * MiB + 1), '0', '-1', '1.5', 'many', '']) {
+        expect(
+          problems({ ...base, QUALOR_REVIEW_SNAPSHOT_MAX_DECOMPRESSED_BYTES: bad }),
+          bad,
+        ).toEqual([expect.stringContaining('QUALOR_REVIEW_SNAPSHOT_MAX_DECOMPRESSED_BYTES')]);
+      }
+      expect(limits({ QUALOR_REVIEW_SNAPSHOT_MAX_DECOMPRESSED_BYTES: String(MiB) })).toMatchObject({
+        maxDecompressedBytes: MiB,
+      });
+      expect(
+        limits({ QUALOR_REVIEW_SNAPSHOT_MAX_DECOMPRESSED_BYTES: String(500 * MiB) }),
+      ).toMatchObject({ maxDecompressedBytes: 500 * MiB });
+    });
+
+    it('take a compressed size of at least 1 KiB, as the report upload does', () => {
+      for (const bad of ['1023', '0', '-5', '1.5', 'big']) {
+        expect(
+          problems({ ...base, QUALOR_REVIEW_SNAPSHOT_MAX_COMPRESSED_BYTES: bad }),
+          bad,
+        ).toEqual([expect.stringContaining('QUALOR_REVIEW_SNAPSHOT_MAX_COMPRESSED_BYTES')]);
+      }
+      expect(limits({ QUALOR_REVIEW_SNAPSHOT_MAX_COMPRESSED_BYTES: '1024' })).toMatchObject({
+        maxCompressedBytes: 1024,
+      });
+    });
   });
 
   it('never echoes secret values in its errors', () => {
