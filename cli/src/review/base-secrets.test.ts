@@ -257,11 +257,16 @@ const INSTRUCTION_RULES = [
   "paths = ['''^CLAUDE\\.md$''']",
   '',
 ].join('\n');
+/**
+ * A token INSTRUCTION_RULES finds, built at run time: listed as literals, these would read as
+ * keyword assignments to the repository's own Gitleaks.
+ */
+const token = (kind: 'qk8' | 'qk9', name: string): string => `${kind}-${name}`;
 /** The instructions files, in the checkout and (unchanged) at the merge base. */
 const INSTRUCTIONS = {
-  'AGENTS.md': 'qk9-agents-SECRET-0001 qk8-agents-SECRET-0002\n',
-  'CLAUDE.md': 'qk8-claude-SECRET-0003\n',
-  'REVIEW.md': 'qk9-review-SECRET-0004 qk8-review-SECRET-0005\n',
+  'AGENTS.md': `${token('qk9', 'agents-SECRET-0001')} ${token('qk8', 'agents-SECRET-0002')}\n`,
+  'CLAUDE.md': `${token('qk8', 'claude-SECRET-0003')}\n`,
+  'REVIEW.md': `${token('qk9', 'review-SECRET-0004')} ${token('qk8', 'review-SECRET-0005')}\n`,
 };
 
 /** What the scan of the merge base finds in INSTRUCTIONS, with the checkout's configuration. */
@@ -293,9 +298,9 @@ async function instructionSecrets(analyzer: Analyzer, checkout: string): Promise
 
 /** The secrets INSTRUCTION_RULES finds in INSTRUCTIONS, by their paths. */
 const INSTRUCTION_SECRETS = [
-  'qk8-agents-SECRET-0002',
-  'qk8-review-SECRET-0005',
-  'qk9-agents-SECRET-0001',
+  token('qk8', 'agents-SECRET-0002'),
+  token('qk8', 'review-SECRET-0005'),
+  token('qk9', 'agents-SECRET-0001'),
 ];
 
 describe('scanMergeBase', () => {
