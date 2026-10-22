@@ -93,8 +93,9 @@ const CONTEXT_LINES = 8;
 /**
  * A window's own lines: at most this many, and at most half of what the shared redaction scans at
  * once (so its context fits around them). A whole key block is masked over the whole text first,
- * whatever its length (`maskKeyBlocks`), so a window only decides what a BEGIN or an END line
- * without its pair means.
+ * whatever its length (`maskKeyBlocks`), and so is the body that follows a BEGIN line with no END
+ * line, while it looks like one; a window decides what a BEGIN or an END line without its pair
+ * means for the lines it sees.
  */
 const WINDOW_LINES = 200;
 const CORE_CHARS = Math.floor(REDACT_MAX_CHARS / 2);
@@ -147,7 +148,10 @@ function viewOf(
  * Every line of every key block that is whole in `lines` replaced by «redacted»: a BEGIN line to
  * the next END line after it (keyBlockLines), however many lines lie between and however they are
  * decorated (a comment's `# `, a string literal, a patch's `-`), which the shared rule for a key
- * body in clear base64 would miss.
+ * body in clear base64 would miss. So are the lines of a body that follow a BEGIN line with no END
+ * line after it, as far as they look like a PEM body once their decoration is off (a key whose END
+ * line is missing or mistyped, over a window's edge). That BEGIN line itself is left to the
+ * windows.
  */
 function maskKeyBlocks(lines: readonly string[]): { lines: string[]; count: number } {
   const blocks = keyBlockLines(lines);
@@ -167,8 +171,10 @@ function maskKeyBlocks(lines: readonly string[]): { lines: string[]; count: numb
  * is still seen whole: redactText masks a text longer than it scans as a whole, and a file of the
  * snapshot is up to 1 MiB. A BEGIN line with no END after it is the shared rule's, which masks to
  * the end of the view: a file that only names a PEM header (a parser, a test) loses the rest of
- * that window, not the rest of the file. A single line too long to scan is replaced by
- * «redacted», as a text redactText cannot scan is. The lines stay as many as they were.
+ * that window, not the rest of the file. The body after such a line is masked beyond the view too
+ * (`maskKeyBlocks`), up to the first line that is no PEM body line. A single line too long to scan
+ * is replaced by «redacted», as a text redactText cannot scan is. The lines stay as many as they
+ * were.
  */
 export function redactLongText(text: string): Redacted {
   if (text.split('\n', WINDOW_LINES + 1).length <= WINDOW_LINES && fits(text.length + 1)) {

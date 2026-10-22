@@ -372,23 +372,99 @@ function markKeyBlocks(lines: readonly string[], whole: boolean[]): void {
 }
 
 /**
+ * Characters code puts before the text of a key body's line: indentation, a comment mark (`#`,
+ * `*`, `;`, `--`, and `//` below), a patch's `+` or `-`, a quote. `/` alone is base64.
+ */
+const BODY_LEADING = new Set([' ', '\t', '#', '*', ';', '+', '-', '"', "'", '`']);
+/** ... and after it: a quote, a comma, a string glued by `+`, a continued line, a CR (and `\n` below). */
+const BODY_TRAILING = new Set([' ', '\t', '\r', '"', "'", '`', ',', '+', '\\']);
+/** A body line longer than this, decoration off, is no PEM line (they are 64 or 76 characters). */
+const BODY_LINE_MAX_CHARS = 4_096;
+/** A line of base64: the body of a PEM key. 16 characters or more, so a short word is not one. */
+const BODY_BASE64 = /^[A-Za-z0-9+/=]{16,4096}$/;
+/** The header fields of an encrypted PEM key. */
+const BODY_FIELD = /^(?:Proc-Type|DEK-Info):/i;
+
+/**
+ * `line` without what code puts around a key body's text: the marks of a comment, a string or a
+ * patch (`BODY_LEADING`, `//`, `BODY_TRAILING`, the escape `\n` that ends a string's line). Linear
+ * in the line.
+ */
+function undecorated(line: string): string {
+  let start = 0;
+  let end = line.length;
+  while (start < end) {
+    if (BODY_LEADING.has(line.charAt(start))) start += 1;
+    else if (line.startsWith('//', start)) start += 2;
+    else break;
+  }
+  while (end > start) {
+    if (end - 2 >= start && line.startsWith('\\n', end - 2)) end -= 2;
+    else if (BODY_TRAILING.has(line.charAt(end - 1))) end -= 1;
+    else break;
+  }
+  return line.slice(start, end);
+}
+
+/** What a line of a key body can be: a header field, the blank line that ends the fields, base64. */
+function bodyLineKind(line: string): 'field' | 'blank' | 'base64' | null {
+  if (line.length > BODY_LINE_MAX_CHARS + 256) return null;
+  const text = undecorated(line);
+  if (text === '') return 'blank';
+  if (BODY_FIELD.test(text)) return 'field';
+  // The line as it stands too: base64 may start with `+` or `//`, which are decoration as well.
+  return BODY_BASE64.test(text) || BODY_BASE64.test(line.trim()) ? 'base64' : null;
+}
+
+/**
+ * Marks the lines that follow each BEGIN line from `from` on (no END line comes after any of them)
+ * while they are PEM body lines, decoration off: the header fields (`Proc-Type`, `DEK-Info`), one
+ * blank line to end the fields, base64 of 16 characters or more. The first other line ends the
+ * body, and the BEGIN line itself is left unmarked: it is the caller's.
+ */
+function markLoneBodies(lines: readonly string[], from: number, marked: boolean[]): void {
+  /** `header`: right after a BEGIN line, where fields and the blank line may come; `body`: base64 only. */
+  let state: 'header' | 'body' | null = null;
+  for (let i = from; i < lines.length; i++) {
+    const line = lines[i] ?? '';
+    if (KEY_BEGIN.test(line)) {
+      state = 'header';
+      continue;
+    }
+    if (state === null) continue;
+    const kind = bodyLineKind(line);
+    if (kind === 'base64' || (state === 'header' && kind !== null)) {
+      marked[i] = true;
+      state = kind === 'field' ? 'header' : 'body';
+    } else {
+      state = null;
+    }
+  }
+}
+
+/**
  * The lines of every private key block that is whole in `lines`: from a line with a BEGIN marker
  * to the next line with an END marker after it, both included, however the lines are decorated
- * (a comment's `# `, a string literal, a patch's `-`). A BEGIN line with no END line after it, or
- * an END line with no BEGIN line before it, is no whole block: what it means is the caller's (the
- * redaction above masks from such a BEGIN line on, and up to such an END line). For a caller that
- * cuts a long text into pieces, so that a block over a cut is still masked whole.
+ * (a comment's `# `, a string literal, a patch's `-`). An END line with no BEGIN line before it is
+ * no whole block, and a BEGIN line with no END line after it is none either: what they mean is the
+ * caller's (the redaction above masks up to such an END line, and from such a BEGIN line on, as far
+ * as it sees). But the body that follows a BEGIN line like that is marked, while its lines are PEM
+ * body lines once their decoration is off (`markLoneBodies`): a key whose END line is missing or
+ * mistyped is masked over a cut too, and ordinary code after a BEGIN line named in code is not.
+ * For a caller that cuts a long text into pieces, so that a block over a cut is still masked whole.
  */
 export function keyBlockLines(lines: readonly string[]): boolean[] {
   const marked = lines.map(() => false);
   let begin: number | null = null;
-  lines.forEach((line, i) => {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? '';
     if (begin === null && KEY_BEGIN.test(line)) begin = i;
     if (begin !== null && KEY_END.test(line)) {
       for (let k = begin; k <= i; k++) marked[k] = true;
       begin = null;
     }
-  });
+  }
+  if (begin !== null) markLoneBodies(lines, begin, marked);
   return marked;
 }
 

@@ -173,6 +173,54 @@ describe('redactLongText', () => {
     });
   });
 
+  describe('the body of a BEGIN line with no END line is masked over every window (M2)', () => {
+    /** Four dashes: no END marker, as a mistyped or cut line is. */
+    const BROKEN_END = j('----END RSA ', 'PRIVATE KEY-----');
+    const code = (n: number, tag: string) =>
+      Array.from({ length: n }, (_, i) => `const ${tag}${i} = ${i};`);
+    const shapes = [
+      { name: 'undecorated', begin: KEY_BEGIN, row: (l: string) => l, end: BROKEN_END },
+      {
+        name: 'commented with `# `',
+        begin: `# ${KEY_BEGIN}`,
+        separator: '#',
+        row: (l: string) => `# ${l}`,
+        end: `# ${BROKEN_END}`,
+      },
+      {
+        name: 'a Java string, "…\\n" +',
+        begin: `    "${KEY_BEGIN}\\n" +`,
+        row: (l: string) => `    "${l}\\n" +`,
+        end: `    "${BROKEN_END}\\n";`,
+      },
+      {
+        name: 'a Java string that a patch removes',
+        begin: `-    "${KEY_BEGIN}\\n" +`,
+        row: (l: string) => `-    "${l}\\n" +`,
+        end: `-    "${BROKEN_END}\\n";`,
+      },
+    ];
+
+    it.each(shapes)(
+      '$name: 30 body lines over the boundary of the first window, with the file around kept',
+      ({ begin, separator, row, end }) => {
+        const body = Array.from({ length: 30 }, (_, i) => row(keyLine(i)));
+        const block = [begin, ...(separator === undefined ? [] : [separator]), ...body];
+        // The window ends at line 200 and its view eight lines later: the body crosses both.
+        for (const before of [185, 190]) {
+          const lines = [...code(before, 'a'), ...block, end, ...code(2_000, 'b')];
+          const out = redactLongText(lines.join('\n')).text.split('\n');
+          expect(out).toHaveLength(lines.length);
+          const shown = block.filter((_, i) => out[before + i] !== REDACTED);
+          expect(shown, `${shown.length} key lines in clear after ${before} lines`).toEqual([]);
+          // Nothing before the key, and nothing from the broken END line on, is lost.
+          expect(out.slice(0, before)).toEqual(lines.slice(0, before));
+          expect(out.slice(before + block.length)).toEqual(lines.slice(before + block.length));
+        }
+      },
+    );
+  });
+
   it('replaces a line too long to scan, and only that line', () => {
     const text = ['first', 'x'.repeat(REDACT_MAX_CHARS + 10), 'last'].join('\n');
     expect(redactLongText(text)).toEqual({ text: `first\n${REDACTED}\nlast`, count: 1 });

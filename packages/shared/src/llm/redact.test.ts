@@ -680,13 +680,209 @@ describe('keyBlockLines', () => {
     ]);
   });
 
-  it('leaves a BEGIN line without an END after it, and an END line before any BEGIN, to the caller', () => {
-    expect(keyBlockLines([END(), 'x', BEGIN(), body('MIIEo1')])).toEqual([
+  it('leaves an END line before any BEGIN, and the BEGIN line without an END, to the caller', () => {
+    expect(keyBlockLines([END(), 'x', BEGIN(), 'const a = 1;'])).toEqual([
       false,
       false,
       false,
       false,
     ]);
     expect(keyBlockLines([])).toEqual([]);
+  });
+});
+
+describe('keyBlockLines: the body of a BEGIN line with no END line after it (M2)', () => {
+  /** Four dashes: no END marker, as a mistyped or cut line is. */
+  const BROKEN_END = j('----END RSA ', 'PRIVATE KEY-----');
+  const rows = (n: number) =>
+    Array.from({ length: n }, (_, i) => body(`k${String(i).padStart(3, '0')}`));
+  const code = (tag: string) => `const ${tag} = 1;`;
+  const marked = (n: number) => Array.from({ length: n }, () => true);
+
+  const shapes: {
+    name: string;
+    begin: string;
+    /** The line that ends the header section, when the shape has one. */
+    separator?: string;
+    row: (line: string) => string;
+    end: string;
+  }[] = [
+    { name: 'undecorated', begin: BEGIN(), row: (l) => l, end: BROKEN_END },
+    {
+      name: 'commented with `# `',
+      begin: `# ${BEGIN()}`,
+      separator: '#',
+      row: (l) => `# ${l}`,
+      end: `# ${BROKEN_END}`,
+    },
+    {
+      name: 'a Java string, "…\\n" +',
+      begin: `    "${BEGIN()}\\n" +`,
+      row: (l) => `    "${l}\\n" +`,
+      end: `    "${BROKEN_END}\\n";`,
+    },
+    {
+      name: 'a Java string that a patch removes',
+      begin: `-    "${BEGIN()}\\n" +`,
+      row: (l) => `-    "${l}\\n" +`,
+      end: `-    "${BROKEN_END}\\n";`,
+    },
+  ];
+
+  it.each(shapes)(
+    'marks the 30 body lines after the BEGIN line, $name, and stops at the broken END',
+    ({ begin, separator, row, end }) => {
+      const lines = [
+        code('a'),
+        begin,
+        ...(separator === undefined ? [] : [separator]),
+        ...rows(30).map(row),
+        end,
+        code('b'),
+      ];
+      // The BEGIN line is the caller's, as it is without a body (it masks that line and fails
+      // closed from there); the body lines are marked, the broken END line and the code are not.
+      expect(keyBlockLines(lines)).toEqual([
+        false,
+        false,
+        ...(separator === undefined ? [] : [true]),
+        ...marked(30),
+        false,
+        false,
+      ]);
+    },
+  );
+
+  it('marks the header fields of an encrypted PEM key, the blank line that ends them, and the body', () => {
+    const lines = [
+      BEGIN(),
+      'Proc-Type: 4,ENCRYPTED',
+      'DEK-Info: AES-128-CBC,0123456789ABCDEF0123456789ABCDEF',
+      '',
+      ...rows(3),
+      BROKEN_END,
+    ];
+    expect(keyBlockLines(lines)).toEqual([false, true, true, true, true, true, true, false]);
+    // Commented, the fields and the blank line are too.
+    expect(keyBlockLines(lines.map((l) => `# ${l}`))).toEqual([
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+    ]);
+  });
+
+  it('marks a blank line right after the BEGIN line, which ends an empty header section (PGP)', () => {
+    expect(keyBlockLines([BEGIN('PGP '), '', ...rows(2), code('a')])).toEqual([
+      false,
+      true,
+      true,
+      true,
+      false,
+    ]);
+  });
+
+  it.each([
+    ['a `//` comment', (l: string) => `// ${l}`],
+    ['a `*` comment', (l: string) => ` * ${l}`],
+    ['a `;` comment', (l: string) => `; ${l}`],
+    ['a `--` comment', (l: string) => `-- ${l}`],
+    ['a `#` comment, without a space', (l: string) => `#${l}`],
+    ['a patch line added', (l: string) => `+${l}`],
+    ['a patch line removed', (l: string) => `-${l}`],
+    ['a patch context line', (l: string) => ` ${l}`],
+    ['indentation and a CR', (l: string) => `\t  ${l}\r`],
+    ['double quotes and a comma', (l: string) => `  "${l}",`],
+    ['single quotes', (l: string) => `'${l}'`],
+    ['backticks', (l: string) => `\`${l}\``],
+    ['an escaped line end in a string', (l: string) => `"${l}\\n"`],
+    ['a string glued by `+`', (l: string) => `"${l}" +`],
+    ['a line continued by a backslash', (l: string) => `${l}\\`],
+  ])('takes %s off a body line before it looks at it', (_name, decorate) => {
+    const lines = [BEGIN(), ...rows(2).map(decorate), code('a')];
+    expect(keyBlockLines(lines)).toEqual([false, true, true, false]);
+  });
+
+  it('keeps a base64 line that starts or ends with + or / as it is, whatever it loses to the decoration', () => {
+    // 16 characters, the shortest body line: taking off the `+` would leave 15.
+    expect(
+      keyBlockLines([BEGIN(), `+${'A'.repeat(15)}`, `${'B'.repeat(15)}/`, '//8AAAAAAAAAAAAA']),
+    ).toEqual([false, true, true, true]);
+  });
+
+  it('stops at the first line that is not a body line, and marks nothing after it', () => {
+    // Ordinary code right after a BEGIN line named in code: unmarked, and so is what follows it,
+    // base64-looking or not.
+    const lines = [
+      `const START = '${BEGIN()}';`,
+      code('a'),
+      ...rows(2),
+      'AuthenticationServiceFactory',
+      '',
+      'function parse() {',
+    ];
+    expect(keyBlockLines(lines)).toEqual(lines.map(() => false));
+    // The same after a body: its first other line ends it.
+    expect(keyBlockLines([BEGIN(), ...rows(2), code('a'), ...rows(2)])).toEqual([
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+    ]);
+  });
+
+  it('does not take a short line, a second blank line, or a header field after the body for the body', () => {
+    // Under 16 characters: the last line of a key is short, and is the one this rule gives up.
+    expect(keyBlockLines([BEGIN(), body('x'), 'Zz9=', body('y')])).toEqual([
+      false,
+      true,
+      false,
+      false,
+    ]);
+    // One blank line ends the header section; a blank line in the body, or after it, ends the body.
+    expect(keyBlockLines([BEGIN(), '', '', body('x')])).toEqual([false, true, false, false]);
+    expect(keyBlockLines([BEGIN(), body('x'), '', body('y')])).toEqual([false, true, false, false]);
+    expect(keyBlockLines([BEGIN(), body('x'), 'Proc-Type: 4,ENCRYPTED'])).toEqual([
+      false,
+      true,
+      false,
+    ]);
+    // A line over 4 096 characters is no PEM line.
+    expect(keyBlockLines([BEGIN(), 'A'.repeat(5_000)])).toEqual([false, false]);
+  });
+
+  it('marks the body of every BEGIN line with no END after it, and leaves a whole block as it was', () => {
+    const lines = [
+      // A whole block, with its own BEGIN and END lines marked.
+      BEGIN(),
+      body('a'),
+      END(),
+      code('a'),
+      // Two BEGIN lines with no END after them.
+      BEGIN(),
+      body('b'),
+      code('b'),
+      BEGIN('EC '),
+      body('c'),
+      body('d'),
+    ];
+    expect(keyBlockLines(lines)).toEqual([
+      true,
+      true,
+      true,
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      true,
+    ]);
   });
 });
