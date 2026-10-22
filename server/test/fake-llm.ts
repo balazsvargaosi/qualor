@@ -86,6 +86,68 @@ export function anthropicAnswer(
   return shape;
 }
 
+/**
+ * A chat completion whose first choice asks for tool calls (R5), in the API's shape: `content` is
+ * `over.text`, or null without it, and `finish_reason` is `tool_calls`. A string `arguments` is
+ * the provider's own text and goes out as it is (so a test can send what is not JSON); any other
+ * value is JSON-encoded, as the API does.
+ */
+export function openAiToolCalls(
+  calls: { id: string; name: string; arguments: unknown }[],
+  over: {
+    text?: string;
+    model?: string;
+    usage?: { prompt_tokens: number; completion_tokens: number } | null;
+  } = {},
+): unknown {
+  const shape = openAiAnswer(over.text ?? '', {
+    finishReason: 'tool_calls',
+    ...(over.model !== undefined ? { model: over.model } : {}),
+    ...(over.usage !== undefined ? { usage: over.usage } : {}),
+  }) as { choices: { message: Record<string, unknown> }[] };
+  const { message } = shape.choices[0]!;
+  message.content = over.text ?? null;
+  message.tool_calls = calls.map((call) => ({
+    id: call.id,
+    type: 'function',
+    function: {
+      name: call.name,
+      arguments:
+        typeof call.arguments === 'string' ? call.arguments : JSON.stringify(call.arguments),
+    },
+  }));
+  return shape;
+}
+
+/**
+ * A Messages API answer (R5) with a `tool_use` block per call, after a text block when
+ * `over.text` is given; `stop_reason` is `tool_use`.
+ */
+export function anthropicToolUse(
+  calls: { id: string; name: string; input: unknown }[],
+  over: {
+    text?: string;
+    model?: string;
+    usage?: { input_tokens: number; output_tokens: number } | null;
+  } = {},
+): unknown {
+  const shape = anthropicAnswer('', {
+    stopReason: 'tool_use',
+    ...(over.model !== undefined ? { model: over.model } : {}),
+    ...(over.usage !== undefined ? { usage: over.usage } : {}),
+  }) as { content: unknown[] };
+  shape.content = [
+    ...(over.text === undefined ? [] : [{ type: 'text', text: over.text }]),
+    ...calls.map((call) => ({
+      type: 'tool_use',
+      id: call.id,
+      name: call.name,
+      input: call.input,
+    })),
+  ];
+  return shape;
+}
+
 const DATA_BLOCK = /<<<QUALOR-DATA-([0-9a-f]{32})\n(.*)\nQUALOR-DATA-\1>>>/;
 
 interface DataObject {

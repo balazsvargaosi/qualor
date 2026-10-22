@@ -1,7 +1,13 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildPrompt } from '@qualor/shared';
 import { sampleInput } from '../../packages/shared/test/llm';
-import { cannedModelText, createFakeLlm, type FakeLlm } from './fake-llm';
+import {
+  anthropicToolUse,
+  cannedModelText,
+  createFakeLlm,
+  openAiToolCalls,
+  type FakeLlm,
+} from './fake-llm';
 
 const NONCE = 'f'.repeat(32);
 
@@ -127,6 +133,69 @@ describe('fake LLM', () => {
     } finally {
       await open.close();
     }
+  });
+
+  it('builds tool-call answers in the providers shapes (R5)', () => {
+    const openAi = openAiToolCalls(
+      [
+        { id: 'call_1', name: 'read_file', arguments: { path: 'a.ts' } },
+        // A string is the provider's own text: it goes out as it is, JSON or not.
+        { id: 'call_2', name: 'grep', arguments: '{not json' },
+      ],
+      { usage: { prompt_tokens: 7, completion_tokens: 3 }, model: 'm-x' },
+    );
+    expect(openAi).toMatchObject({
+      model: 'm-x',
+      usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 },
+      choices: [
+        {
+          finish_reason: 'tool_calls',
+          message: {
+            role: 'assistant',
+            content: null,
+            tool_calls: [
+              {
+                id: 'call_1',
+                type: 'function',
+                function: { name: 'read_file', arguments: '{"path":"a.ts"}' },
+              },
+              {
+                id: 'call_2',
+                type: 'function',
+                function: { name: 'grep', arguments: '{not json' },
+              },
+            ],
+          },
+        },
+      ],
+    });
+    const spoken = openAiToolCalls([{ id: 'call_1', name: 'read_file', arguments: {} }], {
+      text: 'Looking.',
+    });
+    expect(
+      (spoken as { choices: { message: { content: unknown } }[] }).choices[0]!.message,
+    ).toMatchObject({
+      content: 'Looking.',
+    });
+
+    const anthropic = anthropicToolUse(
+      [{ id: 'toolu_1', name: 'read_file', input: { path: 'a.ts' } }],
+      {
+        text: 'Looking.',
+      },
+    );
+    expect(anthropic).toMatchObject({
+      type: 'message',
+      stop_reason: 'tool_use',
+      content: [
+        { type: 'text', text: 'Looking.' },
+        { type: 'tool_use', id: 'toolu_1', name: 'read_file', input: { path: 'a.ts' } },
+      ],
+    });
+    const silent = anthropicToolUse([{ id: 'toolu_1', name: 'read_file', input: {} }]);
+    expect((silent as { content: unknown[] }).content).toEqual([
+      { type: 'tool_use', id: 'toolu_1', name: 'read_file', input: {} },
+    ]);
   });
 
   it('says {"ok": true} to a request without a data block', () => {

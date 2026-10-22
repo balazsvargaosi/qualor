@@ -31,6 +31,46 @@ export interface LlmAnswer {
   model: string | null;
 }
 
+/**
+ * R5: a tool the model may call during a conversation. `parameters` is a JSON Schema object. The
+ * tools are read-only (the review features run them over a repository snapshot); the provider
+ * layer only describes them to the model and never runs one.
+ */
+export interface LlmToolSpec {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+/**
+ * R5: a call the model made. `arguments` is the parsed JSON the model sent, or its raw text when
+ * that was not JSON (a truncated or malformed call); the caller validates it against the tool.
+ */
+export interface LlmToolCall {
+  id: string;
+  name: string;
+  arguments: unknown;
+}
+
+/** R5: one message of a conversation; `tool` answers the call `callId` of an `assistant` message. */
+export type LlmMessage =
+  | { role: 'user'; text: string }
+  | { role: 'assistant'; text: string; toolCalls: readonly LlmToolCall[] }
+  | { role: 'tool'; callId: string; name: string; text: string };
+
+/** R5: the whole conversation so far, sent again on every turn. */
+export interface LlmConversation {
+  system: string;
+  messages: readonly LlmMessage[];
+  tools: readonly LlmToolSpec[];
+  maxOutputTokens: number;
+}
+
+/** R5: the model's next turn: its text, and the calls it wants answered (none: it is done). */
+export interface LlmTurn extends LlmAnswer {
+  toolCalls: LlmToolCall[];
+}
+
 /** llm.md §14: why a provider call gave no usable answer. */
 export const LLM_FAILURES = [
   'timeout',
