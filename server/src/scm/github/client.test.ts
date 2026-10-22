@@ -500,10 +500,14 @@ describe('GitHub REST client (github.md §4–§6)', () => {
         variables: Record<string, unknown>;
       };
 
-    it('reads every page and tells a person’s resolution from an App’s', async () => {
+    it('reads every page and the resolver’s login', async () => {
+      // A person, another App, and the fake's own App (a resolve through the API with an
+      // installation token): GitHub names each by its login, an App as `<slug>[bot]` (R6).
       fake.resolveThreadAs(many.threadIds[3]!, 'octocat');
-      fake.resolveThreadAs(many.threadIds[120]!, null);
+      fake.resolveThreadAs(many.threadIds[60]!, 'other-app[bot]');
       const client = await reader();
+      expect(await client.setThreadResolved(many.threadIds[120]!, true)).toBe('done');
+      fake.clearRequests();
       const threads = await client.reviewThreads(many.number, MAX_THREAD_PAGES);
       expect(fake.requests.map((r) => `${r.method} ${r.path}`)).toEqual([
         'POST /api/graphql',
@@ -515,19 +519,26 @@ describe('GitHub REST client (github.md §4–§6)', () => {
         {
           id: many.threadIds[3],
           isResolved: true,
-          resolvedByPerson: true,
+          resolvedByLogin: 'octocat',
           firstCommentId: many.commentIds[3],
+        },
+        {
+          id: many.threadIds[60],
+          isResolved: true,
+          resolvedByLogin: 'other-app[bot]',
+          firstCommentId: many.commentIds[60],
         },
         {
           id: many.threadIds[120],
           isResolved: true,
-          resolvedByPerson: false,
+          resolvedByLogin: `${fake.slug}[bot]`,
           firstCommentId: many.commentIds[120],
         },
       ]);
-      expect(threads.items.filter((t) => !t.isResolved).some((t) => t.resolvedByPerson)).toBe(
-        false,
-      );
+      // An open thread names nobody.
+      const open = threads.items.filter((t) => !t.isResolved);
+      expect(open).toHaveLength(147);
+      expect(open.every((t) => t.resolvedByLogin === null)).toBe(true);
       expect(threads.items.map((t) => t.id)).toEqual(many.threadIds);
       expect(threads.items.map((t) => t.firstCommentId)).toEqual(many.commentIds);
     });
@@ -616,7 +627,7 @@ describe('GitHub REST client (github.md §4–§6)', () => {
       }
     });
 
-    it('does not take an answer without resolvedBy for "resolved by an App"', async () => {
+    it('does not read a missing resolvedBy as "nobody resolved it"', async () => {
       const client = await reader();
       answer(
         threadsData([{ id: 'PRRT_a', isResolved: true, comments: { nodes: [{ databaseId: 5 }] } }]),
@@ -639,9 +650,32 @@ describe('GitHub REST client (github.md §4–§6)', () => {
       );
       const threads = await client.reviewThreads(many.number, 1);
       expect(threads.items).toEqual([
-        { id: 'PRRT_a', isResolved: false, resolvedByPerson: false, firstCommentId: null },
-        { id: 'PRRT_b', isResolved: true, resolvedByPerson: true, firstCommentId: null },
-        { id: 'PRRT_c', isResolved: false, resolvedByPerson: false, firstCommentId: null },
+        { id: 'PRRT_a', isResolved: false, resolvedByLogin: null, firstCommentId: null },
+        { id: 'PRRT_b', isResolved: true, resolvedByLogin: 'octocat', firstCommentId: null },
+        { id: 'PRRT_c', isResolved: false, resolvedByLogin: null, firstCommentId: null },
+      ]);
+    });
+
+    it('reads the recorded answer: an open thread, a person’s resolution and an App’s', async () => {
+      const client = await reader();
+      answer(githubShape('graphql_review_threads'));
+      const threads = await client.reviewThreads(many.number, 1);
+      expect(threads.complete).toBe(false); // the recorded page has a next one
+      expect(threads.items.map((t) => [t.isResolved, t.resolvedByLogin, t.firstCommentId])).toEqual(
+        [
+          [false, null, 10],
+          [true, 'octocat', 11],
+          [true, 'qualor-acme[bot]', 12],
+        ],
+      );
+    });
+
+    it('keeps a resolved thread GitHub names nobody for resolved, with no login', async () => {
+      const client = await reader();
+      // E.g. the resolver's account is gone: the caller can tell it is not Qualor's own.
+      answer(threadsData([{ ...node('PRRT_d', null, 8), isResolved: true }]));
+      expect((await client.reviewThreads(many.number, 1)).items).toEqual([
+        { id: 'PRRT_d', isResolved: true, resolvedByLogin: null, firstCommentId: 8 },
       ]);
     });
 
@@ -704,15 +738,20 @@ describe('GitHub REST client (github.md §4–§6)', () => {
       const client = await reader();
       expect(await client.setThreadResolved(id, true)).toBe('done');
       const thread = fake.reviewThreads.find((t) => t.id === id)!;
-      expect([thread.resolved, thread.resolvedBy]).toEqual([true, null]);
+      const app = `${fake.slug}[bot]`;
+      expect([thread.resolved, thread.resolvedBy]).toEqual([true, app]);
       expect(sent(0)).toEqual({ query: RESOLVE_THREAD_MUTATION, variables: { id } });
-      // Read back, a thread an App resolved is not a person's resolution (R6).
+      // Read back, GitHub names the App like any other resolver, `<slug>[bot]` (R6).
       expect((await client.reviewThreads(number, 1)).items).toEqual([
-        expect.objectContaining({ id, isResolved: true, resolvedByPerson: false }),
+        expect.objectContaining({ id, isResolved: true, resolvedByLogin: app }),
       ]);
       expect(await client.setThreadResolved(id, false)).toBe('done');
-      expect(thread.resolved).toBe(false);
+      expect([thread.resolved, thread.resolvedBy]).toEqual([false, null]);
       expect(sent(2)).toEqual({ query: UNRESOLVE_THREAD_MUTATION, variables: { id } });
+      // Reopened, it names nobody.
+      expect((await client.reviewThreads(number, 1)).items).toEqual([
+        expect.objectContaining({ id, isResolved: false, resolvedByLogin: null }),
+      ]);
     });
 
     it('says not_found for a thread GitHub does not know, and lets every other error through', async () => {
@@ -802,7 +841,7 @@ describe('GitHub REST client (github.md §4–§6)', () => {
         commentIds[0],
         reply.id,
       ]);
-      expect(() => fake.resolveThreadAs('PRRT_nope', null)).toThrow();
+      expect(() => fake.resolveThreadAs('PRRT_nope', 'octocat')).toThrow();
     });
 
     it('is served by a fake that refuses what GitHub’s GraphQL endpoint refuses', async () => {

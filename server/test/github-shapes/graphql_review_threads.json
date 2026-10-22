@@ -19,6 +19,12 @@
               "isResolved": true,
               "resolvedBy": { "login": "octocat" },
               "comments": { "nodes": [{ "databaseId": 11 }] }
+            },
+            {
+              "id": "PRRT_kwDOAAABc85AAAAC",
+              "isResolved": true,
+              "resolvedBy": { "login": "qualor-acme[bot]" },
+              "comments": { "nodes": [{ "databaseId": 12 }] }
             }
           ]
         }

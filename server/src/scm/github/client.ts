@@ -168,7 +168,7 @@ const graphqlAnswer = z.looseObject({
 const reviewThreadNode = z.looseObject({
   id: z.string().min(1),
   isResolved: z.boolean(),
-  /** A `User`: null while the thread is open, and when an App resolved it (ruling R6). */
+  /** Whoever resolved it, an App as `<slug>[bot]` (ruling R6); null while the thread is open. */
   resolvedBy: z.looseObject({ login: z.string() }).nullable(),
   comments: z.looseObject({
     nodes: z.array(z.looseObject({ databaseId: z.number().int().nullable() }).nullable()),
@@ -221,11 +221,13 @@ export interface GitHubReviewThread {
   id: string;
   isResolved: boolean;
   /**
-   * A person resolved it. GraphQL's `resolvedBy` is a `User`, and null when an App (Qualor
-   * included) resolved the thread; so this is false for an open thread and for Qualor's own
-   * resolution, and Qualor reopens only those (ruling G3).
+   * The login GitHub names as the thread's resolver; null while it is open. An App is named like
+   * any other user, as `<slug>[bot]` (ruling R6), so a resolution is Qualor's own when this equals
+   * its App's `<slug>[bot]` (github.md §6.3), which the caller compares. Anyone else's, a person's
+   * or another App's, is never reopened (ruling G3), and neither is a resolved thread that GitHub
+   * names nobody for.
    */
-  resolvedByPerson: boolean;
+  resolvedByLogin: string | null;
   /** The REST id of the thread's first comment, which `reviewComments` lists; null if unreadable. */
   firstCommentId: number | null;
 }
@@ -884,8 +886,9 @@ export class GitHubClient {
   /**
    * github.md §6.4 (ruling R6): the pull request's review threads, 100 to a page by cursor, at
    * most `maxPages` pages (`complete: false` when more remain). Only a thread's node id, its
-   * resolution and its first comment's REST id are read here; who wrote the comments is read from
-   * {@link reviewComments}. A pull request that is not there is `not_found`, never an empty list.
+   * resolution with the resolver's login, and its first comment's REST id are read here; who
+   * wrote the comments is read from {@link reviewComments}. A pull request that is not there is
+   * `not_found`, never an empty list.
    */
   async reviewThreads(number: string, maxPages: number): Promise<Paged<GitHubReviewThread>> {
     const pull = Number(this.number(number));
@@ -900,7 +903,7 @@ export class GitHubClient {
         items.push({
           id: thread.id,
           isResolved: thread.isResolved,
-          resolvedByPerson: thread.resolvedBy !== null,
+          resolvedByLogin: thread.resolvedBy?.login ?? null,
           firstCommentId: thread.comments.nodes[0]?.databaseId ?? null,
         });
       }
@@ -917,7 +920,8 @@ export class GitHubClient {
   /**
    * Resolves (`resolved`) or reopens a review thread. `not_found` when GitHub no longer knows the
    * thread (its comments were deleted): the caller skips it. Done means GitHub reports the state
-   * asked for. Through an installation token the resolution is an App's (ruling R6).
+   * asked for. Through an installation token the resolver GitHub names is the App's own
+   * `<slug>[bot]` (ruling R6); a reopened thread names none.
    */
   async setThreadResolved(threadId: string, resolved: boolean): Promise<'done' | 'not_found'> {
     if (!NODE_ID.test(threadId)) throw this.invalid(GITHUB_TEXT.id);

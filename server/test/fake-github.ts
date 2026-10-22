@@ -18,8 +18,8 @@ import { fileURLToPath } from 'node:url';
  * `pnpm test` contacts a real GitHub. Answers are built from `github-shapes/`, written from
  * GitHub's REST and GraphQL documentation (API version 2022-11-28), NOT captured from a live
  * GitHub: a behaviour listed here is what the documentation says, and plan 2C lists the ones no
- * real answer confirmed (6I-1 adds one: that a thread an installation token resolves has
- * `resolvedBy: null`, ruling R6).
+ * real answer confirmed (6I-1 adds one: that a thread resolved with an installation token names
+ * the App's own `<slug>[bot]` as `resolvedBy`, as github.com does for other Apps, ruling R6).
  *
  * What it checks where Qualor depends on it: the App JWT (RS256 with the App's public key, `iss`
  * the App id, `iat` not in the fake's future, at most 10 minutes); installation tokens (issued
@@ -99,9 +99,9 @@ export interface FakeReviewThread {
   commentIds: number[];
   resolved: boolean;
   /**
-   * The login of the person who resolved it. Null while it is open, and when an App resolved it,
-   * through the API with an installation token or by `resolveThreadAs(id, null)`: GraphQL's
-   * `resolvedBy` is a `User`, and an App is none (ruling R6).
+   * The login of whoever resolved it, which GraphQL's `resolvedBy` names: a person's, or an App's
+   * `<slug>[bot]` (ruling R6), this fake App's own when the thread was resolved through the API
+   * with an installation token. Null while the thread is open.
    */
   resolvedBy: string | null;
 }
@@ -174,8 +174,8 @@ export interface FakeGitHub {
     commentId: number,
     reply: { body: string; login: string; type?: 'Bot' | 'User' },
   ): FakeReviewComment;
-  /** The thread is resolved by a person (`login`), or by an App (`null`: `resolvedBy` stays null). */
-  resolveThreadAs(threadId: string, login: string | null): void;
+  /** The thread is resolved by someone else: a person's `login`, or another App's `<slug>[bot]`. */
+  resolveThreadAs(threadId: string, login: string): void;
   /** Every issued token stops working (an uninstall, a revocation). */
   revokeTokens(): void;
   inject(method: string, path: RegExp, ...answers: InjectedAnswer[]): void;
@@ -626,8 +626,9 @@ export async function createFakeGitHub(
         );
       if (!may('write')) return answer({ [field]: null }, forbidden([field]));
       thread.resolved = field === 'resolveReviewThread';
-      // An installation token is an App's, and GraphQL's `resolvedBy` is a User (ruling R6).
-      thread.resolvedBy = null;
+      // An installation token is this App's: GitHub names its `<slug>[bot]` as the resolver, and
+      // nobody once the thread is open again (ruling R6).
+      thread.resolvedBy = thread.resolved ? `${slug}[bot]` : null;
       return answer({ [field]: { thread: { id: thread.id, isResolved: thread.resolved } } });
     }
     return answer(undefined, { message: `Unknown operation ${operation ?? '(none)'}` });
