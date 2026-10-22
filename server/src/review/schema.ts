@@ -41,11 +41,14 @@ export const DEFAULT_REVIEW_BUDGETS: Readonly<ReviewBudgets> = Object.freeze({
 });
 
 /**
- * R10: who acknowledged the data-sharing notice, for which provider. The provider's host (with
- * its port, as `URL.host` gives it) and model are those the notice named. When either changes, the
- * consent no longer covers the provider (`consentCurrent` is false) until it is given again.
+ * R10: who acknowledged the data-sharing notice, for which provider. The provider is named by its
+ * normalised base URL (scheme, host, port and path, as `/system/llm` stores it: a gateway may put
+ * the tenant in the path), its host (with its port, as `URL.host` gives it: the one the notice
+ * names) and its model. When any of them changes, the consent no longer covers the provider
+ * (`consentCurrent` is false) until it is given again.
  */
 export const reviewConsentSchema = z.strictObject({
+  providerUrl: z.string().min(1).max(2_048),
   providerHost: z.string().min(1).max(300),
   model: z.string().min(1).max(200),
   userId: z.uuid(),
@@ -59,7 +62,12 @@ export const reviewSettingsSchema = z.strictObject({
   /** The projects of the scope `selected`; kept (and ignored) while the scope is `all`. */
   projectIds: z.array(z.uuid()).max(MAX_REVIEW_PROJECT_IDS),
   budgets: reviewBudgetsSchema,
-  consent: reviewConsentSchema.nullable(),
+  /**
+   * A stored consent that does not parse (one written before it named the base URL, say) reads as
+   * none, not as a row that does not parse: the rest of the `llm` settings stay in force, and the
+   * review stops (`consent_outdated`) until the organisation admin acknowledges again. Fail closed.
+   */
+  consent: reviewConsentSchema.nullable().catch(null),
 });
 export type ReviewSettings = z.infer<typeof reviewSettingsSchema>;
 

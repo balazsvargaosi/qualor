@@ -9,6 +9,7 @@ import {
   type StoredProvider,
 } from '../llm/settings';
 import {
+  acknowledgesProvider,
   consentCurrent,
   dataSharingNotice,
   DEFAULT_REVIEW,
@@ -49,6 +50,7 @@ const PROVIDER: StoredProvider = {
 };
 
 const CONSENT = {
+  providerUrl: 'https://api.openai.com/v1',
   providerHost: 'api.openai.com',
   model: 'gpt-x',
   userId: USER,
@@ -175,9 +177,6 @@ describe('the review settings (6I-2, llm.md §3.3)', () => {
     ['an unknown scope', { ...ON, scope: 'some' }],
     ['an unknown field', { ...ON, extra: 1 }],
     ['a project id that is not a UUID', { ...ON, projectIds: ['p1'] }],
-    ['a consent without a user', { ...ON, consent: { ...CONSENT, userId: undefined } }],
-    ['a consent time that is not a time', { ...ON, consent: { ...CONSENT, at: 'yesterday' } }],
-    ['a consent with an unknown field', { ...ON, consent: { ...CONSENT, extra: 1 } }],
     ['negative daily tokens', { ...ON, budgets: { ...ON.budgets, tokensPerDay: -1 } }],
     ['fractional daily tokens', { ...ON, budgets: { ...ON.budgets, tokensPerDay: 1.5 } }],
     ['a negative cost', { ...ON, budgets: { ...ON.budgets, costPerDayUsd: -0.01 } }],
@@ -203,6 +202,36 @@ describe('the review settings (6I-2, llm.md §3.3)', () => {
       false,
     );
     expect(reviewConsentSchema.safeParse(CONSENT).success).toBe(true);
+  });
+
+  it.each<[string, unknown]>([
+    [
+      'one without the base URL (stored before the consent named it)',
+      Object.fromEntries(Object.entries(CONSENT).filter(([key]) => key !== 'providerUrl')),
+    ],
+    ['one without a user', { ...CONSENT, userId: undefined }],
+    ['one with a time that is not a time', { ...CONSENT, at: 'yesterday' }],
+    ['one with a base URL that is empty', { ...CONSENT, providerUrl: '' }],
+    ['one with a field of its own', { ...CONSENT, extra: 1 }],
+    ['one that is not an object', 'yes'],
+  ])('reads %s as no consent, and keeps the rest of the block (fail closed)', (_name, consent) => {
+    expect(reviewConsentSchema.safeParse(consent).success).toBe(false);
+    expect(reviewSettingsSchema.parse({ ...ON, consent })).toEqual({ ...ON, consent: null });
+  });
+
+  it('reads a stored organisation whose consent lacks the base URL as having none, and keeps the provider', () => {
+    const old = Object.fromEntries(
+      Object.entries(CONSENT).filter(([key]) => key !== 'providerUrl'),
+    );
+    const row = {
+      ...settingsWith(),
+      organizations: { [ORG]: { ...ORG_ON, review: { ...ON, consent: old } } },
+    };
+    const parsed = storedLlmSettingsSchema.parse(row);
+    expect(parsed.provider).toEqual(PROVIDER);
+    expect(parsed.organizations[ORG]!.review).toEqual({ ...ON, consent: null });
+    // Reviews stop until the organisation admin acknowledges again.
+    expect(reviewActive(parsed, mapped)).toEqual({ active: false, reason: 'consent_outdated' });
   });
 
   it('refuses a stored instance ceiling that is negative or fractional', () => {
@@ -248,17 +277,22 @@ describe('reviewSettingsOf and withOrganizationReview', () => {
 });
 
 describe('the provider, its consent and the data-sharing notice (R10)', () => {
-  it('names the provider by the host of its address, port included, and its model', () => {
-    expect(reviewProvider(settingsWith())).toEqual({ host: 'api.openai.com', model: 'gpt-x' });
+  it('names the provider by its normalised address, the host of it (port included) and its model', () => {
+    expect(reviewProvider(settingsWith())).toEqual({
+      url: 'https://api.openai.com/v1',
+      host: 'api.openai.com',
+      model: 'gpt-x',
+    });
     const local = { ...PROVIDER, baseUrl: 'https://llm.example:8443/v1/' };
     expect(reviewProvider(settingsWith({}, {}, local))).toEqual({
+      url: 'https://llm.example:8443/v1',
       host: 'llm.example:8443',
       model: 'gpt-x',
     });
     expect(reviewProvider(settingsWith({}, {}, null))).toBeNull();
   });
 
-  it('is current while the consent names the configured host and model', () => {
+  it('is current while the consent names the configured address, host and model', () => {
     expect(consentCurrent(settingsWith(), ON)).toBe(true);
   });
 
@@ -266,24 +300,90 @@ describe('the provider, its consent and the data-sharing notice (R10)', () => {
     ['the model changes', { model: 'gpt-y' }],
     ['the host changes', { baseUrl: 'https://api.other.example/v1' }],
     ['the port changes', { baseUrl: 'https://api.openai.com:8443/v1' }],
+    ['the scheme changes', { baseUrl: 'http://api.openai.com/v1' }],
+    ['the base path changes (same host)', { baseUrl: 'https://api.openai.com/other/v2' }],
+    [
+      'the base path gains a segment (same host)',
+      { baseUrl: 'https://api.openai.com/v1/tenant-b' },
+    ],
+    ['the base path is gone (same host)', { baseUrl: 'https://api.openai.com' }],
   ])('is outdated when %s', (_name, over) => {
     expect(consentCurrent(settingsWith({}, {}, { ...PROVIDER, ...over }), ON)).toBe(false);
   });
 
-  it('survives a change of the path, the key or any other provider field', () => {
+  it('is outdated when the consent names another address of the same host and model', () => {
+    const consent = { ...CONSENT, providerUrl: 'https://api.openai.com/tenant-a/v1' };
+    expect(consentCurrent(settingsWith(), { ...ON, consent })).toBe(false);
+  });
+
+  it('survives a change of anything else about the provider: the key, the temperature, the kind', () => {
     const changed: StoredProvider = {
       ...PROVIDER,
-      baseUrl: 'https://api.openai.com/other/v2',
       temperature: 0.2,
       timeoutSeconds: 120,
       kind: 'anthropic',
+      auth: 'api-key',
+      apiKeyEnc: { v: 1, iv: 'aXY=', ct: 'Y3Q=', tag: 'dGFn' },
     };
     expect(consentCurrent(settingsWith({}, {}, changed), ON)).toBe(true);
+  });
+
+  it('compares the address as /system/llm stores it: a trailing slash, a default port or a capital is no change', () => {
+    const spelled: StoredProvider = { ...PROVIDER, baseUrl: 'HTTPS://API.OpenAI.com:443/v1/' };
+    expect(reviewProvider(settingsWith({}, {}, spelled))).toEqual({
+      url: 'https://api.openai.com/v1',
+      host: 'api.openai.com',
+      model: 'gpt-x',
+    });
+    expect(consentCurrent(settingsWith({}, {}, spelled), ON)).toBe(true);
+  });
+
+  it('knows no provider whose address does not parse', () => {
+    const broken: StoredProvider = { ...PROVIDER, baseUrl: 'not an address' };
+    expect(reviewProvider(settingsWith({}, {}, broken))).toBeNull();
+    expect(consentCurrent(settingsWith({}, {}, broken), ON)).toBe(false);
+    expect(reviewActive(settingsWith({}, {}, broken), mapped)).toEqual({
+      active: false,
+      reason: 'no_provider',
+    });
   });
 
   it('is outdated without a consent or without a provider', () => {
     expect(consentCurrent(settingsWith(), { ...ON, consent: null })).toBe(false);
     expect(consentCurrent(settingsWith({}, {}, null), ON)).toBe(false);
+  });
+
+  describe('acknowledgesProvider (the acknowledgement names the provider the admin was shown)', () => {
+    const provider = {
+      url: 'https://llm.example:8443/v1',
+      host: 'llm.example:8443',
+      model: 'Gpt-X',
+    };
+
+    it('is true for the host and the model the notice named', () => {
+      expect(acknowledgesProvider(provider, { host: 'llm.example:8443', model: 'Gpt-X' })).toBe(
+        true,
+      );
+    });
+
+    it('takes the host in any case, as hosts are, but the model as it is written', () => {
+      expect(acknowledgesProvider(provider, { host: 'LLM.Example:8443', model: 'Gpt-X' })).toBe(
+        true,
+      );
+      expect(acknowledgesProvider(provider, { host: 'llm.example:8443', model: 'gpt-x' })).toBe(
+        false,
+      );
+    });
+
+    it.each<[string, { host: string; model: string }]>([
+      ['another host', { host: 'llm.elsewhere.example:8443', model: 'Gpt-X' }],
+      ['the host without its port', { host: 'llm.example', model: 'Gpt-X' }],
+      ['another port', { host: 'llm.example:9443', model: 'Gpt-X' }],
+      ['another model', { host: 'llm.example:8443', model: 'Gpt-Y' }],
+      ['nothing', { host: '', model: '' }],
+    ])('is false for %s', (_name, acknowledged) => {
+      expect(acknowledgesProvider(provider, acknowledged)).toBe(false);
+    });
   });
 
   it('writes the notice exactly', () => {
@@ -511,6 +611,10 @@ describe('sameReview and isDefaultReview', () => {
     ['a project', { projectIds: [OTHER_PROJECT] }],
     ['more projects', { projectIds: [PROJECT, OTHER_PROJECT] }],
     ['no consent', { consent: null }],
+    [
+      'the consent’s base URL',
+      { consent: { ...CONSENT, providerUrl: 'https://other.example/v1' } },
+    ],
     ['the consent’s host', { consent: { ...CONSENT, providerHost: 'other.example' } }],
     ['the consent’s model', { consent: { ...CONSENT, model: 'other' } }],
     ['the consent’s user', { consent: { ...CONSENT, userId: OTHER_PROJECT } }],

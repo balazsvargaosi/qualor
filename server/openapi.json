@@ -26522,6 +26522,11 @@
                         {
                           "type": "object",
                           "properties": {
+                            "providerUrl": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 2048
+                            },
                             "providerHost": {
                               "type": "string",
                               "minLength": 1,
@@ -26544,6 +26549,7 @@
                             }
                           },
                           "required": [
+                            "providerUrl",
                             "providerHost",
                             "model",
                             "userId",
@@ -26642,7 +26648,7 @@
         }
       },
       "put": {
-        "summary": "Set the organisation's AI review (org.ai.manage). Switching it on needs acknowledgeDataSharing: true, which records the provider's host and model, the user and the time; a change of the provider's host or model makes the consent outdated until it is given again",
+        "summary": "Set the organisation's AI review (org.ai.manage). Switching it on needs acknowledgeDataSharing, the provider the notice named, which records the provider's base URL, host and model, the user and the time; a change of any of them makes the consent outdated until it is given again",
         "tags": [
           "ai"
         ],
@@ -26719,8 +26725,25 @@
                     "additionalProperties": false
                   },
                   "acknowledgeDataSharing": {
-                    "description": "true confirms the notice in the answer. Needed to switch review on from off, and while consentCurrent is false; ignored otherwise",
-                    "type": "boolean"
+                    "description": "The provider the notice named: the `provider` of the GET answer. Needed to switch review on from off, and while consentCurrent is false; ignored otherwise. Absent: 409 AI_REVIEW_CONSENT_REQUIRED. A host or model other than the provider configured now: 409 AI_REVIEW_PROVIDER_CHANGED (nothing is stored)",
+                    "type": "object",
+                    "properties": {
+                      "host": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 300
+                      },
+                      "model": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200
+                      }
+                    },
+                    "required": [
+                      "host",
+                      "model"
+                    ],
+                    "additionalProperties": false
                   }
                 },
                 "required": [
@@ -26869,6 +26892,11 @@
                         {
                           "type": "object",
                           "properties": {
+                            "providerUrl": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 2048
+                            },
                             "providerHost": {
                               "type": "string",
                               "minLength": 1,
@@ -26891,6 +26919,7 @@
                             }
                           },
                           "required": [
+                            "providerUrl",
                             "providerHost",
                             "model",
                             "userId",
@@ -26977,7 +27006,7 @@
             }
           },
           "409": {
-            "description": "AI_DISABLED (switching it on needs a provider and the organisation enabled for the AI assistant), or AI_REVIEW_CONSENT_REQUIRED (switching it on, from off or while consentCurrent is false, needs acknowledgeDataSharing: true); AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed while no audit event is stored; an administrator must restore it (a retry does not help)",
+            "description": "AI_DISABLED (switching it on needs a provider and the organisation enabled for the AI assistant), AI_REVIEW_CONSENT_REQUIRED (switching it on, from off or while consentCurrent is false, needs acknowledgeDataSharing), or AI_REVIEW_PROVIDER_CHANGED (the acknowledgement names another host or model than the provider configured now; nothing is stored); AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed while no audit event is stored; an administrator must restore it (a retry does not help)",
             "content": {
               "application/problem+json": {
                 "schema": {

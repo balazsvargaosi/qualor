@@ -115,15 +115,20 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
       `/projects/review-context?projectKey=${encodeURIComponent(projectKey)}&mergeRequest=${mergeRequest}`,
       headersOf(caller),
     );
-  /** The body of a switch-on that selects `project`, acknowledged. */
+  /** What the notice names while the provider is the one of `configure()`: its host and model. */
+  const SHOWN = { host: 'llm.example', model: 'fake-model' };
+  /** The body of a switch-on that selects `project`, acknowledging the provider of `configure()`. */
   const onBody = (over: Record<string, unknown> = {}) => ({
     enabled: true,
     scope: 'selected',
     projectIds: [project.id],
     budgets: { ...DEFAULT_REVIEW.budgets },
-    acknowledgeDataSharing: true,
+    acknowledgeDataSharing: SHOWN,
     ...over,
   });
+  /** The acknowledgement the settings page sends: the provider the GET answer shows now (R10). */
+  const shownProvider = async (): Promise<{ host: string; model: string }> =>
+    (await getReview()).json().provider;
   const events = (action: string): Promise<Event[]> =>
     ctx.db
       .select()
@@ -365,20 +370,16 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
 
     it('answers AI_DISABLED before it asks for the acknowledgement', async () => {
       await configure({}, null);
-      const res = await putReview(onBody({ acknowledgeDataSharing: false }));
+      const res = await putReview(onBody({ acknowledgeDataSharing: undefined }));
       expect(res.statusCode).toBe(409);
       expect(res.json()).toMatchObject({ code: 'AI_DISABLED' });
     });
 
     it('answers 409 AI_REVIEW_CONSENT_REQUIRED for switching it on without the acknowledgement', async () => {
       const before = (await events('organization.ai_review_changed')).length;
-      const without = onBody();
-      delete (without as Record<string, unknown>).acknowledgeDataSharing;
-      for (const payload of [without, onBody({ acknowledgeDataSharing: false })]) {
-        const res = await putReview(payload);
-        expect(res.statusCode, res.body).toBe(409);
-        expect(res.json()).toMatchObject({ code: 'AI_REVIEW_CONSENT_REQUIRED' });
-      }
+      const res = await putReview(onBody({ acknowledgeDataSharing: undefined }));
+      expect(res.statusCode, res.body).toBe(409);
+      expect(res.json()).toMatchObject({ code: 'AI_REVIEW_CONSENT_REQUIRED' });
       expect(await storedReview()).toEqual(DEFAULT_REVIEW);
       expect(await events('organization.ai_review_changed')).toHaveLength(before);
     });
@@ -395,7 +396,12 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
         scope: 'selected',
         projectIds: [project.id],
         consentCurrent: true,
-        consent: { providerHost: 'llm.example', model: 'fake-model', userId: orgAdminId },
+        consent: {
+          providerUrl: 'https://llm.example/v1',
+          providerHost: 'llm.example',
+          model: 'fake-model',
+          userId: orgAdminId,
+        },
         notice: dataSharingNotice('llm.example', 'fake-model', 14),
       });
       const at = Date.parse(answer.consent.at);
@@ -465,8 +471,21 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
         consentCurrent: true,
       });
       // Sending the acknowledgement again does not renew it either.
-      const again = await putReview({ ...edit, acknowledgeDataSharing: true });
+      const again = await putReview({ ...edit, acknowledgeDataSharing: SHOWN });
       expect(again.json().consent).toEqual(first.consent);
+    });
+
+    it('ignores an acknowledgement that no consent needs, even one naming another provider', async () => {
+      const first = (await putReview(onBody())).json();
+      const other = { host: 'llm.elsewhere.example', model: 'another-model' };
+      // Review is on and the consent is current: the acknowledgement is not looked at.
+      const res = await putReview(onBody({ scope: 'all', acknowledgeDataSharing: other }));
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json()).toMatchObject({ scope: 'all', consent: first.consent });
+      // Nor is it when review is switched off.
+      const off = await putReview(onBody({ enabled: false, acknowledgeDataSharing: other }));
+      expect(off.statusCode, off.body).toBe(200);
+      expect(off.json()).toMatchObject({ enabled: false, consent: first.consent });
     });
 
     it('switches it off without a provider or an acknowledgement, and asks again to switch it on', async () => {
@@ -510,7 +529,12 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
         consentCurrent: false,
         provider: { host: 'llm.example', model: 'other-model' },
         // The record of what was acknowledged stays as it was given.
-        consent: { providerHost: 'llm.example', model: 'fake-model', userId: orgAdminId },
+        consent: {
+          providerUrl: 'https://llm.example/v1',
+          providerHost: 'llm.example',
+          model: 'fake-model',
+          userId: orgAdminId,
+        },
       });
       expect(read.notice).toBe(dataSharingNotice('llm.example', 'other-model', 14));
       const context = await contextOf(project.key, bearer(projectToken));
@@ -520,15 +544,22 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
       const kept = await changeProvider({});
       expect(kept.statusCode, kept.body).toBe(200);
       expect((await getReview()).json()).toMatchObject({ enabled: true, consentCurrent: false });
-      // Confirming again needs the acknowledgement, and gives the new model.
+      // Confirming again needs the acknowledgement of the new model, and gives it.
       const refused = await putReview(onBody({ acknowledgeDataSharing: undefined }));
       expect(refused.statusCode).toBe(409);
       expect(refused.json()).toMatchObject({ code: 'AI_REVIEW_CONSENT_REQUIRED' });
-      const confirmed = await putReview(onBody());
+      const stale = await putReview(onBody({ acknowledgeDataSharing: SHOWN }));
+      expect(stale.statusCode).toBe(409);
+      expect(stale.json()).toMatchObject({ code: 'AI_REVIEW_PROVIDER_CHANGED' });
+      const confirmed = await putReview(onBody({ acknowledgeDataSharing: await shownProvider() }));
       expect(confirmed.statusCode, confirmed.body).toBe(200);
       expect(confirmed.json()).toMatchObject({
         consentCurrent: true,
-        consent: { providerHost: 'llm.example', model: 'other-model' },
+        consent: {
+          providerUrl: 'https://llm.example/v1',
+          providerHost: 'llm.example',
+          model: 'other-model',
+        },
       });
       expect((await contextOf(project.key, bearer(projectToken))).json()).toMatchObject({
         review: true,
@@ -555,6 +586,177 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
       const back = await changeProvider({ baseUrl: PROVIDER.baseUrl, apiKey: null });
       expect(back.statusCode, back.body).toBe(200);
       expect((await getReview()).json()).toMatchObject({ consentCurrent: true });
+    });
+
+    it('a changed base path outdates the consent', async () => {
+      const first = (await putReview(onBody())).json();
+      expect(first.consent.providerUrl).toBe('https://llm.example/v1');
+      // The same host and model, another path: a gateway that puts the tenant there (R10).
+      const moved = await changeProvider({
+        baseUrl: 'https://llm.example/tenant-b/v1',
+        apiKey: null,
+      });
+      expect(moved.statusCode, moved.body).toBe(200);
+      const read = (await getReview()).json();
+      expect(read).toMatchObject({
+        enabled: true,
+        consentCurrent: false,
+        provider: { host: 'llm.example', model: 'fake-model' },
+        consent: { providerUrl: 'https://llm.example/v1' },
+      });
+      const context = await contextOf(project.key, bearer(projectToken));
+      expect(context.json()).toMatchObject({ review: false, reason: 'consent_outdated' });
+      const projectAnswer = await call('GET', `/projects/${project.id}`, orgAdmin.headers);
+      expect(projectAnswer.json().aiReview).toEqual({ enabled: false, organizationEnabled: false });
+      // The notice names the host and the model, which did not change: confirming gives the new address.
+      const confirmed = await putReview(onBody({ acknowledgeDataSharing: read.provider }));
+      expect(confirmed.statusCode, confirmed.body).toBe(200);
+      expect(confirmed.json()).toMatchObject({
+        consentCurrent: true,
+        consent: { providerUrl: 'https://llm.example/tenant-b/v1', providerHost: 'llm.example' },
+      });
+      expect((await contextOf(project.key, bearer(projectToken))).json()).toMatchObject({
+        review: true,
+        reason: null,
+      });
+      // Back to the first path: the consent now names the second, so it is outdated again.
+      expect((await changeProvider({ baseUrl: PROVIDER.baseUrl, apiKey: null })).statusCode).toBe(
+        200,
+      );
+      expect((await getReview()).json()).toMatchObject({ consentCurrent: false });
+    });
+
+    it('the provider changed between the GET and the PUT: the acknowledgement of the old provider stores nothing (R10)', async () => {
+      // The admin's GET shows host A and its notice.
+      const shown = await shownProvider();
+      expect(shown).toEqual({ host: 'llm.example', model: 'fake-model' });
+      const before = (await events('organization.ai_review_changed')).length;
+      // The instance admin switches to host B before the admin's PUT arrives.
+      const switched = await changeProvider({
+        baseUrl: 'https://llm.elsewhere.example/v1',
+        apiKey: null,
+      });
+      expect(switched.statusCode, switched.body).toBe(200);
+      const refused = await putReview(onBody({ acknowledgeDataSharing: shown }));
+      expect(refused.statusCode, refused.body).toBe(409);
+      expect(refused.json()).toMatchObject({ code: 'AI_REVIEW_PROVIDER_CHANGED' });
+      // Nothing is stored: review is still off and no consent was recorded, nor an audit event.
+      expect(await storedReview()).toEqual(DEFAULT_REVIEW);
+      expect(await events('organization.ai_review_changed')).toHaveLength(before);
+      expect((await contextOf(project.key, bearer(projectToken))).json()).toMatchObject({
+        review: false,
+        reason: 'review_disabled',
+      });
+      // Acknowledging host B, which the GET now shows, is accepted.
+      const nowShown = await shownProvider();
+      expect(nowShown).toEqual({ host: 'llm.elsewhere.example', model: 'fake-model' });
+      const accepted = await putReview(onBody({ acknowledgeDataSharing: nowShown }));
+      expect(accepted.statusCode, accepted.body).toBe(200);
+      expect(accepted.json()).toMatchObject({
+        enabled: true,
+        consentCurrent: true,
+        consent: {
+          providerUrl: 'https://llm.elsewhere.example/v1',
+          providerHost: 'llm.elsewhere.example',
+          model: 'fake-model',
+        },
+      });
+      expect(await events('organization.ai_review_changed')).toHaveLength(before + 1);
+    });
+
+    it('a model changed between the GET and the PUT is refused the same way', async () => {
+      const shown = await shownProvider();
+      expect((await changeProvider({ model: 'another-model' })).statusCode).toBe(200);
+      const refused = await putReview(onBody({ acknowledgeDataSharing: shown }));
+      expect(refused.statusCode, refused.body).toBe(409);
+      expect(refused.json()).toMatchObject({ code: 'AI_REVIEW_PROVIDER_CHANGED' });
+      expect(await storedReview()).toEqual(DEFAULT_REVIEW);
+      const accepted = await putReview(
+        onBody({ acknowledgeDataSharing: { host: 'llm.example', model: 'another-model' } }),
+      );
+      expect(accepted.statusCode, accepted.body).toBe(200);
+      expect(accepted.json().consent).toMatchObject({ model: 'another-model' });
+    });
+
+    it('confirming again after a provider change is refused when the provider changed once more', async () => {
+      const firstConsent = (await putReview(onBody())).json().consent;
+      expect((await changeProvider({ model: 'second-model' })).statusCode).toBe(200);
+      // The admin's GET shows the second model (consentCurrent is false) ...
+      const shown = await shownProvider();
+      expect(shown).toEqual({ host: 'llm.example', model: 'second-model' });
+      // ... and the instance admin changes it again before the PUT.
+      expect((await changeProvider({ model: 'third-model' })).statusCode).toBe(200);
+      const refused = await putReview(onBody({ acknowledgeDataSharing: shown }));
+      expect(refused.statusCode, refused.body).toBe(409);
+      expect(refused.json()).toMatchObject({ code: 'AI_REVIEW_PROVIDER_CHANGED' });
+      // The consent on record is still the first one, and reviews stay stopped.
+      expect(await storedReview()).toMatchObject({ enabled: true, consent: firstConsent });
+      expect((await contextOf(project.key, bearer(projectToken))).json()).toMatchObject({
+        review: false,
+        reason: 'consent_outdated',
+      });
+      const accepted = await putReview(onBody({ acknowledgeDataSharing: await shownProvider() }));
+      expect(accepted.statusCode, accepted.body).toBe(200);
+      expect(accepted.json().consent).toMatchObject({ model: 'third-model' });
+    });
+
+    it('takes the host of the acknowledgement in any case, and the model as it is', async () => {
+      const shouted = await putReview(
+        onBody({ acknowledgeDataSharing: { host: 'LLM.Example', model: 'fake-model' } }),
+      );
+      expect(shouted.statusCode, shouted.body).toBe(200);
+      // The consent records the provider's host as it is, not as it was typed.
+      expect(shouted.json().consent).toMatchObject({ providerHost: 'llm.example' });
+      await putReview(onBody({ enabled: false }));
+      const other = await putReview(
+        onBody({ acknowledgeDataSharing: { host: 'llm.example', model: 'Fake-Model' } }),
+      );
+      expect(other.statusCode).toBe(409);
+      expect(other.json()).toMatchObject({ code: 'AI_REVIEW_PROVIDER_CHANGED' });
+    });
+
+    it('records the provider’s normalised address in the consent, however it was stored', async () => {
+      await configure({}, { ...PROVIDER, baseUrl: 'HTTPS://LLM.Example:443/v1/' });
+      expect((await getReview()).json().provider).toEqual({
+        host: 'llm.example',
+        model: 'fake-model',
+      });
+      const res = await putReview(onBody());
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json()).toMatchObject({
+        consentCurrent: true,
+        consent: { providerUrl: 'https://llm.example/v1', providerHost: 'llm.example' },
+      });
+    });
+
+    it('reads a consent stored without its base URL as none and keeps the provider (fail closed)', async () => {
+      expect((await putReview(onBody())).statusCode).toBe(200);
+      // The row as an earlier version wrote it: the consent does not name the address yet.
+      const [row] = await ctx.db
+        .select()
+        .from(instanceSettings)
+        .where(eq(instanceSettings.key, 'llm'));
+      const value = JSON.parse(JSON.stringify(row!.value)) as {
+        organizations: Record<string, { review: { consent: Record<string, unknown> } }>;
+      };
+      delete value.organizations[org]!.review.consent.providerUrl;
+      await ctx.db.update(instanceSettings).set({ value }).where(eq(instanceSettings.key, 'llm'));
+      expect((await getReview()).json()).toMatchObject({
+        available: true,
+        provider: { host: 'llm.example', model: 'fake-model' },
+        enabled: true,
+        consent: null,
+        consentCurrent: false,
+      });
+      expect((await contextOf(project.key, bearer(projectToken))).json()).toMatchObject({
+        review: false,
+        reason: 'consent_outdated',
+      });
+      const refused = await putReview(onBody({ acknowledgeDataSharing: undefined }));
+      expect(refused.json()).toMatchObject({ code: 'AI_REVIEW_CONSENT_REQUIRED' });
+      const confirmed = await putReview(onBody());
+      expect(confirmed.statusCode, confirmed.body).toBe(200);
+      expect(confirmed.json().consent).toMatchObject({ providerUrl: 'https://llm.example/v1' });
     });
 
     it('answers 422 PROJECT_NOT_IN_ORGANIZATION for the project of another organisation', async () => {
@@ -649,6 +851,36 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
       ],
       ['budgets missing', { budgets: undefined }, 'body.budgets'],
       ['acknowledgement as text', { acknowledgeDataSharing: 'yes' }, 'body.acknowledgeDataSharing'],
+      [
+        'acknowledgement as true (the form before it named the provider)',
+        { acknowledgeDataSharing: true },
+        'body.acknowledgeDataSharing',
+      ],
+      [
+        'acknowledgement without the model',
+        { acknowledgeDataSharing: { host: 'llm.example' } },
+        'body.acknowledgeDataSharing.model',
+      ],
+      [
+        'acknowledgement without the host',
+        { acknowledgeDataSharing: { model: 'fake-model' } },
+        'body.acknowledgeDataSharing.host',
+      ],
+      [
+        'acknowledgement with an empty host',
+        { acknowledgeDataSharing: { host: '', model: 'fake-model' } },
+        'body.acknowledgeDataSharing.host',
+      ],
+      [
+        'acknowledgement with a field of its own',
+        { acknowledgeDataSharing: { ...SHOWN, extra: 1 } },
+        'body.acknowledgeDataSharing',
+      ],
+      [
+        'acknowledgement with a host that is not text',
+        { acknowledgeDataSharing: { host: 1, model: 'fake-model' } },
+        'body.acknowledgeDataSharing.host',
+      ],
     ])('answers 422 for %s', async (_name, over, path) => {
       const res = await putReview(onBody(over));
       expect(res.statusCode, res.body).toBe(422);
@@ -829,7 +1061,10 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
 
     it('records nothing for a refused change', async () => {
       const before = (await events('organization.ai_review_changed')).length;
-      await putReview(onBody({ acknowledgeDataSharing: false }));
+      await putReview(onBody({ acknowledgeDataSharing: undefined }));
+      await putReview(
+        onBody({ acknowledgeDataSharing: { host: 'llm.elsewhere.example', model: 'fake-model' } }),
+      );
       await putReview(onBody({ projectIds: [otherProject.id] }));
       await putReview(onBody({ scope: 'some' }));
       expect(await events('organization.ai_review_changed')).toHaveLength(before);
@@ -1120,7 +1355,8 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
       expect((await putReview(onBody())).statusCode).toBe(200);
       expect((await changeProvider({ model: 'another-model' })).statusCode).toBe(200);
       expect(await dtoOf()).toEqual({ enabled: false, organizationEnabled: false });
-      expect((await putReview(onBody())).statusCode).toBe(200);
+      const confirmed = await putReview(onBody({ acknowledgeDataSharing: await shownProvider() }));
+      expect(confirmed.statusCode, confirmed.body).toBe(200);
       expect(await dtoOf()).toEqual({ enabled: true, organizationEnabled: true });
     });
 

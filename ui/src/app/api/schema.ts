@@ -12507,6 +12507,7 @@ export interface paths {
                                 maxTokensPerReview: number;
                             };
                             consent: {
+                                providerUrl: string;
                                 providerHost: string;
                                 model: string;
                                 /** Format: uuid */
@@ -12559,7 +12560,7 @@ export interface paths {
                 };
             };
         };
-        /** Set the organisation's AI review (org.ai.manage). Switching it on needs acknowledgeDataSharing: true, which records the provider's host and model, the user and the time; a change of the provider's host or model makes the consent outdated until it is given again */
+        /** Set the organisation's AI review (org.ai.manage). Switching it on needs acknowledgeDataSharing, the provider the notice named, which records the provider's base URL, host and model, the user and the time; a change of any of them makes the consent outdated until it is given again */
         put: {
             parameters: {
                 query?: never;
@@ -12582,8 +12583,11 @@ export interface paths {
                             perProjectTokensPerDay: number | null;
                             maxTokensPerReview: number;
                         };
-                        /** @description true confirms the notice in the answer. Needed to switch review on from off, and while consentCurrent is false; ignored otherwise */
-                        acknowledgeDataSharing?: boolean;
+                        /** @description The provider the notice named: the `provider` of the GET answer. Needed to switch review on from off, and while consentCurrent is false; ignored otherwise. Absent: 409 AI_REVIEW_CONSENT_REQUIRED. A host or model other than the provider configured now: 409 AI_REVIEW_PROVIDER_CHANGED (nothing is stored) */
+                        acknowledgeDataSharing?: {
+                            host: string;
+                            model: string;
+                        };
                     };
                 };
             };
@@ -12613,6 +12617,7 @@ export interface paths {
                                 maxTokensPerReview: number;
                             };
                             consent: {
+                                providerUrl: string;
                                 providerHost: string;
                                 model: string;
                                 /** Format: uuid */
@@ -12654,7 +12659,7 @@ export interface paths {
                         "application/problem+json": components["schemas"]["Problem"];
                     };
                 };
-                /** @description AI_DISABLED (switching it on needs a provider and the organisation enabled for the AI assistant), or AI_REVIEW_CONSENT_REQUIRED (switching it on, from off or while consentCurrent is false, needs acknowledgeDataSharing: true); AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed while no audit event is stored; an administrator must restore it (a retry does not help) */
+                /** @description AI_DISABLED (switching it on needs a provider and the organisation enabled for the AI assistant), AI_REVIEW_CONSENT_REQUIRED (switching it on, from off or while consentCurrent is false, needs acknowledgeDataSharing), or AI_REVIEW_PROVIDER_CHANGED (the acknowledgement names another host or model than the provider configured now; nothing is stored); AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed while no audit event is stored; an administrator must restore it (a retry does not help) */
                 409: {
                     headers: {
                         [name: string]: unknown;

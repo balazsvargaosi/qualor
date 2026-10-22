@@ -1,4 +1,5 @@
 import { organizationSettings, type StoredLlmSettings } from '../llm/settings';
+import { normalBaseUrl } from '../scm/url';
 import { sameReviewBudgets, type ReviewBudgets, type ReviewSettings } from './schema';
 
 export {
@@ -32,8 +33,10 @@ export const REVIEW_INACTIVE_REASONS = [
 ] as const;
 export type ReviewInactiveReason = (typeof REVIEW_INACTIVE_REASONS)[number];
 
-/** The provider's host and model, as the data-sharing notice names them. */
+/** The provider as a consent names it (R10). */
 export interface ReviewProvider {
+  /** The normalised base URL: scheme, host, port and path, as `/system/llm` stores it. */
+  url: string;
   /** The host of the address (`URL.host`: with its port when it is not the scheme's default). */
   host: string;
   model: string;
@@ -41,15 +44,32 @@ export interface ReviewProvider {
 
 /**
  * The configured provider, or null when there is none (an address that does not parse is none:
- * nothing could be sent to it, and a consent could not name it).
+ * nothing could be sent to it, and a consent could not name it). The address is normalised again,
+ * as `/system/llm` does on save, so a row written another way names the same address.
  */
 export function reviewProvider(settings: StoredLlmSettings): ReviewProvider | null {
   if (settings.provider === null) return null;
   try {
-    return { host: new URL(settings.provider.baseUrl).host, model: settings.provider.model };
+    const url = normalBaseUrl(settings.provider.baseUrl);
+    return { url, host: new URL(url).host, model: settings.provider.model };
   } catch {
     return null;
   }
+}
+
+/**
+ * Whether an acknowledgement names the provider configured now: the host (a host has no case) and
+ * the model the notice showed. The admin acknowledges what was shown; if the instance admin has
+ * changed the provider since, the acknowledgement does not cover the new one (R10).
+ */
+export function acknowledgesProvider(
+  provider: ReviewProvider,
+  acknowledged: { host: string; model: string },
+): boolean {
+  return (
+    acknowledged.host.toLowerCase() === provider.host.toLowerCase() &&
+    acknowledged.model === provider.model
+  );
 }
 
 /**
@@ -92,7 +112,8 @@ export function sameReview(a: ReviewSettings, b: ReviewSettings): boolean {
   const consent = (x: ReviewSettings['consent'], y: ReviewSettings['consent']): boolean =>
     x === null || y === null
       ? x === y
-      : x.providerHost === y.providerHost &&
+      : x.providerUrl === y.providerUrl &&
+        x.providerHost === y.providerHost &&
         x.model === y.model &&
         x.userId === y.userId &&
         x.at === y.at;
@@ -107,8 +128,9 @@ export function sameReview(a: ReviewSettings, b: ReviewSettings): boolean {
 }
 
 /**
- * R10: whether the consent names the provider that is configured now, by its host and its model.
- * A consent given for another host or model, none, or no provider at all, is not current.
+ * R10: whether the consent names the provider that is configured now, by its normalised base URL,
+ * its host and its model. A consent given for another address (the path too), host or model, none,
+ * or no provider at all, is not current.
  */
 export function consentCurrent(settings: StoredLlmSettings, review: ReviewSettings): boolean {
   const provider = reviewProvider(settings);
@@ -116,6 +138,7 @@ export function consentCurrent(settings: StoredLlmSettings, review: ReviewSettin
   return (
     provider !== null &&
     consent !== null &&
+    consent.providerUrl === provider.url &&
     consent.providerHost === provider.host &&
     consent.model === provider.model
   );

@@ -530,13 +530,13 @@ export async function runAuditScenario(
   });
 
   // organization.ai_review_changed (6I-2): the organisation switches AI review on for every project,
-  // acknowledging the data-sharing notice (the provider and the organisation are set up above)
+  // acknowledging the data-sharing notice for the provider it names (set up above, with the fake)
   await call('PUT', `/organizations/${org}/ai/review`, 200, {
     enabled: true,
     scope: 'all',
     projectIds: [],
     budgets: { ...DEFAULT_REVIEW_BUDGETS },
-    acknowledgeDataSharing: true,
+    acknowledgeDataSharing: { host: new URL(llm.openAiBaseUrl).host, model: 'fake-model' },
   });
 
   // mail.settings_updated (with a password) and mail.test_sent (refused: nothing listens there)

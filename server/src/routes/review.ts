@@ -20,6 +20,7 @@ import {
 import { PROJECT_KEY_PATTERN } from '../patterns';
 import { projectForUpload } from '../projects/access';
 import {
+  acknowledgesProvider,
   consentCurrent,
   dataSharingNotice,
   MAX_REVIEW_PROJECT_IDS,
@@ -78,14 +79,24 @@ export const organizationReviewSchema = z.object({
 });
 type OrganizationReview = z.infer<typeof organizationReviewSchema>;
 
+/**
+ * R10 (amended): the acknowledgement names the provider the admin was shown, the `provider` of the
+ * GET answer, not just "yes": a provider switched between the GET and the PUT must not get a
+ * consent nobody saw.
+ */
+const acknowledgementSchema = z.strictObject({
+  host: z.string().min(1).max(300),
+  model: z.string().min(1).max(200),
+});
+
 const reviewBody = z.strictObject({
   enabled: z.boolean(),
   scope: z.enum(REVIEW_SCOPES),
   projectIds: z.array(z.uuid()).max(MAX_REVIEW_PROJECT_IDS),
   budgets: reviewBudgetsSchema,
-  acknowledgeDataSharing: z.boolean().optional().meta({
+  acknowledgeDataSharing: acknowledgementSchema.optional().meta({
     description:
-      'true confirms the notice in the answer. Needed to switch review on from off, and while consentCurrent is false; ignored otherwise',
+      'The provider the notice named: the `provider` of the GET answer. Needed to switch review on from off, and while consentCurrent is false; ignored otherwise. Absent: 409 AI_REVIEW_CONSENT_REQUIRED. A host or model other than the provider configured now: 409 AI_REVIEW_PROVIDER_CHANGED (nothing is stored)',
   }),
 });
 
@@ -122,7 +133,7 @@ function organizationReview(
   return {
     available: unavailableReason === null,
     unavailableReason,
-    provider,
+    provider: provider === null ? null : { host: provider.host, model: provider.model },
     notice:
       provider === null ? null : dataSharingNotice(provider.host, provider.model, retentionDays),
     enabled: review.enabled,
@@ -181,7 +192,7 @@ export const reviewRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (a
           problems: [409],
           problemDescriptions: {
             403: 'FORBIDDEN or INSUFFICIENT_SCOPE',
-            409: 'AI_DISABLED (switching it on needs a provider and the organisation enabled for the AI assistant), or AI_REVIEW_CONSENT_REQUIRED (switching it on, from off or while consentCurrent is false, needs acknowledgeDataSharing: true)',
+            409: 'AI_DISABLED (switching it on needs a provider and the organisation enabled for the AI assistant), AI_REVIEW_CONSENT_REQUIRED (switching it on, from off or while consentCurrent is false, needs acknowledgeDataSharing), or AI_REVIEW_PROVIDER_CHANGED (the acknowledgement names another host or model than the provider configured now; nothing is stored)',
             422: 'VALIDATION_FAILED, or PROJECT_NOT_IN_ORGANIZATION (a project id belongs to another organisation; errors[] names it)',
           },
         },
@@ -189,7 +200,7 @@ export const reviewRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (a
       schema: {
         tags: ['ai'],
         summary:
-          "Set the organisation's AI review (org.ai.manage). Switching it on needs acknowledgeDataSharing: true, which records the provider's host and model, the user and the time; a change of the provider's host or model makes the consent outdated until it is given again",
+          "Set the organisation's AI review (org.ai.manage). Switching it on needs acknowledgeDataSharing, the provider the notice named, which records the provider's base URL, host and model, the user and the time; a change of any of them makes the consent outdated until it is given again",
         params: idParams,
         body: reviewBody,
         response: { 200: organizationReviewSchema },
@@ -231,7 +242,8 @@ export const reviewRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (a
           [...new Set(ids)].filter((id) => owners.get(id) === organizationId).sort();
         const stored: ReviewSettings = { ...current, projectIds: ownProjects(current.projectIds) };
         const provider = reviewProvider(settings);
-        // Switching it on: from off, or confirming again when the provider's host or model changed.
+        // Switching it on: from off, or confirming again when the provider's address, host or model
+        // changed (the consent no longer names it).
         const switchingOn =
           body.enabled && (!current.enabled || !consentCurrent(settings, current));
         let consent = current.consent;
@@ -242,13 +254,23 @@ export const reviewRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (a
               'AI review needs the AI assistant configured and enabled for this organisation',
             );
           }
-          if (body.acknowledgeDataSharing !== true) {
+          const acknowledged = body.acknowledgeDataSharing;
+          if (acknowledged === undefined) {
             throw conflict(
               'AI_REVIEW_CONSENT_REQUIRED',
               'Switching AI review on needs the data-sharing notice acknowledged',
             );
           }
+          // R10: the consent is for the provider the admin was shown. The instance admin may have
+          // switched it since; the new one has a notice nobody has read yet.
+          if (!acknowledgesProvider(provider, acknowledged)) {
+            throw conflict(
+              'AI_REVIEW_PROVIDER_CHANGED',
+              'The AI provider changed since the notice was shown; read the new notice and confirm again',
+            );
+          }
           consent = {
+            providerUrl: provider.url,
             providerHost: provider.host,
             model: provider.model,
             userId: principal.user.id,
