@@ -1,4 +1,4 @@
-import { closeSync, mkdtempSync, openSync, rmSync, writeSync } from 'node:fs';
+import { closeSync, lstatSync, mkdtempSync, openSync, rmSync, writeSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
@@ -29,6 +29,7 @@ import { VERSION } from '../index';
 import type { Logger } from '../log';
 import { Warnings } from '../warnings';
 import {
+  isGitleaksRootFile,
   scanHeadFiles,
   scanMergeBase,
   type BaseSecretScan,
@@ -669,47 +670,150 @@ interface Read {
   raw: Map<string, Buffer>;
   instructions: InstructionsFile[];
   scanned: MergeBaseScan;
-  /** What the secret engine found in the head's files the scanned checkout does not hold (R14). */
-  headSecrets: readonly string[];
+  /** The head's files the scan did not see as the head has them (R14). */
+  head: HeadScan;
+}
+
+/** What R14 found in the head's files the scan did not see as the head has them. */
+interface HeadScan {
+  secrets: readonly string[];
+  /** Files the secret engine could not be given: neither their text nor their patch is sent. */
+  unscanned: ReadonlySet<string>;
+}
+
+const NOTHING_UNSEEN: HeadScan = { secrets: [], unscanned: new Set() };
+
+const nulSeparated = (output: string): string[] => output.split('\u0000').filter((p) => p !== '');
+
+const files = (n: number): string => (n === 1 ? '1 file' : `${n} files`);
+
+/**
+ * The paths of the scan root where git sees the working tree differ from `head`: a merge commit
+ * checked out in its place, a tracked file a CI step edited, a file missing there.
+ */
+async function checkoutDifferences(git: Git, head: string): Promise<string[]> {
+  return nulSeparated(
+    await gitText(git, [
+      'diff',
+      '--name-only',
+      '-z',
+      '--no-renames',
+      '--relative',
+      '--no-ext-diff',
+      head,
+      '--',
+    ]),
+  );
 }
 
 /**
- * The paths of the scan root where the working tree differs from `head`: a merge commit checked
- * out in its place, a tracked file a CI step edited, a file missing there.
+ * The scan root's index entries whose working-tree files git does not look at, and whose index
+ * version `git diff` therefore takes for the working tree's: skip-worktree (a sparse checkout's,
+ * tagged `S` by `ls-files -v`, `s` with assume-unchanged) and assume-unchanged (a lower-case tag).
  */
-async function checkoutDifferences(git: Git, head: string): Promise<Set<string>> {
-  const output = await gitText(git, [
-    'diff',
-    '--name-only',
-    '-z',
-    '--no-renames',
-    '--relative',
-    '--no-ext-diff',
-    head,
-    '--',
-  ]);
-  return new Set(output.split('\u0000').filter((p) => p !== ''));
+async function indexHidden(git: Git): Promise<string[]> {
+  return nulSeparated(await gitText(git, ['ls-files', '-z', '-v']))
+    .filter((entry) => entry.length > 2 && entry[1] === ' ')
+    .filter((entry) => {
+      const tag = entry.charAt(0);
+      return tag === 'S' || tag !== tag.toUpperCase();
+    })
+    .map((entry) => entry.slice(2));
+}
+
+/** The scan root's directory, git's working directory; null when git cannot say. */
+async function scanRootDir(git: Git): Promise<string | null> {
+  const top = await git(['rev-parse', '--show-toplevel']);
+  const prefix = await scanRootPrefix(git);
+  const dir = top.stdout.replace(/\r?\n$/, '');
+  if (top.code !== 0 || dir === '' || prefix === null) return null;
+  return path.join(dir, ...prefix.split('/').filter((s) => s !== ''));
+}
+
+/** Whether something is at `p` below `dir`. */
+function onDisk(dir: string, p: string): boolean {
+  try {
+    lstatSync(path.join(dir, ...p.split('/')));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The paths of `paths` whose `working-tree-encoding` attribute is set: the checkout holds them in
+ * that encoding, the commit in UTF-8, so the scan read other bytes than the snapshot sends. All of
+ * them when git cannot say.
+ */
+async function otherEncodings(git: Git, paths: readonly string[]): Promise<string[]> {
+  if (paths.length === 0) return [];
+  const r = await git(['check-attr', '-z', '--stdin', 'working-tree-encoding'], {
+    input: paths.map((p) => `${p}\u0000`).join(''),
+  });
+  if (r.code !== 0) return [...paths];
+  // `<path> NUL <attribute> NUL <value> NUL`, one triple per path.
+  const fields = r.stdout.split('\u0000');
+  const set: string[] = [];
+  for (let i = 0; i + 2 < fields.length; i += 3) {
+    const value = fields[i + 2];
+    if (value !== 'unspecified' && value !== 'unset') set.push(fields[i] ?? '');
+  }
+  return set;
+}
+
+/**
+ * Ruling R14: the paths of `showing` the scan may not have seen as the head has them. The
+ * analyzers scanned the working tree. Where git sees it differ from the head counts, but git's
+ * word leaves out the entries it does not look at (a sparse checkout, assume-unchanged), so those
+ * count too, and so does every path missing on disk and every one the checkout holds in another
+ * encoding.
+ */
+async function unseenByScan(
+  git: Git,
+  head: string,
+  showing: ReadonlySet<string>,
+): Promise<string[]> {
+  const unseen = new Set<string>();
+  const take = (paths: Iterable<string>): void => {
+    for (const p of paths) if (showing.has(p)) unseen.add(p);
+  };
+  take(await checkoutDifferences(git, head));
+  take(await indexHidden(git));
+  const dir = await scanRootDir(git);
+  take([...showing].filter((p) => dir === null || !onDisk(dir, p)));
+  take(
+    await otherEncodings(
+      git,
+      [...showing].filter((p) => !unseen.has(p)),
+    ),
+  );
+  return [...unseen].sort();
 }
 
 /**
  * Ruling R14: the secrets of the head's files that the scan did not see as the head has them,
- * found by the scan's secret engine. The analyzers scanned the working tree; the snapshot sends
- * the head commit's files, so every file it can send that the working tree does not hold as the
- * head does is scanned as the head has it. Null when the engine did not scan every one of them to
- * the end: those files cannot be sent. With no engine (switched off in qualor.yml), the shared
+ * found by the scan's secret engine. The snapshot sends the head commit's files and patches, the
+ * analyzers scanned the working tree: every head path the snapshot shows anything of (a file it
+ * can send, the patch of a change that is no deletion) that the scan may not have seen as the
+ * head has it is scanned as the head has it. One the engine cannot be given is `unscanned`; null
+ * when the engine did not run to the end. With no engine (switched off in qualor.yml) the shared
  * patterns alone mask them, as all else; when the working tree is the head, there is nothing to do.
  */
 async function headSecrets(
   input: SnapshotInput,
   tree: readonly Candidate[],
+  shown: readonly Change[],
   budget: number,
-): Promise<readonly string[] | null> {
-  if (input.secretsFrom !== 'working-tree' || input.baseSecrets === null) return [];
-  const differ = await checkoutDifferences(input.git, input.headSha);
-  const paths = tree.filter((c) => c.reason === null && differ.has(c.path)).map((c) => c.path);
-  if (paths.length === 0) return [];
+): Promise<HeadScan | null> {
+  if (input.secretsFrom !== 'working-tree' || input.baseSecrets === null) return NOTHING_UNSEEN;
+  const showing = new Set([
+    ...tree.filter((c) => c.reason === null).map((c) => c.path),
+    ...shown.filter((c) => c.status !== 'deleted').map((c) => c.path),
+  ]);
+  const paths = await unseenByScan(input.git, input.headSha, showing);
+  if (paths.length === 0) return NOTHING_UNSEEN;
   input.log.info(
-    `AI review: ${paths.length === 1 ? '1 file' : `${paths.length} files`} of the head differ from the scanned checkout; the secret scan runs over them as the head has them`,
+    `AI review: ${files(paths.length)} of the head differ from the scanned checkout; the secret scan runs over them as the head has them`,
   );
   const result = await scanHeadFiles(input.git, input.headSha, paths, {
     scan: input.baseSecrets,
@@ -723,7 +827,12 @@ async function headSecrets(
     );
     return null;
   }
-  return result.secrets;
+  if (result.unscanned.size > 0) {
+    input.log.info(
+      `AI review: ${files(result.unscanned.size)} of them cannot be given to the secret scan (too large, or a name its directory cannot hold), so the snapshot sends neither their text nor their patches`,
+    );
+  }
+  return result;
 }
 
 /**
@@ -781,19 +890,26 @@ async function readSources(
   checkedHeader(headerOf(input, base, null, { title: null, description: null }));
   const since = await readSince(git, input.sinceSha, head, log);
   const limits = { ...input.limits, maxFiles: Math.min(input.limits.maxFiles, MAX_SNAPSHOT_FILES) };
+  const excludes = globMatcher([...BUILTIN_EXCLUDES, ...input.config.sources.exclude], true);
   const paths: PathRules = {
-    excluded: globMatcher([...BUILTIN_EXCLUDES, ...input.config.sources.exclude], true),
+    // The secret scan's own configuration at the scan's root is never sent (nor scanned, R14).
+    excluded: (p) => isGitleaksRootFile(p) || excludes(p),
     maxFileBytes: Math.min(input.limits.maxFileBytes, MAX_SNAPSHOT_FILE_BYTES),
   };
   const left = new LeftOut(prepareSecrets(input.secrets));
   const changes = await readChanges(git, base, head, left);
   const tree = await readTree(git, head, changes, paths, left);
   const budget = limits.maxDecompressedBytes;
-  const fromHead = await headSecrets(input, tree, budget);
-  if (fromHead === null) return 'head_unscanned';
-  const shown = changes.filter(
+  const showable = changes.filter(
     (c) => c.patchable && mayShow(c.path, paths) && mayShow(c.from, paths),
   );
+  const fromHead = await headSecrets(input, tree, showable, budget);
+  if (fromHead === null) return 'head_unscanned';
+  // R14: a head file the secret engine could not be given goes neither whole nor in a patch.
+  for (const c of tree) {
+    if (c.reason === null && fromHead.unscanned.has(c.path)) c.reason = 'excluded';
+  }
+  const shown = showable.filter((c) => !fromHead.unscanned.has(c.path));
   const raw = await readRawPatches(git, { base, head }, shown, { budget, log });
   if (raw === 'too_large') return 'too_large';
   const instructions = await readInstructionFiles(git, base);
@@ -823,7 +939,7 @@ async function readSources(
     raw,
     instructions,
     scanned,
-    headSecrets: fromHead,
+    head: fromHead,
   });
 }
 
@@ -832,7 +948,7 @@ async function readSources(
  * the head's files the scanned checkout did not hold.
  */
 function maskedSources(input: SnapshotInput, read: Read): Sources {
-  const secrets = prepareSecrets([...input.secrets, ...read.scanned.secrets, ...read.headSecrets]);
+  const secrets = prepareSecrets([...input.secrets, ...read.scanned.secrets, ...read.head.secrets]);
   read.left.addSecrets(secrets);
   const { changes, candidates } = stillSendable(read.changes, read.tree, read.left);
   read.left.warn(input.log);

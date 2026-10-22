@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { parseConfig, type QualorConfig } from '@qualor/shared';
@@ -15,6 +16,7 @@ import { createGit, type Git } from '../git/git';
 import { createLogger, silentLogger } from '../log';
 import {
   baseSecretScan,
+  scanHeadFiles,
   scanMergeBase,
   type BaseSecretScan,
   type BaseSecretScanResult,
@@ -435,4 +437,59 @@ describeWithTools(['gitleaks'])('baseSecretScan with the real Gitleaks', () => {
       expect(await instructionSecrets(gitleaksAnalyzer, checkout)).toEqual(head);
     },
   );
+});
+
+describe("a commit's files written for the secret engine", () => {
+  /** A commit whose tree holds names git itself accepts but no checkout would: `..`, `.`, `\`. */
+  function craftedCommit(): { repo: string; head: string; crafted: string[] } {
+    const repo = tmp();
+    initRepo(repo);
+    const git = (args: string[], input?: string) =>
+      execFileSync('git', args, { cwd: repo, env: GIT_TEST_ENV, input, encoding: 'utf8' }).trim();
+    const blob = git(['hash-object', '-w', '--stdin'], 'hello\n');
+    const tree = (entries: string[]) =>
+      git(['mktree', '-z'], entries.map((e) => `${e}\u0000`).join(''));
+    const up = tree([`100644 blob ${blob}\tescape.ts`]);
+    const dot = tree([`100644 blob ${blob}\ty.ts`]);
+    const x = tree([`040000 tree ${dot}\t.`]);
+    const root = tree([
+      `100644 blob ${blob}\tok.ts`,
+      `100644 blob ${blob}\ta\\b.ts`,
+      `040000 tree ${up}\t..`,
+      `040000 tree ${x}\tx`,
+    ]);
+    const head = git(['commit-tree', root, '-m', 'crafted']);
+    return { repo, head, crafted: ['../escape.ts', 'a\\b.ts', 'x/./y.ts'] };
+  }
+
+  it('never writes one outside its directory, nor one that is not a plain relative path', async () => {
+    const { repo, head, crafted } = craftedCommit();
+    const listed = execFileSync('git', ['ls-tree', '-r', '-z', '--name-only', head], {
+      cwd: repo,
+      env: GIT_TEST_ENV,
+      encoding: 'utf8',
+    });
+    expect(listed.split('\u0000').filter(Boolean).sort()).toEqual([...crafted, 'ok.ts'].sort());
+    const tempRoot = tmp();
+    const recorded = recordingScan();
+    const o = { scan: recorded.scan, budget: 1_000_000, log: silentLogger, tempRoot };
+    const git = createGit(repo, GIT_TEST_ENV);
+    // The head's files (R14): the crafted ones are left unscanned, so their text goes nowhere.
+    expect(await scanHeadFiles(git, head, ['ok.ts', ...crafted], o)).toEqual({
+      secrets: [],
+      unscanned: new Set(crafted),
+    });
+    expect(recorded.files).toEqual(['ok.ts']);
+    expect(readdirSync(tempRoot)).toEqual([]);
+    // The merge base's (R13), written by the same code: the crafted ones send no removed line.
+    const base = await scanMergeBase(
+      git,
+      head,
+      { paths: ['ok.ts', ...crafted], instructions: [] },
+      o,
+    );
+    expect([...base.scanned]).toEqual(['ok.ts']);
+    expect(recorded.files).toEqual(['ok.ts']);
+    expect(readdirSync(tempRoot)).toEqual([]);
+  });
 });

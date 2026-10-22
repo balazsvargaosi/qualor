@@ -668,16 +668,14 @@ describe("buildReviewSnapshot: the merge base's secrets (R13)", () => {
   });
 
   it('sends no removed line of a changed file the scan of the merge base did not hold', async () => {
-    // Gitleaks would read a root .gitleaksignore as its own: it is never put where it scans.
+    // A file system that ignores case holds one of Dup.ts and dup.ts: dup.ts is not put there.
     const mr = mergeRequest(
-      { '.gitleaksignore': 'old-entry\n', 'a.ts': 'x\ny\n' },
-      { '.gitleaksignore': 'new-entry\n', 'a.ts': 'x\nz\n' },
+      { 'Dup.ts': 'x\ny\n', 'dup.ts': 'p\nq\n' },
+      { 'Dup.ts': 'x\nz\n', 'dup.ts': 'p\nr\n' },
     );
     const changes = changesOf(linesOf(await build(mr)));
-    expect(changes.get('.gitleaksignore')?.patch).toContain(
-      '\n-[1 removed line not sent]\n+new-entry\n',
-    );
-    expect(changes.get('a.ts')?.patch).toContain('\n-y\n+z\n');
+    expect(changes.get('dup.ts')?.patch).toContain('\n-[1 removed line not sent]\n+r\n');
+    expect(changes.get('Dup.ts')?.patch).toContain('\n-y\n+z\n');
   });
 
   it('leaves out a path holding a secret of the merge base, as one holding the scan’s', async () => {
@@ -775,7 +773,7 @@ describe("buildReviewSnapshot: the merge base's secrets (R13)", () => {
     expect(headersOf(patch)).toEqual(['@@ -9,7 +9,7 @@']);
   });
 
-  it('never places a .gitleaks file of the merge base, whatever its case', async () => {
+  it('never sends nor places a root .gitleaks file, whatever its case', async () => {
     // A dotless i (U+0131) has the capital I, as a file system that ignores case may fold it.
     const dotless = '.g\u0131tleaksignore';
     const mr = mergeRequest(
@@ -784,7 +782,7 @@ describe("buildReviewSnapshot: the merge base's secrets (R13)", () => {
     );
     const changes = changesOf(linesOf(await build(mr)));
     for (const p of ['.GITLEAKS.TOML', dotless]) {
-      expect(changes.get(p)?.patch, p).toContain('\n-[1 removed line not sent]\n');
+      expect(changes.get(p), p).toMatchObject({ status: 'deleted', patch: null });
     }
     expect(changes.get('a.ts')?.patch).toContain('\n-y\n+z\n');
   });
@@ -961,22 +959,58 @@ describe('buildReviewSnapshot: the head files the scan did not see (R14)', () =>
     expect(headerOf(lines).mergeRequest.description).toBe(`rotates ${REDACTED}`);
   });
 
-  it.each([
-    ['the secret engine fails over them', { engine: 'fail' as const }, {}],
-    [
-      'one cannot be put where the engine reads it (a root .gitleaksignore)',
-      {},
-      { '.gitleaksignore': 'src/x.ts:fake-secret:1\n' },
-    ],
-  ])('%s: unavailable head_unscanned, and nothing left behind', async (_name, over, extra) => {
-    const mr = mergeRequest({ 'src/a.ts': 'a\n' }, { 'src/a.ts': 'b\n', ...extra });
+  it('the secret engine failing over them: unavailable head_unscanned, and nothing left behind', async () => {
+    const mr = mergeRequest({ 'src/a.ts': 'a\n' }, { 'src/a.ts': 'b\n' });
     const tempRoot = tmp();
-    expect(await build(mr, { ...over, secretsFrom: 'working-tree', tempRoot })).toEqual({
+    expect(await build(mr, { engine: 'fail', secretsFrom: 'working-tree', tempRoot })).toEqual({
       kind: 'unavailable',
       reason: 'head_unscanned',
     });
     expect(readdirSync(tempRoot)).toEqual([]);
   });
+
+  it('one the secret engine cannot be given is sent neither whole nor in a patch', async () => {
+    // A file system that ignores case holds one of Dup.ts and dup.ts: dup.ts is not scanned.
+    const secret = fakeSecret('in0the0second0name');
+    const mr = mergeRequest(
+      { 'src/a.ts': 'a\n' },
+      { 'src/a.ts': 'b\n', 'src/Dup.ts': 'one\n', 'src/dup.ts': `two ${secret}\n` },
+    );
+    const logs: string[] = [];
+    const built = await build(mr, {
+      secretsFrom: 'working-tree',
+      log: createLogger('info', (t) => logs.push(t)),
+    });
+    expect(textOf(built)).not.toContain(secret);
+    const lines = linesOf(built);
+    expect(filesOf(lines)['src/Dup.ts']).toBe('one\n');
+    expect(omittedOf(lines)['src/dup.ts']).toBe('excluded');
+    expect(changesOf(lines).get('src/dup.ts')).toMatchObject({ status: 'added', patch: null });
+    expect(logs.filter((l) => l.includes('cannot be given to the secret scan'))).toHaveLength(1);
+  });
+
+  it.each(['head', 'working-tree'] as const)(
+    'a root .gitleaksignore or .gitleaks.* is never sent, so it needs no scan (secrets from the %s)',
+    async (secretsFrom) => {
+      const mr = mergeRequest(
+        { 'src/a.ts': 'a\n' },
+        {
+          'src/a.ts': 'b\n',
+          '.gitleaksignore': 'src/x.ts:fake-secret:1\n',
+          '.Gitleaks.toml': 'title = "rules"\n',
+          // Not at the scan's root: another file.
+          'sub/.gitleaks.toml': 'title = "sub"\n',
+        },
+      );
+      const lines = linesOf(await build(mr, { secretsFrom }));
+      expect(omittedOf(lines)).toMatchObject({
+        '.gitleaksignore': 'excluded',
+        '.Gitleaks.toml': 'excluded',
+      });
+      expect(changesOf(lines).get('.gitleaksignore')?.patch).toBeNull();
+      expect(filesOf(lines)['sub/.gitleaks.toml']).toBe('title = "sub"\n');
+    },
+  );
 
   it('without a secret engine, the shared patterns alone mask them, as all else', async () => {
     const mr = mergeRequest({ 'src/a.ts': 'a\n' }, { 'src/a.ts': 'b\n', 'src/c.ts': 'c\n' });

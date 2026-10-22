@@ -1,4 +1,4 @@
-import { readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, writeFileSync } from 'node:fs';
 import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from 'node:http';
 import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
@@ -12,6 +12,7 @@ import {
   type SnapshotFileLine,
   type SnapshotHeaderLine,
   type SnapshotLine,
+  type SnapshotOmittedLine,
 } from '@qualor/shared';
 import { describe, expect, it } from 'vitest';
 import { commitAll, gitSync, initRepo, SCAN_TEST_ENV } from '../../test/git';
@@ -318,8 +319,8 @@ interface Mr {
 function mrRepo(
   o: {
     yml?: string;
-    base?: Record<string, string>;
-    head?: Record<string, string>;
+    base?: Record<string, string | Uint8Array>;
+    head?: Record<string, string | Uint8Array>;
     dir?: string;
   } = {},
 ): Mr {
@@ -360,6 +361,14 @@ function gitlabMr(head: string, more: Record<string, string> = {}): Record<strin
 const isChange = (l: SnapshotLine): l is SnapshotChangeLine => l.type === 'change';
 const isFile = (l: SnapshotLine): l is SnapshotFileLine => l.type === 'file';
 const isHeader = (l: SnapshotLine): l is SnapshotHeaderLine => l.type === 'header';
+const isOmitted = (l: SnapshotLine): l is SnapshotOmittedLine => l.type === 'omitted';
+const omittedOf = (lines: SnapshotLine[]) =>
+  Object.fromEntries(lines.filter(isOmitted).map((l) => [l.path, l.reason]));
+/** The only snapshot `server` received: its inflated text and its lines. */
+function sent(server: Fake): { text: string; lines: SnapshotLine[] } {
+  const body = server.snapshots[0]?.body ?? Buffer.alloc(0);
+  return { text: gunzipSync(body).toString('utf8'), lines: snapshotLinesOf(body) };
+}
 const reviewWarnings = (stderr: string) =>
   stderr.split('\n').filter((l) => l.startsWith('warn: AI review'));
 
@@ -871,20 +880,27 @@ describe('qualor scan: the head files the scan did not see (6I-2, ruling R14)', 
    * (feature) changes src/a.ts only; main then removes the secret (origin/main); HEAD is the merge
    * of the merge request into main.
    */
-  function mergeCheckout(): MergeCheckout {
+  function mergeCheckout(
+    o: {
+      base?: Record<string, string>;
+      head?: Record<string, string>;
+      target?: Record<string, string>;
+    } = {},
+  ): MergeCheckout {
     const root = path.join(tmp(), 'repo');
     writeTree(root, {
       'qualor.yml': MR_YML,
       'src/a.ts': 'export const a = 1;\n',
       'src/leak.ts': `export const key = '${LEAKED}';\n`,
+      ...o.base,
     });
     initRepo(root);
     commitAll(root, 'base');
     gitSync(root, 'checkout', '-q', '-b', 'feature');
-    writeTree(root, { 'src/a.ts': 'export const a = 2;\n' });
+    writeTree(root, { 'src/a.ts': 'export const a = 2;\n', ...o.head });
     const head = commitAll(root, 'the merge request');
     gitSync(root, 'checkout', '-q', 'main');
-    writeTree(root, { 'src/leak.ts': "export const key = process.env['KEY'];\n" });
+    writeTree(root, { 'src/leak.ts': "export const key = process.env['KEY'];\n", ...o.target });
     const target = commitAll(root, 'remove the leaked key');
     gitSync(root, 'update-ref', 'refs/remotes/origin/main', target);
     gitSync(root, 'merge', '-q', '--no-ff', '--no-edit', 'feature');
@@ -1044,6 +1060,161 @@ describe('qualor scan: the head files the scan did not see (6I-2, ruling R14)', 
       // The scan's own run and the merge base's (the old side of src/a.ts), nothing else.
       expect(engine.runs()).toHaveLength(2);
       expect(headRuns(engine)).toEqual([]);
+    },
+  );
+
+  /** A merge request scan with the fake Gitleaks, in the GitLab pipeline `ci`. */
+  async function scanWithEngine(
+    root: string,
+    ci: Record<string, string>,
+  ): Promise<{ code: number; stderr: string; server: Fake; engine: FakeEngine }> {
+    const engine = fakeSecretEngine(tmp());
+    const server = await fakeServer([done('passed')], undefined, { context: REVIEW_ON });
+    const r = await scan(root, server, [], { analyzers: [engine.analyzer] }, ci);
+    return { ...r, server, engine };
+  }
+  type FakeEngine = ReturnType<typeof fakeSecretEngine>;
+  const mergedResult = (m: MergeCheckout) =>
+    gitlabMr(m.merge, {
+      CI_MERGE_REQUEST_EVENT_TYPE: 'merged_result',
+      CI_MERGE_REQUEST_SOURCE_BRANCH_SHA: m.head,
+    });
+
+  it(
+    'N1: a file too large to send whole, rewritten by a CI step: the secret the merge request adds is masked on its patch',
+    { timeout: 60_000 },
+    async () => {
+      const secret = fakeSecret('added0to0a0big0file');
+      // 1.6 MB: over the snapshot's 1 MiB for a file, so only its patch shows it.
+      const big = `${'x'.repeat(79)}\n`.repeat(20_000);
+      const mr = mrRepo({
+        base: { 'src/big.txt': big },
+        head: { 'src/a.ts': 'export const a = 2;\n', 'src/big.txt': `${big}key = ${secret}\n` },
+      });
+      // A CI step rewrote the file before the scan: the analyzers never saw the line.
+      writeTree(mr.root, { 'src/big.txt': big });
+      const { code, stderr, server, engine } = await scanWithEngine(mr.root, gitlabMr(mr.head));
+      expect(code, stderr).toBe(0);
+      const { text, lines } = sent(server);
+      expect(text).not.toContain(secret);
+      expect(omittedOf(lines)['src/big.txt']).toBe('too_large');
+      const patch = lines.filter(isChange).find((l) => l.path === 'src/big.txt')?.patch ?? '';
+      expect(patch).toContain(`\n+key = ${REDACTED}\n`);
+      expect(headRuns(engine)).toHaveLength(1);
+    },
+  );
+
+  it(
+    'N1: a file too large to scan, whose patch context shows a secret main removed after the merge base: the patch is not sent',
+    { timeout: 120_000 },
+    async () => {
+      const secret = fakeSecret('in0a0huge0file');
+      // 17 MB: over the 16 MiB the secret scan of a commit's file takes.
+      const filler = Array.from(
+        { length: 175_000 },
+        (_, i) => `line ${String(i + 1).padStart(6, '0')} ${'y'.repeat(85)}\n`,
+      );
+      const huge = (lines: Record<number, string>) =>
+        filler.map((l, i) => lines[i + 1] ?? l).join('');
+      const m = mergeCheckout({
+        base: { 'src/huge.txt': huge({ 1004: `key = ${secret}\n` }) },
+        // Line 1001 changes: line 1004 is in the patch's context.
+        head: { 'src/huge.txt': huge({ 1001: 'changed\n', 1004: `key = ${secret}\n` }) },
+        target: { 'src/huge.txt': huge({ 1004: "key = process.env['KEY']\n" }) },
+      });
+      const { code, stderr, server } = await scanWithEngine(m.root, mergedResult(m));
+      expect(code, stderr).toBe(0);
+      const { text, lines } = sent(server);
+      expect(text).not.toContain(secret);
+      expect(lines.filter(isChange).find((l) => l.path === 'src/huge.txt')).toMatchObject({
+        status: 'modified',
+        patch: null,
+      });
+      expect(omittedOf(lines)['src/huge.txt']).toBe('too_large');
+      expect(stderr).toContain('cannot be given to the secret scan');
+    },
+  );
+
+  it(
+    'N2: a sparse checkout: a head file outside its cone, which the scan never saw, is scanned',
+    { timeout: 60_000 },
+    async () => {
+      const secret = fakeSecret('outside0the0sparse0cone');
+      const mr = mrRepo({ base: { 'lib/leak.ts': `export const key = '${secret}';\n` } });
+      gitSync(mr.root, 'sparse-checkout', 'set', '--cone', 'src');
+      expect(existsSync(path.join(mr.root, 'lib', 'leak.ts'))).toBe(false);
+      const { code, stderr, server, engine } = await scanWithEngine(mr.root, gitlabMr(mr.head));
+      expect(code, stderr).toBe(0);
+      const { text, lines } = sent(server);
+      expect(text).not.toContain(secret);
+      const sentFiles = new Map(lines.filter(isFile).map((l) => [l.path, l.text]));
+      expect(sentFiles.get('lib/leak.ts')).toBe(`export const key = '${REDACTED}';\n`);
+      expect(headRuns(engine)).toHaveLength(1);
+    },
+  );
+
+  it(
+    'N2: a file marked assume-unchanged and edited after the checkout: its head version is scanned',
+    { timeout: 60_000 },
+    async () => {
+      const secret = fakeSecret('hidden0by0assume0unchanged');
+      const mr = mrRepo({
+        head: {
+          'src/a.ts': 'export const a = 2;\n',
+          'src/config.ts': `export const key = '${secret}';\n`,
+        },
+      });
+      gitSync(mr.root, 'update-index', '--assume-unchanged', 'src/config.ts');
+      writeTree(mr.root, { 'src/config.ts': "export const key = process.env['KEY'];\n" });
+      // git takes the index's word for the file: it sees no difference.
+      expect(gitSync(mr.root, 'diff', '--name-only', mr.head)).toBe('');
+      const { code, stderr, server } = await scanWithEngine(mr.root, gitlabMr(mr.head));
+      expect(code, stderr).toBe(0);
+      const { text, lines } = sent(server);
+      expect(text).not.toContain(secret);
+      const sentFiles = new Map(lines.filter(isFile).map((l) => [l.path, l.text]));
+      expect(sentFiles.get('src/config.ts')).toBe(`export const key = '${REDACTED}';\n`);
+    },
+  );
+
+  it(
+    'N3: a file the checkout holds in another encoding (working-tree-encoding): its UTF-8 head version is scanned',
+    { timeout: 60_000 },
+    async () => {
+      const secret = fakeSecret('in0a0utf16le0checkout');
+      const mr = mrRepo({
+        head: {
+          'src/a.ts': 'export const a = 2;\n',
+          '.gitattributes': '*.txt text working-tree-encoding=UTF-16LE\n',
+          // The working tree's file is UTF-16LE; the commit holds it in UTF-8.
+          'notes.txt': Buffer.from(`key = ${secret}\n`, 'utf16le'),
+        },
+      });
+      expect(gitSync(mr.root, 'diff', '--name-only', mr.head)).toBe('');
+      const { code, stderr, server } = await scanWithEngine(mr.root, gitlabMr(mr.head));
+      expect(code, stderr).toBe(0);
+      const { text, lines } = sent(server);
+      expect(text).not.toContain(secret);
+      const sentFiles = new Map(lines.filter(isFile).map((l) => [l.path, l.text]));
+      expect(sentFiles.get('notes.txt')).toBe(`key = ${REDACTED}\n`);
+    },
+  );
+
+  it(
+    "N4: the target changed the scan's root .gitleaksignore after the merge base: it is never sent, and no longer in the way",
+    { timeout: 60_000 },
+    async () => {
+      const m = mergeCheckout({
+        base: { '.gitleaksignore': 'src/old.ts:fake-secret:1\n' },
+        target: { '.gitleaksignore': 'src/new.ts:fake-secret:1\n' },
+      });
+      const { code, stderr, server } = await scanWithEngine(m.root, mergedResult(m));
+      expect(code, stderr).toBe(0);
+      expect(server.paths).toEqual([...UNTIL_REPORT, CONTEXT, SNAPSHOT, GATE]);
+      const { text, lines } = sent(server);
+      expect(text).not.toContain(LEAKED);
+      expect(omittedOf(lines)['.gitleaksignore']).toBe('excluded');
+      expect(reviewWarnings(stderr)).toEqual([]);
     },
   );
 });

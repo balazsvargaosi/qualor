@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import type { QualorConfig } from '@qualor/shared';
+import { snapshotPathProblem, type QualorConfig } from '@qualor/shared';
 import { fileLines, normalizeCaptures } from '../analyzers/normalize';
 import {
   createWorkDir,
@@ -135,27 +135,39 @@ const WINDOWS_RESERVED = /^(?:con|prn|aux|nul|com\d|lpt\d)(?:\..*)?$/i;
 const WINDOWS_FORBIDDEN = /[<>:"|?*]|[. ]$/;
 
 /**
- * Whether the merge base's version of `p` can go into the scanned directory as itself: never a root
- * `.gitleaksignore` or `.gitleaks.*` in any case, which Gitleaks would read as its own there on a
- * file system that ignores case (`.GITLEAKS.TOML`, or a dotless i, U+0131, whose capital is `I`);
- * on Windows, never a name the file system would turn into something else (a device, a stream).
+ * A file Gitleaks reads as its own at the root of the directory it scans: `.gitleaksignore` or
+ * `.gitleaks.*`, in any case, as a file system that ignores case reads `.GITLEAKS.TOML` (or a
+ * dotless i, U+0131, whose capital is `I`). `p` is relative to the scan's root. The snapshot never
+ * sends one (it is the scan's configuration, not code to review), so none needs a scan there.
+ */
+export function isGitleaksRootFile(p: string): boolean {
+  const names = [p.toLowerCase(), p.toUpperCase().toLowerCase()];
+  return names.some((n) => n === '.gitleaksignore' || n.startsWith('.gitleaks.'));
+}
+
+/**
+ * Whether a commit's version of `p` can go into the scanned directory as itself: only a plain
+ * relative path (no `\`, no `.` or `..` segment, no control character, as a snapshot path); never
+ * a root `.gitleaksignore` or `.gitleaks.*`, which Gitleaks would read as its own there; on
+ * Windows, never a name the file system would turn into something else (a device, a stream).
  */
 function placeable(p: string): boolean {
-  const names = [p.toLowerCase(), p.toUpperCase().toLowerCase()];
-  if (names.some((n) => n === '.gitleaksignore' || n.startsWith('.gitleaks.'))) return false;
+  if (snapshotPathProblem(p) !== null || isGitleaksRootFile(p)) return false;
   if (process.platform !== 'win32') return true;
   return p.split('/').every((s) => !WINDOWS_RESERVED.test(s) && !WINDOWS_FORBIDDEN.test(s));
 }
 
 /**
  * Writes `content` to `rel` below `dir`, once per name a case-insensitive file system tells apart:
- * a second path that would land on the first is not written (it was not scanned, then).
+ * a second path that would land on the first is not written (it was not scanned, then), and
+ * neither is one that would land anywhere but below `dir`.
  */
 function writeBelow(dir: string, rel: string, content: Buffer, names: Set<string>): boolean {
   const name = rel.normalize('NFC').toLowerCase();
   if (names.has(name)) return false;
   try {
     const file = path.join(dir, ...rel.split('/'));
+    if (!path.resolve(file).startsWith(path.resolve(dir) + path.sep)) return false;
     mkdirSync(path.dirname(file), { recursive: true });
     writeFileSync(file, content, { flag: 'wx', mode: 0o600 });
   } catch {
@@ -316,20 +328,27 @@ export async function scanMergeBase(
 }
 
 /**
- * Ruling R14: the head commit's versions of `paths`, files of the scan's root that the working
- * tree the scan saw does not hold as the head does (a merge commit checked out, a file a CI step
- * edited), scanned by the scan's secret engine at their paths, in a private work directory as the
- * merge base's are. Their secrets, or why not every one of them was scanned to the end: one that
- * cannot be put where the engine reads it (a root `.gitleaksignore`, a name the file system
- * cannot hold) is not scanned either.
+ * What the scan's secret engine found in the head's versions of some files (ruling R14): their
+ * secrets, and the files it could not be given (`unscanned`), whose content then goes nowhere; or
+ * why it did not run to the end over the rest.
+ */
+export type HeadFilesScan =
+  { secrets: readonly string[]; unscanned: ReadonlySet<string> } | { failed: string };
+
+/**
+ * Ruling R14: the head commit's versions of `paths`, files of the scan's root that the scan did
+ * not see as the head has them (a merge commit checked out, a file a CI step edited, a sparse
+ * checkout), scanned by the scan's secret engine at their paths, in a private work directory as
+ * the merge base's are. One that cannot be put where the engine reads it (over the size bound, a
+ * name the file system cannot hold, two names it takes for one) is `unscanned`.
  */
 export async function scanHeadFiles(
   git: Git,
   head: string,
   paths: readonly string[],
   o: { scan: BaseSecretScan; budget: number; tempRoot?: string; log: Logger },
-): Promise<BaseSecretScanResult> {
-  if (paths.length === 0) return { secrets: [] };
+): Promise<HeadFilesScan> {
+  if (paths.length === 0) return { secrets: [], unscanned: new Set() };
   return withEmergencyCleanup(o.log, async () => {
     const dir = createWorkDir('review-head', o.tempRoot);
     try {
@@ -339,9 +358,10 @@ export async function scanHeadFiles(
         budget: o.budget,
         names: new Set(),
       });
-      const missed = paths.filter((p) => !written.has(p)).length;
-      if (missed > 0) return { failed: `${missed} cannot be put where the engine reads them` };
-      return await scanned(o.scan, dir, paths, o.log);
+      const unscanned = new Set(paths.filter((p) => !written.has(p)));
+      if (written.size === 0) return { secrets: [], unscanned };
+      const result = await scanned(o.scan, dir, [...written], o.log);
+      return 'failed' in result ? result : { secrets: result.secrets, unscanned };
     } finally {
       releaseWorkDir(dir, o.log);
     }
