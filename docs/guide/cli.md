@@ -17,6 +17,11 @@ It runs the analyzers, computes metrics, duplication and coverage, and computes 
 baseline. It uploads one gzip report, waits for the gate verdict, prints the failed conditions, and
 exits.
 
+On a merge request, when [AI review](./ai-review.md) is switched on for the project, it also uploads
+a snapshot of the repository right after the report. Every log line about that starts with
+`AI review`, and a failure there is only a warning: the exit code stays the quality gate's. A scan
+that exits 3 sends no snapshot.
+
 Its first line is its own version (`qualor 0.11.0 (linux-x64)`). With a server configured, it then
 asks the server for its version and logs `server https://qualor.example.com runs Qualor 0.11.0`. When
 the two are different releases (`0.3` against `0.4`), it warns and names the scanner tag that

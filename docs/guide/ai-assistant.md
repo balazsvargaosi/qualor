@@ -2,6 +2,8 @@
 
 Qualor can ask a language model about one issue at a time. It is optional, **off by default**, and
 uses a model you choose, with your own key: a hosted provider or a local model on your own network.
+To have a model review whole merge requests, see [AI review](./ai-review.md): it uses the provider
+configured here and has its own switch, warning and budgets.
 
 ## What it does
 
@@ -275,6 +277,10 @@ and day (UTC)**:
 
 The top of the page shows today's use of the organisation chosen in the header against these
 budgets, one meter per budget, and says when a budget is reached for the day.
+
+The field **AI review: most tokens per organisation per day** under them is not a budget of this
+assistant. It caps what an organisation admin may give [AI review](./ai-review.md#budgets-and-the-instance-ceiling),
+which has budgets of its own. Leave it empty for no cap.
 
 Posting a suggestion to a merge request does not count again. The budgets are yours to set, and no
 edition caps them: the fix budget can go up to 100 000 a day, like the explanation and triage budgets.

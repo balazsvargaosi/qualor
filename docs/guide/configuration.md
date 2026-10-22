@@ -108,7 +108,7 @@ newCode:
   referenceBranch: null             # branches other than main compare with this; default: the main branch
 
 scm:
-  autoFetch: true                   # fetch missing baseline commits when the clone is shallow
+  autoFetch: true                   # fetch missing baseline commits when the clone is shallow; false fetches nothing
   mainBranch: null                  # default: CI_DEFAULT_BRANCH / the server's setting
 
 gate:
@@ -179,6 +179,11 @@ every finding older than that commit.
 
 Values read from CI, when present: the revision, the branch, the MR/PR id and its target, the default
 branch and the project path, from `CI_*` on GitLab and `GITHUB_*` plus the event payload on GitHub.
+For [AI review](./ai-review.md#what-your-ci-needs) it also reads the merge request's last commit
+(`CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` in a merged-result or merge-train pipeline, else
+`CI_COMMIT_SHA`; the event's `pull_request.head.sha` on GitHub) and its title and description
+(`CI_MERGE_REQUEST_TITLE` and `CI_MERGE_REQUEST_DESCRIPTION`; the event's `pull_request.title` and
+`body`). Those three go into the AI review snapshot only, never into the report.
 Outside CI, the scanner uses `git rev-parse HEAD` and the current branch, and never assumes a merge
 request.
 

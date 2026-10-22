@@ -6,6 +6,27 @@ All notable changes to Qualor are listed here, newest first. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- AI review settings (**Settings → AI review**) and the repository snapshot the scanner sends for
+  merge requests when it is on. An organisation admin switches AI review on after confirming a
+  warning that names the AI provider's host and model, chooses the projects and sets the budgets;
+  when the instance admin changes the provider, reviews stop until the warning is confirmed again.
+  Instance admins can cap the tokens per organisation and day in **Settings → AI assistant**. For
+  the merge requests of the chosen projects, the scanner uploads a copy of the repository with its
+  secrets masked, and the server keeps it for 14 days at most. The server gets
+  `QUALOR_REVIEW_SNAPSHOT_MAX_COMPRESSED_BYTES` and `QUALOR_REVIEW_SNAPSHOT_MAX_DECOMPRESSED_BYTES`.
+  See [the guide](docs/guide/ai-review.md). The API gains `GET` and
+  `PUT /api/v0/organizations/{id}/ai/review`, `GET /api/v0/projects/review-context` and
+  `POST /api/v0/analyses/{id}/review-snapshot`, and project objects gain `aiReview`.
+
+### Changed
+
+- No community limit on AI fix suggestions; your own budget applies. The 25 a day that every
+  organisation was held to is gone, and the fix budget in **Settings → AI assistant** (25 by
+  default, up to 100 000) is the only limit. A licence key that lists `llm.fix-quota` stays valid
+  and changes nothing. `GET` and `PUT /api/v0/system/llm` no longer have `maxFixPerDay`.
+
 ## [0.11.0] - 2026-10-19
 
 ### Added

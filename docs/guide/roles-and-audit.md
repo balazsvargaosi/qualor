@@ -23,6 +23,7 @@ This page covers two things:
 | Create a compliance report of the project (with `compliance-export`, permission `project.compliance.create`) | ✓ | ✓ | | |
 | Create organisation compliance reports, delete any compliance report (with `compliance-export`, permission `org.compliance.manage`) | ✓ | | | |
 | Switch automatic fix suggestions on for the organisation and set their threshold (with `llm.auto-fix`, permission `org.ai.manage`) | ✓ | | | |
+| Switch [AI review](./ai-review.md) on for the organisation, choose its projects and set its budgets (permission `org.ai.manage`) | ✓ | | | |
 | Opt one project out of automatic fix suggestions (with `llm.auto-fix`; part of changing project settings) | ✓ | ✓ | | |
 | Read the project's dependencies and their licences (the **Dependencies** tab), and the organisation's licence policy | ✓ | ✓ | ✓ | ✓ |
 | Set or remove the organisation's licence policy (with `license-policy`, permission `org.licenses.manage`) | ✓ | | | |
@@ -142,7 +143,10 @@ prefix ending in `.*`, for example `issue.*`):
   organisation's automatic fix settings changed (`organization.auto_fix_changed`, with the new
   on/off, minimum severity and maximum per analysis) and a project opting out or back in
   (`project.auto_fix_changed`). The requests and posts Qualor makes by itself are recorded as
-  `ai.requested` and `ai.fix_posted` by `system`, with no user.
+  `ai.requested` and `ai.fix_posted` by `system`, with no user. An organisation's
+  [AI review](./ai-review.md) settings changed (`organization.ai_review_changed`, with whether it
+  is on, its scope, how many projects it lists, whether this change confirmed the warning, and the
+  provider's host and model).
 - **Email:** its settings changed (the names of the changed fields only, never the password), and a
   test message sent (whether it was delivered).
 - **The licence policy** (with `license-policy`, [Dependency licences](./dependency-licenses.md)):

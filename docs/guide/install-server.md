@@ -412,7 +412,9 @@ into a `postgres://` URL.
 | `QUALOR_SMTP_REPLY_TO` | none | an address replies go to |
 | `QUALOR_UPLOAD_MAX_COMPRESSED_BYTES` | 50 MiB | largest report upload, as sent |
 | `QUALOR_UPLOAD_MAX_DECOMPRESSED_BYTES` | 500 MiB | largest report once inflated (500 MiB is also the maximum) |
-| `QUALOR_MAX_CONCURRENT_UPLOADS` | `4` | uploads read at once. More get 503 with `Retry-After` |
+| `QUALOR_REVIEW_SNAPSHOT_MAX_COMPRESSED_BYTES` | 50 MiB | largest [AI review](./ai-review.md) snapshot upload, as sent |
+| `QUALOR_REVIEW_SNAPSHOT_MAX_DECOMPRESSED_BYTES` | 500 MiB | largest snapshot once inflated (500 MiB is also the maximum, 1 MiB the minimum) |
+| `QUALOR_MAX_CONCURRENT_UPLOADS` | `4` | uploads read at once, reports and AI review snapshots together. More get 503 with `Retry-After` |
 | `QUALOR_REQUEST_TIMEOUT_MS` | `300000` | longest a request may run |
 | `QUALOR_WORKER_CONCURRENCY` | `1` | analysis jobs processed at once. Each slot can use several times one report's size in memory |
 | `NODE_EXTRA_CA_CERTS` | none | a PEM bundle, when your GitLab, GitHub Enterprise, webhook receivers or SMTP server use a private CA. Mount the file into the container |
@@ -446,6 +448,10 @@ location / {
   proxy_read_timeout 300s;
 }
 ```
+
+The same body limit covers the snapshots of [AI review](./ai-review.md), whose own limit
+(`QUALOR_REVIEW_SNAPSHOT_MAX_COMPRESSED_BYTES`) is also 50 MiB by default. Set the proxy to the
+larger of the two limits.
 
 A cloud load balancer works too. Give it the same body size limit and a 300 s timeout, and set
 `QUALOR_TRUST_PROXY` to its hop count or address range.
@@ -551,6 +557,7 @@ A daily housekeeping job deletes old data:
 | webhook deliveries | 30 days |
 | the email log (Settings → Email) | 30 days; a message still waiting after 2 days is given up |
 | AI assistant requests and answers | 90 days, an automatic fix suggestion while its issue exists; stored prompts (off by default) 1–90 days, default 7 |
+| [AI review](./ai-review.md) snapshots (copies of a merge request's repository) | until a newer analysis of the merge request replaces them, and 14 days at most; one the server refused, 1 day |
 | audit log events (enterprise, `audit-log`) | 365 days by default, 30 days to 100 years (**Settings → Audit settings**; [Roles and the audit log](./roles-and-audit.md#retention)) |
 | analyses and measures | forever |
 

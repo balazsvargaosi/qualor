@@ -42,31 +42,34 @@ release: **Docs** in the top bar, at `/docs` on your server, for signed-in users
     profiles and issue statuses.
 11. [AI assistant](./ai-assistant.md): explain issues, suggest triage and fixes with your own
     model; off by default. Enterprise adds automatic fix suggestions for merge requests.
-12. [Email](./email.md): the SMTP server, the test message and the alerts for administrators.
-13. [CLI reference](./cli.md): commands, options and exit codes.
-14. [Migrating from SonarQube](./migrate-from-sonarqube.md): `qualor import sonarqube`.
-15. [Webhooks and REST API](./webhooks-and-api.md): events, signatures and the most useful
+12. [AI review](./ai-review.md): switching on AI review of merge requests, the warning you
+    confirm, the repository snapshot the scanner uploads, how it is masked and kept, and the
+    budgets.
+13. [Email](./email.md): the SMTP server, the test message and the alerts for administrators.
+14. [CLI reference](./cli.md): commands, options and exit codes.
+15. [Migrating from SonarQube](./migrate-from-sonarqube.md): `qualor import sonarqube`.
+16. [Webhooks and REST API](./webhooks-and-api.md): events, signatures and the most useful
     endpoints.
-16. [Enterprise](./enterprise.md): what a licence key adds, how to apply it, and what happens when
+17. [Enterprise](./enterprise.md): what a licence key adds, how to apply it, and what happens when
     it expires.
-17. [Roles and the audit log](./roles-and-audit.md): the four roles and project-level access (every
+18. [Roles and the audit log](./roles-and-audit.md): the four roles and project-level access (every
     edition), and the security audit log with its export, verification and SIEM stream.
-18. [Single sign-on and SCIM](./sso-and-scim.md): OIDC and SAML sign-in, group mapping,
+19. [Single sign-on and SCIM](./sso-and-scim.md): OIDC and SAML sign-in, group mapping,
     break-glass admins, and SCIM provisioning.
-19. [Compliance reports](./compliance-reports.md): OWASP Top 10, CWE Top 25, OWASP ASVS and
+20. [Compliance reports](./compliance-reports.md): OWASP Top 10, CWE Top 25, OWASP ASVS and
     PCI DSS reports of a project or an organisation, as JSON, CSV and PDF, and how to verify them.
-20. [Portfolio reports](./portfolio.md): the quality of every project and organisation in one
+21. [Portfolio reports](./portfolio.md): the quality of every project and organisation in one
     view, with trends and the projects that need attention, as CSV and PDF.
-21. [Troubleshooting](./troubleshooting.md): what common errors mean and how to fix them.
-22. [AI prompts](./ai-prompts.md): ready-made prompts that let an AI agent roll Qualor out in your
+22. [Troubleshooting](./troubleshooting.md): what common errors mean and how to fix them.
+23. [AI prompts](./ai-prompts.md): ready-made prompts that let an AI agent roll Qualor out in your
     company.
-23. [Telemetry](./telemetry.md): the anonymous usage statistics the server sends, and how to turn
+24. [Telemetry](./telemetry.md): the anonymous usage statistics the server sends, and how to turn
     them off.
-24. [The support bundle](./support-bundle.md): one zip with versions, configuration without
+25. [The support bundle](./support-bundle.md): one zip with versions, configuration without
     secrets, health and recent failures, from the web UI or a command.
-25. [MCP server for AI agents](./mcp.md): Claude Code, Cursor and claude.ai read the quality gate
+26. [MCP server for AI agents](./mcp.md): Claude Code, Cursor and claude.ai read the quality gate
     and issues, ask the AI assistant and mark false positives, signed in as the user.
-26. [Slack and Microsoft Teams](./chat-notifications.md): gate failures, recoveries and a weekly
+27. [Slack and Microsoft Teams](./chat-notifications.md): gate failures, recoveries and a weekly
     security digest in a channel.
 
 ## How Qualor works

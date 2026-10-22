@@ -7,6 +7,7 @@ const PAGES: Readonly<Record<string, () => Promise<{ default: string }>>> = {
   README: () => import('../../../../docs/guide/README.md'),
   'ai-assistant': () => import('../../../../docs/guide/ai-assistant.md'),
   'ai-prompts': () => import('../../../../docs/guide/ai-prompts.md'),
+  'ai-review': () => import('../../../../docs/guide/ai-review.md'),
   'chat-notifications': () => import('../../../../docs/guide/chat-notifications.md'),
   cli: () => import('../../../../docs/guide/cli.md'),
   'compliance-reports': () => import('../../../../docs/guide/compliance-reports.md'),

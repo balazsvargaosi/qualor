@@ -99,6 +99,8 @@ process, plus its own PostgreSQL 18, which it starts itself and keeps on the vol
 | `QUALOR_DEMO_USER`                                                   | none              | a user anyone may sign in as, read-only and without a password, with **Explore the demo** on the sign-in page     |
 | `QUALOR_UPLOAD_MAX_COMPRESSED_BYTES`                                 | 50 MiB            | report upload limit as sent                                                                                       |
 | `QUALOR_UPLOAD_MAX_DECOMPRESSED_BYTES`                               | 500 MiB           | report upload limit decompressed (also the maximum)                                                               |
+| `QUALOR_REVIEW_SNAPSHOT_MAX_COMPRESSED_BYTES`                        | 50 MiB            | AI review snapshot upload limit as sent                                                                           |
+| `QUALOR_REVIEW_SNAPSHOT_MAX_DECOMPRESSED_BYTES`                      | 500 MiB           | AI review snapshot limit decompressed (also the maximum)                                                          |
 | `QUALOR_MAX_CONCURRENT_UPLOADS`                                      | `4`               | uploads read at once                                                                                              |
 | `QUALOR_REQUEST_TIMEOUT_MS`                                          | `300000`          | the longest any one request may run                                                                               |
 | `QUALOR_WORKER_CONCURRENCY`                                          | `1`               | analysis jobs processed at once                                                                                   |
