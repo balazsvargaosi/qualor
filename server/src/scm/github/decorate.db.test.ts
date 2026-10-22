@@ -166,10 +166,11 @@ describe('GitHub decoration (github.md §5–§6)', () => {
     const { repo, ingest } = await setup('gh/pr');
     const analysisId = await ingest([1, 3, 4]); // line 1 is new code for Qualor, but not an added line of the diff
     await runDecorations(h, githubDeps(h));
-    // The threads first, both in one review, then the check run and the summary.
+    // The check run first, with the counts the plan gives (as GitLab's commit status comes first),
+    // then the threads, both in one review, then the summary.
     expect(writes()).toEqual([
-      reviewPost(repo.name),
       `POST /repos/acme/${repo.name}/check-runs`,
+      reviewPost(repo.name),
       `POST /repos/acme/${repo.name}/issues/7/comments`,
     ]);
     // One check run, with no annotation, and the constant digest.
@@ -308,8 +309,8 @@ describe('GitHub decoration (github.md §5–§6)', () => {
     await ingest([3]);
     await runDecorations(h, githubDeps(h));
     expect(writes()).toEqual([
-      `POST ${GRAPHQL} QualorResolveThread`,
       `PATCH /repos/acme/${repo.name}/check-runs/${run.id}`,
+      `POST ${GRAPHQL} QualorResolveThread`,
       `PATCH /repos/acme/${repo.name}/issues/comments/${commentId}`,
     ]);
     expect(resolvedByLine(repo.id)).toEqual({ 3: false, 4: true });
@@ -467,23 +468,39 @@ describe('GitHub decoration (github.md §5–§6)', () => {
     );
   });
 
-  it('counts a position GitHub refuses as not placed, and sets the check run once as usual', async () => {
+  it('corrects the check run’s counts with one PATCH when GitHub refuses a position', async () => {
     const { repo, ingest } = await setup('gh/refused');
-    // GitHub refuses the review, then each comment posted alone.
+    // GitHub refuses the review, then line 3 posted alone; line 4 alone it places.
     fake.inject('POST', reviews(repo.name), { status: 422, body: { message: 'Unprocessable' } });
-    fake.inject(
-      'POST',
-      singleComments(repo.name),
-      { status: 422, body: { message: 'Validation Failed' } },
-      { status: 422, body: { message: 'Validation Failed' } },
-    );
+    fake.inject('POST', singleComments(repo.name), {
+      status: 422,
+      body: { message: 'Validation Failed' },
+    });
     await ingest([3, 4]);
     await runDecorations(h, githubDeps(h));
-    expect(reviewCommentsOf(repo.id)).toEqual([]);
+    expect(reviewCommentsOf(repo.id).map((c) => c.line)).toEqual([4]);
     expect(runsOf(repo.id)).toHaveLength(1);
-    expect(newestRun(repo.id)?.annotations).toEqual([]);
-    const sentence = '0 new issues are commented inline; 2 could not be placed on the diff.';
-    expect(newestRun(repo.id)?.summary).toContain(sentence);
+    const run = newestRun(repo.id)!;
+    expect(writes()).toEqual([
+      `POST /repos/acme/${repo.name}/check-runs`,
+      reviewPost(repo.name),
+      `POST /repos/acme/${repo.name}/pulls/7/comments`,
+      `POST /repos/acme/${repo.name}/pulls/7/comments`,
+      `POST /repos/acme/${repo.name}/issues/7/comments`,
+      `PATCH /repos/acme/${repo.name}/check-runs/${run.id}`,
+    ]);
+    // The check run first said what the plan expected, and the PATCH says what came of it.
+    const sent = (method: string) =>
+      (
+        JSON.parse(
+          fake.requests.find((r) => r.method === method && r.path.includes('/check-runs'))!.body,
+        ) as { output: { summary: string } }
+      ).output.summary;
+    expect(sent('POST')).toContain('2 new issues are commented inline.');
+    const sentence = '1 new issue is commented inline; 1 could not be placed on the diff.';
+    expect(sent('PATCH')).toContain(sentence);
+    expect(run.summary).toContain(sentence);
+    expect(run.annotations).toEqual([]);
     expect(summaries(repo.id)[0]?.body).toContain(sentence);
     expect(await queuedDecorations(h)).toEqual([]);
   });
@@ -560,8 +577,9 @@ describe('GitHub decoration (github.md §5–§6)', () => {
     await runDecorations(h, githubDeps(h));
     const [retry] = await queuedDecorations(h);
     expect(retry?.payload).toMatchObject({ attempt: 1 });
-    // The thread was made before the check run was refused.
-    expect(reviewCommentsOf(repo.id)).toHaveLength(1);
+    // The check run comes first: refused, it stops the job before any thread or summary.
+    expect(reviewCommentsOf(repo.id)).toEqual([]);
+    expect(summaries(repo.id)).toEqual([]);
     // On the database clock: the retry is created and scheduled by it. Node's clock may differ
     // from the database container's by more than a second (the old check against Date.now()
     // failed with 88 904 ms against 89 000).
@@ -594,7 +612,7 @@ describe('GitHub decoration (github.md §5–§6)', () => {
     expect(resolved()).toBe(3);
   });
 
-  it('sets the check run, and no summary, when the review comments are refused', async () => {
+  it('still writes the summary, saying the inline comments could not be updated, when GitHub refuses the review', async () => {
     const { repo, ingest } = await setup('gh/no-permission');
     fake.inject('POST', reviews(repo.name), {
       status: 403,
@@ -604,10 +622,125 @@ describe('GitHub decoration (github.md §5–§6)', () => {
     await runDecorations(h, githubDeps(h));
     expect(reviewCommentsOf(repo.id)).toEqual([]);
     expect(runsOf(repo.id)).toHaveLength(1);
-    expect(newestRun(repo.id)?.conclusion).toBe('failure');
-    expect(newestRun(repo.id)?.annotations).toEqual([]);
-    expect(summaries(repo.id)).toEqual([]);
+    const run = newestRun(repo.id)!;
+    expect(run.conclusion).toBe('failure');
+    expect(run.annotations).toEqual([]);
+    // The check run said what the plan expected; once the review failed, the summary comment and
+    // the check run say the inline comments could not be updated, and count none.
+    expect(writes()).toEqual([
+      `POST /repos/acme/${repo.name}/check-runs`,
+      reviewPost(repo.name),
+      `POST /repos/acme/${repo.name}/issues/7/comments`,
+      `PATCH /repos/acme/${repo.name}/check-runs/${run.id}`,
+    ]);
+    const sentence = 'Inline comments could not be updated this time.';
+    expect(summaries(repo.id)).toHaveLength(1);
+    expect(summaries(repo.id)[0]?.body).toContain(sentence);
+    expect(summaries(repo.id)[0]?.body).not.toContain('commented inline');
+    expect(run.summary).toContain(sentence);
     expect(await queuedDecorations(h)).toEqual([]); // a missing permission is not retried
+  });
+
+  it('ends the job after the check run when the review is rate limited, and the retry makes the rest with no duplicate', async () => {
+    const { repo, ingest } = await setup('gh/review-limited');
+    fake.inject('POST', reviews(repo.name), {
+      status: 403,
+      body: { message: 'You have exceeded a secondary rate limit.' },
+      headers: { 'retry-after': '90' },
+    });
+    await ingest([3, 4]);
+    await runDecorations(h, githubDeps(h));
+    // Attempt 0: the check run, written first, then the refused review; nothing after it.
+    expect(writes()).toEqual([`POST /repos/acme/${repo.name}/check-runs`, reviewPost(repo.name)]);
+    expect(runsOf(repo.id)).toHaveLength(1);
+    expect(reviewCommentsOf(repo.id)).toEqual([]);
+    expect(summaries(repo.id)).toEqual([]);
+    const queued = await queuedDecorations(h);
+    expect(queued).toHaveLength(1);
+    expect(queued[0]?.payload).toMatchObject({ attempt: 1 });
+    // On the database clock, as in the test above.
+    const waits = (queued[0]!.runAt.getTime() - queued[0]!.createdAt.getTime()) / 1000;
+    expect(waits).toBeGreaterThan(89);
+    expect(waits).toBeLessThan(95);
+    // The retry: the threads, in one review, then the summary. The check run already said so.
+    fake.clearRequests();
+    await runDecorations(h, githubDeps(h));
+    expect(await queuedDecorations(h)).toEqual([]);
+    expect(writes()).toEqual([
+      reviewPost(repo.name),
+      `POST /repos/acme/${repo.name}/issues/7/comments`,
+    ]);
+    expect(reviewCommentsOf(repo.id).map((c) => c.line)).toEqual([3, 4]);
+    expect(threadsOf(repo.id)).toHaveLength(2);
+    expect(runsOf(repo.id)).toHaveLength(1);
+    expect(summaries(repo.id)).toHaveLength(1);
+    const sentence = '2 new issues are commented inline.';
+    expect(newestRun(repo.id)?.summary).toContain(sentence);
+    expect(summaries(repo.id)[0]?.body).toContain(sentence);
+  });
+
+  it('still writes the check run and the summary when the threads cannot be read, and the retry brings them', async () => {
+    const { repo, ingest } = await setup('gh/threads-unreadable');
+    fake.inject('POST', /^\/api\/graphql$/, { status: 502, body: { message: 'Server Error' } });
+    await ingest([3, 4]);
+    await runDecorations(h, githubDeps(h));
+    // A failure other than a rate limit: the check run and the summary say so, and the job is
+    // retried (a 502 is transient).
+    expect(writes()).toEqual([
+      `POST /repos/acme/${repo.name}/check-runs`,
+      `POST /repos/acme/${repo.name}/issues/7/comments`,
+    ]);
+    const failed = 'Inline comments could not be updated this time.';
+    expect(newestRun(repo.id)?.summary).toContain(failed);
+    expect(summaries(repo.id)[0]?.body).toContain(failed);
+    expect(reviewCommentsOf(repo.id)).toEqual([]);
+    expect((await queuedDecorations(h))[0]?.payload).toMatchObject({ attempt: 1 });
+    fake.clearRequests();
+    await runDecorations(h, githubDeps(h));
+    expect(await queuedDecorations(h)).toEqual([]);
+    const run = newestRun(repo.id)!;
+    const summary = summaries(repo.id)[0]!;
+    expect(writes()).toEqual([
+      `PATCH /repos/acme/${repo.name}/check-runs/${run.id}`,
+      reviewPost(repo.name),
+      `PATCH /repos/acme/${repo.name}/issues/comments/${summary.id}`,
+    ]);
+    expect(run.summary).toContain('2 new issues are commented inline.');
+    expect(summary.body).toContain('2 new issues are commented inline.');
+    expect(runsOf(repo.id)).toHaveLength(1);
+    expect(summaries(repo.id)).toHaveLength(1);
+  });
+
+  it('writes the check run before it stops on a GraphQL rate limit, and waits for the limit’s reset', async () => {
+    const { repo, ingest } = await setup('gh/graphql-limited');
+    fake.inject('POST', /^\/api\/graphql$/, {
+      status: 200,
+      body: { data: null, errors: [{ type: 'RATE_LIMITED', message: 'API rate limit exceeded' }] },
+      headers: {
+        'x-ratelimit-remaining': '0',
+        'x-ratelimit-reset': String(Math.floor(Date.now() / 1000) + 300),
+      },
+    });
+    await ingest([3]);
+    await runDecorations(h, githubDeps(h));
+    expect(writes()).toEqual([`POST /repos/acme/${repo.name}/check-runs`]);
+    expect(newestRun(repo.id)?.summary).toContain(
+      'Inline comments could not be updated this time.',
+    );
+    expect(summaries(repo.id)).toEqual([]);
+    const [retry] = await queuedDecorations(h);
+    expect(retry?.payload).toMatchObject({ attempt: 1 });
+    // Until the reset GitHub named (M3), on the database clock.
+    const waits = (retry!.runAt.getTime() - retry!.createdAt.getTime()) / 1000;
+    expect(waits).toBeGreaterThan(290);
+    expect(waits).toBeLessThan(306);
+    fake.clearRequests();
+    await runDecorations(h, githubDeps(h));
+    expect(await queuedDecorations(h)).toEqual([]);
+    expect(reviewCommentsOf(repo.id)).toHaveLength(1);
+    expect(runsOf(repo.id)).toHaveLength(1);
+    expect(newestRun(repo.id)?.summary).toContain('1 new issue is commented inline.');
+    expect(summaries(repo.id)).toHaveLength(1);
   });
 
   it('leaves the threads and the summary alone, and still sets the check run, when the pull request part fails', async () => {

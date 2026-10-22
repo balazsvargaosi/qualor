@@ -171,8 +171,9 @@ export interface SummaryInput {
     /**
      * Why no discussion was created or changed this time, if so. `checkout_other` (GitHub only):
      * the workflow analysed a commit other than the pull request's head (github.md §6.2).
+     * `failed` (GitHub only): reading or changing the threads failed, so the counts are unknown.
      */
-    skipped: 'stale' | 'merged_result' | 'checkout_other' | null;
+    skipped: 'stale' | 'merged_result' | 'checkout_other' | 'failed' | null;
   };
   /** The branch in Qualor, or null without `QUALOR_PUBLIC_URL`. */
   branchUrl: string | null;
@@ -203,6 +204,8 @@ const WORDS = {
 /** github.md §6.2. Fixed text: the `${{ … }}` is an Actions expression, not a template. */
 const CHECKOUT_OTHER =
   'No inline comments: the workflow analysed a commit other than the pull request’s head (GitHub’s merge commit, by default); check out the head to get them (`ref: ${{ github.event.pull_request.head.sha }}`).';
+/** github.md §6.2: the threads could not be read or changed; the next decoration tries again. */
+const NOT_UPDATED = 'Inline comments could not be updated this time.';
 
 /** The headline's marker of a gate status; one this code does not know is a warning. */
 const STATUS_ICON: Record<GateResult['status'], string> = {
@@ -379,6 +382,7 @@ function inlineSentence(
     return 'No inline comments: this was a merged-results pipeline, whose line numbers are not the merge request’s.';
   }
   if (inline.skipped === 'checkout_other') return CHECKOUT_OTHER;
+  if (inline.skipped === 'failed') return NOT_UPDATED;
   if (commented > 0 || unplaced > 0) {
     return `${commented} new ${commented === 1 ? 'issue is' : 'issues are'} ${words.placed}${
       unplaced > 0 ? `; ${unplaced} could not be placed on the diff` : ''

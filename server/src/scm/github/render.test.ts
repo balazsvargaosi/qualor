@@ -119,11 +119,35 @@ describe('the summary in GitHub’s words (github.md §6.2)', () => {
     ).toContain('the pull request is now at');
   });
 
+  it('says the inline comments could not be updated when the thread part failed', () => {
+    const body = summaryBody(input({ commented: 0, unplaced: 0, skipped: 'failed' }));
+    expect(body).toContain('Inline comments could not be updated this time.');
+    expect(body).not.toContain('commented inline');
+    // The list's tail does not claim every issue is inline either.
+    const more = summaryBody({
+      ...input({ commented: 25, unplaced: 0, skipped: 'failed' }),
+      topIssuesTotal: 25,
+      topIssues: Array.from({ length: 3 }, (_, i) => ({
+        id: `0190c3b2-7a00-7000-8000-00000000010${i}`,
+        severity: 'high' as const,
+        quality: 'security' as const,
+        ruleKey: 'eslint:no-eval',
+        path: 'src/a.ts',
+        line: i + 1,
+        message: 'm',
+        url: null,
+      })),
+    });
+    expect(more).toContain('…and 22 more\n\nInline comments could not be updated this time.');
+    expect(more).not.toContain('all commented inline');
+  });
+
   it('says nothing about annotations: GitHub findings are review comments', () => {
     for (const inline of [
       { commented: 2, unplaced: 1, skipped: null },
       { commented: 0, unplaced: 0, skipped: 'stale' },
       { commented: 0, unplaced: 0, skipped: 'checkout_other' },
+      { commented: 0, unplaced: 0, skipped: 'failed' },
     ] as const) {
       expect(summaryBody(input(inline))).not.toMatch(/annotat/i);
     }

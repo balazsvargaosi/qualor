@@ -21,9 +21,9 @@ export const MAX_GITHUB_RESPONSE_BYTES = 8 * 1024 * 1024;
 export const GITHUB_PAGE_SIZE = 100;
 /**
  * Requests one job (one client) may make (ruling R7). The most a decoration asks for besides its
- * thread work is `REQUESTS_OUTSIDE_THREADS` (decorate.ts); with the creations and the updates of
- * threads the sum is about 300, a token refreshed after a 401 included, so the check run and the
- * summary are always written.
+ * thread work is `REQUESTS_OUTSIDE_THREADS` (decorate.ts); with the creations (one review, and
+ * each comment alone after a 422) and the updates of threads the sum is 302, a token refreshed
+ * after a 401 included, so the check run and the summary are always written.
  */
 export const MAX_GITHUB_REQUESTS = 320;
 /** Ruling T6: pages of 100 review threads one job reads at most. */

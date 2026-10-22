@@ -6,6 +6,7 @@ import {
   recordMergeRequest,
   summaryData,
   type Loaded,
+  type SummaryData,
 } from '../decoration-data';
 import { markerOf } from '../markdown';
 import { ScmError } from '../provider';
@@ -16,6 +17,7 @@ import {
   GITHUB_TEXT,
   MAX_THREAD_PAGES,
   type CheckRunUpdate,
+  type GitHubCheckRun,
   type GitHubClient,
   type GitHubPullRequest,
 } from './client';
@@ -32,6 +34,7 @@ import {
   MAX_COMMENT_PAGES,
   planReviewThreads,
   type ReviewThreadContext,
+  type ThreadPlan,
 } from './threads';
 import { githubWebBase, parseRepoRef } from './url';
 
@@ -45,7 +48,8 @@ export { MAX_COMMENT_PAGES };
  * reopening review threads:
  * - the App, the installation, its token, the repository and the pull request (5);
  * - every page of files, review comments, review threads and issue comments it may read;
- * - the check run: its listing, and its creation or update (2);
+ * - the check run: its listing, its creation or update before the threads, and the PATCH that
+ *   corrects it when applying the threads changed what it says (3);
  * - the summary: its creation or edit (1);
  * - what a token refreshed after a 401 adds: the new token and the request made again (2).
  * With the creations (`MAX_CREATION_REQUESTS`: one review, and each comment alone when GitHub
@@ -53,24 +57,94 @@ export { MAX_COMMENT_PAGES };
  * within `MAX_GITHUB_REQUESTS`, so the check run and the summary are always written.
  */
 export const REQUESTS_OUTSIDE_THREADS =
-  5 + MAX_FILE_PAGES + MAX_COMMENT_PAGES + MAX_THREAD_PAGES + 2 + MAX_COMMENT_PAGES + 1 + 2;
+  5 + MAX_FILE_PAGES + MAX_COMMENT_PAGES + MAX_THREAD_PAGES + 3 + MAX_COMMENT_PAGES + 1 + 2;
 export const REPOSITORY_MISMATCH =
   "The workflow's GitHub repository is not the repository Qualor is mapped to";
 
 type Inline = SummaryInput['inline'];
+/**
+ * Nothing to say about inline comments: the analysis is not the pull request's latest, or the
+ * pull request is not open, or could not be read.
+ */
+const NO_INLINE: Inline = { commented: 0, unplaced: 0, skipped: null };
+/** Reading or changing the threads failed: the summary says they could not be updated this time. */
+const NOT_UPDATED: Inline = { commented: 0, unplaced: 0, skipped: 'failed' };
+
+/** The plan of Qualor's threads (github.md §6.4), and the context it is applied in. */
+interface PlannedThreads {
+  ctx: ReviewThreadContext;
+  plan: ThreadPlan;
+}
+
+/** What the pull request part found before anything is written (github.md §5.2 step 4). */
+interface PullRequestPart {
+  /** Null when the analysis is not the pull request's latest, or it could not be read. */
+  pull: GitHubPullRequest | null;
+  /** What the check run says first: the plan's counts, or why there are none. */
+  inline: Inline;
+  /** The threads' plan, when ruling T3 allows one and it could be made. */
+  planned: PlannedThreads | null;
+}
+const NO_PULL_REQUEST: PullRequestPart = { pull: null, inline: NO_INLINE, planned: null };
+
+const retryable = (e: ScmError) => e.kind === 'transient' || e.kind === 'rate_limited';
+/** More requests now would only be refused too (the retry waits for GitHub's Retry-After). */
+const stopsTheJob = (e: ScmError) => e.kind === 'budget' || e.kind === 'rate_limited';
 
 /**
- * github.md §6.4: the review threads of an open pull request whose head is the analysed revision,
- * checked out by the workflow: the pull request's files (a file the page bound cuts places no
- * issue: its issues count as not placed) and the reconciliation of Qualor's threads with them.
+ * The failures of a job's parts (github.md §5.2). A rate limit or the exhausted budget is the
+ * job's stop: the job ends once the check run is written, or at once when it comes later. Any
+ * other failure is kept and the job goes on; it then fails with a retryable one if there is one,
+ * else with the first.
  */
-async function reconcileThreads(
+class Failures {
+  stop: ScmError | null = null;
+  private readonly kept: ScmError[] = [];
+
+  /** Records a failure of GitHub's; anything else (the database, a bug) is thrown on. */
+  add(err: unknown): void {
+    if (!(err instanceof ScmError)) throw err;
+    if (stopsTheJob(err)) this.stop ??= err;
+    else this.kept.push(err);
+  }
+
+  decisive(): ScmError | null {
+    return this.stop ?? this.kept.find(retryable) ?? this.kept[0] ?? null;
+  }
+}
+
+/** One part of the job: its failure is recorded, and null returned, so the others go on. */
+async function attempt<T>(failures: Failures, part: () => Promise<T>): Promise<T | null> {
+  try {
+    return await part();
+  } catch (err) {
+    failures.add(err);
+    return null;
+  }
+}
+
+/** Ruling T3: why an open pull request's threads are left as they are, or null. */
+function threadsSkipped(
+  payload: DecorationPayload,
+  pull: GitHubPullRequest,
+  revision: string,
+): Inline['skipped'] {
+  if (payload.github?.checkout !== 'head') return 'checkout_other';
+  return pull.head.sha === revision ? null : 'stale';
+}
+
+/**
+ * github.md §6.4: the plan of Qualor's threads on an open pull request whose head is the analysed
+ * revision, checked out by the workflow: the pull request's files (a file the page bound cuts
+ * places no issue: its issues count as not placed) and what the threads need. Reads only.
+ */
+async function planThreads(
   deps: DecorationDeps,
   client: GitHubClient,
   loaded: Loaded,
   pull: GitHubPullRequest,
   botLogin: string,
-): Promise<Inline> {
+): Promise<PlannedThreads> {
   const number = loaded.branch.name;
   const files = await client.pullRequestFiles(number, MAX_FILE_PAGES);
   const ctx: ReviewThreadContext = {
@@ -85,54 +159,104 @@ async function reconcileThreads(
     issueUrl: (issueId) => issueUrl(deps.publicUrl, loaded.project.id, issueId),
     ...(deps.maxThreadUpdates === undefined ? {} : { maxThreadUpdates: deps.maxThreadUpdates }),
   };
-  const { commented, unplaced } = await applyReviewThreads(ctx, await planReviewThreads(ctx));
-  return { commented, unplaced, skipped: null };
+  return { ctx, plan: await planReviewThreads(ctx) };
+}
+
+/**
+ * github.md §5.2 step 4: the pull request, its title and link recorded on the branch, and for an
+ * open one the plan of its threads (§6.4) when ruling T3 allows it. Nothing is written to GitHub.
+ * A failure goes to `failures`: a pull request that cannot be read is left as it is, with nothing
+ * said about inline comments; a plan that cannot be made leaves `pull` as it is, so the summary
+ * comment is still written, and says the inline comments could not be updated.
+ */
+async function readPullRequest(
+  deps: DecorationDeps,
+  client: GitHubClient,
+  loaded: Loaded,
+  payload: DecorationPayload,
+  botLogin: string,
+  failures: Failures,
+): Promise<PullRequestPart> {
+  let pull: GitHubPullRequest;
+  try {
+    pull = await client.pullRequest(loaded.branch.name);
+    await recordMergeRequest(
+      deps.db,
+      loaded,
+      { title: pull.title, url: pull.html_url },
+      githubWebBase(loaded.connection.baseUrl),
+    );
+  } catch (err) {
+    failures.add(err);
+    return NO_PULL_REQUEST;
+  }
+  if (pull.state !== 'open') return { pull, inline: NO_INLINE, planned: null };
+  const skipped = threadsSkipped(payload, pull, loaded.revision);
+  if (skipped !== null) return { pull, inline: { ...NO_INLINE, skipped }, planned: null };
+  try {
+    const planned = await planThreads(deps, client, loaded, pull, botLogin);
+    const { commented, unplaced } = planned.plan;
+    return { pull, inline: { commented, unplaced, skipped: null }, planned };
+  } catch (err) {
+    failures.add(err);
+    return { pull, inline: NOT_UPDATED, planned: null };
+  }
+}
+
+/** The threads' plan applied (§6.4); a failure goes to `failures`, and its counts are unknown. */
+async function applyThreads(planned: PlannedThreads, failures: Failures): Promise<Inline> {
+  const applied = await attempt(failures, () => applyReviewThreads(planned.ctx, planned.plan));
+  return applied === null ? NOT_UPDATED : { ...applied, skipped: null };
+}
+
+/** github.md §6.1: the check run of this analysis, its summary the summary comment's `body`. */
+function checkRunFields(deps: DecorationDeps, loaded: Loaded, body: string): CheckRunUpdate {
+  const { conclusion, title } = checkRunVerdict(loaded.gate);
+  return {
+    conclusion,
+    title,
+    summary: checkRunSummary(body),
+    detailsUrl: branchUrl(deps.publicUrl, loaded),
+    externalId: checkRunExternalId(loaded.analysis.id, NO_ANNOTATIONS_DIGEST),
+  };
+}
+
+/** A check run of Qualor's already says what `desired` says. */
+function says(run: GitHubCheckRun, desired: CheckRunUpdate): boolean {
+  return (
+    run.conclusion === desired.conclusion &&
+    (run.output.title ?? '') === desired.title &&
+    comparable(run.output.summary ?? '') === comparable(desired.summary) &&
+    // GitHub fills in a details URL of its own when none is sent: compare only one Qualor sent.
+    (desired.detailsUrl === null || run.details_url === desired.detailsUrl) &&
+    run.external_id === desired.externalId
+  );
 }
 
 /**
  * github.md §6.1: Qualor's check run of this name on the revision, read before written. One with
  * the digest of no annotations (every check run Qualor writes has it, and a 0.11 one without
- * annotations) and the same conclusion, title, summary, link and analysis → nothing; the same
- * digest and anything else changed → PATCH. None of Qualor's, or the newest has another digest (a
- * 0.11 check run with annotations, which GitHub cannot take off it) → a new check run, which
- * GitHub shows (and branch protection uses) in its place.
+ * annotations) that says what `desired` says → nothing; the same digest and anything else changed
+ * → PATCH. None of Qualor's, or the newest has another digest (a 0.11 check run with annotations,
+ * which GitHub cannot take off it) → a new check run, which GitHub shows (and branch protection
+ * uses) in its place. Returns the id of the check run that now says it.
  */
 async function reconcileCheckRun(
   client: GitHubClient,
-  a: {
-    name: string;
-    revision: string;
-    analysisId: string;
-    verdict: { conclusion: 'success' | 'failure'; title: string };
-    detailsUrl: string | null;
-    summary: string;
-  },
-): Promise<void> {
+  name: string,
+  revision: string,
+  desired: CheckRunUpdate,
+): Promise<number> {
   const current =
-    (await client.checkRuns(a.revision, a.name))
+    (await client.checkRuns(revision, name))
       .map((run) => ({ run, ids: parseCheckRunExternalId(run.external_id) }))
       .filter((c) => c.ids !== null)
       .sort((x, y) => y.run.id - x.run.id)[0] ?? null;
-  const desired: CheckRunUpdate = {
-    conclusion: a.verdict.conclusion,
-    title: a.verdict.title,
-    summary: a.summary,
-    detailsUrl: a.detailsUrl,
-    externalId: checkRunExternalId(a.analysisId, NO_ANNOTATIONS_DIGEST),
-  };
   if (current === null || current.ids?.digest !== NO_ANNOTATIONS_DIGEST) {
-    await client.createCheckRun({ ...desired, name: a.name, headSha: a.revision });
-    return;
+    return (await client.createCheckRun({ ...desired, name, headSha: revision })).id;
   }
-  const r = current.run;
-  const same =
-    r.conclusion === desired.conclusion &&
-    (r.output.title ?? '') === desired.title &&
-    comparable(r.output.summary ?? '') === comparable(desired.summary) &&
-    // GitHub fills in a details URL of its own when none is sent: compare only one Qualor sent.
-    (desired.detailsUrl === null || r.details_url === desired.detailsUrl) &&
-    r.external_id === desired.externalId;
-  if (!same) await client.updateCheckRun(r.id, desired);
+  if (!says(current.run, desired)) await client.updateCheckRun(current.run.id, desired);
+  return current.run.id;
 }
 
 /** github.md §6.2–§6.3: the summary comment, recognised by the App's bot login and the marker. */
@@ -164,18 +288,76 @@ async function reconcileComment(
   }
 }
 
-const retryable = (e: ScmError) => e.kind === 'transient' || e.kind === 'rate_limited';
-/** More requests now would only be refused too (the retry waits for GitHub's Retry-After). */
-const stopsTheJob = (e: ScmError) => e.kind === 'budget' || e.kind === 'rate_limited';
+/** The summary comment's body (github.md §6.2) with `inline` as its sentence on inline comments. */
+function summaryFor(
+  deps: DecorationDeps,
+  loaded: Loaded,
+  data: SummaryData,
+  pull: GitHubPullRequest | null,
+  inline: Inline,
+): string {
+  return summaryBody({
+    projectId: loaded.project.id,
+    revision: loaded.revision,
+    gate: loaded.gate,
+    newIssues: data.newIssues,
+    topIssues: data.top,
+    topIssuesTotal: data.total,
+    inline,
+    branchUrl: branchUrl(deps.publicUrl, loaded),
+    mergeRequestHead: pull !== null && pull.head.sha !== loaded.revision ? pull.head.sha : null,
+    vocabulary: 'github',
+    smallChangesetLines: data.smallChangesetLines,
+  });
+}
+
+/**
+ * github.md §5.2 steps 5–7, in this order: the check run, saying what the plan will do (as
+ * GitLab's commit status comes first); the threads; the summary comment, saying what came of
+ * them; and the check run once more only when that differs from what it said (a position GitHub
+ * refused, a thread gone, a failure). A stop ends the job at once once the check run is written.
+ * Returns the error the job fails with, or null.
+ */
+async function writeDecoration(
+  deps: DecorationDeps,
+  client: GitHubClient,
+  loaded: Loaded,
+  part: PullRequestPart,
+  slug: string,
+  failures: Failures,
+): Promise<ScmError | null> {
+  const data = await summaryData(deps.db, loaded, deps.publicUrl);
+  const planned = summaryFor(deps, loaded, data, part.pull, part.inline);
+  const name = statusName(loaded.project.key);
+  const runId = await attempt(failures, () =>
+    reconcileCheckRun(client, name, loaded.revision, checkRunFields(deps, loaded, planned)),
+  );
+  if (failures.stop !== null) return failures.stop;
+  const inline = part.planned === null ? part.inline : await applyThreads(part.planned, failures);
+  if (failures.stop !== null) return failures.stop;
+  const body = summaryFor(deps, loaded, data, part.pull, inline);
+  if (part.pull?.state === 'open') {
+    await attempt(failures, () =>
+      reconcileComment(deps, client, loaded, loaded.branch.name, body, slug),
+    );
+  }
+  const changed = checkRunSummary(body) !== checkRunSummary(planned);
+  if (runId !== null && changed && failures.stop === null) {
+    await attempt(failures, () => client.updateCheckRun(runId, checkRunFields(deps, loaded, body)));
+  }
+  return failures.decisive();
+}
 
 /**
  * One GitHub decoration (github.md §5.2): the App, the installation and the repository; for the
- * branch's latest analysis of an open pull request, its review threads (§6.4); the check run of
- * the revision (§6.1), which carries no annotations; then the summary comment. A failed pull
- * request part does not stop the check run (which then says nothing about inline comments),
- * unless GitHub rate-limited it or the budget ran out; the threads and the summary stay as they
- * are. Only a transient failure or a rate limit is retried (by the caller, through `failed`); any
- * other error stops the job.
+ * branch's latest analysis of an open pull request, the plan of its review threads (§6.4), which
+ * only reads; the check run of the revision (§6.1), which carries no annotations and says what the
+ * plan will do; the threads, their new comments as one review; the summary comment with what came
+ * of them; and the check run once more when that changed. A rate limit or the exhausted budget
+ * ends the job once the check run is written; any other failure of the pull request part lets the
+ * rest go on (the summary then says the inline comments could not be updated this time). Only a
+ * transient failure or a rate limit is retried (by the caller, through `failed`); any other error
+ * stops the job.
  */
 export async function decorateGitHub(
   deps: DecorationDeps,
@@ -193,7 +375,6 @@ export async function decorateGitHub(
     return failed(new ScmError('refused', GITHUB_TEXT.notFound, { reason: 'invalid_input' }));
   }
   const client = found.client;
-  const errors: ScmError[] = [];
   try {
     const app = await client.app();
     const repo = await client.useRepository(ref);
@@ -201,81 +382,17 @@ export async function decorateGitHub(
     if (expected !== undefined && String(repo.id) !== expected) {
       return failed(new ScmError('refused', REPOSITORY_MISMATCH));
     }
-    let pull: GitHubPullRequest | null = null;
-    // An analysis that is no longer the branch's latest, or whose pull request part failed, leaves
-    // the threads as they are and says nothing about them.
-    let inline: Inline = { commented: 0, unplaced: 0, skipped: null };
-    const latestPullRequest =
+    const failures = new Failures();
+    // An analysis that is no longer the branch's latest leaves the threads and the summary as
+    // they are, and says nothing about them.
+    const latest =
       branch.kind === 'merge_request' &&
       GITHUB_PR_NUMBER.test(branch.name) &&
       branch.lastAnalysisId === analysis.id;
-    if (latestPullRequest) {
-      try {
-        pull = await client.pullRequest(branch.name);
-        await recordMergeRequest(
-          deps.db,
-          loaded,
-          { title: pull.title, url: pull.html_url },
-          githubWebBase(connection.baseUrl),
-        );
-        if (pull.state === 'open') {
-          const skipped: Inline['skipped'] =
-            payload.github?.checkout !== 'head'
-              ? 'checkout_other'
-              : pull.head.sha !== loaded.revision
-                ? 'stale'
-                : null;
-          inline =
-            skipped === null
-              ? await reconcileThreads(deps, client, loaded, pull, `${app.slug}[bot]`)
-              : { commented: 0, unplaced: 0, skipped };
-        }
-      } catch (err) {
-        if (!(err instanceof ScmError)) throw err;
-        if (stopsTheJob(err)) return failed(err);
-        errors.push(err);
-        pull = null;
-      }
-    }
-    const data = await summaryData(deps.db, loaded, deps.publicUrl);
-    const head = pull !== null && pull.head.sha !== loaded.revision ? pull.head.sha : null;
-    const body = summaryBody({
-      projectId: project.id,
-      revision: loaded.revision,
-      gate: loaded.gate,
-      newIssues: data.newIssues,
-      topIssues: data.top,
-      topIssuesTotal: data.total,
-      inline,
-      branchUrl: branchUrl(deps.publicUrl, loaded),
-      mergeRequestHead: head,
-      vocabulary: 'github',
-      smallChangesetLines: data.smallChangesetLines,
-    });
-    try {
-      await reconcileCheckRun(client, {
-        name: statusName(project.key),
-        revision: loaded.revision,
-        analysisId: analysis.id,
-        verdict: checkRunVerdict(loaded.gate),
-        detailsUrl: branchUrl(deps.publicUrl, loaded),
-        summary: checkRunSummary(body),
-      });
-    } catch (err) {
-      if (!(err instanceof ScmError)) throw err;
-      if (stopsTheJob(err)) return failed(err);
-      errors.push(err);
-    }
-    if (pull !== null && pull.state === 'open') {
-      try {
-        await reconcileComment(deps, client, loaded, branch.name, body, app.slug);
-      } catch (err) {
-        if (!(err instanceof ScmError)) throw err;
-        errors.push(err);
-      }
-    }
-    const error =
-      errors.find((e) => e.kind === 'budget') ?? errors.find(retryable) ?? errors[0] ?? null;
+    const part = latest
+      ? await readPullRequest(deps, client, loaded, payload, `${app.slug}[bot]`, failures)
+      : NO_PULL_REQUEST;
+    const error = await writeDecoration(deps, client, loaded, part, app.slug, failures);
     return error === null ? { kind: 'done', connectionId: connection.id } : failed(error);
   } catch (err) {
     if (err instanceof ScmError) return failed(err);

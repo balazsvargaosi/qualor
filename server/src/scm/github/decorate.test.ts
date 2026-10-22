@@ -12,8 +12,10 @@ describe('the request budget (github.md §5.3, ruling R7)', () => {
   it('leaves room for every request of a job that reads and writes as much as it may', () => {
     // The App, the installation, its token, the repository and the pull request.
     const setup = 5;
-    // The check run's listing and its one write; the summary's one write.
-    const checkRun = 2;
+    // The check run's listing and its one write, written before the threads with the counts the
+    // plan gives, and the PATCH that corrects them when applying the plan changed them.
+    const checkRun = 3;
+    // The summary's one write.
     const summary = 1;
     // A 401 on an installation token: the new token, and the request made again.
     const tokenRefresh = 2;
@@ -40,7 +42,7 @@ describe('the request budget (github.md §5.3, ruling R7)', () => {
     ]).toEqual([30, 50, 10, 50, 100]);
     expect(MAX_CREATION_REQUESTS).toBe(creations);
     expect(REQUESTS_OUTSIDE_THREADS + MAX_CREATION_REQUESTS + MAX_GITHUB_THREAD_UPDATES).toBe(sum);
-    expect(sum).toBe(301);
+    expect(sum).toBe(302);
     // Below the budget, so the check run and the summary are written whatever else the job did.
     expect(sum).toBeLessThan(MAX_GITHUB_REQUESTS);
   });
