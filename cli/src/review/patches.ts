@@ -220,6 +220,29 @@ function onlyMarkersRemoved(patch: string): boolean {
   return true;
 }
 
+/** git's `index <old>..<new> [mode]` line: the abbreviated ids of the blobs of both sides. */
+const INDEX_LINE = /^index [0-9a-f]+\.\.[0-9a-f]+( [0-7]{6})?$/;
+
+/**
+ * `patch` without git's `index` lines. Each names the ids of both blobs (7 to 12 digits, or more
+ * with many objects): whoever holds the snapshot could hash guesses of a secret that is masked
+ * in it, or of a removed line that is not sent, as git blobs and compare the first digits. A
+ * review gains nothing from the ids. A line is git's only in the header part of a piece, from its
+ * `diff --git` line to its first hunk (a type change has two pieces): every line of a hunk starts
+ * with ` `, `+`, `-` or `\`, so one that reads like an index line there is the file's own.
+ */
+export function withoutIndexLines(patch: string): string {
+  let header = true;
+  return patch
+    .split('\n')
+    .filter((line) => {
+      if (line.startsWith('diff --git ')) header = true;
+      else if (line.startsWith('@@')) header = false;
+      return !(header && INDEX_LINE.test(line));
+    })
+    .join('\n');
+}
+
 export interface Patch {
   text: string;
   /** Replacements the masking made. */
@@ -227,24 +250,26 @@ export interface Patch {
 }
 
 /**
- * A patch as sent, or null: over the bound, with a NUL, or not UTF-8. Its removed lines go only
- * when the scan of the merge base held its old side (`removedLinesScanned`); else each run of them
- * is a marker line, and a patch where one could still be left (a hunk it cannot read) is not sent.
- * Every hunk header goes as its ranges alone, scanned or not; a patch with one it cannot rebuild
- * is not sent either. Then the secrets are masked (`secrets` with the lines of the multi-line
- * ones, which a patch shows apart) and the shared redaction runs.
+ * A patch as sent, or null: over the bound, with a NUL, or not UTF-8. It carries no `index` line
+ * (`withoutIndexLines`). Its removed lines go only when the scan of the merge base held its old
+ * side (`removedLinesScanned`); else each run of them is a marker line, and a patch where one
+ * could still be left (a hunk it cannot read) is not sent. Every hunk header goes as its ranges
+ * alone, scanned or not; a patch with one it cannot rebuild is not sent either. Then the secrets
+ * are masked (`secrets` with the lines of the multi-line ones, which a patch shows apart) and the
+ * shared redaction runs.
  */
 export function finishPatch(
   bytes: Buffer,
   o: { secrets: readonly string[]; removedLinesScanned: boolean },
 ): Patch | null {
   if (bytes.length > MAX_SNAPSHOT_PATCH_BYTES || bytes.includes(0)) return null;
-  let text: string;
+  let decoded: string;
   try {
-    text = UTF8.decode(bytes);
+    decoded = UTF8.decode(bytes);
   } catch {
     return null;
   }
+  const text = withoutIndexLines(decoded);
   const shown = withoutFunctionContext(o.removedLinesScanned ? text : withoutRemovedLines(text));
   if (shown === null) return null;
   if (!o.removedLinesScanned && !onlyMarkersRemoved(shown)) return null;

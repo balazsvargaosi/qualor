@@ -1,14 +1,17 @@
 import { MAX_SNAPSHOT_PATCH_BYTES, REDACTED } from '@qualor/shared';
 import { describe, expect, it } from 'vitest';
 import { FAKE_KEY } from '../../test/review-snapshot';
-import { finishPatch, withoutRemovedLines } from './patches';
+import { finishPatch, withoutIndexLines, withoutRemovedLines } from './patches';
 
+/** A modified file's header as git writes it. */
 const HEAD = [
   'diff --git a/a.ts b/a.ts',
   'index 1111111..2222222 100644',
   '--- a/a.ts',
   '+++ b/a.ts',
 ];
+/** The same header as a patch is sent: without git's `index` line, the blob ids of both sides. */
+const SENT_HEAD = HEAD.filter((line) => !line.startsWith('index '));
 
 describe('withoutRemovedLines', () => {
   it('makes each run of removed lines one marker, and counts the old side again', () => {
@@ -95,6 +98,130 @@ describe('withoutRemovedLines', () => {
   });
 });
 
+describe('withoutIndexLines', () => {
+  /** The header parts git writes, each with the `index` line it carries (or none). */
+  const headers: [string, string[], string[]][] = [
+    ['a modified file', HEAD, SENT_HEAD],
+    [
+      'a mode change with a content change (no mode on the index line)',
+      [
+        'diff --git a/a.sh b/a.sh',
+        'old mode 100644',
+        'new mode 100755',
+        'index 1111111..2222222',
+        '--- a/a.sh',
+        '+++ b/a.sh',
+      ],
+      [
+        'diff --git a/a.sh b/a.sh',
+        'old mode 100644',
+        'new mode 100755',
+        '--- a/a.sh',
+        '+++ b/a.sh',
+      ],
+    ],
+    [
+      'an added file',
+      [
+        'diff --git a/n.ts b/n.ts',
+        'new file mode 100644',
+        'index 0000000..3333333',
+        '--- /dev/null',
+        '+++ b/n.ts',
+      ],
+      ['diff --git a/n.ts b/n.ts', 'new file mode 100644', '--- /dev/null', '+++ b/n.ts'],
+    ],
+    [
+      'a deleted file',
+      [
+        'diff --git a/d.ts b/d.ts',
+        'deleted file mode 100644',
+        'index 4444444..0000000',
+        '--- a/d.ts',
+        '+++ /dev/null',
+      ],
+      ['diff --git a/d.ts b/d.ts', 'deleted file mode 100644', '--- a/d.ts', '+++ /dev/null'],
+    ],
+    [
+      'a rename with changes (ids of 12 digits)',
+      [
+        'diff --git a/x.ts b/y.ts',
+        'similarity index 90%',
+        'rename from x.ts',
+        'rename to y.ts',
+        `index ${'5'.repeat(12)}..${'6'.repeat(12)} 100644`,
+        '--- a/x.ts',
+        '+++ b/y.ts',
+      ],
+      [
+        'diff --git a/x.ts b/y.ts',
+        'similarity index 90%',
+        'rename from x.ts',
+        'rename to y.ts',
+        '--- a/x.ts',
+        '+++ b/y.ts',
+      ],
+    ],
+    [
+      'a file that is only renamed (no index line at all)',
+      ['diff --git a/x.ts b/y.ts', 'similarity index 100%', 'rename from x.ts', 'rename to y.ts'],
+      ['diff --git a/x.ts b/y.ts', 'similarity index 100%', 'rename from x.ts', 'rename to y.ts'],
+    ],
+  ];
+
+  it.each(headers)('drops the index line of %s, and no other header line', (_n, written, sent) => {
+    const hunk = ['@@ -1 +1 @@', '-was', '+is', ''];
+    const out = withoutIndexLines([...written, ...hunk].join('\n'));
+    expect(out.split('\n')).toEqual([...sent, ...hunk]);
+  });
+
+  it('drops the index line of each piece of a type change, and only from a header part', () => {
+    // A file replaced by a symlink: git writes the deletion and the addition as two pieces.
+    const typeChange = [
+      'diff --git a/t b/t',
+      'deleted file mode 100644',
+      'index 7777777..0000000',
+      '--- a/t',
+      '+++ /dev/null',
+      '@@ -1 +0,0 @@',
+      '-text',
+      'diff --git a/t b/t',
+      'new file mode 120000',
+      'index 0000000..8888888',
+      '--- /dev/null',
+      '+++ b/t',
+      '@@ -0,0 +1 @@',
+      '+target',
+      '\\ No newline at end of file',
+      '',
+    ];
+    expect(withoutIndexLines(typeChange.join('\n')).split('\n')).toEqual(
+      typeChange.filter((line) => !line.startsWith('index ')),
+    );
+  });
+
+  it('keeps a line of a hunk that reads like an index line, whatever its prefix', () => {
+    // A diff of a diff file: every line of a hunk starts with ` `, `+`, `-` or `\`.
+    const like = 'index 1234567..89abcde 100644';
+    const patch = [...HEAD, '@@ -1,3 +1,2 @@', ` ${like}`, `-${like}`, `+${like}`, ''].join('\n');
+    expect(withoutIndexLines(patch).split('\n')).toEqual([
+      ...SENT_HEAD,
+      '@@ -1,3 +1,2 @@',
+      ` ${like}`,
+      `-${like}`,
+      `+${like}`,
+      '',
+    ]);
+  });
+
+  it('keeps an index line that is not git’s: another shape, or with trailing text', () => {
+    // Before the first hunk, but not `index <hex>..<hex> [mode]`.
+    const odd = ['index abc..xyz', 'index 1111111..2222222 100644 extra', 'index 111..222 1006440'];
+    const patch = [HEAD[0], ...odd, ...HEAD.slice(2), ''].join('\n');
+    expect(withoutIndexLines(patch)).toBe(patch);
+  });
+});
+
 describe('finishPatch', () => {
   const key = [
     ...HEAD,
@@ -108,7 +235,7 @@ describe('finishPatch', () => {
 
   it('keeps the diff prefix of each line the redaction masks whole', () => {
     const out = finishPatch(Buffer.from(key), { secrets: [], removedLinesScanned: true });
-    expect(out?.text.split('\n').slice(4)).toEqual([
+    expect(out?.text.split('\n').slice(SENT_HEAD.length)).toEqual([
       '@@ -1,4 +1 @@',
       ' const k =',
       `-${REDACTED}`,
@@ -121,12 +248,22 @@ describe('finishPatch', () => {
 
   it('sends no removed line unless the scan of the merge base held them', () => {
     const out = finishPatch(Buffer.from(key), { secrets: [], removedLinesScanned: false });
-    expect(out?.text.split('\n').slice(4)).toEqual([
+    expect(out?.text.split('\n').slice(SENT_HEAD.length)).toEqual([
       '@@ -1,2 +1 @@',
       ' const k =',
       '-[3 removed lines not sent]',
       '',
     ]);
+  });
+
+  it('sends no index line of git’s, whether the removed lines go or not', () => {
+    // The ids of both blobs would let whoever holds the snapshot test guesses of a masked secret
+    // (or of a removed line that is not sent) offline, by hashing them as git blobs.
+    for (const removedLinesScanned of [true, false]) {
+      const out = finishPatch(Buffer.from(key), { secrets: [], removedLinesScanned });
+      expect(out?.text, String(removedLinesScanned)).not.toMatch(/^index /m);
+      expect(out?.text.split('\n').slice(0, SENT_HEAD.length)).toEqual(SENT_HEAD);
+    }
   });
 
   it('rebuilds every hunk header from its ranges alone, whether the removed lines go or not', () => {
@@ -163,7 +300,7 @@ describe('finishPatch', () => {
       '',
     ].join('\n');
     const out = finishPatch(Buffer.from(spanning), { secrets: [], removedLinesScanned: true });
-    expect(out?.text.split('\n').slice(4)).toEqual([
+    expect(out?.text.split('\n').slice(SENT_HEAD.length)).toEqual([
       '@@ -1,2 +1 @@',
       ' k',
       `-${REDACTED}`,
