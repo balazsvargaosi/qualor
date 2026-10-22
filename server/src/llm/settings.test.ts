@@ -3,6 +3,7 @@ import { encryptionKey, encryptSecret } from '../crypto/secrets';
 import { defaultReview } from '../review/settings';
 import {
   DEFAULT_LLM_SETTINGS,
+  excludedPathMatcher,
   LLM_API_KEY_AAD,
   organizationSettings,
   pathExcluded,
@@ -92,5 +93,24 @@ describe('LLM settings (llm.md §3)', () => {
     expect(pathExcluded(s, 'src/.hidden/x.gen.ts')).toBe(true);
     expect(pathExcluded(s, 'src/a.ts')).toBe(false);
     expect(pathExcluded(s, null)).toBe(false);
+  });
+
+  it('compiles the excluded paths once for many paths, as pathExcluded reads them', () => {
+    const globs = ['secrets/**', '**/*.gen.ts', '.env*'];
+    const excluded = excludedPathMatcher(globs);
+    const s = { ...DEFAULT_LLM_SETTINGS, excludePaths: globs };
+    for (const path of [
+      'secrets',
+      'secrets/a/b.ts',
+      'src/.hidden/x.gen.ts',
+      '.env.local',
+      'src/a.ts',
+    ]) {
+      expect(excluded(path), path).toBe(pathExcluded(s, path));
+    }
+    expect(excluded('secrets/a/b.ts')).toBe(true);
+    expect(excluded('src/a.ts')).toBe(false);
+    // No globs exclude nothing.
+    expect(excludedPathMatcher([])('anything/at/all')).toBe(false);
   });
 });

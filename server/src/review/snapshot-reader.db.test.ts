@@ -1,0 +1,629 @@
+import { randomUUID } from 'node:crypto';
+import { gzipSync } from 'node:zlib';
+import type { OmissionReason, SnapshotLine } from '@qualor/shared';
+import { eq, sql } from 'drizzle-orm';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createTestDatabase, type TestDatabase } from '../../test/db';
+import { memorySnapshot, storeTestSnapshot } from '../../test/review';
+import { first } from '../db/rows';
+import { analyses, organizations, projects, reviewSnapshots } from '../db/schema';
+import {
+  MAX_HIT_TEXT_CHARS,
+  openSnapshotReader,
+  type SnapshotChange,
+  type SnapshotReader,
+} from './snapshot-reader';
+import { storeSnapshotUpload, unpackSnapshot } from './snapshot-store';
+
+const SINCE = 'c'.repeat(40);
+/** U+FF5E: a character of the Basic Multilingual Plane above the surrogates of UTF-16. */
+const FULLWIDTH_TILDE = String.fromCodePoint(0xff5e);
+
+/** `n` numbers from 0, as `00`, `01` … so that they sort as they count. */
+const pad = (n: number) => String(n).padStart(2, '0');
+
+const TEXTS: Record<string, string> = {
+  'README.md': '# Title\nSee the docs for the needle.\n',
+  'src/main.ts': 'import { x } from "./util";\nconst foo = (a|b);\nneedle(main)\n',
+  'src/util.ts': 'export const x = 1;\n// needle in util\n',
+  'src/new.ts': 'needle new file',
+  'src/renamed.ts': 'moved\nneedle\n',
+  'src/lib/a.ts': 'a\nneedle a\n',
+  'src/lib/b.ts': 'b\n',
+  'src/lib/deep/c.ts': 'needle c\n',
+  // LIKE metacharacters in names: _ is any character and % any run of them to LIKE.
+  'a_b/one.ts': 'needle one\n',
+  'axb/two.ts': 'needle two\n',
+  'a%b/three.ts': 'needle three\n',
+  'src/%/pct.ts': 'needle pct\n',
+  'src/q/q.ts': 'needle q\n',
+  // Names that a collation and UTF-16 order sort differently from code point order.
+  'Zeta.ts': 'needle Z\n',
+  'alpha.ts': 'needle alpha\n',
+  'éclair.ts': 'needle é\n',
+  '日本.ts': 'needle 日本\n',
+  [`${FULLWIDTH_TILDE}.ts`]: 'needle fullwidth tilde\n',
+  '😀.ts': 'needle 😀 emoji\n',
+  // Directories whose names take more than one UTF-16 unit or UTF-8 byte a character.
+  'dir😀/inner.ts': 'needle astral dir\n',
+  'データ/inner.ts': 'needle katakana dir\n',
+  // Line ends and the lines of a file.
+  'crlf.txt': 'one\r\ntwo needle\r\nthree\r\n',
+  'no-newline.txt': 'ends with needle',
+  'empty.txt': '',
+  'blank-lines.txt': '\n\nneedle\n\n',
+  'long.txt': `${'y'.repeat(3000)} needle ${'z'.repeat(3000)}\nshort needle\n`,
+  'many.txt': Array.from({ length: 120 }, (_, i) => `needle ${i + 1}`).join('\n'),
+  'big.log': Array.from({ length: 20_000 }, (_, i) =>
+    i === 6 || i === 19_998 ? `row ${i + 1} needle` : `row ${i + 1}`,
+  ).join('\n'),
+  '.hidden/dot.txt': 'needle hidden\n',
+  // More files than one fetch of the reader's takes.
+  ...Object.fromEntries(
+    Array.from({ length: 40 }, (_, i) => [`many/f${pad(i)}.ts`, `batch-needle ${i}\n`]),
+  ),
+};
+const OMITTED: Record<string, OmissionReason> = {
+  'bin/logo.png': 'binary',
+  '.env': 'credentials',
+  'db/dump.sql': 'too_large',
+  'vendor/lib.js': 'excluded',
+  link: 'symlink',
+  sub: 'submodule',
+  'gen/out.ts': 'limit',
+  'latin1.txt': 'not_utf8',
+};
+const CHANGES: SnapshotChange[] = [
+  {
+    path: 'src/main.ts',
+    oldPath: null,
+    status: 'modified',
+    patch: '@@ -1,2 +1,3 @@\n import { x } from "./util";\n+const foo = (a|b);\n+needle(main)\n',
+    since: [
+      [2, 3],
+      [9, 9],
+    ],
+  },
+  {
+    path: 'src/new.ts',
+    oldPath: null,
+    status: 'added',
+    patch: '@@ -0,0 +1 @@\n+needle new file',
+    since: [],
+  },
+  {
+    path: 'src/renamed.ts',
+    oldPath: 'src/old-name.ts',
+    status: 'renamed',
+    patch: null,
+    since: [[1, 2]],
+  },
+  {
+    path: 'old/gone.ts',
+    oldPath: null,
+    status: 'deleted',
+    patch: '@@ -1 +0,0 @@\n-gone\n',
+    since: null,
+  },
+  { path: 'bin/logo.png', oldPath: null, status: 'added', patch: null, since: null },
+];
+const INSTRUCTIONS = [
+  { name: 'AGENTS.md', text: 'Use two spaces.\n' },
+  { name: 'REVIEW.md', text: 'Look for needles.\n' },
+];
+
+/** The lines of the fixture, in the order the scanner writes them. */
+function fixtureLines(): SnapshotLine[] {
+  return [
+    ...INSTRUCTIONS.map((i): SnapshotLine => ({
+      type: 'instructions',
+      name: i.name as 'AGENTS.md' | 'REVIEW.md',
+      text: i.text,
+    })),
+    ...CHANGES.map((c): SnapshotLine => ({
+      type: 'change',
+      ...c,
+      since: c.since?.map(([from, to]): [number, number] => [from, to]) ?? null,
+    })),
+    ...Object.entries(TEXTS).map(([path, text]): SnapshotLine => ({ type: 'file', path, text })),
+    ...Object.entries(OMITTED).map(([path, reason]): SnapshotLine => ({
+      type: 'omitted',
+      path,
+      reason,
+    })),
+  ];
+}
+
+/** The same snapshot, as the memory reader takes it. */
+function fixtureMemory(): SnapshotReader {
+  return memorySnapshot({
+    meta: {
+      sinceSha: SINCE,
+      targetBranch: 'develop',
+      mrTitle: 'Parse the config',
+      mrDescription: 'It parses it.',
+      instructions: INSTRUCTIONS,
+      partial: true,
+    },
+    changes: CHANGES,
+    files: {
+      ...TEXTS,
+      ...Object.fromEntries(
+        Object.entries(OMITTED).map(([path, reason]) => [
+          path,
+          { kind: 'omitted', reason } as const,
+        ]),
+      ),
+    },
+  });
+}
+
+describe('the snapshot reader (6I-3)', () => {
+  let t: TestDatabase;
+  let projectId: string;
+  let snapshotId: string;
+  let db: SnapshotReader;
+  let memory: SnapshotReader;
+
+  const newAnalysis = async (): Promise<string> =>
+    first(await t.db.insert(analyses).values({ projectId }).returning()).id;
+
+  beforeAll(async () => {
+    t = await createTestDatabase();
+    const organizationId = first(
+      await t.db.insert(organizations).values({ key: 'reader', name: 'Reader' }).returning(),
+    ).id;
+    projectId = first(
+      await t.db
+        .insert(projects)
+        .values({ organizationId, key: 'reader/api', name: 'api' })
+        .returning(),
+    ).id;
+    snapshotId = await storeTestSnapshot(t.db, await newAnalysis(), fixtureLines(), {
+      sinceSha: SINCE,
+      targetBranch: 'develop',
+      mergeRequest: { id: '7', title: 'Parse the config', description: 'It parses it.' },
+      partial: true,
+    });
+    const opened = await openSnapshotReader(t.db, snapshotId);
+    if (opened === null) throw new Error('the fixture snapshot did not open');
+    db = opened;
+    memory = fixtureMemory();
+  });
+  afterAll(async () => {
+    await t.close();
+  });
+
+  describe('the DB reader agrees with the memory reader', () => {
+    it('on the meta and the changes', async () => {
+      expect(db.meta).toEqual({ ...memory.meta, snapshotId });
+      expect(db.meta).toMatchObject({
+        headSha: 'a'.repeat(40),
+        baseSha: 'b'.repeat(40),
+        sinceSha: SINCE,
+        targetBranch: 'develop',
+        mrTitle: 'Parse the config',
+        mrDescription: 'It parses it.',
+        instructions: INSTRUCTIONS,
+        partial: true,
+      });
+      expect(await db.changes()).toEqual(await memory.changes());
+      const changes = await db.changes();
+      expect(changes.map((c) => c.path)).toEqual([
+        'bin/logo.png',
+        'old/gone.ts',
+        'src/main.ts',
+        'src/new.ts',
+        'src/renamed.ts',
+      ]);
+      expect(changes.find((c) => c.path === 'src/renamed.ts')).toEqual({
+        path: 'src/renamed.ts',
+        oldPath: 'src/old-name.ts',
+        status: 'renamed',
+        patch: null,
+        since: [[1, 2]],
+      });
+      expect(changes.find((c) => c.path === 'src/main.ts')?.since).toEqual([
+        [2, 3],
+        [9, 9],
+      ]);
+    });
+
+    it('on every file', async () => {
+      const paths = [
+        ...Object.keys(TEXTS),
+        ...Object.keys(OMITTED),
+        'old/gone.ts',
+        'src/old-name.ts',
+        'src',
+        'src/',
+        'nope.ts',
+        'constructor',
+        '__proto__',
+        'src/MAIN.ts',
+      ];
+      for (const path of paths) {
+        expect(await db.file(path), path).toEqual(await memory.file(path));
+      }
+      expect(await db.file('src/main.ts')).toEqual({ kind: 'text', text: TEXTS['src/main.ts'] });
+      expect(await db.file('empty.txt')).toEqual({ kind: 'text', text: '' });
+      expect(await db.file('bin/logo.png')).toEqual({ kind: 'omitted', reason: 'binary' });
+      // A deleted file has no text and no omission: it is not there at the head.
+      expect(await db.file('old/gone.ts')).toEqual({ kind: 'absent' });
+      expect(await db.file('nope.ts')).toEqual({ kind: 'absent' });
+    });
+
+    it('on grep, across needles, globs and limits', async () => {
+      const searches: [string, string | null, number][] = [
+        ['needle', null, 1],
+        ['needle', null, 5],
+        ['needle', null, 50],
+        ['needle', null, 51],
+        ['needle', null, 500],
+        ['needle', null, 5_000],
+        ['needle', 'src/**', 50],
+        ['needle', '*.ts', 50],
+        ['needle', '**/*.ts', 100],
+        ['needle', 'src/lib/*.ts', 10],
+        ['needle', 'src/*/*.ts', 10],
+        ['needle', 'src/**/c.ts', 10],
+        ['needle', 'a_b/**', 10],
+        ['needle', 'a%b/**', 10],
+        ['needle', 'axb/**', 10],
+        ['needle', 'src/%/*.ts', 10],
+        ['needle', '**/*.txt', 20],
+        ['needle', '?????.txt', 20],
+        ['needle', '.hidden/**', 10],
+        ['needle', 'dir😀/**', 10],
+        ['needle', 'データ/?????.ts', 10],
+        ['needle', 'デ?タ/*.ts', 10],
+        ['needle', 'データ/*.ts', 10],
+        ['needle', 'big.log', 10],
+        ['needle', 'nomatch/**', 10],
+        ['batch-needle', null, 100],
+        ['batch-needle', 'many/**', 100],
+        ['batch-needle', 'many/f3?.ts', 100],
+        ['batch-needle', '**/f1*', 7],
+        ['batch-needle', '**/f39.ts', 7],
+        ['batch-needle', null, 33],
+        ['batch-needle', null, 40],
+        ['batch-needle', null, 39],
+        ['(a|b)', null, 10],
+        ['.*', null, 10],
+        ['\\d', null, 10],
+        ['é', null, 10],
+        ['😀', null, 10],
+        ['日本', null, 10],
+        ['fullwidth', null, 10],
+        ['yyy', null, 10],
+        ['row 7', null, 10],
+        ['zz', 'long.txt', 10],
+        ['absent text', null, 10],
+      ];
+      for (const [needle, glob, limit] of searches) {
+        expect(await db.grep(needle, glob, limit), JSON.stringify([needle, glob, limit])).toEqual(
+          await memory.grep(needle, glob, limit),
+        );
+      }
+    });
+
+    it('on list, across directories and limits', async () => {
+      const dirs: [string, number][] = [
+        ['', 1],
+        ['', 10],
+        ['', 500],
+        ['', 5_000],
+        ['src', 10],
+        ['src', 2],
+        ['src', 3],
+        ['src/lib', 10],
+        ['src/lib/deep', 10],
+        ['src/%', 10],
+        ['a_b', 10],
+        ['a%b', 10],
+        ['dir😀', 10],
+        ['データ', 10],
+        ['many', 39],
+        ['many', 40],
+        ['many', 41],
+        ['many', 5],
+        ['bin', 10],
+        ['old', 10],
+        ['nope', 10],
+        ['src/lib/a.ts', 10],
+        ['sr', 10],
+      ];
+      for (const [dir, limit] of dirs) {
+        expect(await db.list(dir, limit), JSON.stringify([dir, limit])).toEqual(
+          await memory.list(dir, limit),
+        );
+      }
+    });
+  });
+
+  describe('what the DB reader answers', () => {
+    it('finds a line by fixed text, with its line number and without its line end', async () => {
+      const { hits, truncated } = await db.grep('needle', 'crlf.txt', 10);
+      expect(hits).toEqual([{ path: 'crlf.txt', line: 2, text: 'two needle' }]);
+      expect(truncated).toBe(false);
+      expect((await db.grep('needle', 'no-newline.txt', 10)).hits).toEqual([
+        { path: 'no-newline.txt', line: 1, text: 'ends with needle' },
+      ]);
+      // A newline ends a line, it does not start another: the blank lines are lines 1, 2 and 4.
+      expect((await db.grep('needle', 'blank-lines.txt', 10)).hits).toEqual([
+        { path: 'blank-lines.txt', line: 3, text: 'needle' },
+      ]);
+      expect((await db.grep('needle', 'big.log', 10)).hits).toEqual([
+        { path: 'big.log', line: 7, text: 'row 7 needle' },
+        { path: 'big.log', line: 19_999, text: 'row 19999 needle' },
+      ]);
+      // A hit's text is bounded, whatever the line.
+      const long = (await db.grep('needle', 'long.txt', 10)).hits;
+      expect(long.map((h) => h.line)).toEqual([1, 2]);
+      expect(long[0]?.text.length).toBeLessThanOrEqual(MAX_HIT_TEXT_CHARS);
+      expect(long[1]?.text).toBe('short needle');
+    });
+
+    it('searches the text of the files, not the patches, the instructions or the omitted', async () => {
+      // `gone` is in the patch of a deleted file, `two spaces` in an instructions file, `png` in a name.
+      for (const needle of ['gone', 'two spaces', 'png', 'credentials']) {
+        expect(await db.grep(needle, null, 100), needle).toEqual({ hits: [], truncated: false });
+      }
+    });
+
+    it('reads the text only of the files that hold the needle, a few at a time', async () => {
+      let queries = 0;
+      const counted = new Proxy(t.db, {
+        get(target, property, receiver) {
+          const value: unknown = Reflect.get(target, property, receiver);
+          if (typeof value !== 'function') return value;
+          const method = value as (...args: unknown[]) => unknown;
+          return (...args: unknown[]) => {
+            if (property === 'select' || property === 'execute') queries += 1;
+            return method.apply(target, args);
+          };
+        },
+      });
+      const reader = await openSnapshotReader(counted, snapshotId);
+      queries = 0;
+      // No file holds it: the query that names the files is the only one.
+      await reader!.grep('a needle nobody wrote', null, 10);
+      expect(queries).toBe(1);
+      // One file holds it: that query and one for its text.
+      queries = 0;
+      expect((await reader!.grep('needle in util', null, 10)).hits).toHaveLength(1);
+      expect(queries).toBe(2);
+      // Forty files: their texts come 16 at a time.
+      queries = 0;
+      expect((await reader!.grep('batch-needle', null, 100)).hits).toHaveLength(40);
+      expect(queries).toBe(1 + 3);
+      // A glob that takes none of them asks for no text at all.
+      queries = 0;
+      expect((await reader!.grep('batch-needle', 'src/**', 100)).hits).toEqual([]);
+      expect(queries).toBe(1);
+      // And a full answer stops asking: the first group holds the one hit that is asked for.
+      queries = 0;
+      expect((await reader!.grep('batch-needle', null, 1)).truncated).toBe(true);
+      expect(queries).toBe(1 + 1);
+    });
+
+    it('escapes LIKE metacharacters in the prefix of a glob', async () => {
+      const paths = async (glob: string) =>
+        (await db.grep('needle', glob, 100)).hits.map((h) => h.path);
+      expect(await paths('a_b/**')).toEqual(['a_b/one.ts']);
+      expect(await paths('a%b/**')).toEqual(['a%b/three.ts']);
+      expect(await paths('src/%/*.ts')).toEqual(['src/%/pct.ts']);
+      expect(await paths('src/q/*.ts')).toEqual(['src/q/q.ts']);
+      expect(await db.list('a_b', 10)).toEqual({
+        entries: [{ name: 'one.ts', kind: 'file' }],
+        truncated: false,
+      });
+      expect(await db.list('a%b', 10)).toEqual({
+        entries: [{ name: 'three.ts', kind: 'file' }],
+        truncated: false,
+      });
+      expect(await db.list('src/%', 10)).toEqual({
+        entries: [{ name: 'pct.ts', kind: 'file' }],
+        truncated: false,
+      });
+    });
+
+    it('orders by code point', async () => {
+      const root = (await db.list('', 5_000)).entries.map((e) => e.name);
+      expect(root.slice(0, 6)).toEqual(['.env', '.hidden', 'README.md', 'Zeta.ts', 'a%b', 'a_b']);
+      // é, デ, 日, U+FF5E, 😀: the order of code points, which UTF-16 and a collation both change.
+      expect(root.slice(-5)).toEqual([
+        'éclair.ts',
+        'データ',
+        '日本.ts',
+        `${FULLWIDTH_TILDE}.ts`,
+        '😀.ts',
+      ]);
+      const hits = (await db.grep('needle', '?*.ts', 5_000)).hits.map((h) => h.path);
+      expect(hits.slice(-4)).toEqual(['éclair.ts', '日本.ts', `${FULLWIDTH_TILDE}.ts`, '😀.ts']);
+    });
+
+    it('lists the immediate children, directories marked, without what the merge request deleted', async () => {
+      expect(await db.list('src', 10)).toEqual({
+        entries: [
+          { name: '%', kind: 'dir' },
+          { name: 'lib', kind: 'dir' },
+          { name: 'main.ts', kind: 'file' },
+          { name: 'new.ts', kind: 'file' },
+          { name: 'q', kind: 'dir' },
+          { name: 'renamed.ts', kind: 'file' },
+          { name: 'util.ts', kind: 'file' },
+        ],
+        truncated: false,
+      });
+      // The omitted files are listed; the deleted one, and the old name of a rename, are not.
+      expect((await db.list('old', 10)).entries).toEqual([]);
+      expect((await db.list('bin', 10)).entries).toEqual([{ name: 'logo.png', kind: 'file' }]);
+      expect((await db.list('', 5_000)).entries.map((e) => e.name)).not.toContain('old/');
+      expect((await db.list('src', 10)).entries.map((e) => e.name)).not.toContain('old-name.ts');
+      expect(await db.list('many', 5)).toMatchObject({ truncated: true });
+      expect((await db.list('many', 5)).entries).toHaveLength(5);
+    });
+  });
+
+  describe('readers', () => {
+    it('a snapshot deleted while a reader is open answers absent', async () => {
+      const id = await storeTestSnapshot(t.db, await newAnalysis(), [
+        { type: 'file', path: 'src/a.ts', text: 'needle\n' },
+        {
+          type: 'change',
+          path: 'src/a.ts',
+          oldPath: null,
+          status: 'added',
+          patch: null,
+          since: null,
+        },
+      ]);
+      const reader = await openSnapshotReader(t.db, id);
+      expect(reader).not.toBeNull();
+      expect(await reader!.file('src/a.ts')).toEqual({ kind: 'text', text: 'needle\n' });
+      expect((await reader!.grep('needle', null, 5)).hits).toHaveLength(1);
+      expect((await reader!.list('', 5)).entries).toHaveLength(1);
+
+      // Housekeeping, a newer analysis or a merged merge request deletes the snapshot.
+      await t.db.delete(reviewSnapshots).where(eq(reviewSnapshots.id, id));
+
+      expect(await reader!.file('src/a.ts')).toEqual({ kind: 'absent' });
+      expect(await reader!.changes()).toEqual([]);
+      expect(await reader!.grep('needle', null, 5)).toEqual({ hits: [], truncated: false });
+      expect(await reader!.grep('needle', 'src/**', 5)).toEqual({ hits: [], truncated: false });
+      expect(await reader!.list('', 5)).toEqual({ entries: [], truncated: false });
+      expect(await reader!.list('src', 5)).toEqual({ entries: [], truncated: false });
+      // What it was opened with is still there to read.
+      expect(reader!.meta.headSha).toBe('a'.repeat(40));
+      expect(await openSnapshotReader(t.db, id)).toBeNull();
+    });
+
+    it('storeTestSnapshot throws with the stored reason when the unpacker refuses the snapshot', async () => {
+      await expect(
+        storeTestSnapshot(t.db, await newAnalysis(), [
+          { type: 'file', path: '../outside.ts', text: 'x' },
+        ]),
+      ).rejects.toThrow(
+        'the test snapshot did not unpack (rejected): SNAPSHOT_INVALID:path: invalid path',
+      );
+    });
+
+    it('openSnapshotReader returns null for an uploaded or rejected snapshot', async () => {
+      const upload = async (text: string) => {
+        const analysisId = await newAnalysis();
+        const body = gzipSync(text);
+        const id = await storeSnapshotUpload(t.db, {
+          analysisId,
+          projectId,
+          body,
+          compressedBytes: body.length,
+        });
+        return id;
+      };
+      const uploaded = await upload('{"type":"header"}\n');
+      expect(
+        first(await t.db.select().from(reviewSnapshots).where(eq(reviewSnapshots.id, uploaded)))
+          .status,
+      ).toBe('uploaded');
+      expect(await openSnapshotReader(t.db, uploaded)).toBeNull();
+
+      const rejected = await upload('this is not a snapshot\n');
+      const limits = { maxCompressedBytes: 1 << 20, maxDecompressedBytes: 1 << 20 };
+      expect(await unpackSnapshot(t.db, rejected, limits)).toBe('rejected');
+      expect(await openSnapshotReader(t.db, rejected)).toBeNull();
+
+      // The status decides, not the fields that only a ready snapshot has: with them set, an upload
+      // and a refused snapshot still open nothing.
+      for (const id of [uploaded, rejected]) {
+        await t.db
+          .update(reviewSnapshots)
+          .set({ headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40), targetBranch: 'main' })
+          .where(eq(reviewSnapshots.id, id));
+        expect(await openSnapshotReader(t.db, id)).toBeNull();
+      }
+
+      // Nor does a snapshot that is not there open; a ready one does.
+      expect(await openSnapshotReader(t.db, randomUUID())).toBeNull();
+      expect(await openSnapshotReader(t.db, snapshotId)).not.toBeNull();
+    });
+  });
+});
+
+describe('the snapshot reader on a database with another collation (6I-3)', () => {
+  let t: TestDatabase;
+
+  beforeAll(async () => {
+    t = await createTestDatabase();
+    // The database's own collation orders text its own way; the reader must not depend on it.
+    await t.db.execute(
+      sql`ALTER TABLE review_snapshot_files ALTER COLUMN path TYPE text COLLATE "und-x-icu"`,
+    );
+  });
+  afterAll(async () => {
+    await t.close();
+  });
+
+  it('orders by code point whatever the collation of the path column', async () => {
+    const organizationId = first(
+      await t.db.insert(organizations).values({ key: 'collation', name: 'Collation' }).returning(),
+    ).id;
+    const projectId = first(
+      await t.db
+        .insert(projects)
+        .values({ organizationId, key: 'collation/api', name: 'api' })
+        .returning(),
+    ).id;
+    const analysisId = first(await t.db.insert(analyses).values({ projectId }).returning()).id;
+    const names = ['B.ts', 'a.ts', 'Z.ts', '_x.ts', 'é.ts', 'a_b/x.ts', 'a%b/x.ts', 'ab/x.ts'];
+    const id = await storeTestSnapshot(t.db, analysisId, [
+      ...names.map((path): SnapshotLine => ({ type: 'file', path, text: 'needle\n' })),
+      ...names.slice(0, 5).map((path): SnapshotLine => ({
+        type: 'change',
+        path,
+        oldPath: null,
+        status: 'modified',
+        patch: null,
+        since: null,
+      })),
+    ]);
+    // The collation really differs from the code point order here.
+    const collated = await t.db.execute<{ path: string }>(
+      sql`SELECT path FROM review_snapshot_files WHERE snapshot_id = ${id} AND path NOT LIKE '%/%' ORDER BY path`,
+    );
+    expect(collated.rows.map((r) => r.path)).not.toEqual(['B.ts', 'Z.ts', '_x.ts', 'a.ts', 'é.ts']);
+
+    const reader = await openSnapshotReader(t.db, id);
+    expect((await reader!.list('', 100)).entries.map((e) => e.name)).toEqual([
+      'B.ts',
+      'Z.ts',
+      '_x.ts',
+      'a%b',
+      'a.ts',
+      'a_b',
+      'ab',
+      'é.ts',
+    ]);
+    expect((await reader!.grep('needle', null, 100)).hits.map((h) => h.path)).toEqual([
+      'B.ts',
+      'Z.ts',
+      '_x.ts',
+      'a%b/x.ts',
+      'a.ts',
+      'a_b/x.ts',
+      'ab/x.ts',
+      'é.ts',
+    ]);
+    expect((await reader!.changes()).map((c) => c.path)).toEqual([
+      'B.ts',
+      'Z.ts',
+      '_x.ts',
+      'a.ts',
+      'é.ts',
+    ]);
+    expect((await reader!.grep('needle', 'a_b/**', 100)).hits.map((h) => h.path)).toEqual([
+      'a_b/x.ts',
+    ]);
+    expect((await reader!.list('a_b', 100)).entries).toEqual([{ name: 'x.ts', kind: 'file' }]);
+  });
+});

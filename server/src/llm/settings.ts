@@ -231,8 +231,16 @@ export async function projectOwners(
   return owners;
 }
 
+/**
+ * llm.md §3.2: the matcher of `excludePaths`, picomatch with dotfiles, for code that tests many
+ * paths against one list.
+ */
+export function excludedPathMatcher(excludePaths: readonly string[]): (path: string) => boolean {
+  if (excludePaths.length === 0) return () => false;
+  return picomatch([...excludePaths], { dot: true });
+}
+
 /** llm.md §3.2: `excludePaths`, picomatch with dotfiles. */
 export function pathExcluded(settings: StoredLlmSettings, path: string | null): boolean {
-  if (path === null || settings.excludePaths.length === 0) return false;
-  return picomatch(settings.excludePaths, { dot: true })(path);
+  return path !== null && excludedPathMatcher(settings.excludePaths)(path);
 }
