@@ -68,6 +68,11 @@ export class SettingsPage {
     () => this.ids().has('compliance') && this.org.can('org.read'),
   );
   /**
+   * The organisation's AI review (6I-2): for holders of `org.ai.manage`, in every edition. The
+   * page itself says when the instance has no AI provider or the organisation is not enabled.
+   */
+  protected readonly aiReview = computed(() => this.org.can('org.ai.manage'));
+  /**
    * The organisation's automatic fix suggestions (4E-3a §4, ruling R7): for holders of
    * `org.ai.manage`, while `llm.auto-fix` is active; the address itself says when it is not.
    */
@@ -83,14 +88,16 @@ export class SettingsPage {
       this.info.features().includes(LICENSE_POLICY_FEATURE) && this.org.can('org.licenses.manage'),
   );
   /**
-   * The organization's entries: members, webhooks, the SCM connections, the automatic fix
-   * suggestions (4E-3a §4), the licence policy (6M §8), the audit log and the compliance reports.
+   * The organization's entries: members, webhooks, the SCM connections, AI review (6I-2), the
+   * automatic fix suggestions (4E-3a §4), the licence policy (6M §8), the audit log and the
+   * compliance reports.
    */
   protected readonly organization = computed(
     () =>
       this.org.can('org.members.read') ||
       this.org.can('org.webhooks.manage') ||
       this.org.can('org.scm.manage') ||
+      this.aiReview() ||
       this.autoFix() ||
       this.licensePolicy() ||
       this.auditLog() ||

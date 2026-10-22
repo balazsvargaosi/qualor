@@ -11,6 +11,14 @@ import type {
   DependencyAnswer,
   DependencyRow,
 } from '../app/project/dependencies/dependencies.page';
+import {
+  type AiReviewBody,
+  type AiReviewBudgets,
+  type AiReviewProvider,
+  type AiReviewScope,
+  DEFAULT_AI_REVIEW_BUDGETS,
+  type OrgAiReview,
+} from '../app/settings/ai-review';
 import { type AutoFix, DEFAULT_AUTO_FIX } from '../app/settings/auto-fix';
 import type {
   LicenseGroupId,
@@ -552,6 +560,191 @@ export class FakeAutoFix {
 
   of(organizationId: string): AutoFix {
     return this.organizations[organizationId] ?? { ...DEFAULT_AUTO_FIX };
+  }
+}
+
+const ORG_AI_REVIEW = /^\/api\/v0\/organizations\/([^/]+)\/ai\/review$/;
+
+/** An organisation's stored AI review, as a {@link FakeAiReview} keeps it. */
+export interface FakeStoredReview {
+  enabled: boolean;
+  scope: AiReviewScope;
+  projectIds: string[];
+  budgets: AiReviewBudgets;
+  /** Who acknowledged the notice, for which provider; null before any. */
+  consent: NonNullable<OrgAiReview['consent']> | null;
+}
+
+/** The starting state of a {@link FakeAiReview}: a provider and an enabled organisation, by default. */
+export interface FakeAiReviewOptions {
+  /** The provider the notice names (the host with its port, and the model); null: none configured. */
+  provider?: AiReviewProvider | null;
+  /** The organisation is enabled for the AI assistant by the instance administrator. */
+  organizationEnabled?: boolean;
+  /** The instance ceiling on the organisation's tokens per day; null: none. */
+  ceiling?: number | null;
+  /** The days a snapshot is kept, which the notice names. */
+  retentionDays?: number;
+  /** Stored blocks by organisation id; `consentFor` records an acknowledgement of that provider. */
+  organizations?: Record<
+    string,
+    Partial<Omit<FakeStoredReview, 'consent'>> & { consentFor?: AiReviewProvider | null }
+  >;
+}
+
+/** llm.md §3.3 / spec §5: the warning, word for word, as the server sends it. */
+function fakeNotice(provider: AiReviewProvider, days: number): string {
+  return (
+    `AI review sends the merge request's diff and any repository file the model chooses to read to ${provider.host} (${provider.model}). ` +
+    `The scanner uploads a copy of the repository to this Qualor server for each merge request; ` +
+    `Qualor keeps it until the merge request is closed (at most ${days} days). ` +
+    `Secrets the analyzers found are masked; credentials files are never sent.`
+  );
+}
+
+/**
+ * The organisation AI review routes (6I-2, `GET`/`PUT /organizations/{id}/ai/review`) over in-memory
+ * settings, with the server's consent rules (R10 amended): switching on from off, or while the
+ * consent does not name the provider now, needs `acknowledgeDataSharing`; without a provider or
+ * an enabled organisation that is 409 AI_DISABLED, without the acknowledgement 409
+ * AI_REVIEW_CONSENT_REQUIRED, and with a host or model other than the provider now 409
+ * AI_REVIEW_PROVIDER_CHANGED (nothing stored). `changeProvider` plays the instance administrator
+ * switching the provider; `foreignProjects` are ids that belong to another organisation (422
+ * PROJECT_NOT_IN_ORGANIZATION). The consent carries a base URL with a path, as the server's
+ * answer still does: a page must never show it. A test answers a route itself with `server.on`,
+ * which wins.
+ */
+export class FakeAiReview {
+  provider: AiReviewProvider | null;
+  organizationEnabled: boolean;
+  ceiling: number | null;
+  retentionDays: number;
+  /** Stored blocks by organisation id; one not listed reads as the default. */
+  readonly organizations: Record<string, FakeStoredReview> = {};
+  /** Project ids of another organisation: a save that lists one is refused. */
+  readonly foreignProjects = new Set<string>();
+
+  /** Answers the AI review routes on `server`. */
+  static install(server: FakeServer, options: FakeAiReviewOptions = {}): FakeAiReview {
+    return new FakeAiReview(server, options);
+  }
+
+  private constructor(server: FakeServer, options: FakeAiReviewOptions) {
+    this.provider =
+      options.provider === undefined
+        ? { host: 'llm.example.com', model: 'gpt-review' }
+        : options.provider;
+    this.organizationEnabled = options.organizationEnabled ?? true;
+    this.ceiling = options.ceiling ?? null;
+    this.retentionDays = options.retentionDays ?? 14;
+    for (const [id, given] of Object.entries(options.organizations ?? {})) {
+      const { consentFor, ...rest } = given;
+      this.organizations[id] = { ...this.of(id), ...rest, consent: this.consentOf(consentFor) };
+    }
+    server.on('GET', ORG_AI_REVIEW, (r) => ({
+      body: this.answer(ORG_AI_REVIEW.exec(r.path)?.[1] ?? ''),
+    }));
+    server.on('PUT', ORG_AI_REVIEW, (r) => this.put(ORG_AI_REVIEW.exec(r.path)?.[1] ?? '', r));
+  }
+
+  /** The stored block of an organisation, or the defaults (off, selected projects, none). */
+  of(organizationId: string): FakeStoredReview {
+    return (
+      this.organizations[organizationId] ?? {
+        enabled: false,
+        scope: 'selected',
+        projectIds: [],
+        budgets: { ...DEFAULT_AI_REVIEW_BUDGETS },
+        consent: null,
+      }
+    );
+  }
+
+  /** The instance administrator changes the provider (its host or model), or removes it. */
+  changeProvider(next: AiReviewProvider | null): void {
+    this.provider = next === null ? null : { ...next };
+  }
+
+  /** Whether the stored consent names the provider configured now (its host and model). */
+  consentCurrent(stored: FakeStoredReview): boolean {
+    return (
+      this.provider !== null &&
+      stored.consent !== null &&
+      stored.consent.providerHost === this.provider.host &&
+      stored.consent.model === this.provider.model
+    );
+  }
+
+  answer(organizationId: string): OrgAiReview {
+    const stored = this.of(organizationId);
+    const unavailableReason =
+      this.provider === null
+        ? 'no_provider'
+        : this.organizationEnabled
+          ? null
+          : 'organization_disabled';
+    return {
+      available: unavailableReason === null,
+      unavailableReason,
+      provider: this.provider === null ? null : { ...this.provider },
+      notice: this.provider === null ? null : fakeNotice(this.provider, this.retentionDays),
+      enabled: stored.enabled,
+      scope: stored.scope,
+      projectIds: [...stored.projectIds],
+      budgets: { ...stored.budgets },
+      consent: stored.consent === null ? null : { ...stored.consent },
+      consentCurrent: this.consentCurrent(stored),
+      instanceCeiling: { tokensPerDay: this.ceiling },
+    };
+  }
+
+  private consentOf(provider: AiReviewProvider | null | undefined): FakeStoredReview['consent'] {
+    if (!provider) return null;
+    return {
+      providerUrl: `https://${provider.host}/tenant-7f3a/v1`,
+      providerHost: provider.host,
+      model: provider.model,
+      userId: '0190a6c2-0000-7000-8000-00000000000a',
+      at: '2026-10-20T09:30:00.000Z',
+    };
+  }
+
+  private put(organizationId: string, request: RecordedRequest): FakeReply {
+    const body = request.body as AiReviewBody;
+    const current = this.of(organizationId);
+    const foreign = body.projectIds.flatMap((id, i) =>
+      this.foreignProjects.has(id)
+        ? [{ path: `body.projectIds.${i}`, message: 'Not a project of this organisation' }]
+        : [],
+    );
+    if (foreign.length > 0) {
+      return { status: 422, body: problem(422, 'PROJECT_NOT_IN_ORGANIZATION', foreign) };
+    }
+    let consent = current.consent;
+    if (body.enabled && (!current.enabled || !this.consentCurrent(current))) {
+      if (this.provider === null || !this.organizationEnabled) {
+        return { status: 409, body: problem(409, 'AI_DISABLED') };
+      }
+      const acknowledged = body.acknowledgeDataSharing;
+      if (acknowledged === undefined) {
+        return { status: 409, body: problem(409, 'AI_REVIEW_CONSENT_REQUIRED') };
+      }
+      if (
+        acknowledged.host.toLowerCase() !== this.provider.host.toLowerCase() ||
+        acknowledged.model !== this.provider.model
+      ) {
+        return { status: 409, body: problem(409, 'AI_REVIEW_PROVIDER_CHANGED') };
+      }
+      consent = this.consentOf(this.provider);
+    }
+    this.organizations[organizationId] = {
+      enabled: body.enabled,
+      scope: body.scope,
+      projectIds: [...body.projectIds],
+      budgets: { ...body.budgets },
+      consent,
+    };
+    return { body: this.answer(organizationId) };
   }
 }
 

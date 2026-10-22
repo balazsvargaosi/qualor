@@ -85,6 +85,7 @@ describe('ProjectSettingsPage', () => {
       'Quality gate and profiles',
       'Main branch',
       'Automatic fix suggestions',
+      'AI review',
       'Analysis tokens',
       'Danger zone',
     ]);
@@ -94,6 +95,7 @@ describe('ProjectSettingsPage', () => {
       'gate',
       'main-branch',
       'auto-fix',
+      'ai-review',
       'tokens',
       'danger',
     ]);

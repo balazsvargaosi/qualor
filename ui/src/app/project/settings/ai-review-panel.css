@@ -1,0 +1,7 @@
+:host {
+  display: block;
+}
+
+.panel-body p:last-child {
+  margin-bottom: 0;
+}

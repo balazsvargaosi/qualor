@@ -1,0 +1,367 @@
+<div class="settings-head">
+  <div>
+    <h2 #heading tabindex="-1" i18n="@@aiReview.title">AI review</h2>
+    <p class="muted" i18n="@@aiReview.intro">
+      AI review reads each merge request of the projects you choose with the AI provider the
+      instance administrator configured, and posts what it finds to the merge request. It sends
+      repository code to that provider, so switching it on asks you to confirm.
+    </p>
+  </div>
+</div>
+@if (org.organizations.error()) {
+  <p class="alert alert-error" role="alert" i18n="@@aiReview.organizationsFailed">
+    The organizations could not be loaded.
+  </p>
+} @else if (!org.current() && !org.organizations.isLoading()) {
+  <p class="muted" i18n="@@aiReview.noOrganization">There is no organization to show.</p>
+} @else if (org.current() && !allowed()) {
+  <p class="muted" i18n="@@aiReview.adminsOnly">
+    Only organisation administrators change the AI review settings.
+  </p>
+} @else if (loadError(); as message) {
+  <p class="alert alert-error" role="alert">{{ message }}</p>
+} @else if (current(); as settings) {
+  <div role="status">
+    @if (announcement(); as message) {
+      <p class="alert alert-success">{{ message }}</p>
+    }
+  </div>
+  @if (error(); as message) {
+    <p class="alert alert-error" role="alert">{{ message }}</p>
+  }
+  @if (unavailable(); as reason) {
+    <p id="ai-review-unavailable" class="alert alert-info">{{ reason }}</p>
+  }
+  @if (outdated()) {
+    <div id="ai-review-outdated" class="alert alert-warn ai-review-outdated">
+      <p i18n="@@aiReview.outdated">The AI provider changed; confirm again to keep reviewing.</p>
+      <button
+        type="button"
+        class="btn"
+        [attr.aria-disabled]="busy() ? true : null"
+        (click)="confirmAgain()"
+        i18n="@@aiReview.confirmAgain"
+      >
+        Confirm again
+      </button>
+    </div>
+  }
+
+  <form class="ai-review" novalidate (submit)="save($event)">
+    <section class="card panel" aria-labelledby="ai-review-organization">
+      <div class="panel-head">
+        <h3 id="ai-review-organization">{{ org.current()?.name }}</h3>
+      </div>
+      @if (settings.provider; as provider) {
+        <div class="setting-row">
+          <div class="setting-text">
+            <span class="setting-name" i18n="@@aiReview.providerLabel">AI provider</span>
+            <p i18n="@@aiReview.providerHint">
+              The instance administrator configures one provider for the whole instance.
+            </p>
+          </div>
+          <div class="setting-field">
+            <p id="ai-review-provider" i18n="@@aiReview.provider">
+              Model {{ provider.model }} at {{ provider.host }}
+            </p>
+          </div>
+        </div>
+      }
+      <div class="setting-row">
+        <div class="setting-text">
+          <label for="ai-review-enabled" i18n="@@aiReview.enabled"
+            >Review merge requests with AI</label
+          >
+          <p id="ai-review-enabled-hint" i18n="@@aiReview.enabledHint">
+            Off until you switch it on. Switching it on shows what is sent and where, and asks you
+            to confirm.
+          </p>
+        </div>
+        <div class="setting-field">
+          <input
+            #switchField
+            id="ai-review-enabled"
+            type="checkbox"
+            aria-describedby="ai-review-enabled-hint"
+            [checked]="enabled()"
+            [disabled]="locked()"
+            (change)="setEnabled($event)"
+          />
+        </div>
+      </div>
+    </section>
+
+    <section class="card panel" aria-labelledby="ai-review-projects-heading">
+      <div class="panel-head">
+        <h3 id="ai-review-projects-heading" i18n="@@aiReview.projects">Projects</h3>
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <span id="ai-review-scope-name" class="setting-name" i18n="@@aiReview.scope"
+            >Projects to review</span
+          >
+          <p id="ai-review-scope-hint" i18n="@@aiReview.scopeHint">
+            Projects the instance administrator excluded from the AI assistant are never reviewed.
+          </p>
+        </div>
+        <div
+          class="setting-field"
+          role="radiogroup"
+          aria-labelledby="ai-review-scope-name"
+          aria-describedby="ai-review-scope-hint"
+        >
+          <label class="row">
+            <input
+              id="ai-review-scope-all"
+              type="radio"
+              name="ai-review-scope"
+              [checked]="scope() === 'all'"
+              [disabled]="locked()"
+              (change)="setScope('all')"
+            />
+            <span i18n="@@aiReview.scopeAll">All projects</span>
+          </label>
+          <label class="row">
+            <input
+              id="ai-review-scope-selected"
+              type="radio"
+              name="ai-review-scope"
+              [checked]="scope() === 'selected'"
+              [disabled]="locked()"
+              (change)="setScope('selected')"
+            />
+            <span i18n="@@aiReview.scopeSelected">Selected projects</span>
+          </label>
+        </div>
+      </div>
+      @if (scope() === 'selected') {
+        <div class="setting-row">
+          <div class="setting-text">
+            <span class="setting-name" i18n="@@aiReview.pickProjects">Which projects</span>
+            <p id="ai-review-selected-count" aria-live="polite">
+              <span i18n="@@aiReview.selectedCount">{selectedCount(), plural,
+                =0 {No project selected}
+                =1 {1 project selected}
+                other {{{ selectedCount() }} projects selected}
+              }</span>
+            </p>
+          </div>
+          <div class="setting-field">
+            @if (projects.error(); as message) {
+              <p class="alert alert-error" role="alert">{{ message }}</p>
+            }
+            <fieldset class="facet projects">
+              <legend i18n="@@aiReview.projectsLegend">
+                Review the merge requests of these projects
+              </legend>
+              @for (p of projects.items(); track p.id) {
+                <label>
+                  <input
+                    type="checkbox"
+                    [id]="'ai-review-project-' + p.id"
+                    [checked]="isSelected(p.id)"
+                    [disabled]="locked()"
+                    (change)="toggleProject(p.id, $event)"
+                  />
+                  <span>{{ p.name }}</span>
+                  <code class="project-key">{{ p.key }}</code>
+                </label>
+              } @empty {
+                @if (projects.loaded()) {
+                  <p class="muted" i18n="@@aiReview.noProjects">No project yet.</p>
+                } @else if (!projects.error()) {
+                  <p class="muted" i18n="@@aiReview.projectsLoading">Loading…</p>
+                }
+              }
+            </fieldset>
+          </div>
+        </div>
+      }
+    </section>
+
+    <section class="card panel" aria-labelledby="ai-review-budgets-heading">
+      <div class="panel-head">
+        <h3 id="ai-review-budgets-heading" i18n="@@aiReview.budgets">Budgets per day (UTC)</h3>
+        <span class="panel-sub" i18n="@@aiReview.budgetsHint">
+          They cover the reviews of all the organisation's projects.
+        </span>
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <label for="ai-review-tokens" i18n="@@aiReview.budgetTokens">Tokens per day</label>
+          <p id="ai-review-tokens-hint" i18n="@@aiReview.budgetTokensHint">
+            The most tokens (input and output) the organisation's reviews may use in a day.
+          </p>
+          @if (ceiling(); as limit) {
+            <p id="ai-review-ceiling" i18n="@@aiReview.ceiling">
+              The instance administrator allows at most {{ limit }} tokens per organisation and day;
+              a higher value here is capped to it.
+            </p>
+          }
+        </div>
+        <div class="setting-field">
+          <input
+            id="ai-review-tokens"
+            class="short"
+            type="number"
+            inputmode="numeric"
+            min="0"
+            max="1000000000"
+            step="1"
+            [value]="budgets().tokensPerDay"
+            [disabled]="locked()"
+            [attr.aria-invalid]="budgetErrors().tokensPerDay ? true : null"
+            [attr.aria-describedby]="describedBy('tokensPerDay')"
+            (input)="setBudget('tokensPerDay', $event)"
+          />
+          @if (budgetErrors().tokensPerDay; as message) {
+            <span id="ai-review-tokens-error" class="field-error" role="alert">{{ message }}</span>
+          }
+        </div>
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <label for="ai-review-cost" i18n="@@aiReview.budgetCost"
+            >Cost per day in US dollars</label
+          >
+          <p id="ai-review-cost-hint" i18n="@@aiReview.budgetCostHint">
+            Optional. It needs the model's prices, which the instance administrator sets in the AI
+            assistant settings. Leave it empty for no cost limit.
+          </p>
+        </div>
+        <div class="setting-field">
+          <input
+            id="ai-review-cost"
+            class="short"
+            type="number"
+            inputmode="decimal"
+            min="0"
+            max="1000000"
+            step="0.01"
+            [value]="budgets().costPerDayUsd"
+            [disabled]="locked()"
+            [attr.aria-invalid]="budgetErrors().costPerDayUsd ? true : null"
+            [attr.aria-describedby]="describedBy('costPerDayUsd')"
+            (input)="setBudget('costPerDayUsd', $event)"
+          />
+          @if (budgetErrors().costPerDayUsd; as message) {
+            <span id="ai-review-cost-error" class="field-error" role="alert">{{ message }}</span>
+          }
+        </div>
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <label for="ai-review-per-project" i18n="@@aiReview.budgetPerProject"
+            >Tokens per project and day</label
+          >
+          <p id="ai-review-per-project-hint" i18n="@@aiReview.budgetPerProjectHint">
+            Optional. The most tokens one project's reviews may use in a day. Leave it empty for no
+            limit per project.
+          </p>
+        </div>
+        <div class="setting-field">
+          <input
+            id="ai-review-per-project"
+            class="short"
+            type="number"
+            inputmode="numeric"
+            min="0"
+            max="1000000000"
+            step="1"
+            [value]="budgets().perProjectTokensPerDay"
+            [disabled]="locked()"
+            [attr.aria-invalid]="budgetErrors().perProjectTokensPerDay ? true : null"
+            [attr.aria-describedby]="describedBy('perProjectTokensPerDay')"
+            (input)="setBudget('perProjectTokensPerDay', $event)"
+          />
+          @if (budgetErrors().perProjectTokensPerDay; as message) {
+            <span id="ai-review-per-project-error" class="field-error" role="alert">{{
+              message
+            }}</span>
+          }
+        </div>
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <label for="ai-review-max-per-review" i18n="@@aiReview.budgetPerReview"
+            >Tokens per review</label
+          >
+          <p id="ai-review-max-per-review-hint" i18n="@@aiReview.budgetPerReviewHint">
+            The most tokens one review may use. A review that reaches it ends with what it has found
+            so far.
+          </p>
+        </div>
+        <div class="setting-field">
+          <input
+            id="ai-review-max-per-review"
+            class="short"
+            type="number"
+            inputmode="numeric"
+            min="1"
+            max="10000000"
+            step="1"
+            [value]="budgets().maxTokensPerReview"
+            [disabled]="locked()"
+            [attr.aria-invalid]="budgetErrors().maxTokensPerReview ? true : null"
+            [attr.aria-describedby]="describedBy('maxTokensPerReview')"
+            (input)="setBudget('maxTokensPerReview', $event)"
+          />
+          @if (budgetErrors().maxTokensPerReview; as message) {
+            <span id="ai-review-max-per-review-error" class="field-error" role="alert">{{
+              message
+            }}</span>
+          }
+        </div>
+      </div>
+    </section>
+
+    <div class="ai-review-actions">
+      <button
+        type="submit"
+        class="btn btn-primary"
+        [disabled]="locked()"
+        [attr.aria-disabled]="busy() ? true : null"
+        i18n="@@aiReview.save"
+      >
+        Save
+      </button>
+    </div>
+  </form>
+
+  <dialog
+    #consentDialog
+    id="ai-review-dialog"
+    class="dialog"
+    aria-labelledby="ai-review-dialog-title"
+    aria-describedby="ai-review-notice"
+    (close)="cancelConsent()"
+  >
+    <div class="dialog-head">
+      <h2 id="ai-review-dialog-title" i18n="@@aiReview.dialogTitle">Switch on AI review</h2>
+    </div>
+    <div class="dialog-body">
+      @if (consent()?.changed) {
+        <p class="alert alert-warn" i18n="@@aiReview.dialogChanged">
+          The AI provider changed while this was open. This is the notice for the new one.
+        </p>
+      }
+      <p id="ai-review-notice">{{ consent()?.notice }}</p>
+    </div>
+    <div class="dialog-actions">
+      <button type="button" class="btn" autofocus (click)="cancelConsent()" i18n="@@dialog.cancel">
+        Cancel
+      </button>
+      @if (consent(); as asked) {
+        <button
+          type="button"
+          class="btn btn-primary"
+          [attr.aria-disabled]="busy() ? true : null"
+          (click)="confirmConsent()"
+          i18n="@@aiReview.confirm"
+        >
+          Switch on and send code to {{ asked.host }}
+        </button>
+      }
+    </div>
+  </dialog>
+}

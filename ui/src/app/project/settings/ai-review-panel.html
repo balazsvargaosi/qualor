@@ -1,0 +1,18 @@
+<section class="card panel" id="ai-review">
+  <div class="panel-head">
+    <h2 tabindex="-1" i18n="@@project.settings.aiReview">AI review</h2>
+  </div>
+  <div class="panel-body">
+    @if (enabled()) {
+      <p id="ai-review-state" i18n="@@aiReview.project.on">AI review is on for this project.</p>
+    } @else {
+      <p id="ai-review-state" i18n="@@aiReview.project.off">AI review is off for this project.</p>
+    }
+    @if (!organizationEnabled()) {
+      <p id="ai-review-organization-off" class="muted" i18n="@@aiReview.project.organizationOff">
+        Your organisation admin switches it on in
+        <a routerLink="/settings/ai-review">Settings → AI review</a>.
+      </p>
+    }
+  </div>
+</section>

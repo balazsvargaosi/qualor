@@ -12,6 +12,7 @@ import { ActivatedRoute, Router } from '@angular/router';
 import { can } from '../../auth/permissions';
 import { SessionStore } from '../../auth/session';
 import { CurrentProject } from '../current-project';
+import { AiReviewPanel } from './ai-review-panel';
 import { AutoFixPanel } from './auto-fix-panel';
 import { GateProfilesPanel } from './gate-profiles-panel';
 import { MainBranchPanel } from './main-branch-panel';
@@ -28,6 +29,7 @@ import { ProjectWebhooksPanel } from './project-webhooks-panel';
 @Component({
   selector: 'q-project-settings-page',
   imports: [
+    AiReviewPanel,
     AutoFixPanel,
     DeleteProjectPanel,
     GateProfilesPanel,

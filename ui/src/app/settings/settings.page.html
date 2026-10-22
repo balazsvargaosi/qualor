@@ -109,6 +109,17 @@
               >
             </li>
           }
+          @if (aiReview()) {
+            <li>
+              <a
+                routerLink="ai-review"
+                routerLinkActive="active"
+                ariaCurrentWhenActive="page"
+                i18n="@@settings.tab.aiReview"
+                >AI review</a
+              >
+            </li>
+          }
           @if (autoFix()) {
             <li>
               <a

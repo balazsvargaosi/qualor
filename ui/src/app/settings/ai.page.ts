@@ -79,6 +79,7 @@ const FIELDS = [
   'budget-tokens',
   'budget-cost',
   'budget-user',
+  'budget-review',
   'price-input',
   'price-output',
   'retention',
@@ -100,6 +101,7 @@ const SERVER_PATHS: [string, Field][] = [
   ['body.budgets.tokensPerDay', 'budget-tokens'],
   ['body.budgets.costPerDayUsd', 'budget-cost'],
   ['body.budgets.perUserPerHour', 'budget-user'],
+  ['body.budgets.reviewTokensPerOrganizationPerDay', 'budget-review'],
   ['body.pricing.inputUsdPerMTok', 'price-input'],
   ['body.pricing.outputUsdPerMTok', 'price-output'],
   ['body.pricing', 'price-input'],
@@ -122,8 +124,10 @@ const PROJECT_PAGES = 20;
  * at a submission, emptied at once whatever happens next, never kept in the page's state, never
  * shown), each organisation's enablement and features and its automatic fix suggestions (4E-3a
  * §4: the Enterprise note in place of them without `llm.auto-fix`), the excluded paths, the
- * budgets (the fix budget has no edition ceiling, 6I D10), prices, prompt storage, and a Test of
- * the saved provider. Refusals and test problems are shown in the page's own words (plan 1F ruling Y3).
+ * budgets (the fix budget has no edition ceiling, 6I D10; the ceiling on AI review's tokens per
+ * organisation and day, which every save sends back because the server clears one that is left
+ * out, 6I-2), prices, prompt storage, and a Test of the saved provider. Refusals and test
+ * problems are shown in the page's own words (plan 1F ruling Y3).
  *
  * Step 8 of the redesign (spec §7.8): today's use of the current organisation against its budgets
  * as meters (`GET /organizations/{id}/ai`; a failed read leaves an alert in its panel), then the
@@ -580,6 +584,10 @@ export class AiSettingsPage {
       tokensPerDay: String(b.tokensPerDay),
       costPerDayUsd: b.costPerDayUsd === null ? '' : String(b.costPerDayUsd),
       perUserPerHour: String(b.perUserPerHour),
+      reviewTokensPerOrganizationPerDay:
+        b.reviewTokensPerOrganizationPerDay === null
+          ? ''
+          : String(b.reviewTokensPerOrganizationPerDay),
     });
     this.priceInput.set(settings.pricing ? String(settings.pricing.inputUsdPerMTok) : '');
     this.priceOutput.set(settings.pricing ? String(settings.pricing.outputUsdPerMTok) : '');
@@ -659,6 +667,7 @@ export class AiSettingsPage {
     const budget = (field: Field, key: keyof SettingsBody['budgets'], min: number, max: number) =>
       wholeNumber(errors, field, this.budget(key), min, max);
     const costRaw = this.budget('costPerDayUsd').trim();
+    const ceilingRaw = this.budget('reviewTokensPerOrganizationPerDay').trim();
     return {
       explainPerDay: budget('budget-explain', 'explainPerDay', 0, 100_000),
       triagePerDay: budget('budget-triage', 'triagePerDay', 0, 100_000),
@@ -667,6 +676,12 @@ export class AiSettingsPage {
       costPerDayUsd:
         costRaw === '' ? null : decimalNumber(errors, 'budget-cost', costRaw, 0, 1_000_000),
       perUserPerHour: budget('budget-user', 'perUserPerHour', 1, 10_000),
+      // Always sent, null for no ceiling: the server clears a ceiling the body leaves out (6I-2
+      // Task 4, D8), so a save of anything else on this page must carry it back.
+      reviewTokensPerOrganizationPerDay:
+        ceilingRaw === ''
+          ? null
+          : wholeNumber(errors, 'budget-review', ceilingRaw, 0, 1_000_000_000),
     };
   }
 
@@ -782,6 +797,8 @@ function refusal(field: Field): string {
       return $localize`:@@ai.settings.badBudget:Use a whole number, 0 or more.`;
     case 'budget-user':
       return $localize`:@@ai.settings.badUserBudget:Use a whole number, 1 or more.`;
+    case 'budget-review':
+      return $localize`:@@ai.settings.badReviewCeiling:Use a whole number, 0 or more, or leave it empty for no limit.`;
     case 'budget-cost':
       return $localize`:@@ai.settings.badCost:Use an amount in US dollars, or leave it empty for no cost budget.`;
     case 'price-input':

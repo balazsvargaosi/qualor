@@ -89,3 +89,13 @@ export const CHAT_URL = `http://127.0.0.1:${CHAT_PORT}`;
 export const OLGA = { username: 'olga', password: 'olga e2e passphrase' };
 /** A user in no organisation, with a Viewer grant on Web Shop only (seed.ts seedRoles). */
 export const VICTOR = { username: 'victor', password: 'victor e2e passphrase' };
+/**
+ * An organisation Viewer of Default, a member without `org.ai.manage` (seed.ts seedRoles). The seed
+ * leaves her the initial password the admin set, so she must change it at her first sign-in (ruling
+ * R7); `password` is the one `ai-review.spec.ts` gives her, which no other test uses.
+ */
+export const VERA = {
+  username: 'vera',
+  initialPassword: 'vera initial passphrase',
+  password: 'vera e2e passphrase',
+};

@@ -805,6 +805,41 @@
         </div>
         <div class="setting-row">
           <div class="setting-text">
+            <label for="ai-budget-review" i18n="@@ai.settings.budgetReview"
+              >AI review: most tokens per organisation per day</label
+            >
+            <p id="ai-budget-review-hint" i18n="@@ai.settings.budgetReviewHint">
+              The most tokens an organisation admin can give AI review per day: a higher budget set
+              in Settings → AI review is capped to it. Leave it empty for no limit.
+            </p>
+          </div>
+          <div class="setting-field">
+            <input
+              id="ai-budget-review"
+              class="short"
+              type="number"
+              min="0"
+              max="1000000000"
+              step="1"
+              inputmode="numeric"
+              [value]="budget('reviewTokensPerOrganizationPerDay')"
+              [attr.aria-invalid]="fieldError('budget-review') ? true : null"
+              [attr.aria-describedby]="
+                fieldError('budget-review')
+                  ? 'ai-budget-review-error ai-budget-review-hint'
+                  : 'ai-budget-review-hint'
+              "
+              (input)="setBudget('reviewTokensPerOrganizationPerDay', 'budget-review', $event)"
+            />
+            @if (fieldError('budget-review'); as message) {
+              <span id="ai-budget-review-error" class="field-error" role="alert">{{
+                message
+              }}</span>
+            }
+          </div>
+        </div>
+        <div class="setting-row">
+          <div class="setting-text">
             <label for="ai-price-input" i18n="@@ai.settings.priceInput"
               >Input price (US dollars per million tokens)</label
             >

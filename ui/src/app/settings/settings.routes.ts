@@ -55,6 +55,13 @@ export const settingsRoutes: Routes = [
     loadComponent: () => import('./repositories.page').then((m) => m.RepositoriesPage),
   },
   {
+    // 6I-2: an organisation's AI review and its data-sharing confirmation, for its admins
+    // (org.ai.manage), in every edition.
+    path: 'ai-review',
+    title: $localize`:@@title.aiReview:AI review`,
+    loadComponent: () => import('./ai-review.page').then((m) => m.AiReviewPage),
+  },
+  {
     // 4E-3a §4: an organisation's automatic fix suggestions, for its admins (org.ai.manage).
     path: 'auto-fix',
     title: $localize`:@@title.autoFix:Automatic fix suggestions`,

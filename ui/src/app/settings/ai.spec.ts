@@ -261,6 +261,122 @@ describe('AiSettingsPage (llm.md §3, §18)', () => {
     );
   });
 
+  describe('the AI review ceiling (6I-2 Task 9; Task 4 D8)', () => {
+    const WITH_CEILING = {
+      ...CONFIGURED,
+      budgets: { ...CONFIGURED.budgets, reviewTokensPerOrganizationPerDay: 750_000 },
+    };
+    const echo = (request: { body: unknown }) => ({
+      body: { ...CONFIGURED, budgets: (request.body as typeof CONFIGURED).budgets },
+    });
+
+    it('has a field for the most tokens per organisation and day of AI review, with its limits', async () => {
+      setup(WITH_CEILING);
+      const { root } = await render();
+      expect(root.querySelector('label[for="ai-budget-review"]')?.textContent?.trim()).toBe(
+        'AI review: most tokens per organisation per day',
+      );
+      const field = root.querySelector<HTMLInputElement>('#ai-budget-review')!;
+      expect(field.value).toBe('750000');
+      expect([field.type, field.min, field.max]).toEqual(['number', '0', '1000000000']);
+      expect(field.getAttribute('aria-describedby')).toBe('ai-budget-review-hint');
+      expect(root.querySelector('#ai-budget-review-hint')?.textContent).toContain(
+        'Leave it empty for no limit.',
+      );
+    });
+
+    it('is empty while there is no ceiling', async () => {
+      setup(CONFIGURED);
+      const { root } = await render();
+      expect(root.querySelector<HTMLInputElement>('#ai-budget-review')!.value).toBe('');
+    });
+
+    it('sends the stored ceiling back with every save: an omitted ceiling would clear it', async () => {
+      const server = setup(WITH_CEILING);
+      server.on('PUT', '/api/v0/system/llm', echo);
+      const { fixture, root } = await render();
+      // An unrelated change: the ceiling travels with it, unchanged.
+      type(root, '#ai-budget-fix', '30');
+      submit(root);
+      await settle(fixture);
+      const puts = server.requestsTo('PUT', '/api/v0/system/llm');
+      expect(puts).toHaveLength(1);
+      expect(puts[0]?.body).toMatchObject({
+        budgets: { fixPerDay: 30, reviewTokensPerOrganizationPerDay: 750_000 },
+      });
+    });
+
+    it('sends null, not nothing, while there is no ceiling', async () => {
+      const server = setup(CONFIGURED);
+      server.on('PUT', '/api/v0/system/llm', echo);
+      const { fixture, root } = await render();
+      submit(root);
+      await settle(fixture);
+      const body = server.requestsTo('PUT', '/api/v0/system/llm')[0]?.body as {
+        budgets: Record<string, unknown>;
+      };
+      expect(body.budgets).toHaveProperty('reviewTokensPerOrganizationPerDay', null);
+    });
+
+    it('sets a ceiling, and removes it by emptying the field', async () => {
+      const server = setup(CONFIGURED);
+      server.on('PUT', '/api/v0/system/llm', echo);
+      const { fixture, root } = await render();
+      type(root, '#ai-budget-review', '1000000');
+      submit(root);
+      await settle(fixture);
+      expect(server.requestsTo('PUT', '/api/v0/system/llm')[0]?.body).toMatchObject({
+        budgets: { reviewTokensPerOrganizationPerDay: 1_000_000 },
+      });
+      // The saved answer fills the field again.
+      expect(root.querySelector<HTMLInputElement>('#ai-budget-review')!.value).toBe('1000000');
+      type(root, '#ai-budget-review', '');
+      submit(root);
+      await settle(fixture);
+      expect(server.requestsTo('PUT', '/api/v0/system/llm')[1]?.body).toMatchObject({
+        budgets: { reviewTokensPerOrganizationPerDay: null },
+      });
+    });
+
+    it('takes 0 (no organisation may review) and refuses what is not a whole number up to 1 000 000 000', async () => {
+      const server = setup(CONFIGURED);
+      server.on('PUT', '/api/v0/system/llm', echo);
+      const { fixture, root } = await render();
+      type(root, '#ai-budget-review', '0');
+      submit(root);
+      await settle(fixture);
+      expect(server.requestsTo('PUT', '/api/v0/system/llm')[0]?.body).toMatchObject({
+        budgets: { reviewTokensPerOrganizationPerDay: 0 },
+      });
+      for (const value of ['-1', '1.5', '1000000001']) {
+        type(root, '#ai-budget-review', value);
+        submit(root);
+        await settle(fixture);
+        expect(root.querySelector('#ai-budget-review')?.getAttribute('aria-invalid')).toBe('true');
+        expect(root.querySelector('#ai-budget-review-error')?.textContent).toContain(
+          'Use a whole number, 0 or more, or leave it empty for no limit.',
+        );
+      }
+      expect(server.requestsTo('PUT', '/api/v0/system/llm')).toHaveLength(1);
+    });
+
+    it('maps the server’s refusal of the ceiling to its field', async () => {
+      const server = setup(CONFIGURED);
+      server.on('PUT', '/api/v0/system/llm', {
+        status: 422,
+        body: problem(422, 'VALIDATION_FAILED', [
+          { path: 'body.budgets.reviewTokensPerOrganizationPerDay', message: 'server text' },
+        ]),
+      });
+      const { fixture, root } = await render();
+      type(root, '#ai-budget-review', '5');
+      submit(root);
+      await settle(fixture);
+      expect(root.querySelector('#ai-budget-review')?.getAttribute('aria-invalid')).toBe('true');
+      expect(root.textContent).not.toContain('server text');
+    });
+  });
+
   it('tests the provider and shows the problem in its own words', async () => {
     const server = setup(CONFIGURED);
     server.on('POST', '/api/v0/system/llm/test', {
