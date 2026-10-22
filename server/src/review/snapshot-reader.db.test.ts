@@ -14,10 +14,18 @@ import {
   type SnapshotReader,
 } from './snapshot-reader';
 import { storeSnapshotUpload, unpackSnapshot } from './snapshot-store';
+import { runReviewTool, type ToolPolicy } from './tools';
 
 const SINCE = 'c'.repeat(40);
 /** U+FF5E: a character of the Basic Multilingual Plane above the surrogates of UTF-16. */
 const FULLWIDTH_TILDE = String.fromCodePoint(0xff5e);
+
+const j = (...parts: string[]) => parts.join('');
+/** A fake private key, built at run time so no scanner takes it for a real one. */
+const KEY_BEGIN = j('-----BEGIN ', 'RSA PRIVATE KEY-----');
+const KEY_END = j('-----END ', 'RSA PRIVATE KEY-----');
+const keyLine = (i: number): string =>
+  j('lQOYBF', String(i).padStart(4, '0'), 'Qm9ndXMga2V5IGJvZHk'.repeat(2));
 
 /** `n` numbers from 0, as `00`, `01` … so that they sort as they count. */
 const pad = (n: number) => String(n).padStart(2, '0');
@@ -58,6 +66,15 @@ const TEXTS: Record<string, string> = {
     i === 6 || i === 19_998 ? `row ${i + 1} needle` : `row ${i + 1}`,
   ).join('\n'),
   '.hidden/dot.txt': 'needle hidden\n',
+  // Secrets the tools mask when they show a file: a YAML value, and a private key block.
+  'conf/app.yml': 'name: app\npassword: hunter2hunter2\nreplicas: 2\n',
+  'keys/server.txt': [
+    'before',
+    KEY_BEGIN,
+    ...Array.from({ length: 30 }, (_, i) => keyLine(i)),
+    KEY_END,
+    'after',
+  ].join('\n'),
   // More files than one fetch of the reader's takes.
   ...Object.fromEntries(
     Array.from({ length: 40 }, (_, i) => [`many/f${pad(i)}.ts`, `batch-needle ${i}\n`]),
@@ -339,6 +356,68 @@ describe('the snapshot reader (6I-3)', () => {
         );
       }
     });
+  });
+
+  it('the review tools answer alike over the DB reader and the memory reader', async () => {
+    const policy = (): ToolPolicy => ({
+      excludePaths: ['vendor/**', 'src/lib/deep/**'],
+      budget: { calls: 1_000, greps: 1_000 },
+    });
+    const overDb = policy();
+    const overMemory = policy();
+    const calls: [string, unknown][] = [
+      ['read_file', { path: 'src/main.ts' }],
+      ['read_file', { path: 'src/main.ts', from: 2, to: 3 }],
+      ['read_file', { path: 'crlf.txt' }],
+      ['read_file', { path: 'empty.txt' }],
+      ['read_file', { path: 'big.log', from: 19_990 }],
+      ['read_file', { path: 'big.log' }],
+      ['read_file', { path: 'long.txt', from: 1, to: 1 }],
+      ['read_file', { path: 'conf/app.yml' }],
+      ['read_file', { path: 'keys/server.txt', from: 16, to: 16 }],
+      ['read_file', { path: 'keys/server.txt', from: 1, to: 3 }],
+      ['read_file', { path: 'bin/logo.png' }],
+      ['read_file', { path: 'src/lib/deep/c.ts' }],
+      ['read_file', { path: 'old/gone.ts' }],
+      ['grep', { pattern: 'needle' }],
+      ['grep', { pattern: 'needle', path_glob: 'src/**' }],
+      ['grep', { pattern: 'needle', path_glob: '**/*.ts' }],
+      ['grep', { pattern: 'needle', path_glob: 'a_b/**' }],
+      ['grep', { pattern: 'password' }],
+      ['grep', { pattern: 'hunter2' }],
+      ['grep', { pattern: 'Qm9ndXMga2V5' }],
+      ['grep', { pattern: 'lQOYBF0016' }],
+      ['grep', { pattern: 'before' }],
+      ['grep', { pattern: 'row 19999' }],
+      ['list_files', {}],
+      ['list_files', { dir: 'src' }],
+      ['list_files', { dir: 'src/lib' }],
+      ['list_files', { dir: 'src/lib/deep' }],
+      ['list_files', { dir: 'many' }],
+      ['list_files', { dir: 'nope' }],
+    ];
+    for (const [name, args] of calls) {
+      const id = JSON.stringify([name, args]);
+      const call = { id, name, arguments: args };
+      expect(await runReviewTool(db, call, overDb), id).toEqual(
+        await runReviewTool(memory, call, overMemory),
+      );
+    }
+    // The answers are what is meant: a key is masked from the middle, a needle in a mask finds nothing.
+    const call = (name: string, args: unknown) => ({ id: name, name, arguments: args });
+    const middle = await runReviewTool(
+      db,
+      call('read_file', { path: 'keys/server.txt', from: 16, to: 16 }),
+      policy(),
+    );
+    expect(middle.text).toBe('16│ «redacted»');
+    const inKey = await runReviewTool(db, call('grep', { pattern: 'lQOYBF0016' }), policy());
+    expect(inKey.text).toBe('no matches');
+    const yaml = await runReviewTool(db, call('grep', { pattern: 'hunter2' }), policy());
+    expect(yaml.text).toBe('no matches');
+    // Each file the tools read or searched was masked once, over the database too.
+    expect(overDb.masked?.maskings).toBe(overDb.masked?.files);
+    expect(overDb.masked?.maskings).toBe(overMemory.masked?.maskings);
   });
 
   describe('what the DB reader answers', () => {

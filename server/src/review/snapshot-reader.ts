@@ -59,12 +59,15 @@ export interface SnapshotReader {
   readonly meta: SnapshotMeta;
   /** The paths the merge request changed, in path order. */
   changes(): Promise<SnapshotChange[]>;
+  /** The file as the snapshot stores it: its text is the scanner's, not masked again here. */
   file(path: string): Promise<SnapshotFile>;
   /**
    * The lines that hold `needle` (fixed text, case-sensitive, within one line) in the files with
    * text whose path matches `glob` (see {@link compilePathGlob}), in path order and line order: at
    * most `limit` hits, and `truncated` when there are more. A hit's `text` is its line without the
-   * line end, cut to {@link MAX_HIT_TEXT_CHARS}.
+   * line end, cut to {@link MAX_HIT_TEXT_CHARS}. The lines are searched, and shown, as stored: a
+   * caller that shows one to a model shows its masked line (masked-files.ts), and keeps this for
+   * the place of the hit.
    */
   grep(
     needle: string,
@@ -85,7 +88,7 @@ export interface SnapshotReader {
 type Hits = Awaited<ReturnType<SnapshotReader['grep']>>;
 type Listing = Awaited<ReturnType<SnapshotReader['list']>>;
 
-/** The longest text of a hit the readers keep: the tool cuts it shorter (tools.ts). */
+/** The longest text of a hit the readers keep, so that a search of minified files holds no megabytes. */
 export const MAX_HIT_TEXT_CHARS = 1_000;
 /** Files whose text a search reads at a time. */
 const FETCH_FILES = 16;

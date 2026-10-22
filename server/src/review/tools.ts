@@ -10,7 +10,8 @@ import {
 import { z } from 'zod';
 import type { LlmToolCall, LlmToolSpec } from '../llm/providers/types';
 import { excludedPathMatcher } from '../llm/settings';
-import { linesOf, type SnapshotReader } from './snapshot-reader';
+import { MaskedFiles } from './masked-files';
+import type { SnapshotReader } from './snapshot-reader';
 
 /*
  * The three read-only tools the model reviews with, over the repository snapshot: `read_file`,
@@ -19,6 +20,10 @@ import { linesOf, type SnapshotReader } from './snapshot-reader';
  * is refused before anything is read), its search text is only ever compared as text, and its glob
  * is matched in JavaScript. What the tools answer passes the server's secret redaction (llm.md
  * §5.2) before it leaves, and never shows a path the administrator excluded (llm.md §3.2).
+ *
+ * The lines of a file are masked as part of the whole file, never a slice at a time (masked-files.ts),
+ * and `grep` finds a needle in the masked lines only: the text it matches is the text the model
+ * could read, so the number of hits cannot tell it what a mask hides.
  */
 
 export const TOOL_LIMITS = {
@@ -129,6 +134,11 @@ export interface ToolPolicy {
   /** The administrator's `excludePaths` globs (llm.md §3.2). */
   excludePaths: readonly string[];
   budget: { calls: number; greps: number };
+  /**
+   * The masked files of the review (see `MaskedFiles`): made by the first call, for the reader it
+   * is given, and kept in the policy, so that a file is masked once for all the calls that share it.
+   */
+  masked?: MaskedFiles;
 }
 
 interface ToolAnswer {
@@ -164,9 +174,10 @@ const OMISSIONS_IN_WORDS: Record<OmissionReason, string> = {
 const fixed = (text: string): ToolAnswer => ({ text, redactions: 0 });
 
 /**
- * The redaction of llm.md §5.2 for a text of any size: it masks a text of 64 KiB or more as a
- * whole, so a longer text goes through in pieces of whole lines, each under that bound. A single
- * line too long to scan is masked itself. The lines stay as many as they were.
+ * The redaction of llm.md §5.2 for the names and paths of an answer, which belong to no file's
+ * text: it masks a text of 64 KiB or more as a whole, so a longer answer goes through in pieces of
+ * whole lines, each under that bound. A single line too long to scan is masked itself. The lines
+ * stay as many as they were.
  */
 function redactInPieces(text: string): { text: string; count: number } {
   if (text.length < REDACT_MAX_CHARS) return redactText(text);
@@ -199,8 +210,8 @@ function redactInPieces(text: string): { text: string; count: number } {
 }
 
 /**
- * The answer, redacted. `counted` are the replacements already made in the parts of it that were
- * redacted on their own first (see `numberedLines` and `grep`).
+ * The answer with its names and paths redacted. `counted` are the replacements made when the files
+ * it shows lines of were masked (see `MaskedFiles`), reported with the call that masked them.
  */
 function redactedAnswer(text: string, counted = 0): ToolAnswer {
   const result = redactInPieces(text);
@@ -273,43 +284,49 @@ function invalidArguments(error: z.ZodError): ToolAnswer {
 // ─── The tools ───────────────────────────────────────────────────────────────
 
 /**
- * The first `want` items `visible` lets through, from a reader that returns at most `limit` of
- * them. The reader does not know which items the administrator excluded, so when it returns some
- * of them it is asked again for more, up to `maxFetch`, instead of letting them use up the cap.
+ * The first `want` results of `keep`, over the items of a reader that returns at most `limit` of
+ * them. The reader does not know which of its items the administrator excluded, nor which hits are
+ * masked away, and `keep` answers null for those. When items were dropped and the reader had more,
+ * it is asked again for more, up to `maxFetch`, instead of letting the dropped items use up the
+ * cap. The items after the `want`th result are not looked at.
  */
-async function takeVisible<T>(
+async function takeKept<T, U>(
   want: number,
   maxFetch: number,
   load: (limit: number) => Promise<{ items: T[]; truncated: boolean }>,
-  visible: (item: T) => boolean,
-): Promise<{ items: T[]; truncated: boolean }> {
+  keep: (item: T) => U | null | Promise<U | null>,
+): Promise<{ items: U[]; truncated: boolean }> {
   let limit = want + 1;
   for (;;) {
     const page = await load(limit);
-    const items = page.items.filter(visible);
-    if (items.length > want) return { items: items.slice(0, want), truncated: true };
+    const items: U[] = [];
+    for (const item of page.items) {
+      const kept = await keep(item);
+      if (kept !== null) items.push(kept);
+      if (items.length > want) return { items: items.slice(0, want), truncated: true };
+    }
     if (!page.truncated) return { items, truncated: false };
     if (limit >= maxFetch) return { items, truncated: true };
     limit = Math.min(limit * 4, maxFetch);
   }
 }
 
-/** A line of a file as the model sees it: without its carriage return, and never over the cap. */
+const withoutCr = (line: string): string => (line.endsWith('\r') ? line.slice(0, -1) : line);
+
+/** A line of a file as `read_file` shows it: without its carriage return, never over the cap. */
 function shownLine(line: string): string {
-  const text = line.endsWith('\r') ? line.slice(0, -1) : line;
+  const text = withoutCr(line);
   return text.length > TOOL_LIMITS.readChars ? cutAtGrapheme(text, TOOL_LIMITS.readChars) : text;
 }
 
 /**
- * Lines `from` to `to` (1-based, inclusive) of `text`, numbered, within the caps of one call. The
- * lines are redacted first and numbered after: the patterns for a YAML key or an `ENV` line only
- * match at the start of a line, which a line number would put out of their reach.
+ * Lines `from` to `to` (1-based, inclusive) of a file's masked `lines`, numbered, within the caps
+ * of one call. The lines are the file's, masked as a whole: nothing is masked here.
  */
-function numberedLines(text: string, from: number, to: number | null): ToolAnswer {
-  const lines = linesOf(text);
+function numberedLines(lines: readonly string[], from: number, to: number | null): string {
   const total = lines.length;
-  if (total === 0) return fixed('the file is empty');
-  if (from > total) return fixed(`the file has ${total} lines; from is past its end`);
+  if (total === 0) return 'the file is empty';
+  if (from > total) return `the file has ${total} lines; from is past its end`;
   const asked = Math.min(to ?? total, total);
   let last = Math.min(asked, from + TOOL_LIMITS.readLines - 1);
   let chars = 0;
@@ -322,20 +339,18 @@ function numberedLines(text: string, from: number, to: number | null): ToolAnswe
     }
     chars += size;
   }
-  const shown = lines.slice(from - 1, last).map(shownLine);
-  const masked = redactInPieces(shown.join('\n'));
   const width = String(last).length;
-  const numbered = masked.text
-    .split('\n')
-    .map((line, index) => `${String(from + index).padStart(width)}│ ${line}`);
+  const numbered = lines
+    .slice(from - 1, last)
+    .map((line, index) => `${String(from + index).padStart(width)}│ ${shownLine(line)}`);
   if (last < asked) {
     numbered.push(`… lines ${from}–${last} of ${total}; ask for more with from/to`);
   }
-  return redactedAnswer(numbered.join('\n'), masked.count);
+  return numbered.join('\n');
 }
 
 async function readFile(
-  reader: SnapshotReader,
+  masked: MaskedFiles,
   rawArguments: unknown,
   excluded: (path: string) => boolean,
 ): Promise<ToolAnswer> {
@@ -345,19 +360,30 @@ async function readFile(
   if (snapshotPathProblem(path) !== null) return fixed(INVALID_PATH);
   // Whether or not the snapshot holds the path: the answer says nothing about it.
   if (excluded(path)) return fixed(EXCLUDED);
-  const file = await reader.file(path);
+  const file = await masked.file(path);
   switch (file.kind) {
     case 'absent':
       return fixed(NO_SUCH_FILE);
     case 'omitted':
       return fixed(`not available: ${OMISSIONS_IN_WORDS[file.reason]}`);
     case 'text':
-      return numberedLines(file.text, from ?? 1, to ?? null);
+      // Whatever the answer, the call that masked the file reports what was masked in it.
+      return {
+        text: numberedLines(file.lines, from ?? 1, to ?? null),
+        redactions: file.redactions,
+      };
   }
 }
 
+/**
+ * The reader finds the lines that hold the needle in the text as the snapshot stores it. That text
+ * only narrows the search: a hit is a line whose masked text holds the needle, and what is shown
+ * of it is that masked line. So a needle that lies inside what a mask hides finds nothing, and
+ * the hits cannot be counted to tell what the mask hides.
+ */
 async function grep(
   reader: SnapshotReader,
+  masked: MaskedFiles,
   rawArguments: unknown,
   excluded: (path: string) => boolean,
   budget: ToolPolicy['budget'],
@@ -371,24 +397,33 @@ async function grep(
   if (budget.greps <= 0) return fixed(BUDGET_USED_UP);
   budget.greps -= 1;
 
-  const found = await takeVisible(
+  let counted = 0;
+  const found = await takeKept(
     TOOL_LIMITS.grepHits,
     MAX_FETCHED_HITS,
     async (limit) => {
       const result = await reader.grep(pattern, glob, limit);
       return { items: result.hits, truncated: result.truncated };
     },
-    (hit) => !excluded(hit.path),
+    async (hit) => {
+      if (excluded(hit.path)) return null;
+      const file = await masked.file(hit.path);
+      if (file.kind !== 'text') return null;
+      counted += file.redactions;
+      const line = file.lines[hit.line - 1];
+      if (line === undefined || !line.includes(pattern)) return null;
+      // Twice what is shown: enough for the cut to land on the right character, and a minified
+      // line of a megabyte is not taken apart for it.
+      return {
+        path: hit.path,
+        line: hit.line,
+        text: withoutCr(line).slice(0, 2 * TOOL_LIMITS.grepLineChars),
+      };
+    },
   );
-  // A line is redacted by itself, before the path and the number are put in front of it (see
-  // `numberedLines`), and whole, before it is cut, so that a secret over the cut is masked.
-  let counted = 0;
-  const lines = found.items.map((hit) => {
-    const masked = redactText(hit.text.endsWith('\r') ? hit.text.slice(0, -1) : hit.text);
-    counted += masked.count;
-    const text = cutAtGrapheme(masked.text, TOOL_LIMITS.grepLineChars);
-    return `${hit.path}:${hit.line}: ${text}`;
-  });
+  const lines = found.items.map(
+    (hit) => `${hit.path}:${hit.line}: ${cutAtGrapheme(hit.text, TOOL_LIMITS.grepLineChars)}`,
+  );
   if (found.truncated) lines.push(MORE_MATCHES);
   return redactedAnswer(lines.length === 0 ? NO_MATCHES : lines.join('\n'), counted);
 }
@@ -406,14 +441,14 @@ async function listFiles(
     if (snapshotPathProblem(dir) !== null) return fixed(INVALID_PATH);
     if (excluded(dir)) return fixed(EXCLUDED);
   }
-  const found = await takeVisible(
+  const found = await takeKept(
     TOOL_LIMITS.listEntries,
     MAX_FETCHED_ENTRIES,
     async (limit) => {
       const result = await reader.list(dir, limit);
       return { items: result.entries, truncated: result.truncated };
     },
-    (entry) => !excluded(dir === '' ? entry.name : `${dir}/${entry.name}`),
+    (entry) => (excluded(dir === '' ? entry.name : `${dir}/${entry.name}`) ? null : entry),
   );
   if (found.items.length === 0 && !found.truncated) {
     return fixed(dir === '' ? 'the snapshot holds no files' : NO_SUCH_DIRECTORY);
@@ -437,11 +472,17 @@ export async function runReviewTool(
   if (policy.budget.calls <= 0) return fixed(BUDGET_USED_UP);
   policy.budget.calls -= 1;
   const excluded = excludedPathMatcher(policy.excludePaths);
+  // A cache serves one reader: the policy of a review keeps it from call to call.
+  let masked = policy.masked;
+  if (masked?.reader !== reader) {
+    masked = new MaskedFiles(reader);
+    policy.masked = masked;
+  }
   switch (call.name) {
     case 'read_file':
-      return readFile(reader, call.arguments, excluded);
+      return readFile(masked, call.arguments, excluded);
     case 'grep':
-      return grep(reader, call.arguments, excluded, policy.budget);
+      return grep(reader, masked, call.arguments, excluded, policy.budget);
     case 'list_files':
       return listFiles(reader, call.arguments, excluded);
     default:

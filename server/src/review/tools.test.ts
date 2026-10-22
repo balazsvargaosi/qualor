@@ -2,6 +2,7 @@ import { OMISSION_REASONS, REDACTED } from '@qualor/shared';
 import { describe, expect, it } from 'vitest';
 import { memorySnapshot } from '../../test/review';
 import type { LlmToolCall } from '../llm/providers/types';
+import { MaskedFiles } from './masked-files';
 import { compilePathGlob, likePrefix, type SnapshotReader } from './snapshot-reader';
 import { REVIEW_TOOLS, runReviewTool, TOOL_LIMITS, type ToolPolicy } from './tools';
 
@@ -13,6 +14,14 @@ const AWS_KEY = 'AKIAIOSFODNN7EXAMPLE';
 const NUL = String.fromCharCode(0);
 const LONE_SURROGATE = String.fromCharCode(0xd800);
 const RIGHT_TO_LEFT_OVERRIDE = String.fromCodePoint(0x202e);
+
+const j = (...parts: string[]) => parts.join('');
+/** A fake private key, built at run time so no scanner takes it for a real one. */
+const KEY_BEGIN = j('-----BEGIN ', 'RSA PRIVATE KEY-----');
+const KEY_END = j('-----END ', 'RSA PRIVATE KEY-----');
+/** Line `i` of a key body: base64 letters and digits, never a real key. */
+const keyLine = (i: number): string =>
+  j('lQOYBF', String(i).padStart(4, '0'), 'Qm9ndXMga2V5IGJvZHk'.repeat(2));
 
 let callCount = 0;
 const call = (name: string, args: unknown): LlmToolCall => ({
@@ -42,6 +51,21 @@ const answer = async (
 const numberedFile = (n: number): string =>
   Array.from({ length: n }, (_, i) => `line ${i + 1}\n`).join('');
 
+/** The reader, and the paths `file()` was asked for. */
+function counting(inner: SnapshotReader): { reader: SnapshotReader; asked: string[] } {
+  const asked: string[] = [];
+  return {
+    reader: {
+      ...inner,
+      file: (path) => {
+        asked.push(path);
+        return inner.file(path);
+      },
+    },
+    asked,
+  };
+}
+
 /** A reader that fails the test when anything reads from it. */
 const tripwire: SnapshotReader = {
   meta: memorySnapshot().meta,
@@ -59,7 +83,8 @@ describe('reading files', () => {
       'src/crlf.ts': 'one\r\ntwo\r\n',
       'src/empty.ts': '',
       'src/wide.ts': `${'x'.repeat(500)}\n`.repeat(100),
-      'src/minified.js': 'y'.repeat(100_000),
+      'src/minified.js': 'y'.repeat(50_000),
+      'src/bundle.js': 'z'.repeat(70_000),
     },
   });
 
@@ -112,6 +137,15 @@ describe('reading files', () => {
     expect(one.startsWith('1│ yyyy')).toBe(true);
     expect(one.endsWith('y…')).toBe(true);
     expect(one.length).toBeLessThanOrEqual(TOOL_LIMITS.readChars + 3);
+  });
+
+  it('read_file shows a line too long for the redaction to scan as redacted, as the scanner masked it', async () => {
+    // Over 64 KiB, a line cannot be scanned for secrets: it is masked whole, in the file the
+    // scanner uploads and again here.
+    expect(await run(reader, 'read_file', { path: 'src/bundle.js' })).toEqual({
+      text: `1│ ${REDACTED}`,
+      redactions: 1,
+    });
   });
 
   it('read_file shows a line without its carriage return, and says so for an empty file or a range past the end', async () => {
@@ -625,9 +659,14 @@ describe('all tools', () => {
     );
     expect(read.redactions).toBe(1);
 
+    // The secret itself finds nothing: grep matches the lines as the model could read them. The
+    // file was masked for the search, and what was masked in it is reported.
     const found = await run(reader, 'grep', { pattern: AWS_KEY });
-    expect(found.text).toBe(`src/config.ts:2: const key = "${REDACTED}";`);
+    expect(found.text).toBe('no matches');
     expect(found.redactions).toBe(1);
+    // What is left of the line can be found, and shows as masked.
+    const around = await run(reader, 'grep', { pattern: 'const key' });
+    expect(around.text).toBe(`src/config.ts:2: const key = "${REDACTED}";`);
 
     // A key in a name is masked in a listing too.
     const listed = await run(reader, 'list_files', { dir: 'names' });
@@ -653,13 +692,194 @@ describe('all tools', () => {
     expect(whole.redactions).toBe(4);
     // ... also when the range starts inside it, after the line that begins it.
     const inside = await run(reader, 'read_file', { path: 'keys/server.txt', from: 3, to: 6 });
-    expect(inside.text).not.toContain('QRSTUV');
-    expect(inside.text.split('\n').map((line) => line.slice(0, 2))).toEqual([
-      '3│',
-      '4│',
-      '5│',
-      '6│',
-    ]);
+    expect(inside.text).toBe([3, 4, 5].map((n) => `${n}│ ${REDACTED}`).join('\n') + '\n6│ after');
+  });
+
+  describe('a file is masked as a whole, never a slice at a time', () => {
+    const KEY_PATH = 'keys/server.txt';
+    const body = Array.from({ length: 30 }, (_, i) => keyLine(i));
+    // Line 1 is code, 2 the BEGIN line, 3 to 32 the body, 33 the END line, 34 code.
+    const keyFile = ['before', KEY_BEGIN, ...body, KEY_END, 'after'].join('\n');
+
+    it('read_file of the middle lines of a private key, its BEGIN and END outside the range, shows «redacted»', async () => {
+      const reader = memorySnapshot({ files: { [KEY_PATH]: keyFile } });
+      // One line of base64 on its own is not recognised as a key: a slice is not masked alone.
+      for (const [from, to] of [
+        [16, 16],
+        [10, 12],
+        [3, 3],
+        [32, 32],
+        [20, 25],
+      ] as const) {
+        const lines = (await answer(reader, 'read_file', { path: KEY_PATH, from, to })).split('\n');
+        expect(lines, `lines ${from} to ${to}`).toHaveLength(to - from + 1);
+        for (const line of lines) expect(line).toMatch(/^ ?\d+│ «redacted»$/);
+      }
+      // The code around the key is not part of it.
+      expect(await answer(reader, 'read_file', { path: KEY_PATH, from: 1, to: 1 })).toBe(
+        '1│ before',
+      );
+      expect(await answer(reader, 'read_file', { path: KEY_PATH, from: 34, to: 34 })).toBe(
+        '34│ after',
+      );
+    });
+
+    it('grep for a substring of a key body line finds no hit', async () => {
+      const reader = memorySnapshot({ files: { [KEY_PATH]: keyFile } });
+      // Each body line, a piece of one, and the piece they all share.
+      for (const pattern of [keyLine(16), 'lQOYBF0016', keyLine(16).slice(7, 30), 'Qm9ndXMga2V5']) {
+        expect(await answer(reader, 'grep', { pattern }), pattern).toBe('no matches');
+      }
+      // The code around it is searched as ever.
+      expect(await answer(reader, 'grep', { pattern: 'before' })).toBe(`${KEY_PATH}:1: before`);
+    });
+
+    it('grep for a substring of a masked password value finds no hit', async () => {
+      const reader = memorySnapshot({
+        files: {
+          'src/config.ts':
+            'const user = "admin";\nconst password = "hunter2-very-secret";\nconst port = 8080;\n',
+        },
+      });
+      for (const pattern of ['very-secret', 'hunter2', '"hunter2-very-secret"']) {
+        expect(await answer(reader, 'grep', { pattern }), pattern).toBe('no matches');
+      }
+      // What the mask leaves is found, and shown as the model could read it.
+      expect(await answer(reader, 'grep', { pattern: 'password' })).toBe(
+        `src/config.ts:2: const password = "${REDACTED}";`,
+      );
+    });
+
+    it('a hit line next to a key block is masked as in the whole file', async () => {
+      // A line of base64 next to a key block is part of the key; the same line alone is code.
+      const reader = memorySnapshot({
+        files: {
+          'keys/with-block.txt': [
+            KEY_BEGIN,
+            ...body.slice(0, 3),
+            KEY_END,
+            keyLine(99),
+            'after',
+          ].join('\n'),
+          'notes/alone.txt': ['x', keyLine(99), 'y'].join('\n'),
+        },
+      });
+      expect(await answer(reader, 'grep', { pattern: 'lQOYBF0099' })).toBe(
+        `notes/alone.txt:2: ${keyLine(99)}`,
+      );
+      expect(
+        await answer(reader, 'read_file', { path: 'keys/with-block.txt', from: 5, to: 7 }),
+      ).toBe(`5│ ${REDACTED}\n6│ ${REDACTED}\n7│ after`);
+    });
+
+    it('grep counts as hits the lines of the masked text only: masked-away lines do not use up the cap', async () => {
+      const many = Array.from({ length: 80 }, (_, i) => keyLine(i));
+      const files = {
+        'a/key.txt': [KEY_BEGIN, ...many, KEY_END].join('\n'),
+        'b/notes.md': 'see Qm9ndXMga2V5 here\nand Qm9ndXMga2V5 there\n',
+      };
+      // 80 lines of the key hold the needle in the file as stored, and come first; only the two
+      // of the notes are hits.
+      expect(await answer(memorySnapshot({ files }), 'grep', { pattern: 'Qm9ndXMga2V5' })).toBe(
+        'b/notes.md:1: see Qm9ndXMga2V5 here\nb/notes.md:2: and Qm9ndXMga2V5 there',
+      );
+      // With more hits than the cap among the masked ones, the message is about those hits.
+      const crowded = {
+        ...files,
+        'c/more.md': Array.from({ length: 60 }, (_, i) => `line ${i} Qm9ndXMga2V5`).join('\n'),
+      };
+      const hits = (
+        await answer(memorySnapshot({ files: crowded }), 'grep', { pattern: 'Qm9ndXMga2V5' })
+      ).split('\n');
+      expect(hits).toHaveLength(TOOL_LIMITS.grepHits + 1);
+      expect(hits[0]).toBe('b/notes.md:1: see Qm9ndXMga2V5 here');
+      expect(hits[50]).toBe(MORE_MATCHES);
+    });
+
+    it('grep masks no file past the hit that fills the cap', async () => {
+      const files: Record<string, string> = {
+        'a/key.txt': [KEY_BEGIN, ...Array.from({ length: 80 }, (_, i) => keyLine(i)), KEY_END].join(
+          '\n',
+        ),
+      };
+      for (let i = 1; i <= 60; i++)
+        files[`b/f${String(i).padStart(2, '0')}.md`] = 'see Qm9ndXMga2V5';
+      const { reader, asked } = counting(memorySnapshot({ files }));
+      const hits = (await answer(reader, 'grep', { pattern: 'Qm9ndXMga2V5' })).split('\n');
+      expect(hits).toHaveLength(TOOL_LIMITS.grepHits + 1);
+      expect(hits[50]).toBe(MORE_MATCHES);
+      // The key file, and the 51 notes that decide that there are more than 50 hits.
+      expect(asked).toHaveLength(1 + 51);
+      expect(asked).not.toContain('b/f52.md');
+    });
+
+    it('a file is masked once for the whole review, however many calls read it', async () => {
+      const files = { [KEY_PATH]: keyFile, 'src/other.ts': 'const other = 1;\n' };
+      const { reader, asked } = counting(memorySnapshot({ files }));
+      const policy = newPolicy();
+      const first = await run(reader, 'read_file', { path: KEY_PATH }, policy);
+      const second = await run(reader, 'read_file', { path: KEY_PATH, from: 2, to: 3 }, policy);
+      const searched = await run(reader, 'grep', { pattern: 'before' }, policy);
+      const listed = await run(reader, 'list_files', {}, policy);
+      // The key block is masked once, and reported once, by the call that masked it.
+      expect(first.redactions).toBe(1 + 30 + 1);
+      expect([second.redactions, searched.redactions, listed.redactions]).toEqual([0, 0, 0]);
+      expect(asked).toEqual([KEY_PATH]);
+      expect(policy.masked?.maskings).toBe(1);
+
+      // Another file is masked when it is first asked for; another review masks again.
+      await run(reader, 'read_file', { path: 'src/other.ts' }, policy);
+      expect(policy.masked?.maskings).toBe(2);
+      await run(reader, 'read_file', { path: KEY_PATH }, newPolicy());
+      expect(asked).toEqual([KEY_PATH, 'src/other.ts', KEY_PATH]);
+    });
+
+    it('the masked files are kept up to a bound, and a file past it is masked again each time', async () => {
+      const files = {
+        'a.txt': `${'a'.repeat(400)}\n`,
+        'b.txt': `${'b'.repeat(400)}\n`,
+        'c.txt': `${j('const password = "', 'hunter2-very-secret";')}\n${'c'.repeat(400)}\n`,
+      };
+      const { reader, asked } = counting(memorySnapshot({ files }));
+      const policy = newPolicy({ masked: new MaskedFiles(reader, 900) });
+      const redactions: number[] = [];
+      for (const path of ['a.txt', 'b.txt', 'c.txt', 'a.txt', 'b.txt', 'c.txt']) {
+        redactions.push((await run(reader, 'read_file', { path }, policy)).redactions);
+      }
+      // a and b are 401 bytes each and fit in 900; c does not, so it is read and masked again.
+      expect(asked).toEqual(['a.txt', 'b.txt', 'c.txt', 'c.txt']);
+      expect(policy.masked?.files).toBe(2);
+      expect(policy.masked?.bytes).toBe(802);
+      expect(policy.masked?.maskings).toBe(4);
+      // Its replacement is reported once all the same.
+      expect(redactions).toEqual([0, 0, 1, 0, 0, 0]);
+    });
+
+    it('an excluded file is not read at all, to be masked or to be searched', async () => {
+      const files = {
+        'secrets/key.txt': `before\n${KEY_BEGIN}\n${body[0]}\n${KEY_END}\n`,
+        'src/ok.ts': 'before\n',
+      };
+      const { reader, asked } = counting(memorySnapshot({ files }));
+      const policy = newPolicy({ excludePaths: ['secrets/**'] });
+      expect(await answer(reader, 'read_file', { path: 'secrets/key.txt' }, policy)).toBe(EXCLUDED);
+      expect(await answer(reader, 'grep', { pattern: 'before' }, policy)).toBe(
+        'src/ok.ts:1: before',
+      );
+      expect(asked).toEqual(['src/ok.ts']);
+    });
+
+    it('a policy used with another reader masks the files of that reader', async () => {
+      const policy = newPolicy();
+      const one = memorySnapshot({ files: { 'a.ts': 'from the first snapshot' } });
+      const two = memorySnapshot({ files: { 'a.ts': 'from the second snapshot' } });
+      expect(await answer(one, 'read_file', { path: 'a.ts' }, policy)).toBe(
+        '1│ from the first snapshot',
+      );
+      expect(await answer(two, 'read_file', { path: 'a.ts' }, policy)).toBe(
+        '1│ from the second snapshot',
+      );
+    });
   });
 
   it('a long answer is redacted in pieces, so that none becomes one marker', async () => {
