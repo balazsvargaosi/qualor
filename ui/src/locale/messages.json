@@ -1453,7 +1453,7 @@
     "github.testOk": "Connected as {$user}.",
     "github.title": "GitHub",
     "github.adminsOnly": " Only organization administrators connect GitHub. ",
-    "github.introMapped": " Qualor creates a check run for every analysis (with annotations on the changed lines of pull requests) and a summary comment on pull requests, as a GitHub App you create and install on the repositories. Give the App Checks and Pull requests (read and write) and Metadata (read-only). Map each project to its repository under {$START_LINK}Repositories{$CLOSE_LINK}. ",
+    "github.introMapped": " Qualor creates a check run for every analysis and comments on pull requests (a summary and a review comment on each new issue), as a GitHub App you create and install on the repositories. Give the App Checks and Pull requests (read and write) and Metadata (read-only). Map each project to its repository under {$START_LINK}Repositories{$CLOSE_LINK}. ",
     "github.apps": "Apps",
     "github.appId": "App id {$INTERPOLATION}",
     "github.addedAt": "Added {$INTERPOLATION}",
