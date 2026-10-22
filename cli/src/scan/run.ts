@@ -430,6 +430,8 @@ function unavailableText(
       return `the merge request's head and origin/${o.targetBranch} have no common commit in this clone`;
     case 'too_large':
       return "the merge request's changes alone are over the server's snapshot limits";
+    case 'head_unscanned':
+      return 'the head files that differ from the scanned checkout could not be scanned';
   }
 }
 
@@ -461,6 +463,9 @@ async function buildAndUpload(
     sinceSha: s.context.lastReviewedCommit,
     mergeRequest: { id: mr.id, title: mr.title, description: mr.description },
     secrets: s.secrets,
+    // The analyzers scanned the working tree: the head's files it does not hold as the head does
+    // (a merge commit checked out, a file a CI step edited) are scanned again (ruling R14).
+    secretsFrom: 'working-tree',
     baseSecrets: baseSecretScan({
       analyzers: o.analyzers,
       root,

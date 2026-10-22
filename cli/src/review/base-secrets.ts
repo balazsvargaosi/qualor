@@ -19,17 +19,21 @@ import { gitleaksOverMergeBase } from './base-gitleaks';
  * The secrets of the merge base (ruling R13). The analyzers scan the merge request's head, so a
  * secret the merge request removes is in no list the scan gives the snapshot; yet a patch shows
  * it, on its removed lines. The scan's own secret engine is run again, as the scan runs it, over a
- * directory holding the merge base's versions of what the snapshot sends of it.
+ * directory holding the merge base's versions of what the snapshot sends of it. Ruling R14 uses
+ * the same run for the head's files the scanned checkout does not hold as the head does.
  */
 
 /**
- * What the scan's secret engine found in a directory of the merge base's files: the secrets' texts,
- * or why it did not run there to the end (not installed, cannot run there as in the scan, failed,
+ * What the scan's secret engine found in a directory of a commit's files: the secrets' texts, or
+ * why it did not run there to the end (not installed, cannot run there as in the scan, failed,
  * timed out) or its output could not be read.
  */
 export type BaseSecretScanResult = { secrets: readonly string[] } | { failed: string };
 
-/** The scan of `dir`, a directory of files of the merge base (`paths`, relative to it). */
+/**
+ * The scan of `dir`, a directory of files of the merge base, or of the head (R14), at `paths`
+ * relative to it.
+ */
 export type BaseSecretScan = (
   dir: string,
   paths: readonly string[],
@@ -305,6 +309,39 @@ export async function scanMergeBase(
         return none;
       }
       return { secrets: result.secrets, scanned: written };
+    } finally {
+      releaseWorkDir(dir, o.log);
+    }
+  });
+}
+
+/**
+ * Ruling R14: the head commit's versions of `paths`, files of the scan's root that the working
+ * tree the scan saw does not hold as the head does (a merge commit checked out, a file a CI step
+ * edited), scanned by the scan's secret engine at their paths, in a private work directory as the
+ * merge base's are. Their secrets, or why not every one of them was scanned to the end: one that
+ * cannot be put where the engine reads it (a root `.gitleaksignore`, a name the file system
+ * cannot hold) is not scanned either.
+ */
+export async function scanHeadFiles(
+  git: Git,
+  head: string,
+  paths: readonly string[],
+  o: { scan: BaseSecretScan; budget: number; tempRoot?: string; log: Logger },
+): Promise<BaseSecretScanResult> {
+  if (paths.length === 0) return { secrets: [] };
+  return withEmergencyCleanup(o.log, async () => {
+    const dir = createWorkDir('review-head', o.tempRoot);
+    try {
+      const written = await writeBaseFiles(git, head, {
+        dir,
+        paths,
+        budget: o.budget,
+        names: new Set(),
+      });
+      const missed = paths.filter((p) => !written.has(p)).length;
+      if (missed > 0) return { failed: `${missed} cannot be put where the engine reads them` };
+      return await scanned(o.scan, dir, paths, o.log);
     } finally {
       releaseWorkDir(dir, o.log);
     }

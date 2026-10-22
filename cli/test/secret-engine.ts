@@ -19,12 +19,13 @@ export const fakeSecret = (name: string): string => `qk7-${name}`;
  * - `.gitleaksignore`: the `--gitleaks-ignore-path` file, or one in that directory (default `.`),
  *   and one in the source, with `<path>:<rule>:<line>` entries;
  * - the secret itself in `region.snippet.text`.
- * It writes what it ran with to FAKE_GITLEAKS_RECORD, fails when FAKE_GITLEAKS_MODE is `fail`,
- * writes JSON that is no SARIF log (its secrets cannot be read) when it is `unreadable`, and never
- * ends (until the runner's timeout stops it) when it is `hang`.
+ * It writes what it ran with to FAKE_GITLEAKS_RECORD, and every run, one line each, to that path
+ * with `.runs` added. It fails when FAKE_GITLEAKS_MODE is `fail` (`fail-after-first`: on every run
+ * but the first), writes JSON that is no SARIF log (its secrets cannot be read) when it is
+ * `unreadable`, and never ends (until the runner's timeout stops it) when it is `hang`.
  */
 const TOOL = `
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 const args = process.argv.slice(2);
 const option = (name) => {
@@ -33,10 +34,17 @@ const option = (name) => {
 };
 const source = args[0] === 'dir' ? args[1] : undefined;
 const record = process.env.FAKE_GITLEAKS_RECORD;
+let earlier = 0;
 if (record) {
   writeFileSync(record, JSON.stringify({ cwd: process.cwd(), args, gitleaksConfig: process.env.GITLEAKS_CONFIG ?? null }));
+  const runs = record + '.runs';
+  earlier = existsSync(runs) ? readFileSync(runs, 'utf8').split('\\n').filter(Boolean).length : 0;
+  appendFileSync(runs, JSON.stringify({ cwd: process.cwd(), args }) + '\\n');
 }
-if (source === undefined || process.env.FAKE_GITLEAKS_MODE === 'fail') process.exit(1);
+const mode = process.env.FAKE_GITLEAKS_MODE;
+if (source === undefined || mode === 'fail' || (mode === 'fail-after-first' && earlier > 0)) {
+  process.exit(1);
+}
 if (process.env.FAKE_GITLEAKS_MODE === 'unreadable') {
   writeFileSync(option('--report-path'), JSON.stringify({ version: '2.1.0', runs: 'none' }));
   process.exit(0);
@@ -141,18 +149,21 @@ export interface FakeSecretEngine {
   prepared: string[];
   /** What its tool last ran with: its working directory, its arguments, GITLEAKS_CONFIG. */
   ran(): { cwd: string; args: string[]; gitleaksConfig: string | null } | null;
+  /** The working directories of all its tool's runs, in order. */
+  runs(): string[];
 }
 
 /**
  * A stand-in for the scan's Gitleaks (id `gitleaks`), its tool written to `dir`: Gitleaks' own
  * preparation (its configuration as the scan resolves it, its command line), with the small
- * Gitleaks above for its binary, run by the analyzers' runner like any analyzer. `fail` exits 1;
- * `unavailable` cannot run here; `unreadable` exits 0 with output that is not SARIF; `hang` runs
- * until the runner times it out; `extraArgs` go at the end of its command line.
+ * Gitleaks above for its binary, run by the analyzers' runner like any analyzer. `fail` exits 1
+ * (`fail-after-first`: on every run but the first); `unavailable` cannot run here; `unreadable`
+ * exits 0 with output that is not SARIF; `hang` runs until the runner times it out; `extraArgs` go
+ * at the end of its command line.
  */
 export function fakeSecretEngine(
   dir: string,
-  mode: 'ok' | 'fail' | 'unavailable' | 'unreadable' | 'hang' = 'ok',
+  mode: 'ok' | 'fail' | 'fail-after-first' | 'unavailable' | 'unreadable' | 'hang' = 'ok',
   extraArgs: readonly string[] = [],
 ): FakeSecretEngine {
   const tool = path.join(dir, 'fake-gitleaks.mjs');
@@ -191,5 +202,12 @@ export function fakeSecretEngine(
             gitleaksConfig: string | null;
           })
         : null,
+    runs: () =>
+      existsSync(`${record}.runs`)
+        ? readFileSync(`${record}.runs`, 'utf8')
+            .split('\n')
+            .filter(Boolean)
+            .map((line) => (JSON.parse(line) as { cwd: string }).cwd)
+        : [],
   };
 }

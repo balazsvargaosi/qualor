@@ -852,3 +852,198 @@ describe('qualor scan: the AI review snapshot of a merge request (6I-2)', () => 
     },
   );
 });
+
+describe('qualor scan: the head files the scan did not see (6I-2, ruling R14)', () => {
+  /** The secret main had at the merge base and removed after it, in a file the MR never touches. */
+  const LEAKED = fakeSecret('leaked0before0removal');
+
+  interface MergeCheckout {
+    root: string;
+    /** The merge request's head, whose tree the snapshot sends. */
+    head: string;
+    /** The merge commit checked out (detached), which the analyzers scan. */
+    merge: string;
+  }
+
+  /**
+   * A merge commit checked out, as a GitLab merged-result pipeline and GitHub's pull request
+   * checkout give it: main at the merge base holds LEAKED in src/leak.ts; the merge request
+   * (feature) changes src/a.ts only; main then removes the secret (origin/main); HEAD is the merge
+   * of the merge request into main.
+   */
+  function mergeCheckout(): MergeCheckout {
+    const root = path.join(tmp(), 'repo');
+    writeTree(root, {
+      'qualor.yml': MR_YML,
+      'src/a.ts': 'export const a = 1;\n',
+      'src/leak.ts': `export const key = '${LEAKED}';\n`,
+    });
+    initRepo(root);
+    commitAll(root, 'base');
+    gitSync(root, 'checkout', '-q', '-b', 'feature');
+    writeTree(root, { 'src/a.ts': 'export const a = 2;\n' });
+    const head = commitAll(root, 'the merge request');
+    gitSync(root, 'checkout', '-q', 'main');
+    writeTree(root, { 'src/leak.ts': "export const key = process.env['KEY'];\n" });
+    const target = commitAll(root, 'remove the leaked key');
+    gitSync(root, 'update-ref', 'refs/remotes/origin/main', target);
+    gitSync(root, 'merge', '-q', '--no-ff', '--no-edit', 'feature');
+    const merge = gitSync(root, 'rev-parse', 'HEAD');
+    gitSync(root, 'checkout', '-q', '--detach', merge);
+    return { root, head, merge };
+  }
+
+  /** GitHub's pull request event for `m`, written to a file, and the environment naming it. */
+  function githubPr(m: MergeCheckout): Record<string, string> {
+    const event = path.join(tmp(), 'event.json');
+    writeFileSync(
+      event,
+      JSON.stringify({
+        pull_request: {
+          number: 7,
+          head: { sha: m.head },
+          base: { ref: 'main' },
+          title: MR_TITLE,
+          body: MR_DESCRIPTION,
+        },
+        repository: { default_branch: 'main' },
+      }),
+    );
+    return {
+      GITHUB_ACTIONS: 'true',
+      GITHUB_EVENT_PATH: event,
+      GITHUB_SHA: m.merge,
+      GITHUB_HEAD_REF: 'feature',
+      GITHUB_BASE_REF: 'main',
+      GITHUB_REF_NAME: '7/merge',
+      GITHUB_REPOSITORY: 'acme/app',
+    };
+  }
+
+  const pipelines: [string, (m: MergeCheckout) => Record<string, string>][] = [
+    [
+      'a GitLab merged-result pipeline',
+      (m) =>
+        gitlabMr(m.merge, {
+          CI_MERGE_REQUEST_EVENT_TYPE: 'merged_result',
+          CI_MERGE_REQUEST_SOURCE_BRANCH_SHA: m.head,
+        }),
+    ],
+    ["GitHub's merge checkout of a pull request", githubPr],
+  ];
+
+  /** The runs of the secret engine over head files that differ from the checkout. */
+  const headRuns = (engine: ReturnType<typeof fakeSecretEngine>) =>
+    engine.runs().filter((cwd) => path.basename(cwd).startsWith('qualor-review-head-'));
+
+  it.each(pipelines)(
+    '%s: a secret main removed after the merge base, in a file the merge request never touched, is masked',
+    { timeout: 60_000 },
+    async (_name, ci) => {
+      const m = mergeCheckout();
+      const engine = fakeSecretEngine(tmp());
+      const server = await fakeServer([done('passed')], undefined, { context: REVIEW_ON });
+      const { code, stderr } = await scan(
+        m.root,
+        server,
+        [],
+        { analyzers: [engine.analyzer] },
+        ci(m),
+      );
+      expect(code, stderr).toBe(0);
+      expect(server.paths).toEqual([...UNTIL_REPORT, CONTEXT, SNAPSHOT, GATE]);
+      const body = server.snapshots[0]?.body ?? Buffer.alloc(0);
+      expect(gunzipSync(body).toString('utf8')).not.toContain(LEAKED);
+      const lines = snapshotLinesOf(body);
+      expect(lines.find(isHeader)?.headSha).toBe(m.head);
+      // The head's version, which the checkout (the merge) does not have, masked.
+      const files = new Map(lines.filter(isFile).map((l) => [l.path, l.text]));
+      expect(files.get('src/leak.ts')).toBe(`export const key = '${REDACTED}';\n`);
+      expect(headRuns(engine)).toHaveLength(1);
+      expect(stderr).not.toContain(LEAKED);
+    },
+  );
+
+  it.each(pipelines)(
+    '%s: the secret engine failing over those files: no snapshot and a warning',
+    { timeout: 60_000 },
+    async (_name, ci) => {
+      const m = mergeCheckout();
+      // The scan's own run succeeds; every later one fails.
+      const engine = fakeSecretEngine(tmp(), 'fail-after-first');
+      const server = await fakeServer([done('passed')], undefined, { context: REVIEW_ON });
+      const temp = tmp();
+      const { code, stderr } = await scan(
+        m.root,
+        server,
+        [],
+        { analyzers: [engine.analyzer], reviewTempRoot: temp },
+        ci(m),
+      );
+      expect(code, stderr).toBe(0);
+      expect(server.paths).toEqual([...UNTIL_REPORT, CONTEXT, GATE]);
+      expect(reviewWarnings(stderr)).toEqual([
+        'warn: AI review: no snapshot sent, the head files that differ from the scanned checkout could not be scanned',
+      ]);
+      expect(headRuns(engine)).toHaveLength(1);
+      expect(readdirSync(temp)).toEqual([]);
+    },
+  );
+
+  it(
+    'a tracked file a CI step edited after the checkout: its head version is scanned too',
+    { timeout: 60_000 },
+    async () => {
+      const secret = fakeSecret('edited0away0in0ci');
+      const mr = mrRepo({
+        head: {
+          'src/a.ts': 'export const a = 2;\n',
+          'src/config.ts': `export const key = '${secret}';\n`,
+        },
+      });
+      // A CI step rewrote the file before the scan: the analyzers never saw the commit's version.
+      writeTree(mr.root, { 'src/config.ts': "export const key = process.env['KEY'];\n" });
+      const engine = fakeSecretEngine(tmp());
+      const server = await fakeServer([done('passed')], undefined, { context: REVIEW_ON });
+      const { code, stderr } = await scan(
+        mr.root,
+        server,
+        [],
+        { analyzers: [engine.analyzer] },
+        gitlabMr(mr.head),
+      );
+      expect(code, stderr).toBe(0);
+      const body = server.snapshots[0]?.body ?? Buffer.alloc(0);
+      expect(gunzipSync(body).toString('utf8')).not.toContain(secret);
+      const files = new Map(
+        snapshotLinesOf(body)
+          .filter(isFile)
+          .map((l) => [l.path, l.text]),
+      );
+      expect(files.get('src/config.ts')).toBe(`export const key = '${REDACTED}';\n`);
+      expect(headRuns(engine)).toHaveLength(1);
+    },
+  );
+
+  it(
+    'a detached pipeline, the head checked out as it is: no extra run',
+    { timeout: 60_000 },
+    async () => {
+      const mr = mrRepo();
+      const engine = fakeSecretEngine(tmp());
+      const server = await fakeServer([done('passed')], undefined, { context: REVIEW_ON });
+      const { code, stderr } = await scan(
+        mr.root,
+        server,
+        [],
+        { analyzers: [engine.analyzer] },
+        gitlabMr(mr.head),
+      );
+      expect(code, stderr).toBe(0);
+      expect(server.paths).toEqual([...UNTIL_REPORT, CONTEXT, SNAPSHOT, GATE]);
+      // The scan's own run and the merge base's (the old side of src/a.ts), nothing else.
+      expect(engine.runs()).toHaveLength(2);
+      expect(headRuns(engine)).toEqual([]);
+    },
+  );
+});

@@ -28,7 +28,12 @@ import { parseLsTreeLong, readObjects, type TreeEntry } from '../git/objects';
 import { VERSION } from '../index';
 import type { Logger } from '../log';
 import { Warnings } from '../warnings';
-import { scanMergeBase, type BaseSecretScan, type MergeBaseScan } from './base-secrets';
+import {
+  scanHeadFiles,
+  scanMergeBase,
+  type BaseSecretScan,
+  type MergeBaseScan,
+} from './base-secrets';
 import { instructionLines, readInstructionFiles, type InstructionsFile } from './instructions';
 import { DIFF_OPTIONS, finishPatch, readRawPatches, type Patch } from './patches';
 import { mergeRequestText, prepareSecrets, redactSnapshotText, secretLines } from './redact';
@@ -36,12 +41,13 @@ import { planSnapshot, writeSnapshot, type Candidate, type SnapshotParts } from 
 
 /*
  * The repository snapshot of a merge request for the AI review (6I-2, rulings R2, R4, R12, R13,
- * C3, C4): gzip'd JSON Lines of the merge request's head commit, read from git objects (never the
- * working tree), its diff against the merge base, the lines changed since the last reviewed
+ * R14, C3, C4): gzip'd JSON Lines of the merge request's head commit, read from git objects (never
+ * the working tree), its diff against the merge base, the lines changed since the last reviewed
  * commit, and the instructions files of the merge base. The snapshot leaves the CI machine with
  * the customer's code: credentials files and excluded files are never sent, and every text is
  * masked (./redact.ts), with the secrets the scan found and those the scan's secret engine finds
- * in the merge base's files (./base-secrets.ts).
+ * in the merge base's files and in the head's files the scanned checkout does not hold as the
+ * head does (./base-secrets.ts).
  *
  * Paths are those of the scan's root, as the report's are: `git ls-tree` lists the root's part of
  * the tree, and every diff runs with `--relative`. They are kept exactly as git gives them.
@@ -59,8 +65,17 @@ export interface SnapshotInput {
   /** The analyzers' secret texts and the token. */
   secrets: readonly string[];
   /**
-   * The scan's secret engine over the merge base's files (`baseSecretScan`, ruling R13): what it
-   * finds is masked too. Null when the scan runs none: then no patch sends a removed line.
+   * What the analyzers found `secrets` in. `working-tree`: the checkout at the scan root, as
+   * `qualor scan` scans it, which can differ from the head (a merge commit checked out, a file a
+   * CI step edited); the head's files that differ are then scanned by `baseSecrets` too (ruling
+   * R14). `head`: the head commit's own files.
+   */
+  secretsFrom: 'working-tree' | 'head';
+  /**
+   * The scan's secret engine over the merge base's files (`baseSecretScan`, ruling R13) and over
+   * the head's files the checkout does not hold as the head does (R14): what it finds is masked
+   * too. Null when the scan runs none: then no patch sends a removed line, and the shared patterns
+   * alone mask those head files.
    */
   baseSecrets: BaseSecretScan | null;
   /** The server's limits (`GET /projects/review-context`). */
@@ -90,7 +105,10 @@ export type BuiltSnapshot =
       /** Removes the snapshot and its directory. */
       cleanup: () => Promise<void>;
     }
-  | { kind: 'unavailable'; reason: 'head_missing' | 'no_merge_base' | 'too_large' };
+  | {
+      kind: 'unavailable';
+      reason: 'head_missing' | 'no_merge_base' | 'too_large' | 'head_unscanned';
+    };
 
 type Unavailable = Extract<BuiltSnapshot, { kind: 'unavailable' }>;
 const unavailable = (reason: Unavailable['reason']): Unavailable => ({
@@ -651,6 +669,61 @@ interface Read {
   raw: Map<string, Buffer>;
   instructions: InstructionsFile[];
   scanned: MergeBaseScan;
+  /** What the secret engine found in the head's files the scanned checkout does not hold (R14). */
+  headSecrets: readonly string[];
+}
+
+/**
+ * The paths of the scan root where the working tree differs from `head`: a merge commit checked
+ * out in its place, a tracked file a CI step edited, a file missing there.
+ */
+async function checkoutDifferences(git: Git, head: string): Promise<Set<string>> {
+  const output = await gitText(git, [
+    'diff',
+    '--name-only',
+    '-z',
+    '--no-renames',
+    '--relative',
+    '--no-ext-diff',
+    head,
+    '--',
+  ]);
+  return new Set(output.split('\u0000').filter((p) => p !== ''));
+}
+
+/**
+ * Ruling R14: the secrets of the head's files that the scan did not see as the head has them,
+ * found by the scan's secret engine. The analyzers scanned the working tree; the snapshot sends
+ * the head commit's files, so every file it can send that the working tree does not hold as the
+ * head does is scanned as the head has it. Null when the engine did not scan every one of them to
+ * the end: those files cannot be sent. With no engine (switched off in qualor.yml), the shared
+ * patterns alone mask them, as all else; when the working tree is the head, there is nothing to do.
+ */
+async function headSecrets(
+  input: SnapshotInput,
+  tree: readonly Candidate[],
+  budget: number,
+): Promise<readonly string[] | null> {
+  if (input.secretsFrom !== 'working-tree' || input.baseSecrets === null) return [];
+  const differ = await checkoutDifferences(input.git, input.headSha);
+  const paths = tree.filter((c) => c.reason === null && differ.has(c.path)).map((c) => c.path);
+  if (paths.length === 0) return [];
+  input.log.info(
+    `AI review: ${paths.length === 1 ? '1 file' : `${paths.length} files`} of the head differ from the scanned checkout; the secret scan runs over them as the head has them`,
+  );
+  const result = await scanHeadFiles(input.git, input.headSha, paths, {
+    scan: input.baseSecrets,
+    budget,
+    log: input.log,
+    ...(input.tempRoot !== undefined && { tempRoot: input.tempRoot }),
+  });
+  if ('failed' in result) {
+    input.log.debug(
+      `AI review: the head files that differ from the scanned checkout could not be scanned: ${result.failed}`,
+    );
+    return null;
+  }
+  return result.secrets;
 }
 
 /**
@@ -699,7 +772,10 @@ async function instructionsToScan(
  * the instructions files within the scan's root) go to the scan's secret engine first (R13), so
  * the secrets of the merge base are masked with the scan's own, everywhere.
  */
-async function readSources(input: SnapshotInput, base: string): Promise<Sources | 'too_large'> {
+async function readSources(
+  input: SnapshotInput,
+  base: string,
+): Promise<Sources | 'too_large' | 'head_unscanned'> {
   const { git, headSha: head, log } = input;
   // The input's own fields of the header, before any work: an id or a branch it cannot hold.
   checkedHeader(headerOf(input, base, null, { title: null, description: null }));
@@ -712,10 +788,12 @@ async function readSources(input: SnapshotInput, base: string): Promise<Sources 
   const left = new LeftOut(prepareSecrets(input.secrets));
   const changes = await readChanges(git, base, head, left);
   const tree = await readTree(git, head, changes, paths, left);
+  const budget = limits.maxDecompressedBytes;
+  const fromHead = await headSecrets(input, tree, budget);
+  if (fromHead === null) return 'head_unscanned';
   const shown = changes.filter(
     (c) => c.patchable && mayShow(c.path, paths) && mayShow(c.from, paths),
   );
-  const budget = limits.maxDecompressedBytes;
   const raw = await readRawPatches(git, { base, head }, shown, { budget, log });
   if (raw === 'too_large') return 'too_large';
   const instructions = await readInstructionFiles(git, base);
@@ -745,12 +823,16 @@ async function readSources(input: SnapshotInput, base: string): Promise<Sources 
     raw,
     instructions,
     scanned,
+    headSecrets: fromHead,
   });
 }
 
-/** The sources as sent: every text masked with the scan's secrets and the merge base's. */
+/**
+ * The sources as sent: every text masked with the scan's secrets, the merge base's and those of
+ * the head's files the scanned checkout did not hold.
+ */
 function maskedSources(input: SnapshotInput, read: Read): Sources {
-  const secrets = prepareSecrets([...input.secrets, ...read.scanned.secrets]);
+  const secrets = prepareSecrets([...input.secrets, ...read.scanned.secrets, ...read.headSecrets]);
   read.left.addSecrets(secrets);
   const { changes, candidates } = stillSendable(read.changes, read.tree, read.left);
   read.left.warn(input.log);
@@ -823,7 +905,8 @@ async function buildIn(
 /**
  * Builds the review snapshot of a merge request's head (6I-2) in a private temporary
  * directory, or says why it cannot: the head commit is not in the clone and cannot be fetched
- * (R12), it has no merge base with the target branch, or the changes alone are over the limits.
+ * (R12), it has no merge base with the target branch, the changes alone are over the limits, or
+ * the head's files the scanned checkout does not hold could not be scanned for secrets (R14).
  * Throws on a failure of git or of the disk, and leaves nothing behind then.
  */
 export async function buildReviewSnapshot(input: SnapshotInput): Promise<BuiltSnapshot> {
@@ -833,7 +916,7 @@ export async function buildReviewSnapshot(input: SnapshotInput): Promise<BuiltSn
   const baseline = await mergeBaseBaseline(git, input.targetBranch, input.policy, ctx, head);
   if (baseline.status !== 'ok' || baseline.revision === null) return unavailable('no_merge_base');
   const sources = await readSources(input, baseline.revision);
-  if (sources === 'too_large') return unavailable('too_large');
+  if (typeof sources === 'string') return unavailable(sources);
   const dir = mkdtempSync(path.join(input.tempRoot ?? os.tmpdir(), 'qualor-review-'));
   try {
     const built = await buildIn(dir, input, sources);

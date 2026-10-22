@@ -134,6 +134,8 @@ function build(
     sinceSha: null,
     mergeRequest: { id: '7', title: 'Add the parser', description: 'It parses.' },
     secrets: [],
+    // These repositories have no checkout: the given secrets stand for those of the head's files.
+    secretsFrom: 'head',
     limits: LIMITS,
     policy: { autoFetch: false, deepenSteps: [] },
     log: silentLogger,
@@ -938,6 +940,48 @@ describe('buildReviewSnapshot: lines changed since the last review (R4)', () => 
       expect(headerOf(lines).sinceSha, sinceSha).toBeNull();
       expect([...changesOf(lines).values()].map((c) => c.since)).toEqual([null, null, null, null]);
     }
+  });
+});
+
+describe('buildReviewSnapshot: the head files the scan did not see (R14)', () => {
+  // These repositories have no checkout: no head file is in the working tree the scan saw.
+  it('has the secret engine scan them, and masks what it finds everywhere', async () => {
+    const secret = fakeSecret('head0only0SECRET0aa');
+    const mr = mergeRequest(
+      { 'src/a.ts': 'a\n' },
+      { 'src/a.ts': 'b\n', 'src/k.ts': `const k = '${secret}';\n` },
+    );
+    const built = await build(mr, {
+      secretsFrom: 'working-tree',
+      mergeRequest: { id: '7', title: null, description: `rotates ${secret}` },
+    });
+    expect(textOf(built)).not.toContain(secret);
+    const lines = linesOf(built);
+    expect(filesOf(lines)['src/k.ts']).toBe(`const k = '${REDACTED}';\n`);
+    expect(headerOf(lines).mergeRequest.description).toBe(`rotates ${REDACTED}`);
+  });
+
+  it.each([
+    ['the secret engine fails over them', { engine: 'fail' as const }, {}],
+    [
+      'one cannot be put where the engine reads it (a root .gitleaksignore)',
+      {},
+      { '.gitleaksignore': 'src/x.ts:fake-secret:1\n' },
+    ],
+  ])('%s: unavailable head_unscanned, and nothing left behind', async (_name, over, extra) => {
+    const mr = mergeRequest({ 'src/a.ts': 'a\n' }, { 'src/a.ts': 'b\n', ...extra });
+    const tempRoot = tmp();
+    expect(await build(mr, { ...over, secretsFrom: 'working-tree', tempRoot })).toEqual({
+      kind: 'unavailable',
+      reason: 'head_unscanned',
+    });
+    expect(readdirSync(tempRoot)).toEqual([]);
+  });
+
+  it('without a secret engine, the shared patterns alone mask them, as all else', async () => {
+    const mr = mergeRequest({ 'src/a.ts': 'a\n' }, { 'src/a.ts': 'b\n', 'src/c.ts': 'c\n' });
+    const built = await build(mr, { engine: 'none', secretsFrom: 'working-tree' });
+    expect(filePaths(linesOf(built))).toEqual(['src/a.ts', 'src/c.ts']);
   });
 });
 
