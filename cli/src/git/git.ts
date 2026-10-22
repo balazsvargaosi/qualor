@@ -34,8 +34,11 @@ export type Git = (args: readonly string[], options?: GitCallOptions) => Promise
  * --no-ext-diff` in `scm.ts`'s `-U0` diff are belt and braces for the same problem: a large
  * `interHunkContext` merges nearby hunks (turning unchanged context lines into part of a
  * bigger "changed" range if a caller trusted hunk headers), and a textconv/ext-diff driver can
- * rewrite content so line numbers no longer match the real file. `gc.auto`/`maintenance.auto`
- * are disabled so a scan never triggers background repository maintenance.
+ * rewrite content so line numbers no longer match the real file. `diff.submodule=short` keeps a
+ * runner's `log` or `diff` setting from writing a submodule's commit subjects or file diffs into
+ * the diff, without a header of their own, where they would end up in the previous file's patch
+ * (the review snapshot's). `gc.auto`/`maintenance.auto` are disabled so a scan never triggers
+ * background repository maintenance.
  */
 export const GIT_OPTIONS: readonly string[] = [
   '-c',
@@ -50,6 +53,8 @@ export const GIT_OPTIONS: readonly string[] = [
   'diff.renames=true',
   '-c',
   'diff.interHunkContext=0',
+  '-c',
+  'diff.submodule=short',
   '-c',
   'color.ui=false',
   '-c',

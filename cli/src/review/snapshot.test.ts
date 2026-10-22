@@ -14,7 +14,7 @@ import {
   type SnapshotOmittedLine,
 } from '@qualor/shared';
 import { describe, expect, it } from 'vitest';
-import { fileUrl, GIT_TEST_ENV, gitSync, initRepo } from '../../test/git';
+import { commitAll, fileUrl, GIT_TEST_ENV, gitSync, initRepo } from '../../test/git';
 import { FAKE_KEY, snapshotLines, snapshotText } from '../../test/review-snapshot';
 import { fakeSecret, fakeSecretEngine } from '../../test/secret-engine';
 import { useTempDirs, writeTree } from '../../test/tmp';
@@ -282,6 +282,51 @@ describe('buildReviewSnapshot: what a merge request sends', () => {
       expect(patch, p).not.toMatch(/^index /m);
       for (const id of ids) expect(patch, `${p} ${id}`).not.toContain(id.slice(0, 7));
     }
+  });
+
+  it("pins diff.submodule: a runner's `log` setting adds no submodule commit subject to a patch", async () => {
+    // The submodule's repository is where git looks for it, in the working tree.
+    const root = tmp();
+    initRepo(root);
+    const sub = path.join(root, 'sub');
+    mkdirSync(sub);
+    initRepo(sub);
+    writeTree(sub, { 'lib.txt': 'one\n' });
+    const first = commitAll(sub, 'Add the library');
+    writeTree(sub, { 'lib.txt': 'two\n' });
+    const subject = 'Rotate the deploy token zq9-subject-text';
+    const second = commitAll(sub, subject);
+    const base = commitOf(root, { 'a.ts': TEN, sub: { submodule: first } });
+    gitSync(root, 'update-ref', 'refs/remotes/origin/main', base);
+    const head = commitOf(
+      root,
+      { 'a.ts': TEN.replace('line 3', 'LINE 3'), sub: { submodule: second } },
+      base,
+    );
+    const mr = { root, base, head };
+
+    // This repository's own configuration makes git write the log of the submodule's commits,
+    // with no `diff --git` header: right after the patch of the file before it.
+    gitSync(root, 'config', 'diff.submodule', 'log');
+    const raw = git(root, ['diff', '-M', '--no-color', base, head]);
+    expect(raw).toContain('Submodule sub ');
+    expect(raw).toContain(subject);
+
+    const built = await build(mr);
+    const text = textOf(built);
+    expect(text).not.toContain('Submodule sub');
+    expect(text).not.toContain(subject);
+    const changes = changesOf(linesOf(built));
+    // The pointer's own change is the short form: the commit it moved to (the old one is a removed
+    // line of the merge base, which the scan did not read), not what lies between them.
+    expect(changes.get('sub')?.patch).toBe(
+      `diff --git a/sub b/sub\n--- a/sub\n+++ b/sub\n@@ -1 +1 @@\n-[1 removed line not sent]\n+Subproject commit ${second}\n`,
+    );
+    // The file before it has the patch it has without the setting.
+    const patch = changes.get('a.ts')?.patch;
+    expect(patch).toContain('\n-line 3\n+LINE 3\n');
+    gitSync(root, 'config', '--unset', 'diff.submodule');
+    expect(changesOf(linesOf(await build(mr))).get('a.ts')?.patch).toBe(patch);
   });
 
   it('excluded, credentials, binary, symlink and too-large files are omitted with their reasons', async () => {
