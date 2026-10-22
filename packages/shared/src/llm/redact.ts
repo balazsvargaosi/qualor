@@ -386,6 +386,8 @@ const BODY_LINE_DECORATION_CHARS = 256;
 const BODY_BASE64 = /^[A-Za-z0-9+/=]{16,4096}$/;
 /** The header fields of an encrypted PEM key. */
 const BODY_FIELD = /^(?:Proc-Type|DEK-Info):/i;
+/** The short last line of a key: 1 to 15 characters of base64, and its padding. */
+const BODY_LAST_LINE = /^[A-Za-z0-9+/]{1,15}={0,2}$/;
 
 /**
  * `line` without what code puts around a key body's text: the marks of a comment, a string or a
@@ -419,28 +421,45 @@ function bodyLineKind(line: string): 'field' | 'blank' | 'base64' | null {
 }
 
 /**
+ * Whether `line` can be the last line of a key: 1 to 15 characters of base64, decoration off. A PEM
+ * line is 64 characters and the last is 4 to 64, a multiple of 4, so it is under 16 for 3 of its 16
+ * possible lengths.
+ */
+function isShortLastLine(line: string): boolean {
+  return line.length <= BODY_LINE_DECORATION_CHARS + 17 && BODY_LAST_LINE.test(undecorated(line));
+}
+
+/**
  * Marks the lines that follow each BEGIN line from `from` on (no END line comes after any of them)
  * while they are PEM body lines, decoration off: the header fields (`Proc-Type`, `DEK-Info`), one
  * blank line to end the fields, base64 of 16 characters or more. The first other line ends the
- * body, and the BEGIN line itself is left unmarked: it is the caller's.
+ * body, and the BEGIN line itself is left unmarked: it is the caller's. The one line that ends the
+ * body is marked too when it is a short base64 line (`isShortLastLine`) and a base64 line came
+ * before it: the last line of the key. The windows used to extend a run of long base64 lines to a
+ * short one beside it, and no run is left for them once these lines are masked.
  */
 function markLoneBodies(lines: readonly string[], from: number, marked: boolean[]): void {
   /** `header`: right after a BEGIN line, where fields and the blank line may come; `body`: base64 only. */
   let state: 'header' | 'body' | null = null;
+  /** A base64 line of the key has been marked: a short line after it can be its last. */
+  let sawBase64 = false;
   for (let i = from; i < lines.length; i++) {
     const line = lines[i] ?? '';
     if (KEY_BEGIN.test(line)) {
       state = 'header';
+      sawBase64 = false;
       continue;
     }
     if (state === null) continue;
     const kind = bodyLineKind(line);
     if (kind === 'base64' || (state === 'header' && kind !== null)) {
       marked[i] = true;
+      sawBase64 ||= kind === 'base64';
       state = kind === 'field' ? 'header' : 'body';
-    } else {
-      state = null;
+      continue;
     }
+    if (sawBase64 && isShortLastLine(line)) marked[i] = true;
+    state = null;
   }
 }
 
@@ -451,9 +470,10 @@ function markLoneBodies(lines: readonly string[], from: number, marked: boolean[
  * no whole block, and a BEGIN line with no END line after it is none either: what they mean is the
  * caller's (the redaction above masks up to such an END line, and from such a BEGIN line on, as far
  * as it sees). But the body that follows a BEGIN line like that is marked, while its lines are PEM
- * body lines once their decoration is off (`markLoneBodies`): a key whose END line is missing or
- * mistyped is masked over a cut too, and ordinary code after a BEGIN line named in code is not.
- * For a caller that cuts a long text into pieces, so that a block over a cut is still masked whole.
+ * body lines once their decoration is off, and the short last line of the key (`markLoneBodies`): a
+ * key whose END line is missing or mistyped is masked over a cut too, and ordinary code after a
+ * BEGIN line named in code is not. For a caller that cuts a long text into pieces, so that a block
+ * over a cut is still masked whole.
  */
 export function keyBlockLines(lines: readonly string[]): boolean[] {
   const marked = lines.map(() => false);

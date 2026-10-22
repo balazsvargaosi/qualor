@@ -730,23 +730,25 @@ describe('keyBlockLines: the body of a BEGIN line with no END line after it', ()
   ];
 
   it.each(shapes)(
-    'marks the 30 body lines after the BEGIN line, $name, and stops at the broken END',
+    'marks the 30 body lines and the short last line after the BEGIN line, $name, and stops at the broken END',
     ({ begin, separator, row, end }) => {
       const lines = [
         code('a'),
         begin,
         ...(separator === undefined ? [] : [separator]),
         ...rows(30).map(row),
+        row('AbCd1234'),
         end,
         code('b'),
       ];
       // The BEGIN line is the caller's, as it is without a body (it masks that line and fails
-      // closed from there); the body lines are marked, the broken END line and the code are not.
+      // closed from there); the body lines and the short last line are marked, the broken END
+      // line and the code are not.
       expect(keyBlockLines(lines)).toEqual([
         false,
         false,
         ...(separator === undefined ? [] : [true]),
-        ...marked(30),
+        ...marked(31),
         false,
         false,
       ]);
@@ -837,14 +839,73 @@ describe('keyBlockLines: the body of a BEGIN line with no END line after it', ()
     ]);
   });
 
-  it('does not take a short line, a second blank line, or a header field after the body for the body', () => {
-    // Under 16 characters: the last line of a key is short, and is the one this rule gives up.
-    expect(keyBlockLines([BEGIN(), body('x'), 'Zz9=', body('y')])).toEqual([
-      false,
-      true,
-      false,
-      false,
-    ]);
+  describe('the short last line of a key', () => {
+    // A PEM line is 64 characters and the last one is 4 to 64, a multiple of 4: under 16 for 3 of
+    // its 16 possible lengths. The windows used to extend a run of long base64 lines to a short
+    // one next to it; the long lines are masked before them, so the short one is taken here.
+    it.each([
+      ['with padding', 'Zz9='],
+      ['of 8 letters and digits', 'AbCd1234'],
+      ['of 8 with padding', 'Zm9vYmE='],
+      ['of 4', 'QUJD'],
+      ['of one', 'A'],
+      ['of 15', 'A'.repeat(15)],
+      ['of 15 and padding', `${'A'.repeat(13)}==`],
+    ])('is marked, %s, and ends the body', (_name, tail) => {
+      expect(keyBlockLines([BEGIN(), body('x'), tail, body('y')])).toEqual([
+        false,
+        true,
+        true,
+        false,
+      ]);
+    });
+
+    it.each([
+      ['undecorated', (l: string) => l],
+      ['commented with `# `', (l: string) => `# ${l}`],
+      ['indented (YAML)', (l: string) => `    ${l}`],
+      ['a patch line added', (l: string) => `+${l}`],
+      ['a Java string, "…\\n" +', (l: string) => `    "${l}\\n" +`],
+      ['a Java string that a patch removes', (l: string) => `-    "${l}\\n" +`],
+      ['a string with a comma', (l: string) => `  "${l}",`],
+    ])('is marked with its decoration off, %s', (_name, decorate) => {
+      const lines = [BEGIN(), ...rows(2).map(decorate), decorate('AbCd1234'), code('a')];
+      expect(keyBlockLines(lines)).toEqual([false, true, true, true, false]);
+    });
+
+    it('is marked only after a base64 body line', () => {
+      expect(keyBlockLines([BEGIN(), 'Zz9='])).toEqual([false, false]);
+      expect(keyBlockLines([BEGIN(), '', 'Zz9='])).toEqual([false, true, false]);
+      const fields = ['Proc-Type: 4,ENCRYPTED', 'DEK-Info: AES-128-CBC,0123456789ABCDEF'];
+      expect(keyBlockLines([BEGIN(), ...fields, '', 'Zz9='])).toEqual([
+        false,
+        true,
+        true,
+        true,
+        false,
+      ]);
+    });
+
+    it('is one line: the body ends with it, and with any other line that is not a body line', () => {
+      expect(keyBlockLines([BEGIN(), body('x'), 'Zz9=', 'AbCd1234', body('y')])).toEqual([
+        false,
+        true,
+        true,
+        false,
+        false,
+      ]);
+      // Code, an END line that is mistyped, a closing brace: not base64, not the last line.
+      for (const other of ['return x;', '}', 'AB CD', BROKEN_END, '']) {
+        expect(keyBlockLines([BEGIN(), body('x'), other]), JSON.stringify(other)).toEqual([
+          false,
+          true,
+          false,
+        ]);
+      }
+    });
+  });
+
+  it('ends the body at a second blank line, a header field after it, or a line over 4 096 characters', () => {
     // One blank line ends the header section; a blank line in the body, or after it, ends the body.
     expect(keyBlockLines([BEGIN(), '', '', body('x')])).toEqual([false, true, false, false]);
     expect(keyBlockLines([BEGIN(), body('x'), '', body('y')])).toEqual([false, true, false, false]);

@@ -199,23 +199,45 @@ describe('redactLongText', () => {
         row: (l: string) => `-    "${l}\\n" +`,
         end: `-    "${BROKEN_END}\\n";`,
       },
+      {
+        name: 'indented (YAML)',
+        begin: `    ${KEY_BEGIN}`,
+        row: (l: string) => `    ${l}`,
+        end: `    ${BROKEN_END}`,
+      },
+      {
+        name: 'a patch line added',
+        begin: `+${KEY_BEGIN}`,
+        row: (l: string) => `+${l}`,
+        end: `+${BROKEN_END}`,
+      },
     ];
 
     it.each(shapes)(
-      '$name: 30 body lines over the boundary of the first window, with the file around kept',
+      '$name: 30 body lines and a short last line over the boundary of the first window, with the file around kept',
       ({ begin, separator, row, end }) => {
         const body = Array.from({ length: 30 }, (_, i) => row(keyLine(i)));
-        const block = [begin, ...(separator === undefined ? [] : [separator]), ...body];
-        // The window ends at line 200 and its view eight lines later: the body crosses both.
-        for (const before of [185, 190]) {
-          const lines = [...code(before, 'a'), ...block, end, ...code(2_000, 'b')];
-          const out = redactLongText(lines.join('\n')).text.split('\n');
-          expect(out).toHaveLength(lines.length);
-          const shown = block.filter((_, i) => out[before + i] !== REDACTED);
-          expect(shown, `${shown.length} key lines in clear after ${before} lines`).toEqual([]);
-          // Nothing before the key, and nothing from the broken END line on, is lost.
-          expect(out.slice(0, before)).toEqual(lines.slice(0, before));
-          expect(out.slice(before + block.length)).toEqual(lines.slice(before + block.length));
+        // The last line of a key is as long as the others or shorter (4 to 64 characters). The
+        // windows used to extend a run of long base64 lines to a short one next to it; the long
+        // ones are masked before the windows now, so the short line itself is marked.
+        for (const tail of ['AbCd1234', 'Zm9vYmE=']) {
+          const block = [
+            begin,
+            ...(separator === undefined ? [] : [separator]),
+            ...body,
+            row(tail),
+          ];
+          // The window ends at line 200 and its view eight lines later: the body crosses both.
+          for (const before of [185, 190]) {
+            const lines = [...code(before, 'a'), ...block, end, ...code(2_000, 'b')];
+            const out = redactLongText(lines.join('\n')).text.split('\n');
+            expect(out).toHaveLength(lines.length);
+            const shown = block.filter((_, i) => out[before + i] !== REDACTED);
+            expect(shown, `${shown.length} key lines in clear after ${before} lines`).toEqual([]);
+            // Nothing before the key, and nothing from the broken END line on, is lost.
+            expect(out.slice(0, before)).toEqual(lines.slice(0, before));
+            expect(out.slice(before + block.length)).toEqual(lines.slice(before + block.length));
+          }
         }
       },
     );

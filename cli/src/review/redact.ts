@@ -149,9 +149,11 @@ function viewOf(
  * the next END line after it (keyBlockLines), however many lines lie between and however they are
  * decorated (a comment's `# `, a string literal, a patch's `-`), which the shared rule for a key
  * body in clear base64 would miss. So are the lines of a body that follow a BEGIN line with no END
- * line after it, as far as they look like a PEM body once their decoration is off (a key whose END
- * line is missing or mistyped, over a window's edge). That BEGIN line itself is left to the
- * windows.
+ * line after it, as far as they look like a PEM body once their decoration is off, and the short
+ * last line of the key (a key whose END line is missing or mistyped, over a window's edge). That
+ * BEGIN line itself is left to the windows. The lines masked here are no run for the windows'
+ * own rule for base64 lines to extend to a short line beside them, which is why that last line is
+ * marked here.
  */
 function maskKeyBlocks(lines: readonly string[]): { lines: string[]; count: number } {
   const blocks = keyBlockLines(lines);
