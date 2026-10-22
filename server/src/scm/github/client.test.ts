@@ -646,6 +646,42 @@ describe('GitHub REST client (github.md §4–§6)', () => {
       },
     );
 
+    it('waits for the reset a GraphQL rate limit names, and a minute when it names none (M3)', async () => {
+      const client = await reader();
+      const limited = {
+        data: null,
+        errors: [{ type: 'RATE_LIMITED', message: 'API rate limit exceeded' }],
+      };
+      const inSeconds = (s: number) => String(Math.floor(clock / 1000) + s);
+      const waits = async (headers?: Record<string, string>) => {
+        answer(limited, 200, headers);
+        const err = await failure(client.reviewThreads(many.number, 1));
+        expect([err.kind, err.status]).toEqual(['rate_limited', 200]);
+        return err.retryAfterSeconds;
+      };
+      // The primary limit is spent: its reset says when, as REST's does (githubRateLimit).
+      const spent = { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': inSeconds(120) };
+      expect(await waits(spent)).toBe(120);
+      // Retry-After wins, as for REST; a reset far off is clamped to 15 minutes.
+      expect(await waits({ ...spent, 'retry-after': '30' })).toBe(30);
+      expect(await waits({ ...spent, 'x-ratelimit-reset': inSeconds(7_200) })).toBe(900);
+      // A limit that is not spent (a secondary one), an unreadable reset, or no header at all:
+      // GitHub's advice of a minute.
+      expect(await waits({ ...spent, 'x-ratelimit-remaining': '4000' })).toBe(60);
+      expect(await waits({ ...spent, 'x-ratelimit-reset': 'soon' })).toBe(60);
+      expect(await waits()).toBe(60);
+      // A mutation reads them the same way. It is paced first (the fake clock moves on up to a
+      // second), so the wait is counted from when the answer came.
+      const reset = inSeconds(300);
+      answer(limited, 200, { ...spent, 'x-ratelimit-reset': reset });
+      const mutation = await failure(client.setThreadResolved(many.threadIds[0]!, true));
+      expect([mutation.kind, mutation.retryAfterSeconds]).toEqual([
+        'rate_limited',
+        Math.ceil(Number(reset) - clock / 1000),
+      ]);
+      expect(mutation.retryAfterSeconds).toBeGreaterThanOrEqual(299);
+    });
+
     it('is never fooled by data next to an error, or by an answer without data', async () => {
       const client = await reader();
       // An empty list beside a FORBIDDEN error is a failure, not "no threads".

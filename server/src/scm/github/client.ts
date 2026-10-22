@@ -284,6 +284,24 @@ export interface GitHubClientOptions {
 }
 
 /**
+ * When an answer's headers say to try again, in seconds (clamped to 1 s – 15 min): `Retry-After`
+ * wins, then an exhausted primary limit's `x-ratelimit-reset`. Null for an exhausted primary limit
+ * whose reset is unreadable; undefined when the headers name no wait.
+ */
+function headerWait(headers: IncomingHttpHeaders, nowMs: number): number | null | undefined {
+  const clamp = (s: number) => Math.min(MAX_RETRY_AFTER_SECONDS, Math.max(1, Math.ceil(s)));
+  const retryAfter = headers['retry-after'];
+  if (typeof retryAfter === 'string' && /^\d{1,9}$/.test(retryAfter.trim())) {
+    return clamp(Number(retryAfter));
+  }
+  if (headers['x-ratelimit-remaining'] !== '0') return undefined;
+  const reset = headers['x-ratelimit-reset'];
+  return typeof reset === 'string' && /^\d{1,12}$/.test(reset)
+    ? clamp(Number(reset) - nowMs / 1000)
+    : null;
+}
+
+/**
  * github.md §5.3: whether a 403 or 429 is a rate limit, and when to try again (`null`: the
  * backoff). `Retry-After` wins, then an exhausted primary limit's reset, then a secondary limit
  * named only in the message (60 s); a 429 is always a rate limit; any other 403 is not.
@@ -295,20 +313,8 @@ export function githubRateLimit(
   nowMs: number = Date.now(),
 ): { retryAfterSeconds: number | null } | null {
   if (status !== 403 && status !== 429) return null;
-  const clamp = (s: number) => Math.min(MAX_RETRY_AFTER_SECONDS, Math.max(1, Math.ceil(s)));
-  const retryAfter = headers['retry-after'];
-  if (typeof retryAfter === 'string' && /^\d{1,9}$/.test(retryAfter.trim())) {
-    return { retryAfterSeconds: clamp(Number(retryAfter)) };
-  }
-  if (headers['x-ratelimit-remaining'] === '0') {
-    const reset = headers['x-ratelimit-reset'];
-    return {
-      retryAfterSeconds:
-        typeof reset === 'string' && /^\d{1,12}$/.test(reset)
-          ? clamp(Number(reset) - nowMs / 1000)
-          : null,
-    };
-  }
+  const wait = headerWait(headers, nowMs);
+  if (wait !== undefined) return { retryAfterSeconds: wait };
   if (message !== null && /secondary rate limit/i.test(message)) {
     return { retryAfterSeconds: SECONDARY_LIMIT_SECONDS };
   }
@@ -350,12 +356,16 @@ function githubMessage(body: Buffer, secrets: readonly string[]): string | null 
  * github.md §5.3: GraphQL answers a failed operation with HTTP 200 and an `errors` array, whose
  * first entry's `type` (GitHub's own: `NOT_FOUND`, `FORBIDDEN`, `RATE_LIMITED`, …) says which. The
  * status is 200 as GitHub did answer: the circuit breaker (scm.md §4.2) counts that as GitHub
- * being up. A rate limit waits GitHub's advice of a minute (the answer's rate limit headers are
- * not read). The provider's words are kept for decisions only, as everywhere (`providerMessage`).
+ * being up. A rate limit waits as long as the answer's headers say, as a REST one does
+ * (`Retry-After`, then an exhausted limit's `x-ratelimit-reset`), and GitHub's advice of a minute
+ * when they say nothing. The provider's words are kept for decisions only, as everywhere
+ * (`providerMessage`).
  */
 function graphqlFailure(
   error: { type?: string | undefined; message?: unknown },
   secrets: readonly string[],
+  headers: IncomingHttpHeaders,
+  nowMs: number,
 ): ScmError {
   const providerMessage = scrubbed(error.message, secrets);
   switch (error.type) {
@@ -375,7 +385,7 @@ function graphqlFailure(
       return new ScmError('rate_limited', GITHUB_TEXT.graphqlRateLimit, {
         status: 200,
         reason: 'http',
-        retryAfterSeconds: SECONDARY_LIMIT_SECONDS,
+        retryAfterSeconds: headerWait(headers, nowMs) ?? SECONDARY_LIMIT_SECONDS,
         providerMessage,
       });
     default:
@@ -621,7 +631,7 @@ export class GitHubClient {
     schema: z.ZodType<T>,
     mutation: boolean,
   ): Promise<T> {
-    const { json } = await this.repoCall(
+    const { headers, json } = await this.repoCall(
       'POST',
       new URL(githubGraphqlUrl(this.#connection.baseUrl)),
       { query: document, variables },
@@ -629,7 +639,9 @@ export class GitHubClient {
     );
     const answer = this.parse(graphqlAnswer, json);
     const [failure] = answer.errors ?? [];
-    if (failure !== undefined) throw graphqlFailure(failure, [this.#token ?? '', this.#jwt ?? '']);
+    if (failure !== undefined) {
+      throw graphqlFailure(failure, [this.#token ?? '', this.#jwt ?? ''], headers, this.now());
+    }
     if (answer.data === null || answer.data === undefined) {
       throw new ScmError('bad_answer', GITHUB_TEXT.badAnswer, { status: 200 });
     }
