@@ -31,7 +31,11 @@ const call = (name: string, args: unknown): LlmToolCall => ({
 });
 const newPolicy = (over: Partial<ToolPolicy> = {}): ToolPolicy => ({
   excludePaths: [],
-  budget: { calls: TOOL_LIMITS.callsPerReview, greps: TOOL_LIMITS.grepsPerReview },
+  budget: {
+    calls: TOOL_LIMITS.callsPerReview,
+    greps: TOOL_LIMITS.grepsPerReview,
+    maskedBytes: TOOL_LIMITS.maskedBytesPerReview,
+  },
   ...over,
 });
 const run = (
@@ -855,6 +859,154 @@ describe('all tools', () => {
       expect(redactions).toEqual([0, 0, 1, 0, 0, 0]);
     });
 
+    it('concurrent calls on one path mask it once', async () => {
+      const { reader, asked } = counting(memorySnapshot({ files: { [KEY_PATH]: keyFile } }));
+      const policy = newPolicy();
+      const results = await Promise.all([
+        run(reader, 'read_file', { path: KEY_PATH }, policy),
+        run(reader, 'read_file', { path: KEY_PATH, from: 2, to: 4 }, policy),
+        run(reader, 'grep', { pattern: 'before' }, policy),
+        run(reader, 'grep', { pattern: 'after' }, policy),
+        run(reader, 'read_file', { path: KEY_PATH, from: 30, to: 34 }, policy),
+      ]);
+      expect(policy.masked?.maskings).toBe(1);
+      expect(asked).toEqual([KEY_PATH]);
+      // What was masked is reported once, by one of the calls; the budget is spent once.
+      expect(results.map((r) => r.redactions).sort((a, b) => a - b)).toEqual([0, 0, 0, 0, 32]);
+      expect(policy.budget.maskedBytes).toBe(
+        TOOL_LIMITS.maskedBytesPerReview - Buffer.byteLength(keyFile),
+      );
+      // Every call got its answer from the masked file.
+      expect(results[1]?.text).toBe(`2│ ${REDACTED}\n3│ ${REDACTED}\n4│ ${REDACTED}`);
+      expect(results[2]?.text).toBe(`${KEY_PATH}:1: before`);
+    });
+
+    it('grep over many hits in one file masks it once, whether or not the masked files are kept', async () => {
+      const notes = Array.from({ length: 60 }, (_, i) => `line ${i} Qm9ndXMga2V5`);
+      const mixed = [
+        KEY_BEGIN,
+        ...Array.from({ length: 80 }, (_, i) => keyLine(i)),
+        KEY_END,
+        ...notes,
+      ].join('\n');
+      for (const [name, text] of [
+        ['sixty hits', notes.join('\n')],
+        // 80 of the lines that hold the needle are masked away: the reader is asked again for more.
+        ['masked-away lines and then sixty hits', mixed],
+      ] as const) {
+        const { reader, asked } = counting(memorySnapshot({ files: { 'big.txt': text } }));
+        // A bound too small to keep the file: it is masked for the search, once.
+        const policy = newPolicy({ masked: new MaskedFiles(reader, 10) });
+        const hits = (await answer(reader, 'grep', { pattern: 'Qm9ndXMga2V5' }, policy)).split(
+          '\n',
+        );
+        expect(hits, name).toHaveLength(TOOL_LIMITS.grepHits + 1);
+        expect(hits[50], name).toBe(MORE_MATCHES);
+        expect(policy.masked?.maskings, name).toBe(1);
+        expect(asked, name).toEqual(['big.txt']);
+        expect(policy.budget.maskedBytes, name).toBe(
+          TOOL_LIMITS.maskedBytesPerReview - Buffer.byteLength(text),
+        );
+      }
+    });
+
+    it('every hit is looked at once, however often the reader is asked for more', async () => {
+      const key = (n: number) => [
+        KEY_BEGIN,
+        ...Array.from({ length: n }, (_, i) => keyLine(i)),
+        KEY_END,
+      ];
+      const files = {
+        // 19 and 39 lines that hold the needle in the file as stored, and are masked away.
+        'f1.txt': key(19).join('\n'),
+        'f2.txt': key(39).join('\n'),
+        'f3.txt': Array.from({ length: 60 }, (_, i) => `line ${i} Qm9ndXMga2V5`).join('\n'),
+      };
+      const { reader, asked } = counting(memorySnapshot({ files }));
+      // Nothing is kept: a file looked at again would be masked again.
+      const policy = newPolicy({ masked: new MaskedFiles(reader, 10) });
+      const hits = (await answer(reader, 'grep', { pattern: 'Qm9ndXMga2V5' }, policy)).split('\n');
+      expect(hits).toHaveLength(TOOL_LIMITS.grepHits + 1);
+      expect(hits[0]).toBe('f3.txt:1: line 0 Qm9ndXMga2V5');
+      expect(hits[50]).toBe(MORE_MATCHES);
+      // The first 51 hits of the reader are lines of f1 and f2; the 204 it is asked for next begin
+      // with them again, and go on from there.
+      expect(policy.masked?.maskings).toBe(3);
+      expect(asked).toEqual(['f1.txt', 'f2.txt', 'f3.txt']);
+    });
+
+    it('the text a review masks is budgeted: the call that would pass the budget fails closed', async () => {
+      const text = (c: string) => `${c.repeat(400)}\n`;
+      const files = { 'a.txt': text('a'), 'b.txt': text('b'), 'c.txt': text('c') };
+      const { reader, asked } = counting(memorySnapshot({ files }));
+      // 401 bytes each: the budget fits two files and 100 bytes more.
+      const policy = newPolicy({ budget: { calls: 99, greps: 99, maskedBytes: 902 } });
+      expect(await answer(reader, 'read_file', { path: 'a.txt' }, policy)).toBe(
+        `1│ ${'a'.repeat(400)}`,
+      );
+      expect(await answer(reader, 'read_file', { path: 'b.txt' }, policy)).toBe(
+        `1│ ${'b'.repeat(400)}`,
+      );
+      expect(policy.budget.maskedBytes).toBe(100);
+      // The third would pass it: nothing is masked or shown, and the budget is as it was.
+      const maskings = policy.masked?.maskings;
+      expect(await run(reader, 'read_file', { path: 'c.txt' }, policy)).toEqual({
+        text: BUDGET_USED_UP,
+        redactions: 0,
+      });
+      expect(policy.budget.maskedBytes).toBe(100);
+      expect(policy.masked?.maskings).toBe(maskings);
+      // The files masked already are still there to read, for nothing; a file that is not there,
+      // and one that is not text, need no masking.
+      expect(await answer(reader, 'read_file', { path: 'a.txt', from: 1, to: 1 }, policy)).toBe(
+        `1│ ${'a'.repeat(400)}`,
+      );
+      expect(await answer(reader, 'read_file', { path: 'nope.txt' }, policy)).toBe(ABSENT);
+      expect(policy.budget.maskedBytes).toBe(100);
+      expect(asked).toEqual(['a.txt', 'b.txt', 'c.txt', 'nope.txt']);
+    });
+
+    it('a grep that comes to a file it cannot afford to mask ends with the budget line after its hits', async () => {
+      const files = {
+        'a/one.txt': `${'a'.repeat(300)} needle\n`,
+        'b/two.txt': `${'b'.repeat(300)} needle\n`,
+        'c/three.txt': `${'c'.repeat(300)} needle\n`,
+        // It would fit in what is left, but the search has ended.
+        'd/four.txt': 'needle\n',
+      };
+      const { reader } = counting(memorySnapshot({ files }));
+      // 308 bytes a file: the first fits, the second does not.
+      const policy = newPolicy({ budget: { calls: 99, greps: 99, maskedBytes: 400 } });
+      const out = (await answer(reader, 'grep', { pattern: 'needle' }, policy)).split('\n');
+      expect(out).toEqual([`a/one.txt:1: ${'a'.repeat(199)}…`, BUDGET_USED_UP]);
+      expect(policy.budget.maskedBytes).toBe(400 - 308);
+      // With nothing left to mask a file with, a grep finds only the budget line.
+      const empty = newPolicy({ budget: { calls: 99, greps: 99, maskedBytes: 100 } });
+      expect(await answer(reader, 'grep', { pattern: 'needle' }, empty)).toBe(BUDGET_USED_UP);
+    });
+
+    it('a file masked again after the bound kept it out is spent again', async () => {
+      const text = (c: string) => `${c.repeat(400)}\n`;
+      const { reader, asked } = counting(
+        memorySnapshot({ files: { 'a.txt': text('a'), 'b.txt': text('b') } }),
+      );
+      // The masked files kept are bounded at one file; the budget is for two and a half.
+      const policy = newPolicy({
+        masked: new MaskedFiles(reader, 450),
+        budget: { calls: 99, greps: 99, maskedBytes: 1_000 },
+      });
+      const read = (path: string) => answer(reader, 'read_file', { path }, policy);
+      expect(await read('a.txt')).toBe(`1│ ${'a'.repeat(400)}`);
+      expect(await read('b.txt')).toBe(`1│ ${'b'.repeat(400)}`);
+      expect(policy.budget.maskedBytes).toBe(1_000 - 802);
+      // b did not fit in what is kept: it is masked again, and the budget does not allow it.
+      expect(await read('b.txt')).toBe(BUDGET_USED_UP);
+      expect(policy.budget.maskedBytes).toBe(1_000 - 802);
+      // a is kept, and free.
+      expect(await read('a.txt')).toBe(`1│ ${'a'.repeat(400)}`);
+      expect(asked).toEqual(['a.txt', 'b.txt', 'b.txt']);
+    });
+
     it('an excluded file is not read at all, to be masked or to be searched', async () => {
       const files = {
         'secrets/key.txt': `before\n${KEY_BEGIN}\n${body[0]}\n${KEY_END}\n`,
@@ -904,15 +1056,16 @@ describe('all tools', () => {
 
   it('budgets stop calls and greps', async () => {
     const reader = memorySnapshot({ files: { 'a.ts': 'needle' } });
-    const policy = newPolicy({ budget: { calls: 4, greps: 1 } });
+    const policy = newPolicy({ budget: { calls: 4, greps: 1, maskedBytes: 100 } });
     expect(await answer(reader, 'grep', { pattern: 'needle' }, policy)).toBe('a.ts:1: needle');
-    expect(policy.budget).toEqual({ calls: 3, greps: 0 });
+    // The file was masked for the search: its 6 bytes are spent, once.
+    expect(policy.budget).toEqual({ calls: 3, greps: 0, maskedBytes: 94 });
     // The grep budget is spent; reading is not.
     expect(await answer(reader, 'grep', { pattern: 'needle' }, policy)).toBe(BUDGET_USED_UP);
-    expect(policy.budget).toEqual({ calls: 2, greps: 0 });
+    expect(policy.budget).toEqual({ calls: 2, greps: 0, maskedBytes: 94 });
     expect(await answer(reader, 'read_file', { path: 'a.ts' }, policy)).toBe('1│ needle');
     expect(await answer(reader, 'list_files', {}, policy)).toBe('a.ts');
-    expect(policy.budget).toEqual({ calls: 0, greps: 0 });
+    expect(policy.budget).toEqual({ calls: 0, greps: 0, maskedBytes: 94 });
     // The call budget is spent: nothing runs, whatever the tool or the arguments, and nothing is read.
     for (const [name, args] of [
       ['read_file', { path: 'a.ts' }],
@@ -926,12 +1079,12 @@ describe('all tools', () => {
         redactions: 0,
       });
     }
-    expect(policy.budget).toEqual({ calls: 0, greps: 0 });
+    expect(policy.budget).toEqual({ calls: 0, greps: 0, maskedBytes: 94 });
     // A call with arguments the tool refuses still counts as a call, but a refused grep is no search.
-    const strict = newPolicy({ budget: { calls: 5, greps: 1 } });
+    const strict = newPolicy({ budget: { calls: 5, greps: 1, maskedBytes: 100 } });
     await run(reader, 'read_file', {}, strict);
     await run(reader, 'grep', { pattern: 'x' }, strict);
-    expect(strict.budget).toEqual({ calls: 3, greps: 1 });
+    expect(strict.budget).toEqual({ calls: 3, greps: 1, maskedBytes: 100 });
   });
 });
 
@@ -976,6 +1129,7 @@ describe('REVIEW_TOOLS', () => {
       listEntries: 500,
       callsPerReview: 120,
       grepsPerReview: 40,
+      maskedBytesPerReview: 256 * 1024 * 1024,
     });
     for (const tool of REVIEW_TOOLS) {
       expect(tool.description.length).toBeGreaterThan(40);

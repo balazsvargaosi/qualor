@@ -134,6 +134,107 @@ describe('MaskedFiles', () => {
     expect(files.files).toBe(0);
   });
 
+  it('charges the text it masks to a budget, once, and fails closed when it does not fit', async () => {
+    const secret = `${j('const password = "', 'hunter2-very-secret";')}\n`;
+    const text = (c: string) => `${c.repeat(400)}\n`;
+    const { reader, asked } = counting(
+      memorySnapshot({ files: { 'a.txt': text('a'), 'b.txt': text('b'), 's.txt': secret } }),
+    );
+    const files = new MaskedFiles(reader);
+    const budget = { maskedBytes: 1_000 };
+    // The text before it is masked is what is charged: 40 bytes here, 33 after.
+    expect(await files.file('s.txt', budget)).toMatchObject({ kind: 'text', redactions: 1 });
+    expect(budget.maskedBytes).toBe(1_000 - 40);
+    // A file kept costs nothing, nor one that is being masked.
+    await files.file('s.txt', budget);
+    expect(budget.maskedBytes).toBe(1_000 - 40);
+    expect(await files.file('a.txt', budget)).toMatchObject({ kind: 'text' });
+    expect(budget.maskedBytes).toBe(1_000 - 40 - 401);
+    expect(await files.file('b.txt', budget)).toMatchObject({ kind: 'text' });
+    expect(budget.maskedBytes).toBe(1_000 - 40 - 401 - 401);
+    // What is kept is free whatever is left of the budget.
+    const again = { maskedBytes: 100 };
+    expect(await files.file('a.txt', again)).toMatchObject({ kind: 'text' });
+    expect(again.maskedBytes).toBe(100);
+    // A file that does not fit is neither masked nor kept, and the budget stays as it was.
+    const poor = new MaskedFiles(reader);
+    expect(await poor.file('a.txt', again)).toEqual({ kind: 'budget' });
+    expect(again.maskedBytes).toBe(100);
+    expect([poor.maskings, poor.files, poor.bytes]).toEqual([0, 0, 0]);
+    // It is not remembered as refused: with the budget for it, it is masked.
+    again.maskedBytes = 401;
+    expect(await poor.file('a.txt', again)).toMatchObject({ kind: 'text' });
+    expect(again.maskedBytes).toBe(0);
+    // A file that is not there, or not text, needs no masking and costs nothing.
+    expect(await poor.file('nope.txt', { maskedBytes: 0 })).toEqual({ kind: 'absent' });
+    expect(asked.filter((path) => path === 'nope.txt')).toHaveLength(1);
+    // Without a budget there is no limit.
+    expect(await new MaskedFiles(reader).file('a.txt')).toMatchObject({ kind: 'text' });
+  });
+
+  it('charges a file again each time it is masked again', async () => {
+    const reader = memorySnapshot({ files: { 'k.txt': KEY_FILE } });
+    const files = new MaskedFiles(reader, 100);
+    const size = Buffer.byteLength(KEY_FILE);
+    const budget = { maskedBytes: 3 * size };
+    for (let i = 0; i < 3; i++) {
+      expect(await files.file('k.txt', budget)).toMatchObject({ kind: 'text' });
+    }
+    expect(budget.maskedBytes).toBe(0);
+    expect(files.maskings).toBe(3);
+    expect(await files.file('k.txt', budget)).toEqual({ kind: 'budget' });
+    expect(files.maskings).toBe(3);
+  });
+
+  it('shares a masking in progress with every request for the file, and charges it once', async () => {
+    const { reader, asked } = counting(memorySnapshot({ files: { 'key.txt': KEY_FILE } }));
+    const files = new MaskedFiles(reader);
+    const budget = { maskedBytes: 10_000 };
+    const all = await Promise.all(Array.from({ length: 5 }, () => files.file('key.txt', budget)));
+    expect(all.every((file) => file.kind === 'text')).toBe(true);
+    expect(budget.maskedBytes).toBe(10_000 - Buffer.byteLength(KEY_FILE));
+    expect([files.maskings, asked.length]).toEqual([1, 1]);
+    // Requests that wait for a refusal are refused too, and nothing is charged.
+    const none = { maskedBytes: 10 };
+    const fresh = new MaskedFiles(reader);
+    const refused = await Promise.all([fresh.file('key.txt', none), fresh.file('key.txt', none)]);
+    expect(refused).toEqual([{ kind: 'budget' }, { kind: 'budget' }]);
+    expect(none.maskedBytes).toBe(10);
+  });
+
+  it('does not keep a failed read: the request fails, those that waited for it fail, and the next tries again', async () => {
+    const inner = memorySnapshot({ files: { 'key.txt': KEY_FILE } });
+    let failures = 1;
+    let reads = 0;
+    const reader: SnapshotReader = {
+      ...inner,
+      file: async (path) => {
+        reads += 1;
+        // Long enough for the second request to arrive while the first waits.
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        if (failures > 0) {
+          failures -= 1;
+          throw new Error('connection lost');
+        }
+        return inner.file(path);
+      },
+    };
+    const files = new MaskedFiles(reader);
+    const budget = { maskedBytes: 10_000 };
+    const first = await Promise.allSettled([
+      files.file('key.txt', budget),
+      files.file('key.txt', budget),
+    ]);
+    expect(first.map((result) => result.status)).toEqual(['rejected', 'rejected']);
+    expect(reads).toBe(1);
+    // Nothing was charged or kept; the next request reads the file again and masks it.
+    expect(budget.maskedBytes).toBe(10_000);
+    expect(await files.file('key.txt', budget)).toMatchObject({ kind: 'text', redactions: 32 });
+    expect(reads).toBe(2);
+    expect(budget.maskedBytes).toBe(10_000 - Buffer.byteLength(KEY_FILE));
+    expect(files.maskings).toBe(1);
+  });
+
   it('passes an omitted or an absent file on, and keeps nothing of it', async () => {
     const { reader, asked } = counting(
       memorySnapshot({ files: { 'logo.png': { kind: 'omitted', reason: 'binary' } } }),

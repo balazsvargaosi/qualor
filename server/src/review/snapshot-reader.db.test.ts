@@ -361,7 +361,7 @@ describe('the snapshot reader (6I-3)', () => {
   it('the review tools answer alike over the DB reader and the memory reader', async () => {
     const policy = (): ToolPolicy => ({
       excludePaths: ['vendor/**', 'src/lib/deep/**'],
-      budget: { calls: 1_000, greps: 1_000 },
+      budget: { calls: 1_000, greps: 1_000, maskedBytes: 256 * 1024 * 1024 },
     });
     const overDb = policy();
     const overMemory = policy();

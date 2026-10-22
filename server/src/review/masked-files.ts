@@ -8,10 +8,24 @@ import { linesOf, type SnapshotReader } from './snapshot-reader';
  * private key's BEGIN line or in the key block next to it, so the lines of a file are never masked
  * one slice at a time: a slice of the middle of a key is not recognised as one. The review tools
  * read, and search, the masked lines only.
+ *
+ * Masking is synchronous work, about 0.7 s for a file of 1 MiB, and what a model asks for is
+ * untrusted: how often a file is masked is bounded three ways. A file is masked once for all the
+ * calls of a review that ask for it, also when they ask together (a masking in progress is shared).
+ * The masked lines of the files of a review are kept up to MASKED_CACHE_BYTES. And a review has a
+ * budget of bytes of text to mask, which every masking spends, a file masked again included.
  */
 
 /** The most masked text one review keeps, all its files together, in UTF-8 bytes. */
 export const MASKED_CACHE_BYTES = 64 * 1024 * 1024;
+
+/**
+ * What is left of a review's budget for masking, in UTF-8 bytes of file text before it is masked.
+ * The caller owns it and shares it between the calls of one review: a masking spends it.
+ */
+export interface MaskBudget {
+  maskedBytes: number;
+}
 
 /** A file of the snapshot: its masked lines, why it has none, or no such file. */
 export type MaskedFile =
@@ -26,13 +40,14 @@ export type MaskedFile =
       redactions: number;
     }
   | { kind: 'omitted'; reason: OmissionReason }
-  | { kind: 'absent' };
+  | { kind: 'absent' }
+  /** The file would take the review past its budget for masking: it is not masked or shown. */
+  | { kind: 'budget' };
 
 /**
  * The masked files of one review, kept so that a file is masked once however many calls read it.
- * Masking takes about 0.7 s for a file of 1 MiB, and a review reads a few files many times. The
- * lines kept are bounded: once a masked file would take the total past `maxBytes` it is not kept,
- * and is masked again each time it is asked for.
+ * The lines kept are bounded: once a masked file would take the total past `maxBytes` it is not
+ * kept, and is masked again (and charged again) each time it is asked for.
  */
 export class MaskedFiles {
   private readonly kept = new Map<string, readonly string[]>();
@@ -60,7 +75,13 @@ export class MaskedFiles {
     return this.kept.size;
   }
 
-  async file(path: string): Promise<MaskedFile> {
+  /**
+   * The file, masked. A file that is kept or being masked costs nothing; one that is masked now
+   * is charged to `budget` (when there is one) before it is, and is `budget` when it does not fit:
+   * nothing is masked or kept then, and the budget is left as it was. A failure to read the file
+   * is not kept: the next request tries again.
+   */
+  async file(path: string, budget?: MaskBudget): Promise<MaskedFile> {
     const kept = this.kept.get(path);
     if (kept !== undefined) return { kind: 'text', lines: kept, redactions: 0 };
     const pending = this.loading.get(path);
@@ -68,7 +89,7 @@ export class MaskedFiles {
       const file = await pending;
       return file.kind === 'text' ? { ...file, redactions: 0 } : file;
     }
-    const started = this.load(path);
+    const started = this.load(path, budget);
     this.loading.set(path, started);
     try {
       return await started;
@@ -77,9 +98,14 @@ export class MaskedFiles {
     }
   }
 
-  private async load(path: string): Promise<MaskedFile> {
+  private async load(path: string, budget: MaskBudget | undefined): Promise<MaskedFile> {
     const file = await this.reader.file(path);
     if (file.kind !== 'text') return file;
+    if (budget !== undefined) {
+      const bytes = Buffer.byteLength(file.text, 'utf8');
+      if (bytes > budget.maskedBytes) return { kind: 'budget' };
+      budget.maskedBytes -= bytes;
+    }
     // The masking does not yield: let the work that waits (requests, the queue) go first.
     await yieldToEventLoop();
     const masked = redactLongText(file.text);
