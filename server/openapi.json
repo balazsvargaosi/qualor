@@ -27176,6 +27176,180 @@
         }
       }
     },
+    "/api/v0/analyses/{id}/review-snapshot": {
+      "post": {
+        "summary": "Upload the repository snapshot of a merge request's analysis for AI review (gzip body, Content-Type application/vnd.qualor.review-snapshot+jsonl, Content-Encoding gzip), right after its report; refused while AI review is off for the project. A job unpacks it; it is never served back",
+        "tags": [
+          "analyses"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._/:-]{1,255}$"
+            },
+            "in": "query",
+            "name": "projectKey",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          },
+          {
+            "in": "header",
+            "name": "Content-Encoding",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "gzip"
+              ]
+            }
+          },
+          {
+            "in": "header",
+            "name": "Expect",
+            "required": false,
+            "description": "Send `100-continue` to have every check (auth, project, encoding, analysis, AI review, existing snapshot, declared length, upload slots) run before the body is sent.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "100-continue"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "snapshotId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "uploaded"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "snapshotId",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated but not allowed (FORBIDDEN, INSUFFICIENT_SCOPE, TOKEN_NOT_ALLOWED, SESSION_REQUIRED, CSRF_FAILED, PASSWORD_CHANGE_REQUIRED)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "PROJECT_NOT_FOUND (the project does not exist, the token belongs to another project, or the caller cannot see it), or ANALYSIS_NOT_FOUND (the analysis is not one of the project's)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "AI_REVIEW_OFF (AI review does not run for the project; GET /projects/review-context says why), or SNAPSHOT_EXISTS (the analysis has a snapshot already)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "SNAPSHOT_TOO_LARGE: over maxCompressedBytes as sent or maxDecompressedBytes inflated (GET /projects/review-context answers both)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "UNSUPPORTED_MEDIA_TYPE, or UNSUPPORTED_ENCODING (Content-Encoding must be gzip)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "VALIDATION_FAILED, or SNAPSHOT_INVALID (the body is not gzip)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "UPLOADS_BUSY: every upload slot is taken (the report uploads share them); retry after Retry-After",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "description": "The merge request's repository snapshot as gzip'd JSON Lines: a header line, the instruction files, one line per change, file and omitted file, and an end line with the counts; at most maxCompressedBytes (default 50 MiB) as sent and maxDecompressedBytes (default 500 MiB) inflated.",
+          "content": {
+            "application/vnd.qualor.review-snapshot+jsonl": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v0/organizations/{id}/license-policy": {
       "get": {
         "summary": "The organisation's licence policy (org.read), the licence groups and the SPDX ids it may name; `available` is false without the enterprise feature license-policy",

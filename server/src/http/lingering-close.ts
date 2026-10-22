@@ -1,5 +1,6 @@
 import type { IncomingMessage } from 'node:http';
 import type { Socket } from 'node:net';
+import type { FastifyReply, FastifyRequest } from 'fastify';
 
 const MiB = 1024 * 1024;
 
@@ -90,6 +91,31 @@ export function lingerBeforeClosing(
 
   const originalDestroySoon = socket.destroySoon.bind(socket);
   socket.destroySoon = () => lingerThenClose(requestStream, socket, originalDestroySoon, options);
+}
+
+/**
+ * The `onSend` of an upload route (`POST /analyses`, 6I-2's review snapshot), S11/S12/S15: every
+ * refusal (before the body is read: 401/403/404/409/415/413/503; while reading it: 413/422) closes
+ * the connection, or Node keeps the socket alive and, for a refusal that never touched the body,
+ * drains and discards the whole declared Content-Length before the next request on that socket can
+ * be parsed (observed: 200 MiB read after a 413 for a project the caller cannot see). An immediate
+ * close is its own bug: a client still mid-write when the socket is destroyed leaves unread bytes
+ * in the kernel, and the close becomes a TCP RST that loses this very answer (reproduced with a
+ * client still posting a large body). So `Connection: close` is sent and the socket lingers
+ * ({@link lingerBeforeClosing}) up to `maxBytes` (the upload's compressed limit) plus its margin,
+ * or a short deadline, before it is torn down. It lingers even when `100 Continue` was never sent:
+ * a client that honours Expect sends nothing and closes on the final answer (lingering then ends
+ * at once), but one that stopped waiting (RFC 9110 lets it) may already be writing the body.
+ */
+export function closeAfterRefusal(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  maxBytes: number,
+): void {
+  if (reply.statusCode < 400) return;
+  reply.header('connection', 'close');
+  const socket = reply.raw.socket;
+  if (socket) lingerBeforeClosing(request.raw, socket, { maxBytes });
 }
 
 function lingerThenClose(

@@ -88,6 +88,8 @@ export const ROUTE_PERMISSIONS: Readonly<Record<string, RouteRule>> = Object.fre
   'GET /projects/:id/branches': 'project.read',
   'DELETE /branches/:id': 'project.branches.delete',
   'POST /analyses': 'project.analyze',
+  // 6I-2: the repository snapshot of a merge request, uploaded by the scanner after its report.
+  'POST /analyses/:id/review-snapshot': 'project.analyze',
   'GET /analyses/:id': 'project.read',
   'GET /branches/:id/analyses': 'project.read',
   'GET /projects/new-code-baseline': 'project.analyze',

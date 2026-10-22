@@ -61,6 +61,10 @@ export async function retentionSettings(db: Executor): Promise<Retention> {
 const BATCH = 5_000;
 /** Stored reports are up to the upload limit each; delete fewer per statement. */
 const REPORT_BATCH = 500;
+/** A review snapshot may hold tens of thousands of file rows, which go with it (6I-2). */
+const SNAPSHOT_BATCH = 50;
+/** 6I-2: a rejected review snapshot is kept this long (its reason says why it was refused). */
+export const REJECTED_SNAPSHOT_DAYS = 1;
 
 /** E1 spec: a message still pending this long lost its job: it is failed and its body dropped. */
 export const MAIL_GIVE_UP_DAYS = 2;
@@ -111,6 +115,8 @@ export interface HousekeepingResult {
   mailMessages: number;
   /** Pending messages failed after MAIL_GIVE_UP_DAYS, their body dropped. */
   abandonedMailMessages: number;
+  /** Review snapshots past `reviewSnapshotsDays`, and rejected ones after a day (6I-2). */
+  reviewSnapshots: number;
   /** Expired OAuth authorization requests, expired OAuth tokens, and clients nothing uses any more. */
   oauthRequests: number;
   oauthTokens: number;
@@ -222,6 +228,8 @@ export async function cleanOAuth(
  * - an email log row after mailMessagesDays; a message pending for 2 days is failed and its body
  *   dropped (its job was lost);
  * - expired account links (mail E2), skipping a row a request is taking at that moment;
+ * - a review snapshot after `reviewSnapshotsDays` (spec §5), a rejected one after a day, whatever
+ *   its status (its unpack job then finds it gone), skipping one a job holds at that moment;
  * - expired OAuth requests and tokens, and clients without a live grant (cleanOAuth).
  */
 export async function runHousekeeping(
@@ -372,6 +380,18 @@ export async function runHousekeeping(
          -- Re-checked on the row being updated: an attempt recorded meanwhile moved it on.
          AND status = 'pending'`,
   );
+  const reviewSnapshots = await deleteInBatches(
+    db,
+    SNAPSHOT_BATCH,
+    (limit) => sql`
+      DELETE FROM review_snapshots WHERE id IN (
+        SELECT id FROM review_snapshots
+         WHERE created_at < now() - make_interval(days => ${r.reviewSnapshotsDays})
+            OR (status = 'rejected'
+                AND created_at < now() - make_interval(days => ${REJECTED_SNAPSHOT_DAYS}))
+         LIMIT ${limit}
+         FOR UPDATE SKIP LOCKED)`,
+  );
   const auditEvents = await pruneAuditStep(db, logger);
   const ssoStates = await pruneSsoStates(db);
   const accountTokens = await pruneAccountTokens(db);
@@ -392,6 +412,7 @@ export async function runHousekeeping(
     accountTokens,
     mailMessages,
     abandonedMailMessages,
+    reviewSnapshots,
     oauthRequests: oauth.requests,
     oauthTokens: oauth.tokens,
     oauthClients: oauth.clients,

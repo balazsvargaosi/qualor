@@ -1,4 +1,4 @@
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, sql, type SQL } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createIngestHarness, type IngestHarness, type IngestProject } from '../../test/ingest';
 import { file, finding, reportWith } from '../../test/reports';
@@ -11,6 +11,8 @@ import {
   jobs,
   llmRequests,
   mailMessages,
+  reviewSnapshotFiles,
+  reviewSnapshots,
   sessions,
   webhookDeliveries,
   webhookSubscriptions,
@@ -617,6 +619,58 @@ describe('daily housekeeping (data-model.md §7)', () => {
     } finally {
       await h.ctx.db.delete(instanceSettings).where(eq(instanceSettings.key, 'retention'));
       await h.ctx.db.delete(mailMessages);
+    }
+  });
+
+  it('deletes review snapshots past reviewSnapshotsDays and rejected ones after a day (6I-2)', async () => {
+    const snapshot = async (status: 'uploaded' | 'ready' | 'rejected', createdAgo: SQL) => {
+      const [analysis] = await h.ctx.db.insert(analyses).values({ projectId: p.id }).returning();
+      const [row] = await h.ctx.db
+        .insert(reviewSnapshots)
+        .values({
+          analysisId: analysis!.id,
+          projectId: p.id,
+          status,
+          body: status === 'uploaded' ? Buffer.from('gzip') : null,
+          error: status === 'rejected' ? 'SNAPSHOT_INVALID:duplicate_path (line 3)' : null,
+          compressedBytes: 4,
+        })
+        .returning({ id: reviewSnapshots.id });
+      await h.ctx.db.insert(reviewSnapshotFiles).values({ snapshotId: row!.id, path: 'src/a.ts' });
+      await h.ctx.db.execute(
+        sql`UPDATE review_snapshots SET created_at = ${createdAgo} WHERE id = ${row!.id}`,
+      );
+      return row!.id;
+    };
+    const left = async () =>
+      new Set(
+        (await h.ctx.db.select({ id: reviewSnapshots.id }).from(reviewSnapshots)).map((r) => r.id),
+      );
+    const expired = await snapshot('ready', ago(15));
+    const expiredUpload = await snapshot('uploaded', ago(15));
+    const fresh = await snapshot('ready', ago(13));
+    const rejected = await snapshot('rejected', sql`now() - interval '25 hours'`);
+    const justRejected = await snapshot('rejected', sql`now() - interval '23 hours'`);
+    expect((await runHousekeeping(h.ctx.db)).reviewSnapshots).toBe(3);
+    let kept = await left();
+    for (const id of [expired, expiredUpload, rejected]) expect(kept.has(id)).toBe(false);
+    for (const id of [fresh, justRejected]) expect(kept.has(id)).toBe(true);
+    // Their file rows go with them.
+    const files = await h.ctx.db
+      .select({ snapshotId: reviewSnapshotFiles.snapshotId })
+      .from(reviewSnapshotFiles);
+    expect(files.map((f) => f.snapshotId).sort()).toEqual([fresh, justRejected].sort());
+    try {
+      await h.ctx.db
+        .insert(instanceSettings)
+        .values({ key: 'retention', value: { reviewSnapshotsDays: 10 } });
+      expect((await runHousekeeping(h.ctx.db)).reviewSnapshots).toBe(1);
+      kept = await left();
+      expect(kept.has(fresh)).toBe(false);
+      expect(kept.has(justRejected)).toBe(true);
+    } finally {
+      await h.ctx.db.delete(instanceSettings).where(eq(instanceSettings.key, 'retention'));
+      await h.ctx.db.delete(reviewSnapshots);
     }
   });
 

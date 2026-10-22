@@ -6,8 +6,9 @@
  * `METHOD <path as declared in routes/>`.
  */
 export const UNAUDITED_MUTATIONS: ReadonlySet<string> = new Set([
-  // Report uploads are not audited.
+  // Report uploads are not audited, nor the review snapshot a scanner sends with one (6I-2).
   'POST /analyses',
+  'POST /analyses/:id/review-snapshot',
   // Connection and webhook tests change nothing.
   'POST /scm-connections/:id/test',
   'POST /webhooks/:id/test',

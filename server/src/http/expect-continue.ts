@@ -40,6 +40,21 @@ export function sendContinue(request: FastifyRequest, reply: FastifyReply): void
 }
 
 /**
+ * The `preParsing` of an upload route, whose `config.deferContinue` leaves `100 Continue` to its
+ * handler: a request of any other content type is parsed (buffered) by Fastify before the handler
+ * runs, so holding `100 Continue` back would stall that parser. It is sent now, and the handler
+ * refuses the request with 415 afterwards, exactly as without Expect.
+ */
+export function continueUnlessUpload(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  contentType: string,
+): void {
+  const mime = request.headers['content-type']?.split(';')[0]?.trim().toLowerCase();
+  if (mime !== contentType) sendContinue(request, reply);
+}
+
+/**
  * RFC 9110 §10.1.1 `Expect: 100-continue`. Node answers `100 Continue` automatically, before any
  * hook has run, unless the server has a `checkContinue` listener — so a client would upload a
  * 50 MiB report only to be told 401/404/413. With this installed the request is dispatched

@@ -6,9 +6,9 @@ import type { RouteDeps } from '../app';
 import { accessOf, requirePrincipal, requireUser } from '../auth/access';
 import { analyses, branches } from '../db/schema';
 import { createQueuedAnalysis } from '../ingest/service';
-import { readGzipUpload, reportTooLarge, type UploadedReport } from '../ingest/upload';
-import { sendContinue } from '../http/expect-continue';
-import { lingerBeforeClosing } from '../http/lingering-close';
+import { readGzipUpload, reportTooLarge, UploadSlots, type UploadedReport } from '../ingest/upload';
+import { continueUnlessUpload, sendContinue } from '../http/expect-continue';
+import { closeAfterRefusal } from '../http/lingering-close';
 import { decodeCursor, pageQuery, pageSchema, toPage } from '../http/pagination';
 import { notFound, ProblemError } from '../http/problem';
 import { idParams } from '../http/schemas';
@@ -18,17 +18,18 @@ import { analysisDto, analysisSchema } from '../analyses/dto';
 
 export const REPORT_CONTENT_TYPE = 'application/vnd.qualor.report+json';
 
-export const analysisRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (app, { deps }) => {
+export const analysisRoutes: FastifyPluginAsyncZod<{
+  deps: RouteDeps;
+  /** S11: the app's upload slots, shared with the review snapshot upload (routes/index.ts). */
+  uploadSlots?: UploadSlots;
+}> = async (app, { deps, uploadSlots }) => {
   // Hand the raw request stream to the handler; readGzipUpload enforces the limits.
   app.addContentTypeParser(REPORT_CONTENT_TYPE, (_request, payload, done) => {
     done(null, payload);
   });
 
-  // S11: how many uploads currently hold a buffered compressed body — from just before it is
-  // read to just after its analysis row and job are persisted. Scoped to this plugin's closure,
-  // so it is per app instance (this function runs once per buildApp() call) rather than shared
-  // global state.
-  let activeUploads = 0;
+  // S11: per app instance (this function runs once per buildApp() call), not global state.
+  const slots = uploadSlots ?? new UploadSlots(deps.config.maxConcurrentUploads);
 
   app.post(
     '/analyses',
@@ -77,40 +78,14 @@ export const analysisRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async 
           }),
         },
       },
-      // S11/S12: every rejection here (pre-read: 401/403/404/415/413/503; post-read: 413/422) must
-      // close the connection, or Node keeps the socket alive and — for a rejection that never
-      // touched the body — drains and discards the whole declared Content-Length before the next
-      // request on that socket can be parsed (observed: 200 MiB read after a 413 for a project the
-      // caller can't see). But an immediate close is its own bug: if the client is still mid-write
-      // when the socket is destroyed, the kernel still has unread bytes queued and the close
-      // becomes a TCP RST — the client gets ECONNRESET and never sees this very response
-      // (reproduced with a client still posting a large body). lingerBeforeClosing keeps
-      // `Connection: close` but drains up to maxCompressedBytes (plus its own margin) or a short
-      // deadline before actually tearing the socket down — see that module for why it measures
-      // with socket.bytesRead rather than the request stream's own 'data' events.
-      // Scoped to just this route: the GET routes below have no body to drain.
+      // S11/S12/S15: every rejection here closes the connection without losing the answer
+      // (closeAfterRefusal). Scoped to just this route: the GET routes below have no body to drain.
       preParsing: async (request, reply, payload) => {
-        // Any other content type is parsed (buffered) by Fastify before the handler runs, so
-        // holding back `100 Continue` would stall that parser; the handler rejects it with 415
-        // afterwards, exactly as without Expect.
-        const mime = request.headers['content-type']?.split(';')[0]?.trim().toLowerCase();
-        if (mime !== REPORT_CONTENT_TYPE) sendContinue(request, reply);
+        continueUnlessUpload(request, reply, REPORT_CONTENT_TYPE);
         return payload;
       },
       onSend: async (request, reply, payload) => {
-        if (reply.statusCode >= 400) {
-          reply.header('connection', 'close');
-          const socket = reply.raw.socket;
-          // S15: linger even when `100 Continue` was never sent. A client that honours Expect
-          // sends nothing and closes on the final answer (lingering then ends at once), but one
-          // that stopped waiting (RFC 9110 lets it) may already be writing the body, and an
-          // immediate close would turn that into a TCP RST that loses this response.
-          if (socket) {
-            lingerBeforeClosing(request.raw, socket, {
-              maxBytes: deps.config.upload.maxCompressedBytes,
-            });
-          }
-        }
+        closeAfterRefusal(request, reply, deps.config.upload.maxCompressedBytes);
         return payload;
       },
     },
@@ -137,12 +112,7 @@ export const analysisRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async 
         );
       }
       // S11: bound concurrent uploads before touching the body at all.
-      if (activeUploads >= deps.config.maxConcurrentUploads) {
-        throw new ProblemError(503, 'UPLOADS_BUSY', 'Too many concurrent uploads; retry shortly', {
-          headers: { 'retry-after': '1' },
-        });
-      }
-      activeUploads += 1;
+      slots.take();
       try {
         sendContinue(request, reply);
         let upload: UploadedReport;
@@ -173,7 +143,7 @@ export const analysisRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async 
         // S11 fix round 2: released only after the report row and job are persisted, so the
         // counter really bounds how many buffered compressed bodies exist at once — not just how
         // many are still being decompressed.
-        activeUploads -= 1;
+        slots.release();
       }
     },
   );

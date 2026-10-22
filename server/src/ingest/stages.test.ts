@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { licensePolicyStage } from '../licenses/stage';
 import { notificationStage } from '../notifications/stage';
+import { reviewSnapshotStage } from '../review/stage';
 import { rulesStage } from '../rules/stage';
+import { scmStage } from '../scm/stage';
 import { trackingStage } from '../tracking/stage';
 import { webhookStage } from '../webhooks/stage';
 import { DEFAULT_STAGES } from './stages';
@@ -19,5 +21,13 @@ describe('DEFAULT_STAGES', () => {
     expect(licensePolicyStage.name).toBe('license-policy');
     expect(DEFAULT_STAGES[at - 1]).toBe(rulesStage);
     expect(DEFAULT_STAGES[at + 1]).toBe(trackingStage);
+  });
+
+  it('links the review snapshot after the SCM stage and before the webhooks (6I-2)', () => {
+    const at = DEFAULT_STAGES.indexOf(reviewSnapshotStage);
+    expect(reviewSnapshotStage.name).toBe('review-snapshot');
+    expect(DEFAULT_STAGES[at - 1]).toBe(scmStage);
+    expect(DEFAULT_STAGES[at + 1]).toBe(webhookStage);
+    expect(DEFAULT_STAGES.filter((s) => s === reviewSnapshotStage)).toHaveLength(1);
   });
 });

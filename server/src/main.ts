@@ -36,6 +36,7 @@ import { notifyDeps } from './notifications/deps';
 import { bootEnterprise, type EnterpriseBoot } from './plugins/boot';
 import { ensurePluginSchedules, startPluginWorker } from './plugins/mount';
 import { startWorker } from './queue/worker';
+import { reviewSnapshotHandlers } from './review/jobs';
 import { scmHandlers } from './scm/decorate';
 import { createScmRuntime } from './scm/runtime';
 import { supportBundleCommand } from './support/command';
@@ -241,6 +242,9 @@ async function main(): Promise<void> {
       ...housekeepingHandlers({ db: database.db, logger }),
       // scm.md §7: re-evaluations share the analysis worker and its per-project key.
       ...gateHandlers({ db: database.db, logger, notify }),
+      // 6I-2: merge requests' review snapshots are unpacked here; the worker tries the queues in
+      // this order, so a waiting analysis is taken first.
+      ...reviewSnapshotHandlers({ db: database.db, logger, limits: config.reviewSnapshot }),
       // telemetry.md: only when enabled; the queue has no handler (and no job) otherwise.
       ...(config.telemetry.enabled
         ? telemetryHandlers({

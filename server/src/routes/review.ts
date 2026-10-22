@@ -1,14 +1,27 @@
-import { MAX_SNAPSHOT_FILE_BYTES, MAX_SNAPSHOT_FILES } from '@qualor/shared';
+import { Readable } from 'node:stream';
+import {
+  MAX_SNAPSHOT_FILE_BYTES,
+  MAX_SNAPSHOT_FILES,
+  REVIEW_SNAPSHOT_CONTENT_TYPE,
+} from '@qualor/shared';
 import { eq } from 'drizzle-orm';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import type { RouteDeps } from '../app';
 import { actorOf } from '../audit/recorder';
 import { accessOf, requireOrganizationAccess, requirePrincipal, requireUser } from '../auth/access';
-import { organizations } from '../db/schema';
+import { analyses, organizations } from '../db/schema';
 import { retentionSettings } from '../housekeeping/run';
-import { conflict, ProblemError, type FieldError } from '../http/problem';
+import { continueUnlessUpload, sendContinue } from '../http/expect-continue';
+import { closeAfterRefusal } from '../http/lingering-close';
+import { conflict, notFound, ProblemError, type FieldError } from '../http/problem';
 import { idParams } from '../http/schemas';
+import {
+  readGzipUpload,
+  UploadSlots,
+  type UploadedReport,
+  type UploadProblems,
+} from '../ingest/upload';
 import { lockLlmSettings } from '../llm/auto-fix-settings';
 import {
   organizationSettings,
@@ -35,6 +48,7 @@ import {
   withOrganizationReview,
   type ReviewSettings,
 } from '../review/settings';
+import { hasSnapshot, snapshotExists, storeSnapshotUpload } from '../review/snapshot-store';
 
 /**
  * The project DTO's `aiReview` (6I-2): whether AI review runs for the project, and whether its
@@ -118,6 +132,27 @@ const reviewContextSchema = z.object({
 
 const FOREIGN_PROJECT_TEXT = 'Not a project of this organisation';
 
+/**
+ * 413 SNAPSHOT_TOO_LARGE: over a limit of `config.reviewSnapshot` (the review context answers both).
+ */
+function snapshotTooLarge(which: 'compressed' | 'decompressed', limit: number): ProblemError {
+  return new ProblemError(413, 'SNAPSHOT_TOO_LARGE', 'The review snapshot is too large', {
+    detail: `The ${which} snapshot exceeds ${limit} bytes`,
+  });
+}
+
+/**
+ * The refusals of the snapshot upload while it is read: the report's checks with the snapshot's
+ * codes.
+ */
+const SNAPSHOT_UPLOAD_PROBLEMS: UploadProblems = {
+  tooLarge: snapshotTooLarge,
+  invalidGzip: (message) =>
+    new ProblemError(422, 'SNAPSHOT_INVALID', 'The review snapshot is not a valid gzip stream', {
+      errors: [{ path: 'body', message }],
+    }),
+};
+
 /** The answer for the organisation: `projectIds` are those of its projects that still exist. */
 function organizationReview(
   settings: StoredLlmSettings,
@@ -152,7 +187,17 @@ function organizationReview(
  * a snapshot. The provider and the organisation's enablement stay the instance admin's
  * (`/system/llm`, llm.md §3.1).
  */
-export const reviewRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (app, { deps }) => {
+export const reviewRoutes: FastifyPluginAsyncZod<{
+  deps: RouteDeps;
+  /** S11: the app's upload slots, shared with the report upload (routes/index.ts). */
+  uploadSlots?: UploadSlots;
+}> = async (app, { deps, uploadSlots }) => {
+  // The snapshot upload: the raw request stream goes to the handler, readGzipUpload bounds it.
+  app.addContentTypeParser(REVIEW_SNAPSHOT_CONTENT_TYPE, (_request, payload, done) => {
+    done(null, payload);
+  });
+  const slots = uploadSlots ?? new UploadSlots(deps.config.maxConcurrentUploads);
+
   app.get(
     '/organizations/:id/ai/review',
     {
@@ -357,6 +402,139 @@ export const reviewRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (a
           maxFiles: MAX_SNAPSHOT_FILES,
         },
       };
+    },
+  );
+
+  app.post(
+    '/analyses/:id/review-snapshot',
+    {
+      // `100 Continue` is written by the handler, only once every check below has passed.
+      config: {
+        deferContinue: true,
+        openapi: {
+          problems: [404, 409, 413, 415, 503],
+          problemDescriptions: {
+            404: "PROJECT_NOT_FOUND (the project does not exist, the token belongs to another project, or the caller cannot see it), or ANALYSIS_NOT_FOUND (the analysis is not one of the project's)",
+            409: 'AI_REVIEW_OFF (AI review does not run for the project; GET /projects/review-context says why), or SNAPSHOT_EXISTS (the analysis has a snapshot already)',
+            413: 'SNAPSHOT_TOO_LARGE: over maxCompressedBytes as sent or maxDecompressedBytes inflated (GET /projects/review-context answers both)',
+            415: 'UNSUPPORTED_MEDIA_TYPE, or UNSUPPORTED_ENCODING (Content-Encoding must be gzip)',
+            422: 'VALIDATION_FAILED, or SNAPSHOT_INVALID (the body is not gzip)',
+            503: 'UPLOADS_BUSY: every upload slot is taken (the report uploads share them); retry after Retry-After',
+          },
+          requestBody: {
+            required: true,
+            description:
+              "The merge request's repository snapshot as gzip'd JSON Lines: a header line, the instruction files, one line per change, file and omitted file, and an end line with the counts; at most maxCompressedBytes (default 50 MiB) as sent and maxDecompressedBytes (default 500 MiB) inflated.",
+            content: {
+              [REVIEW_SNAPSHOT_CONTENT_TYPE]: { schema: { type: 'string', format: 'binary' } },
+            },
+          },
+          headers: [
+            {
+              in: 'header',
+              name: 'Content-Encoding',
+              required: true,
+              schema: { type: 'string', enum: ['gzip'] },
+            },
+            {
+              in: 'header',
+              name: 'Expect',
+              required: false,
+              description:
+                'Send `100-continue` to have every check (auth, project, encoding, analysis, AI review, existing snapshot, declared length, upload slots) run before the body is sent.',
+              schema: { type: 'string', enum: ['100-continue'] },
+            },
+          ],
+        },
+      },
+      schema: {
+        tags: ['analyses'],
+        summary:
+          "Upload the repository snapshot of a merge request's analysis for AI review (gzip body, Content-Type application/vnd.qualor.review-snapshot+jsonl, Content-Encoding gzip), right after its report; refused while AI review is off for the project. A job unpacks it; it is never served back",
+        params: idParams,
+        querystring: z.strictObject({ projectKey: z.string().regex(PROJECT_KEY_PATTERN) }),
+        response: {
+          202: z.object({ snapshotId: z.uuid(), status: z.literal('uploaded') }),
+        },
+      },
+      // S11/S12/S15: every rejection closes the connection without losing the answer.
+      preParsing: async (request, reply, payload) => {
+        continueUnlessUpload(request, reply, REVIEW_SNAPSHOT_CONTENT_TYPE);
+        return payload;
+      },
+      onSend: async (request, reply, payload) => {
+        closeAfterRefusal(request, reply, deps.config.reviewSnapshot.maxCompressedBytes);
+        return payload;
+      },
+    },
+    async (request, reply) => {
+      const principal = requirePrincipal(request);
+      const project = await projectForUpload(accessOf(deps), principal, request.query.projectKey);
+      // RFC 9110 §8.4: header values for a token like this one are compared case-insensitively.
+      if (request.headers['content-encoding']?.toLowerCase() !== 'gzip') {
+        throw new ProblemError(
+          415,
+          'UNSUPPORTED_ENCODING',
+          'Review snapshots must be sent with Content-Encoding: gzip',
+        );
+      }
+      if (!(request.body instanceof Readable)) {
+        throw new ProblemError(
+          415,
+          'UNSUPPORTED_MEDIA_TYPE',
+          `Review snapshots must be sent as ${REVIEW_SNAPSHOT_CONTENT_TYPE}`,
+        );
+      }
+      const source = request.body;
+      // Review Focus 4: the snapshot is of an analysis of this project; it is stored with the
+      // analysis's project, never the request's.
+      const [analysis] = await deps.db
+        .select({ id: analyses.id, projectId: analyses.projectId })
+        .from(analyses)
+        .where(eq(analyses.id, request.params.id));
+      if (!analysis || analysis.projectId !== project.id) {
+        throw notFound('Analysis', 'ANALYSIS_NOT_FOUND');
+      }
+      const verdict = reviewActive(await readLlmSettings(deps.db), project);
+      if (!verdict.active) {
+        throw new ProblemError(409, 'AI_REVIEW_OFF', 'AI review is off for this project', {
+          detail: `AI review does not run for this project: ${verdict.reason}`,
+        });
+      }
+      // Asked before the body is read; two uploads racing meet at the insert (storeSnapshotUpload).
+      if (await hasSnapshot(deps.db, analysis.id)) throw snapshotExists();
+      const limits = deps.config.reviewSnapshot;
+      const declared = Number(request.headers['content-length']);
+      if (Number.isFinite(declared) && declared > limits.maxCompressedBytes) {
+        throw snapshotTooLarge('compressed', limits.maxCompressedBytes);
+      }
+      // S11: one bound with the report uploads, taken before the body is touched.
+      slots.take();
+      try {
+        sendContinue(request, reply);
+        let upload: UploadedReport;
+        try {
+          upload = await readGzipUpload(source, limits, SNAPSHOT_UPLOAD_PROBLEMS);
+        } catch (err) {
+          // A client hanging up mid-upload is routine: readGzipUpload made it a non-500 problem.
+          if (err instanceof ProblemError && err.code === 'CLIENT_ABORTED') {
+            request.log.debug({ err }, 'client aborted the review snapshot upload');
+          }
+          throw err;
+        }
+        // The uploader's project: the store checks it against the analysis row again, and keeps
+        // the row's.
+        const snapshotId = await storeSnapshotUpload(deps.db, {
+          analysisId: analysis.id,
+          projectId: project.id,
+          body: upload.body,
+          compressedBytes: upload.body.length,
+        });
+        return reply.code(202).send({ snapshotId, status: 'uploaded' as const });
+      } finally {
+        // Released once the snapshot and its job are stored, as for the report.
+        slots.release();
+      }
     },
   );
 };

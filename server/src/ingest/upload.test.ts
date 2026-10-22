@@ -3,7 +3,8 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createGunzip, createGzip, gzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
-import { readGzipUpload } from './upload';
+import { ProblemError } from '../http/problem';
+import { readGzipUpload, type UploadProblems } from './upload';
 
 const MiB = 1024 * 1024;
 const DEFAULT_LIMITS = { maxCompressedBytes: 50 * MiB, maxDecompressedBytes: 500 * MiB };
@@ -100,6 +101,28 @@ describe('readGzipUpload (report-format.md §2)', () => {
         status: 422,
         code: 'REPORT_INVALID',
       });
+    }
+  });
+
+  it('answers with the problems of the upload it reads, when the route names its own (6I-2)', async () => {
+    const problems: UploadProblems = {
+      tooLarge: (which, limit) => new ProblemError(413, 'SNAPSHOT_TOO_LARGE', `${which} ${limit}`),
+      invalidGzip: (message) => new ProblemError(422, 'SNAPSHOT_INVALID', message),
+    };
+    const limits = { maxCompressedBytes: 1_000, maxDecompressedBytes: 2_000 };
+    const cases: [Buffer, object][] = [
+      [randomBytes(2_000), { status: 413, code: 'SNAPSHOT_TOO_LARGE', message: 'compressed 1000' }],
+      [gzipSync(Buffer.alloc(4_000)), { status: 413, message: 'decompressed 2000' }],
+      [
+        Buffer.from('not gzip'),
+        { status: 422, code: 'SNAPSHOT_INVALID', message: 'Not valid gzip data' },
+      ],
+      [Buffer.alloc(0), { status: 422, message: 'Empty body' }],
+    ];
+    for (const [body, problem] of cases) {
+      await expect(readGzipUpload(Readable.from([body]), limits, problems)).rejects.toMatchObject(
+        problem,
+      );
     }
   });
 

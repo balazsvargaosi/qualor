@@ -15,7 +15,44 @@ function invalidGzip(message: string): ProblemError {
   });
 }
 
-function isZlibError(err: unknown): boolean {
+/**
+ * How an upload is refused: too large (as sent, or inflated) and not gzip. The report's by default;
+ * an upload of another kind (6I-2: the review snapshot) names its own codes.
+ */
+export interface UploadProblems {
+  tooLarge(which: 'compressed' | 'decompressed', limit: number): ProblemError;
+  invalidGzip(message: string): ProblemError;
+}
+
+export const REPORT_UPLOAD_PROBLEMS: UploadProblems = { tooLarge: reportTooLarge, invalidGzip };
+
+/**
+ * S11: the uploads that hold a buffered compressed body at once, from just before it is read to
+ * just after its rows and job are stored; at most QUALOR_MAX_CONCURRENT_UPLOADS. One per app,
+ * shared by every upload route (the report, and 6I-2's review snapshot): the variable bounds all.
+ */
+export class UploadSlots {
+  private taken = 0;
+
+  constructor(private readonly max: number) {}
+
+  /** Takes a slot, or refuses with 503 UPLOADS_BUSY when none is free; {@link release} frees it. */
+  take(): void {
+    if (this.taken >= this.max) {
+      throw new ProblemError(503, 'UPLOADS_BUSY', 'Too many concurrent uploads; retry shortly', {
+        headers: { 'retry-after': '1' },
+      });
+    }
+    this.taken += 1;
+  }
+
+  release(): void {
+    this.taken -= 1;
+  }
+}
+
+/** A zlib stream's error: the input is not (whole) gzip data. */
+export function isZlibError(err: unknown): boolean {
   const code =
     typeof err === 'object' && err !== null ? (err as { code?: unknown }).code : undefined;
   return typeof code === 'string' && code.startsWith('Z_');
@@ -51,7 +88,7 @@ export interface UploadedReport {
  * Reads a gzip request body and enforces both limits while streaming. Compressed bytes are kept
  * (at most maxCompressedBytes) for storage; inflated bytes are only counted and dropped, so a gzip
  * bomb costs at most the limit plus one chunk before it is rejected, and an oversized body stops
- * being read as soon as it crosses the limit.
+ * being read as soon as it crosses the limit. The refusals are those of `problems`.
  *
  * `source` (the incoming HTTP request stream in production) is deliberately never destroyed here:
  * doing so tears down the response too, in real HTTP/1.1 pipelining and — critically — under the
@@ -64,6 +101,7 @@ export interface UploadedReport {
 export async function readGzipUpload(
   source: Readable,
   limits: UploadLimits,
+  problems: UploadProblems = REPORT_UPLOAD_PROBLEMS,
 ): Promise<UploadedReport> {
   const gunzip = createGunzip();
   const chunks: Buffer[] = [];
@@ -100,7 +138,7 @@ export async function readGzipUpload(
     function onSourceData(chunk: Buffer): void {
       compressed += chunk.length;
       if (compressed > limits.maxCompressedBytes) {
-        fail(reportTooLarge('compressed', limits.maxCompressedBytes));
+        fail(problems.tooLarge('compressed', limits.maxCompressedBytes));
         return;
       }
       chunks.push(chunk);
@@ -118,13 +156,13 @@ export async function readGzipUpload(
     function onGunzipData(chunk: Buffer): void {
       decompressed += chunk.length;
       if (decompressed > limits.maxDecompressedBytes) {
-        fail(reportTooLarge('decompressed', limits.maxDecompressedBytes));
+        fail(problems.tooLarge('decompressed', limits.maxDecompressedBytes));
       }
     }
     function onGunzipError(err: unknown): void {
       fail(
         isZlibError(err)
-          ? invalidGzip(compressed === 0 ? 'Empty body' : 'Not valid gzip data')
+          ? problems.invalidGzip(compressed === 0 ? 'Empty body' : 'Not valid gzip data')
           : err,
       );
     }
@@ -141,6 +179,6 @@ export async function readGzipUpload(
     gunzip.on('end', onGunzipEnd);
   });
 
-  if (compressed === 0) throw invalidGzip('Empty body');
+  if (compressed === 0) throw problems.invalidGzip('Empty body');
   return { body: Buffer.concat(chunks, compressed), decompressedBytes: decompressed };
 }

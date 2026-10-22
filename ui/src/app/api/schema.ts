@@ -12771,6 +12771,132 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v0/analyses/{id}/review-snapshot": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Upload the repository snapshot of a merge request's analysis for AI review (gzip body, Content-Type application/vnd.qualor.review-snapshot+jsonl, Content-Encoding gzip), right after its report; refused while AI review is off for the project. A job unpacks it; it is never served back */
+        post: {
+            parameters: {
+                query: {
+                    projectKey: string;
+                };
+                header: {
+                    "Content-Encoding": "gzip";
+                    /** @description Send `100-continue` to have every check (auth, project, encoding, analysis, AI review, existing snapshot, declared length, upload slots) run before the body is sent. */
+                    Expect?: "100-continue";
+                };
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            /** @description The merge request's repository snapshot as gzip'd JSON Lines: a header line, the instruction files, one line per change, file and omitted file, and an end line with the counts; at most maxCompressedBytes (default 50 MiB) as sent and maxDecompressedBytes (default 500 MiB) inflated. */
+            requestBody: {
+                content: {
+                    "application/vnd.qualor.review-snapshot+jsonl": string;
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** Format: uuid */
+                            snapshotId: string;
+                            /** @enum {string} */
+                            status: "uploaded";
+                        };
+                    };
+                };
+                /** @description Not authenticated (UNAUTHENTICATED, INVALID_CREDENTIALS) */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Authenticated but not allowed (FORBIDDEN, INSUFFICIENT_SCOPE, TOKEN_NOT_ALLOWED, SESSION_REQUIRED, CSRF_FAILED, PASSWORD_CHANGE_REQUIRED) */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description PROJECT_NOT_FOUND (the project does not exist, the token belongs to another project, or the caller cannot see it), or ANALYSIS_NOT_FOUND (the analysis is not one of the project's) */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description AI_REVIEW_OFF (AI review does not run for the project; GET /projects/review-context says why), or SNAPSHOT_EXISTS (the analysis has a snapshot already) */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description SNAPSHOT_TOO_LARGE: over maxCompressedBytes as sent or maxDecompressedBytes inflated (GET /projects/review-context answers both) */
+                413: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description UNSUPPORTED_MEDIA_TYPE, or UNSUPPORTED_ENCODING (Content-Encoding must be gzip) */
+                415: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description VALIDATION_FAILED, or SNAPSHOT_INVALID (the body is not gzip) */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description UPLOADS_BUSY: every upload slot is taken (the report uploads share them); retry after Retry-After */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v0/organizations/{id}/license-policy": {
         parameters: {
             query?: never;

@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { RouteDeps } from '../app';
+import { UploadSlots } from '../ingest/upload';
 import { issueChangeCharge } from '../issues/rate-limit';
 import { aiRoutes } from './ai';
 import { analysisRoutes } from './analyses';
@@ -37,6 +38,9 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   // Ruling G7: one bound per app on the issue changes of a user, shared by the routes that
   // change issues or act on them (llm.md §8.2).
   const chargeIssueChanges = issueChangeCharge();
+  // S11, 6I-2: one bound per app on the uploads read at once, the reports and the review
+  // snapshots together (QUALOR_MAX_CONCURRENT_UPLOADS).
+  const uploadSlots = new UploadSlots(deps.config.maxConcurrentUploads);
   await app.register(systemRoutes, { deps });
   await app.register(authRoutes, { prefix: '/api/v0', deps });
   await app.register(accountRoutes, { prefix: '/api/v0', deps });
@@ -49,7 +53,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   await app.register(projectRoutes, { prefix: '/api/v0', deps });
   await app.register(projectMemberRoutes, { prefix: '/api/v0', deps });
   await app.register(branchRoutes, { prefix: '/api/v0', deps });
-  await app.register(analysisRoutes, { prefix: '/api/v0', deps });
+  await app.register(analysisRoutes, { prefix: '/api/v0', deps, uploadSlots });
   await app.register(newCodeRoutes, { prefix: '/api/v0', deps });
   await app.register(measureRoutes, { prefix: '/api/v0', deps });
   await app.register(dependencyRoutes, { prefix: '/api/v0', deps });
@@ -67,7 +71,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   await app.register(licenseRoutes, { prefix: '/api/v0', deps });
   await app.register(aiRoutes, { prefix: '/api/v0', deps, chargeIssueChanges });
   await app.register(autoFixRoutes, { prefix: '/api/v0', deps });
-  await app.register(reviewRoutes, { prefix: '/api/v0', deps });
+  await app.register(reviewRoutes, { prefix: '/api/v0', deps, uploadSlots });
   await app.register(licensePolicyRoutes, { prefix: '/api/v0', deps });
   // Its own plugin: its raw-body JSON parser stays in its encapsulation context (github.md §9).
   await app.register(githubWebhookRoutes, { deps });

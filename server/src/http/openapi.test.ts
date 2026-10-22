@@ -104,6 +104,7 @@ describe('OpenAPI document (api.md §6.1)', () => {
       ).toBeUndefined();
       for (const [path, method] of [
         ['/api/v0/analyses', 'post'],
+        ['/api/v0/analyses/{id}/review-snapshot', 'post'],
         ['/api/v0/scm-connections/{id}/test', 'post'],
         ['/api/v0/system/llm/test', 'post'],
         ['/api/v0/projects/{id}', 'get'],
@@ -144,6 +145,31 @@ describe('OpenAPI document (api.md §6.1)', () => {
       expect(upload.parameters).toContainEqual(
         expect.objectContaining({ in: 'header', name: 'Content-Encoding', required: true }),
       );
+    });
+
+    it('describes the review snapshot upload: gzip body, its content type, and every rejection (6I-2)', () => {
+      const upload = op('/api/v0/analyses/{id}/review-snapshot', 'post');
+      expect(statuses(upload)).toEqual([
+        '202',
+        '401',
+        '403',
+        '404',
+        '409',
+        '413',
+        '415',
+        '422',
+        '503',
+      ]);
+      expect(Object.keys(upload.requestBody!.content)).toEqual([
+        'application/vnd.qualor.review-snapshot+jsonl',
+      ]);
+      expect(upload.parameters).toContainEqual(
+        expect.objectContaining({ in: 'header', name: 'Content-Encoding', required: true }),
+      );
+      for (const code of ['AI_REVIEW_OFF', 'SNAPSHOT_EXISTS']) {
+        expect(upload.responses['409']?.description).toContain(code);
+      }
+      expect(upload.responses['413']?.description).toContain('SNAPSHOT_TOO_LARGE');
     });
   });
 
