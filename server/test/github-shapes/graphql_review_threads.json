@@ -1,0 +1,28 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "reviewThreads": {
+          "pageInfo": {
+            "hasNextPage": true,
+            "endCursor": "Y3Vyc29yOnYyOpK5MjAyNi0wOS0yNlQxMDowMDowMCswMDowMM4AAAAC"
+          },
+          "nodes": [
+            {
+              "id": "PRRT_kwDOAAABc85AAAAA",
+              "isResolved": false,
+              "resolvedBy": null,
+              "comments": { "nodes": [{ "databaseId": 10 }] }
+            },
+            {
+              "id": "PRRT_kwDOAAABc85AAAAB",
+              "isResolved": true,
+              "resolvedBy": { "login": "octocat" },
+              "comments": { "nodes": [{ "databaseId": 11 }] }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
