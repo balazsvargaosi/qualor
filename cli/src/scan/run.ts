@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { engineMapping, type Language, type QualorConfig, type Report } from '@qualor/shared';
+import { engineMapping, type QualorConfig, type Report } from '@qualor/shared';
 import { loadExternalSarif } from '../analyzers/external';
 import { fileLines, normalizeCaptures } from '../analyzers/normalize';
 import { builtinAnalyzers } from '../analyzers/registry';
@@ -370,6 +370,8 @@ interface ReviewSnapshotOptions {
   redaction: GitLabRedaction;
   /** The scan's analyzers: its secret engine scans the merge base's files too (ruling R13). */
   analyzers: readonly Analyzer[];
+  /** The engines that did not complete, ruling G6's list (`BuiltReport.gitlab.incomplete`). */
+  incomplete: readonly string[];
   /** The CLI's environment, as the scan's analyzers had it (`GITLEAKS_CONFIG`). */
   env: CliIO['env'];
   log: Logger;
@@ -384,26 +386,34 @@ function redactsSecrets(engineId: string): boolean {
 
 /**
  * Review Focus 2: the scan's secret scans that did not complete, read from the report's engine
- * records and the analyzers the scan ran. Every one whose findings are secrets the report masks
- * (Gitleaks, and the secret rules of Semgrep and of Qualor's rules) that qualor.yml does not
- * switch off must be `ok`: one that failed, timed out, could not run here or whose output could not
- * be read left its secrets unknown. One with languages, none of which the scan has, had nothing
- * to scan.
+ * records (`engines`), the analyzers the scan ran and `incomplete`, ruling G6's list (`buildReport`: failed,
+ * timed out, or unavailable, the tool could not run here). Every engine whose findings are secrets
+ * the report masks (Gitleaks, and the secret rules of Semgrep and of Qualor's rules) that
+ * qualor.yml does not switch off must have looked at the files: one that failed, timed out, could
+ * not run here, or whose output could not be read left its secrets unknown.
+ *
+ * Two kinds of "skipped" are not that. An engine that had nothing to run (Semgrep without rule
+ * files, which is how the scanner image ships it; Qualor's rules without their pack, or without a
+ * file of their languages) masks nothing it could have found, and G6 counts it complete. Gitleaks
+ * is the exception: it has something to scan in every repository, so a Gitleaks that was skipped
+ * (its `configFile` does not exist) scanned nothing, and holds the snapshot up like a failure.
+ * An engine with no record at all is unknown, so not complete.
  */
-function incompleteSecretScans(
-  analyzers: readonly Analyzer[],
-  report: Report,
+export function incompleteSecretScans(
+  analyzers: readonly Pick<Analyzer, 'id'>[],
+  engines: readonly Pick<Report['engines'][number], 'id' | 'status'>[],
   config: QualorConfig,
+  incomplete: readonly string[],
 ): string[] {
-  // The languages the analyzers' runner saw: those of the report's files.
-  const languages = new Set<Language>(
-    report.files.map((f) => f.language).filter((l) => l !== 'other'),
-  );
-  const status = new Map(report.engines.map((e) => [e.id, e.status]));
+  const status = new Map(engines.map((e) => [e.id, e.status]));
+  const notComplete = new Set(incomplete);
   return analyzers
     .filter((a) => redactsSecrets(a.id) && config.analyzers[a.id].enabled !== false)
-    .filter((a) => a.languages.length === 0 || a.languages.some((l) => languages.has(l)))
-    .filter((a) => status.get(a.id) !== 'ok')
+    .filter((a) => {
+      const recorded = status.get(a.id);
+      if (recorded === undefined) return true;
+      return a.id === SECRET_ENGINE ? recorded !== 'ok' : notComplete.has(a.id);
+    })
     .map((a) => a.id);
 }
 
@@ -549,7 +559,12 @@ async function sendReviewSnapshot(o: ReviewSnapshotOptions): Promise<void> {
       log.warn("AI review: no snapshot sent, the secret scan's output could not be read");
       return;
     }
-    const incomplete = incompleteSecretScans(o.analyzers, o.report, settings.config);
+    const incomplete = incompleteSecretScans(
+      o.analyzers,
+      o.report.engines,
+      settings.config,
+      o.incomplete,
+    );
     if (incomplete.length > 0) {
       log.warn(
         `AI review: no snapshot sent, the secret scan (${incomplete.join(', ')}) did not complete`,
@@ -686,6 +701,7 @@ export async function runScan(
       report,
       redaction: gitlab.redaction,
       analyzers,
+      incomplete: gitlab.incomplete,
       env: io.env,
       log,
       deps,
