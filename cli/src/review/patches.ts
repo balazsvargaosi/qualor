@@ -81,13 +81,25 @@ export async function readRawPatches(
 }
 
 /**
- * A hunk header's ranges, from the start of the line: what follows is kept as it is, since git
- * copies up to 80 bytes of the line above the hunk there, a CR or a line separator included.
+ * A hunk header's ranges, from the start of the line. After them git writes the hunk's function
+ * context: the nearest line above the hunk in the OLD file that looks like a function's start (by
+ * default any line beginning with a letter, `_` or `$`), cut at 80 bytes. That is text of the
+ * merge base, which can be a line the merge request removed in an earlier hunk, and a secret on it
+ * no longer matches the masking once cut (nor one of the head's, on a line it kept). So no header
+ * is sent with it: each is rebuilt from its ranges alone (`rangesOnly`).
  */
-const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? (\+\d+(?:,(\d+))?) @@/;
+const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 const MARKER = /^-\[\d+ removed lines? not sent\]$/;
 
 const marker = (n: number): string => `-[${n} removed ${n === 1 ? 'line' : 'lines'} not sent]`;
+
+/** A side's range as git writes it: a count of 1 is left out (`-20`, `-20,2`, `-0,0`). */
+const sideRange = (start: string, count: number): string =>
+  count === 1 ? start : `${start},${count}`;
+
+/** The header of the hunk `m` reads, from its ranges alone: its old side counting `oldCount`. */
+const rangesOnly = (m: RegExpExecArray, oldCount = Number(m[2] ?? '1')): string =>
+  `@@ -${sideRange(m[1] ?? '', oldCount)} +${sideRange(m[3] ?? '', Number(m[4] ?? '1'))} @@`;
 
 /** One line of a hunk's body counted off its sides: `-` the old, `+` the new, `\` neither. */
 function countOff(line: string, left: { old: number; new: number }): void {
@@ -140,9 +152,9 @@ function hunkBody(
 
 /**
  * `patch` with every run of removed lines replaced by one line, `-[N removed lines not sent]`. A
- * hunk's header counts its old side again (one line per marker); its new side, which the review
- * anchors to, stays as it was. The file headers (`--- a/…`), the added lines and the context
- * lines stay.
+ * hunk's header is rebuilt from its ranges, its old side counted again (one line per marker); its
+ * new side, which the review anchors to, stays as it was. The file headers (`--- a/…`), the added
+ * lines and the context lines stay.
  */
 export function withoutRemovedLines(patch: string): string {
   const lines = patch.split('\n');
@@ -158,12 +170,26 @@ export function withoutRemovedLines(patch: string): string {
     }
     const oldCount = Number(m[2] ?? '1');
     const hunk = hunkBody(lines, i + 1, { old: oldCount, new: Number(m[4] ?? '1') });
-    const counted = oldCount - hunk.removed + hunk.markers;
-    const header = `@@ -${m[1] ?? ''},${counted} ${m[3] ?? ''} @@${line.slice(m[0].length)}`;
-    out.push(counted === oldCount ? line : header, ...hunk.body);
+    out.push(rangesOnly(m, oldCount - hunk.removed + hunk.markers), ...hunk.body);
     i = hunk.next;
   }
   return out.join('\n');
+}
+
+/**
+ * `patch` with every hunk header rebuilt from its ranges alone, without the function context git
+ * writes after them (`HUNK_HEADER`); null when a line that starts with `@@` is no header it reads.
+ * A hunk's body never starts a line with `@`.
+ */
+export function withoutFunctionContext(patch: string): string | null {
+  const lines = patch.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (!(lines[i] ?? '').startsWith('@@')) continue;
+    const m = HUNK_HEADER.exec(lines[i] ?? '');
+    if (m === null) return null;
+    lines[i] = rangesOnly(m);
+  }
+  return lines.join('\n');
 }
 
 /**
@@ -204,8 +230,9 @@ export interface Patch {
  * A patch as sent, or null: over the bound, with a NUL, or not UTF-8. Its removed lines go only
  * when the scan of the merge base held its old side (`removedLinesScanned`); else each run of them
  * is a marker line, and a patch where one could still be left (a hunk it cannot read) is not sent.
- * Then the secrets are masked (`secrets` with the lines of the multi-line ones, which a patch shows
- * apart) and the shared redaction runs.
+ * Every hunk header goes as its ranges alone, scanned or not; a patch with one it cannot rebuild
+ * is not sent either. Then the secrets are masked (`secrets` with the lines of the multi-line
+ * ones, which a patch shows apart) and the shared redaction runs.
  */
 export function finishPatch(
   bytes: Buffer,
@@ -218,7 +245,8 @@ export function finishPatch(
   } catch {
     return null;
   }
-  const shown = o.removedLinesScanned ? text : withoutRemovedLines(text);
+  const shown = withoutFunctionContext(o.removedLinesScanned ? text : withoutRemovedLines(text));
+  if (shown === null) return null;
   if (!o.removedLinesScanned && !onlyMarkersRemoved(shown)) return null;
   const masked = maskSecrets(shown, o.secrets);
   const redacted = redactLongText(masked.text);
@@ -229,15 +257,15 @@ export function finishPatch(
 
 /**
  * The lines the redaction masked whole (a key block, a secret split over lines) with the diff
- * prefix they had (`+`, `-` or a space), or a hunk header's range, so the patch is still one.
- * `before` and `after` are line for line: the redaction keeps the lines as many as they were.
+ * prefix they had (`+`, `-` or a space), so the patch is still one; a hunk header, which holds
+ * its ranges alone by then (`withoutFunctionContext`), is given back as it was. `before` and
+ * `after` are line for line: the redaction keeps the lines as many as they were.
  */
 function keepPrefixes(before: readonly string[], after: readonly string[]): string[] {
   return after.map((line, i) => {
     const was = before[i] ?? '';
     if (line !== REDACTED || was === REDACTED) return line;
-    const range = HUNK_HEADER.exec(was)?.[0];
-    if (range !== undefined) return `${range} ${REDACTED}`;
+    if (HUNK_HEADER.test(was)) return was;
     const prefix = was.charAt(0);
     return prefix === '+' || prefix === '-' || prefix === ' ' ? `${prefix}${REDACTED}` : line;
   });

@@ -697,7 +697,8 @@ describe("buildReviewSnapshot: the merge base's secrets (R13)", () => {
   });
 
   it('sends no removed line of a hunk whose header holds a CR or a line separator', async () => {
-    // git copies the hunk's function context (the line above it) into its header, whole.
+    // git writes the hunk's function context (the nearest line above it that starts with a
+    // letter) into its header, a CR or a line separator included.
     const around = (n: number, tag: string) =>
       Array.from({ length: n }, (_, i) => `- ${tag} ${i}`).join('\n');
     const notes = (secret: string) =>
@@ -716,11 +717,60 @@ describe("buildReviewSnapshot: the merge base's secrets (R13)", () => {
       // The header parses (a marker), or the patch is not sent: never the removed line.
       expect(patch === null || patch?.includes('\n-[1 removed line not sent]\n'), p).toBe(true);
     }
-    // Both headers hold their function context whole, and both parse.
-    expect(changes.get('docs/notes.md')?.patch).toContain('\n@@ -4,7 +4,6 @@ Para one\u2028two.\n');
-    expect(changes.get('src/f.ts')?.patch).toContain(
-      '\n@@ -4,7 +4,6 @@ function f() {\rconst hidden = 1;\n',
+    // Both headers parse, and go as their ranges alone.
+    for (const p of ['docs/notes.md', 'src/f.ts']) {
+      expect(changes.get(p)?.patch, p).toContain('\n@@ -4,7 +4,6 @@\n');
+    }
+  });
+
+  /** A top-level line, then 15 indented ones; the head edits the 11th of those. */
+  const settings = (top: string | null, edited: string) =>
+    `${top === null ? '' : `${top}\n`}${Array.from({ length: 15 }, (_, i) =>
+      i === 10 ? `  k${i}: ${edited}` : `  k${i}: ${i}`,
+    ).join('\n')}\n`;
+  const headersOf = (patch: string | null | undefined) =>
+    (patch ?? '').split('\n').filter((l) => l.startsWith('@@'));
+
+  it('sends no trace of a removed line that is a later hunk\u2019s function context', async () => {
+    // git takes a hunk's function context from the old file: here the line the first hunk removes.
+    const removed = fakeSecret('removed-SECRET-0001xyz');
+    const mr = mergeRequest(
+      { 'settings.yml': settings(`note ${removed}`, 'old') },
+      { 'settings.yml': settings(null, 'new') },
     );
+    const built = await build(mr, { engine: 'none' });
+    expect(textOf(built)).not.toContain(removed);
+    expect(textOf(built)).not.toContain('note qk7');
+    const patch = changesOf(linesOf(built)).get('settings.yml')?.patch;
+    expect(headersOf(patch)).toEqual(['@@ -1,4 +1,3 @@', '@@ -9,7 +8,7 @@']);
+  });
+
+  it('sends no part of a long secret of the merge base that a hunk header would cut', async () => {
+    // Over 80 bytes: git cuts the function context there, and the exact secret no longer matches.
+    const removed = fakeSecret(`removed-SECRET-${'Ab3'.repeat(30)}`);
+    const mr = mergeRequest(
+      { 'settings.yml': settings(`note ${removed}`, 'old') },
+      { 'settings.yml': settings(null, 'new') },
+    );
+    const built = await build(mr);
+    const patch = changesOf(linesOf(built)).get('settings.yml')?.patch;
+    // The engine found it: the removed line goes, masked.
+    expect(patch).toContain(`\n-note ${REDACTED}\n`);
+    expect(textOf(built)).not.toContain(removed.slice(0, 16));
+    expect(headersOf(patch)).toEqual(['@@ -1,4 +1,3 @@', '@@ -9,7 +8,7 @@']);
+  });
+
+  it('sends no part of a long secret of the head on a line that is a hunk\u2019s function context', async () => {
+    const secret = fakeSecret(`head-SECRET-${'Cd4'.repeat(30)}`);
+    const mr = mergeRequest(
+      { 'settings.yml': settings(`note ${secret}`, 'old') },
+      { 'settings.yml': settings(`note ${secret}`, 'new') },
+    );
+    const built = await build(mr, { engine: 'none', secrets: [secret] });
+    expect(textOf(built)).not.toContain(secret.slice(0, 16));
+    expect(filesOf(linesOf(built))['settings.yml']).toContain(`note ${REDACTED}\n`);
+    const patch = changesOf(linesOf(built)).get('settings.yml')?.patch;
+    expect(headersOf(patch)).toEqual(['@@ -9,7 +9,7 @@']);
   });
 
   it('never places a .gitleaks file of the merge base, whatever its case', async () => {

@@ -32,7 +32,8 @@ describe('withoutRemovedLines', () => {
     expect(withoutRemovedLines(patch).split('\n')).toEqual([
       ...HEAD,
       // 3 context lines and 2 markers: the new side, which the review anchors to, is unchanged.
-      '@@ -1,5 +1,4 @@ function f() {',
+      // The function context git wrote after the ranges is gone.
+      '@@ -1,5 +1,4 @@',
       ' keep 1',
       '-[2 removed lines not sent]',
       '+new 1',
@@ -63,27 +64,29 @@ describe('withoutRemovedLines', () => {
     expect(withoutRemovedLines(deleted).split('\n').slice(3)).toEqual([
       '--- a/gone.ts',
       '+++ /dev/null',
-      '@@ -1,1 +0,0 @@',
+      // A count of 1 is left out, as git writes it.
+      '@@ -1 +0,0 @@',
       '-[3 removed lines not sent]',
       '',
     ]);
   });
 
-  it('reads a hunk header whatever its function context holds: a CR, a line or paragraph separator', () => {
-    for (const tail of [' f() {\rmore', ' para\u2028graph', ' para\u2029graph']) {
+  it('rebuilds each hunk header from its ranges alone, whatever its function context holds', () => {
+    // git writes the old file's nearest line above the hunk that looks like a function's start:
+    // a CR, a line or paragraph separator, or a line the merge request removed.
+    const tails = [' f() {\rmore', ' para\u2028graph', ' para\u2029graph', ' note removed-line'];
+    for (const tail of tails) {
       const patch = [...HEAD, `@@ -1,3 +1,2 @@${tail}`, ' a', '-gone', ' b', ''].join('\n');
       expect(withoutRemovedLines(patch).split('\n').slice(4), JSON.stringify(tail)).toEqual([
-        `@@ -1,3 +1,2 @@${tail}`,
+        '@@ -1,3 +1,2 @@',
         ' a',
         '-[1 removed line not sent]',
         ' b',
         '',
       ]);
     }
-    const counted = [...HEAD, '@@ -1,3 +1,1 @@ f() {\rx', ' a', '-gone', '-gone too', ''].join(
-      '\n',
-    );
-    expect(withoutRemovedLines(counted).split('\n')[4]).toBe('@@ -1,2 +1,1 @@ f() {\rx');
+    const counted = [...HEAD, '@@ -1,3 +1 @@ f() {\rx', ' a', '-gone', '-gone too', ''].join('\n');
+    expect(withoutRemovedLines(counted).split('\n')[4]).toBe('@@ -1,2 +1 @@');
   });
 
   it('keeps a patch without removed lines as it is', () => {
@@ -95,7 +98,7 @@ describe('withoutRemovedLines', () => {
 describe('finishPatch', () => {
   const key = [
     ...HEAD,
-    '@@ -1,4 +1,1 @@',
+    '@@ -1,4 +1 @@',
     ' const k =',
     `-  "${FAKE_KEY.rsaBegin}\\n" +`,
     `-  "${FAKE_KEY.line(1)}\\n" +`,
@@ -106,7 +109,7 @@ describe('finishPatch', () => {
   it('keeps the diff prefix of each line the redaction masks whole', () => {
     const out = finishPatch(Buffer.from(key), { secrets: [], removedLinesScanned: true });
     expect(out?.text.split('\n').slice(4)).toEqual([
-      '@@ -1,4 +1,1 @@',
+      '@@ -1,4 +1 @@',
       ' const k =',
       `-${REDACTED}`,
       `-${REDACTED}`,
@@ -119,35 +122,92 @@ describe('finishPatch', () => {
   it('sends no removed line unless the scan of the merge base held them', () => {
     const out = finishPatch(Buffer.from(key), { secrets: [], removedLinesScanned: false });
     expect(out?.text.split('\n').slice(4)).toEqual([
-      '@@ -1,2 +1,1 @@',
+      '@@ -1,2 +1 @@',
       ' const k =',
       '-[3 removed lines not sent]',
       '',
     ]);
   });
 
+  it('rebuilds every hunk header from its ranges alone, whether the removed lines go or not', () => {
+    const tailed = [
+      ...HEAD,
+      '@@ -1,3 +1,3 @@ note qk7-removed-line-0001',
+      ' a',
+      '-b',
+      '+B',
+      ' c',
+      '@@ -10 +10 @@ settings:',
+      '-x',
+      '+y',
+      '',
+    ].join('\n');
+    for (const removedLinesScanned of [true, false]) {
+      const out = finishPatch(Buffer.from(tailed), { secrets: [], removedLinesScanned });
+      const headers = out?.text.split('\n').filter((l) => l.startsWith('@@'));
+      expect(headers, String(removedLinesScanned)).toEqual(['@@ -1,3 +1,3 @@', '@@ -10 +10 @@']);
+      expect(out?.text).not.toContain('qk7');
+    }
+  });
+
+  it('gives a hunk header the redaction masks whole its ranges back, and nothing more', () => {
+    // A key block over two hunks: the redaction masks every line from its BEGIN to its END.
+    const spanning = [
+      ...HEAD,
+      '@@ -1,2 +1 @@',
+      ' k',
+      `-${FAKE_KEY.rsaBegin}`,
+      '@@ -9,2 +8 @@',
+      `-${FAKE_KEY.rsaEnd}`,
+      ' z',
+      '',
+    ].join('\n');
+    const out = finishPatch(Buffer.from(spanning), { secrets: [], removedLinesScanned: true });
+    expect(out?.text.split('\n').slice(4)).toEqual([
+      '@@ -1,2 +1 @@',
+      ' k',
+      `-${REDACTED}`,
+      '@@ -9,2 +8 @@',
+      `-${REDACTED}`,
+      ' z',
+      '',
+    ]);
+  });
+
   it('sends no patch with a hunk it cannot read, or a removed line left out of every hunk', () => {
     const unsent = { secrets: [], removedLinesScanned: false };
-    const patches = [
+    // A header it cannot rebuild, whether the removed lines go or not: a combined diff's header
+    // is enough, with no removed line after it.
+    const unreadable = [
       [...HEAD, '@@ -x +y @@', '-gone', ''],
-      // A header it cannot read (a combined diff's) is enough, with no removed line after it.
       [...HEAD, '@@@ -1,2 -1,2 +1,3 @@@', '  kept', '++added', ''],
-      // A hunk that ends before a removed line: the line is in no hunk.
-      [...HEAD, '@@ -1,1 +1,1 @@', '-gone', '+new', '-also gone', ''],
-      // A run of removed lines longer than the hunk's old side: the rest is in no hunk either.
-      [...HEAD, '@@ -1,1 +1,2 @@', '-gone', '-gone too', '+a', '+b', ''],
-      // A removed `-- comment` reads `--- comment`: a file header only before a `+++ ` line.
-      [...HEAD, '@@ -1,1 +1,1 @@', '-a', '+b', '--- comment', ''],
     ];
-    for (const lines of patches) {
+    for (const lines of unreadable) {
+      for (const removedLinesScanned of [false, true]) {
+        const out = finishPatch(Buffer.from(lines.join('\n')), {
+          secrets: [],
+          removedLinesScanned,
+        });
+        expect(out, `${lines[4] ?? ''} ${String(removedLinesScanned)}`).toBeNull();
+      }
+    }
+    const outside = [
+      // A hunk that ends before a removed line: the line is in no hunk.
+      [...HEAD, '@@ -1 +1 @@', '-gone', '+new', '-also gone', ''],
+      // A run of removed lines longer than the hunk's old side: the rest is in no hunk either.
+      [...HEAD, '@@ -1 +1,2 @@', '-gone', '-gone too', '+a', '+b', ''],
+      // A removed `-- comment` reads `--- comment`: a file header only before a `+++ ` line.
+      [...HEAD, '@@ -1 +1 @@', '-a', '+b', '--- comment', ''],
+    ];
+    for (const lines of outside) {
       expect(finishPatch(Buffer.from(lines.join('\n')), unsent), lines.at(-2)).toBeNull();
     }
-    // The scan held the old side: its removed lines go, so there is nothing to check.
-    const sent = finishPatch(Buffer.from(patches[0]?.join('\n') ?? ''), {
+    // The scan held the old side: its removed lines go wherever they are.
+    const sent = finishPatch(Buffer.from(outside[0]?.join('\n') ?? ''), {
       secrets: [],
       removedLinesScanned: true,
     });
-    expect(sent?.text).toContain('\n-gone\n');
+    expect(sent?.text).toContain('\n-also gone\n');
   });
 
   it('masks the secrets, and is null for a patch with a NUL, not UTF-8, or over the bound', () => {
