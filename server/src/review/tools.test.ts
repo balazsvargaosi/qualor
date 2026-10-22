@@ -1,8 +1,9 @@
 import { OMISSION_REASONS, REDACTED } from '@qualor/shared';
-import { describe, expect, it } from 'vitest';
-import { memorySnapshot } from '../../test/review';
+import { afterAll, describe, expect, it } from 'vitest';
+import { HOSTILE_TEXT, memorySnapshot } from '../../test/review';
 import type { LlmToolCall } from '../llm/providers/types';
 import { MaskedFiles } from './masked-files';
+import { Masker } from './masker';
 import { compilePathGlob, likePrefix, MAX_GLOB_WILDCARDS } from './path-glob';
 import type { SnapshotReader } from './snapshot-reader';
 import { REVIEW_TOOLS, runReviewTool, TOOL_LIMITS, type ToolPolicy } from './tools';
@@ -27,6 +28,10 @@ const KEY_END = j('-----END ', 'RSA PRIVATE KEY-----');
 const keyLine = (i: number): string =>
   j('lQOYBF', String(i).padStart(4, '0'), 'Qm9ndXMga2V5IGJvZHk'.repeat(2));
 
+/** The masker of the tests: one worker for all of them, stopped when they are done. */
+const masker = new Masker();
+afterAll(() => masker.close());
+
 let callCount = 0;
 const call = (name: string, args: unknown): LlmToolCall => ({
   id: `call-${(callCount += 1)}`,
@@ -40,6 +45,7 @@ const newPolicy = (over: Partial<ToolPolicy> = {}): ToolPolicy => ({
     greps: TOOL_LIMITS.grepsPerReview,
     maskedBytes: TOOL_LIMITS.maskedBytesPerReview,
   },
+  masker,
   ...over,
 });
 const run = (
@@ -999,7 +1005,7 @@ describe('all tools', () => {
         'c.txt': `${PASSWORD_LINE}\n${'c'.repeat(400)}\n`,
       };
       const { reader, asked } = counting(memorySnapshot({ files }));
-      const policy = newPolicy({ masked: new MaskedFiles(reader, 900) });
+      const policy = newPolicy({ masked: new MaskedFiles(reader, { maxBytes: 900, masker }) });
       const redactions: number[] = [];
       for (const path of ['a.txt', 'b.txt', 'c.txt', 'a.txt', 'b.txt', 'c.txt']) {
         redactions.push((await run(reader, 'read_file', { path }, policy)).redactions);
@@ -1007,7 +1013,7 @@ describe('all tools', () => {
       // a and b are 401 bytes each and fit in 900; c does not, so it is read and masked again.
       expect(asked).toEqual(['a.txt', 'b.txt', 'c.txt', 'c.txt']);
       expect(policy.masked?.files).toBe(2);
-      expect(policy.masked?.bytes).toBe(802);
+      expect(policy.masked?.bytes).toBe(2 * (400 + 4));
       expect(policy.masked?.maskings).toBe(4);
       // Its replacement is reported once all the same.
       expect(redactions).toEqual([0, 0, 1, 0, 0, 0]);
@@ -1050,7 +1056,7 @@ describe('all tools', () => {
       ] as const) {
         const { reader, asked } = counting(memorySnapshot({ files: { 'big.txt': text } }));
         // A bound too small to keep the file: it is masked for the search, once.
-        const policy = newPolicy({ masked: new MaskedFiles(reader, 10) });
+        const policy = newPolicy({ masked: new MaskedFiles(reader, { maxBytes: 10, masker }) });
         const hits = (await answer(reader, 'grep', { pattern: 'Qm9ndXMga2V5' }, policy)).split(
           '\n',
         );
@@ -1078,7 +1084,7 @@ describe('all tools', () => {
       };
       const { reader, asked } = counting(memorySnapshot({ files }));
       // Nothing is kept: a file looked at again would be masked again.
-      const policy = newPolicy({ masked: new MaskedFiles(reader, 10) });
+      const policy = newPolicy({ masked: new MaskedFiles(reader, { maxBytes: 10, masker }) });
       const hits = (await answer(reader, 'grep', { pattern: 'Qm9ndXMga2V5' }, policy)).split('\n');
       expect(hits).toHaveLength(TOOL_LIMITS.grepHits + 1);
       expect(hits[0]).toBe('f3.txt:1: line 0 Qm9ndXMga2V5');
@@ -1146,7 +1152,7 @@ describe('all tools', () => {
       );
       // The masked files kept are bounded at one file; the budget is for two and a half.
       const policy = newPolicy({
-        masked: new MaskedFiles(reader, 450),
+        masked: new MaskedFiles(reader, { maxBytes: 450, masker }),
         budget: { calls: 99, greps: 99, maskedBytes: 1_000 },
       });
       const read = (path: string) => answer(reader, 'read_file', { path }, policy);
@@ -1239,6 +1245,118 @@ describe('all tools', () => {
     await run(reader, 'read_file', {}, strict);
     await run(reader, 'grep', { pattern: 'x' }, strict);
     expect(strict.budget).toEqual({ calls: 3, greps: 1, maskedBytes: 100 });
+  });
+});
+
+describe('masking that takes too long', () => {
+  const NOT_IN_TIME = 'not available: it could not be masked in time';
+  const slowMaskers: Masker[] = [];
+  afterAll(async () => {
+    await Promise.all(slowMaskers.map((m) => m.close()));
+  });
+  /** A policy whose masker gives a text 300 ms, and the review `budgetMs` for all of them. */
+  const slowPolicy = (budgetMs = 90_000): ToolPolicy => {
+    const slow = new Masker({ timeoutMs: 300, budgetMs });
+    slowMaskers.push(slow);
+    return newPolicy({ masker: slow });
+  };
+  const reader = memorySnapshot({
+    files: {
+      'a/hostile.txt': `${HOSTILE_TEXT}\nneedle`,
+      'b/ok.ts': 'const needle = 1;\n',
+      'c/hostile2.txt': `${HOSTILE_TEXT}\nneedle`,
+      'd/ok.ts': 'const needle = 2;\n',
+    },
+  });
+
+  it('read_file says that a file could not be masked in time, and answers so again without masking it again', async () => {
+    const policy = slowPolicy();
+    const bytes = policy.budget.maskedBytes;
+    expect(await run(reader, 'read_file', { path: 'a/hostile.txt' }, policy)).toEqual({
+      text: NOT_IN_TIME,
+      redactions: 0,
+    });
+    // The time was spent, and so were the bytes, once.
+    const spent = bytes - Buffer.byteLength(`${HOSTILE_TEXT}\nneedle`);
+    expect(policy.budget.maskedBytes).toBe(spent);
+    const started = performance.now();
+    expect(
+      await answer(reader, 'read_file', { path: 'a/hostile.txt', from: 2, to: 3 }, policy),
+    ).toBe(NOT_IN_TIME);
+    expect(performance.now() - started).toBeLessThan(250);
+    expect(policy.budget.maskedBytes).toBe(spent);
+    // The other files are read as ever.
+    expect(await answer(reader, 'read_file', { path: 'b/ok.ts' }, policy)).toBe(
+      '1│ const needle = 1;',
+    );
+  });
+
+  it('grep leaves a file that could not be masked in time out of its search, and says so', async () => {
+    const policy = slowPolicy();
+    expect(await answer(reader, 'grep', { pattern: 'needle' }, policy)).toBe(
+      [
+        'b/ok.ts:1: const needle = 1;',
+        'd/ok.ts:1: const needle = 2;',
+        '… 2 files could not be masked in time and were not searched',
+      ].join('\n'),
+    );
+    // Asked again, the files that took too long are not masked again.
+    const started = performance.now();
+    expect(await answer(reader, 'grep', { pattern: 'needle', path_glob: 'a/**' }, policy)).toBe(
+      ['no matches', '… 1 file could not be masked in time and was not searched'].join('\n'),
+    );
+    expect(performance.now() - started).toBeLessThan(250);
+    // Searched for the files that are fine alone, there is no note.
+    expect(await answer(reader, 'grep', { pattern: 'needle', path_glob: 'b/**' }, policy)).toBe(
+      'b/ok.ts:1: const needle = 1;',
+    );
+  });
+
+  it('a review that has spent its time for masking gets the budget line, and masks no more', async () => {
+    const policy = slowPolicy(500);
+    // 300 ms for the first, and the 200 that are left are not enough for the second.
+    expect(await answer(reader, 'read_file', { path: 'a/hostile.txt' }, policy)).toBe(NOT_IN_TIME);
+    expect(await answer(reader, 'read_file', { path: 'c/hostile2.txt' }, policy)).toBe(
+      BUDGET_USED_UP,
+    );
+    // The bytes of a text that was not masked are not spent.
+    const left = policy.budget.maskedBytes;
+    expect(await answer(reader, 'read_file', { path: 'b/ok.ts' }, policy)).toBe(BUDGET_USED_UP);
+    expect(await answer(reader, 'grep', { pattern: 'needle' }, policy)).toBe(
+      ['… 1 file could not be masked in time and was not searched', BUDGET_USED_UP].join('\n'),
+    );
+    expect(policy.budget.maskedBytes).toBe(left);
+  });
+
+  it('the files are masked by the masker of the policy', async () => {
+    const own = new Masker();
+    slowMaskers.push(own);
+    const policy = newPolicy({ masker: own });
+    expect(await answer(reader, 'read_file', { path: 'b/ok.ts' }, policy)).toBe(
+      '1│ const needle = 1;',
+    );
+    expect(own.workersStarted).toBe(1);
+    // A policy without one has files that make their own, and leave the shared one alone.
+    const before = masker.workersStarted;
+    const bare = newPolicy();
+    delete bare.masker;
+    expect(await answer(reader, 'read_file', { path: 'b/ok.ts' }, bare)).toBe(
+      '1│ const needle = 1;',
+    );
+    expect(masker.workersStarted).toBe(before);
+    await bare.masked?.close();
+  });
+
+  it('a masker that has been closed fails the call, as a reader that fails does', async () => {
+    const closed = new Masker();
+    await closed.close();
+    const policy = newPolicy({ masker: closed });
+    await expect(run(reader, 'read_file', { path: 'b/ok.ts' }, policy)).rejects.toThrow('closed');
+    await expect(run(reader, 'grep', { pattern: 'needle' }, policy)).rejects.toThrow('closed');
+    // A tool that masks nothing is not stopped by it.
+    expect(await answer(reader, 'list_files', {}, policy)).toBe(
+      ['a/', 'b/', 'c/', 'd/'].join('\n'),
+    );
   });
 });
 

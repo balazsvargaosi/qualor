@@ -10,7 +10,8 @@ import {
 import { z } from 'zod';
 import type { LlmToolCall, LlmToolSpec } from '../llm/providers/types';
 import { excludedPathMatcher } from '../llm/settings';
-import { MaskedFiles, type MaskedFile } from './masked-files';
+import { MaskedFiles, type MaskedFile, type MaskedText } from './masked-files';
+import type { Masker } from './masker';
 import { compilePathGlob, MAX_GLOB_WILDCARDS, type PathGlob } from './path-glob';
 import type { SnapshotReader } from './snapshot-reader';
 
@@ -23,8 +24,9 @@ import type { SnapshotReader } from './snapshot-reader';
  * §5.2) before it leaves, and never shows a path the administrator excluded (llm.md §3.2).
  *
  * The lines of a file are masked as part of the whole file, never a slice at a time (masked-files.ts),
- * and `grep` finds a needle in the masked lines only: the text it matches is the text the model
- * could read, so the number of hits cannot tell it what a mask hides.
+ * in a worker thread and within a time for each file (masker.ts), and `grep` finds a needle in the
+ * masked lines only: the text it matches is the text the model could read, so the number of hits
+ * cannot tell it what a mask hides.
  */
 
 export const TOOL_LIMITS = {
@@ -153,6 +155,11 @@ export interface ToolPolicy {
    * is given, and kept in the policy, so that a file is masked once for all the calls that share it.
    */
   masked?: MaskedFiles;
+  /**
+   * The masker of the review (see `Masker`), which the files are masked with and which the review's
+   * caller closes. Without one each set of masked files makes its own, which stops when idle.
+   */
+  masker?: Masker;
 }
 
 interface ToolAnswer {
@@ -167,6 +174,7 @@ const BUDGET_USED_UP = 'tool budget used up; answer now with what you have';
 const NO_SUCH_FILE = "no such file in this merge request's snapshot";
 const NO_SUCH_DIRECTORY = "no such directory in this merge request's snapshot";
 const EXCLUDED = 'not available: excluded by the administrator';
+const NOT_MASKED_IN_TIME = 'not available: it could not be masked in time';
 const NO_MATCHES = 'no matches';
 const MORE_MATCHES = '… more matches; narrow path_glob';
 const MORE_ENTRIES = '… more entries; list a subdirectory to see them';
@@ -303,12 +311,12 @@ function invalidArguments(error: z.ZodError): ToolAnswer {
 
 /**
  * The first `want` results of `keep`, over the items of a reader that returns at most `limit` of
- * them, in the same order each time it is asked. The reader does not know which of its items the
- * administrator excluded, nor which hits are masked away, and `keep` answers null for those. When
- * items were dropped and the reader had more, it is asked again for more, up to `maxFetch`,
- * instead of letting the dropped items use up the cap; `keep` is called once for each item, in
- * order, and the items after the `want`th result are not looked at. `halted` ends the search
- * early, with the results so far.
+ * them, in the same order each time it is asked. The reader does not know which hits are masked
+ * away (nor, for a listing, which entries the administrator excluded), and `keep` answers null for
+ * those. When items were dropped and the reader had more, it is asked again for more, up to
+ * `maxFetch`, instead of letting the dropped items use up the cap; `keep` is called once for each
+ * item, in order, and the items after the `want`th result are not looked at. `halted` ends the
+ * search early, with the results so far.
  */
 async function takeKept<T, U>(
   want: number,
@@ -352,12 +360,12 @@ function shownLine(line: string, max: number): string {
 }
 
 /**
- * Lines `from` to `to` (1-based, inclusive) of a file's masked `lines`, numbered, within the caps
- * of one call. The lines are the file's, masked as a whole: nothing is masked here. The character
+ * Lines `from` to `to` (1-based, inclusive) of a masked file, numbered, within the caps of one
+ * call. The lines are the file's, masked as a whole: nothing is masked here. The character
  * cap counts everything shown of a line: the number and the `│ ` before it, and its line end.
  */
-function numberedLines(lines: readonly string[], from: number, to: number | null): string {
-  const total = lines.length;
+function numberedLines(file: MaskedText, from: number, to: number | null): string {
+  const total = file.lineCount;
   if (total === 0) return 'the file is empty';
   if (from > total) return `the file has ${total} lines; from is past its end`;
   const asked = Math.min(to ?? total, total);
@@ -367,7 +375,7 @@ function numberedLines(lines: readonly string[], from: number, to: number | null
   const prefix = String(last).length + 2;
   let chars = 0;
   for (let n = from; n <= last; n += 1) {
-    const size = prefix + Math.min((lines[n - 1] ?? '').length, TOOL_LIMITS.readChars) + 1;
+    const size = prefix + Math.min(file.lineLength(n - 1), TOOL_LIMITS.readChars) + 1;
     // At least the first line is shown (cut, if it is over the cap by itself).
     if (n > from && chars + size > TOOL_LIMITS.readChars) {
       last = n - 1;
@@ -377,9 +385,10 @@ function numberedLines(lines: readonly string[], from: number, to: number | null
   }
   const width = String(last).length;
   const room = TOOL_LIMITS.readChars - width - 2;
-  const numbered = lines
-    .slice(from - 1, last)
-    .map((line, index) => `${String(from + index).padStart(width)}│ ${shownLine(line, room)}`);
+  const numbered: string[] = [];
+  for (let n = from; n <= last; n += 1) {
+    numbered.push(`${String(n).padStart(width)}│ ${shownLine(file.line(n - 1), room)}`);
+  }
   if (last < asked) {
     numbered.push(`… lines ${from}–${last} of ${total}; ask for more with from/to`);
   }
@@ -406,10 +415,12 @@ async function readFile(
       return fixed(`not available: ${OMISSIONS_IN_WORDS[file.reason]}`);
     case 'budget':
       return fixed(BUDGET_USED_UP);
+    case 'timeout':
+      return fixed(NOT_MASKED_IN_TIME);
     case 'text':
       // Whatever the answer, the call that masked the file reports what was masked in it.
       return {
-        text: numberedLines(file.lines, from ?? 1, to ?? null),
+        text: numberedLines(file.text, from ?? 1, to ?? null),
         redactions: file.redactions,
       };
   }
@@ -473,6 +484,8 @@ async function grep(
   let current: { path: string; file: MaskedFile } | null = null;
   /** A file would take the review past its budget for masking: no more files are looked at. */
   let spent = false;
+  /** The files that took too long to mask: they are not searched, and the model is told. */
+  const notSearched = new Set<string>();
   const found = await takeKept(
     TOOL_LIMITS.grepHits,
     MAX_FETCHED_HITS,
@@ -494,9 +507,13 @@ async function grep(
         spent = true;
         return null;
       }
+      if (file.kind === 'timeout') {
+        notSearched.add(hit.path);
+        return null;
+      }
       if (file.kind !== 'text') return null;
-      const line = file.lines[hit.line - 1];
-      if (line === undefined || !line.includes(pattern)) return null;
+      const line = file.text.line(hit.line - 1);
+      if (!line.includes(pattern)) return null;
       // Twice what is shown: enough for the cut to land on the right character, and a minified
       // line of a megabyte is not taken apart for it.
       return {
@@ -510,10 +527,18 @@ async function grep(
   const lines = found.items.map(
     (hit) => `${hit.path}:${hit.line}: ${cutAtGrapheme(hit.text, TOOL_LIMITS.grepLineChars)}`,
   );
+  if (lines.length === 0 && !spent && !found.truncated) lines.push(NO_MATCHES);
+  if (notSearched.size > 0) {
+    const n = notSearched.size;
+    const files = n === 1 ? '1 file' : `${n} files`;
+    lines.push(
+      `… ${files} could not be masked in time and ${n === 1 ? 'was' : 'were'} not searched`,
+    );
+  }
   // What is left of the search is dropped when the budget is spent, and the model is told.
   if (spent) lines.push(BUDGET_USED_UP);
   else if (found.truncated) lines.push(MORE_MATCHES);
-  return redactedAnswer(lines.length === 0 ? NO_MATCHES : lines.join('\n'), counted);
+  return redactedAnswer(lines.join('\n'), counted);
 }
 
 async function listFiles(
@@ -576,7 +601,7 @@ export async function runReviewTool(
   // A cache serves one reader: the policy of a review keeps it from call to call.
   let masked = policy.masked;
   if (masked?.reader !== reader) {
-    masked = new MaskedFiles(reader);
+    masked = new MaskedFiles(reader, { masker: policy.masker });
     policy.masked = masked;
   }
   switch (call.name) {

@@ -191,3 +191,10 @@ export function memorySnapshot(input: MemorySnapshotInput = {}): SnapshotReader 
     ),
   });
 }
+
+/**
+ * A text the shared redaction takes seconds to mask (about 9 s here): fifty lines of 4 000
+ * characters that are nothing but the start of a JWT, over and over. For the tests of the time a
+ * masking may take.
+ */
+export const HOSTILE_TEXT = Array.from({ length: 50 }, () => 'eyJ'.repeat(1_333)).join('\n');

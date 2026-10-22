@@ -8,6 +8,7 @@ import { memorySnapshot, storeTestSnapshot } from '../../test/review';
 import { first } from '../db/rows';
 import { analyses, organizations, projects, reviewSnapshots } from '../db/schema';
 import { excludedPathMatcher } from '../llm/settings';
+import { Masker } from './masker';
 import { MAX_GLOB_WILDCARDS } from './path-glob';
 import {
   MAX_HIT_TEXT_CHARS,
@@ -183,6 +184,8 @@ describe('the snapshot reader (6I-3)', () => {
   let snapshotId: string;
   let db: SnapshotReader;
   let memory: SnapshotReader;
+  /** The masker of the review tools of these tests: one worker, stopped with them. */
+  const masker = new Masker();
 
   const newAnalysis = async (): Promise<string> =>
     first(await t.db.insert(analyses).values({ projectId }).returning()).id;
@@ -210,6 +213,7 @@ describe('the snapshot reader (6I-3)', () => {
     memory = fixtureMemory();
   });
   afterAll(async () => {
+    await masker.close();
     await t.close();
   });
 
@@ -395,6 +399,7 @@ describe('the snapshot reader (6I-3)', () => {
     const policy = (): ToolPolicy => ({
       excludePaths: ['vendor/**', 'src/lib/deep/**'],
       budget: { calls: 1_000, greps: 1_000, maskedBytes: 256 * 1024 * 1024 },
+      masker,
     });
     const overDb = policy();
     const overMemory = policy();

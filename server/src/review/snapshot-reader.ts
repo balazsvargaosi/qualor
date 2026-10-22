@@ -11,7 +11,9 @@ import { compilePathGlob, likePrefix, newGlobWork, type PathGlob } from './path-
 /*
  * What the review reads of a merge request's repository: the snapshot the scanner uploaded
  * (snapshot-store.ts), as one `SnapshotReader`. The database reader answers from
- * `review_snapshot_files`, one query for each call, so a snapshot deleted while a review runs
+ * `review_snapshot_files`, asking the database anew for each call (a search names its files in one
+ * query and reads their texts a few at a time; it keeps the files it named for the next call that
+ * asks again for more of the same search), so a snapshot deleted while a review runs
  * (housekeeping, a newer push, a merged merge request) reads as nothing: no file, no change, no
  * hit. The memory reader holds the same snapshot in an object, for tests and the evaluation set;
  * both share one rule for lines, paths and globs (path-glob.ts), so they answer alike.
