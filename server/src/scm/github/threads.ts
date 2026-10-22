@@ -54,7 +54,11 @@ export interface ReviewThreadContext {
 }
 
 interface OwnThread {
-  /** The thread, or null when the thread listing (cut by its page bound) does not show it. */
+  /**
+   * The thread, or null when the thread listing does not show one for the comment's node id (it
+   * was cut by its page bound, or names the comment otherwise): then nothing is created or
+   * changed for it.
+   */
   thread: GitHubReviewThread | null;
   /** Someone but the App wrote in the thread after the App's first comment. */
   humanReplied: boolean;
@@ -65,37 +69,44 @@ function byApp(comment: GitHubReviewComment, botLogin: string): boolean {
   return comment.user?.type === 'Bot' && comment.user.login === botLogin;
 }
 
+/** The first comment a reply answers; null for a first comment (GitHub sends no id, or null). */
+function repliesTo(comment: GitHubReviewComment): number | null {
+  return typeof comment.in_reply_to_id === 'number' ? comment.in_reply_to_id : null;
+}
+
 /**
  * Qualor's review threads by issue id (github.md §6.3): a top-level review comment by the App
- * whose first line is an issue marker, with the thread GraphQL lists for it. A marker in anyone
- * else's comment, or in a reply, is ignored; of two comments for one issue (never made by Qualor)
- * the first, which is the older, is the issue's. The map is in the order of the comments.
+ * whose first line is an issue marker, with the thread GraphQL lists for it: the one whose first
+ * comment has the comment's node id (REST's `node_id`, GraphQL's `id`; github.com's REST ids no
+ * longer fit GraphQL's deprecated 32-bit `databaseId`). A marker in anyone else's comment, or in a
+ * reply, is ignored; of two comments for one issue (never made by Qualor) the first, which is the
+ * older, is the issue's. The map is in the order of the comments.
  */
 function ownThreads(
   comments: readonly GitHubReviewComment[],
   threads: readonly GitHubReviewThread[],
   botLogin: string,
 ): Map<string, OwnThread> {
-  const byFirstComment = new Map<number, GitHubReviewThread>();
+  const byFirstComment = new Map<string, GitHubReviewThread>();
   for (const thread of threads) {
-    if (thread.firstCommentId !== null && !byFirstComment.has(thread.firstCommentId)) {
-      byFirstComment.set(thread.firstCommentId, thread);
+    if (thread.firstCommentNodeId !== null && !byFirstComment.has(thread.firstCommentNodeId)) {
+      byFirstComment.set(thread.firstCommentNodeId, thread);
     }
   }
-  // A reply names the thread's first comment; a reply by anyone but the App is not Qualor's.
+  // A reply names the thread's first comment by its REST id; a reply by anyone but the App is
+  // not Qualor's.
   const repliedIn = new Set<number>();
   for (const comment of comments) {
-    if (comment.in_reply_to_id !== undefined && !byApp(comment, botLogin)) {
-      repliedIn.add(comment.in_reply_to_id);
-    }
+    const first = repliesTo(comment);
+    if (first !== null && !byApp(comment, botLogin)) repliedIn.add(first);
   }
   const own = new Map<string, OwnThread>();
   for (const comment of comments) {
-    if (comment.in_reply_to_id !== undefined || !byApp(comment, botLogin)) continue;
+    if (repliesTo(comment) !== null || !byApp(comment, botLogin)) continue;
     const marker = markerOf(comment.body);
     if (marker?.kind !== 'issue' || own.has(marker.issueId)) continue;
     own.set(marker.issueId, {
-      thread: byFirstComment.get(comment.id) ?? null,
+      thread: byFirstComment.get(comment.node_id) ?? null,
       humanReplied: repliedIn.has(comment.id),
     });
   }

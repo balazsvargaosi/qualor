@@ -76,15 +76,18 @@ export const GITHUB_TEXT = {
 
 /**
  * The GraphQL documents (github.md §6.4, ruling R6): a pull request's review threads, 100 to a
- * page, with who resolved each and the REST id of its first comment; and the two mutations that
- * resolve and reopen a thread (REST cannot). The operation names are what the fake picks by.
+ * page, with who resolved each and the node id of its first comment (REST's `node_id` of that
+ * comment); and the two mutations that resolve and reopen a thread (REST cannot). Never the
+ * comment's `databaseId`, which GitHub deprecated because it cannot hold its 64-bit ids, nor
+ * `fullDatabaseId`, which an older GitHub Enterprise Server does not have: a field the server
+ * lacks fails the whole query. The operation names are what the fake picks by.
  */
 export const REVIEW_THREADS_QUERY = `query QualorReviewThreads($owner: String!, $name: String!, $number: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       reviewThreads(first: 100, after: $after) {
         pageInfo { hasNextPage endCursor }
-        nodes { id isResolved resolvedBy { login } comments(first: 1) { nodes { databaseId } } }
+        nodes { id isResolved resolvedBy { login } comments(first: 1) { nodes { id } } }
       }
     }
   }
@@ -149,15 +152,18 @@ const comment = z.looseObject({
 });
 export type GitHubComment = z.infer<typeof comment>;
 /**
- * A pull request review comment (llm.md §8.4): a comment on lines of the diff. `in_reply_to_id`
- * (the thread's first comment) is there on a reply only (ruling R6).
+ * A pull request review comment (llm.md §8.4): a comment on lines of the diff. `node_id` is the
+ * comment's GraphQL id, which ties it to its thread (github.md §6.4); `in_reply_to_id` (the
+ * thread's first comment) is a number on a reply only, and absent or null on a first comment
+ * (ruling R6).
  */
 const reviewComment = z.looseObject({
   id: z.number().int(),
+  node_id: z.string(),
   body: z.string(),
   user: z.looseObject({ login: z.string(), type: z.string() }).nullable(),
   html_url: z.string().optional(),
-  in_reply_to_id: z.number().int().optional(),
+  in_reply_to_id: z.number().int().nullish(),
   path: z.string().optional(),
 });
 export type GitHubReviewComment = z.infer<typeof reviewComment>;
@@ -176,8 +182,9 @@ const reviewThreadNode = z.looseObject({
   isResolved: z.boolean(),
   /** Whoever resolved it, an App as `<slug>[bot]` (ruling R6); null while the thread is open. */
   resolvedBy: z.looseObject({ login: z.string() }).nullable(),
+  /** Its first comment's node id (GraphQL's `ID!`): a comment without one is not understood. */
   comments: z.looseObject({
-    nodes: z.array(z.looseObject({ databaseId: z.number().int().nullable() }).nullable()),
+    nodes: z.array(z.looseObject({ id: z.string().min(1) }).nullable()),
   }),
 });
 const reviewThreadsData = z.looseObject({
@@ -234,8 +241,11 @@ export interface GitHubReviewThread {
    * names nobody for.
    */
   resolvedByLogin: string | null;
-  /** The REST id of the thread's first comment, which `reviewComments` lists; null if unreadable. */
-  firstCommentId: number | null;
+  /**
+   * The node id of the thread's first comment, which `reviewComments` lists as its `node_id`;
+   * null when GitHub shows the thread without a comment.
+   */
+  firstCommentNodeId: string | null;
 }
 
 export interface CheckRunUpdate {
@@ -870,7 +880,7 @@ export class GitHubClient {
   /**
    * github.md §6.4 (ruling R6): the pull request's review threads, 100 to a page by cursor, at
    * most `maxPages` pages (`complete: false` when more remain). Only a thread's node id, its
-   * resolution with the resolver's login, and its first comment's REST id are read here; who
+   * resolution with the resolver's login, and its first comment's node id are read here; who
    * wrote the comments is read from {@link reviewComments}. A pull request that is not there is
    * `not_found`, never an empty list.
    */
@@ -888,7 +898,7 @@ export class GitHubClient {
           id: thread.id,
           isResolved: thread.isResolved,
           resolvedByLogin: thread.resolvedBy?.login ?? null,
-          firstCommentId: thread.comments.nodes[0]?.databaseId ?? null,
+          firstCommentNodeId: thread.comments.nodes[0]?.id ?? null,
         });
       }
       if (!threads.pageInfo.hasNextPage) return { items, complete: true };

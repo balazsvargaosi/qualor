@@ -12,19 +12,19 @@
               "id": "PRRT_kwDOAAABc85AAAAA",
               "isResolved": false,
               "resolvedBy": null,
-              "comments": { "nodes": [{ "databaseId": 10 }] }
+              "comments": { "nodes": [{ "id": "PRRC_kwDOAAABc84AAAAK" }] }
             },
             {
               "id": "PRRT_kwDOAAABc85AAAAB",
               "isResolved": true,
               "resolvedBy": { "login": "octocat" },
-              "comments": { "nodes": [{ "databaseId": 11 }] }
+              "comments": { "nodes": [{ "id": "PRRC_kwDOAAABc84AAAAL" }] }
             },
             {
               "id": "PRRT_kwDOAAABc85AAAAC",
               "isResolved": true,
               "resolvedBy": { "login": "qualor-acme[bot]" },
-              "comments": { "nodes": [{ "databaseId": 12 }] }
+              "comments": { "nodes": [{ "id": "PRRC_kwDOAAABc84AAAAM" }] }
             }
           ]
         }

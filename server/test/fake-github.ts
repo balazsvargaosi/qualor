@@ -27,6 +27,12 @@ import { fileURLToPath } from 'node:url';
  * each endpoint's permission; at most 50 annotations per request (appended on PATCH, as GitHub
  * does: Qualor sends none now, but a check run of 0.11 carries some, and GitHub never removes
  * them); `filter=latest` and `app_id` of the check-run listing; `Link` headers with `rel="next"`.
+ *
+ * Review comment ids are past 2^31, as github.com's are (from 3 000 000 001), and each comment has
+ * a node id of its own (`PRRC_` and its id in base 62, {@link reviewCommentNodeId}), which REST
+ * lists as `node_id` and GraphQL as the comment's `id`. GraphQL offers neither `databaseId`
+ * (deprecated by GitHub: it cannot hold such ids) nor `fullDatabaseId` (an older GitHub Enterprise
+ * Server has none): a query asking for either fails as a query of an unknown field does.
  */
 
 const SHAPES = path.join(path.dirname(fileURLToPath(import.meta.url)), 'github-shapes');
@@ -77,6 +83,7 @@ export interface FakeComment {
 }
 /** A pull request review comment: a comment on RIGHT-side lines of one file's diff. */
 export interface FakeReviewComment {
+  /** The REST id, past 2^31 as github.com's are; its node id is {@link reviewCommentNodeId}. */
   id: number;
   repoId: number;
   pull: number;
@@ -214,6 +221,25 @@ const PREFIX = '/api/v3';
 const GRAPHQL_PATH = '/api/graphql';
 /** GraphQL's `Int`: a signed 32-bit integer. */
 const GRAPHQL_MAX_INT = 2_147_483_647;
+/** The first review comment id: past GraphQL's `Int`, as github.com's ids are. */
+const FIRST_REVIEW_COMMENT_ID = 3_000_000_001;
+const BASE62 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+/** Comment fields GitHub's GraphQL schema lacks here (`fullDatabaseId`: an older GHES). */
+const UNKNOWN_COMMENT_FIELD = /\b(fullDatabaseId|databaseId)\b/;
+
+/**
+ * The node id of the review comment `id`, as the fake makes them: `PRRC_` and the id in base 62.
+ * REST lists it as `node_id`, GraphQL as the comment's `id`.
+ */
+export function reviewCommentNodeId(id: number): string {
+  let rest = id;
+  let digits = '';
+  do {
+    digits = BASE62.charAt(rest % 62) + digits;
+    rest = Math.floor(rest / 62);
+  } while (rest > 0);
+  return `PRRC_${digits}`;
+}
 const LEVELS = new Set(['notice', 'warning', 'failure']);
 const CONCLUSIONS = new Set([
   'success',
@@ -292,6 +318,7 @@ export async function createFakeGitHub(
   const injections: { method: string; path: RegExp; answers: InjectedAnswer[] }[] = [];
   let nextId = 1;
   let nextThread = 1;
+  let nextReviewComment = FIRST_REVIEW_COMMENT_ID;
 
   const fake: FakeGitHub = {
     url: '',
@@ -346,7 +373,7 @@ export async function createFakeGitHub(
       }
       const comment: FakeReviewComment = {
         ...first,
-        id: nextId++,
+        id: nextReviewComment++,
         body: reply.body,
         user: {
           login: reply.login,
@@ -462,6 +489,7 @@ export async function createFakeGitHub(
   const reviewCommentJson = (repo: FakeRepository) => (c: FakeReviewComment) => ({
     ...githubShape('pull_request_review_comment'),
     id: c.id,
+    node_id: reviewCommentNodeId(c.id),
     body: c.body,
     path: c.path,
     commit_id: c.commitId,
@@ -591,6 +619,17 @@ export async function createFakeGitHub(
     });
 
     const operation = /^\s*(?:query|mutation)\s+(\w+)/.exec(query)?.[1];
+    // GitHub validates the whole document first: a field the schema lacks fails it, with no data.
+    const unknownField = UNKNOWN_COMMENT_FIELD.exec(query)?.[1];
+    if (unknownField !== undefined)
+      return answer(undefined, {
+        message: `Field '${unknownField}' doesn't exist on type 'PullRequestReviewComment'`,
+        extensions: {
+          code: 'undefinedField',
+          typeName: 'PullRequestReviewComment',
+          fieldName: unknownField,
+        },
+      });
     if (operation === 'QualorReviewThreads') {
       const { owner, name, number, after } = variables;
       if (!isText(owner)) return invalid('owner', 'String!', owner);
@@ -653,7 +692,7 @@ export async function createFakeGitHub(
                 id: t.id,
                 isResolved: t.resolved,
                 resolvedBy: t.resolvedBy === null ? null : { login: t.resolvedBy },
-                comments: { nodes: [{ databaseId: t.commentIds[0] }] },
+                comments: { nodes: [{ id: reviewCommentNodeId(t.commentIds[0]!) }] },
               })),
             },
           },
@@ -968,7 +1007,7 @@ export async function createFakeGitHub(
         return deny(res, 422, 'Validation Failed');
       }
       const created: FakeReviewComment = {
-        id: nextId++,
+        id: nextReviewComment++,
         repoId: repo.id,
         pull: pull.number,
         body: b.body,

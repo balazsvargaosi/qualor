@@ -2,6 +2,8 @@ import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   createFakeGitHub,
+  githubShape,
+  reviewCommentNodeId,
   type FakeFile,
   type FakeGitHub,
   type FakeReviewComment,
@@ -101,8 +103,11 @@ describe('GitHub review threads (github.md §6.4)', () => {
   let connectionId: string;
   let botLogin: string;
   let nextRepo = 2000;
-  /** Ids of comments the tests make by hand, far from the fake's own counter. */
-  let nextForeign = 800_000;
+  /**
+   * Ids of comments the tests make by hand: past 2^31 like GitHub's (and the fake's, from
+   * 3 000 000 001), and far from the fake's own counter.
+   */
+  let nextForeign = 5_000_000_001;
   let day = 1;
 
   /** A mapped project on its own repository with an open pull request #7 at HEAD. */
@@ -292,12 +297,19 @@ describe('GitHub review threads (github.md §6.4)', () => {
     });
   };
 
-  /** A thread as GraphQL lists it, under `id` when the test wants GitHub to know another one. */
-  const threadNode = (thread: FakeReviewThread, id = thread.id) => ({
+  /**
+   * A thread as GraphQL lists it, under `id` when the test wants GitHub to know another one, and
+   * with `firstComment` as its first comment's node id when the test wants another one there.
+   */
+  const threadNode = (
+    thread: FakeReviewThread,
+    id = thread.id,
+    firstComment = reviewCommentNodeId(thread.commentIds[0]!),
+  ) => ({
     id,
     isResolved: thread.resolved,
     resolvedBy: thread.resolvedBy === null ? null : { login: thread.resolvedBy },
-    comments: { nodes: [{ databaseId: thread.commentIds[0] }] },
+    comments: { nodes: [{ id: firstComment }] },
   });
   /** A GraphQL answer for the review threads query, with these thread nodes. */
   const threadsPage = (nodes: unknown[], hasNextPage = false) => ({
@@ -782,6 +794,80 @@ describe('GitHub review threads (github.md §6.4)', () => {
     expect(await s.reconcile()).toEqual({ commented: 1, unplaced: 0 });
     expect(mutations()).toEqual([{ operation: 'QualorUnresolveThread', id: 'PRRT_deleted' }]);
     expect(creations()).toEqual([]);
+  });
+
+  it('ties each thread to its comment by node id, with comment ids past 2^31 (C1)', async () => {
+    const s = await setup('threads/node-ids');
+    await s.ingest([3, 4]);
+    await s.reconcile();
+    // GitHub's review comment ids no longer fit GraphQL's 32-bit `databaseId`; the fake's do not.
+    const ids = appThreads(s.repo.id).map((t) => commentOf(t).id);
+    expect(ids).toHaveLength(2);
+    expect(ids.every((id) => id > 2 ** 31)).toBe(true);
+    await s.ingest([3]);
+    expect(await s.reconcile()).toEqual({ commented: 1, unplaced: 0 });
+    expect(mutations()).toEqual([
+      { operation: 'QualorResolveThread', id: threadAt(s.repo.id, 4).id },
+    ]);
+    // The query asked for the first comment's node id only.
+    const queries = fake.requests
+      .filter((r) => r.path === '/api/graphql')
+      .map((r) => (JSON.parse(r.body) as { query: string }).query);
+    expect(queries.some((q) => q.includes('comments(first: 1) { nodes { id } }'))).toBe(true);
+    expect(queries.some((q) => /databaseid/i.test(q))).toBe(false);
+  });
+
+  it('takes a comment whose thread GraphQL ties to another node id for existing, and leaves it alone', async () => {
+    const s = await setup('threads/unmatched-node');
+    await s.ingest([3, 4, 5]);
+    await s.reconcile();
+    const [t3, t4, t5] = [3, 4, 5].map((line) => threadAt(s.repo.id, line));
+    // Line 3 is fixed, lines 4 and 5 are open.
+    await s.ingest([4, 5]);
+    // GraphQL ties the threads of lines 3 and 4 to node ids the REST listing does not have.
+    fake.inject('POST', GRAPHQL, {
+      status: 200,
+      body: threadsPage([
+        threadNode(t3!, t3!.id, 'PRRC_elsewhere3'),
+        threadNode(t4!, t4!.id, 'PRRC_elsewhere4'),
+        threadNode(t5!),
+      ]),
+    });
+    // Their comments count as existing, as when the listing does not show their threads: nothing
+    // is created for them, line 3's thread is not resolved, and line 4's open issue still counts.
+    expect(await s.reconcile()).toEqual({ commented: 2, unplaced: 0 });
+    expect(mutations()).toEqual([]);
+    expect(creations()).toEqual([]);
+    expect(resolvedByLine(s.repo.id)).toEqual({ 3: false, 4: false, 5: false });
+  });
+
+  it('takes a review comment whose in_reply_to_id is null for the first comment of its thread (M1)', async () => {
+    const s = await setup('threads/null-reply-to');
+    await s.ingest([3]);
+    await s.reconcile();
+    const thread = threadAt(s.repo.id, 3);
+    const own = commentOf(thread);
+    await s.ingest([]);
+    // GitHub may send the field as null on a first comment: the listing stays readable, and the
+    // comment is still the first of Qualor's thread.
+    fake.inject('GET', new RegExp(`^/repos/acme/${s.repo.name}/pulls/7/comments$`), {
+      status: 200,
+      body: [
+        {
+          ...githubShape('pull_request_review_comment'),
+          id: own.id,
+          node_id: reviewCommentNodeId(own.id),
+          body: own.body,
+          user: own.user,
+          path: own.path,
+          line: own.line,
+          in_reply_to_id: null,
+        },
+      ],
+    });
+    expect(await s.reconcile()).toEqual({ commented: 0, unplaced: 0 });
+    expect(mutations()).toEqual([{ operation: 'QualorResolveThread', id: thread.id }]);
+    expect(thread.resolved).toBe(true);
   });
 
   it('counts a position GitHub refuses as not placed', async () => {
