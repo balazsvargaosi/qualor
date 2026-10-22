@@ -584,41 +584,106 @@ describe('listing', () => {
     ).toHaveLength(500);
   });
 
-  it('list_files lists every directory, and hides the files an exclusion matches', async () => {
-    const policy = () => newPolicy({ excludePaths: ['src/lib/**', '**/*.md', '.hidden'] });
-    // The exclusions are globs for files: a directory is not tested against them, so the model
-    // finds its way to what is not excluded.
-    expect(await answer(reader, 'list_files', {}, policy())).toBe(
-      ['.hidden/', 'a.ts', 'bin/', 'src/'].join('\n'),
-    );
-    expect(await answer(reader, 'list_files', { dir: 'src' }, policy())).toBe(
-      ['b.ts', 'lib/'].join('\n'),
-    );
-    expect(await answer(reader, 'list_files', { dir: '.hidden' }, policy())).toBe('f');
-    // The files of src/lib are hidden; the directory in it is listed.
-    expect(await answer(reader, 'list_files', { dir: 'src/lib' }, policy())).toBe('deep/');
-    // A directory with nothing in it but excluded files is answered as an excluded file is.
-    expect(await answer(reader, 'list_files', { dir: 'src/lib/deep' }, policy())).toBe(EXCLUDED);
-    const flat = memorySnapshot({ files: { 'a.ts': 'a', 'b.ts': 'b' } });
-    expect(await answer(flat, 'list_files', {}, newPolicy({ excludePaths: ['*.ts'] }))).toBe(
-      EXCLUDED,
-    );
-    // A directory that is not there is still not there.
-    expect(await answer(reader, 'list_files', { dir: 'nope' }, policy())).toBe(
-      "no such directory in this merge request's snapshot",
-    );
-    // Hidden entries do not use up the cap.
-    const files = Object.fromEntries(
-      Array.from({ length: 700 }, (_, i) => [
-        `${i < 600 ? 'a' : 'b'}${String(i).padStart(3, '0')}.ts`,
-        'x',
-      ]),
-    );
-    const listed = (
-      await answer(memorySnapshot({ files }), 'list_files', {}, newPolicy({ excludePaths: ['a*'] }))
-    ).split('\n');
-    expect(listed).toHaveLength(100);
-    expect(listed[0]).toBe('b600.ts');
+  describe('with exclusions, which are globs for files', () => {
+    const tree = memorySnapshot({
+      files: {
+        'README.md': 'r',
+        'a.ts': 'a',
+        'secrets/a.txt': 'secret a',
+        'secrets/sub/b.txt': 'secret b',
+        'secrets/sub/deeper/c.txt': 'secret c',
+        'keys/readme.txt': 'k',
+        'keys/server.pem': 'pem',
+        'keys/only/pair.pem': 'pem',
+        'certs/ca.pem': 'pem',
+        'src/b.ts': 'b',
+      },
+    });
+    const policy = (...excludePaths: string[]) => newPolicy({ excludePaths });
+    const list = (dir: string, ...excludePaths: string[]) =>
+      answer(tree, 'list_files', { dir }, policy(...excludePaths));
+
+    it('a directory the exclusions cover whole is hidden from its parent, and refused when listed, whether or not it exists', async () => {
+      const covered = ['secrets/**'];
+      expect(await answer(tree, 'list_files', {}, policy(...covered))).toBe(
+        ['README.md', 'a.ts', 'certs/', 'keys/', 'src/'].join('\n'),
+      );
+      expect(await list('secrets', ...covered)).toBe(EXCLUDED);
+      expect(await list('secrets/sub', ...covered)).toBe(EXCLUDED);
+      // The snapshot holds no such directory: the answer is the same, so it tells nothing.
+      expect(await list('secrets/nothing/here', ...covered)).toBe(EXCLUDED);
+      // Nothing is read for it.
+      expect(await answer(tripwire, 'list_files', { dir: 'secrets' }, policy(...covered))).toBe(
+        EXCLUDED,
+      );
+      // A directory that no exclusion covers is not there, if it is not.
+      expect(await list('nope', ...covered)).toBe(
+        "no such directory in this merge request's snapshot",
+      );
+      // The same for a directory covered by a glob that reaches it from anywhere.
+      expect(await list('secrets', '**/secrets/**')).toBe(EXCLUDED);
+    });
+
+    it('a directory the exclusions cover only in part is listed, with the files they do not name', async () => {
+      // `secrets/*` names what is directly in secrets: the files deeper in it are not excluded.
+      const direct = ['secrets/*'];
+      expect(await answer(tree, 'list_files', {}, policy(...direct))).toBe(
+        ['README.md', 'a.ts', 'certs/', 'keys/', 'secrets/', 'src/'].join('\n'),
+      );
+      expect(await list('secrets', ...direct)).toBe('sub/');
+      expect(await list('secrets/sub', ...direct)).toBe(['b.txt', 'deeper/'].join('\n'));
+      // read_file and grep keep to the same files: the one directly in secrets is refused, the
+      // ones deeper in it are shown.
+      expect(await answer(tree, 'read_file', { path: 'secrets/a.txt' }, policy(...direct))).toBe(
+        EXCLUDED,
+      );
+      expect(
+        await answer(tree, 'read_file', { path: 'secrets/sub/b.txt' }, policy(...direct)),
+      ).toBe('1│ secret b');
+      expect(await answer(tree, 'grep', { pattern: 'secret' }, policy(...direct))).toBe(
+        ['secrets/sub/b.txt:1: secret b', 'secrets/sub/deeper/c.txt:1: secret c'].join('\n'),
+      );
+      // The name of a directory is a glob for the one path.
+      expect(await list('secrets', 'secrets')).toBe(['a.txt', 'sub/'].join('\n'));
+    });
+
+    it('a kind of file is left out wherever it is, and the directories are all listed', async () => {
+      const pem = ['**/*.pem'];
+      expect(await answer(tree, 'list_files', {}, policy(...pem))).toBe(
+        ['README.md', 'a.ts', 'certs/', 'keys/', 'secrets/', 'src/'].join('\n'),
+      );
+      expect(await list('keys', ...pem)).toBe(['only/', 'readme.txt'].join('\n'));
+      // A directory whose files are all left out is answered as an excluded file is.
+      expect(await list('keys/only', ...pem)).toBe(EXCLUDED);
+      expect(await list('certs', ...pem)).toBe(EXCLUDED);
+      expect(await list('src', ...pem)).toBe('b.ts');
+    });
+
+    it('a root with nothing in it but excluded files is answered as an excluded file is', async () => {
+      const flat = memorySnapshot({ files: { 'a.ts': 'a', 'b.ts': 'b' } });
+      expect(await answer(flat, 'list_files', {}, newPolicy({ excludePaths: ['*.ts'] }))).toBe(
+        EXCLUDED,
+      );
+    });
+
+    it('hidden entries do not use up the cap', async () => {
+      const files = Object.fromEntries(
+        Array.from({ length: 700 }, (_, i) => [
+          `${i < 600 ? 'a' : 'b'}${String(i).padStart(3, '0')}.ts`,
+          'x',
+        ]),
+      );
+      const listed = (
+        await answer(
+          memorySnapshot({ files }),
+          'list_files',
+          {},
+          newPolicy({ excludePaths: ['a*'] }),
+        )
+      ).split('\n');
+      expect(listed).toHaveLength(100);
+      expect(listed[0]).toBe('b600.ts');
+    });
   });
 });
 

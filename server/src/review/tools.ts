@@ -416,11 +416,21 @@ async function readFile(
 }
 
 /**
+ * Whether the exclusions cover everything under the directory `dir`, as far as they can be asked:
+ * the directory, a file in it and a file deeper in it are all excluded. `secrets/**` covers
+ * `secrets`; the name `secrets`, which is the one path, and `secrets/*`, which is what is directly
+ * in it, do not. The exclusions are globs for files, and a directory is hidden only when no file
+ * under it can be seen.
+ */
+function directoryExcluded(dir: string, excluded: (path: string) => boolean): boolean {
+  return excluded(dir) && excluded(`${dir}/x`) && excluded(`${dir}/x/y`);
+}
+
+/**
  * Whether every path a glob matches is excluded, as far as the exclusions can tell: it names one
  * path and that is excluded, or the directory its literal prefix ends in (`secrets` in
- * `secrets/*.key`) is excluded with a file and a file deeper in it, which `secrets/**` does and the
- * name `secrets` or the glob `secrets/*` does not. A glob that starts with a wildcard, or in the
- * root, is not: the reader leaves the excluded paths out of what it searches.
+ * `secrets/*.key`) is covered by them. A glob that starts with a wildcard, or in the root, is not:
+ * the reader leaves the excluded paths out of what it searches.
  */
 function namesOnlyExcluded(
   compiled: PathGlob,
@@ -429,9 +439,7 @@ function namesOnlyExcluded(
 ): boolean {
   if (compiled.wildcards === 0) return excluded(glob);
   const slash = compiled.prefix.lastIndexOf('/');
-  if (slash <= 0) return false;
-  const dir = compiled.prefix.slice(0, slash);
-  return excluded(dir) && excluded(`${dir}/x`) && excluded(`${dir}/x/y`);
+  return slash > 0 && directoryExcluded(compiled.prefix.slice(0, slash), excluded);
 }
 
 /**
@@ -518,8 +526,12 @@ async function listFiles(
   // The root has no path of its own, so it is left out or empty.
   const dir = parsed.data.dir ?? '';
   if (dir !== '' && snapshotPathProblem(dir) !== null) return fixed(INVALID_PATH);
-  // Every directory is listed, and so is every file but an excluded one: `excludePaths` are globs
-  // for files (read_file and grep enforce them file by file), and a directory is not one.
+  // A directory the exclusions cover whole is refused as an excluded file is, whether or not the
+  // snapshot holds it, and nothing is read.
+  if (dir !== '' && directoryExcluded(dir, excluded)) return fixed(EXCLUDED);
+  // The exclusions are globs for files (read_file and grep enforce them file by file). So the
+  // listing hides a directory only when they cover everything under it, and a file when they name
+  // it; any other directory is listed, and the files in it one by one.
   let hidden = 0;
   const found = await takeKept(
     TOOL_LIMITS.listEntries,
@@ -529,7 +541,8 @@ async function listFiles(
       return { items: result.entries, truncated: result.truncated };
     },
     (entry) => {
-      if (entry.kind === 'file' && excluded(dir === '' ? entry.name : `${dir}/${entry.name}`)) {
+      const path = dir === '' ? entry.name : `${dir}/${entry.name}`;
+      if (entry.kind === 'dir' ? directoryExcluded(path, excluded) : excluded(path)) {
         hidden += 1;
         return null;
       }
@@ -537,7 +550,7 @@ async function listFiles(
     },
   );
   if (found.items.length === 0 && !found.truncated) {
-    // A directory that holds nothing but excluded files is there, and is answered as one of them is.
+    // A directory with nothing in it but excluded entries is answered as an excluded file is.
     if (hidden > 0) return fixed(EXCLUDED);
     return fixed(dir === '' ? 'the snapshot holds no files' : NO_SUCH_DIRECTORY);
   }
