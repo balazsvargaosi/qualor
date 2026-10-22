@@ -86,7 +86,7 @@ describe('automatic fix suggestions (4E-3a §3)', () => {
   let day = 1;
   /** The licence's seam, changed by the tests (the app and the workers read it on every call). */
   const limits: Limits = {
-    llm: { maxFixPerOrganizationPerDay: 100_000, automaticFixSuggestions: true },
+    llm: { automaticFixSuggestions: true },
     licenses: { policy: false },
   };
   const autoDeps = (over: Partial<AutoFixDeps> = {}): AutoFixDeps => ({

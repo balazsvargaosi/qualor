@@ -56,14 +56,14 @@ import { sweepE2eDatabases } from './sweep';
  *
  * Plan 4C (rbac-audit.md §17): a second, licensed server on QUALOR_E2E_ENTERPRISE_PORT for the
  * enterprise screens. Its own database (the community run keeps its tests and screenshots), a key
- * signed by the same throwaway key that lists `llm.fix-quota`, `audit-log`, `sso` and `scim`
+ * signed by the same throwaway key that lists `audit-log`, `sso` and `scim`
  * (QUALOR_LICENSE), the enterprise plugin built beforehand (QUALOR_E2E_ENTERPRISE_PLUGIN, loaded
  * through QUALOR_PLUGIN_PATHS), the demo data plus an org admin, a viewer and project grants
  * seeded through the app (so the audit log has events), webhook URLs allowed on http and
  * loopback (the `webhooks` instance setting), and a SIEM receiver on 127.0.0.1 that answers 204
  * (QUALOR_E2E_SIEM_PORT) for the audit stream. It starts before the community server, so it is
  * up when Playwright's readiness check passes. Plan 5D: a third server on QUALOR_E2E_BUSINESS_PORT
- * serves the same database under a Business key (`sso`, `audit-log`, `llm.fix-quota`), as a
+ * serves the same database under a Business key (`sso`, `audit-log`, `support-bundle`, `license-policy`), as a
  * replica would after a move to the Business plan. It starts on the first connection to its port
  * (see {@link lazyServer}). Mail E2: a reader on QUALOR_E2E_MAIL_PORT hands the tests the body of a
  * pending account email.

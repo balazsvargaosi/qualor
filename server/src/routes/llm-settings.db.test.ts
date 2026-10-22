@@ -89,7 +89,9 @@ describe('/system/llm (llm.md §3, §16)', () => {
   it('is off by default and for instance admins only (an org admin gets 403)', async () => {
     const res = await get();
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ provider: null, maxFixPerDay: 25 });
+    expect(res.json()).toMatchObject({ provider: null });
+    // D10: no edition ceiling on fix suggestions, so nothing tells the page one.
+    expect(res.json()).not.toHaveProperty('maxFixPerDay');
     expect((await get(orgAdmin)).statusCode).toBe(403);
     expect((await put(body(), orgAdmin)).statusCode).toBe(403);
     expect((await test(orgAdmin)).statusCode).toBe(403);
@@ -200,7 +202,7 @@ describe('/system/llm (llm.md §3, §16)', () => {
         budgets: {
           explainPerDay: 1,
           triagePerDay: 1,
-          fixPerDay: 26,
+          fixPerDay: 100_001,
           tokensPerDay: 1,
           costPerDayUsd: null,
           perUserPerHour: 1,
@@ -227,32 +229,23 @@ describe('/system/llm (llm.md §3, §16)', () => {
     expect(res.json().errors.map((e: { path: string }) => e.path)).toContain(path);
   });
 
-  it('names the ceiling of this edition, not "the community edition" (enterprise.md §7.2)', async () => {
-    const res = await put(body({ budgets: { ...body().budgets, fixPerDay: 26 } }));
-    expect(res.statusCode).toBe(422);
-    expect(res.json().errors).toContainEqual({
-      path: 'body.budgets.fixPerDay',
-      message: 'At most 25 in this edition',
-    });
-  });
-
-  it('keeps a stored fix budget above the ceiling of this edition, and refuses only a raise above it (enterprise.md §7.2)', async () => {
-    // Saved while a licence allowed more; the licence lapsed since (this app is community: 25).
-    await writeLlmSettings(ctx.db, {
-      ...DEFAULT_LLM_SETTINGS,
-      budgets: { ...DEFAULT_LLM_SETTINGS.budgets, fixPerDay: 500 },
-    });
+  it('community: fixPerDay up to 100 000 is accepted, and nothing above it (D10)', async () => {
+    // This app runs the community edition: the admin's own budget is the only limit.
     const fix = (fixPerDay: number) => put(body({ budgets: { ...body().budgets, fixPerDay } }));
-    expect((await fix(500)).statusCode).toBe(200); // unchanged
-    expect((await fix(400)).statusCode).toBe(200); // lowered, still above 25
-    const raised = await fix(401);
-    expect(raised.statusCode).toBe(422);
-    expect(raised.json().errors).toContainEqual({
-      path: 'body.budgets.fixPerDay',
-      message: 'At most 25 in this edition',
-    });
+    for (const fixPerDay of [26, 500, 100_000]) {
+      const res = await fix(fixPerDay);
+      expect(res.statusCode, `${fixPerDay}: ${res.body}`).toBe(200);
+      expect(res.json().budgets.fixPerDay).toBe(fixPerDay);
+      expect((await get()).json().budgets.fixPerDay).toBe(fixPerDay);
+    }
+    const over = await fix(100_001);
+    expect(over.statusCode).toBe(422);
+    expect(over.json().errors.map((e: { path: string }) => e.path)).toContain(
+      'body.budgets.fixPerDay',
+    );
+    // A refused save changes nothing.
+    expect((await get()).json().budgets.fixPerDay).toBe(100_000);
     expect((await fix(25)).statusCode).toBe(200);
-    expect((await fix(26)).statusCode).toBe(422); // the stored value is 25 now
   });
 
   it('accepts an Anthropic temperature of 0 to 1 and OpenAI up to 2', async () => {

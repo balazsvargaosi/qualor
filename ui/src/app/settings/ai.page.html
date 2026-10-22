@@ -704,17 +704,6 @@
         <div class="setting-row">
           <div class="setting-text">
             <label for="ai-budget-fix" i18n="@@ai.settings.budgetFix">Fix suggestions</label>
-            @if (storedFixPerDay() > maxFixPerDay()) {
-              <p id="ai-budget-fix-hint" i18n="@@ai.settings.fixCeilingKept">
-                At most {{ maxFixPerDay() }} a day in this edition. The saved
-                {{ storedFixPerDay() }} can be kept or lowered, not raised; the ceiling applies when
-                suggestions are made.
-              </p>
-            } @else {
-              <p id="ai-budget-fix-hint" i18n="@@ai.settings.fixCeiling">
-                At most {{ maxFixPerDay() }} a day in this edition
-              </p>
-            }
           </div>
           <div class="setting-field">
             <input
@@ -722,16 +711,12 @@
               class="short"
               type="number"
               min="0"
-              [max]="maxFixAllowed()"
+              max="100000"
               step="1"
               inputmode="numeric"
               [value]="budget('fixPerDay')"
               [attr.aria-invalid]="fieldError('budget-fix') ? true : null"
-              [attr.aria-describedby]="
-                fieldError('budget-fix')
-                  ? 'ai-budget-fix-error ai-budget-fix-hint'
-                  : 'ai-budget-fix-hint'
-              "
+              [attr.aria-describedby]="fieldError('budget-fix') ? 'ai-budget-fix-error' : null"
               (input)="setBudget('fixPerDay', 'budget-fix', $event)"
             />
             @if (fieldError('budget-fix'); as message) {

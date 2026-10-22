@@ -23,6 +23,7 @@ import { createAuditRecorder } from '../../server/src/audit/recorder';
 import { createEdition, type Edition } from '../../server/src/license/edition';
 import { licenseState } from '../../server/src/license/state';
 import { verifyLicenseKey } from '../../server/src/license/verify';
+import { communityLimits } from '../../server/src/limits';
 import {
   DEFAULT_AUTO_FIX,
   DEFAULT_LLM_SETTINGS,
@@ -145,10 +146,7 @@ describe('Qualor Enterprise: the llm.auto-fix feature through the built plugin (
   it('an Enterprise key turns the seam on and enables the routes', async () => {
     const { admin, org, project } = await boot(ENTERPRISE_FEATURES);
     expect(ctx!.edition!.activeFeatures()).toContain('llm.auto-fix');
-    expect(ctx!.edition!.limits().llm).toMatchObject({
-      automaticFixSuggestions: true,
-      maxFixPerOrganizationPerDay: 100_000,
-    });
+    expect(ctx!.edition!.limits().llm).toEqual({ automaticFixSuggestions: true });
     expect((await getOrg(admin, org)).json()).toMatchObject({ available: true, enabled: false });
     const saved = await put(admin, `/organizations/${org}/ai/auto-fix`, on);
     expect(saved.statusCode, saved.body).toBe(200);
@@ -173,16 +171,13 @@ describe('Qualor Enterprise: the llm.auto-fix feature through the built plugin (
     }
   });
 
-  it("the plugin's two limit overrides merge: each feature lifts only its own limit", async () => {
+  it('a licence listing llm.fix-quota still applies and changes nothing (D10); llm.auto-fix lifts only its own limit', async () => {
+    // The name stays licensed and implemented, so the key is active; no limit follows from it.
     await boot(['llm.fix-quota']);
-    expect(ctx!.edition!.limits().llm).toMatchObject({
-      automaticFixSuggestions: false,
-      maxFixPerOrganizationPerDay: 100_000,
-    });
+    expect(ctx!.edition!.activeFeatures()).toEqual(['llm.fix-quota']);
+    expect(ctx!.edition!.limits()).toEqual(communityLimits());
     await ctx!.close();
     await boot(['llm.auto-fix']);
-    const llm = ctx!.edition!.limits().llm;
-    expect(llm.automaticFixSuggestions).toBe(true);
-    expect(llm.maxFixPerOrganizationPerDay).toBeLessThan(100_000);
+    expect(ctx!.edition!.limits().llm).toEqual({ automaticFixSuggestions: true });
   });
 });

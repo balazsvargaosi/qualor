@@ -327,9 +327,8 @@ excluded projects and paths. Answers are plain text labelled "AI-generated, may 
 the model writes is rendered as HTML or Markdown. See [docs/guide/ai-assistant.md](docs/guide/ai-assistant.md).
 
 **Limits.** Daily budgets per organisation (explanations, triage, fix suggestions, tokens and an
-optional cost estimate) and a per-user hourly bound, all set by the instance admin; the community
-edition allows at most 25 fix suggestions per organisation per day. Answers are cached per
-organisation for 30 days.
+optional cost estimate) and a per-user hourly bound, all set by the instance admin; no edition caps
+them. Answers are cached per organisation for 30 days.
 
 **A local model.** Provider URLs follow the SCM rules: `https`, or plain `http` and private or
 loopback addresses only for hosts listed in `QUALOR_LLM_INTERNAL_HOSTS` (its own list, separate

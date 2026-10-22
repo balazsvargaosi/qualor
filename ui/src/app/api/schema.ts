@@ -9756,7 +9756,6 @@ export interface paths {
                             } | null;
                             storePrompts: boolean;
                             promptRetentionDays: number;
-                            maxFixPerDay: number;
                         };
                     };
                 };
@@ -9921,7 +9920,6 @@ export interface paths {
                             } | null;
                             storePrompts: boolean;
                             promptRetentionDays: number;
-                            maxFixPerDay: number;
                         };
                     };
                 };

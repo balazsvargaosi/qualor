@@ -17,6 +17,7 @@ import { organizations, projects } from '../../server/src/db/schema';
 import { createEdition } from '../../server/src/license/edition';
 import { DAY_MS, licenseState } from '../../server/src/license/state';
 import { verifyLicenseKey } from '../../server/src/license/verify';
+import { communityLimits } from '../../server/src/limits';
 import { loadPlugins } from '../../server/src/plugins/loader';
 import { assertEnterpriseInputs, buildEnterprise } from '../scripts/bundle';
 
@@ -101,7 +102,14 @@ describe('Qualor Enterprise end to end (enterprise.md §17)', () => {
       edition: 'enterprise',
       features: ['llm.fix-quota'],
     });
-    expect((await get('/api/v0/system/llm')).json()).toMatchObject({ maxFixPerDay: 100_000 });
+  });
+
+  it('a licence listing llm.fix-quota still applies and changes nothing (D10)', async () => {
+    // The feature is active, and the limits are the community ones: the key adds no ceiling and
+    // lifts none, and the settings tell the page no edition limit.
+    expect(ctx.edition!.activeFeatures()).toEqual(['llm.fix-quota']);
+    expect(ctx.edition!.limits()).toEqual(communityLimits());
+    expect((await get('/api/v0/system/llm')).json()).not.toHaveProperty('maxFixPerDay');
   });
 
   it('allows more than three organisations while licensed', async () => {
@@ -128,7 +136,7 @@ describe('Qualor Enterprise end to end (enterprise.md §17)', () => {
       edition: 'community',
       features: [],
     });
-    expect((await get('/api/v0/system/llm')).json()).toMatchObject({ maxFixPerDay: 25 });
+    expect(ctx.edition!.limits()).toEqual(communityLimits());
     const orgs = (await get('/api/v0/organizations')).json() as {
       items: Record<string, unknown>[];
     };
@@ -150,7 +158,7 @@ describe('Qualor Enterprise end to end (enterprise.md §17)', () => {
   });
 });
 
-describe('Qualor Enterprise with a key that does not list llm.fix-quota (enterprise.md §7.2)', () => {
+describe('Qualor Enterprise with a key that lists no feature (enterprise.md §7.2)', () => {
   const now = new Date('2027-01-01T00:00:00Z');
   let ctx: TestContext;
   let admin: Session;
@@ -161,12 +169,12 @@ describe('Qualor Enterprise with a key that does not list llm.fix-quota (enterpr
   }, 60_000);
   afterAll(async () => ctx.close());
 
-  it('keeps the community fix ceiling: the plugin may not lift a limit the key does not license', async () => {
+  it('keeps the community limits: the plugin may not lift a limit the key does not license', async () => {
     const get = (url: string) => ctx.app.inject({ method: 'GET', url, headers: admin.headers });
     expect((await get('/api/v0/system/info')).json()).toMatchObject({
       features: [],
     });
-    expect((await get('/api/v0/system/llm')).json()).toMatchObject({ maxFixPerDay: 25 });
+    expect(ctx.edition!.limits()).toEqual(communityLimits());
   });
 
   it('answers 403 FEATURE_NOT_LICENSED on the audit-log, sso and scim routes the key does not list', async () => {

@@ -12,8 +12,6 @@ import { scimRoutes } from './scim-routes';
 import { ssoRoutes } from './sso-routes';
 import { supportRoutes } from './support-routes';
 
-/** The admin's budget maximum (server/src/llm/settings.ts); core refuses more. */
-const MAX_FIX_PER_DAY = 100_000;
 /** rbac-audit.md §14.2: the SIEM stream runs every 10 seconds. */
 const STREAM_EVERY_SECONDS = 10;
 /** 4E-1 §2.4 step 5: the compliance housekeeping runs hourly. */
@@ -28,6 +26,9 @@ const plugin: QualorPlugin = {
   // 4E-3a: llm.auto-fix is Enterprise only and has no prerequisite.
   // 4E-3b: support-bundle is Business and Enterprise, with no prerequisite.
   // 6M: license-policy is Business and Enterprise, with no prerequisite.
+  // 6I (D10): llm.fix-quota is kept, so a licence already issued that lists it stays active (and
+  // the deploy probe, tools/deploy/checks.ts, still finds it), but it sets no limit: the community
+  // edition has no ceiling on AI fix suggestions.
   features: [
     'llm.fix-quota',
     'audit-log',
@@ -42,7 +43,6 @@ const plugin: QualorPlugin = {
     'license-policy',
   ],
   register(ctx) {
-    ctx.limits('llm.fix-quota', { llm: { maxFixPerOrganizationPerDay: MAX_FIX_PER_DAY } });
     // 4E-3a: the seam core reads for automatic fix suggestions; the routes and the opt-out are core's.
     ctx.limits('llm.auto-fix', { llm: { automaticFixSuggestions: true } });
     // 6M: the seam core reads for the organisation licence policy; the routes, the ingest stage and

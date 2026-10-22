@@ -26,7 +26,7 @@ const daysUntil = (to: Date, from: Date) =>
 
 /** What stops when the grace period ends, in the words of docs/guide/enterprise.md. */
 const WHAT_STOPS =
-  'single sign-on stops (people with a password sign in with it), SCIM requests are refused, the audit log stops recording new events, and AI fix suggestions are limited to 25 per organisation per day';
+  'single sign-on stops (people with a password sign in with it), SCIM requests are refused, and the audit log stops recording new events';
 
 interface LicenseWording {
   subject: string;

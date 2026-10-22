@@ -74,7 +74,7 @@ describe('StagedPlugin (ruling EE4)', () => {
     const ctx = staged.context(base, registry);
     ctx.routes('fixture.echo', async () => {});
     ctx.jobs('fixture.echo', { 'ee.fixture': async () => {} });
-    ctx.limits('fixture.echo', { llm: { maxFixPerOrganizationPerDay: 500 } });
+    ctx.limits('fixture.echo', { llm: { automaticFixSuggestions: true } });
     ctx.ui('fixture.echo', {
       point: 'settings.nav',
       id: 'echo',
@@ -118,20 +118,8 @@ describe('StagedPlugin (ruling EE4)', () => {
       (ctx) => ctx.limits('fixture.echo', { organizations: 99 } as never),
     ],
     [
-      'a fix quota over 100 000',
-      (ctx) => ctx.limits('fixture.echo', { llm: { maxFixPerOrganizationPerDay: 100_001 } }),
-    ],
-    [
-      'a negative fix quota',
-      (ctx) => ctx.limits('fixture.echo', { llm: { maxFixPerOrganizationPerDay: -1 } }),
-    ],
-    [
-      'a fractional fix quota',
-      (ctx) => ctx.limits('fixture.echo', { llm: { maxFixPerOrganizationPerDay: 1.5 } }),
-    ],
-    [
-      'a fix quota that is a string',
-      (ctx) => ctx.limits('fixture.echo', { llm: { maxFixPerOrganizationPerDay: '5' } } as never),
+      'the retired fix quota, in any value (D10: community has no fix ceiling)',
+      (ctx) => ctx.limits('fixture.echo', { llm: { maxFixPerOrganizationPerDay: 500 } } as never),
     ],
     [
       'an unknown llm limit',
@@ -180,9 +168,9 @@ describe('StagedPlugin (ruling EE4)', () => {
     const ctx = staged.context(base, registry);
     let reads = 0;
     const llm = {
-      get maxFixPerOrganizationPerDay() {
+      get automaticFixSuggestions() {
         reads += 1;
-        return reads === 1 ? 500 : 1_000_000_000;
+        return reads === 1 ? true : ('not a boolean' as never);
       },
     };
     let llmReads = 0;
@@ -195,12 +183,12 @@ describe('StagedPlugin (ruling EE4)', () => {
     ctx.limits('fixture.echo', override);
     staged.commit(registry);
     const stored = registry.limitOverrides[0]!.override;
-    expect(stored.llm?.maxFixPerOrganizationPerDay).toBe(500);
-    expect(stored.llm?.maxFixPerOrganizationPerDay).toBe(500);
+    expect(stored.llm?.automaticFixSuggestions).toBe(true);
+    expect(stored.llm?.automaticFixSuggestions).toBe(true);
     expect(reads).toBe(1);
     expect(llmReads).toBe(1);
-    expect(Object.getOwnPropertyDescriptor(stored.llm, 'maxFixPerOrganizationPerDay')).toEqual(
-      expect.objectContaining({ value: 500, writable: false }),
+    expect(Object.getOwnPropertyDescriptor(stored.llm, 'automaticFixSuggestions')).toEqual(
+      expect.objectContaining({ value: true, writable: false }),
     );
   });
 
@@ -222,8 +210,8 @@ describe('StagedPlugin (ruling EE4)', () => {
     const registry = emptyRegistry();
     const ctx = new StagedPlugin(plugin(), registry).context(base, registry);
     const llm = {
-      get maxFixPerOrganizationPerDay() {
-        return 1_000_000_000;
+      get automaticFixSuggestions() {
+        return 'not a boolean' as never;
       },
     };
     expect(() => ctx.limits('fixture.echo', { llm })).toThrow(PluginError);

@@ -12,7 +12,6 @@ works in air-gapped networks.
 | | Community | Business | Enterprise |
 |---|---|---|---|
 | Roles (Organization admin, Project admin, Maintainer, Viewer) and roles on a single project | yes | yes, the same ([Roles and the audit log](./roles-and-audit.md)) | yes, the same |
-| AI fix suggestions | at most 25 per organisation per day | up to your own budget (**Settings → AI assistant**), feature `llm.fix-quota` | the same as Business |
 | The audit log, with its JSON Lines export | no | yes, feature `audit-log` ([Roles and the audit log](./roles-and-audit.md#the-audit-log-enterprise-audit-log)) | yes |
 | Streaming the audit log to a SIEM | no | no | yes, feature `audit-log.stream` ([Streaming to a SIEM](./roles-and-audit.md#streaming-to-a-siem)) |
 | Single sign-on (OIDC, SAML 2.0) | no | one connection at a time, feature `sso` ([Single sign-on and SCIM](./sso-and-scim.md)) | yes |
@@ -26,7 +25,7 @@ works in air-gapped networks.
 | A licence policy: forbidden licences become issues and fail the gate | no | yes, feature `license-policy` ([The licence policy](./dependency-licenses.md#the-licence-policy-business-and-enterprise)) | yes |
 
 A licence switches on the features its key lists, and nothing else. A Business key lists `sso`,
-`audit-log`, `llm.fix-quota`, `support-bundle` and `license-policy`; an Enterprise key lists those and `sso.multi`,
+`audit-log`, `support-bundle` and `license-policy`; an Enterprise key lists those and `sso.multi`,
 `audit-log.stream`, `scim`, `compliance-export`, `portfolio` and `llm.auto-fix` too. **Settings → Licence** lists
 the features the key has under **Enterprise features**, each marked Active or Not active;
 `GET /api/v0/license` shows the same. Roles and project access need no licence: they are part of
@@ -38,6 +37,11 @@ stays off.
 
 Keys issued before roles joined the community edition may list the feature `rbac`. They keep
 working; the name `rbac` switches nothing on or off.
+
+Keys issued earlier may list the feature `llm.fix-quota`, which used to lift the limit on AI fix
+suggestions. It is kept for licences already issued and no longer changes anything: no edition
+limits AI fix suggestions, and your own budget in **Settings → AI assistant** is the only limit
+([Budgets and limits](./ai-assistant.md#budgets-and-limits)).
 
 The audit log's export (**Settings → Audit log → Export JSON Lines**) is a plain download link, so
 a refusal shows up only as a failed download in your browser, with no message on the page: 429
@@ -63,7 +67,7 @@ needs a subscription. Everything outside `enterprise/` is MIT.
 | Plan | Price | What you get |
 |---|---|---|
 | Community | free | the community edition (MIT), with no limit on lines of code, users, projects or organisations, including all four roles and project access; no licence key; help from the community |
-| Business | $4,900 a year | single sign-on (OIDC, SAML 2.0) with one enabled connection at a time, the audit log with its JSON Lines export, the higher AI fix suggestion limit, the support bundle and the dependency licence policy; email support |
+| Business | $4,900 a year | single sign-on (OIDC, SAML 2.0) with one enabled connection at a time, the audit log with its JSON Lines export, the support bundle and the dependency licence policy; email support |
 | Enterprise | $12,000 a year | everything in Business, plus SCIM 2.0 provisioning, streaming the audit log to a SIEM, several identity providers at once (up to 10 connections), compliance reports, portfolio reports and automatic fix suggestions; SLA support: email only, first reply within 1 business day for critical issues, no phone or 24x7 |
 
 Prices are per server instance, per year, in US dollars. They never depend on lines of code or
@@ -213,9 +217,6 @@ Users who are not instance admins see nothing else about the licence.
 2. On the expiry date a **14-day grace period** starts. Everything keeps working, and the notice
    says when the enterprise features stop. Instance administrators get an email when it starts.
 3. When the grace period ends, the server runs as the community edition, without a restart:
-   - the AI assistant's fix suggestions are limited to 25 per organisation per day again. A higher
-     fix budget you saved stays saved and applies again with a renewed key; until then you can keep
-     it or lower it in **Settings → AI assistant**, but not raise it;
    - the audit log stops recording new events. Retention keeps removing old ones at the period last
      saved, and **Settings → Audit log**, **Settings → Audit settings** and every `/api/v0/ee/audit`
      route answer 403 `FEATURE_NOT_LICENSED` until a key listing `audit-log` is applied

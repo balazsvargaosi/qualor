@@ -5,7 +5,7 @@ import type { PluginContext } from '@qualor/server/plugin-contract';
 import plugin from './plugin';
 
 describe('qualor-enterprise', () => {
-  it('declares its eleven features, lifts the fix ceiling, and registers the audit-log, audit-log.stream, sso, scim, compliance-export, portfolio and support-bundle API (rbac is retired in 5B)', async () => {
+  it('declares its eleven features, sets no fix ceiling, and registers the audit-log, audit-log.stream, sso, scim, compliance-export, portfolio and support-bundle API (rbac is retired in 5B)', async () => {
     const limits: unknown[] = [];
     const routes: string[] = [];
     const jobs: [string, string[]][] = [];
@@ -45,8 +45,8 @@ describe('qualor-enterprise', () => {
       ],
     });
     await plugin.register(ctx);
+    // D10: llm.fix-quota is still declared (licences already issued list it) and sets no limit.
     expect(limits).toEqual([
-      ['llm.fix-quota', { llm: { maxFixPerOrganizationPerDay: 100_000 } }],
       ['llm.auto-fix', { llm: { automaticFixSuggestions: true } }],
       ['license-policy', { licenses: { policy: true } }],
     ]);

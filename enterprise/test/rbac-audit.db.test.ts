@@ -778,7 +778,7 @@ describe('audit-log.stream (rbac-audit.md §14.4)', () => {
   });
 
   it('a Business key keeps retention and refuses the stream', async () => {
-    // Review Focus 1: Business lists sso, audit-log and llm.fix-quota.
+    // Review Focus 1: Business lists sso, audit-log, support-bundle and license-policy.
     const env = await startAuditScenarioEnv();
     const ctx = await bootEnterpriseTest(env, () => LICENSED, BUSINESS_FEATURES);
     try {

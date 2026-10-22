@@ -176,7 +176,7 @@ describe('loadPlugins (enterprise.md §10, §12)', () => {
       features: ['slow.x'],
       register: (ctx) => {
         ctx.routes('slow.x', async () => {});
-        ctx.limits('slow.x', { llm: { maxFixPerOrganizationPerDay: 5 } });
+        ctx.limits('slow.x', { llm: { automaticFixSuggestions: true } });
         return new Promise<void>((resolve) => {
           late = () => {
             try {

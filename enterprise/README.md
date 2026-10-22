@@ -12,11 +12,13 @@ its validity, grace period included. Licence keys are sold through <https://qual
 Everything outside this directory is MIT. Outside contributions to this directory are not
 accepted.
 
-- `src/plugin.ts`: the plugin (`qualor-enterprise`). It implements six features: `llm.fix-quota`,
-  `audit-log`, `audit-log.stream`, `sso`, `sso.multi` and `scim`. `audit-log.stream` works only
-  with `audit-log`, and `sso.multi` only with `sso`. The
-  Business plan lists `sso`, `audit-log` and `llm.fix-quota`; the Enterprise plan lists all six.
-  Roles and project access are not here: they are core (MIT), in every edition.
+- `src/plugin.ts`: the plugin (`qualor-enterprise`). It implements `audit-log`, `audit-log.stream`,
+  `sso`, `sso.multi`, `scim`, `compliance-export`, `portfolio`, `llm.auto-fix`, `support-bundle` and
+  `license-policy`. It also declares `llm.fix-quota`, which is kept for licences already issued and
+  no longer changes anything. `audit-log.stream` works only with `audit-log`, and `sso.multi` only
+  with `sso`. The Business plan lists `sso`, `audit-log`, `support-bundle` and `license-policy`; the
+  Enterprise plan lists those and the other six. Roles and project access are not here: they are
+  core (MIT), in every edition.
 - `pnpm --filter @qualor/enterprise build` writes `dist/plugin.js`, which the `qualor/server`
   image carries at `/app/enterprise/plugin.js`.
 - It imports core only with `import type`; everything else comes from the plugin context.

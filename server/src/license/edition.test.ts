@@ -25,9 +25,8 @@ const boot: BootLicense = {
 const plugins: EditionPlugins = {
   reports: [{ name: 'p', state: 'loaded', features: ['llm.fix-quota', 'audit-log'], error: null }],
   features: new Set(['llm.fix-quota', 'audit-log']),
-  limitOverrides: [
-    { feature: 'llm.fix-quota', override: { llm: { maxFixPerOrganizationPerDay: 100_000 } } },
-  ],
+  // D10: llm.fix-quota is implemented, so a licence listing it is active, but it sets no limit.
+  limitOverrides: [],
   extensions: [
     {
       feature: 'llm.fix-quota',
@@ -66,10 +65,38 @@ describe('createEdition (enterprise.md §7)', () => {
   });
 
   it('takes the LLM limits from active overrides; there is no organisation limit', () => {
-    expect(createEdition({ boot, plugins, now: () => T0 }).limits()).toEqual({
-      llm: { maxFixPerOrganizationPerDay: 100_000, automaticFixSuggestions: false },
+    const autoFixLicense = testPayload({
+      expires: '2027-10-01T00:00:00Z',
+      features: ['llm.auto-fix'],
+    });
+    const autoFixBoot: BootLicense = {
+      source: 'environment',
+      keyHash: 'h',
+      verification: { ok: true, kid: 'test-a', license: autoFixLicense },
+    };
+    const autoFixPlugins: EditionPlugins = {
+      ...plugins,
+      features: new Set(['llm.fix-quota', 'llm.auto-fix']),
+      limitOverrides: [
+        { feature: 'llm.auto-fix', override: { llm: { automaticFixSuggestions: true } } },
+      ],
+    };
+    expect(
+      createEdition({ boot: autoFixBoot, plugins: autoFixPlugins, now: () => T0 }).limits(),
+    ).toEqual({
+      llm: { automaticFixSuggestions: true },
       licenses: { policy: false },
     });
+    // A licence that does not list the feature leaves its override unused.
+    expect(createEdition({ boot, plugins: autoFixPlugins, now: () => T0 }).limits()).toEqual(
+      communityLimits(),
+    );
+  });
+
+  it('a licence listing llm.fix-quota is active and changes no limit (D10)', () => {
+    const edition = createEdition({ boot, plugins, now: () => T0 });
+    expect(edition.isFeatureActive('llm.fix-quota')).toBe(true);
+    expect(edition.limits()).toEqual(communityLimits());
   });
 
   it('is licensed without plugins: the community LLM limits, no features', () => {
@@ -138,7 +165,7 @@ describe('createEdition (enterprise.md §7)', () => {
       features: new Set(six),
       limitOverrides: six.map((feature) => ({
         feature,
-        override: { llm: { maxFixPerOrganizationPerDay: 1_000 } },
+        override: { llm: { automaticFixSuggestions: true } },
       })),
       extensions: six.map((feature) => ({
         feature,
@@ -172,7 +199,7 @@ describe('createEdition (enterprise.md §7)', () => {
     expect(whole.activeFeatures()).toEqual(four);
     for (const f of four) expect(whole.isFeatureActive(f)).toBe(true);
     expect(whole.uiExtensions().map((e) => e.id)).toEqual(four);
-    expect(whole.limits().llm.maxFixPerOrganizationPerDay).toBe(1_000);
+    expect(whole.limits().llm.automaticFixSuggestions).toBe(true);
 
     // One pass suffices: no prerequisite has a prerequisite of its own.
     expect(FEATURE_PREREQUISITES).toEqual({ 'audit-log.stream': 'audit-log', 'sso.multi': 'sso' });
@@ -201,7 +228,7 @@ describe('createEdition (enterprise.md §7)', () => {
 
   it('fixedEdition keeps the limits a test passes', () => {
     const limits = {
-      llm: { maxFixPerOrganizationPerDay: 5, automaticFixSuggestions: false },
+      llm: { automaticFixSuggestions: true },
       licenses: { policy: true },
     };
     const edition = fixedEdition(limits);

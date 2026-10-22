@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
   COMMUNITY_LLM_LIMITS,
   communityLimits,
-  ENTERPRISE_MAX_FIX_PER_DAY,
   LICENSE_GRACE_DAYS,
   licensedLimits,
 } from './limits';
@@ -10,17 +9,16 @@ import {
 describe('licensed limits (enterprise.md §7.2)', () => {
   it('keeps the constants in one place', () => {
     expect(LICENSE_GRACE_DAYS).toBe(14);
-    expect(ENTERPRISE_MAX_FIX_PER_DAY).toBe(100_000);
   });
 
-  it('has no organisation limit: only the LLM limits (enterprise.md §1.3)', () => {
+  it('has no organisation limit and no fix ceiling: only the seams (enterprise.md §1.3, D10)', () => {
     expect(communityLimits()).toEqual({
-      llm: { maxFixPerOrganizationPerDay: 25, automaticFixSuggestions: false },
+      llm: { automaticFixSuggestions: false },
       licenses: { policy: false },
     });
     expect(licensedLimits([])).toEqual({ llm: COMMUNITY_LLM_LIMITS, licenses: { policy: false } });
-    expect(licensedLimits([{ llm: { maxFixPerOrganizationPerDay: 100_000 } }])).toEqual({
-      llm: { maxFixPerOrganizationPerDay: 100_000, automaticFixSuggestions: false },
+    expect(licensedLimits([{ llm: { automaticFixSuggestions: true } }])).toEqual({
+      llm: { automaticFixSuggestions: true },
       licenses: { policy: false },
     });
   });
@@ -28,39 +26,38 @@ describe('licensed limits (enterprise.md §7.2)', () => {
   it('reads each override value once (a getter cannot pass one value and use another)', () => {
     let reads = 0;
     const llm = {
-      get maxFixPerOrganizationPerDay(): number {
+      get automaticFixSuggestions(): boolean {
         reads += 1;
-        return reads === 1 ? 50 : 100_001;
+        return reads === 1;
       },
     };
-    expect(licensedLimits([{ llm }]).llm.maxFixPerOrganizationPerDay).toBe(50);
+    expect(licensedLimits([{ llm }]).llm.automaticFixSuggestions).toBe(true);
     expect(reads).toBe(1);
   });
 
   it('applies LLM overrides in order and ignores anything else', () => {
-    const limits = licensedLimits([
-      { llm: { maxFixPerOrganizationPerDay: 500 } },
-      { llm: { maxFixPerOrganizationPerDay: ENTERPRISE_MAX_FIX_PER_DAY } },
-      { organizations: 9999 } as never,
-    ]);
-    expect(limits).toEqual({
-      llm: { maxFixPerOrganizationPerDay: 100_000, automaticFixSuggestions: false },
-      licenses: { policy: false },
-    });
+    expect(
+      licensedLimits([
+        { llm: { automaticFixSuggestions: true } },
+        { organizations: 9999 } as never,
+      ]),
+    ).toEqual({ llm: { automaticFixSuggestions: true }, licenses: { policy: false } });
+    expect(
+      licensedLimits([
+        { llm: { automaticFixSuggestions: true } },
+        { llm: { automaticFixSuggestions: false } },
+      ]).llm,
+    ).toEqual({ automaticFixSuggestions: false });
   });
 
-  it('ignores an override outside 0–100 000 or of the wrong type (enterprise.md §7.2)', () => {
+  it('ignores an override of the wrong type, and the retired fix ceiling (D10)', () => {
     const limits = licensedLimits([
-      { llm: { maxFixPerOrganizationPerDay: 100_001 } },
-      { llm: { maxFixPerOrganizationPerDay: -1 } },
-      { llm: { maxFixPerOrganizationPerDay: 1.5 } },
+      { llm: { maxFixPerOrganizationPerDay: 100_000 } as never },
       { llm: { automaticFixSuggestions: 'yes' as never } },
+      { llm: { automaticFixSuggestions: 1 as never } },
     ]);
     expect(limits.llm).toEqual(COMMUNITY_LLM_LIMITS);
-    expect(licensedLimits([{ llm: { maxFixPerOrganizationPerDay: 0 } }]).llm).toEqual({
-      maxFixPerOrganizationPerDay: 0,
-      automaticFixSuggestions: false,
-    });
+    expect(limits.llm).not.toHaveProperty('maxFixPerOrganizationPerDay');
   });
 
   it('turns the licence policy on only with a boolean override (6M)', () => {

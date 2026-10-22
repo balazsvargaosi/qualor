@@ -66,7 +66,7 @@ export const DEPENDENCIES = {
  * (`enterprise.setup.ts`), and the local receiver its audit stream may post to.
  *
  * Plan 5D: a third server on BUSINESS_PORT serves the enterprise server's database under a
- * Business key (`sso`, `audit-log`, `llm.fix-quota`), as a replica would after a move to the
+ * Business key (`sso`, `audit-log`, `support-bundle`, `license-policy`), as a replica would after a move to the
  * Business plan. It shares that database's sessions, so the enterprise admin's session works
  * there too (cookies do not depend on the port). `business.spec.ts` runs after the enterprise
  * tests, so it sees the stream they configured, kept and paused.

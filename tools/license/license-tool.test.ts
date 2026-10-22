@@ -731,12 +731,12 @@ describe('the command line never prints or leaks a private key', () => {
 
   it('the usage text names the Business and the Enterprise feature lists (enterprise.md §1.7, §15)', () => {
     const r = run(['frobnicate'], {});
+    expect(r.err).toContain('Business:   --features sso,audit-log,support-bundle,license-policy');
     expect(r.err).toContain(
-      'Business:   --features sso,audit-log,llm.fix-quota,support-bundle,license-policy',
+      'Enterprise: --features sso,sso.multi,audit-log,audit-log.stream,scim,compliance-export,portfolio,llm.auto-fix,support-bundle,license-policy',
     );
-    expect(r.err).toContain(
-      'Enterprise: --features sso,sso.multi,audit-log,audit-log.stream,llm.fix-quota,scim,compliance-export,portfolio,llm.auto-fix,support-bundle,license-policy',
-    );
+    // 6I D10: the retired feature is in neither plan (a key that lists it is still accepted).
+    expect(r.err).not.toContain('llm.fix-quota');
   });
 
   it('inspect decodes standard input as the server decodes QUALOR_LICENSE_FILE', () => {

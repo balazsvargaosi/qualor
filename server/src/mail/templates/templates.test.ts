@@ -66,6 +66,18 @@ describe('the E1 messages (E1 spec, Templates)', () => {
     );
   });
 
+  it('says what stops when the grace period ends, and names no AI fix limit (6I D10)', () => {
+    const mails = sampleMails(null).filter((s) => /^license\.expiry-(grace|expired)$/.test(s.name));
+    expect(mails).toHaveLength(2);
+    for (const { name, mail } of mails) {
+      expect(mail.text.replace(/\n/g, ' '), name).toContain(
+        'the audit log stops recording new events. Nothing',
+      );
+      expect(mail.text, name).not.toMatch(/fix suggestion/i);
+      expect(mail.html, name).not.toMatch(/fix suggestion|per organi[sz]ation per day/i);
+    }
+  });
+
   it('escapes names in the HTML part and keeps them plain in the text part', () => {
     const webhook = renderWebhookFailed({
       organization: '<b>Acme</b> & Co',

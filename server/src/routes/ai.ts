@@ -12,7 +12,7 @@ import { issueChangeCharge, type ChargeIssueChanges } from '../issues/rate-limit
 import { aiRequestDto, aiRequestSchema } from '../llm/dto';
 import { queueFixPost } from '../llm/post';
 import { PROVIDER_KINDS } from '../llm/providers';
-import { AiUserLimits, effectiveBudgets, requestAi, todayUsage } from '../llm/service';
+import { AiUserLimits, requestAi, todayUsage } from '../llm/service';
 import { budgetsSchema, organizationSettings, readLlmSettings } from '../llm/settings';
 import { aiRequestFor, issueForUser } from '../projects/access';
 
@@ -232,7 +232,7 @@ export const aiRoutes: FastifyPluginAsyncZod<{
           tokens: usage.tokens,
           costUsd: settings.pricing === null ? null : usage.costMicroUsd / 1e6,
         },
-        budgets: effectiveBudgets(settings, deps.edition.limits()),
+        budgets: settings.budgets,
       };
     },
   );

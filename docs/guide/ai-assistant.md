@@ -193,8 +193,8 @@ suggestion a person asked for is never posted automatically.
 
 An automatic suggestion is an ordinary fix request of the organisation: it counts against the
 organisation's **daily fix budget**, its tokens and its estimated cost ([Budgets and
-limits](#budgets-and-limits)). Not against a person's hourly bound, since no person asked. With
-Enterprise your fix budget is the only limit. When the budget is used up, Qualor stops asking for
+limits](#budgets-and-limits)). Not against a person's hourly bound, since no person asked. Your
+fix budget is the only limit. When the budget is used up, Qualor stops asking for
 that analysis, and the findings that got no suggestion yet are picked up by a later analysis of
 the same merge request, once the budget is back at the next UTC midnight. The server logs one line
 (`outcome: budget_exhausted`). Lower **At most per analysis** or raise the budget if suggestions
@@ -276,15 +276,8 @@ and day (UTC)**:
 The top of the page shows today's use of the organisation chosen in the header against these
 budgets, one meter per budget, and says when a budget is reached for the day.
 
-**The community edition allows at most 25 fix suggestions per organisation per day**, whatever the
-fix budget says. Posting a suggestion to a merge request does not count again. Explanations and
-triage have no community ceiling: your budgets apply, since it is your key. With an
-[enterprise licence](./enterprise.md) your fix budget is the only limit. The text beside the field
-says the ceiling of the edition the server runs as.
-
-If a licence lapses, a fix budget above 25 that you saved stays saved: the ceiling of 25 applies
-when suggestions are made, and the saved budget applies again with a renewed key. Until then you
-can save the rest of the page with that budget unchanged, or lower it, but not raise it.
+Posting a suggestion to a merge request does not count again. The budgets are yours to set, and no
+edition caps them: the fix budget can go up to 100 000 a day, like the explanation and triage budgets.
 
 An organisation over a budget gets "The organisation's AI budget for today is used up" until the
 next UTC midnight. A person over the hourly bound gets "You asked too often; try again in a few

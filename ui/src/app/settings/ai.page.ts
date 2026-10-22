@@ -122,8 +122,8 @@ const PROJECT_PAGES = 20;
  * at a submission, emptied at once whatever happens next, never kept in the page's state, never
  * shown), each organisation's enablement and features and its automatic fix suggestions (4E-3a
  * §4: the Enterprise note in place of them without `llm.auto-fix`), the excluded paths, the
- * budgets (the fix budget capped at this edition's ceiling, enterprise.md §7.2), prices, prompt
- * storage, and a Test of the saved provider. Refusals and test problems are shown in the page's own words (plan 1F ruling Y3).
+ * budgets (the fix budget has no edition ceiling, 6I D10), prices, prompt storage, and a Test of
+ * the saved provider. Refusals and test problems are shown in the page's own words (plan 1F ruling Y3).
  *
  * Step 8 of the redesign (spec §7.8): today's use of the current organisation against its budgets
  * as meters (`GET /organizations/{id}/ai`; a failed read leaves an alert in its panel), then the
@@ -212,16 +212,6 @@ export class AiSettingsPage {
   protected readonly error = signal<string | null>(null);
   protected readonly busy = signal(false);
 
-  protected readonly maxFixPerDay = computed(() => this.settings()?.maxFixPerDay ?? 25);
-  /** The saved fix budget, which may be above the ceiling after a licence lapsed. */
-  protected readonly storedFixPerDay = computed(() => this.settings()?.budgets.fixPerDay ?? 0);
-  /**
-   * The highest fix budget the server takes (enterprise.md §7.2): the ceiling, or the saved budget
-   * when that is higher, which may be kept or lowered but not raised.
-   */
-  protected readonly maxFixAllowed = computed(() =>
-    Math.max(this.maxFixPerDay(), this.storedFixPerDay()),
-  );
   protected readonly maxTemperature = computed(() => (this.kind() === 'anthropic' ? 1 : 2));
   protected readonly provider = computed(() => this.settings()?.provider ?? null);
   protected readonly enabledCount = computed(
@@ -672,7 +662,7 @@ export class AiSettingsPage {
     return {
       explainPerDay: budget('budget-explain', 'explainPerDay', 0, 100_000),
       triagePerDay: budget('budget-triage', 'triagePerDay', 0, 100_000),
-      fixPerDay: budget('budget-fix', 'fixPerDay', 0, this.maxFixAllowed()),
+      fixPerDay: budget('budget-fix', 'fixPerDay', 0, 100_000),
       tokensPerDay: budget('budget-tokens', 'tokensPerDay', 0, 1_000_000_000),
       costPerDayUsd:
         costRaw === '' ? null : decimalNumber(errors, 'budget-cost', costRaw, 0, 1_000_000),
@@ -787,10 +777,9 @@ function refusal(field: Field): string {
       return $localize`:@@ai.settings.badExclude:Use at most 100 globs, one per line, relative to the repository root.`;
     case 'budget-explain':
     case 'budget-triage':
+    case 'budget-fix':
     case 'budget-tokens':
       return $localize`:@@ai.settings.badBudget:Use a whole number, 0 or more.`;
-    case 'budget-fix':
-      return $localize`:@@ai.settings.badFixBudget:Use a whole number from 0 to this edition's ceiling. A saved budget above it can be kept or lowered, not raised.`;
     case 'budget-user':
       return $localize`:@@ai.settings.badUserBudget:Use a whole number, 1 or more.`;
     case 'budget-cost':

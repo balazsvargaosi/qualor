@@ -2,12 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import type { Db } from '../db/client';
 import type { EditionPlugins } from '../license/edition';
 import { FEATURE_PATTERN, type LicensePayload } from '../license/token';
-import {
-  ENTERPRISE_MAX_FIX_PER_DAY,
-  type LicenseLimits,
-  type LlmLimits,
-  type PluginLimitOverride,
-} from '../limits';
+import type { LicenseLimits, LlmLimits, PluginLimitOverride } from '../limits';
 import { DEFAULT_MAX_ATTEMPTS, enqueue, type EnqueueOptions } from '../queue/queue';
 import {
   PLUGIN_API_VERSION,
@@ -175,8 +170,8 @@ function validateLicenseOverride(value: unknown): Partial<LicenseLimits> {
 }
 
 /**
- * enterprise.md §10.5: only these LLM limits, within the spec's bounds, and the licence policy
- * (6M), checked at registration.
+ * enterprise.md §10.5: only the automatic fix suggestions switch of the LLM limits (the fix quota
+ * is gone, 6I D10) and the licence policy (6M), checked at registration.
  */
 function validateOverride(value: unknown): PluginLimitOverride {
   const override = snapshot(value, 'a limit override');
@@ -198,27 +193,12 @@ function validateLlmOverride(value: unknown): Partial<LlmLimits> {
   const raw = snapshot(value, 'llm');
   const llm: Partial<LlmLimits> = {};
   for (const key of Object.keys(raw)) {
+    if (key !== 'automaticFixSuggestions') throw new PluginError(`unknown limit llm.${key}`);
     const v = raw[key];
-    if (key === 'maxFixPerOrganizationPerDay') {
-      if (
-        typeof v !== 'number' ||
-        !Number.isInteger(v) ||
-        v < 0 ||
-        v > ENTERPRISE_MAX_FIX_PER_DAY
-      ) {
-        throw new PluginError(
-          'llm.maxFixPerOrganizationPerDay must be an integer from 0 to 100 000',
-        );
-      }
-      llm.maxFixPerOrganizationPerDay = v;
-    } else if (key === 'automaticFixSuggestions') {
-      if (typeof v !== 'boolean') {
-        throw new PluginError('llm.automaticFixSuggestions must be a boolean');
-      }
-      llm.automaticFixSuggestions = v;
-    } else {
-      throw new PluginError(`unknown limit llm.${key}`);
+    if (typeof v !== 'boolean') {
+      throw new PluginError('llm.automaticFixSuggestions must be a boolean');
     }
+    llm.automaticFixSuggestions = v;
   }
   return Object.freeze(llm);
 }

@@ -30,7 +30,6 @@ const EMPTY = {
   pricing: null,
   storePrompts: false,
   promptRetentionDays: 7,
-  maxFixPerDay: 25,
 };
 const CONFIGURED = {
   ...EMPTY,
@@ -223,77 +222,42 @@ describe('AiSettingsPage (llm.md §3, §18)', () => {
     expect(root.textContent).not.toContain('server text');
   });
 
-  it("caps the fix budget at this edition's ceiling", async () => {
+  it('shows no "at most 25 per day" text: the fix budget has the bounds of the other budgets (D10)', async () => {
     setup(CONFIGURED);
     const { root } = await render();
-    expect(root.querySelector<HTMLInputElement>('#ai-budget-fix')!.max).toBe('25');
-    expect(root.querySelector('#ai-budget-fix-hint')?.textContent?.trim()).toBe(
-      'At most 25 a day in this edition',
-    );
+    const field = root.querySelector<HTMLInputElement>('#ai-budget-fix')!;
+    expect(field.max).toBe('100000');
+    expect(field.value).toBe('25');
+    // No edition ceiling in any wording, and no note beside the field.
+    expect(root.textContent).not.toMatch(/at most 25/i);
+    expect(root.textContent).not.toContain('in this edition');
     expect(root.textContent).not.toContain('community');
+    expect(root.querySelector('#ai-budget-fix-hint')).toBeNull();
+    expect(field.getAttribute('aria-describedby')).toBeNull();
   });
 
-  it('names the enterprise ceiling without calling it the community edition', async () => {
-    const server = setup({
-      ...CONFIGURED,
-      budgets: { ...CONFIGURED.budgets, fixPerDay: 500 },
-      maxFixPerDay: 100_000,
-    });
-    server.on('PUT', '/api/v0/system/llm', { body: CONFIGURED });
-    const { fixture, root } = await render();
-    expect(root.querySelector<HTMLInputElement>('#ai-budget-fix')!.max).toBe('100000');
-    expect(root.querySelector('#ai-budget-fix-hint')?.textContent?.trim()).toBe(
-      'At most 100000 a day in this edition',
-    );
-    expect(root.textContent).not.toContain('community');
-    type(root, '#ai-budget-fix', '100000');
-    submit(root);
-    await settle(fixture);
-    expect(server.requestsTo('PUT', '/api/v0/system/llm')[0]?.body).toMatchObject({
-      budgets: { fixPerDay: 100_000 },
-    });
-  });
-
-  it('keeps or lowers a saved fix budget above the ceiling, and refuses only a raise (enterprise.md §7.2)', async () => {
-    // After a licence lapse: 60 was saved under the enterprise ceiling, the ceiling is 25 again.
-    const lapsed = { ...CONFIGURED, budgets: { ...CONFIGURED.budgets, fixPerDay: 60 } };
-    const server = setup(lapsed);
+  it('takes a fix budget up to 100 000 and refuses more on its field, sending nothing (D10)', async () => {
+    const server = setup(CONFIGURED);
     server.on('PUT', '/api/v0/system/llm', (request) => ({
-      body: { ...lapsed, budgets: (request.body as typeof lapsed).budgets },
+      body: { ...CONFIGURED, budgets: (request.body as typeof CONFIGURED).budgets },
     }));
     const { fixture, root } = await render();
-    expect(root.querySelector<HTMLInputElement>('#ai-budget-fix')!.max).toBe('60');
-    expect(root.querySelector('#ai-budget-fix-hint')?.textContent).toContain(
-      'At most 25 a day in this edition. The saved 60 can be kept or lowered, not raised',
-    );
-
-    // Unchanged: the rest of the form can still be saved.
+    type(root, '#ai-budget-fix', '100000');
     submit(root);
     await settle(fixture);
     expect(server.requestsTo('PUT', '/api/v0/system/llm')).toHaveLength(1);
     expect(server.requestsTo('PUT', '/api/v0/system/llm')[0]?.body).toMatchObject({
-      budgets: { fixPerDay: 60 },
+      budgets: { fixPerDay: 100_000 },
     });
 
-    // A raise is refused before anything is sent.
-    type(root, '#ai-budget-fix', '61');
+    type(root, '#ai-budget-fix', '100001');
     submit(root);
     await settle(fixture);
     expect(server.requestsTo('PUT', '/api/v0/system/llm')).toHaveLength(1);
     expect(root.querySelector('#ai-budget-fix')?.getAttribute('aria-invalid')).toBe('true');
     expect(root.querySelector('#ai-budget-fix-error')?.textContent).toContain(
-      "Use a whole number from 0 to this edition's ceiling. A saved budget above it can be kept or lowered, not raised.",
+      'Use a whole number, 0 or more.',
     );
-
-    // Lowered, still above the ceiling: accepted.
-    type(root, '#ai-budget-fix', '40');
-    submit(root);
-    await settle(fixture);
-    expect(server.requestsTo('PUT', '/api/v0/system/llm')).toHaveLength(2);
-    expect(server.requestsTo('PUT', '/api/v0/system/llm')[1]?.body).toMatchObject({
-      budgets: { fixPerDay: 40 },
-    });
-    expect(root.querySelector<HTMLInputElement>('#ai-budget-fix')!.max).toBe('40');
   });
 
   it('tests the provider and shows the problem in its own words', async () => {

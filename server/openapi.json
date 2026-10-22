@@ -19614,11 +19614,6 @@
                       "type": "integer",
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991
-                    },
-                    "maxFixPerDay": {
-                      "type": "integer",
-                      "minimum": -9007199254740991,
-                      "maximum": 9007199254740991
                     }
                   },
                   "required": [
@@ -19628,8 +19623,7 @@
                     "budgets",
                     "pricing",
                     "storePrompts",
-                    "promptRetentionDays",
-                    "maxFixPerDay"
+                    "promptRetentionDays"
                   ],
                   "additionalProperties": false
                 }
@@ -20230,11 +20224,6 @@
                       "type": "integer",
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991
-                    },
-                    "maxFixPerDay": {
-                      "type": "integer",
-                      "minimum": -9007199254740991,
-                      "maximum": 9007199254740991
                     }
                   },
                   "required": [
@@ -20244,8 +20233,7 @@
                     "budgets",
                     "pricing",
                     "storePrompts",
-                    "promptRetentionDays",
-                    "maxFixPerDay"
+                    "promptRetentionDays"
                   ],
                   "additionalProperties": false
                 }

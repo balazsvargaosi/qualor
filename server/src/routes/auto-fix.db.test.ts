@@ -455,7 +455,6 @@ describe('automatic fix suggestion settings (4E-3a §2)', () => {
           [org]: { ...read.json().organizations[org], autoFixDisabledProjectIds: [gone.id] },
         },
       };
-      delete body.maxFixPerDay;
       const saved = await call('PUT', '/system/llm', admin.headers, body);
       expect(saved.statusCode, saved.body).toBe(200);
       expect(saved.json().organizations[org].autoFixDisabledProjectIds).toEqual([]);
@@ -488,7 +487,6 @@ describe('automatic fix suggestion settings (4E-3a §2)', () => {
   describe('/system/llm and autoFix (llm.md §3.3)', () => {
     const settingsBody = async () => {
       const read = (await call('GET', '/system/llm', admin.headers)).json();
-      delete read.maxFixPerDay;
       return { ...read, provider: null };
     };
 

@@ -67,7 +67,7 @@ describe('posting a fix suggestion (llm.md §8)', () => {
     await runLlmJobs(h, llmJobDeps(h));
     const requestId = res.json().id as string;
     expect((await request(requestId)).status).toBe('succeeded');
-    // Yesterday's: this file asks for more fixes than the 25 a day of llm.md §13.
+    // Yesterday's: this file asks for more fixes than the default budget of 25 a day.
     await h.ctx.db
       .update(llmRequests)
       .set({ createdAt: sql`now() - interval '1 day'` })

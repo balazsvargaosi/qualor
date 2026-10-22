@@ -109,14 +109,6 @@ export function secondsToUtcMidnight(now: Date = new Date()): number {
   return Math.max(1, Math.ceil((midnight - now.getTime()) / 1_000));
 }
 
-/** llm.md §12.1, §13: the admin's budgets with the community ceiling on fix suggestions. */
-export function effectiveBudgets(settings: StoredLlmSettings, limits: Limits): Budgets {
-  return {
-    ...settings.budgets,
-    fixPerDay: Math.min(settings.budgets.fixPerDay, limits.llm.maxFixPerOrganizationPerDay),
-  };
-}
-
 export interface AiUsage {
   explain: number;
   triage: number;
@@ -370,7 +362,8 @@ export async function createAiRequest(
     if (hit) return { kind: 'cached', row: hit };
   }
 
-  const budgets = effectiveBudgets(settings, deps.limits);
+  // The admin's own budgets are the only limit (6I D10): no edition caps them.
+  const { budgets } = settings;
   // A person over their bound is refused before waiting for the organisation's lock; the token is
   // still taken under the lock, so this only saves them the wait (and the lock the traffic). An
   // automatic request has no person, so no person's bound (4E-3a §3).

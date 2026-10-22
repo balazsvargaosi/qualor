@@ -14,7 +14,6 @@ import { conflict, ProblemError, validationFailed, type FieldError } from '../ht
 import { noNul } from '../http/schemas';
 import { VERSION } from '../index';
 import { IssueChangeLimiter } from '../issues/rate-limit';
-import type { LlmLimits } from '../limits';
 import { ERROR_TEXTS, errorCodeOf, LLM_ERROR_CODES, type LlmErrorCode } from '../llm/errors';
 import { callProvider, LlmError, PROVIDER_KINDS } from '../llm/providers';
 import {
@@ -148,8 +147,6 @@ const settingsDto = z.object({
   pricing: pricingSchema,
   storePrompts: z.boolean(),
   promptRetentionDays: z.number().int(),
-  /** The community ceiling of `budgets.fixPerDay` (llm.md §13), for the settings page's note. */
-  maxFixPerDay: z.number().int(),
 });
 
 const testResult = z.object({
@@ -308,11 +305,7 @@ const autoFixOf = (organizations: Record<string, OrgLlmSettings>) =>
     ]),
   );
 
-function dto(
-  s: StoredLlmSettings,
-  secretKey: string,
-  limits: LlmLimits,
-): z.infer<typeof settingsDto> {
+function dto(s: StoredLlmSettings, secretKey: string): z.infer<typeof settingsDto> {
   return {
     provider: s.provider && {
       ...providerConfig(s.provider),
@@ -325,7 +318,6 @@ function dto(
     pricing: s.pricing,
     storePrompts: s.storePrompts,
     promptRetentionDays: s.promptRetentionDays,
-    maxFixPerDay: limits.maxFixPerOrganizationPerDay,
   };
 }
 
@@ -448,7 +440,6 @@ export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
     owners: ReadonlyMap<string, string>,
     stored: StoredLlmSettings,
   ): FieldError[] => {
-    const storedFixPerDay = stored.budgets.fixPerDay;
     const errors: FieldError[] = [];
     if (body.provider) {
       const problem = llmBaseUrlProblem(body.provider.baseUrl, deps.config.llmInternalHosts);
@@ -457,16 +448,6 @@ export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
       if (temperature !== null && temperature > MAX_TEMPERATURE[body.provider.kind]) {
         errors.push({ path: 'body.provider.temperature', message: ANTHROPIC_TEMPERATURE_TEXT });
       }
-    }
-    // enterprise.md §7.2: a budget saved while a licence allowed more is kept (and clamped at
-    // use); only a raise above this edition's ceiling is refused, so the form still saves.
-    const ceiling = deps.edition.limits().llm.maxFixPerOrganizationPerDay;
-    const fixPerDay = body.budgets.fixPerDay;
-    if (fixPerDay > ceiling && fixPerDay > storedFixPerDay) {
-      errors.push({
-        path: 'body.budgets.fixPerDay',
-        message: `At most ${ceiling} in this edition`,
-      });
     }
     for (const [id, o] of Object.entries(body.organizations)) {
       if (!known.has(id)) {
@@ -514,7 +495,7 @@ export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
     },
     async (request) => {
       requireInstanceAdmin(request);
-      return dto(await readForAdmin(), deps.config.secretKey, deps.edition.limits().llm);
+      return dto(await readForAdmin(), deps.config.secretKey);
     },
   );
 
@@ -610,7 +591,7 @@ export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
         { userId: principal.user.id, fields: changedFields(current, next, keySent) },
         'LLM settings changed',
       );
-      return dto(next, deps.config.secretKey, deps.edition.limits().llm);
+      return dto(next, deps.config.secretKey);
     },
   );
 

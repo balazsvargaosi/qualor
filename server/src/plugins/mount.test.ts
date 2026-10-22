@@ -118,7 +118,7 @@ describe('plugin routes that fail to mount (ruling R-MOUNT)', () => {
         app.get(path, async () => ({ plugin: name }));
       });
       ctx.jobs(`${name}.x`, { [`ee.${name}`]: async () => {} });
-      ctx.limits(`${name}.x`, { llm: { maxFixPerOrganizationPerDay: 99 } });
+      ctx.limits(`${name}.x`, { llm: { automaticFixSuggestions: true } });
       ctx.ui(`${name}.x`, {
         point: 'settings.nav',
         id: name,
@@ -140,7 +140,7 @@ describe('plugin routes that fail to mount (ruling R-MOUNT)', () => {
         throw new Error('boom at mount');
       });
       ctx.jobs('broken.x', { 'ee.broken': async () => {} });
-      ctx.limits('broken.x', { llm: { maxFixPerOrganizationPerDay: 500 } });
+      ctx.limits('broken.x', { llm: { automaticFixSuggestions: true } });
       ctx.ui('broken.x', {
         point: 'settings.nav',
         id: 'broken',
@@ -188,7 +188,7 @@ describe('plugin routes that fail to mount (ruling R-MOUNT)', () => {
     const frozen = freezePlugins(registry);
     const ed = edition(frozen);
     expect(ed.activeFeatures()).toEqual(['first.x', 'third.x']);
-    expect(ed.limits().llm.maxFixPerOrganizationPerDay).toBe(99);
+    expect(ed.limits().llm.automaticFixSuggestions).toBe(true);
     const app = Fastify();
     installErrorHandling(app);
     await mountPluginRoutes(app, frozen, ed);

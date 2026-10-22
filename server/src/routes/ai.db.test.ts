@@ -440,17 +440,39 @@ describe('AI requests (llm.md §5, §10, §12, §16)', () => {
     }
   });
 
-  it('keeps the community ceiling of 25 fixes a day whatever fixPerDay says', async () => {
-    await configure({ budgets: { ...DEFAULT_LLM_SETTINGS.budgets, fixPerDay: 1_000 } });
+  it('community: the 26th fix of the day is accepted when fixPerDay allows it (D10)', async () => {
+    // There is no edition ceiling on fix suggestions: the admin's budget is the only limit.
+    await configure({
+      budgets: { ...DEFAULT_LLM_SETTINGS.budgets, fixPerDay: 100, perUserPerHour: 10_000 },
+    });
+    const codes: number[] = [];
+    for (let i = 0; i < 26; i += 1) {
+      codes.push((await ask(eqIssue, 'fix', { refresh: true })).statusCode);
+    }
+    expect(codes).toEqual(Array<number>(26).fill(202));
+    expect(await h.ctx.db.select().from(llmRequests)).toHaveLength(26);
+    // The organisation's view reports the admin's budget as saved, not clamped to 25.
+    expect((await get(`/api/v0/organizations/${h.organizationId}/ai`)).json()).toMatchObject({
+      usage: { fix: 26 },
+      budgets: { fixPerDay: 100 },
+    });
+  });
+
+  it('community: the admin’s own fixPerDay is the only limit, so the request after it is refused', async () => {
+    await configure({
+      budgets: { ...DEFAULT_LLM_SETTINGS.budgets, fixPerDay: 26, perUserPerHour: 10_000 },
+    });
     const first = (await ask(eqIssue, 'fix')).json();
     const [template] = await h.ctx.db
       .select()
       .from(llmRequests)
       .where(eq(llmRequests.id, first.id));
     const copy = { ...template!, id: undefined };
+    // 25 requests counted so far (the first, and 24 that failed after being sent).
     await h.ctx.db
       .insert(llmRequests)
       .values(Array.from({ length: 24 }, () => ({ ...copy, status: 'failed' as const })));
+    expect((await ask(eqIssue, 'fix', { refresh: true })).statusCode).toBe(202);
     const res = await ask(eqIssue, 'fix', { refresh: true });
     expect(res.statusCode).toBe(429);
     expect(res.json().code).toBe('AI_QUOTA_EXCEEDED');

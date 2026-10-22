@@ -826,7 +826,6 @@ describe('sso.multi: one connection in effect without it (sso-scim.md §4.4)', (
     expect(ctx!.edition!.activeFeatures()).toEqual([
       'audit-log',
       'license-policy',
-      'llm.fix-quota',
       'sso',
       'support-bundle',
     ]);
