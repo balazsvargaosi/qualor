@@ -164,15 +164,19 @@ it. In the scan log you see `AI review: no snapshot sent, …` and the reason:
 - **A secret scan that is switched on did not complete.** Gitleaks is on by default
   (`enabled: true`) and a failure of it ends the scan with exit code 3, which sends no snapshot.
   With `enabled: auto`, a Gitleaks that failed, timed out, is not installed, or was skipped because
-  the `configFile` it was given does not exist stops the snapshot too: it scanned nothing. The same
-  holds for OpenGrep or Semgrep (`analyzers.semgrep`) and for Qualor's rules (`analyzers.qualor`),
-  whose findings mask secrets as well, with one exception: an engine that had **nothing to run**
-  does not hold the snapshot up. That is Semgrep without rule files (the scanner image ships none,
-  so on its defaults Semgrep runs nothing), and Qualor's rules without their pack or without a file
-  in their languages. If one of them has something to run and cannot (you named rule files in
-  `analyzers.semgrep.configs` and neither OpenGrep nor Semgrep is installed, or the run failed),
-  fix it, or switch it off: `analyzers.semgrep.enabled: false`, or
-  `analyzers.qualor.enabled: false` for Qualor's rules.
+  the `configFile` it was given does not exist or is not a regular file stops the snapshot too: it
+  scanned nothing. The same holds for OpenGrep or Semgrep (`analyzers.semgrep`) and for Qualor's
+  rules (`analyzers.qualor`), whose findings mask secrets as well, with one exception: an engine
+  that had **nothing to run** does not hold the snapshot up. That is Semgrep on its defaults
+  (`configs: [qualor-default]`; the scanner image ships no rule files, so it runs nothing), and
+  Qualor's rules without their pack or without a file in their languages. Qualor's rules that
+  have a pack and cannot run (OpenGrep is missing, the pack is damaged, the run failed) do hold it
+  up: fix them, or set `analyzers.qualor.enabled: false`.
+- **Rule files you named never ran.** Once `analyzers.semgrep.configs` names a file or directory
+  of your own, a Semgrep that did not run holds the snapshot up: a path that does not exist or has
+  a typo, `qualor-default` next to your file on a runner without the image's rules directory (the
+  skip then drops your file too), neither OpenGrep nor Semgrep installed, or a run that failed.
+  Fix the path or the tool, or switch Semgrep off with `analyzers.semgrep.enabled: false`.
 - **The secret scan's output could not be read.**
 - **The files that differ from the checkout could not be scanned** (item 4 above).
 
@@ -275,7 +279,7 @@ informational lines about what the snapshot holds and masks. Set `QUALOR_LOG_LEV
 | Message in the scan log | What it means, and what to do |
 |---|---|
 | `AI review is off for this project (<reason>), so no repository snapshot is sent` | Not an error. The reasons are in the next table |
-| `no snapshot sent, the secret scan (<engines>) did not complete` | An engine that is switched on and had something to run did not finish. Fix or install it, or switch it off with `enabled: false` ([When the secret scan stops the snapshot](#when-the-secret-scan-stops-the-snapshot)). An engine with nothing to run, such as Semgrep without rule files, does not cause it |
+| `no snapshot sent, the secret scan (<engines>) did not complete` | An engine that is switched on and had something to run did not finish, or rule files you named in `analyzers.semgrep.configs` never ran. Fix the path or the tool, or switch the engine off with `enabled: false` ([When the secret scan stops the snapshot](#when-the-secret-scan-stops-the-snapshot)). An engine with nothing to run, such as Semgrep on its defaults, does not cause it |
 | `no snapshot sent, the secret scan's output could not be read` | Run the scan again. If it repeats, read the debug log |
 | `no snapshot sent, the merge request's head commit <sha> is not in the clone and could not be fetched` | Give the job the full history, or check out the pull request's head ([What your CI needs](#what-your-ci-needs)) |
 | `… is not in the clone (scm.autoFetch is false)` | Allow the fetch (`scm.autoFetch: true`), or give the clone the commit |

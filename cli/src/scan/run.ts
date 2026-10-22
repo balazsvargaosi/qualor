@@ -385,19 +385,30 @@ function redactsSecrets(engineId: string): boolean {
 }
 
 /**
+ * Whether `analyzers.semgrep.configs` names nothing but the image's own `qualor-default`: no rule
+ * file of the user's. Read from the scan's configuration, not from the engine's reason text.
+ */
+const semgrepOnDefaults = (config: QualorConfig): boolean =>
+  config.analyzers.semgrep.configs.every((entry) => entry === 'qualor-default');
+
+/**
  * Review Focus 2: the scan's secret scans that did not complete, read from the report's engine
- * records (`engines`), the analyzers the scan ran and `incomplete`, ruling G6's list (`buildReport`: failed,
- * timed out, or unavailable, the tool could not run here). Every engine whose findings are secrets
- * the report masks (Gitleaks, and the secret rules of Semgrep and of Qualor's rules) that
- * qualor.yml does not switch off must have looked at the files: one that failed, timed out, could
- * not run here, or whose output could not be read left its secrets unknown.
- *
- * Two kinds of "skipped" are not that. An engine that had nothing to run (Semgrep without rule
- * files, which is how the scanner image ships it; Qualor's rules without their pack, or without a
- * file of their languages) masks nothing it could have found, and G6 counts it complete. Gitleaks
- * is the exception: it has something to scan in every repository, so a Gitleaks that was skipped
- * (its `configFile` does not exist) scanned nothing, and holds the snapshot up like a failure.
- * An engine with no record at all is unknown, so not complete.
+ * records (`engines`), the analyzers the scan ran and `incomplete`, ruling G6's list (`buildReport`:
+ * failed, timed out, or unavailable, the tool could not run here). Every engine whose findings are
+ * secrets the report masks (Gitleaks, and the secret rules of Semgrep and of Qualor's rules) that
+ * qualor.yml does not switch off must have looked at the files. In order:
+ * - no record at all: unknown, so not complete;
+ * - `ok`: complete;
+ * - failed or timed out: not complete, whatever the list says;
+ * - skipped: it scanned nothing, which is complete only when there was nothing to scan.
+ *   - Gitleaks: never. It has something to scan in every repository, and its only skip is a
+ *     `configFile` that does not exist or is not a regular file.
+ *   - an engine in the list: its tool could not run here.
+ *   - Semgrep whose configs name anything but `qualor-default`: the rule files the configuration
+ *     names never ran (a path that does not exist; `resolveConfigs` also returns the first skip
+ *     and drops the configs it resolved). Semgrep on its defaults ran nothing because the scanner
+ *     image ships no rule file: nothing to run.
+ *   - Qualor's rules without their pack or without a file of their languages: nothing to run.
  */
 export function incompleteSecretScans(
   analyzers: readonly Pick<Analyzer, 'id'>[],
@@ -406,14 +417,18 @@ export function incompleteSecretScans(
   incomplete: readonly string[],
 ): string[] {
   const status = new Map(engines.map((e) => [e.id, e.status]));
-  const notComplete = new Set(incomplete);
+  const unavailable = new Set(incomplete);
+  const unfinished = (id: string): boolean => {
+    const recorded = status.get(id);
+    if (recorded === undefined) return true;
+    if (recorded === 'ok') return false;
+    if (recorded !== 'skipped') return true;
+    if (id === SECRET_ENGINE || unavailable.has(id)) return true;
+    return id === 'semgrep' && !semgrepOnDefaults(config);
+  };
   return analyzers
     .filter((a) => redactsSecrets(a.id) && config.analyzers[a.id].enabled !== false)
-    .filter((a) => {
-      const recorded = status.get(a.id);
-      if (recorded === undefined) return true;
-      return a.id === SECRET_ENGINE ? recorded !== 'ok' : notComplete.has(a.id);
-    })
+    .filter((a) => unfinished(a.id))
     .map((a) => a.id);
 }
 

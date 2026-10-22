@@ -21,6 +21,7 @@ import { captureIO } from '../../test/io';
 import { snapshotLinesOf } from '../../test/review-snapshot';
 import { fakeSecret, fakeSecretEngine } from '../../test/secret-engine';
 import { useTempDirs, writeTree } from '../../test/tmp';
+import { createQualorAnalyzer } from '../analyzers/qualor';
 import { builtinAnalyzers } from '../analyzers/registry';
 import { createSemgrepAnalyzer } from '../analyzers/semgrep';
 import type { Analyzer } from '../analyzers/types';
@@ -619,13 +620,17 @@ describe('qualor scan: the AI review snapshot of a merge request (6I-2)', () => 
     },
   );
 
-  // The real analyzers, not fakes: what their own preparation answers decides (ruling G6).
-  const realAnalyzer = (id: 'gitleaks' | 'qualor' | 'semgrep'): Analyzer => {
-    const found = builtinAnalyzers().find((a) => a.id === id);
-    if (found === undefined) throw new Error(`no ${id} analyzer`);
+  // The real analyzers, not fakes: what their own preparation answers decides (ruling G6). Each
+  // is given directories of its own, so the machine running the tests (the scanner image, CI)
+  // never decides: no rules directory of the host is read.
+  const realGitleaks = (): Analyzer => {
+    const found = builtinAnalyzers().find((a) => a.id === 'gitleaks');
+    if (found === undefined) throw new Error('no gitleaks analyzer');
     return found;
   };
-  /** The real Semgrep analyzer, whose rules directory is `rulesDir`, on a machine with no OpenGrep or Semgrep. */
+  /** The real Semgrep analyzer for a runner without the image: its rules directory is absent. */
+  const semgrepWithoutImage = (): Analyzer => createSemgrepAnalyzer(path.join(tmp(), 'absent'));
+  /** The real Semgrep analyzer on a machine with no OpenGrep or Semgrep, whatever this one has. */
   const semgrepWithoutTools = (rulesDir: string): Analyzer => {
     const real = createSemgrepAnalyzer(rulesDir);
     return { ...real, prepare: (ctx) => real.prepare({ ...ctx, resolveBinary: () => null }) };
@@ -642,13 +647,16 @@ describe('qualor scan: the AI review snapshot of a merge request (6I-2)', () => 
   it.each([
     [
       'Semgrep on its defaults, on a host without the image (no rules directory)',
-      () => [realAnalyzer('semgrep')],
+      () => [semgrepWithoutImage()],
     ],
     [
       'Semgrep on its defaults in the scanner image, whose rules directory holds no rule',
       () => [createSemgrepAnalyzer(emptyRulesDir())],
     ],
-    ["Qualor's rules without their pack, off the scanner image", () => [realAnalyzer('qualor')]],
+    [
+      "Qualor's rules without their pack, off the scanner image",
+      () => [createQualorAnalyzer({ defaultDir: path.join(tmp(), 'no-pack') })],
+    ],
   ])(
     'a secret rule engine with nothing to run does not hold the snapshot up: %s',
     { timeout: 60_000 },
@@ -698,19 +706,70 @@ describe('qualor scan: the AI review snapshot of a merge request (6I-2)', () => 
     },
   );
 
-  it(
-    'Gitleaks that was skipped for a configFile that does not exist scanned nothing, so it holds the snapshot up',
+  // Semgrep's own preparation skips for a config that does not exist, and returns the FIRST skip
+  // of the list, dropping the configs it already resolved: the rules the configuration names
+  // never ran, which is not "nothing to run".
+  it.each([
+    ['a named rule file that does not exist', '[rules/missing.yml]', {}],
+    [
+      'a typo in the name of a rule file',
+      '[rules/secret.yml]',
+      { 'rules/secrets.yml': SECRET_RULE },
+    ],
+    [
+      'two named rule files, the second gone (the first resolved, then was dropped)',
+      '[rules/secrets.yml, rules/old.yml]',
+      { 'rules/secrets.yml': SECRET_RULE },
+    ],
+    [
+      'qualor-default next to a named rule file, on a runner without the image',
+      '[qualor-default, rules/secrets.yml]',
+      { 'rules/secrets.yml': SECRET_RULE },
+    ],
+  ])(
+    'Semgrep rules that were named and never ran hold the snapshot up: %s',
     { timeout: 60_000 },
-    async () => {
+    async (_name, configs, base) => {
       const mr = mrRepo({
-        yml: withAnalyzers('  gitleaks:\n    enabled: auto\n    configFile: missing.toml\n'),
+        yml: withAnalyzers(`  semgrep:\n    configs: ${configs}\n`),
+        base,
       });
       const server = await fakeServer([done('passed')], undefined, { context: REVIEW_ON });
       const { code, stderr } = await scan(
         mr.root,
         server,
         [],
-        { analyzers: [realAnalyzer('gitleaks')] },
+        { analyzers: [fakeSecretEngine(tmp()).analyzer, semgrepWithoutImage()] },
+        gitlabMr(mr.head),
+      );
+      expect(code, stderr).toBe(0);
+      expect(server.uploaded[0]?.engines).toContainEqual(
+        expect.objectContaining({ id: 'semgrep', status: 'skipped' }),
+      );
+      expect(server.paths).toEqual([...UNTIL_REPORT, CONTEXT, GATE]);
+      expect(reviewWarnings(stderr)).toEqual([
+        'warn: AI review: no snapshot sent, the secret scan (semgrep) did not complete',
+      ]);
+    },
+  );
+
+  it.each([
+    ['does not exist', 'missing.toml', {}],
+    ['is not a regular file', 'config-dir', { 'config-dir/notes.txt': 'a directory\n' }],
+  ])(
+    'Gitleaks that was skipped because its configFile %s scanned nothing, so it holds the snapshot up',
+    { timeout: 60_000 },
+    async (_name, configFile, base) => {
+      const mr = mrRepo({
+        yml: withAnalyzers(`  gitleaks:\n    enabled: auto\n    configFile: ${configFile}\n`),
+        base,
+      });
+      const server = await fakeServer([done('passed')], undefined, { context: REVIEW_ON });
+      const { code, stderr } = await scan(
+        mr.root,
+        server,
+        [],
+        { analyzers: [realGitleaks()] },
         gitlabMr(mr.head),
       );
       expect(code, stderr).toBe(0);
