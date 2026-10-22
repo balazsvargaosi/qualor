@@ -63,7 +63,12 @@ export function snapshotText(file: string): string {
 
 /** The lines of a gzip'd snapshot file, each checked by the shared schema, the whole as above. */
 export function snapshotLines(file: string): SnapshotLine[] {
-  const text = snapshotText(file);
+  return snapshotLinesOf(readFileSync(file));
+}
+
+/** The lines of a gzip'd snapshot as sent (an upload's body), checked as `snapshotLines` does. */
+export function snapshotLinesOf(gzipped: Buffer): SnapshotLine[] {
+  const text = gunzipSync(gzipped).toString('utf8');
   expect(text.endsWith('\n')).toBe(true);
   const lines = text.slice(0, -1).split('\n').map(parseSnapshotLine);
   expectAcceptable(lines);

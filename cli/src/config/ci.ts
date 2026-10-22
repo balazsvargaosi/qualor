@@ -14,7 +14,7 @@ export interface CiInfo {
   provider: CiProvider;
   revision: string | null;
   branch: string | null;
-  mergeRequest: { id: string; targetBranch: string } | null;
+  mergeRequest: CiMergeRequest | null;
   mainBranch: string | null;
   projectPath: string | null;
   /** GitLab CI only (report `scm.gitlab`, scm.md §3); a malformed value is left out. */
@@ -23,6 +23,24 @@ export interface CiInfo {
   github: GitHubCi | null;
   /** The pull request's head SHA from the event payload (full, lower-case hex), else null. */
   pullRequestHead: string | null;
+}
+
+/**
+ * The merge request a CI pipeline runs for. `id` and `targetBranch` go to the report; the rest is
+ * only for the AI review's repository snapshot (6I-2) and never reaches the report.
+ */
+export interface CiMergeRequest {
+  id: string;
+  targetBranch: string;
+  /**
+   * The merge request's head commit (full, lower-case hex): its source branch's head, which a
+   * merged-result or merge-train pipeline does not check out (ruling R12); null when CI does not
+   * name it.
+   */
+  headSha: string | null;
+  /** Its title and description as CI gives them (ruling R9); null when absent or blank. */
+  title: string | null;
+  description: string | null;
 }
 
 export interface GitLabCi {
@@ -43,12 +61,29 @@ function get(env: Env, name: string): string | null {
   return v === undefined || v === '' ? null : v;
 }
 
+/** A text as its author wrote it (a description keeps its indentation); null when blank. */
+function text(value: string | null | undefined): string | null {
+  return value === null || value === undefined || value.trim() === '' ? null : value;
+}
+
+const FULL_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
+/** A full commit id, else null. */
+function fullSha(value: string | null | undefined): string | null {
+  return value !== null && value !== undefined && FULL_SHA.test(value) ? value : null;
+}
+
+/** A text field of the event read leniently: of another type it is absent, never the PR lost. */
+const eventText = z.string().nullish().catch(null);
+
 const githubEvent = z.looseObject({
   pull_request: z
     .looseObject({
       number: z.number().int(),
       head: z.looseObject({ sha: z.string() }).optional(),
       base: z.looseObject({ ref: z.string() }).optional(),
+      title: eventText,
+      body: eventText,
     })
     .optional(),
   repository: z.looseObject({ default_branch: z.string() }).optional(),
@@ -106,7 +141,15 @@ function githubCi(env: Env): GitHubCi {
   };
 }
 
-const FULL_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+/**
+ * A GitLab merge request's head: in a merged-result or merge-train pipeline the commit is the
+ * merge GitLab made, and `CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` names the source branch's head; in
+ * any other the commit is that head.
+ */
+function gitlabHead(env: Env, eventType: GitLabMergeRequestEventType | undefined): string | null {
+  const merged = eventType === 'merged_result' || eventType === 'merge_train';
+  return fullSha(get(env, merged ? 'CI_MERGE_REQUEST_SOURCE_BRANCH_SHA' : 'CI_COMMIT_SHA'));
+}
 
 export function detectCi(
   env: Env,
@@ -115,14 +158,24 @@ export function detectCi(
   if (get(env, 'GITLAB_CI') === 'true') {
     const iid = get(env, 'CI_MERGE_REQUEST_IID');
     const target = get(env, 'CI_MERGE_REQUEST_TARGET_BRANCH_NAME');
+    const gitlab = gitlabCi(env);
     return {
       provider: 'gitlab',
       revision: get(env, 'CI_COMMIT_SHA'),
       branch: get(env, 'CI_COMMIT_TAG') !== null ? null : get(env, 'CI_COMMIT_REF_NAME'),
-      mergeRequest: iid !== null && target !== null ? { id: iid, targetBranch: target } : null,
+      mergeRequest:
+        iid !== null && target !== null
+          ? {
+              id: iid,
+              targetBranch: target,
+              headSha: gitlabHead(env, gitlab.mergeRequestEventType),
+              title: text(env['CI_MERGE_REQUEST_TITLE']),
+              description: text(env['CI_MERGE_REQUEST_DESCRIPTION']),
+            }
+          : null,
       mainBranch: get(env, 'CI_DEFAULT_BRANCH'),
       projectPath: get(env, 'CI_PROJECT_PATH'),
-      gitlab: gitlabCi(env),
+      gitlab,
       github: null,
       pullRequestHead: null,
     };
@@ -131,6 +184,7 @@ export function detectCi(
     const event = readEvent(get(env, 'GITHUB_EVENT_PATH'), readFile);
     const pr = event.pull_request;
     const target = get(env, 'GITHUB_BASE_REF') ?? pr?.base?.ref ?? null;
+    const head = fullSha(pr?.head?.sha);
     return {
       provider: 'github',
       revision: pr?.head?.sha ?? get(env, 'GITHUB_SHA'),
@@ -140,14 +194,19 @@ export function detectCi(
           : (get(env, 'GITHUB_HEAD_REF') ?? get(env, 'GITHUB_REF_NAME')),
       mergeRequest:
         pr !== undefined && target !== null
-          ? { id: String(pr.number), targetBranch: target }
+          ? {
+              id: String(pr.number),
+              targetBranch: target,
+              headSha: head,
+              title: text(pr.title),
+              description: text(pr.body),
+            }
           : null,
       mainBranch: event.repository?.default_branch ?? null,
       projectPath: get(env, 'GITHUB_REPOSITORY'),
       gitlab: null,
       github: githubCi(env),
-      pullRequestHead:
-        pr?.head?.sha !== undefined && FULL_SHA.test(pr.head.sha) ? pr.head.sha : null,
+      pullRequestHead: head,
     };
   }
   return {

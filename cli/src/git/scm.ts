@@ -182,6 +182,17 @@ async function mainBranchBaseline(
   return serverBaselineCommit(o.git, answer.revision, policy, ctx);
 }
 
+/**
+ * How a scan fetches what its clone lacks (`scm.autoFetch`, then `--deepen` steps before
+ * `--unshallow`): the new-code baseline's policy, and the AI review snapshot's (6I-2).
+ */
+export function fetchPolicy(
+  settings: Settings,
+  deepenSteps: readonly number[] = DEFAULT_DEEPEN_STEPS,
+): FetchPolicy {
+  return { autoFetch: settings.config.scm.autoFetch, deepenSteps };
+}
+
 export async function resolveScm(o: ResolveScmOptions): Promise<ScmResolution> {
   const { git, settings, flags, warnings, log } = o;
   const inside = await git(['rev-parse', '--is-inside-work-tree']);
@@ -214,11 +225,13 @@ export async function resolveScm(o: ResolveScmOptions): Promise<ScmResolution> {
     flags.mr !== undefined && flags.mrTarget !== undefined
       ? { id: flags.mr, targetBranch: flags.mrTarget }
       : settings.ci.mergeRequest;
-  const mergeRequest = mr === null ? null : { ...mr, sourceBranch: branch ?? 'HEAD' };
-  const policy: FetchPolicy = {
-    autoFetch: settings.config.scm.autoFetch,
-    deepenSteps: o.deepenSteps ?? DEFAULT_DEEPEN_STEPS,
-  };
+  // Field by field: what CI says of the merge request beyond these (its title and description,
+  // for the AI review's snapshot) never reaches the report.
+  const mergeRequest =
+    mr === null
+      ? null
+      : { id: mr.id, targetBranch: mr.targetBranch, sourceBranch: branch ?? 'HEAD' };
+  const policy = fetchPolicy(settings, o.deepenSteps);
   const ctx: BaselineContext = { log, warnings };
 
   let baseline: Baseline;

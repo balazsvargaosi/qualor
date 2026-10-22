@@ -9,6 +9,7 @@ import {
   parseProblem,
   request,
   retryAfterMs,
+  type HttpResponse,
   type ServerEndpoint,
 } from './http';
 
@@ -39,6 +40,23 @@ const accepted = z.looseObject({
 });
 
 /**
+ * Ruling E5, for every upload (the report, the AI review's snapshot): how long to wait before the
+ * next attempt when the answer `res` to attempt `attempt` (from 1) is 503 `UPLOADS_BUSY` and the
+ * retries are not used up: `Retry-After`, clamped to 1–30 s (2 s without one), within what is
+ * left of `MAX_UPLOAD_RETRY_WAIT_MS` after `waited`. Null for any other answer, or when no
+ * attempt or wait is left.
+ */
+export function busyRetryDelay(res: HttpResponse, attempt: number, waited: number): number | null {
+  if (res.status !== 503 || attempt >= MAX_UPLOAD_ATTEMPTS) return null;
+  if (parseProblem(res.body)?.code !== 'UPLOADS_BUSY') return null;
+  const delay = Math.min(
+    retryAfterMs(res.headers, MIN_RETRY_MS, MAX_RETRY_MS) ?? DEFAULT_RETRY_MS,
+    MAX_UPLOAD_RETRY_WAIT_MS - waited,
+  );
+  return delay > 0 ? delay : null;
+}
+
+/**
  * `POST /api/v0/analyses?projectKey=` (api.md §3) with the gzipped report, streamed from disk,
  * `Content-Length` and `Expect: 100-continue`: the server refuses a bad token, an unknown project
  * or an oversized report before a byte of the body is sent. 503 `UPLOADS_BUSY` is retried
@@ -64,19 +82,14 @@ export async function uploadReport(
     if (res.status === 202) {
       return { analysisId: parseJson(res, accepted, 'upload response').analysisId };
     }
-    const problem = parseProblem(res.body);
-    if (res.status === 503 && problem?.code === 'UPLOADS_BUSY' && attempt < MAX_UPLOAD_ATTEMPTS) {
-      const delay = Math.min(
-        retryAfterMs(res.headers, MIN_RETRY_MS, MAX_RETRY_MS) ?? DEFAULT_RETRY_MS,
-        MAX_UPLOAD_RETRY_WAIT_MS - waited,
-      );
-      if (delay > 0) {
-        o.log.info(`the server is busy with other uploads; retrying in ${delay / 1000} s`);
-        waited += delay;
-        await wait(delay);
-        continue;
-      }
+    const delay = busyRetryDelay(res, attempt, waited);
+    if (delay !== null) {
+      o.log.info(`the server is busy with other uploads; retrying in ${delay / 1000} s`);
+      waited += delay;
+      await wait(delay);
+      continue;
     }
+    const problem = parseProblem(res.body);
     if (res.status === 401 || res.status === 403) {
       throw new CliError(EXIT.AUTH, `the server rejected the upload (${describeFailure(res)})`);
     }

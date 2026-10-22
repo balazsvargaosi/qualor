@@ -3,26 +3,38 @@ import type { Report } from '@qualor/shared';
 import { loadExternalSarif } from '../analyzers/external';
 import { fileLines, normalizeCaptures } from '../analyzers/normalize';
 import { builtinAnalyzers } from '../analyzers/registry';
-import { requiredFailures, runAnalyzers } from '../analyzers/runner';
+import {
+  createWorkDir,
+  releaseWorkDir,
+  requiredFailures,
+  runAnalyzers,
+  withEmergencyCleanup,
+} from '../analyzers/runner';
 import { LICENSE_ENGINE_ID } from '../analyzers/trivy-licenses';
 import type { Analyzer, DotnetRun } from '../analyzers/types';
 import type { ScanFlags } from '../args';
 import { platformId } from '../commands/version';
+import type { CiMergeRequest } from '../config/ci';
 import { loadSettings, requireServer, type Settings } from '../config/settings';
 import { importCoverage } from '../coverage/import';
 import { discoverFiles } from '../discovery/discover';
 import { detectDuplications } from '../duplication/detect';
 import { CliError, EXIT, type ExitCode } from '../errors';
 import { createGit, type Git } from '../git/git';
-import { resolveScm } from '../git/scm';
+import { fetchPolicy, resolveScm } from '../git/scm';
 import { VERSION } from '../index';
 import type { CliIO } from '../io';
 import type { Logger } from '../log';
 import { loadParsers, type Parsers } from '../parse/grammars';
+import { baseSecretScan } from '../review/base-secrets';
+import { fetchReviewContext, type ReviewContext } from '../review/context';
+import { maskSecrets, prepareSecrets } from '../review/redact';
+import { buildReviewSnapshot, type BuiltSnapshot } from '../review/snapshot';
+import { uploadReviewSnapshot } from '../review/upload';
 import { httpBaselineClient, type NewCodeBaselineClient } from '../server/baseline-client';
 import { serverEndpoint } from '../server/endpoint';
 import { describeGate, gateExitCode, waitForAnalysis } from '../server/gate';
-import type { ServerEndpoint } from '../server/http';
+import { clean, type ServerEndpoint } from '../server/http';
 import { uploadReport } from '../server/upload';
 import { checkServerVersion } from '../server/version';
 import { Warnings } from '../warnings';
@@ -72,6 +84,11 @@ export interface ScanDeps {
   extraWarnings?: readonly { code: string; message: string }[];
   /** The Trivy licence pass's process helper and binary lookup (tests fake them). */
   licensePass?: DependencyPassHooks;
+  /**
+   * Where the AI review's snapshot and the scan of its merge base make their private directories
+   * (tests); the system's temporary directory by default.
+   */
+  reviewTempRoot?: string;
 }
 
 interface BuiltReport {
@@ -341,6 +358,185 @@ function summary(report: Report): string {
   );
 }
 
+interface ReviewSnapshotOptions {
+  endpoint: ServerEndpoint;
+  settings: Settings;
+  projectKey: string;
+  /** The analysis of the report just uploaded. */
+  analysisId: string;
+  /** The report's merge request: CI's, or the one `--mr` and `--mr-target` name. */
+  reported: Report['scm']['mergeRequest'];
+  /** The secrets the scan's analyzers found, or that they are unknown. */
+  redaction: GitLabRedaction;
+  /** The scan's analyzers: its secret engine scans the merge base's files too (ruling R13). */
+  analyzers: readonly Analyzer[];
+  /** The CLI's environment, as the scan's analyzers had it (`GITLEAKS_CONFIG`). */
+  env: CliIO['env'];
+  log: Logger;
+  deps: ScanDeps;
+}
+
+/** What CI lacks when it does not name the merge request's head commit, for the warning. */
+function unnamedHead(ci: Settings['ci']): string {
+  if (ci.provider === 'github') return "the event's pull_request.head.sha is not a commit id";
+  const merged = ci.gitlab?.mergeRequestEventType;
+  return merged === 'merged_result' || merged === 'merge_train'
+    ? `CI_MERGE_REQUEST_SOURCE_BRANCH_SHA is not a commit id in this ${merged.replace('_', ' ')} pipeline`
+    : 'CI_COMMIT_SHA is not a commit id';
+}
+
+/** Why the snapshot could not be built, for its warning. */
+function unavailableText(
+  reason: Extract<BuiltSnapshot, { kind: 'unavailable' }>['reason'],
+  o: { headSha: string; targetBranch: string; autoFetch: boolean },
+): string {
+  switch (reason) {
+    case 'head_missing':
+      return o.autoFetch
+        ? `the merge request's head commit ${o.headSha} is not in the clone and could not be fetched (a checkout with more history, a larger fetch-depth, has it)`
+        : `the merge request's head commit ${o.headSha} is not in the clone (scm.autoFetch is false)`;
+    case 'no_merge_base':
+      return `the merge request's head and origin/${o.targetBranch} have no common commit in this clone`;
+    case 'too_large':
+      return "the merge request's changes alone are over the server's snapshot limits";
+  }
+}
+
+/**
+ * The snapshot of `s.mr`, built in `s.tempRoot` and uploaded, then removed whatever happens. Its
+ * warnings are those of `sendReviewSnapshot`; it throws on a git, disk or network failure.
+ */
+async function buildAndUpload(
+  o: ReviewSnapshotOptions,
+  s: {
+    mr: CiMergeRequest & { headSha: string };
+    context: ReviewContext;
+    secrets: readonly string[];
+    tempRoot: string;
+  },
+): Promise<void> {
+  const { settings, log } = o;
+  const { mr, tempRoot } = s;
+  // One directory for git and the secret engine, the scan root: the merge base's files are laid
+  // out from git's working directory, and the head scan's paths, which the engine's path rules
+  // and allowlists match, are the analyzers' root's.
+  const root = settings.root;
+  const policy = fetchPolicy(settings);
+  const built = await buildReviewSnapshot({
+    git: o.deps.git ?? createGit(root, o.env),
+    config: settings.config,
+    headSha: mr.headSha,
+    targetBranch: mr.targetBranch,
+    sinceSha: s.context.lastReviewedCommit,
+    mergeRequest: { id: mr.id, title: mr.title, description: mr.description },
+    secrets: s.secrets,
+    baseSecrets: baseSecretScan({
+      analyzers: o.analyzers,
+      root,
+      config: settings.config,
+      env: o.env,
+      log,
+      tempRoot,
+    }),
+    limits: s.context.limits,
+    policy,
+    log,
+    tempRoot,
+  });
+  if (built.kind === 'unavailable') {
+    const why = unavailableText(built.reason, {
+      headSha: mr.headSha,
+      targetBranch: mr.targetBranch,
+      autoFetch: policy.autoFetch,
+    });
+    log.warn(`AI review: no snapshot sent, ${why}`);
+    return;
+  }
+  try {
+    log.info(
+      `AI review: uploading the repository snapshot (${built.files} files, ${built.size} bytes gzipped, ${built.redactions} secrets masked${built.partial ? "; partial: the server's limits left files out" : ''})`,
+    );
+    const outcome = await uploadReviewSnapshot(
+      o.endpoint,
+      { analysisId: o.analysisId, projectKey: o.projectKey, file: built.file, size: built.size },
+      { log, ...(o.deps.wait !== undefined && { wait: o.deps.wait }) },
+    );
+    if (outcome === 'uploaded') log.info('AI review: repository snapshot uploaded');
+  } finally {
+    await built.cleanup();
+  }
+}
+
+/**
+ * AI review (6I-2): the merge request's repository snapshot, after its report, when the server
+ * says AI review runs for the project. The snapshot is built with the scan's own configuration,
+ * analyzers and secrets (the token among them), the merge base's files scanned by the same secret
+ * engine from the same root (ruling R13), and is always removed afterwards (on Ctrl+C or a
+ * cancelled job too). A scan that exits 3 sends none (`runScan` returns first). No snapshot goes
+ * when the scan's secret-engine output could not be read (Review Focus 2) or the merge request's
+ * head is unknown or not in the clone (ruling R12); each of those, a snapshot that cannot be
+ * built, a refused upload (said by `uploadReviewSnapshot`) and any failure is one warning. It
+ * never throws and never decides the exit code. Nothing it logs holds a secret, the token or
+ * snapshot content.
+ */
+async function sendReviewSnapshot(o: ReviewSnapshotOptions): Promise<void> {
+  const { settings, log } = o;
+  const mr = settings.ci.mergeRequest;
+  if (mr === null) return;
+  const token = settings.token;
+  const secrets = [...o.redaction.texts, ...(token === null || token === '' ? [] : [token])];
+  try {
+    const context = await fetchReviewContext(
+      o.endpoint,
+      { projectKey: o.projectKey, mergeRequest: mr.id },
+      log,
+    );
+    if (context === null) return;
+    if (!context.review) {
+      log.info(
+        `AI review is off for this project (${context.reason ?? 'no reason given'}), so no repository snapshot is sent`,
+      );
+      return;
+    }
+    // The snapshot is of the merge request CI runs for (its head, title and description): never
+    // sent with the analysis of another one.
+    if (o.reported?.id !== mr.id || o.reported.targetBranch !== mr.targetBranch) {
+      log.warn(
+        'AI review: no snapshot sent, --mr and --mr-target name another merge request than the one CI runs for',
+      );
+      return;
+    }
+    // The secrets the scan found are unknown: none of them could be masked.
+    if (o.redaction.unknown) {
+      log.warn("AI review: no snapshot sent, the secret scan's output could not be read");
+      return;
+    }
+    if (mr.headSha === null) {
+      log.warn(
+        `AI review: no snapshot sent, the merge request's head commit is unknown (${unnamedHead(settings.ci)})`,
+      );
+      return;
+    }
+    const head = { ...mr, headSha: mr.headSha };
+    // Everything the snapshot writes goes below one private directory, which Ctrl+C or a cancelled
+    // job removes too: the snapshot holds the repository's code.
+    await withEmergencyCleanup(log, async () => {
+      const dir = createWorkDir('review', o.deps.reviewTempRoot);
+      try {
+        await buildAndUpload(o, { mr: head, context, secrets, tempRoot: dir });
+      } finally {
+        releaseWorkDir(dir, log);
+      }
+    });
+  } catch (err) {
+    // A git, disk or network failure: its text masked like the snapshot, made safe for a terminal.
+    const text = err instanceof Error ? err.message : String(err);
+    log.warn(
+      `AI review: no snapshot sent: ${clean(maskSecrets(text, prepareSecrets(secrets)).text)}`,
+    );
+  }
+}
+
 /**
  * `qualor scan` (config.md §5, §7). With `--dry-run` the report is written to `--output`.
  * Otherwise it is uploaded (ruling E5), and with `gate.wait` the gate verdict becomes the exit
@@ -423,8 +619,23 @@ export async function runScan(
   });
   log.info(`analysis ${analysisId} queued on ${new URL(endpoint.url).origin}`);
   // Ruling E3: the report is uploaded (the failed engine is recorded and its issues stay open,
-  // server ruling T2), but the gate is not awaited: exit 3 wins.
+  // server ruling T2), but the gate is not awaited: exit 3 wins. No AI review snapshot either: the
+  // scan's results, the secrets it masks among them, may be incomplete.
   if (failed.length > 0) return failedRequired();
+  if (settings.ci.mergeRequest !== null) {
+    await sendReviewSnapshot({
+      endpoint,
+      settings,
+      projectKey,
+      analysisId,
+      reported: report.scm.mergeRequest,
+      redaction: gitlab.redaction,
+      analyzers,
+      env: io.env,
+      log,
+      deps,
+    });
+  }
   const { gate } = settings.config;
   if (!gate.wait) {
     log.info('not waiting for the quality gate (gate.wait is false)');

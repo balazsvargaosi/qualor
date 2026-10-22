@@ -239,6 +239,28 @@ describe('resolveScm: branches and merge requests', () => {
     expect((await resolve(root).result).scm).not.toHaveProperty('gitlab');
   });
 
+  it("takes only the CI merge request's id and target into the report, never its texts", async () => {
+    const { root } = featureRepo();
+    const ci = {
+      ...detectCi({}),
+      provider: 'gitlab' as const,
+      branch: 'feature',
+      mergeRequest: {
+        id: '7',
+        targetBranch: 'main',
+        headSha: 'a'.repeat(40),
+        title: 'Add the parser',
+        description: 'It parses.',
+      },
+    };
+    const { scm } = await resolve(root, { ci }).result;
+    expect(scm.mergeRequest).toStrictEqual({
+      id: '7',
+      targetBranch: 'main',
+      sourceBranch: 'feature',
+    });
+  });
+
   it('leaves scm.gitlab out when GitLab CI gave none of its values (scm.md §3)', async () => {
     const { root } = featureRepo();
     const ci = { ...detectCi({}), provider: 'gitlab' as const, gitlab: {} };
@@ -557,7 +579,7 @@ describe('scm.github.checkout (github.md §3)', () => {
   const githubCi = () => ({
     ...detectCi({}),
     provider: 'github' as const,
-    mergeRequest: { id: '7', targetBranch: 'main' },
+    mergeRequest: { id: '7', targetBranch: 'main', headSha: null, title: null, description: null },
     gitlab: null,
   });
 

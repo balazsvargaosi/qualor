@@ -34,6 +34,8 @@ describe('detectCi', () => {
           CI_PROJECT_ID: '4711',
           CI_PIPELINE_ID: '99001',
           CI_MERGE_REQUEST_EVENT_TYPE: 'detached',
+          CI_MERGE_REQUEST_TITLE: 'Add the parser',
+          CI_MERGE_REQUEST_DESCRIPTION: '  It parses.\n\nCloses #12.\n',
         },
         noFile,
       ),
@@ -41,12 +43,90 @@ describe('detectCi', () => {
       provider: 'gitlab',
       revision: 'a'.repeat(40),
       branch: 'feature/x',
-      mergeRequest: { id: '482', targetBranch: 'main' },
+      mergeRequest: {
+        id: '482',
+        targetBranch: 'main',
+        headSha: 'a'.repeat(40),
+        title: 'Add the parser',
+        // As the author wrote it: the review reads the description, indentation and all.
+        description: '  It parses.\n\nCloses #12.\n',
+      },
       mainBranch: 'main',
       projectPath: 'acme/payments-api',
       gitlab: { projectId: '4711', pipelineId: '99001', mergeRequestEventType: 'detached' },
       github: null,
       pullRequestHead: null,
+    });
+  });
+
+  describe("a GitLab merge request's head commit (AI review, ruling R12)", () => {
+    const mr = {
+      GITLAB_CI: 'true',
+      CI_COMMIT_SHA: 'c'.repeat(40),
+      CI_MERGE_REQUEST_IID: '482',
+      CI_MERGE_REQUEST_TARGET_BRANCH_NAME: 'main',
+    };
+
+    it.each(['merged_result', 'merge_train'])(
+      'is the source branch head in a %s pipeline, whose own commit is the merge',
+      (eventType) => {
+        const ci = detectCi(
+          {
+            ...mr,
+            CI_MERGE_REQUEST_EVENT_TYPE: eventType,
+            CI_MERGE_REQUEST_SOURCE_BRANCH_SHA: 'b'.repeat(40),
+          },
+          noFile,
+        );
+        expect(ci.mergeRequest?.headSha).toBe('b'.repeat(40));
+        // The analysed commit stays the pipeline's own.
+        expect(ci.revision).toBe('c'.repeat(40));
+      },
+    );
+
+    it('is unknown in a merged-result pipeline that does not name it, never the merge', () => {
+      const head = (sha: string | undefined) =>
+        detectCi(
+          {
+            ...mr,
+            CI_MERGE_REQUEST_EVENT_TYPE: 'merged_result',
+            CI_MERGE_REQUEST_SOURCE_BRANCH_SHA: sha,
+          },
+          noFile,
+        ).mergeRequest?.headSha;
+      for (const sha of [undefined, '', 'b'.repeat(39), 'B'.repeat(40), 'g'.repeat(40)]) {
+        expect(head(sha), JSON.stringify(sha)).toBeNull();
+      }
+      // Like every CI value, read without surrounding blanks.
+      expect(head(` ${'b'.repeat(64)}\n`)).toBe('b'.repeat(64));
+    });
+
+    it('is the commit of a detached pipeline, or of one without an event type', () => {
+      for (const eventType of ['detached', undefined, 'merge_everything']) {
+        const ci = detectCi(
+          {
+            ...mr,
+            CI_MERGE_REQUEST_EVENT_TYPE: eventType,
+            // Set only in merged-result pipelines; never taken in another.
+            CI_MERGE_REQUEST_SOURCE_BRANCH_SHA: 'b'.repeat(40),
+          },
+          noFile,
+        );
+        expect(ci.mergeRequest?.headSha, String(eventType)).toBe('c'.repeat(40));
+      }
+      expect(detectCi({ ...mr, CI_COMMIT_SHA: 'not-a-sha' }, noFile).mergeRequest?.headSha).toBe(
+        null,
+      );
+    });
+
+    it('has no title or description when CI gives none, or only blanks', () => {
+      for (const blank of [undefined, '', ' \n\t']) {
+        const ci = detectCi(
+          { ...mr, CI_MERGE_REQUEST_TITLE: blank, CI_MERGE_REQUEST_DESCRIPTION: blank },
+          noFile,
+        );
+        expect(ci.mergeRequest).toMatchObject({ title: null, description: null });
+      }
     });
   });
 
@@ -123,7 +203,13 @@ describe('detectCi', () => {
 
   it('reads a GitHub pull request from the event payload', () => {
     const event = JSON.stringify({
-      pull_request: { number: 17, head: { sha: 'b'.repeat(40) }, base: { ref: 'main' } },
+      pull_request: {
+        number: 17,
+        head: { sha: 'b'.repeat(40) },
+        base: { ref: 'main' },
+        title: 'Add the parser',
+        body: 'It parses.\r\n\r\nCloses #12.',
+      },
       repository: { default_branch: 'main' },
     });
     expect(
@@ -143,13 +229,47 @@ describe('detectCi', () => {
       provider: 'github',
       revision: 'b'.repeat(40),
       branch: 'feature/y',
-      mergeRequest: { id: '17', targetBranch: 'main' },
+      mergeRequest: {
+        id: '17',
+        targetBranch: 'main',
+        headSha: 'b'.repeat(40),
+        title: 'Add the parser',
+        description: 'It parses.\r\n\r\nCloses #12.',
+      },
       mainBranch: 'main',
       projectPath: 'acme/web',
       gitlab: null,
       github: {},
       pullRequestHead: 'b'.repeat(40),
     });
+  });
+
+  it("reads a pull request's title and body leniently: a bad one loses only itself", () => {
+    const env = { GITHUB_ACTIONS: 'true', GITHUB_EVENT_PATH: '/e', GITHUB_BASE_REF: 'main' };
+    const pr = (fields: Record<string, unknown>) => () =>
+      JSON.stringify({ pull_request: { number: 17, head: { sha: 'b'.repeat(40) }, ...fields } });
+    // A pull request without a description has `body: null`.
+    expect(detectCi(env, pr({ title: 'Fix', body: null })).mergeRequest).toEqual({
+      id: '17',
+      targetBranch: 'main',
+      headSha: 'b'.repeat(40),
+      title: 'Fix',
+      description: null,
+    });
+    expect(detectCi(env, pr({ title: 42, body: ['x'] })).mergeRequest).toEqual({
+      id: '17',
+      targetBranch: 'main',
+      headSha: 'b'.repeat(40),
+      title: null,
+      description: null,
+    });
+    expect(detectCi(env, pr({ title: ' ', body: '' })).mergeRequest).toMatchObject({
+      title: null,
+      description: null,
+    });
+    // A head that is not a full commit id is no head.
+    const short = () => JSON.stringify({ pull_request: { number: 17, head: { sha: 'abc' } } });
+    expect(detectCi(env, short).mergeRequest?.headSha).toBeNull();
   });
 
   it('reads a GitHub push and survives a missing or malformed event file', () => {
