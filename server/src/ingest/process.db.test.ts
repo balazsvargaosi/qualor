@@ -13,7 +13,9 @@ import {
   type Session,
   type TestContext,
 } from '../../test/app';
+import { sqlStateOf } from '../../test/db';
 import { gzipDeeplyNestedArray, gzipJson, sampleReport, uploadReport } from '../../test/reports';
+import { createDatabase } from '../db/client';
 import { analyses, analysisReports, branches, jobs } from '../db/schema';
 import {
   claimJob,
@@ -23,6 +25,7 @@ import {
   reapExpiredLeases,
 } from '../queue/queue';
 import { runUntilIdle } from '../queue/worker';
+import { linkSnapshot, storeSnapshotUpload } from '../review/snapshot-store';
 import { jobHandlers } from './handlers';
 import {
   AnalysisFailure,
@@ -35,6 +38,8 @@ import {
 import { ANALYSIS_QUEUE } from './service';
 
 const KEY = 'acme/api';
+/** SQLSTATE lock_not_available: `lock_timeout` expired while the statement waited for a lock. */
+const LOCK_NOT_AVAILABLE = '55P03';
 
 describe('analysis processing job', () => {
   let ctx: TestContext;
@@ -310,7 +315,7 @@ describe('analysis processing job', () => {
   it('processes an analysis exactly once even when two calls race past the outer guard (ruling S13 #1)', async () => {
     // The outer claim update accepts both 'queued' and 'processing' (so a run whose worker
     // actually died can be re-claimed), which means Postgres itself does not stop a second,
-    // still-alive caller for the same analysisId from also passing it — only the FOR UPDATE lock
+    // still-alive caller for the same analysisId from also passing it — only the row lock
     // inside the ingest transaction serialises them. Driving two real, concurrently-executing
     // processAnalysis calls against the same row (not a sleep, not a manual DB hack) is exactly
     // that race: whichever transaction's row lock wins runs the stage and commits 'succeeded';
@@ -332,6 +337,65 @@ describe('analysis processing job', () => {
     // The upload above still left a real, untouched job queued (calling processAnalysis directly
     // bypasses claim/complete); drain it through the normal queue path so it doesn't also get
     // claimed — as a harmless but count-skewing no-op — by a later test's processAll().
+    expect(await processAll()).toBe(1);
+  });
+
+  it('holds its analysis row against a duplicate ingestion and a snapshot link, never against a foreign key (ruling S13 #1, 6I-2)', async () => {
+    // A stage that waits keeps the ingestion transaction open, and with it its lock on the row.
+    let entered!: () => void;
+    const inStage = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const holding: IngestionStage = {
+      name: 'holding',
+      run: async () => {
+        entered();
+        await gate;
+      },
+    };
+    const id = await upload(sampleReport({ branch: 'lock-level' }));
+    const ingestion = processAnalysis(
+      { db: ctx.db, upload: ctx.config.upload, stages: [holding] },
+      id,
+    );
+    // Other sessions, each waiting at most 300 ms for a lock: a regression fails, never hangs.
+    const probe = createDatabase(
+      `${ctx.database.url}?options=${encodeURIComponent('-c lock_timeout=300')}`,
+      { max: 2 },
+    );
+    try {
+      await inStage;
+      // The review snapshot of the analysis, uploaded while it is ingested: the foreign-key check
+      // of its row (FOR KEY SHARE) does not wait for the ingestion.
+      const snapshotId = await storeSnapshotUpload(probe.db, {
+        analysisId: id,
+        projectId,
+        body: Buffer.from('gzip'),
+        compressedBytes: 4,
+      });
+      expect(snapshotId).toEqual(expect.any(String));
+      // A duplicate ingestion's lock still waits for this one (ruling S13 #1)...
+      const duplicate = probe.db.transaction((tx) =>
+        tx
+          .select({ id: analyses.id })
+          .from(analyses)
+          .where(eq(analyses.id, id))
+          .for('no key update'),
+      );
+      expect(await sqlStateOf(duplicate)).toBe(LOCK_NOT_AVAILABLE);
+      // ...and so does the snapshot's link, which reads the analysis as the ingestion commits it.
+      expect(await sqlStateOf(linkSnapshot(probe.db, id))).toBe(LOCK_NOT_AVAILABLE);
+    } finally {
+      release();
+      await ingestion;
+      await probe.close();
+    }
+    expect((await read(id)).status).toBe('succeeded');
+    // As in the race above: the upload's own job is still queued; drain it (a no-op).
     expect(await processAll()).toBe(1);
   });
 

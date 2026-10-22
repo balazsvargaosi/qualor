@@ -371,11 +371,17 @@ async function ingest(
     // (under READ COMMITTED) sees the just-committed row on wake and finds status is no longer
     // 'processing' — so it no-ops instead of re-running stages or re-deriving a result that
     // already committed.
+    // FOR NO KEY UPDATE, not FOR UPDATE (6I-2): it conflicts with itself, so the duplicate run
+    // still waits here, and with FOR SHARE (a review snapshot's link reads the analysis as this
+    // transaction commits it, review/snapshot-store.ts); but not with the FOR KEY SHARE of a
+    // foreign-key check, so a row inserted meanwhile that references this analysis (its review
+    // snapshot, uploaded right after the report) never waits out the whole ingestion. The
+    // ingestion's own updates of the row change no key column, so they hold this level too.
     await tx
       .select({ id: analyses.id })
       .from(analyses)
       .where(eq(analyses.id, analysisId))
-      .for('update');
+      .for('no key update');
     const [current] = await tx
       .select({ status: analyses.status })
       .from(analyses)
