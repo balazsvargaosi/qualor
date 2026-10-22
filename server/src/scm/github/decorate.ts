@@ -33,11 +33,16 @@ import {
   MAX_ANNOTATIONS,
   parseCheckRunExternalId,
 } from './render';
+import { MAX_COMMENT_PAGES } from './threads';
 import { githubWebBase, parseRepoRef } from './url';
 
-/** github.md §5.3: pages of pull request files and of issue comments one job reads. */
+/** github.md §5.3: pages of pull request files one job reads ... */
 export const MAX_FILE_PAGES = 30;
-export const MAX_COMMENT_PAGES = 50;
+/**
+ * ... and of comments (issue comments, and the review comments of the threads): the bound lives in
+ * threads.ts, which reads the review comments by it, and is found here as it always was.
+ */
+export { MAX_COMMENT_PAGES };
 export const REPOSITORY_MISMATCH =
   "The workflow's GitHub repository is not the repository Qualor is mapped to";
 
