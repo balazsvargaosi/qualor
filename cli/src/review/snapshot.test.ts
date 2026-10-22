@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import {
   MAX_SNAPSHOT_ROWS,
@@ -755,6 +755,67 @@ describe("buildReviewSnapshot: the merge base's secrets (R13)", () => {
       '\n-[1 removed line not sent]\n',
     );
     expect(logs.filter((l) => l.startsWith('warn: '))).toHaveLength(1);
+  });
+
+  it('scans an instructions file at its repository path, where a rule scoped to it applies', async () => {
+    // The scan's rule for qk9 tokens reads AGENTS.md only, by its path from the scan's root.
+    const token = j('qk9-', 'agents-SECRET-0001');
+    const agents = `Rules: ${token}.\n`;
+    const mr = mergeRequest(
+      { 'AGENTS.md': agents, 'a.ts': 'x\n' },
+      { 'AGENTS.md': agents, 'a.ts': 'y\n' },
+    );
+    writeTree(mr.root, {
+      '.gitleaks.toml': [
+        '[[rules]]',
+        'id = "agents-only"',
+        "regex = '''qk9-[A-Za-z0-9-]{8,}'''",
+        "path = '''^AGENTS\\.md$'''",
+        '',
+      ].join('\n'),
+    });
+    const built = await build(mr);
+    expect(textOf(built)).not.toContain(token);
+    expect(linesOf(built).filter(isInstructions)).toEqual([
+      { type: 'instructions', name: 'AGENTS.md', text: `Rules: ${REDACTED}.\n` },
+    ]);
+  });
+
+  it('sends an instructions file outside the scan root with the shared redaction only, and says so', async () => {
+    // The scan's root is pkg/: the repository's AGENTS.md lies outside it, where the head scan
+    // never read it either, so only the shared patterns mask it (not the engine's qk7 token).
+    const engineOnly = fakeSecret('outside-SECRET-0001');
+    const agents = `Use ${GH} and ${engineOnly}.\n`;
+    const mr = mergeRequest(
+      { 'AGENTS.md': agents, 'pkg/a.ts': 'x\n' },
+      { 'AGENTS.md': agents, 'pkg/a.ts': 'y\n' },
+    );
+    const root = path.join(mr.root, 'pkg');
+    mkdirSync(root);
+    const logs: string[] = [];
+    const built = await build(mr, {
+      git: createGit(root, GIT_TEST_ENV),
+      baseSecrets: baseSecretScan({
+        analyzers: [fakeSecretEngine(tmp()).analyzer],
+        root,
+        config: CONFIG,
+        log: silentLogger,
+      }),
+      log: createLogger('info', (t) => logs.push(t)),
+    });
+    expect(linesOf(built).filter(isInstructions)).toEqual([
+      { type: 'instructions', name: 'AGENTS.md', text: `Use ${REDACTED} and ${engineOnly}.\n` },
+    ]);
+    expect([...changesOf(linesOf(built)).keys()]).toEqual(['a.ts']);
+    expect(logs.filter((l) => l.includes('outside the scan root'))).toHaveLength(1);
+    // Without a secret engine nothing is scanned anyway: no line about the instructions files.
+    const quiet: string[] = [];
+    await build(mr, {
+      git: createGit(root, GIT_TEST_ENV),
+      engine: 'none',
+      log: createLogger('info', (t) => quiet.push(t)),
+    });
+    expect(quiet.filter((l) => l.includes('instructions'))).toEqual([]);
   });
 
   it('removes the merge base files when the snapshot is too large', async () => {

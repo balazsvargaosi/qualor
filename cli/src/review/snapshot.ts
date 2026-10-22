@@ -654,10 +654,50 @@ interface Read {
 }
 
 /**
+ * The scan root's path in the repository, as `git rev-parse --show-prefix` prints it (empty at the
+ * repository's root, `pkg/` below it): the paths of the snapshot are relative to it. Null when git
+ * cannot say.
+ */
+async function scanRootPrefix(git: Git): Promise<string | null> {
+  const r = await git(['rev-parse', '--show-prefix']);
+  return r.code === 0 ? r.stdout.replace(/\r?\n$/, '') : null;
+}
+
+/**
+ * The instructions files the secret engine scans at the merge base: those within the scan's
+ * root, at their paths there, which are the ones the head scan read them at. One outside it (the
+ * repository's AGENTS.md, for a scan of `pkg/`) the head scan never read either: it is not
+ * scanned, and goes with the shared redaction only, which is said once.
+ */
+async function instructionsToScan(
+  git: Git,
+  files: readonly InstructionsFile[],
+  log: Logger,
+): Promise<{ path: string; content: Buffer }[]> {
+  if (files.length === 0) return [];
+  const prefix = await scanRootPrefix(git);
+  const inside: { path: string; content: Buffer }[] = [];
+  const outside: string[] = [];
+  for (const f of files) {
+    if (prefix !== null && f.name.startsWith(prefix)) {
+      inside.push({ path: f.name.slice(prefix.length), content: f.content });
+    } else {
+      outside.push(f.name);
+    }
+  }
+  if (outside.length > 0) {
+    log.info(
+      `AI review: the instructions files outside the scan root (${outside.join(', ')}) are not scanned for secrets, as the scan never read them, so the snapshot sends them with the shared redaction only`,
+    );
+  }
+  return inside;
+}
+
+/**
  * What the snapshot is made of, once the head and the merge base are known: too large when its
  * patches are. The merge base's files the snapshot shows parts of (the old side of each patch,
- * the instructions files) go to the scan's secret engine first (R13), so the secrets of the
- * merge base are masked with the scan's own, everywhere.
+ * the instructions files within the scan's root) go to the scan's secret engine first (R13), so
+ * the secrets of the merge base are masked with the scan's own, everywhere.
  */
 async function readSources(input: SnapshotInput, base: string): Promise<Sources | 'too_large'> {
   const { git, headSha: head, log } = input;
@@ -682,10 +722,11 @@ async function readSources(input: SnapshotInput, base: string): Promise<Sources 
   const oldSides = [
     ...new Set(shown.filter((c) => raw.has(c.path) && hasOldSide(c)).map((c) => c.from)),
   ];
+  const toScan = input.baseSecrets === null ? [] : await instructionsToScan(git, instructions, log);
   const scanned = await scanMergeBase(
     git,
     base,
-    { paths: oldSides, instructions },
+    { paths: oldSides, instructions: toScan },
     {
       scan: input.baseSecrets,
       budget,

@@ -1,22 +1,51 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { parseConfig, type QualorConfig } from '@qualor/shared';
 import { describe, expect, it } from 'vitest';
 import { describeWithTools } from '../../test/analyzers';
 import { FIXTURES_DIR } from '../../test/fixtures';
+import { commitAll, GIT_TEST_ENV, initRepo } from '../../test/git';
 import { fakeSecret, fakeSecretEngine } from '../../test/secret-engine';
 import { useTempDirs, writeTree } from '../../test/tmp';
 import { gitleaksAnalyzer } from '../analyzers/gitleaks';
 import { fileLines, normalizeCaptures } from '../analyzers/normalize';
 import { runAnalyzers } from '../analyzers/runner';
 import type { Analyzer } from '../analyzers/types';
-import type { Git } from '../git/git';
-import { silentLogger } from '../log';
-import { baseSecretScan, scanMergeBase, type BaseSecretScanResult } from './base-secrets';
+import { createGit, type Git } from '../git/git';
+import { createLogger, silentLogger } from '../log';
+import {
+  baseSecretScan,
+  scanMergeBase,
+  type BaseSecretScan,
+  type BaseSecretScanResult,
+} from './base-secrets';
 
 const tmp = useTempDirs();
 const CONFIG = parseConfig({ version: 1, project: { key: 'acme/app' } });
 type Env = Readonly<Record<string, string | undefined>>;
+const noGit: Git = () => Promise.reject(new Error('no git call is due'));
+
+/** The files below `dir`, as `/`-separated paths relative to it. */
+const filesBelow = (dir: string): string[] =>
+  readdirSync(dir, { recursive: true })
+    .map(String)
+    .filter((p) => statSync(path.join(dir, p)).isFile())
+    .map((p) => p.split(path.sep).join('/'))
+    .sort();
+
+/** A scan that finds nothing, and records the files it was given and the paths it was told. */
+function recordingScan(): { scan: BaseSecretScan; files: string[]; paths: string[] } {
+  const seen = {
+    files: [] as string[],
+    paths: [] as string[],
+    scan: (dir: string, paths: readonly string[]): Promise<BaseSecretScanResult> => {
+      seen.files = filesBelow(dir);
+      seen.paths = [...paths].sort();
+      return Promise.resolve({ secrets: [] });
+    },
+  };
+  return seen;
+}
 
 const secretsOf = (result: BaseSecretScanResult | undefined): string[] | 'failed' =>
   result === undefined || 'failed' in result ? 'failed' : [...result.secrets].sort();
@@ -213,16 +242,141 @@ describe('baseSecretScan: the secret engine over the merge base (R13)', () => {
   });
 });
 
+/** A configuration whose rule and allowlist name instructions files by their repository paths. */
+const INSTRUCTION_RULES = [
+  'title = "instructions"',
+  '[[rules]]',
+  'id = "agents-only"',
+  "regex = '''qk9-[A-Za-z0-9-]{8,}'''",
+  "path = '''^AGENTS\\.md$'''",
+  '[[rules]]',
+  'id = "anywhere"',
+  "regex = '''qk8-[A-Za-z0-9-]{8,}'''",
+  '[[allowlists]]',
+  'description = "the review rules"',
+  "paths = ['''^CLAUDE\\.md$''']",
+  '',
+].join('\n');
+/** The instructions files, in the checkout and (unchanged) at the merge base. */
+const INSTRUCTIONS = {
+  'AGENTS.md': 'qk9-agents-SECRET-0001 qk8-agents-SECRET-0002\n',
+  'CLAUDE.md': 'qk8-claude-SECRET-0003\n',
+  'REVIEW.md': 'qk9-review-SECRET-0004 qk8-review-SECRET-0005\n',
+};
+
+/** What the scan of the merge base finds in INSTRUCTIONS, with the checkout's configuration. */
+async function instructionSecrets(analyzer: Analyzer, checkout: string): Promise<string[]> {
+  const result = await scanMergeBase(
+    noGit,
+    'b'.repeat(40),
+    {
+      paths: [],
+      instructions: Object.entries(INSTRUCTIONS).map(([p, text]) => ({
+        path: p,
+        content: Buffer.from(text),
+      })),
+    },
+    {
+      scan: baseSecretScan({
+        analyzers: [analyzer],
+        root: checkout,
+        config: CONFIG,
+        log: silentLogger,
+      }),
+      budget: 1_000_000,
+      log: silentLogger,
+      tempRoot: tmp(),
+    },
+  );
+  return [...result.secrets].sort();
+}
+
+/** The secrets INSTRUCTION_RULES finds in INSTRUCTIONS, by their paths. */
+const INSTRUCTION_SECRETS = [
+  'qk8-agents-SECRET-0002',
+  'qk8-review-SECRET-0005',
+  'qk9-agents-SECRET-0001',
+];
+
 describe('scanMergeBase', () => {
+  it('scans the instructions files at their repository paths, as the head scan sees them', async () => {
+    const checkout = tmp();
+    writeTree(checkout, { '.gitleaks.toml': INSTRUCTION_RULES, ...INSTRUCTIONS });
+    const engine = fakeSecretEngine(tmp()).analyzer;
+    // The rule scoped to AGENTS.md, and the allowlist of CLAUDE.md, apply by path.
+    const head = await headSecrets(engine, checkout);
+    expect(head).toEqual(INSTRUCTION_SECRETS);
+    expect(await instructionSecrets(engine, checkout)).toEqual(head);
+  });
+
+  it("scans an instructions file that is a changed file's old side once, from that copy", async () => {
+    const repo = tmp();
+    initRepo(repo);
+    writeTree(repo, { 'AGENTS.md': 'old rules\n', 'src/a.ts': 'a\n' });
+    const base = commitAll(repo, 'base');
+    const recorded = recordingScan();
+    const logs: string[] = [];
+    const result = await scanMergeBase(
+      createGit(repo, GIT_TEST_ENV),
+      base,
+      {
+        paths: ['AGENTS.md', 'src/a.ts'],
+        instructions: [{ path: 'AGENTS.md', content: Buffer.from('old rules\n') }],
+      },
+      {
+        scan: recorded.scan,
+        budget: 1_000_000,
+        log: createLogger('debug', (t) => logs.push(t)),
+        tempRoot: tmp(),
+      },
+    );
+    expect(recorded.files).toEqual(['AGENTS.md', 'src/a.ts']);
+    expect(recorded.paths).toEqual(['AGENTS.md', 'src/a.ts']);
+    expect([...result.scanned].sort()).toEqual(['AGENTS.md', 'src/a.ts']);
+    expect(logs.filter((l) => l.includes('instructions'))).toEqual([]);
+  });
+
+  it('says so once when it cannot put an instructions file where the scan reads it', async () => {
+    const repo = tmp();
+    initRepo(repo);
+    writeTree(repo, { 'agents.md': 'other notes\n', 'CLAUDE.md': 'old\n' });
+    const base = commitAll(repo, 'base');
+    const recorded = recordingScan();
+    const logs: string[] = [];
+    await scanMergeBase(
+      createGit(repo, GIT_TEST_ENV),
+      base,
+      {
+        paths: ['agents.md', 'CLAUDE.md'],
+        instructions: [
+          // A changed agents.md holds the place a file system that ignores case gives AGENTS.md.
+          { path: 'AGENTS.md', content: Buffer.from('rules\n') },
+          // A copy at its path that is not the instructions file's own is never taken for it.
+          { path: 'CLAUDE.md', content: Buffer.from('other\n') },
+        ],
+      },
+      {
+        scan: recorded.scan,
+        budget: 1_000_000,
+        log: createLogger('info', (t) => logs.push(t)),
+        tempRoot: tmp(),
+      },
+    );
+    expect(recorded.files).toEqual(['CLAUDE.md', 'agents.md']);
+    expect(recorded.paths).toEqual(['CLAUDE.md', 'agents.md']);
+    const said = logs.filter((l) => l.includes('instructions'));
+    expect(said).toHaveLength(1);
+    expect(said[0]).toContain('AGENTS.md, CLAUDE.md');
+  });
+
   it('keeps the signal cleanup on for the whole life of the merge base directory', async () => {
     const before = process.listenerCount('SIGINT');
     let during = -1;
     let dir = '';
-    const noGit: Git = () => Promise.reject(new Error('no git call is due'));
     const result = await scanMergeBase(
       noGit,
       'b'.repeat(40),
-      { paths: [], instructions: [{ name: 'AGENTS.md', content: Buffer.from('rules\n') }] },
+      { paths: [], instructions: [{ path: 'AGENTS.md', content: Buffer.from('rules\n') }] },
       {
         scan: (scanned) => {
           during = process.listenerCount('SIGINT');
@@ -262,6 +416,18 @@ describeWithTools(['gitleaks'])('baseSecretScan with the real Gitleaks', () => {
       const head = await headSecrets(gitleaksAnalyzer, checkout);
       expect(head).toEqual([fakeSecret('config-SECRET-0001'), 'qk8-other-SECRET-0002']);
       expect(await baseSecrets(gitleaksAnalyzer, checkout, CODE)).toEqual(head);
+    },
+  );
+
+  it(
+    'scans the instructions files at their repository paths, as the head scan sees them',
+    { timeout: 300_000 },
+    async () => {
+      const checkout = tmp();
+      writeTree(checkout, { '.gitleaks.toml': INSTRUCTION_RULES, ...INSTRUCTIONS });
+      const head = await headSecrets(gitleaksAnalyzer, checkout);
+      expect(head).toEqual(INSTRUCTION_SECRETS);
+      expect(await instructionSecrets(gitleaksAnalyzer, checkout)).toEqual(head);
     },
   );
 });

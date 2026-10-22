@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { QualorConfig } from '@qualor/shared';
 import { fileLines, normalizeCaptures } from '../analyzers/normalize';
@@ -126,8 +126,6 @@ export function baseSecretScan(o: BaseSecretScanOptions): BaseSecretScan | null 
 
 /** A merge-base file larger than this is not scanned (its patch then sends no removed line). */
 const MAX_BASE_FILE_BYTES = 16 * 1024 * 1024;
-/** Where the instructions files go in the directory, apart from the changed files' paths. */
-const INSTRUCTIONS_DIR = '.qualor-instructions';
 /** On Windows, names a file system takes for a device, a stream or nothing like the name. */
 const WINDOWS_RESERVED = /^(?:con|prn|aux|nul|com\d|lpt\d)(?:\..*)?$/i;
 const WINDOWS_FORBIDDEN = /[<>:"|?*]|[. ]$/;
@@ -207,8 +205,42 @@ export interface MergeBaseScan {
 export interface MergeBaseFiles {
   /** The merge base's paths whose lines patches show (the old side of each patch sent). */
   paths: readonly string[];
-  /** The instructions files the snapshot sends, as the merge base has them. */
-  instructions: readonly { name: string; content: Buffer }[];
+  /**
+   * The instructions files the snapshot sends, as the merge base has them, that lie within the
+   * scan's root: at their paths there, the ones the head scan read them at.
+   */
+  instructions: readonly { path: string; content: Buffer }[];
+}
+
+/** Whether the file at `rel` below `dir` holds `content`. */
+function holds(dir: string, rel: string, content: Buffer): boolean {
+  try {
+    return readFileSync(path.join(dir, ...rel.split('/'))).equals(content);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The instructions files put where the scan reads them, at their own paths: one that is the old
+ * side of a changed file is already there (the same blob of the merge base), and is scanned once,
+ * as that copy. The paths of those it holds, and of those it cannot (their name is taken, on a
+ * file system that ignores case).
+ */
+function placeInstructions(
+  dir: string,
+  files: MergeBaseFiles['instructions'],
+  o: { written: ReadonlySet<string>; names: Set<string> },
+): { placed: string[]; unplaced: string[] } {
+  const placed: string[] = [];
+  const unplaced: string[] = [];
+  for (const f of files) {
+    const there = o.written.has(f.path)
+      ? holds(dir, f.path, f.content)
+      : placeable(f.path) && writeBelow(dir, f.path, f.content, o.names);
+    (there ? placed : unplaced).push(f.path);
+  }
+  return { placed, unplaced };
 }
 
 /** `scan` over `dir`: a scan that throws did not run to the end either. */
@@ -227,12 +259,12 @@ async function scanned(
 }
 
 /**
- * Runs `scan` over the merge base's `files`, written to a private work directory that the
- * analyzers' signal handler covers for its whole life and that is removed on every path. With no
- * secret engine (`scan` null), or one that did not run to the end, could not run there as in the
- * scan, or threw, nothing is found and no old side is held (said once, at warn, but for no
- * engine): the patches then send no removed line, and the instructions files go with the shared
- * patterns only.
+ * Runs `scan` over the merge base's `files`, written at their paths within the scan's root to a
+ * private work directory that the analyzers' signal handler covers for its whole life and that is
+ * removed on every path. With no secret engine (`scan` null), or one that did not run to the end,
+ * could not run there as in the scan, or threw, nothing is found and no old side is held (said
+ * once, at warn, but for no engine): the patches then send no removed line, and the instructions
+ * files go with the shared patterns only, as one that cannot be put at its path does (said once).
  */
 export async function scanMergeBase(
   git: Git,
@@ -258,12 +290,14 @@ export async function scanMergeBase(
         budget: o.budget,
         names,
       });
-      const instructions = files.instructions
-        .map((f) => `${INSTRUCTIONS_DIR}/${f.name}`)
-        .filter((rel, i) =>
-          writeBelow(dir, rel, files.instructions[i]?.content ?? Buffer.alloc(0), names),
+      const instructions = placeInstructions(dir, files.instructions, { written, names });
+      if (instructions.unplaced.length > 0) {
+        o.log.info(
+          `AI review: the instructions files ${instructions.unplaced.join(', ')} cannot be scanned for secrets where the scan reads them, so the snapshot sends them with the shared redaction only`,
         );
-      const result = await scanned(scan, dir, [...written, ...instructions], o.log);
+      }
+      const paths = [...new Set([...written, ...instructions.placed])];
+      const result = await scanned(scan, dir, paths, o.log);
       if ('failed' in result) {
         o.log.warn(
           `AI review: the merge base's files could not be scanned for secrets (${result.failed}), ${cut}`,
