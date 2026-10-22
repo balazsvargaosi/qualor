@@ -4,6 +4,7 @@ import { jsonChunks } from '../db/bulk';
 import type { Executor } from '../db/client';
 import { uuidv7 } from '../db/ids';
 import { issues, rules } from '../db/schema';
+import { AI_ENGINE } from '../rules/server-engines';
 import {
   REOPEN_WINDOW_DAYS,
   type CandidateIssue,
@@ -27,6 +28,9 @@ export async function dbNow(tx: Executor): Promise<Date> {
  * reproducible order instead of whatever order the database happens to return them in (U5 fix
  * round 1, #1) — without this, which of two same-line, same-hash candidates ends up paired with
  * which finding could flip between otherwise-identical analyses.
+ *
+ * The issues of the AI review (engine `ai`) are not candidates: review runs own them, so ingestion
+ * never matches, updates, closes or deduplicates one.
  */
 export async function loadCandidates(tx: Executor, branchId: string): Promise<CandidateIssue[]> {
   const rows = await tx
@@ -61,6 +65,7 @@ export async function loadCandidates(tx: Executor, branchId: string): Promise<Ca
     .where(
       and(
         eq(issues.branchId, branchId),
+        ne(rules.engineId, AI_ENGINE),
         or(
           ne(issues.status, 'closed'),
           sql`${issues.closedAt} > now() - make_interval(days => ${REOPEN_WINDOW_DAYS})`,

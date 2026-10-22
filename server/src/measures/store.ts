@@ -11,6 +11,7 @@ import type { Executor } from '../db/client';
 import { branchDependencies, branchFiles, issues } from '../db/schema';
 import type { MeasureValues } from '../ingest/state';
 import type { NewCodeClassifier } from '../newcode/lines';
+import { notAiIssue } from '../review/rules';
 import {
   duplicationByFile,
   fileCoverageCounts,
@@ -20,7 +21,8 @@ import {
 } from './compute';
 
 /**
- * gates.md §2: visible issues are open, not a duplicate, and of kind `issue`. Counted by severity,
+ * gates.md §2: visible issues are open, not a duplicate, and of kind `issue`; those of the AI
+ * review do not count (a review run owns them, and they never fail a gate). Counted by severity,
  * quality and new code, and (6M §7) the visible issues of rule `license:forbidden` on their own.
  */
 export async function visibleIssueCounts(
@@ -32,6 +34,7 @@ export async function visibleIssueCounts(
     eq(issues.status, 'open'),
     isNull(issues.duplicateOfIssueId),
     eq(issues.kind, 'issue'),
+    notAiIssue(issues.ruleId),
   );
   const rows = await tx
     .select({
@@ -85,7 +88,10 @@ export async function dependencyLicenseCounts(
   return { total: row?.total ?? 0, unknown: row?.unknown ?? 0 };
 }
 
-/** `accepted_issues` (wont_fix) and `false_positive_issues`: kind `issue`, duplicates excluded (ruling M1). */
+/**
+ * `accepted_issues` (wont_fix) and `false_positive_issues`: kind `issue`, duplicates excluded
+ * (ruling M1), and so are those of the AI review.
+ */
 export async function resolvedIssueCounts(
   tx: Executor,
   branchId: string,
@@ -99,6 +105,7 @@ export async function resolvedIssueCounts(
         inArray(issues.status, ['wont_fix', 'false_positive']),
         isNull(issues.duplicateOfIssueId),
         eq(issues.kind, 'issue'),
+        notAiIssue(issues.ruleId),
       ),
     )
     .groupBy(issues.status);

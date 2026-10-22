@@ -83,6 +83,8 @@ export const BUILTIN_ENGINES = [
   // 6M §1: the CLI's licence pass. Reserved: an external engine of that id with a status other
   // than ok would stop the server's licence stage on every analysis.
   'trivy-licenses',
+  // 6I-3: the findings of the server's AI review. Reserved: no report engine may take the id.
+  'ai',
 ] as const;
 export type BuiltinEngine = (typeof BUILTIN_ENGINES)[number];
 

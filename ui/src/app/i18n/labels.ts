@@ -114,9 +114,10 @@ const LABELS: Record<LabelKind, Record<string, string>> = {
     oidc: $localize`:@@label.ssoProtocol.oidc:OpenID Connect`,
     saml: $localize`:@@label.ssoProtocol.saml:SAML`,
   },
-  /** Engine ids are shown as they are, except Qualor's own (plan 6B-1). */
+  /** Engine ids are shown as they are, except Qualor's own (plan 6B-1) and the AI review's. */
   engine: {
     qualor: $localize`:@@label.engine.qualor:Qualor`,
+    ai: $localize`:@@label.engine.ai:AI review`,
   },
   /** Qualor's licence groups (6M §3); the server sends their descriptions and members. */
   licenseGroup: {

@@ -29,8 +29,9 @@ describe('label', () => {
     expect(label('metric', 'new_coverage')).toBe('Coverage on new code');
   });
 
-  it('names the qualor engine "Qualor" and leaves every other engine id as it is (plan 6B-1)', () => {
+  it('names the qualor engine "Qualor" and the ai engine "AI review", and leaves every other engine id as it is (plan 6B-1, 6I-3)', () => {
     expect(label('engine', 'qualor')).toBe('Qualor');
+    expect(label('engine', 'ai')).toBe('AI review');
     expect(label('engine', 'spotbugs')).toBe('spotbugs');
     expect(label('engine', 'ext-osv')).toBe('ext-osv');
   });

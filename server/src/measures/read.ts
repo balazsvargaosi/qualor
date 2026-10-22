@@ -3,6 +3,7 @@ import { and, asc, eq, inArray, ne, sql } from 'drizzle-orm';
 import { textList } from '../db/bulk';
 import type { Executor } from '../db/client';
 import { branchFiles, issues, measures, rules } from '../db/schema';
+import { notAiIssue } from '../review/rules';
 
 /** Shown next to every project and branch in list responses (api.md: "headline measures"). */
 export const HEADLINE_METRICS = [
@@ -247,7 +248,8 @@ const summed = sql.join(
 /**
  * The direct children of `dir` in the branch's latest file snapshot: directories aggregate their
  * main files (like the branch totals), files show their own values. Keyset-paginated by name in
- * byte order (ruling F1: `sort=name` only in v0).
+ * byte order (ruling F1: `sort=name` only in v0). The `issues` shown are the analyzers': those of
+ * the AI review are not counted.
  */
 export async function fileTree(
   db: Executor,
@@ -282,7 +284,7 @@ export async function fileTree(
       SELECT split_part(substr(path, char_length(${prefix}::text) + 1), '/', 1) AS name, count(*)::int AS n
         FROM issues
        WHERE branch_id = ${branchId} AND status = 'open' AND duplicate_of_issue_id IS NULL
-         AND kind = 'issue' AND starts_with(path, ${prefix})
+         AND kind = 'issue' AND ${notAiIssue(issues.ruleId)} AND starts_with(path, ${prefix})
          AND split_part(substr(path, char_length(${prefix}::text) + 1), '/', 1) IN ${textList(names)}
        GROUP BY 1`);
     for (const r of issueRows.rows) counts.set(r.name, r.n);
@@ -300,6 +302,7 @@ export async function fileTree(
 /** api.md GET /branches/{id}/file: at most this many issues are listed for one file. */
 export const MAX_FILE_ISSUES = 500;
 
+/** One file's snapshot row and measures; its `issues` are the analyzers', not the AI review's. */
 export async function fileDetail(db: Executor, branchId: string, path: string) {
   const [row] = await db
     .select()
@@ -309,7 +312,7 @@ export async function fileDetail(db: Executor, branchId: string, path: string) {
   const issueRows = await db.execute<{ n: number }>(sql`
     SELECT count(*)::int AS n FROM issues
      WHERE branch_id = ${branchId} AND path = ${path} AND status = 'open'
-       AND duplicate_of_issue_id IS NULL AND kind = 'issue'`);
+       AND duplicate_of_issue_id IS NULL AND kind = 'issue' AND ${notAiIssue(issues.ruleId)}`);
   const m = (row.metrics ?? {}) as Record<string, number | undefined>;
   const measuresOfFile = itemMeasures(
     {

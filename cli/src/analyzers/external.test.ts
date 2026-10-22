@@ -56,6 +56,8 @@ describe('engine ids of external SARIF', () => {
       id: 'ext-trivy-licenses',
       renamed: true,
     });
+    // 6I: and so is the engine of the server's AI review.
+    expect(externalEngineId('AI', undefined)).toEqual({ id: 'ext-ai', renamed: true });
   });
 });
 

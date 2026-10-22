@@ -41,4 +41,24 @@ describe('ruleRowsFromReport', () => {
     expect(withMetadata.map((r) => r.key)).toEqual(['eslint:no-console']);
     expect(bare).toEqual([]);
   });
+
+  it("never takes the AI review's rules from a report either, defined or only referenced (6I-3)", () => {
+    const report = reportWith({
+      engines: [
+        engine('eslint', [{ id: 'no-console' }]),
+        engine('ai', [
+          { id: 'logic', quality: 'security', kind: 'hotspot', defaultSeverity: 'blocker' },
+        ]),
+      ],
+      files: [file('src/a.ts')],
+      findings: [
+        finding({ line: 1 }),
+        finding({ engineId: 'ai', ruleId: 'logic', line: 2 }),
+        finding({ engineId: 'ai', ruleId: 'made-up', line: 3 }),
+      ],
+    });
+    const { withMetadata, bare } = ruleRowsFromReport(report);
+    expect(withMetadata.map((r) => r.key)).toEqual(['eslint:no-console']);
+    expect(bare).toEqual([]);
+  });
 });

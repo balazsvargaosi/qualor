@@ -352,6 +352,7 @@
     "label.ssoProtocol.oidc": "OpenID Connect",
     "label.ssoProtocol.saml": "SAML",
     "label.engine.qualor": "Qualor",
+    "label.engine.ai": "AI review",
     "label.licenseGroup.networkCopyleft": "Network copyleft",
     "label.licenseGroup.strongCopyleft": "Strong copyleft",
     "label.licenseGroup.weakCopyleft": "Weak copyleft",

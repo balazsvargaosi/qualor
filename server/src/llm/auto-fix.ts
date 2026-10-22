@@ -8,6 +8,7 @@ import { ProblemError } from '../http/problem';
 import type { Limits } from '../limits';
 import { enqueue } from '../queue/queue';
 import type { JobHandlers, WorkerLogger } from '../queue/worker';
+import { notAiIssue } from '../review/rules';
 import { effectiveAutoFix } from './auto-fix-settings';
 import { createAiRequest, type AiRequestDeps } from './service';
 import { pathExcluded, readLlmSettings, type StoredLlmSettings } from './settings';
@@ -65,7 +66,8 @@ export async function enqueueAutoFix(
  * 4E-3a §3 step 2: the branch's open issues in new code, not duplicates, with a path, a start line
  * and a snippet, at or above `minSeverity`, whose path is not excluded from AI and that never had
  * an automatic fix request (whatever its outcome); the most severe first, then by path (byte
- * order), start line and id. The caller takes at most `maxPerAnalysis` of them.
+ * order), start line and id. The caller takes at most `maxPerAnalysis` of them. Only the
+ * analyzers' issues are candidates: the AI review's findings are left out.
  */
 export async function autoFixCandidates(
   db: Executor,
@@ -85,6 +87,7 @@ export async function autoFixCandidates(
         isNotNull(issues.path),
         isNotNull(issues.startLine),
         isNotNull(issues.snippet),
+        notAiIssue(issues.ruleId),
         lte(issues.severityRank, SEVERITIES.indexOf(minSeverity)),
         sql`NOT EXISTS (
               SELECT 1 FROM llm_requests r

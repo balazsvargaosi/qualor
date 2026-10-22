@@ -6,7 +6,7 @@ import {
   type Severity,
 } from '@qualor/shared';
 import { z } from 'zod';
-import { and, asc, count, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
+import { and, asc, count, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import type { Db } from '../db/client';
 import {
   analyses,
@@ -18,6 +18,8 @@ import {
   scmConnections,
 } from '../db/schema';
 import { SMALL_CHANGESET_SETTING } from '../gates/stage';
+import { notAiIssue } from '../review/rules';
+import { AI_ENGINE } from '../rules/server-engines';
 import { instanceSetting } from '../settings';
 import { readScmContext } from './context';
 import { mergeRequestTitle, SUMMARY_TOP_ISSUES, type IssueLine, type SummaryInput } from './render';
@@ -105,7 +107,10 @@ export function linkOn(link: string, webBase: string): string | null {
   }
 }
 
-/** Open, visible, new issues of the branch: most severe first, then by place (scm.md §5.2). */
+/**
+ * Open, visible, new issues of the branch: most severe first, then by place (scm.md §5.2). The AI
+ * review's findings are not among them: the summary lists and counts the analyzers' issues.
+ */
 function openNewIssues(branchId: string) {
   return and(
     eq(issues.branchId, branchId),
@@ -113,6 +118,7 @@ function openNewIssues(branchId: string) {
     isNull(issues.duplicateOfIssueId),
     eq(issues.kind, 'issue'),
     eq(issues.inNewCode, true),
+    notAiIssue(issues.ruleId),
   );
 }
 
@@ -211,7 +217,8 @@ export async function summaryData(
 
 /**
  * The branch's open new issues with a place, most severe first (scm.md §5.4, github.md §6.4): the
- * ones a decoration comments inline, each with its rule's documentation link.
+ * ones a decoration comments inline, each with its rule's documentation link. The AI review's
+ * findings are not among them: these threads are the analyzers'.
  */
 export async function desiredInlineIssues(db: Db, branchId: string, limit: number) {
   const rows = await db
@@ -235,6 +242,7 @@ export async function desiredInlineIssues(db: Db, branchId: string, limit: numbe
         isNull(issues.duplicateOfIssueId),
         eq(issues.kind, 'issue'),
         eq(issues.inNewCode, true),
+        ne(rules.engineId, AI_ENGINE),
         isNotNull(issues.path),
         isNotNull(issues.startLine),
       ),

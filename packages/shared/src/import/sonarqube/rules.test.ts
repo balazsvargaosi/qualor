@@ -447,6 +447,19 @@ describe('the SonarQube mapping table (import-sonarqube.md §6)', () => {
     }
   });
 
+  it('maps no language, repository or rule to an engine the server makes itself (the licence policy, the AI review)', () => {
+    const serverEngines = ['license', 'ai'];
+    for (const language of Object.values(raw.languages)) {
+      for (const id of language.engines) expect(serverEngines, id).not.toContain(id);
+    }
+    for (const row of raw.repositories) {
+      expect(serverEngines, row.repository).not.toContain(row.engine);
+    }
+    for (const entry of raw.rules) {
+      for (const key of entry.qualor) expect(serverEngines, key).not.toContain(engineOf(key));
+    }
+  });
+
   it('names the engine of a Qualor key, and none for a key without a colon', () => {
     expect(engineOf('eslint:@typescript-eslint/no-unused-vars')).toBe('eslint');
     expect(engineOf('no-colon')).toBe('');

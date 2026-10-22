@@ -379,8 +379,8 @@ describe('BUILTIN_EXCLUDES', () => {
     expect(errorPaths({ version: 1, sarif: [{ path: 'r.sarif', engine: 'detekt' }] })).not.toEqual(
       [],
     );
-    // 6M: so are the server's licence engine and the CLI's licence pass.
-    for (const engine of ['license', 'trivy-licenses']) {
+    // 6M: so are the server's licence engine and the CLI's licence pass. 6I: and the AI review's.
+    for (const engine of ['license', 'trivy-licenses', 'ai']) {
       expect(() => parseConfig({ version: 1, sarif: [{ path: 'r.sarif', engine }] })).toThrow(
         /reserved/,
       );

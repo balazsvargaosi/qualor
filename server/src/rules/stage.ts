@@ -10,8 +10,8 @@ import { SERVER_ENGINES } from './server-engines';
  * is active in the effective profile (profiles filter, they do not configure analyzers),
  * re-graded by the profile's severity override. Dropped findings are counted in one warning and
  * never stored (data-model.md §4.4). A finding of a server engine (rules/server-engines.ts) is
- * dropped: only the server makes those (the licence policy stage), so a report can neither open
- * nor keep such an issue.
+ * dropped: only the server makes those (the licence policy stage, the AI review), so a report can
+ * neither open nor keep such an issue.
  */
 export const rulesStage: IngestionStage = {
   name: 'rules',
