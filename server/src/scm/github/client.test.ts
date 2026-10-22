@@ -288,12 +288,13 @@ describe('GitHub REST client (github.md §4–§6)', () => {
     expect(() => clientFor({}, String(Number.MAX_SAFE_INTEGER))).not.toThrow();
   });
 
-  it('stops at 120 requests', async () => {
+  it('stops at its request budget, 320 a job by default', async () => {
     const client = clientFor({ maxRequests: 2 });
     await client.app();
     await client.app();
     const err = await failure(client.app());
     expect([err.kind, err.message]).toEqual(['budget', GITHUB_TEXT.budget]);
+    expect(GITHUB_TEXT.budget).toBe('More than 320 GitHub requests in one job');
   });
 
   it('spaces its mutations at least a second apart', async () => {
@@ -349,10 +350,10 @@ describe('GitHub REST client (github.md §4–§6)', () => {
     expect(fake.requests).toHaveLength(0);
   });
 
-  it('answers annotations_rejected when GitHub refuses the annotations', async () => {
+  it('creates a check run whose output is a title and a summary, never annotations', async () => {
     const client = clientFor();
     await client.useRepository(REPO);
-    fake.inject('POST', /check-runs$/, { status: 422, body: { message: 'Invalid request.' } });
+    fake.clearRequests();
     const created = await client.createCheckRun({
       name: 'qualor/k',
       headSha: SHA,
@@ -361,18 +362,34 @@ describe('GitHub REST client (github.md §4–§6)', () => {
       summary: 's',
       detailsUrl: null,
       externalId: 'qualor:v1:x',
-      annotations: [
-        {
-          path: 'a.ts',
-          start_line: 1,
-          end_line: 1,
-          annotation_level: 'notice',
-          title: 't',
-          message: 'm',
-        },
-      ],
     });
-    expect(created).toBe('annotations_rejected');
+    expect(created).toMatchObject({ name: 'qualor/k', conclusion: 'success' });
+    expect(created.output.annotations_count).toBe(0);
+    const sent = fake.requests.find((r) => r.method === 'POST' && r.path.endsWith('/check-runs'));
+    expect((JSON.parse(sent?.body ?? '{}') as { output: unknown }).output).toEqual({
+      title: 't',
+      summary: 's',
+    });
+  });
+
+  it('refuses a check run GitHub answers 422 to, with no second attempt of any kind', async () => {
+    const client = clientFor();
+    await client.useRepository(REPO);
+    fake.inject('POST', /check-runs$/, { status: 422, body: { message: 'Invalid request.' } });
+    fake.clearRequests();
+    const refused = await failure(
+      client.createCheckRun({
+        name: 'qualor/k',
+        headSha: SHA,
+        conclusion: 'success',
+        title: 't',
+        summary: 's',
+        detailsUrl: null,
+        externalId: 'qualor:v1:x',
+      }),
+    );
+    expect([refused.kind, refused.status]).toEqual(['refused', 422]);
+    expect(fake.requests.filter((r) => r.path.endsWith('/check-runs'))).toHaveLength(1);
   });
 
   it('lists only this App’s check runs of the name', async () => {
@@ -386,7 +403,6 @@ describe('GitHub REST client (github.md §4–§6)', () => {
       summary: 's',
       detailsUrl: null,
       externalId: 'qualor:v1:x',
-      annotations: [],
     });
     fake.checkRuns.push({ ...fake.checkRuns.at(-1)!, id: 9999, appId: 1 });
     const runs = await client.checkRuns(SHA, 'qualor/k');

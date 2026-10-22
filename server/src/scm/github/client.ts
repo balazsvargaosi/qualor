@@ -19,7 +19,13 @@ import { githubGraphqlUrl, GITHUB_REPO_PATTERN, type GitHubRepoRef } from './url
 export const GITHUB_TIMEOUT_MS = 10_000;
 export const MAX_GITHUB_RESPONSE_BYTES = 8 * 1024 * 1024;
 export const GITHUB_PAGE_SIZE = 100;
-export const MAX_GITHUB_REQUESTS = 120;
+/**
+ * Requests one job (one client) may make (ruling R7). The most a decoration asks for besides its
+ * thread work is `REQUESTS_OUTSIDE_THREADS` (decorate.ts); with the creations and the updates of
+ * threads the sum is about 300, a token refreshed after a 401 included, so the check run and the
+ * summary are always written.
+ */
+export const MAX_GITHUB_REQUESTS = 320;
 /** Ruling T6: pages of 100 review threads one job reads at most. */
 export const MAX_THREAD_PAGES = 10;
 /** GraphQL's `Int` is a signed 32-bit integer: the largest pull request number a query can carry. */
@@ -232,17 +238,6 @@ export interface GitHubReviewThread {
   firstCommentId: number | null;
 }
 
-export type AnnotationLevel = 'notice' | 'warning' | 'failure';
-/** github.md §6.4: one annotation, keys in the order the digest uses. */
-export interface GitHubAnnotation {
-  path: string;
-  start_line: number;
-  end_line: number;
-  annotation_level: AnnotationLevel;
-  title: string;
-  message: string;
-}
-
 export interface CheckRunUpdate {
   conclusion: 'success' | 'failure';
   title: string;
@@ -253,7 +248,6 @@ export interface CheckRunUpdate {
 export interface CheckRunInput extends CheckRunUpdate {
   name: string;
   headSha: string;
-  annotations: readonly GitHubAnnotation[];
 }
 
 export interface GitHubConnectionInput {
@@ -760,28 +754,18 @@ export class GitHubClient {
     };
   }
 
-  /** A new check run; `'annotations_rejected'` when GitHub refuses its annotations (a 422). */
-  async createCheckRun(input: CheckRunInput): Promise<GitHubCheckRun | 'annotations_rejected'> {
-    try {
-      const { json } = await this.repoCall('POST', `${this.repoPath()}/check-runs`, {
-        name: input.name,
-        head_sha: this.sha(input.headSha),
-        ...this.checkRunBody(input),
-        output: { title: input.title, summary: input.summary, annotations: input.annotations },
-      });
-      return this.parse(checkRun, json);
-    } catch (err) {
-      // GitHub answers 422 for an invalid request; with annotations sent, one of them is the
-      // likely cause (a path or line it does not accept), so the caller retries without them.
-      // Without annotations a 422 is a plain refusal.
-      if (err instanceof ScmError && err.status === 422 && input.annotations.length > 0) {
-        return 'annotations_rejected';
-      }
-      throw err;
-    }
+  /** A new check run; its output is a title and a summary, never annotations (github.md §6.1). */
+  async createCheckRun(input: CheckRunInput): Promise<GitHubCheckRun> {
+    const { json } = await this.repoCall('POST', `${this.repoPath()}/check-runs`, {
+      name: input.name,
+      head_sha: this.sha(input.headSha),
+      ...this.checkRunBody(input),
+      output: { title: input.title, summary: input.summary },
+    });
+    return this.parse(checkRun, json);
   }
 
-  /** Updates conclusion and output, never annotations (GitHub appends them on an update). */
+  /** Updates the conclusion and the output (title and summary) of a check run. */
   async updateCheckRun(id: number, input: CheckRunUpdate): Promise<GitHubCheckRun> {
     if (!Number.isSafeInteger(id) || id <= 0) throw this.invalid(GITHUB_TEXT.id);
     const { json } = await this.repoCall('PATCH', `${this.repoPath()}/check-runs/${id}`, {

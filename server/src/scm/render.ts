@@ -196,13 +196,13 @@ const WORDS = {
   },
   github: {
     request: 'pull request',
-    placed: 'annotated inline',
-    stale: 'Inline annotations wait for the analysis of the pull request’s latest commit.',
+    placed: 'commented inline',
+    stale: 'Inline comments wait for the analysis of the pull request’s latest commit.',
   },
 } as const;
 /** github.md §6.2. Fixed text: the `${{ … }}` is an Actions expression, not a template. */
 const CHECKOUT_OTHER =
-  'No inline annotations: the workflow analysed a commit other than the pull request’s head (GitHub’s merge commit, by default); check out the head to get them (`ref: ${{ github.event.pull_request.head.sha }}`).';
+  'No inline comments: the workflow analysed a commit other than the pull request’s head (GitHub’s merge commit, by default); check out the head to get them (`ref: ${{ github.event.pull_request.head.sha }}`).';
 
 /** The headline's marker of a gate status; one this code does not know is a warning. */
 const STATUS_ICON: Record<GateResult['status'], string> = {

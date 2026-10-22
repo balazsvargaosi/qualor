@@ -1,29 +1,10 @@
 import { createHash } from 'node:crypto';
-import type { GateResult, Quality, Severity } from '@qualor/shared';
-import { linesWithinBytes, MAX_MESSAGE_CHARS, plainValue, ruleDocUrl } from '../markdown';
-import {
-  commitStatusFor,
-  possibleLabel,
-  qualityLabel,
-  severityLabel,
-  SUMMARY_MAX_BYTES,
-} from '../render';
-import type { AnnotationLevel, GitHubAnnotation } from './client';
+import type { GateResult } from '@qualor/shared';
+import { linesWithinBytes, plainValue } from '../markdown';
+import { commitStatusFor, SUMMARY_MAX_BYTES } from '../render';
 
-/** github.md §6.4: GitHub's limit per request, and Qualor's per pull request. */
-export const MAX_ANNOTATIONS = 50;
-/** GitHub's bound on a check run's `output.title` and an annotation's `title`. */
+/** GitHub's bound on a check run's `output.title`. */
 const TITLE_MAX = 255;
-/** A link longer than this is not one of Qualor's own (an origin and two UUIDs); it is left out. */
-const URL_MAX = 2_048;
-
-const LEVEL: Record<Severity, AnnotationLevel> = {
-  blocker: 'failure',
-  high: 'failure',
-  medium: 'warning',
-  low: 'notice',
-  info: 'notice',
-};
 
 /**
  * {@link plainValue} bounded to `max` UTF-16 code units as well as code points: GitHub counts a
@@ -41,76 +22,17 @@ function plainWithin(value: string, max: number): string {
 }
 
 /**
- * Qualor's own issue link as plain text, or null: an http(s) URL without credentials, which
- * {@link plainValue} leaves as it is (no control, space or invisible character) and short.
+ * github.md §6.1 (ruling T4): the digest of every check run's external id. A check run carries no
+ * annotation any more (findings are review threads, §6.4), so the digest is always that of an empty
+ * annotation list as 0.11 computed it: the first 16 hex characters of the SHA-256 of `[]`. A check
+ * run 0.11 made with annotations has another digest, so the next decoration replaces it once with
+ * one without (GitHub cannot take an annotation off a check run); one 0.11 made without any has
+ * this digest and is kept. Changing this value replaces the check run of every revision once.
  */
-function plainLink(url: string | null): string | null {
-  if (url === null || url.length > URL_MAX || !URL.canParse(url)) return null;
-  const parsed = new URL(url);
-  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null;
-  if (parsed.username !== '' || parsed.password !== '') return null;
-  return plainValue(url, URL_MAX) === url && !/\s/.test(url) ? url : null;
-}
-
-/**
- * github.md §6.4: one annotation, plain text through `plainValue` (scm.md §6, github.md §7):
- * GitHub renders no Markdown in annotations. The message is at most 300 characters, the rule's
- * documentation link (a safe https URL of at most 512) and Qualor's link, far below GitHub's
- * 64 KiB; the title at most 255.
- */
-export function annotationFor(issue: {
-  path: string;
-  line: number;
-  severity: Severity;
-  quality: Quality;
-  ruleKey: string;
-  /** The rule's documentation link, shown when it is a safe https URL. */
-  helpUri?: string | null;
-  message: string;
-  /** The C# taint engine's confidence (R-9): `medium` is named "Possible" in the title. */
-  confidence?: 'high' | 'medium' | null;
-  url: string | null;
-}): GitHubAnnotation {
-  const text = plainValue(issue.message, MAX_MESSAGE_CHARS);
-  const docs = ruleDocUrl(issue.helpUri);
-  const message = `${text.trim() === '' ? 'Qualor issue' : text}${
-    docs === null
-      ? ''
-      : `
-
-Rule: ${docs}`
-  }`;
-  const link = plainLink(issue.url);
-  return {
-    path: issue.path,
-    start_line: issue.line,
-    end_line: issue.line,
-    annotation_level: Object.hasOwn(LEVEL, issue.severity) ? LEVEL[issue.severity] : 'warning',
-    title: plainWithin(
-      [
-        severityLabel(issue.severity),
-        qualityLabel(issue.quality),
-        ...possibleLabel(issue.confidence),
-        issue.ruleKey,
-      ].join(' · '),
-      TITLE_MAX,
-    ),
-    message: link === null ? message : `${message}\n\nView in Qualor: ${link}`,
-  };
-}
-
-/** github.md §6.4: 16 hex characters of the SHA-256 of the annotations as sent. */
-export function annotationsDigest(annotations: readonly GitHubAnnotation[]): string {
-  const canonical = annotations.map((a) => [
-    a.path,
-    a.start_line,
-    a.end_line,
-    a.annotation_level,
-    a.title,
-    a.message,
-  ]);
-  return createHash('sha256').update(JSON.stringify(canonical), 'utf8').digest('hex').slice(0, 16);
-}
+export const NO_ANNOTATIONS_DIGEST = createHash('sha256')
+  .update('[]', 'utf8')
+  .digest('hex')
+  .slice(0, 16);
 
 const EXTERNAL_ID =
   /^qualor:v1:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):([0-9a-f]{16})$/;

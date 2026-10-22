@@ -1,16 +1,12 @@
-import { SEVERITIES, type Quality, type Severity } from '@qualor/shared';
 import type { DecorationDeps, DecorationOutcome } from '../decorate';
 import {
   branchUrl,
   comparable,
-  desiredInlineIssues,
   issueUrl,
   recordMergeRequest,
   summaryData,
-  type DesiredInlineIssue,
   type Loaded,
 } from '../decoration-data';
-import { addedLines } from '../inline';
 import { markerOf } from '../markdown';
 import { ScmError } from '../provider';
 import type { DecorationPayload } from '../queue';
@@ -18,129 +14,82 @@ import { statusName, summaryBody, type SummaryInput } from '../render';
 import {
   GITHUB_PR_NUMBER,
   GITHUB_TEXT,
+  MAX_THREAD_PAGES,
   type CheckRunUpdate,
-  type GitHubAnnotation,
   type GitHubClient,
   type GitHubPullRequest,
 } from './client';
 import { githubClientFor } from './connections';
 import {
-  annotationFor,
-  annotationsDigest,
   checkRunExternalId,
   checkRunSummary,
   checkRunVerdict,
-  MAX_ANNOTATIONS,
+  NO_ANNOTATIONS_DIGEST,
   parseCheckRunExternalId,
 } from './render';
-import { MAX_COMMENT_PAGES } from './threads';
+import { MAX_COMMENT_PAGES, reconcileReviewThreads } from './threads';
 import { githubWebBase, parseRepoRef } from './url';
 
-/** github.md §5.3: pages of pull request files one job reads ... */
+/** github.md §5.3: pages of pull request files one job reads at most. */
 export const MAX_FILE_PAGES = 30;
-/**
- * ... and of comments (issue comments, and the review comments of the threads): the bound lives in
- * threads.ts, which reads the review comments by it, and is found here as it always was.
- */
+// The bound on pages of comments, of the issue comments that hold the summary and of the pull
+// request's review comments alike, lives in threads.ts, which reads the review comments by it.
 export { MAX_COMMENT_PAGES };
+/**
+ * github.md §5.3 (ruling R7): the most requests a job makes besides creating, resolving and
+ * reopening review threads:
+ * - the App, the installation, its token, the repository and the pull request (5);
+ * - every page of files, review comments, review threads and issue comments it may read;
+ * - the check run: its listing, and its creation or update (2);
+ * - the summary: its creation or edit (1);
+ * - what a token refreshed after a 401 adds: the new token and the request made again (2).
+ * With the creations (at most `MAX_INLINE_THREADS`) and the resolutions and reopenings (at most
+ * `MAX_GITHUB_THREAD_UPDATES`) this stays within `MAX_GITHUB_REQUESTS`, so the check run and the
+ * summary are always written.
+ */
+export const REQUESTS_OUTSIDE_THREADS =
+  5 + MAX_FILE_PAGES + MAX_COMMENT_PAGES + MAX_THREAD_PAGES + 2 + MAX_COMMENT_PAGES + 1 + 2;
 export const REPOSITORY_MISMATCH =
   "The workflow's GitHub repository is not the repository Qualor is mapped to";
 
 type Inline = SummaryInput['inline'];
 
-const severityRank = (severity: string) => {
-  const i = (SEVERITIES as readonly string[]).indexOf(severity);
-  return i === -1 ? SEVERITIES.length : i;
-};
-/** Code-unit order: the same on every machine and locale (no `localeCompare`). */
-const byText = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
-
 /**
- * github.md §6.4: the desired issues that fall on added lines of the pull request's files, as
- * annotations, and how many do not. The annotations are in a total order (severity descending,
- * then path, line, rule key and issue id), whatever order the issues come in: the check run's
- * digest depends on it, and a rerun must find the same digest to change nothing. An issue without
- * a positive line, or on a file without a patch (binary, generated, too large), is not placed.
+ * github.md §6.4: the review threads of an open pull request whose head is the analysed revision,
+ * checked out by the workflow: the pull request's files (a file the page bound cuts places no
+ * issue: its issues count as not placed) and the reconciliation of Qualor's threads with them.
  */
-export function annotationsOnDiff(
-  desired: readonly DesiredInlineIssue[],
-  added: ReadonlyMap<string, ReadonlySet<number>>,
-  url: (issueId: string) => string | null,
-): { annotations: GitHubAnnotation[]; unplaced: number } {
-  const placed: (DesiredInlineIssue & { path: string; line: number })[] = [];
-  let unplaced = 0;
-  for (const issue of desired) {
-    const { path, line } = issue;
-    if (
-      path === null ||
-      line === null ||
-      !Number.isSafeInteger(line) ||
-      line <= 0 ||
-      !added.get(path)?.has(line)
-    ) {
-      unplaced += 1;
-      continue;
-    }
-    placed.push({ ...issue, path, line });
-  }
-  placed.sort(
-    (a, b) =>
-      severityRank(a.severity) - severityRank(b.severity) ||
-      byText(a.path, b.path) ||
-      a.line - b.line ||
-      byText(a.ruleKey, b.ruleKey) ||
-      byText(a.id, b.id),
-  );
-  return {
-    annotations: placed.map((issue) =>
-      annotationFor({
-        path: issue.path,
-        line: issue.line,
-        severity: issue.severity as Severity,
-        quality: issue.quality as Quality,
-        ruleKey: issue.ruleKey,
-        helpUri: issue.helpUri,
-        message: issue.message,
-        confidence: issue.confidence,
-        url: url(issue.id),
-      }),
-    ),
-    unplaced,
-  };
-}
-
-/** github.md §6.4: the desired issues placed on added lines of the pull request's files. */
-async function placeAnnotations(
+async function reconcileThreads(
   deps: DecorationDeps,
   client: GitHubClient,
   loaded: Loaded,
-  number: string,
-): Promise<{ annotations: GitHubAnnotation[]; unplaced: number }> {
-  const desired = await desiredInlineIssues(deps.db, loaded.branch.id, MAX_ANNOTATIONS);
-  if (desired.length === 0) return { annotations: [], unplaced: 0 };
+  pull: GitHubPullRequest,
+  botLogin: string,
+): Promise<Inline> {
+  const number = loaded.branch.name;
   const files = await client.pullRequestFiles(number, MAX_FILE_PAGES);
-  const added = new Map<string, Set<number>>();
-  for (const f of files.items) {
-    if (f.status !== 'removed' && f.patch !== undefined) added.set(f.filename, addedLines(f.patch));
-  }
-  return annotationsOnDiff(desired, added, (id) => issueUrl(deps.publicUrl, loaded.project.id, id));
+  const { commented, unplaced } = await reconcileReviewThreads({
+    db: deps.db,
+    client,
+    number,
+    projectId: loaded.project.id,
+    branchId: loaded.branch.id,
+    headSha: pull.head.sha,
+    files: files.items,
+    botLogin,
+    issueUrl: (issueId) => issueUrl(deps.publicUrl, loaded.project.id, issueId),
+    ...(deps.maxThreadUpdates === undefined ? {} : { maxThreadUpdates: deps.maxThreadUpdates }),
+  });
+  return { commented, unplaced, skipped: null };
 }
 
 /**
- * What the check run's summary says about its annotations: those placed this time, a refusal of
- * them by GitHub, or (the annotations kept, `annotations: null`) the count the check run holds.
- */
-type AnnotationState = 'placed' | 'rejected' | { kept: number };
-
-/**
- * github.md §6.1: Qualor's check run of this name on the revision, read before written. The same
- * annotations (by digest) and output → nothing; the same annotations, other output → PATCH; other
- * annotations or none of Qualor's → a new check run. `annotations: null` keeps the current ones
- * (the pull request part failed, or the analysis is not the branch's latest), and the summary
- * then counts the ones kept. When GitHub refuses the annotations, the check run is created without
- * them but with the digest of those it tried (§6.4, ruling C2): a rerun of the same analysis then
- * finds that digest and sends nothing, rather than a refused POST and a new fallback each time.
- * Returns whether the check run is such a fallback.
+ * github.md §6.1: Qualor's check run of this name on the revision, read before written. One with
+ * the digest of no annotations (every check run Qualor writes has it, and a 0.11 one without
+ * annotations) and the same conclusion, title, summary, link and analysis → nothing; the same
+ * digest and anything else changed → PATCH. None of Qualor's, or the newest has another digest (a
+ * 0.11 check run with annotations, which GitHub cannot take off it) → a new check run, which
+ * GitHub shows (and branch protection uses) in its place.
  */
 async function reconcileCheckRun(
   client: GitHubClient,
@@ -150,66 +99,34 @@ async function reconcileCheckRun(
     analysisId: string;
     verdict: { conclusion: 'success' | 'failure'; title: string };
     detailsUrl: string | null;
-    annotations: GitHubAnnotation[] | null;
-    summary: (state: AnnotationState) => string;
+    summary: string;
   },
-): Promise<{ rejected: boolean }> {
+): Promise<void> {
   const current =
     (await client.checkRuns(a.revision, a.name))
       .map((run) => ({ run, ids: parseCheckRunExternalId(run.external_id) }))
       .filter((c) => c.ids !== null)
       .sort((x, y) => y.run.id - x.run.id)[0] ?? null;
-  const digest =
-    a.annotations === null
-      ? (current?.ids?.digest ?? annotationsDigest([]))
-      : annotationsDigest(a.annotations);
-  const matches = current !== null && current.ids?.digest === digest;
-  // The fallback of an earlier refusal: the digest of annotations it does not hold.
-  const refusedBefore =
-    matches &&
-    a.annotations !== null &&
-    a.annotations.length > 0 &&
-    current.run.output.annotations_count === 0;
-  const state: AnnotationState =
-    a.annotations === null
-      ? { kept: current?.run.output.annotations_count ?? 0 }
-      : refusedBefore
-        ? 'rejected'
-        : 'placed';
-  const update = (summary: string): CheckRunUpdate => ({
+  const desired: CheckRunUpdate = {
     conclusion: a.verdict.conclusion,
     title: a.verdict.title,
-    summary,
+    summary: a.summary,
     detailsUrl: a.detailsUrl,
-    externalId: checkRunExternalId(a.analysisId, digest),
-  });
-  const desired = update(a.summary(state));
-  if (matches) {
-    const r = current.run;
-    const same =
-      r.conclusion === desired.conclusion &&
-      (r.output.title ?? '') === desired.title &&
-      comparable(r.output.summary ?? '') === comparable(desired.summary) &&
-      // GitHub fills in a details URL of its own when none is sent: compare only one Qualor sent.
-      (desired.detailsUrl === null || r.details_url === desired.detailsUrl) &&
-      r.external_id === desired.externalId;
-    if (!same) await client.updateCheckRun(r.id, desired);
-    return { rejected: refusedBefore };
+    externalId: checkRunExternalId(a.analysisId, NO_ANNOTATIONS_DIGEST),
+  };
+  if (current === null || current.ids?.digest !== NO_ANNOTATIONS_DIGEST) {
+    await client.createCheckRun({ ...desired, name: a.name, headSha: a.revision });
+    return;
   }
-  const created = await client.createCheckRun({
-    ...desired,
-    name: a.name,
-    headSha: a.revision,
-    annotations: a.annotations ?? [],
-  });
-  if (created !== 'annotations_rejected') return { rejected: false };
-  await client.createCheckRun({
-    ...update(a.summary('rejected')),
-    name: a.name,
-    headSha: a.revision,
-    annotations: [],
-  });
-  return { rejected: true };
+  const r = current.run;
+  const same =
+    r.conclusion === desired.conclusion &&
+    (r.output.title ?? '') === desired.title &&
+    comparable(r.output.summary ?? '') === comparable(desired.summary) &&
+    // GitHub fills in a details URL of its own when none is sent: compare only one Qualor sent.
+    (desired.detailsUrl === null || r.details_url === desired.detailsUrl) &&
+    r.external_id === desired.externalId;
+  if (!same) await client.updateCheckRun(r.id, desired);
 }
 
 /** github.md §6.2–§6.3: the summary comment, recognised by the App's bot login and the marker. */
@@ -247,11 +164,12 @@ const stopsTheJob = (e: ScmError) => e.kind === 'budget' || e.kind === 'rate_lim
 
 /**
  * One GitHub decoration (github.md §5.2): the App, the installation and the repository; for the
- * branch's latest analysis of an open pull request, its annotations; the check run of the
- * revision; then the summary comment. A failed pull request part does not stop the check run
- * (which then keeps its annotations), unless GitHub rate-limited it or the budget ran out. Only a
- * transient failure or a rate limit is retried (by the caller, through `failed`); any other error
- * stops the job.
+ * branch's latest analysis of an open pull request, its review threads (§6.4); the check run of
+ * the revision (§6.1), which carries no annotations; then the summary comment. A failed pull
+ * request part does not stop the check run (which then says nothing about inline comments),
+ * unless GitHub rate-limited it or the budget ran out; the threads and the summary stay as they
+ * are. Only a transient failure or a rate limit is retried (by the caller, through `failed`); any
+ * other error stops the job.
  */
 export async function decorateGitHub(
   deps: DecorationDeps,
@@ -278,8 +196,8 @@ export async function decorateGitHub(
       return failed(new ScmError('refused', REPOSITORY_MISMATCH));
     }
     let pull: GitHubPullRequest | null = null;
-    // An analysis that is no longer the branch's latest keeps the annotations the check run has.
-    let annotations: GitHubAnnotation[] | null = branch.lastAnalysisId === analysis.id ? [] : null;
+    // An analysis that is no longer the branch's latest, or whose pull request part failed, leaves
+    // the threads as they are and says nothing about them.
     let inline: Inline = { commented: 0, unplaced: 0, skipped: null };
     const latestPullRequest =
       branch.kind === 'merge_request' &&
@@ -301,66 +219,42 @@ export async function decorateGitHub(
               : pull.head.sha !== loaded.revision
                 ? 'stale'
                 : null;
-          if (skipped === null) {
-            const placed = await placeAnnotations(deps, client, loaded, branch.name);
-            annotations = placed.annotations;
-            inline = {
-              commented: placed.annotations.length,
-              unplaced: placed.unplaced,
-              skipped: null,
-            };
-          } else {
-            inline = { commented: 0, unplaced: 0, skipped };
-          }
+          inline =
+            skipped === null
+              ? await reconcileThreads(deps, client, loaded, pull, `${app.slug}[bot]`)
+              : { commented: 0, unplaced: 0, skipped };
         }
       } catch (err) {
         if (!(err instanceof ScmError)) throw err;
         if (stopsTheJob(err)) return failed(err);
         errors.push(err);
         pull = null;
-        annotations = null;
       }
     }
     const data = await summaryData(deps.db, loaded, deps.publicUrl);
     const head = pull !== null && pull.head.sha !== loaded.revision ? pull.head.sha : null;
-    const render = (i: Inline) =>
-      summaryBody({
-        projectId: project.id,
-        revision: loaded.revision,
-        gate: loaded.gate,
-        newIssues: data.newIssues,
-        topIssues: data.top,
-        topIssuesTotal: data.total,
-        inline: i,
-        branchUrl: branchUrl(deps.publicUrl, loaded),
-        mergeRequestHead: head,
-        vocabulary: 'github',
-        smallChangesetLines: data.smallChangesetLines,
-      });
-    const rejectedInline: Inline = {
-      commented: 0,
-      unplaced: inline.commented + inline.unplaced,
-      skipped: null,
-    };
-    let body = render(inline);
+    const body = summaryBody({
+      projectId: project.id,
+      revision: loaded.revision,
+      gate: loaded.gate,
+      newIssues: data.newIssues,
+      topIssues: data.top,
+      topIssuesTotal: data.total,
+      inline,
+      branchUrl: branchUrl(deps.publicUrl, loaded),
+      mergeRequestHead: head,
+      vocabulary: 'github',
+      smallChangesetLines: data.smallChangesetLines,
+    });
     try {
-      const { rejected } = await reconcileCheckRun(client, {
+      await reconcileCheckRun(client, {
         name: statusName(project.key),
         revision: loaded.revision,
         analysisId: analysis.id,
         verdict: checkRunVerdict(loaded.gate),
         detailsUrl: branchUrl(deps.publicUrl, loaded),
-        annotations,
-        summary: (state) =>
-          checkRunSummary(
-            state === 'placed'
-              ? body
-              : state === 'rejected'
-                ? render(rejectedInline)
-                : render({ commented: state.kept, unplaced: 0, skipped: null }),
-          ),
+        summary: checkRunSummary(body),
       });
-      if (rejected) body = render(rejectedInline);
     } catch (err) {
       if (!(err instanceof ScmError)) throw err;
       if (stopsTheJob(err)) return failed(err);

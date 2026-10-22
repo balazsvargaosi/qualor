@@ -1,83 +1,41 @@
+import { createHash } from 'node:crypto';
 import type { GateResult } from '@qualor/shared';
 import { describe, expect, it } from 'vitest';
 import { markerOf } from '../markdown';
-import { SUMMARY_MAX_BYTES, summaryBody, type SummaryInput } from '../render';
 import {
-  annotationFor,
-  annotationsDigest,
+  INLINE_MAX_BYTES,
+  inlineBody,
+  SUMMARY_MAX_BYTES,
+  summaryBody,
+  type SummaryInput,
+} from '../render';
+import {
   checkRunExternalId,
   checkRunSummary,
   checkRunVerdict,
-  MAX_ANNOTATIONS,
+  NO_ANNOTATIONS_DIGEST,
   parseCheckRunExternalId,
 } from './render';
 
-const ISSUE = {
-  path: 'src/a.ts',
-  line: 3,
-  severity: 'high' as const,
-  quality: 'security' as const,
-  ruleKey: 'semgrep:x',
-  message: 'Avoid eval',
-  url: 'https://q.example/projects/p/issues/i',
-};
 const PROJECT = '0190c3b2-7a00-7000-8000-000000000001';
 const gate = (status: GateResult['status']): GateResult =>
   ({ status, gate: null, conditions: [], warnings: [] }) as unknown as GateResult;
 
-describe('annotations (github.md §6.4)', () => {
-  it('is plain text with the issue’s place, level, title and link', () => {
-    expect(annotationFor(ISSUE)).toEqual({
-      path: 'src/a.ts',
-      start_line: 3,
-      end_line: 3,
-      annotation_level: 'failure',
-      title: 'High · security · semgrep:x',
-      message: 'Avoid eval\n\nView in Qualor: https://q.example/projects/p/issues/i',
-    });
-    expect(annotationFor({ ...ISSUE, severity: 'medium', url: null }).annotation_level).toBe(
-      'warning',
+describe('the check run’s external id (github.md §6.1, ruling T4)', () => {
+  it('carries the digest of an empty annotation list, which 0.11 wrote for a check run without any', () => {
+    // Pinned: another value replaces the check run of every revision once.
+    expect(NO_ANNOTATIONS_DIGEST).toBe('4f53cda18c2baa0c');
+    expect(NO_ANNOTATIONS_DIGEST).toBe(
+      createHash('sha256').update(JSON.stringify([]), 'utf8').digest('hex').slice(0, 16),
     );
-    expect(annotationFor({ ...ISSUE, severity: 'info', url: null })).toMatchObject({
-      annotation_level: 'notice',
-      message: 'Avoid eval',
-    });
   });
 
-  it('names a medium-confidence finding of the C# taint engine Possible in the title (R-9)', () => {
-    expect(annotationFor({ ...ISSUE, confidence: 'medium' }).title).toBe(
-      'High · security · Possible · semgrep:x',
-    );
-    expect(annotationFor({ ...ISSUE, confidence: 'high' }).title).toBe(
-      'High · security · semgrep:x',
-    );
-    expect(annotationFor({ ...ISSUE, confidence: null }).title).toBe('High · security · semgrep:x');
-  });
-
-  it('strips controls and bidirectional characters and bounds every value', () => {
-    const hostile = annotationFor({
-      ...ISSUE,
-      message: 'a\u202eb\nc\u0000d' + 'x'.repeat(400),
-      ruleKey: 'r\u2066'.repeat(200),
-    });
-    const text = hostile.message.split('\n')[0]!;
-    // eslint-disable-next-line no-control-regex -- matching control characters is the point
-    expect(text).not.toMatch(/[\u0000-\u001f\u202e]/);
-    expect(text.length).toBeLessThanOrEqual(300);
-    expect(hostile.title.length).toBeLessThanOrEqual(255);
-    expect(hostile.title).not.toContain('\u2066');
-  });
-
-  it('digests the annotations in order, and the external id round-trips', () => {
-    const a = annotationFor(ISSUE);
-    const b = annotationFor({ ...ISSUE, line: 4 });
-    expect(annotationsDigest([a, b])).toMatch(/^[0-9a-f]{16}$/);
-    expect(annotationsDigest([a, b])).not.toBe(annotationsDigest([b, a]));
-    expect(annotationsDigest([])).toBe(annotationsDigest([]));
-    const id = checkRunExternalId(PROJECT, annotationsDigest([a]));
+  it('round-trips, and refuses an id it could not read back', () => {
+    const id = checkRunExternalId(PROJECT, NO_ANNOTATIONS_DIGEST);
+    expect(id).toBe(`qualor:v1:${PROJECT}:${NO_ANNOTATIONS_DIGEST}`);
     expect(parseCheckRunExternalId(id)).toEqual({
       analysisId: PROJECT,
-      digest: annotationsDigest([a]),
+      digest: NO_ANNOTATIONS_DIGEST,
     });
     for (const foreign of [
       null,
@@ -87,6 +45,14 @@ describe('annotations (github.md §6.4)', () => {
       `qualor:v1:not-a-uuid:0123456789abcdef`,
     ])
       expect(parseCheckRunExternalId(foreign)).toBeNull();
+    expect(() => checkRunExternalId('not-a-uuid', '0123456789abcdef')).toThrow();
+    expect(() => checkRunExternalId(PROJECT, 'xyz')).toThrow();
+  });
+
+  it('reads the digest of a check run 0.11 made with annotations as another one', () => {
+    const annotated = `qualor:v1:${PROJECT}:0123456789abcdef`;
+    expect(parseCheckRunExternalId(annotated)?.digest).toBe('0123456789abcdef');
+    expect(parseCheckRunExternalId(annotated)?.digest).not.toBe(NO_ANNOTATIONS_DIGEST);
   });
 });
 
@@ -115,19 +81,35 @@ describe('the summary in GitHub’s words (github.md §6.2)', () => {
     vocabulary: 'github',
   });
 
-  it('says pull request and annotated, and explains a merge-commit checkout', () => {
+  it('says pull request and commented, and explains a merge-commit checkout', () => {
+    const body = (skipped: SummaryInput['inline']['skipped']) =>
+      summaryBody(input({ commented: 0, unplaced: 0, skipped }));
     expect(summaryBody(input({ commented: 2, unplaced: 1, skipped: null }))).toContain(
-      '2 new issues are annotated inline; 1 could not be placed on the diff.',
+      '2 new issues are commented inline; 1 could not be placed on the diff.',
     );
-    expect(summaryBody(input({ commented: 0, unplaced: 0, skipped: 'stale' }))).toContain(
-      'pull request’s latest commit',
+    expect(summaryBody(input({ commented: 1, unplaced: 0, skipped: null }))).toContain(
+      '1 new issue is commented inline.',
     );
-    expect(summaryBody(input({ commented: 0, unplaced: 0, skipped: 'checkout_other' }))).toContain(
-      'ref: ${{ github.event.pull_request.head.sha }}',
+    expect(body('stale')).toContain(
+      'Inline comments wait for the analysis of the pull request’s latest commit.',
     );
+    expect(body('checkout_other')).toContain(
+      'No inline comments: the workflow analysed a commit other than the pull request’s head (GitHub’s merge commit, by default); check out the head to get them (`ref: ${{ github.event.pull_request.head.sha }}`).',
+    );
+    expect(body(null)).toContain('**no new issues** in this pull request');
     expect(
       summaryBody(input({ commented: 0, unplaced: 0, skipped: null }, 'b'.repeat(40))),
     ).toContain('the pull request is now at');
+  });
+
+  it('says nothing about annotations: GitHub findings are review comments', () => {
+    for (const inline of [
+      { commented: 2, unplaced: 1, skipped: null },
+      { commented: 0, unplaced: 0, skipped: 'stale' },
+      { commented: 0, unplaced: 0, skipped: 'checkout_other' },
+    ] as const) {
+      expect(summaryBody(input(inline))).not.toMatch(/annotat/i);
+    }
   });
 
   it('drops the marker line for the check run', () => {
@@ -139,13 +121,14 @@ describe('the summary in GitHub’s words (github.md §6.2)', () => {
   it('keeps GitLab’s words when no vocabulary is given', () => {
     const gitlab = input({ commented: 2, unplaced: 0, skipped: null });
     delete gitlab.vocabulary;
-    expect(summaryBody(gitlab)).toContain('commented inline');
+    expect(summaryBody(gitlab)).toContain('2 new issues are commented inline.');
+    expect(summaryBody(gitlab)).toContain('**no new issues** in this merge request');
   });
 });
 
-/** GitHub's documented bounds on a check run's output and annotations. */
+/** GitHub's documented bounds on a check run's output and a comment. */
 const GITHUB_TITLE_MAX = 255;
-const GITHUB_MESSAGE_MAX_BYTES = 64 * 1024;
+const GITHUB_COMMENT_MAX_CHARS = 65_536;
 const GITHUB_SUMMARY_MAX_CHARS = 65_535;
 
 /** A shortened adversarial corpus (github.md §7: the corpus of `../render.test.ts` on GitHub's bodies). */
@@ -172,16 +155,24 @@ const FORBIDDEN =
 
 describe('GitHub bounds and hostile values (github.md §6.1, §6.4, §7)', () => {
   it.each(HOSTILE.map((v, i) => [i, v] as const))(
-    'keeps hostile value %i plain and bounded in an annotation',
+    'keeps hostile value %i in code spans in a review comment, the first line its marker',
     (_i, value) => {
-      const a = annotationFor({ ...ISSUE, ruleKey: value, message: value });
-      expect(a.title).not.toMatch(FORBIDDEN);
-      expect(a.message).not.toMatch(FORBIDDEN);
-      expect(a.title.length).toBeLessThanOrEqual(GITHUB_TITLE_MAX);
-      expect([...a.message.split('\n')[0]!].length).toBeLessThanOrEqual(300);
-      expect(Buffer.byteLength(a.message, 'utf8')).toBeLessThanOrEqual(GITHUB_MESSAGE_MAX_BYTES);
-      // The only line breaks are Qualor's own, before its link.
-      expect(a.message.split('\n')).toHaveLength(3);
+      const issueId = '01920000-0000-7000-8000-000000000002';
+      const body = inlineBody({
+        issueId,
+        severity: 'high',
+        quality: 'security',
+        ruleKey: value,
+        message: value,
+        url: 'https://q.example/projects/p/issues/i',
+      });
+      expect(markerOf(body)).toEqual({ kind: 'issue', issueId });
+      expect(body).not.toMatch(FORBIDDEN);
+      expect(body.length).toBeLessThanOrEqual(GITHUB_COMMENT_MAX_CHARS);
+      expect(Buffer.byteLength(body, 'utf8')).toBeLessThanOrEqual(INLINE_MAX_BYTES);
+      // No line but the marker's starts a mention, a quick action, HTML or a heading.
+      for (const line of body.split('\n').slice(1))
+        expect(line).not.toMatch(/^\s*(?:[/@<!]|#(?!##+ ))/);
     },
   );
 
@@ -226,57 +217,6 @@ describe('GitHub bounds and hostile values (github.md §6.1, §6.4, §7)', () =>
     },
   );
 
-  it('bounds the title in UTF-16 units too, whatever the plane of the characters', () => {
-    const a = annotationFor({ ...ISSUE, ruleKey: '😀'.repeat(500) });
-    expect(a.title.length).toBeLessThanOrEqual(GITHUB_TITLE_MAX);
-    expect(a.title.length).toBeGreaterThanOrEqual(GITHUB_TITLE_MAX - 2);
-    expect(a.title.startsWith('High · security · 😀')).toBe(true);
-    expect(a.title).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])/);
-  });
-
-  it('shows only an http(s) link without credentials, and a fixed text for an empty message', () => {
-    for (const url of [
-      'javascript:alert(1)',
-      'https://u:p@q.example/x',
-      'not a url',
-      'https://q.example/a\nb',
-    ])
-      expect(annotationFor({ ...ISSUE, url }).message).toBe('Avoid eval');
-    expect(annotationFor({ ...ISSUE, message: '\u200b\u0000 ', url: null }).message).toBe(
-      'Qualor issue',
-    );
-    expect(annotationFor({ ...ISSUE, message: '', url: null }).message).toBe('Qualor issue');
-  });
-
-  it("adds the rule's documentation link when it is a safe https URL", () => {
-    const docs = 'https://github.com/qualor-dev/qualor-rules/blob/main/docs/rules/js/xss.md';
-    expect(annotationFor({ ...ISSUE, helpUri: docs }).message).toBe(
-      `Avoid eval\n\nRule: ${docs}\n\nView in Qualor: https://q.example/projects/p/issues/i`,
-    );
-    expect(annotationFor({ ...ISSUE, helpUri: docs, url: null }).message).toBe(
-      `Avoid eval\n\nRule: ${docs}`,
-    );
-    for (const helpUri of [
-      'http://eslint.org/x',
-      'javascript:alert(1)',
-      'https://u:p@eslint.org/x',
-      'https://eslint.org/a\nb',
-      `https://eslint.org/${'x'.repeat(600)}`,
-      null,
-    ])
-      expect(annotationFor({ ...ISSUE, helpUri, url: null }).message).toBe('Avoid eval');
-    // The link is part of what is digested: a new one updates the annotations once.
-    expect(annotationsDigest([annotationFor({ ...ISSUE, helpUri: docs })])).not.toBe(
-      annotationsDigest([annotationFor(ISSUE)]),
-    );
-  });
-
-  it('fails closed on a severity or quality it does not know', () => {
-    const a = annotationFor({ ...ISSUE, severity: 'bogus' as never, quality: '<b>' as never });
-    expect(a.annotation_level).toBe('warning');
-    expect(a.title).toBe('Unknown · unknown · semgrep:x');
-  });
-
   it('keeps the check run output within 16 KiB, cut at whole lines, and the title within 255', () => {
     const long = [
       '<!-- qualor:summary x -->',
@@ -302,11 +242,5 @@ describe('GitHub bounds and hostile values (github.md §6.1, §6.4, §7)', () =>
     expect(failed.conclusion).toBe('failure');
     expect(failed.title.length).toBeLessThanOrEqual(GITHUB_TITLE_MAX);
     expect(failed.title.startsWith('Quality gate failed: new_issues 3 > 0')).toBe(true);
-  });
-
-  it('allows GitHub’s 50 annotations per request, and refuses an external id it cannot parse back', () => {
-    expect(MAX_ANNOTATIONS).toBe(50);
-    expect(() => checkRunExternalId('not-a-uuid', '0123456789abcdef')).toThrow();
-    expect(() => checkRunExternalId(PROJECT, 'xyz')).toThrow();
   });
 });

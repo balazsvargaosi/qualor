@@ -25,7 +25,8 @@ import { fileURLToPath } from 'node:url';
  * the App id, `iat` not in the fake's future, at most 10 minutes); installation tokens (issued
  * only for repositories and permissions the installation has, expiring after an hour, revocable);
  * each endpoint's permission; at most 50 annotations per request (appended on PATCH, as GitHub
- * does); `filter=latest` and `app_id` of the check-run listing; `Link` headers with `rel="next"`.
+ * does: Qualor sends none now, but a check run of 0.11 carries some, and GitHub never removes
+ * them); `filter=latest` and `app_id` of the check-run listing; `Link` headers with `rel="next"`.
  */
 
 const SHAPES = path.join(path.dirname(fileURLToPath(import.meta.url)), 'github-shapes');
@@ -144,8 +145,6 @@ export interface FakeGitHub {
   /** One thread per first review comment, which `POST /pulls/{n}/comments` starts. */
   reviewThreads: FakeReviewThread[];
   checkRuns: FakeCheckRun[];
-  /** Every check run created with annotations is refused (422), until set back to false. */
-  rejectAnnotations: boolean;
   /** Issued installation tokens and their scope. */
   tokens: Map<
     string,
@@ -164,6 +163,17 @@ export interface FakeGitHub {
     issue: number,
     comment: { body: string; login: string; type?: 'Bot' | 'User' },
   ): FakeComment;
+  /**
+   * A check run of this App as an earlier request made it (a version of Qualor before this one,
+   * say), with the next id: older than any check run made after it, as GitHub's ids grow.
+   */
+  addCheckRun(
+    repoId: number,
+    run: Pick<FakeCheckRun, 'name' | 'headSha' | 'externalId'> &
+      Partial<
+        Pick<FakeCheckRun, 'conclusion' | 'detailsUrl' | 'title' | 'summary' | 'annotations'>
+      >,
+  ): FakeCheckRun;
   /**
    * A reply to the thread's first review comment `commentId` (GitHub takes no reply to a reply),
    * by `login`; the thread keeps its first comment and gains the reply.
@@ -231,6 +241,34 @@ function rightSideLines(patch: string): Set<number> {
   return lines;
 }
 
+/**
+ * What a list of requests changed on GitHub, as `METHOD path` in the order sent: every request but
+ * a GET, an installation token request (it changes nothing) and a GraphQL query (a POST that only
+ * reads). A GraphQL mutation is listed with its operation, `POST /api/graphql QualorResolveThread`;
+ * one this function cannot read counts as a change, so a test never passes on what it did not see.
+ */
+export function githubWrites(requests: readonly RecordedRequest[]): string[] {
+  const writes: string[] = [];
+  for (const r of requests) {
+    if (r.method === 'GET' || r.path.endsWith('/access_tokens')) continue;
+    if (r.path !== GRAPHQL_PATH) {
+      writes.push(`${r.method} ${r.path}`);
+      continue;
+    }
+    let document = '';
+    try {
+      const sent = JSON.parse(r.body) as { query?: unknown };
+      if (typeof sent.query === 'string') document = sent.query;
+    } catch {
+      // Not JSON: left unread, so it is listed below.
+    }
+    const operation = /^\s*(query|mutation)\s+(\w+)/.exec(document);
+    if (operation?.[1] !== 'query')
+      writes.push(`${r.method} ${r.path} ${operation?.[2] ?? ''}`.trim());
+  }
+  return writes;
+}
+
 let sharedKey: { privateKey: KeyObject; pem: string } | null = null;
 /** One 2048-bit key per test process (generating one takes ~100 ms). */
 function appKey(): { privateKey: KeyObject; pem: string } {
@@ -265,7 +303,6 @@ export async function createFakeGitHub(
     reviewComments: [],
     reviewThreads: [],
     checkRuns: [],
-    rejectAnnotations: false,
     tokens: new Map(),
     addRepository: (repo) => repos.set(`${repo.owner}/${repo.name}`.toLowerCase(), repo),
     addPull: (repoId, pull) => pulls.set(`${repoId}#${pull.number}`, structuredClone(pull)),
@@ -283,6 +320,21 @@ export async function createFakeGitHub(
       };
       fake.comments.push(comment);
       return comment;
+    },
+    addCheckRun: (repoId, run) => {
+      const created: FakeCheckRun = {
+        conclusion: null,
+        detailsUrl: null,
+        title: null,
+        summary: null,
+        annotations: [],
+        ...run,
+        id: nextId++,
+        repoId,
+        appId,
+      };
+      fake.checkRuns.push(created);
+      return created;
     },
     replyToReviewComment: (repoId, pull, commentId, reply) => {
       const first = fake.reviewComments.find(
@@ -808,8 +860,6 @@ export async function createFakeGitHub(
       if (badOutput) return deny(res, 422, badOutput);
       const bad = badAnnotations(b.output?.annotations);
       if (bad) return deny(res, 422, bad);
-      if (fake.rejectAnnotations && (b.output?.annotations?.length ?? 0) > 0)
-        return deny(res, 422, 'Invalid request.');
       const run: FakeCheckRun = {
         id: nextId++,
         repoId: repo.id,

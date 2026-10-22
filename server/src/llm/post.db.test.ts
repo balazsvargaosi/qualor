@@ -16,6 +16,7 @@ import {
   runDecorations,
 } from '../../test/scm';
 import { analyses, issues, jobs, llmRequests, projects } from '../db/schema';
+import { markerOf } from '../scm/markdown';
 import { parseInternalHosts } from '../scm/url';
 import { AI_FIX_QUEUE, queueFixPost } from './post';
 import { DEFAULT_AUTO_FIX, DEFAULT_BUDGETS } from './settings';
@@ -39,6 +40,12 @@ describe('posting a fix suggestion (llm.md §8)', () => {
   const aiFix = (body: string) => body.startsWith('<!-- qualor:ai-fix ');
   const fixThreads = (gitlabId: number) =>
     gitlab.discussions(gitlabId, 7).filter((d) => aiFix(d.notes[0]!.body));
+  /**
+   * The fix suggestions posted to a GitHub pull request: its review comments but the issue threads,
+   * which the pull request's decoration makes beside them (github.md §6.4).
+   */
+  const fixComments = (repoId: number) =>
+    github.reviewComments.filter((c) => c.repoId === repoId && aiFix(c.body));
   const request = async (id: string) =>
     (await h.ctx.db.select().from(llmRequests).where(eq(llmRequests.id, id)))[0]!;
   const post = (requestId: string, headers: Record<string, string> = h.orgAdmin.headers) =>
@@ -286,7 +293,7 @@ describe('posting a fix suggestion (llm.md §8)', () => {
     await runDecorations(h, deps);
     expect((await post(requestId)).statusCode).toBe(202);
     await runDecorations(h, deps);
-    const mine = github.reviewComments.filter((c) => c.repoId === repoId);
+    const mine = fixComments(repoId);
     expect(mine).toHaveLength(1);
     expect(mine[0]).toMatchObject({
       path: 'src/a.ts',
@@ -297,13 +304,17 @@ describe('posting a fix suggestion (llm.md §8)', () => {
       user: { login: `${github.slug}[bot]` },
     });
     expect(mine[0]!.body).toContain('```suggestion\nif (a === 1) {}\n```');
+    // The decoration's thread for the issue is the pull request's other review comment: the post
+    // is not mistaken for it, and it does not take the post's place.
+    const issueThreads = github.reviewComments.filter((c) => c.repoId === repoId && !aiFix(c.body));
+    expect(issueThreads.map((c) => [c.line, markerOf(c.body)?.kind])).toEqual([[2, 'issue']]);
     const posted = (await request(requestId)).post;
     expect(posted).toMatchObject({ status: 'posted' });
     expect(posted?.url).toMatch(/\/acme\/fix-gh\/pull\/7#discussion_r\d+$/);
     await h.ctx.db.update(llmRequests).set({ post: null }).where(eq(llmRequests.id, requestId));
     await post(requestId);
     await runDecorations(h, deps);
-    expect(github.reviewComments.filter((c) => c.repoId === repoId)).toHaveLength(1);
+    expect(fixComments(repoId)).toHaveLength(1);
     expect((await request(requestId)).post).toMatchObject({ status: 'posted' });
   });
 
@@ -471,7 +482,7 @@ describe('posting a fix suggestion (llm.md §8)', () => {
     const deps = githubDeps(h);
     await post(ghFix.requestId);
     await runDecorations(h, deps);
-    const [comment] = github.reviewComments.filter((c) => c.repoId === repoId);
+    const [comment] = fixComments(repoId);
     expect(comment).toMatchObject({ startLine: 2, line: 3, side: 'RIGHT' });
     expect(comment!.body).toContain('```suggestion\nif (a === 1) {\n}\nexport {};\n```');
   });
@@ -735,7 +746,7 @@ describe('posting a fix suggestion (llm.md §8)', () => {
     expect((await post(noId.requestId)).statusCode).toBe(202);
     await runDecorations(h, deps);
     expect((await request(noId.requestId)).post).toMatchObject({ reason: 'refused' });
-    expect(github.reviewComments.filter((c) => c.repoId === noId.repoId)).toHaveLength(0);
+    expect(fixComments(noId.repoId)).toHaveLength(0);
 
     // Queued on a head checkout; the stored context no longer says head when the job runs.
     const moved = await setup('fix-checkout-moved', true);
@@ -753,7 +764,7 @@ describe('posting a fix suggestion (llm.md §8)', () => {
       .where(eq(analyses.id, analysis!.id));
     await runDecorations(h, deps);
     expect((await request(moved.requestId)).post).toMatchObject({ reason: 'not_possible' });
-    expect(github.reviewComments.filter((c) => c.repoId === moved.repoId)).toHaveLength(0);
+    expect(fixComments(moved.repoId)).toHaveLength(0);
 
     // Lines GitHub will not place (422): position_rejected.
     const placed = await setup('fix-gh-position', true);

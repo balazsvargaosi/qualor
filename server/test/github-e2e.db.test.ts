@@ -35,7 +35,7 @@ import { githubWebBase } from '../src/scm/github/url';
 import { markerOf } from '../src/scm/markdown';
 import { enqueueDecoration, SCM_QUEUE } from '../src/scm/queue';
 import { statusName } from '../src/scm/render';
-import { createFakeGitHub, type FakeGitHub } from './fake-github';
+import { createFakeGitHub, githubWrites, type FakeGitHub } from './fake-github';
 import { githubDeps, githubTestConfig, WEBHOOK_SECRET } from './github';
 import { createIngestHarness, type IngestHarness, type IngestProject } from './ingest';
 import { queuedDecorations } from './scm';
@@ -231,11 +231,14 @@ const summaries = () =>
   fake.comments.filter(
     (c) => c.repoId === REPO_ID && c.issue === PR && markerOf(c.body)?.kind === 'summary',
   );
-/** Requests that change something on GitHub (an installation token changes nothing). */
-const writes = () =>
-  fake.requests
-    .filter((r) => r.method !== 'GET' && !r.path.endsWith('/access_tokens'))
-    .map((r) => `${r.method} ${r.path}`);
+/**
+ * Requests that change something on GitHub (an installation token or a GraphQL query changes
+ * nothing).
+ */
+const writes = () => githubWrites(fake.requests);
+/** The review comments of the pull request, and the thread each of them starts. */
+const reviewComments = () => fake.reviewComments.filter((c) => c.repoId === REPO_ID);
+const threads = () => fake.reviewThreads.filter((t) => t.repoId === REPO_ID);
 
 beforeAll(async () => {
   fake = await createFakeGitHub();
@@ -351,8 +354,8 @@ describe('GitHub end to end, against the fake GitHub (github.md §11, §12)', ()
       checkout: 'head',
     });
 
-    // The `scm` queue decorates: a failing check run with one annotation, one summary, the PR's
-    // title and link on the branch.
+    // The `scm` queue decorates: a failing check run without annotations, the finding as a review
+    // comment on its line, one summary, the PR's title and link on the branch.
     expect(await runScm()).toBe(1);
     expect(runs()).toHaveLength(1);
     const [first] = runs();
@@ -360,10 +363,19 @@ describe('GitHub end to end, against the fake GitHub (github.md §11, §12)', ()
       name: statusName(KEY),
       headSha: head,
       conclusion: 'failure',
+      annotations: [],
     });
-    expect(first?.annotations).toEqual([
-      expect.objectContaining({ path: 'src/a.ts', start_line: 2, end_line: 2 }),
+    expect(reviewComments()).toEqual([
+      expect.objectContaining({
+        path: 'src/a.ts',
+        line: 2,
+        side: 'RIGHT',
+        commitId: head,
+        user: expect.objectContaining({ login: `${fake.slug}[bot]`, type: 'Bot' }) as unknown,
+      }),
     ]);
+    expect(markerOf(reviewComments()[0]!.body)?.kind).toBe('issue');
+    expect(threads()).toEqual([expect.objectContaining({ resolved: false, resolvedBy: null })]);
     expect(summaries()).toHaveLength(1);
     const summaryId = summaries()[0]?.id;
     expect(summaries()[0]?.user).toMatchObject({ login: `${fake.slug}[bot]`, type: 'Bot' });
@@ -374,7 +386,8 @@ describe('GitHub end to end, against the fake GitHub (github.md §11, §12)', ()
       mrUrl: `${githubWebBase(fake.url)}/acme/shop/pull/${PR}`,
     });
 
-    // The same job again (github.md §11 #1, §6.1): nothing but reads and a token.
+    // The same job again (github.md §11 #1, §6.1): nothing but reads (the threads' query among them)
+    // and a token.
     clearRequests();
     await enqueueDecoration(ctx.db, {
       analysisId: prAnalysis!.id,
@@ -387,13 +400,14 @@ describe('GitHub end to end, against the fake GitHub (github.md §11, §12)', ()
     expect(writes()).toEqual([]);
 
     // A new analysis with the same result (the workflow run again): exactly one PATCH of the check
-    // run, which moves its analysis id (§6.1).
+    // run, which moves its analysis id (§6.1); the thread is the one there is.
     clearRequests();
     const again = await scan(root, head);
     expect(again.code, again.stderr).toBe(1);
     expect(await runScm()).toBe(1);
     expect(writes()).toEqual([`PATCH /repos/acme/shop/check-runs/${first!.id}`]);
     expect(runs()).toHaveLength(1);
+    expect(reviewComments()).toHaveLength(1);
 
     // G5: a false positive passes the gate without a scan; the re-evaluation re-decorates.
     const [issue] = await ctx.db
@@ -407,9 +421,14 @@ describe('GitHub end to end, against the fake GitHub (github.md §11, §12)', ()
     expect(transition.statusCode, transition.body).toBe(200);
     expect(await runGate()).toBeGreaterThan(0);
     expect(await runScm()).toBe(1);
+    // The thread is resolved by the App; the check run turns to success in place (§6.1: its digest
+    // never changes now, so no second check run).
+    expect(threads()).toEqual([
+      expect.objectContaining({ resolved: true, resolvedBy: `${fake.slug}[bot]` }),
+    ]);
     expect(runs().at(-1)).toMatchObject({ headSha: head, conclusion: 'success', annotations: [] });
-    // Another digest (the annotation is gone): a new check run beside the first (§6.1).
-    expect(runs()).toHaveLength(2);
+    expect(runs()).toHaveLength(1);
+    expect(reviewComments()).toHaveLength(1);
     expect(summaries()).toHaveLength(1);
     expect(summaries()[0]?.body).toContain('### ✅ Qualor: quality gate passed');
 
@@ -441,7 +460,8 @@ describe('GitHub end to end, against the fake GitHub (github.md §11, §12)', ()
     expect(writes()).toEqual([]);
     expect(runs()).toHaveLength(runsBefore);
 
-    // A fix: a new head, a new analysis, a new check run on it, the same summary edited in place.
+    // A fix: a new head, a new analysis, a new check run on it, the same summary edited in place; the
+    // thread of the issue Qualor already closed stays as it is.
     write(root, { 'src/a.ts': 'export const a = 1;\nif (a === b) {}\n' });
     git(root, 'commit', '-q', '-am', 'fix');
     const fixed = git(root, 'rev-parse', 'HEAD');
@@ -461,6 +481,8 @@ describe('GitHub end to end, against the fake GitHub (github.md §11, §12)', ()
     expect(summaries()[0]?.id).toBe(summaryId);
     expect(summaries()[0]?.body).toContain(fixed.slice(0, 12));
     expect(fake.comments.filter((c) => c.repoId === REPO_ID)).toHaveLength(1);
+    expect(reviewComments()).toHaveLength(1);
+    expect(threads().every((t) => t.resolved)).toBe(true);
 
     // A transient failure (GitHub answers 502 once): the decoration is retried, and logs so; its
     // log lines join the leak search below.
@@ -539,6 +561,8 @@ describe('GitHub end to end, against the fake GitHub (github.md §11, §12)', ()
       ]),
       ['the check runs', JSON.stringify(fake.checkRuns)],
       ['the comments', JSON.stringify(fake.comments)],
+      ['the review comments', JSON.stringify(fake.reviewComments)],
+      ['the review threads', JSON.stringify(fake.reviewThreads)],
       [
         'the requests to GitHub (bodies and paths)',
         JSON.stringify([...received, ...fake.requests].map((r) => [r.method, r.path, r.body])),

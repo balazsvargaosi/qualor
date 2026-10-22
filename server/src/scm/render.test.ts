@@ -346,15 +346,38 @@ describe('summary, inline note and commit status (scm.md §5)', () => {
     expect(passed).not.toContain('Open in Qualor');
   });
 
+  it('says in GitHub’s words how many issues are commented and why there are no inline comments (github.md §6.2)', () => {
+    const none = { commented: 0, unplaced: 0, skipped: null };
+    const github = (inline: SummaryInput['inline'], mergeRequestHead: string | null = null) =>
+      summary({ vocabulary: 'github', inline, mergeRequestHead });
+    expect(github({ ...none, commented: 2, unplaced: 1 })).toContain(
+      '2 new issues are commented inline; 1 could not be placed on the diff.',
+    );
+    expect(github({ ...none, commented: 1 })).toContain('1 new issue is commented inline.');
+    expect(github({ ...none, skipped: 'stale' })).toContain(
+      'Inline comments wait for the analysis of the pull request’s latest commit.',
+    );
+    expect(github({ ...none, skipped: 'checkout_other' })).toContain(
+      'No inline comments: the workflow analysed a commit other than the pull request’s head (GitHub’s merge commit, by default); check out the head to get them (`ref: ${{ github.event.pull_request.head.sha }}`).',
+    );
+    // Annotations are gone: no GitHub text says so any more.
+    for (const skipped of ['stale', 'checkout_other'] as const) {
+      expect(github({ ...none, skipped })).not.toMatch(/annotat/i);
+    }
+    expect(github({ ...none, commented: 2 })).not.toMatch(/annotat/i);
+    expect(github(none, 'f'.repeat(40))).toContain('the pull request is now at ` ffffffffffff `.');
+  });
+
   it('ends with how many more issues there are, where they are, and the link', () => {
     const tail = (o: Partial<SummaryInput>) => summary(o).split('\n').at(-1);
     const none = { commented: 0, unplaced: 0, skipped: null };
     expect(tail({ topIssuesTotal: 25, inline: { ...none, commented: 25 } })).toBe(
       `…and 22 more, all commented inline · **[Open in Qualor →](${B})**`,
     );
+    // GitHub's findings are review comments too (github.md §6.2): the same words as GitLab's.
     expect(
       tail({ topIssuesTotal: 25, inline: { ...none, commented: 25 }, vocabulary: 'github' }),
-    ).toBe(`…and 22 more, all annotated inline · **[Open in Qualor →](${B})**`);
+    ).toBe(`…and 22 more, all commented inline · **[Open in Qualor →](${B})**`);
     expect(summary({ topIssuesTotal: 25, inline: { commented: 20, unplaced: 5, skipped: null } }))
       .toContain(`   \` /merge \`
 
