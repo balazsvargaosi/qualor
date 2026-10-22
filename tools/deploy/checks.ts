@@ -78,3 +78,44 @@ try {
 process.stdout.write(JSON.stringify(problems));
 process.exit(problems.length > 0 ? 1 : 0);
 `;
+
+/**
+ * 6I-3: the ES module the smoke test runs inside the server image with
+ * `node --input-type=module -e MASK_WORKER_PROBE <worker file>`. It starts the worker thread of the
+ * review's masker (`dist/review-mask-worker.js`) as the server's masker does, sends it a text with
+ * a token in it and checks that the answer has the token masked. It prints the problems as a JSON
+ * array and exits 1 when there is one. The token is built here, so no scanner takes it for a real one.
+ */
+export const MASK_WORKER_PROBE = `
+import { Worker } from 'node:worker_threads';
+import { pathToFileURL } from 'node:url';
+const file = process.argv[1];
+const token = ['gh', 'p_', 'a1B2'.repeat(9)].join('');
+const problems = [];
+try {
+  const answer = await new Promise((resolve, reject) => {
+    const worker = new Worker(pathToFileURL(file), { execArgv: [] });
+    const timer = setTimeout(() => reject(new Error('no answer in 20 s')), 20000);
+    worker.on('error', reject);
+    worker.on('exit', (code) => reject(new Error('the worker exited with code ' + code)));
+    worker.on('message', (message) => {
+      if (message.ready === true) {
+        worker.postMessage({ id: 1, text: 'const t = "' + token + '";' });
+        return;
+      }
+      clearTimeout(timer);
+      resolve(message);
+      void worker.terminate();
+    });
+  });
+  if (answer.id !== 1) problems.push('the answer is for job ' + answer.id);
+  if (typeof answer.text !== 'string' || answer.text.includes(token)) {
+    problems.push('the secret was not masked');
+  }
+  if (answer.count !== 1) problems.push('the count is ' + answer.count + ', not 1');
+} catch (e) {
+  problems.push(e instanceof Error ? e.message : String(e));
+}
+process.stdout.write(JSON.stringify(problems));
+process.exit(problems.length > 0 ? 1 : 0);
+`;

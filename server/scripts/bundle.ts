@@ -1,14 +1,29 @@
 import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { testKeysFrom } from '../src/license/public-keys';
 
 const serverRoot = fileURLToPath(new URL('..', import.meta.url));
 
+/** The npm dependencies of the server stay external to its bundles; workspace packages are inlined. */
+function externalDependencies(): string[] {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+    dependencies?: Record<string, string>;
+  };
+  return Object.keys(pkg.dependencies ?? {})
+    .filter((name) => !name.startsWith('@qualor/'))
+    .flatMap((name) => [name, `${name}/*`]);
+}
+
+/** The file the review's masker starts its worker thread from, next to the server bundle. */
+export const REVIEW_MASK_WORKER = 'review-mask-worker.js';
+
 /**
- * Bundles src/main.ts; npm dependencies stay external, workspace packages are inlined. Returns the
- * bundle's inputs (esbuild's metafile, relative to server/) for the boundary test (enterprise.md
- * §12).
+ * Bundles src/main.ts, and the worker thread of the review's masker (`buildReviewMaskWorker`) next
+ * to it, where the masker looks for it; npm dependencies stay external, workspace packages are
+ * inlined. Returns the bundle's inputs (esbuild's metafile, relative to server/) for the boundary
+ * test (enterprise.md §12).
  *
  * `__QUALOR_TEST_LICENSE_KEYS__` is always defined (enterprise.md §14.2): as the test keys in a
  * test bundle (every kid must start with `test-`), and as the literal `undefined` in every other
@@ -17,30 +32,53 @@ const serverRoot = fileURLToPath(new URL('..', import.meta.url));
 export async function buildServer(
   options: { outfile?: string; testLicenseKeys?: Record<string, string> } = {},
 ): Promise<{ inputs: string[] }> {
-  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
-    dependencies?: Record<string, string>;
-  };
-  const external = Object.keys(pkg.dependencies ?? {})
-    .filter((name) => !name.startsWith('@qualor/'))
-    .flatMap((name) => [name, `${name}/*`]);
   const keys = options.testLicenseKeys;
   // The same check the bundle runs at start (public-keys.ts), so a bad kid fails the build.
   const testKeys =
     keys === undefined ? undefined : JSON.stringify(testKeysFrom(JSON.stringify(keys)));
+  const outfile = options.outfile ?? 'dist/main.js';
   const result = await build({
     absWorkingDir: serverRoot,
     entryPoints: ['src/main.ts'],
-    outfile: options.outfile ?? 'dist/main.js',
+    outfile,
     bundle: true,
     platform: 'node',
     format: 'esm',
     target: 'node22',
     sourcemap: true,
     metafile: true,
-    external,
+    external: externalDependencies(),
     define: {
       __QUALOR_TEST_LICENSE_KEYS__: testKeys === undefined ? 'undefined' : JSON.stringify(testKeys),
     },
+    logLevel: 'warning',
+  });
+  await buildReviewMaskWorker({
+    outfile: path.join(path.dirname(path.resolve(serverRoot, outfile)), REVIEW_MASK_WORKER),
+  });
+  return { inputs: Object.keys(result.metafile.inputs) };
+}
+
+/**
+ * `dist/review-mask-worker.js`: the worker thread the review's masker runs the secret redaction in
+ * (src/review/mask-worker.ts), so that masking a hostile text never stops the server. The masker
+ * starts it from the directory of the server bundle. It bundles the shared redaction and nothing
+ * else of the server.
+ */
+export async function buildReviewMaskWorker(
+  options: { outfile?: string } = {},
+): Promise<{ inputs: string[] }> {
+  const result = await build({
+    absWorkingDir: serverRoot,
+    entryPoints: ['src/review/mask-worker.ts'],
+    outfile: options.outfile ?? `dist/${REVIEW_MASK_WORKER}`,
+    bundle: true,
+    platform: 'node',
+    format: 'esm',
+    target: 'node22',
+    sourcemap: true,
+    metafile: true,
+    external: externalDependencies(),
     logLevel: 'warning',
   });
   return { inputs: Object.keys(result.metafile.inputs) };

@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ENTERPRISE_PROBE, indexProblems, mainScript } from './checks';
+import { ENTERPRISE_PROBE, indexProblems, mainScript, MASK_WORKER_PROBE } from './checks';
 import {
   Api,
   compose,
@@ -170,6 +170,21 @@ async function main(): Promise<void> {
       accepted,
       "the loader's plugin file check accepts /app/enterprise/plugin.js" +
         (accepted ? '' : `: ${fileCheck.stdout.trim()} ${fileCheck.stderr.trim()}`),
+    );
+    // 6I-3: the worker thread the review's masker masks in, as the image ships it.
+    const maskWorker = run('docker', [
+      'exec',
+      serverId,
+      '/usr/local/bin/node',
+      '--input-type=module',
+      '-e',
+      MASK_WORKER_PROBE,
+      '/app/dist/review-mask-worker.js',
+    ]);
+    check(
+      maskWorker.code === 0,
+      'the image carries /app/dist/review-mask-worker.js, and it masks a token' +
+        (maskWorker.code === 0 ? '' : `: ${maskWorker.stdout.trim()} ${maskWorker.stderr.trim()}`),
     );
 
     const index = await get(`${stack.url}/projects`);
