@@ -13,6 +13,7 @@ import {
   MAX_SNAPSHOT_LINE_BYTES,
   MAX_SNAPSHOT_PATCH_BYTES,
   MAX_SNAPSHOT_PATH_BYTES,
+  MAX_SNAPSHOT_ROWS,
   OMISSION_REASONS,
   parseSnapshotLine,
   REVIEW_SNAPSHOT_CONTENT_TYPE,
@@ -103,6 +104,8 @@ describe('the snapshot format constants (6I-2 Global Constraints)', () => {
     expect(SNAPSHOT_VERSION).toBe(1);
     expect(MAX_SNAPSHOT_FILE_BYTES).toBe(1_048_576);
     expect(MAX_SNAPSHOT_FILES).toBe(50_000);
+    // The paths of one snapshot, its files, changes and omissions together: the rows it unpacks into.
+    expect(MAX_SNAPSHOT_ROWS).toBe(100_000);
     expect(MAX_SNAPSHOT_PATCH_BYTES).toBe(262_144);
     expect(MAX_SNAPSHOT_LINE_BYTES).toBe(8_388_608);
     expect(MAX_SNAPSHOT_PATH_BYTES).toBe(1_024);
@@ -135,6 +138,7 @@ describe('the snapshot format constants (6I-2 Global Constraints)', () => {
     expect(shared.snapshotLineSchema).toBe(snapshotLineSchema);
     expect(shared.OMISSION_REASONS).toBe(OMISSION_REASONS);
     expect(shared.MAX_SNAPSHOT_FILE_BYTES).toBe(MAX_SNAPSHOT_FILE_BYTES);
+    expect(shared.MAX_SNAPSHOT_ROWS).toBe(MAX_SNAPSHOT_ROWS);
   });
 });
 

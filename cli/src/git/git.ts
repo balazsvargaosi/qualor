@@ -14,6 +14,16 @@ export interface GitResult {
 export interface GitCallOptions {
   /** Overrides the `Git` instance's default timeout for this one call. */
   timeoutMs?: number;
+  /** Written to git's standard input, which is then closed (`cat-file --batch`). */
+  input?: string;
+  /**
+   * Takes standard output piece by piece as it comes, instead of collecting it: the output cap
+   * does not apply and the result's `stdout` is empty. The timeout then bounds each wait for
+   * output, not the whole call, so the consumer may take its time over a piece. Answering `false`
+   * stops git (its process tree is killed) and the call resolves; a throw stops git too, and the
+   * call rejects with it.
+   */
+  onStdout?: (chunk: Buffer) => boolean;
 }
 
 export type Git = (args: readonly string[], options?: GitCallOptions) => Promise<GitResult>;
@@ -85,7 +95,7 @@ function joinMessage(stderr: string, message: string): string {
  * `CliError`, and `baseline.ts`'s `fetch()` helper just treats it as "fetch failed" — matching
  * how a network hiccup during `scm.autoFetch` already degrades to `baseline.status: unavailable`
  * instead of crashing the scan. The promise only rejects when git itself could not be spawned
- * at all (for example, the binary is missing).
+ * at all (for example, the binary is missing), or with what an `onStdout` consumer threw.
  *
  * A timeout or an overflow kills the process tree (`killTree`): Git for Windows' `cmd\git.exe` is
  * only a launcher, so killing just the direct child would leave the real git running. On POSIX
@@ -132,19 +142,24 @@ export function createGit(
         windowsHide: true,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
+      const stream = options?.onStdout;
       const stdout: Buffer[] = [];
       const stderr: Buffer[] = [];
       let size = 0;
-      let failure: 'timeout' | 'overflow' | null = null;
+      let failure: 'timeout' | 'overflow' | 'stopped' | null = null;
+      /** What the onStdout consumer threw, which the call rejects with. */
+      let thrown: { error: unknown } | null = null;
       let settled = false;
-      const kill = (why: 'timeout' | 'overflow') => {
+      const kill = (why: 'timeout' | 'overflow' | 'stopped') => {
         if (failure !== null) return;
         failure = why;
         killTree(child.pid);
       };
-      const timer = setTimeout(() => {
-        kill('timeout');
-      }, timeoutMs);
+      const arm = () =>
+        setTimeout(() => {
+          kill('timeout');
+        }, timeoutMs);
+      let timer = arm();
       const collect = (into: Buffer[]) => (chunk: Buffer) => {
         if (failure === 'overflow') return;
         size += chunk.length;
@@ -154,21 +169,51 @@ export function createGit(
         }
         into.push(chunk);
       };
-      child.stdout.on('data', collect(stdout));
+      const take = (consume: (chunk: Buffer) => boolean) => (chunk: Buffer) => {
+        if (failure !== null) return;
+        let more: boolean;
+        try {
+          more = consume(chunk);
+        } catch (error) {
+          thrown = { error };
+          kill('stopped');
+          return;
+        }
+        if (!more) {
+          kill('stopped');
+          return;
+        }
+        // A streamed call is bounded per wait for output: the clock starts again after each piece.
+        clearTimeout(timer);
+        timer = arm();
+      };
+      child.stdout.on('data', stream === undefined ? collect(stdout) : take(stream));
       child.stderr.on('data', collect(stderr));
+      if (options?.input !== undefined) {
+        // git may stop reading before the end (a call that was stopped): no error of the call.
+        child.stdin.on('error', () => undefined);
+        child.stdin.end(options.input);
+      }
       const finish = (code: number | null) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
         child.stdin.destroy();
+        if (thrown !== null) {
+          reject(thrown.error);
+          return;
+        }
         const out = Buffer.concat(stdout).toString('utf8');
         const err = scrubCredentials(Buffer.concat(stderr).toString('utf8'));
         if (failure === 'timeout') {
+          const wait = stream === undefined ? '' : ' without output';
           resolve({
             code: -1,
             stdout: out,
-            stderr: joinMessage(err, `git ${label} timed out after ${timeoutMs}ms`),
+            stderr: joinMessage(err, `git ${label} timed out after ${timeoutMs}ms${wait}`),
           });
+        } else if (failure === 'stopped') {
+          resolve({ code: -1, stdout: '', stderr: err });
         } else if (failure === 'overflow') {
           resolve({
             code: -1,

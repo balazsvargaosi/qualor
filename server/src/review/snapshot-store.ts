@@ -4,6 +4,7 @@ import {
   INSTRUCTION_FILES,
   MAX_SNAPSHOT_FILES,
   MAX_SNAPSHOT_LINE_BYTES,
+  MAX_SNAPSHOT_ROWS,
   parseSnapshotLine,
   SnapshotFormatError,
   snapshotPathProblem,
@@ -57,13 +58,6 @@ export interface SnapshotLimits {
   /** Inflated. */
   maxDecompressedBytes: number;
 }
-
-/**
- * The most paths one snapshot unpacks into (rows of `review_snapshot_files`). The end line bounds
- * the files with text (MAX_SNAPSHOT_FILES), but neither the changes nor the omissions, so the
- * paths of the three together are bounded here.
- */
-export const MAX_SNAPSHOT_ROWS = 2 * MAX_SNAPSHOT_FILES;
 
 /** Rows per INSERT, and the most one INSERT carries: the size of its lines as sent. */
 const BATCH_ROWS = 100;

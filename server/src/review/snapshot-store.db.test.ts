@@ -4,6 +4,7 @@ import { createGzip, gzipSync } from 'node:zlib';
 import {
   encodeSnapshotLine,
   MAX_SNAPSHOT_LINE_BYTES,
+  MAX_SNAPSHOT_ROWS,
   OMISSION_REASONS,
   type OmissionReason,
   type SnapshotChangeLine,
@@ -27,7 +28,6 @@ import { runUntilIdle } from '../queue/worker';
 import { reviewSnapshotHandlers } from './jobs';
 import {
   linkSnapshot,
-  MAX_SNAPSHOT_ROWS,
   REVIEW_SNAPSHOT_QUEUE,
   storeSnapshotUpload,
   unpackSnapshot,

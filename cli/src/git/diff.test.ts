@@ -1,11 +1,19 @@
+import { execFileSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
+import { GIT_TEST_ENV, initRepo } from '../../test/git';
+import { useTempDirs } from '../../test/tmp';
 import {
+  diffHeaderLine,
+  DiffSplitter,
   mergeRanges,
   parseBinaryPaths,
   parseNameStatusZ,
   parseUnifiedDiff,
   unquoteGitPath,
 } from './diff';
+import { createGit, gitText } from './git';
+
+const tmp = useTempDirs();
 
 describe('parseUnifiedDiff', () => {
   it('collects new-side ranges per file, rename-aware, ignoring deletions', () => {
@@ -157,5 +165,134 @@ describe('unquoteGitPath', () => {
     expect(unquoteGitPath('"a\\tb\\\\c\\"d"')).toBe('a\tb\\c"d');
     expect(unquoteGitPath('"😀 \\n"')).toBe('😀 \n');
     expect(unquoteGitPath('plain')).toBe('plain');
+  });
+});
+
+describe('diffHeaderLine', () => {
+  it("is git's `diff --git` line of a pair, each side quoted on its own like git does", () => {
+    expect(diffHeaderLine('src/a.ts', 'src/a.ts')).toBe('diff --git a/src/a.ts b/src/a.ts');
+    expect(diffHeaderLine('src/old.ts', 'src/new.ts')).toBe('diff --git a/src/old.ts b/src/new.ts');
+    // core.quotepath=off (GIT_OPTIONS): bytes over 0x7f are not quoted, spaces never are.
+    expect(diffHeaderLine('dir with space/ü.ts', 'dir with space/ü.ts')).toBe(
+      'diff --git a/dir with space/ü.ts b/dir with space/ü.ts',
+    );
+    expect(diffHeaderLine('q"uote.ts', 'plain.ts')).toBe('diff --git "a/q\\"uote.ts" b/plain.ts');
+    expect(diffHeaderLine('back\\slash', 'tab\there')).toBe(
+      'diff --git "a/back\\\\slash" "b/tab\\there"',
+    );
+    expect(diffHeaderLine('bad\u0001\u007f', 'x')).toBe('diff --git "a/bad\\001\\177" b/x');
+  });
+
+  it('matches the header git writes for every pair of a real diff', async () => {
+    const root = tmp();
+    initRepo(root);
+    const blob = (text: string) =>
+      execFileSync('git', ['hash-object', '-w', '--stdin'], {
+        cwd: root,
+        env: GIT_TEST_ENV,
+        input: text,
+        encoding: 'utf8',
+      }).trim();
+    // git mktree takes any name, also one Git for Windows would not check out.
+    const tree = (entries: Record<string, string>) =>
+      execFileSync('git', ['mktree', '-z'], {
+        cwd: root,
+        env: GIT_TEST_ENV,
+        input: Object.entries(entries)
+          .map(([name, text]) => `100644 blob ${blob(text)}\t${name}\u0000`)
+          .join(''),
+        encoding: 'utf8',
+      }).trim();
+    const ten = Array.from({ length: 10 }, (_, i) => `line ${i}`).join('\n');
+    const before = tree({ 'old.ts': `${ten}\n`, 'q"uote.ts': 'a\n', 'ü space.ts': 'u\n' });
+    const after = tree({
+      'new.ts': `${ten}\nmore\n`,
+      'q"uote.ts': 'b\n',
+      'ü space.ts': 'v\n',
+      'tab\there.ts': 't\n',
+    });
+    const git = createGit(root, GIT_TEST_ENV);
+    const headers = (await gitText(git, ['diff', '-M', before, after]))
+      .split('\n')
+      .filter((l) => l.startsWith('diff --git '));
+    const pairs = parseNameStatusZ(
+      await gitText(git, ['diff', '--name-status', '-z', '-M', before, after]),
+    );
+    expect(pairs).toHaveLength(4);
+    expect(headers).toEqual(pairs.map((p) => diffHeaderLine(p.from ?? p.path, p.path)));
+  });
+});
+
+describe('DiffSplitter', () => {
+  const DIFF = [
+    'diff --git a/a.ts b/a.ts',
+    'index 1..2 100644',
+    '--- a/a.ts',
+    '+++ b/a.ts',
+    '@@ -1 +1 @@',
+    '-a',
+    '+diff --git a/not b/a-header',
+    'diff --git a/big.ts b/big.ts',
+    '--- a/big.ts',
+    '+++ b/big.ts',
+    '@@ -1 +1 @@',
+    `-${'x'.repeat(200)}`,
+    `+${'y'.repeat(200)}`,
+    'diff --git a/c.ts b/c.ts',
+    'new file mode 100644',
+    '',
+  ].join('\n');
+
+  function split(chunks: Buffer[], maxBytes = 150): { header: string; patch: string | null }[] {
+    const out: { header: string; patch: string | null }[] = [];
+    const splitter = new DiffSplitter(maxBytes, (header, patch) => {
+      out.push({ header, patch: patch === null ? null : patch.toString('utf8') });
+    });
+    for (const chunk of chunks) splitter.push(chunk);
+    splitter.end();
+    return out;
+  }
+
+  const EXPECTED = [
+    {
+      header: 'diff --git a/a.ts b/a.ts',
+      patch:
+        'diff --git a/a.ts b/a.ts\nindex 1..2 100644\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-a\n+diff --git a/not b/a-header\n',
+    },
+    { header: 'diff --git a/big.ts b/big.ts', patch: null },
+    {
+      header: 'diff --git a/c.ts b/c.ts',
+      patch: 'diff --git a/c.ts b/c.ts\nnew file mode 100644\n',
+    },
+  ];
+
+  it('cuts the output at each `diff --git` line, and drops a piece over the bound', () => {
+    expect(split([Buffer.from(DIFF)])).toEqual(EXPECTED);
+  });
+
+  it('gives the same pieces whatever the chunks the output comes in', () => {
+    const bytes = Buffer.from(DIFF);
+    const ones = [...bytes].map((b) => Buffer.from([b]));
+    expect(split(ones)).toEqual(EXPECTED);
+    for (const size of [2, 7, 11, 12, 64]) {
+      const chunks: Buffer[] = [];
+      for (let at = 0; at < bytes.length; at += size) chunks.push(bytes.subarray(at, at + size));
+      expect(split(chunks), `chunks of ${size}`).toEqual(EXPECTED);
+    }
+  });
+
+  it('keeps a last piece without a final newline, and ignores what comes before the first header', () => {
+    expect(split([Buffer.from('warning: x\ndiff --git a/a b/a\n+1')])).toEqual([
+      { header: 'diff --git a/a b/a', patch: 'diff --git a/a b/a\n+1' },
+    ]);
+    expect(split([])).toEqual([]);
+  });
+
+  it('drops a piece made of one line over the bound without holding the line', () => {
+    const long = `diff --git a/a b/a\n+${'z'.repeat(10_000)}\ndiff --git a/b b/b\n`;
+    expect(split([Buffer.from(long)], 100)).toEqual([
+      { header: 'diff --git a/a b/a', patch: null },
+      { header: 'diff --git a/b b/b', patch: 'diff --git a/b b/b\n' },
+    ]);
   });
 });

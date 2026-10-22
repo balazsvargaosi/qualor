@@ -1,7 +1,7 @@
 import { chmodSync, existsSync, readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { GIT_TEST_ENV, initRepo } from '../../test/git';
+import { GIT_TEST_ENV, gitSync, initRepo } from '../../test/git';
 import { useTempDirs, writeTree } from '../../test/tmp';
 import { CliError } from '../errors';
 import { createGit, gitText, scrubCredentials } from './git';
@@ -168,5 +168,104 @@ describe('createGit: output size', () => {
     const r = await git(['--version']);
     expect(r.code).not.toBe(0);
     expect(r.stderr).toContain('produced more than 5 bytes of output');
+  });
+});
+
+describe('createGit: standard input and streamed output', () => {
+  /** A repository holding one blob: `hello\n`, which is `HELLO` (its object id). */
+  const HELLO = 'ce013625030ba8dba906f756967f9e9ca394464a';
+  function repoWithHello(): string {
+    const root = tmp();
+    initRepo(root);
+    writeTree(root, { 'hello.txt': 'hello\n' });
+    gitSync(root, 'add', 'hello.txt');
+    return root;
+  }
+
+  it('writes `input` to standard input and closes it', async () => {
+    const git = createGit(tmp(), GIT_TEST_ENV);
+    const r = await git(['hash-object', '--stdin'], { input: 'hello\n' });
+    expect(r.code).toBe(0);
+    expect(r.stdout.trim()).toBe(HELLO);
+  });
+
+  it('hands the output to onStdout as it comes, without collecting it or capping it', async () => {
+    const root = repoWithHello();
+    const git = createGit(root, GIT_TEST_ENV, { maxBufferBytes: 5 });
+    const chunks: Buffer[] = [];
+    const r = await git(['cat-file', '--batch'], {
+      input: `${HELLO}\n`.repeat(3),
+      onStdout: (chunk) => {
+        chunks.push(chunk);
+        return true;
+      },
+    });
+    expect(r.code).toBe(0);
+    expect(r.stdout).toBe('');
+    expect(Buffer.concat(chunks).toString('utf8')).toBe(`${HELLO} blob 6\nhello\n\n`.repeat(3));
+  });
+
+  it('stops git when onStdout answers false', async () => {
+    const root = repoWithHello();
+    const git = createGit(root, GIT_TEST_ENV);
+    let calls = 0;
+    // Without the stop, git would answer 200 000 requests (8 MB).
+    const r = await git(['cat-file', '--batch'], {
+      input: `${HELLO}\n`.repeat(200_000),
+      onStdout: () => {
+        calls += 1;
+        return false;
+      },
+    });
+    expect(calls).toBe(1);
+    expect(r.code).not.toBe(0);
+  });
+
+  it('stops git and rejects with the error when onStdout throws', async () => {
+    const root = repoWithHello();
+    const git = createGit(root, GIT_TEST_ENV);
+    const boom = new Error('boom');
+    const err: unknown = await git(['cat-file', '--batch'], {
+      input: `${HELLO}\n`.repeat(200_000),
+      onStdout: () => {
+        throw boom;
+      },
+    }).catch((e: unknown) => e);
+    expect(err).toBe(boom);
+  });
+
+  it('bounds each wait for streamed output by the timeout, not the whole call', async () => {
+    const root = tmp();
+    initRepo(root);
+    writeTree(root, { 'big.txt': 'x'.repeat(4 * 1024 * 1024) });
+    gitSync(root, 'add', 'big.txt');
+    const big = gitSync(root, 'rev-parse', ':big.txt');
+    const git = createGit(root, GIT_TEST_ENV, { timeoutMs: 400 });
+    // The consumer takes 150 ms over each of its first six pieces: the call lasts longer than the
+    // timeout, but git never waits that long for it, and the call succeeds.
+    let slow = 6;
+    let bytes = 0;
+    const start = Date.now();
+    const r = await git(['cat-file', '--batch'], {
+      input: `${big}\n`,
+      onStdout: (chunk) => {
+        bytes += chunk.length;
+        if (slow > 0) {
+          slow -= 1;
+          const until = Date.now() + 150;
+          while (Date.now() < until) {
+            // the consumer is busy
+          }
+        }
+        return true;
+      },
+    });
+    expect(r.code).toBe(0);
+    expect(bytes).toBeGreaterThan(4 * 1024 * 1024);
+    expect(Date.now() - start).toBeGreaterThan(400);
+    // Standard input is never closed here, so git waits for it, silent, until the timeout.
+    const hung = await git(['cat-file', '--batch'], { onStdout: () => true });
+    expect(hung.code).toBe(-1);
+    expect(hung.stderr).toContain('timed out after 400ms without output');
   });
 });

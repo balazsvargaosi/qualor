@@ -21,6 +21,12 @@ export const SNAPSHOT_VERSION = 1;
 export const MAX_SNAPSHOT_FILE_BYTES = 1024 * 1024;
 /** Files with text in one snapshot. */
 export const MAX_SNAPSHOT_FILES = 50_000;
+/**
+ * Paths one snapshot names, its `file`, `change` and `omitted` lines together: the rows of
+ * `review_snapshot_files` it unpacks into. The end line bounds the files with text, but neither
+ * the changes nor the omissions, so the paths of the three together are bounded here.
+ */
+export const MAX_SNAPSHOT_ROWS = 2 * MAX_SNAPSHOT_FILES;
 /** One change's patch, in UTF-8 bytes; a larger patch is not sent (it is `null`). */
 export const MAX_SNAPSHOT_PATCH_BYTES = 256 * 1024;
 /** One line of the snapshot, without its terminator, in UTF-8 bytes. */

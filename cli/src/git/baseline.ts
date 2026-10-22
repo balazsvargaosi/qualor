@@ -42,8 +42,8 @@ async function fetch(git: Git, args: readonly string[], log: Logger): Promise<bo
   return r.code === 0;
 }
 
-async function mergeBase(git: Git, ref: string): Promise<string | null> {
-  const r = await git(['merge-base', 'HEAD', ref]);
+async function mergeBase(git: Git, revision: string, ref: string): Promise<string | null> {
+  const r = await git(['merge-base', revision, ref]);
   const sha = r.stdout.trim();
   return r.code === 0 && REVISION.test(sha) ? sha : null;
 }
@@ -54,12 +54,16 @@ function unavailable(kind: Baseline['kind'], why: string, ctx: BaselineContext):
   return { revision: null, kind, status: 'unavailable' };
 }
 
-/** MR and branch analyses: merge-base with origin/<target>, fetching what a shallow clone lacks. */
+/**
+ * MR and branch analyses: merge-base of `revision` (HEAD, or a merge request's head commit) with
+ * origin/<target>, fetching what a shallow clone lacks.
+ */
 export async function mergeBaseBaseline(
   git: Git,
   target: string,
   policy: FetchPolicy,
   ctx: BaselineContext,
+  revision = 'HEAD',
 ): Promise<Baseline> {
   if (!(await validBranch(git, target))) {
     return unavailable('merge_base', `"${target}" is not a valid branch name`, ctx);
@@ -83,11 +87,11 @@ export async function mergeBaseBaseline(
     // fetch-depth: 0, github.md §11) has just fetched the target and cannot fetch it again.
     ctx.log.info(`could not refresh origin/${target}; using the copy already in the clone`);
   }
-  let base = await mergeBase(git, ref);
+  let base = await mergeBase(git, revision, ref);
   if (base === null && policy.autoFetch && (await isShallow(git))) {
     for (const depth of policy.deepenSteps) {
       if (!(await fetch(git, [`--deepen=${depth}`, 'origin', refspec], ctx.log))) break;
-      base = await mergeBase(git, ref);
+      base = await mergeBase(git, revision, ref);
       if (base !== null) break;
     }
     if (
@@ -95,17 +99,39 @@ export async function mergeBaseBaseline(
       (await isShallow(git)) &&
       (await fetch(git, ['--unshallow', 'origin', refspec], ctx.log))
     ) {
-      base = await mergeBase(git, ref);
+      base = await mergeBase(git, revision, ref);
     }
   }
   if (base === null) {
     return unavailable(
       'merge_base',
-      `HEAD and origin/${target} have no common commit in this clone${policy.autoFetch ? '' : ' (scm.autoFetch is false)'}`,
+      `${revision} and origin/${target} have no common commit in this clone${policy.autoFetch ? '' : ' (scm.autoFetch is false)'}`,
       ctx,
     );
   }
   return { revision: base, kind: 'merge_base', status: 'ok' };
+}
+
+/**
+ * A commit the clone may lack, such as a merge request's head behind GitHub's merge checkout,
+ * fetched from origin by its id when `scm.autoFetch` allows: one commit into a shallow clone (a
+ * fetch without a depth would bring its whole history), with its history into a complete clone
+ * (which `--depth` would make shallow). Whether the clone has the commit in the end; never true
+ * for a value that is not a commit id.
+ */
+export async function ensureCommit(
+  git: Git,
+  revision: string,
+  policy: FetchPolicy,
+  log: Logger,
+): Promise<boolean> {
+  if (!REVISION.test(revision)) return false;
+  if (await hasCommit(git, revision)) return true;
+  if (!policy.autoFetch) return false;
+  const depth = (await isShallow(git)) ? ['--depth=1'] : [];
+  return (
+    (await fetch(git, [...depth, 'origin', revision], log)) && (await hasCommit(git, revision))
+  );
 }
 
 /** Main-branch analyses: the server's baseline commit, fetched by SHA if the clone lacks it. */

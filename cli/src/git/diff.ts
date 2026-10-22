@@ -182,3 +182,124 @@ export function parseBinaryPaths(output: string): Set<string> {
   }
   return out;
 }
+
+/** The escapes git's C-style quoting writes for these bytes (quote.c `cq_lookup`). */
+const QUOTE_ESCAPES = new Map<number, string>([
+  [7, 'a'],
+  [8, 'b'],
+  [9, 't'],
+  [10, 'n'],
+  [11, 'v'],
+  [12, 'f'],
+  [13, 'r'],
+  [0x22, '"'],
+  [0x5c, '\\'],
+]);
+
+/**
+ * `name` as git writes it in a diff header under `core.quotepath=off` (GIT_OPTIONS): as it is, or,
+ * when it holds a control character, `"` or `\`, in double quotes with those escaped (C-style,
+ * octal for a control character without a letter). Bytes over 0x7f stay as they are.
+ */
+function quoteName(name: string): string {
+  const bytes = Buffer.from(name, 'utf8');
+  if (!bytes.some((b) => b < 0x20 || b === 0x7f || QUOTE_ESCAPES.has(b))) return name;
+  let out = '';
+  for (const b of bytes) {
+    const letter = QUOTE_ESCAPES.get(b);
+    if (letter !== undefined) out += `\\${letter}`;
+    else if (b < 0x20 || b === 0x7f) out += `\\${b.toString(8).padStart(3, '0')}`;
+    else out += String.fromCharCode(b);
+  }
+  // The bytes over 0x7f were copied one by one: read them back as the UTF-8 they are.
+  return `"${Buffer.from(out, 'latin1').toString('utf8')}"`;
+}
+
+/**
+ * The `diff --git` line git writes for a pair (`from` the old path, `to` the new one; the same for
+ * any status but a rename or a copy), with `--src-prefix=a/ --dst-prefix=b/`: each side is quoted
+ * on its own, as git does.
+ */
+export function diffHeaderLine(from: string, to: string): string {
+  return `diff --git ${quoteName(`a/${from}`)} ${quoteName(`b/${to}`)}`;
+}
+
+const DIFF_HEADER = Buffer.from('diff --git ');
+
+/**
+ * Cuts `git diff` output, as it comes, into one piece per `diff --git` line: `onPiece` gets the
+ * header line (without its newline) and the piece's bytes, header included, or null when the
+ * piece is over `maxBytes`, which is then never held whole. Output before the first header is
+ * dropped. Feed it with `push`, then call `end`. No other line of a patch starts with
+ * `diff --git `: a hunk's lines start with a space, `+`, `-` or `\`.
+ */
+export class DiffSplitter {
+  private header: string | null = null;
+  private parts: Buffer[] = [];
+  private bytes = 0;
+  /** The line being read: its first bytes (to tell a header), and its bytes while they fit. */
+  private lineStart: Buffer = Buffer.alloc(0);
+  private line: Buffer[] = [];
+  private lineBytes = 0;
+
+  constructor(
+    private readonly maxBytes: number,
+    private readonly onPiece: (header: string, patch: Buffer | null) => void,
+  ) {}
+
+  push(chunk: Buffer): void {
+    let at = 0;
+    while (at < chunk.length) {
+      const lf = chunk.indexOf(0x0a, at);
+      const end = lf === -1 ? chunk.length : lf + 1;
+      this.addToLine(chunk.subarray(at, end));
+      if (lf !== -1) this.endLine();
+      at = end;
+    }
+  }
+
+  end(): void {
+    if (this.lineBytes > 0) this.endLine();
+    this.endPiece();
+  }
+
+  private addToLine(segment: Buffer): void {
+    if (this.lineStart.length < DIFF_HEADER.length) {
+      const room = DIFF_HEADER.length - this.lineStart.length;
+      this.lineStart = Buffer.concat([this.lineStart, segment.subarray(0, room)]);
+    }
+    this.lineBytes += segment.length;
+    // A line longer than a piece may be makes its piece too large, so it is not held.
+    if (this.lineBytes <= this.maxBytes) this.line.push(segment);
+    else this.line = [];
+  }
+
+  private endLine(): void {
+    const bytes = this.lineBytes;
+    const line = bytes <= this.maxBytes ? Buffer.concat(this.line, bytes) : null;
+    const isHeader = this.lineStart.equals(DIFF_HEADER);
+    this.lineStart = Buffer.alloc(0);
+    this.line = [];
+    this.lineBytes = 0;
+    if (isHeader) {
+      this.endPiece();
+      // A header line is short (two paths); one too long to hold names no path of the snapshot.
+      this.header = line === null ? '' : line.toString('utf8').replace(/\r?\n$/, '');
+    }
+    if (this.header === null) return;
+    this.bytes += bytes;
+    if (line !== null && this.bytes <= this.maxBytes) this.parts.push(line);
+    else this.parts = [];
+  }
+
+  private endPiece(): void {
+    if (this.header === null) return;
+    this.onPiece(
+      this.header,
+      this.bytes <= this.maxBytes ? Buffer.concat(this.parts, this.bytes) : null,
+    );
+    this.header = null;
+    this.parts = [];
+    this.bytes = 0;
+  }
+}
