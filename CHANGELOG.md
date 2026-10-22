@@ -26,6 +26,15 @@ All notable changes to Qualor are listed here, newest first. The format follows
   organisation was held to is gone, and the fix budget in **Settings → AI assistant** (25 by
   default, up to 100 000) is the only limit. A licence key that lists `llm.fix-quota` stays valid
   and changes nothing. `GET` and `PUT /api/v0/system/llm` no longer have `maxFixPerDay`.
+- GitHub: findings on changed lines are now pull request review comments, posted together as one
+  review, instead of check run annotations. The check run keeps the status and the summary.
+- GitHub: Qualor resolves a comment when its issue is fixed or marked in Qualor, and reopens it
+  when the issue comes back, unless someone else resolved it (a person or another App). A reply by
+  anyone else keeps a fixed issue's comment open.
+- GitHub, when you upgrade: open pull requests get comments for all their open new issues on
+  changed lines (up to 50 each) at their next analysis. With branch protection that requires
+  conversation resolution, Qualor's open comments now block the merge, including comments on low
+  and info issues that pass the gate. Mark the issue in Qualor, or resolve the comment.
 
 ## [0.11.0] - 2026-10-19
 

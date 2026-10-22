@@ -278,7 +278,7 @@ export async function reevaluateBranch(
         const github = stored.context.github ?? null;
         if (github === null) {
           // Ruling C1: without the GitHub context, which revision was checked out (and so which
-          // annotations are right) is unknown; fail closed.
+          // lines a review thread may be on) is unknown; fail closed.
           logger?.warn(
             where,
             'quality gate re-evaluated but not decorated again on GitHub: the analysis has no stored GitHub Actions context (sent by an older CLI)',

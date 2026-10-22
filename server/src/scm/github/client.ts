@@ -13,13 +13,25 @@ import {
   MutationPacer,
   tokenCacheKey,
 } from './app-auth';
-import { GITHUB_REPO_PATTERN, type GitHubRepoRef } from './url';
+import { githubGraphqlUrl, GITHUB_REPO_PATTERN, type GitHubRepoRef } from './url';
 
 /** github.md §5.3. */
 export const GITHUB_TIMEOUT_MS = 10_000;
 export const MAX_GITHUB_RESPONSE_BYTES = 8 * 1024 * 1024;
 export const GITHUB_PAGE_SIZE = 100;
-export const MAX_GITHUB_REQUESTS = 120;
+/**
+ * Requests one job (one client) may make (ruling R7). The most a decoration asks for besides its
+ * thread work is `REQUESTS_OUTSIDE_THREADS` (decorate.ts); with the creations (one review, and
+ * each comment alone after a 422) and the updates of threads the sum is 302, a token refreshed
+ * after a 401 included, so the check run and the summary are always written.
+ */
+export const MAX_GITHUB_REQUESTS = 320;
+/** Ruling T6: pages of 100 review threads one job reads at most. */
+export const MAX_THREAD_PAGES = 10;
+/** GraphQL's `Int` is a signed 32-bit integer: the largest pull request number a query can carry. */
+const GRAPHQL_MAX_INT = 2_147_483_647;
+/** A node id as GitHub makes them (`PRRT_kwDO…`): printable ASCII, no space. */
+const NODE_ID = /^[\x21-\x7e]{1,255}$/;
 /** GitHub's advice for a secondary rate limit without `Retry-After`: wait at least a minute. */
 export const SECONDARY_LIMIT_SECONDS = 60;
 export const GITHUB_API_VERSION = '2022-11-28';
@@ -58,7 +70,32 @@ export const GITHUB_TEXT = {
   refusedAddress: 'The GitHub host resolves to a link-local, cloud metadata or loopback address',
   unresolved: 'The GitHub host could not be resolved',
   timeout: 'GitHub did not answer within 10 s',
+  /** A GraphQL `RATE_LIMITED` error comes with HTTP 200: there is no status to quote. */
+  graphqlRateLimit: "GitHub's GraphQL API rate limit was reached",
 } as const;
+
+/**
+ * The GraphQL documents (github.md §6.4, ruling R6): a pull request's review threads, 100 to a
+ * page, with who resolved each and the node id of its first comment (REST's `node_id` of that
+ * comment); and the two mutations that resolve and reopen a thread (REST cannot). Never the
+ * comment's `databaseId`, which GitHub deprecated because it cannot hold its 64-bit ids, nor
+ * `fullDatabaseId`, which an older GitHub Enterprise Server does not have: a field the server
+ * lacks fails the whole query. The operation names are what the fake picks by.
+ */
+export const REVIEW_THREADS_QUERY = `query QualorReviewThreads($owner: String!, $name: String!, $number: Int!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes { id isResolved resolvedBy { login } comments(first: 1) { nodes { id } } }
+      }
+    }
+  }
+}`;
+export const RESOLVE_THREAD_MUTATION =
+  'mutation QualorResolveThread($id: ID!) { resolveReviewThread(input: { threadId: $id }) { thread { id isResolved } } }';
+export const UNRESOLVE_THREAD_MUTATION =
+  'mutation QualorUnresolveThread($id: ID!) { unresolveReviewThread(input: { threadId: $id }) { thread { id isResolved } } }';
 
 // ─── Response shapes (the fields Qualor reads; server/test/github-shapes/ holds recorded ones) ──
 
@@ -114,15 +151,67 @@ const comment = z.looseObject({
   user: z.looseObject({ login: z.string(), type: z.string() }).nullable(),
 });
 export type GitHubComment = z.infer<typeof comment>;
-/** A pull request review comment (llm.md §8.4): a comment on lines of the diff. */
+/**
+ * A pull request review comment (llm.md §8.4): a comment on lines of the diff. `node_id` is the
+ * comment's GraphQL id, which ties it to its thread (github.md §6.4); `in_reply_to_id` (the
+ * thread's first comment) is a number on a reply only, and absent or null on a first comment
+ * (ruling R6).
+ */
 const reviewComment = z.looseObject({
   id: z.number().int(),
+  node_id: z.string(),
   body: z.string(),
   user: z.looseObject({ login: z.string(), type: z.string() }).nullable(),
   html_url: z.string().optional(),
+  in_reply_to_id: z.number().int().nullish(),
+  path: z.string().optional(),
 });
 export type GitHubReviewComment = z.infer<typeof reviewComment>;
+/** A pull request review (github.md §6.4): only that GitHub made one is read. */
+const review = z.looseObject({ id: z.number().int(), state: z.string() });
+export type GitHubReview = z.infer<typeof review>;
 const errorBody = z.looseObject({ message: z.unknown().optional() });
+
+// GraphQL answers (github.md §5.3): `data` and, when it fails, `errors` around it. Each document
+// above asks for exactly the fields its schema reads.
+const graphqlAnswer = z.looseObject({
+  data: z.unknown().optional(),
+  errors: z
+    .array(z.looseObject({ type: z.string().optional(), message: z.unknown().optional() }))
+    .optional(),
+});
+const reviewThreadNode = z.looseObject({
+  id: z.string().min(1),
+  isResolved: z.boolean(),
+  /** Whoever resolved it, an App as `<slug>[bot]` (ruling R6); null while the thread is open. */
+  resolvedBy: z.looseObject({ login: z.string() }).nullable(),
+  /** Its first comment's node id (GraphQL's `ID!`): a comment without one is not understood. */
+  comments: z.looseObject({
+    nodes: z.array(z.looseObject({ id: z.string().min(1) }).nullable()),
+  }),
+});
+const reviewThreadsData = z.looseObject({
+  repository: z
+    .looseObject({
+      pullRequest: z
+        .looseObject({
+          reviewThreads: z.looseObject({
+            pageInfo: z.looseObject({
+              hasNextPage: z.boolean(),
+              endCursor: z.string().nullable(),
+            }),
+            nodes: z.array(reviewThreadNode.nullable()),
+          }),
+        })
+        .nullable(),
+    })
+    .nullable(),
+});
+const threadPayload = z.looseObject({
+  thread: z.looseObject({ id: z.string().min(1), isResolved: z.boolean() }),
+});
+const resolveThreadData = z.looseObject({ resolveReviewThread: threadPayload });
+const unresolveThreadData = z.looseObject({ unresolveReviewThread: threadPayload });
 
 /** Every recorded shape the client parses, for the shape tests (server/test/github-shapes/). */
 export const GITHUB_SHAPES = {
@@ -138,17 +227,29 @@ export const GITHUB_SHAPES = {
   issueComments: z.array(comment),
   reviewComment,
   reviewComments: z.array(reviewComment),
+  review,
+  reviewThreads: z.looseObject({ data: reviewThreadsData }),
+  resolveThread: z.looseObject({ data: resolveThreadData }),
 } as const;
 
-export type AnnotationLevel = 'notice' | 'warning' | 'failure';
-/** github.md §6.4: one annotation, keys in the order the digest uses. */
-export interface GitHubAnnotation {
-  path: string;
-  start_line: number;
-  end_line: number;
-  annotation_level: AnnotationLevel;
-  title: string;
-  message: string;
+/** A pull request's review thread as Qualor reads it (ruling R6). */
+export interface GitHubReviewThread {
+  /** The GraphQL node id (`PRRT_…`), what {@link GitHubClient.setThreadResolved} takes. */
+  id: string;
+  isResolved: boolean;
+  /**
+   * The login GitHub names as the thread's resolver; null while it is open. An App is named like
+   * any other user, as `<slug>[bot]` (ruling R6), so a resolution is Qualor's own when this equals
+   * its App's `<slug>[bot]` (github.md §6.3), which the caller compares. Anyone else's, a person's
+   * or another App's, is never reopened (ruling G3), and neither is a resolved thread that GitHub
+   * names nobody for.
+   */
+  resolvedByLogin: string | null;
+  /**
+   * The node id of the thread's first comment, which `reviewComments` lists as its `node_id`;
+   * null when GitHub shows the thread without a comment.
+   */
+  firstCommentNodeId: string | null;
 }
 
 export interface CheckRunUpdate {
@@ -161,7 +262,6 @@ export interface CheckRunUpdate {
 export interface CheckRunInput extends CheckRunUpdate {
   name: string;
   headSha: string;
-  annotations: readonly GitHubAnnotation[];
 }
 
 export interface GitHubConnectionInput {
@@ -188,6 +288,24 @@ export interface GitHubClientOptions {
 }
 
 /**
+ * When an answer's headers say to try again, in seconds (clamped to 1 s – 15 min): `Retry-After`
+ * wins, then an exhausted primary limit's `x-ratelimit-reset`. Null for an exhausted primary limit
+ * whose reset is unreadable; undefined when the headers name no wait.
+ */
+function headerWait(headers: IncomingHttpHeaders, nowMs: number): number | null | undefined {
+  const clamp = (s: number) => Math.min(MAX_RETRY_AFTER_SECONDS, Math.max(1, Math.ceil(s)));
+  const retryAfter = headers['retry-after'];
+  if (typeof retryAfter === 'string' && /^\d{1,9}$/.test(retryAfter.trim())) {
+    return clamp(Number(retryAfter));
+  }
+  if (headers['x-ratelimit-remaining'] !== '0') return undefined;
+  const reset = headers['x-ratelimit-reset'];
+  return typeof reset === 'string' && /^\d{1,12}$/.test(reset)
+    ? clamp(Number(reset) - nowMs / 1000)
+    : null;
+}
+
+/**
  * github.md §5.3: whether a 403 or 429 is a rate limit, and when to try again (`null`: the
  * backoff). `Retry-After` wins, then an exhausted primary limit's reset, then a secondary limit
  * named only in the message (60 s); a 429 is always a rate limit; any other 403 is not.
@@ -199,20 +317,8 @@ export function githubRateLimit(
   nowMs: number = Date.now(),
 ): { retryAfterSeconds: number | null } | null {
   if (status !== 403 && status !== 429) return null;
-  const clamp = (s: number) => Math.min(MAX_RETRY_AFTER_SECONDS, Math.max(1, Math.ceil(s)));
-  const retryAfter = headers['retry-after'];
-  if (typeof retryAfter === 'string' && /^\d{1,9}$/.test(retryAfter.trim())) {
-    return { retryAfterSeconds: clamp(Number(retryAfter)) };
-  }
-  if (headers['x-ratelimit-remaining'] === '0') {
-    const reset = headers['x-ratelimit-reset'];
-    return {
-      retryAfterSeconds:
-        typeof reset === 'string' && /^\d{1,12}$/.test(reset)
-          ? clamp(Number(reset) - nowMs / 1000)
-          : null,
-    };
-  }
+  const wait = headerWait(headers, nowMs);
+  if (wait !== undefined) return { retryAfterSeconds: wait };
   if (message !== null && /secondary rate limit/i.test(message)) {
     return { retryAfterSeconds: SECONDARY_LIMIT_SECONDS };
   }
@@ -221,6 +327,14 @@ export function githubRateLimit(
 
 /** Longer than any `Link` header GitHub sends (at most four relations of one URL each). */
 const MAX_LINK_HEADER_CHARS = 4_096;
+
+/** A line number of a file, as a review comment's `line` or `start_line` takes it. */
+const lineNumber = (n: number) => Number.isSafeInteger(n) && n > 0;
+
+/** github.md §5.3: a 422 on a review comment or review is a position GitHub will not place. */
+function positionRefused(err: unknown): boolean {
+  return err instanceof ScmError && err.kind === 'refused' && err.status === 422;
+}
 
 /**
  * Whether a `Link` header has a `rel="next"` entry; null when it is too long to read, which the
@@ -232,16 +346,62 @@ export function hasNextPage(link: string | string[] | undefined): boolean | null
   return link.split(',').some((part) => /;\s*rel="?next"?\s*$/.test(part.trim()));
 }
 
+/** A message of GitHub's, cut to 1 000 characters, with every credential cut out should it echo one. */
+function scrubbed(message: unknown, secrets: readonly string[]): string | null {
+  if (typeof message !== 'string') return null;
+  let text = message;
+  for (const secret of secrets) if (secret !== '') text = text.split(secret).join('[secret]');
+  return text.slice(0, 1_000);
+}
+
 /** GitHub's `message`, for decisions only, with every credential cut out should it echo one. */
 function githubMessage(body: Buffer, secrets: readonly string[]): string | null {
   try {
     const parsed = errorBody.safeParse(JSON.parse(body.toString('utf8')));
-    if (!parsed.success || typeof parsed.data.message !== 'string') return null;
-    let text = parsed.data.message;
-    for (const secret of secrets) if (secret !== '') text = text.split(secret).join('[secret]');
-    return text.slice(0, 1_000);
+    return parsed.success ? scrubbed(parsed.data.message, secrets) : null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * github.md §5.3: GraphQL answers a failed operation with HTTP 200 and an `errors` array, whose
+ * first entry's `type` (GitHub's own: `NOT_FOUND`, `FORBIDDEN`, `RATE_LIMITED`, …) says which. The
+ * status is 200 as GitHub did answer: the circuit breaker (scm.md §4.2) counts that as GitHub
+ * being up. A rate limit waits as long as the answer's headers say, as a REST one does
+ * (`Retry-After`, then an exhausted limit's `x-ratelimit-reset`), and GitHub's advice of a minute
+ * when they say nothing. The provider's words are kept for decisions only, as everywhere
+ * (`providerMessage`).
+ */
+function graphqlFailure(
+  error: { type?: string | undefined; message?: unknown },
+  secrets: readonly string[],
+  headers: IncomingHttpHeaders,
+  nowMs: number,
+): ScmError {
+  const providerMessage = scrubbed(error.message, secrets);
+  switch (error.type) {
+    case 'NOT_FOUND':
+      return new ScmError('not_found', GITHUB_TEXT.notFound, {
+        status: 200,
+        reason: 'http',
+        providerMessage,
+      });
+    case 'FORBIDDEN':
+      return new ScmError('auth', GITHUB_TEXT.permission, {
+        status: 200,
+        reason: 'permission_missing',
+        providerMessage,
+      });
+    case 'RATE_LIMITED':
+      return new ScmError('rate_limited', GITHUB_TEXT.graphqlRateLimit, {
+        status: 200,
+        reason: 'http',
+        retryAfterSeconds: headerWait(headers, nowMs) ?? SECONDARY_LIMIT_SECONDS,
+        providerMessage,
+      });
+    default:
+      return new ScmError('bad_answer', GITHUB_TEXT.badAnswer, { status: 200, providerMessage });
   }
 }
 
@@ -271,13 +431,24 @@ function transportError(result: Extract<OutboundResult, { kind: 'failed' }>): Sc
 
 type Auth = 'app' | 'installation';
 type Method = 'GET' | 'POST' | 'PATCH';
+/** A path under the connection's base URL (REST), or an absolute URL beside it (GraphQL). */
+type Target = string | URL;
+interface CallOptions {
+  /**
+   * Paced as a mutation. By default every method but GET is one; a GraphQL query is a POST that
+   * is not.
+   */
+  mutation?: boolean;
+}
 
 /**
  * The GitHub REST API (github.md §4–§6), through {@link outboundRequest}: the connection's base
  * URL only, no redirect, 10 s per request, bounded answers, pages built by number, a budget of
  * {@link MAX_GITHUB_REQUESTS} per client (one client per job), mutations paced per installation.
- * The private key, the JWT and the installation token live in `#private` fields; no error, return
- * value or log line carries them.
+ * Review threads, which REST cannot list with their state or resolve, go through the GraphQL
+ * endpoint beside the base URL, under the same rules and the same budget (ruling R6). The private
+ * key, the JWT and the installation token live in `#private` fields; no error, return value or log
+ * line carries them.
  */
 export class GitHubClient {
   private requestCount = 0;
@@ -319,9 +490,14 @@ export class GitHubClient {
     return new ScmError('refused', text, { reason: 'invalid_input' });
   }
 
-  private repoPath(): string {
+  private repoRef(): GitHubRepoRef {
     if (!this.#repo) throw new Error('useRepository first');
-    return `/repos/${encodeURIComponent(this.#repo.owner)}/${encodeURIComponent(this.#repo.repo)}`;
+    return this.#repo;
+  }
+
+  private repoPath(): string {
+    const { owner, repo } = this.repoRef();
+    return `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
   }
 
   private number(value: string): string {
@@ -342,9 +518,10 @@ export class GitHubClient {
 
   private async call(
     method: Method,
-    path: string,
+    target: Target,
     auth: Auth,
     body?: unknown,
+    options: CallOptions = {},
   ): Promise<{ headers: IncomingHttpHeaders; json: unknown }> {
     if (this.requestCount >= this.maxRequests) {
       throw new ScmError('budget', GITHUB_TEXT.budget, { reason: 'budget' });
@@ -356,12 +533,12 @@ export class GitHubClient {
         : this.#token;
     if (credential === null) throw new Error('no installation token');
     if (auth === 'app') this.#jwt = credential;
-    if (method !== 'GET') {
+    if (options.mutation ?? method !== 'GET') {
       await this.pacer.wait(`${this.#connection.baseUrl}|${this.#installationId ?? 'app'}`);
     }
     const result = await outboundRequest(
       {
-        url: `${this.#connection.baseUrl}${path}`,
+        url: typeof target === 'string' ? `${this.#connection.baseUrl}${target}` : target.href,
         method,
         headers: {
           authorization: `Bearer ${credential}`,
@@ -438,18 +615,49 @@ export class GitHubClient {
   /** A repository call; after a 401, one fresh installation token and one more try (§4). */
   private async repoCall(
     method: Method,
-    path: string,
+    target: Target,
     body?: unknown,
+    options: CallOptions = {},
   ): Promise<{ headers: IncomingHttpHeaders; json: unknown }> {
     try {
-      return await this.call(method, path, 'installation', body);
+      return await this.call(method, target, 'installation', body, options);
     } catch (err) {
       if (!(err instanceof ScmError) || err.status !== 401 || this.#refreshed) throw err;
       this.#refreshed = true;
       if (this.#tokenKey !== null) this.tokens.drop(this.#tokenKey);
       await this.issueToken();
-      return this.call(method, path, 'installation', body);
+      return this.call(method, target, 'installation', body, options);
     }
+  }
+
+  /**
+   * One GraphQL operation on the endpoint beside the base URL (ruling T5), as a repository call:
+   * the budget, the pacing (a mutation only), the headers, the outbound rules, the HTTP errors and
+   * the one token refresh are `call`'s and `repoCall`'s. A failed operation is HTTP 200 with
+   * `errors` (`graphqlFailure`); `data` next to an error is never used, so a failure is never
+   * read as an empty result.
+   */
+  private async graphql<T>(
+    document: string,
+    variables: Record<string, unknown>,
+    schema: z.ZodType<T>,
+    mutation: boolean,
+  ): Promise<T> {
+    const { headers, json } = await this.repoCall(
+      'POST',
+      new URL(githubGraphqlUrl(this.#connection.baseUrl)),
+      { query: document, variables },
+      { mutation },
+    );
+    const answer = this.parse(graphqlAnswer, json);
+    const [failure] = answer.errors ?? [];
+    if (failure !== undefined) {
+      throw graphqlFailure(failure, [this.#token ?? '', this.#jwt ?? ''], headers, this.now());
+    }
+    if (answer.data === null || answer.data === undefined) {
+      throw new ScmError('bad_answer', GITHUB_TEXT.badAnswer, { status: 200 });
+    }
+    return this.parse(schema, answer.data);
   }
 
   private async pages<T>(path: string, schema: z.ZodType<T>, maxPages: number): Promise<Paged<T>> {
@@ -580,28 +788,18 @@ export class GitHubClient {
     };
   }
 
-  /** A new check run; `'annotations_rejected'` when GitHub refuses its annotations (a 422). */
-  async createCheckRun(input: CheckRunInput): Promise<GitHubCheckRun | 'annotations_rejected'> {
-    try {
-      const { json } = await this.repoCall('POST', `${this.repoPath()}/check-runs`, {
-        name: input.name,
-        head_sha: this.sha(input.headSha),
-        ...this.checkRunBody(input),
-        output: { title: input.title, summary: input.summary, annotations: input.annotations },
-      });
-      return this.parse(checkRun, json);
-    } catch (err) {
-      // GitHub answers 422 for an invalid request; with annotations sent, one of them is the
-      // likely cause (a path or line it does not accept), so the caller retries without them.
-      // Without annotations a 422 is a plain refusal.
-      if (err instanceof ScmError && err.status === 422 && input.annotations.length > 0) {
-        return 'annotations_rejected';
-      }
-      throw err;
-    }
+  /** A new check run; its output is a title and a summary, never annotations (github.md §6.1). */
+  async createCheckRun(input: CheckRunInput): Promise<GitHubCheckRun> {
+    const { json } = await this.repoCall('POST', `${this.repoPath()}/check-runs`, {
+      name: input.name,
+      head_sha: this.sha(input.headSha),
+      ...this.checkRunBody(input),
+      output: { title: input.title, summary: input.summary },
+    });
+    return this.parse(checkRun, json);
   }
 
-  /** Updates conclusion and output, never annotations (GitHub appends them on an update). */
+  /** Updates the conclusion and the output (title and summary) of a check run. */
   async updateCheckRun(id: number, input: CheckRunUpdate): Promise<GitHubCheckRun> {
     if (!Number.isSafeInteger(id) || id <= 0) throw this.invalid(GITHUB_TEXT.id);
     const { json } = await this.repoCall('PATCH', `${this.repoPath()}/check-runs/${id}`, {
@@ -654,10 +852,10 @@ export class GitHubClient {
     number: string,
     input: { body: string; commitId: string; path: string; line: number; startLine?: number },
   ): Promise<GitHubReviewComment | 'position_rejected'> {
-    const lineOk = (n: number) => Number.isSafeInteger(n) && n > 0;
     if (
-      !lineOk(input.line) ||
-      (input.startLine !== undefined && (!lineOk(input.startLine) || input.startLine > input.line))
+      !lineNumber(input.line) ||
+      (input.startLine !== undefined &&
+        (!lineNumber(input.startLine) || input.startLine > input.line))
     ) {
       throw this.invalid(GITHUB_TEXT.line);
     }
@@ -680,9 +878,135 @@ export class GitHubClient {
       );
       return this.parse(reviewComment, json);
     } catch (err) {
-      if (err instanceof ScmError && err.kind === 'refused' && err.status === 422) {
-        return 'position_rejected';
+      if (positionRefused(err)) return 'position_rejected';
+      throw err;
+    }
+  }
+
+  /**
+   * github.md §6.4: one pull request review (`event: COMMENT`) at `commitId` that holds a review
+   * comment on the RIGHT side of `line` of `path` for each of `comments`, each the first of a
+   * thread: one request, one notification and one timeline entry for them all. `body` is the
+   * review's own text, which GitHub requires with `COMMENT`; it is no review comment.
+   * `position_rejected` on a 422: GitHub will not place a position of the batch (or refused the
+   * request as spam), and made none of the comments.
+   */
+  async createReview(
+    number: string,
+    input: {
+      body: string;
+      commitId: string;
+      comments: readonly { path: string; line: number; body: string }[];
+    },
+  ): Promise<GitHubReview | 'position_rejected'> {
+    if (input.comments.length === 0) throw new Error('a review of no comments');
+    if (!input.comments.every((c) => lineNumber(c.line))) throw this.invalid(GITHUB_TEXT.line);
+    try {
+      const { json } = await this.repoCall(
+        'POST',
+        `${this.repoPath()}/pulls/${this.number(number)}/reviews`,
+        {
+          commit_id: this.sha(input.commitId),
+          event: 'COMMENT',
+          body: input.body,
+          comments: input.comments.map((c) => ({
+            path: c.path,
+            line: c.line,
+            side: 'RIGHT',
+            body: c.body,
+          })),
+        },
+      );
+      return this.parse(review, json);
+    } catch (err) {
+      if (positionRefused(err)) return 'position_rejected';
+      throw err;
+    }
+  }
+
+  /** One page of a pull request's review threads, after the cursor `after`. */
+  private async threadsPage(pull: number, after: string | null) {
+    const { owner, repo } = this.repoRef();
+    const data = await this.graphql(
+      REVIEW_THREADS_QUERY,
+      { owner, name: repo, number: pull, after },
+      reviewThreadsData,
+      false,
+    );
+    const threads = data.repository?.pullRequest?.reviewThreads;
+    if (threads === undefined) {
+      throw new ScmError('not_found', GITHUB_TEXT.notFound, { status: 200, reason: 'http' });
+    }
+    return threads;
+  }
+
+  /**
+   * github.md §6.4 (ruling R6): the pull request's review threads, 100 to a page by cursor, at
+   * most `maxPages` pages (`complete: false` when more remain). Only a thread's node id, its
+   * resolution with the resolver's login, and its first comment's node id are read here; who
+   * wrote the comments is read from {@link reviewComments}. A pull request that is not there is
+   * `not_found`, never an empty list.
+   */
+  async reviewThreads(number: string, maxPages: number): Promise<Paged<GitHubReviewThread>> {
+    const pull = Number(this.number(number));
+    // GraphQL's Int! refuses anything larger; GitHub has no such pull request anyway.
+    if (pull > GRAPHQL_MAX_INT) throw this.invalid(GITHUB_TEXT.prNumber);
+    const items: GitHubReviewThread[] = [];
+    let after: string | null = null;
+    for (let page = 1; page <= maxPages; page++) {
+      const threads = await this.threadsPage(pull, after);
+      for (const thread of threads.nodes) {
+        if (thread === null) continue;
+        items.push({
+          id: thread.id,
+          isResolved: thread.isResolved,
+          resolvedByLogin: thread.resolvedBy?.login ?? null,
+          firstCommentNodeId: thread.comments.nodes[0]?.id ?? null,
+        });
       }
+      if (!threads.pageInfo.hasNextPage) return { items, complete: true };
+      // A next page without a cursor to ask for it is not understood, never "the last page".
+      if (threads.pageInfo.endCursor === null) {
+        throw new ScmError('bad_answer', GITHUB_TEXT.badAnswer);
+      }
+      after = threads.pageInfo.endCursor;
+    }
+    return { items, complete: false };
+  }
+
+  /**
+   * Resolves (`resolved`) or reopens a review thread. `not_found` when GitHub no longer knows the
+   * thread (its comments were deleted): the caller skips it. Done means GitHub reports the state
+   * asked for. Through an installation token the resolver GitHub names is the App's own
+   * `<slug>[bot]` (ruling R6); a reopened thread names none.
+   */
+  async setThreadResolved(threadId: string, resolved: boolean): Promise<'done' | 'not_found'> {
+    if (!NODE_ID.test(threadId)) throw this.invalid(GITHUB_TEXT.id);
+    const variables = { id: threadId };
+    try {
+      let state: boolean;
+      if (resolved) {
+        const data = await this.graphql(
+          RESOLVE_THREAD_MUTATION,
+          variables,
+          resolveThreadData,
+          true,
+        );
+        state = data.resolveReviewThread.thread.isResolved;
+      } else {
+        const data = await this.graphql(
+          UNRESOLVE_THREAD_MUTATION,
+          variables,
+          unresolveThreadData,
+          true,
+        );
+        state = data.unresolveReviewThread.thread.isResolved;
+      }
+      if (state !== resolved)
+        throw new ScmError('bad_answer', GITHUB_TEXT.badAnswer, { status: 200 });
+      return 'done';
+    } catch (err) {
+      if (err instanceof ScmError && err.kind === 'not_found') return 'not_found';
       throw err;
     }
   }

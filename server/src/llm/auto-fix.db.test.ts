@@ -333,7 +333,10 @@ describe('automatic fix suggestions (4E-3a §3)', () => {
       }),
     );
     await runAll(githubDeps(h, scmOverrides()));
-    const comments = github.reviewComments.filter((c) => c.repoId === repoId);
+    // The fix is one of the pull request's review comments; the other is the issue's own thread.
+    const comments = github.reviewComments.filter(
+      (c) => c.repoId === repoId && c.body.startsWith('<!-- qualor:ai-fix '),
+    );
     expect(comments).toHaveLength(1);
     expect(comments[0]).toMatchObject({ path: 'src/a.ts', line: 3, commitId: HEAD });
     expect(comments[0]!.body.split('\n')[2]).toBe(AUTO_LINE);

@@ -5,8 +5,8 @@ Qualor works with GitHub.com, GHE.com and GitHub Enterprise Server 3.9 or later.
 1. **The Actions workflow** (the Qualor Action) runs `qualor scan`, uploads the analysis and fails the check when the
    quality gate fails.
 2. **A GitHub App (optional, recommended)** lets the Qualor server post a check run
-   `qualor/<project key>` with annotations on changed lines, plus one summary comment per pull
-   request. Its **Re-run** button re-decorates.
+   `qualor/<project key>`, a review comment on each new issue on the changed lines, and one summary
+   comment per pull request. Its **Re-run** button re-decorates.
 
 The workflow itself needs no GitHub write permission. The App posts everything.
 
@@ -99,8 +99,9 @@ server, or pin a full version to control every update.
 
 Why it looks like this:
 
-- It checks out the **pull request's head**, not GitHub's merge commit, so annotations land on the
-  pull request's own lines.
+- It checks out the **pull request's head**, not GitHub's merge commit, so Qualor's review comments
+  land on the pull request's own lines. After a checkout of the merge commit (what `actions/checkout`
+  does by default) there are no inline comments, and the summary says so.
 - `fetch-depth: 0` gives the full history, from which new code is computed.
 - `persist-credentials: false` keeps the job's GitHub token out of `.git/config`, where the analysed
   code could read it.
@@ -216,21 +217,41 @@ server, and a private CA needs `NODE_EXTRA_CA_CERTS`.
 ### What reviewers see
 
 - A **check run** `qualor/<project key>` on every analysed commit: *success* or *failure*, with the
-  failed conditions in its title and the summary in its body.
-- **Annotations** on up to 50 new issues on added lines, each with a link to its rule's
-  documentation. They are *failure* for blocker and high issues, *warning* for medium, and *notice*
-  for low and info.
+  failed conditions in its title and the summary in its body. It has no annotations: the findings
+  on the changed lines are the review comments below.
+- **A review comment on each new issue** that sits on a line the pull request added, up to 50 per
+  pull request, with the rule's key linked to its documentation and, when `QUALOR_PUBLIC_URL` is
+  set, a link to the issue in Qualor. An analysis posts its new comments together, as one review,
+  so GitHub notifies once. Each comment is a conversation that people can reply to and resolve.
+  Qualor resolves the conversation when the issue is fixed or marked in Qualor, and reopens it if
+  the issue comes back. It never reopens a conversation that someone else resolved. A reply by
+  someone else only stops Qualor from resolving the conversation: Qualor still reopens a
+  conversation it resolved itself. A comment keeps the text it was posted with: a severity changed
+  later in Qualor shows in the summary. A Qualor comment you delete comes back at the next
+  analysis; to silence one, mark its issue in Qualor.
 - **One summary comment** per pull request, edited in place. It holds the verdict, a table of every
   gate condition with its value and the value it requires, the new issues by severity, the ten most
-  severe ones with their rule (linked to the rule's documentation) and a link to each in Qualor, and
-  a link to the branch in Qualor.
-- Marking an issue **false positive** or **won't fix** in Qualor re-evaluates the gate at once. A new
-  check run without that annotation replaces the old one.
+  severe ones with their rule (linked to the rule's documentation) and a link to each in Qualor, how
+  many issues are commented inline and how many could not be placed on the diff, and a link to the
+  branch in Qualor.
+- Marking an issue **false positive** or **won't fix** in Qualor re-evaluates the gate at once, with
+  no new scan. The check run is updated in place, and the issue's conversation is resolved (unless
+  someone else replied in it).
+
+The check run is written first, so it never waits for the comments. GitHub asks integrations to
+make at most one write a second, and Qualor keeps to that: an analysis's new comments take one
+write, but each conversation it resolves or reopens takes one more, so when many issues are fixed
+at once their conversations can take a minute or more to follow.
 
 ## 4. Block merges on the gate
 
 Add a branch protection rule (or a ruleset) on the default branch that requires the status check
 **`qualor`** (the workflow job), or **`qualor/<project key>`** (the App's check run), or both.
+
+If the rule also requires conversations to be resolved before merging, Qualor's open comments block
+the merge, also those on issues that pass the gate (low and info ones, say). Qualor resolves a
+comment when its issue is fixed or marked in Qualor (unless someone else replied in it), and a
+person can resolve it too.
 
 ## Troubleshooting
 
@@ -240,6 +261,9 @@ Add a branch protection rule (or a ruleset) on the default branch that requires 
 | Exit 5 | the `QUALOR_TOKEN` secret is wrong or revoked |
 | Gate `error`, new code unavailable | `fetch-depth: 0` is missing |
 | No check run | no App connection or mapping, the App is not installed on the repository, or it lacks a permission |
+| No review comment on an issue | the workflow checked out GitHub's merge commit (the summary says "No inline comments"; use the `ref:` of [the workflow](#2-the-workflow)), the issue is not on a line the pull request added, or it is past the 50 per pull request. The summary counts the ones it could not place |
+| A conversation stays open after the issue is fixed or marked | someone else replied in it. Qualor leaves such a conversation for people to resolve |
+| The summary says "Inline comments could not be updated this time." | GitHub failed or refused a request for the review comments: an outage or a rate limit (Qualor tries again on its own), or a missing permission (it tries again at the next analysis). The server log's `GitHub decoration retried` or `GitHub decoration stopped` line says why |
 | `The GitHub repository was not found` after a rename | update the mapping to the new `owner/repo` |
 
 More in [Troubleshooting](./troubleshooting.md).

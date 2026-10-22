@@ -1,5 +1,10 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { createFakeGitHub, githubShape, type FakeGitHub } from '../../../test/fake-github';
+import {
+  createFakeGitHub,
+  githubShape,
+  reviewCommentNodeId,
+  type FakeGitHub,
+} from '../../../test/fake-github';
 import { ScmError } from '../provider';
 import {
   credentialsId,
@@ -13,11 +18,25 @@ import {
   GITHUB_SHAPES,
   GITHUB_TEXT,
   hasNextPage,
+  MAX_THREAD_PAGES,
+  RESOLVE_THREAD_MUTATION,
+  REVIEW_THREADS_QUERY,
+  UNRESOLVE_THREAD_MUTATION,
   type GitHubClientOptions,
 } from './client';
+import { githubGraphqlUrl } from './url';
 
 const REPO = { owner: 'acme', repo: 'api' };
 const SHA = '1'.repeat(40);
+
+/** A pacer that records the keys it is asked to wait for; the waiting itself is the fake clock's. */
+class SpyPacer extends MutationPacer {
+  readonly waits: string[] = [];
+  override async wait(key: string): Promise<void> {
+    this.waits.push(key);
+    await super.wait(key);
+  }
+}
 
 describe('GitHub REST client (github.md §4–§6)', () => {
   let fake: FakeGitHub;
@@ -274,12 +293,13 @@ describe('GitHub REST client (github.md §4–§6)', () => {
     expect(() => clientFor({}, String(Number.MAX_SAFE_INTEGER))).not.toThrow();
   });
 
-  it('stops at 120 requests', async () => {
+  it('stops at its request budget, 320 a job by default', async () => {
     const client = clientFor({ maxRequests: 2 });
     await client.app();
     await client.app();
     const err = await failure(client.app());
     expect([err.kind, err.message]).toEqual(['budget', GITHUB_TEXT.budget]);
+    expect(GITHUB_TEXT.budget).toBe('More than 320 GitHub requests in one job');
   });
 
   it('spaces its mutations at least a second apart', async () => {
@@ -335,10 +355,129 @@ describe('GitHub REST client (github.md §4–§6)', () => {
     expect(fake.requests).toHaveLength(0);
   });
 
-  it('answers annotations_rejected when GitHub refuses the annotations', async () => {
+  it('posts review comments together as one review, in one paced request (github.md §6.4)', async () => {
+    const tokens = new InstallationTokenCache(() => clock);
+    await clientFor({ tokens }).useRepository(REPO); // a token, now cached
+    const pacer = new SpyPacer(
+      () => clock,
+      async (ms) => void (clock += ms),
+    );
+    const client = clientFor({ tokens, pacer });
+    await client.useRepository(REPO);
+    const comments = fake.reviewComments.length;
+    const reviews = fake.reviews.length;
+    fake.clearRequests();
+    const review = await client.createReview('7', {
+      commitId: SHA,
+      body: 'Qualor: 2 new issues on changed lines.',
+      comments: [
+        { path: 'f2.ts', line: 1, body: 'two' },
+        { path: 'f3.ts', line: 1, body: 'three' },
+      ],
+    });
+    expect(review).toMatchObject({ state: 'COMMENTED' });
+    // One request and one pacing wait for both: GitHub notifies once, with one timeline entry.
+    expect(fake.requests.map((r) => `${r.method} ${r.path}`)).toEqual([
+      'POST /repos/acme/api/pulls/7/reviews',
+    ]);
+    expect(pacer.waits).toHaveLength(1);
+    // `event: COMMENT` needs a `body` (GitHub's REST reference); each comment is on the RIGHT side.
+    expect(JSON.parse(fake.requests[0]?.body ?? '{}')).toEqual({
+      commit_id: SHA,
+      event: 'COMMENT',
+      body: 'Qualor: 2 new issues on changed lines.',
+      comments: [
+        { path: 'f2.ts', line: 1, side: 'RIGHT', body: 'two' },
+        { path: 'f3.ts', line: 1, side: 'RIGHT', body: 'three' },
+      ],
+    });
+    // Its comments are review comments of the App, each the first of a thread; its body is none.
+    expect(
+      fake.reviewComments
+        .slice(comments)
+        .map((c) => [c.path, c.line, c.body, c.user.login, c.inReplyToId]),
+    ).toEqual([
+      ['f2.ts', 1, 'two', `${fake.slug}[bot]`, null],
+      ['f3.ts', 1, 'three', `${fake.slug}[bot]`, null],
+    ]);
+    expect(fake.reviews.slice(reviews)).toEqual([
+      expect.objectContaining({ body: 'Qualor: 2 new issues on changed lines.', event: 'COMMENT' }),
+    ]);
+    // A position GitHub will not place refuses the whole review: none of its comments is made.
+    const refused = await client.createReview('7', {
+      commitId: SHA,
+      body: 'x',
+      comments: [
+        { path: 'f4.ts', line: 1, body: 'on the diff' },
+        { path: 'f4.ts', line: 9, body: 'off the diff' },
+      ],
+    });
+    expect(refused).toBe('position_rejected');
+    expect(fake.reviewComments).toHaveLength(comments + 2);
+    // Nothing reaches GitHub with a line that is no line number.
+    fake.clearRequests();
+    const bad = await failure(
+      client.createReview('7', {
+        commitId: SHA,
+        body: 'x',
+        comments: [{ path: 'f5.ts', line: 0, body: 'x' }],
+      }),
+    );
+    expect([bad.kind, bad.reason]).toEqual(['refused', 'invalid_input']);
+    expect(fake.requests).toHaveLength(0);
+  });
+
+  it('is served by a fake that refuses a review GitHub would refuse', async () => {
+    await clientFor().useRepository(REPO);
+    const [token] = [...fake.tokens.keys()].slice(-1);
+    const post = async (body: Record<string, unknown>) =>
+      (
+        await fetch(`${fake.url}/repos/acme/api/pulls/7/reviews`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token!}`, 'user-agent': 'test' },
+          body: JSON.stringify(body),
+        })
+      ).status;
+    const comment = { path: 'f6.ts', line: 1, side: 'RIGHT', body: 'x' };
+    const review = { commit_id: SHA, event: 'COMMENT', body: 'b', comments: [comment] };
+    const before = fake.reviewComments.length;
+    // GitHub requires a body with COMMENT.
+    expect(await post({ ...review, body: undefined })).toBe(422);
+    expect(await post({ ...review, body: '' })).toBe(422);
+    // A review without an event stays pending, which Qualor never makes and the fake does not model.
+    expect(await post({ ...review, event: undefined })).toBe(422);
+    expect(await post({ ...review, event: 'MERGE' })).toBe(422);
+    expect(await post({ ...review, commit_id: 'b'.repeat(40) })).toBe(422);
+    expect(await post({ ...review, comments: [{ ...comment, side: 'LEFT' }] })).toBe(422);
+    expect(await post({ ...review, comments: [{ ...comment, body: '' }] })).toBe(422);
+    expect(fake.reviewComments).toHaveLength(before);
+    expect(await post(review)).toBe(200);
+    expect(fake.reviewComments).toHaveLength(before + 1);
+  });
+
+  it('reads a review comment whose in_reply_to_id is null, and needs its node id', async () => {
     const client = clientFor();
     await client.useRepository(REPO);
-    fake.inject('POST', /check-runs$/, { status: 422, body: { message: 'Invalid request.' } });
+    const comments = /^\/repos\/acme\/api\/pulls\/7\/comments$/;
+    const recorded = githubShape('pull_request_review_comment');
+    // A first comment may come with `in_reply_to_id: null`: the listing is still read (M1).
+    fake.inject('GET', comments, { status: 200, body: [{ ...recorded, in_reply_to_id: null }] });
+    const listed = await client.reviewComments('7', 1);
+    expect(listed.items.map((c) => [c.id, c.in_reply_to_id, c.node_id])).toEqual([
+      [10, null, 'PRRC_kwDOAAABc84AAAAK'],
+    ]);
+    // The node id is what ties a comment to its thread (C1): a comment without one is not understood.
+    const { node_id: omitted, ...withoutNodeId } = recorded;
+    expect(omitted).toBe('PRRC_kwDOAAABc84AAAAK');
+    fake.inject('GET', comments, { status: 200, body: [withoutNodeId] });
+    const err = await failure(client.reviewComments('7', 1));
+    expect([err.kind, err.message]).toEqual(['bad_answer', GITHUB_TEXT.badAnswer]);
+  });
+
+  it('creates a check run whose output is a title and a summary, never annotations', async () => {
+    const client = clientFor();
+    await client.useRepository(REPO);
+    fake.clearRequests();
     const created = await client.createCheckRun({
       name: 'qualor/k',
       headSha: SHA,
@@ -347,18 +486,34 @@ describe('GitHub REST client (github.md §4–§6)', () => {
       summary: 's',
       detailsUrl: null,
       externalId: 'qualor:v1:x',
-      annotations: [
-        {
-          path: 'a.ts',
-          start_line: 1,
-          end_line: 1,
-          annotation_level: 'notice',
-          title: 't',
-          message: 'm',
-        },
-      ],
     });
-    expect(created).toBe('annotations_rejected');
+    expect(created).toMatchObject({ name: 'qualor/k', conclusion: 'success' });
+    expect(created.output.annotations_count).toBe(0);
+    const sent = fake.requests.find((r) => r.method === 'POST' && r.path.endsWith('/check-runs'));
+    expect((JSON.parse(sent?.body ?? '{}') as { output: unknown }).output).toEqual({
+      title: 't',
+      summary: 's',
+    });
+  });
+
+  it('refuses a check run GitHub answers 422 to, with no second attempt of any kind', async () => {
+    const client = clientFor();
+    await client.useRepository(REPO);
+    fake.inject('POST', /check-runs$/, { status: 422, body: { message: 'Invalid request.' } });
+    fake.clearRequests();
+    const refused = await failure(
+      client.createCheckRun({
+        name: 'qualor/k',
+        headSha: SHA,
+        conclusion: 'success',
+        title: 't',
+        summary: 's',
+        detailsUrl: null,
+        externalId: 'qualor:v1:x',
+      }),
+    );
+    expect([refused.kind, refused.status]).toEqual(['refused', 422]);
+    expect(fake.requests.filter((r) => r.path.endsWith('/check-runs'))).toHaveLength(1);
   });
 
   it('lists only this App’s check runs of the name', async () => {
@@ -372,7 +527,6 @@ describe('GitHub REST client (github.md §4–§6)', () => {
       summary: 's',
       detailsUrl: null,
       externalId: 'qualor:v1:x',
-      annotations: [],
     });
     fake.checkRuns.push({ ...fake.checkRuns.at(-1)!, id: 9999, appId: 1 });
     const runs = await client.checkRuns(SHA, 'qualor/k');
@@ -418,6 +572,542 @@ describe('GitHub REST client (github.md §4–§6)', () => {
     expect(everything).not.toContain(token!);
     expect(everything).not.toContain('PRIVATE KEY');
     expect(everything).not.toMatch(/eyJ[A-Za-z0-9_-]+\./);
+  });
+
+  describe('review threads over GraphQL (github.md §6.4, ruling R6)', () => {
+    const GRAPHQL = /^\/api\/graphql$/;
+    let nextPull = 100;
+
+    /**
+     * A pull request of its own (no test reads another's threads) with `count` review comments by
+     * the App, each the first comment of a thread, in the order they were made.
+     */
+    const pullWithThreads = async (count: number) => {
+      const number = nextPull++;
+      fake.addPull(424242, {
+        number,
+        title: `Threads ${number}`,
+        state: 'open',
+        headSha: SHA,
+        baseSha: 'b'.repeat(40),
+        files: [{ filename: 'f.ts', patch: '@@ -0,0 +1 @@\n+x' }],
+      });
+      const author = clientFor({ maxRequests: count + 10 });
+      await author.useRepository(REPO);
+      const commentIds: number[] = [];
+      const nodeIds: string[] = [];
+      for (let i = 0; i < count; i++) {
+        const created = await author.createReviewComment(String(number), {
+          body: `<!-- qualor:issue ${i} -->\nissue ${i}`,
+          commitId: SHA,
+          path: 'f.ts',
+          line: 1,
+        });
+        if (created === 'position_rejected') throw new Error('the fake refused the position');
+        commentIds.push(created.id);
+        nodeIds.push(created.node_id);
+      }
+      const threadIds = commentIds.map(
+        (id) => fake.reviewThreads.find((t) => t.commentIds[0] === id)!.id,
+      );
+      return { number: String(number), commentIds, nodeIds, threadIds };
+    };
+    let many: Awaited<ReturnType<typeof pullWithThreads>>;
+    beforeAll(async () => {
+      many = await pullWithThreads(150);
+    }, 60_000);
+
+    /** A client on the repository, its requests so far forgotten. */
+    const reader = async (options: GitHubClientOptions = {}) => {
+      const client = clientFor(options);
+      await client.useRepository(REPO);
+      fake.clearRequests();
+      return client;
+    };
+    /** The next GraphQL request is answered with this (HTTP 200 unless said otherwise). */
+    const answer = (body: unknown, status = 200, headers?: Record<string, string>) =>
+      fake.inject('POST', GRAPHQL, { status, body, ...(headers ? { headers } : {}) });
+    /** A thread node whose first comment has the node id `commentId` (REST's `node_id`). */
+    const node = (id: string, resolvedBy: string | null, commentId: string) => ({
+      id,
+      isResolved: resolvedBy !== null,
+      resolvedBy: resolvedBy === null ? null : { login: resolvedBy },
+      comments: { nodes: [{ id: commentId }] },
+    });
+    const threadsData = (nodes: unknown[], pageInfo = { hasNextPage: false, endCursor: null }) => ({
+      data: { repository: { pullRequest: { reviewThreads: { pageInfo, nodes } } } },
+    });
+    const sent = (index: number) =>
+      JSON.parse(fake.requests[index]?.body ?? '{}') as {
+        query: string;
+        variables: Record<string, unknown>;
+      };
+
+    it('reads every page and the resolver’s login', async () => {
+      // A person, another App, and the fake's own App (a resolve through the API with an
+      // installation token): GitHub names each by its login, an App as `<slug>[bot]` (R6).
+      fake.resolveThreadAs(many.threadIds[3]!, 'octocat');
+      fake.resolveThreadAs(many.threadIds[60]!, 'other-app[bot]');
+      const client = await reader();
+      expect(await client.setThreadResolved(many.threadIds[120]!, true)).toBe('done');
+      fake.clearRequests();
+      const threads = await client.reviewThreads(many.number, MAX_THREAD_PAGES);
+      expect(fake.requests.map((r) => `${r.method} ${r.path}`)).toEqual([
+        'POST /api/graphql',
+        'POST /api/graphql',
+      ]);
+      expect(threads.complete).toBe(true);
+      expect(threads.items).toHaveLength(150);
+      expect(threads.items.filter((t) => t.isResolved)).toEqual([
+        {
+          id: many.threadIds[3],
+          isResolved: true,
+          resolvedByLogin: 'octocat',
+          firstCommentNodeId: many.nodeIds[3],
+        },
+        {
+          id: many.threadIds[60],
+          isResolved: true,
+          resolvedByLogin: 'other-app[bot]',
+          firstCommentNodeId: many.nodeIds[60],
+        },
+        {
+          id: many.threadIds[120],
+          isResolved: true,
+          resolvedByLogin: `${fake.slug}[bot]`,
+          firstCommentNodeId: many.nodeIds[120],
+        },
+      ]);
+      // An open thread names nobody.
+      const open = threads.items.filter((t) => !t.isResolved);
+      expect(open).toHaveLength(147);
+      expect(open.every((t) => t.resolvedByLogin === null)).toBe(true);
+      expect(threads.items.map((t) => t.id)).toEqual(many.threadIds);
+      // Each thread names its first comment by the node id REST lists as `node_id` (C1): GitHub's
+      // REST ids are past 2^31, which GraphQL's 32-bit `databaseId` cannot hold.
+      expect(threads.items.map((t) => t.firstCommentNodeId)).toEqual(many.nodeIds);
+      expect(new Set(many.nodeIds).size).toBe(150);
+      expect(many.commentIds.every((id) => id > 2 ** 31)).toBe(true);
+    });
+
+    it('stops at maxPages and says the list is not complete', async () => {
+      const client = await reader();
+      const threads = await client.reviewThreads(many.number, 1);
+      expect([threads.items.length, threads.complete]).toEqual([100, false]);
+      expect(fake.requests).toHaveLength(1);
+    });
+
+    it('posts the document with the variables GraphQL types, to the endpoint beside /api/v3', async () => {
+      const client = await reader();
+      await client.reviewThreads(many.number, MAX_THREAD_PAGES);
+      const [first, second] = fake.requests;
+      expect([first?.method, first?.path, first?.auth]).toEqual(['POST', '/api/graphql', 'token']);
+      expect(first?.headers['content-type']).toBe('application/json');
+      expect(first?.headers.accept).toBe('application/vnd.github+json');
+      expect(String(first?.headers['user-agent'])).toMatch(/^Qualor\//);
+      // `number` is an Int!, and the first page has no cursor.
+      expect(sent(0)).toEqual({
+        query: REVIEW_THREADS_QUERY,
+        variables: { owner: 'acme', name: 'api', number: Number(many.number), after: null },
+      });
+      // The first comment is asked for by its node id only (C1): never `databaseId`, deprecated
+      // because it cannot hold GitHub's 64-bit ids, nor `fullDatabaseId`, which an older GitHub
+      // Enterprise Server does not have (an unknown field fails the whole query).
+      expect(REVIEW_THREADS_QUERY).toContain('comments(first: 1) { nodes { id } }');
+      expect(REVIEW_THREADS_QUERY).not.toMatch(/databaseid/i);
+      // The second page continues after the first one's end cursor.
+      expect(second?.path).toBe('/api/graphql');
+      expect(sent(1).variables).toEqual({
+        owner: 'acme',
+        name: 'api',
+        number: Number(many.number),
+        after: expect.stringMatching(/^.+$/),
+      });
+    });
+
+    it.each([
+      ['NOT_FOUND', 'not_found', 'http', GITHUB_TEXT.notFound, null],
+      ['FORBIDDEN', 'auth', 'permission_missing', GITHUB_TEXT.permission, null],
+      ['RATE_LIMITED', 'rate_limited', 'http', GITHUB_TEXT.graphqlRateLimit, 60],
+      ['MAX_NODE_LIMIT_EXCEEDED', 'bad_answer', 'bad_answer', GITHUB_TEXT.badAnswer, null],
+    ])(
+      'a GraphQL %s error is an ScmError of kind %s, never an empty list',
+      async (type, kind, reason, text, retryAfterSeconds) => {
+        const client = await reader();
+        answer({ data: null, errors: [{ type, message: 'x' }] });
+        const err = await failure(client.reviewThreads(many.number, 1));
+        expect([err.kind, err.reason, err.message, err.retryAfterSeconds, err.status]).toEqual([
+          kind,
+          reason,
+          text,
+          retryAfterSeconds,
+          200,
+        ]);
+      },
+    );
+
+    it('waits for the reset a GraphQL rate limit names, and a minute when it names none (M3)', async () => {
+      const client = await reader();
+      const limited = {
+        data: null,
+        errors: [{ type: 'RATE_LIMITED', message: 'API rate limit exceeded' }],
+      };
+      const inSeconds = (s: number) => String(Math.floor(clock / 1000) + s);
+      const waits = async (headers?: Record<string, string>) => {
+        answer(limited, 200, headers);
+        const err = await failure(client.reviewThreads(many.number, 1));
+        expect([err.kind, err.status]).toEqual(['rate_limited', 200]);
+        return err.retryAfterSeconds;
+      };
+      // The primary limit is spent: its reset says when, as REST's does (githubRateLimit).
+      const spent = { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': inSeconds(120) };
+      expect(await waits(spent)).toBe(120);
+      // Retry-After wins, as for REST; a reset far off is clamped to 15 minutes.
+      expect(await waits({ ...spent, 'retry-after': '30' })).toBe(30);
+      expect(await waits({ ...spent, 'x-ratelimit-reset': inSeconds(7_200) })).toBe(900);
+      // A limit that is not spent (a secondary one), an unreadable reset, or no header at all:
+      // GitHub's advice of a minute.
+      expect(await waits({ ...spent, 'x-ratelimit-remaining': '4000' })).toBe(60);
+      expect(await waits({ ...spent, 'x-ratelimit-reset': 'soon' })).toBe(60);
+      expect(await waits()).toBe(60);
+      // A mutation reads them the same way. It is paced first (the fake clock moves on up to a
+      // second), so the wait is counted from when the answer came.
+      const reset = inSeconds(300);
+      answer(limited, 200, { ...spent, 'x-ratelimit-reset': reset });
+      const mutation = await failure(client.setThreadResolved(many.threadIds[0]!, true));
+      expect([mutation.kind, mutation.retryAfterSeconds]).toEqual([
+        'rate_limited',
+        Math.ceil(Number(reset) - clock / 1000),
+      ]);
+      expect(mutation.retryAfterSeconds).toBeGreaterThanOrEqual(299);
+    });
+
+    it('is never fooled by data next to an error, or by an answer without data', async () => {
+      const client = await reader();
+      // An empty list beside a FORBIDDEN error is a failure, not "no threads".
+      answer({ ...threadsData([]), errors: [{ type: 'FORBIDDEN', message: 'x' }] });
+      expect((await failure(client.reviewThreads(many.number, 1))).kind).toBe('auth');
+      for (const body of [
+        { data: null },
+        {},
+        [],
+        null,
+        { data: {} },
+        { data: { repository: 5 } },
+      ]) {
+        answer(body);
+        const err = await failure(client.reviewThreads(many.number, 1));
+        expect([err.kind, err.message]).toEqual(['bad_answer', GITHUB_TEXT.badAnswer]);
+      }
+      // `errors: []` is no error.
+      answer({ ...threadsData([node('PRRT_a', null, 'PRRC_a')]), errors: [] });
+      expect((await client.reviewThreads(many.number, 1)).items).toHaveLength(1);
+    });
+
+    it('says not_found for a pull request that is not there, never an empty list', async () => {
+      const client = await reader();
+      const err = await failure(client.reviewThreads('2147483647', 1)); // the fake: a NOT_FOUND error
+      expect([err.kind, err.message]).toEqual(['not_found', GITHUB_TEXT.notFound]);
+      for (const data of [{ repository: { pullRequest: null } }, { repository: null }]) {
+        answer({ data });
+        const gone = await failure(client.reviewThreads(many.number, 1));
+        expect([gone.kind, gone.message]).toEqual(['not_found', GITHUB_TEXT.notFound]);
+      }
+    });
+
+    it('does not read a missing resolvedBy as "nobody resolved it"', async () => {
+      const client = await reader();
+      answer(threadsData([{ id: 'PRRT_a', isResolved: true, comments: { nodes: [{ id: 'x' }] } }]));
+      expect((await failure(client.reviewThreads(many.number, 1))).kind).toBe('bad_answer');
+      // A next page without a cursor to ask for it is not the last page either.
+      answer(threadsData([node('PRRT_a', null, 'PRRC_a')], { hasNextPage: true, endCursor: null }));
+      expect((await failure(client.reviewThreads(many.number, 5))).kind).toBe('bad_answer');
+    });
+
+    it('leaves out a null node, and has no first comment id for a thread without a readable comment', async () => {
+      const client = await reader();
+      answer(
+        threadsData([
+          null,
+          { ...node('PRRT_a', null, 'PRRC_a'), comments: { nodes: [] } },
+          { ...node('PRRT_c', 'octocat', 'PRRC_c'), comments: { nodes: [null] } },
+        ]),
+      );
+      const threads = await client.reviewThreads(many.number, 1);
+      expect(threads.items).toEqual([
+        { id: 'PRRT_a', isResolved: false, resolvedByLogin: null, firstCommentNodeId: null },
+        { id: 'PRRT_c', isResolved: true, resolvedByLogin: 'octocat', firstCommentNodeId: null },
+      ]);
+    });
+
+    it('does not understand a first comment without a node id, such as an answer of databaseId', async () => {
+      const client = await reader();
+      for (const comment of [{ databaseId: 5 }, { id: null }, { id: '' }, { id: 5 }, {}]) {
+        answer(
+          threadsData([{ ...node('PRRT_a', null, 'PRRC_a'), comments: { nodes: [comment] } }]),
+        );
+        const err = await failure(client.reviewThreads(many.number, 1));
+        expect([err.kind, err.message]).toEqual(['bad_answer', GITHUB_TEXT.badAnswer]);
+      }
+    });
+
+    it('reads the recorded answer: an open thread, a person’s resolution and an App’s', async () => {
+      const client = await reader();
+      answer(githubShape('graphql_review_threads'));
+      const threads = await client.reviewThreads(many.number, 1);
+      expect(threads.complete).toBe(false); // the recorded page has a next one
+      expect(
+        threads.items.map((t) => [t.isResolved, t.resolvedByLogin, t.firstCommentNodeId]),
+      ).toEqual([
+        [false, null, 'PRRC_kwDOAAABc84AAAAK'],
+        [true, 'octocat', 'PRRC_kwDOAAABc84AAAAL'],
+        [true, 'qualor-acme[bot]', 'PRRC_kwDOAAABc84AAAAM'],
+      ]);
+    });
+
+    it('keeps a resolved thread GitHub names nobody for resolved, with no login', async () => {
+      const client = await reader();
+      // E.g. the resolver's account is gone: the caller can tell it is not Qualor's own.
+      answer(threadsData([{ ...node('PRRT_d', null, 'PRRC_d'), isResolved: true }]));
+      expect((await client.reviewThreads(many.number, 1)).items).toEqual([
+        { id: 'PRRT_d', isResolved: true, resolvedByLogin: null, firstCommentNodeId: 'PRRC_d' },
+      ]);
+    });
+
+    it('keeps GitHub’s own words and the installation token out of the error text', async () => {
+      const client = await reader();
+      const [token] = [...fake.tokens.keys()].slice(-1);
+      answer({ data: null, errors: [{ type: 'FORBIDDEN', message: `denied for ${token}` }] });
+      const err = await failure(client.reviewThreads(many.number, 1));
+      expect(err.message).toBe(GITHUB_TEXT.permission);
+      expect(err.providerMessage).toBe('denied for [secret]');
+      expect(JSON.stringify({ err, client, message: err.message, stack: err.stack })).not.toContain(
+        token!,
+      );
+    });
+
+    it('maps the HTTP errors of the endpoint as REST’s are mapped', async () => {
+      const client = await reader();
+      answer({ message: 'You have exceeded a secondary rate limit.' }, 403, {
+        'retry-after': '30',
+      });
+      const limited = await failure(client.reviewThreads(many.number, 1));
+      expect([limited.kind, limited.status, limited.retryAfterSeconds]).toEqual([
+        'rate_limited',
+        403,
+        30,
+      ]);
+      answer({ message: 'Resource not accessible by integration' }, 403);
+      const forbidden = await failure(client.reviewThreads(many.number, 1));
+      expect([forbidden.kind, forbidden.reason]).toEqual(['auth', 'permission_missing']);
+      answer({ message: 'Server Error' }, 502);
+      expect((await failure(client.reviewThreads(many.number, 1))).kind).toBe('transient');
+    });
+
+    it('asks for one fresh installation token after a 401, as every repository call does', async () => {
+      const client = await reader();
+      fake.revokeTokens();
+      const threads = await client.reviewThreads(many.number, 1);
+      expect(threads.items).toHaveLength(100);
+      expect(fake.requests.map((r) => `${r.method} ${r.path}`)).toEqual([
+        'POST /api/graphql',
+        'POST /app/installations/777/access_tokens',
+        'POST /api/graphql',
+      ]);
+    });
+
+    it('refuses a pull request number GraphQL’s Int cannot hold, and an id it would not send, before any request', async () => {
+      const client = await reader();
+      for (const bad of ['2147483648', '9999999999', 'pr-12', '']) {
+        expect((await failure(client.reviewThreads(bad, 1))).reason).toBe('invalid_input');
+      }
+      for (const bad of ['', 'two words', 'x'.repeat(256), 'PRRT\n1']) {
+        expect((await failure(client.setThreadResolved(bad, true))).reason).toBe('invalid_input');
+      }
+      expect(fake.requests).toHaveLength(0);
+    });
+
+    it('setThreadResolved resolves and reopens a thread, as an App', async () => {
+      const { number, threadIds } = await pullWithThreads(1);
+      const id = threadIds[0]!;
+      const client = await reader();
+      expect(await client.setThreadResolved(id, true)).toBe('done');
+      const thread = fake.reviewThreads.find((t) => t.id === id)!;
+      const app = `${fake.slug}[bot]`;
+      expect([thread.resolved, thread.resolvedBy]).toEqual([true, app]);
+      expect(sent(0)).toEqual({ query: RESOLVE_THREAD_MUTATION, variables: { id } });
+      // Read back, GitHub names the App like any other resolver, `<slug>[bot]` (R6).
+      expect((await client.reviewThreads(number, 1)).items).toEqual([
+        expect.objectContaining({ id, isResolved: true, resolvedByLogin: app }),
+      ]);
+      expect(await client.setThreadResolved(id, false)).toBe('done');
+      expect([thread.resolved, thread.resolvedBy]).toEqual([false, null]);
+      expect(sent(2)).toEqual({ query: UNRESOLVE_THREAD_MUTATION, variables: { id } });
+      // Reopened, it names nobody.
+      expect((await client.reviewThreads(number, 1)).items).toEqual([
+        expect.objectContaining({ id, isResolved: false, resolvedByLogin: null }),
+      ]);
+    });
+
+    it('says not_found for a thread GitHub does not know, and lets every other error through', async () => {
+      const client = await reader();
+      expect(await client.setThreadResolved('PRRT_kwDOgone', true)).toBe('not_found');
+      expect(await client.setThreadResolved('PRRT_kwDOgone', false)).toBe('not_found');
+      answer({ data: null, errors: [{ type: 'RATE_LIMITED', message: 'x' }] });
+      const limited = await failure(client.setThreadResolved(many.threadIds[0]!, true));
+      expect([limited.kind, limited.retryAfterSeconds]).toEqual(['rate_limited', 60]);
+      // GitHub does not report the state asked for: not "done".
+      answer({ data: { resolveReviewThread: { thread: { id: 'PRRT_a', isResolved: false } } } });
+      expect((await failure(client.setThreadResolved(many.threadIds[0]!, true))).kind).toBe(
+        'bad_answer',
+      );
+      answer({ data: { unresolveReviewThread: { thread: { id: 'PRRT_a', isResolved: false } } } });
+      expect(await client.setThreadResolved(many.threadIds[0]!, false)).toBe('done');
+      answer({ data: { unresolveReviewThread: null } });
+      expect((await failure(client.setThreadResolved(many.threadIds[0]!, false))).kind).toBe(
+        'bad_answer',
+      );
+    });
+
+    it('counts GraphQL calls against the request budget', async () => {
+      const { number, threadIds } = await pullWithThreads(1);
+      const tokens = new InstallationTokenCache(() => clock);
+      await clientFor({ tokens }).useRepository(REPO); // a token, now cached
+      const client = clientFor({ tokens, maxRequests: 3 });
+      await client.useRepository(REPO); // the installation and the repository: two requests
+      await client.reviewThreads(number, 1); // the third
+      expect(client.requests).toBe(3);
+      const query = await failure(client.reviewThreads(number, 1));
+      const mutation = await failure(client.setThreadResolved(threadIds[0]!, true));
+      expect([query.kind, query.message, mutation.kind]).toEqual([
+        'budget',
+        GITHUB_TEXT.budget,
+        'budget',
+      ]);
+      expect(client.requests).toBe(3);
+      expect(fake.reviewThreads.find((t) => t.id === threadIds[0])?.resolved).toBe(false);
+    });
+
+    it('paces its mutations with the REST ones, and its queries not at all', async () => {
+      const { number, threadIds } = await pullWithThreads(1);
+      const tokens = new InstallationTokenCache(() => clock);
+      await clientFor({ tokens }).useRepository(REPO); // a token, now cached
+      const pacer = new SpyPacer(
+        () => clock,
+        async (ms) => void (clock += ms),
+      );
+      const client = clientFor({ tokens, pacer });
+      await client.useRepository(REPO); // reads only
+      await client.reviewThreads(number, 1); // a query is a POST, but no mutation
+      expect(pacer.waits).toEqual([]);
+      const t0 = clock;
+      await client.setThreadResolved(threadIds[0]!, true);
+      await client.setThreadResolved(threadIds[0]!, false);
+      expect(pacer.waits).toHaveLength(2);
+      expect(clock - t0).toBeGreaterThanOrEqual(1_000);
+      await client.createComment(number, 'a REST mutation');
+      expect(pacer.waits).toHaveLength(3);
+      expect(new Set(pacer.waits).size).toBe(1); // one key: the installation's
+    });
+
+    it('lists a reply with its in_reply_to_id and its path, and a reply starts no thread', async () => {
+      const { number, commentIds, nodeIds, threadIds } = await pullWithThreads(2);
+      const reply = fake.replyToReviewComment(424242, Number(number), commentIds[0]!, {
+        body: 'On it',
+        login: 'octocat',
+      });
+      expect(() =>
+        fake.replyToReviewComment(424242, Number(number), reply.id, { body: 'x', login: 'a' }),
+      ).toThrow(); // GitHub takes no reply to a reply
+      const client = await reader();
+      const listed = await client.reviewComments(number, 5);
+      expect(listed.items.map((c) => [c.id, c.in_reply_to_id, c.path, c.user?.login])).toEqual([
+        [commentIds[0], undefined, 'f.ts', `${fake.slug}[bot]`],
+        [commentIds[1], undefined, 'f.ts', `${fake.slug}[bot]`],
+        [reply.id, commentIds[0], 'f.ts', 'octocat'],
+      ]);
+      expect(listed.items[2]?.user?.type).toBe('User');
+      // Every comment has a node id of its own, `PRRC_` and its id in base 62, as the fake makes them.
+      expect(listed.items.map((c) => c.node_id)).toEqual([
+        nodeIds[0],
+        nodeIds[1],
+        reviewCommentNodeId(reply.id),
+      ]);
+      expect(nodeIds[0]).toBe(reviewCommentNodeId(commentIds[0]!));
+      expect(reply.id).toBeGreaterThan(2 ** 31);
+      const threads = await client.reviewThreads(number, 1);
+      expect(threads.items.map((t) => [t.id, t.firstCommentNodeId])).toEqual([
+        [threadIds[0], nodeIds[0]],
+        [threadIds[1], nodeIds[1]],
+      ]);
+      expect(fake.reviewThreads.find((t) => t.id === threadIds[0])?.commentIds).toEqual([
+        commentIds[0],
+        reply.id,
+      ]);
+      expect(() => fake.resolveThreadAs('PRRT_nope', 'octocat')).toThrow();
+    });
+
+    it('is served by a fake that refuses what GitHub’s GraphQL endpoint refuses', async () => {
+      const client = await reader();
+      const [token] = [...fake.tokens.keys()].slice(-1);
+      const post = (headers: Record<string, string>, body: unknown) =>
+        fetch(githubGraphqlUrl(fake.url), {
+          method: 'POST',
+          headers: { 'user-agent': 'test', ...headers },
+          body: typeof body === 'string' ? body : JSON.stringify(body),
+        });
+      const auth = { authorization: `Bearer ${token!}` };
+      const variables = { owner: 'acme', name: 'api', number: Number(many.number), after: null };
+      expect((await post({}, { query: REVIEW_THREADS_QUERY, variables })).status).toBe(401);
+      expect((await post(auth, '{not json')).status).toBe(400);
+      // A string where the document says Int!: HTTP 200, errors and no data.
+      const wrong = await post(auth, {
+        query: REVIEW_THREADS_QUERY,
+        variables: { ...variables, number: many.number },
+      });
+      const body = (await wrong.json()) as { data?: unknown; errors?: { message: string }[] };
+      expect([wrong.status, body.data, body.errors?.[0]?.message]).toEqual([
+        200,
+        undefined,
+        expect.stringContaining('$number'),
+      ]);
+      // A field the schema does not have fails the whole query, as on a GitHub Enterprise Server
+      // without `fullDatabaseId`; the fake has neither that nor the deprecated `databaseId` (C1).
+      for (const field of ['databaseId', 'fullDatabaseId']) {
+        const old = await post(auth, {
+          query: REVIEW_THREADS_QUERY.replace('nodes { id } }', `nodes { ${field} } }`),
+          variables,
+        });
+        const refused = (await old.json()) as {
+          data?: unknown;
+          errors?: { message: string; extensions?: { code?: string } }[];
+        };
+        expect([old.status, refused.data, refused.errors?.[0]?.extensions?.code]).toEqual([
+          200,
+          undefined,
+          'undefinedField',
+        ]);
+        expect(refused.errors?.[0]?.message).toContain(field);
+      }
+      // Only the repositories the token is for, and only with the permission the operation needs.
+      const grant = fake.tokens.get(token!)!;
+      grant.permissions = { metadata: 'read', checks: 'write', pull_requests: 'read' };
+      expect((await client.reviewThreads(many.number, 1)).items).toHaveLength(100);
+      const write = await failure(client.setThreadResolved(many.threadIds[0]!, true));
+      expect([write.kind, write.reason, write.message]).toEqual([
+        'auth',
+        'permission_missing',
+        GITHUB_TEXT.permission,
+      ]);
+      grant.permissions = { metadata: 'read', checks: 'write' };
+      const read = await failure(client.reviewThreads(many.number, 1));
+      expect([read.kind, read.reason]).toEqual(['auth', 'permission_missing']);
+      grant.permissions = { metadata: 'read', checks: 'write', pull_requests: 'write' };
+      grant.repositories = ['other'];
+      expect((await failure(client.reviewThreads(many.number, 1))).kind).toBe('not_found');
+      expect(await client.setThreadResolved(many.threadIds[0]!, true)).toBe('not_found');
+      expect(fake.reviewThreads.find((t) => t.id === many.threadIds[0])?.resolved).toBe(false);
+    });
   });
 });
 
@@ -471,6 +1161,9 @@ describe('recorded shapes', () => {
       issueComment: 'issue_comment',
       issueComments: 'issue_comments',
       reviewComment: 'pull_request_review_comment',
+      review: 'pull_request_review',
+      reviewThreads: 'graphql_review_threads',
+      resolveThread: 'graphql_resolve_thread',
     }),
   )('%s parses', (key, file) => {
     expect(

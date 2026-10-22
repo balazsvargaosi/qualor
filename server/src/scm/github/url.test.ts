@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { githubBaseUrlProblem, githubWebBase, parseRepoRef } from './url';
+import { githubBaseUrlProblem, githubGraphqlUrl, githubWebBase, parseRepoRef } from './url';
 
 describe('GitHub base URLs (github.md §2.2)', () => {
   it.each([
@@ -24,6 +24,18 @@ describe('GitHub base URLs (github.md §2.2)', () => {
     ['http://127.0.0.1:8080/api/v3', 'http://127.0.0.1:8080'],
   ])('web base of %s', (api, web) => {
     expect(githubWebBase(api)).toBe(web);
+  });
+});
+
+describe('GitHub GraphQL endpoint (ruling T5)', () => {
+  it.each([
+    ['https://api.github.com', 'https://api.github.com/graphql'],
+    ['https://api.acme.ghe.com', 'https://api.acme.ghe.com/graphql'],
+    ['https://ghe.example.com/api/v3', 'https://ghe.example.com/api/graphql'],
+    ['https://ghe.corp/github/api/v3', 'https://ghe.corp/github/api/graphql'],
+    ['http://127.0.0.1:8080/api/v3', 'http://127.0.0.1:8080/api/graphql'],
+  ])('the GraphQL endpoint of %s is %s', (base, url) => {
+    expect(githubGraphqlUrl(base)).toBe(url);
   });
 });
 

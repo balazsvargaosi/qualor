@@ -1,4 +1,7 @@
-/** github.md §2.2–§2.3: GitHub's API base URLs, their web base, and repository references. */
+/**
+ * github.md §2.2–§2.3: GitHub's API base URLs, their web base and GraphQL endpoint, and
+ * repository references.
+ */
 
 const GHE_COM = /^https:\/\/api\.([a-z0-9-]+)\.ghe\.com$/;
 const API_ROOT_HINT =
@@ -27,6 +30,18 @@ export function githubWebBase(baseUrl: string): string {
   if (ghe?.[1]) return `https://${ghe[1]}.ghe.com`;
   if (baseUrl.endsWith('/api/v3')) return baseUrl.slice(0, -'/api/v3'.length);
   return baseUrl;
+}
+
+/**
+ * github.md §5.3 (ruling T5): the GraphQL endpoint beside a REST base URL (normalised, without a
+ * trailing slash, allowed by {@link githubBaseUrlProblem}), on the same host:
+ * `https://api.github.com/graphql`, `https://api.<sub>.ghe.com/graphql`, and an Enterprise
+ * Server's `https://<host>/api/graphql` for its `https://<host>/api/v3`.
+ */
+export function githubGraphqlUrl(baseUrl: string): string {
+  return baseUrl.endsWith('/api/v3')
+    ? `${baseUrl.slice(0, -'/v3'.length)}/graphql`
+    : `${baseUrl}/graphql`;
 }
 
 /** github.md §2.3: `owner/repo`, nothing else. */

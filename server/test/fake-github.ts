@@ -13,16 +13,31 @@ import { fileURLToPath } from 'node:url';
 
 /**
  * A local fake of the GitHub REST endpoints Qualor uses (github.md §4–§6, §13), served under
- * `/api/v3` as GitHub Enterprise Server serves them, for tests: nothing in `pnpm test` contacts a
- * real GitHub. Answers are built from `github-shapes/`, written from GitHub's REST documentation
- * (API version 2022-11-28), NOT captured from a live GitHub: a behaviour listed here is
- * what the documentation says, and plan 2C lists the ones no real answer confirmed.
+ * `/api/v3` as GitHub Enterprise Server serves them, and of the GraphQL endpoint beside them
+ * (`/api/graphql`, the same layout) for review threads and their resolution, for tests: nothing in
+ * `pnpm test` contacts a real GitHub. Answers are built from `github-shapes/`, written from
+ * GitHub's REST and GraphQL documentation (API version 2022-11-28), NOT captured from a live
+ * GitHub: a behaviour listed here is what the documentation says, and plan 2C lists the ones no
+ * real answer confirmed (6I-1 adds one: that a thread resolved with an installation token names
+ * the App's own `<slug>[bot]` as `resolvedBy`, as github.com does for other Apps, ruling R6).
  *
  * What it checks where Qualor depends on it: the App JWT (RS256 with the App's public key, `iss`
  * the App id, `iat` not in the fake's future, at most 10 minutes); installation tokens (issued
  * only for repositories and permissions the installation has, expiring after an hour, revocable);
  * each endpoint's permission; at most 50 annotations per request (appended on PATCH, as GitHub
- * does); `filter=latest` and `app_id` of the check-run listing; `Link` headers with `rel="next"`.
+ * does: Qualor sends none now, but a check run of 0.11 carries some, and GitHub never removes
+ * them); `filter=latest` and `app_id` of the check-run listing; `Link` headers with `rel="next"`.
+ *
+ * A pull request review (`POST /pulls/{n}/reviews`) is all or nothing, as GitHub's: one comment
+ * GitHub would not place refuses it (422) and makes none of its comments. GitHub requires a body
+ * with `event: COMMENT`; a review without an event would stay pending, which Qualor never makes
+ * and the fake does not model (a 422 too). A review's body is no review comment.
+ *
+ * Review comment ids are past 2^31, as github.com's are (from 3 000 000 001), and each comment has
+ * a node id of its own (`PRRC_` and its id in base 62, {@link reviewCommentNodeId}), which REST
+ * lists as `node_id` and GraphQL as the comment's `id`. GraphQL offers neither `databaseId`
+ * (deprecated by GitHub: it cannot hold such ids) nor `fullDatabaseId` (an older GitHub Enterprise
+ * Server has none): a query asking for either fails as a query of an unknown field does.
  */
 
 const SHAPES = path.join(path.dirname(fileURLToPath(import.meta.url)), 'github-shapes');
@@ -73,6 +88,7 @@ export interface FakeComment {
 }
 /** A pull request review comment: a comment on RIGHT-side lines of one file's diff. */
 export interface FakeReviewComment {
+  /** The REST id, past 2^31 as github.com's are; its node id is {@link reviewCommentNodeId}. */
   id: number;
   repoId: number;
   pull: number;
@@ -83,6 +99,39 @@ export interface FakeReviewComment {
   side: string;
   commitId: string;
   user: { login: string; id: number; type: 'Bot' | 'User' };
+  /** The thread's first comment, for a reply (REST's `in_reply_to_id`); null for a first comment. */
+  inReplyToId: number | null;
+}
+/** A review thread: a first review comment and the replies to it (GraphQL's `PullRequestReviewThread`). */
+export interface FakeReviewThread {
+  /** The GraphQL node id (`PRRT_…`). */
+  id: string;
+  repoId: number;
+  pull: number;
+  /** The REST ids of its comments, the first comment's first. */
+  commentIds: number[];
+  resolved: boolean;
+  /**
+   * The login of whoever resolved it, which GraphQL's `resolvedBy` names: a person's, or an App's
+   * `<slug>[bot]` (ruling R6), this fake App's own when the thread was resolved through the API
+   * with an installation token. Null while the thread is open.
+   */
+  resolvedBy: string | null;
+}
+/**
+ * A pull request review (`POST /pulls/{n}/reviews`): a body of its own, which is no review
+ * comment and starts no thread, and the review comments it made, each the first of a thread.
+ */
+export interface FakeReview {
+  id: number;
+  repoId: number;
+  pull: number;
+  body: string;
+  /** `COMMENT`, `APPROVE` or `REQUEST_CHANGES`: a pending review (no event) is not modelled. */
+  event: string;
+  commitId: string;
+  /** The REST ids of the review comments it made. */
+  commentIds: number[];
 }
 export interface FakeCheckRun {
   id: number;
@@ -99,7 +148,7 @@ export interface FakeCheckRun {
 }
 export interface RecordedRequest {
   method: string;
-  /** Without the `/api/v3` prefix, with the query. */
+  /** Without the `/api/v3` prefix, with the query (GraphQL: `/api/graphql`). */
   path: string;
   auth: 'jwt' | 'token' | 'none';
   body: string;
@@ -111,7 +160,7 @@ export interface InjectedAnswer {
   headers?: Record<string, string>;
 }
 export interface FakeGitHub {
-  /** The API base URL (`http://127.0.0.1:<port>/api/v3`). */
+  /** The API base URL (`http://127.0.0.1:<port>/api/v3`); GraphQL is beside it, at `/api/graphql`. */
   url: string;
   appId: number;
   slug: string;
@@ -120,9 +169,14 @@ export interface FakeGitHub {
   comments: FakeComment[];
   /** Pull request review comments (`/pulls/{n}/comments`). */
   reviewComments: FakeReviewComment[];
+  /**
+   * One thread per first review comment, which `POST /pulls/{n}/comments` starts, and each
+   * comment of a `POST /pulls/{n}/reviews`.
+   */
+  reviewThreads: FakeReviewThread[];
+  /** Pull request reviews (`POST /pulls/{n}/reviews`), with their own bodies. */
+  reviews: FakeReview[];
   checkRuns: FakeCheckRun[];
-  /** Every check run created with annotations is refused (422), until set back to false. */
-  rejectAnnotations: boolean;
   /** Issued installation tokens and their scope. */
   tokens: Map<
     string,
@@ -141,6 +195,29 @@ export interface FakeGitHub {
     issue: number,
     comment: { body: string; login: string; type?: 'Bot' | 'User' },
   ): FakeComment;
+  /**
+   * A check run of this App as an earlier request made it (a version of Qualor before this one,
+   * say), with the next id: older than any check run made after it, as GitHub's ids grow.
+   */
+  addCheckRun(
+    repoId: number,
+    run: Pick<FakeCheckRun, 'name' | 'headSha' | 'externalId'> &
+      Partial<
+        Pick<FakeCheckRun, 'conclusion' | 'detailsUrl' | 'title' | 'summary' | 'annotations'>
+      >,
+  ): FakeCheckRun;
+  /**
+   * A reply to the thread's first review comment `commentId` (GitHub takes no reply to a reply),
+   * by `login`; the thread keeps its first comment and gains the reply.
+   */
+  replyToReviewComment(
+    repoId: number,
+    pull: number,
+    commentId: number,
+    reply: { body: string; login: string; type?: 'Bot' | 'User' },
+  ): FakeReviewComment;
+  /** The thread is resolved by someone else: a person's `login`, or another App's `<slug>[bot]`. */
+  resolveThreadAs(threadId: string, login: string): void;
   /** Every issued token stops working (an uninstall, a revocation). */
   revokeTokens(): void;
   inject(method: string, path: RegExp, ...answers: InjectedAnswer[]): void;
@@ -158,6 +235,28 @@ interface CheckRunBody {
   details_url?: string;
   output?: { title?: string; summary?: string; annotations?: Record<string, unknown>[] };
 }
+/** A review comment as a client may send it, alone or in a review (types unchecked). */
+interface ReviewCommentBody {
+  body?: unknown;
+  path?: unknown;
+  side?: unknown;
+  line?: unknown;
+  start_line?: unknown;
+  start_side?: unknown;
+}
+/** A pull request review as a client may send it (types unchecked). */
+interface ReviewBody {
+  commit_id?: unknown;
+  event?: unknown;
+  body?: unknown;
+  comments?: unknown;
+}
+/** What a review's `event` makes of it; without one it would stay pending (not modelled). */
+const REVIEW_STATES: Readonly<Record<string, string>> = {
+  COMMENT: 'COMMENTED',
+  APPROVE: 'APPROVED',
+  REQUEST_CHANGES: 'CHANGES_REQUESTED',
+};
 
 const DEFAULT_PERMISSIONS: Record<string, Access> = {
   checks: 'write',
@@ -165,6 +264,29 @@ const DEFAULT_PERMISSIONS: Record<string, Access> = {
   metadata: 'read',
 };
 const PREFIX = '/api/v3';
+/** Where GitHub Enterprise Server serves GraphQL: beside `/api/v3`, not under it. */
+const GRAPHQL_PATH = '/api/graphql';
+/** GraphQL's `Int`: a signed 32-bit integer. */
+const GRAPHQL_MAX_INT = 2_147_483_647;
+/** The first review comment id: past GraphQL's `Int`, as github.com's ids are. */
+const FIRST_REVIEW_COMMENT_ID = 3_000_000_001;
+const BASE62 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+/** Comment fields GitHub's GraphQL schema lacks here (`fullDatabaseId`: an older GHES). */
+const UNKNOWN_COMMENT_FIELD = /\b(fullDatabaseId|databaseId)\b/;
+
+/**
+ * The node id of the review comment `id`, as the fake makes them: `PRRC_` and the id in base 62.
+ * REST lists it as `node_id`, GraphQL as the comment's `id`.
+ */
+export function reviewCommentNodeId(id: number): string {
+  let rest = id;
+  let digits = '';
+  do {
+    digits = BASE62.charAt(rest % 62) + digits;
+    rest = Math.floor(rest / 62);
+  } while (rest > 0);
+  return `PRRC_${digits}`;
+}
 const LEVELS = new Set(['notice', 'warning', 'failure']);
 const CONCLUSIONS = new Set([
   'success',
@@ -192,6 +314,34 @@ function rightSideLines(patch: string): Set<number> {
   return lines;
 }
 
+/**
+ * What a list of requests changed on GitHub, as `METHOD path` in the order sent: every request but
+ * a GET, an installation token request (it changes nothing) and a GraphQL query (a POST that only
+ * reads). A GraphQL mutation is listed with its operation, `POST /api/graphql QualorResolveThread`;
+ * one this function cannot read counts as a change, so a test never passes on what it did not see.
+ */
+export function githubWrites(requests: readonly RecordedRequest[]): string[] {
+  const writes: string[] = [];
+  for (const r of requests) {
+    if (r.method === 'GET' || r.path.endsWith('/access_tokens')) continue;
+    if (r.path !== GRAPHQL_PATH) {
+      writes.push(`${r.method} ${r.path}`);
+      continue;
+    }
+    let document = '';
+    try {
+      const sent = JSON.parse(r.body) as { query?: unknown };
+      if (typeof sent.query === 'string') document = sent.query;
+    } catch {
+      // Not JSON: left unread, so it is listed below.
+    }
+    const operation = /^\s*(query|mutation)\s+(\w+)/.exec(document);
+    if (operation?.[1] !== 'query')
+      writes.push(`${r.method} ${r.path} ${operation?.[2] ?? ''}`.trim());
+  }
+  return writes;
+}
+
 let sharedKey: { privateKey: KeyObject; pem: string } | null = null;
 /** One 2048-bit key per test process (generating one takes ~100 ms). */
 function appKey(): { privateKey: KeyObject; pem: string } {
@@ -214,6 +364,8 @@ export async function createFakeGitHub(
   const pulls = new Map<string, FakePull>();
   const injections: { method: string; path: RegExp; answers: InjectedAnswer[] }[] = [];
   let nextId = 1;
+  let nextThread = 1;
+  let nextReviewComment = FIRST_REVIEW_COMMENT_ID;
 
   const fake: FakeGitHub = {
     url: '',
@@ -223,8 +375,9 @@ export async function createFakeGitHub(
     requests: [],
     comments: [],
     reviewComments: [],
+    reviewThreads: [],
+    reviews: [],
     checkRuns: [],
-    rejectAnnotations: false,
     tokens: new Map(),
     addRepository: (repo) => repos.set(`${repo.owner}/${repo.name}`.toLowerCase(), repo),
     addPull: (repoId, pull) => pulls.set(`${repoId}#${pull.number}`, structuredClone(pull)),
@@ -242,6 +395,50 @@ export async function createFakeGitHub(
       };
       fake.comments.push(comment);
       return comment;
+    },
+    addCheckRun: (repoId, run) => {
+      const created: FakeCheckRun = {
+        conclusion: null,
+        detailsUrl: null,
+        title: null,
+        summary: null,
+        annotations: [],
+        ...run,
+        id: nextId++,
+        repoId,
+        appId,
+      };
+      fake.checkRuns.push(created);
+      return created;
+    },
+    replyToReviewComment: (repoId, pull, commentId, reply) => {
+      const first = fake.reviewComments.find(
+        (c) => c.id === commentId && c.repoId === repoId && c.pull === pull,
+      );
+      const thread = fake.reviewThreads.find((t) => t.commentIds[0] === commentId);
+      if (!first || !thread || first.inReplyToId !== null) {
+        throw new Error(`no first review comment ${commentId} on pull request ${pull}`);
+      }
+      const comment: FakeReviewComment = {
+        ...first,
+        id: nextReviewComment++,
+        body: reply.body,
+        user: {
+          login: reply.login,
+          id: reply.type === 'Bot' ? 41898282 : 5,
+          type: reply.type ?? 'User',
+        },
+        inReplyToId: commentId,
+      };
+      fake.reviewComments.push(comment);
+      thread.commentIds.push(comment.id);
+      return comment;
+    },
+    resolveThreadAs: (threadId, login) => {
+      const thread = fake.reviewThreads.find((t) => t.id === threadId);
+      if (!thread) throw new Error(`no review thread ${threadId}`);
+      thread.resolved = true;
+      thread.resolvedBy = login;
     },
     revokeTokens: () => fake.tokens.clear(),
     inject: (method, p, ...answers) => injections.push({ method, path: p, answers }),
@@ -340,6 +537,7 @@ export async function createFakeGitHub(
   const reviewCommentJson = (repo: FakeRepository) => (c: FakeReviewComment) => ({
     ...githubShape('pull_request_review_comment'),
     id: c.id,
+    node_id: reviewCommentNodeId(c.id),
     body: c.body,
     path: c.path,
     commit_id: c.commitId,
@@ -353,6 +551,8 @@ export async function createFakeGitHub(
     user: c.user,
     html_url: `${webBase()}/${repo.owner}/${repo.name}/pull/${c.pull}#discussion_r${c.id}`,
     performed_via_github_app: c.user.type === 'Bot' ? { id: appId, slug } : null,
+    // GitHub names the thread's first comment on a reply, and has no such field on a first one.
+    ...(c.inReplyToId === null ? {} : { in_reply_to_id: c.inReplyToId }),
   });
 
   /** GitHub requires `title` and `summary` in a check run's `output`, when it is sent. */
@@ -387,6 +587,284 @@ export async function createFakeGitHub(
     return null;
   };
 
+  /**
+   * Whether GitHub places a review comment as its body asks: a body of at most 65 536 characters
+   * on RIGHT-side lines (one, or `start_line`..`line`) that the file's patch shows.
+   */
+  const placeable = (pull: FakePull, b: ReviewCommentBody): boolean => {
+    const line = Number(b.line);
+    const start = b.start_line === undefined ? line : Number(b.start_line);
+    const patch = pull.files.find((f) => f.filename === b.path)?.patch;
+    const lines = patch === undefined ? new Set<number>() : rightSideLines(patch);
+    const placed = Array.from({ length: Math.max(0, line - start + 1) }, (_, i) => start + i);
+    return (
+      typeof b.body === 'string' &&
+      b.body !== '' &&
+      b.body.length <= 65_536 &&
+      b.side === 'RIGHT' &&
+      Number.isInteger(line) &&
+      Number.isInteger(start) &&
+      start <= line &&
+      (b.start_line === undefined || b.start_side === 'RIGHT') &&
+      placed.length > 0 &&
+      placed.every((n) => lines.has(n))
+    );
+  };
+
+  /** A review comment of the App at the pull request's head, the first of a new thread. */
+  const startThread = (
+    repo: FakeRepository,
+    pull: FakePull,
+    b: ReviewCommentBody,
+  ): FakeReviewComment => {
+    const created: FakeReviewComment = {
+      id: nextReviewComment++,
+      repoId: repo.id,
+      pull: pull.number,
+      body: String(b.body),
+      path: String(b.path),
+      line: Number(b.line),
+      startLine: b.start_line === undefined ? null : Number(b.start_line),
+      side: 'RIGHT',
+      commitId: pull.headSha,
+      user: { login: `${slug}[bot]`, id: 41898282, type: 'Bot' },
+      inReplyToId: null,
+    };
+    fake.reviewComments.push(created);
+    fake.reviewThreads.push({
+      id: `PRRT_kwDOFake${nextThread++}`,
+      repoId: repo.id,
+      pull: pull.number,
+      commentIds: [created.id],
+      resolved: false,
+      resolvedBy: null,
+    });
+    return created;
+  };
+
+  /**
+   * Whether GitHub refuses a review (a 422), which then makes none of its comments: an event that
+   * is not one of the three (none would leave it pending, which the fake does not model), no body
+   * with `COMMENT` or `REQUEST_CHANGES` (GitHub requires one), a commit other than the head, or a
+   * comment GitHub would not place.
+   */
+  const reviewRefused = (pull: FakePull, b: ReviewBody): boolean => {
+    const event = typeof b.event === 'string' ? b.event : '';
+    const bodyNeeded = event !== 'APPROVE';
+    const body = typeof b.body === 'string' ? b.body : undefined;
+    const comments: unknown[] = Array.isArray(b.comments) ? b.comments : [];
+    return (
+      !Object.hasOwn(REVIEW_STATES, event) ||
+      (bodyNeeded && (body === undefined || body === '')) ||
+      (body !== undefined && body.length > 65_536) ||
+      (b.body !== undefined && body === undefined) ||
+      (b.commit_id !== undefined && b.commit_id !== pull.headSha) ||
+      (b.comments !== undefined && !Array.isArray(b.comments)) ||
+      !comments.every(
+        (c) => typeof c === 'object' && c !== null && placeable(pull, c as ReviewCommentBody),
+      )
+    );
+  };
+
+  const reviewJson = (repo: FakeRepository, r: FakeReview) => ({
+    ...githubShape('pull_request_review'),
+    id: r.id,
+    node_id: `PRR_kwDOFake${r.id}`,
+    user: { login: `${slug}[bot]`, id: 41898282, type: 'Bot' },
+    body: r.body,
+    state: REVIEW_STATES[r.event],
+    html_url: `${webBase()}/${repo.owner}/${repo.name}/pull/${r.pull}#pullrequestreview-${r.id}`,
+    pull_request_url: `${fake.url}/repos/${repo.owner}/${repo.name}/pulls/${r.pull}`,
+    commit_id: r.commitId,
+    submitted_at: new Date(now()).toISOString().replace(/\.\d{3}Z$/, 'Z'),
+  });
+
+  /**
+   * GraphQL (the operations 6I-1 sends, picked by the name in the document): review threads and
+   * their resolution. As GitHub's, it answers a failed operation with HTTP 200 and `errors` (typed:
+   * `NOT_FOUND` for a repository, pull request or thread the token cannot see, `FORBIDDEN` for a
+   * missing permission), a variable of the wrong type with errors and no `data`, and a bad
+   * credential or request body with an HTTP status. The token must belong to an installation that
+   * has the repository, with `pull_requests` read (a query) or write (a mutation).
+   */
+  const graphql = (
+    req: IncomingMessage,
+    res: ServerResponse,
+    auth: RecordedRequest['auth'],
+    bearer: string,
+    body: string,
+  ) => {
+    const refuse = (status: number, message: string) =>
+      send(res, status, {
+        message,
+        documentation_url: 'https://docs.github.com/graphql',
+        status: String(status),
+      });
+    const answer = (data: unknown, ...errors: Record<string, unknown>[]) =>
+      send(res, 200, {
+        ...(data === undefined ? {} : { data }),
+        ...(errors.length > 0 ? { errors } : {}),
+      });
+    if (typeof req.headers['user-agent'] !== 'string')
+      return refuse(
+        403,
+        'Request forbidden by administrative rules. Please make sure your request has a User-Agent header',
+      );
+    const grant = fake.tokens.get(bearer);
+    if (auth !== 'token' || !grant || grant.expiresAt <= now())
+      return refuse(401, 'Bad credentials');
+    let request: { query?: unknown; variables?: unknown } | null;
+    try {
+      request = JSON.parse(body) as typeof request;
+    } catch {
+      return refuse(400, 'Problems parsing JSON');
+    }
+    if (typeof request !== 'object' || request === null || typeof request.query !== 'string')
+      return answer(undefined, {
+        message: 'A query attribute must be specified and must be a string.',
+      });
+    const query = request.query;
+    const variables =
+      typeof request.variables === 'object' && request.variables !== null
+        ? (request.variables as Record<string, unknown>)
+        : {};
+    const invalid = (name: string, type: string, value: unknown) =>
+      answer(undefined, {
+        message: `Variable $${name} of type ${type} was provided invalid value`,
+        extensions: {
+          value,
+          problems: [
+            {
+              path: [],
+              explanation: `Could not coerce value ${JSON.stringify(value)} to ${type.replace('!', '')}`,
+            },
+          ],
+        },
+      });
+    const isText = (value: unknown): value is string => typeof value === 'string';
+    const isInt = (value: unknown): value is number =>
+      Number.isInteger(value) && Math.abs(value as number) <= GRAPHQL_MAX_INT;
+    const visible = (repo: FakeRepository | undefined): repo is FakeRepository =>
+      repo !== undefined &&
+      repo.installationId === grant.installationId &&
+      grant.repositories.includes(repo.name.toLowerCase());
+    const may = (access: Access) => {
+      const has = grant.permissions.pull_requests;
+      return has !== undefined && (access === 'read' || has === 'write');
+    };
+    const forbidden = (path: string[]) => ({
+      type: 'FORBIDDEN',
+      path,
+      message: 'Resource not accessible by integration',
+    });
+
+    const operation = /^\s*(?:query|mutation)\s+(\w+)/.exec(query)?.[1];
+    // GitHub validates the whole document first: a field the schema lacks fails it, with no data.
+    const unknownField = UNKNOWN_COMMENT_FIELD.exec(query)?.[1];
+    if (unknownField !== undefined)
+      return answer(undefined, {
+        message: `Field '${unknownField}' doesn't exist on type 'PullRequestReviewComment'`,
+        extensions: {
+          code: 'undefinedField',
+          typeName: 'PullRequestReviewComment',
+          fieldName: unknownField,
+        },
+      });
+    if (operation === 'QualorReviewThreads') {
+      const { owner, name, number, after } = variables;
+      if (!isText(owner)) return invalid('owner', 'String!', owner);
+      if (!isText(name)) return invalid('name', 'String!', name);
+      if (!isInt(number)) return invalid('number', 'Int!', number);
+      if (after !== undefined && after !== null && !isText(after))
+        return invalid('after', 'String', after);
+      const repo = repos.get(`${owner}/${name}`.toLowerCase());
+      if (!visible(repo))
+        return answer(
+          { repository: null },
+          {
+            type: 'NOT_FOUND',
+            path: ['repository'],
+            message: `Could not resolve to a Repository with the name '${owner}/${name}'.`,
+          },
+        );
+      if (!may('read')) return answer({ repository: null }, forbidden(['repository']));
+      const pull = pulls.get(`${repo.id}#${number}`);
+      if (!pull)
+        return answer(
+          { repository: { pullRequest: null } },
+          {
+            type: 'NOT_FOUND',
+            path: ['repository', 'pullRequest'],
+            message: `Could not resolve to a PullRequest with the number of ${number}.`,
+          },
+        );
+      const first = Number(/reviewThreads\(first:\s*(\d+)/.exec(query)?.[1] ?? '0');
+      if (first < 1 || first > 100)
+        return answer(undefined, {
+          message:
+            first === 0
+              ? 'You must provide a `first` or `last` value to properly paginate the `reviewThreads` connection.'
+              : `Requesting ${first} records on the \`reviewThreads\` connection exceeds the \`first\` limit of 100 records.`,
+        });
+      const threads = fake.reviewThreads.filter(
+        (t) => t.repoId === repo.id && t.pull === pull.number,
+      );
+      // A cursor is the number of threads before it, as an opaque string.
+      const offset =
+        after === undefined || after === null
+          ? 0
+          : Number(/^cursor:(\d{1,9})$/.exec(Buffer.from(after, 'base64').toString())?.[1] ?? NaN);
+      if (!Number.isInteger(offset) || offset > threads.length)
+        return answer(undefined, { message: '`after` is not a cursor of this connection' });
+      const page = threads.slice(offset, offset + first);
+      return answer({
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              pageInfo: {
+                hasNextPage: offset + first < threads.length,
+                endCursor:
+                  page.length === 0
+                    ? null
+                    : Buffer.from(`cursor:${offset + page.length}`).toString('base64'),
+              },
+              nodes: page.map((t) => ({
+                id: t.id,
+                isResolved: t.resolved,
+                resolvedBy: t.resolvedBy === null ? null : { login: t.resolvedBy },
+                comments: { nodes: [{ id: reviewCommentNodeId(t.commentIds[0]!) }] },
+              })),
+            },
+          },
+        },
+      });
+    }
+    if (operation === 'QualorResolveThread' || operation === 'QualorUnresolveThread') {
+      const field =
+        operation === 'QualorResolveThread' ? 'resolveReviewThread' : 'unresolveReviewThread';
+      const { id } = variables;
+      if (!isText(id)) return invalid('id', 'ID!', id);
+      const thread = fake.reviewThreads.find((t) => t.id === id);
+      const repo = [...repos.values()].find((r) => r.id === thread?.repoId);
+      if (!thread || !visible(repo))
+        return answer(
+          { [field]: null },
+          {
+            type: 'NOT_FOUND',
+            path: [field],
+            message: `Could not resolve to a node with the global id of '${id}'.`,
+          },
+        );
+      if (!may('write')) return answer({ [field]: null }, forbidden([field]));
+      thread.resolved = field === 'resolveReviewThread';
+      // An installation token is this App's: GitHub names its `<slug>[bot]` as the resolver, and
+      // nobody once the thread is open again (ruling R6).
+      thread.resolvedBy = thread.resolved ? `${slug}[bot]` : null;
+      return answer({ [field]: { thread: { id: thread.id, isResolved: thread.resolved } } });
+    }
+    return answer(undefined, { message: `Unknown operation ${operation ?? '(none)'}` });
+  };
+
   const handle = (req: IncomingMessage, res: ServerResponse, body: string) => {
     const url = new URL(req.url ?? '/', 'http://fake');
     const method = req.method ?? 'GET';
@@ -401,6 +879,9 @@ export async function createFakeGitHub(
         const answer = injection.answers.shift()!;
         return send(res, answer.status, answer.body, answer.headers);
       }
+    }
+    if (url.pathname === GRAPHQL_PATH && method === 'POST') {
+      return graphql(req, res, auth, bearer, body);
     }
     if (!url.pathname.startsWith(PREFIX)) return deny(res, 404, 'Not Found');
     if (typeof req.headers['user-agent'] !== 'string')
@@ -558,8 +1039,6 @@ export async function createFakeGitHub(
       if (badOutput) return deny(res, 422, badOutput);
       const bad = badAnnotations(b.output?.annotations);
       if (bad) return deny(res, 422, bad);
-      if (fake.rejectAnnotations && (b.output?.annotations?.length ?? 0) > 0)
-        return deny(res, 422, 'Invalid request.');
       const run: FakeCheckRun = {
         id: nextId++,
         repoId: repo.id,
@@ -638,49 +1117,33 @@ export async function createFakeGitHub(
       if (!need('pull_requests', 'write')) return forbidden();
       const pull = pulls.get(`${repo.id}#${reviewComments[1]}`);
       if (!pull) return deny(res, 404, 'Not Found');
-      const b = json() as {
-        body?: unknown;
-        commit_id?: unknown;
-        path?: unknown;
-        side?: unknown;
-        line?: unknown;
-        start_line?: unknown;
-        start_side?: unknown;
-      };
-      const line = Number(b.line);
-      const start = b.start_line === undefined ? line : Number(b.start_line);
-      const patch = pull.files.find((f) => f.filename === b.path)?.patch;
-      const lines = patch === undefined ? new Set<number>() : rightSideLines(patch);
-      const placed = Array.from({ length: Math.max(0, line - start + 1) }, (_, i) => start + i);
-      if (
-        typeof b.body !== 'string' ||
-        b.body === '' ||
-        b.body.length > 65_536 ||
-        b.commit_id !== pull.headSha ||
-        b.side !== 'RIGHT' ||
-        !Number.isInteger(line) ||
-        !Number.isInteger(start) ||
-        start > line ||
-        (b.start_line !== undefined && b.start_side !== 'RIGHT') ||
-        placed.length === 0 ||
-        !placed.every((n) => lines.has(n))
-      ) {
+      const b = json() as ReviewCommentBody & { commit_id?: unknown };
+      if (b.commit_id !== pull.headSha || !placeable(pull, b)) {
         return deny(res, 422, 'Validation Failed');
       }
-      const created: FakeReviewComment = {
+      return send(res, 201, reviewCommentJson(repo)(startThread(repo, pull, b)));
+    }
+    const pullReviews = /^\/pulls\/(\d+)\/reviews$/.exec(rest);
+    if (pullReviews && method === 'POST') {
+      if (!need('pull_requests', 'write')) return forbidden();
+      const pull = pulls.get(`${repo.id}#${pullReviews[1]}`);
+      if (!pull) return deny(res, 404, 'Not Found');
+      const b = json() as ReviewBody;
+      // All or nothing: a comment GitHub would not place refuses the review and makes none.
+      if (reviewRefused(pull, b)) return deny(res, 422, 'Unprocessable Entity');
+      const comments = (Array.isArray(b.comments) ? b.comments : []) as ReviewCommentBody[];
+      const made = comments.map((c) => startThread(repo, pull, c));
+      const review: FakeReview = {
         id: nextId++,
         repoId: repo.id,
         pull: pull.number,
-        body: b.body,
-        path: String(b.path),
-        line,
-        startLine: b.start_line === undefined ? null : start,
-        side: 'RIGHT',
+        body: typeof b.body === 'string' ? b.body : '',
+        event: String(b.event),
         commitId: pull.headSha,
-        user: { login: `${slug}[bot]`, id: 41898282, type: 'Bot' },
+        commentIds: made.map((c) => c.id),
       };
-      fake.reviewComments.push(created);
-      return send(res, 201, reviewCommentJson(repo)(created));
+      fake.reviews.push(review);
+      return send(res, 200, reviewJson(repo, review));
     }
     const issueComments = /^\/issues\/(\d+)\/comments$/.exec(rest);
     if (issueComments && method === 'GET') {

@@ -1,6 +1,6 @@
 import { and, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createFakeGitHub, type FakeGitHub } from '../../../test/fake-github';
+import { createFakeGitHub, githubWrites, type FakeGitHub } from '../../../test/fake-github';
 import {
   githubConnection,
   githubDeps,
@@ -72,7 +72,7 @@ describe('a false positive re-decorates the pull request (github.md §8, G5)', (
     await fake.close();
   });
 
-  it('turns the check run to success without the annotation, and edits the summary, without a scan', async () => {
+  it('a false positive resolves its thread and turns the check run to success, and edits the summary, without a scan', async () => {
     const connectionId = await githubConnection(h, fake);
     const project = await mappedGitHubProject(h, fake, 'gh/fp', 'acme/api', { connectionId });
     await project.ingestOk(
@@ -84,14 +84,28 @@ describe('a false positive re-decorates the pull request (github.md §8, G5)', (
       }),
     );
     await runDecorations(h, githubDeps(h));
-    expect(fake.checkRuns.at(-1)).toMatchObject({
-      conclusion: 'failure',
-      annotations: [expect.objectContaining({ start_line: 3 })],
-    });
+    // The finding is a review comment on its line, in a thread that is open, and the check run
+    // carries no annotation.
+    expect(fake.checkRuns.at(-1)).toMatchObject({ conclusion: 'failure', annotations: [] });
+    expect(fake.reviewComments.filter((c) => c.repoId === 424242)).toEqual([
+      expect.objectContaining({
+        path: 'src/a.ts',
+        line: 3,
+        user: expect.objectContaining({ login: `${fake.slug}[bot]` }) as unknown,
+      }),
+    ]);
+    const [thread, ...others] = fake.reviewThreads.filter((t) => t.repoId === 424242);
+    expect(others).toEqual([]);
+    expect(thread).toMatchObject({ resolved: false, resolvedBy: null });
 
     await falsePositive(project.id);
     await runGateJobs();
     await runDecorations(h, githubDeps(h));
+    // The thread is resolved, by the App; the same check run turns to success (a new check run
+    // is no longer needed, since none carries annotations); the summary says so.
+    expect(thread).toMatchObject({ resolved: true, resolvedBy: `${fake.slug}[bot]` });
+    expect(fake.reviewComments.filter((c) => c.repoId === 424242)).toHaveLength(1);
+    expect(fake.checkRuns.filter((r) => r.repoId === 424242)).toHaveLength(1);
     expect(fake.checkRuns.at(-1)).toMatchObject({ conclusion: 'success', annotations: [] });
     const summary = fake.comments.find((c) => markerOf(c.body)?.kind === 'summary');
     expect(summary?.body).toContain('### ✅ Qualor: quality gate passed');
@@ -100,9 +114,7 @@ describe('a false positive re-decorates the pull request (github.md §8, G5)', (
     await runGateJobs();
     await runDecorations(h, githubDeps(h));
     // Nothing changed: only reads (and a fresh installation token: each githubDeps has its own cache).
-    expect(
-      fake.requests.filter((r) => r.method !== 'GET' && !r.path.endsWith('/access_tokens')),
-    ).toEqual([]);
+    expect(githubWrites(fake.requests)).toEqual([]);
   });
 
   it('re-evaluates, but does not decorate again, an analysis whose GitHub context was not sent (older CLI, ruling C1)', async () => {

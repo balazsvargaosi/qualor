@@ -6,9 +6,9 @@
 #   - secret QUALOR_TOKEN: a project analysis token of the Qualor project.
 # The job needs no GitHub write permission: pull requests are decorated by the Qualor GitHub App,
 # which an administrator connects in Qualor (Settings, GitHub) and installs on this repository.
-# It checks out the pull request's head, not GitHub's merge commit, so Qualor's annotations land on
-# the lines of the pull request, with the full history (the new-code baseline) and without leaving
-# the job's token in .git/config, where the analysed code could read it.
+# It checks out the pull request's head, not GitHub's merge commit, so Qualor's review comments
+# land on the lines of the pull request, with the full history (the new-code baseline) and without
+# leaving the job's token in .git/config, where the analysed code could read it.
 # The job is skipped for pull requests from forks: GitHub gives them no secrets, so the scan could
 # not upload. Never switch to pull_request_target, which would run a fork's code with the token.
 # Change `main` below if your default branch has another name.

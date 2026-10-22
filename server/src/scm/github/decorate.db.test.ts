@@ -1,6 +1,11 @@
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { createFakeGitHub, githubShape, type FakeGitHub } from '../../../test/fake-github';
+import {
+  createFakeGitHub,
+  githubShape,
+  githubWrites,
+  type FakeGitHub,
+} from '../../../test/fake-github';
 import {
   githubConnection,
   githubDeps,
@@ -17,10 +22,17 @@ import { SCM_TOKEN_AAD } from '../connections';
 import { markerOf } from '../markdown';
 import { enqueueDecoration } from '../queue';
 import { statusName } from '../render';
-import { annotationsDigest, parseCheckRunExternalId } from './render';
+import { MAX_FILE_PAGES } from './decorate';
+import { NO_ANNOTATIONS_DIGEST, parseCheckRunExternalId } from './render';
 
 const HEAD = '1'.repeat(40);
+/** src/a.ts: lines 1-2 are context, lines 3-5 are added. */
 const PATCH = '@@ -1,2 +1,5 @@\n a\n b\n+c\n+d\n+e';
+const GRAPHQL = '/api/graphql';
+/** github.md §6.2: the exact sentences of GitHub's summary (Global Constraints of 6I-1). */
+const CHECKOUT_OTHER =
+  'No inline comments: the workflow analysed a commit other than the pull request’s head (GitHub’s merge commit, by default); check out the head to get them (`ref: ${{ github.event.pull_request.head.sha }}`).';
+const STALE = 'Inline comments wait for the analysis of the pull request’s latest commit.';
 
 describe('GitHub decoration (github.md §5–§6)', () => {
   let h: IngestHarness;
@@ -74,11 +86,27 @@ describe('GitHub decoration (github.md §5–§6)', () => {
   const newestRun = (repoId: number) => runsOf(repoId).at(-1);
   const summaries = (repoId: number) =>
     fake.comments.filter((c) => c.repoId === repoId && markerOf(c.body)?.kind === 'summary');
-  /** Writes to the repository (an installation token request is not one: it changes nothing). */
-  const writes = () =>
-    fake.requests
-      .filter((r) => r.method !== 'GET' && !r.path.endsWith('/access_tokens'))
-      .map((r) => `${r.method} ${r.path}`);
+  /** The review comments on the repository's pull request (Qualor's threads are the first of each). */
+  const reviewCommentsOf = (repoId: number) =>
+    fake.reviewComments.filter((c) => c.repoId === repoId);
+  const threadsOf = (repoId: number) => fake.reviewThreads.filter((t) => t.repoId === repoId);
+  /** Whether the thread on each line is resolved (a test with one thread to a line). */
+  const resolvedByLine = (repoId: number) =>
+    Object.fromEntries(
+      threadsOf(repoId).map((t) => [
+        fake.reviewComments.find((c) => c.id === t.commentIds[0])?.line,
+        t.resolved,
+      ]),
+    );
+  /** What the requests changed on GitHub (an installation token or a GraphQL query changes nothing). */
+  const writes = () => githubWrites(fake.requests);
+  /** The writes that touch the pull request's threads: review comments and GraphQL mutations. */
+  const threadWrites = () => writes().filter((w) => w.includes('/pulls/') || w.includes(GRAPHQL));
+  /** The pull request review that carries a decoration's new threads. */
+  const reviewPost = (repoName: string) => `POST /repos/acme/${repoName}/pulls/7/reviews`;
+  const reviews = (repoName: string) => new RegExp(`^/repos/acme/${repoName}/pulls/7/reviews$`);
+  const singleComments = (repoName: string) =>
+    new RegExp(`^/repos/acme/${repoName}/pulls/7/comments$`);
 
   /** Enqueues the decoration of `analysisId` again, as its ingestion did: the same job. */
   const enqueueAgain = async (analysisId: string, repoId: number) => {
@@ -112,7 +140,7 @@ describe('GitHub decoration (github.md §5–§6)', () => {
       connectionId,
     });
     const report = reportWith({ projectKey: project.key, revision: 'c'.repeat(40) });
-    await project.ingestOk({
+    const analysisId = await project.ingestOk({
       ...report,
       scm: { ...report.scm, provider: 'github', github: { repositoryId: String(repoId) } },
     });
@@ -125,30 +153,78 @@ describe('GitHub decoration (github.md §5–§6)', () => {
         conclusion: 'failure',
         title: 'Quality gate failed: new_issues 1 > 0',
         detailsUrl: `${PUBLIC_URL}/projects/${project.id}/branches/${main!.id}`,
+        externalId: `qualor:v1:${analysisId}:${NO_ANNOTATIONS_DIGEST}`,
         annotations: [],
       }),
     ]);
     expect(runsOf(repoId)[0]?.summary?.startsWith('### ❌ Qualor: quality gate failed')).toBe(true);
     expect(fake.comments.filter((c) => c.repoId === repoId)).toEqual([]);
+    expect(fake.reviewComments.filter((c) => c.repoId === repoId)).toEqual([]);
   });
 
-  it('annotates new issues on added lines, posts one summary, and a rerun only reads', async () => {
+  it('a pull request’s new issues become review threads and the check run has none', async () => {
     const { repo, ingest } = await setup('gh/pr');
     const analysisId = await ingest([1, 3, 4]); // line 1 is new code for Qualor, but not an added line of the diff
     await runDecorations(h, githubDeps(h));
+    // The check run first, with the counts the plan gives (as GitLab's commit status comes first),
+    // then the threads, both in one review, then the summary.
+    expect(writes()).toEqual([
+      `POST /repos/acme/${repo.name}/check-runs`,
+      reviewPost(repo.name),
+      `POST /repos/acme/${repo.name}/issues/7/comments`,
+    ]);
+    // One check run, with no annotation, and the constant digest.
+    expect(runsOf(repo.id)).toHaveLength(1);
     const run = newestRun(repo.id)!;
-    expect(run.annotations.map((a) => a.start_line).sort()).toEqual([3, 4]);
-    expect(run.annotations[0]).toMatchObject({ path: 'src/a.ts', annotation_level: 'warning' });
-    expect(parseCheckRunExternalId(run.externalId)).not.toBeNull();
-    expect(summaries(repo.id)).toHaveLength(1);
-    expect(summaries(repo.id)[0]?.body).toContain(
-      '2 new issues are annotated inline; 1 could not be placed on the diff.',
+    expect(run.annotations.length).toBe(0);
+    expect(run.externalId?.endsWith(NO_ANNOTATIONS_DIGEST)).toBe(true);
+    expect(run.externalId).toBe(`qualor:v1:${analysisId}:${NO_ANNOTATIONS_DIGEST}`);
+    expect(parseCheckRunExternalId(run.externalId)).toEqual({
+      analysisId,
+      digest: NO_ANNOTATIONS_DIGEST,
+    });
+    const created = fake.requests.find(
+      (r) => r.method === 'POST' && r.path === `/repos/acme/${repo.name}/check-runs`,
     );
+    const output = (JSON.parse(created!.body) as { output: Record<string, unknown> }).output;
+    expect(Object.keys(output).sort()).toEqual(['summary', 'title']);
+    // Two review comments, on the two added lines, by the App, each the first of its thread.
+    const comments = reviewCommentsOf(repo.id);
+    expect(comments).toHaveLength(2);
+    expect(comments.map((c) => c.line).sort()).toEqual([3, 4]);
+    for (const comment of comments) {
+      expect(comment).toMatchObject({
+        path: 'src/a.ts',
+        side: 'RIGHT',
+        commitId: HEAD,
+        user: { login: `${fake.slug}[bot]`, type: 'Bot' },
+        inReplyToId: null,
+      });
+      expect(markerOf(comment.body)?.kind).toBe('issue');
+    }
+    expect(threadsOf(repo.id)).toHaveLength(2);
+    expect(threadsOf(repo.id).every((t) => !t.resolved)).toBe(true);
+    // One summary, in review-comment words; the check run says the same.
+    const sentence = '2 new issues are commented inline; 1 could not be placed on the diff.';
+    expect(summaries(repo.id)).toHaveLength(1);
+    expect(summaries(repo.id)[0]?.body).toContain(sentence);
     expect(summaries(repo.id)[0]?.user.login).toBe(`${fake.slug}[bot]`);
-    // The same job again (github.md §11 #1): nothing but reads.
+    expect(run.summary).toContain(sentence);
+    expect(`${run.summary}${summaries(repo.id)[0]?.body}`).not.toMatch(/annotat/i);
+  });
+
+  it('a rerun changes nothing, and a new analysis with the same result only moves the check run', async () => {
+    const { repo, ingest } = await setup('gh/rerun');
+    const analysisId = await ingest([1, 3, 4]);
+    await runDecorations(h, githubDeps(h));
+    const run = newestRun(repo.id)!;
+    const comments = reviewCommentsOf(repo.id).map((c) => c.id);
+    // The same job again (github.md §11 #1): no POST or PATCH, and no GraphQL mutation. It did read
+    // the threads (a GraphQL query), which is no change.
     fake.clearRequests();
     await enqueueAgain(analysisId, repo.id);
     await runDecorations(h, githubDeps(h));
+    expect(fake.requests.some((r) => r.path === GRAPHQL)).toBe(true);
     expect(writes()).toEqual([]);
     // A new analysis with the same result: only the check run's analysis id moves (§6.1, a PATCH).
     fake.clearRequests();
@@ -156,9 +232,11 @@ describe('GitHub decoration (github.md §5–§6)', () => {
     await runDecorations(h, githubDeps(h));
     expect(writes()).toEqual([`PATCH /repos/acme/${repo.name}/check-runs/${run.id}`]);
     expect(runsOf(repo.id)).toHaveLength(1);
+    expect(reviewCommentsOf(repo.id).map((c) => c.id)).toEqual(comments);
+    expect(summaries(repo.id)).toHaveLength(1);
   });
 
-  it('sends tied annotations in one order, so the same job again keeps the check run', async () => {
+  it('gives two issues on one line a thread each, and the same job again adds none', async () => {
     const { project, repo } = await setup('gh/tied');
     // Two issues of the same severity on the same line, from two rules.
     const analysisId = await project.ingestOk(
@@ -174,18 +252,22 @@ describe('GitHub decoration (github.md §5–§6)', () => {
       }),
     );
     await runDecorations(h, githubDeps(h));
-    expect(newestRun(repo.id)?.annotations.map((a) => a.title)).toEqual([
-      'Medium · maintainability · eslint:no-console',
-      'Medium · maintainability · eslint:no-debugger',
-    ]);
+    expect(reviewCommentsOf(repo.id).map((c) => c.line)).toEqual([3, 3]);
+    expect(
+      reviewCommentsOf(repo.id)
+        .map((c) => /eslint:[\w-]+/.exec(c.body)?.[0])
+        .sort(),
+    ).toEqual(['eslint:no-console', 'eslint:no-debugger']);
+    expect(threadsOf(repo.id)).toHaveLength(2);
     fake.clearRequests();
     await enqueueAgain(analysisId, repo.id);
     await runDecorations(h, githubDeps(h));
     expect(writes()).toEqual([]);
     expect(runsOf(repo.id)).toHaveLength(1);
+    expect(reviewCommentsOf(repo.id)).toHaveLength(2);
   });
 
-  it('links each rule to its live documentation in annotations, the check run and the summary', async () => {
+  it('links each rule to its live documentation in the thread, the check run and the summary', async () => {
     const { project, repo } = await setup('gh/rule-links');
     const dead = 'https://rules.sonarsource.com/javascript/RSPEC-1871';
     const live =
@@ -204,43 +286,127 @@ describe('GitHub decoration (github.md §5–§6)', () => {
     const analysisId = await ingest();
     await runDecorations(h, githubDeps(h));
     const run = newestRun(repo.id)!;
-    expect(run.annotations[0]?.['message']).toContain(`\n\nRule: ${live}`);
-    expect(run.summary).toContain(`[\` eslint:no-alert \`](${live})`);
-    expect(summaries(repo.id)[0]?.body).toContain(`[\` eslint:no-alert \`](${live})`);
-    // The same job again changes nothing: the bodies and the digest are the same.
+    const link = `[\` eslint:no-alert \`](${live})`;
+    expect(reviewCommentsOf(repo.id)[0]?.body).toContain(link);
+    expect(run.summary).toContain(link);
+    expect(summaries(repo.id)[0]?.body).toContain(link);
+    // The same job again changes nothing: the bodies are the same.
     fake.clearRequests();
     await enqueueAgain(analysisId, repo.id);
     await runDecorations(h, githubDeps(h));
     expect(writes()).toEqual([]);
   });
 
-  it('replaces the check run when an issue is fixed, and edits the summary in place', async () => {
+  it('resolves the thread of a fixed issue and reopens it when the issue comes back, editing the check run and the summary in place', async () => {
     const { repo, ingest } = await setup('gh/fix');
     await ingest([3, 4]);
     await runDecorations(h, githubDeps(h));
     const commentId = summaries(repo.id)[0]?.id;
+    const run = newestRun(repo.id)!;
+    expect(resolvedByLine(repo.id)).toEqual({ 3: false, 4: false });
+    // Line 4 is fixed: its thread is resolved by the App, and the one check run is edited, not replaced.
+    fake.clearRequests();
     await ingest([3]);
     await runDecorations(h, githubDeps(h));
-    expect(runsOf(repo.id)).toHaveLength(2);
-    expect(newestRun(repo.id)?.annotations.map((a) => a.start_line)).toEqual([3]);
+    expect(writes()).toEqual([
+      `PATCH /repos/acme/${repo.name}/check-runs/${run.id}`,
+      `POST ${GRAPHQL} QualorResolveThread`,
+      `PATCH /repos/acme/${repo.name}/issues/comments/${commentId}`,
+    ]);
+    expect(resolvedByLine(repo.id)).toEqual({ 3: false, 4: true });
+    expect(threadsOf(repo.id).find((t) => t.resolved)?.resolvedBy).toBe(`${fake.slug}[bot]`);
+    expect(runsOf(repo.id)).toHaveLength(1);
+    expect(newestRun(repo.id)?.annotations).toEqual([]);
+    expect(newestRun(repo.id)?.summary).toContain('1 new issue is commented inline.');
     expect(summaries(repo.id).map((c) => c.id)).toEqual([commentId]);
-    expect(summaries(repo.id)[0]?.body).toContain('1 new issue is annotated inline.');
+    expect(summaries(repo.id)[0]?.body).toContain('1 new issue is commented inline.');
+    expect(reviewCommentsOf(repo.id)).toHaveLength(2);
+    // The issue comes back: the thread Qualor resolved is reopened, with no second thread.
+    fake.clearRequests();
+    await ingest([3, 4]);
+    await runDecorations(h, githubDeps(h));
+    expect(writes()).toContain(`POST ${GRAPHQL} QualorUnresolveThread`);
+    expect(resolvedByLine(repo.id)).toEqual({ 3: false, 4: false });
+    expect(reviewCommentsOf(repo.id)).toHaveLength(2);
+    expect(runsOf(repo.id)).toHaveLength(1);
+    expect(summaries(repo.id)[0]?.body).toContain('2 new issues are commented inline.');
   });
 
-  it('annotates nothing for a merge-commit checkout or a stale head, and says why', async () => {
+  it('leaves a thread a person resolved resolved, whatever becomes of its issue', async () => {
+    const { repo, ingest } = await setup('gh/person-resolved');
+    await ingest([3, 4]);
+    await runDecorations(h, githubDeps(h));
+    // A person resolves the thread of line 4, which is then fixed, and detected again.
+    const [thread] = threadsOf(repo.id).filter(
+      (t) => fake.reviewComments.find((c) => c.id === t.commentIds[0])?.line === 4,
+    );
+    fake.resolveThreadAs(thread!.id, 'octocat');
+    fake.clearRequests();
+    await ingest([3]);
+    await runDecorations(h, githubDeps(h));
+    await ingest([3, 4]);
+    await runDecorations(h, githubDeps(h));
+    expect(writes().filter((w) => w.includes(GRAPHQL))).toEqual([]);
+    expect(thread).toMatchObject({ resolved: true, resolvedBy: 'octocat' });
+    expect(resolvedByLine(repo.id)).toEqual({ 3: false, 4: true });
+    // Its issue is open, and has a thread: it counts.
+    expect(summaries(repo.id)[0]?.body).toContain('2 new issues are commented inline.');
+    expect(reviewCommentsOf(repo.id)).toHaveLength(2);
+  });
+
+  it('checkout other: no threads, and the summary says why', async () => {
     const { repo, ingest } = await setup('gh/merge');
     await ingest([3], { repositoryId: String(repo.id), checkout: 'other' });
     await runDecorations(h, githubDeps(h));
+    expect(reviewCommentsOf(repo.id)).toEqual([]);
+    expect(threadsOf(repo.id)).toEqual([]);
+    expect(threadWrites()).toEqual([]);
     expect(newestRun(repo.id)?.annotations).toEqual([]);
-    expect(summaries(repo.id)[0]?.body).toContain(
-      'No inline annotations: the workflow analysed a commit other than',
-    );
+    expect(summaries(repo.id)[0]?.body).toContain(CHECKOUT_OTHER);
+    expect(newestRun(repo.id)?.summary).toContain(CHECKOUT_OTHER);
+  });
+
+  it('checkout other: leaves the threads it finds as they are', async () => {
+    const { repo, ingest } = await setup('gh/merge-kept');
+    await ingest([3, 4]);
+    await runDecorations(h, githubDeps(h));
+    expect(resolvedByLine(repo.id)).toEqual({ 3: false, 4: false });
+    // Line 4 is fixed in the next analysis, but the workflow checked out the merge commit.
+    fake.clearRequests();
+    await ingest([3], { repositoryId: String(repo.id), checkout: 'other' });
+    await runDecorations(h, githubDeps(h));
+    expect(threadWrites()).toEqual([]);
+    expect(resolvedByLine(repo.id)).toEqual({ 3: false, 4: false });
+    expect(reviewCommentsOf(repo.id)).toHaveLength(2);
+    expect(summaries(repo.id)[0]?.body).toContain(CHECKOUT_OTHER);
+    expect(newestRun(repo.id)?.summary).toContain(CHECKOUT_OTHER);
+  });
+
+  it('a stale head: no threads', async () => {
+    const { repo, ingest } = await setup('gh/stale');
     fake.updatePull(repo.id, 7, { headSha: '2'.repeat(40) });
     await ingest([3]);
     await runDecorations(h, githubDeps(h));
-    expect(summaries(repo.id)[0]?.body).toContain(
-      'Inline annotations wait for the analysis of the pull request’s latest commit.',
-    );
+    expect(reviewCommentsOf(repo.id)).toEqual([]);
+    expect(threadsOf(repo.id)).toEqual([]);
+    expect(threadWrites()).toEqual([]);
+    expect(summaries(repo.id)[0]?.body).toContain(STALE);
+    expect(summaries(repo.id)[0]?.body).toContain('the pull request is now at');
+    expect(newestRun(repo.id)?.summary).toContain(STALE);
+  });
+
+  it('a stale head: leaves the threads it finds as they are', async () => {
+    const { repo, ingest } = await setup('gh/stale-kept');
+    await ingest([3, 4]);
+    await runDecorations(h, githubDeps(h));
+    // The pull request moves on; the analysis of the old head fixes line 4, which is no one's to resolve.
+    fake.updatePull(repo.id, 7, { headSha: '2'.repeat(40) });
+    fake.clearRequests();
+    await ingest([3]);
+    await runDecorations(h, githubDeps(h));
+    expect(threadWrites()).toEqual([]);
+    expect(resolvedByLine(repo.id)).toEqual({ 3: false, 4: false });
+    expect(summaries(repo.id)[0]?.body).toContain(STALE);
   });
 
   it('counts issues on a file without a patch as not placed', async () => {
@@ -248,12 +414,113 @@ describe('GitHub decoration (github.md §5–§6)', () => {
     await ingest([3]);
     await runDecorations(h, githubDeps(h));
     expect(newestRun(repo.id)?.annotations).toEqual([]);
+    expect(reviewCommentsOf(repo.id)).toEqual([]);
     expect(summaries(repo.id)[0]?.body).toContain(
-      '0 new issues are annotated inline; 1 could not be placed on the diff.',
+      '0 new issues are commented inline; 1 could not be placed on the diff.',
     );
   });
 
-  it('keeps one check run and one summary per Qualor project of a monorepo', async () => {
+  it('counts the issues on files beyond the page bound as not placed, and places the others', async () => {
+    const { project, repo } = await setup('gh/many-files', {
+      files: [
+        { filename: 'src/a.ts', patch: PATCH },
+        { filename: 'src/b.ts', patch: PATCH },
+      ],
+    });
+    const next = { link: '<https://x.example/?page=2>; rel="next"' };
+    const first = {
+      ...(githubShape<unknown[]>('pull_request_files')[0] as object),
+      filename: 'src/a.ts',
+      status: 'modified',
+      patch: PATCH,
+    };
+    // Page 1 holds src/a.ts and every page up to the bound has a next one: src/b.ts is never read.
+    fake.inject(
+      'GET',
+      new RegExp(`^/repos/acme/${repo.name}/pulls/7/files$`),
+      { status: 200, body: [first], headers: next },
+      ...Array.from({ length: MAX_FILE_PAGES - 1 }, () => ({
+        status: 200,
+        body: [],
+        headers: next,
+      })),
+    );
+    await project.ingestOk(
+      pullRequestReport(7, HEAD, {
+        projectKey: project.key,
+        analysisDate: new Date(Date.UTC(2026, 8, 1, 10) + 86_400_000 * day++).toISOString(),
+        engines: [engine('eslint')],
+        files: [
+          file('src/a.ts', { newLines: [[1, 60]] }),
+          file('src/b.ts', { newLines: [[1, 60]] }),
+        ],
+        findings: ['src/a.ts', 'src/b.ts'].map((path) => finding({ path, line: 3 })),
+        github: { repositoryId: String(repo.id), checkout: 'head' },
+      }),
+    );
+    await runDecorations(h, githubDeps(h));
+    expect(fake.requests.filter((r) => /\/pulls\/7\/files\?/.test(r.path))).toHaveLength(
+      MAX_FILE_PAGES,
+    );
+    expect(reviewCommentsOf(repo.id).map((c) => c.path)).toEqual(['src/a.ts']);
+    expect(summaries(repo.id)[0]?.body).toContain(
+      '1 new issue is commented inline; 1 could not be placed on the diff.',
+    );
+  });
+
+  it('corrects the check run’s counts with one PATCH when GitHub refuses a position', async () => {
+    const { repo, ingest } = await setup('gh/refused');
+    // GitHub refuses the review, then line 3 posted alone; line 4 alone it places.
+    fake.inject('POST', reviews(repo.name), { status: 422, body: { message: 'Unprocessable' } });
+    fake.inject('POST', singleComments(repo.name), {
+      status: 422,
+      body: { message: 'Validation Failed' },
+    });
+    await ingest([3, 4]);
+    await runDecorations(h, githubDeps(h));
+    expect(reviewCommentsOf(repo.id).map((c) => c.line)).toEqual([4]);
+    expect(runsOf(repo.id)).toHaveLength(1);
+    const run = newestRun(repo.id)!;
+    expect(writes()).toEqual([
+      `POST /repos/acme/${repo.name}/check-runs`,
+      reviewPost(repo.name),
+      `POST /repos/acme/${repo.name}/pulls/7/comments`,
+      `POST /repos/acme/${repo.name}/pulls/7/comments`,
+      `POST /repos/acme/${repo.name}/issues/7/comments`,
+      `PATCH /repos/acme/${repo.name}/check-runs/${run.id}`,
+    ]);
+    // The check run first said what the plan expected, and the PATCH says what came of it.
+    const sent = (method: string) =>
+      (
+        JSON.parse(
+          fake.requests.find((r) => r.method === method && r.path.includes('/check-runs'))!.body,
+        ) as { output: { summary: string } }
+      ).output.summary;
+    expect(sent('POST')).toContain('2 new issues are commented inline.');
+    const sentence = '1 new issue is commented inline; 1 could not be placed on the diff.';
+    expect(sent('PATCH')).toContain(sentence);
+    expect(run.summary).toContain(sentence);
+    expect(run.annotations).toEqual([]);
+    expect(summaries(repo.id)[0]?.body).toContain(sentence);
+    expect(await queuedDecorations(h)).toEqual([]);
+  });
+
+  it('does not try a refused check run again without annotations, and goes on to the summary', async () => {
+    const { repo, ingest } = await setup('gh/refused-run');
+    fake.inject('POST', /check-runs$/, { status: 422, body: { message: 'Invalid request.' } });
+    await ingest([3]);
+    await runDecorations(h, githubDeps(h));
+    const posts = fake.requests.filter(
+      (r) => r.method === 'POST' && r.path.endsWith('/check-runs'),
+    );
+    expect(posts).toHaveLength(1);
+    expect(runsOf(repo.id)).toEqual([]);
+    expect(summaries(repo.id)).toHaveLength(1);
+    expect(reviewCommentsOf(repo.id)).toHaveLength(1);
+    expect(await queuedDecorations(h)).toEqual([]); // a refusal is not retried
+  });
+
+  it('keeps one check run, one summary and the threads of its own issues per Qualor project of a monorepo', async () => {
     const first = await setup('gh/mono-a');
     const second = await setup('gh/mono-b', { repo: first.repo });
     await first.ingest([3]);
@@ -268,6 +535,13 @@ describe('GitHub decoration (github.md §5–§6)', () => {
         { kind: 'summary', projectId: second.project.id },
       ]),
     );
+    // Each project made the thread of its own issue.
+    expect(resolvedByLine(first.repo.id)).toEqual({ 3: false, 4: false });
+    // Fixing A's issue resolves A's thread and leaves B's alone.
+    await first.ingest([]);
+    await runDecorations(h, githubDeps(h));
+    expect(resolvedByLine(first.repo.id)).toEqual({ 3: true, 4: false });
+    expect(reviewCommentsOf(first.repo.id)).toHaveLength(2);
   });
 
   it('never edits a person’s comment that carries a Qualor marker', async () => {
@@ -292,8 +566,8 @@ describe('GitHub decoration (github.md §5–§6)', () => {
     expect(await queuedDecorations(h)).toEqual([]);
   });
 
-  it('waits as long as a secondary rate limit says', async () => {
-    const { ingest } = await setup('gh/limited');
+  it('waits as long as a secondary rate limit says, and makes no second thread on the retry', async () => {
+    const { repo, ingest } = await setup('gh/limited');
     fake.inject('POST', /check-runs$/, {
       status: 403,
       body: { message: 'You have exceeded a secondary rate limit.' },
@@ -303,6 +577,9 @@ describe('GitHub decoration (github.md §5–§6)', () => {
     await runDecorations(h, githubDeps(h));
     const [retry] = await queuedDecorations(h);
     expect(retry?.payload).toMatchObject({ attempt: 1 });
+    // The check run comes first: refused, it stops the job before any thread or summary.
+    expect(reviewCommentsOf(repo.id)).toEqual([]);
+    expect(summaries(repo.id)).toEqual([]);
     // On the database clock: the retry is created and scheduled by it. Node's clock may differ
     // from the database container's by more than a second (the old check against Date.now()
     // failed with 88 904 ms against 89 000).
@@ -312,87 +589,206 @@ describe('GitHub decoration (github.md §5–§6)', () => {
     // The retry (made due now) then decorates; no job is left for the next test.
     await runDecorations(h, githubDeps(h));
     expect(await queuedDecorations(h)).toEqual([]);
+    expect(reviewCommentsOf(repo.id)).toHaveLength(1);
+    expect(threadsOf(repo.id)).toHaveLength(1);
+    expect(runsOf(repo.id)).toHaveLength(1);
+    expect(summaries(repo.id)).toHaveLength(1);
   });
 
-  it('recreates the check run without annotations when GitHub refuses them', async () => {
-    const { repo, ingest } = await setup('gh/refused');
-    fake.inject('POST', /check-runs$/, { status: 422, body: { message: 'Invalid request.' } });
+  it('resolves and reopens at most the bound of threads per job, the rest in a later one', async () => {
+    const { repo, ingest } = await setup('gh/update-cap');
+    await ingest([3, 4, 5]);
+    await runDecorations(h, githubDeps(h));
+    expect(resolvedByLine(repo.id)).toEqual({ 3: false, 4: false, 5: false });
+    const resolved = () => threadsOf(repo.id).filter((t) => t.resolved).length;
+    const capped = () => githubDeps(h, { maxThreadUpdates: 2 });
+    fake.clearRequests();
+    await ingest([]);
+    await runDecorations(h, capped());
+    expect(writes().filter((w) => w.includes(GRAPHQL))).toHaveLength(2);
+    expect(resolved()).toBe(2);
+    await ingest([]);
+    await runDecorations(h, capped());
+    expect(resolved()).toBe(3);
+  });
+
+  it('still writes the summary, saying the inline comments could not be updated, when GitHub refuses the review', async () => {
+    const { repo, ingest } = await setup('gh/no-permission');
+    fake.inject('POST', reviews(repo.name), {
+      status: 403,
+      body: { message: 'Resource not accessible by integration' },
+    });
     await ingest([3, 4]);
     await runDecorations(h, githubDeps(h));
-    expect(newestRun(repo.id)?.annotations).toEqual([]);
-    expect(summaries(repo.id)[0]?.body).toContain(
-      '0 new issues are annotated inline; 2 could not be placed on the diff.',
+    expect(reviewCommentsOf(repo.id)).toEqual([]);
+    expect(runsOf(repo.id)).toHaveLength(1);
+    const run = newestRun(repo.id)!;
+    expect(run.conclusion).toBe('failure');
+    expect(run.annotations).toEqual([]);
+    // The check run said what the plan expected; once the review failed, the summary comment and
+    // the check run say the inline comments could not be updated, and count none.
+    expect(writes()).toEqual([
+      `POST /repos/acme/${repo.name}/check-runs`,
+      reviewPost(repo.name),
+      `POST /repos/acme/${repo.name}/issues/7/comments`,
+      `PATCH /repos/acme/${repo.name}/check-runs/${run.id}`,
+    ]);
+    const sentence = 'Inline comments could not be updated this time.';
+    expect(summaries(repo.id)).toHaveLength(1);
+    expect(summaries(repo.id)[0]?.body).toContain(sentence);
+    expect(summaries(repo.id)[0]?.body).not.toContain('commented inline');
+    expect(run.summary).toContain(sentence);
+    expect(await queuedDecorations(h)).toEqual([]); // a missing permission is not retried
+  });
+
+  it('ends the job after the check run when the review is rate limited, and the retry makes the rest with no duplicate', async () => {
+    const { repo, ingest } = await setup('gh/review-limited');
+    fake.inject('POST', reviews(repo.name), {
+      status: 403,
+      body: { message: 'You have exceeded a secondary rate limit.' },
+      headers: { 'retry-after': '90' },
+    });
+    await ingest([3, 4]);
+    await runDecorations(h, githubDeps(h));
+    // Attempt 0: the check run, written first, then the refused review; nothing after it.
+    expect(writes()).toEqual([`POST /repos/acme/${repo.name}/check-runs`, reviewPost(repo.name)]);
+    expect(runsOf(repo.id)).toHaveLength(1);
+    expect(reviewCommentsOf(repo.id)).toEqual([]);
+    expect(summaries(repo.id)).toEqual([]);
+    const queued = await queuedDecorations(h);
+    expect(queued).toHaveLength(1);
+    expect(queued[0]?.payload).toMatchObject({ attempt: 1 });
+    // On the database clock, as in the test above.
+    const waits = (queued[0]!.runAt.getTime() - queued[0]!.createdAt.getTime()) / 1000;
+    expect(waits).toBeGreaterThan(89);
+    expect(waits).toBeLessThan(95);
+    // The retry: the threads, in one review, then the summary. The check run already said so.
+    fake.clearRequests();
+    await runDecorations(h, githubDeps(h));
+    expect(await queuedDecorations(h)).toEqual([]);
+    expect(writes()).toEqual([
+      reviewPost(repo.name),
+      `POST /repos/acme/${repo.name}/issues/7/comments`,
+    ]);
+    expect(reviewCommentsOf(repo.id).map((c) => c.line)).toEqual([3, 4]);
+    expect(threadsOf(repo.id)).toHaveLength(2);
+    expect(runsOf(repo.id)).toHaveLength(1);
+    expect(summaries(repo.id)).toHaveLength(1);
+    const sentence = '2 new issues are commented inline.';
+    expect(newestRun(repo.id)?.summary).toContain(sentence);
+    expect(summaries(repo.id)[0]?.body).toContain(sentence);
+  });
+
+  it('still writes the check run and the summary when the threads cannot be read, and the retry brings them', async () => {
+    const { repo, ingest } = await setup('gh/threads-unreadable');
+    fake.inject('POST', /^\/api\/graphql$/, { status: 502, body: { message: 'Server Error' } });
+    await ingest([3, 4]);
+    await runDecorations(h, githubDeps(h));
+    // A failure other than a rate limit: the check run and the summary say so, and the job is
+    // retried (a 502 is transient).
+    expect(writes()).toEqual([
+      `POST /repos/acme/${repo.name}/check-runs`,
+      `POST /repos/acme/${repo.name}/issues/7/comments`,
+    ]);
+    const failed = 'Inline comments could not be updated this time.';
+    expect(newestRun(repo.id)?.summary).toContain(failed);
+    expect(summaries(repo.id)[0]?.body).toContain(failed);
+    expect(reviewCommentsOf(repo.id)).toEqual([]);
+    expect((await queuedDecorations(h))[0]?.payload).toMatchObject({ attempt: 1 });
+    fake.clearRequests();
+    await runDecorations(h, githubDeps(h));
+    expect(await queuedDecorations(h)).toEqual([]);
+    const run = newestRun(repo.id)!;
+    const summary = summaries(repo.id)[0]!;
+    expect(writes()).toEqual([
+      `PATCH /repos/acme/${repo.name}/check-runs/${run.id}`,
+      reviewPost(repo.name),
+      `PATCH /repos/acme/${repo.name}/issues/comments/${summary.id}`,
+    ]);
+    expect(run.summary).toContain('2 new issues are commented inline.');
+    expect(summary.body).toContain('2 new issues are commented inline.');
+    expect(runsOf(repo.id)).toHaveLength(1);
+    expect(summaries(repo.id)).toHaveLength(1);
+  });
+
+  it('writes the check run before it stops on a GraphQL rate limit, and waits for the limit’s reset', async () => {
+    const { repo, ingest } = await setup('gh/graphql-limited');
+    fake.inject('POST', /^\/api\/graphql$/, {
+      status: 200,
+      body: { data: null, errors: [{ type: 'RATE_LIMITED', message: 'API rate limit exceeded' }] },
+      headers: {
+        'x-ratelimit-remaining': '0',
+        'x-ratelimit-reset': String(Math.floor(Date.now() / 1000) + 300),
+      },
+    });
+    await ingest([3]);
+    await runDecorations(h, githubDeps(h));
+    expect(writes()).toEqual([`POST /repos/acme/${repo.name}/check-runs`]);
+    expect(newestRun(repo.id)?.summary).toContain(
+      'Inline comments could not be updated this time.',
     );
+    expect(summaries(repo.id)).toEqual([]);
+    const [retry] = await queuedDecorations(h);
+    expect(retry?.payload).toMatchObject({ attempt: 1 });
+    // Until the reset GitHub named (M3), on the database clock.
+    const waits = (retry!.runAt.getTime() - retry!.createdAt.getTime()) / 1000;
+    expect(waits).toBeGreaterThan(290);
+    expect(waits).toBeLessThan(306);
+    fake.clearRequests();
+    await runDecorations(h, githubDeps(h));
+    expect(await queuedDecorations(h)).toEqual([]);
+    expect(reviewCommentsOf(repo.id)).toHaveLength(1);
+    expect(runsOf(repo.id)).toHaveLength(1);
+    expect(newestRun(repo.id)?.summary).toContain('1 new issue is commented inline.');
+    expect(summaries(repo.id)).toHaveLength(1);
   });
 
-  it('converges after GitHub refuses the annotations for good: a rerun posts nothing (C2)', async () => {
-    const { repo, ingest } = await setup('gh/refused-always');
-    fake.rejectAnnotations = true;
-    try {
-      const analysisId = await ingest([3, 4]);
-      await runDecorations(h, githubDeps(h));
-      expect(runsOf(repo.id)).toHaveLength(1);
-      const fallback = newestRun(repo.id)!;
-      expect(fallback.annotations).toEqual([]);
-      // The fallback carries the digest of the annotations it tried, not that of none.
-      const digest = parseCheckRunExternalId(fallback.externalId)?.digest;
-      expect(digest).toBeDefined();
-      expect(digest).not.toBe(annotationsDigest([]));
-      const rejected = '0 new issues are annotated inline; 2 could not be placed on the diff.';
-      expect(fallback.summary).toContain(rejected);
-      // The same job again: nothing but reads, although every annotated POST would be refused.
-      fake.clearRequests();
-      await enqueueAgain(analysisId, repo.id);
-      await runDecorations(h, githubDeps(h));
-      expect(writes()).toEqual([]);
-      // A new analysis with the same result: one PATCH of the fallback, which keeps its text.
-      fake.clearRequests();
-      await ingest([3, 4]);
-      await runDecorations(h, githubDeps(h));
-      expect(writes()).toEqual([`PATCH /repos/acme/${repo.name}/check-runs/${fallback.id}`]);
-      expect(runsOf(repo.id)).toHaveLength(1);
-      expect(newestRun(repo.id)?.summary).toContain(rejected);
-      expect(summaries(repo.id)[0]?.body).toContain(rejected);
-    } finally {
-      fake.rejectAnnotations = false;
-    }
-  });
-
-  it('keeps the annotations and their count in the summary when the pull request part fails', async () => {
+  it('leaves the threads and the summary alone, and still sets the check run, when the pull request part fails', async () => {
     const { repo, ingest } = await setup('gh/pr-fails');
     await ingest([3, 4]);
     await runDecorations(h, githubDeps(h));
     const run = newestRun(repo.id)!;
-    expect(run.summary).toContain('2 new issues are annotated inline.');
+    const summary = summaries(repo.id)[0]!.body;
+    const comments = reviewCommentsOf(repo.id).map((c) => c.id);
+    expect(run.summary).toContain('2 new issues are commented inline.');
     fake.inject('GET', new RegExp(`^/repos/acme/${repo.name}/pulls/7$`), {
       status: 404,
       body: { message: 'Not Found' },
     });
     fake.clearRequests();
-    await ingest([3, 4]);
+    await ingest([3]);
     await runDecorations(h, githubDeps(h));
-    expect(runsOf(repo.id)).toHaveLength(1);
-    expect(newestRun(repo.id)?.annotations).toHaveLength(2);
-    expect(newestRun(repo.id)?.summary).toContain('2 new issues are annotated inline.');
+    // The check run is edited in place (the gate and the analysis are the new ones, the digest is
+    // always the same); the threads and the summary are as they were.
     expect(writes()).toEqual([`PATCH /repos/acme/${repo.name}/check-runs/${run.id}`]);
+    expect(runsOf(repo.id)).toHaveLength(1);
+    expect(resolvedByLine(repo.id)).toEqual({ 3: false, 4: false });
+    expect(reviewCommentsOf(repo.id).map((c) => c.id)).toEqual(comments);
+    expect(summaries(repo.id)[0]?.body).toBe(summary);
+    expect(newestRun(repo.id)?.annotations).toEqual([]);
   });
 
-  it('leaves the annotations alone when it decorates an analysis that is not the latest', async () => {
+  it('leaves the threads alone when it decorates an analysis that is not the latest', async () => {
     const { repo, ingest } = await setup('gh/older');
     const older = await ingest([3, 4]);
     await runDecorations(h, githubDeps(h));
-    expect(newestRun(repo.id)?.annotations).toHaveLength(2);
+    expect(reviewCommentsOf(repo.id)).toHaveLength(2);
     fake.updatePull(repo.id, 7, { headSha: '2'.repeat(40) });
     await ingest([3, 4], undefined, '2'.repeat(40));
     await runDecorations(h, githubDeps(h));
     const onHead = runsOf(repo.id).filter((r) => r.headSha === HEAD);
     expect(onHead).toHaveLength(1);
+    expect(reviewCommentsOf(repo.id)).toHaveLength(2);
+    const summary = summaries(repo.id)[0]!.body;
     fake.clearRequests();
     await enqueueAgain(older, repo.id);
     await runDecorations(h, githubDeps(h));
+    // Nothing is created, no thread is touched, and the pull request's summary is as it was.
     expect(writes().filter((w) => w.startsWith('POST'))).toEqual([]);
+    expect(threadWrites()).toEqual([]);
     expect(runsOf(repo.id).filter((r) => r.headSha === HEAD)).toHaveLength(1);
-    expect(onHead[0]?.annotations).toHaveLength(2);
+    expect(resolvedByLine(repo.id)).toEqual({ 3: false, 4: false });
+    expect(summaries(repo.id)[0]?.body).toBe(summary);
   });
 
   it('never edits another App’s bot comment that carries a Qualor marker', async () => {
@@ -415,7 +811,7 @@ describe('GitHub decoration (github.md §5–§6)', () => {
       name: statusName(project.key),
       headSha: HEAD,
       conclusion: 'success',
-      externalId: `qualor:v1:${analysisId}:${annotationsDigest([])}`,
+      externalId: `qualor:v1:${analysisId}:${NO_ANNOTATIONS_DIGEST}`,
       detailsUrl: null,
       title: 'theirs',
       summary: 'theirs',
@@ -427,6 +823,78 @@ describe('GitHub decoration (github.md §5–§6)', () => {
     expect(theirs).toMatchObject({ title: 'theirs', summary: 'theirs', conclusion: 'success' });
     expect(writes()).not.toContain(`PATCH /repos/acme/${repo.name}/check-runs/${theirs!.id}`);
     expect(runsOf(repo.id).filter((r) => r.appId === fake.appId)).toHaveLength(1);
+  });
+
+  describe('a check run of 0.11 (ruling T4)', () => {
+    /** A check run as 0.11 made it: annotations on the lines, and their digest in the external id. */
+    const oldRun = (repoId: number, name: string, externalId: string, withAnnotations: boolean) =>
+      fake.addCheckRun(repoId, {
+        name,
+        headSha: HEAD,
+        conclusion: 'failure',
+        externalId,
+        title: 'Quality gate failed: new_issues 2 > 0',
+        summary: '2 new issues are annotated inline.',
+        annotations: withAnnotations
+          ? [3, 4].map((line) => ({
+              path: 'src/a.ts',
+              start_line: line,
+              end_line: line,
+              annotation_level: 'warning',
+              title: 'Medium · maintainability · eslint:no-console',
+              message: 'Problem',
+            }))
+          : [],
+      });
+
+    it('an analysis decorated by 0.11 gets one check run without annotations', async () => {
+      const { project, repo, ingest } = await setup('gh/old-run');
+      const analysisId = await ingest([3, 4]);
+      const old = oldRun(
+        repo.id,
+        statusName(project.key),
+        `qualor:v1:${analysisId}:0123456789abcdef`,
+        true,
+      );
+      fake.clearRequests();
+      await runDecorations(h, githubDeps(h));
+      // GitHub cannot remove an annotation: a new check run replaces the old one, once.
+      expect(runsOf(repo.id)).toHaveLength(2);
+      const fresh = newestRun(repo.id)!;
+      expect(fresh.id).not.toBe(old.id);
+      expect(fresh.annotations).toEqual([]);
+      expect(fresh.externalId).toBe(`qualor:v1:${analysisId}:${NO_ANNOTATIONS_DIGEST}`);
+      expect(old.annotations).toHaveLength(2);
+      expect(writes().filter((w) => w.includes('/check-runs'))).toEqual([
+        `POST /repos/acme/${repo.name}/check-runs`,
+      ]);
+      // The threads took the place of the annotations.
+      expect(reviewCommentsOf(repo.id).map((c) => c.line)).toEqual([3, 4]);
+      // The same job again: nothing but reads.
+      fake.clearRequests();
+      await enqueueAgain(analysisId, repo.id);
+      await runDecorations(h, githubDeps(h));
+      expect(writes()).toEqual([]);
+      expect(runsOf(repo.id)).toHaveLength(2);
+    });
+
+    it('keeps a check run 0.11 made without annotations, and edits it in place', async () => {
+      const { project, repo, ingest } = await setup('gh/old-run-bare');
+      const analysisId = await ingest([3]);
+      const old = oldRun(
+        repo.id,
+        statusName(project.key),
+        `qualor:v1:${analysisId}:${NO_ANNOTATIONS_DIGEST}`,
+        false,
+      );
+      fake.clearRequests();
+      await runDecorations(h, githubDeps(h));
+      expect(runsOf(repo.id)).toEqual([old]);
+      expect(writes().filter((w) => w.includes('/check-runs'))).toEqual([
+        `PATCH /repos/acme/${repo.name}/check-runs/${old.id}`,
+      ]);
+      expect(old.summary).toContain('1 new issue is commented inline.');
+    });
   });
 
   it('creates no summary when the comment list is longer than it reads', async () => {
@@ -444,9 +912,11 @@ describe('GitHub decoration (github.md §5–§6)', () => {
     fake.clearRequests();
     await runDecorations(h, githubDeps(h));
     expect(fake.requests.filter((r) => r.path.includes('/issues/7/comments'))).toHaveLength(50);
-    expect(writes().filter((w) => w.includes('/comments'))).toEqual([]);
+    expect(writes().filter((w) => w.includes('/issues/'))).toEqual([]);
     expect(summaries(repo.id)).toEqual([]);
     expect(runsOf(repo.id)).toHaveLength(1);
+    // The pull request part ran before: the thread is there.
+    expect(reviewCommentsOf(repo.id)).toHaveLength(1);
   });
 
   it('records the pull request link only on the connection’s web base (GH13)', async () => {
@@ -479,10 +949,36 @@ describe('GitHub decoration (github.md §5–§6)', () => {
     expect(await branchOf()).toMatchObject({ mrTitle: 'Refunds @all', mrUrl: null });
   });
 
-  it('sets only the check run of a closed pull request, and of one GitHub does not have', async () => {
+  it('closed pull request: check run only', async () => {
     const closed = await setup('gh/closed');
+    // Threads from while it was open; the pull request is then closed with line 4 fixed.
+    await closed.ingest([3, 4]);
+    await runDecorations(h, githubDeps(h));
+    const summary = summaries(closed.repo.id)[0]!.body;
+    expect(resolvedByLine(closed.repo.id)).toEqual({ 3: false, 4: false });
     fake.updatePull(closed.repo.id, 7, { state: 'closed' });
+    fake.clearRequests();
     await closed.ingest([3]);
+    // Another pull request is closed before its first decoration.
+    const fresh = await setup('gh/closed-fresh');
+    fake.updatePull(fresh.repo.id, 7, { state: 'closed' });
+    await fresh.ingest([3]);
+    await runDecorations(h, githubDeps(h));
+    // The check run is set; no comment is written and no thread is touched.
+    expect(runsOf(closed.repo.id)).toHaveLength(1);
+    expect(runsOf(fresh.repo.id)).toHaveLength(1);
+    expect(newestRun(closed.repo.id)?.annotations).toEqual([]);
+    expect(threadWrites()).toEqual([]);
+    expect(writes().filter((w) => w.includes('/issues/'))).toEqual([]);
+    expect(resolvedByLine(closed.repo.id)).toEqual({ 3: false, 4: false });
+    expect(reviewCommentsOf(closed.repo.id)).toHaveLength(2);
+    expect(summaries(closed.repo.id)[0]?.body).toBe(summary);
+    expect(summaries(fresh.repo.id)).toEqual([]);
+    expect(reviewCommentsOf(fresh.repo.id)).toEqual([]);
+    expect(threadsOf(fresh.repo.id)).toEqual([]);
+  });
+
+  it('sets only the check run of a pull request GitHub does not have', async () => {
     const gone = await setup('gh/gone');
     await gone.project.ingestOk(
       pullRequestReport(99, HEAD, {
@@ -491,9 +987,8 @@ describe('GitHub decoration (github.md §5–§6)', () => {
       }),
     );
     await runDecorations(h, githubDeps(h));
-    expect(runsOf(closed.repo.id)).toHaveLength(1);
-    expect(summaries(closed.repo.id)).toEqual([]);
     expect(runsOf(gone.repo.id)).toHaveLength(1);
+    expect(reviewCommentsOf(gone.repo.id)).toEqual([]);
     expect(await queuedDecorations(h)).toEqual([]); // a 404 on the pull request is not retried
   });
 

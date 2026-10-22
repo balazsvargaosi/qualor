@@ -211,7 +211,7 @@ export async function summaryData(
 
 /**
  * The branch's open new issues with a place, most severe first (scm.md §5.4, github.md §6.4): the
- * ones a decoration comments or annotates inline, each with its rule's documentation link.
+ * ones a decoration comments inline, each with its rule's documentation link.
  */
 export async function desiredInlineIssues(db: Db, branchId: string, limit: number) {
   const rows = await db
@@ -244,7 +244,6 @@ export async function desiredInlineIssues(db: Db, branchId: string, limit: numbe
   // The link to show: a stored dead one becomes the live page, a Qualor rule gets its own page.
   return rows.map((r) => ({ ...r, helpUri: ruleHelpUri(r.ruleKey, r.helpUri) }));
 }
-export type DesiredInlineIssue = Awaited<ReturnType<typeof desiredInlineIssues>>[number];
 
 /** A note body as compared for "changed": the provider may store line ends or a final newline its way. */
 export function comparable(body: string): string {

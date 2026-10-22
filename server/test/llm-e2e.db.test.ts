@@ -420,7 +420,12 @@ describe('the AI assistant end to end (plan 3B, Task 18)', () => {
     const posted = await call('POST', `/ai-requests/${fix.id}/post`, {});
     expect(posted.statusCode, posted.body).toBe(202);
     await runScm(githubDeps(h));
-    const mine = github.reviewComments.filter((c) => c.repoId === repoId);
+    // The fix is one of the pull request's review comments; the other is the issue's own thread.
+    const fixComments = () =>
+      github.reviewComments.filter(
+        (c) => c.repoId === repoId && c.body.startsWith('<!-- qualor:ai-fix '),
+      );
+    const mine = fixComments();
     expect(mine).toHaveLength(1);
     expect(mine[0]).toMatchObject({ path: 'src/a.ts', line: 2, side: 'RIGHT', commitId: HEAD });
     expect(mine[0]!.body).toContain('```suggestion\nif (a === 1) {}\n```');
@@ -428,7 +433,7 @@ describe('the AI assistant end to end (plan 3B, Task 18)', () => {
     const again = await call('POST', `/ai-requests/${fix.id}/post`, {});
     expect([again.statusCode, again.json().detail]).toEqual([409, 'already_posted']);
     await runScm(githubDeps(h));
-    expect(github.reviewComments.filter((c) => c.repoId === repoId)).toHaveLength(1);
+    expect(fixComments()).toHaveLength(1);
   });
 
   it('changes an issue only when a person accepts a triage, and records where it came from', async () => {
