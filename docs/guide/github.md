@@ -221,21 +221,27 @@ server, and a private CA needs `NODE_EXTRA_CA_CERTS`.
   on the changed lines are the review comments below.
 - **A review comment on each new issue** that sits on a line the pull request added, up to 50 per
   pull request, with the rule's key linked to its documentation and, when `QUALOR_PUBLIC_URL` is
-  set, a link to the issue in Qualor. It is a conversation that people can reply to and resolve.
+  set, a link to the issue in Qualor. An analysis posts its new comments together, as one review,
+  so GitHub notifies once. Each comment is a conversation that people can reply to and resolve.
   Qualor resolves the conversation when the issue is fixed or marked in Qualor, and reopens it if
-  the issue comes back. It never reopens a conversation that someone else resolved, and it leaves
-  alone one that a person replied in. A comment keeps the text it was posted with: a severity
-  changed later in Qualor shows in the summary.
+  the issue comes back. It never reopens a conversation that someone else resolved. A reply by
+  someone else only stops Qualor from resolving the conversation: Qualor still reopens a
+  conversation it resolved itself. A comment keeps the text it was posted with: a severity changed
+  later in Qualor shows in the summary. A Qualor comment you delete comes back at the next
+  analysis; to silence one, mark its issue in Qualor.
 - **One summary comment** per pull request, edited in place. It holds the verdict, a table of every
   gate condition with its value and the value it requires, the new issues by severity, the ten most
   severe ones with their rule (linked to the rule's documentation) and a link to each in Qualor, how
   many issues are commented inline and how many could not be placed on the diff, and a link to the
   branch in Qualor.
 - Marking an issue **false positive** or **won't fix** in Qualor re-evaluates the gate at once, with
-  no new scan. The check run is updated in place, and the issue's conversation is resolved.
+  no new scan. The check run is updated in place, and the issue's conversation is resolved (unless
+  someone else replied in it).
 
-GitHub asks integrations to make at most one write a second, and Qualor keeps to that. A pull
-request with many new issues can take a minute or more to get all its comments and its check run.
+The check run is written first, so it never waits for the comments. GitHub asks integrations to
+make at most one write a second, and Qualor keeps to that: an analysis's new comments take one
+write, but each conversation it resolves or reopens takes one more, so when many issues are fixed
+at once their conversations can take a minute or more to follow.
 
 ## 4. Block merges on the gate
 
@@ -243,7 +249,9 @@ Add a branch protection rule (or a ruleset) on the default branch that requires 
 **`qualor`** (the workflow job), or **`qualor/<project key>`** (the App's check run), or both.
 
 If the rule also requires conversations to be resolved before merging, Qualor's open comments block
-the merge until their issues are fixed or marked in Qualor, or a person resolves them.
+the merge, also those on issues that pass the gate (low and info ones, say). Qualor resolves a
+comment when its issue is fixed or marked in Qualor (unless someone else replied in it), and a
+person can resolve it too.
 
 ## Troubleshooting
 
@@ -254,7 +262,8 @@ the merge until their issues are fixed or marked in Qualor, or a person resolves
 | Gate `error`, new code unavailable | `fetch-depth: 0` is missing |
 | No check run | no App connection or mapping, the App is not installed on the repository, or it lacks a permission |
 | No review comment on an issue | the workflow checked out GitHub's merge commit (the summary says "No inline comments"; use the `ref:` of [the workflow](#2-the-workflow)), the issue is not on a line the pull request added, or it is past the 50 per pull request. The summary counts the ones it could not place |
-| A conversation stays open after the issue is fixed | a person replied in it. Qualor leaves such a conversation for people to resolve |
+| A conversation stays open after the issue is fixed or marked | someone else replied in it. Qualor leaves such a conversation for people to resolve |
+| The summary says "Inline comments could not be updated this time." | GitHub failed or refused a request for the review comments: an outage or a rate limit (Qualor tries again on its own), or a missing permission (it tries again at the next analysis). The server log's `GitHub decoration retried` or `GitHub decoration stopped` line says why |
 | `The GitHub repository was not found` after a rename | update the mapping to the new `owner/repo` |
 
 More in [Troubleshooting](./troubleshooting.md).

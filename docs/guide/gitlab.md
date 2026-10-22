@@ -181,10 +181,12 @@ If GitLab's certificate comes from a private CA, give the server that CA with `N
   below Maintainer the old summary stays; delete it by hand.
 - **A discussion on each new issue** that sits on an added line, up to 50 per merge request, with
   the rule's key linked to its documentation. Qualor resolves the discussion when the issue is
-  fixed. It never reopens a thread a person resolved, and it leaves alone a thread a person replied
-  in.
+  fixed or marked in Qualor, and reopens it if the issue comes back. It never reopens a thread a
+  person resolved. A reply by a person only stops Qualor from resolving the thread: Qualor still
+  reopens a thread it resolved itself.
 - Marking an issue **false positive** or **won't fix** in Qualor re-evaluates the gate right away, with
-  no new scan. If that was the only new issue, the status turns green and the thread is resolved.
+  no new scan. If that was the only new issue, the status turns green and the thread is resolved
+  (unless a person replied in it).
 
 Everything a comment quotes from the code is put in code spans. No snippet, no rule text and no link
 that the report controls reaches GitLab, except a rule's documentation link on its key, and only
