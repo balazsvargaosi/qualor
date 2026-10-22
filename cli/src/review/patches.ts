@@ -31,7 +31,7 @@ export interface PatchPair {
 }
 
 /**
- * The most bytes of patches the scanner holds at once (M4), whatever inflated size the server
+ * The most bytes of patches the scanner holds at once, whatever inflated size the server
  * accepts (up to 500 MiB): the raw patches are kept as buffers and then decoded and masked as
  * strings, so the peak is about twice this, and a runner that runs out of memory ends the job.
  * 64 MiB of diffs is already more than a review can use. A merge request with more is `too_large`,

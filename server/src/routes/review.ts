@@ -77,7 +77,10 @@ export const projectAiReviewSchema = z.object({
 const consentAnswerSchema = reviewConsentSchema.omit({ providerUrl: true });
 type ConsentAnswer = z.infer<typeof consentAnswerSchema>;
 
-/** The stored consent as answered: field by field, so a field added to the record is never shown by default. */
+/**
+ * The stored consent as answered, field by field: a field added to the record is not shown by
+ * default.
+ */
 function consentAnswer(consent: ReviewConsent | null): ConsentAnswer | null {
   if (consent === null) return null;
   return {

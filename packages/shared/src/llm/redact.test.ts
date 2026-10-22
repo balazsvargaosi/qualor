@@ -691,7 +691,7 @@ describe('keyBlockLines', () => {
   });
 });
 
-describe('keyBlockLines: the body of a BEGIN line with no END line after it (M2)', () => {
+describe('keyBlockLines: the body of a BEGIN line with no END line after it', () => {
   /** Four dashes: no END marker, as a mistyped or cut line is. */
   const BROKEN_END = j('----END RSA ', 'PRIVATE KEY-----');
   const rows = (n: number) =>

@@ -173,7 +173,7 @@ describe('redactLongText', () => {
     });
   });
 
-  describe('the body of a BEGIN line with no END line is masked over every window (M2)', () => {
+  describe('the body of a BEGIN line with no END line is masked over every window', () => {
     /** Four dashes: no END marker, as a mistyped or cut line is. */
     const BROKEN_END = j('----END RSA ', 'PRIVATE KEY-----');
     const code = (n: number, tag: string) =>

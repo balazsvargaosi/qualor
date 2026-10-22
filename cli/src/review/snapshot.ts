@@ -916,7 +916,7 @@ async function readSources(
     if (c.reason === null && fromHead.unscanned.has(c.path)) c.reason = 'excluded';
   }
   const shown = showable.filter((c) => !fromHead.unscanned.has(c.path));
-  // The patches are held in memory: they get the inflated limit, up to a cap of their own (M4).
+  // The patches are held in memory: they get the inflated limit, up to a cap of their own.
   const patchBudget = Math.min(budget, MAX_PATCH_BUDGET_BYTES);
   const raw = await readRawPatches(git, { base, head }, shown, { budget: patchBudget, log });
   if (raw === 'too_large') return 'too_large';

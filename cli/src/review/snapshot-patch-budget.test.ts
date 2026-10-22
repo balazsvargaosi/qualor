@@ -8,7 +8,7 @@ import { silentLogger } from '../log';
 import type * as Patches from './patches';
 import { buildReviewSnapshot } from './snapshot';
 
-// The cap on the patches held in memory is a constant (M4): a test cannot afford 64 MiB of diffs,
+// The cap on the patches held in memory is a constant: a test cannot afford 64 MiB of diffs,
 // so the snapshot builder gets a cap of 2 000 bytes here, in place of the real constant, which is
 // pinned below.
 vi.mock('./patches', async (importOriginal) => ({
@@ -62,7 +62,7 @@ const build = (mr: { root: string; head: string }, tempRoot: string) =>
     baseSecrets: null,
   });
 
-describe('the budget of the patches a snapshot holds (M4)', () => {
+describe('the budget of the patches a snapshot holds', () => {
   it('is 64 MiB, whatever inflated size the server accepts', async () => {
     const real = await vi.importActual<typeof Patches>('./patches');
     expect(real.MAX_PATCH_BUDGET_BYTES).toBe(64 * MiB);
