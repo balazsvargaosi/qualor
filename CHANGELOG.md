@@ -8,10 +8,15 @@ All notable changes to Qualor are listed here, newest first. The format follows
 
 ### Changed
 
-- GitHub: findings on changed lines are now pull request review comments instead of check run
-  annotations. Qualor resolves a comment when its issue is fixed or marked in Qualor, and reopens
-  it when the issue comes back, unless a person resolved it. The check run keeps the status and
-  the summary.
+- GitHub: findings on changed lines are now pull request review comments, posted together as one
+  review, instead of check run annotations. The check run keeps the status and the summary.
+- GitHub: Qualor resolves a comment when its issue is fixed or marked in Qualor, and reopens it
+  when the issue comes back, unless someone else resolved it (a person or another App). A reply by
+  anyone else keeps a fixed issue's comment open.
+- GitHub, when you upgrade: open pull requests get comments for all their open new issues on
+  changed lines (up to 50 each) at their next analysis. With branch protection that requires
+  conversation resolution, Qualor's open comments now block the merge, including comments on low
+  and info issues that pass the gate. Mark the issue in Qualor, or resolve the comment.
 
 ## [0.11.0] - 2026-10-19
 
