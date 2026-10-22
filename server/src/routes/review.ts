@@ -443,7 +443,7 @@ export const reviewRoutes: FastifyPluginAsyncZod<{
             413: 'SNAPSHOT_TOO_LARGE: over maxCompressedBytes as sent or maxDecompressedBytes inflated (GET /projects/review-context answers both)',
             415: 'UNSUPPORTED_MEDIA_TYPE, or UNSUPPORTED_ENCODING (Content-Encoding must be gzip)',
             422: 'VALIDATION_FAILED, or SNAPSHOT_INVALID (the body is not gzip)',
-            503: 'UPLOADS_BUSY: every upload slot is taken (the report uploads share them); retry after Retry-After',
+            503: 'UPLOADS_BUSY: every upload slot is taken, or all but the last one, which is kept for report uploads (with a single slot, reports and snapshots share it); retry after Retry-After',
           },
           requestBody: {
             required: true,
@@ -532,8 +532,12 @@ export const reviewRoutes: FastifyPluginAsyncZod<{
       if (Number.isFinite(declared) && declared > limits.maxCompressedBytes) {
         throw snapshotTooLarge('compressed', limits.maxCompressedBytes);
       }
-      // S11: one bound with the report uploads, taken before the body is touched.
-      slots.take();
+      // S11: one bound with the report uploads, taken before the body is touched. A snapshot is
+      // optional and holds its slot for the whole transfer of a repository, far longer than a
+      // report does, while the report upload of another scan gives up after a few seconds of 503
+      // and fails that scan. So a snapshot leaves one slot to the reports: snapshots alone can
+      // never fill every slot. With a single slot there is none to leave, and the two share it.
+      slots.take(slots.max > 1 ? { reserve: 1 } : {});
       try {
         sendContinue(request, reply);
         let upload: UploadedReport;

@@ -215,9 +215,11 @@ with server variables ([Server settings](./install-server.md#server-settings)):
 
 A reverse proxy must let bodies this large through, as for reports: raise `client_max_body_size`
 together with the first variable ([Reverse proxy and TLS](./install-server.md#reverse-proxy-and-tls)).
-Snapshots share the server's upload slots with reports (`QUALOR_MAX_CONCURRENT_UPLOADS`). When all
-slots are taken the server answers 503, and the scanner waits and retries. In a Helm install both
-variables go into `extraEnv`.
+Snapshots share the server's upload slots with reports (`QUALOR_MAX_CONCURRENT_UPLOADS`, 4 by
+default), but a snapshot never takes the last free slot: that one stays for reports, so a rush of
+snapshots cannot fail the report uploads of other scans. With only one slot, snapshots and reports
+share it. When no slot is free for a snapshot the server answers 503, and the scanner waits and
+retries. In a Helm install both variables go into `extraEnv`.
 
 Fixed limits: 1 MiB per file, 50 000 files, 256 KiB per diff, 1 024 bytes per path.
 

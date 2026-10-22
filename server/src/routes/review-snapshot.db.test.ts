@@ -13,7 +13,7 @@ import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { bearer } from '../../test/app';
 import { createIngestHarness, type IngestHarness, type IngestProject } from '../../test/ingest';
-import { gzipJson, REPORT_CONTENT_TYPE, sampleReport } from '../../test/reports';
+import { gzipJson, REPORT_CONTENT_TYPE, sampleReport, uploadReport } from '../../test/reports';
 import { mergeRequestReport } from '../../test/scm';
 import { encryptionKey, encryptSecret } from '../crypto/secrets';
 import {
@@ -85,6 +85,98 @@ function snapshotBody(): Buffer {
   return gzipSync(lines.map(encodeSnapshotLine).join(''));
 }
 
+/** The `llm` setting with `h`'s organisation's review on for every project (a current consent). */
+async function configureReviewOf(
+  h: IngestHarness,
+  review: Partial<ReviewSettings> = {},
+): Promise<void> {
+  const base: StoredLlmSettings = { ...DEFAULT_LLM_SETTINGS, provider: PROVIDER };
+  const provider = reviewProvider(base)!;
+  await writeLlmSettings(h.ctx.db, {
+    ...base,
+    organizations: {
+      [h.organizationId]: {
+        enabled: true,
+        features: { explain: true, triage: false, fix: false },
+        excludedProjectIds: [],
+        autoFix: { ...DEFAULT_AUTO_FIX },
+        autoFixDisabledProjectIds: [],
+        review: {
+          ...defaultReview(),
+          enabled: true,
+          scope: 'all',
+          consent: {
+            providerUrl: provider.url,
+            providerHost: provider.host,
+            model: provider.model,
+            userId: h.ctx.adminId,
+            at: new Date().toISOString(),
+          },
+          ...review,
+        },
+      },
+    },
+  });
+}
+
+/** Maps projects to their repository on a GitLab connection of `h`'s organisation (a review needs it). */
+async function mapToGitLab(
+  h: IngestHarness,
+  mapped: readonly (readonly [IngestProject, string])[],
+): Promise<void> {
+  const [connection] = await h.ctx.db
+    .insert(scmConnections)
+    .values({
+      organizationId: h.organizationId,
+      provider: 'gitlab',
+      baseUrl: 'https://gitlab.example.com',
+      tokenEnc: encryptSecret(encryptionKey(h.ctx.config.secretKey), 'x', SCM_TOKEN_AAD),
+    })
+    .returning();
+  for (const [project, ref] of mapped) {
+    await h.ctx.db
+      .update(projects)
+      .set({ scmConnectionId: connection!.id, scmProjectRef: ref })
+      .where(eq(projects.id, project.id));
+  }
+}
+
+/**
+ * A body whose second half is sent only by `release()`: the upload that reads it keeps its slot
+ * until then. `reading` resolves once the upload has started reading (and so holds its slot).
+ */
+function gatedBody(body: Buffer): {
+  stream: Readable;
+  reading: Promise<void>;
+  release: () => void;
+} {
+  const half = Math.ceil(body.length / 2);
+  let started!: () => void;
+  const reading = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let reads = 0;
+  const stream = new Readable({
+    read() {
+      reads += 1;
+      if (reads === 1) {
+        started();
+        this.push(body.subarray(0, half));
+        return;
+      }
+      void gate.then(() => {
+        this.push(body.subarray(half));
+        this.push(null);
+      });
+    },
+  });
+  return { stream, reading, release };
+}
+
 describe('POST /analyses/{id}/review-snapshot (6I-2)', () => {
   let h: IngestHarness;
   /** Mapped to an SCM connection, and selected for review. */
@@ -140,36 +232,7 @@ describe('POST /analyses/{id}/review-snapshot (6I-2)', () => {
       reviewSnapshotHandlers({ db: h.ctx.db, logger: h.ctx.app.log, limits: LIMITS }),
       h.ctx.app.log,
     );
-  /** The `llm` setting with the organisation's review on for every project (a current consent). */
-  const configureReview = async (review: Partial<ReviewSettings> = {}) => {
-    const base: StoredLlmSettings = { ...DEFAULT_LLM_SETTINGS, provider: PROVIDER };
-    const provider = reviewProvider(base)!;
-    await writeLlmSettings(h.ctx.db, {
-      ...base,
-      organizations: {
-        [h.organizationId]: {
-          enabled: true,
-          features: { explain: true, triage: false, fix: false },
-          excludedProjectIds: [],
-          autoFix: { ...DEFAULT_AUTO_FIX },
-          autoFixDisabledProjectIds: [],
-          review: {
-            ...defaultReview(),
-            enabled: true,
-            scope: 'all',
-            consent: {
-              providerUrl: provider.url,
-              providerHost: provider.host,
-              model: provider.model,
-              userId: h.ctx.adminId,
-              at: new Date().toISOString(),
-            },
-            ...review,
-          },
-        },
-      },
-    });
-  };
+  const configureReview = (review: Partial<ReviewSettings> = {}) => configureReviewOf(h, review);
 
   beforeAll(async () => {
     h = await createIngestHarness({
@@ -178,24 +241,10 @@ describe('POST /analyses/{id}/review-snapshot (6I-2)', () => {
     p = await h.project('rs/p');
     q = await h.project('rs/q');
     unmapped = await h.project('rs/unmapped');
-    const [connection] = await h.ctx.db
-      .insert(scmConnections)
-      .values({
-        organizationId: h.organizationId,
-        provider: 'gitlab',
-        baseUrl: 'https://gitlab.example.com',
-        tokenEnc: encryptSecret(encryptionKey(h.ctx.config.secretKey), 'x', SCM_TOKEN_AAD),
-      })
-      .returning();
-    for (const [project, ref] of [
+    await mapToGitLab(h, [
       [p, '7'],
       [q, '8'],
-    ] as const) {
-      await h.ctx.db
-        .update(projects)
-        .set({ scmConnectionId: connection!.id, scmProjectRef: ref })
-        .where(eq(projects.id, project.id));
-    }
+    ]);
     await h.ctx.app.listen({ port: 0, host: '127.0.0.1' });
     port = (h.ctx.app.server.address() as AddressInfo).port;
   });
@@ -399,31 +448,7 @@ describe('POST /analyses/{id}/review-snapshot (6I-2)', () => {
   it('answers 503 UPLOADS_BUSY while a report upload holds the only slot: one bound for both', async () => {
     const analysisId = await mergeRequestAnalysis();
     // A report whose second half is sent only on release(): the slot stays taken until then.
-    const report = gzipJson(sampleReport({ projectKey: p.key }));
-    const half = Math.ceil(report.length / 2);
-    let started!: () => void;
-    const reading = new Promise<void>((resolve) => {
-      started = resolve;
-    });
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    let reads = 0;
-    const stream = new Readable({
-      read() {
-        reads += 1;
-        if (reads === 1) {
-          started();
-          this.push(report.subarray(0, half));
-          return;
-        }
-        void gate.then(() => {
-          this.push(report.subarray(half));
-          this.push(null);
-        });
-      },
-    });
+    const { stream, reading, release } = gatedBody(gzipJson(sampleReport({ projectKey: p.key })));
     const held = h.ctx.app.inject({
       method: 'POST',
       url: `/api/v0/analyses?projectKey=${encodeURIComponent(p.key)}`,
@@ -492,5 +517,70 @@ describe('POST /analyses/{id}/review-snapshot (6I-2)', () => {
       expect(off).not.toContain('100 Continue');
       expect(off).toContain('"code":"AI_REVIEW_OFF"');
     });
+  });
+});
+
+describe('POST /analyses/{id}/review-snapshot: the upload slots it shares with the reports (6I-2)', () => {
+  let h: IngestHarness;
+  let p: IngestProject;
+  let mr = 0;
+
+  const post = (analysisId: string, body: Buffer | Readable) =>
+    h.ctx.app.inject({
+      method: 'POST',
+      url: `/api/v0/analyses/${analysisId}/review-snapshot?projectKey=${encodeURIComponent(p.key)}`,
+      headers: {
+        ...bearer(p.token),
+        'content-type': REVIEW_SNAPSHOT_CONTENT_TYPE,
+        'content-encoding': 'gzip',
+      },
+      payload: body,
+    });
+  const mergeRequestAnalysis = async (): Promise<string> => {
+    mr += 1;
+    return p.ingestOk(mergeRequestReport(mr, 'c'.repeat(40), { projectKey: p.key }));
+  };
+  const snapshotsOf = (analysisId: string) =>
+    h.ctx.db
+      .select({ id: reviewSnapshots.id })
+      .from(reviewSnapshots)
+      .where(eq(reviewSnapshots.analysisId, analysisId));
+
+  beforeAll(async () => {
+    h = await createIngestHarness({
+      config: { reviewSnapshot: LIMITS, maxConcurrentUploads: 2 },
+    });
+    p = await h.project('rs/slots');
+    await mapToGitLab(h, [[p, '7']]);
+    await configureReviewOf(h);
+  });
+  afterAll(async () => {
+    await h.close();
+  });
+
+  it('keeps the last of two slots for the reports: a snapshot is refused while another is read, a report is taken', async () => {
+    const first = await mergeRequestAnalysis();
+    const second = await mergeRequestAnalysis();
+    const held = gatedBody(snapshotBody());
+    const holding = post(first, held.stream);
+    await held.reading;
+    // One snapshot holds one of the two slots. Another would take the one the reports keep.
+    const busy = await post(second, snapshotBody());
+    expect([busy.statusCode, busy.json().code]).toEqual([503, 'UPLOADS_BUSY']);
+    expect(busy.headers['retry-after']).toBe('1');
+    expect(await snapshotsOf(second)).toEqual([]);
+    // A report takes it, though a snapshot is being read.
+    const report = await uploadReport(
+      h.ctx,
+      bearer(p.token),
+      p.key,
+      gzipJson(sampleReport({ projectKey: p.key })),
+    );
+    expect(report).toEqual(expect.any(String));
+    held.release();
+    expect((await holding).statusCode).toBe(202);
+    // The slot is free again: the refused snapshot is taken when it is sent once more.
+    expect((await post(second, snapshotBody())).statusCode).toBe(202);
+    expect(await snapshotsOf(second)).toHaveLength(1);
   });
 });

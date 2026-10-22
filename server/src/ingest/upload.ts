@@ -34,11 +34,17 @@ export const REPORT_UPLOAD_PROBLEMS: UploadProblems = { tooLarge: reportTooLarge
 export class UploadSlots {
   private taken = 0;
 
-  constructor(private readonly max: number) {}
+  /** `max` is the number of slots. */
+  constructor(readonly max: number) {}
 
-  /** Takes a slot, or refuses with 503 UPLOADS_BUSY when none is free; {@link release} frees it. */
-  take(): void {
-    if (this.taken >= this.max) {
+  /**
+   * Takes a slot, or refuses with 503 UPLOADS_BUSY when none is free; {@link release} frees it.
+   * With a `reserve`, a slot is free only while that many others stay free besides it: an upload
+   * that can wait leaves the last slots to those that cannot. A reserve of `max` or more refuses
+   * every take, so a caller with one slot takes without a reserve.
+   */
+  take(options: { reserve?: number } = {}): void {
+    if (this.taken >= this.max - (options.reserve ?? 0)) {
       throw new ProblemError(503, 'UPLOADS_BUSY', 'Too many concurrent uploads; retry shortly', {
         headers: { 'retry-after': '1' },
       });

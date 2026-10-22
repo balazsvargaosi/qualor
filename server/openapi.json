@@ -27314,7 +27314,7 @@
             }
           },
           "503": {
-            "description": "UPLOADS_BUSY: every upload slot is taken (the report uploads share them); retry after Retry-After",
+            "description": "UPLOADS_BUSY: every upload slot is taken, or all but the last one, which is kept for report uploads (with a single slot, reports and snapshots share it); retry after Retry-After",
             "content": {
               "application/problem+json": {
                 "schema": {

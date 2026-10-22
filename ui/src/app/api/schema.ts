@@ -12878,7 +12878,7 @@ export interface paths {
                         "application/problem+json": components["schemas"]["Problem"];
                     };
                 };
-                /** @description UPLOADS_BUSY: every upload slot is taken (the report uploads share them); retry after Retry-After */
+                /** @description UPLOADS_BUSY: every upload slot is taken, or all but the last one, which is kept for report uploads (with a single slot, reports and snapshots share it); retry after Retry-After */
                 503: {
                     headers: {
                         [name: string]: unknown;
