@@ -1,5 +1,6 @@
 import {
   cutAtGrapheme,
+  keyBlockLines,
   LONE_SURROGATE_SOURCE,
   REDACT_MAX_CHARS,
   REDACTED,
@@ -22,11 +23,33 @@ export interface Redacted {
   count: number;
 }
 
-/** The secrets worth masking: 8 characters or more, once each, the longest first. */
+const withoutCr = (line: string): string => (line.endsWith('\r') ? line.slice(0, -1) : line);
+
+/** `secret` with its line ends as LF: a scan of a CRLF working tree, a commit that holds LF. */
+const withLf = (secret: string): string => secret.split('\n').map(withoutCr).join('\n');
+
+/**
+ * The secrets worth masking: 8 characters or more, once each, the longest first. Each comes as
+ * found and with its line ends as LF, since the analyzers read the working tree (CRLF in a
+ * Windows checkout) and the snapshot the commit.
+ */
 export function prepareSecrets(secrets: readonly string[]): string[] {
-  return [...new Set(secrets)]
+  return [...new Set(secrets.flatMap((s) => [s, withLf(s)]))]
     .filter((s) => s.length >= MIN_SECRET_CHARS)
     .sort((a, b) => b.length - a.length);
+}
+
+/**
+ * The lines of every multi-line secret, each without its `\r` and of 8 characters or more: a
+ * patch shows a secret's lines apart, each behind its `+`, `-` or space, so the whole never occurs
+ * in it.
+ */
+export function secretLines(secrets: readonly string[]): string[] {
+  const lines = secrets
+    .filter((s) => s.includes('\n'))
+    .flatMap((s) => s.split('\n').map(withoutCr))
+    .filter((line) => line.length >= MIN_SECRET_CHARS);
+  return [...new Set(lines)];
 }
 
 /**
@@ -69,7 +92,9 @@ export function maskSecrets(text: string, secrets: readonly string[]): Redacted 
 const CONTEXT_LINES = 8;
 /**
  * A window's own lines: at most this many, and at most half of what the shared redaction scans at
- * once (so its context fits around them). A real key block is shorter, so it is seen whole.
+ * once (so its context fits around them). A whole key block is masked over the whole text first,
+ * whatever its length (`maskKeyBlocks`), so a window only decides what a BEGIN or an END line
+ * without its pair means.
  */
 const WINDOW_LINES = 200;
 const CORE_CHARS = Math.floor(REDACT_MAX_CHARS / 2);
@@ -119,21 +144,39 @@ function viewOf(
 }
 
 /**
- * The shared redaction for a text of any length, in windows of at most WINDOW_LINES lines, each
- * scanned with CONTEXT_LINES lines of context on both sides, so a secret over a window's edge is
- * still seen whole. redactText masks a text longer than it scans as a whole, and a file of the
- * snapshot is up to 1 MiB. It also fails closed on a key block's BEGIN line with no END in view,
- * to the end of the view: a file that only names a PEM header (a parser, a test) then loses the
- * rest of that window, not the rest of the file, and a real key block over a window's edge is
- * still masked, from its BEGIN line by that rule and to its END line by the rule for an END line
- * without its BEGIN in view. A single line too long to scan is replaced by «redacted», as a text
- * redactText cannot scan is. The lines stay as many as they were.
+ * Every line of every key block that is whole in `lines` replaced by «redacted»: a BEGIN line to
+ * the next END line after it (keyBlockLines), however many lines lie between and however they are
+ * decorated (a comment's `# `, a string literal, a patch's `-`), which the shared rule for a key
+ * body in clear base64 would miss.
+ */
+function maskKeyBlocks(lines: readonly string[]): { lines: string[]; count: number } {
+  const blocks = keyBlockLines(lines);
+  let count = 0;
+  const masked = lines.map((line, i) => {
+    if (blocks[i] !== true || line === REDACTED) return line;
+    count += 1;
+    return REDACTED;
+  });
+  return { lines: masked, count };
+}
+
+/**
+ * The shared redaction for a text of any length. First every key block whole in the text is
+ * masked (`maskKeyBlocks`); then the text is redacted in windows of at most WINDOW_LINES lines,
+ * each scanned with CONTEXT_LINES lines of context on both sides, so a secret over a window's edge
+ * is still seen whole: redactText masks a text longer than it scans as a whole, and a file of the
+ * snapshot is up to 1 MiB. A BEGIN line with no END after it is the shared rule's, which masks to
+ * the end of the view: a file that only names a PEM header (a parser, a test) loses the rest of
+ * that window, not the rest of the file. A single line too long to scan is replaced by
+ * «redacted», as a text redactText cannot scan is. The lines stay as many as they were.
  */
 export function redactLongText(text: string): Redacted {
-  const lines = text.split('\n');
-  if (lines.length <= WINDOW_LINES && fits(text.length + 1)) return redactText(text);
+  if (text.split('\n', WINDOW_LINES + 1).length <= WINDOW_LINES && fits(text.length + 1)) {
+    return redactText(text);
+  }
+  const { lines, count: blocks } = maskKeyBlocks(text.split('\n'));
   const out: string[] = [];
-  let count = 0;
+  let count = blocks;
   let start = 0;
   while (start < lines.length) {
     if (!fits(lengthOf(lines, start))) {

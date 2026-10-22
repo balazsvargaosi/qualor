@@ -1,19 +1,21 @@
 import { REDACT_MAX_CHARS, REDACTED, redactText } from '@qualor/shared';
 import { describe, expect, it } from 'vitest';
+import { FAKE_KEY } from '../../test/review-snapshot';
 import {
   maskSecrets,
   mergeRequestText,
   prepareSecrets,
   redactLongText,
   redactSnapshotText,
+  secretLines,
 } from './redact';
 
 const j = (...parts: string[]) => parts.join('');
 /** Shapes the shared patterns know, built at run time so no scanner takes them for real ones. */
 const GH = j('gh', 'p_', 'a1B2'.repeat(9));
-const KEY_BEGIN = j('-----BEGIN ', 'RSA PRIVATE KEY-----');
-const KEY_END = j('-----END ', 'RSA PRIVATE KEY-----');
+const { rsaBegin: KEY_BEGIN, rsaEnd: KEY_END, pgpBegin: PGP_BEGIN, pgpEnd: PGP_END } = FAKE_KEY;
 const KEY_BODY = j('MIIEowIBAAKCAQEA', 'q7Zr'.repeat(12));
+const keyLine = FAKE_KEY.line;
 
 describe('prepareSecrets', () => {
   it('keeps the secrets of 8 characters or more, once each, the longest first', () => {
@@ -21,6 +23,24 @@ describe('prepareSecrets', () => {
       'abcdefghij',
       'abcdefgh',
     ]);
+  });
+
+  it('adds each secret with its line ends as LF (a scan of a CRLF working tree, a commit of LF)', () => {
+    expect(prepareSecrets(['line-one-xx\r\nline-two-xx', 'trailing-cr-value\r'])).toEqual([
+      'line-one-xx\r\nline-two-xx',
+      'line-one-xx\nline-two-xx',
+      'trailing-cr-value\r',
+      'trailing-cr-value',
+    ]);
+  });
+});
+
+describe('secretLines', () => {
+  it('is each line of every multi-line secret, of 8 characters or more, without its \\r', () => {
+    // A patch shows a secret's lines apart, each behind its `+`, `-` or space.
+    expect(
+      secretLines(['single-line-secret', 'first-half-of-it\r\nshort\nsecond-half-of-it']),
+    ).toEqual(['first-half-of-it', 'second-half-of-it']);
   });
 });
 
@@ -102,6 +122,45 @@ describe('redactLongText', () => {
     expect(out.slice(300)).toEqual(lines.slice(300));
   });
 
+  describe('a whole key block, however its lines are decorated, is masked over every window', () => {
+    const code = (n: number, tag: string) =>
+      Array.from({ length: n }, (_, i) => `const ${tag}${i} = ${i};`);
+    /** Every line of `block` masked, placed after `before` lines of code; the code around kept. */
+    function expectMasked(block: readonly string[], before: number): void {
+      const lines = [...code(before, 'a'), ...block, ...code(300, 'b')];
+      const out = redactLongText(lines.join('\n')).text.split('\n');
+      expect(out).toHaveLength(lines.length);
+      const shown = block.filter((_, i) => out[before + i] !== REDACTED);
+      expect(shown, `${shown.length} key lines in clear`).toEqual([]);
+      expect(out[before - 1]).toBe(lines[before - 1]);
+      expect(out[before + block.length]).toBe(lines[before + block.length]);
+    }
+    const body = (n: number, decorate: (line: string) => string) =>
+      Array.from({ length: n }, (_, i) => decorate(keyLine(i)));
+
+    it('a 450-line PGP block commented with `# `', () => {
+      expectMasked(
+        [`# ${PGP_BEGIN}`, '#', ...body(450, (l) => `# ${l}`), '# =AbCd', `# ${PGP_END}`],
+        100,
+      );
+    });
+
+    it('a key block written as b"…\\n" literals', () => {
+      const literal = (l: string) => `    b"${l}\\n"`;
+      expectMasked([literal(KEY_BEGIN), ...body(450, literal), literal(KEY_END)], 60);
+    });
+
+    it('a patch that deletes an embedded 450-line block', () => {
+      const removed = (l: string) => `-    "${l}\\n" +`;
+      expectMasked([removed(KEY_BEGIN), ...body(450, removed), removed(KEY_END)], 30);
+    });
+
+    it('a //-commented 230-line RSA block whose BEGIN is at line 190', () => {
+      const comment = (l: string) => `// ${l}`;
+      expectMasked([comment(KEY_BEGIN), ...body(228, comment), comment(KEY_END)], 190);
+    });
+  });
+
   it('replaces a line too long to scan, and only that line', () => {
     const text = ['first', 'x'.repeat(REDACT_MAX_CHARS + 10), 'last'].join('\n');
     expect(redactLongText(text)).toEqual({ text: `first\n${REDACTED}\nlast`, count: 1 });
@@ -138,7 +197,7 @@ describe('mergeRequestText', () => {
   });
 
   it('masks a secret before cutting, so no half of it is left at the cut', () => {
-    const secret = 'cut-me-in-half-1234';
+    const secret = j('cut-me-', 'in-half-1234');
     const text = `${'w'.repeat(10)} ${secret}`;
     // 10 + 1 + the marker's 10 code points.
     const out = mergeRequestText(text, 21, [secret]);

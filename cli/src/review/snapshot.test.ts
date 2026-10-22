@@ -15,11 +15,13 @@ import {
 } from '@qualor/shared';
 import { describe, expect, it } from 'vitest';
 import { fileUrl, GIT_TEST_ENV, gitSync, initRepo } from '../../test/git';
-import { snapshotLines, snapshotText } from '../../test/review-snapshot';
+import { FAKE_KEY, snapshotLines, snapshotText } from '../../test/review-snapshot';
+import { fakeSecret, fakeSecretEngine } from '../../test/secret-engine';
 import { useTempDirs } from '../../test/tmp';
 import { createGit } from '../git/git';
 import { VERSION } from '../index';
 import { createLogger, silentLogger } from '../log';
+import { baseSecretScan } from './base-secrets';
 import { buildReviewSnapshot, type BuiltSnapshot, type SnapshotInput } from './snapshot';
 
 const tmp = useTempDirs();
@@ -109,10 +111,24 @@ function mergeRequest(base: Record<string, Entry>, head: Record<string, Entry>):
   return { root, base: b, head: commitOf(root, head, b) };
 }
 
-function build(mr: { root: string; head: string }, over: Partial<SnapshotInput> = {}) {
+type Engine = 'ok' | 'fail' | 'unavailable' | 'none';
+
+/**
+ * The snapshot of `mr`. The merge base's files go to the fake secret engine (a stand-in for the
+ * scan's Gitleaks, which finds the `qk7-…` tokens), unless `engine` says it fails, cannot run, or
+ * is not part of the scan.
+ */
+function build(
+  mr: { root: string; head: string },
+  over: Partial<SnapshotInput> & { engine?: Engine } = {},
+) {
+  const { engine = 'ok', ...input } = over;
+  const tempRoot = input.tempRoot ?? tmp();
+  const config = input.config ?? CONFIG;
+  const analyzer = engine === 'none' ? null : fakeSecretEngine(tmp(), engine).analyzer;
   return buildReviewSnapshot({
     git: createGit(mr.root, GIT_TEST_ENV),
-    config: CONFIG,
+    config,
     headSha: mr.head,
     targetBranch: 'main',
     sinceSha: null,
@@ -121,8 +137,18 @@ function build(mr: { root: string; head: string }, over: Partial<SnapshotInput> 
     limits: LIMITS,
     policy: { autoFetch: false, deepenSteps: [] },
     log: silentLogger,
-    tempRoot: tmp(),
-    ...over,
+    tempRoot,
+    baseSecrets:
+      analyzer === null
+        ? null
+        : baseSecretScan({
+            analyzers: [analyzer],
+            root: mr.root,
+            config,
+            log: silentLogger,
+            tempRoot,
+          }),
+    ...input,
   });
 }
 
@@ -229,7 +255,7 @@ describe('buildReviewSnapshot: what a merge request sends', () => {
         'ok.ts': 'ok\n',
         'dist/bundle.js': 'bundle\n',
         'generated/x.ts': 'x\n',
-        '.env': 'TOKEN=never-sent-env-value\n',
+        '.env': j('TOKEN', '=never-sent-env-value\n'),
         'config/server.key': 'never-sent-key-value\n',
         'img.png': new Uint8Array([0x89, 0x50, 0x00, 0x01]),
         // git reads this one as text (no NUL in its first 8000 bytes), the snapshot never does.
@@ -286,7 +312,7 @@ describe('buildReviewSnapshot: what a merge request sends', () => {
   });
 
   it('secrets are redacted everywhere', async () => {
-    const secret = 'Zq8x-plain-words-SECRET-42';
+    const secret = j('Zq8x-plain-', 'words-SECRET-42');
     const mr = mergeRequest(
       { 'src/config.ts': 'export const a = 1;\n', 'AGENTS.md': `Never commit ${secret}.\n` },
       {
@@ -376,6 +402,20 @@ describe('buildReviewSnapshot: what a merge request sends', () => {
     expect(changesOf(lines).get('AGENTS.md')?.status).toBe('modified');
   });
 
+  it('redacts an instructions file past its cut, so a secret split over the cut is masked', async () => {
+    // 65 512 bytes, then a key split over two lines: its first half ends just within the cut.
+    const filler = `${`${'x'.repeat(99)}\n`.repeat(655)}${'y'.repeat(11)}\n`;
+    const split = `${j('const k = "AK', 'IA" +')}\n${j('"', 'Z'.repeat(16), '";')}\ntail\n`;
+    const mr = mergeRequest(
+      { 'REVIEW.md': `${filler}${split}` },
+      { 'REVIEW.md': `${filler}${split}`, 'a.ts': 'a\n' },
+    );
+    const text = linesOf(await build(mr)).filter(isInstructions)[0]?.text ?? '';
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(64 * 1024);
+    expect(text.startsWith(filler)).toBe(true);
+    expect(text.slice(filler.length)).toBe(`${REDACTED}\n`);
+  });
+
   it('a path git quotes in its diff header keeps its patch', async () => {
     const mr = mergeRequest(
       { 'a.ts': 'a\n' },
@@ -445,6 +485,213 @@ describe('buildReviewSnapshot: paths it cannot send', () => {
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain('3 paths');
     expect(logs.join('')).not.toContain('\u0001');
+  });
+});
+
+describe('buildReviewSnapshot: renames from a path it cannot send', () => {
+  const OTHER = `${Array.from({ length: 10 }, (_, i) => `other ${i + 1}`).join('\n')}\n`;
+
+  it('sends no patch for one, so `rename from` never names the path', async () => {
+    const mr = mergeRequest(
+      { 'bad\u0001name.ts': TEN, 'dist/x.js': OTHER },
+      {
+        'good.ts': TEN.replace('line 2', 'LINE 2'),
+        'src/x.js': OTHER.replace('other 3', 'OTHER 3'),
+      },
+    );
+    const built = await build(mr);
+    const changes = changesOf(linesOf(built));
+    expect(changes.get('good.ts')).toMatchObject({ status: 'added', oldPath: null, patch: null });
+    expect(changes.get('src/x.js')).toMatchObject({
+      status: 'renamed',
+      oldPath: 'dist/x.js',
+      patch: null,
+    });
+    expect(textOf(built)).not.toContain('rename from');
+  });
+
+  it('omits a file renamed from a credentials file as credentials: its text is never sent', async () => {
+    const env = j('TOKEN', '=never-sent-renamed-value\nOTHER=1\nMORE=2\n');
+    const mr = mergeRequest(
+      { '.env': env, 'a.ts': 'a\n' },
+      { 'env-notes.txt': env, 'a.ts': 'a\n' },
+    );
+    const built = await build(mr);
+    const lines = linesOf(built);
+    expect(omittedOf(lines)).toEqual({ 'env-notes.txt': 'credentials' });
+    expect(changesOf(lines).get('env-notes.txt')).toMatchObject({
+      status: 'renamed',
+      oldPath: '.env',
+      patch: null,
+    });
+    expect(textOf(built)).not.toContain('never-sent-renamed-value');
+  });
+});
+
+describe('buildReviewSnapshot: a secret over several lines', () => {
+  it('is masked in the file and, line by line, in its patch', async () => {
+    const secret = j('first-half-', 'of-it\nsecond-half-', 'of-it');
+    const mr = mergeRequest(
+      { 'a.ts': 'a\n' },
+      { 'a.ts': 'a\n', 'src/two.ts': `a\n${secret}\nb\n` },
+    );
+    const built = await build(mr, { secrets: [secret] });
+    const text = textOf(built);
+    expect(text).not.toContain(j('first-half-', 'of-it'));
+    expect(text).not.toContain(j('second-half-', 'of-it'));
+    const lines = linesOf(built);
+    expect(filesOf(lines)['src/two.ts']).toBe(`a\n${REDACTED}\nb\n`);
+    expect(changesOf(lines).get('src/two.ts')?.patch).toContain(
+      `\n+a\n+${REDACTED}\n+${REDACTED}\n+b\n`,
+    );
+  });
+
+  it('is masked when the scan found it with CRLF line ends and the commit holds LF', async () => {
+    const one = j('crlf-line-one-', 'of-it');
+    const two = j('crlf-line-two-', 'of-it');
+    const trailing = j('trailing-cr-', 'secret-value');
+    const mr = mergeRequest(
+      { 'a.ts': 'a\n' },
+      { 'a.ts': 'a\n', 'src/crlf.ts': `x\n${one}\n${two}\ny = ${trailing}\n` },
+    );
+    // A Windows checkout's working tree has CRLF; the commit, which the snapshot reads, has LF.
+    const built = await build(mr, { secrets: [`${one}\r\n${two}`, `${trailing}\r`] });
+    const text = textOf(built);
+    for (const piece of [one, two, trailing]) expect(text).not.toContain(piece);
+    expect(filesOf(linesOf(built))['src/crlf.ts']).toBe(`x\n${REDACTED}\ny = ${REDACTED}\n`);
+  });
+
+  it('masks every line of a key block a patch removes, over every window', async () => {
+    const code = (n: number, tag: string) =>
+      Array.from({ length: n }, (_, i) => `const ${tag}${i} = ${i};`);
+    const body = Array.from({ length: 450 }, (_, i) => FAKE_KEY.line(i));
+    const block = [FAKE_KEY.rsaBegin, ...body, FAKE_KEY.rsaEnd].map((l) => `    "${l}\\n" +`);
+    const mr = mergeRequest(
+      { 'src/keys.ts': `${[...code(30, 'a'), ...block, ...code(30, 'b')].join('\n')}\n` },
+      { 'src/keys.ts': `${[...code(30, 'a'), ...code(30, 'b')].join('\n')}\n` },
+    );
+    const patch = changesOf(linesOf(await build(mr))).get('src/keys.ts')?.patch ?? '';
+    expect(body.filter((line) => patch.includes(line))).toEqual([]);
+    expect(patch).toContain(`\n-${REDACTED}\n`);
+  });
+});
+
+describe("buildReviewSnapshot: the merge base's secrets (R13)", () => {
+  const SECRET = fakeSecret('base-only-SECRET-77aa');
+  /** An MR that removes two lines, one holding a secret the head (so the scan) no longer has. */
+  const removal = (): Mr =>
+    mergeRequest(
+      {
+        'src/old.ts': `const a = 1;\n// remember ${SECRET}\n// and more\nconst b = 2;\n`,
+        'src/keep.ts': 'k\n',
+      },
+      { 'src/old.ts': 'const a = 1;\nconst b = 2;\n', 'src/keep.ts': 'k\n' },
+    );
+  /** What is left in `tempRoot` besides the snapshot itself. */
+  const leftovers = (tempRoot: string, built: BuiltSnapshot): string[] =>
+    readdirSync(tempRoot).filter(
+      (name) => built.kind !== 'built' || name !== path.basename(path.dirname(built.file)),
+    );
+
+  it('masks a secret only the scan of the merge base finds, in the patch and everywhere else', async () => {
+    const mr = mergeRequest(
+      {
+        'src/old.ts': `const a = 1;\n// remember ${SECRET}\n// and more\nconst b = 2;\n`,
+        'AGENTS.md': `Rules ${SECRET}.\n`,
+      },
+      {
+        'src/old.ts': 'const a = 1;\nconst b = 2;\n',
+        'AGENTS.md': `Rules ${SECRET}.\n`,
+        'src/moved.ts': `// ${SECRET}\n`,
+      },
+    );
+    const tempRoot = tmp();
+    const built = await build(mr, { tempRoot });
+    expect(textOf(built)).not.toContain(SECRET);
+    const lines = linesOf(built);
+    expect(changesOf(lines).get('src/old.ts')?.patch).toContain(
+      `\n-// remember ${REDACTED}\n-// and more\n`,
+    );
+    expect(lines.filter(isInstructions)).toEqual([
+      { type: 'instructions', name: 'AGENTS.md', text: `Rules ${REDACTED}.\n` },
+    ]);
+    expect(filesOf(lines)['src/moved.ts']).toBe(`// ${REDACTED}\n`);
+    // The merge base's files and the engine's work directory are gone: only the snapshot is left.
+    expect(leftovers(tempRoot, built)).toEqual([]);
+    if (built.kind === 'built') await built.cleanup();
+    expect(readdirSync(tempRoot)).toEqual([]);
+  });
+
+  it('without a secret engine, sends no removed line: each run of them is one marker line', async () => {
+    const tempRoot = tmp();
+    const built = await build(removal(), { engine: 'none', tempRoot });
+    expect(textOf(built)).not.toContain(SECRET);
+    const patch = changesOf(linesOf(built)).get('src/old.ts')?.patch ?? '';
+    expect(patch.split('\n').slice(-5)).toEqual([
+      '@@ -1,3 +1,2 @@',
+      ' const a = 1;',
+      '-[2 removed lines not sent]',
+      ' const b = 2;',
+      '',
+    ]);
+    expect(leftovers(tempRoot, built)).toEqual([]);
+  });
+
+  it('an engine that fails on the merge base, cannot run, or throws, counts as none', async () => {
+    const throwing = { baseSecrets: () => Promise.reject(new Error('the engine broke')) };
+    for (const over of [
+      { engine: 'fail' as const },
+      { engine: 'unavailable' as const },
+      throwing,
+    ]) {
+      const tempRoot = tmp();
+      const built = await build(removal(), { ...over, tempRoot });
+      expect(textOf(built)).not.toContain(SECRET);
+      const patch = changesOf(linesOf(built)).get('src/old.ts')?.patch ?? '';
+      expect(patch).toContain('\n-[2 removed lines not sent]\n');
+      expect(leftovers(tempRoot, built)).toEqual([]);
+    }
+  });
+
+  it('sends no removed line of a changed file the scan of the merge base did not hold', async () => {
+    // Gitleaks would read a root .gitleaksignore as its own: it is never put where it scans.
+    const mr = mergeRequest(
+      { '.gitleaksignore': 'old-entry\n', 'a.ts': 'x\ny\n' },
+      { '.gitleaksignore': 'new-entry\n', 'a.ts': 'x\nz\n' },
+    );
+    const changes = changesOf(linesOf(await build(mr)));
+    expect(changes.get('.gitleaksignore')?.patch).toContain(
+      '\n-[1 removed line not sent]\n+new-entry\n',
+    );
+    expect(changes.get('a.ts')?.patch).toContain('\n-y\n+z\n');
+  });
+
+  it('leaves out a path holding a secret of the merge base, as one holding the scan’s', async () => {
+    // The scan of the merge base finds the secret in notes.txt; two paths name it too.
+    const named = fakeSecret('path-SECRET-1234');
+    const mr = mergeRequest(
+      { 'notes.txt': `see ${named}\n`, [`old-${named}.ts`]: TEN, [`gone-${named}.ts`]: 'g\n' },
+      { 'notes.txt': 'see nothing\n', 'renamed.ts': TEN.replace('line 4', 'LINE 4') },
+    );
+    const built = await build(mr);
+    expect(textOf(built)).not.toContain(named);
+    const changes = changesOf(linesOf(built));
+    expect([...changes.keys()].sort()).toEqual(['notes.txt', 'renamed.ts']);
+    expect(changes.get('renamed.ts')).toMatchObject({
+      status: 'added',
+      oldPath: null,
+      patch: null,
+    });
+  });
+
+  it('removes the merge base files when the snapshot is too large', async () => {
+    const tempRoot = tmp();
+    const built = await build(removal(), {
+      tempRoot,
+      limits: { ...LIMITS, maxDecompressedBytes: 300 },
+    });
+    expect(built).toEqual({ kind: 'unavailable', reason: 'too_large' });
+    expect(readdirSync(tempRoot)).toEqual([]);
   });
 });
 

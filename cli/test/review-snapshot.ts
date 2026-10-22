@@ -3,6 +3,19 @@ import { gunzipSync } from 'node:zlib';
 import { MAX_SNAPSHOT_ROWS, parseSnapshotLine, type SnapshotLine } from '@qualor/shared';
 import { expect } from 'vitest';
 
+const j = (...parts: string[]) => parts.join('');
+
+/** The lines of a fake private key, built at run time so no scanner takes them for real ones. */
+export const FAKE_KEY = {
+  rsaBegin: j('-----BEGIN ', 'RSA PRIVATE KEY-----'),
+  rsaEnd: j('-----END ', 'RSA PRIVATE KEY-----'),
+  pgpBegin: j('-----BEGIN PGP ', 'PRIVATE', ' KEY BLOCK-----'),
+  pgpEnd: j('-----END PGP ', 'PRIVATE', ' KEY BLOCK-----'),
+  /** Line `i` of a key body: base64 letters and digits, never a real key. */
+  line: (i: number): string =>
+    j('lQOYBF', String(i).padStart(4, '0'), 'Qm9ndXMga2V5IGJvZHk'.repeat(2)),
+};
+
 const KINDS = ['header', 'instructions', 'change', 'file', 'omitted', 'end'] as const;
 
 /**

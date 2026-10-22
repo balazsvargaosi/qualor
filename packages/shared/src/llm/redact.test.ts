@@ -2,7 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { REDACTED } from '../sarif/normalize';
 import { sampleInput } from '../../test/llm';
 import { buildPrompt } from './prompts';
-import { REDACT_MAX_CHARS, redactInput, redactText, SECRET_PATTERNS } from './redact';
+import {
+  keyBlockLines,
+  REDACT_MAX_CHARS,
+  redactInput,
+  redactText,
+  SECRET_PATTERNS,
+} from './redact';
 
 const j = (...parts: string[]) => parts.join('');
 const AWS = j('AK', 'IA', 'Z'.repeat(16));
@@ -643,5 +649,44 @@ describe('redactText: secrets glued from pieces', () => {
     ]) {
       expect(redactText(text)).toEqual({ text, count: 0 });
     }
+  });
+});
+
+describe('keyBlockLines', () => {
+  it('marks every whole key block from its BEGIN line to its END line, however decorated', () => {
+    const lines = [
+      'const a = 1;',
+      `# ${BEGIN()}`,
+      `# ${body('MIIEo1')}`,
+      `# ${END()}`,
+      'const b = 2;',
+      `-    "${BEGIN('EC ')}" +`,
+      `-    "${body('AbCd2')}" +`,
+      `-    "${END('EC ')}";`,
+      `one line: ${BEGIN()} ${body('Zz9')} ${END()}`,
+      'tail',
+    ];
+    expect(keyBlockLines(lines)).toEqual([
+      false,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+    ]);
+  });
+
+  it('leaves a BEGIN line without an END after it, and an END line before any BEGIN, to the caller', () => {
+    expect(keyBlockLines([END(), 'x', BEGIN(), body('MIIEo1')])).toEqual([
+      false,
+      false,
+      false,
+      false,
+    ]);
+    expect(keyBlockLines([])).toEqual([]);
   });
 });

@@ -4,15 +4,12 @@ import path from 'node:path';
 import {
   BUILTIN_EXCLUDES,
   encodeSnapshotLine,
-  INSTRUCTION_FILES,
   isCredentialsFile,
-  MAX_INSTRUCTIONS_BYTES,
   MAX_MR_DESCRIPTION_CHARS,
   MAX_MR_TITLE_CHARS,
   MAX_SNAPSHOT_FILE_BYTES,
   MAX_SNAPSHOT_FILES,
   MAX_SNAPSHOT_LINE_BYTES,
-  MAX_SNAPSHOT_PATCH_BYTES,
   MAX_SNAPSHOT_PATH_BYTES,
   SNAPSHOT_VERSION,
   snapshotHeaderSchema,
@@ -25,35 +22,26 @@ import {
 } from '@qualor/shared';
 import { globMatcher } from '../discovery/discover';
 import { ensureCommit, mergeBaseBaseline, REVISION, type FetchPolicy } from '../git/baseline';
-import {
-  diffHeaderLine,
-  DiffSplitter,
-  parseBinaryPaths,
-  parseNameStatusZ,
-  parseUnifiedDiff,
-  type NameStatus,
-} from '../git/diff';
+import { parseBinaryPaths, parseNameStatusZ, parseUnifiedDiff, type NameStatus } from '../git/diff';
 import { gitText, type Git } from '../git/git';
 import { parseLsTreeLong, readObjects, type TreeEntry } from '../git/objects';
 import { VERSION } from '../index';
 import type { Logger } from '../log';
 import { Warnings } from '../warnings';
-import {
-  maskSecrets,
-  mergeRequestText,
-  prepareSecrets,
-  redactLongText,
-  redactSnapshotText,
-} from './redact';
+import { scanMergeBase, type BaseSecretScan, type MergeBaseScan } from './base-secrets';
+import { instructionLines, readInstructionFiles, type InstructionsFile } from './instructions';
+import { DIFF_OPTIONS, finishPatch, readRawPatches, type Patch } from './patches';
+import { mergeRequestText, prepareSecrets, redactSnapshotText, secretLines } from './redact';
 import { planSnapshot, writeSnapshot, type Candidate, type SnapshotParts } from './snapshot-plan';
 
 /*
- * The repository snapshot of a merge request for the AI review (6I-2, rulings R2, R4, R12,
+ * The repository snapshot of a merge request for the AI review (6I-2, rulings R2, R4, R12, R13,
  * C3, C4): gzip'd JSON Lines of the merge request's head commit, read from git objects (never the
  * working tree), its diff against the merge base, the lines changed since the last reviewed
  * commit, and the instructions files of the merge base. The snapshot leaves the CI machine with
  * the customer's code: credentials files and excluded files are never sent, and every text is
- * masked (./redact.ts).
+ * masked (./redact.ts), with the secrets the scan found and those the scan's secret engine finds
+ * in the merge base's files (./base-secrets.ts).
  *
  * Paths are those of the scan's root, as the report's are: `git ls-tree` lists the root's part of
  * the tree, and every diff runs with `--relative`. They are kept exactly as git gives them.
@@ -70,6 +58,11 @@ export interface SnapshotInput {
   mergeRequest: { id: string; title: string | null; description: string | null };
   /** The analyzers' secret texts and the token. */
   secrets: readonly string[];
+  /**
+   * The scan's secret engine over the merge base's files (`baseSecretScan`, ruling R13): what it
+   * finds is masked too. Null when the scan runs none: then no patch sends a removed line.
+   */
+  baseSecrets: BaseSecretScan | null;
   /** The server's limits (`GET /projects/review-context`). */
   limits: {
     maxCompressedBytes: number;
@@ -110,23 +103,9 @@ const SNAPSHOT_FILE = 'review-snapshot.jsonl.gz';
 const LINES_FILE = 'files.jsonl';
 /** A rebuilt snapshot aims at this share of the compressed limit. */
 const REBUILD_SHARE = 0.9;
-/** A regular file's mode in a tree (`100644`, `100755`, the old `100664`). */
-const REGULAR_FILE = /^100\d{3}$/;
-/** An instructions file is cut to MAX_INSTRUCTIONS_BYTES; one beyond this is not read at all. */
-const MAX_INSTRUCTIONS_READ = 16 * 1024 * 1024;
 const UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 /** What git's bytes that are not UTF-8 read as (the Git runner decodes its output as UTF-8). */
 const REPLACEMENT_CHARACTER = String.fromCodePoint(0xfffd);
-/** Options of every diff: the bytes as committed, the scan root's paths, `a/` and `b/`. */
-const DIFF_OPTIONS = [
-  '-M',
-  '--relative',
-  '--no-color',
-  '--no-ext-diff',
-  '--no-textconv',
-  '--src-prefix=a/',
-  '--dst-prefix=b/',
-];
 
 /** The scan's log, with the merge base's warnings demoted: this snapshot reports what it lacks. */
 function quiet(log: Logger): Logger {
@@ -148,7 +127,16 @@ function quiet(log: Logger): Logger {
  */
 class LeftOut {
   private readonly paths = new Set<string>();
-  constructor(private readonly secrets: readonly string[]) {}
+  private secrets: readonly string[];
+
+  constructor(secrets: readonly string[]) {
+    this.secrets = secrets;
+  }
+
+  /** Secrets found later (in the merge base's files): a path holding one is left out too. */
+  addSecrets(secrets: readonly string[]): void {
+    this.secrets = [...this.secrets, ...secrets];
+  }
 
   sendable(p: string): boolean {
     const ok =
@@ -251,6 +239,8 @@ interface Change {
   status: SnapshotChange;
   /** The path git compared it with: a rename's or a copy's source, else the path itself. */
   from: string;
+  /** Its patch may be sent: never one from a path that cannot be, which its header would name. */
+  patchable: boolean;
 }
 
 const STATUSES: Record<string, SnapshotChange> = {
@@ -264,15 +254,17 @@ const STATUSES: Record<string, SnapshotChange> = {
 
 /**
  * A pair of `git diff --name-status`, as sent: null when its path cannot be. A rename from a path
- * that cannot be sent is sent as `added`: the path did not exist at the merge base either way.
+ * that cannot be sent is sent as `added` (the path did not exist at the merge base either way),
+ * without its patch, whose `rename from` line would name that path.
  */
 function changeOf(entry: NameStatus, left: LeftOut): Change | null {
   const status = STATUSES[entry.status];
   if (status === undefined || !left.sendable(entry.path)) return null;
   const from = entry.from ?? entry.path;
-  if (status !== 'renamed') return { path: entry.path, oldPath: null, status, from };
-  if (left.sendable(from)) return { path: entry.path, oldPath: from, status, from };
-  return { path: entry.path, oldPath: null, status: 'added', from };
+  const patchable = from === entry.path || left.sendable(from);
+  if (status !== 'renamed') return { path: entry.path, oldPath: null, status, from, patchable };
+  if (patchable) return { path: entry.path, oldPath: from, status, from, patchable };
+  return { path: entry.path, oldPath: null, status: 'added', from, patchable };
 }
 
 /** What the merge request did, one change per path. */
@@ -299,81 +291,57 @@ async function readChanges(git: Git, base: string, head: string, left: LeftOut):
   return changes;
 }
 
-interface Patch {
-  text: string;
-  redactions: number;
+/** A change has an old side, the merge base's lines its patch removes: all but a plain add. */
+const hasOldSide = (c: Change): boolean => c.status !== 'added' || c.from !== c.path;
+
+/**
+ * The changes and the candidates without a path that holds a secret found since they were read
+ * (in the merge base's files): a rename or a copy from such a path loses its old path and patch.
+ */
+function stillSendable(
+  changes: readonly Change[],
+  candidates: readonly Candidate[],
+  left: LeftOut,
+): { changes: Change[]; candidates: Candidate[] } {
+  const kept = changes
+    .filter((c) => left.sendable(c.path))
+    .map((c): Change => {
+      if (c.from === c.path || left.sendable(c.from)) return c;
+      return {
+        ...c,
+        status: c.status === 'renamed' ? 'added' : c.status,
+        oldPath: null,
+        patchable: false,
+      };
+    });
+  return { changes: kept, candidates: candidates.filter((c) => left.sendable(c.path)) };
 }
 
-interface TextRules {
-  secrets: readonly string[];
+interface PathRules {
   excluded: (p: string) => boolean;
+  maxFileBytes: number;
 }
 
 /** A credentials or excluded file is never sent, nor what its patch shows of it. */
-const mayShow = (p: string, rules: TextRules): boolean =>
+const mayShow = (p: string, rules: PathRules): boolean =>
   !isCredentialsFile(p) && !rules.excluded(p);
 
-/** A patch as sent: null over the bound, with a NUL, or not UTF-8. */
-function finishPatch(bytes: Buffer, secrets: readonly string[]): Patch | null {
-  if (bytes.length > MAX_SNAPSHOT_PATCH_BYTES || bytes.includes(0)) return null;
-  let text: string;
-  try {
-    text = UTF8.decode(bytes);
-  } catch {
-    return null;
-  }
-  const masked = redactSnapshotText(text, secrets);
-  if (Buffer.byteLength(masked.text, 'utf8') > MAX_SNAPSHOT_PATCH_BYTES) return null;
-  return { text: masked.text, redactions: masked.count };
-}
-
 /**
- * The patches, from one `git diff` against the merge base read as a stream and cut per
- * `diff --git` header (a type change has two). A patch over MAX_SNAPSHOT_PATCH_BYTES is never held;
- * the patches held stay within `budget` (or the snapshot is too large: they always go in).
+ * The patches as sent. A patch's removed lines are sent only when the scan of the merge base held
+ * its old side; `secrets` holds the lines of the multi-line ones too (a patch shows them apart).
  */
-async function readPatches(
-  git: Git,
-  base: string,
-  head: string,
+function finishPatches(
+  raw: ReadonlyMap<string, Buffer>,
   changes: readonly Change[],
-  o: TextRules & { budget: number; log: Logger },
-): Promise<Map<string, Patch> | 'too_large'> {
-  const shown = changes.filter((c) => mayShow(c.path, o) && mayShow(c.from, o));
-  const byHeader = new Map(shown.map((c) => [diffHeaderLine(c.from, c.path), c.path]));
-  /** A path's pieces, or null once they are over the bound. */
-  const pieces = new Map<string, Buffer[] | null>();
-  let held = 0;
-  const splitter = new DiffSplitter(MAX_SNAPSHOT_PATCH_BYTES, (header, patch) => {
-    const p = byHeader.get(header);
-    if (p === undefined) return;
-    const before = pieces.get(p);
-    if (before === null) return;
-    if (patch === null) {
-      pieces.set(p, null);
-      return;
-    }
-    held += patch.length;
-    pieces.set(p, [...(before ?? []), patch]);
-  });
-  const r = await git(['diff', '-U3', ...DIFF_OPTIONS, base, head, '--'], {
-    onStdout: (chunk) => {
-      splitter.push(chunk);
-      return held <= o.budget;
-    },
-  });
-  if (held > o.budget) return 'too_large';
+  o: { secrets: readonly string[]; scanned: ReadonlySet<string> },
+): Map<string, Patch> {
   const patches = new Map<string, Patch>();
-  if (r.code !== 0) {
-    o.log.warn(
-      `AI review: the merge request's diff could not be read, so the snapshot has no patches: ${r.stderr.trim()}`,
-    );
-    return patches;
-  }
-  splitter.end();
-  for (const [p, parts] of pieces) {
-    const patch = parts === null ? null : finishPatch(Buffer.concat(parts), o.secrets);
-    if (patch !== null) patches.set(p, patch);
+  for (const c of changes) {
+    const bytes = raw.get(c.path);
+    if (bytes === undefined || !c.patchable) continue;
+    const removedLinesScanned = !hasOldSide(c) || o.scanned.has(c.from);
+    const patch = finishPatch(bytes, { secrets: o.secrets, removedLinesScanned });
+    if (patch !== null) patches.set(c.path, patch);
   }
   return patches;
 }
@@ -458,91 +426,14 @@ function changeLines(
   );
 }
 
-// ─── Instructions (C4) ───────────────────────────────────────────────────────
-
-/** `text` cut to at most `maxBytes` UTF-8 bytes: at a line's end, or a character's if none fits. */
-function cutAtLine(text: string, maxBytes: number): string {
-  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text;
-  const bytes = Buffer.from(text, 'utf8');
-  const lf = bytes.lastIndexOf(0x0a, maxBytes - 1);
-  if (lf !== -1) return bytes.subarray(0, lf + 1).toString('utf8');
-  let end = maxBytes;
-  while (end > 0 && ((bytes[end] ?? 0) & 0xc0) === 0x80) end -= 1;
-  return bytes.subarray(0, end).toString('utf8');
-}
-
-/** An instructions file as sent: the secrets masked before the cut, redacted after it. */
-function instructionsText(
-  content: Buffer,
-  secrets: readonly string[],
-): { text: string; count: number } | null {
-  if (content.includes(0)) return null;
-  let text: string;
-  try {
-    text = UTF8.decode(content);
-  } catch {
-    return null;
-  }
-  const masked = maskSecrets(text, secrets);
-  const redacted = redactLongText(cutAtLine(masked.text, MAX_INSTRUCTIONS_BYTES));
-  return {
-    text: cutAtLine(redacted.text, MAX_INSTRUCTIONS_BYTES),
-    count: masked.count + redacted.count,
-  };
-}
-
-/** AGENTS.md, CLAUDE.md and REVIEW.md of the repository's root, as the merge base has them (C4). */
-async function readInstructions(
-  git: Git,
-  base: string,
-  secrets: readonly string[],
-): Promise<{ lines: string[]; redactions: number }> {
-  const listed = parseLsTreeLong(
-    await gitText(git, [
-      'ls-tree',
-      '-z',
-      '--long',
-      '--full-tree',
-      base,
-      '--',
-      ...INSTRUCTION_FILES,
-    ]),
-  );
-  const files = INSTRUCTION_FILES.flatMap((name) => {
-    const entry = listed.find((e) => e.path === name);
-    const readable =
-      entry !== undefined &&
-      entry.type === 'blob' &&
-      REGULAR_FILE.test(entry.mode) &&
-      (entry.size ?? Infinity) <= MAX_INSTRUCTIONS_READ;
-    return readable ? [{ name, oid: entry.oid }] : [];
-  });
-  const lines: string[] = [];
-  let redactions = 0;
-  await readObjects(
-    git,
-    files.map((f) => f.oid),
-    (i, content) => {
-      const name = files[i]?.name;
-      const sent = content === null ? null : instructionsText(content, secrets);
-      if (name !== undefined && sent !== null) {
-        lines.push(encodeSnapshotLine({ type: 'instructions', name, text: sent.text }));
-        redactions += sent.count;
-      }
-      return true;
-    },
-  );
-  return { lines, redactions };
-}
-
 // ─── The files ───────────────────────────────────────────────────────────────
 
-interface FileRules extends TextRules {
-  maxFileBytes: number;
+interface FileRules extends PathRules {
+  secrets: readonly string[];
 }
 
 /** Why a tree entry has no text, before it is read; null when it is to be read. */
-function treeReason(entry: TreeEntry, rules: FileRules): OmissionReason | null {
+function treeReason(entry: TreeEntry, rules: PathRules): OmissionReason | null {
   if (entry.mode === '120000') return 'symlink';
   if (entry.mode === '160000' || entry.type !== 'blob') return 'submodule';
   if (rules.excluded(entry.path)) return 'excluded';
@@ -551,14 +442,21 @@ function treeReason(entry: TreeEntry, rules: FileRules): OmissionReason | null {
   return null;
 }
 
-/** The head commit's files that can be sent, as candidates (not yet ordered). */
+/**
+ * The head commit's files that can be sent, as candidates (not yet ordered). A file renamed or
+ * copied from a credentials file is one, whatever its new name: it holds what that held.
+ */
 async function readTree(
   git: Git,
   head: string,
-  changed: ReadonlySet<string>,
-  rules: FileRules,
+  changes: readonly Change[],
+  rules: PathRules,
   left: LeftOut,
 ): Promise<Candidate[]> {
+  const changed = new Set(changes.filter((c) => c.status !== 'deleted').map((c) => c.path));
+  const fromCredentials = new Set(
+    changes.filter((c) => c.from !== c.path && isCredentialsFile(c.from)).map((c) => c.path),
+  );
   const entries = parseLsTreeLong(await gitText(git, ['ls-tree', '-r', '-z', '--long', head]));
   return entries
     .filter((e) => left.sendable(e.path))
@@ -566,7 +464,7 @@ async function readTree(
       path: e.path,
       oid: e.oid,
       changed: changed.has(e.path),
-      reason: treeReason(e, rules),
+      reason: treeReason(e, rules) ?? (fromCredentials.has(e.path) ? 'credentials' : null),
       line: null,
       missing: false,
     }));
@@ -652,9 +550,27 @@ async function readFiles(
 
 // ─── The snapshot ────────────────────────────────────────────────────────────
 
-function checkedHeader(
-  header: Omit<SnapshotHeaderLine, 'partial'>,
-): Omit<SnapshotHeaderLine, 'partial'> {
+type Header = Omit<SnapshotHeaderLine, 'partial'>;
+
+function headerOf(
+  input: SnapshotInput,
+  base: string,
+  since: Since | null,
+  texts: { title: string | null; description: string | null },
+): Header {
+  return {
+    type: 'header',
+    v: SNAPSHOT_VERSION,
+    headSha: input.headSha,
+    baseSha: base,
+    sinceSha: since?.sha ?? null,
+    targetBranch: input.targetBranch,
+    mergeRequest: { id: input.mergeRequest.id, ...texts },
+    generator: GENERATOR,
+  };
+}
+
+function checkedHeader(header: Header): Header {
   const parsed = snapshotHeaderSchema.safeParse({ ...header, partial: false });
   if (parsed.success) return header;
   const issue = parsed.error.issues[0];
@@ -709,9 +625,9 @@ async function writeWithinLimits(
   return unavailable('too_large');
 }
 
-/** What the snapshot is made of, read from git before any file is. */
+/** What the snapshot is made of, before any file is read. */
 interface Sources {
-  header: Omit<SnapshotHeaderLine, 'partial'>;
+  header: Header;
   rules: FileRules;
   limits: SnapshotInput['limits'];
   changes: Change[];
@@ -723,57 +639,101 @@ interface Sources {
   redactions: number;
 }
 
+/** What `readSources` read from git, before anything is masked. */
+interface Read {
+  base: string;
+  since: Since | null;
+  limits: SnapshotInput['limits'];
+  paths: PathRules;
+  left: LeftOut;
+  changes: Change[];
+  tree: Candidate[];
+  raw: Map<string, Buffer>;
+  instructions: InstructionsFile[];
+  scanned: MergeBaseScan;
+}
+
 /**
  * What the snapshot is made of, once the head and the merge base are known: too large when its
- * patches are.
+ * patches are. The merge base's files the snapshot shows parts of (the old side of each patch,
+ * the instructions files) go to the scan's secret engine first (R13), so the secrets of the
+ * merge base are masked with the scan's own, everywhere.
  */
 async function readSources(input: SnapshotInput, base: string): Promise<Sources | 'too_large'> {
   const { git, headSha: head, log } = input;
-  const secrets = prepareSecrets(input.secrets);
+  // The input's own fields of the header, before any work: an id or a branch it cannot hold.
+  checkedHeader(headerOf(input, base, null, { title: null, description: null }));
   const since = await readSince(git, input.sinceSha, head, log);
+  const limits = { ...input.limits, maxFiles: Math.min(input.limits.maxFiles, MAX_SNAPSHOT_FILES) };
+  const paths: PathRules = {
+    excluded: globMatcher([...BUILTIN_EXCLUDES, ...input.config.sources.exclude], true),
+    maxFileBytes: Math.min(input.limits.maxFileBytes, MAX_SNAPSHOT_FILE_BYTES),
+  };
+  const left = new LeftOut(prepareSecrets(input.secrets));
+  const changes = await readChanges(git, base, head, left);
+  const tree = await readTree(git, head, changes, paths, left);
+  const shown = changes.filter(
+    (c) => c.patchable && mayShow(c.path, paths) && mayShow(c.from, paths),
+  );
+  const budget = limits.maxDecompressedBytes;
+  const raw = await readRawPatches(git, { base, head }, shown, { budget, log });
+  if (raw === 'too_large') return 'too_large';
+  const instructions = await readInstructionFiles(git, base);
+  const oldSides = [
+    ...new Set(shown.filter((c) => raw.has(c.path) && hasOldSide(c)).map((c) => c.from)),
+  ];
+  const scanned = await scanMergeBase(
+    git,
+    base,
+    { paths: oldSides, instructions },
+    {
+      scan: input.baseSecrets,
+      budget,
+      log,
+      ...(input.tempRoot !== undefined && { tempRoot: input.tempRoot }),
+    },
+  );
+  return maskedSources(input, {
+    base,
+    since,
+    limits,
+    paths,
+    left,
+    changes,
+    tree,
+    raw,
+    instructions,
+    scanned,
+  });
+}
+
+/** The sources as sent: every text masked with the scan's secrets and the merge base's. */
+function maskedSources(input: SnapshotInput, read: Read): Sources {
+  const secrets = prepareSecrets([...input.secrets, ...read.scanned.secrets]);
+  read.left.addSecrets(secrets);
+  const { changes, candidates } = stillSendable(read.changes, read.tree, read.left);
+  read.left.warn(input.log);
+  const patches = finishPatches(read.raw, changes, {
+    secrets: [...secrets, ...secretLines(secrets)],
+    scanned: read.scanned.scanned,
+  });
+  const instructions = instructionLines(read.instructions, secrets);
   const title = mergeRequestText(input.mergeRequest.title, MAX_MR_TITLE_CHARS, secrets);
   const description = mergeRequestText(
     input.mergeRequest.description,
     MAX_MR_DESCRIPTION_CHARS,
     secrets,
   );
-  const header = checkedHeader({
-    type: 'header',
-    v: SNAPSHOT_VERSION,
-    headSha: head,
-    baseSha: base,
-    sinceSha: since?.sha ?? null,
-    targetBranch: input.targetBranch,
-    mergeRequest: { id: input.mergeRequest.id, title: title.text, description: description.text },
-    generator: GENERATOR,
-  });
-  const limits = { ...input.limits, maxFiles: Math.min(input.limits.maxFiles, MAX_SNAPSHOT_FILES) };
-  const rules: FileRules = {
-    secrets,
-    excluded: globMatcher([...BUILTIN_EXCLUDES, ...input.config.sources.exclude], true),
-    maxFileBytes: Math.min(input.limits.maxFileBytes, MAX_SNAPSHOT_FILE_BYTES),
-  };
-  const left = new LeftOut(secrets);
-  const changes = await readChanges(git, base, head, left);
-  const changed = new Set(changes.filter((c) => c.status !== 'deleted').map((c) => c.path));
-  const candidates = ordered(await readTree(git, head, changed, rules, left), changes);
-  left.warn(log);
-  const patches = await readPatches(git, base, head, changes, {
-    ...rules,
-    budget: limits.maxDecompressedBytes,
-    log,
-  });
-  if (patches === 'too_large') return 'too_large';
-  const instructions = await readInstructions(git, base, secrets);
+  const texts = { title: title.text, description: description.text };
   const patchRedactions = [...patches.values()].reduce((n, p) => n + p.redactions, 0);
   return {
-    header,
-    rules,
-    limits,
+    header: checkedHeader(headerOf(input, read.base, read.since, texts)),
+    rules: { ...read.paths, secrets },
+    limits: read.limits,
     changes,
-    candidates,
+    candidates: ordered(candidates, changes),
     patches,
-    since,
+    since: read.since,
     instructions: instructions.lines,
     redactions: title.count + description.count + instructions.redactions + patchRedactions,
   };

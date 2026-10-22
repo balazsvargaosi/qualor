@@ -371,6 +371,27 @@ function markKeyBlocks(lines: readonly string[], whole: boolean[]): void {
   });
 }
 
+/**
+ * The lines of every private key block that is whole in `lines`: from a line with a BEGIN marker
+ * to the next line with an END marker after it, both included, however the lines are decorated
+ * (a comment's `# `, a string literal, a patch's `-`). A BEGIN line with no END line after it, or
+ * an END line with no BEGIN line before it, is no whole block: what it means is the caller's (the
+ * redaction above masks from such a BEGIN line on, and up to such an END line). For a caller that
+ * cuts a long text into pieces, so that a block over a cut is still masked whole.
+ */
+export function keyBlockLines(lines: readonly string[]): boolean[] {
+  const marked = lines.map(() => false);
+  let begin: number | null = null;
+  lines.forEach((line, i) => {
+    if (begin === null && KEY_BEGIN.test(line)) begin = i;
+    if (begin !== null && KEY_END.test(line)) {
+      for (let k = begin; k <= i; k++) marked[k] = true;
+      begin = null;
+    }
+  });
+  return marked;
+}
+
 function isStrongBase64(line: string): boolean {
   const m = BASE64_LINE.exec(line);
   const value = m?.[1] ?? '';
