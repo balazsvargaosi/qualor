@@ -26522,11 +26522,6 @@
                         {
                           "type": "object",
                           "properties": {
-                            "providerUrl": {
-                              "type": "string",
-                              "minLength": 1,
-                              "maxLength": 2048
-                            },
                             "providerHost": {
                               "type": "string",
                               "minLength": 1,
@@ -26549,7 +26544,6 @@
                             }
                           },
                           "required": [
-                            "providerUrl",
                             "providerHost",
                             "model",
                             "userId",
@@ -26892,11 +26886,6 @@
                         {
                           "type": "object",
                           "properties": {
-                            "providerUrl": {
-                              "type": "string",
-                              "minLength": 1,
-                              "maxLength": 2048
-                            },
                             "providerHost": {
                               "type": "string",
                               "minLength": 1,
@@ -26919,7 +26908,6 @@
                             }
                           },
                           "required": [
-                            "providerUrl",
                             "providerHost",
                             "model",
                             "userId",

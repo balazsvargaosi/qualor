@@ -396,19 +396,14 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
         scope: 'selected',
         projectIds: [project.id],
         consentCurrent: true,
-        consent: {
-          providerUrl: 'https://llm.example/v1',
-          providerHost: 'llm.example',
-          model: 'fake-model',
-          userId: orgAdminId,
-        },
+        consent: { providerHost: 'llm.example', model: 'fake-model', userId: orgAdminId },
         notice: dataSharingNotice('llm.example', 'fake-model', 14),
       });
       const at = Date.parse(answer.consent.at);
       expect(at).toBeGreaterThanOrEqual(before);
       expect(at).toBeLessThanOrEqual(after);
       expect(answer.consent.at).toBe(new Date(at).toISOString());
-      // The same answer on a read, and the same in the stored settings.
+      // The same answer on a read; the stored consent is the answer's and the provider's address.
       expect((await getReview()).json()).toEqual(answer);
       const stored = await readLlmSettings(ctx.db);
       expect(stored.organizations[org]!.review).toEqual({
@@ -416,11 +411,39 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
         scope: 'selected',
         projectIds: [project.id],
         budgets: DEFAULT_REVIEW.budgets,
-        consent: answer.consent,
+        consent: { providerUrl: 'https://llm.example/v1', ...answer.consent },
       });
       // Nothing else of the settings changed.
       expect(stored.provider).toEqual(PROVIDER);
       expect({ ...stored.organizations[org]!, review: null }).toEqual({ ...ORG_ON, review: null });
+    });
+
+    it('never answers the consent’s base URL, on a switch-on, a read or a save, though the consent on record has it', async () => {
+      // A gateway can put a tenant or account id in the path; organisation admins otherwise see
+      // only the host (`GET /organizations/{id}/ai`).
+      const tenant = 'https://llm.example/tenant-7f3a/v1';
+      await configure({}, { ...PROVIDER, baseUrl: tenant });
+      const answers = [await putReview(onBody()), await getReview()];
+      // A save that changes nothing, and one that changes the budgets, answer the same way.
+      answers.push(await putReview(onBody({ acknowledgeDataSharing: undefined })));
+      answers.push(
+        await putReview(
+          onBody({
+            acknowledgeDataSharing: undefined,
+            budgets: { ...DEFAULT_REVIEW.budgets, tokensPerDay: 1_000 },
+          }),
+        ),
+      );
+      for (const res of answers) {
+        expect(res.statusCode, res.body).toBe(200);
+        const { consent } = res.json();
+        expect(Object.keys(consent).sort()).toEqual(['at', 'model', 'providerHost', 'userId']);
+        expect(JSON.stringify(consent)).not.toContain('providerUrl');
+        expect(res.body).not.toContain('tenant-7f3a');
+      }
+      // The consent on record keeps it: `consentCurrent` compares the address.
+      expect((await storedReview()).consent).toMatchObject({ providerUrl: tenant });
+      expect(answers.map((res) => res.json().consentCurrent)).toEqual([true, true, true, true]);
     });
 
     it('has an instance admin acknowledge it as that admin', async () => {
@@ -529,12 +552,13 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
         consentCurrent: false,
         provider: { host: 'llm.example', model: 'other-model' },
         // The record of what was acknowledged stays as it was given.
-        consent: {
-          providerUrl: 'https://llm.example/v1',
-          providerHost: 'llm.example',
-          model: 'fake-model',
-          userId: orgAdminId,
-        },
+        consent: { providerHost: 'llm.example', model: 'fake-model', userId: orgAdminId },
+      });
+      expect((await storedReview()).consent).toMatchObject({
+        providerUrl: 'https://llm.example/v1',
+        providerHost: 'llm.example',
+        model: 'fake-model',
+        userId: orgAdminId,
       });
       expect(read.notice).toBe(dataSharingNotice('llm.example', 'other-model', 14));
       const context = await contextOf(project.key, bearer(projectToken));
@@ -555,11 +579,12 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
       expect(confirmed.statusCode, confirmed.body).toBe(200);
       expect(confirmed.json()).toMatchObject({
         consentCurrent: true,
-        consent: {
-          providerUrl: 'https://llm.example/v1',
-          providerHost: 'llm.example',
-          model: 'other-model',
-        },
+        consent: { providerHost: 'llm.example', model: 'other-model' },
+      });
+      expect((await storedReview()).consent).toMatchObject({
+        providerUrl: 'https://llm.example/v1',
+        providerHost: 'llm.example',
+        model: 'other-model',
       });
       expect((await contextOf(project.key, bearer(projectToken))).json()).toMatchObject({
         review: true,
@@ -589,8 +614,10 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
     });
 
     it('a changed base path outdates the consent', async () => {
-      const first = (await putReview(onBody())).json();
-      expect(first.consent.providerUrl).toBe('https://llm.example/v1');
+      expect((await putReview(onBody())).statusCode).toBe(200);
+      expect((await storedReview()).consent).toMatchObject({
+        providerUrl: 'https://llm.example/v1',
+      });
       // The same host and model, another path: a gateway that puts the tenant there (R10).
       const moved = await changeProvider({
         baseUrl: 'https://llm.example/tenant-b/v1',
@@ -602,7 +629,10 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
         enabled: true,
         consentCurrent: false,
         provider: { host: 'llm.example', model: 'fake-model' },
-        consent: { providerUrl: 'https://llm.example/v1' },
+      });
+      // The consent on record names the first address, which the answer does not show.
+      expect((await storedReview()).consent).toMatchObject({
+        providerUrl: 'https://llm.example/v1',
       });
       const context = await contextOf(project.key, bearer(projectToken));
       expect(context.json()).toMatchObject({ review: false, reason: 'consent_outdated' });
@@ -613,7 +643,11 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
       expect(confirmed.statusCode, confirmed.body).toBe(200);
       expect(confirmed.json()).toMatchObject({
         consentCurrent: true,
-        consent: { providerUrl: 'https://llm.example/tenant-b/v1', providerHost: 'llm.example' },
+        consent: { providerHost: 'llm.example' },
+      });
+      expect((await storedReview()).consent).toMatchObject({
+        providerUrl: 'https://llm.example/tenant-b/v1',
+        providerHost: 'llm.example',
       });
       expect((await contextOf(project.key, bearer(projectToken))).json()).toMatchObject({
         review: true,
@@ -655,11 +689,12 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
       expect(accepted.json()).toMatchObject({
         enabled: true,
         consentCurrent: true,
-        consent: {
-          providerUrl: 'https://llm.elsewhere.example/v1',
-          providerHost: 'llm.elsewhere.example',
-          model: 'fake-model',
-        },
+        consent: { providerHost: 'llm.elsewhere.example', model: 'fake-model' },
+      });
+      expect((await storedReview()).consent).toMatchObject({
+        providerUrl: 'https://llm.elsewhere.example/v1',
+        providerHost: 'llm.elsewhere.example',
+        model: 'fake-model',
       });
       expect(await events('organization.ai_review_changed')).toHaveLength(before + 1);
     });
@@ -725,7 +760,12 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
       expect(res.statusCode, res.body).toBe(200);
       expect(res.json()).toMatchObject({
         consentCurrent: true,
-        consent: { providerUrl: 'https://llm.example/v1', providerHost: 'llm.example' },
+        consent: { providerHost: 'llm.example' },
+      });
+      // The stored consent holds the normalised address, which the answer does not show.
+      expect((await storedReview()).consent).toMatchObject({
+        providerUrl: 'https://llm.example/v1',
+        providerHost: 'llm.example',
       });
     });
 
@@ -756,7 +796,9 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
       expect(refused.json()).toMatchObject({ code: 'AI_REVIEW_CONSENT_REQUIRED' });
       const confirmed = await putReview(onBody());
       expect(confirmed.statusCode, confirmed.body).toBe(200);
-      expect(confirmed.json().consent).toMatchObject({ providerUrl: 'https://llm.example/v1' });
+      expect((await storedReview()).consent).toMatchObject({
+        providerUrl: 'https://llm.example/v1',
+      });
     });
 
     it('answers 422 PROJECT_NOT_IN_ORGANIZATION for the project of another organisation', async () => {

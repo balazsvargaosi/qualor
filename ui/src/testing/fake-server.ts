@@ -610,8 +610,8 @@ function fakeNotice(provider: AiReviewProvider, days: number): string {
  * AI_REVIEW_CONSENT_REQUIRED, and with a host or model other than the provider now 409
  * AI_REVIEW_PROVIDER_CHANGED (nothing stored). `changeProvider` plays the instance administrator
  * switching the provider; `foreignProjects` are ids that belong to another organisation (422
- * PROJECT_NOT_IN_ORGANIZATION). The consent carries a base URL with a path, as the server's
- * answer still does: a page must never show it. A test answers a route itself with `server.on`,
+ * PROJECT_NOT_IN_ORGANIZATION). The consent answers its host and model, the user and the time,
+ * and no base URL, as the server's answers do. A test answers a route itself with `server.on`,
  * which wins.
  */
 export class FakeAiReview {
@@ -701,7 +701,6 @@ export class FakeAiReview {
   private consentOf(provider: AiReviewProvider | null | undefined): FakeStoredReview['consent'] {
     if (!provider) return null;
     return {
-      providerUrl: `https://${provider.host}/tenant-7f3a/v1`,
       providerHost: provider.host,
       model: provider.model,
       userId: '0190a6c2-0000-7000-8000-00000000000a',

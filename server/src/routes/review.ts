@@ -46,6 +46,7 @@ import {
   reviewSettingsOf,
   sameReview,
   withOrganizationReview,
+  type ReviewConsent,
   type ReviewSettings,
 } from '../review/settings';
 import { hasSnapshot, snapshotExists, storeSnapshotUpload } from '../review/snapshot-store';
@@ -67,6 +68,26 @@ export const projectAiReviewSchema = z.object({
   organizationEnabled: z.boolean(),
 });
 
+/**
+ * The consent as the organisation's answers show it: who acknowledged the notice, for which host
+ * and model, and when. Not the provider's base URL: a gateway's path can hold a tenant or account
+ * id, which organisation admins otherwise never see (`GET /organizations/{id}/ai` shows the host
+ * only). The stored consent keeps the URL, and `consentCurrent` still compares it.
+ */
+const consentAnswerSchema = reviewConsentSchema.omit({ providerUrl: true });
+type ConsentAnswer = z.infer<typeof consentAnswerSchema>;
+
+/** The stored consent as answered: field by field, so a field added to the record is never shown by default. */
+function consentAnswer(consent: ReviewConsent | null): ConsentAnswer | null {
+  if (consent === null) return null;
+  return {
+    providerHost: consent.providerHost,
+    model: consent.model,
+    userId: consent.userId,
+    at: consent.at,
+  };
+}
+
 /** `GET`/`PUT /organizations/{id}/ai/review` (6I-2, spec C1, D4, R10). */
 export const organizationReviewSchema = z.object({
   /** AI review can be switched on: a provider is configured and the organisation is enabled. */
@@ -83,8 +104,11 @@ export const organizationReviewSchema = z.object({
   /** The organisation's own budgets; the instance ceiling caps `tokensPerDay` when a review runs. */
   budgets: reviewBudgetsSchema,
   /** Who acknowledged the notice, for which provider host and model, and when; null before any. */
-  consent: reviewConsentSchema.nullable(),
-  /** The consent names the configured provider's host and model; false after either changed (R10). */
+  consent: consentAnswerSchema.nullable(),
+  /**
+   * The consent names the configured provider (its base URL, host and model); false after any of
+   * them changed (R10).
+   */
   consentCurrent: z.boolean(),
   instanceCeiling: z.object({
     /** The most tokens per organisation per day the instance administrator allows; null: none. */
@@ -175,7 +199,7 @@ function organizationReview(
     scope: review.scope,
     projectIds: [...projectIds],
     budgets: review.budgets,
-    consent: review.consent,
+    consent: consentAnswer(review.consent),
     consentCurrent: consentCurrent(settings, review),
     instanceCeiling: { tokensPerDay: settings.budgets.reviewTokensPerOrganizationPerDay },
   };

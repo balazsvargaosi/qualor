@@ -673,12 +673,12 @@ describe('AiReviewPage (6I-2 Task 9)', () => {
   });
 
   describe('data it must never show', () => {
-    it("never shows the consent's provider URL, its path included", async () => {
+    it('never shows the provider as a URL: the answers name its host and model only', async () => {
       setup('orgAdmin', { organizations: { [ORG_ID]: { enabled: true, consentFor: A } } });
       const { fixture, root } = await render();
       await click(fixture, button(root, 'Save'));
       // The whole markup, attributes included (ui/tools/templates.test.ts bars reading it as HTML).
-      expect(new XMLSerializer().serializeToString(root)).not.toContain('tenant-7f3a');
+      expect(new XMLSerializer().serializeToString(root)).not.toContain('https://');
       expect(root.textContent).not.toContain('https://');
     });
   });

@@ -12507,7 +12507,6 @@ export interface paths {
                                 maxTokensPerReview: number;
                             };
                             consent: {
-                                providerUrl: string;
                                 providerHost: string;
                                 model: string;
                                 /** Format: uuid */
@@ -12617,7 +12616,6 @@ export interface paths {
                                 maxTokensPerReview: number;
                             };
                             consent: {
-                                providerUrl: string;
                                 providerHost: string;
                                 model: string;
                                 /** Format: uuid */
