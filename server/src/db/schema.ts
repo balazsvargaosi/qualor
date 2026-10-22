@@ -1612,7 +1612,9 @@ export type ReviewSnapshotRow = typeof reviewSnapshots.$inferSelect;
 /**
  * One row per path of an unpacked snapshot: the file's text at the head, an omission (a file the
  * scanner did not send, with the reason), and the change line (status, old path, patch and the
- * line ranges changed since the last review), merged by path. The reasons are 6I-2 ruling P3's.
+ * line ranges changed since the last review), merged by path. A path that fails the path rule of
+ * the snapshot format (unsafe, or over 1 024 bytes) is never stored, not even as an omission: the
+ * scanner leaves it out, and a snapshot that names one is rejected.
  */
 export const reviewSnapshotFiles = pgTable(
   'review_snapshot_files',
@@ -1624,7 +1626,7 @@ export const reviewSnapshotFiles = pgTable(
     /** UTF-8 text, secrets masked by the scanner; null for an omitted or deleted file. */
     text: text('text'),
     bytes: integer('bytes').notNull().default(0),
-    /** Why the text was not sent: one of the eight reasons the CHECK lists (ruling P3). */
+    /** Why the text was not sent: one of the eight reasons the CHECK lists. */
     omitted: text('omitted'),
     change: text('change').$type<SnapshotChange>(),
     oldPath: text('old_path'),

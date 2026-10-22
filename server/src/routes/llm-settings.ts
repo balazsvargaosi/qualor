@@ -487,8 +487,9 @@ export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
         continue;
       }
       errors.push(...foreignProjectProblems(id, o, owners));
-      // 4E-3a §2: as the budget above, a switch-on saved while the licence allowed it is kept;
-      // only switching it on needs the feature.
+      // 4E-3a §2: only switching the automatic fix on needs the enterprise feature `llm.auto-fix`.
+      // A switch-on saved while the licence allowed it is kept, so the form still saves after the
+      // licence lapses.
       if (
         o.autoFix?.enabled === true &&
         !organizationSettings(stored, id).autoFix.enabled &&
