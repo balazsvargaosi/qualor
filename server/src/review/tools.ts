@@ -11,6 +11,7 @@ import { z } from 'zod';
 import type { LlmToolCall, LlmToolSpec } from '../llm/providers/types';
 import { excludedPathMatcher } from '../llm/settings';
 import { MaskedFiles, type MaskedFile } from './masked-files';
+import { compilePathGlob, MAX_GLOB_WILDCARDS, type PathGlob } from './path-glob';
 import type { SnapshotReader } from './snapshot-reader';
 
 /*
@@ -103,8 +104,9 @@ export const REVIEW_TOOLS: readonly LlmToolSpec[] = [
           maxLength: GLOB_MAX_CHARS,
           description:
             'Search only the paths that match: * matches within one path segment, ** across ' +
-            'segments, ? one character; for example src/**/*.ts. Braces and character classes ' +
-            'are not supported. Default: every file.',
+            'segments, ? one character; for example src/**/*.ts. At most ' +
+            `${MAX_GLOB_WILDCARDS} wildcards; braces and character classes are not supported. ` +
+            'Default: every file.',
         },
       },
       required: ['pattern'],
@@ -254,7 +256,11 @@ const readFileArguments = z
   });
 const grepArguments = z.strictObject({
   pattern: z.string().refine(isSearchText, 'not 2 to 200 characters within one line'),
-  path_glob: z.string().max(GLOB_MAX_CHARS).nullish(),
+  path_glob: z
+    .string()
+    .max(GLOB_MAX_CHARS)
+    .refine((glob) => compilePathGlob(glob).wildcards <= MAX_GLOB_WILDCARDS, 'too many wildcards')
+    .nullish(),
 });
 const listFilesArguments = z.strictObject({ dir: z.string().nullish() });
 
@@ -263,7 +269,7 @@ const ARGUMENT_HINTS: Record<string, string> = {
   from: 'a line number, a whole number from 1',
   to: 'a line number, a whole number from 1, not before from',
   pattern: `text of ${TOOL_LIMITS.grepNeedleMin} to ${TOOL_LIMITS.grepNeedleMax} characters within one line`,
-  path_glob: `a glob of at most ${GLOB_MAX_CHARS} characters`,
+  path_glob: `a glob of at most ${GLOB_MAX_CHARS} characters and ${MAX_GLOB_WILDCARDS} wildcards`,
   dir: 'a directory path, as a string',
 };
 
@@ -326,6 +332,9 @@ async function takeKept<T, U>(
       if (halted()) return { items, truncated: false };
     }
     if (!page.truncated) return { items, truncated: false };
+    // Fewer items than asked for, and more to come: the reader cannot find more (a search it ended
+    // early), and asking for more would give the same answer.
+    if (page.items.length < limit) return { items, truncated: true };
     if (limit >= maxFetch) return { items, truncated: true };
     limit = Math.min(limit * 4, maxFetch);
   }
@@ -333,15 +342,19 @@ async function takeKept<T, U>(
 
 const withoutCr = (line: string): string => (line.endsWith('\r') ? line.slice(0, -1) : line);
 
-/** A line of a file as `read_file` shows it: without its carriage return, never over the cap. */
-function shownLine(line: string): string {
+/**
+ * A line of a file as `read_file` shows it: without its carriage return, and cut to `max`
+ * characters. Only the first line of an answer can be cut: the others were chosen to fit.
+ */
+function shownLine(line: string, max: number): string {
   const text = withoutCr(line);
-  return text.length > TOOL_LIMITS.readChars ? cutAtGrapheme(text, TOOL_LIMITS.readChars) : text;
+  return text.length > max ? cutAtGrapheme(text, max) : text;
 }
 
 /**
  * Lines `from` to `to` (1-based, inclusive) of a file's masked `lines`, numbered, within the caps
- * of one call. The lines are the file's, masked as a whole: nothing is masked here.
+ * of one call. The lines are the file's, masked as a whole: nothing is masked here. The character
+ * cap counts everything shown of a line: the number and the `│ ` before it, and its line end.
  */
 function numberedLines(lines: readonly string[], from: number, to: number | null): string {
   const total = lines.length;
@@ -349,9 +362,12 @@ function numberedLines(lines: readonly string[], from: number, to: number | null
   if (from > total) return `the file has ${total} lines; from is past its end`;
   const asked = Math.min(to ?? total, total);
   let last = Math.min(asked, from + TOOL_LIMITS.readLines - 1);
+  // The widest the numbers of this answer can be: they are as wide as the last, which is not
+  // wider.
+  const prefix = String(last).length + 2;
   let chars = 0;
   for (let n = from; n <= last; n += 1) {
-    const size = (lines[n - 1] ?? '').length + 1;
+    const size = prefix + Math.min((lines[n - 1] ?? '').length, TOOL_LIMITS.readChars) + 1;
     // At least the first line is shown (cut, if it is over the cap by itself).
     if (n > from && chars + size > TOOL_LIMITS.readChars) {
       last = n - 1;
@@ -360,9 +376,10 @@ function numberedLines(lines: readonly string[], from: number, to: number | null
     chars += size;
   }
   const width = String(last).length;
+  const room = TOOL_LIMITS.readChars - width - 2;
   const numbered = lines
     .slice(from - 1, last)
-    .map((line, index) => `${String(from + index).padStart(width)}│ ${shownLine(line)}`);
+    .map((line, index) => `${String(from + index).padStart(width)}│ ${shownLine(line, room)}`);
   if (last < asked) {
     numbered.push(`… lines ${from}–${last} of ${total}; ask for more with from/to`);
   }
@@ -399,6 +416,25 @@ async function readFile(
 }
 
 /**
+ * Whether every path a glob matches is excluded, as far as the exclusions can tell: it names one
+ * path and that is excluded, or the directory its literal prefix ends in (`secrets` in
+ * `secrets/*.key`) is excluded with a file and a file deeper in it, which `secrets/**` does and the
+ * name `secrets` or the glob `secrets/*` does not. A glob that starts with a wildcard, or in the
+ * root, is not: the reader leaves the excluded paths out of what it searches.
+ */
+function namesOnlyExcluded(
+  compiled: PathGlob,
+  glob: string,
+  excluded: (path: string) => boolean,
+): boolean {
+  if (compiled.wildcards === 0) return excluded(glob);
+  const slash = compiled.prefix.lastIndexOf('/');
+  if (slash <= 0) return false;
+  const dir = compiled.prefix.slice(0, slash);
+  return excluded(dir) && excluded(`${dir}/x`) && excluded(`${dir}/x/y`);
+}
+
+/**
  * The reader finds the lines that hold the needle in the text as the snapshot stores it. That text
  * only narrows the search: a hit is a line whose masked text holds the needle, and what is shown
  * of it is that masked line. So a needle that lies inside what a mask hides finds nothing, and
@@ -417,6 +453,10 @@ async function grep(
   // An empty glob is no filter, as a missing one.
   const glob = parsed.data.path_glob === '' ? null : (parsed.data.path_glob ?? null);
   if (glob !== null && snapshotPathProblem(glob) !== null) return fixed(INVALID_PATH);
+  // A glob that can name only excluded paths is refused as a path is, whether or not there are any.
+  if (glob !== null && namesOnlyExcluded(compilePathGlob(glob), glob, excluded)) {
+    return fixed(EXCLUDED);
+  }
   if (budget.greps <= 0) return fixed(BUDGET_USED_UP);
   budget.greps -= 1;
 
@@ -429,7 +469,7 @@ async function grep(
     TOOL_LIMITS.grepHits,
     MAX_FETCHED_HITS,
     async (limit) => {
-      const result = await reader.grep(pattern, glob, limit);
+      const result = await reader.grep(pattern, glob, limit, excluded);
       return { items: result.hits, truncated: result.truncated };
     },
     async (hit) => {
@@ -477,10 +517,10 @@ async function listFiles(
   if (!parsed.success) return invalidArguments(parsed.error);
   // The root has no path of its own, so it is left out or empty.
   const dir = parsed.data.dir ?? '';
-  if (dir !== '') {
-    if (snapshotPathProblem(dir) !== null) return fixed(INVALID_PATH);
-    if (excluded(dir)) return fixed(EXCLUDED);
-  }
+  if (dir !== '' && snapshotPathProblem(dir) !== null) return fixed(INVALID_PATH);
+  // Every directory is listed, and so is every file but an excluded one: `excludePaths` are globs
+  // for files (read_file and grep enforce them file by file), and a directory is not one.
+  let hidden = 0;
   const found = await takeKept(
     TOOL_LIMITS.listEntries,
     MAX_FETCHED_ENTRIES,
@@ -488,9 +528,17 @@ async function listFiles(
       const result = await reader.list(dir, limit);
       return { items: result.entries, truncated: result.truncated };
     },
-    (entry) => (excluded(dir === '' ? entry.name : `${dir}/${entry.name}`) ? null : entry),
+    (entry) => {
+      if (entry.kind === 'file' && excluded(dir === '' ? entry.name : `${dir}/${entry.name}`)) {
+        hidden += 1;
+        return null;
+      }
+      return entry;
+    },
   );
   if (found.items.length === 0 && !found.truncated) {
+    // A directory that holds nothing but excluded files is there, and is answered as one of them is.
+    if (hidden > 0) return fixed(EXCLUDED);
     return fixed(dir === '' ? 'the snapshot holds no files' : NO_SUCH_DIRECTORY);
   }
   const lines = found.items.map((entry) => (entry.kind === 'dir' ? `${entry.name}/` : entry.name));

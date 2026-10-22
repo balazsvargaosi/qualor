@@ -7,6 +7,8 @@ import { createTestDatabase, type TestDatabase } from '../../test/db';
 import { memorySnapshot, storeTestSnapshot } from '../../test/review';
 import { first } from '../db/rows';
 import { analyses, organizations, projects, reviewSnapshots } from '../db/schema';
+import { excludedPathMatcher } from '../llm/settings';
+import { MAX_GLOB_WILDCARDS } from './path-glob';
 import {
   MAX_HIT_TEXT_CHARS,
   openSnapshotReader,
@@ -67,7 +69,7 @@ const TEXTS: Record<string, string> = {
   ).join('\n'),
   '.hidden/dot.txt': 'needle hidden\n',
   // Secrets the tools mask when they show a file: a YAML value, and a private key block.
-  'conf/app.yml': 'name: app\npassword: hunter2hunter2\nreplicas: 2\n',
+  'conf/app.yml': `name: app\n${j('password: ', 'hunter2', 'hunter2')}\nreplicas: 2\n`,
   'keys/server.txt': [
     'before',
     KEY_BEGIN,
@@ -324,6 +326,37 @@ describe('the snapshot reader (6I-3)', () => {
       }
     });
 
+    it('on grep with an exclusion, as it narrows the files the search is about', async () => {
+      const exclusions: [string, (path: string) => boolean][] = [
+        ['some directories and a kind of file', excludedPathMatcher(['src/lib/**', '**/*.md'])],
+        ['the first files of a group', excludedPathMatcher(['many/f0*.ts', 'many/f1*.ts'])],
+        ['all but a few', excludedPathMatcher(['many/f0*.ts', 'many/f1*.ts', 'many/f2*.ts'])],
+        ['a name that is no directory', excludedPathMatcher(['many', 'src'])],
+        ['every file', () => true],
+        ['no file', () => false],
+      ];
+      const searches: [string, string | null, number][] = [
+        ['needle', null, 1],
+        ['needle', null, 5],
+        ['needle', null, 50],
+        ['needle', 'src/**', 10],
+        ['needle', '**/*.ts', 100],
+        ['batch-needle', null, 5],
+        ['batch-needle', null, 10],
+        ['batch-needle', null, 40],
+        ['batch-needle', 'many/f3?.ts', 5],
+        ['batch-needle', '**/f1*', 3],
+      ];
+      for (const [name, exclude] of exclusions) {
+        for (const [needle, glob, limit] of searches) {
+          const label = JSON.stringify([name, needle, glob, limit]);
+          expect(await db.grep(needle, glob, limit, exclude), label).toEqual(
+            await memory.grep(needle, glob, limit, exclude),
+          );
+        }
+      }
+    });
+
     it('on list, across directories and limits', async () => {
       const dirs: [string, number][] = [
         ['', 1],
@@ -383,6 +416,9 @@ describe('the snapshot reader (6I-3)', () => {
       ['grep', { pattern: 'needle', path_glob: 'src/**' }],
       ['grep', { pattern: 'needle', path_glob: '**/*.ts' }],
       ['grep', { pattern: 'needle', path_glob: 'a_b/**' }],
+      ['grep', { pattern: 'needle', path_glob: 'src/lib/deep/**' }],
+      ['grep', { pattern: 'needle', path_glob: 'src/lib/*/*.ts' }],
+      ['grep', { pattern: 'batch-needle', path_glob: 'many/**' }],
       ['grep', { pattern: 'password' }],
       ['grep', { pattern: 'hunter2' }],
       ['grep', { pattern: 'Qm9ndXMga2V5' }],
@@ -450,7 +486,12 @@ describe('the snapshot reader (6I-3)', () => {
       }
     });
 
-    it('reads the text only of the files that hold the needle, a few at a time', async () => {
+    /** A reader of the fixture snapshot over a database that counts the queries made through it. */
+    async function countingReader(): Promise<{
+      reader: SnapshotReader;
+      queries: () => number;
+      reset: () => void;
+    }> {
       let queries = 0;
       const counted = new Proxy(t.db, {
         get(target, property, receiver) {
@@ -464,26 +505,115 @@ describe('the snapshot reader (6I-3)', () => {
         },
       });
       const reader = await openSnapshotReader(counted, snapshotId);
+      if (reader === null) throw new Error('the fixture snapshot did not open');
       queries = 0;
+      return {
+        reader,
+        queries: () => queries,
+        reset: () => {
+          queries = 0;
+        },
+      };
+    }
+
+    it('reads the text only of the files that hold the needle, a few at a time', async () => {
+      const { reader, queries, reset } = await countingReader();
       // No file holds it: the query that names the files is the only one.
-      await reader!.grep('a needle nobody wrote', null, 10);
-      expect(queries).toBe(1);
+      await reader.grep('a needle nobody wrote', null, 10);
+      expect(queries()).toBe(1);
       // One file holds it: that query and one for its text.
-      queries = 0;
-      expect((await reader!.grep('needle in util', null, 10)).hits).toHaveLength(1);
-      expect(queries).toBe(2);
+      reset();
+      expect((await reader.grep('needle in util', null, 10)).hits).toHaveLength(1);
+      expect(queries()).toBe(2);
       // Forty files: their texts come 16 at a time.
-      queries = 0;
-      expect((await reader!.grep('batch-needle', null, 100)).hits).toHaveLength(40);
-      expect(queries).toBe(1 + 3);
+      reset();
+      expect((await reader.grep('batch-needle', null, 100)).hits).toHaveLength(40);
+      expect(queries()).toBe(1 + 3);
       // A glob that takes none of them asks for no text at all.
-      queries = 0;
-      expect((await reader!.grep('batch-needle', 'src/**', 100)).hits).toEqual([]);
-      expect(queries).toBe(1);
+      reset();
+      expect((await reader.grep('batch-needle', 'src/**', 100)).hits).toEqual([]);
+      expect(queries()).toBe(1);
       // And a full answer stops asking: the first group holds the one hit that is asked for.
-      queries = 0;
-      expect((await reader!.grep('batch-needle', null, 1)).truncated).toBe(true);
-      expect(queries).toBe(1 + 1);
+      reset();
+      expect((await reader.grep('batch-needle', null, 1)).truncated).toBe(true);
+      expect(queries()).toBe(1 + 1);
+    });
+
+    it('reads no text of a file the exclusion names, and does not count it', async () => {
+      const { reader, queries, reset } = await countingReader();
+      // All forty are excluded: no text is read, and there is nothing more to find.
+      expect(await reader.grep('batch-needle', null, 10, excludedPathMatcher(['many/**']))).toEqual(
+        {
+          hits: [],
+          truncated: false,
+        },
+      );
+      expect(queries()).toBe(1);
+      // Thirty are: the ten that are not come in one group, and fit a limit of ten.
+      const most = excludedPathMatcher(['many/f0*.ts', 'many/f1*.ts', 'many/f2*.ts']);
+      reset();
+      const ten = await reader.grep('batch-needle', null, 10, most);
+      expect(ten.hits.map((h) => h.path)).toEqual(
+        Array.from({ length: 10 }, (_, i) => `many/f${30 + i}.ts`),
+      );
+      expect(ten.truncated).toBe(false);
+      expect(queries()).toBe(1 + 1);
+      // A limit of nine leaves one more.
+      const nine = await reader.grep('batch-needle', null, 9, most);
+      expect(nine.hits).toHaveLength(9);
+      expect(nine.truncated).toBe(true);
+    });
+
+    it('asks again for more of one search without finding its files again', async () => {
+      const { reader, queries, reset } = await countingReader();
+      const exclude = excludedPathMatcher(['nothing/**']);
+      expect((await reader.grep('batch-needle', null, 5, exclude)).hits).toHaveLength(5);
+      expect(queries()).toBe(1 + 1);
+      // The same search with a higher limit: the files are known, the texts are read.
+      reset();
+      const more = await reader.grep('batch-needle', null, 20, exclude);
+      expect(more).toEqual(await memory.grep('batch-needle', null, 20, exclude));
+      expect(queries()).toBe(2);
+      reset();
+      expect(await reader.grep('batch-needle', null, 100, exclude)).toEqual(
+        await memory.grep('batch-needle', null, 100, exclude),
+      );
+      expect(queries()).toBe(3);
+      // Another exclusion, glob or needle is another search.
+      reset();
+      await reader.grep('batch-needle', null, 5, excludedPathMatcher(['nothing/**']));
+      expect(queries()).toBe(1 + 1);
+      reset();
+      await reader.grep('batch-needle', 'many/**', 5, exclude);
+      expect(queries()).toBe(1 + 1);
+      reset();
+      await reader.grep('needle in util', null, 5, exclude);
+      expect(queries()).toBe(1 + 1);
+    });
+
+    it('ends a search whose glob takes too much work with the hits it has, and says there is more', async () => {
+      const analysisId = await newAnalysis();
+      const hostile = `${'*a'.repeat(MAX_GLOB_WILDCARDS - 1)}*b`;
+      // The first path matches the glob; the 4 000 long ones after it are walked to their ends.
+      const match = `0${'a'.repeat(20)}b`;
+      const longPaths = Array.from(
+        { length: 4_000 },
+        (_, i) => `${'a'.repeat(990)}${String(i).padStart(6, '0')}`,
+      );
+      const id = await storeTestSnapshot(
+        t.db,
+        analysisId,
+        [match, ...longPaths].map((path): SnapshotLine => ({
+          type: 'file',
+          path,
+          text: 'needle\n',
+        })),
+      );
+      const reader = await openSnapshotReader(t.db, id);
+      const started = performance.now();
+      const found = await reader!.grep('needle', hostile, 50);
+      expect(performance.now() - started).toBeLessThan(5_000);
+      expect(found).toEqual({ hits: [{ path: match, line: 1, text: 'needle' }], truncated: true });
     });
 
     it('escapes LIKE metacharacters in the prefix of a glob', async () => {

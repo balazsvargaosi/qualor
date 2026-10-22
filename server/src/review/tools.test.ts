@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { memorySnapshot } from '../../test/review';
 import type { LlmToolCall } from '../llm/providers/types';
 import { MaskedFiles } from './masked-files';
-import { compilePathGlob, likePrefix, type SnapshotReader } from './snapshot-reader';
+import { compilePathGlob, likePrefix, MAX_GLOB_WILDCARDS } from './path-glob';
+import type { SnapshotReader } from './snapshot-reader';
 import { REVIEW_TOOLS, runReviewTool, TOOL_LIMITS, type ToolPolicy } from './tools';
 
 const BUDGET_USED_UP = 'tool budget used up; answer now with what you have';
@@ -16,6 +17,9 @@ const LONE_SURROGATE = String.fromCharCode(0xd800);
 const RIGHT_TO_LEFT_OVERRIDE = String.fromCodePoint(0x202e);
 
 const j = (...parts: string[]) => parts.join('');
+/** A fake password and the line that sets it, built at run time as the fake key below is. */
+const PASSWORD_VALUE = j('"hunter2', '-very-secret"');
+const PASSWORD_LINE = j('const password = ', PASSWORD_VALUE, ';');
 /** A fake private key, built at run time so no scanner takes it for a real one. */
 const KEY_BEGIN = j('-----BEGIN ', 'RSA PRIVATE KEY-----');
 const KEY_END = j('-----END ', 'RSA PRIVATE KEY-----');
@@ -131,16 +135,30 @@ describe('reading files', () => {
   it('read_file cuts at 40 000 characters, whole lines first', async () => {
     const lines = (await answer(reader, 'read_file', { path: 'src/wide.ts' })).split('\n');
     const shown = lines.slice(0, -1);
-    // 501 characters with the line end: 79 lines are 39 579 characters, an 80th would pass 40 000.
+    // 506 characters with the line end and the number (three digits, the 100th line's): 79 lines
+    // are 39 974 characters, an 80th would pass 40 000.
     expect(shown).toHaveLength(79);
     expect(shown.at(-1)).toBe(`79│ ${'x'.repeat(500)}`);
     expect(lines.at(-1)).toBe('… lines 1–79 of 100; ask for more with from/to');
 
-    // One line over the cap is cut by itself, with its ellipsis.
+    // One line over the cap is cut by itself, with its ellipsis, the number and the bar included.
     const one = await answer(reader, 'read_file', { path: 'src/minified.js' });
     expect(one.startsWith('1│ yyyy')).toBe(true);
     expect(one.endsWith('y…')).toBe(true);
-    expect(one.length).toBeLessThanOrEqual(TOOL_LIMITS.readChars + 3);
+    expect(one.length).toBe(TOOL_LIMITS.readChars);
+  });
+
+  it('read_file counts the numbers and bars it puts before the lines against its 40 000 characters', async () => {
+    // The lines alone are 498 characters with their ends: 80 of them are 39 840. With a number and
+    // a bar each (a line is 502) they are 40 159, over the cap, and 79 are not.
+    const narrow = memorySnapshot({
+      files: { 'src/narrow.ts': `${'x'.repeat(497)}\n`.repeat(100) },
+    });
+    const lines = (await answer(narrow, 'read_file', { path: 'src/narrow.ts' })).split('\n');
+    expect(lines.at(-1)).toBe('… lines 1–79 of 100; ask for more with from/to');
+    const shown = lines.slice(0, -1);
+    expect(shown).toHaveLength(79);
+    expect(shown.join('\n').length).toBeLessThanOrEqual(TOOL_LIMITS.readChars);
   });
 
   it('read_file shows a line too long for the redaction to scan as redacted, as the scanner masked it', async () => {
@@ -344,10 +362,140 @@ describe('searching', () => {
     );
     // Without the setting they are searched.
     expect(await answer(reader, 'grep', { pattern: 'needle' })).toContain('vendor/big.js:1:');
-    // Nothing but excluded hits is no match.
+    // Nothing but excluded paths in the glob is answered as the path of an excluded file is.
     expect(
       await answer(reader, 'grep', { pattern: 'needle', path_glob: 'secrets/**' }, policy()),
+    ).toBe(EXCLUDED);
+    // Nothing but excluded hits among the paths of the glob is no match.
+    expect(
+      await answer(reader, 'grep', { pattern: 'needle', path_glob: 'vendor*/**' }, policy()),
     ).toBe('no matches');
+  });
+
+  it('grep is refused for a glob that can name only excluded paths, before anything is read or counted', async () => {
+    const policy = (...excludePaths: string[]) => newPolicy({ excludePaths });
+    const refused = async (glob: string, excludePaths: string[]) => {
+      const used = policy(...excludePaths);
+      const { text, redactions } = await run(
+        tripwire,
+        'grep',
+        { pattern: 'needle', path_glob: glob },
+        used,
+      );
+      // It counts as a call and is no search.
+      expect(used.budget.calls).toBe(TOOL_LIMITS.callsPerReview - 1);
+      expect(used.budget.greps).toBe(TOOL_LIMITS.grepsPerReview);
+      return { text, redactions };
+    };
+    const excluded = { text: EXCLUDED, redactions: 0 };
+    // The directory the glob starts in is excluded, with what is in it.
+    expect(await refused('secrets/**', ['secrets/**'])).toEqual(excluded);
+    expect(await refused('secrets/*.key', ['secrets/**'])).toEqual(excluded);
+    expect(await refused('secrets/keys/ut?l.key', ['secrets/**'])).toEqual(excluded);
+    expect(await refused('a/secrets/**/*.key', ['**/secrets/**'])).toEqual(excluded);
+    // The glob names one path, and it is excluded.
+    expect(await refused('config/prod.env', ['**/*.env'])).toEqual(excluded);
+  });
+
+  it('grep is not refused for a glob that can name a path that is not excluded', async () => {
+    const reader = memorySnapshot({
+      files: {
+        'vendor/a.js': 'needle',
+        'secrets/a.key': 'needle',
+        'secrets/deep/b.key': 'needle',
+        'config/prod.env': 'needle',
+        'config/dev.txt': 'needle',
+        'src/lib/c.ts': 'needle',
+      },
+    });
+    const run1 = (path_glob: string, ...excludePaths: string[]) =>
+      answer(reader, 'grep', { pattern: 'needle', path_glob }, newPolicy({ excludePaths }));
+    // The name of a directory is a glob for the one path, not for what is in it.
+    expect(await run1('vendor/*.js', 'vendor')).toBe('vendor/a.js:1: needle');
+    // Only what is directly in the directory is excluded: the files deeper in it are not.
+    expect(await run1('secrets/**/*.key', 'secrets/*')).toBe('secrets/deep/b.key:1: needle');
+    // A glob that starts with a wildcard, or in the root, may name paths that are not excluded.
+    expect(await run1('**/*.env', '**/*.env')).toBe('no matches');
+    expect(await run1('*/a.key', 'secrets/**')).toBe('no matches');
+    expect(await run1('config/*', 'config/*.env')).toBe('config/dev.txt:1: needle');
+    // A glob that does not start in an excluded directory.
+    expect(await run1('src/**', 'secrets/**')).toBe('src/lib/c.ts:1: needle');
+    expect(await run1('src/lib/c.ts', 'secrets/**')).toBe('src/lib/c.ts:1: needle');
+  });
+
+  it('grep never shows an excluded path, whether or not the reader leaves it out', async () => {
+    const inner = memorySnapshot({
+      files: {
+        'a/vendor.js': 'needle in vendor',
+        'b/ok.ts': 'needle in ok',
+        'c/vendor.js': 'needle in more vendor',
+      },
+    });
+    const received: ((path: string) => boolean)[] = [];
+    // A reader that does not take the exclusion in: it gives the hits of every path.
+    const careless: SnapshotReader = {
+      ...inner,
+      grep: (needle, glob, limit) => inner.grep(needle, glob, limit),
+    };
+    const watching: SnapshotReader = {
+      ...inner,
+      grep: (needle, glob, limit, exclude) => {
+        if (exclude !== undefined) received.push(exclude);
+        return inner.grep(needle, glob, limit, exclude);
+      },
+    };
+    const policy = () => newPolicy({ excludePaths: ['**/vendor.js'] });
+    expect(await answer(careless, 'grep', { pattern: 'needle' }, policy())).toBe(
+      'b/ok.ts:1: needle in ok',
+    );
+    // The tool hands the reader the exclusion, which tells the excluded paths from the others.
+    expect(await answer(watching, 'grep', { pattern: 'needle' }, policy())).toBe(
+      'b/ok.ts:1: needle in ok',
+    );
+    expect(received).toHaveLength(1);
+    expect(received[0]?.('a/vendor.js')).toBe(true);
+    expect(received[0]?.('b/ok.ts')).toBe(false);
+  });
+
+  it('grep asks a reader that has no more to give once, and says there is more', async () => {
+    let asked = 0;
+    // A search the reader ended early (a glob that took too much work): it has nothing, and more.
+    const ended: SnapshotReader = {
+      ...memorySnapshot(),
+      grep: () => {
+        asked += 1;
+        return Promise.resolve({ hits: [], truncated: true });
+      },
+    };
+    expect(await answer(ended, 'grep', { pattern: 'needle' })).toBe(MORE_MATCHES);
+    expect(asked).toBe(1);
+  });
+
+  it('grep takes a glob of at most 16 wildcards', async () => {
+    const reader = memorySnapshot({ files: { 'a.ts': 'needle' } });
+    const globs = (wildcards: number) => '*a'.repeat(wildcards).replace(/a$/, '.ts');
+    expect(MAX_GLOB_WILDCARDS).toBe(16);
+    expect(compilePathGlob(globs(16)).wildcards).toBe(16);
+    expect(await answer(reader, 'grep', { pattern: 'needle', path_glob: globs(16) })).toBe(
+      'no matches',
+    );
+    // One wildcard more is refused, naming the argument, before the reader is asked anything.
+    const refused = await answer(tripwire, 'grep', { pattern: 'needle', path_glob: globs(17) });
+    expect(refused).toMatch(/^invalid arguments: path_glob\b/);
+    expect(refused).toContain(`${MAX_GLOB_WILDCARDS} wildcards`);
+    // Questions marks and the stars of **/ count as well.
+    for (const path_glob of [
+      '?'.repeat(17),
+      '**/'.repeat(17),
+      `${'*/'.repeat(8)}${'?'.repeat(9)}`,
+    ]) {
+      expect(await answer(tripwire, 'grep', { pattern: 'needle', path_glob })).toMatch(
+        /^invalid arguments: path_glob\b/,
+      );
+    }
+    expect(await answer(reader, 'grep', { pattern: 'needle', path_glob: '?'.repeat(16) })).toBe(
+      'no matches',
+    );
   });
 
   it('grep refuses a pattern that is not 2 to 200 characters on one line', async () => {
@@ -372,75 +520,6 @@ describe('searching', () => {
     );
     expect(await answer(reader, 'grep', { pattern: '😀' })).toMatch(/^invalid arguments: pattern/);
     expect(await answer(reader, 'grep', { pattern: '😀😀' })).toBe('no matches');
-  });
-});
-
-describe('the path_glob language', () => {
-  const matches = (glob: string, path: string) => compilePathGlob(glob).matches(path);
-
-  it('matches * within a segment, ** across segments and ? one character', () => {
-    expect(matches('*.ts', 'a.ts')).toBe(true);
-    expect(matches('*.ts', 'src/a.ts')).toBe(false);
-    expect(matches('*.ts', 'a.tsx')).toBe(false);
-    expect(matches('src/*/c.ts', 'src/lib/c.ts')).toBe(true);
-    expect(matches('src/*/c.ts', 'src/lib/deep/c.ts')).toBe(false);
-    expect(matches('src/*/c.ts', 'src/c.ts')).toBe(false);
-    expect(matches('**/*.ts', 'a.ts')).toBe(true);
-    expect(matches('**/*.ts', 'src/lib/a.ts')).toBe(true);
-    expect(matches('**/*.ts', 'src/lib/a.js')).toBe(false);
-    expect(matches('src/**', 'src/a')).toBe(true);
-    expect(matches('src/**', 'src/a/b/c')).toBe(true);
-    expect(matches('src/**', 'src')).toBe(false);
-    expect(matches('src/**', 'srcs/a')).toBe(false);
-    expect(matches('src/**/c.ts', 'src/c.ts')).toBe(true);
-    expect(matches('src/**/c.ts', 'src/a/b/c.ts')).toBe(true);
-    expect(matches('src/**/c.ts', 'src/a/b/d.ts')).toBe(false);
-    expect(matches('src/**/c.ts', 'src/xc.ts')).toBe(false);
-    expect(matches('**', 'any/path/at.all')).toBe(true);
-    expect(matches('**.ts', 'src/lib/a.ts')).toBe(true);
-    expect(matches('?.ts', 'a.ts')).toBe(true);
-    expect(matches('?.ts', 'ab.ts')).toBe(false);
-    expect(matches('?.ts', '/.ts')).toBe(false);
-    expect(matches('a?c', 'a/c')).toBe(false);
-    expect(matches('a?c', 'a😀c')).toBe(true);
-    // Case matters.
-    expect(matches('SRC/**', 'src/a')).toBe(false);
-  });
-
-  it('takes every other character as itself', () => {
-    expect(matches('a.b(c)[d]+e^$|f{g}', 'a.b(c)[d]+e^$|f{g}')).toBe(true);
-    expect(matches('a.b', 'aXb')).toBe(false);
-    expect(matches('[ab].ts', 'a.ts')).toBe(false);
-    expect(matches('[ab].ts', '[ab].ts')).toBe(true);
-    expect(matches('{a,b}.ts', 'a.ts')).toBe(false);
-    expect(matches('src/%/x', 'src/%/x')).toBe(true);
-    expect(matches('src/%/x', 'src/y/x')).toBe(false);
-    expect(matches('a_b', 'axb')).toBe(false);
-  });
-
-  it('takes the literal text before the first wildcard as the prefix', () => {
-    expect(compilePathGlob('src/lib/*.ts').prefix).toBe('src/lib/');
-    expect(compilePathGlob('src/ut?l.ts').prefix).toBe('src/ut');
-    expect(compilePathGlob('src/**/c.ts').prefix).toBe('src/');
-    expect(compilePathGlob('**/*.ts').prefix).toBe('');
-    expect(compilePathGlob('exact/path.ts').prefix).toBe('exact/path.ts');
-    // Every path a glob matches starts with its prefix.
-    for (const [glob, path] of [
-      ['src/**/c.ts', 'src/c.ts'],
-      ['src/ut?l.ts', 'src/utel.ts'],
-      ['a**/b', 'a/x/b'],
-    ] as const) {
-      expect(matches(glob, path)).toBe(true);
-      expect(path.startsWith(compilePathGlob(glob).prefix)).toBe(true);
-    }
-  });
-
-  it('cannot be made to take exponential time', () => {
-    const glob = `${'*a'.repeat(40)}*b`;
-    const started = performance.now();
-    expect(matches(glob, 'a'.repeat(1_000))).toBe(false);
-    expect(matches(`${'**/'.repeat(40)}x`, `${'d/'.repeat(500)}y`)).toBe(false);
-    expect(performance.now() - started).toBeLessThan(1_000);
   });
 });
 
@@ -505,14 +584,29 @@ describe('listing', () => {
     ).toHaveLength(500);
   });
 
-  it('list_files hides an excluded path, and refuses an excluded directory', async () => {
+  it('list_files lists every directory, and hides the files an exclusion matches', async () => {
     const policy = () => newPolicy({ excludePaths: ['src/lib/**', '**/*.md', '.hidden'] });
+    // The exclusions are globs for files: a directory is not tested against them, so the model
+    // finds its way to what is not excluded.
     expect(await answer(reader, 'list_files', {}, policy())).toBe(
-      ['a.ts', 'bin/', 'src/'].join('\n'),
+      ['.hidden/', 'a.ts', 'bin/', 'src/'].join('\n'),
     );
-    expect(await answer(reader, 'list_files', { dir: 'src' }, policy())).toBe('b.ts');
-    expect(await answer(reader, 'list_files', { dir: 'src/lib' }, policy())).toBe(EXCLUDED);
+    expect(await answer(reader, 'list_files', { dir: 'src' }, policy())).toBe(
+      ['b.ts', 'lib/'].join('\n'),
+    );
+    expect(await answer(reader, 'list_files', { dir: '.hidden' }, policy())).toBe('f');
+    // The files of src/lib are hidden; the directory in it is listed.
+    expect(await answer(reader, 'list_files', { dir: 'src/lib' }, policy())).toBe('deep/');
+    // A directory with nothing in it but excluded files is answered as an excluded file is.
     expect(await answer(reader, 'list_files', { dir: 'src/lib/deep' }, policy())).toBe(EXCLUDED);
+    const flat = memorySnapshot({ files: { 'a.ts': 'a', 'b.ts': 'b' } });
+    expect(await answer(flat, 'list_files', {}, newPolicy({ excludePaths: ['*.ts'] }))).toBe(
+      EXCLUDED,
+    );
+    // A directory that is not there is still not there.
+    expect(await answer(reader, 'list_files', { dir: 'nope' }, policy())).toBe(
+      "no such directory in this merge request's snapshot",
+    );
     // Hidden entries do not use up the cap.
     const files = Object.fromEntries(
       Array.from({ length: 700 }, (_, i) => [
@@ -594,6 +688,7 @@ describe('all tools', () => {
       ['grep', { pattern: 5 }, 'pattern'],
       ['grep', { pattern: 'ab', path_glob: 3 }, 'path_glob'],
       ['grep', { pattern: 'ab', path_glob: 'x'.repeat(201) }, 'path_glob'],
+      ['grep', { pattern: 'ab', path_glob: '*a'.repeat(MAX_GLOB_WILDCARDS + 1) }, 'path_glob'],
       ['grep', { pattern: 'ab', regex: true }, 'regex'],
       ['list_files', { dir: 3 }, 'dir'],
       ['list_files', { directory: 'src' }, 'directory'],
@@ -642,17 +737,12 @@ describe('all tools', () => {
   });
 
   it('tool output is redacted', async () => {
-    const privateKey = [
-      '-----BEGIN RSA PRIVATE KEY-----',
-      'MIIEowIBAAKCAQEA1234567890abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOP',
-      'QRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUV',
-      '-----END RSA PRIVATE KEY-----',
-    ];
+    const privateKey = [KEY_BEGIN, keyLine(1), keyLine(2), KEY_END];
     const reader = memorySnapshot({
       files: {
         'src/config.ts': `const region = 'eu';\nconst key = "${AWS_KEY}";\nconst other = 1;\n`,
-        'deploy/app.yml': 'name: app\npassword: hunter2hunter2\nreplicas: 2\n',
-        'deploy/app.env': 'API_TOKEN=abcdefgh12345678\n',
+        'deploy/app.yml': `name: app\n${j('password: ', 'hunter2', 'hunter2')}\nreplicas: 2\n`,
+        'deploy/app.env': `${j('API_TOKEN', '=', 'abcdefgh', '12345678')}\n`,
         'keys/server.txt': `before\n${privateKey.join('\n')}\nafter\n`,
         [`names/${AWS_KEY}.txt`]: 'x',
       },
@@ -741,11 +831,10 @@ describe('all tools', () => {
     it('grep for a substring of a masked password value finds no hit', async () => {
       const reader = memorySnapshot({
         files: {
-          'src/config.ts':
-            'const user = "admin";\nconst password = "hunter2-very-secret";\nconst port = 8080;\n',
+          'src/config.ts': `const user = "admin";\n${PASSWORD_LINE}\nconst port = 8080;\n`,
         },
       });
-      for (const pattern of ['very-secret', 'hunter2', '"hunter2-very-secret"']) {
+      for (const pattern of ['very-secret', 'hunter2', PASSWORD_VALUE]) {
         expect(await answer(reader, 'grep', { pattern }), pattern).toBe('no matches');
       }
       // What the mask leaves is found, and shown as the model could read it.
@@ -842,7 +931,7 @@ describe('all tools', () => {
       const files = {
         'a.txt': `${'a'.repeat(400)}\n`,
         'b.txt': `${'b'.repeat(400)}\n`,
-        'c.txt': `${j('const password = "', 'hunter2-very-secret";')}\n${'c'.repeat(400)}\n`,
+        'c.txt': `${PASSWORD_LINE}\n${'c'.repeat(400)}\n`,
       };
       const { reader, asked } = counting(memorySnapshot({ files }));
       const policy = newPolicy({ masked: new MaskedFiles(reader, 900) });

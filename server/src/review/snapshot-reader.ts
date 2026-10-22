@@ -6,6 +6,7 @@ import {
 import { and, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import type { Executor } from '../db/client';
 import { reviewSnapshotFiles as files, reviewSnapshots } from '../db/schema';
+import { compilePathGlob, likePrefix, newGlobWork, type PathGlob } from './path-glob';
 
 /*
  * What the review reads of a merge request's repository: the snapshot the scanner uploaded
@@ -13,7 +14,7 @@ import { reviewSnapshotFiles as files, reviewSnapshots } from '../db/schema';
  * `review_snapshot_files`, one query for each call, so a snapshot deleted while a review runs
  * (housekeeping, a newer push, a merged merge request) reads as nothing: no file, no change, no
  * hit. The memory reader holds the same snapshot in an object, for tests and the evaluation set;
- * both share one rule for lines, paths and globs, so they answer alike.
+ * both share one rule for lines, paths and globs (path-glob.ts), so they answer alike.
  *
  * Everything here is read-only, and nothing a model sends reaches SQL as anything but a bound value:
  * the needle of a search is compared as text (`strpos`) and a glob is matched in JavaScript; only
@@ -63,16 +64,20 @@ export interface SnapshotReader {
   file(path: string): Promise<SnapshotFile>;
   /**
    * The lines that hold `needle` (fixed text, case-sensitive, within one line) in the files with
-   * text whose path matches `glob` (see {@link compilePathGlob}), in path order and line order: at
-   * most `limit` hits, and `truncated` when there are more. A hit's `text` is its line without the
-   * line end, cut to {@link MAX_HIT_TEXT_CHARS}. The lines are searched, and shown, as stored: a
-   * caller that shows one to a model shows its masked line (masked-files.ts), and keeps this for
-   * the place of the hit.
+   * text whose path matches `glob` (see {@link compilePathGlob}) and that `exclude` does not name,
+   * in path order and line order: at most `limit` hits, and `truncated` when there are more. A
+   * path `exclude` names is dropped before any text is read, so that it neither costs a read nor
+   * counts towards `truncated`. A glob that takes more work than one search may (path-glob.ts)
+   * ends the search early, and `truncated` says so. A hit's `text` is its line without the line
+   * end, cut to {@link MAX_HIT_TEXT_CHARS}. The lines are searched, and shown, as stored: a caller
+   * that shows one to a model shows its masked line (masked-files.ts), and keeps this for the
+   * place of the hit.
    */
   grep(
     needle: string,
     glob: string | null,
     limit: number,
+    exclude?: (path: string) => boolean,
   ): Promise<{ hits: { path: string; line: number; text: string }[]; truncated: boolean }>;
   /**
    * What is directly in `dir` (the root is `''`), sorted: at most `limit` entries, and `truncated`
@@ -132,25 +137,51 @@ function hitText(line: string): string {
   return /[\ud800-\udbff]$/.test(cut) ? cut.slice(0, -1) : cut;
 }
 
+/** The files a search is about, in path order. */
+interface Search {
+  paths: readonly string[];
+  /** False when the work bound of the glob ended the walk: the paths after the last are unknown. */
+  complete: boolean;
+}
+
 /**
- * The hits of a search once SQL (or the memory reader) has named the files that hold the needle:
- * the files whose path matches the glob, in path order, read in groups, their lines scanned for
- * the needle until there is one hit more than `limit`. A file that has gone since it was named is
- * skipped.
+ * The paths of `sorted` (the files that hold the needle, in path order) a search is about: those
+ * `exclude` does not name and the glob matches. An excluded path costs no walk of the glob. Walking
+ * the glob over the paths is bounded (path-glob.ts), and the paths come in order, so a walk that is
+ * cut short has found the first of them.
+ */
+function selectPaths(
+  sorted: readonly string[],
+  glob: PathGlob | null,
+  exclude: ((path: string) => boolean) | undefined,
+): Search {
+  const work = newGlobWork();
+  const paths: string[] = [];
+  for (const path of sorted) {
+    if (exclude?.(path) === true) continue;
+    if (glob !== null && !glob.matches(path, work)) {
+      if (work.exhausted) return { paths, complete: false };
+      continue;
+    }
+    paths.push(path);
+  }
+  return { paths, complete: true };
+}
+
+/**
+ * The hits of a search once SQL (or the memory reader) has named its files: those files read in
+ * groups, in path order, their lines scanned for the needle until there is one hit more than
+ * `limit`. A file that has gone since it was named is skipped.
  */
 async function collectHits(
-  candidates: readonly string[],
+  search: Search,
   textsOf: (paths: readonly string[]) => Promise<ReadonlyMap<string, string>>,
   needle: string,
-  glob: PathGlob | null,
   limit: number,
 ): Promise<Hits> {
-  const paths = candidates
-    .filter((path) => glob === null || glob.matches(path))
-    .sort(compareCodePoints);
   const hits: Hits['hits'] = [];
-  for (let from = 0; from < paths.length; from += FETCH_FILES) {
-    const group = paths.slice(from, from + FETCH_FILES);
+  for (let from = 0; from < search.paths.length; from += FETCH_FILES) {
+    const group = search.paths.slice(from, from + FETCH_FILES);
     const texts = await textsOf(group);
     for (const path of group) {
       const lines = linesOf(texts.get(path) ?? '');
@@ -162,7 +193,7 @@ async function collectHits(
       }
     }
   }
-  return { hits, truncated: false };
+  return { hits, truncated: !search.complete };
 }
 
 /** The entries directly in `dir`, from every path of the head: the memory reader's `list`. */
@@ -184,116 +215,6 @@ function childrenOf(paths: Iterable<string>, dir: string, limit: number): Listin
     })),
     truncated: names.length > limit,
   };
-}
-
-// ─── Path globs ──────────────────────────────────────────────────────────────
-
-type GlobToken =
-  | { kind: 'char'; char: string }
-  | { kind: 'one' }
-  | { kind: 'segment' }
-  | { kind: 'any' }
-  | { kind: 'dirs' };
-
-export interface PathGlob {
-  /** The literal text the glob starts with: every path it matches starts with it. */
-  readonly prefix: string;
-  matches(path: string): boolean;
-}
-
-/**
- * The model's path filter for a search. `?` is one character and `*` any run of characters within a
- * path segment. `**` is any run of characters, across segments; as a segment of its own followed
- * by a slash it may also be nothing, so that the glob with `**` between `src/` and `/c.ts` takes
- * `src/c.ts` as well as `src/a/b/c.ts`. Every other character is itself, case included: there are
- * no classes, no braces and no escapes.
- *
- * A glob is never turned into a regular expression or a LIKE pattern, which a model could write
- * to hang the server or the database. It is matched by walking the set of positions of the path
- * it can have reached after each token, so the time is at most the tokens times the path, however
- * many stars the glob has.
- */
-export function compilePathGlob(glob: string): PathGlob {
-  const chars = Array.from(glob);
-  const tokens: GlobToken[] = [];
-  let prefix = '';
-  let literal = true;
-  let at = 0;
-  while (at < chars.length) {
-    const char = chars[at] ?? '';
-    if (char === '*') {
-      let end = at;
-      while (chars[end] === '*') end += 1;
-      const segmentStart = at === 0 || chars[at - 1] === '/';
-      if (end - at >= 2 && segmentStart && chars[end] === '/') {
-        tokens.push({ kind: 'dirs' });
-        at = end + 1;
-      } else {
-        tokens.push({ kind: end - at >= 2 ? 'any' : 'segment' });
-        at = end;
-      }
-      literal = false;
-    } else if (char === '?') {
-      tokens.push({ kind: 'one' });
-      literal = false;
-      at += 1;
-    } else {
-      tokens.push({ kind: 'char', char });
-      if (literal) prefix += char;
-      at += 1;
-    }
-  }
-  return { prefix, matches: (path) => globMatches(tokens, path) };
-}
-
-function globMatches(tokens: readonly GlobToken[], path: string): boolean {
-  const text = Array.from(path);
-  const size = text.length;
-  /** The positions of `text` the tokens so far can end at, and the positions after the next token. */
-  let reach = new Uint8Array(size + 1);
-  let next = new Uint8Array(size + 1);
-  reach[0] = 1;
-  for (const token of tokens) {
-    next.fill(0);
-    let open = false;
-    for (let j = 0; j <= size; j += 1) {
-      const here = reach[j] === 1;
-      switch (token.kind) {
-        case 'char':
-          if (here && text[j] === token.char) next[j + 1] = 1;
-          break;
-        case 'one':
-          if (here && j < size && text[j] !== '/') next[j + 1] = 1;
-          break;
-        case 'segment':
-          // From a reachable position on, up to and not past the next '/'.
-          if (here) open = true;
-          if (open) next[j] = 1;
-          if (text[j] === '/') open = false;
-          break;
-        case 'any':
-          if (here) open = true;
-          if (open) next[j] = 1;
-          break;
-        case 'dirs':
-          // Nothing, or a run of characters that ends with the '/' just before this position.
-          if (here || (open && j > 0 && text[j - 1] === '/')) next[j] = 1;
-          if (here) open = true;
-          break;
-      }
-    }
-    [reach, next] = [next, reach];
-  }
-  return reach[size] === 1;
-}
-
-/**
- * The LIKE pattern for the paths that start with `prefix`: its `\`, `%` and `_` escaped with `\`,
- * LIKE's default escape character, so that a name with an underscore or a percent sign matches
- * only itself.
- */
-export function likePrefix(prefix: string): string {
-  return `${prefix.replace(/[\\%_]/g, '\\$&')}%`;
 }
 
 // ─── The snapshot in memory ──────────────────────────────────────────────────
@@ -318,18 +239,14 @@ export function memorySnapshotReader(input: {
           .sort((a, b) => compareCodePoints(a.path, b.path)),
       ),
     file: (path) => Promise.resolve(held.get(path) ?? { kind: 'absent' }),
-    grep: (needle, glob, limit) => {
+    grep: (needle, glob, limit, exclude) => {
       const texts = new Map<string, string>();
       for (const [path, file] of held) {
         if (file.kind === 'text' && file.text.includes(needle)) texts.set(path, file.text);
       }
-      return collectHits(
-        [...texts.keys()],
-        () => Promise.resolve(texts),
-        needle,
-        glob === null ? null : compilePathGlob(glob),
-        limit,
-      );
+      const sorted = [...texts.keys()].sort(compareCodePoints);
+      const search = selectPaths(sorted, glob === null ? null : compilePathGlob(glob), exclude);
+      return collectHits(search, () => Promise.resolve(texts), needle, limit);
     },
     list: (dir, limit) => Promise.resolve(childrenOf(held.keys(), dir, limit)),
   };
@@ -382,6 +299,9 @@ export async function openSnapshotReader(
     partial: row.partial,
   };
   const inSnapshot = eq(files.snapshotId, snapshotId);
+  /** The files the last search named. */
+  let lastSearch:
+    { key: string; exclude: ((path: string) => boolean) | undefined; search: Search } | undefined;
 
   return {
     meta,
@@ -415,23 +335,36 @@ export async function openSnapshotReader(
       return { kind: 'absent' };
     },
 
-    async grep(needle, glob, limit) {
-      const compiled = glob === null ? null : compilePathGlob(glob);
-      const prefix = compiled?.prefix ?? '';
-      // `strpos` is false for a row without text. The literal start of the glob narrows the files;
-      // the glob itself is matched on the paths this finds.
-      const named = await db
-        .select({ path: files.path })
-        .from(files)
-        .where(
-          and(
-            inSnapshot,
-            sql`strpos(${files.text}, ${needle}) > 0`,
-            prefix === '' ? undefined : sql`${files.path} LIKE ${likePrefix(prefix)}`,
-          ),
+    async grep(needle, glob, limit, exclude) {
+      // A search that asks again for more (its caller dropped some hits) has its files already.
+      const key = JSON.stringify([needle, glob]);
+      let search =
+        lastSearch?.key === key && lastSearch.exclude === exclude ? lastSearch.search : undefined;
+      if (search === undefined) {
+        const compiled = glob === null ? null : compilePathGlob(glob);
+        const prefix = compiled?.prefix ?? '';
+        // `strpos` is false for a row without text. The literal start of the glob narrows the
+        // files; the glob itself is matched on the paths this finds, in their order.
+        const named = await db
+          .select({ path: files.path })
+          .from(files)
+          .where(
+            and(
+              inSnapshot,
+              sql`strpos(${files.text}, ${needle}) > 0`,
+              prefix === '' ? undefined : sql`${files.path} LIKE ${likePrefix(prefix)}`,
+            ),
+          )
+          .orderBy(byPath);
+        search = selectPaths(
+          named.map((row) => row.path),
+          compiled,
+          exclude,
         );
+        lastSearch = { key, exclude, search };
+      }
       return collectHits(
-        named.map((row) => row.path),
+        search,
         async (paths) => {
           const rows = await db
             .select({ path: files.path, text: files.text })
@@ -440,7 +373,6 @@ export async function openSnapshotReader(
           return new Map(rows.flatMap((row) => (row.text === null ? [] : [[row.path, row.text]])));
         },
         needle,
-        compiled,
         limit,
       );
     },
