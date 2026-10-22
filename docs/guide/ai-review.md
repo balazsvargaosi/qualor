@@ -81,7 +81,7 @@ Qualor records who confirmed the warning, when, and for which provider, and the 
 
 **A confirmation belongs to one provider.** It names the provider's address, host and model. When
 the instance admin changes any of them, the confirmation no longer covers the new provider:
-reviews stop, and **Settings → AI review** shows "The AI provider changed; confirm again to keep
+AI review stops, and **Settings → AI review** shows "The AI provider changed; confirm again to keep
 reviewing." with a **Confirm again** button that opens the new warning. A warning given for one
 address never covers another. If the provider changes while you are looking at the box, saving is
 refused and the box opens again with the new warning.
@@ -170,8 +170,9 @@ it. In the scan log you see `AI review: no snapshot sent, …` and the reason:
   that had **nothing to run** does not hold the snapshot up. That is Semgrep on its defaults
   (`configs: [qualor-default]`; the scanner image ships no rule files, so it runs nothing), and
   Qualor's rules without their pack or without a file in their languages. Qualor's rules that
-  have a pack and cannot run (OpenGrep is missing, the pack is damaged, the run failed) do hold it
-  up: fix them, or set `analyzers.qualor.enabled: false`.
+  have a pack and cannot run (OpenGrep is missing, the pack is damaged, the run failed, or
+  `QUALOR_RULES_DIR` is wrong: a directory that does not exist, a relative path, or one inside the
+  checkout) do hold it up: fix them, or set `analyzers.qualor.enabled: false`.
 - **Rule files you named never ran.** Once `analyzers.semgrep.configs` names a file or directory
   of your own, a Semgrep that did not run holds the snapshot up: a path that does not exist or has
   a typo, `qualor-default` next to your file on a runner without the image's rules directory (the
@@ -203,6 +204,10 @@ The snapshot lives in Qualor's database, like the reports and the code snippets 
 does not encrypt it, and no page or API of Qualor shows it. Treat the database and its
 [backups](./install-server.md#backups) as you treat the code.
 
+Allow for its size. The copies take about the text of the repository, which PostgreSQL compresses,
+for each open merge request with a recent push, plus the copies of failed or stale analyses until
+the next successful analysis on the branch deletes them, or 14 days pass.
+
 ## Size limits and the two server variables
 
 The scanner asks the server for these limits before it builds the snapshot. An operator sets them
@@ -220,6 +225,11 @@ default), but a snapshot never takes the last free slot: that one stays for repo
 snapshots cannot fail the report uploads of other scans. With only one slot, snapshots and reports
 share it. When no slot is free for a snapshot the server answers 503, and the scanner waits and
 retries. In a Helm install both variables go into `extraEnv`.
+
+Each merge request analysis with AI review on also adds an unpack job to the server's analysis
+worker. With the default `QUALOR_WORKER_CONCURRENCY=1` that job can delay the quality gates of
+other projects by a few seconds, so set it to 2 or more on a busy server
+([Server settings](./install-server.md#server-settings)).
 
 Fixed limits: 1 MiB per file, 50 000 files, 256 KiB per diff and 64 MiB of diffs in all, 1 024
 bytes per path.
@@ -289,7 +299,7 @@ informational lines about what the snapshot holds and masks. Set `QUALOR_LOG_LEV
 | `no snapshot sent, the merge request's head commit is unknown (…)` | The CI did not name the commit: run in merge request pipelines on GitLab, on the `pull_request` event on GitHub |
 | `no snapshot sent, the merge request's head and origin/<target> have no common commit in this clone` | The clone lacks the history: `GIT_DEPTH: 0` or `fetch-depth: 0` |
 | `no snapshot sent, the merge request's changes alone are over the server's snapshot limits` | The merge request is very large. The operator can raise the [limits](#size-limits-and-the-two-server-variables) |
-| `no snapshot sent, the head files that differ from the scanned checkout could not be scanned` | Gitleaks failed on them. Run the scan again, or read the debug log |
+| `no snapshot sent, the head files that differ from the scanned checkout could not be scanned` | Gitleaks failed on them. Run the scan again, or rebase the merge request (when the target branch changed a file that your Gitleaks configuration extends), or read the debug log |
 | `no snapshot sent, --mr and --mr-target name another merge request …` | Do not pass `--mr` and `--mr-target` for a merge request other than the one CI runs for |
 | `no snapshot sent, the server refused it (409 AI_REVIEW_OFF …)` | An organisation admin switched AI review off, or the provider changed, while the job ran |
 | `… (413 SNAPSHOT_TOO_LARGE …)` | Over the limits. Raise them, and the proxy's body limit |
