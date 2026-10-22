@@ -253,30 +253,36 @@ describe('buildReviewSnapshot: what a merge request sends', () => {
     // The ids would let whoever holds the snapshot test guesses of a masked secret offline.
     const ten = (tag: string) => TEN.replace('line 1', tag);
     const mr = mergeRequest(
-      { 'src/a.ts': ten('A'), 'src/old.ts': ten('O'), 'src/gone.ts': 'gone\n' },
+      { 'src/a.ts': ten('A'), 'src/old.ts': ten('O'), 'src/gone.ts': 'gone\n', typed: 'text\n' },
       {
         'src/a.ts': ten('A').replace('line 3', 'LINE 3'),
         'src/new.ts': ten('O').replace('line 5', 'LINE 5'),
         'src/added.ts': 'new\n',
+        // A file replaced by a symlink: git writes two pieces for the one path.
+        typed: { symlink: 'target' },
       },
     );
-    // git does write an index line for a modified, a renamed, an added and a deleted file ...
+    // git does write an index line for a modified, a renamed, an added and a deleted file, and two
+    // for the type change ...
     const raw = git(mr.root, ['diff', '-M', '--no-color', mr.base, mr.head]);
-    expect(raw.match(/^index [0-9a-f]+\.\.[0-9a-f]+/gm)).toHaveLength(4);
+    expect(raw.match(/^index [0-9a-f]+\.\.[0-9a-f]+/gm)).toHaveLength(6);
     // ... and no patch carries one, nor the start of any blob's id.
     const ids = [mr.base, mr.head].flatMap((tree) =>
       git(mr.root, ['ls-tree', '-r', tree])
         .split('\n')
         .map((entry) => /^\d+ blob ([0-9a-f]{40})\t/.exec(entry)?.[1] ?? ''),
     );
-    expect(ids).toHaveLength(6);
+    expect(ids).toHaveLength(8);
     const patches = [...changesOf(linesOf(await build(mr))).values()];
     expect(patches.map((c) => c.path).sort()).toEqual([
       'src/a.ts',
       'src/added.ts',
       'src/gone.ts',
       'src/new.ts',
+      'typed',
     ]);
+    // Both pieces of the type change are in its patch.
+    expect(patches.find((c) => c.path === 'typed')?.patch?.match(/^diff --git /gm)).toHaveLength(2);
     for (const { path: p, patch } of patches) {
       expect(patch, p).toMatch(/^diff --git a\/.* b\/.*\n/);
       expect(patch, p).not.toMatch(/^index /m);
