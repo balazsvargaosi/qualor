@@ -1,10 +1,5 @@
 # AI review
 
-AI review reads a merge request or pull request the way a careful colleague would. It runs on a
-model you choose, it is part of the free community edition, and it is **off by default**. It uses
-the provider that an instance admin configured for the [AI assistant](./ai-assistant.md): a hosted
-provider with your own key, or a local model on your own network.
-
 **This page is written in parts, and this is the first.** It covers what you set up and what
 leaves your CI job and your server: who switches AI review on, the warning they confirm, the
 **repository snapshot** the scanner uploads for each merge request, how secrets are masked in it,
@@ -12,6 +7,11 @@ how long the server keeps it, the budgets, the two server variables, and what yo
 review itself** (what it looks for, where it posts its findings and how it answers replies) arrives
 with the next part of this page. Until it does, switching AI review on uploads and stores the
 snapshot, and nothing reads it yet.
+
+AI review is meant to read a merge request or pull request the way a careful colleague would, on a
+model you choose. It is part of the free community edition and **off by default**. It will use the
+provider that an instance admin configured for the [AI assistant](./ai-assistant.md): a hosted
+provider with your own key, or a local model on your own network.
 
 ## How it works
 
@@ -21,8 +21,8 @@ snapshot, and nothing reads it yet.
    uploads a **snapshot**: a copy of the repository as it is at the merge request's last commit,
    with the merge request's changes, and with secrets masked.
 3. The server stores the snapshot, unpacks it, and keeps it for 14 days at most.
-4. The review (next part of this page) reads the change and the repository from the snapshot with
-   your model.
+4. The review (next part of this page) will read the change and the repository from the snapshot
+   with your model.
 
 Only merge request scans send a snapshot. A scan of the main branch or of any other branch never
 does, and neither does a project that AI review is not switched on for.
@@ -37,7 +37,7 @@ does, and neither does a project that AI review is not switched on for.
   fix) do not have to be on. Without a provider, **Settings → AI review** says so and its form stays
   disabled.
 - The project is mapped to its repository on GitLab or GitHub ([GitLab](./gitlab.md),
-  [GitHub](./github.md)), because the review is posted there.
+  [GitHub](./github.md)), because the review will be posted there.
 - Your CI scans **merge requests** and has the full history ([What your CI needs](#what-your-ci-needs)).
 
 ### In Qualor
@@ -71,9 +71,9 @@ Whoever switches AI review on sees this text, and the API repeats it:
 > the analyzers found are masked; credentials files are never sent.
 
 `<host>` is the provider's address (with its port, such as `ollama:11434`), `<model>` its model, and
-`<days>` the most days the server keeps a snapshot (14 unless the operator changed it). Read it as
-what it says: the code of the projects you choose goes to that provider, so choose them with that in
-mind. No masking finds every secret ([How secrets are masked](#how-secrets-are-masked)).
+`<days>` the most days the server keeps a snapshot (14). Take it at its word: when the review runs,
+the code of the projects you choose goes to that provider, so choose them with that in mind. No
+masking finds every secret ([How secrets are masked](#how-secrets-are-masked)).
 
 Qualor records who confirmed the warning, when, and for which provider, and the audit log (with
 `audit-log`) records each change of these settings as `organization.ai_review_changed`
@@ -118,8 +118,9 @@ It holds:
 - the scan's own Gitleaks configuration at the scan root: `.gitleaks.toml` and the other
   `.gitleaks.*` files, and `.gitleaksignore`. A merge request that edits one shows only that it
   changed, never its text or its diff;
-- a path that cannot be stored safely: longer than 1 024 bytes, with a control character in its
-  name, or holding a secret. The scan log counts them, never names them.
+- a path that cannot be stored safely: longer than 1 024 bytes, with a control character, a
+  backslash, an empty segment (`//`) or a `.` or `..` segment in it, starting with `/`, not valid
+  UTF-8, or holding a secret. The scan log counts them, never names them.
 
 The snapshot is sent compressed. When it is over the server's limits ([below](#size-limits-and-the-two-server-variables)),
 the scanner sends the changed files first and then the rest of the repository by nearness to the
@@ -160,28 +161,34 @@ which both the scan and the snapshot use, so add rules for secret formats of you
 The secret scan is what masks your secrets, so the scanner sends no snapshot when it cannot trust
 it. In the scan log you see `AI review: no snapshot sent, …` and the reason:
 
-- **The secret scan did not complete** for an engine that is switched on. Gitleaks is on by default
+- **A secret scan that is switched on did not complete.** Gitleaks is on by default
   (`enabled: true`) and a failure of it ends the scan with exit code 3, which sends no snapshot.
-  With `enabled: auto`, a Gitleaks that failed, timed out or is not installed stops the snapshot.
-  OpenGrep or Semgrep (`analyzers.semgrep`) and Qualor's rules (`analyzers.qualor`) count as well
-  when they are left on `auto` but are not installed, which happens outside the `qualor/scanner`
-  image: install them, or switch them off with `enabled: false`. A repository with no files in the
-  languages of Qualor's rules is not held up by them.
+  With `enabled: auto`, a Gitleaks that failed, timed out, is not installed, or was skipped because
+  the `configFile` it was given does not exist stops the snapshot too: it scanned nothing. The same
+  holds for OpenGrep or Semgrep (`analyzers.semgrep`) and for Qualor's rules (`analyzers.qualor`),
+  whose findings mask secrets as well, with one exception: an engine that had **nothing to run**
+  does not hold the snapshot up. That is Semgrep without rule files (the scanner image ships none,
+  so on its defaults Semgrep runs nothing), and Qualor's rules without their pack or without a file
+  in their languages. If one of them has something to run and cannot (you named rule files in
+  `analyzers.semgrep.configs` and neither OpenGrep nor Semgrep is installed, or the run failed),
+  fix it, or switch it off: `analyzers.semgrep.enabled: false`, or
+  `analyzers.qualor.enabled: false` for Qualor's rules.
 - **The secret scan's output could not be read.**
 - **The files that differ from the checkout could not be scanned** (item 4 above).
 
-If you **switch the secret scan off** on purpose (`analyzers.gitleaks.enabled: false` in
-`qualor.yml`), the snapshot is still sent. Then only the built-in patterns, and whatever OpenGrep or
-Qualor's rules found as secrets, mask it, and removed lines are not sent. The scan log says so:
-`AI review: the secret scan is off in qualor.yml; only built-in patterns mask secrets in the
-snapshot`. Switch it off only for code you are content to send.
+If you **switch Gitleaks off** on purpose (`analyzers.gitleaks.enabled: false` in `qualor.yml`),
+the snapshot is still sent. Then the built-in patterns mask it, with any secrets that OpenGrep or
+Qualor's rules reported in this scan if they ran (on their defaults they report none), and removed
+lines are not sent. The scan log says "AI review: the secret scan is off in qualor.yml; only
+built-in patterns mask secrets in the snapshot", which does not count those two engines' findings.
+Switch Gitleaks off only for code you are content to send.
 
 ## How long the server keeps it
 
 - The upload is stored as it was sent. A job on the server then unpacks it into one record per file,
   which takes seconds.
-- A merge request keeps the snapshot of its **newest analysis** only. When a newer snapshot is
-  ready, the older ones are deleted.
+- A merge request keeps the snapshot of its **newest analysis** only: when the merge request's
+  next analysis has been processed, the server deletes the older snapshots of that merge request.
 - A daily job deletes every snapshot that is **more than 14 days old**, whatever its state. A
   snapshot the server refused (a damaged upload) is deleted after one day.
 - The warning also says the snapshot is kept "until the merge request is closed". Deleting a
@@ -246,11 +253,15 @@ means no ceiling. The budgets take effect when the review itself runs.
 - **The full history**, as for new code (`GIT_DEPTH: 0` on GitLab, `fetch-depth: 0` on GitHub), so
   the scanner finds where the branch left the target branch. A shallow clone that cannot be
   deepened sends no snapshot.
+- **GitLab CI or GitHub Actions.** Other CI systems (Jenkins, Bitbucket, TeamCity or a laptop)
+  send no snapshot: the scanner learns the merge request, its last commit, title and description
+  only from those two, and `--mr` with `--mr-target` alone does not give it enough.
 - **A scan that exits 3** (a required analyzer failed) sends no snapshot.
 - `--mr` and `--mr-target` that name **another merge request** than the one CI runs for send no
   snapshot (the title and the last commit are the CI's).
-- **Time.** Building the snapshot takes a few seconds for an ordinary repository and minutes for a
-  very large one, and it adds to the job. The scan does not wait for the server to unpack it.
+- **Time.** Building the snapshot masks every file, at about 1.8 MB of text a second on a
+  developer machine: about 15 seconds for a repository of 25 MB, and about five minutes near the
+  500 MiB limit. It adds to the job. The scan does not wait for the server to unpack the snapshot.
 
 **The snapshot never changes the scan's result.** Whatever goes wrong while it is built or sent
 is a warning in the log. The exit code stays the quality gate's.
@@ -258,12 +269,13 @@ is a warning in the log. The exit code stays the quality gate's.
 ## Troubleshooting
 
 Every scan log line about the snapshot starts with `AI review` (the table leaves out the
-`AI review: ` prefix). Set `QUALOR_LOG_LEVEL=debug` for more.
+`AI review: ` prefix). The table lists the messages that call for an answer; the log has more
+informational lines about what the snapshot holds and masks. Set `QUALOR_LOG_LEVEL=debug` for more.
 
 | Message in the scan log | What it means, and what to do |
 |---|---|
 | `AI review is off for this project (<reason>), so no repository snapshot is sent` | Not an error. The reasons are in the next table |
-| `no snapshot sent, the secret scan (<engines>) did not complete` | An engine that is switched on did not finish. Use the scanner image, fix or install the engine, or switch it off with `enabled: false` ([When the secret scan stops the snapshot](#when-the-secret-scan-stops-the-snapshot)) |
+| `no snapshot sent, the secret scan (<engines>) did not complete` | An engine that is switched on and had something to run did not finish. Fix or install it, or switch it off with `enabled: false` ([When the secret scan stops the snapshot](#when-the-secret-scan-stops-the-snapshot)). An engine with nothing to run, such as Semgrep without rule files, does not cause it |
 | `no snapshot sent, the secret scan's output could not be read` | Run the scan again. If it repeats, read the debug log |
 | `no snapshot sent, the merge request's head commit <sha> is not in the clone and could not be fetched` | Give the job the full history, or check out the pull request's head ([What your CI needs](#what-your-ci-needs)) |
 | `… is not in the clone (scm.autoFetch is false)` | Allow the fetch (`scm.autoFetch: true`), or give the clone the commit |
@@ -277,8 +289,12 @@ Every scan log line about the snapshot starts with `AI review` (the table leaves
 | `… (409 SNAPSHOT_EXISTS …)` | The analysis already has a snapshot |
 | `the merge base's files could not be scanned for secrets (…), so the snapshot sends none of the lines the merge request removes` | Gitleaks could not run over the target branch's versions. The snapshot is sent without removed lines |
 | `the secret scan is off in qualor.yml; only built-in patterns mask secrets in the snapshot` | You switched Gitleaks off; see [above](#when-the-secret-scan-stops-the-snapshot) |
-| `N paths left out of the repository snapshot, which cannot hold them safely` | Information: very long names, control characters or secrets in a path |
+| `N paths left out of the repository snapshot, which cannot hold them safely` | A warning, and the snapshot is sent without those paths: names that are very long, hold control characters or other characters a snapshot path may not have, or hold a secret |
 | `N files are not in the clone's objects and were left out of the snapshot` | A partial clone lacks those files. Fetch the objects, or use a full clone |
+| `the server could not be asked whether it reviews (…), so no repository snapshot is sent` | The scanner could not reach the server's review route (network, proxy or certificate). The report is uploaded; there is no snapshot this time |
+| `the server did not say whether it reviews (…), so no repository snapshot is sent` | The server answered with an error, such as 403 for a token that cannot upload. The text names it |
+| `the merge request's diff could not be read, so the snapshot has no patches: …` | git failed to produce the diff. The snapshot is sent without diffs |
+| `no snapshot sent: <error>` | A git, disk or network failure while the snapshot was built or sent. The text says which, with any secret in it masked |
 | `the server is busy with other uploads; retrying the snapshot` | The server's upload slots are taken; the scanner retries. The operator can raise `QUALOR_MAX_CONCURRENT_UPLOADS` |
 | a snapshot is uploaded and nothing else happens | Expected today: the review itself arrives with the next part of this page |
 

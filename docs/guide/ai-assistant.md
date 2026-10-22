@@ -2,8 +2,9 @@
 
 Qualor can ask a language model about one issue at a time. It is optional, **off by default**, and
 uses a model you choose, with your own key: a hosted provider or a local model on your own network.
-To have a model review whole merge requests, see [AI review](./ai-review.md): it uses the provider
-configured here and has its own switch, warning and budgets.
+The settings of [AI review](./ai-review.md), which will let a model review whole merge requests,
+are described on their own page. AI review uses the provider configured here and has its own
+switch, warning and budgets.
 
 ## What it does
 
