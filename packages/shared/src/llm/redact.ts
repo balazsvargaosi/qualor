@@ -376,8 +376,12 @@ function markKeyBlocks(lines: readonly string[], whole: boolean[]): void {
  * `*`, `;`, `--`, and `//` below), a patch's `+` or `-`, a quote. `/` alone is base64.
  */
 const BODY_LEADING = new Set([' ', '\t', '#', '*', ';', '+', '-', '"', "'", '`']);
-/** ... and after it: a quote, a comma, a string glued by `+`, a continued line, a CR (and `\n` below). */
-const BODY_TRAILING = new Set([' ', '\t', '\r', '"', "'", '`', ',', '+', '\\']);
+/**
+ * ... and after it: a quote, a comma, a string glued by `+`, a continued line, the `;` that ends
+ * the string's statement, a CR (and the escape `\n` below). The same marks the windows' rule for
+ * base64 lines (`BASE64_LINE`) takes off, so that a line it would take is a body line here too.
+ */
+const BODY_TRAILING = new Set([' ', '\t', '\r', '"', "'", '`', ',', ';', '+', '\\']);
 /** A body line longer than this, decoration off, is no PEM line (they are 64 or 76 characters). */
 const BODY_LINE_MAX_CHARS = 4_096;
 /** Room for the decoration around the longest body line, so that a longer line is not scanned. */

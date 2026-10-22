@@ -873,6 +873,20 @@ describe('keyBlockLines: the body of a BEGIN line with no END line after it', ()
       expect(keyBlockLines(lines)).toEqual([false, true, true, true, false]);
     });
 
+    it.each([
+      ['a Java string that ends there', (l: string) => `    "${l}\\n";`, '    "x\\n" +'],
+      ['the same without the escape', (l: string) => `    "${l}";`, '    "x" +'],
+      ['a Java string that a patch removes', (l: string) => `-    "${l}\\n";`, '-    "x\\n" +'],
+    ])('is marked, long or short, when it closes the string it is in: %s', (_n, closing, glued) => {
+      // The END line is missing, so the literal ends with the key's last line, `";` after it. The
+      // windows' rule for base64 lines takes such a line, so the lines before it must not hide it.
+      const row = (l: string) => glued.replace('x', l);
+      for (const tail of ['AbCd1234', 'Zm9vYmE=', body('z')]) {
+        const lines = [BEGIN(), ...rows(2).map(row), closing(tail), code('a')];
+        expect(keyBlockLines(lines), tail).toEqual([false, true, true, true, false]);
+      }
+    });
+
     it('is marked only after a base64 body line', () => {
       expect(keyBlockLines([BEGIN(), 'Zz9='])).toEqual([false, false]);
       expect(keyBlockLines([BEGIN(), '', 'Zz9='])).toEqual([false, true, false]);

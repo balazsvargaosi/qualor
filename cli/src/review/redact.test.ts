@@ -241,6 +241,34 @@ describe('redactLongText', () => {
         }
       },
     );
+
+    it.each([
+      ['a Java string', (l: string) => `    "${l}\\n" +`, (l: string) => `    "${l}\\n";`],
+      ['the same without the escape', (l: string) => `    "${l}" +`, (l: string) => `    "${l}";`],
+      [
+        'a Java string that a patch removes',
+        (l: string) => `-    "${l}\\n" +`,
+        (l: string) => `-    "${l}\\n";`,
+      ],
+    ])(
+      '%s: the last line, long or short, closes the string, with the END line missing',
+      (_n, row, closing) => {
+        // The windows' own rule for base64 lines takes a last line with its `";`; the lines before
+        // it are masked first, so the rule has no run left to start from.
+        const body = Array.from({ length: 30 }, (_, i) => row(keyLine(i)));
+        for (const tail of ['AbCd1234', keyLine(30)]) {
+          const block = [row(KEY_BEGIN), ...body, closing(tail)];
+          for (const before of [185, 190]) {
+            const lines = [...code(before, 'a'), ...block, '}', ...code(2_000, 'b')];
+            const out = redactLongText(lines.join('\n')).text.split('\n');
+            expect(out).toHaveLength(lines.length);
+            const shown = block.filter((_, i) => out[before + i] !== REDACTED);
+            expect(shown, `${shown.length} key lines in clear after ${before} lines`).toEqual([]);
+            expect(out.slice(before + block.length)).toEqual(lines.slice(before + block.length));
+          }
+        }
+      },
+    );
   });
 
   it('replaces a line too long to scan, and only that line', () => {
