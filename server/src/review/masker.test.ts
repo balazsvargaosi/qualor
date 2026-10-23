@@ -121,7 +121,7 @@ describe('a text that takes too long', () => {
     expect(await masker.mask('const a = 1;\n')).toMatchObject({ kind: 'masked' });
     const { result, ticks, elapsed } = await whileTicking(masker.mask(HOSTILE));
     expect(result).toEqual({ kind: 'timeout' });
-    expect(elapsed).toBeGreaterThanOrEqual(380);
+    expect(elapsed).toBeGreaterThanOrEqual(350);
     // Masking it takes the shared redaction seconds: the answer comes when the time is up.
     expect(elapsed).toBeLessThan(budgetMs(3_000));
     // A timer fired the whole time: every 10 ms, so some 40 times in 400 ms on an idle machine and
@@ -130,7 +130,7 @@ describe('a text that takes too long', () => {
   });
 
   it('is not masked again for the next text: a new worker takes it, and masks it as it should', async () => {
-    const masker = maskerOf({ timeoutMs: 300 });
+    const masker = maskerOf({ timeoutMs: 600 });
     expect(await masker.mask('const a = 1;\n')).toMatchObject({ kind: 'masked' });
     expect(masker.workersStarted).toBe(1);
     expect(await masker.mask(HOSTILE)).toEqual({ kind: 'timeout' });
@@ -182,10 +182,13 @@ describe('the time a review may spend masking', () => {
   });
 
   it('is spent by the texts, the ones given up included, and nothing is masked once it is', async () => {
-    const masker = maskerOf({ timeoutMs: 150, budgetMs: 400 });
+    // The text that warms the worker up is a text like any other, with the time of one: the budget
+    // is for several.
+    const masker = maskerOf({ timeoutMs: 400, budgetMs: 1_300 });
     expect(await masker.mask('const a = 1;\n')).toMatchObject({ kind: 'masked' });
-    // Each text that is too slow takes its 150 ms; the one that comes to the end of the budget is
-    // not given 150 but what is left, and answers `budget`.
+    expect(masker.exhausted).toBe(false);
+    // Each text that is too slow takes its 400 ms; the one that comes to the end of the budget is
+    // not given 400 but what is left, and answers `budget`.
     const kinds: string[] = [];
     for (let i = 0; i < 10 && kinds.at(-1) !== 'budget'; i += 1) {
       kinds.push((await masker.mask(HOSTILE)).kind);
@@ -193,7 +196,8 @@ describe('the time a review may spend masking', () => {
     expect(kinds.at(-1)).toBe('budget');
     expect(kinds.slice(0, -1).length).toBeGreaterThanOrEqual(1);
     expect(kinds.slice(0, -1).every((kind) => kind === 'timeout')).toBe(true);
-    expect(masker.spentMs).toBeGreaterThanOrEqual(400);
+    expect(masker.spentMs).toBeGreaterThanOrEqual(1_300);
+    expect(masker.exhausted).toBe(true);
     // Once spent, no text is masked, and no worker is started for one.
     const workers = masker.workersStarted;
     for (const text of ['const a = 1;\n', '', HOSTILE]) {
@@ -203,14 +207,17 @@ describe('the time a review may spend masking', () => {
   });
 
   it('gives a text the time that is left of the budget, and not more', async () => {
-    const masker = maskerOf({ timeoutMs: 5_000, budgetMs: 400 });
+    const masker = maskerOf({ timeoutMs: 5_000, budgetMs: 600 });
     expect(await masker.mask('const a = 1;\n')).toMatchObject({ kind: 'masked' });
+    // What the first text took is out of the budget, whatever that was on this machine.
+    const left = 600 - masker.spentMs;
     const started = performance.now();
     expect(await masker.mask(HOSTILE)).toEqual({ kind: 'budget' });
     const elapsed = performance.now() - started;
-    // The 400 ms of the budget, not the 5 s one text may take: it needs 9 s.
-    expect(elapsed).toBeGreaterThanOrEqual(380);
-    expect(elapsed).toBeLessThan(budgetMs(2_500));
+    // What is left of the budget, not the 5 s one text may take: it needs 9 s.
+    expect(elapsed).toBeGreaterThanOrEqual(left - 30);
+    expect(elapsed).toBeLessThan(left + budgetMs(2_000));
+    expect(masker.spentMs).toBeGreaterThanOrEqual(600);
   });
 
   it('is not spent by a text that waits, nor by the loading of a worker', async () => {

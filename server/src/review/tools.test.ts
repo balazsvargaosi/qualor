@@ -1284,9 +1284,9 @@ describe('masking that takes too long', () => {
   afterAll(async () => {
     await Promise.all(slowMaskers.map((m) => m.close()));
   });
-  /** A policy whose masker gives a text 300 ms, and the review `budgetMs` for all of them. */
+  /** A policy whose masker gives a text 500 ms, and the review `budgetMs` for all of them. */
   const slowPolicy = (budgetMs = 90_000): ToolPolicy => {
-    const slow = new Masker({ timeoutMs: 300, budgetMs });
+    const slow = new Masker({ timeoutMs: 500, budgetMs });
     slowMaskers.push(slow);
     return newPolicy({ masker: slow });
   };
@@ -1388,8 +1388,8 @@ describe('masking that takes too long', () => {
   });
 
   it('a review that has spent its time for masking gets the budget line from read_file, and masks no more', async () => {
-    const policy = slowPolicy(500);
-    // 300 ms for the first, and the 200 that are left are not enough for the second.
+    const policy = slowPolicy(900);
+    // 500 ms for the first, and the 400 that are left are not enough for the second.
     expect(await answer(reader, 'read_file', { path: 'a/hostile.txt' }, policy)).toBe(NOT_IN_TIME);
     expect(await answer(reader, 'read_file', { path: 'c/hostile2.txt' }, policy)).toBe(
       BUDGET_USED_UP,
@@ -1400,6 +1400,47 @@ describe('masking that takes too long', () => {
     // A grep leaves out what it can no longer mask, and says nothing of it.
     expect(await answer(reader, 'grep', { pattern: 'needle' }, policy)).toBe('no matches');
     expect(policy.budget.maskedBytes).toBe(left);
+  });
+
+  it('once the review has spent its time, read_file answers alike for a file an earlier grep tried and one it never did', async () => {
+    const burning = Object.fromEntries(
+      [1, 2, 3, 4].map((n) => [`e/burn${n}.txt`, HOSTILE_TEXT] as const),
+    );
+    const files = memorySnapshot({
+      files: {
+        'a/hostile.txt': `${HOSTILE_TEXT}\nneedle`,
+        'b/ok.ts': 'const needle = 1;\n',
+        'c/never.ts': 'const other = 1;\n',
+        'd/never-hostile.txt': HOSTILE_TEXT,
+        ...burning,
+      },
+    });
+    const policy = slowPolicy(1_800);
+    // A grep tries the two files that hold the needle: one takes too long, one is masked and kept.
+    expect(await answer(files, 'grep', { pattern: 'needle' }, policy)).toBe(
+      'b/ok.ts:1: const needle = 1;',
+    );
+    // While there is time, what read_file says tells the two apart, and from a file not tried.
+    expect(await answer(files, 'read_file', { path: 'a/hostile.txt' }, policy)).toBe(NOT_IN_TIME);
+    expect(await answer(files, 'read_file', { path: 'b/ok.ts' }, policy)).toBe(
+      '1│ const needle = 1;',
+    );
+    expect(await answer(files, 'read_file', { path: 'c/never.ts' }, policy)).toBe(
+      '1│ const other = 1;',
+    );
+    // Texts that take too long spend the time of the review.
+    for (const path of Object.keys(burning)) {
+      if (policy.masker?.exhausted === true) break;
+      await answer(files, 'read_file', { path }, policy);
+    }
+    expect(policy.masker?.exhausted).toBe(true);
+    // Now every file with text gets the budget line: tried and slow, tried and kept, and not tried
+    // at all (a text that would take too long too, or one that would not).
+    for (const path of ['a/hostile.txt', 'b/ok.ts', 'c/never.ts', 'd/never-hostile.txt']) {
+      expect(await answer(files, 'read_file', { path }, policy), path).toBe(BUDGET_USED_UP);
+    }
+    // A file that needs no masking is answered as it is without the budget.
+    expect(await answer(files, 'read_file', { path: 'nope.ts' }, policy)).toBe(ABSENT);
   });
 
   it('the files are masked by the masker of the policy', async () => {

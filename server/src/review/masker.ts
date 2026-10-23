@@ -61,8 +61,8 @@ interface Live {
   ready: Promise<void>;
   /** Gives up waiting for the worker to load its code (nothing, once it has). */
   abandon: (reason: unknown) => void;
-  /** Given the outcome of the job the worker is running, when it has one. */
-  running: ((outcome: Outcome) => void) | null;
+  /** The job the worker is running, when it has one: its id, and what is given its outcome. */
+  running: { id: number; settle: (outcome: Outcome) => void } | null;
   /** The worker is stopped or has failed: it takes no more jobs. */
   ended: boolean;
 }
@@ -139,6 +139,11 @@ export class Masker {
     return this.started - this.exited;
   }
 
+  /** The review has spent the wall time it may spend masking: no text is masked now. */
+  get exhausted(): boolean {
+    return this.budgetMs - this.spent <= 0;
+  }
+
   /**
    * Masks `text` with the shared redaction (redactLongText). The texts are masked one after the
    * other, in the order they are asked for; the time one waits for its turn is nobody's. Rejects
@@ -172,7 +177,7 @@ export class Masker {
     if (live === null) return;
     live.ended = true;
     live.abandon(reason);
-    live.running?.({ kind: 'interrupted', reason });
+    live.running?.settle({ kind: 'interrupted', reason });
     await live.worker.terminate();
   }
 
@@ -211,12 +216,22 @@ export class Masker {
     return timer;
   }
 
-  /** Masks one text on the worker, within the time it has: `left` of the budget, and the timeout. */
+  /**
+   * Masks one text on a worker, within the time it has: `left` of the budget, and the timeout. A
+   * worker that failed after it loaded its code and before it was sent the text did nothing with
+   * the text: the text is given to another, once, before it is blamed.
+   */
   private async maskOne(text: string, left: number): Promise<MaskResult> {
-    const live = await this.liveWorker();
-    if (this.closed) throw this.closedReason();
-    // The worker failed after it loaded its code, before it was sent the text: the text is given up.
-    if (live.ended) return { kind: 'timeout' };
+    for (let attempt = 0; ; attempt += 1) {
+      const live = await this.liveWorker();
+      if (this.closed) throw this.closedReason();
+      if (!live.ended) return this.maskOn(live, text, left);
+      if (attempt > 0) return { kind: 'timeout' };
+    }
+  }
+
+  /** Sends the text to the worker, and waits for its answer, for the time `left` and the timeout. */
+  private async maskOn(live: Live, text: string, left: number): Promise<MaskResult> {
     const limit = Math.min(this.timeoutMs, left);
     const started = performance.now();
     const outcome = await new Promise<Outcome>((resolve) => {
@@ -226,8 +241,8 @@ export class Masker {
         live.running = null;
         resolve(result);
       };
-      live.running = settle;
       const job: MaskJob = { id: (this.nextId += 1), text };
+      live.running = { id: job.id, settle };
       live.worker.postMessage(job);
     });
     // A text given up has taken the whole of its time, whatever a clock that fires early says.
@@ -310,13 +325,15 @@ export class Masker {
         loaded();
         return;
       }
-      live.running?.({ kind: 'done', text: message.text, count: message.count });
+      // An answer is for the job the worker is running, and for no other.
+      if (live.running?.id !== message.id) return;
+      live.running.settle({ kind: 'done', text: message.text, count: message.count });
     });
     const gone = (error: Error) => {
       clearTimeout(startTimer);
       live.ended = true;
       if (!isReady) failed(new Error(`the mask worker could not start: ${messageOf(error)}`));
-      live.running?.({ kind: 'failed' });
+      live.running?.settle({ kind: 'failed' });
     };
     worker.on('error', gone);
     worker.on('exit', (code) => {

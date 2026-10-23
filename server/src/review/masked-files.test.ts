@@ -412,7 +412,7 @@ describe('MaskedFiles and the time a masking may take', () => {
 
   it('answers timeout for a file that takes too long, now and for every request after it', async () => {
     const { reader, asked } = counting(hostile);
-    const slow = maskerOf({ timeoutMs: 300 });
+    const slow = maskerOf({ timeoutMs: 600 });
     const files = new MaskedFiles(reader, { masker: slow });
     const budget = { maskedBytes: 10_000_000 };
     expect(await files.file('hostile.txt', budget)).toEqual({ kind: 'timeout' });
@@ -432,7 +432,7 @@ describe('MaskedFiles and the time a masking may take', () => {
   });
 
   it('gives the same answer to the requests that wait for a file that takes too long', async () => {
-    const files = new MaskedFiles(hostile, { masker: maskerOf({ timeoutMs: 300 }) });
+    const files = new MaskedFiles(hostile, { masker: maskerOf({ timeoutMs: 600 }) });
     const all = await Promise.all([files.file('hostile.txt'), files.file('hostile.txt')]);
     expect(all).toEqual([{ kind: 'timeout' }, { kind: 'timeout' }]);
   });
@@ -454,6 +454,43 @@ describe('MaskedFiles and the time a masking may take', () => {
     expect(
       await new MaskedFiles(logo, { masker: maskerOf({ budgetMs: 1 }) }).file('logo.png'),
     ).toEqual({ kind: 'omitted', reason: 'binary' });
+  });
+
+  it('answers budget for every file with text once the time is spent, the files kept and the ones that took too long among them', async () => {
+    const files = new MaskedFiles(
+      memorySnapshot({
+        files: {
+          'kept.ts': 'const kept = 1;\n',
+          'slow.txt': HOSTILE_TEXT,
+          'never.ts': 'const never = 1;\n',
+          'burn1.txt': HOSTILE_TEXT,
+          'burn2.txt': HOSTILE_TEXT,
+          'burn3.txt': HOSTILE_TEXT,
+          'logo.png': { kind: 'omitted', reason: 'binary' },
+        },
+      }),
+      // 600 ms a text, 1 500 ms for the review.
+      { masker: maskerOf({ timeoutMs: 600, budgetMs: 1_500 }) },
+    );
+    expect(linesOfFile(await files.file('kept.ts'))).toEqual(['const kept = 1;']);
+    expect(await files.file('slow.txt')).toEqual({ kind: 'timeout' });
+    // While there is time, the three kinds of file are told apart.
+    expect(linesOfFile(await files.file('kept.ts'))).toEqual(['const kept = 1;']);
+    expect(await files.file('slow.txt')).toEqual({ kind: 'timeout' });
+    expect(linesOfFile(await files.file('never.ts'))).toEqual(['const never = 1;']);
+    // Texts that take too long spend what is left.
+    for (const path of ['burn1.txt', 'burn2.txt', 'burn3.txt']) await files.file(path);
+    // Now they are not: a file that was kept, one that took too long and one not asked for before
+    // are all the same to the answer, and none of them is charged.
+    const budget = { maskedBytes: 1_000 };
+    for (const path of ['kept.ts', 'slow.txt', 'never.ts', 'burn1.txt', 'new.ts']) {
+      expect(await files.file(path, budget), path).toEqual(
+        path === 'new.ts' ? { kind: 'absent' } : { kind: 'budget' },
+      );
+    }
+    expect(budget.maskedBytes).toBe(1_000);
+    // A file that needs no masking is answered as ever.
+    expect(await files.file('logo.png', budget)).toEqual({ kind: 'omitted', reason: 'binary' });
   });
 
   it('fails the request, and refunds the bytes, when the masker has been closed', async () => {

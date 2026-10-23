@@ -182,15 +182,21 @@ export class MaskedFiles {
 
   /**
    * The file, masked. A file that is kept or being masked costs nothing; one that is masked now
-   * is charged to `budget` (when there is one) before it is, and is `budget` when it does not fit
-   * or when the review has spent the time it may spend masking: nothing is masked or kept then,
-   * and the budget is left as it was. A file that took too long is `timeout`, now and for every
-   * request after. A failure to read or to mask the file is not kept: the next request tries again.
+   * is charged to `budget` (when there is one) before it is, and is `budget` when it does not fit.
+   * A file that took too long is `timeout`, now and for every request after. Once the review has
+   * spent the time it may spend masking, every file with text is `budget`, the ones kept and the
+   * ones that took too long among them: which of them were asked for before, and what they held,
+   * is not for the answer to tell. A failure to read or to mask the file is not kept: the next
+   * request tries again.
    */
   async file(path: string, budget?: MaskBudget): Promise<MaskedFile> {
     const kept = this.kept.get(path);
-    if (kept !== undefined) return { kind: 'text', text: kept, redactions: 0 };
-    if (this.timedOut.has(path)) return { kind: 'timeout' };
+    if (kept !== undefined) {
+      return this.masker.exhausted
+        ? { kind: 'budget' }
+        : { kind: 'text', text: kept, redactions: 0 };
+    }
+    if (this.timedOut.has(path)) return { kind: this.masker.exhausted ? 'budget' : 'timeout' };
     const pending = this.loading.get(path);
     if (pending !== undefined) {
       const file = await pending;

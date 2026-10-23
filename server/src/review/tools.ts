@@ -573,8 +573,9 @@ async function listFiles(
 /**
  * Runs one tool call of the model over the snapshot, and answers what to tell it: the answer is
  * always text, also for a call that cannot be run (a refusal is an answer the model can act on).
- * The call counts against the budget first; past it nothing runs and nothing is read. Throws only
- * when the reader does.
+ * The call counts against the budget first; past it nothing runs and nothing is read. Throws when
+ * the reader does, and when the masker rejects: it is closed, its signal has aborted, or its worker
+ * cannot be started. A file the masker could not mask in time is an answer, not a throw.
  */
 export async function runReviewTool(
   reader: SnapshotReader,
