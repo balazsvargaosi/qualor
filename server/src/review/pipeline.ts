@@ -145,6 +145,12 @@ export type PipelineOutcome =
        * be closed for being left out of the findings.
        */
       shownPriorIds: string[];
+      /**
+       * The prior findings the judge named in a finding (its `priorId`, each once), also in one the
+       * review dropped itself: of low confidence, or rejected by the verification. A prior finding
+       * that is named stays open, whatever becomes of the finding that names it.
+       */
+      namedPriorIds: string[];
       summary: { verdict: string; walkthrough: string[] };
       tokenLimitReached: boolean;
       notes: ReviewNote[];
@@ -443,10 +449,12 @@ export async function runReviewPipeline(
   const openPriors = new Set(
     judgeShown.priorFindings.filter((finding) => finding.status === 'open').map((f) => f.id),
   );
+  const answered = answer.findings.map((found) => judged(found, sources, new Set(shownPriorIds)));
+  const namedPriorIds = [
+    ...new Set(answered.flatMap(({ priorId }) => (priorId === null ? [] : [priorId]))),
+  ];
   // A low-confidence finding is never stored, so it is not verified either.
-  const kept = answer.findings
-    .map((found) => judged(found, sources, new Set(shownPriorIds)))
-    .filter((finding) => finding.confidence !== 'low');
+  const kept = answered.filter((finding) => finding.confidence !== 'low');
 
   // The serious security findings, critical first, each verified alone, with the verification's
   // own share: what the stages before it overspent is not taken from it.
@@ -493,6 +501,7 @@ export async function runReviewPipeline(
     findings,
     prior: priorVerdicts(answer.prior, openPriors),
     shownPriorIds,
+    namedPriorIds,
     summary: { verdict: answer.summary.verdict, walkthrough: [...answer.summary.walkthrough] },
     tokenLimitReached: review.tokenLimitReached,
     notes: [...review.notes],

@@ -82,6 +82,7 @@ const outcomeOf = (over: Partial<Reviewed> = {}): Reviewed => ({
   findings: [],
   prior: [],
   shownPriorIds: [],
+  namedPriorIds: [],
   summary: { verdict: 'One problem.', walkthrough: ['The cart.'] },
   tokenLimitReached: false,
   notes: [],
@@ -296,6 +297,43 @@ describe('matchPrior', () => {
     // The judge may still call the file by the name the prior finding has, which is its own.
     const old = judged({ priorId: 'p', path: 'src/a.ts', line: 90, title: 'Anything' });
     expect(matchPrior(old, [p], renamed)).toBe(p);
+  });
+
+  it('a finding in a renamed file is the earlier finding of the file under its old name', () => {
+    const title = 'Problem in a renamed file';
+    const renamed = new Map([['src/new.ts', 'src/old.ts']]);
+    const old = prior('old', { path: 'src/old.ts', line: 14, title });
+    const finding = judged({ path: 'src/new.ts', line: 15, title });
+    // Not known to be a rename: another file's finding.
+    expect(matchPrior(finding, [old])).toBeNull();
+    expect(matchPrior(finding, [old], renamed)).toBe(old);
+    // The rule, the words and the place are needed as ever, and the file must be the one renamed.
+    expect(matchPrior({ ...finding, category: 'security' }, [old], renamed)).toBeNull();
+    expect(matchPrior({ ...finding, title: 'Something else' }, [old], renamed)).toBeNull();
+    expect(matchPrior({ ...finding, line: 40 }, [old], renamed)).toBeNull();
+    expect(matchPrior(finding, [old], new Map([['src/new.ts', 'src/other.ts']]))).toBeNull();
+    expect(matchPrior({ ...finding, path: 'src/other.ts' }, [old], renamed)).toBeNull();
+    // The fingerprint an earlier finding has is the one of its own file.
+    const stale = prior('stale', {
+      path: 'src/old.ts',
+      line: 14,
+      title,
+      fingerprint: fingerprintOf('logic', 'src/new.ts', title),
+    });
+    expect(matchPrior(finding, [stale], renamed)).toBeNull();
+    // A dismissal of the old file holds in the new one, for the same code.
+    const gone = prior('gone', {
+      path: 'src/old.ts',
+      status: 'wont_fix',
+      line: 14,
+      title: 'Check `user`',
+    });
+    expect(matchPrior({ ...finding, title: 'check `user`' }, [gone], renamed)).toBe(gone);
+    expect(matchPrior({ ...finding, title: 'check `order`' }, [gone], renamed)).toBeNull();
+    // An earlier finding in the file under its own name is the finding's too, with or without it.
+    const own = prior('own', { path: 'src/new.ts', line: 14, title });
+    expect(matchPrior(finding, [own])).toBe(own);
+    expect(matchPrior(finding, [own], renamed)).toBe(own);
   });
 
   it('fingerprint and proximity match a re-worded finding', () => {
@@ -797,6 +835,136 @@ describe('planFindings', () => {
     expect(result.creates.map((c) => [c.finding.title, c.anchorLine])).toEqual([['New', null]]);
     expect(result.closes).toEqual([]);
     expect(result.keeps).toEqual([]);
+  });
+
+  it('a finding that uses the old name of a renamed file is the earlier finding already on the new name', () => {
+    const renamed = [change('src/new.ts', { oldPath: 'src/old.ts', status: 'renamed' })];
+    const title = 'Problem in a renamed file';
+    // An earlier review has moved the issue to the new name; the judge still uses the old one.
+    const p = prior('p', { path: 'src/new.ts', line: 14, title });
+    const byId = plan(
+      {
+        findings: [judged({ priorId: 'p', path: 'src/old.ts', line: 15, title })],
+        shownPriorIds: ['p'],
+      },
+      [p],
+      renamed,
+    );
+    const byWords = plan(
+      { findings: [judged({ path: 'src/old.ts', line: 15, title })], shownPriorIds: ['p'] },
+      [p],
+      renamed,
+    );
+    for (const [label, result] of [
+      ['by its id', byId],
+      ['by its words', byWords],
+    ] as const) {
+      // One update, and no second issue for the same finding.
+      expect(
+        result.updates.map((u) => [u.prior.id, u.found.finding.path, u.found.anchorLine]),
+        label,
+      ).toEqual([['p', 'src/new.ts', 15]]);
+      expect(result.creates, label).toEqual([]);
+      expect(result.keeps, label).toEqual([]);
+      expect(result.closes, label).toEqual([]);
+      expect(result.dropped, label).toEqual([]);
+    }
+  });
+
+  it('a finding in the new name of a renamed file, with no id, is the earlier finding of the old name', () => {
+    const renamed = [change('src/new.ts', { oldPath: 'src/old.ts', status: 'renamed' })];
+    const title = 'Problem in a renamed file';
+    const p = prior('p', { path: 'src/old.ts', line: 14, title });
+    const result = plan(
+      { findings: [judged({ path: 'src/new.ts', line: 15, title })], shownPriorIds: ['p'] },
+      [p],
+      renamed,
+    );
+    // It moves the issue to the new name, and raises no second one.
+    expect(
+      result.updates.map((u) => [u.prior.id, u.found.finding.path, u.found.anchorLine]),
+    ).toEqual([['p', 'src/new.ts', 15]]);
+    expect(result.creates).toEqual([]);
+    expect(result.keeps).toEqual([]);
+    expect(result.closes).toEqual([]);
+    expect(result.dropped).toEqual([]);
+
+    // What a person dismissed in the old name is not raised again in the new one.
+    const gone = prior('gone', {
+      path: 'src/old.ts',
+      status: 'wont_fix',
+      line: 14,
+      title: 'Check `user`',
+    });
+    const again = plan(
+      { findings: [judged({ path: 'src/new.ts', line: 15, title: 'Check `user`' })] },
+      [gone],
+      renamed,
+    );
+    expect(again.dropped.map((d) => d.why)).toEqual(['dismissed']);
+    expect(again.creates).toEqual([]);
+  });
+
+  it('takes the old path of a file only where the merge request renamed it', () => {
+    const title = 'Problem in another file';
+    const p = prior('p', { path: 'src/old.ts', line: 14, title });
+    const forged = (status: ReviewableChange['status']) => [
+      change('src/new.ts', { oldPath: 'src/old.ts', status }),
+    ];
+    for (const status of ['added', 'modified'] as const) {
+      // A finding that uses that name is in no file of the review: it is not looked up as the new
+      // file, and the issue of that name stays where it is.
+      const byName = plan(
+        { findings: [judged({ path: 'src/old.ts', line: 15, title })], shownPriorIds: ['p'] },
+        [p],
+        forged(status),
+      );
+      expect(byName.updates, status).toEqual([]);
+      expect(byName.creates, status).toEqual([]);
+      expect(
+        byName.keeps.map((k) => k.id),
+        status,
+      ).toEqual(['p']);
+      // The judge's id is not followed into the file, nor are the same words in it the issue's.
+      for (const finding of [
+        judged({ priorId: 'p', path: 'src/new.ts', line: 15, title: 'Other words' }),
+        judged({ path: 'src/new.ts', line: 15, title }),
+      ]) {
+        const inFile = plan({ findings: [finding], shownPriorIds: ['p'] }, [p], forged(status));
+        expect(inFile.updates, status).toEqual([]);
+        expect(
+          inFile.creates.map((c) => c.finding.path),
+          status,
+        ).toEqual(['src/new.ts']);
+      }
+    }
+    // A file said to be deleted does not delete the issues of the name it gives: that is not a
+    // deletion of theirs.
+    const deleted = [
+      change('src/new.ts', {
+        oldPath: 'src/old.ts',
+        status: 'deleted',
+        lines: null,
+        added: new Set(),
+        unshown: 'deleted',
+      }),
+    ];
+    expect(plan({ shownPriorIds: ['p'] }, [p], deleted).closes).toEqual([]);
+  });
+
+  it('a prior finding the review named in a finding it dropped itself stays open', () => {
+    const p = prior('p', { line: 14 });
+    const kept = plan(
+      { namedPriorIds: ['p'], prior: [verdict('p', 'fixed')], shownPriorIds: ['p'] },
+      [p],
+    );
+    expect(kept.keeps.map((k) => k.id)).toEqual(['p']);
+    expect(kept.closes).toEqual([]);
+    // An id that is no open prior finding's names nothing.
+    const gone = prior('gone', { status: 'wont_fix', title: 'Dismissed problem' });
+    const none = plan({ namedPriorIds: ['nobody', 'gone'], shownPriorIds: ['gone'] }, [gone]);
+    expect(none.keeps).toEqual([]);
+    expect(none.closes).toEqual([]);
   });
 
   it('plans nothing for an empty review', () => {

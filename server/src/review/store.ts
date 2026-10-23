@@ -158,11 +158,13 @@ async function renderPlan(
 /**
  * Decides what a review stores and makes the values of it: the findings that become issues, the
  * earlier ones raised again, kept or closed, and the summary. It reads and masks the files the
- * findings are in, and touches no database, so call it before the transaction opens. It does not
- * look at the run: the caller moves the run to `storing` with an update that only a run still
- * `running` passes, and that update is what refuses a run that was superseded or stored already,
- * before any masking is spent on it. `storeReviewOutcome` takes the run's row again, under lock, and
- * is the authority.
+ * findings are in, and writes no database, so call it before the transaction opens. The reader
+ * behind `deps.files` is the review's own, opened on the connection pool: it reads
+ * `review_snapshot_files`, takes no lock and writes nothing, and it is never opened on the
+ * transaction `storeReviewOutcome` is given. Nothing here looks at the run: the caller moves the
+ * run to `storing` with an update that only a run still `running` passes, and that update is what
+ * refuses a run that was superseded or stored already, before any masking is spent on it.
+ * `storeReviewOutcome` takes the run's row again, under lock, and is the authority.
  */
 export async function prepareReviewOutcome(
   context: ReviewContext,

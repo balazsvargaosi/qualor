@@ -113,6 +113,7 @@ const outcomeOf = (over: Partial<Reviewed> = {}): Reviewed => ({
   findings: [],
   prior: [],
   shownPriorIds: [],
+  namedPriorIds: [],
   summary: { verdict: 'Two problems.', walkthrough: ['The cart total.'] },
   tokenLimitReached: false,
   notes: [],
@@ -1125,6 +1126,64 @@ describe('storeReviewOutcome (6I-3)', () => {
       fingerprint: fingerprintOf('logic', 'src/new.ts', title),
     });
     expect(await aiIssues(branchId)).toHaveLength(1);
+  });
+
+  it('raises no second issue for a finding of a renamed file that an issue already stands for', async () => {
+    const title = 'A problem in a renamed file';
+    // Where the issue sits (an earlier review may have moved it already), what the judge calls the
+    // file, and whether it names the issue.
+    const cases = [
+      { label: 'old name, by id', issueAt: 'src/new.ts', calls: 'src/old.ts', byId: true },
+      { label: 'old name, by words', issueAt: 'src/new.ts', calls: 'src/old.ts', byId: false },
+      { label: 'new name, by words', issueAt: 'src/old.ts', calls: 'src/new.ts', byId: false },
+    ];
+    for (const { label, issueAt, calls, byId } of cases) {
+      const { branchId, run } = await newRun();
+      const id = await seedPrior(branchId, { path: issueAt, line: 14, title });
+      const context = await contextOf(branchId, [
+        change('src/new.ts', { oldPath: 'src/old.ts', status: 'renamed' }),
+      ]);
+      const counts = await store(
+        run,
+        context,
+        outcomeOf({
+          findings: [judged({ path: calls, title, line: 15, priorId: byId ? id : null })],
+          shownPriorIds: [id],
+        }),
+      );
+      expect(counts, label).toEqual({ created: 0, updated: 1, closed: 0, dropped: 0 });
+      const stored = await aiIssues(branchId);
+      expect(
+        stored.map((row) => row.issue.id),
+        label,
+      ).toEqual([id]);
+      expect(await issueRow(id), label).toMatchObject({
+        path: 'src/new.ts',
+        startLine: 15,
+        status: 'open',
+        fingerprint: fingerprintOf('logic', 'src/new.ts', title),
+      });
+      expect(await findingRow(id), label).toMatchObject({ anchorLine: 15, reviewedHeadSha: HEAD });
+    }
+  });
+
+  it('keeps a prior finding that the review named in a finding it dropped itself, whatever the judge says of it', async () => {
+    const { branchId, run } = await newRun();
+    const id = await seedPrior(branchId, { line: 14 });
+    const context = await contextOf(branchId, [change('src/cart.ts')]);
+    const counts = await store(
+      run,
+      context,
+      outcomeOf({
+        namedPriorIds: [id],
+        prior: [{ id, status: 'fixed', reason: 'Gone.' }],
+        shownPriorIds: [id],
+      }),
+    );
+    expect(counts).toEqual({ created: 0, updated: 1, closed: 0, dropped: 0 });
+    expect(await issueRow(id)).toMatchObject({ status: 'open', closedAt: null });
+    expect(await changesOf(id)).toEqual([]);
+    expect(await findingRow(id)).toMatchObject({ runId: run.id, reviewedHeadSha: OLD_HEAD });
   });
 
   it('keeps one prior finding for one finding when two claim it: the second becomes a new issue', async () => {

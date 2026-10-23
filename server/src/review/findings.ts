@@ -146,6 +146,14 @@ export type Renames = ReadonlyMap<string, string>;
 const NO_RENAMES: Renames = new Map();
 
 /**
+ * Whether the earlier finding `p` is in the file `f` is in: the same path, or the path the file had
+ * before the merge request renamed it.
+ */
+function inSameFile(f: Matchable, p: PriorFinding, renamedFrom: Renames): boolean {
+  return p.path === f.path || renamedFrom.get(f.path) === p.path;
+}
+
+/**
  * The prior finding the judge named, when it is one of those given and the finding is in its file:
  * the judge's id puts an earlier finding in another file only where the file was renamed. Any other
  * id is ignored, as a forged one is, and the finding is judged by its words and its place.
@@ -156,8 +164,7 @@ function namedBy(
   renamedFrom: Renames,
 ): PriorFinding | null {
   const named = f.priorId === null ? undefined : prior.find((p) => p.id === f.priorId);
-  if (named === undefined) return null;
-  return named.path === f.path || renamedFrom.get(f.path) === named.path ? named : null;
+  return named !== undefined && inSameFile(f, named, renamedFrom) ? named : null;
 }
 
 const distance = (f: Matchable, p: PriorFinding): number => Math.abs(f.line - p.line);
@@ -170,20 +177,25 @@ function closer(f: Matchable, a: PriorFinding, b: PriorFinding): boolean {
 }
 
 /**
- * The prior finding that is `f` by its words and its place: the same rule (category) and path, an
+ * The prior finding that is `f` by its words and its place: the same rule (category) and file, an
  * equal fingerprint, and no more than PRIOR_MATCH_LINES lines apart; the closest if several. A
- * dismissal is about the code its title names, and the fingerprint leaves code out, so a dismissed
- * prior finding is `f` only if their titles name the same code.
+ * renamed file is the same file under its old name, and the fingerprint of an earlier finding is
+ * the one it has in its own file, so `f` is compared by the fingerprint it has there. A dismissal
+ * is about the code its title names, and the fingerprint leaves code out, so a dismissed prior
+ * finding is `f` only if their titles name the same code.
  */
-function nearestSame(f: Matchable, prior: readonly PriorFinding[]): PriorFinding | null {
-  const fingerprint = fingerprintOf(f.category, f.path, f.title);
+function nearestSame(
+  f: Matchable,
+  prior: readonly PriorFinding[],
+  renamedFrom: Renames,
+): PriorFinding | null {
   let best: PriorFinding | null = null;
   for (const p of prior) {
     const same =
       p.category === f.category &&
-      p.path === f.path &&
-      p.fingerprint === fingerprint &&
+      inSameFile(f, p, renamedFrom) &&
       distance(f, p) <= PRIOR_MATCH_LINES &&
+      p.fingerprint === fingerprintOf(f.category, p.path, f.title) &&
       (p.status === 'open' || sameCode(f.title, p.title));
     if (same && (best === null || closer(f, p, best))) best = p;
   }
@@ -199,7 +211,7 @@ export function matchPrior(
   prior: readonly PriorFinding[],
   renamedFrom: Renames = NO_RENAMES,
 ): PriorFinding | null {
-  return namedBy(f, prior, renamedFrom) ?? nearestSame(f, prior);
+  return namedBy(f, prior, renamedFrom) ?? nearestSame(f, prior, renamedFrom);
 }
 
 /**
@@ -228,7 +240,7 @@ export function matchPriors(
     let best: { index: number; found: PriorFinding; apart: number } | null = null;
     for (const [index, f] of findings.entries()) {
       if (matches[index] !== null) continue;
-      const found = nearestSame(f, free);
+      const found = nearestSame(f, free, renamedFrom);
       if (found !== null && (best === null || distance(f, found) < best.apart)) {
         best = { index, found, apart: distance(f, found) };
       }
@@ -288,12 +300,33 @@ function onTheFile(
 }
 
 /**
+ * The path a reviewed file had before the merge request renamed it, or null. Only a rename has one:
+ * an upload may carry an old path with any other status, and that is not read.
+ */
+const pathBeforeRename = (change: ReviewableChange): string | null =>
+  change.status === 'renamed' ? change.oldPath : null;
+
+/** The renamed files of the review, by their new path, with the path they had. */
+function renamesOf(reviewed: readonly ReviewableChange[]): Renames {
+  return new Map(
+    reviewed.flatMap((change): [string, string][] => {
+      const before = pathBeforeRename(change);
+      return before === null ? [] : [[change.path, before]];
+    }),
+  );
+}
+
+/**
  * The reviewed changes by path, and by the path a renamed file had: an earlier finding is in the
- * file under its old name, and the judge may still use it.
+ * file under its old name, and the judge may still use it. A path that is a file of the review is
+ * that file, though another file was renamed from it.
  */
 function changesByPath(reviewed: readonly ReviewableChange[]): Map<string, ReviewableChange> {
   const byPath = new Map<string, ReviewableChange>();
-  for (const change of reviewed) if (change.oldPath !== null) byPath.set(change.oldPath, change);
+  for (const change of reviewed) {
+    const before = pathBeforeRename(change);
+    if (before !== null) byPath.set(before, change);
+  }
   for (const change of reviewed) byPath.set(change.path, change);
   return byPath;
 }
@@ -306,6 +339,8 @@ function changesByPath(reviewed: readonly ReviewableChange[]): Map<string, Revie
  *   finding for each; an open one stays open whatever the judge says of it, and is updated when the
  *   finding can be placed on an added line of this head, else kept as it is;
  * - otherwise a new finding, kept when its lines meet the scope and dropped when they do not.
+ * A finding in a renamed file is a finding of the file under the name it has now, whichever name the
+ * judge used, and an earlier finding of the old name is in the same file.
  * An open earlier finding that no finding is: one that a finding named stays open, whatever becomes
  * of that finding; else the judge's `fixed` closes it and `present` keeps it open. One the judge
  * left out or could not tell stays open too, unless the merge request deleted its file. One the
@@ -313,21 +348,18 @@ function changesByPath(reviewed: readonly ReviewableChange[]): Map<string, Revie
  */
 export function planFindings(
   context: Pick<ReviewContext, 'reviewed' | 'prior'>,
-  outcome: Pick<Reviewed, 'findings' | 'prior' | 'shownPriorIds'>,
+  outcome: Pick<Reviewed, 'findings' | 'prior' | 'shownPriorIds' | 'namedPriorIds'>,
 ): FindingsPlan {
   const plan: FindingsPlan = { creates: [], updates: [], keeps: [], closes: [], dropped: [] };
   const scope = reviewScope(context.reviewed);
   const changes = changesByPath(context.reviewed);
-  const renamedFrom = new Map(
-    context.reviewed.flatMap((change): [string, string][] =>
-      change.oldPath === null ? [] : [[change.path, change.oldPath]],
-    ),
-  );
+  const renamedFrom = renamesOf(context.reviewed);
   const drop = (finding: JudgedFinding, why: DropReason) => plan.dropped.push({ finding, why });
 
-  // The ids that findings name: an open prior finding named by one stays open whatever becomes of
-  // that finding. An id that is no prior finding's names nothing.
-  const named = new Set(outcome.findings.map(({ priorId }) => priorId));
+  // The ids the judge named, in the findings given and in the ones the review dropped itself: an
+  // open prior finding named stays open whatever becomes of the finding that names it. An id that is
+  // no prior finding's names nothing.
+  const named = new Set([...outcome.namedPriorIds, ...outcome.findings.map((f) => f.priorId)]);
 
   const candidates: { finding: JudgedFinding; change: ReviewableChange | undefined }[] = [];
   for (const given of outcome.findings) {
@@ -336,10 +368,15 @@ export function planFindings(
       continue;
     }
     const change = changes.get(given.path);
-    const finding = onTheFile(given, change);
-    if (finding === null) drop(given, 'bad_lines');
+    const held = onTheFile(given, change);
+    if (held === null) drop(given, 'bad_lines');
     else if (candidates.length >= MAX_FINDINGS_PER_REVIEW) drop(given, 'over_limit');
-    else candidates.push({ finding, change });
+    else {
+      // Whatever name the judge gave a renamed file, the finding is in it under the name it has now.
+      const finding =
+        change === undefined || change.path === held.path ? held : { ...held, path: change.path };
+      candidates.push({ finding, change });
+    }
   }
 
   const matches = matchPriors(
@@ -355,12 +392,7 @@ export function planFindings(
       continue;
     }
     const placed = placeFinding(finding, change, scope);
-    // A finding in a renamed file is stored under the name the file has now.
-    const stored =
-      change === undefined || change.path === finding.path
-        ? finding
-        : { ...finding, path: change.path };
-    const found: PlannedFinding = { finding: stored, change, anchorLine: placed.anchorLine };
+    const found: PlannedFinding = { finding, change, anchorLine: placed.anchorLine };
     if (prior !== null) {
       raisedAgain.add(prior.id);
       // Where the new finding has no place on this head, the anchor and the suggestion of the old

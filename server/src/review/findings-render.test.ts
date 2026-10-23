@@ -63,6 +63,7 @@ const outcomeOf = (over: Partial<Reviewed> = {}): Reviewed => ({
   findings: [],
   prior: [],
   shownPriorIds: [],
+  namedPriorIds: [],
   summary: { verdict: 'One problem.', walkthrough: ['The cart.'] },
   tokenLimitReached: false,
   notes: [],

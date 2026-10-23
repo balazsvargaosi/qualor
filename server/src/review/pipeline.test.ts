@@ -404,6 +404,7 @@ describe('runReviewPipeline', () => {
       ],
       prior: [],
       shownPriorIds: [],
+      namedPriorIds: [],
       summary: {
         verdict: 'One major problem in the cart total.',
         walkthrough: ['Totals the cart.'],
@@ -949,6 +950,47 @@ describe('runReviewPipeline', () => {
       // The prior findings the judge was shown: only those can be closed for being left out.
       shownPriorIds: ['issue-1', 'issue-2'],
     });
+  });
+
+  it('lists the prior findings the judge named, once each, also in findings the review drops itself', async () => {
+    const context = contextOf([change('src/cart.ts', 2)], {
+      prior: [
+        prior('issue-1', 'open'),
+        prior('issue-2', 'open'),
+        prior('issue-3', 'open'),
+        prior('issue-4', 'wont_fix'),
+      ],
+    });
+    const { deps } = scripted({
+      quality: [answer({ findings: [found()] })],
+      judge: [
+        answer(
+          judgeSays({
+            findings: [
+              judgedAs({ title: 'Kept', priorId: 'issue-1' }),
+              // Dropped by the review: of low confidence, and rejected by the verification.
+              judgedAs({ title: 'Doubtful', confidence: 'low', priorId: 'issue-2' }),
+              judgedAs({
+                title: 'Rejected',
+                category: 'security',
+                severity: 'critical',
+                priorId: 'issue-3',
+              }),
+              judgedAs({ title: 'Again', priorId: 'issue-1' }),
+              // An id the judge was not given names nothing.
+              judgedAs({ title: 'Forged', priorId: 'issue-9' }),
+              judgedAs({ title: 'Of a dismissed one', priorId: 'issue-4' }),
+              judgedAs({ title: 'Of none' }),
+            ],
+          }),
+        ),
+      ],
+      verify: [answer({ verdict: 'rejected', reason: 'It is not reachable.' })],
+    });
+    const { outcome } = await review(context, 100_000, deps);
+    if (outcome.kind !== 'reviewed') throw new Error(outcome.kind);
+    expect(titles(outcome)).toEqual(['Kept', 'Again', 'Forged', 'Of a dismissed one', 'Of none']);
+    expect(outcome.namedPriorIds).toEqual(['issue-1', 'issue-2', 'issue-3', 'issue-4']);
   });
 
   it('names the prior findings the judge was shown: the open ones first, at most 50', async () => {
