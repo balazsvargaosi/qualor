@@ -1,5 +1,13 @@
-import type { ReviewFailureReason, ReviewSkipReason } from '../db/schema';
-import { codeSpan, MAX_PATH_CHARS, qualorLink, safeProse } from '../scm/markdown';
+import { redactText, suggestionLineProblem } from '@qualor/shared';
+import type { AiCategory, ReviewFailureReason, ReviewSkipReason } from '../db/schema';
+import {
+  codeSpan,
+  issueMarker,
+  linesWithinBytes,
+  MAX_PATH_CHARS,
+  qualorLink,
+  safeProse,
+} from '../scm/markdown';
 import { ANSWER_LIMITS, type ReviewNote } from './schemas';
 
 /*
@@ -15,6 +23,10 @@ import { ANSWER_LIMITS, type ReviewNote } from './schemas';
  * whole lines: it drops the prompt for an agent first (or lists fewer findings in it), then the
  * walkthrough, then the tail of the findings not on changed lines, then cuts the verdict; and shows
  * nothing when even that does not fit.
+ *
+ * The first note of a finding's thread (aiThreadBody) is made of the same pieces, and of the one
+ * text no model word goes through `safeProse` in: the lines of its one-click suggestion, code that a
+ * person applies, which the storing of the finding checked and which are checked again here.
  */
 
 /** The most bytes of the section; the summary comment as a whole has 16 KiB. */
@@ -71,6 +83,35 @@ export function withMergeRequestHead(
   head: string | null,
 ): ReviewSummaryState | null {
   return state?.kind === 'done' ? { ...state, mergeRequestHeadSha: head } : state;
+}
+
+/** The order of the review's three severities in the section's list; any other comes last. */
+const SEVERITY_ORDER: Readonly<Record<string, number>> = { high: 0, medium: 1, low: 2 };
+const severityOrder = (severity: string): number =>
+  Object.hasOwn(SEVERITY_ORDER, severity) ? (SEVERITY_ORDER[severity] ?? 3) : 3;
+
+/**
+ * The finished review of the newest analysis with `more` among its findings not on changed lines:
+ * the ones a decoration could not post as threads this time (the merge request moved on, they are
+ * past the cap of threads, the provider's diff had no place for them or the provider refused the
+ * place). Most severe first, as the loader
+ * gives its own (a stable order within a severity), at most UNPLACED_LISTED of them listed and the
+ * rest counted. Any other state is given back as it is.
+ */
+export function withUnplacedFindings(
+  state: ReviewSummaryState | null,
+  more: readonly Done['unplaced'][number][],
+): ReviewSummaryState | null {
+  if (state?.kind !== 'done' || state.latest === false || more.length === 0) return state;
+  const all = [...state.unplaced, ...more].sort(
+    (a, b) => severityOrder(a.severity) - severityOrder(b.severity),
+  );
+  const listed = all.slice(0, UNPLACED_LISTED);
+  return {
+    ...state,
+    unplaced: listed,
+    moreUnplaced: count(state.moreUnplaced) + all.length - listed.length,
+  };
 }
 
 // ─── Qualor's fixed text ─────────────────────────────────────────────────────
@@ -390,4 +431,140 @@ export function aiSummarySection(
       return [];
   }
   return bytesOf(lines) <= maxBytes ? lines : [];
+}
+
+// ─── The first note of a finding's thread ────────────────────────────────────
+
+/** The most bytes of the first note of an AI review thread. */
+export const AI_THREAD_MAX_BYTES = 8 * 1024;
+/** What the note keeps of the finding's body, in characters: all a finding has, then less. */
+const THREAD_BODY_CHARS = [ANSWER_LIMITS.bodyChars, 600, 300, 0] as const;
+const THREAD_BODY_LINES = 20;
+
+const THREAD_HEADING = '**AI review**';
+/** The AI review's three severities; a person may have set one of Qualor's five on the issue. */
+const THREAD_SEVERITY: Readonly<Record<string, string>> = {
+  blocker: 'High',
+  high: 'High',
+  medium: 'Medium',
+  low: 'Low',
+  info: 'Low',
+};
+const CATEGORY_LABEL: Readonly<Record<AiCategory, string>> = {
+  logic: 'Logic',
+  'error-handling': 'Error handling',
+  compatibility: 'Compatibility',
+  concurrency: 'Concurrency',
+  security: 'Security',
+  performance: 'Performance',
+  tests: 'Tests',
+  docs: 'Documentation',
+};
+/** How sure the review is, in a word: a finding of medium confidence is a possible one. */
+const CONFIDENCE_WORD = { high: 'likely', medium: 'possible' } as const;
+const ASSUMES = 'Assumes:';
+/** What the independent verification of a security finding said, when it could not decide. */
+const NEEDS_VALIDATION =
+  'Needs validation: an independent check could not tell from the repository whether this holds.';
+
+/** What the first note of a finding's thread is made of. */
+export interface AiThreadInput {
+  provider: Provider;
+  issueId: string;
+  /** The issue's severity: blocker and high read as high, low and info as low. */
+  severity: string;
+  category: AiCategory;
+  confidence: 'high' | 'medium';
+  ruleKey: string;
+  title: string;
+  body: string;
+  assumption: string | null;
+  verification: 'confirmed' | 'needs_validation' | null;
+  /**
+   * The one-click replacement of the head lines `startLine` to `endLine`, when it still applies to
+   * the provider's diff (the caller checks that): on GitLab the thread sits on `startLine`.
+   */
+  suggestion: { startLine: number; endLine: number; lines: string[] } | null;
+  /** Qualor's own link to the issue, or null. */
+  issueUrl: string | null;
+}
+
+/**
+ * The suggestion block, GitLab's `suggestion:-0+N` (the line the thread is on and the N below it) or
+ * GitHub's, or null when the suggestion is none a person should be offered: a range that is no
+ * range or is over the bounds, or a line that could end the block, start a quick action, hide or
+ * reorder characters, or hold a secret. The storing of the finding refused all of them already; a
+ * row written otherwise is refused here too, and the finding keeps its thread without it.
+ */
+function suggestionBlock(input: AiThreadInput): string[] | null {
+  const s = input.suggestion;
+  if (s === null) return null;
+  const { startLine, endLine, lines } = s;
+  if (!Number.isSafeInteger(startLine) || !Number.isSafeInteger(endLine)) return null;
+  if (startLine < 1 || endLine < startLine) return null;
+  if (endLine - startLine + 1 > ANSWER_LIMITS.suggestionReplacedLines) return null;
+  if (lines.length > ANSWER_LIMITS.suggestionLines) return null;
+  if (lines.some((line) => suggestionLineProblem(line) !== null)) return null;
+  if (redactText(lines.join('\n')).count > 0) return null;
+  const fence =
+    input.provider === 'gitlab' ? `\`\`\`suggestion:-0+${endLine - startLine}` : '```suggestion';
+  return [fence, ...lines, '```'];
+}
+
+/**
+ * The first note of an AI finding's thread, on GitLab or GitHub: the issue marker (the thread is
+ * reconciled through it as an analyzer's is), the fixed header (severity, category, how sure the
+ * review is, and the rule's key in a code span), the title in bold and the body, what the finding
+ * assumes and whether it needs validation, its one-click suggestion, and Qualor's link. Every word
+ * of the model is written through `safeProse`. At most AI_THREAD_MAX_BYTES: the suggestion is left
+ * out first, then the body is shortened.
+ */
+export function aiThreadBody(input: AiThreadInput): string {
+  const severity = Object.hasOwn(THREAD_SEVERITY, input.severity)
+    ? THREAD_SEVERITY[input.severity]
+    : undefined;
+  const category = Object.hasOwn(CATEGORY_LABEL, input.category)
+    ? CATEGORY_LABEL[input.category]
+    : undefined;
+  const header = [
+    THREAD_HEADING,
+    severity ?? 'Unknown',
+    category ?? 'Unknown',
+    input.confidence === 'high' ? CONFIDENCE_WORD.high : CONFIDENCE_WORD.medium,
+    codeSpan(input.ruleKey),
+  ].join(SEPARATOR);
+  const title = inlineProse(input.title, ANSWER_LIMITS.titleChars);
+  const assumption =
+    input.assumption === null ? '' : inlineProse(input.assumption, ANSWER_LIMITS.assumptionChars);
+  const head = [issueMarker(input.issueId), header, ...(title === '' ? [] : ['', `**${title}**`])];
+  const notes = [
+    ...(assumption === '' ? [] : ['', `${ASSUMES} ${assumption}`]),
+    ...(input.verification === 'needs_validation' ? ['', NEEDS_VALIDATION] : []),
+  ];
+  const link = qualorLink('View in Qualor', input.issueUrl);
+  const tail = link === null ? [] : ['', link];
+  const note = (suggestion: readonly string[] | null, bodyChars: number): string => {
+    const body =
+      bodyChars === 0
+        ? ''
+        : safeProse(input.body, { maxChars: bodyChars, maxLines: THREAD_BODY_LINES });
+    return [
+      ...head,
+      ...(body === '' ? [] : ['', body]),
+      ...notes,
+      ...(suggestion === null ? [] : ['', ...suggestion]),
+      ...tail,
+    ].join('\n');
+  };
+  const block = suggestionBlock(input);
+  if (block !== null) {
+    const whole = note(block, THREAD_BODY_CHARS[0]);
+    if (Buffer.byteLength(whole, 'utf8') <= AI_THREAD_MAX_BYTES) return whole;
+  }
+  for (const chars of THREAD_BODY_CHARS) {
+    const shorter = note(null, chars);
+    if (Buffer.byteLength(shorter, 'utf8') <= AI_THREAD_MAX_BYTES) return shorter;
+  }
+  // Only a link longer than the bound gets here: the note is cut at whole lines.
+  return linesWithinBytes([...head, ...notes, ...tail], AI_THREAD_MAX_BYTES);
 }

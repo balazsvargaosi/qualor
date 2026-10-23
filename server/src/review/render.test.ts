@@ -1,11 +1,20 @@
 import { marked } from 'marked';
 import { describe, expect, it } from 'vitest';
-import { checkSectionLine, FORBIDDEN_ANYWHERE, outsideCodeSpans } from '../../test/markdown-check';
+import {
+  checkAiThreadLines,
+  checkSectionLine,
+  FORBIDDEN_ANYWHERE,
+  outsideCodeSpans,
+} from '../../test/markdown-check';
 import { markerOf } from '../scm/markdown';
 import {
   AI_SECTION_MAX_BYTES,
+  AI_THREAD_MAX_BYTES,
   aiSummarySection,
+  aiThreadBody,
   withMergeRequestHead,
+  withUnplacedFindings,
+  type AiThreadInput,
   type ReviewSummaryState,
 } from './render';
 
@@ -257,6 +266,313 @@ describe('the AI review section', () => {
       expect(withMergeRequestHead(other, NEWER)).toBe(other);
     }
     expect(withMergeRequestHead(null, NEWER)).toBeNull();
+  });
+});
+
+describe('the findings a decoration could not post as threads', () => {
+  it('joins the ones that are not on changed lines, most severe first, ten listed and the rest counted', () => {
+    const state = done({
+      unplaced: [finding(1, { severity: 'medium' }), finding(2, { severity: 'low' })],
+      moreUnplaced: 3,
+    });
+    expect(
+      withUnplacedFindings(state, [
+        finding(3, { severity: 'low' }),
+        finding(4, { severity: 'high' }),
+      ]),
+    ).toEqual({
+      ...state,
+      unplaced: [
+        finding(4, { severity: 'high' }),
+        finding(1, { severity: 'medium' }),
+        finding(2, { severity: 'low' }),
+        finding(3, { severity: 'low' }),
+      ],
+      moreUnplaced: 3,
+    });
+    // Ten are listed: the rest are counted with the ones the state counted already.
+    const many = withUnplacedFindings(
+      state,
+      Array.from({ length: 12 }, (_, i) => finding(10 + i, { severity: 'high' })),
+    );
+    if (many?.kind !== 'done') throw new Error('not done');
+    expect(many.unplaced.map((f) => f.line)).toEqual([10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);
+    expect(many.moreUnplaced).toBe(3 + 2 + 12 - 10);
+    expect(section(many).join('\n')).toContain('…and 7 more in Qualor');
+  });
+
+  it('changes nothing but the finished review of the newest analysis, and nothing with none to add', () => {
+    const more = [finding(1)];
+    for (const other of [{ kind: 'pending' }, { kind: 'failed', reason: 'internal' }] as const) {
+      expect(withUnplacedFindings(other, more)).toBe(other);
+    }
+    expect(withUnplacedFindings(null, more)).toBeNull();
+    const older = done({ latest: false });
+    expect(withUnplacedFindings(older, more)).toBe(older);
+    const state = done();
+    expect(withUnplacedFindings(state, [])).toBe(state);
+  });
+});
+
+describe('the first note of an AI review thread', () => {
+  const ISSUE = '01920000-0000-7000-8000-000000000001';
+  const URL_OF_ISSUE = 'https://q.example/projects/p/issues/i1';
+  const input = (over: Partial<AiThreadInput> = {}): AiThreadInput => ({
+    provider: 'gitlab',
+    issueId: ISSUE,
+    severity: 'medium',
+    category: 'logic',
+    confidence: 'high',
+    ruleKey: 'ai:logic',
+    title: 'The loop skips the last item',
+    body: 'The loop stops one item early, so the last item is never added to the sum.',
+    assumption: null,
+    verification: null,
+    suggestion: null,
+    issueUrl: URL_OF_ISSUE,
+    ...over,
+  });
+  const LOOP = {
+    startLine: 3,
+    endLine: 4,
+    lines: ['  for (let i = 0; i < items.length; i += 1) {', '    sum += items[i];'],
+  };
+
+  it('starts with the issue marker and a fixed header, then the title, the body and the link', () => {
+    expect(aiThreadBody(input()).split('\n')).toEqual([
+      `<!-- qualor:issue ${ISSUE} -->`,
+      '**AI review** · Medium · Logic · likely · ` ai:logic `',
+      '',
+      '**The loop skips the last item**',
+      '',
+      'The loop stops one item early, so the last item is never added to the sum.',
+      '',
+      `[View in Qualor](${URL_OF_ISSUE})`,
+    ]);
+    expect(markerOf(aiThreadBody(input()))).toEqual({ kind: 'issue', issueId: ISSUE });
+    // Without Qualor's address there is no link, and an empty title or body leaves no line.
+    expect(aiThreadBody(input({ issueUrl: null, title: '​', body: ' ' })).split('\n')).toEqual([
+      `<!-- qualor:issue ${ISSUE} -->`,
+      '**AI review** · Medium · Logic · likely · ` ai:logic `',
+    ]);
+  });
+
+  it('names the severity, the category and the confidence in fixed words', () => {
+    const header = (over: Partial<AiThreadInput>) => aiThreadBody(input(over)).split('\n')[1];
+    expect(header({ severity: 'high', confidence: 'medium' })).toBe(
+      '**AI review** · High · Logic · possible · ` ai:logic `',
+    );
+    // A severity a person set in Qualor reads as the AI review's three, as the summary counts it.
+    expect(header({ severity: 'blocker' })).toContain('· High ·');
+    expect(header({ severity: 'low' })).toContain('· Low ·');
+    expect(header({ severity: 'info' })).toContain('· Low ·');
+    for (const severity of ['constructor', '__proto__', 'critical', '']) {
+      expect(header({ severity }), severity).toContain('· Unknown ·');
+    }
+    const labels = {
+      logic: 'Logic',
+      'error-handling': 'Error handling',
+      compatibility: 'Compatibility',
+      concurrency: 'Concurrency',
+      security: 'Security',
+      performance: 'Performance',
+      tests: 'Tests',
+      docs: 'Documentation',
+    } as const;
+    for (const [category, label] of Object.entries(labels)) {
+      expect(header({ category: category as keyof typeof labels, ruleKey: `ai:${category}` })).toBe(
+        `**AI review** · Medium · ${label} · likely · \` ai:${category} \``,
+      );
+    }
+  });
+
+  it('says what the finding assumes, and that an independent check could not settle it', () => {
+    const lines = aiThreadBody(
+      input({
+        category: 'security',
+        ruleKey: 'ai:security',
+        confidence: 'medium',
+        assumption: 'The handler is reachable without signing in.',
+        verification: 'needs_validation',
+      }),
+    ).split('\n');
+    expect(lines.slice(5)).toEqual([
+      'The loop stops one item early, so the last item is never added to the sum.',
+      '',
+      'Assumes: The handler is reachable without signing in.',
+      '',
+      'Needs validation: an independent check could not tell from the repository whether this holds.',
+      '',
+      `[View in Qualor](${URL_OF_ISSUE})`,
+    ]);
+    // A confirmed finding, or one with no assumption, says neither.
+    const confirmed = aiThreadBody(input({ verification: 'confirmed', assumption: '  ' }));
+    expect(confirmed).not.toContain('Assumes:');
+    expect(confirmed).not.toContain('Needs validation:');
+  });
+
+  it('writes GitLab’s suggestion block over the lines it replaces, and GitHub’s', () => {
+    const gitlab = aiThreadBody(input({ suggestion: LOOP }));
+    expect(gitlab.split('\n').slice(5)).toEqual([
+      'The loop stops one item early, so the last item is never added to the sum.',
+      '',
+      '```suggestion:-0+1',
+      '  for (let i = 0; i < items.length; i += 1) {',
+      '    sum += items[i];',
+      '```',
+      '',
+      `[View in Qualor](${URL_OF_ISSUE})`,
+    ]);
+    expect(
+      aiThreadBody(input({ suggestion: { startLine: 7, endLine: 7, lines: ['x'] } })),
+    ).toContain('```suggestion:-0+0\nx\n```');
+    // A suggestion that removes the lines it replaces writes an empty block.
+    expect(aiThreadBody(input({ suggestion: { startLine: 7, endLine: 8, lines: [] } }))).toContain(
+      '```suggestion:-0+1\n```',
+    );
+    const github = aiThreadBody(input({ provider: 'github', suggestion: LOOP }));
+    expect(github).toContain(
+      '```suggestion\n  for (let i = 0; i < items.length; i += 1) {\n    sum += items[i];\n```',
+    );
+    for (const body of [gitlab, github]) expect(checkAiThreadLines(body), body).toBe(true);
+  });
+
+  it('leaves out a suggestion that would not be safe to post, and keeps the finding', () => {
+    for (const lines of [
+      ['```', 'x'],
+      ['~~~'],
+      ['/merge'],
+      ['  /close now'],
+      ['a‮b'],
+      ['a\rb'],
+      [`token = "${'«redacted»'}"`],
+      ['x'.repeat(401)],
+      Array.from({ length: 31 }, () => 'x'),
+    ]) {
+      const body = aiThreadBody(input({ suggestion: { startLine: 3, endLine: 3, lines } }));
+      expect(body, lines.join('|')).not.toContain('```suggestion');
+      expect(body).toContain('**The loop skips the last item**');
+    }
+    // Neither does a range that is no range, or more than fifteen lines.
+    for (const [startLine, endLine] of [
+      [0, 1],
+      [4, 3],
+      [1, 16],
+      [1.5, 2],
+    ] as const) {
+      expect(
+        aiThreadBody(input({ suggestion: { startLine, endLine, lines: ['x'] } })),
+      ).not.toContain('```suggestion');
+    }
+  });
+
+  it('stays within 8 KiB: the suggestion goes first, then the body is shortened', () => {
+    const bytes = (text: string) => Buffer.byteLength(text, 'utf8');
+    // Thirty lines of comment words: a suggestion that passes every check, and is too large.
+    const long = Array.from({ length: 30 }, (_, i) => `// ${'word '.repeat(74)}${i}`);
+    const suggestion = { startLine: 1, endLine: 15, lines: long };
+    const big = aiThreadBody(input({ suggestion }));
+    expect(bytes(big)).toBeLessThanOrEqual(AI_THREAD_MAX_BYTES);
+    expect(big).not.toContain('```suggestion');
+    expect(big).toContain(
+      'The loop stops one item early, so the last item is never added to the sum.',
+    );
+    // Thirty lines of fifty such words fit, and are kept.
+    const fitting = long.map((line) => line.slice(0, 250));
+    expect(aiThreadBody(input({ suggestion: { ...suggestion, lines: fitting } }))).toContain(
+      '```suggestion:-0+14',
+    );
+    // The longest body a finding has, of words that each need a code span, with the longest
+    // assumption and a long link: past the bound once the suggestion is gone, so the body is
+    // shortened, and the note keeps its header, its title, its assumption and its link.
+    const words = Array.from({ length: 600 }, () => '@').join(' ');
+    const link = `https://q.example/${'a'.repeat(4_000)}`;
+    const shortened = aiThreadBody(
+      input({ body: words, assumption: '@ '.repeat(150), issueUrl: link, suggestion: LOOP }),
+    );
+    expect(bytes(shortened)).toBeLessThanOrEqual(AI_THREAD_MAX_BYTES);
+    expect(shortened).not.toContain('```suggestion');
+    const lines = shortened.split('\n');
+    expect(lines[1]).toBe('**AI review** · Medium · Logic · likely · ` ai:logic `');
+    expect(lines).toContain('**The loop skips the last item**');
+    expect(lines.some((line) => line.startsWith('Assumes: ` @ `'))).toBe(true);
+    expect(lines.at(-1)).toBe(`[View in Qualor](${link})`);
+    const spansOf = (text: string) => text.split('` @ `').length - 1;
+    const body = lines.find((line) => line.startsWith('` @ `')) ?? '';
+    expect(spansOf(body)).toBeGreaterThan(0);
+    expect(spansOf(body)).toBeLessThan(600);
+    expect(checkAiThreadLines(shortened)).toBe(true);
+    // Without the long link the whole body fits.
+    const whole = aiThreadBody(input({ body: words }));
+    expect(spansOf(whole.split('\n').find((line) => line.startsWith('` @ `')) ?? '')).toBe(600);
+  });
+
+  it('is checked by a body check that refuses markup where it does not belong', () => {
+    const good = aiThreadBody(input({ suggestion: LOOP, assumption: 'It runs once.' }));
+    expect(checkAiThreadLines(good)).toBe(true);
+    const lines = good.split('\n');
+    const withLine = (index: number, line: string) =>
+      [...lines.slice(0, index), line, ...lines.slice(index + 1)].join('\n');
+    // Model text out of its code spans, on any line after the header.
+    for (const bad of ['[x](https://e.example)', '@all', '# heading', 'a * b', '**a** *b*']) {
+      expect(checkAiThreadLines(withLine(5, bad)), bad).toBe(false);
+      expect(checkAiThreadLines(withLine(7, `Assumes: ${bad}`)), bad).toBe(false);
+    }
+    // A marker or a header that is not the note's own.
+    expect(checkAiThreadLines(withLine(0, '<!-- qualor:summary x -->'))).toBe(false);
+    expect(
+      checkAiThreadLines(withLine(1, '**AI review** · High · Logic · sure · ` ai:logic `')),
+    ).toBe(false);
+    // A suggestion block that holds a fence, starts a quick action, or is never closed.
+    const block = lines.indexOf('```suggestion:-0+1');
+    expect(block).toBeGreaterThan(0);
+    for (const bad of ['````', '~~~ x', '/merge', '  /close']) {
+      expect(checkAiThreadLines(withLine(block + 1, bad)), bad).toBe(false);
+    }
+    expect(checkAiThreadLines(lines.slice(0, block + 2).join('\n'))).toBe(false);
+    // A link that is not Qualor's.
+    expect(
+      checkAiThreadLines(withLine(lines.length - 1, '[View in Qualor](https://e.example/x)')),
+    ).toBe(false);
+  });
+
+  const HOSTILE: readonly (readonly [string, string])[] = [
+    ['a link', '[x](https://e.example)'],
+    ['a mention', '@all and @group/sub'],
+    ['references', '#12 !12 ~label %milestone &epic $snippet'],
+    ['HTML', '<img src=x onerror=y> <details></details> <script>alert(1)</script>'],
+    ['a quick action', '/close\n/merge'],
+    ['a heading, a quote and a table', '# heading\n> quote\n| a | b |'],
+    ['fences', '```\n~~~\n````'],
+    ['a forged marker', '<!-- qualor:issue 01920000-0000-7000-8000-000000000000 -->'],
+    ['bold and a rule', '**x** __y__ ***'],
+    ['invisible and bidirectional characters', 'a​b‮c d\u0000e﻿'],
+    ['backtick runs', '`'.repeat(300)],
+    ['a hash and a key', 'deadbeef0123 GH-26 JIRA-12'],
+    ['long words', 'w'.repeat(3_000)],
+  ];
+
+  it.each(HOSTILE)('keeps %s inert in every slot', (_name, value) => {
+    for (const provider of ['gitlab', 'github'] as const) {
+      const body = aiThreadBody(
+        input({ provider, title: value, body: value, assumption: value, suggestion: LOOP }),
+      );
+      expect(body).not.toMatch(FORBIDDEN_ANYWHERE);
+      expect(markerOf(body)).toEqual({ kind: 'issue', issueId: ISSUE });
+      expect(Buffer.byteLength(body, 'utf8')).toBeLessThanOrEqual(AI_THREAD_MAX_BYTES);
+      expect(checkAiThreadLines(body), body).toBe(true);
+      for (const line of body.split('\n')) expect(line, line).not.toMatch(/^\s*\//);
+      // Nothing is a link but Qualor's own, and nothing renders as markup the note did not write.
+      const html = marked.parse(body, { async: false, gfm: true, breaks: false });
+      for (const [, href] of html.matchAll(/<a [^>]*href="([^"]*)"/g)) {
+        expect(href).toMatch(/^https:\/\/q\.example\//);
+      }
+      expect(html).not.toMatch(
+        /<(?:img|script|style|iframe|input|blockquote|table|details|h[1-6]|hr)\b/,
+      );
+      // The one code block is the suggestion.
+      expect(html.match(/<pre>/g) ?? []).toHaveLength(1);
+    }
   });
 });
 

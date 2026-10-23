@@ -75,3 +75,19 @@ export function checkReviewSuggestion(
   if (redactText(s.lines.join('\n')).count > 0) return fail('secret');
   return { ok: true };
 }
+
+/**
+ * Whether a stored suggestion still applies to the provider's diff of the merge request as it is
+ * now, when a decoration posts it: every line it replaces is an added line of that diff (`added`:
+ * new line number → text, `addedLineTexts` of scm/inline.ts) and holds the text the review read in
+ * the snapshot (`reviewed`, the lines `startLine` to `endLine`; null when the snapshot is gone).
+ * Anything else would replace other code than the model was shown: the suggestion is left out.
+ */
+export function suggestionApplies(
+  s: ReviewSuggestion,
+  added: ReadonlyMap<number, string>,
+  reviewed: readonly string[] | null,
+): boolean {
+  if (reviewed === null || reviewed.length !== s.endLine - s.startLine + 1) return false;
+  return reviewed.every((text, i) => added.get(s.startLine + i) === text);
+}

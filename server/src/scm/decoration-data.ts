@@ -6,7 +6,7 @@ import {
   type Severity,
 } from '@qualor/shared';
 import { z } from 'zod';
-import { and, asc, count, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, isNotNull, isNull, ne, or, sql } from 'drizzle-orm';
 import type { Db, Executor } from '../db/client';
 import {
   analyses,
@@ -16,8 +16,11 @@ import {
   projects,
   reviewFindings,
   reviewRuns,
+  reviewSnapshotFiles,
+  reviewSnapshots,
   rules,
   scmConnections,
+  type AiCategory,
   type ReviewFailureReason,
   type ReviewRunRow,
   type ReviewSkipReason,
@@ -26,6 +29,7 @@ import { SMALL_CHANGESET_SETTING } from '../gates/stage';
 import { PROMPT_FINDINGS, UNPLACED_LISTED, type ReviewSummaryState } from '../review/render';
 import { notAiIssue } from '../review/rules';
 import { reviewSummarySchema } from '../review/schemas';
+import type { ReviewSuggestion } from '../review/suggestion';
 import { AI_ENGINE } from '../rules/server-engines';
 import { instanceSetting } from '../settings';
 import { readScmContext } from './context';
@@ -434,6 +438,175 @@ export async function desiredInlineIssues(db: Db, branchId: string, limit: numbe
     .limit(limit);
   // The link to show: a stored dead one becomes the live page, a Qualor rule gets its own page.
   return rows.map((r) => ({ ...r, helpUri: ruleHelpUri(r.ruleKey, r.helpUri) }));
+}
+
+/**
+ * An AI review finding a decoration may comment inline (R18): an open AI issue with its place and
+ * the thread's line, and what its first note says.
+ */
+export interface DesiredAiIssue {
+  id: string;
+  severity: string;
+  quality: string;
+  ruleKey: string;
+  helpUri: string | null;
+  path: string;
+  line: number;
+  message: string;
+  confidence: 'high' | 'medium';
+  /** The added line of the reviewed head the thread sits on. */
+  anchorLine: number;
+  category: AiCategory;
+  /** The issue's message: the finding's title. */
+  title: string;
+  body: string;
+  assumption: string | null;
+  verification: 'confirmed' | 'needs_validation' | null;
+  /** The replacement of the reviewed head's lines `startLine` to `endLine`, which starts at the anchor. */
+  suggestion: ReviewSuggestion | null;
+}
+
+/** A suggestion as its row stores it: a replacement of whole lines, or none. */
+const storedSuggestion = z.object({
+  startLine: z.number().int(),
+  endLine: z.number().int(),
+  lines: z.array(z.string()),
+});
+
+/**
+ * The branch's open AI findings that get a thread on the head `reviewedHeadSha` (R18), most severe
+ * first, then by place: those the review placed on that head (their row's head and its anchor), of
+ * severity high or medium (blocker counts as high), or low (info counts as low) with a suggestion.
+ * The caller asks only for the head of the branch's newest finished review, and creates threads only
+ * while the merge request is at it: a finding kept from an older head keeps that head's numbers,
+ * and is never posted with them.
+ */
+export async function desiredAiIssues(
+  db: Executor,
+  branchId: string,
+  reviewedHeadSha: string,
+  limit: number,
+): Promise<DesiredAiIssue[]> {
+  const rows = await db
+    .select({
+      id: issues.id,
+      severity: issues.severity,
+      quality: issues.quality,
+      ruleKey: rules.key,
+      helpUri: rules.helpUri,
+      path: issues.path,
+      line: issues.startLine,
+      message: issues.message,
+      confidence: issues.confidence,
+      anchorLine: reviewFindings.anchorLine,
+      category: reviewFindings.category,
+      body: reviewFindings.body,
+      assumption: reviewFindings.assumption,
+      verification: reviewFindings.verification,
+      suggestion: reviewFindings.suggestion,
+    })
+    .from(issues)
+    .innerJoin(rules, eq(rules.id, issues.ruleId))
+    .innerJoin(reviewFindings, eq(reviewFindings.issueId, issues.id))
+    .where(
+      and(
+        openAiFindings(branchId),
+        eq(reviewFindings.reviewedHeadSha, reviewedHeadSha.toLowerCase()),
+        isNotNull(reviewFindings.anchorLine),
+        isNotNull(issues.path),
+        isNotNull(issues.startLine),
+        or(
+          inArray(issues.severity, ['blocker', 'high', 'medium']),
+          sql`jsonb_typeof(${reviewFindings.suggestion}) = 'object'`,
+        ),
+      ),
+    )
+    .orderBy(asc(issues.severityRank), asc(issues.path), asc(issues.startLine), asc(issues.id))
+    .limit(limit);
+  return rows.flatMap(({ path, line, anchorLine, confidence, suggestion, message, ...row }) => {
+    if (path === null || line === null || anchorLine === null) return [];
+    const stored = suggestion === null ? null : storedSuggestion.safeParse(suggestion);
+    return [
+      {
+        ...row,
+        helpUri: ruleHelpUri(row.ruleKey, row.helpUri),
+        path,
+        line,
+        message,
+        title: message,
+        // Every AI issue is stored with one; without it, the finding reads as the less sure.
+        confidence: confidence ?? 'medium',
+        anchorLine,
+        suggestion: stored?.success === true ? stored.data : null,
+      },
+    ];
+  });
+}
+
+/** The head commit of the branch's newest finished AI review, or null when none has finished. */
+export async function newestReviewedHead(db: Executor, branchId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ headSha: reviewRuns.headSha })
+    .from(reviewRuns)
+    .where(and(eq(reviewRuns.branchId, branchId), eq(reviewRuns.status, 'done')))
+    .orderBy(desc(reviewRuns.createdAt), desc(reviewRuns.id))
+    .limit(1);
+  return row?.headSha ?? null;
+}
+
+/**
+ * Lines `from` to `to` of the head file `path` as the AI review of `headSha` read it, without their
+ * line ends: from the snapshot of that head the merge request keeps. Null when it keeps none (it was
+ * deleted, or replaced by one of another head), or the file has no text there or fewer lines. Only
+ * those lines are read: a file of the snapshot can be a megabyte.
+ */
+export async function reviewedLines(
+  db: Executor,
+  branchId: string,
+  headSha: string,
+  path: string,
+  from: number,
+  to: number,
+): Promise<string[] | null> {
+  if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to) || from < 1 || to < from) {
+    return null;
+  }
+  const text = reviewSnapshotFiles.text;
+  // The lines as git counts them: a final newline ends the last line, it does not start another.
+  const ended = sql`CASE WHEN right(${text}, 1) = chr(10) THEN left(${text}, -1) ELSE ${text} END`;
+  const range = sql`[(${from})::int:(${to})::int]`;
+  const lines = sql<string[] | null>`(string_to_array(${ended}, chr(10)))${range}`;
+  const [row] = await db
+    .select({ lines })
+    .from(reviewSnapshotFiles)
+    .innerJoin(reviewSnapshots, eq(reviewSnapshots.id, reviewSnapshotFiles.snapshotId))
+    .where(
+      and(
+        eq(reviewSnapshots.branchId, branchId),
+        eq(reviewSnapshots.status, 'ready'),
+        eq(reviewSnapshots.headSha, headSha.toLowerCase()),
+        eq(reviewSnapshotFiles.path, path),
+      ),
+    )
+    .orderBy(desc(reviewSnapshots.createdAt))
+    .limit(1);
+  const found = row?.lines ?? null;
+  if (found === null || found.length !== to - from + 1) return null;
+  return found.map((line) => (line.endsWith('\r') ? line.slice(0, -1) : line));
+}
+
+/** An AI finding the decoration could not post as a thread, as the summary lists it. */
+export function unplacedFinding(
+  issue: DesiredAiIssue,
+  url: string | null,
+): Extract<ReviewSummaryState, { kind: 'done' }>['unplaced'][number] {
+  return {
+    severity: aiSeverity(issue.severity),
+    path: issue.path,
+    line: issue.line,
+    title: issue.title,
+    url,
+  };
 }
 
 /** A note body as compared for "changed": the provider may store line ends or a final newline its way. */

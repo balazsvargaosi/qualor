@@ -13,6 +13,7 @@ import {
 import { MAX_GITLAB_REQUESTS } from './gitlab/client';
 import {
   addedLines,
+  MAX_AI_THREADS,
   MAX_DIFF_PAGES,
   MAX_DISCUSSION_PAGES,
   MAX_INLINE_THREADS,
@@ -46,13 +47,22 @@ describe('addedLines', () => {
 });
 
 describe('the request budget (scm.md §4.3)', () => {
-  it('leaves room for the inline work of a job that reads every page it may', () => {
+  it('the GitLab request bounds sum to 357', () => {
     // Project, user, merge request, commit status (read, post and its retry without the pipeline),
     // the summary, and every page of discussions and diffs.
     expect(REQUESTS_OUTSIDE_INLINE).toBe(7 + MAX_DISCUSSION_PAGES + MAX_DIFF_PAGES);
-    expect(REQUESTS_OUTSIDE_INLINE + MAX_INLINE_THREADS + MAX_THREAD_UPDATES).toBeLessThanOrEqual(
-      MAX_GITLAB_REQUESTS,
-    );
+    // The analyzers' threads, the AI review's beside them, and the resolutions and reopenings of
+    // both: a job that does all it may still writes the summary.
+    expect([
+      REQUESTS_OUTSIDE_INLINE,
+      MAX_INLINE_THREADS,
+      MAX_AI_THREADS,
+      MAX_THREAD_UPDATES,
+    ]).toEqual([87, 50, 20, 200]);
+    const sum = REQUESTS_OUTSIDE_INLINE + MAX_INLINE_THREADS + MAX_AI_THREADS + MAX_THREAD_UPDATES;
+    expect(sum).toBe(357);
+    expect(sum).toBeLessThanOrEqual(MAX_GITLAB_REQUESTS);
+    expect(MAX_GITLAB_REQUESTS).toBe(400);
   });
 });
 

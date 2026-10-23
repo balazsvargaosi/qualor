@@ -119,3 +119,45 @@ export function checkSectionLine(line: string): boolean {
   if (line.startsWith('- **')) return checkFindingLine(line);
   return checkProse(line);
 }
+
+// ─── The first note of an AI review thread (server/src/review/render.ts) ─────
+
+const ISSUE_MARKER_LINE =
+  /^<!-- qualor:issue [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12} -->$/;
+/** The header: its fixed words, and the rule key in a code span. */
+const THREAD_HEADER =
+  /^\*\*AI review\*\* · (?:High|Medium|Low|Unknown) · [A-Z][a-z]+(?: [a-z]+)? · (?:likely|possible) · ` [a-z:-]+ `$/;
+/** The opening line of a suggestion block: GitLab's `-0+N`, or GitHub's. */
+const SUGGESTION_OPEN = /^```suggestion(?::-0\+\d+)?$/;
+/** The labels of the lines that say what a finding assumes and that it needs validation. */
+const THREAD_LABELS = ['Assumes: ', 'Needs validation: '] as const;
+const THREAD_LINK = /^\[View in Qualor\]\(https:\/\/q\.example\/[A-Za-z0-9/-]*\)$/;
+
+/**
+ * Whether every line of an AI review thread's first note keeps to the rule that model text is only
+ * ordinary words outside code spans: the marker on the first line and the header on the second;
+ * then prose (the title in bold, the body, the labelled lines), Qualor's link, and the suggestion
+ * block, whose lines are code a person applies (each with no fence run, and none a quick action).
+ */
+export function checkAiThreadLines(body: string): boolean {
+  const lines = body.split('\n');
+  if (!ISSUE_MARKER_LINE.test(lines[0] ?? '') || !THREAD_HEADER.test(lines[1] ?? '')) return false;
+  let inSuggestion = false;
+  for (const line of lines.slice(2)) {
+    if (inSuggestion) {
+      if (line === '```') inSuggestion = false;
+      else if (/`{3,}|~{3,}/.test(line) || /^\s*\//.test(line)) return false;
+      continue;
+    }
+    if (SUGGESTION_OPEN.test(line)) {
+      inSuggestion = true;
+      continue;
+    }
+    if (line === '' || THREAD_LINK.test(line)) continue;
+    const bold = /^\*\*(.+)\*\*$/.exec(line);
+    const label = THREAD_LABELS.find((l) => line.startsWith(l));
+    const prose = bold?.[1] ?? (label === undefined ? line : line.slice(label.length));
+    if (!checkProse(prose)) return false;
+  }
+  return !inSuggestion;
+}

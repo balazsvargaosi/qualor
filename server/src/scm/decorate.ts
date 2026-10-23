@@ -3,7 +3,8 @@ import type { Db } from '../db/client';
 import type { Limits } from '../limits';
 import { AI_FIX_QUEUE, postFixHandler } from '../llm/post';
 import type { JobHandlers } from '../queue/worker';
-import { withMergeRequestHead } from '../review/render';
+import { deleteBranchSnapshots } from '../review/lifecycle';
+import { withMergeRequestHead, withUnplacedFindings } from '../review/render';
 import { gitlabClientFor, type ScmDeps } from './connections';
 import {
   branchUrl,
@@ -13,6 +14,7 @@ import {
   loadReviewSummary,
   recordMergeRequest,
   summaryData,
+  unplacedFinding,
   type Loaded,
 } from './decoration-data';
 import { decorateGitHub } from './github/decorate';
@@ -165,7 +167,8 @@ async function reconcileCommitStatus(
 
 /**
  * The merge request part of a decoration (scm.md §5.2–§5.5): inline discussions, then the
- * summary.
+ * summary. A merge request that is merged or closed gets neither, and loses the copies of its
+ * repository the AI review kept (R16).
  */
 async function decorateMergeRequest(
   deps: DecorationDeps,
@@ -182,7 +185,12 @@ async function decorateMergeRequest(
     { title: mr.title, url: mr.web_url },
     loaded.connection.baseUrl,
   );
-  if (mr.state !== 'opened') return;
+  if (mr.state !== 'opened') {
+    if (mr.state === 'merged' || mr.state === 'closed') {
+      await deleteBranchSnapshots(deps.db, loaded.branch.id);
+    }
+    return;
+  }
   const revision = loaded.revision;
   const head = mr.diff_refs?.head_sha ?? mr.sha;
   const me = await client.currentUser();
@@ -194,31 +202,38 @@ async function decorateMergeRequest(
       : head !== revision
         ? 'stale'
         : null;
-  // §5.4: only when the report's line numbers are the merge request's (merged results win over
-  // stale: a merge commit is never the head).
-  const inline =
-    skipped === null
-      ? await reconcileInline({
-          db: deps.db,
-          client,
-          ref,
-          iid,
-          projectId: loaded.project.id,
-          branchId: loaded.branch.id,
-          mr,
-          discussions: listed.items,
-          discussionsComplete: listed.complete,
-          botId: me.id,
-          issueUrl: (issueId) => issueUrl(deps.publicUrl, loaded.project.id, issueId),
-          ...(deps.maxThreadUpdates === undefined
-            ? {}
-            : { maxThreadUpdates: deps.maxThreadUpdates }),
-        })
-      : { commented: 0, unplaced: 0 };
+  // §5.4: the analyzers' threads only when the report's line numbers are the merge request's
+  // (merged results win over stale: a merge commit is never the head). The AI review's follow the
+  // head it read, also in a merged-results pipeline.
+  const inline = await reconcileInline({
+    db: deps.db,
+    client,
+    ref,
+    iid,
+    projectId: loaded.project.id,
+    branchId: loaded.branch.id,
+    mr,
+    discussions: listed.items,
+    discussionsComplete: listed.complete,
+    botId: me.id,
+    issueUrl: (issueId) => issueUrl(deps.publicUrl, loaded.project.id, issueId),
+    analyzers: skipped === null,
+    ...(deps.maxThreadUpdates === undefined ? {} : { maxThreadUpdates: deps.maxThreadUpdates }),
+  });
   const { top, total, newIssues, smallChangesetLines } = await summaryData(
     deps.db,
     loaded,
     deps.publicUrl,
+  );
+  // The AI findings that got no thread this time are listed with the ones on no changed line.
+  const review = withUnplacedFindings(
+    withMergeRequestHead(
+      await loadReviewSummary(deps.db, loaded.analysis.id, deps.publicUrl),
+      head,
+    ),
+    inline.aiNotPosted.map((issue) =>
+      unplacedFinding(issue, issueUrl(deps.publicUrl, loaded.project.id, issue.id)),
+    ),
   );
   const body = summaryBody({
     projectId: loaded.project.id,
@@ -227,14 +242,11 @@ async function decorateMergeRequest(
     newIssues,
     topIssues: top,
     topIssuesTotal: total,
-    inline: { ...inline, skipped },
+    inline: { commented: inline.commented, unplaced: inline.unplaced, skipped },
     branchUrl: branchUrl(deps.publicUrl, loaded),
     mergeRequestHead: head !== null && head !== revision ? head : null,
     smallChangesetLines,
-    review: withMergeRequestHead(
-      await loadReviewSummary(deps.db, loaded.analysis.id, deps.publicUrl),
-      head,
-    ),
+    review,
   });
   const { own, foreign } = summaryNotes(listed.items, me.id, loaded.project.id);
   if (own) {
