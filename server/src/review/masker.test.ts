@@ -1,5 +1,6 @@
 import { redactLongText } from '@qualor/shared';
 import { afterAll, describe, expect, it } from 'vitest';
+import { budgetMs } from '../../test/perf';
 import { HOSTILE_TEXT as HOSTILE } from '../../test/review';
 import { MASK_BUDGET_MS, MASK_TIMEOUT_MS, Masker, type MaskerOptions } from './masker';
 
@@ -122,7 +123,7 @@ describe('a text that takes too long', () => {
     expect(result).toEqual({ kind: 'timeout' });
     expect(elapsed).toBeGreaterThanOrEqual(380);
     // Masking it takes the shared redaction seconds: the answer comes when the time is up.
-    expect(elapsed).toBeLessThan(3_000);
+    expect(elapsed).toBeLessThan(budgetMs(3_000));
     // A timer fired the whole time (every 10 ms, 40 times in 400 ms; stopped it would be once).
     expect(ticks).toBeGreaterThan(15);
   });
@@ -197,7 +198,7 @@ describe('the time a review may spend masking', () => {
     for (const text of ['const a = 1;\n', '', HOSTILE]) {
       const answered = performance.now();
       expect(await masker.mask(text)).toEqual({ kind: 'budget' });
-      expect(performance.now() - answered).toBeLessThan(200);
+      expect(performance.now() - answered).toBeLessThan(budgetMs(200));
     }
     expect(masker.workersStarted).toBe(workers);
   });
@@ -210,7 +211,7 @@ describe('the time a review may spend masking', () => {
     const elapsed = performance.now() - started;
     // The 400 ms of the budget, not the 5 s one text may take: it needs 9 s.
     expect(elapsed).toBeGreaterThanOrEqual(380);
-    expect(elapsed).toBeLessThan(2_500);
+    expect(elapsed).toBeLessThan(budgetMs(2_500));
   });
 
   it('is not spent by a text that waits, nor by the loading of a worker', async () => {
@@ -218,10 +219,10 @@ describe('the time a review may spend masking', () => {
     await masker.mask('const a = 1;\n');
     // Texts that mask in a few milliseconds spend a few milliseconds of the budget.
     for (let i = 0; i < 20; i += 1) await masker.mask(`const t${i} = ${i};\n`);
-    expect(masker.spentMs).toBeLessThan(2_000);
+    expect(masker.spentMs).toBeLessThan(budgetMs(2_000));
     const fresh = maskerOf({ budgetMs: 60_000 });
     await fresh.mask('const a = 1;\n');
-    expect(fresh.spentMs).toBeLessThan(1_000);
+    expect(fresh.spentMs).toBeLessThan(budgetMs(1_000));
   });
 });
 
@@ -255,7 +256,7 @@ describe('a masker whose run is superseded', () => {
     controller.abort(new Error('superseded'));
     const settled = await outcomes;
     // The text that was running is not waited for, and none of them is masked.
-    expect(performance.now() - started).toBeLessThan(1_500);
+    expect(performance.now() - started).toBeLessThan(budgetMs(1_500));
     for (const outcome of settled) {
       expect(outcome.status).toBe('rejected');
       expect(outcome.status === 'rejected' && String(outcome.reason)).toContain('superseded');
@@ -285,7 +286,7 @@ describe('closing a masker', () => {
     const started = performance.now();
     await masker.close();
     const outcomes = await settled;
-    expect(performance.now() - started).toBeLessThan(2_000);
+    expect(performance.now() - started).toBeLessThan(budgetMs(2_000));
     expect(outcomes.map((outcome) => outcome.status)).toEqual(['rejected', 'rejected']);
     await expect(masker.mask('const c = 3;\n')).rejects.toThrow('closed');
     // The worker is stopped, and the text that waited did not start another.

@@ -4,6 +4,7 @@ import type { OmissionReason, SnapshotLine } from '@qualor/shared';
 import { eq, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestDatabase, type TestDatabase } from '../../test/db';
+import { budgetMs } from '../../test/perf';
 import { memorySnapshot, storeTestSnapshot } from '../../test/review';
 import { first } from '../db/rows';
 import { analyses, organizations, projects, reviewSnapshots } from '../db/schema';
@@ -617,7 +618,7 @@ describe('the snapshot reader (6I-3)', () => {
       const reader = await openSnapshotReader(t.db, id);
       const started = performance.now();
       const found = await reader!.grep('needle', hostile, 50);
-      expect(performance.now() - started).toBeLessThan(5_000);
+      expect(performance.now() - started).toBeLessThan(budgetMs(5_000));
       expect(found).toEqual({ hits: [{ path: match, line: 1, text: 'needle' }], truncated: true });
     });
 

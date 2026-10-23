@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { budgetMs } from '../../test/perf';
 import {
   compilePathGlob,
   likePrefix,
@@ -215,7 +216,7 @@ describe('the work of matching a glob is bounded', () => {
     ).toBe(false);
     // Without a limit on the wildcards, the same.
     expect(compilePathGlob(`${'*a'.repeat(100)}*b`).matches('a'.repeat(1_000))).toBe(false);
-    expect(performance.now() - started).toBeLessThan(1_000);
+    expect(performance.now() - started).toBeLessThan(budgetMs(1_000));
   });
 
   it('ends the walk of a path as soon as no position of it is reachable', () => {
@@ -275,7 +276,7 @@ describe('the work of matching a glob is bounded', () => {
       if (glob.matches(path, work)) matched += 1;
       if (work.exhausted) break;
     }
-    expect(performance.now() - started).toBeLessThan(2_000);
+    expect(performance.now() - started).toBeLessThan(budgetMs(2_000));
     expect(work.exhausted).toBe(true);
     expect(matched).toBe(0);
   });

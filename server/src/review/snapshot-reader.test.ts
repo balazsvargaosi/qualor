@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { budgetMs } from '../../test/perf';
 import { memorySnapshot } from '../../test/review';
 import { MAX_GLOB_WILDCARDS } from './path-glob';
 
@@ -60,7 +61,7 @@ describe('the work of a search with a glob', () => {
     const reader = memorySnapshot({ files: needleIn(match, ...paths) });
     const started = performance.now();
     const found = await reader.grep('needle', hostile, 50);
-    expect(performance.now() - started).toBeLessThan(5_000);
+    expect(performance.now() - started).toBeLessThan(budgetMs(5_000));
     expect(found.hits).toEqual([hit(match)]);
     expect(found.truncated).toBe(true);
   });
