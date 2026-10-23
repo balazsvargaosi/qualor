@@ -72,16 +72,20 @@ const MINIFIED_LONG_LINE_CHARS = 1_000;
 const anyCase = (word: string): string =>
   word.replace(/[a-z]/g, (letter) => `[${letter}${letter.toUpperCase()}]`);
 
-/** Words that begin the name of security-sensitive code: `auth`, `authService`, `oauth`, `sanitizer`. */
-const SENSITIVE_PREFIXES = [
+/**
+ * Words that mark security-sensitive code wherever they stand in a path, inside another word too:
+ * `basicauth`, `bcrypt`, `.htpasswd`, `adminlogin`.
+ */
+const SENSITIVE_WORDS = [
   'auth',
+  'authn',
+  'authz',
   'oauth',
+  'saml',
   'secret',
   'passw',
   'credential',
   'crypt',
-  'encrypt',
-  'decrypt',
   'cipher',
   'permission',
   'session',
@@ -90,18 +94,22 @@ const SENSITIVE_PREFIXES = [
   'sanitiz',
   'escap',
 ];
-/** Short words, which must also end there: `sso` is in `processor`, and `token` runs on into `tokenizer`. */
-const SENSITIVE_WORDS = ['sso', 'acl', 'jwt', 'csrf', 'rbac', 'saml', 'token'];
+/**
+ * Short words, which are also inside ordinary ones (`sso` in `processor`, `acl` in `oracle`, `token`
+ * in `tokenizer`): one counts where no lower case letter follows it or its plural `s`, as in
+ * `csrftoken`, `APIToken` and `acls`.
+ */
+const SHORT_SENSITIVE_WORDS = ['sso', 'acl', 'jwt', 'csrf', 'rbac', 'token'];
 
 /**
- * A path with one of the words above at the start of a word looks like security-sensitive code: a
- * word starts where no letter comes before it (the start of a segment, or after a `.`, `_` or `-`)
- * or where a lower case letter meets a capital (`userAuth`), in any case. Deliberately loose (`author`
- * has `auth` at its start): a hit only adds a reviewer, and a miss costs more. It has no `i` flag,
- * for a capital is part of what makes a word start, and no global flag, so it keeps no state between paths.
+ * A path that looks like security-sensitive code, in any case: one of the words above anywhere in
+ * it, or one of the short words where no lower case letter follows. Deliberately loose (`author` has
+ * `auth` in it, and `lasso` ends in `sso`): a hit only adds a reviewer, and a miss costs more. It has
+ * no `i` flag, for a capital after a short word ends it as any other character does, and no global
+ * flag, so it keeps no state between paths.
  */
 export const SENSITIVE_PATH = new RegExp(
-  `(?:(?<![a-zA-Z])|(?<=[a-z])(?=[A-Z]))(?:${SENSITIVE_PREFIXES.map(anyCase).join('|')}|(?:${SENSITIVE_WORDS.map(anyCase).join('|')})(?![a-z]))`,
+  `${SENSITIVE_WORDS.map(anyCase).join('|')}|(?:${SHORT_SENSITIVE_WORDS.map(anyCase).join('|')})[sS]?(?![a-z])`,
 );
 
 const LOCK_FILES: ReadonlySet<string> = new Set([

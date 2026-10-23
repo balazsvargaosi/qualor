@@ -624,8 +624,6 @@ describe('the changes that are reviewed', () => {
       'src/credentials.ts',
       'src/authn/authz.ts',
     ];
-    // A word of the list at the start of a word of the path: the start of a segment, after a `.`,
-    // `_` or `-`, or where a lower case letter meets a capital (`userAuth`).
     sensitive.push(
       'auth.ts',
       'authService.ts',
@@ -644,26 +642,48 @@ describe('the changes that are reviewed', () => {
       'Token/',
       'src/decrypt.ts',
     );
+    // The long words count anywhere in a path, inside another word too, in any case.
+    sensitive.push(
+      'middleware/basicauth.go',
+      'pkg/jwtauth/jwtauth.go',
+      'public/.htpasswd',
+      'lib/bcrypt.ts',
+      'lib/scrypt.go',
+      'changepassword.php',
+      'adminlogin.php',
+      'web/ssologin.ts',
+      'unencrypted.ts',
+      'HTTPAuthFilter.java',
+      'src/MAUTH.ts',
+    );
+    // A short word counts where no lower case letter follows it, its plural too.
+    sensitive.push(
+      'csrftoken.py',
+      'api/accesstoken.ts',
+      'APIToken.ts',
+      'src/acls.go',
+      'src/tokens.ts',
+    );
     const plain = [
       'src/util/format.ts',
       'README.md',
       'src/main.ts',
       'docs/guide/install.md',
-      // The words are inside a longer one, or the short word runs on into it.
+      // A short word that runs on into a longer one.
       'processor.ts',
+      'association.ts',
       'src/association.ts',
       'tokenizer.ts',
       'oracle/',
       'src/obstacle/spectacle.ts',
       'src/classroom.ts',
-      'src/tokens.ts',
       'src/ssort.ts',
-      // A capital after a capital is no start of a word.
-      'src/MAUTH.ts',
     ];
     for (const path of sensitive) expect(SENSITIVE_PATH.test(path), path).toBe(true);
     for (const path of plain) expect(SENSITIVE_PATH.test(path), path).toBe(false);
-    // The pattern keeps no state between paths (it has no global flag).
+    // No flags: the case is in the pattern (a capital after a short word ends it), and without a
+    // global flag the pattern keeps no state between paths.
+    expect(SENSITIVE_PATH.flags).toBe('');
     expect([
       SENSITIVE_PATH.test(sensitive[0] ?? ''),
       SENSITIVE_PATH.test(sensitive[0] ?? ''),
