@@ -14,6 +14,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { redactLongText } from '@qualor/shared';
 import { build } from 'esbuild';
 import { describe, expect, it } from 'vitest';
+import { budgetMs } from '../test/perf';
 import { buildPluginFileCheck, buildReviewMaskWorker, buildServer } from './bundle';
 
 describe('server bundle', () => {
@@ -153,14 +154,14 @@ describe('the review mask worker bundle (6I-3)', () => {
     });
     const token = ['gh', 'p_', 'a1B2'.repeat(9)].join('');
     const sample = `const t = "${token}";\nok();\n`;
-    const script = `
+    const script = (close: boolean) => `
       import { Masker } from ${JSON.stringify(pathToFileURL(path.join(outDir, 'masker.js')).href)};
       const masker = new Masker();
       const result = await masker.mask(${JSON.stringify(sample)});
       process.stdout.write(JSON.stringify({ result, workers: masker.workersStarted }));
-      await masker.close();
+      ${close ? 'await masker.close();' : ''}
     `;
-    const run = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+    const run = spawnSync(process.execPath, ['--input-type=module', '-e', script(true)], {
       encoding: 'utf8',
       timeout: 30_000,
     });
@@ -169,5 +170,15 @@ describe('the review mask worker bundle (6I-3)', () => {
       result: { kind: 'masked', ...redactLongText(sample) },
       workers: 1,
     });
+
+    // A masker nobody closed does not keep the process alive: its worker and its timers let go.
+    const started = performance.now();
+    const left = spawnSync(process.execPath, ['--input-type=module', '-e', script(false)], {
+      encoding: 'utf8',
+      timeout: 30_000,
+    });
+    expect(left.status, left.stderr).toBe(0);
+    expect(JSON.parse(left.stdout)).toMatchObject({ workers: 1 });
+    expect(performance.now() - started).toBeLessThan(budgetMs(8_000));
   }, 60_000);
 });

@@ -1,5 +1,5 @@
 import { redactLongText } from '@qualor/shared';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { budgetMs } from '../../test/perf';
 import { HOSTILE_TEXT as HOSTILE } from '../../test/review';
 import { MASK_BUDGET_MS, MASK_TIMEOUT_MS, Masker, type MaskerOptions } from './masker';
@@ -272,6 +272,21 @@ describe('a masker whose run is superseded', () => {
     const pending = masker.mask('const a = 1;\n');
     controller.abort(new Error('superseded'));
     await expect(pending).rejects.toThrow('superseded');
+  });
+
+  it('leaves no timer behind when it is closed while a worker loads, or at any other time', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const masker = new Masker();
+      const pending = masker.mask('const a = 1;\n').catch(() => 'rejected');
+      // The timer that gives up a worker that does not load.
+      expect(vi.getTimerCount()).toBe(1);
+      await masker.close();
+      expect(await pending).toBe('rejected');
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

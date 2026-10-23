@@ -279,8 +279,6 @@ export class Masker {
       execArgv,
       resourceLimits: { maxOldGenerationSizeMb: this.heapMb },
     });
-    // A worker left over (a review that never closed its masker) must not keep the process alive.
-    worker.unref();
     this.started += 1;
     let loaded: () => void = () => undefined;
     let failed: (reason: unknown) => void = () => undefined;
@@ -290,17 +288,20 @@ export class Masker {
     });
     // Awaited by whoever needs the worker; if nobody does, a failure is not an unhandled rejection.
     ready.catch(() => undefined);
-    const live: Live = {
-      worker,
-      ready,
-      abandon: (reason) => failed(reason),
-      running: null,
-      ended: false,
-    };
     const startTimer = setTimeout(
       () => failed(new Error('the mask worker did not start in time')),
       START_MS,
     );
+    const live: Live = {
+      worker,
+      ready,
+      abandon: (reason) => {
+        clearTimeout(startTimer);
+        failed(reason);
+      },
+      running: null,
+      ended: false,
+    };
     let isReady = false;
     worker.on('message', (message: MaskAnswer | MaskReady) => {
       if ('ready' in message) {
@@ -320,8 +321,12 @@ export class Masker {
     worker.on('error', gone);
     worker.on('exit', (code) => {
       this.exited += 1;
+      clearTimeout(startTimer);
       if (!live.ended) gone(new Error(`the mask worker exited with code ${code}`));
     });
+    // A worker left over (a review that never closed its masker) must not keep the process alive.
+    // After the listeners: a listener for messages takes hold of the event loop again.
+    worker.unref();
     return live;
   }
 }
