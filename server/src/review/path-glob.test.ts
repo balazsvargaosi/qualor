@@ -325,8 +325,10 @@ describe('the work of matching a glob is bounded', () => {
       // The bound ends the search before the paths do, and a path costs at least its length.
       expect(work.exhausted, label).toBe(true);
       expect(walked, label).toBeLessThanOrEqual(Math.ceil(MAX_GLOB_STEPS / 1_006));
-      // About 100 ms here; the bound is 300 so that a busy machine does not fail it.
-      expect(elapsed, label).toBeLessThan(budgetMs(300));
+      // About 100 ms here at the most; the bound is 500 so that a busy machine, which runs a
+      // dozen test files side by side, does not fail it. The walk before the bound was fixed took
+      // 800 ms for the first of the shapes.
+      expect(elapsed, label).toBeLessThan(budgetMs(500));
     }
   });
 });
