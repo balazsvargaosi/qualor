@@ -13,7 +13,7 @@ import {
   reviewFindings,
   type AiCategory,
 } from '../db/schema';
-import { analyzerFindings, priorAiFindings } from './context';
+import { analyzerFindings, priorAiFindings } from './findings-query';
 
 const HEAD = 'a'.repeat(40);
 

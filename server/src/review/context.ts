@@ -1,18 +1,23 @@
 import { cutAtGrapheme } from '@qualor/shared';
-import { and, asc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
-import type { Executor } from '../db/client';
-import {
-  AI_CATEGORIES,
-  analyses,
-  issues,
-  reviewFindings,
-  rules,
-  type AiCategory,
-} from '../db/schema';
 import type { MaskedFiles, MaskedText } from './masked-files';
 import type { Masker } from './masker';
-import { AI_ENGINE } from './rules';
+import { patchFacts, removedLines, WHY, type NoteReason, type RemovedLine } from './patch';
+import type { AnalyzerFinding, PriorFinding } from './findings-query';
 import type { SnapshotChange, SnapshotMeta } from './snapshot-reader';
+
+export {
+  parsePatch,
+  type ParsedPatch,
+  type PatchHunk,
+  type PatchRow,
+  type RemovedLine,
+} from './patch';
+export {
+  analyzerFindings,
+  priorAiFindings,
+  type AnalyzerFinding,
+  type PriorFinding,
+} from './findings-query';
 
 /*
  * What a review is shown of a merge request: which of its changes are reviewed, the diff slices
@@ -40,14 +45,9 @@ const SLICE_BUDGET_CHARS = 120_000;
 const MAX_OMITTED_LISTED = 200;
 /** A line is cut here, with `…`. */
 const MAX_LINE_CHARS = 400;
-const MAX_ANALYZER_FINDINGS = 100;
-const ANALYZER_MESSAGE_CHARS = 300;
-const PRIOR_BODY_CHARS = 500;
 const INSTRUCTIONS_CHARS = 32_000;
 const TITLE_CHARS = 255;
 const DESCRIPTION_CHARS = 4_000;
-/** A marker line stands for this many removed lines at most: a number in a patch is not trusted. */
-const MAX_MARKER_LINES = 1_000_000;
 /** The lines at the head of a file that say it is generated, and the ones that say it is minified. */
 const GENERATED_HEAD_LINES = 5;
 const MINIFIED_HEAD_LINES = 50;
@@ -99,13 +99,6 @@ export interface SkippedChange {
  */
 export type Unshown = 'deleted' | 'no_text' | 'unreadable' | 'timeout' | 'budget';
 
-/** A line the change removed: the new-side line it follows (0: before the first), as the model sees it. */
-export interface RemovedLine {
-  after: number;
-  /** The masked line, or a fixed note for lines that could not be masked. */
-  text: string;
-}
-
 /**
  * A change that is reviewed. Everything in it that is text of the repository, the head file and
  * the removed lines, is masked; `patch` is the snapshot's, for the digest of the diff, and is
@@ -123,27 +116,6 @@ export interface ReviewableChange extends SnapshotChange {
   removed: readonly RemovedLine[];
   /** Why there are no slices of it, or null. */
   unshown: Unshown | null;
-}
-
-export interface AnalyzerFinding {
-  ruleKey: string;
-  severity: string;
-  message: string;
-  path: string;
-  line: number | null;
-}
-
-export interface PriorFinding {
-  id: string;
-  category: AiCategory;
-  severity: string;
-  status: 'open' | 'false_positive' | 'wont_fix';
-  path: string;
-  line: number;
-  endLine: number;
-  title: string;
-  body: string;
-  fingerprint: string;
 }
 
 export interface ContextOptions {
@@ -176,277 +148,8 @@ export interface ReviewContext {
   redactions: number;
 }
 
-// ─── Notes for what could not be shown ───────────────────────────────────────
-
-const WHY = {
-  timeout: 'it could not be masked in time',
-  budget: 'the review has used up the time it may spend masking',
-  unreadable: 'its masked text could not be read',
-} as const;
-type NoteReason = keyof typeof WHY;
-
 const notShown = (why: NoteReason): string => `[not shown: ${WHY[why]}]`;
-const removedNote = (lines: number, why: NoteReason): string =>
-  `[${lines} removed line${lines === 1 ? '' : 's'} not shown: ${WHY[why]}]`;
 const linesOf = (count: number): string => `${count} line${count === 1 ? '' : 's'}`;
-
-// ─── Unified diffs ───────────────────────────────────────────────────────────
-
-export interface PatchRow {
-  /** `removed-marker` is the scanner's line for removed lines it did not send (`-[3 removed lines not sent]`). */
-  kind: '+' | '-' | ' ' | 'removed-marker';
-  /** The line on the new side; null for a removed row. */
-  newLine: number | null;
-  text: string;
-}
-export interface PatchHunk {
-  oldStart: number;
-  newStart: number;
-  rows: PatchRow[];
-}
-export interface ParsedPatch {
-  hunks: PatchHunk[];
-  /** The new-side lines the patch adds. */
-  added: Set<number>;
-}
-
-const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
-const REMOVED_MARKER = /^\[(\d+) removed lines? not sent\]$/;
-
-/** A number of a hunk header, or `missing` when it was left out; null when it is too large to count with. */
-function headerNumber(digits: string | undefined, missing: number): number | null {
-  if (digits === undefined) return missing;
-  const value = Number(digits);
-  return Number.isSafeInteger(value) ? value : null;
-}
-
-/**
- * Reads the patch of one file (`git diff -U3`: the header lines, then hunks), numbering the rows
- * of the new side: an added or a context row has its line, a removed row none. The lines outside
- * a hunk (the headers, a second piece of a type change) are not read. A line that is empty where
- * a context line is due is a blank context line: that is how git writes it with
- * `diff.suppressBlankEmpty`, which the scanner's git may have set. Null when the text is not a
- * unified diff: a hunk header that does not parse, a row that is not a row, or a hunk shorter than
- * its header says.
- */
-export function parsePatch(patch: string): ParsedPatch | null {
-  const lines = patch.split('\n');
-  if (lines[lines.length - 1] === '') lines.pop();
-  const hunks: PatchHunk[] = [];
-  const added = new Set<number>();
-  let at = 0;
-  while (at < lines.length) {
-    const line = lines[at] ?? '';
-    at += 1;
-    if (!line.startsWith('@@')) continue;
-    const header = HUNK_HEADER.exec(line);
-    if (header === null) return null;
-    const oldStart = headerNumber(header[1], 0);
-    const oldCount = headerNumber(header[2], 1);
-    const newStart = headerNumber(header[3], 0);
-    const newCount = headerNumber(header[4], 1);
-    if (oldStart === null || oldCount === null || newStart === null || newCount === null) {
-      return null;
-    }
-    // Lines are numbered from 1: only a hunk with no new line is placed at 0 (`+0,0`).
-    if (newStart === 0 && newCount > 0) return null;
-    let oldLeft = oldCount;
-    let newLeft = newCount;
-    let newLine = newStart;
-    const rows: PatchRow[] = [];
-    while (oldLeft > 0 || newLeft > 0) {
-      const body = lines[at];
-      if (body === undefined) return null;
-      at += 1;
-      const mark = body.charAt(0);
-      const text = body.endsWith('\r') ? body.slice(1, -1) : body.slice(1);
-      if (mark === '\\') continue;
-      if (mark === '+') {
-        if (newLeft === 0) return null;
-        newLeft -= 1;
-        rows.push({ kind: '+', newLine, text });
-        added.add(newLine);
-        newLine += 1;
-      } else if (mark === '-') {
-        if (oldLeft === 0) return null;
-        oldLeft -= 1;
-        rows.push({
-          kind: REMOVED_MARKER.test(text) ? 'removed-marker' : '-',
-          newLine: null,
-          text,
-        });
-      } else if (mark === ' ' || body === '') {
-        if (oldLeft === 0 || newLeft === 0) return null;
-        oldLeft -= 1;
-        newLeft -= 1;
-        rows.push({ kind: ' ', newLine, text });
-        newLine += 1;
-      } else {
-        return null;
-      }
-    }
-    hunks.push({ oldStart, newStart, rows });
-  }
-  return { hunks, added };
-}
-
-/** A removed row, where it was, and what it says. */
-interface Removal {
-  after: number;
-  kind: '-' | 'removed-marker';
-  text: string;
-}
-
-/**
- * The removed rows of a patch, each with the new-side line it follows. A hunk that has no new-side
- * line (`+4,0`) names that line itself; any other starts after the line before its first.
- */
-function removalsOf(patch: ParsedPatch): Removal[] {
-  const removals: Removal[] = [];
-  for (const hunk of patch.hunks) {
-    let after = hunk.rows.some((row) => row.newLine !== null) ? hunk.newStart - 1 : hunk.newStart;
-    for (const row of hunk.rows) {
-      if (row.newLine !== null) after = row.newLine;
-      else if (row.kind === '-' || row.kind === 'removed-marker') {
-        removals.push({ after, kind: row.kind, text: row.text });
-      }
-    }
-  }
-  return removals;
-}
-
-/** The lines a removed row stands for: one, or the number a marker line names. */
-function linesRemoved(removal: Removal): number {
-  if (removal.kind === '-') return 1;
-  return Math.min(Number(/\d+/.exec(removal.text)?.[0] ?? 1), MAX_MARKER_LINES);
-}
-
-/** Whether a patch has a row on a line past the end of a file of `lines` lines. */
-function reachesPast(patch: ParsedPatch, removals: readonly Removal[], lines: number): boolean {
-  for (const hunk of patch.hunks) {
-    for (const row of hunk.rows) if (row.newLine !== null && row.newLine > lines) return true;
-  }
-  return removals.some((removal) => removal.after > lines);
-}
-
-/** What the structure of a change says: independent of any masking, as it holds numbers only. */
-interface PatchFacts {
-  added: Set<number>;
-  removals: Removal[];
-  changedLines: number;
-  /** False when the change has a patch that cannot be read. */
-  readable: boolean;
-}
-
-/**
- * The lines a change adds and removes. With no patch, or one that does not parse or does not fit
- * the file, the file is all there is: a new file is all added, any other counts as long as the file
- * is and adds nothing that can be named.
- */
-function readPatch(change: SnapshotChange, text: MaskedText | null): PatchFacts {
-  const parsed = change.patch === null ? null : parsePatch(change.patch);
-  if (parsed !== null) {
-    const removals = removalsOf(parsed);
-    if (text === null || !reachesPast(parsed, removals, text.lineCount)) {
-      const removed = removals.reduce((sum, removal) => sum + linesRemoved(removal), 0);
-      return {
-        added: parsed.added,
-        removals,
-        changedLines: parsed.added.size + removed,
-        readable: true,
-      };
-    }
-  }
-  const lines = text?.lineCount ?? 0;
-  const added = new Set<number>();
-  if (change.status === 'added') for (let line = 1; line <= lines; line += 1) added.add(line);
-  return { added, removals: [], changedLines: lines, readable: change.patch === null };
-}
-
-// ─── Masking the patch ───────────────────────────────────────────────────────
-
-/**
- * The patch as masked, with each row's diff prefix put back where the masking took it with the
- * line (a private key's lines are replaced whole, `-` included), so that it parses as the original
- * does. Null when the masking did not keep the lines.
- */
-function withDiffPrefixes(patch: string, masked: string): string | null {
-  const original = patch.split('\n');
-  const shown = masked.split('\n');
-  if (shown.length < original.length) return null;
-  return original
-    .map((line, i) => {
-      const out = shown[i] ?? '';
-      const mark = line.charAt(0);
-      return (mark === '+' || mark === '-' || mark === ' ') && !out.startsWith(mark)
-        ? `${mark}${out}`
-        : out;
-    })
-    .join('\n');
-}
-
-/** A run of removed rows that could not be shown as one note; a marker line is the scanner's own text. */
-function noteRuns(removals: readonly Removal[], why: NoteReason): RemovedLine[] {
-  const out: RemovedLine[] = [];
-  /** Where the note of the run being counted is in `out` (-1 when there is none), and what it counts. */
-  let runAt = -1;
-  let runAfter = 0;
-  let runLines = 0;
-  for (const removal of removals) {
-    if (removal.kind === 'removed-marker') {
-      out.push({ after: removal.after, text: removal.text });
-      runAt = -1;
-    } else if (runAt >= 0 && runAfter === removal.after) {
-      runLines += 1;
-      out[runAt] = { after: runAfter, text: removedNote(runLines, why) };
-    } else {
-      runAt = out.length;
-      runAfter = removal.after;
-      runLines = 1;
-      out.push({ after: removal.after, text: removedNote(1, why) });
-    }
-  }
-  return out;
-}
-
-/**
- * The removed rows of a change as the model may see them: the patch masked as a whole text, and
- * read the way the original was; or, when that is not possible, a note for each run of rows. A
- * patch that removes nothing the scanner sent is not masked: its marker lines are the scanner's text.
- */
-async function removedLines(
-  patch: string,
-  facts: PatchFacts,
-  masker: Masker,
-): Promise<{ removed: RemovedLine[]; redactions: number }> {
-  if (!facts.removals.some((removal) => removal.kind === '-')) {
-    return {
-      removed: facts.removals.map(({ after, text }) => ({ after, text })),
-      redactions: 0,
-    };
-  }
-  const result = await masker.mask(patch);
-  let why: NoteReason;
-  if (result.kind === 'masked') {
-    const restored = withDiffPrefixes(patch, result.text);
-    const shown = restored === null ? null : parsePatch(restored);
-    if (shown !== null) {
-      // Masking changes the rows' text (their prefixes are back) or takes a hunk header with it and
-      // loses the hunk's rows: with as many removed rows as the patch has, each is the one it came from.
-      const removals = removalsOf(shown);
-      if (removals.length === facts.removals.length) {
-        return {
-          removed: removals.map(({ after, text }) => ({ after, text })),
-          redactions: result.count,
-        };
-      }
-    }
-    why = 'unreadable';
-  } else {
-    why = result.kind;
-  }
-  return { removed: noteRuns(facts.removals, why), redactions: 0 };
-}
 
 // ─── Which changes are reviewed ──────────────────────────────────────────────
 
@@ -578,11 +281,11 @@ export async function reviewableChanges(
       continue;
     }
 
-    const facts = readPatch(change, text);
+    const facts = patchFacts(change, text?.lineCount ?? null);
     if (unshown === null && !facts.readable) unshown = 'unreadable';
     let removed: readonly RemovedLine[] = [];
     if (unshown === null && change.patch !== null) {
-      const masked = await removedLines(change.patch, facts, masker);
+      const masked = await removedLines(change.patch, facts, (patchText) => masker.mask(patchText));
       removed = masked.removed;
       redactions += masked.redactions;
     }
@@ -727,111 +430,6 @@ function cutSlices(reviewed: readonly ReviewableChange[]): { slices: string; omi
     listed.push(`… ${more} more changed files are not in the slices; read them with read_file`);
   }
   return { slices: parts.join('\n'), omitted: listed };
-}
-
-// ─── The findings a review is given ──────────────────────────────────────────
-
-/**
- * The open issues of the analysis' branch that the analyzers made (not engine `ai`, not duplicates)
- * on `paths`, the most severe first and at most 100. The paths go to the database as one value,
- * as a merge request can change more paths than a statement can bind values for.
- */
-export async function analyzerFindings(
-  db: Executor,
-  analysisId: string,
-  paths: readonly string[],
-): Promise<AnalyzerFinding[]> {
-  if (paths.length === 0) return [];
-  const found = await db
-    .select({
-      ruleKey: rules.key,
-      severity: issues.severity,
-      message: issues.message,
-      path: issues.path,
-      line: issues.startLine,
-    })
-    .from(analyses)
-    .innerJoin(issues, eq(issues.branchId, analyses.branchId))
-    .innerJoin(rules, eq(rules.id, issues.ruleId))
-    .where(
-      and(
-        eq(analyses.id, analysisId),
-        eq(issues.status, 'open'),
-        isNull(issues.duplicateOfIssueId),
-        ne(rules.engineId, AI_ENGINE),
-        sql`${issues.path} = ANY(${sql.param([...paths])}::text[])`,
-      ),
-    )
-    .orderBy(
-      asc(issues.severityRank),
-      asc(issues.path),
-      sql`${issues.startLine} ASC NULLS LAST`,
-      asc(issues.id),
-    )
-    .limit(MAX_ANALYZER_FINDINGS);
-  return found.flatMap(({ path, message, ...rest }) =>
-    path === null
-      ? []
-      : [{ ...rest, path, message: cutAtGrapheme(message, ANALYZER_MESSAGE_CHARS) }],
-  );
-}
-
-const PRIOR_STATUSES = ['open', 'false_positive', 'wont_fix'] as const;
-const isPriorStatus = (status: string): status is PriorFinding['status'] =>
-  PRIOR_STATUSES.some((known) => known === status);
-const isAiCategory = (category: string): category is AiCategory =>
-  AI_CATEGORIES.some((known) => known === category);
-
-/**
- * The AI issues of the branch that are open or that a person dismissed (a false positive, or one
- * that will not be fixed), with the body of their finding: what a re-review re-checks, and does
- * not raise again. An issue with no place in a file is of no use to either and is left out.
- */
-export async function priorAiFindings(db: Executor, branchId: string): Promise<PriorFinding[]> {
-  const found = await db
-    .select({
-      id: issues.id,
-      category: rules.engineRuleId,
-      severity: issues.severity,
-      status: issues.status,
-      path: issues.path,
-      line: issues.startLine,
-      endLine: issues.endLine,
-      title: issues.message,
-      body: reviewFindings.body,
-      fingerprint: issues.fingerprint,
-    })
-    .from(issues)
-    .innerJoin(rules, eq(rules.id, issues.ruleId))
-    .leftJoin(reviewFindings, eq(reviewFindings.issueId, issues.id))
-    .where(
-      and(
-        eq(issues.branchId, branchId),
-        eq(rules.engineId, AI_ENGINE),
-        inArray(issues.status, [...PRIOR_STATUSES]),
-      ),
-    )
-    .orderBy(asc(issues.path), asc(issues.startLine), asc(issues.id));
-  return found.flatMap((row) => {
-    const { path, line, category, status } = row;
-    if (path === null || line === null || !isAiCategory(category) || !isPriorStatus(status)) {
-      return [];
-    }
-    return [
-      {
-        id: row.id,
-        category,
-        severity: row.severity,
-        status,
-        path,
-        line,
-        endLine: row.endLine ?? line,
-        title: row.title,
-        body: cutAtGrapheme(row.body ?? '', PRIOR_BODY_CHARS),
-        fingerprint: row.fingerprint,
-      },
-    ];
-  });
 }
 
 // ─── The review's context ────────────────────────────────────────────────────
