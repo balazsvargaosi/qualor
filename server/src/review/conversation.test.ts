@@ -461,6 +461,33 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
       },
     );
 
+    it.each(KINDS)(
+      'the wrap-up counts what the tools just added to the history in the next call (%s)',
+      async (kind) => {
+        const limits = { ...LIMITS, tokenBudget: 10_000 };
+        // 2 100 used, and a call as large as the last would make 4 200: under the budget. But the
+        // file read in the turn adds about 6 000 tokens to what the next call sends: it would reach it.
+        const read = (text: string) => () => Promise.resolve(text);
+        fake.enqueue(
+          toolTurn(kind, [{ id: 'c1', args: { path: 'a.ts' } }], [2_000, 100]),
+          textTurn(kind, '{"findings":[]}', [10, 1]),
+        );
+        const large = await run(kind, { limits, runTool: read('x'.repeat(24_000)) });
+        expect(large.result).toMatchObject({ kind: 'answer', turns: 2, budgetReached: true });
+        expect(WIRES[kind].lastUser(fake.requests[1]!)).toBe(WRAP_UP);
+
+        // A small result leaves room for another turn: the model goes on.
+        fake.requests.length = 0;
+        fake.enqueue(
+          toolTurn(kind, [{ id: 'c1', args: { path: 'a.ts' } }], [2_000, 100]),
+          textTurn(kind, '{"findings":[]}', [10, 1]),
+        );
+        const small = await run(kind, { limits, runTool: read('a small file') });
+        expect(small.result).toMatchObject({ kind: 'answer', turns: 2, budgetReached: false });
+        expect(WIRES[kind].lastUser(fake.requests[1]!)).not.toContain('Token budget');
+      },
+    );
+
     it.each(KINDS)('a wrap-up answer that only calls tools is a bad answer (%s)', async (kind) => {
       fake.enqueue(
         toolTurn(kind, [{ id: 'c1', args: { path: 'a.ts' } }]),

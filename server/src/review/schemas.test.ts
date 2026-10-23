@@ -137,12 +137,6 @@ describe('the review answer schemas', () => {
         200,
         (value) => judgeAnswer({ summary: { verdict: 'v', walkthrough: [value] } }),
       ],
-      // A few words: a judge drops many findings, and its answer must stay short.
-      [
-        'dropped reason',
-        150,
-        (value) => judgeAnswer({ dropped: [{ source: 's1', reason: value }] }),
-      ],
       [
         'prior reason',
         300,
@@ -156,6 +150,13 @@ describe('the review answer schemas', () => {
     expect(passes(verifyAnswerSchema, { verdict: 'rejected', reason: text(300) })).toBe(true);
     expect(passes(verifyAnswerSchema, { verdict: 'rejected', reason: text(301) })).toBe(false);
     expect(passes(verifyAnswerSchema, { verdict: 'rejected', reason: '' })).toBe(false);
+    // A reason for dropping a finding is a few words: a longer one is cut, never the judge's answer
+    // refused for it. One must be given still.
+    const dropped = (reason: string) =>
+      judgeAnswerSchema.safeParse(judgeAnswer({ dropped: [{ source: 's1', reason }] }));
+    expect(dropped(text(150)).data?.dropped[0]?.reason).toBe(text(150));
+    expect(dropped(text(2_000)).data?.dropped[0]?.reason).toBe(`${text(149)}…`);
+    expect(dropped(' ').success).toBe(false);
 
     // Counts: 30 findings of a specialist, 40 of the judge, 6 walkthrough points, 30 lines written.
     expect(passes(specialistAnswerSchema, { findings: many(30, finding) })).toBe(true);

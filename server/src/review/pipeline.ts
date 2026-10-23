@@ -38,10 +38,11 @@ export type { ReviewFinding } from './schemas';
 
 /*
  * The review of a merge request, from its context to the findings it stores (spec §6.3). The size
- * of the change picks the specialist reviewers; they report with recall first, one after the other;
- * a judge reads the code behind their findings and keeps, merges or drops each with a reason,
- * re-checks what an earlier review raised and writes the summary; and every serious security
- * finding it keeps is checked again by a conversation given that finding alone.
+ * of the change picks the specialist reviewers; they report with recall first, one after the other
+ * (security first when it is one of them); a judge reads the code behind their findings and keeps,
+ * merges or drops each with a reason, re-checks what an earlier review raised and writes the
+ * summary; and every serious security finding it keeps is checked again by a conversation given
+ * that finding alone.
  *
  * Every conversation is given a check of its answers: parseModelJson, the provider's key taken out,
  * then the role's strict schema (schemas.ts). The conversation asks once more for an answer that
@@ -49,12 +50,13 @@ export type { ReviewFinding } from './schemas';
  * does not fails the review (fail closed).
  *
  * The review's token budget is shared out between the stages, each of which spends from its own
- * share whichever way its conversations end: 55 % for the specialists, each in turn given an even
- * part of what is left of it; 35 % for the judge, 10 % for the verification, each in turn given an
- * even part of it. A conversation that used up its part answers through its wrap-up, and one with
- * nothing left does not run; the review goes on, with `tokenLimitReached`. Only a judge cannot be
- * done without. What a first message holds is sized to a third of its conversation's tokens
- * (`reviewLimits`, and the judge's data), so that two turns of tools and the answer fit after it.
+ * share whichever way its conversations end: 55 % for the specialists, an even part for each that
+ * the others' spending does not touch; 35 % for the judge; 10 % for the verification, each in turn
+ * given an even part of what is left of it. A conversation that used up its part answers through
+ * its wrap-up, and one with nothing to spend does not run; the review goes on, with
+ * `tokenLimitReached`. Only a judge cannot be done without. What a first message holds is sized to
+ * a third of its conversation's tokens (`reviewLimits`, and the judge's data), so that two turns
+ * of tools and the answer fit after it.
  *
  * Nothing here calls a provider: `deps.converse` does, with the role's system prompt, the tools and
  * the first message it is given.
@@ -100,6 +102,8 @@ const ENVELOPE_CHARS = 600;
 const JSON_ALLOWANCE = 1.1;
 /** The label of an instructions file that is cut. */
 const CUT_LABEL_CHARS = 80;
+/** Characters of each instructions file shown whatever the budget (or all of it, if it is shorter). */
+const INSTRUCTIONS_MIN_CHARS = 16_000;
 
 export interface JudgedFinding extends ReviewFinding {
   /** The ids of the specialist findings it comes from (`s1`, `s2`, …). */
@@ -217,8 +221,10 @@ function evenCut(lengths: readonly number[], total: number, max: number): number
  * this shape: what buildReviewContext's `limits` answers (the job passes it this, bound to the
  * budget). The data the specialists share is sized so that a specialist's first message takes at
  * most a third of its part, and half of the judge's third (the judge keeps the other half for the
- * findings). What is left after the system prompt and the lists goes a quarter at most to the
- * instructions files, shared out evenly, and the rest to the slices, each at most CONTEXT_MAXIMA.
+ * findings). What is left after the system prompt and the lists, counted as the change has them,
+ * goes first to the instructions files, which no tool can stand in for: each at least
+ * INSTRUCTIONS_MIN_CHARS (or all of it, if shorter) even past that room, the long ones cut evenly
+ * when they do not all fit. The slices have the rest. Each part is at most CONTEXT_MAXIMA.
  */
 export function reviewLimits(shape: ContextShape, budget: number): ContextLimits {
   const { specialists } = planReview(shape.reviewed);
@@ -232,12 +238,10 @@ export function reviewLimits(shape: ContextShape, budget: number): ContextLimits
       listedDataChars(shape)) /
       JSON_ALLOWANCE,
   );
-  if (room <= 0) return { sliceChars: 0, instructionsChars: 0 };
   const labels = shape.instructionChars.length * CUT_LABEL_CHARS;
-  const instructionsChars = evenCut(
-    shape.instructionChars,
-    Math.floor(room / 4) - labels,
-    CONTEXT_MAXIMA.instructionsChars,
+  const instructionsChars = Math.max(
+    INSTRUCTIONS_MIN_CHARS,
+    evenCut(shape.instructionChars, room - labels, CONTEXT_MAXIMA.instructionsChars),
   );
   const instructions = shape.instructionChars.reduce(
     (sum, chars) =>
@@ -389,15 +393,15 @@ export async function runReviewPipeline(
   // Without a judge nothing can be kept: a budget too small for its share is not spent at all.
   if (judgeTokens <= 0) return NOT_JUDGED;
 
-  // The specialists, one after the other, each with an even part of what is left of their share.
+  // The specialists, one after the other, each with an even part of their share, whatever the
+  // others spent: one that overshoots its part takes nothing from the next.
   await onPhase('specialists');
-  const specialists: Share = { left: shareOf(budget, STAGE_SHARES.specialists) };
+  const part = Math.floor(shareOf(budget, STAGE_SHARES.specialists) / plan.specialists.length);
   const ran: Specialist[] = [];
   const labelled: LabelledFinding[] = [];
   const shown = specialistData(context);
-  for (const [index, specialist] of plan.specialists.entries()) {
-    const tokens = evenPart(specialists, index, plan.specialists.length);
-    const asked = await review.ask(specialist, shown, specialistAnswerSchema, tokens, specialists);
+  for (const specialist of plan.specialists) {
+    const asked = await review.ask(specialist, shown, specialistAnswerSchema, part, { left: part });
     if (asked.kind === 'stopped') return STOPPED;
     if (asked.kind === 'failed') return { kind: 'failed', reason: asked.reason };
     if (asked.kind === 'no_tokens') continue;

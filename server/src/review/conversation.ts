@@ -79,9 +79,9 @@ export interface ConversationInput {
     maxCallsPerTurn: number;
     /**
      * The tokens, input and output of all its calls, the conversation aims to stay within: at 85 %
-     * of it, or when another call as large as the last would reach it, the next turn is the
-     * wrap-up, whose own call can still go past it. More than 0: a caller with nothing to spend
-     * does not start a conversation.
+     * of it, or when the next call (as large as the last, with what the tools just answered) would
+     * reach it, the next turn is the wrap-up, whose own call can still go past it. More than 0: a
+     * caller with nothing to spend does not start a conversation.
      */
     tokenBudget: number;
     maxOutputTokens: number;
@@ -241,13 +241,15 @@ interface Taken {
   sent: LlmConversation;
 }
 
-/**
- * The guess for the input of a call the provider did not count: a quarter of a token for each byte
- * of the JSON that was sent. The day makes the same guess for a row without a count (usage.ts).
- */
-function guessedInput(sent: LlmConversation): number {
-  return Math.ceil(Buffer.byteLength(JSON.stringify(sent), 'utf8') / 4);
-}
+/** The bytes of JSON a token is guessed to stand for. The day guesses the same (usage.ts). */
+const BYTES_PER_TOKEN = 4;
+
+/** The guess for the tokens of what is sent as JSON: a quarter of a token for each byte. */
+const guessedTokens = (value: unknown): number =>
+  Math.ceil(Buffer.byteLength(JSON.stringify(value), 'utf8') / BYTES_PER_TOKEN);
+
+/** The guess for the input of a call the provider did not count: the JSON that was sent. */
+const guessedInput = (sent: LlmConversation): number => guessedTokens(sent);
 
 /**
  * The model's next turn, or why there is none: the stop check is asked before every call, a
@@ -348,9 +350,9 @@ function tokensOf(
  * - the tool list goes with every turn, the wrap-up included (Anthropic refuses tool blocks in the
  *   history without it);
  * - once the model has had `maxTurns` turns, or the calls have used 85 % of the token budget, or
- *   another call as large as the last would reach it (the history only grows), the next turn is
- *   the wrap-up: a user message that says to answer now. Calls in its answer are not run, and its
- *   text is the answer;
+ *   the next call would reach it (as large as the last, with what the tools just answered added:
+ *   the history only grows), the next turn is the wrap-up: a user message that says to answer now.
+ *   Calls in its answer are not run, and its text is the answer;
  * - a call is told apart by what is there, not by the finish reason: `tool` also comes without
  *   calls, and then text is an answer and no text is none;
  * - an answer cut off at the output limit is asked for again, shorter, once; a refusal, a blank
@@ -405,13 +407,16 @@ export async function runConversation(input: ConversationInput): Promise<Convers
     if (turn.toolCalls.length > 0 && !wrappingUp && !askedAgain) {
       const ids = new Set(turn.toolCalls.map((call) => call.id));
       if (ids.size !== turn.toolCalls.length) return ended(failed('bad_answer'));
+      // The model's turn joins the history first, then the answers to its calls.
+      const answersFrom = messages.length + 1;
       toolCalls += await answerCalls(input, turn.text, turn.toolCalls, messages);
       const used = inputTokens + outputTokens;
-      // The next call sends at least this one's input and its output again: if that alone would
-      // reach the budget, this is the last turn of tools whatever share is used.
+      // The next call sends this one's input and its output again, and what the tools answered:
+      // if that would reach the budget, this is the last turn of tools whatever share is used.
+      const nextCall = spent.input + spent.output + guessedTokens(messages.slice(answersFrom));
       const reached =
         used >= CONVERSATION_LIMITS.wrapUpAt * limits.tokenBudget ||
-        used + spent.input + spent.output >= limits.tokenBudget;
+        used + nextCall >= limits.tokenBudget;
       if (turns >= limits.maxTurns || reached) {
         messages.push({ role: 'user', text: CONVERSATION_TEXTS.wrapUp });
         wrappingUp = true;

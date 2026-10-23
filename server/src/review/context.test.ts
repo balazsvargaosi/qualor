@@ -1970,6 +1970,7 @@ describe('the context', () => {
           'hasPatch',
           'lines',
           'oldPath',
+          'patchUsable',
           'path',
           'removalPoints',
           'removed',
@@ -2068,6 +2069,8 @@ describe('how much of the merge request a review shows, and where its findings b
     const { context } = await contextOf(
       memorySnapshot({
         meta: {
+          mrTitle: 'T'.repeat(300),
+          mrDescription: 'd'.repeat(5_000),
           instructions: [
             { name: 'AGENTS.md', text: 'i'.repeat(100) },
             { name: 'REVIEW.md', text: 'r'.repeat(7) },
@@ -2099,7 +2102,11 @@ describe('how much of the merge request a review shows, and where its findings b
       ['src/b.ts', 30, null, []],
     ]);
     expect(shape?.skipped).toEqual([{ path: 'pnpm-lock.yaml', why: 'lock' }]);
-    expect(shape?.analyzerFindings).toBe(1);
+    // What the lists take, from what the report and the snapshot hold: a finding's path, rule and
+    // message, and the title and the description as they are cut.
+    expect(shape?.analyzerChars).toEqual(['src/a.ts'.length + 'eslint:x'.length + 'm'.length]);
+    const label = '\n[cut: the text has 5000 characters, only the first 4000 are shown]';
+    expect(shape?.wordsChars).toBe(255 + 4_000 + label.length);
     expect(shape?.instructionChars).toEqual([100, 7]);
     // The instructions are cut where the review said, with their label; a short one is whole.
     expect(context.meta.instructions[0]?.text).toMatch(/^i{40}\n\[cut: .*100.*40.*\]$/);
@@ -2177,12 +2184,16 @@ describe('how much of the merge request a review shows, and where its findings b
 
   it('gives the lines a review raises new findings on: what the change adds and the lines after its removals, or what changed since the last review', () => {
     expect(SCOPE_MARGIN).toBe(3);
-    const change = (
-      over: Partial<Pick<ReviewableChange, 'since' | 'added' | 'removalPoints'>>,
-    ): Pick<ReviewableChange, 'since' | 'added' | 'removalPoints'> => ({
+    type Scoped = Pick<
+      ReviewableChange,
+      'since' | 'added' | 'removalPoints' | 'patchUsable' | 'lines'
+    >;
+    const change = (over: Partial<Scoped>): Scoped => ({
       since: null,
       added: new Set([9, 3, 4, 5]),
       removalPoints: [12, 7],
+      patchUsable: true,
+      lines: 40,
       ...over,
     });
     expect(scopeRanges(change({}))).toEqual([
@@ -2212,5 +2223,36 @@ describe('how much of the merge request a review shows, and where its findings b
       [20, 30],
     ]);
     expect(scopeRanges(change({ since: [] }))).toEqual([]);
+    // A first review of a change whose patch says nothing of its lines takes in the whole file; a
+    // re-review has the lines changed since, as for any change.
+    expect(scopeRanges(change({ patchUsable: false, added: new Set() }))).toEqual([[1, 40]]);
+    expect(scopeRanges(change({ patchUsable: false, lines: null }))).toEqual([]);
+    expect(scopeRanges(change({ patchUsable: false, lines: 0 }))).toEqual([]);
+    expect(scopeRanges(change({ patchUsable: false, since: [[4, 6]] }))).toEqual([[4, 6]]);
+  });
+
+  it('knows of a change whether its patch says which lines changed', async () => {
+    const lines = Array.from({ length: 5 }, (_, i) => `line ${i + 1}`);
+    const text = `${lines.join('\n')}\n`;
+    const { context } = await contextOf(
+      memorySnapshot({
+        changes: [
+          { path: 'a.ts', status: 'modified', patch: '@@ -2 +2 @@\n-old\n+line 2\n' },
+          // Too large to send, or a diff the scanner could not make.
+          { path: 'b.ts', status: 'modified', patch: null },
+          // A patch that does not parse.
+          { path: 'c.ts', status: 'modified', patch: '@@ nonsense @@\n+x\n' },
+          // A patch with a row past the end of the file.
+          { path: 'd.ts', status: 'modified', patch: '@@ -9 +9 @@\n-old\n+new\n' },
+        ],
+        files: { 'a.ts': text, 'b.ts': text, 'c.ts': text, 'd.ts': text },
+      }),
+    );
+    expect(context.reviewed.map((c) => [c.path, c.patchUsable, scopeRanges(c)])).toEqual([
+      ['a.ts', true, [[2, 2]]],
+      ['b.ts', false, [[1, 5]]],
+      ['c.ts', false, [[1, 5]]],
+      ['d.ts', false, [[1, 5]]],
+    ]);
   });
 });

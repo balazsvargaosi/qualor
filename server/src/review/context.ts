@@ -167,6 +167,11 @@ export type Unshown = 'deleted' | 'no_text' | 'unreadable' | 'timeout' | 'budget
 export interface ReviewableChange extends Omit<SnapshotChange, 'patch'> {
   /** The snapshot has a patch for the change; it is missing when it was too large to send. */
   hasPatch: boolean;
+  /**
+   * The patch says which lines the change touched: false when there is none (too large to send,
+   * or a diff the scanner could not make) or it cannot be read against the file.
+   */
+  patchUsable: boolean;
   /** The lines the head file has, as the snapshot stores it; null when there is no text of it. */
   lines: number | null;
   /**
@@ -226,13 +231,18 @@ export interface ContextLimits {
   instructionsChars: number;
 }
 
-/** What a context knows of the change when it asks for its limits: nothing is masked or cut yet. */
+/**
+ * What a context knows of the change when it asks for its limits: nothing is masked or cut yet,
+ * and of the texts only their sizes are given.
+ */
 export interface ContextShape {
   /** The changes that are reviewed; none has its text or its removed lines yet. */
   reviewed: readonly ReviewableChange[];
   skipped: readonly SkippedChange[];
-  /** How many findings of the analyzers there are on the reviewed paths. */
-  analyzerFindings: number;
+  /** For each finding of the analyzers on the reviewed paths: the characters of its path, rule and message. */
+  analyzerChars: readonly number[];
+  /** The characters the title and the description take once they are cut. */
+  wordsChars: number;
   /** The characters of each instructions file the model may be shown, as the snapshot holds it. */
   instructionChars: readonly number[];
 }
@@ -421,6 +431,7 @@ async function classify(
         status: change.status,
         since: lines === null ? change.since : clipSince(change.since, lines),
         hasPatch: change.patch !== null,
+        patchUsable: change.patch !== null && facts.readable,
         lines,
         text: null,
         added: facts.added,
@@ -469,11 +480,15 @@ export const SCOPE_MARGIN = 3;
  * The lines a review may raise new findings on, as sorted ranges apart from one another: on a
  * re-review (a change with `since`), the lines changed since the last reviewed commit (D6); on a
  * first review, the lines the change adds and the line after each run it removed, so that a removed
- * check can be reported where it was. Prior findings are re-checked wherever they are.
+ * check can be reported where it was, and the whole file when its patch says nothing of its lines.
+ * Prior findings are re-checked wherever they are.
  */
 export function scopeRanges(
-  change: Pick<ReviewableChange, 'since' | 'added' | 'removalPoints'>,
+  change: Pick<ReviewableChange, 'since' | 'added' | 'removalPoints' | 'patchUsable' | 'lines'>,
 ): [number, number][] {
+  if (change.since === null && !change.patchUsable) {
+    return change.lines !== null && change.lines > 0 ? [[1, change.lines]] : [];
+  }
   const ranges: [number, number][] =
     change.since !== null
       ? change.since.map(([from, to]): [number, number] => [from, to])
@@ -734,7 +749,19 @@ async function shownText(mask: Mask, text: string, tally: Tally): Promise<string
 function cutWithLabel(text: string, max: number): string {
   const chars = [...text];
   if (chars.length <= max) return text;
-  return `${chars.slice(0, max).join('')}\n[cut: the text has ${chars.length} characters, only the first ${max} are shown]`;
+  return `${chars.slice(0, max).join('')}${cutLabel(chars.length, max)}`;
+}
+
+/** The label of a text of `total` characters cut to `max`. */
+const cutLabel = (total: number, max: number): string =>
+  `\n[cut: the text has ${total} characters, only the first ${max} are shown]`;
+
+/** The characters a text takes once cut to `max`: all of it, or `max` and, cut with a label, the label. */
+function shownChars(text: string | null, max: number, labelled: boolean): number {
+  if (text === null) return 0;
+  const total = [...text].length;
+  if (total <= max) return total;
+  return labelled ? max + cutLabel(total, max).length : max;
 }
 
 /** A limit the review gave, held to whole characters from 0 to `max`; one that is no number is 0. */
@@ -839,11 +866,15 @@ export async function buildReviewContext(
   const { candidates, skipped } = await classify(await reader.changes(), files, options);
   const reviewed = candidates.map((candidate) => candidate.change);
   const found = await analyzerOnReviewed(findings, reviewed);
+  const { meta: stored } = reader;
   const limits = options.limits({
     reviewed,
     skipped,
-    analyzerFindings: found.length,
-    instructionChars: shownInstructions(reader.meta, options).map((file) => file.text.length),
+    analyzerChars: found.map((f) => f.path.length + f.ruleKey.length + f.message.length),
+    wordsChars:
+      shownChars(stored.mrTitle, TITLE_CHARS, false) +
+      shownChars(stored.mrDescription, DESCRIPTION_CHARS, true),
+    instructionChars: shownInstructions(stored, options).map((file) => file.text.length),
   });
   const instructionsChars = heldTo(limits.instructionsChars, CONTEXT_MAXIMA.instructionsChars);
   const meta = await shownMeta(reader.meta, mask, tally, options, instructionsChars);

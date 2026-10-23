@@ -1,12 +1,14 @@
+import { cutAtGrapheme } from '@qualor/shared';
 import { z } from 'zod';
 import { AI_CATEGORIES, type AiCategory } from '../db/schema';
 
 /*
  * The answers of a review's model, as strict schemas (llm.md §9.3): an unknown key, a value of the
  * wrong kind, a line that is not a line of a file and a text over its bound are each refused, and
- * the whole answer with them. The pipeline reads every answer with `parseModelJson`, takes the
- * provider's key out of what it read, and only then checks it here; an answer that does not pass is
- * not used (fail closed). The bounds are the ones the prompts give the model.
+ * the whole answer with them (only the reason for dropping a finding, which is never shown, is cut
+ * instead). The pipeline reads every answer with `parseModelJson`, takes the provider's key out of
+ * what it read, and only then checks it here; an answer that does not pass is not used (fail
+ * closed). The bounds are the ones the prompts give the model.
  */
 
 export const FINDING_SEVERITIES = ['critical', 'major', 'minor'] as const;
@@ -34,7 +36,7 @@ export const ANSWER_LIMITS = {
   bodyChars: 1_200,
   assumptionChars: 300,
   reasonChars: 300,
-  /** A dropped finding's reason is a few words: a judge may drop many, and its answer stays short. */
+  /** A dropped finding's reason is a few words, and cut to this: a judge may drop many. */
   dropReasonChars: 150,
   verdictChars: 200,
   walkthroughItems: 6,
@@ -102,7 +104,18 @@ export const specialistAnswerSchema = z.strictObject({
 
 export const judgeAnswerSchema = z.strictObject({
   findings: z.array(judgedFindingSchema).max(L.judgeFindings),
-  dropped: z.array(z.strictObject({ source: id, reason: text(L.dropReasonChars) })).max(L.dropped),
+  // A drop reason of more than a few words is cut, never the judge's answer refused for it.
+  dropped: z
+    .array(
+      z.strictObject({
+        source: id,
+        reason: z
+          .string()
+          .refine((value) => value.trim() !== '', 'blank')
+          .transform((value) => cutAtGrapheme(value, L.dropReasonChars)),
+      }),
+    )
+    .max(L.dropped),
   prior: z
     .array(z.strictObject({ id, status: z.enum(PRIOR_VERDICTS), reason: text(L.reasonChars) }))
     .max(L.priorVerdicts),

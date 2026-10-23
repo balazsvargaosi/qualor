@@ -30,6 +30,7 @@ function change(path: string, changedLines = 1): ReviewableChange {
     status: 'modified',
     since: null,
     hasPatch: true,
+    patchUsable: true,
     lines: 40,
     text: null,
     added: new Set([3]),
@@ -277,7 +278,8 @@ describe('planReview', () => {
       changedLines: 300,
       files: 20,
     });
-    const full = ['quality', 'tests', 'security', 'performance'];
+    // Security runs first, then the others.
+    const full = ['security', 'quality', 'tests', 'performance'];
     expect(plan([301])).toEqual({ tier: 'full', specialists: full, changedLines: 301, files: 1 });
     expect(plan(Array.from({ length: 21 }, () => 1))).toEqual({
       tier: 'full',
@@ -288,32 +290,33 @@ describe('planReview', () => {
   });
 
   it('a sensitive path adds security at trivial', () => {
+    // The security reviewer runs first, with its whole part, whatever the others spend.
     expect(planReview([change('src/auth/login.ts', 2)]).specialists).toEqual([
-      'quality',
       'security',
+      'quality',
     ]);
     expect(planReview([change('src/main.ts'), change('lib/bcrypt.ts')])).toMatchObject({
       tier: 'trivial',
-      specialists: ['quality', 'security'],
+      specialists: ['security', 'quality'],
     });
     expect(planReview([change('src/session.ts', 50)]).specialists).toEqual([
+      'security',
       'quality',
       'tests',
-      'security',
     ]);
     // A full review has the security reviewer already, once.
     expect(planReview([change('src/session.ts', 301)]).specialists).toEqual([
+      'security',
       'quality',
       'tests',
-      'security',
       'performance',
     ]);
     // A short word inside a longer one is no sensitive path.
     expect(planReview([change('src/tokenizer.ts', 2)]).specialists).toEqual(['quality']);
     // What decides is the change's `sensitive`, which the context set from the path.
     expect(planReview([{ ...change('src/main.ts'), sensitive: true }]).specialists).toEqual([
-      'quality',
       'security',
+      'quality',
     ]);
     expect(planReview([{ ...change('src/auth.ts'), sensitive: false }]).specialists).toEqual([
       'quality',
@@ -361,9 +364,9 @@ describe('runReviewPipeline', () => {
     );
 
     expect(calls.map((c) => c.role)).toEqual([
+      'security',
       'quality',
       'tests',
-      'security',
       'performance',
       'judge',
     ]);
@@ -394,7 +397,7 @@ describe('runReviewPipeline', () => {
     expect(outcome).toEqual({
       kind: 'reviewed',
       tier: 'full',
-      specialists: ['quality', 'tests', 'security', 'performance'],
+      specialists: ['security', 'quality', 'tests', 'performance'],
       findings: [
         outcomeFinding({ title: 'Q1 and T1', sources: ['s1', 's3'] }),
         outcomeFinding({ category: 'performance', title: 'P1', sources: ['s4'] }),
@@ -680,44 +683,39 @@ describe('runReviewPipeline', () => {
     expect(calls.map((c) => c.role)).toEqual(['quality', 'judge']);
   });
 
-  it("a specialist cannot spend the judge's share", async () => {
-    // Of 10 000 tokens the specialists have 5 500, split between the two of a lite review, the
-    // judge 3 500 and the verification 1 000.
+  it("a specialist cannot spend the judge's share, nor another specialist's part", async () => {
+    // Of 10 000 tokens the specialists have 5 500, a part of 2 750 for each of the two of a lite
+    // review; the judge 3 500 and the verification 1 000.
     const context = contextOf([change('src/cart.ts', 50)]);
-    const over = scripted({
-      // 5 000 of its 2 750: the next specialist has what is left of their share.
-      quality: [answer({ findings: [] }, [4_000, 1_000])],
-      tests: [answer({ findings: [] }, [400, 100])],
-      judge: [answer(judgeSays())],
-    });
-    const one = await review(context, 10_000, over.deps);
-    expect(over.calls.map((c) => [c.role, c.tokenBudget])).toEqual([
-      ['quality', 2_750],
-      ['tests', 500],
-      ['judge', 3_500],
-    ]);
-    expect(one.outcome).toMatchObject({ kind: 'reviewed', tokenLimitReached: false, notes: [] });
+    for (const spent of [
+      [400, 100],
+      [4_000, 1_000],
+      // Past the whole of the specialists' share, and past what the judge's would leave.
+      [6_500, 500],
+    ] as [number, number][]) {
+      const { deps, calls } = scripted({
+        quality: [answer({ findings: [] }, spent)],
+        tests: [answer({ findings: [] }, [400, 100])],
+        judge: [answer(judgeSays())],
+      });
+      const { outcome } = await review(context, 10_000, deps);
+      expect(
+        calls.map((c) => [c.role, c.tokenBudget]),
+        String(spent),
+      ).toEqual([
+        ['quality', 2_750],
+        ['tests', 2_750],
+        ['judge', 3_500],
+      ]);
+      expect(outcome).toMatchObject({
+        kind: 'reviewed',
+        specialists: ['quality', 'tests'],
+        tokenLimitReached: false,
+        notes: [],
+      });
+    }
 
-    // One that spends all of their share leaves the next nothing: it does not run, and the review
-    // says the limit was reached. The judge keeps its share, even when what the specialists spent
-    // leaves less than that of the whole budget.
-    const all = scripted({
-      quality: [answer({ findings: [] }, [6_500, 500])],
-      judge: [answer(judgeSays())],
-    });
-    const two = await review(context, 10_000, all.deps);
-    expect(all.calls.map((c) => [c.role, c.tokenBudget])).toEqual([
-      ['quality', 2_750],
-      ['judge', 3_500],
-    ]);
-    expect(two.outcome).toMatchObject({
-      kind: 'reviewed',
-      specialists: ['quality'],
-      tokenLimitReached: true,
-      notes: ['token_limit_reached'],
-    });
-
-    // What a conversation that ended without an answer spent is taken too.
+    // What a conversation that ended without an answer spent is charged all the same.
     const failing = scripted({
       quality: [failed('bad_answer', [2_000, 0])],
       tests: [answer({ findings: [] }, [400, 100])],
@@ -726,10 +724,21 @@ describe('runReviewPipeline', () => {
     const three = await review(context, 10_000, failing.deps);
     expect(failing.calls.map((c) => [c.role, c.tokenBudget])).toEqual([
       ['quality', 2_750],
-      ['tests', 3_500],
+      ['tests', 2_750],
       ['judge', 3_500],
     ]);
     expect(three.outcome).toMatchObject({ kind: 'reviewed', notes: ['reviewer_unreadable'] });
+
+    // A part that rounds to nothing is not run, and the review says the limit was reached.
+    const none = scripted({ judge: [answer(judgeSays())] });
+    const tiny = await review(context, 3, none.deps);
+    expect(none.calls.map((c) => [c.role, c.tokenBudget])).toEqual([['judge', 1]]);
+    expect(tiny.outcome).toMatchObject({
+      kind: 'reviewed',
+      specialists: [],
+      tokenLimitReached: true,
+      notes: ['token_limit_reached'],
+    });
   });
 
   it('an answer given after the wrap-up says that the token limit was reached', async () => {
@@ -807,26 +816,26 @@ describe('runReviewPipeline', () => {
     const context = contextOf([change('src/auth.ts', 50)]);
     const serious = judgeSays({ findings: [judgedAs({ category: 'security', title: 'S' })] });
     const cases: [Partial<Record<ReviewRole, Reply[]>>, ReviewRole[]][] = [
-      [{ quality: [stopped()] }, ['quality']],
-      [{ quality: [answer({ findings: [] })], tests: [stopped()] }, ['quality', 'tests']],
+      [{ security: [stopped()] }, ['security']],
+      [{ security: [answer({ findings: [] })], quality: [stopped()] }, ['security', 'quality']],
       [
         {
+          security: [answer({ findings: [] })],
           quality: [answer({ findings: [] })],
           tests: [answer({ findings: [] })],
-          security: [answer({ findings: [] })],
           judge: [stopped()],
         },
-        ['quality', 'tests', 'security', 'judge'],
+        ['security', 'quality', 'tests', 'judge'],
       ],
       [
         {
+          security: [answer({ findings: [] })],
           quality: [answer({ findings: [] })],
           tests: [answer({ findings: [] })],
-          security: [answer({ findings: [] })],
           judge: [answer(serious)],
           verify: [stopped()],
         },
-        ['quality', 'tests', 'security', 'judge', 'verify'],
+        ['security', 'quality', 'tests', 'judge', 'verify'],
       ],
     ];
     for (const [replies, roles] of cases) {
@@ -841,32 +850,32 @@ describe('runReviewPipeline', () => {
     const context = contextOf([change('src/auth.ts', 50)]);
     const serious = judgeSays({ findings: [judgedAs({ category: 'security', title: 'S' })] });
     const cases: [Partial<Record<ReviewRole, Reply[]>>, string, ReviewRole[]][] = [
-      [{ quality: [failed('provider_no_tools')] }, 'provider_no_tools', ['quality']],
+      [{ security: [failed('provider_no_tools')] }, 'provider_no_tools', ['security']],
       [
-        { quality: [answer({ findings: [] })], tests: [failed('provider_error')] },
+        { security: [answer({ findings: [] })], quality: [failed('provider_error')] },
         'provider_error',
-        ['quality', 'tests'],
+        ['security', 'quality'],
       ],
       [
         {
+          security: [answer({ findings: [] })],
           quality: [answer({ findings: [] })],
           tests: [answer({ findings: [] })],
-          security: [answer({ findings: [] })],
           judge: [failed('provider_error')],
         },
         'provider_error',
-        ['quality', 'tests', 'security', 'judge'],
+        ['security', 'quality', 'tests', 'judge'],
       ],
       [
         {
+          security: [answer({ findings: [] })],
           quality: [answer({ findings: [] })],
           tests: [answer({ findings: [] })],
-          security: [answer({ findings: [] })],
           judge: [answer(serious)],
           verify: [failed('provider_error')],
         },
         'provider_error',
-        ['quality', 'tests', 'security', 'judge', 'verify'],
+        ['security', 'quality', 'tests', 'judge', 'verify'],
       ],
     ];
     for (const [replies, reason, roles] of cases) {
@@ -986,10 +995,25 @@ describe('runReviewPipeline', () => {
 });
 
 describe('reviewLimits', () => {
+  const RULE = 'typescript:S1854';
+  const MESSAGE =
+    'Remove this useless assignment to variable "total"; it is overwritten before it is read.';
+  const TITLE = 'Fix the cart total';
+  // As long as a description is shown: what it takes counts.
+  const DESCRIPTION = 'd'.repeat(4_000);
+  const SKIPPED = Array.from({ length: 5 }, (_, i) => ({
+    path: `vendor/lib-${i}.min.js`,
+    why: 'minified' as const,
+  }));
+  /** The instructions files as the snapshot holds them: their names and lengths. */
+  type Instructions = [name: string, chars: number][];
+
   /** A context as buildReviewContext makes it under `limits`, with ordinary lists. */
   function sizedContext(
     reviewed: ReviewableChange[],
     limits: ReturnType<typeof reviewLimits>,
+    analyzer: number,
+    instructions: Instructions,
   ): ReviewContext {
     const row =
       '  12+    const total = items.reduce((sum, item) => sum + item.price * item.count, 0);';
@@ -1005,40 +1029,52 @@ describe('reviewLimits', () => {
     return contextOf(reviewed, {
       meta: {
         ...META,
-        mrTitle: 'T'.repeat(255),
-        mrDescription: `${'d'.repeat(4_000)}\n[cut: the text has 9000 characters, only the first 4000 are shown]`,
-        instructions: [cut('AGENTS.md', 'a'.repeat(8_000)), cut('REVIEW.md', 'r'.repeat(40_000))],
+        mrTitle: TITLE,
+        mrDescription: DESCRIPTION,
+        instructions: instructions.map(([name, chars]) => cut(name, 'a'.repeat(chars))),
       },
       skipped: SKIPPED,
       slices: rows.join('\n'),
       omittedFromSlices: reviewed.map(
         (c) => `${c.path} (${c.changedLines} changed lines): read it with read_file`,
       ),
-      analyzer: Array.from({ length: 10 }, (_, i) => ({
-        ruleKey: 'typescript:S1854',
+      analyzer: Array.from({ length: analyzer }, (_, i) => ({
+        ruleKey: RULE,
         severity: 'medium',
-        message: 'm'.repeat(300),
+        message: MESSAGE,
         path: reviewed[i % reviewed.length]?.path ?? 'src/a.ts',
         line: 120,
       })),
     });
   }
-  const SKIPPED = Array.from({ length: 5 }, (_, i) => ({
-    path: `vendor/lib-${i}.min.js`,
-    why: 'minified' as const,
-  }));
-  const shapeOf = (reviewed: ReviewableChange[]): ContextShape => ({
+  /** The shape the context would ask its limits with, from the same things. */
+  const shapeOf = (
+    reviewed: ReviewableChange[],
+    analyzer: number,
+    instructions: Instructions,
+  ): ContextShape => ({
     reviewed,
     skipped: SKIPPED,
-    analyzerFindings: 10,
-    instructionChars: [8_000, 40_000],
+    analyzerChars: Array.from(
+      { length: analyzer },
+      (_, i) => (reviewed[i % reviewed.length]?.path.length ?? 0) + RULE.length + MESSAGE.length,
+    ),
+    wordsChars: TITLE.length + DESCRIPTION.length,
+    instructionChars: instructions.map(([, chars]) => chars),
   });
   const changes = (count: number, lines: number, sensitive = false) =>
     Array.from({ length: count }, (_, i) =>
       change(`server/src/${sensitive ? 'auth' : 'module'}${i}/handlers/some-file-${i}.ts`, lines),
     );
+  /** The characters a first message of each specialist may take: a third of its part, and of half the judge's share. */
+  const thirdOf = (budget: number, specialists: number): number => {
+    const part = Math.floor(Math.floor((budget * STAGE_SHARES.specialists) / 100) / specialists);
+    const judgeHalf = Math.floor(Math.floor((budget * STAGE_SHARES.judge) / 100) / 2);
+    return Math.floor(Math.min(part, judgeHalf) / 3) * CHARS_PER_TOKEN;
+  };
 
   it("sizes a reviewer's first message to a third of its part, keeping half of the judge's third for the findings", () => {
+    const agents: Instructions = [['AGENTS.md', 8_000]];
     for (const budget of [300_000, 1_000_000]) {
       for (const reviewed of [
         changes(2, 2),
@@ -1046,49 +1082,62 @@ describe('reviewLimits', () => {
         changes(30, 40),
         changes(2, 2, true),
       ]) {
-        const plan = planReview(reviewed);
-        const limits = reviewLimits(shapeOf(reviewed), budget);
-        const data = specialistData(sizedContext(reviewed, limits));
-        const part = Math.floor(
-          Math.floor((budget * STAGE_SHARES.specialists) / 100) / plan.specialists.length,
-        );
-        const judgeHalf = Math.floor(Math.floor((budget * STAGE_SHARES.judge) / 100) / 2);
-        const third = Math.floor(Math.min(part, judgeHalf) / 3) * CHARS_PER_TOKEN;
-        for (const role of plan.specialists) {
-          const message = SYSTEM_PROMPTS[role].length + envelope(data, newNonce()).length;
-          expect(message, `${budget} ${plan.tier} ${role}`).toBeLessThanOrEqual(third);
+        for (const analyzer of [0, 10]) {
+          const plan = planReview(reviewed);
+          const shape = shapeOf(reviewed, analyzer, agents);
+          const limits = reviewLimits(shape, budget);
+          const data = specialistData(sizedContext(reviewed, limits, analyzer, agents));
+          const name = `${budget} ${plan.tier} ${analyzer}`;
+          for (const role of plan.specialists) {
+            const message = SYSTEM_PROMPTS[role].length + envelope(data, newNonce()).length;
+            expect(message, `${name} ${role}`).toBeLessThanOrEqual(
+              thirdOf(budget, plan.specialists.length),
+            );
+          }
+          // The instructions are shown whole, and there is room for code still.
+          expect(limits.instructionsChars, name).toBeGreaterThanOrEqual(8_000);
+          expect(limits.sliceChars, name).toBeGreaterThan(5_000);
         }
-        // There is room for code at every size of review.
-        expect(limits.sliceChars, `${budget} ${plan.tier}`).toBeGreaterThan(5_000);
       }
     }
-    // When the rest of the data takes the third already, no slice and no instruction is shown.
-    expect(reviewLimits(shapeOf(changes(30, 40)), 60_000)).toEqual({
-      sliceChars: 0,
-      instructionsChars: 0,
-    });
   });
 
-  it('gives the slices what the instructions leave, each up to its maximum, and nothing below 0', () => {
-    const big = reviewLimits(shapeOf(changes(30, 40)), 10_000_000);
-    expect(big).toEqual(CONTEXT_MAXIMA);
-    // The instructions share a quarter of the room: the short file whole, the long one cut.
-    const some = reviewLimits(shapeOf(changes(30, 40)), 1_000_000);
-    expect(some.instructionsChars).toBeGreaterThan(8_000);
-    expect(some.instructionsChars).toBeLessThan(CONTEXT_MAXIMA.instructionsChars);
-    expect(some.sliceChars).toBeGreaterThan(some.instructionsChars);
-    const none = {
-      reviewed: changes(30, 40),
-      skipped: [],
-      analyzerFindings: 0,
-      instructionChars: [],
-    };
-    expect(reviewLimits(none, 1_000_000).sliceChars).toBeGreaterThan(some.sliceChars);
-    for (const budget of [0, 1_000, Number.NaN]) {
-      expect(reviewLimits(shapeOf(changes(30, 40)), budget)).toEqual({
+  it('counts the lists as the change has them: a small change shows its instructions and its code, whatever the analyzers found', () => {
+    // One file of six changed lines with a hundred findings of the analyzers on it, a description
+    // as long as one is shown and an AGENTS.md of 8 000 characters: all of them fit its third, and
+    // code besides.
+    const reviewed = changes(1, 6);
+    const agents: Instructions = [['AGENTS.md', 8_000]];
+    const limits = reviewLimits(shapeOf(reviewed, 100, agents), 300_000);
+    expect(limits.instructionsChars).toBeGreaterThanOrEqual(8_000);
+    expect(limits.sliceChars).toBeGreaterThan(5_000);
+    // And it is sized to its third, not past it.
+    const data = specialistData(sizedContext(reviewed, limits, 100, agents));
+    expect(SYSTEM_PROMPTS.quality.length + envelope(data, newNonce()).length).toBeLessThanOrEqual(
+      thirdOf(300_000, 1),
+    );
+  });
+
+  it('gives the instructions files the first claim, at least 16 000 characters each, and the slices what is left', () => {
+    const long: Instructions = [
+      ['AGENTS.md', 8_000],
+      ['REVIEW.md', 40_000],
+    ];
+    // Plenty of room: each part as large as it may be.
+    expect(reviewLimits(shapeOf(changes(30, 40), 10, long), 10_000_000)).toEqual(CONTEXT_MAXIMA);
+    // Room for the instructions whole: they take it before the slices.
+    const ample = reviewLimits(shapeOf(changes(30, 40), 10, long), 1_000_000);
+    expect(ample.instructionsChars).toBe(CONTEXT_MAXIMA.instructionsChars);
+    expect(ample.sliceChars).toBeGreaterThan(0);
+    // Too little room for them: still 16 000 characters each, and no slices.
+    for (const budget of [300_000, 60_000, 0, Number.NaN]) {
+      expect(reviewLimits(shapeOf(changes(30, 40), 10, long), budget), String(budget)).toEqual({
         sliceChars: 0,
-        instructionsChars: 0,
+        instructionsChars: 16_000,
       });
     }
+    // Without instructions the slices have the room.
+    const none = reviewLimits(shapeOf(changes(30, 40), 10, []), 1_000_000);
+    expect(none.sliceChars).toBeGreaterThan(ample.sliceChars);
   });
 });

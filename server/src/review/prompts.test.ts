@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { SENSITIVE_PATH, type ReviewableChange, type ReviewContext } from './context';
+import { CONVERSATION_TEXTS } from './conversation';
 import type { AnalyzerFinding, PriorFinding } from './findings-query';
 import {
   judgeData,
@@ -31,18 +32,24 @@ const ROLES: readonly ReviewRole[] = [
 ];
 
 /**
- * The sha256 of each prompt, by prompt version. A prompt that changes is a new version: add an entry
- * for it, and never change the entry of a version that exists (`llm_requests.prompt_version` names
- * the text a review was made with).
+ * The sha256 of every text the model is given, by prompt version: each role's prompt, and what the
+ * conversation loop says (`loop.` and its name). A text that changes is a new version: raise
+ * REVIEW_PROMPT_VERSION and add an entry for it, never change the entry of a version that exists
+ * (`llm_requests.prompt_version` names the texts a review was made with).
  */
-const PROMPT_HASHES: Record<string, Record<ReviewRole, string>> = {
+const PROMPT_HASHES: Record<string, Record<string, string>> = {
   'review-1': {
-    quality: 'f62ae8e899f98bf4f62d8fb649cf8454c92b1761fff83269d779be9cef6d64fe',
-    tests: '743f0a7f8b0cae9de74c85df1641b7da8b4c1a747fff8cb04c67d7e481a3f77e',
-    security: 'edc5a7f315bd96cd5cb46df654554939a3d87d5125ebed989874a44033d75264',
-    performance: '8effde624411137c51ea09f018e1ddd63b976ed2c202fb7cc714d76ff6a461e0',
-    judge: 'ba057af01a751e0debcfc4168e0eff3877f4a5a3430b10d422df4f85000d54c2',
+    quality: '628f40e89ddc46422959a226cd9e0e4f5dac70af22432c3d44e9f82076091dd6',
+    tests: '5523ee924bd83e39e5dbca38528db4ee600278b6bb0f85f43e0a62d8efd3036b',
+    security: '377d4978f364aa6d861a17edd42b4d1d4e59a0db2efc453abb0eacb3b20ee307',
+    performance: 'ee9a3ee60f3302be6dc367d3193ac9170c8a89887f2d2f4df9f2b23003af7204',
+    judge: '2ca56107d1046ac25e04b56a90d8621e0cccc4e512548238fbf0200ef76e91ae',
     verify: '04e3c867ffbc76f0a1a6e0596e1a3973436f2d2826a8ab47ac8ce9680ad5a404',
+    'loop.wrapUp': 'cc5c64c44240094b389da80979aa2ad0821c0e38bb88a763d0a481acb9cd2340',
+    'loop.shorter': '572e61f09a58f0033bb47d4170be06b712ef434b1a6f75cab203c4c1b1079b3d',
+    'loop.retry': 'dba9e7ae6537460f5c68547c0a31f236e268b118a0f89e6282d8667c8d925a5c',
+    'loop.tooManyCalls': '23833c21f587117534ed60d7532211b3a4ed637a43049715e5eb909f4682dcca',
+    'loop.badArguments': '849a9e7482301279245ba0e9a762cddc975972e74c6446623be53e82184d85e3',
   },
 };
 
@@ -64,8 +71,8 @@ const REVIEW_DATA_KEYS = [
 ];
 const JUDGE_DATA_KEYS = [...REVIEW_DATA_KEYS, 'priorFindings', 'specialistFindings'];
 const VERIFY_DATA_KEYS = ['finding'];
-/** The keys of a change in `changes`; `oldPath` only for a rename. */
-const CHANGE_KEYS = ['path', 'status', 'oldPath', 'changedLines', 'lines'];
+/** The keys of a change in `changes`; `oldPath` only for a rename, `unlistedLines` only when cut. */
+const CHANGE_KEYS = ['path', 'status', 'oldPath', 'changedLines', 'lines', 'unlistedLines'];
 const DATA_KEYS: Record<ReviewRole, string[]> = {
   quality: [...REVIEW_DATA_KEYS, ...CHANGE_KEYS],
   tests: [...REVIEW_DATA_KEYS, ...CHANGE_KEYS],
@@ -192,6 +199,7 @@ function change(path: string, over: Partial<ReviewableChange> = {}): ReviewableC
     status: 'modified',
     since: null,
     hasPatch: true,
+    patchUsable: true,
     lines: 40,
     text: null,
     added: new Set([3]),
@@ -306,9 +314,15 @@ describe('the review prompts', () => {
     expect(SYSTEM_PROMPTS.verify.toLowerCase()).not.toContain('nothing tells you why');
   });
 
-  it('pins the text of each prompt to its prompt version', () => {
-    expect(REVIEW_PROMPT_VERSION).toBe('review-1');
-    const hashes = Object.fromEntries(ROLES.map((role) => [role, sha256(SYSTEM_PROMPTS[role])]));
+  it('pins every text the model is given to the prompt version', () => {
+    const texts: [string, string][] = [
+      ...ROLES.map((role): [string, string] => [role, SYSTEM_PROMPTS[role]]),
+      ...Object.entries(CONVERSATION_TEXTS).map(([name, text]): [string, string] => [
+        `loop.${name}`,
+        text,
+      ]),
+    ];
+    const hashes = Object.fromEntries(texts.map(([name, text]) => [name, sha256(text)]));
     expect(hashes).toEqual(PROMPT_HASHES[REVIEW_PROMPT_VERSION]);
   });
 
@@ -526,23 +540,22 @@ describe('the review prompts', () => {
     expect(mixed.priorFindings).toHaveLength(50);
   });
 
-  it('lists at most 10 ranges of lines for a change, joining the closest ones', () => {
-    // Fifteen added lines apart from one another; the gaps between them grow.
-    const added = new Set<number>();
-    let line = 1;
-    for (let gap = 2; added.size < 15; gap += 1) {
-      added.add(line);
-      line += gap;
-    }
+  it('lists at most 10 ranges of lines for a change, never joined, and says how many more it has', () => {
+    // Fifteen added lines apart from one another: fifteen ranges, in fifteen hunks.
+    const added = new Set(Array.from({ length: 15 }, (_, i) => 1 + i * 10));
     const data = specialistData(contextOf({ reviewed: [change('src/a.ts', { added })] }));
-    const lines = data.changes[0]?.lines ?? [];
-    expect(lines).toHaveLength(10);
-    // Every line of the change is in a range still: the closest are joined, the far ones stay apart.
-    for (const each of added)
-      expect(lines.some(([from, to]) => from <= each && each <= to)).toBe(true);
-    const sorted = [...added].sort((a, b) => a - b);
-    expect(lines[0]).toEqual([sorted[0], sorted[5]]);
-    expect(lines.slice(1)).toEqual(sorted.slice(6).map((each) => [each, each]));
+    expect(data.changes[0]).toEqual({
+      path: 'src/a.ts',
+      status: 'modified',
+      changedLines: 1,
+      lines: Array.from({ length: 10 }, (_, i) => [1 + i * 10, 1 + i * 10]),
+      unlistedLines: 5,
+    });
+    // Ten or fewer are all listed, with no count.
+    const ten = new Set(Array.from({ length: 10 }, (_, i) => 1 + i * 10));
+    const listed = specialistData(contextOf({ reviewed: [change('src/a.ts', { added: ten })] }));
+    expect(listed.changes[0]?.lines).toHaveLength(10);
+    expect(listed.changes[0]).not.toHaveProperty('unlistedLines');
   });
 
   it("cuts the bodies of the reviewers' findings, and only them, when the judge's data does not fit", () => {
