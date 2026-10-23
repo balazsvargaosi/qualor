@@ -124,7 +124,12 @@ export interface PriorVerdict {
  * What the review says of itself in the summary: a reviewer whose answers could not be read, a
  * stage that reached its share of the tokens, more serious security findings than are verified.
  */
-export type ReviewNote = 'reviewer_unreadable' | 'token_limit_reached' | 'verification_capped';
+export const REVIEW_NOTES = [
+  'reviewer_unreadable',
+  'token_limit_reached',
+  'verification_capped',
+] as const;
+export type ReviewNote = (typeof REVIEW_NOTES)[number];
 
 export type PipelineOutcome =
   | {

@@ -168,21 +168,59 @@ describe('the rules of engine ai (6I-3)', () => {
     }
   });
 
-  it('never rewrites a builtin rule, even one that differs from the code', async () => {
-    await ensureAiRules(t.db);
+  it('brings a builtin rule that differs from the code up to date: a changed text reaches an existing row', async () => {
+    const ids = await ensureAiRules(t.db);
+    const before = await aiRows();
+    // As an earlier release left a rule: other words, another quality, another severity. Each
+    // difference alone is enough, and nothing else about the row changes.
+    const older = [
+      { key: 'ai:logic', set: { name: 'AI review: an older name' } },
+      { key: 'ai:docs', set: { descriptionMd: 'An older description.' } },
+      { key: 'ai:tests', set: { quality: 'reliability' } },
+      { key: 'ai:security', set: { defaultSeverity: 'medium' } },
+    ];
+    for (const { key, set } of older) {
+      await t.db.update(rules).set(set).where(eq(rules.key, key));
+      const stale = await aiRows();
+      expect(
+        stale.find((r) => r.key === key),
+        key,
+      ).toMatchObject(set);
+
+      expect(await ensureAiRules(t.db), key).toEqual(ids);
+      const after = await aiRows();
+      expect(
+        after.map((r) => ({ ...r, updatedAt: null })),
+        key,
+      ).toEqual(before.map((r) => ({ ...r, updatedAt: null })));
+      // The rows that were right are not written.
+      for (const row of after.filter((r) => r.key !== key)) {
+        expect(row.updatedAt, row.key).toEqual(stale.find((r) => r.key === row.key)?.updatedAt);
+      }
+    }
+
+    // All four at once, and a second call writes nothing more.
     await t.db
       .update(rules)
-      .set({ name: 'Renamed by a later release', defaultSeverity: 'low' })
+      .set({
+        name: 'Older',
+        descriptionMd: 'Older.',
+        quality: 'maintainability',
+        defaultSeverity: 'low',
+      })
       .where(eq(rules.key, 'ai:logic'));
-    await ensureAiRules(t.db);
-    const [row] = await t.db.select().from(rules).where(eq(rules.key, 'ai:logic'));
-    expect(row).toMatchObject({ name: 'Renamed by a later release', defaultSeverity: 'low' });
+    expect(await ensureAiRules(t.db)).toEqual(ids);
+    const refreshed = await aiRows();
+    expect(refreshed.map((r) => ({ ...r, updatedAt: null }))).toEqual(
+      before.map((r) => ({ ...r, updatedAt: null })),
+    );
+    expect(await ensureAiRules(t.db)).toEqual(ids);
+    expect(await aiRows()).toEqual(refreshed);
   });
 
-  it('refuses a builtin rule of another engine, quality or kind: its issues would take them', async () => {
+  it('refuses a builtin rule of another engine or kind: its issues would take them', async () => {
     await ensureAiRules(t.db);
     for (const change of [
-      { key: 'ai:docs', set: { quality: 'security' }, problem: 'ai/security/issue' },
       { key: 'ai:tests', set: { kind: 'hotspot' as const }, problem: 'ai/maintainability/hotspot' },
       { key: 'ai:logic', set: { engineId: 'eslint' }, problem: 'eslint/reliability/issue' },
     ]) {
@@ -195,7 +233,7 @@ describe('the rules of engine ai (6I-3)', () => {
       } finally {
         await t.db
           .update(rules)
-          .set({ quality: before?.quality ?? '', kind: before?.kind ?? 'issue', engineId: 'ai' })
+          .set({ kind: before?.kind ?? 'issue', engineId: 'ai' })
           .where(eq(rules.key, change.key));
       }
     }

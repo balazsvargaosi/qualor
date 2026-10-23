@@ -110,12 +110,14 @@ const KIND: IssueKind = 'issue';
 
 /**
  * Creates the eight AI review rules when they are missing, repairs one a report created (origin
- * `reported`, before reports were barred from the `ai` engine), and returns their ids by category.
+ * `reported`, before reports were barred from the `ai` engine), brings the name, description,
+ * quality and default severity of a built-in one up to date when a release changed them, and
+ * returns their ids by category.
  *
- * A built-in row is never touched: the insert is `ON CONFLICT DO NOTHING` and the repair matches
- * only `origin = 'reported'`, so neither takes a row lock on the usual path, and two reviews that
- * store at once do not wait on each other. The read-back is checked: rules are global, and an AI
- * finding must never take another engine, quality or kind.
+ * The usual path writes nothing and takes no row lock: the insert is `ON CONFLICT DO NOTHING`, the
+ * repair matches only `origin = 'reported'`, and a rule is updated only when its row differs from
+ * the code, so two reviews that store at once do not wait on each other. The read-back is checked:
+ * rules are global, and an AI finding must never take another engine or kind.
  */
 export async function ensureAiRules(db: Executor): Promise<Map<AiCategory, string>> {
   await db
@@ -162,8 +164,11 @@ export async function ensureAiRules(db: Executor): Promise<Map<AiCategory, strin
       id: rules.id,
       key: rules.key,
       engineId: rules.engineId,
-      quality: rules.quality,
       kind: rules.kind,
+      name: rules.name,
+      descriptionMd: rules.descriptionMd,
+      quality: rules.quality,
+      defaultSeverity: rules.defaultSeverity,
     })
     .from(rules)
     .where(
@@ -174,16 +179,36 @@ export async function ensureAiRules(db: Executor): Promise<Map<AiCategory, strin
     );
   const byKey = new Map(rows.map((row) => [row.key, row]));
   const ids = new Map<AiCategory, string>();
+  const stale: AiRule[] = [];
   for (const r of AI_RULES) {
     const key = aiRuleKey(r.category);
     const row = byKey.get(key);
     if (row === undefined) throw new Error(`AI rule ${key} was not created`);
-    if (row.engineId !== AI_ENGINE || row.quality !== r.quality || row.kind !== KIND) {
+    if (row.engineId !== AI_ENGINE || row.kind !== KIND) {
       throw new Error(
         `AI rule ${key} is ${row.engineId}/${row.quality}/${row.kind}, not ${AI_ENGINE}/${r.quality}/${KIND}`,
       );
     }
+    if (
+      row.name !== r.name ||
+      row.descriptionMd !== r.descriptionMd ||
+      row.quality !== r.quality ||
+      row.defaultSeverity !== r.defaultSeverity
+    ) {
+      stale.push(r);
+    }
     ids.set(r.category, row.id);
+  }
+  for (const r of stale) {
+    await db
+      .update(rules)
+      .set({
+        name: r.name,
+        descriptionMd: r.descriptionMd,
+        quality: r.quality,
+        defaultSeverity: r.defaultSeverity,
+      })
+      .where(eq(rules.key, aiRuleKey(r.category)));
   }
   return ids;
 }
