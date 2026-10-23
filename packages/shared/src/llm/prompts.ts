@@ -58,17 +58,18 @@ export function promptData(feature: LlmFeature, input: LlmIssueInput): string {
       ? { startLine: input.snippet.startLine, lines: input.snippet.lines }
       : null,
   };
-  return escapeData(JSON.stringify({ task: feature, issue }));
+  return escapePromptData(JSON.stringify({ task: feature, issue }));
 }
 
 /**
  * `JSON.stringify` escapes `\n`, `\r` and the other C0 controls, but not U+2028, U+2029 or U+0085,
  * which a model or its tokenizer may read as line breaks; and it keeps the marker word as it is.
  * Both are rewritten as JSON escapes (the parsed value is unchanged), so the data stays one line
- * and never holds `QUALOR-DATA`, in any case. They can only occur inside string values: the keys
- * are fixed and a `-` after a letter is never part of an escape.
+ * and never holds `QUALOR-DATA`, in any case. They can only occur inside string values (a key is
+ * a string too, and the escapes are valid there): a `-` after a letter is never part of an escape.
+ * Every prompt that fences data between the markers writes it through this, the review's too.
  */
-function escapeData(json: string): string {
+export function escapePromptData(json: string): string {
   return json
     .replace(/\u2028/g, '\\u2028')
     .replace(/\u2029/g, '\\u2029')

@@ -2,7 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { sampleInput } from '../../test/llm';
 import { LLM_FEATURES, PROMPT_VERSIONS } from './features';
 import { llmIssueInputSchema } from './input';
-import { buildPrompt, promptData, SYSTEM_PROMPTS } from './prompts';
+import {
+  buildPrompt,
+  escapePromptData,
+  NONCE_PATTERN,
+  promptData,
+  SYSTEM_PROMPTS,
+} from './prompts';
 
 const NONCE = '0123456789abcdef0123456789abcdef';
 /** Another request's nonce: the data may hold it, the markers never. */
@@ -70,6 +76,21 @@ describe('buildPrompt (llm.md §9.1, §9.2)', () => {
     const parsed = JSON.parse(p.data);
     expect(parsed.issue.message).toBe(hostile.message);
     expect(parsed.issue.snippet.lines).toEqual(hostile.snippet?.lines);
+  });
+
+  it('escapePromptData rewrites the three line breaks and the marker word as JSON escapes, for any prompt that fences data', () => {
+    const json = JSON.stringify({ a: 'x\u{2028}y\u{2029}z\u0085w QUALOR-DATA qualor-Data' });
+    const escaped = escapePromptData(json);
+    expect(escaped).not.toMatch(/[\u{2028}\u{2029}\u0085]/u);
+    expect(escaped).not.toMatch(/qualor-data/i);
+    expect(escaped).toContain('\\u2028');
+    expect(escaped).toContain('QUALOR\\u002dDATA');
+    // Still the same JSON once parsed.
+    expect(JSON.parse(escaped)).toEqual(JSON.parse(json));
+    // Text with none of them is left as it is.
+    expect(escapePromptData('{"a":"plain"}')).toBe('{"a":"plain"}');
+    expect(NONCE_PATTERN.test(NONCE)).toBe(true);
+    expect(NONCE_PATTERN.test(NONCE.toUpperCase())).toBe(false);
   });
 
   it('names the nonce in the introduction', () => {
