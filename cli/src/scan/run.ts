@@ -20,7 +20,7 @@ import { importCoverage } from '../coverage/import';
 import { discoverFiles } from '../discovery/discover';
 import { detectDuplications } from '../duplication/detect';
 import { CliError, EXIT, type ExitCode } from '../errors';
-import { createGit, type Git } from '../git/git';
+import { createGit, GIT_LOCAL_TIMEOUT_MS, type Git } from '../git/git';
 import { fetchPolicy, resolveScm } from '../git/scm';
 import { VERSION } from '../index';
 import type { CliIO } from '../io';
@@ -74,7 +74,7 @@ export interface ScanDeps {
   now?: () => Date;
   /** Pauses between upload retries and gate polls (tests replace the timer). */
   wait?: (ms: number) => Promise<unknown>;
-  /** The clock of the gate deadline (tests move it). */
+  /** The clock of the gate deadline and of the AI review snapshot's (tests move it). */
   clock?: () => number;
   /** `qualor dotnet end`'s logs (config.md §6.1); absent or null in a plain `qualor scan`. */
   dotnet?: DotnetRun | null;
@@ -378,6 +378,48 @@ interface ReviewSnapshotOptions {
   deps: ScanDeps;
 }
 
+/**
+ * The longest the snapshot path may take to build its snapshot (6I-3): the gate wait comes after
+ * it, and a fetch that stalls must not hold the CI job until its own timeout.
+ */
+const SNAPSHOT_DEADLINE_MS = 10 * 60_000;
+const SNAPSHOT_TOO_SLOW =
+  'AI review: building the repository snapshot took longer than 10 minutes, so none is sent';
+
+/** The snapshot path is past its deadline: no snapshot is sent, and one warning says so. */
+class SnapshotTooSlow extends Error {
+  override name = 'SnapshotTooSlow';
+  constructor() {
+    super('the repository snapshot took longer than its deadline');
+  }
+}
+
+/** When the snapshot path must have built its snapshot by, on the scan's clock. */
+class SnapshotDeadline {
+  private readonly at: number;
+
+  constructor(private readonly now: () => number) {
+    this.at = now() + SNAPSHOT_DEADLINE_MS;
+  }
+
+  get passed(): boolean {
+    return this.now() >= this.at;
+  }
+
+  /**
+   * `git` that starts no call once the deadline has passed (it throws SnapshotTooSlow), and stops a
+   * call still running at the deadline: its timeout is cut to the time left.
+   */
+  git(git: Git): Git {
+    return (args, options) => {
+      const left = this.at - this.now();
+      if (left <= 0) return Promise.reject(new SnapshotTooSlow());
+      const timeoutMs = Math.min(options?.timeoutMs ?? GIT_LOCAL_TIMEOUT_MS, left);
+      return git(args, { ...options, timeoutMs });
+    };
+  }
+}
+
 /** An engine whose findings are secrets the report masks (its mapping's `redactRegion`). */
 function redactsSecrets(engineId: string): boolean {
   const redact = engineMapping(engineId)?.redactRegion;
@@ -462,7 +504,9 @@ function unavailableText(
 
 /**
  * The snapshot of `s.mr`, built in `s.tempRoot` and uploaded, then removed whatever happens. Its
- * warnings are those of `sendReviewSnapshot`; it throws on a git, disk or network failure.
+ * warnings are those of `sendReviewSnapshot`; it throws on a git, disk or network failure, and
+ * SnapshotTooSlow when the snapshot is not built by `s.deadline`: git stops there (the snapshot
+ * is not built at all, or not sent).
  */
 async function buildAndUpload(
   o: ReviewSnapshotOptions,
@@ -471,39 +515,52 @@ async function buildAndUpload(
     context: ReviewContext;
     secrets: readonly string[];
     tempRoot: string;
+    deadline: SnapshotDeadline;
   },
 ): Promise<void> {
   const { settings, log } = o;
-  const { mr, tempRoot } = s;
+  const { mr, tempRoot, deadline } = s;
   // One directory for git and the secret engine, the scan root: the merge base's files are laid
   // out from git's working directory, and the head scan's paths, which the engine's path rules
   // and allowlists match, are the analyzers' root's.
   const root = settings.root;
   const policy = fetchPolicy(settings);
-  const built = await buildReviewSnapshot({
-    git: o.deps.git ?? createGit(root, o.env),
-    config: settings.config,
-    headSha: mr.headSha,
-    targetBranch: mr.targetBranch,
-    sinceSha: s.context.lastReviewedCommit,
-    mergeRequest: { id: mr.id, title: mr.title, description: mr.description },
-    secrets: s.secrets,
-    // The analyzers scanned the working tree: the head's files it does not hold as the head does
-    // (a merge commit checked out, a file a CI step edited) are scanned again (ruling R14).
-    secretsFrom: 'working-tree',
-    baseSecrets: baseSecretScan({
-      analyzers: o.analyzers,
-      root,
+  let built: BuiltSnapshot;
+  try {
+    built = await buildReviewSnapshot({
+      git: deadline.git(o.deps.git ?? createGit(root, o.env)),
       config: settings.config,
-      env: o.env,
+      headSha: mr.headSha,
+      targetBranch: mr.targetBranch,
+      sinceSha: s.context.lastReviewedCommit,
+      mergeRequest: { id: mr.id, title: mr.title, description: mr.description },
+      secrets: s.secrets,
+      // The analyzers scanned the working tree: the head's files it does not hold as the head
+      // does (a merge commit checked out, a file a CI step edited) are scanned again (ruling R14).
+      secretsFrom: 'working-tree',
+      baseSecrets: baseSecretScan({
+        analyzers: o.analyzers,
+        root,
+        config: settings.config,
+        env: o.env,
+        log,
+        tempRoot,
+      }),
+      limits: s.context.limits,
+      policy,
       log,
       tempRoot,
-    }),
-    limits: s.context.limits,
-    policy,
-    log,
-    tempRoot,
-  });
+    });
+  } catch (err) {
+    // A git call stopped at the deadline fails as git does: the deadline is the reason.
+    if (deadline.passed) throw new SnapshotTooSlow();
+    throw err;
+  }
+  // Whatever the build came to, it came too late: nothing is sent.
+  if (deadline.passed) {
+    if (built.kind === 'built') await built.cleanup();
+    throw new SnapshotTooSlow();
+  }
   if (built.kind === 'unavailable') {
     const why = unavailableText(built.reason, {
       headSha: mr.headSha,
@@ -537,9 +594,10 @@ async function buildAndUpload(
  * when a secret scan of the scan did not complete or its output could not be read (Review Focus
  * 2; one qualor.yml switches off is the user's choice, said once), or when the merge request's
  * head is unknown or not in the clone (ruling R12); each of those, a snapshot that cannot be
- * built, a refused upload (said by `uploadReviewSnapshot`) and any failure is one warning. It
- * never throws and never decides the exit code. Nothing it logs holds a secret, the token or
- * snapshot content.
+ * built, a refused upload (said by `uploadReviewSnapshot`) and any failure is one warning. A
+ * snapshot not built within ten minutes of the path's start is not sent either (6I-3): git stops
+ * at the deadline, and one warning says so. It never throws and never decides the exit code.
+ * Nothing it logs holds a secret, the token or snapshot content.
  */
 async function sendReviewSnapshot(o: ReviewSnapshotOptions): Promise<void> {
   const { settings, log } = o;
@@ -547,6 +605,7 @@ async function sendReviewSnapshot(o: ReviewSnapshotOptions): Promise<void> {
   if (mr === null) return;
   const token = settings.token;
   const secrets = [...o.redaction.texts, ...(token === null || token === '' ? [] : [token])];
+  const deadline = new SnapshotDeadline(o.deps.clock ?? Date.now);
   try {
     const context = await fetchReviewContext(
       o.endpoint,
@@ -608,12 +667,16 @@ async function sendReviewSnapshot(o: ReviewSnapshotOptions): Promise<void> {
     await withEmergencyCleanup(log, async () => {
       const dir = createWorkDir('review', o.deps.reviewTempRoot);
       try {
-        await buildAndUpload(o, { mr: head, context, secrets, tempRoot: dir });
+        await buildAndUpload(o, { mr: head, context, secrets, tempRoot: dir, deadline });
       } finally {
         releaseWorkDir(dir, log);
       }
     });
   } catch (err) {
+    if (err instanceof SnapshotTooSlow) {
+      log.warn(SNAPSHOT_TOO_SLOW);
+      return;
+    }
     // A git, disk or network failure: its text masked like the snapshot, made safe for a terminal.
     const text = err instanceof Error ? err.message : String(err);
     log.warn(

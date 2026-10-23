@@ -281,6 +281,8 @@ means no ceiling. The budgets take effect when the review itself runs.
 - **Time.** Building the snapshot masks every file, at about 1.8 MB of text a second on a
   developer machine: about 15 seconds for a repository of 25 MB, and about five minutes near the
   500 MiB limit. It adds to the job. The scan does not wait for the server to unpack the snapshot.
+  The scanner gives the snapshot **10 minutes**: one that is not built by then (a fetch that
+  stalls, say) is not sent, and the job goes on to the quality gate.
 
 **The snapshot never changes the scan's result.** Whatever goes wrong while it is built or sent
 is a warning in the log. The exit code stays the quality gate's.
@@ -314,6 +316,7 @@ informational lines about what the snapshot holds and masks. Set `QUALOR_LOG_LEV
 | `the server did not say whether it reviews (…), so no repository snapshot is sent` | The server answered with an error, such as 403 for a token that cannot upload. The text names it |
 | `the merge request's diff could not be read, so the snapshot has no patches: …` | git failed to produce the diff. The snapshot is sent without diffs |
 | `no snapshot sent: <error>` | A git, disk or network failure while the snapshot was built or sent. The text says which, with any secret in it masked |
+| `building the repository snapshot took longer than 10 minutes, so none is sent` | Usually a fetch that stalled, or a very large repository on a slow runner. Give the job the full history so nothing has to be fetched, or more CPU. This push is not reviewed; the next one sends a snapshot again |
 | `the server is busy with other uploads; retrying the snapshot` | The server's upload slots are taken; the scanner retries. The operator can raise `QUALOR_MAX_CONCURRENT_UPLOADS` |
 | a snapshot is uploaded and nothing else happens | Expected today: the review itself arrives with the next part of this page |
 

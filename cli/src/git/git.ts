@@ -64,7 +64,7 @@ export const GIT_OPTIONS: readonly string[] = [
 ];
 
 /** Local plumbing/diff commands (report and repository reads). */
-const GIT_LOCAL_TIMEOUT_MS = 60_000;
+export const GIT_LOCAL_TIMEOUT_MS = 60_000;
 /** `git fetch`, including `--deepen`/`--unshallow` steps, which can be slow over a real network. */
 export const GIT_FETCH_TIMEOUT_MS = 300_000;
 const MAX_GIT_OUTPUT_BYTES = 256 * 1024 * 1024;

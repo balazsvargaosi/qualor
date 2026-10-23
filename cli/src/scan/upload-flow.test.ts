@@ -27,6 +27,7 @@ import { createSemgrepAnalyzer } from '../analyzers/semgrep';
 import type { Analyzer } from '../analyzers/types';
 import { CliError } from '../errors';
 import { parseCommandLine, type ScanFlags } from '../args';
+import { createGit, type Git } from '../git/git';
 import { VERSION } from '../index';
 import { createLogger } from '../log';
 import { runScan, type ScanDeps } from './run';
@@ -67,6 +68,8 @@ interface Fake {
 interface FakeReview {
   /** The 200 answer of `GET /projects/review-context`; without one, 404 (an older server). */
   context?: unknown;
+  /** Runs when the review context is asked for, before the answer. */
+  onContext?: () => void;
   /** Answers the snapshot upload, once its body is read; 202 without it. */
   snapshot?: (req: IncomingMessage, res: ServerResponse) => void;
 }
@@ -106,6 +109,7 @@ async function fakeServer(
       );
     } else if (u.pathname === '/api/v0/projects/review-context' && review.context !== undefined) {
       contextQueries.push(u.search.slice(1));
+      review.onContext?.();
       json(res, 200, review.context);
     } else if (u.pathname === `/api/v0/analyses/${ID}/review-snapshot` && req.method === 'POST') {
       snapshots.push({ url: req.url ?? '', headers: req.headers, body: recorded.body });
@@ -439,6 +443,44 @@ describe('qualor scan: the AI review snapshot of a merge request (6I-2)', () => 
       expect(readdirSync(temp)).toEqual([]);
     },
   );
+
+  it('a snapshot path past its deadline sends nothing and warns', { timeout: 60_000 }, async () => {
+    const mr = mrRepo();
+    // The clock passes the snapshot's ten minutes while the server is asked whether it reviews.
+    let t = 0;
+    const server = await fakeServer([done('passed')], undefined, {
+      context: REVIEW_ON,
+      onContext: () => {
+        t += 10 * 60_000 + 1;
+      },
+    });
+    const temp = tmp();
+    // git as the scan has it, with the calls made past the deadline: there are none.
+    const real = createGit(mr.root, { ...SCAN_TEST_ENV, ...gitlabMr(mr.head) });
+    const late: string[] = [];
+    const git: Git = (args, options) => {
+      if (t > 10 * 60_000) late.push(args.join(' '));
+      return real(args, options);
+    };
+    const { code, stderr } = await scan(
+      mr.root,
+      server,
+      [],
+      { reviewTempRoot: temp, clock: () => t, git },
+      gitlabMr(mr.head),
+    );
+    // The gate decides the exit code, as for any failure of the snapshot path.
+    expect(code, stderr).toBe(0);
+    expect(late).toEqual([]);
+    expect(server.paths).toEqual([...UNTIL_REPORT, CONTEXT, GATE]);
+    expect(server.snapshots).toEqual([]);
+    expect(reviewWarnings(stderr)).toEqual([
+      'warn: AI review: building the repository snapshot took longer than 10 minutes, so none is sent',
+    ]);
+    expect(stderr).not.toContain('AI review: uploading');
+    // Nothing of the repository is left behind.
+    expect(readdirSync(temp)).toEqual([]);
+  });
 
   it('sends the snapshot without waiting for the gate as well', { timeout: 60_000 }, async () => {
     const mr = mrRepo();
