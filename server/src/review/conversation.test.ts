@@ -926,6 +926,10 @@ const call = (id: string, args: unknown = FILE, name = 'read_file'): LlmToolCall
   arguments: args,
 });
 
+/** What the loop charges for the input it sent: a quarter of the bytes of its JSON, rounded up. */
+const quarterOfBytes = (conversation: LlmConversation) =>
+  Math.ceil(Buffer.byteLength(JSON.stringify(conversation), 'utf8') / 4);
+
 describe('runConversation with a scripted provider', () => {
   /** A provider that plays `steps` in order (an Error is thrown) and keeps what it was sent. */
   function scripted(...steps: (LlmTurn | Error)[]) {
@@ -1144,9 +1148,6 @@ describe('runConversation with a scripted provider', () => {
 
     describe('a provider that does not count tokens', () => {
       const unknown = { inputTokens: null, outputTokens: null };
-      /** What the loop charges for the input it sent: a quarter of the bytes of its JSON, rounded up. */
-      const quarterOfBytes = (conversation: LlmConversation) =>
-        Math.ceil(Buffer.byteLength(JSON.stringify(conversation), 'utf8') / 4);
 
       it('is charged a quarter of the bytes it was sent and the longest answer it may write, and the result says so', async () => {
         const s = scripted(
@@ -1163,6 +1164,16 @@ describe('runConversation with a scripted provider', () => {
           toolCalls: 1,
           budgetReached: false,
         });
+      });
+
+      it('is charged for the bytes of the JSON it was sent, not for its characters', async () => {
+        const s = scripted(turn('done', { usage: unknown }));
+        // Characters of two, three and four bytes.
+        s.input.user = 'é€😀'.repeat(100);
+        const result = await runConversation(s.input);
+        const json = JSON.stringify(s.seen[0]);
+        expect(Buffer.byteLength(json, 'utf8')).toBeGreaterThan(json.length);
+        expect(result.inputTokens).toBe(Math.ceil(Buffer.byteLength(json, 'utf8') / 4));
       });
 
       it('is charged only for the count it did not give', async () => {
@@ -1342,7 +1353,7 @@ describe('runConversation with a scripted provider', () => {
       });
     });
 
-    it('a failure after turns the provider did not count carries the guessed tokens', async () => {
+    it('a failure after turns the provider did not count carries the guessed tokens, and the input of the call that timed out', async () => {
       const unknown = { inputTokens: null, outputTokens: null };
       const s = scripted(
         callTurn([call('c1')], { usage: unknown }),
@@ -1351,10 +1362,133 @@ describe('runConversation with a scripted provider', () => {
       );
       const result = await runConversation(s.input);
       expect(result).toMatchObject({ kind: 'failed', reason: 'provider_error', turns: 1 });
+      // The output of a call that was not answered is not known and is not charged.
       expect(result.outputTokens).toBe(LIMITS.maxOutputTokens);
-      expect(result.inputTokens).toBe(
-        Math.ceil(Buffer.byteLength(JSON.stringify(s.seen[0]), 'utf8') / 4),
-      );
+      // The call that timed out was sent, and most likely billed for its input; the one that could
+      // not be reached cost nothing.
+      expect(result.inputTokens).toBe(quarterOfBytes(s.seen[0]!) + quarterOfBytes(s.seen[1]!));
+    });
+  });
+
+  describe('the input of a call that was not answered', () => {
+    const timeout = new LlmError('timeout', 'The model did not answer within 60 s');
+    const unreadable = new LlmError(
+      'bad_answer',
+      'The answer of the provider was not understood',
+      200,
+    );
+
+    it('is charged for a call that timed out, and again for the retry that timed out', async () => {
+      const s = scripted(timeout, timeout);
+      // Characters of two, three and four bytes: the guess is made from the bytes.
+      s.input.user = 'é€😀'.repeat(100);
+      expect(await runConversation(s.input)).toEqual({
+        kind: 'failed',
+        reason: 'provider_error',
+        inputTokens: quarterOfBytes(s.seen[0]!) + quarterOfBytes(s.seen[1]!),
+        outputTokens: 0,
+        turns: 0,
+        toolCalls: 0,
+      });
+    });
+
+    it('is charged for a call that timed out, beside what its retry counted', async () => {
+      const s = scripted(timeout, turn('done'));
+      expect(await runConversation(s.input)).toEqual({
+        kind: 'answer',
+        text: 'done',
+        budgetReached: false,
+        inputTokens: quarterOfBytes(s.seen[0]!) + 10,
+        outputTokens: 5,
+        turns: 1,
+        toolCalls: 0,
+      });
+    });
+
+    it('is charged for a call that timed out when the conversation is stopped after it', async () => {
+      const s = scripted(timeout, turn('never asked'));
+      let asked = 0;
+      s.input.shouldStop = () => Promise.resolve(++asked > 1);
+      expect(await runConversation(s.input)).toEqual({
+        kind: 'stopped',
+        inputTokens: quarterOfBytes(s.seen[0]!),
+        outputTokens: 0,
+        turns: 0,
+        toolCalls: 0,
+      });
+    });
+
+    it('is charged for an answer that could not be read, which ends the conversation', async () => {
+      const s = scripted(callTurn([call('c1')]), unreadable, turn('never asked'));
+      expect(await runConversation(s.input)).toEqual({
+        kind: 'failed',
+        reason: 'provider_error',
+        inputTokens: 10 + quarterOfBytes(s.seen[1]!),
+        outputTokens: 5,
+        turns: 1,
+        toolCalls: 1,
+      });
+      expect(s.seen).toHaveLength(2);
+    });
+
+    it.each([
+      [
+        'an unreachable provider',
+        new LlmError('unavailable', 'The model provider could not be reached'),
+      ],
+      ['a rate limit', new LlmError('rate_limited', 'limited', 429, 1)],
+      ['a refusal of the key', new LlmError('refused_key', 'refused', 401)],
+      ['a refusal of the request', new LlmError('rejected', 'refused', 400)],
+      ['an address that is not allowed', new LlmError('url_not_allowed', 'not allowed')],
+    ])('is not charged for %s', async (_name, error) => {
+      // A rate limit is tried twice more and an unreachable provider once; the rest end it at once.
+      const s = scripted(error, error, error);
+      expect(await runConversation(s.input)).toMatchObject({
+        kind: 'failed',
+        inputTokens: 0,
+        outputTokens: 0,
+      });
+    });
+
+    it('counts toward the budget, so that the wrap-up comes when the calls that failed made it due', async () => {
+      const play = (tokenBudget: number) => {
+        // A call with a tool, a call that times out, its retry with another tool, and the answer.
+        const s = scripted(callTurn([call('c1')]), timeout, callTurn([call('c2')]), turn('done'));
+        s.input.limits = { ...LIMITS, tokenBudget };
+        return { s, result: runConversation(s.input) };
+      };
+      // What the call that timed out is charged: the rest of the input is that of the three turns.
+      const guessed = (await play(1_000_000).result).inputTokens - 30;
+      expect(guessed).toBeGreaterThan(30);
+      // The two turns of tools used 30 tokens, well short of this budget; with the call that timed
+      // out they used 30 and its guess, and the next call would reach it.
+      const { s, result } = play(40 + guessed);
+      expect(await result).toMatchObject({ kind: 'answer', budgetReached: true });
+      expect(s.seen.at(-1)!.messages.at(-1)).toEqual({ role: 'user', text: WRAP_UP });
+    });
+
+    it('serialises the conversation for a call that timed out or was unreadable, and for no other failure', async () => {
+      const stringify = vi.spyOn(JSON, 'stringify');
+      const serialisedConversations = () =>
+        stringify.mock.calls.filter(
+          ([value]) =>
+            typeof value === 'object' && value !== null && 'system' in value && 'messages' in value,
+        ).length;
+      const unavailable = new LlmError('unavailable', 'The model provider could not be reached');
+      try {
+        await runConversation(scripted(timeout, turn('done')).input);
+        expect(serialisedConversations()).toBe(1);
+
+        stringify.mockClear();
+        await runConversation(scripted(unreadable).input);
+        expect(serialisedConversations()).toBe(1);
+
+        stringify.mockClear();
+        await runConversation(scripted(unavailable, turn('done')).input);
+        expect(serialisedConversations()).toBe(0);
+      } finally {
+        stringify.mockRestore();
+      }
     });
   });
 

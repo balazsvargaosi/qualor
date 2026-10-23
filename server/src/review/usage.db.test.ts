@@ -435,6 +435,62 @@ const port = 8080;
       },
     );
 
+    it.each(KINDS)(
+      'charges a call that timed out, and one answered unreadably, the same input in the result of the loop and in the day (%s)',
+      async (kind) => {
+        // The shortest time the provider is given is a second; the fake keeps the first call waiting longer.
+        const settings = settingsFor(kind, {
+          provider: { ...configuredProvider(config.secretKey, fake, kind), timeoutSeconds: 1 },
+        });
+        const late = { ...textTurn(kind, 'late', [1, 1]), delayMs: 1_500 };
+        const timedOut = await converseThrough(
+          kind,
+          [late, textTurn(kind, 'done', [10, 5])],
+          settings,
+        );
+        const [lost, answered] = await rows();
+        expect(lost).toMatchObject({
+          status: 'failed',
+          errorCode: 'PROVIDER_TIMEOUT',
+          inputTokens: null,
+          outputTokens: null,
+        });
+        expect(answered).toMatchObject({ status: 'succeeded', inputTokens: 10, outputTokens: 5 });
+        // The call that was lost is charged a quarter of the bytes it sent, by the loop and by the day.
+        const lostInput = Math.ceil(lost!.inputBytes / 4);
+        expect(timedOut.result).toMatchObject({
+          kind: 'answer',
+          inputTokens: lostInput + 10,
+          outputTokens: 5,
+        });
+        expect((await reviewUsageToday(t.db, orgA)).tokens).toBe(lostInput + 15);
+        await t.db.delete(llmRequests);
+
+        const unreadable = await converseThrough(
+          kind,
+          [{ status: 200, body: 'this is not JSON' }],
+          settings,
+        );
+        const [row] = await rows();
+        expect(row).toMatchObject({
+          status: 'failed',
+          errorCode: 'PROVIDER_BAD_ANSWER',
+          inputTokens: null,
+          outputTokens: null,
+        });
+        const unreadableInput = Math.ceil(row!.inputBytes / 4);
+        expect(unreadable.result).toEqual({
+          kind: 'failed',
+          reason: 'provider_error',
+          inputTokens: unreadableInput,
+          outputTokens: 0,
+          turns: 0,
+          toolCalls: 0,
+        });
+        expect((await reviewUsageToday(t.db, orgA)).tokens).toBe(unreadableInput);
+      },
+    );
+
     it('has no cost without prices', async () => {
       await converseThrough('openai', [textTurn('openai', 'done', [10, 5])], settingsFor('openai'));
       expect(first(await rows())).toMatchObject({
@@ -489,6 +545,37 @@ const port = 8080;
         result: null,
       });
       expect(row.prompt).not.toBeNull();
+    });
+
+    it('does not join the two halves of a key that a NUL splits, in the stored prompt or in the stored result', async () => {
+      const key = fake.apiKey;
+      // The scrub does not see this as the key, and the store must not make it one.
+      const split = `${key.slice(0, 8)}${String.fromCharCode(0)}${key.slice(8)}`;
+      const stored = `${key.slice(0, 8)}${String.fromCodePoint(0xfffd)}${key.slice(8)}`;
+      await converseThrough(
+        'openai',
+        [
+          {
+            status: 200,
+            body: openAiToolCalls([{ id: 'c1', name: 'read_file', arguments: { path: 'a.ts' } }], {
+              text: split,
+            }),
+          },
+          textTurn('openai', split, [20, 5]),
+        ],
+        settingsFor('openai', { storePrompts: true }),
+      );
+      const [callOne, callTwo] = await rows();
+      // The first call's result and the second call's prompt (it carries the first answer back).
+      expect((callOne!.result as { text: string }).text).toBe(stored);
+      expect((callTwo!.result as { text: string }).text).toBe(stored);
+      const promptTexts = (callTwo!.prompt as { messages: { role: string; text: string }[] })
+        .messages;
+      expect(promptTexts.find((message) => message.role === 'assistant')!.text).toBe(stored);
+      for (const row of [callOne!, callTwo!]) {
+        expect(JSON.stringify(row.prompt)).not.toContain(key);
+        expect(JSON.stringify(row.result)).not.toContain(key);
+      }
     });
 
     it('keeps the stored prompt and result within the bounds of their columns, whatever was said', async () => {
@@ -954,7 +1041,7 @@ const port = 8080;
       expect((await reviewUsageToday(t.db, orgA)).tokens).toBe(10);
     });
 
-    it('counts the input of a call whose tokens are unknown as a quarter of its bytes, when it succeeded or timed out', async () => {
+    it('counts the input of a call whose tokens are unknown as a quarter of its bytes, when it succeeded, timed out or was answered unreadably', async () => {
       // The provider answered and did not count: a quarter of the bytes sent, and the output it did count.
       await insertRow({ inputTokens: null, outputTokens: null, inputBytes: 4_000 });
       await insertRow({ inputTokens: null, outputTokens: 7, inputBytes: 401 });
@@ -965,6 +1052,14 @@ const port = 8080;
         inputTokens: null,
         outputTokens: null,
         inputBytes: 2_000,
+      });
+      // So may a call that was answered, with an answer that could not be read: the provider took it.
+      await insertRow({
+        status: 'failed',
+        errorCode: 'PROVIDER_BAD_ANSWER',
+        inputTokens: null,
+        outputTokens: null,
+        inputBytes: 6_000,
       });
       // A call the provider refused, would not take or could not be reached for cost nothing.
       for (const errorCode of [
@@ -984,9 +1079,32 @@ const port = 8080;
       // A call it counted is what it said, whatever the bytes.
       await insertRow({ inputTokens: 50, outputTokens: 10, inputBytes: 99_999 });
 
-      expect((await reviewUsageToday(t.db, orgA)).tokens).toBe(1_000 + (101 + 7) + 500 + 60);
+      expect((await reviewUsageToday(t.db, orgA)).tokens).toBe(
+        1_000 + (101 + 7) + 500 + 1_500 + 60,
+      );
       // The rows keep what the provider said: nothing.
-      expect((await rows()).filter((row) => row.inputTokens === null)).toHaveLength(7);
+      expect((await rows()).filter((row) => row.inputTokens === null)).toHaveLength(8);
+    });
+
+    it('lets a provider whose answers are never readable fill the day, one call to a review at a time', async () => {
+      // Three reviews, each one call of 400 000 bytes that came back unreadable: 100 000 tokens each.
+      for (let review = 0; review < 3; review += 1) {
+        await insertRow({
+          status: 'failed',
+          errorCode: 'PROVIDER_BAD_ANSWER',
+          inputTokens: null,
+          outputTokens: null,
+          inputBytes: 400_000,
+        });
+      }
+      const usage = await reviewUsageToday(t.db, orgA);
+      expect(usage).toMatchObject({ tokens: 300_000, costMicroUsd: 0 });
+      const budgets = {
+        ...DEFAULT_REVIEW_BUDGETS,
+        tokensPerDay: 300_000,
+        maxTokensPerReview: 50_000,
+      };
+      expect(remainingReviewTokens(budgets, { organization: usage, project: null }, null)).toBe(0);
     });
 
     it('does not guess a cost: the cost of the day is that of the calls whose cost is known', async () => {

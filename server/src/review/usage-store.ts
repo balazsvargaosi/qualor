@@ -31,9 +31,13 @@ const LONE_SURROGATES = new RegExp(LONE_SURROGATE_SOURCE, 'g');
 /** U+FFFD, the character that stands for text that could not be read. */
 const REPLACEMENT_CHARACTER = String.fromCodePoint(0xfffd);
 
-/** Text a jsonb value can hold: PostgreSQL refuses a NUL and a lone surrogate. */
+/**
+ * Text a jsonb value can hold: PostgreSQL refuses a NUL and a lone surrogate. Each becomes the
+ * replacement character and none is dropped: the provider's key was scrubbed from the text before
+ * this, and a key that a NUL splits must not be joined again here.
+ */
 const storable = (text: string): string =>
-  text.replaceAll('\u0000', '').replace(LONE_SURROGATES, REPLACEMENT_CHARACTER);
+  text.replaceAll('\u0000', REPLACEMENT_CHARACTER).replace(LONE_SURROGATES, REPLACEMENT_CHARACTER);
 
 /** `text` made storable and cut to `max` characters, the cut marked. */
 function shown(text: string, max: number): string {

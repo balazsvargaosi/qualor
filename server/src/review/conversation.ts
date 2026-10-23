@@ -104,7 +104,8 @@ export interface ConversationInput {
  * spending its share still counts against the review's ceiling. `turns` counts the provider's
  * answers (retried failures and the stop check not), `toolCalls` the calls that were run. The
  * tokens are the provider's counts; for a count it did not give they are a guess made for the
- * budget (see `tokensOf`).
+ * budget (see `tokensOf`). The input of a call that timed out, or whose answer could not be read,
+ * is charged as a guess too: the provider most likely billed it, and the day counts it (usage.ts).
  */
 export interface ConversationCounts {
   inputTokens: number;
@@ -234,14 +235,24 @@ interface Taken {
 }
 
 /**
+ * The guess for the input of a call the provider did not count: a quarter of a token for each byte
+ * of the JSON that was sent. The day makes the same guess for a row without a count (usage.ts).
+ */
+function guessedInput(sent: LlmConversation): number {
+  return Math.ceil(Buffer.byteLength(JSON.stringify(sent), 'utf8') / 4);
+}
+
+/**
  * The model's next turn, or why there is none: the stop check is asked before every call, a
  * failed call is tried again as `retryWait` says, and the first call refused for its tools ends
- * the conversation as such.
+ * the conversation as such. A call the provider most likely billed although it gave no turn, one
+ * that timed out or whose answer could not be read, is charged its guessed input through `charge`.
  */
 async function nextTurn(
   input: ConversationInput,
   conversation: () => LlmConversation,
   first: boolean,
+  charge: (inputTokens: number) => void,
 ): Promise<Taken | Ended> {
   const retried = { rateLimited: 0, transient: 0 };
   for (;;) {
@@ -253,6 +264,7 @@ async function nextTurn(
       if (err instanceof CircuitOpenError) return failed('provider_error');
       if (!(err instanceof LlmError)) throw err;
       if (first && refusedForTools(err, input.tools)) return failed('provider_no_tools');
+      if (err.failure === 'timeout' || err.failure === 'bad_answer') charge(guessedInput(sent));
       const wait = retryWait(err, retried);
       if (wait === null) return failed('provider_error');
       await (input.sleep ?? sleepFor)(wait * 1_000);
@@ -309,9 +321,9 @@ async function answerCalls(
 
 /**
  * What a turn costs the budget: the provider's counts, and for a count it did not give a guess, so
- * that a provider which counts nothing cannot spend without limit. The guess for the input is a
- * quarter of a token for each byte of the JSON that was sent, and for the output the longest
- * answer a call may write. The conversation is serialised only when the input count is missing.
+ * that a provider which counts nothing cannot spend without limit. The guess for the input is
+ * `guessedInput`, and for the output the longest answer a call may write. The conversation is
+ * serialised only when the input count is missing.
  */
 function tokensOf(
   turn: LlmTurn,
@@ -319,7 +331,7 @@ function tokensOf(
   maxOutputTokens: number,
 ): { input: number; output: number } {
   return {
-    input: turn.usage.inputTokens ?? Math.ceil(Buffer.byteLength(JSON.stringify(sent), 'utf8') / 4),
+    input: turn.usage.inputTokens ?? guessedInput(sent),
     output: turn.usage.outputTokens ?? maxOutputTokens,
   };
 }
@@ -366,7 +378,9 @@ export async function runConversation(input: ConversationInput): Promise<Convers
   });
 
   for (;;) {
-    const next = await nextTurn(input, conversation, turns === 0);
+    const next = await nextTurn(input, conversation, turns === 0, (guessed) => {
+      inputTokens += guessed;
+    });
     if (!('turn' in next)) return ended(next);
     const { turn, sent } = next;
     turns += 1;

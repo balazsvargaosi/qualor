@@ -106,7 +106,8 @@ export async function recordReviewCall(db: Executor, call: ReviewCallRecord): Pr
 export interface ReviewUsage {
   /**
    * Tokens, input and output, of the calls made since the UTC day began. A call the provider
-   * answered or timed out on without counting the input is counted at a quarter of the bytes sent.
+   * answered, answered unreadably, or timed out on, without counting the input, is counted at a
+   * quarter of the bytes sent.
    */
   tokens: number;
   costMicroUsd: number;
@@ -121,11 +122,12 @@ export interface ReviewUsage {
  * today and did not end skipped: the rows are calls, and carry no run.
  *
  * A provider that does not count its tokens must not spend without limit: the input of a row that
- * succeeded or timed out, and has no count, is a quarter of its `input_bytes` (the guess the loop
- * makes too). The row keeps its null (llm.md §10.1) and so does its cost: the cost of the day is
- * the sum of the costs that are known. An output count the provider did not give is 0 here: the
- * row does not know the limit its call was made with. A call the provider refused, did not take or
- * could not be reached for is not counted.
+ * succeeded, timed out or was answered in a way that could not be read (a 2xx the provider most
+ * likely billed), and has no count, is a quarter of its `input_bytes` (the guess the loop makes
+ * too). The row keeps its null (llm.md §10.1) and so does its cost: the cost of the day is the sum
+ * of the costs that are known. An output count the provider did not give is 0 here: the row does
+ * not know the limit its call was made with. A call the provider refused, did not take or could not
+ * be reached for is not counted.
  */
 export async function reviewUsageToday(
   db: Executor,
@@ -134,7 +136,8 @@ export async function reviewUsageToday(
 ): Promise<ReviewUsage> {
   const spent = await db.execute<{ tokens: string; cost: string }>(sql`
     SELECT coalesce(sum(
-             CASE WHEN status = 'succeeded' OR error_code = 'PROVIDER_TIMEOUT'
+             CASE WHEN status = 'succeeded'
+                       OR error_code IN ('PROVIDER_TIMEOUT', 'PROVIDER_BAD_ANSWER')
                   THEN coalesce(input_tokens, ceil(input_bytes / 4.0))
                   ELSE coalesce(input_tokens, 0) END
              + coalesce(output_tokens, 0)), 0)::bigint AS tokens,

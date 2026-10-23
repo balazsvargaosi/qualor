@@ -72,6 +72,13 @@ function strings(value: unknown): string[] {
   return Object.entries(value).flatMap(([name, item]) => [name, ...strings(item)]);
 }
 const LONE_SURROGATE = new RegExp(LONE_SURROGATE_SOURCE);
+/** The character that takes the place of a NUL or a lone surrogate. */
+const REPLACEMENT = String.fromCodePoint(0xfffd);
+const NUL = String.fromCharCode(0);
+/** A key of the kind a provider issues, and the same with a NUL in the middle of it. */
+const KEY = 'sk-proj-AbCdEfGhIjKlMnOpQrSt';
+const SPLIT_KEY = `${KEY.slice(0, 12)}${NUL}${KEY.slice(12)}`;
+const SPLIT_KEY_STORED = `${KEY.slice(0, 12)}${REPLACEMENT}${KEY.slice(12)}`;
 /** Whether a stored document holds a NUL or a lone surrogate: PostgreSQL refuses both in jsonb. */
 const unstorable = (document: unknown) =>
   strings(document).some((text) => text.includes('\u0000') || LONE_SURROGATE.test(text));
@@ -167,7 +174,40 @@ describe('storedPrompt', () => {
       ),
     );
     expect(unstorable(stored)).toBe(false);
-    expect(stored.messages[0]!.text).toBe(`ab${String.fromCodePoint(0xfffd)}c`);
+    // The NUL and the lone surrogate each become the replacement character: neither is dropped.
+    expect(stored.messages[0]!.text).toBe(`a${REPLACEMENT}b${REPLACEMENT}c`);
+  });
+
+  it('does not join the two halves of a key that a NUL splits', () => {
+    const stored = promptOf(
+      conversationOf(
+        [
+          { role: 'user', text: `see ${SPLIT_KEY}` },
+          { role: 'assistant', text: SPLIT_KEY, toolCalls: [call('c1', { path: SPLIT_KEY })] },
+          { role: 'tool', callId: 'c1', name: 'read_file', text: SPLIT_KEY },
+        ],
+        SPLIT_KEY,
+      ),
+    );
+    expect(unstorable(stored)).toBe(false);
+    expect(JSON.stringify(stored)).not.toContain(KEY);
+    // Every place the NUL stood holds the replacement character, in the texts and in the system prompt.
+    expect(stored.system).toBe(SPLIT_KEY_STORED);
+    expect(stored.messages.map((message) => message.text)).toEqual([
+      `see ${SPLIT_KEY_STORED}`,
+      SPLIT_KEY_STORED,
+      SPLIT_KEY_STORED,
+    ]);
+  });
+
+  it('stays within the bound when every character is a NUL', () => {
+    // A NUL is one byte as text and three as the character that takes its place.
+    const stored = promptOf(conversationOf([{ role: 'user', text: NUL.repeat(100_000) }]));
+    expect(jsonbTextBytes(stored)).toBeLessThanOrEqual(STORED_PROMPT_BYTES);
+    expect(unstorable(stored)).toBe(false);
+    const text = stored.messages[0]!.text;
+    expect(text.endsWith('…')).toBe(true);
+    expect(text.slice(0, -1)).toBe(REPLACEMENT.repeat(text.length - 1));
   });
 
   it('shows at most 20 calls of an assistant message, each cut, and says how many there were', () => {
@@ -259,8 +299,33 @@ describe('storedResult', () => {
       turnOf({ text: 'a\u0000b\ud800c', toolCalls: [call('i\u0000', '\ud800')] }),
     );
     expect(unstorable(stored)).toBe(false);
-    expect(stored.text).toBe(`ab${String.fromCodePoint(0xfffd)}c`);
-    expect(stored.calls[0]!.arguments).toBe(String.fromCodePoint(0xfffd));
+    // The NUL and the lone surrogate each become the replacement character: neither is dropped.
+    expect(stored.text).toBe(`a${REPLACEMENT}b${REPLACEMENT}c`);
+    expect(stored.calls[0]!.arguments).toBe(REPLACEMENT);
+    expect(stored.calls[0]!.id).toBe(`i${REPLACEMENT}`);
+  });
+
+  it('does not join the two halves of a key that a NUL splits', () => {
+    const stored = resultOf(
+      turnOf({
+        text: `{"summary":"${SPLIT_KEY}"}`,
+        toolCalls: [call(SPLIT_KEY, SPLIT_KEY), call('c2', { path: SPLIT_KEY })],
+      }),
+    );
+    expect(unstorable(stored)).toBe(false);
+    expect(JSON.stringify(stored)).not.toContain(KEY);
+    expect(stored.text).toBe(`{"summary":"${SPLIT_KEY_STORED}"}`);
+    expect(stored.calls[0]).toMatchObject({ id: SPLIT_KEY_STORED, arguments: SPLIT_KEY_STORED });
+    // The NUL of an object is written out as the escape of JSON, which is not the key either.
+    expect(stored.calls[1]!.arguments).not.toContain(KEY);
+  });
+
+  it('stays within the bound when every character is a NUL', () => {
+    const stored = resultOf(turnOf({ text: NUL.repeat(100_000) }));
+    expect(jsonbTextBytes(stored)).toBeLessThanOrEqual(STORED_RESULT_BYTES);
+    expect(unstorable(stored)).toBe(false);
+    expect(stored.text.endsWith('…')).toBe(true);
+    expect(stored.text.length).toBeGreaterThan(1_000);
   });
 
   it('shows arguments nested deeper than JSON.stringify can follow as such', () => {
