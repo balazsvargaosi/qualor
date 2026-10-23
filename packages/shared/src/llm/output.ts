@@ -119,10 +119,15 @@ const THINK_CLOSE = '</think>';
 
 /**
  * llm.md §9.3: exactly one JSON object, bare or alone in one fenced block, maybe after ONE leading
- * `<think>…</think>` block of at most {@link MAX_THINK_CHARS} characters; else undefined.
+ * `<think>…</think>` block of at most {@link MAX_THINK_CHARS} characters; else undefined. A text
+ * longer than `maxChars` is refused unread: explain, triage and fix keep the default, and a caller
+ * whose answers are longer by design (an AI review's) names its own.
  */
-export function parseModelJson(text: string): Record<string, unknown> | undefined {
-  if (text.length > MAX_ANSWER_CHARS) return undefined;
+export function parseModelJson(
+  text: string,
+  maxChars: number = MAX_ANSWER_CHARS,
+): Record<string, unknown> | undefined {
+  if (text.length > maxChars) return undefined;
   let body = text.trim();
   if (body.startsWith(THINK_OPEN)) {
     const close = body.indexOf(THINK_CLOSE, THINK_OPEN.length);

@@ -65,6 +65,17 @@ describe('parseModelJson (llm.md §9.3)', () => {
       code: 'MALFORMED_OUTPUT',
     });
   });
+
+  it('takes a cap of its own, for answers that may be longer or must be shorter', () => {
+    const text = (chars: number) => JSON.stringify({ a: 'x'.repeat(chars - 8) });
+    expect(text(100)).toHaveLength(100);
+    // The default is the cap of explain, triage and fix.
+    expect(parseModelJson(text(MAX_ANSWER_CHARS))).toEqual({ a: 'x'.repeat(MAX_ANSWER_CHARS - 8) });
+    expect(parseModelJson(text(MAX_ANSWER_CHARS + 1))).toBeUndefined();
+    expect(parseModelJson(text(100), 100)).toEqual({ a: 'x'.repeat(92) });
+    expect(parseModelJson(text(101), 100)).toBeUndefined();
+    expect(parseModelJson(text(100_000), 100_000)).toEqual({ a: 'x'.repeat(99_992) });
+  });
 });
 
 describe('parseAnswer', () => {
