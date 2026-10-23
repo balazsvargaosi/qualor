@@ -22,7 +22,13 @@ import {
 } from '@qualor/shared';
 import { globMatcher } from '../discovery/discover';
 import { ensureCommit, mergeBaseBaseline, REVISION, type FetchPolicy } from '../git/baseline';
-import { parseBinaryPaths, parseNameStatusZ, parseUnifiedDiff, type NameStatus } from '../git/diff';
+import {
+  mergeRanges,
+  parseBinaryPaths,
+  parseNameStatusZ,
+  parseUnifiedDiff,
+  type NameStatus,
+} from '../git/diff';
 import { gitText, type Git } from '../git/git';
 import { parseLsTreeLong, readObjects, type TreeEntry } from '../git/objects';
 import { VERSION } from '../index';
@@ -411,12 +417,28 @@ async function readSince(
     );
     return null;
   }
-  return { sha: sinceSha, ranges: parseUnifiedDiff(r.stdout), binary: parseBinaryPaths(r.stdout) };
+  return {
+    sha: sinceSha,
+    // A deletion is a change too: the review may raise a problem it makes where it was (6I-3).
+    ranges: parseUnifiedDiff(r.stdout, { deletions: true }),
+    binary: parseBinaryPaths(r.stdout),
+  };
 }
 
 /**
- * A change's `since`: the ranges changed since the last review, `[]` for a path unchanged since;
- * every line of a text file whose change git shows as binary (its lines are unknown, not none).
+ * `ranges` held to the lines 1 to `lines` of the file: a deletion at its end is recorded one past
+ * its last line, and is its last line here. A file of no lines has none.
+ */
+function withinFile(ranges: readonly LineRange[], lines: number): LineRange[] {
+  if (lines === 0) return [];
+  const held = (line: number) => Math.min(Math.max(line, 1), lines);
+  return mergeRanges(ranges.map(([start, end]): LineRange => [held(start), held(end)]));
+}
+
+/**
+ * A change's `since`: the ranges changed since the last review, a deletion as the line after it
+ * (held to the file), `[]` for a path unchanged since; every line of a text file whose change git
+ * shows as binary (its lines are unknown, not none).
  */
 function sinceOf(
   change: Change,
@@ -427,7 +449,9 @@ function sinceOf(
   if (since.binary.has(change.path) && text !== undefined && text !== null && text.lines > 0) {
     return [[1, text.lines]];
   }
-  return since.ranges.get(change.path) ?? [];
+  const ranges = since.ranges.get(change.path) ?? [];
+  // Without the text the length is unknown; the server holds the ranges to the file it has.
+  return text === undefined || text === null ? ranges : withinFile(ranges, text.lines);
 }
 
 function changeLines(

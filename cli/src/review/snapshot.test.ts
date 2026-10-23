@@ -1017,6 +1017,49 @@ describe('buildReviewSnapshot: lines changed since the last review (R4)', () => 
     expect(filesOf(lines)['a.dat']).toBe('a\nB\nc\n');
   });
 
+  it('since: a push that only deletes lines gives a range at the deletion point', async () => {
+    const root = tmp();
+    initRepo(root);
+    const lines = (n: number) => Array.from({ length: n }, (_, i) => `line ${i + 1}`);
+    const text = (kept: readonly string[]) => (kept.length === 0 ? '' : `${kept.join('\n')}\n`);
+    const without = (drop: readonly number[]) =>
+      text(lines(10).filter((_, i) => !drop.includes(i + 1)));
+    const base = commitOf(root, { 'a.ts': 'a\n', 'b.ts': 'b\n', 'c.ts': 'c\n', 'd.ts': 'd\n' });
+    gitSync(root, 'update-ref', 'refs/remotes/origin/main', base);
+    const reviewed = commitOf(
+      root,
+      { 'a.ts': TEN, 'b.ts': TEN, 'c.ts': TEN, 'd.ts': TEN, 'e.ts': TEN },
+      base,
+    );
+    const head = commitOf(
+      root,
+      {
+        // Lines 4 and 5 deleted: the line after them is line 4 now.
+        'a.ts': without([4, 5]),
+        // The last two lines deleted: the point is past the end, so the last line, 8.
+        'b.ts': without([9, 10]),
+        // The first line deleted, and line 6 changed.
+        'c.ts': without([1]).replace('line 6', 'LINE 6'),
+        // Every line deleted: an empty file has no line to point at.
+        'd.ts': '',
+        'e.ts': TEN,
+      },
+      reviewed,
+    );
+    const changes = changesOf(linesOf(await build({ root, head }, { sinceSha: reviewed })));
+    const since = Object.fromEntries([...changes].map(([p, c]) => [p, c.since]));
+    expect(since).toEqual({
+      'a.ts': [[4, 4]],
+      'b.ts': [[8, 8]],
+      'c.ts': [
+        [1, 1],
+        [5, 5],
+      ],
+      'd.ts': [],
+      'e.ts': [],
+    });
+  });
+
   it('a rebase (since not an ancestor) sends no ranges', async () => {
     const h = history();
     for (const sinceSha of [h.rebased, 'f'.repeat(40), 'not-a-commit']) {

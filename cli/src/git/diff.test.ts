@@ -75,6 +75,68 @@ describe('parseUnifiedDiff', () => {
     ]);
   });
 
+  it('with deletions, records where each run of removed lines was: the new-side line after it', () => {
+    const out = [
+      'diff --git a/src/a.ts b/src/a.ts',
+      '--- a/src/a.ts',
+      '+++ b/src/a.ts',
+      // Old lines 4 and 5 removed, after new line 3: the line after them is new line 4.
+      '@@ -4,2 +3,0 @@',
+      '-four',
+      '-five',
+      // Old line 9 changed: removed and added again, at new line 7.
+      '@@ -9 +7 @@',
+      '-nine',
+      '+NINE',
+      'diff --git a/src/b.ts b/src/b.ts',
+      '--- a/src/b.ts',
+      '+++ b/src/b.ts',
+      // The first two lines removed: the line after them is new line 1.
+      '@@ -1,2 +0,0 @@',
+      '-one',
+      '-two',
+      // The last line of a five-line file removed: after new line 3, past its end.
+      '@@ -5 +3,0 @@',
+      '-five',
+      'diff --git a/src/c.ts b/src/c.ts',
+      '--- a/src/c.ts',
+      '+++ b/src/c.ts',
+      // Removed lines between two context lines that interHunkContext kept (a user setting).
+      '@@ -2,4 +2,2 @@',
+      ' two',
+      '-three',
+      '-four',
+      ' five',
+      'diff --git a/src/gone.ts b/src/gone.ts',
+      'deleted file mode 100644',
+      '--- a/src/gone.ts',
+      '+++ /dev/null',
+      '@@ -1,2 +0,0 @@',
+      '-x',
+      '-y',
+      '',
+    ].join('\n');
+    expect([...parseUnifiedDiff(out, { deletions: true })]).toEqual([
+      [
+        'src/a.ts',
+        [
+          [4, 4],
+          [7, 7],
+        ],
+      ],
+      [
+        'src/b.ts',
+        [
+          [1, 1],
+          [4, 4],
+        ],
+      ],
+      ['src/c.ts', [[3, 3]]],
+    ]);
+    // Without, only the added lines count, as the report's new lines do.
+    expect([...parseUnifiedDiff(out)]).toEqual([['src/a.ts', [[7, 7]]]]);
+  });
+
   it('merges adjacent and overlapping ranges', () => {
     expect(
       mergeRanges([

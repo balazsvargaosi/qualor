@@ -102,24 +102,42 @@ const HUNK = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
  * equivalent `-U`) can still merge two nearby hunks into one whose body interleaves unchanged
  * `' '` context lines with the real changes (e.g. `@@ -2,3 +2,3 @@` covering an unchanged line
  * 3 between changed lines 2 and 4). Trusting the header would then misreport line 3 as new.
+ *
+ * With `deletions` (the AI review's lines changed since the last review, 6I-3), a run of removed
+ * lines counts too, as the one new-side line after it: a range `[c, c]`, merged with its
+ * neighbours. At the end of a file `c` is one past its last line; the caller, who knows the
+ * file's length, holds it to the file.
  */
-export function parseUnifiedDiff(output: string): Map<string, LineRange[]> {
+export function parseUnifiedDiff(
+  output: string,
+  options: { deletions?: boolean } = {},
+): Map<string, LineRange[]> {
   const result = new Map<string, LineRange[]>();
   let current: string | null = null;
   let oldLeft = 0;
   let newLeft = 0;
+  /** The new-side line the next added or context line has. */
   let newLine = 0;
   let runStart: number | null = null;
   let runEnd = 0;
+  /** Lines were removed since the last added or context line. */
+  let removed = false;
 
+  const record = (start: number, end: number) => {
+    if (current === null) return;
+    const list = result.get(current) ?? [];
+    list.push([start, end]);
+    result.set(current, list);
+  };
   const flushRun = () => {
     if (runStart === null) return;
-    if (current !== null) {
-      const list = result.get(current) ?? [];
-      list.push([runStart, runEnd]);
-      result.set(current, list);
-    }
+    record(runStart, runEnd);
     runStart = null;
+  };
+  /** A run of removed lines ends before the line `newLine` is, or would be. */
+  const flushRemoved = () => {
+    if (removed && options.deletions === true) record(newLine, newLine);
+    removed = false;
   };
 
   for (const line of output.split('\n')) {
@@ -132,22 +150,27 @@ export function parseUnifiedDiff(output: string): Map<string, LineRange[]> {
       if (line.startsWith('-')) {
         oldLeft--;
         flushRun();
+        removed = true;
       } else if (line.startsWith('+')) {
         newLeft--;
+        flushRemoved();
         if (runStart === null) runStart = newLine;
         runEnd = newLine;
         newLine++;
       } else if (line.startsWith(' ')) {
         oldLeft--;
         newLeft--;
+        flushRemoved();
         newLine++;
         flushRun(); // an unchanged context line breaks contiguity; it is never "new"
       } else {
         flushRun();
+        flushRemoved();
       }
       continue;
     }
     flushRun(); // the previous hunk's body (if any) has ended
+    flushRemoved();
     if (line.startsWith('diff --git ')) {
       current = null;
     } else if (line.startsWith('+++ ')) {
@@ -157,10 +180,12 @@ export function parseUnifiedDiff(output: string): Map<string, LineRange[]> {
       if (m === null) continue;
       oldLeft = m[1] === undefined ? 1 : Number(m[1]);
       newLeft = m[3] === undefined ? 1 : Number(m[3]);
-      newLine = Number(m[2]);
+      // A hunk with no new line (`+3,0`) names the line before it: what follows is the next one.
+      newLine = Number(m[2]) + (newLeft === 0 ? 1 : 0);
     }
   }
   flushRun();
+  flushRemoved();
   for (const [p, ranges] of result) result.set(p, mergeRanges(ranges));
   return result;
 }
