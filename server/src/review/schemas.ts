@@ -34,9 +34,13 @@ export const ANSWER_LIMITS = {
   bodyChars: 1_200,
   assumptionChars: 300,
   reasonChars: 300,
+  /** A dropped finding's reason is a few words: a judge may drop many, and its answer stays short. */
+  dropReasonChars: 150,
   verdictChars: 200,
   walkthroughItems: 6,
   walkthroughChars: 200,
+  /** The lines a suggestion may replace; the storing of findings drops one that replaces more. */
+  suggestionReplacedLines: 15,
   suggestionLines: 30,
   suggestionLineChars: 400,
   idChars: 64,
@@ -98,7 +102,7 @@ export const specialistAnswerSchema = z.strictObject({
 
 export const judgeAnswerSchema = z.strictObject({
   findings: z.array(judgedFindingSchema).max(L.judgeFindings),
-  dropped: z.array(z.strictObject({ source: id, reason: text(L.reasonChars) })).max(L.dropped),
+  dropped: z.array(z.strictObject({ source: id, reason: text(L.dropReasonChars) })).max(L.dropped),
   prior: z
     .array(z.strictObject({ id, status: z.enum(PRIOR_VERDICTS), reason: text(L.reasonChars) }))
     .max(L.priorVerdicts),

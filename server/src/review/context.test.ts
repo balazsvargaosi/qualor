@@ -4,10 +4,14 @@ import { HOSTILE_TEXT, memorySnapshot, type MemorySnapshotInput } from '../../te
 import { excludedPathMatcher } from '../llm/settings';
 import {
   buildReviewContext,
+  CONTEXT_MAXIMA,
+  SCOPE_MARGIN,
+  scopeRanges,
   SENSITIVE_PATH,
   slicesOf,
   type AnalyzerFinding,
   type ContextOptions,
+  type ContextShape,
   type PriorFinding,
   type ReviewableChange,
   type ReviewContext,
@@ -89,6 +93,7 @@ async function contextOf(
   const budget = options.budget ?? freshBudget();
   const context = await buildReviewContext(files, using, findings, {
     excluded: () => false,
+    limits: () => CONTEXT_MAXIMA,
     ...options,
     budget,
   });
@@ -1235,7 +1240,11 @@ describe('the slice budget', () => {
       masker: closed,
     });
     await expect(
-      buildReviewContext(files, closed, NO_FINDINGS, { excluded: () => false, budget }),
+      buildReviewContext(files, closed, NO_FINDINGS, {
+        excluded: () => false,
+        budget,
+        limits: () => CONTEXT_MAXIMA,
+      }),
     ).rejects.toThrow(/closed/);
     expect(budget.maskedBytes).toBe(1_000);
   });
@@ -1962,6 +1971,7 @@ describe('the context', () => {
           'lines',
           'oldPath',
           'path',
+          'removalPoints',
           'removed',
           'sensitive',
           'since',
@@ -1973,19 +1983,22 @@ describe('the context', () => {
     }
   });
 
-  it('needs the options that keep it from sending what it must not: the exclusions and the budget', () => {
+  it('needs the options that keep it from sending what it must not: the exclusions, the budget and the limits', () => {
     const files = new MaskedFiles(memorySnapshot(), { masker });
-    // A caller that leaves them out does not compile: nothing is excluded, or masked for free, by
-    // chance. (The calls are not made.)
+    // A caller that leaves them out does not compile: nothing is excluded, masked for free, or
+    // shown past what the review's tokens can take, by chance. (The calls are not made.)
     const budget = freshBudget();
     const excluded = () => false;
+    const limits = () => CONTEXT_MAXIMA;
     // @ts-expect-error the options are required
     const forgotten = () => buildReviewContext(files, masker, NO_FINDINGS);
     // @ts-expect-error the exclusions are required
-    const unexcluding = () => buildReviewContext(files, masker, NO_FINDINGS, { budget });
+    const unexcluding = () => buildReviewContext(files, masker, NO_FINDINGS, { budget, limits });
     // @ts-expect-error the budget is required
-    const unbudgeted = () => buildReviewContext(files, masker, NO_FINDINGS, { excluded });
-    expect([forgotten, unexcluding, unbudgeted]).toHaveLength(3);
+    const unbudgeted = () => buildReviewContext(files, masker, NO_FINDINGS, { excluded, limits });
+    // @ts-expect-error the limits are required
+    const unlimited = () => buildReviewContext(files, masker, NO_FINDINGS, { excluded, budget });
+    expect([forgotten, unexcluding, unbudgeted, unlimited]).toHaveLength(4);
   });
 
   it('is what a review needs, in one object, for a merge request with no change', async () => {
@@ -2033,5 +2046,171 @@ describe('the context', () => {
         aborted,
       ),
     ).rejects.toThrow('superseded');
+  });
+});
+
+describe('how much of the merge request a review shows, and where its findings belong', () => {
+  const analyzerOn = (path: string): AnalyzerFinding => ({
+    ruleKey: 'eslint:x',
+    severity: 'low',
+    message: 'm',
+    path,
+    line: 1,
+  });
+
+  it('asks the review for its limits with the shape of the change, before anything is masked or cut', async () => {
+    const spy = maskerOf();
+    const shapes: ContextShape[] = [];
+    /** What the changes of the shape were when the review was asked (they are filled in later). */
+    const seen: unknown[] = [];
+    const a = addedFile(Array.from({ length: 30 }, (_, i) => `a ${i}`));
+    const b = addedFile(Array.from({ length: 30 }, (_, i) => `b ${i}`));
+    const { context } = await contextOf(
+      memorySnapshot({
+        meta: {
+          instructions: [
+            { name: 'AGENTS.md', text: 'i'.repeat(100) },
+            { name: 'REVIEW.md', text: 'r'.repeat(7) },
+          ],
+        },
+        changes: [
+          { path: 'pnpm-lock.yaml', status: 'modified', patch: '@@ -1 +1 @@\n-a\n+b\n' },
+          { path: 'src/a.ts', status: 'added', patch: a.patch },
+          { path: 'src/b.ts', status: 'added', patch: b.patch },
+        ],
+        files: { 'pnpm-lock.yaml': 'b\n', 'src/a.ts': a.text, 'src/b.ts': b.text },
+      }),
+      spy,
+      { analyzer: () => Promise.resolve([analyzerOn('src/a.ts')]), prior: [] },
+      {
+        limits: (shape) => {
+          // Nothing is masked when the review is asked: what it says decides what is.
+          expect(spy.texts).toEqual([]);
+          shapes.push(shape);
+          seen.push(...shape.reviewed.map((c) => [c.path, c.changedLines, c.text, c.removed]));
+          return { sliceChars: 300, instructionsChars: 40 };
+        },
+      },
+    );
+    expect(shapes).toHaveLength(1);
+    const [shape] = shapes;
+    expect(seen).toEqual([
+      ['src/a.ts', 30, null, []],
+      ['src/b.ts', 30, null, []],
+    ]);
+    expect(shape?.skipped).toEqual([{ path: 'pnpm-lock.yaml', why: 'lock' }]);
+    expect(shape?.analyzerFindings).toBe(1);
+    expect(shape?.instructionChars).toEqual([100, 7]);
+    // The instructions are cut where the review said, with their label; a short one is whole.
+    expect(context.meta.instructions[0]?.text).toMatch(/^i{40}\n\[cut: .*100.*40.*\]$/);
+    expect(context.meta.instructions[1]?.text).toBe('r'.repeat(7));
+    // The slices hold what fits in the review's limit: the first of the two files.
+    expect(headersOf(context.slices)).toEqual(['@@ src/a.ts lines 1–30 of 30 @@']);
+    expect(context.omittedFromSlices).toEqual([
+      'src/b.ts (30 changed lines): read it with read_file',
+    ]);
+  });
+
+  it('holds the limits it is given to its maxima, and to nothing below 0', async () => {
+    expect(CONTEXT_MAXIMA).toEqual({ sliceChars: 120_000, instructionsChars: 32_000 });
+    const edit = addedFile(['x']);
+    const snapshot = {
+      meta: { instructions: [{ name: 'AGENTS.md', text: 'a'.repeat(40_000) }] },
+      changes: [{ path: 'src/x.ts', status: 'added' as const, patch: edit.patch }],
+      files: { 'src/x.ts': edit.text },
+    };
+    const over = await contextOf(memorySnapshot(snapshot), masker, NO_FINDINGS, {
+      limits: () => ({ sliceChars: Infinity, instructionsChars: 10_000_000 }),
+    });
+    expect(over.context.meta.instructions[0]?.text.slice(32_000)).toMatch(
+      /^\n\[cut: .*40000.*32000.*\]$/,
+    );
+    expect(headersOf(over.context.slices)).toEqual(['@@ src/x.ts lines 1–1 of 1 @@']);
+    for (const limit of [-5, Number.NaN, -Infinity]) {
+      const under = await contextOf(memorySnapshot(snapshot), masker, NO_FINDINGS, {
+        limits: () => ({ sliceChars: limit, instructionsChars: limit }),
+      });
+      expect(under.context.slices).toBe('');
+      expect(under.context.omittedFromSlices).toEqual([
+        'src/x.ts (1 changed line): read it with read_file',
+      ]);
+      expect(under.context.meta.instructions[0]?.text).toMatch(/^\n\[cut: .*40000.* 0 .*\]$/);
+    }
+  });
+
+  it('knows, of every change, the lines after its removed runs, whether its slices are shown or not', async () => {
+    const kept = Array.from({ length: 8 }, (_, i) => `kept ${i + 1}`);
+    // A run before the first line, one in the middle and one at the end of the file.
+    const patch = `${[
+      '@@ -1,2 +1,1 @@',
+      '-gone first',
+      ' kept 1',
+      '@@ -5,3 +4,2 @@',
+      ' kept 4',
+      '-gone middle',
+      ' kept 5',
+      '@@ -9,2 +8,1 @@',
+      ' kept 8',
+      '-gone last',
+    ].join('\n')}\n`;
+    const snapshot = memorySnapshot({
+      changes: [
+        { path: 'src/a.ts', status: 'modified', patch },
+        { path: 'src/gone.ts', status: 'deleted', patch: '@@ -1,2 +0,0 @@\n-a\n-b\n' },
+        { path: 'src/new.ts', status: 'added', patch: addedFile(['n']).patch },
+      ],
+      files: { 'src/a.ts': `${kept.join('\n')}\n`, 'src/new.ts': 'n\n' },
+    });
+    for (const sliceChars of [CONTEXT_MAXIMA.sliceChars, 0]) {
+      const { context } = await contextOf(snapshot, masker, NO_FINDINGS, {
+        limits: () => ({ ...CONTEXT_MAXIMA, sliceChars }),
+      });
+      expect(context.reviewed.map((c) => [c.path, c.removalPoints])).toEqual([
+        // The last run has no line after it: its point is the last line.
+        ['src/a.ts', [1, 5, 8]],
+        // A deleted file has no line to put anything on.
+        ['src/gone.ts', []],
+        ['src/new.ts', []],
+      ]);
+    }
+  });
+
+  it('gives the lines a review raises new findings on: what the change adds and the lines after its removals, or what changed since the last review', () => {
+    expect(SCOPE_MARGIN).toBe(3);
+    const change = (
+      over: Partial<Pick<ReviewableChange, 'since' | 'added' | 'removalPoints'>>,
+    ): Pick<ReviewableChange, 'since' | 'added' | 'removalPoints'> => ({
+      since: null,
+      added: new Set([9, 3, 4, 5]),
+      removalPoints: [12, 7],
+      ...over,
+    });
+    expect(scopeRanges(change({}))).toEqual([
+      [3, 5],
+      [7, 7],
+      [9, 9],
+      [12, 12],
+    ]);
+    // Ranges that touch or overlap are one.
+    expect(scopeRanges(change({ added: new Set([3, 4]), removalPoints: [5, 4] }))).toEqual([
+      [3, 5],
+    ]);
+    expect(scopeRanges(change({ added: new Set(), removalPoints: [] }))).toEqual([]);
+    // A re-review raises new findings only on what changed since the last reviewed commit (D6).
+    expect(
+      scopeRanges(
+        change({
+          since: [
+            [20, 30],
+            [10, 12],
+            [13, 14],
+          ],
+        }),
+      ),
+    ).toEqual([
+      [10, 14],
+      [20, 30],
+    ]);
+    expect(scopeRanges(change({ since: [] }))).toEqual([]);
   });
 });

@@ -1,18 +1,27 @@
 import { REDACTED } from '@qualor/shared';
 import { describe, expect, it } from 'vitest';
 import type { ReviewPhase } from '../db/schema';
-import { SENSITIVE_PATH, type ReviewableChange, type ReviewContext } from './context';
-import type { ConversationResult } from './conversation';
 import {
+  CONTEXT_MAXIMA,
+  SENSITIVE_PATH,
+  type ContextShape,
+  type ReviewableChange,
+  type ReviewContext,
+} from './context';
+import type { ConversationResult } from './conversation';
+import { envelope, newNonce } from './envelope';
+import {
+  CHARS_PER_TOKEN,
   planReview,
+  REVIEW_OUTPUT_TOKENS,
+  reviewLimits,
   runReviewPipeline,
+  STAGE_SHARES,
   type PipelineDeps,
   type PipelineOutcome,
   type ReviewRole,
 } from './pipeline';
-
-/** The retry turn, as the brief spells it: a change here is a change of contract. */
-const RETRY = 'Your answer did not match the required JSON; answer again with JSON only.';
+import { specialistData, SYSTEM_PROMPTS } from './prompts';
 
 function change(path: string, changedLines = 1): ReviewableChange {
   return {
@@ -24,6 +33,7 @@ function change(path: string, changedLines = 1): ReviewableChange {
     lines: 40,
     text: null,
     added: new Set([3]),
+    removalPoints: [],
     changedLines,
     sensitive: SENSITIVE_PATH.test(path),
     removed: [],
@@ -31,19 +41,21 @@ function change(path: string, changedLines = 1): ReviewableChange {
   };
 }
 
+const META: ReviewContext['meta'] = {
+  snapshotId: null,
+  headSha: 'a'.repeat(40),
+  baseSha: 'b'.repeat(40),
+  sinceSha: null,
+  targetBranch: 'main',
+  mrTitle: 'Add a cart total',
+  mrDescription: null,
+  instructions: [],
+  partial: false,
+};
+
 function contextOf(reviewed: ReviewableChange[], over: Partial<ReviewContext> = {}): ReviewContext {
   return {
-    meta: {
-      snapshotId: null,
-      headSha: 'a'.repeat(40),
-      baseSha: 'b'.repeat(40),
-      sinceSha: null,
-      targetBranch: 'main',
-      mrTitle: 'Add a cart total',
-      mrDescription: null,
-      instructions: [],
-      partial: false,
-    },
+    meta: META,
     reviewed,
     skipped: [],
     slices:
@@ -63,20 +75,54 @@ interface Call {
   nonce: string;
   tokenBudget: number;
   data: Record<string, unknown>;
-  /** The retry sentence follows the data. */
-  retry: boolean;
+  /** The check of an answer the pipeline gave the conversation. */
+  accept: (text: string) => boolean;
+  /** What the check said of each answer a scripted model gave (see `texts`). */
+  accepted: boolean[];
 }
-type Reply = ConversationResult | ((call: Call) => ConversationResult);
+/**
+ * A model that answers these texts in turn, each for `tokens`: the conversation asks again once
+ * when the check refuses an answer and ends as a bad answer at the second refusal, as
+ * runConversation does.
+ */
+interface Texts {
+  texts: string[];
+  tokens: [number, number];
+}
+type Reply = ConversationResult | Texts | ((call: Call) => ConversationResult);
+const texts = (...answers: string[]): Texts => ({ texts: answers, tokens: [100, 10] });
 
-/** The data of a first message: the envelope's line between its markers, and what follows them. */
-function opened(user: string, nonce: string): Pick<Call, 'data' | 'retry'> {
+/** The data of a first message: the envelope's line between its markers, and nothing after them. */
+function opened(user: string, nonce: string): Record<string, unknown> {
   const lines = user.split('\n');
+  expect(lines).toHaveLength(4);
   expect(lines[0]).toContain(nonce);
   expect(lines[1]).toBe(`<<<QUALOR-DATA-${nonce}`);
   expect(lines[3]).toBe(`QUALOR-DATA-${nonce}>>>`);
-  const after = lines.slice(4);
-  if (after.length > 0) expect(after).toEqual(['', RETRY]);
-  return { data: JSON.parse(lines[2] ?? '') as Record<string, unknown>, retry: after.length > 0 };
+  return JSON.parse(lines[2] ?? '') as Record<string, unknown>;
+}
+
+const spent = (input: number, output: number) => ({
+  inputTokens: input,
+  outputTokens: output,
+  turns: 1,
+  toolCalls: 0,
+});
+
+function asked({ texts: answers, tokens: [input, output] }: Texts, call: Call): ConversationResult {
+  for (const [index, text] of answers.slice(0, 2).entries()) {
+    const ok = call.accept(text);
+    call.accepted.push(ok);
+    if (ok) {
+      return {
+        kind: 'answer',
+        text,
+        budgetReached: false,
+        ...spent(input * (index + 1), output * (index + 1)),
+      };
+    }
+  }
+  return { kind: 'failed', reason: 'bad_answer', ...spent(input * 2, output * 2) };
 }
 
 /** Deps that answer each role from its list in turn, and record every call. */
@@ -90,23 +136,26 @@ function scripted(
   );
   const deps: PipelineDeps = {
     providerKey,
-    converse: (role, user, nonce, tokenBudget) => {
-      const call: Call = { role, user, nonce, tokenBudget, ...opened(user, nonce) };
+    converse: (role, user, nonce, tokenBudget, accept) => {
+      const call: Call = {
+        role,
+        user,
+        nonce,
+        tokenBudget,
+        data: opened(user, nonce),
+        accept,
+        accepted: [],
+      };
       calls.push(call);
       const reply = left.get(role)?.shift();
       if (reply === undefined) throw new Error(`no reply left for ${role}`);
-      return Promise.resolve(typeof reply === 'function' ? reply(call) : reply);
+      if (typeof reply === 'function') return Promise.resolve(reply(call));
+      return Promise.resolve('texts' in reply ? asked(reply, call) : reply);
     },
   };
   return { deps, calls };
 }
 
-const spent = (input: number, output: number) => ({
-  inputTokens: input,
-  outputTokens: output,
-  turns: 1,
-  toolCalls: 0,
-});
 const answer = (
   value: unknown,
   [input, output]: [number, number] = [100, 10],
@@ -117,7 +166,7 @@ const answer = (
   budgetReached,
   ...spent(input, output),
 });
-/** An answer that is not JSON. */
+/** An answer that is not JSON, as a conversation that did not check it would give it back. */
 const prose = (
   text: string,
   [input, output]: [number, number] = [100, 10],
@@ -182,6 +231,23 @@ async function review(context: ReviewContext, budget: number, deps: PipelineDeps
 const titles = (outcome: PipelineOutcome): unknown[] =>
   outcome.kind === 'reviewed' ? outcome.findings.map((f) => f.title) : [];
 
+const prior = (
+  id: string,
+  status: 'open' | 'false_positive' | 'wont_fix',
+  severity = 'medium',
+) => ({
+  id,
+  category: 'logic' as const,
+  severity,
+  status,
+  path: 'src/cart.ts',
+  line: 3,
+  endLine: 3,
+  title: `Prior ${id}`,
+  body: 'The total skips the last item.',
+  fingerprint: 'f'.repeat(32),
+});
+
 describe('planReview', () => {
   it('planReview picks trivial, lite and full by lines and files', () => {
     const plan = (lines: number[]) => planReview(lines.map((n, i) => change(`src/f${i}.ts`, n)));
@@ -244,6 +310,14 @@ describe('planReview', () => {
     ]);
     // A short word inside a longer one is no sensitive path.
     expect(planReview([change('src/tokenizer.ts', 2)]).specialists).toEqual(['quality']);
+    // What decides is the change's `sensitive`, which the context set from the path.
+    expect(planReview([{ ...change('src/main.ts'), sensitive: true }]).specialists).toEqual([
+      'quality',
+      'security',
+    ]);
+    expect(planReview([{ ...change('src/auth.ts'), sensitive: false }]).specialists).toEqual([
+      'quality',
+    ]);
   });
 });
 
@@ -275,7 +349,7 @@ describe('runReviewPipeline', () => {
               judgedAs({ title: 'Q1 and T1', sources: ['s1', 's3'] }),
               judgedAs({ category: 'performance', title: 'P1', sources: ['s4'] }),
             ],
-            dropped: [{ source: 's2', reason: 'Line 1 is checked before.' }],
+            dropped: [{ source: 's2', reason: 'Checked before.' }],
           }),
         ),
       ],
@@ -297,7 +371,6 @@ describe('runReviewPipeline', () => {
     // Every reviewer is given the same data, without anyone's findings.
     const [first] = calls;
     for (const call of calls.slice(0, 4)) {
-      expect(call.retry).toBe(false);
       expect(call.data).toEqual(first?.data);
       expect(call.data).not.toHaveProperty('specialistFindings');
     }
@@ -327,6 +400,7 @@ describe('runReviewPipeline', () => {
         outcomeFinding({ category: 'performance', title: 'P1', sources: ['s4'] }),
       ],
       prior: [],
+      shownPriorIds: [],
       summary: {
         verdict: 'One major problem in the cart total.',
         walkthrough: ['Totals the cart.'],
@@ -339,26 +413,21 @@ describe('runReviewPipeline', () => {
   it('an unreadable specialist after one retry contributes nothing and notes it', async () => {
     const { deps, calls } = scripted({
       quality: [
-        prose('I found no problems worth reporting.'),
-        // JSON, but not of the schema.
-        answer({ findings: [found({ category: 'style' })] }),
+        texts(
+          'I found no problems worth reporting.',
+          // JSON, but not of the schema.
+          JSON.stringify({ findings: [found({ category: 'style' })] }),
+        ),
       ],
       tests: [answer({ findings: [found({ category: 'tests', title: 'T1' })] })],
       judge: [answer(judgeSays())],
     });
     const { outcome } = await review(contextOf([change('src/cart.ts', 50)]), 100_000, deps);
 
-    expect(calls.map((c) => [c.role, c.retry])).toEqual([
-      ['quality', false],
-      ['quality', true],
-      ['tests', false],
-      ['judge', false],
-    ]);
-    // The retry is a conversation of its own: the same data under a new nonce, then the sentence.
-    expect(calls[1]?.data).toEqual(calls[0]?.data);
-    expect(calls[1]?.nonce).not.toBe(calls[0]?.nonce);
-    expect(calls[1]?.user.endsWith(`\n\n${RETRY}`)).toBe(true);
-    expect(calls[3]?.data.specialistFindings).toEqual([
+    // One conversation for each: the retry is a turn of its conversation.
+    expect(calls.map((c) => c.role)).toEqual(['quality', 'tests', 'judge']);
+    expect(calls[0]?.accepted).toEqual([false, false]);
+    expect(calls[2]?.data.specialistFindings).toEqual([
       { id: 's1', reviewer: 'tests', ...found({ category: 'tests', title: 'T1' }) },
     ]);
     expect(outcome).toMatchObject({
@@ -372,42 +441,37 @@ describe('runReviewPipeline', () => {
   it('a specialist that answers in its JSON on the retry contributes its findings', async () => {
     const { deps, calls } = scripted({
       quality: [
-        prose('```json\n{"findings": [\n```'),
-        answer({ findings: [found({ title: 'Q1' })] }),
+        texts(
+          '```json\n{"findings": [\n```',
+          JSON.stringify({ findings: [found({ title: 'Q1' })] }),
+        ),
       ],
       judge: [answer(judgeSays())],
     });
     const { outcome } = await review(contextOf([change('src/cart.ts', 2)]), 100_000, deps);
-    expect(calls.map((c) => [c.role, c.retry])).toEqual([
-      ['quality', false],
-      ['quality', true],
-      ['judge', false],
-    ]);
-    expect(calls[2]?.data.specialistFindings).toEqual([
+    expect(calls[0]?.accepted).toEqual([false, true]);
+    expect(calls[1]?.data.specialistFindings).toEqual([
       { id: 's1', reviewer: 'quality', ...found({ title: 'Q1' }) },
     ]);
     expect(outcome).toMatchObject({ kind: 'reviewed', notes: [] });
   });
 
-  it('a conversation that ends without an answer is not retried', async () => {
+  it('an answer a conversation did not check is checked all the same', async () => {
     const { deps, calls } = scripted({
-      quality: [failed('bad_answer', [300, 0])],
-      tests: [answer({ findings: [] })],
+      // Given back as an answer by a conversation that ignored its check: still not used.
+      quality: [prose('No problems.')],
+      tests: [answer({ findings: [found({ category: 'tests', title: 'T1' })] })],
       judge: [answer(judgeSays())],
     });
     const { outcome } = await review(contextOf([change('src/cart.ts', 50)]), 100_000, deps);
     expect(calls.map((c) => c.role)).toEqual(['quality', 'tests', 'judge']);
-    expect(outcome).toMatchObject({
-      kind: 'reviewed',
-      specialists: ['quality', 'tests'],
-      notes: ['reviewer_unreadable'],
-    });
+    expect(outcome).toMatchObject({ kind: 'reviewed', notes: ['reviewer_unreadable'] });
   });
 
   it('an unreadable judge after one retry fails with bad_answer', async () => {
     const first = scripted({
       quality: [answer({ findings: [found()] })],
-      judge: [prose('Looks good to me.'), answer({ ...judgeSays(), approved: true })],
+      judge: [texts('Looks good to me.', JSON.stringify({ ...judgeSays(), approved: true }))],
     });
     const { outcome, phases } = await review(
       contextOf([change('src/cart.ts', 2)]),
@@ -415,11 +479,8 @@ describe('runReviewPipeline', () => {
       first.deps,
     );
     expect(outcome).toEqual({ kind: 'failed', reason: 'bad_answer' });
-    expect(first.calls.map((c) => [c.role, c.retry])).toEqual([
-      ['quality', false],
-      ['judge', false],
-      ['judge', true],
-    ]);
+    expect(first.calls.map((c) => c.role)).toEqual(['quality', 'judge']);
+    expect(first.calls[1]?.accepted).toEqual([false, false]);
     expect(phases).toEqual(['specialists', 'judge']);
 
     // A judge whose conversation ends without an answer fails the review at once.
@@ -431,6 +492,63 @@ describe('runReviewPipeline', () => {
       (await review(contextOf([change('src/cart.ts', 2)]), 100_000, second.deps)).outcome,
     ).toEqual({ kind: 'failed', reason: 'bad_answer' });
     expect(second.calls.map((c) => c.role)).toEqual(['quality', 'judge']);
+  });
+
+  it("a conversation's check takes only its role's JSON, within the role's output, without the key", async () => {
+    expect(REVIEW_OUTPUT_TOKENS).toEqual({
+      quality: 12_288,
+      tests: 12_288,
+      security: 12_288,
+      performance: 12_288,
+      judge: 16_384,
+      verify: 2_048,
+    });
+    const key = 'sk-test-0123456789abcdef';
+    const { deps, calls } = scripted(
+      {
+        quality: [answer({ findings: [] })],
+        judge: [
+          answer(
+            judgeSays({ findings: [judgedAs({ category: 'security', severity: 'critical' })] }),
+          ),
+        ],
+        verify: [answer({ verdict: 'confirmed', reason: 'Input reaches it.' })],
+      },
+      key,
+    );
+    await review(contextOf([change('src/cart.ts', 2)]), 100_000, deps);
+    const [quality, judge, verify] = calls;
+    if (quality === undefined || judge === undefined || verify === undefined) {
+      throw new Error('a conversation is missing');
+    }
+    expect(quality.accept('Here you go.')).toBe(false);
+    expect(quality.accept(JSON.stringify({ findings: [found({ category: 'style' })] }))).toBe(
+      false,
+    );
+    expect(quality.accept(JSON.stringify({ findings: [found()] }))).toBe(true);
+    // Each role has its own schema.
+    expect(quality.accept(JSON.stringify(judgeSays()))).toBe(false);
+    expect(judge.accept(JSON.stringify(judgeSays()))).toBe(true);
+    expect(verify.accept(JSON.stringify({ verdict: 'confirmed', reason: 'r' }))).toBe(true);
+    expect(verify.accept(JSON.stringify({ findings: [] }))).toBe(false);
+    // The key is taken out before the schema is checked: an answer with it is read without it.
+    expect(quality.accept(JSON.stringify({ findings: [found({ title: `Key ${key}` })] }))).toBe(
+      true,
+    );
+    // An answer is read up to four characters for each token the role may write.
+    const padded = (value: unknown, length: number): string => {
+      const json = JSON.stringify(value);
+      return `${json}${' '.repeat(length - json.length)}`;
+    };
+    for (const [call, role, valid] of [
+      [quality, 'quality', { findings: [] }],
+      [judge, 'judge', judgeSays()],
+      [verify, 'verify', { verdict: 'rejected', reason: 'r' }],
+    ] as const) {
+      const limit = 4 * REVIEW_OUTPUT_TOKENS[role];
+      expect(call.accept(padded(valid, limit)), role).toBe(true);
+      expect(call.accept(padded(valid, limit + 1)), role).toBe(false);
+    }
   });
 
   it('verification drops rejected, downgrades needs_validation, marks confirmed, and stops after 5', async () => {
@@ -523,15 +641,11 @@ describe('runReviewPipeline', () => {
           }),
         ),
       ],
-      verify: [prose('It is real.'), answer({ verdict: 'maybe', reason: 'r' })],
+      verify: [texts('It is real.', JSON.stringify({ verdict: 'maybe', reason: 'r' }))],
     });
     const { outcome } = await review(contextOf([change('src/cart.ts', 2)]), 100_000, deps);
-    expect(calls.map((c) => [c.role, c.retry])).toEqual([
-      ['quality', false],
-      ['judge', false],
-      ['verify', false],
-      ['verify', true],
-    ]);
+    expect(calls.map((c) => c.role)).toEqual(['quality', 'judge', 'verify']);
+    expect(calls[2]?.accepted).toEqual([false, false]);
     expect(outcome).toMatchObject({
       kind: 'reviewed',
       findings: [outcomeFinding({ category: 'security', severity: 'critical', title: 'S' })],
@@ -603,42 +717,19 @@ describe('runReviewPipeline', () => {
       notes: ['token_limit_reached'],
     });
 
-    // What an unreadable or failed conversation spent is taken too: the retry has what is left of
-    // its reviewer's part, and the next reviewer what is left of their share.
+    // What a conversation that ended without an answer spent is taken too.
     const failing = scripted({
-      quality: [prose('Nothing.', [2_000, 0]), answer({ findings: [] })],
-      tests: [failed('bad_answer', [1_000, 0])],
-      judge: [prose('No.', [3_400, 100])],
+      quality: [failed('bad_answer', [2_000, 0])],
+      tests: [answer({ findings: [] }, [400, 100])],
+      judge: [answer(judgeSays())],
     });
     const three = await review(context, 10_000, failing.deps);
     expect(failing.calls.map((c) => [c.role, c.tokenBudget])).toEqual([
       ['quality', 2_750],
-      ['quality', 750],
-      ['tests', 3_390],
-      // The judge's retry has nothing left of its share: the judge failed.
+      ['tests', 3_500],
       ['judge', 3_500],
     ]);
-    expect(three.outcome).toEqual({ kind: 'failed', reason: 'bad_answer' });
-
-    // A reviewer whose unreadable answer spent all of its part is not asked again: it adds
-    // nothing, and both are noted.
-    const spentPart = scripted({
-      quality: [prose('Nothing.', [2_700, 50])],
-      tests: [answer({ findings: [] })],
-      judge: [answer(judgeSays())],
-    });
-    const four = await review(context, 10_000, spentPart.deps);
-    expect(spentPart.calls.map((c) => [c.role, c.tokenBudget])).toEqual([
-      ['quality', 2_750],
-      ['tests', 2_750],
-      ['judge', 3_500],
-    ]);
-    expect(four.outcome).toMatchObject({
-      kind: 'reviewed',
-      specialists: ['quality', 'tests'],
-      tokenLimitReached: true,
-      notes: ['token_limit_reached', 'reviewer_unreadable'],
-    });
+    expect(three.outcome).toMatchObject({ kind: 'reviewed', notes: ['reviewer_unreadable'] });
   });
 
   it('an answer given after the wrap-up says that the token limit was reached', async () => {
@@ -655,39 +746,51 @@ describe('runReviewPipeline', () => {
     });
   });
 
-  it("verification shares its part between the findings it checks, within the review's budget", async () => {
+  it('verification has a share of its own, shared between the findings it checks', async () => {
     const serious = judgeSays({
       findings: [
         judgedAs({ category: 'security', title: 'A' }),
         judgedAs({ category: 'security', title: 'B' }),
       ],
     });
+    const confirmed = (): ConversationResult =>
+      answer({ verdict: 'confirmed', reason: 'r' }, [200, 50]);
+    // Of 10 000 tokens the verification has 1 000: half for the first, what is left for the second.
     const shared = scripted({
       quality: [answer({ findings: [] })],
       judge: [answer(serious)],
-      verify: [
-        answer({ verdict: 'confirmed', reason: 'r' }, [200, 50]),
-        answer({ verdict: 'confirmed', reason: 'r' }, [200, 50]),
-      ],
+      verify: [confirmed(), confirmed()],
     });
     await review(contextOf([change('src/cart.ts', 2)]), 10_000, shared.deps);
     expect(shared.calls.filter((c) => c.role === 'verify').map((c) => c.tokenBudget)).toEqual([
       500, 750,
     ]);
 
-    // A review that has spent its whole budget verifies nothing, and says so.
-    const spentAll = scripted({
+    // What the judge spent past its share is not taken from it: the findings are verified still.
+    const overspent = scripted({
       quality: [answer({ findings: [] })],
       judge: [answer(serious, [9_800, 200])],
+      verify: [confirmed(), confirmed()],
     });
-    const { outcome } = await review(contextOf([change('src/cart.ts', 2)]), 10_000, spentAll.deps);
-    expect(spentAll.calls.map((c) => c.role)).toEqual(['quality', 'judge']);
+    const { outcome } = await review(contextOf([change('src/cart.ts', 2)]), 10_000, overspent.deps);
+    expect(overspent.calls.filter((c) => c.role === 'verify').map((c) => c.tokenBudget)).toEqual([
+      500, 750,
+    ]);
     expect(outcome).toMatchObject({
       kind: 'reviewed',
       findings: [
-        outcomeFinding({ category: 'security', title: 'A' }),
-        outcomeFinding({ category: 'security', title: 'B' }),
+        outcomeFinding({ category: 'security', title: 'A', verification: 'confirmed' }),
+        outcomeFinding({ category: 'security', title: 'B', verification: 'confirmed' }),
       ],
+      tokenLimitReached: false,
+    });
+
+    // A share that rounds to nothing verifies nothing, and the review says so.
+    const none = scripted({ quality: [answer({ findings: [] })], judge: [answer(serious)] });
+    const tiny = await review(contextOf([change('src/cart.ts', 2)]), 9, none.deps);
+    expect(none.calls.map((c) => c.role)).toEqual(['quality', 'judge']);
+    expect(tiny.outcome).toMatchObject({
+      kind: 'reviewed',
       tokenLimitReached: true,
       notes: ['token_limit_reached'],
     });
@@ -705,7 +808,6 @@ describe('runReviewPipeline', () => {
     const serious = judgeSays({ findings: [judgedAs({ category: 'security', title: 'S' })] });
     const cases: [Partial<Record<ReviewRole, Reply[]>>, ReviewRole[]][] = [
       [{ quality: [stopped()] }, ['quality']],
-      [{ quality: [prose('No JSON.'), stopped()] }, ['quality', 'quality']],
       [{ quality: [answer({ findings: [] })], tests: [stopped()] }, ['quality', 'tests']],
       [
         {
@@ -750,10 +852,10 @@ describe('runReviewPipeline', () => {
           quality: [answer({ findings: [] })],
           tests: [answer({ findings: [] })],
           security: [answer({ findings: [] })],
-          judge: [prose('No JSON.'), failed('provider_error')],
+          judge: [failed('provider_error')],
         },
         'provider_error',
-        ['quality', 'tests', 'security', 'judge', 'judge'],
+        ['quality', 'tests', 'security', 'judge'],
       ],
       [
         {
@@ -785,13 +887,7 @@ describe('runReviewPipeline', () => {
     const judge = JSON.stringify(
       judgeSays({ findings: [judgedAs({ body: 'Rotate KEY now.' })] }),
     ).replace('KEY', escaped);
-    const { deps, calls } = scripted(
-      {
-        quality: [prose(quality)],
-        judge: [prose(judge)],
-      },
-      key,
-    );
+    const { deps, calls } = scripted({ quality: [texts(quality)], judge: [texts(judge)] }, key);
     const { outcome } = await review(contextOf([change('src/cart.ts', 2)]), 100_000, deps);
     const judgeCall = calls.find((c) => c.role === 'judge');
     expect(JSON.stringify(judgeCall?.data)).not.toContain(key);
@@ -805,18 +901,6 @@ describe('runReviewPipeline', () => {
   });
 
   it('the judge keeps only the sources, prior findings and verdicts it was given', async () => {
-    const prior = (id: string, status: 'open' | 'wont_fix') => ({
-      id,
-      category: 'logic' as const,
-      severity: 'medium',
-      status,
-      path: 'src/cart.ts',
-      line: 3,
-      endLine: 3,
-      title: `Prior ${id}`,
-      body: 'The total skips the last item.',
-      fingerprint: 'f'.repeat(32),
-    });
     const context = contextOf([change('src/cart.ts', 2)], {
       prior: [prior('issue-1', 'open'), prior('issue-2', 'wont_fix')],
     });
@@ -833,6 +917,8 @@ describe('runReviewPipeline', () => {
               { id: 'issue-1', status: 'present', reason: 'Still one short.' },
               { id: 'issue-9', status: 'fixed', reason: 'Gone.' },
               { id: 'issue-1', status: 'fixed', reason: 'Said twice.' },
+              // A verdict on a finding a person dismissed changes nothing.
+              { id: 'issue-2', status: 'fixed', reason: 'Gone.' },
             ],
           }),
         ),
@@ -851,6 +937,158 @@ describe('runReviewPipeline', () => {
         outcomeFinding({ title: 'Forged' }),
       ],
       prior: [{ id: 'issue-1', status: 'present', reason: 'Still one short.' }],
+      // The prior findings the judge was shown: only those can be closed for being left out.
+      shownPriorIds: ['issue-1', 'issue-2'],
     });
+  });
+
+  it('names the prior findings the judge was shown: the open ones first, at most 50', async () => {
+    const context = contextOf([change('src/cart.ts', 2)], {
+      prior: [
+        ...Array.from({ length: 60 }, (_, i) => prior(`dismissed-${i}`, 'false_positive', 'high')),
+        prior('open-1', 'open', 'low'),
+      ],
+    });
+    const { deps } = scripted({
+      quality: [answer({ findings: [] })],
+      judge: [answer(judgeSays())],
+    });
+    const { outcome } = await review(context, 100_000, deps);
+    if (outcome.kind !== 'reviewed') throw new Error(outcome.kind);
+    expect(outcome.shownPriorIds).toHaveLength(50);
+    expect(outcome.shownPriorIds[0]).toBe('open-1');
+    expect(outcome.shownPriorIds).not.toContain('dismissed-49');
+  });
+
+  it("cuts the bodies of the specialists' findings when the judge's data would take more than a third of its share", async () => {
+    const many = Array.from({ length: 30 }, (_, i) =>
+      found({ title: `F${i}`, body: 'b'.repeat(1_200) }),
+    );
+    const bodies = async (budget: number): Promise<number[]> => {
+      const { deps, calls } = scripted({
+        quality: [answer({ findings: many })],
+        judge: [answer(judgeSays())],
+      });
+      await review(contextOf([change('src/cart.ts', 2)]), budget, deps);
+      const judgeCall = calls.find((c) => c.role === 'judge');
+      const message = SYSTEM_PROMPTS.judge.length + (judgeCall?.user.length ?? 0);
+      const third =
+        Math.floor(Math.floor((budget * STAGE_SHARES.judge) / 100) / 3) * CHARS_PER_TOKEN;
+      if (budget < 1_000_000) expect(message).toBeLessThanOrEqual(third);
+      return (judgeCall?.data.specialistFindings as { body: string }[]).map((f) => f.body.length);
+    };
+    // With room, the bodies are whole; with less, each is cut, and every finding is still there.
+    expect(new Set(await bodies(10_000_000))).toEqual(new Set([1_200]));
+    const cut = await bodies(100_000);
+    expect(cut).toHaveLength(30);
+    expect(Math.max(...cut)).toBeLessThan(1_200);
+  });
+});
+
+describe('reviewLimits', () => {
+  /** A context as buildReviewContext makes it under `limits`, with ordinary lists. */
+  function sizedContext(
+    reviewed: ReviewableChange[],
+    limits: ReturnType<typeof reviewLimits>,
+  ): ReviewContext {
+    const row =
+      '  12+    const total = items.reduce((sum, item) => sum + item.price * item.count, 0);';
+    const rows: string[] = [];
+    for (let size = row.length; size <= limits.sliceChars; size += row.length + 1) rows.push(row);
+    const cut = (name: string, text: string) => ({
+      name,
+      text:
+        text.length <= limits.instructionsChars
+          ? text
+          : `${text.slice(0, limits.instructionsChars)}\n[cut: the text has ${text.length} characters, only the first ${limits.instructionsChars} are shown]`,
+    });
+    return contextOf(reviewed, {
+      meta: {
+        ...META,
+        mrTitle: 'T'.repeat(255),
+        mrDescription: `${'d'.repeat(4_000)}\n[cut: the text has 9000 characters, only the first 4000 are shown]`,
+        instructions: [cut('AGENTS.md', 'a'.repeat(8_000)), cut('REVIEW.md', 'r'.repeat(40_000))],
+      },
+      skipped: SKIPPED,
+      slices: rows.join('\n'),
+      omittedFromSlices: reviewed.map(
+        (c) => `${c.path} (${c.changedLines} changed lines): read it with read_file`,
+      ),
+      analyzer: Array.from({ length: 10 }, (_, i) => ({
+        ruleKey: 'typescript:S1854',
+        severity: 'medium',
+        message: 'm'.repeat(300),
+        path: reviewed[i % reviewed.length]?.path ?? 'src/a.ts',
+        line: 120,
+      })),
+    });
+  }
+  const SKIPPED = Array.from({ length: 5 }, (_, i) => ({
+    path: `vendor/lib-${i}.min.js`,
+    why: 'minified' as const,
+  }));
+  const shapeOf = (reviewed: ReviewableChange[]): ContextShape => ({
+    reviewed,
+    skipped: SKIPPED,
+    analyzerFindings: 10,
+    instructionChars: [8_000, 40_000],
+  });
+  const changes = (count: number, lines: number, sensitive = false) =>
+    Array.from({ length: count }, (_, i) =>
+      change(`server/src/${sensitive ? 'auth' : 'module'}${i}/handlers/some-file-${i}.ts`, lines),
+    );
+
+  it("sizes a reviewer's first message to a third of its part, keeping half of the judge's third for the findings", () => {
+    for (const budget of [300_000, 1_000_000]) {
+      for (const reviewed of [
+        changes(2, 2),
+        changes(10, 20),
+        changes(30, 40),
+        changes(2, 2, true),
+      ]) {
+        const plan = planReview(reviewed);
+        const limits = reviewLimits(shapeOf(reviewed), budget);
+        const data = specialistData(sizedContext(reviewed, limits));
+        const part = Math.floor(
+          Math.floor((budget * STAGE_SHARES.specialists) / 100) / plan.specialists.length,
+        );
+        const judgeHalf = Math.floor(Math.floor((budget * STAGE_SHARES.judge) / 100) / 2);
+        const third = Math.floor(Math.min(part, judgeHalf) / 3) * CHARS_PER_TOKEN;
+        for (const role of plan.specialists) {
+          const message = SYSTEM_PROMPTS[role].length + envelope(data, newNonce()).length;
+          expect(message, `${budget} ${plan.tier} ${role}`).toBeLessThanOrEqual(third);
+        }
+        // There is room for code at every size of review.
+        expect(limits.sliceChars, `${budget} ${plan.tier}`).toBeGreaterThan(5_000);
+      }
+    }
+    // When the rest of the data takes the third already, no slice and no instruction is shown.
+    expect(reviewLimits(shapeOf(changes(30, 40)), 60_000)).toEqual({
+      sliceChars: 0,
+      instructionsChars: 0,
+    });
+  });
+
+  it('gives the slices what the instructions leave, each up to its maximum, and nothing below 0', () => {
+    const big = reviewLimits(shapeOf(changes(30, 40)), 10_000_000);
+    expect(big).toEqual(CONTEXT_MAXIMA);
+    // The instructions share a quarter of the room: the short file whole, the long one cut.
+    const some = reviewLimits(shapeOf(changes(30, 40)), 1_000_000);
+    expect(some.instructionsChars).toBeGreaterThan(8_000);
+    expect(some.instructionsChars).toBeLessThan(CONTEXT_MAXIMA.instructionsChars);
+    expect(some.sliceChars).toBeGreaterThan(some.instructionsChars);
+    const none = {
+      reviewed: changes(30, 40),
+      skipped: [],
+      analyzerFindings: 0,
+      instructionChars: [],
+    };
+    expect(reviewLimits(none, 1_000_000).sliceChars).toBeGreaterThan(some.sliceChars);
+    for (const budget of [0, 1_000, Number.NaN]) {
+      expect(reviewLimits(shapeOf(changes(30, 40)), budget)).toEqual({
+        sliceChars: 0,
+        instructionsChars: 0,
+      });
+    }
   });
 });

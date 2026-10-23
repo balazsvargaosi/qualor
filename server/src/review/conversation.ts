@@ -51,6 +51,8 @@ export const CONVERSATION_TEXTS = {
   wrapUp: 'Token budget reached: answer now, with what you have, in the required JSON.',
   shorter:
     'Your answer was cut off because it was too long: answer again, shorter, in the required JSON.',
+  /** After an answer the caller did not accept (`accept`). */
+  retry: 'Your answer did not match the required JSON; answer again with JSON only.',
   tooManyCalls: 'too many calls in one turn; this one was not run',
   badArguments: 'the arguments were not valid JSON; call again',
 } as const;
@@ -92,6 +94,11 @@ export interface ConversationInput {
   send: (conversation: LlmConversation) => Promise<LlmTurn>;
   /** Asked before every call to the provider, a retry included. */
   shouldStop: () => Promise<boolean>;
+  /**
+   * Whether an answer is one the caller can use (its JSON reads as the caller's schema). One that
+   * is not is asked for once more, in the same conversation; without a check every answer is used.
+   */
+  accept?: (text: string) => boolean;
   /**
    * How a retry waits, in milliseconds.
    * @internal Tests only: nothing else sets it.
@@ -347,7 +354,11 @@ function tokensOf(
  * - a call is told apart by what is there, not by the finish reason: `tool` also comes without
  *   calls, and then text is an answer and no text is none;
  * - an answer cut off at the output limit is asked for again, shorter, once; a refusal, a blank
- *   answer and a call id used twice in a turn end the conversation as a bad answer.
+ *   answer and a call id used twice in a turn end the conversation as a bad answer;
+ * - an answer the caller does not accept (`accept`) is asked for again once: the answer stays in
+ *   the history and a user message says what was wrong with it. From then on calls are not run, and
+ *   that turn may go past the budget, as the wrap-up's may; a second answer it does not accept
+ *   ends the conversation as a bad answer.
  *
  * Every end reports what was spent (`ConversationCounts`), the tokens of a call the provider did
  * not count being guessed. The token budget must be more than 0 (see `limits.tokenBudget`).
@@ -368,6 +379,8 @@ export async function runConversation(input: ConversationInput): Promise<Convers
   let outputTokens = 0;
   let wrappingUp = false;
   let askedForShorter = false;
+  /** An answer was not accepted: the model is asked for it again, and runs no more tools. */
+  let askedAgain = false;
   /** An end without an answer, with what the conversation spent. */
   const ended = (end: Ended): ConversationResult => ({
     ...end,
@@ -389,7 +402,7 @@ export async function runConversation(input: ConversationInput): Promise<Convers
     outputTokens += spent.output;
     if (turn.finishReason === 'refusal') return ended(failed('bad_answer'));
 
-    if (turn.toolCalls.length > 0 && !wrappingUp) {
+    if (turn.toolCalls.length > 0 && !wrappingUp && !askedAgain) {
       const ids = new Set(turn.toolCalls.map((call) => call.id));
       if (ids.size !== turn.toolCalls.length) return ended(failed('bad_answer'));
       toolCalls += await answerCalls(input, turn.text, turn.toolCalls, messages);
@@ -418,6 +431,14 @@ export async function runConversation(input: ConversationInput): Promise<Convers
     }
 
     if (turn.text.trim() === '') return ended(failed('bad_answer'));
+    if (input.accept !== undefined && !input.accept(turn.text)) {
+      if (askedAgain) return ended(failed('bad_answer'));
+      askedAgain = true;
+      // The calls of this turn, if any, were not run: the answer goes back as text alone.
+      messages.push({ role: 'assistant', text: turn.text, toolCalls: [] });
+      messages.push({ role: 'user', text: CONVERSATION_TEXTS.retry });
+      continue;
+    }
     return {
       kind: 'answer',
       text: turn.text,

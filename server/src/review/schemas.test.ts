@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { z } from 'zod';
 import {
+  ANSWER_LIMITS,
   judgeAnswerSchema,
   reviewFindingOf,
   specialistAnswerSchema,
@@ -136,9 +137,10 @@ describe('the review answer schemas', () => {
         200,
         (value) => judgeAnswer({ summary: { verdict: 'v', walkthrough: [value] } }),
       ],
+      // A few words: a judge drops many findings, and its answer must stay short.
       [
         'dropped reason',
-        300,
+        150,
         (value) => judgeAnswer({ dropped: [{ source: 's1', reason: value }] }),
       ],
       [
@@ -237,5 +239,30 @@ describe('the review answer schemas', () => {
         findings: [finding({ suggestion: { startLine: 12, endLine: 13, lines: [] } })],
       }),
     ).toBe(true);
+  });
+});
+
+describe('ANSWER_LIMITS', () => {
+  it('holds the values of the contract, which the prompts state and the storing of findings checks', () => {
+    expect(ANSWER_LIMITS).toEqual({
+      specialistFindings: 30,
+      judgeFindings: 40,
+      dropped: 120,
+      sources: 120,
+      priorVerdicts: 50,
+      pathChars: 1_024,
+      titleChars: 120,
+      bodyChars: 1_200,
+      assumptionChars: 300,
+      reasonChars: 300,
+      dropReasonChars: 150,
+      verdictChars: 200,
+      walkthroughItems: 6,
+      walkthroughChars: 200,
+      suggestionReplacedLines: 15,
+      suggestionLines: 30,
+      suggestionLineChars: 400,
+      idChars: 64,
+    });
   });
 });

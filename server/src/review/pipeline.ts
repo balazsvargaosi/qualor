@@ -1,15 +1,22 @@
 import { parseModelJson } from '@qualor/shared';
 import type { z } from 'zod';
 import type { ReviewFailureReason, ReviewPhase, ReviewTier } from '../db/schema';
-import { SENSITIVE_PATH, type ReviewableChange, type ReviewContext } from './context';
+import {
+  CONTEXT_MAXIMA,
+  type ContextLimits,
+  type ContextShape,
+  type ReviewableChange,
+  type ReviewContext,
+} from './context';
 import type { ConversationResult } from './conversation';
 import { envelope, newNonce } from './envelope';
 import { scrubKeyDeep } from './key-scrub';
 import {
   judgeData,
-  RETRY_TEXT,
+  listedDataChars,
   SPECIALISTS,
   specialistData,
+  SYSTEM_PROMPTS,
   verifyData,
   type LabelledFinding,
   type ReviewRole,
@@ -36,16 +43,18 @@ export type { ReviewFinding } from './schemas';
  * re-checks what an earlier review raised and writes the summary; and every serious security
  * finding it keeps is checked again by a conversation given that finding alone.
  *
- * Every answer is read with parseModelJson, has the provider's key taken out, and must match its
- * strict schema (schemas.ts); one that does not is asked for once more. A reviewer that still does
- * not answer in its JSON adds nothing, and a judge that does not fails the review (fail closed).
+ * Every conversation is given a check of its answers: parseModelJson, the provider's key taken out,
+ * then the role's strict schema (schemas.ts). The conversation asks once more for an answer that
+ * does not pass. A reviewer that still does not answer in its JSON adds nothing, and a judge that
+ * does not fails the review (fail closed).
  *
- * The review's token budget is shared out between the stages: 55 % for the specialists, each in
- * turn given an even part of what is left of it; 35 % for the judge, which what the specialists
- * spent past their share does not touch; 10 % for the verification, within what is left of the
- * whole budget. What a conversation spent is taken from its stage's share, whichever way it ended.
- * A conversation that used up its part answers through its wrap-up, and one with nothing left does
- * not run; the review goes on, with `tokenLimitReached`. Only a judge cannot be done without.
+ * The review's token budget is shared out between the stages, each of which spends from its own
+ * share whichever way its conversations end: 55 % for the specialists, each in turn given an even
+ * part of what is left of it; 35 % for the judge, 10 % for the verification, each in turn given an
+ * even part of it. A conversation that used up its part answers through its wrap-up, and one with
+ * nothing left does not run; the review goes on, with `tokenLimitReached`. Only a judge cannot be
+ * done without. What a first message holds is sized to a third of its conversation's tokens
+ * (`reviewLimits`, and the judge's data), so that two turns of tools and the answer fit after it.
  *
  * Nothing here calls a provider: `deps.converse` does, with the role's system prompt, the tools and
  * the first message it is given.
@@ -63,6 +72,34 @@ const TIER_SPECIALISTS: Readonly<Record<ReviewTier, readonly Specialist[]>> = {
 export const STAGE_SHARES = { specialists: 55, judge: 35, verification: 10 } as const;
 /** The serious security findings verified in one review, at most. */
 export const MAX_VERIFICATIONS = 5;
+
+/**
+ * The tokens each role may write in one answer (the conversation's `maxOutputTokens`). Its answer is
+ * read up to four characters for each of them.
+ */
+export const REVIEW_OUTPUT_TOKENS: Readonly<Record<ReviewRole, number>> = Object.freeze({
+  quality: 12_288,
+  tests: 12_288,
+  security: 12_288,
+  performance: 12_288,
+  judge: 16_384,
+  verify: 2_048,
+});
+const ANSWER_CHARS_PER_TOKEN = 4;
+
+/**
+ * The characters a token of code or JSON stands for, at the least: what a first message may hold is
+ * counted with it, so that its tokens are fewer, not more.
+ */
+export const CHARS_PER_TOKEN = 3;
+/** A first message holds at most this part of its conversation's tokens. */
+const FIRST_MESSAGE_PARTS = 3;
+/** What an envelope and the keys of its data object add to the data, at most. */
+const ENVELOPE_CHARS = 600;
+/** A text in JSON takes a tenth more for its escapes (more with many quotes; the token count's slack covers it). */
+const JSON_ALLOWANCE = 1.1;
+/** The label of an instructions file that is cut. */
+const CUT_LABEL_CHARS = 80;
 
 export interface JudgedFinding extends ReviewFinding {
   /** The ids of the specialist findings it comes from (`s1`, `s2`, …). */
@@ -92,7 +129,13 @@ export type PipelineOutcome =
       /** The specialists that ran, in their order: one with no tokens left does not run. */
       specialists: Specialist[];
       findings: JudgedFinding[];
+      /** The judge's verdicts on the open prior findings it was shown. */
       prior: PriorVerdict[];
+      /**
+       * The prior findings the judge was shown (at most 50, the open ones first): only these may
+       * be closed for being left out of the findings.
+       */
+      shownPriorIds: string[];
       summary: { verdict: string; walkthrough: string[] };
       tokenLimitReached: boolean;
       notes: ReviewNote[];
@@ -102,16 +145,17 @@ export type PipelineOutcome =
 
 export interface PipelineDeps {
   /**
-   * One conversation of a role over the tools. `user` is the envelope built with `nonce` (with the
-   * retry sentence after it when an answer is asked for again); the job's implementation runs
-   * `runConversation` with that nonce for the tool results, and with `tokenBudget`, which is more
-   * than 0.
+   * One conversation of a role over the tools. `user` is the envelope built with `nonce`; the
+   * job's implementation runs `runConversation` with that nonce for the tool results, with
+   * `tokenBudget` (more than 0) and REVIEW_OUTPUT_TOKENS of the role, and with `accept` as its
+   * check of an answer.
    */
   converse(
     role: ReviewRole,
     user: string,
     nonce: string,
     tokenBudget: number,
+    accept: (text: string) => boolean,
   ): Promise<ConversationResult>;
   /** The provider's API key, taken out of every answer before it is used; null when there is none. */
   providerKey: string | null;
@@ -119,7 +163,7 @@ export interface PipelineDeps {
 
 /**
  * The tier of a review and its specialists, in their order: by the lines the reviewed changes add
- * and remove, and their number. A reviewed path that looks security-sensitive adds the security
+ * and remove, and their number. A reviewed change that looks security-sensitive adds the security
  * reviewer at any tier.
  */
 export function planReview(reviewed: readonly ReviewableChange[]): {
@@ -137,7 +181,7 @@ export function planReview(reviewed: readonly ReviewableChange[]): {
         ? 'lite'
         : 'full';
   const chosen = new Set<Specialist>(TIER_SPECIALISTS[tier]);
-  if (reviewed.some((change) => SENSITIVE_PATH.test(change.path))) chosen.add('security');
+  if (reviewed.some((change) => change.sensitive)) chosen.add('security');
   return { tier, specialists: SPECIALISTS.filter((s) => chosen.has(s)), changedLines, files };
 }
 
@@ -148,6 +192,64 @@ function shareOf(budget: number, percent: number): number {
     : 0;
 }
 
+/** The characters a first message may take in a conversation of `tokens`. */
+const firstMessageChars = (tokens: number): number =>
+  Math.floor(tokens / FIRST_MESSAGE_PARTS) * CHARS_PER_TOKEN;
+
+/**
+ * The largest length every text may be cut to, at most `max`, for the texts of these lengths to
+ * take at most `total` characters together: a short text keeps all of itself and leaves the rest
+ * to the long ones.
+ */
+function evenCut(lengths: readonly number[], total: number, max: number): number {
+  const sorted = [...lengths].sort((a, b) => a - b);
+  let left = Math.max(0, total);
+  for (const [index, length] of sorted.entries()) {
+    const even = Math.floor(left / (sorted.length - index));
+    if (length > even) return Math.min(max, even);
+    left -= length;
+  }
+  return max;
+}
+
+/**
+ * How much of the slices and of the instructions a review of `budget` tokens shows of a change of
+ * this shape: what buildReviewContext's `limits` answers (the job passes it this, bound to the
+ * budget). The data the specialists share is sized so that a specialist's first message takes at
+ * most a third of its part, and half of the judge's third (the judge keeps the other half for the
+ * findings). What is left after the system prompt and the lists goes a quarter at most to the
+ * instructions files, shared out evenly, and the rest to the slices, each at most CONTEXT_MAXIMA.
+ */
+export function reviewLimits(shape: ContextShape, budget: number): ContextLimits {
+  const { specialists } = planReview(shape.reviewed);
+  const part = Math.floor(shareOf(budget, STAGE_SHARES.specialists) / specialists.length);
+  const judgeHalf = Math.floor(shareOf(budget, STAGE_SHARES.judge) / 2);
+  const prompt = Math.max(...specialists.map((role) => SYSTEM_PROMPTS[role].length));
+  const room = Math.floor(
+    (firstMessageChars(Math.min(part, judgeHalf)) -
+      prompt -
+      ENVELOPE_CHARS -
+      listedDataChars(shape)) /
+      JSON_ALLOWANCE,
+  );
+  if (room <= 0) return { sliceChars: 0, instructionsChars: 0 };
+  const labels = shape.instructionChars.length * CUT_LABEL_CHARS;
+  const instructionsChars = evenCut(
+    shape.instructionChars,
+    Math.floor(room / 4) - labels,
+    CONTEXT_MAXIMA.instructionsChars,
+  );
+  const instructions = shape.instructionChars.reduce(
+    (sum, chars) =>
+      sum + Math.min(chars, instructionsChars) + (chars > instructionsChars ? CUT_LABEL_CHARS : 0),
+    0,
+  );
+  return {
+    sliceChars: Math.min(CONTEXT_MAXIMA.sliceChars, Math.max(0, room - instructions)),
+    instructionsChars,
+  };
+}
+
 /** What a stage may still spend. */
 interface Share {
   left: number;
@@ -156,7 +258,7 @@ interface Share {
 /** How one conversation slot ended. */
 type Asked<T> =
   | { kind: 'answer'; value: T }
-  /** It ran and gave nothing usable: no answer, or none of its schema after the retry. */
+  /** It ran and gave nothing usable: no answer, or none of its schema when asked again. */
   | { kind: 'unread' }
   /** It had no tokens to start with, and did not run. */
   | { kind: 'no_tokens' }
@@ -167,8 +269,6 @@ type Asked<T> =
 class Review {
   tokenLimitReached = false;
   readonly notes: ReviewNote[] = [];
-  /** Tokens spent by every conversation so far, however it ended. */
-  spent = 0;
 
   constructor(private readonly deps: PipelineDeps) {}
 
@@ -182,10 +282,10 @@ class Review {
   }
 
   /**
-   * One slot of a stage: a conversation of `role` over `data` with `tokens` to spend, and when its
-   * answer does not match `schema`, one more with what is left of them, the same data under a new
-   * nonce and the retry sentence after it. A conversation that ends without an answer (the loop's
-   * bad answer) is not asked again. What each conversation spent is taken from `share`.
+   * One slot of a stage: a conversation of `role` over `data` with `tokens` to spend, which asks
+   * once more for an answer that does not match `schema` (runConversation's `accept`). What it
+   * spent is taken from `share`. Its answer is checked again here: a conversation that gave one
+   * back without checking it is not believed.
    */
   async ask<T>(
     role: ReviewRole,
@@ -194,40 +294,37 @@ class Review {
     tokens: number,
     share: Share,
   ): Promise<Asked<T>> {
-    let left = tokens;
-    for (const retry of [false, true]) {
-      if (left <= 0) {
-        this.limitReached();
-        return retry ? { kind: 'unread' } : { kind: 'no_tokens' };
-      }
-      const nonce = newNonce();
-      const first = envelope(data, nonce);
-      const result = await this.deps.converse(
-        role,
-        retry ? `${first}\n\n${RETRY_TEXT}` : first,
-        nonce,
-        left,
-      );
-      const used = result.inputTokens + result.outputTokens;
-      left -= used;
-      share.left -= used;
-      this.spent += used;
-      if (result.kind === 'stopped') return { kind: 'stopped' };
-      if (result.kind === 'failed') {
-        return result.reason === 'bad_answer'
-          ? { kind: 'unread' }
-          : { kind: 'failed', reason: result.reason };
-      }
-      if (result.budgetReached) this.limitReached();
-      const value = this.read(result.text, schema);
-      if (value !== undefined) return { kind: 'answer', value };
+    if (tokens <= 0) {
+      this.limitReached();
+      return { kind: 'no_tokens' };
     }
-    return { kind: 'unread' };
+    /** What the check read of the answers it took, by their text. */
+    const accepted = new Map<string, T>();
+    const accept = (text: string): boolean => {
+      const value = this.read(role, text, schema);
+      if (value !== undefined) accepted.set(text, value);
+      return value !== undefined;
+    };
+    const nonce = newNonce();
+    const result = await this.deps.converse(role, envelope(data, nonce), nonce, tokens, accept);
+    share.left -= result.inputTokens + result.outputTokens;
+    if (result.kind === 'stopped') return { kind: 'stopped' };
+    if (result.kind === 'failed') {
+      return result.reason === 'bad_answer'
+        ? { kind: 'unread' }
+        : { kind: 'failed', reason: result.reason };
+    }
+    if (result.budgetReached) this.limitReached();
+    const value = accepted.get(result.text) ?? this.read(role, result.text, schema);
+    return value === undefined ? { kind: 'unread' } : { kind: 'answer', value };
   }
 
-  /** The answer as its schema reads it, with the provider's key taken out first; or undefined. */
-  private read<T>(text: string, schema: z.ZodType<T>): T | undefined {
-    const parsed = parseModelJson(text);
+  /**
+   * The answer as its schema reads it, with the provider's key taken out first; or undefined. An
+   * answer is read up to four characters for each token the role may write.
+   */
+  private read<T>(role: ReviewRole, text: string, schema: z.ZodType<T>): T | undefined {
+    const parsed = parseModelJson(text, ANSWER_CHARS_PER_TOKEN * REVIEW_OUTPUT_TOKENS[role]);
     if (parsed === undefined) return undefined;
     const checked = schema.safeParse(scrubKeyDeep(parsed, this.deps.providerKey));
     return checked.success ? checked.data : undefined;
@@ -259,11 +356,11 @@ function judged(
   };
 }
 
-/** The judge's verdicts on the prior findings it was given, the first for each. */
-function priorVerdicts(given: JudgeAnswer['prior'], priors: ReadonlySet<string>): PriorVerdict[] {
+/** The judge's verdicts on the open prior findings it was given, the first for each. */
+function priorVerdicts(given: JudgeAnswer['prior'], open: ReadonlySet<string>): PriorVerdict[] {
   const verdicts = new Map<string, PriorVerdict>();
   for (const { id, status, reason } of given) {
-    if (priors.has(id) && !verdicts.has(id)) verdicts.set(id, { id, status, reason });
+    if (open.has(id) && !verdicts.has(id)) verdicts.set(id, { id, status, reason });
   }
   return [...verdicts.values()];
 }
@@ -275,10 +372,10 @@ const isSerious = (finding: JudgedFinding): boolean =>
 /**
  * Reviews the merge request the context is of, with `budget` tokens shared out between its stages:
  * each conversation is given what is left of its part, and may go past it only through its wrap-up
- * (so the judge, whose share the specialists cannot spend, can take the review past `budget` by what
- * they overspent). `onPhase` is told each stage as it starts. The outcome is `stopped` as soon as a
- * conversation is, and `failed` when the provider fails or the judge gives no answer of its schema:
- * nothing of a failed review is stored.
+ * (so a stage, whose share the others cannot spend, can take the review past `budget` by what the
+ * stages before it overspent). `onPhase` is told each stage as it starts. The outcome is `stopped`
+ * as soon as a conversation is, and `failed` when the provider fails or the judge gives no answer
+ * of its schema: nothing of a failed review is stored.
  */
 export async function runReviewPipeline(
   context: ReviewContext,
@@ -319,8 +416,10 @@ export async function runReviewPipeline(
   }
 
   // The judge, with its own share: what the specialists spent past theirs is not taken from it.
+  // Its data takes a third of it at most: the bodies of the findings are cut to fit.
   await onPhase('judge');
-  const judgeShown = judgeData(context, labelled);
+  const judgeRoom = firstMessageChars(judgeTokens) - SYSTEM_PROMPTS.judge.length - ENVELOPE_CHARS;
+  const judgeShown = judgeData(context, labelled, judgeRoom);
   const asked = await review.ask('judge', judgeShown, judgeAnswerSchema, judgeTokens, {
     left: judgeTokens,
   });
@@ -329,14 +428,17 @@ export async function runReviewPipeline(
   if (asked.kind !== 'answer') return NOT_JUDGED;
   const answer = asked.value;
   const sources = new Set(labelled.map((finding) => finding.id));
-  const priors = new Set(judgeShown.priorFindings.map((finding) => finding.id));
+  const shownPriorIds = judgeShown.priorFindings.map((finding) => finding.id);
+  const openPriors = new Set(
+    judgeShown.priorFindings.filter((finding) => finding.status === 'open').map((f) => f.id),
+  );
   // A low-confidence finding is never stored, so it is not verified either.
   const kept = answer.findings
-    .map((found) => judged(found, sources, priors))
+    .map((found) => judged(found, sources, new Set(shownPriorIds)))
     .filter((finding) => finding.confidence !== 'low');
 
-  // The serious security findings, critical first, each verified alone. The verification has its
-  // share, and no more than what is left of the whole budget.
+  // The serious security findings, critical first, each verified alone, with the verification's
+  // own share: what the stages before it overspent is not taken from it.
   const verdicts = new Map<JudgedFinding, VerifyVerdict>();
   const serious = kept
     .filter(isSerious)
@@ -345,9 +447,7 @@ export async function runReviewPipeline(
     await onPhase('verification');
     if (serious.length > MAX_VERIFICATIONS) review.note('verification_capped');
     const checked = serious.slice(0, MAX_VERIFICATIONS);
-    const verification: Share = {
-      left: Math.min(shareOf(budget, STAGE_SHARES.verification), Math.floor(budget) - review.spent),
-    };
+    const verification: Share = { left: shareOf(budget, STAGE_SHARES.verification) };
     for (const [index, finding] of checked.entries()) {
       const tokens = evenPart(verification, index, checked.length);
       const told = await review.ask(
@@ -380,7 +480,8 @@ export async function runReviewPipeline(
     tier: plan.tier,
     specialists: ran,
     findings,
-    prior: priorVerdicts(answer.prior, priors),
+    prior: priorVerdicts(answer.prior, openPriors),
+    shownPriorIds,
     summary: { verdict: answer.summary.verdict, walkthrough: [...answer.summary.walkthrough] },
     tokenLimitReached: review.tokenLimitReached,
     notes: [...review.notes],

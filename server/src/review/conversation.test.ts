@@ -755,6 +755,115 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
     });
   });
 
+  describe('an answer the caller does not accept', () => {
+    const RETRY = 'Your answer did not match the required JSON; answer again with JSON only.';
+    const isJson = (text: string): boolean => {
+      try {
+        JSON.parse(text);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    it.each(KINDS)('an answer the caller accepts ends the conversation (%s)', async (kind) => {
+      fake.enqueue(textTurn(kind, '{"findings":[]}'));
+      const seen: string[] = [];
+      const { result } = await run(kind, {
+        accept: (text) => {
+          seen.push(text);
+          return true;
+        },
+      });
+      expect(result).toMatchObject({ kind: 'answer', text: '{"findings":[]}', turns: 1 });
+      expect(seen).toEqual(['{"findings":[]}']);
+      expect(fake.requests).toHaveLength(1);
+    });
+
+    it.each(KINDS)(
+      'a rejected answer is asked for once more, after it, and no tool runs then (%s)',
+      async (kind) => {
+        fake.enqueue(
+          textTurn(kind, 'Here is my review.', [100, 10]),
+          // A call in the answer asked for again is not run: its text is the answer.
+          toolTurn(kind, [{ id: 'c1', args: { path: 'a.ts' } }], [150, 20], '{"findings":[]}'),
+        );
+        const { result, ran } = await run(kind, { accept: isJson });
+        expect(result).toEqual({
+          kind: 'answer',
+          text: '{"findings":[]}',
+          inputTokens: 250,
+          outputTokens: 30,
+          turns: 2,
+          toolCalls: 0,
+          budgetReached: false,
+        });
+        expect(ran).toEqual([]);
+        const wire = WIRES[kind];
+        expect(fake.requests).toHaveLength(2);
+        const second = fake.requests[1]!;
+        // The answer, then one user turn that asks again; the tools are still offered.
+        expect(wire.assistantTexts(second)).toEqual(['Here is my review.']);
+        expect(wire.lastUser(second)).toBe(RETRY);
+        expect(wire.tools(second)).toEqual(['read_file', 'grep']);
+      },
+    );
+
+    it.each(KINDS)('a second rejection ends as a bad answer (%s)', async (kind) => {
+      fake.enqueue(textTurn(kind, 'First.', [100, 10]), textTurn(kind, 'Second.', [150, 10]));
+      const { result } = await run(kind, { accept: isJson });
+      expect(result).toEqual({
+        kind: 'failed',
+        reason: 'bad_answer',
+        inputTokens: 250,
+        outputTokens: 20,
+        turns: 2,
+        toolCalls: 0,
+      });
+      expect(fake.requests).toHaveLength(2);
+    });
+
+    it.each(KINDS)(
+      'the turn that asks again may go past the token budget, as the wrap-up may (%s)',
+      async (kind) => {
+        fake.enqueue(
+          toolTurn(kind, [{ id: 'c1', args: { path: 'a.ts' } }], [100, 10]),
+          // The answer to the wrap-up, which is not JSON.
+          textTurn(kind, 'Not JSON.', [200, 10]),
+          textTurn(kind, '{"findings":[]}', [300, 10]),
+        );
+        const { result } = await run(kind, {
+          accept: isJson,
+          limits: { ...LIMITS, tokenBudget: 150 },
+        });
+        expect(result).toMatchObject({
+          kind: 'answer',
+          text: '{"findings":[]}',
+          turns: 3,
+          toolCalls: 1,
+          budgetReached: true,
+        });
+        expect(fake.requests).toHaveLength(3);
+        expect(WIRES[kind].lastUser(fake.requests[2]!)).toBe(RETRY);
+      },
+    );
+
+    it.each(KINDS)(
+      'a cut-off answer is asked for shorter before it is checked (%s)',
+      async (kind) => {
+        fake.enqueue(
+          textTurn(kind, '{"findings":[{"title":"A very', [100, 50], 'length'),
+          textTurn(kind, 'Shorter, but not JSON.', [200, 20]),
+          textTurn(kind, '{"findings":[]}', [300, 20]),
+        );
+        const { result } = await run(kind, { accept: isJson });
+        expect(result).toMatchObject({ kind: 'answer', text: '{"findings":[]}', turns: 3 });
+        expect(WIRES[kind].lastUser(fake.requests[1]!)).toMatch(/shorter/);
+        expect(WIRES[kind].lastUser(fake.requests[2]!)).toBe(RETRY);
+      },
+    );
+  });
+
   describe('provider errors', () => {
     it.each(KINDS)(
       'rate limits are retried after Retry-After, at most twice (%s)',

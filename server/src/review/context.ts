@@ -7,6 +7,7 @@ import {
   WHY,
   type Mask,
   type NoteReason,
+  type Removal,
   type RemovedLine,
 } from './patch';
 import type { AnalyzerFinding, PriorFinding } from './findings-query';
@@ -42,24 +43,31 @@ export {
  *
  * Masking costs time, and bytes of the review's budget, so only what is going to be shown is
  * masked, in the order the slices are cut. The merge request's words and the findings come first;
- * then each change in turn, its file and its patch, until the slices are full. What is needed to
- * choose is read from the texts as the snapshot stores them, which costs a read and no masking: of
- * each file only a yes or a no (generated, minified), a number of lines and the number of
- * characters its slices would take leave the reading. A change does not hold its patch: a prompt is
- * built from the context, and nothing in it can send a removed line nobody masked.
+ * then each change in turn, its file and its patch, until the slices are full; how full they may
+ * be, and the instructions files, the review says from the shape of the change (`limits`). What is
+ * needed to choose is read from the texts as the snapshot stores them, which costs a read and no
+ * masking: of each file only a yes or a no (generated, minified), a number of lines, the lines
+ * after its removed runs and the number of characters its slices would take leave the reading. A
+ * change does not hold its patch: a prompt is built from the context, and nothing in it can send a
+ * removed line nobody masked.
  */
 
 // ─── What is read, and how much of it ────────────────────────────────────────
 
 /** Lines of context kept on each side of a change. */
 const CONTEXT_LINES = 40;
-/** The most characters of slices in a prompt. */
-const SLICE_BUDGET_CHARS = 120_000;
+/**
+ * The most a context shows, whatever the review's budget: characters of slices in all, and of each
+ * instructions file. The review's limits (`ContextOptions.limits`) are at most these.
+ */
+export const CONTEXT_MAXIMA: Readonly<ContextLimits> = Object.freeze({
+  sliceChars: 120_000,
+  instructionsChars: 32_000,
+});
 /** The most changes listed as having no slices; a merge request can change tens of thousands. */
 const MAX_OMITTED_LISTED = 200;
 /** A line is cut here, with `…`. */
 const MAX_LINE_CHARS = 400;
-const INSTRUCTIONS_CHARS = 32_000;
 const TITLE_CHARS = 255;
 const DESCRIPTION_CHARS = 4_000;
 /** The lines at the head of a file that say it is generated, and the ones that say it is minified. */
@@ -169,6 +177,12 @@ export interface ReviewableChange extends Omit<SnapshotChange, 'patch'> {
   text: MaskedText | null;
   /** The new-side lines the change adds. */
   added: ReadonlySet<number>;
+  /**
+   * The new-side line after each run of lines the change removed (the last line, for a run at the
+   * end of the file), in order, each once: where a problem in removed code is put. None for a
+   * deleted file, which has no lines.
+   */
+  removalPoints: readonly number[];
   /** Lines added plus lines removed; the file's length when the patch says nothing. */
   changedLines: number;
   sensitive: boolean;
@@ -195,6 +209,32 @@ export interface ContextOptions {
    * optional: a context built without it would mask for free.
    */
   budget: MaskBudget;
+  /**
+   * How much of the slices and of the instructions the review's tokens leave room for, given the
+   * shape of the change (the pipeline's `reviewLimits`). Asked once, before anything is masked or
+   * cut; what it answers is held to CONTEXT_MAXIMA. Not optional: a context built without it would
+   * show more than the review can read.
+   */
+  limits: (shape: ContextShape) => ContextLimits;
+}
+
+/** How much of the merge request a context shows. */
+export interface ContextLimits {
+  /** Characters of slices in all. */
+  sliceChars: number;
+  /** Characters of each instructions file; a longer one is cut, with a label. */
+  instructionsChars: number;
+}
+
+/** What a context knows of the change when it asks for its limits: nothing is masked or cut yet. */
+export interface ContextShape {
+  /** The changes that are reviewed; none has its text or its removed lines yet. */
+  reviewed: readonly ReviewableChange[];
+  skipped: readonly SkippedChange[];
+  /** How many findings of the analyzers there are on the reviewed paths. */
+  analyzerFindings: number;
+  /** The characters of each instructions file the model may be shown, as the snapshot holds it. */
+  instructionChars: readonly number[];
 }
 
 export interface ReviewFindings {
@@ -384,6 +424,7 @@ async function classify(
         lines,
         text: null,
         added: facts.added,
+        removalPoints: change.status === 'deleted' ? [] : removalPointsOf(facts.removals, lines),
         changedLines: facts.changedLines,
         sensitive: SENSITIVE_PATH.test(change.path),
         removed: [],
@@ -396,11 +437,55 @@ async function classify(
           : sliceChars(
               { path: change.path, added: facts.added, removed: facts.removals },
               stored,
-              SLICE_BUDGET_CHARS,
+              CONTEXT_MAXIMA.sliceChars,
             ),
     });
   }
   return { candidates, skipped };
+}
+
+/**
+ * The line after each run of removed rows, held to the file's last line (a run at the end has none
+ * after it), in order and each once. A file of no lines has none.
+ */
+function removalPointsOf(removals: readonly Removal[], lines: number | null): number[] {
+  const points = new Set<number>();
+  for (const { after } of removals) {
+    const point = lines === null ? after + 1 : Math.min(after + 1, lines);
+    if (point >= 1) points.add(point);
+  }
+  return [...points].sort((a, b) => a - b);
+}
+
+// ─── Where findings belong ───────────────────────────────────────────────────
+
+/**
+ * How far from its lines a finding may be and still be a finding on them: a problem is often a
+ * line or two from the line that causes it.
+ */
+export const SCOPE_MARGIN = 3;
+
+/**
+ * The lines a review may raise new findings on, as sorted ranges apart from one another: on a
+ * re-review (a change with `since`), the lines changed since the last reviewed commit (D6); on a
+ * first review, the lines the change adds and the line after each run it removed, so that a removed
+ * check can be reported where it was. Prior findings are re-checked wherever they are.
+ */
+export function scopeRanges(
+  change: Pick<ReviewableChange, 'since' | 'added' | 'removalPoints'>,
+): [number, number][] {
+  const ranges: [number, number][] =
+    change.since !== null
+      ? change.since.map(([from, to]): [number, number] => [from, to])
+      : [...change.added, ...change.removalPoints].map((line): [number, number] => [line, line]);
+  ranges.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const merged: [number, number][] = [];
+  for (const [from, to] of ranges) {
+    const last = merged[merged.length - 1];
+    if (last !== undefined && from <= last[1] + 1) last[1] = Math.max(last[1], to);
+    else merged.push([from, to]);
+  }
+  return merged;
 }
 
 // ─── Slices ──────────────────────────────────────────────────────────────────
@@ -524,7 +609,7 @@ interface Tally {
 }
 
 /**
- * The slices that fit in SLICE_BUDGET_CHARS, in order of importance, and what is left out. This is
+ * The slices that fit in `sliceChars`, in order of importance, and what is left out. This is
  * where the review's masking goes: a change is masked, its file and then its patch, only when its
  * slices fit in the room that is left, known from the stored texts before anything is masked, so a
  * merge request of thousands of files costs the masking of those that are shown. A change that does
@@ -539,6 +624,7 @@ async function cutSlices(
   mask: Mask,
   options: ContextOptions,
   tally: Tally,
+  sliceChars: number,
 ): Promise<{ slices: string; omitted: string[] }> {
   const parts: string[] = [];
   const omitted: string[] = [];
@@ -561,7 +647,7 @@ async function cutSlices(
       continue;
     }
     const joiner = parts.length === 0 ? 0 : 1;
-    if (used + joiner + size > SLICE_BUDGET_CHARS) {
+    if (used + joiner + size > sliceChars) {
       omitted.push(noRoom(change));
       continue;
     }
@@ -589,7 +675,7 @@ async function cutSlices(
       tally.redactions += shown.redactions;
     }
     const slice = [...sliceRows(change, file.text, CONTEXT_LINES)].join('\n');
-    if (used + joiner + slice.length > SLICE_BUDGET_CHARS) {
+    if (used + joiner + slice.length > sliceChars) {
       // What the masking put in the place of a secret is longer than the secret was.
       omitted.push(noRoom(change));
       continue;
@@ -651,19 +737,26 @@ function cutWithLabel(text: string, max: number): string {
   return `${chars.slice(0, max).join('')}\n[cut: the text has ${chars.length} characters, only the first ${max} are shown]`;
 }
 
-/** The meta of the snapshot with the texts the prompt may show: masked, cut, and labelled. */
+/** A limit the review gave, held to whole characters from 0 to `max`; one that is no number is 0. */
+const heldTo = (limit: number, max: number): number =>
+  Number.isNaN(limit) ? 0 : Math.min(max, Math.max(0, Math.floor(limit)));
+
+/**
+ * The meta of the snapshot with the texts the prompt may show: masked, cut (each instructions file
+ * at `instructionsChars`), and labelled.
+ */
 async function shownMeta(
   meta: SnapshotMeta,
   mask: Mask,
   tally: Tally,
   options: ContextOptions,
+  instructionsChars: number,
 ): Promise<SnapshotMeta> {
   const instructions: { name: string; text: string }[] = [];
-  for (const file of meta.instructions) {
-    if (options.excluded(file.name)) continue;
+  for (const file of shownInstructions(meta, options)) {
     instructions.push({
       name: file.name,
-      text: cutWithLabel(await shownText(mask, file.text, tally), INSTRUCTIONS_CHARS),
+      text: cutWithLabel(await shownText(mask, file.text, tally), instructionsChars),
     });
   }
   const mrTitle =
@@ -677,26 +770,40 @@ async function shownMeta(
   return { ...meta, mrTitle, mrDescription, instructions };
 }
 
+/** The instructions files the model may be shown: not one on a path the administrator keeps out. */
+const shownInstructions = (meta: SnapshotMeta, options: ContextOptions) =>
+  meta.instructions.filter((file) => !options.excluded(file.name));
+
 /**
- * The findings with their texts masked. The analyzers' are asked for on the paths of the reviewed
- * changes (so not for a lock file, nor for a path the administrator keeps out), and only those are
- * kept; an earlier review's are kept for any path but the ones the administrator keeps out.
+ * The analyzers' findings, as stored: asked for on the paths of the reviewed changes (so not for a
+ * lock file, nor for a path the administrator keeps out), and only those are kept.
  */
-async function shownFindings(
+async function analyzerOnReviewed(
   findings: ReviewFindings,
   reviewed: readonly ReviewableChange[],
+): Promise<AnalyzerFinding[]> {
+  const reviewedPaths = new Set(reviewed.map((change) => change.path));
+  const found = await findings.analyzer([...reviewedPaths]);
+  return found.filter((finding) => reviewedPaths.has(finding.path));
+}
+
+/**
+ * The findings with their texts masked: the analyzers' on the reviewed paths, and an earlier
+ * review's on any path but the ones the administrator keeps out.
+ */
+async function shownFindings(
+  analyzerFound: readonly AnalyzerFinding[],
+  priorFound: readonly PriorFinding[],
   mask: Mask,
   tally: Tally,
   options: ContextOptions,
 ): Promise<{ analyzer: AnalyzerFinding[]; prior: PriorFinding[] }> {
-  const reviewedPaths = new Set(reviewed.map((change) => change.path));
   const analyzer: AnalyzerFinding[] = [];
-  for (const finding of await findings.analyzer([...reviewedPaths])) {
-    if (!reviewedPaths.has(finding.path)) continue;
+  for (const finding of analyzerFound) {
     analyzer.push({ ...finding, message: await shownText(mask, finding.message, tally) });
   }
   const prior: PriorFinding[] = [];
-  for (const finding of findings.prior) {
+  for (const finding of priorFound) {
     if (options.excluded(finding.path)) continue;
     prior.push({
       ...finding,
@@ -712,11 +819,13 @@ async function shownFindings(
  * slices, and the snapshot's words, masked, cut and labelled. The job passes the findings
  * `analyzerFindings` (bound to the analysis) and `priorAiFindings` read; the evaluation passes
  * none. `masker` is the review's, which `files` and the tools use too, and its caller closes: it
- * rejects here once it is closed or its signal has aborted. The administrator's excluded paths and
- * the review's budget of bytes for masking are `options`.
+ * rejects here once it is closed or its signal has aborted. The administrator's excluded paths, the
+ * review's budget of bytes for masking and the limits of what it shows are `options`.
  *
- * The words come first, then the findings, then the files: what the slices take of the masking
- * that is left, they take last.
+ * What is read to choose comes first and costs no masking: the changes, what each of them is, and
+ * the analyzers' findings on them, with which the review's limits are asked. Then the masking: the
+ * words first, then the findings, then the files; what the slices take of the masking that is
+ * left, they take last.
  */
 export async function buildReviewContext(
   files: MaskedFiles,
@@ -727,11 +836,27 @@ export async function buildReviewContext(
   const { reader } = files;
   const mask = chargedMask(masker, options.budget);
   const tally: Tally = { redactions: 0 };
-  const meta = await shownMeta(reader.meta, mask, tally, options);
   const { candidates, skipped } = await classify(await reader.changes(), files, options);
   const reviewed = candidates.map((candidate) => candidate.change);
-  const { analyzer, prior } = await shownFindings(findings, reviewed, mask, tally, options);
-  const { slices, omitted } = await cutSlices(candidates, files, masker, mask, options, tally);
+  const found = await analyzerOnReviewed(findings, reviewed);
+  const limits = options.limits({
+    reviewed,
+    skipped,
+    analyzerFindings: found.length,
+    instructionChars: shownInstructions(reader.meta, options).map((file) => file.text.length),
+  });
+  const instructionsChars = heldTo(limits.instructionsChars, CONTEXT_MAXIMA.instructionsChars);
+  const meta = await shownMeta(reader.meta, mask, tally, options, instructionsChars);
+  const { analyzer, prior } = await shownFindings(found, findings.prior, mask, tally, options);
+  const { slices, omitted } = await cutSlices(
+    candidates,
+    files,
+    masker,
+    mask,
+    options,
+    tally,
+    heldTo(limits.sliceChars, CONTEXT_MAXIMA.sliceChars),
+  );
   return {
     meta,
     reviewed,

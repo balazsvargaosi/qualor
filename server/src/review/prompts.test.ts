@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { SENSITIVE_PATH, type ReviewableChange, type ReviewContext } from './context';
@@ -30,6 +31,22 @@ const ROLES: readonly ReviewRole[] = [
 ];
 
 /**
+ * The sha256 of each prompt, by prompt version. A prompt that changes is a new version: add an entry
+ * for it, and never change the entry of a version that exists (`llm_requests.prompt_version` names
+ * the text a review was made with).
+ */
+const PROMPT_HASHES: Record<string, Record<ReviewRole, string>> = {
+  'review-1': {
+    quality: 'f62ae8e899f98bf4f62d8fb649cf8454c92b1761fff83269d779be9cef6d64fe',
+    tests: '743f0a7f8b0cae9de74c85df1641b7da8b4c1a747fff8cb04c67d7e481a3f77e',
+    security: 'edc5a7f315bd96cd5cb46df654554939a3d87d5125ebed989874a44033d75264',
+    performance: '8effde624411137c51ea09f018e1ddd63b976ed2c202fb7cc714d76ff6a461e0',
+    judge: 'ba057af01a751e0debcfc4168e0eff3877f4a5a3430b10d422df4f85000d54c2',
+    verify: '04e3c867ffbc76f0a1a6e0596e1a3973436f2d2826a8ab47ac8ce9680ad5a404',
+  },
+};
+
+/**
  * The keys of the one data object each conversation is given, in their order. It is made field by
  * field from the context, never a spread of it: a key that is not listed here is not sent.
  */
@@ -47,12 +64,14 @@ const REVIEW_DATA_KEYS = [
 ];
 const JUDGE_DATA_KEYS = [...REVIEW_DATA_KEYS, 'priorFindings', 'specialistFindings'];
 const VERIFY_DATA_KEYS = ['finding'];
+/** The keys of a change in `changes`; `oldPath` only for a rename. */
+const CHANGE_KEYS = ['path', 'status', 'oldPath', 'changedLines', 'lines'];
 const DATA_KEYS: Record<ReviewRole, string[]> = {
-  quality: REVIEW_DATA_KEYS,
-  tests: REVIEW_DATA_KEYS,
-  security: REVIEW_DATA_KEYS,
-  performance: REVIEW_DATA_KEYS,
-  judge: JUDGE_DATA_KEYS,
+  quality: [...REVIEW_DATA_KEYS, ...CHANGE_KEYS],
+  tests: [...REVIEW_DATA_KEYS, ...CHANGE_KEYS],
+  security: [...REVIEW_DATA_KEYS, ...CHANGE_KEYS],
+  performance: [...REVIEW_DATA_KEYS, ...CHANGE_KEYS],
+  judge: [...JUDGE_DATA_KEYS, ...CHANGE_KEYS],
   verify: VERIFY_DATA_KEYS,
 };
 const ANSWER_SCHEMAS: Record<ReviewRole, z.ZodType> = {
@@ -100,6 +119,12 @@ const FINDING_WRITERS = [
   'the analyzer findings are already reported: never repeat them, you may refer to them',
   "follow the repository's instructions files",
   'what is wrong, why it matters and how to fix it, in under 150 words',
+  // Where a finding may be: the lines the review raises findings on (the scope of the store).
+  'on or within 3 lines of a range in changes[].lines',
+  'goes on the changed line that causes it',
+  // The whole answer stays well within what the review reads of it.
+  'about 40000 characters',
+  'at most 15 lines',
 ];
 /** Each role's focus, in the brief's words. */
 const FOCUS: Record<ReviewRole, string[]> = {
@@ -120,8 +145,22 @@ const FOCUS: Record<ReviewRole, string[]> = {
     'drop',
     'stated reason',
     'never drop a critical or a major finding without reading',
+    // A finding it had no tokens left to read.
+    'not read',
+    'confidence at most medium',
+    // A finding kept at low confidence is thrown away after it.
+    'is discarded',
+    'wherever it is',
   ],
-  verify: ['only the finding', 'confirmed', 'needs_validation', 'rejected'],
+  verify: [
+    'only the finding',
+    'confirmed',
+    'needs_validation',
+    'rejected',
+    'how sure the reviewer was',
+    'who reported it',
+    'scope',
+  ],
 };
 /** What a fixed prompt never holds: what is left of a template, a value written by mistake, a marker. */
 const PLACEHOLDERS = [
@@ -156,6 +195,7 @@ function change(path: string, over: Partial<ReviewableChange> = {}): ReviewableC
     lines: 40,
     text: null,
     added: new Set([3]),
+    removalPoints: [],
     changedLines: 1,
     sensitive: SENSITIVE_PATH.test(path),
     removed: [],
@@ -192,6 +232,8 @@ function contextOf(over: Partial<ReviewContext> = {}): ReviewContext {
     reviewed: [
       change('src/cart.ts', {
         changedLines: 4,
+        added: new Set([3, 4, 5]),
+        removalPoints: [3, 9],
         // Shown in the slices only: never as a field of the data.
         removed: [{ after: 2, text: 'const removedLineText = 1;' }],
       }),
@@ -200,6 +242,7 @@ function contextOf(over: Partial<ReviewContext> = {}): ReviewContext {
         status: 'deleted',
         changedLines: 9,
         lines: null,
+        added: new Set(),
         unshown: 'deleted',
       }),
     ],
@@ -228,16 +271,17 @@ const finding = (over: Partial<ReviewFinding> = {}): ReviewFinding => ({
   ...over,
 });
 
+const sha256 = (text: string): string => createHash('sha256').update(text, 'utf8').digest('hex');
+
 describe('the review prompts', () => {
-  it('every prompt starts with its role line, holds no placeholder, names its JSON keys and stays under 8 000 characters', () => {
-    expect(REVIEW_PROMPT_VERSION).toBe('review-1');
+  it('every prompt starts with its role line, holds no placeholder, names its JSON keys and stays under 10 000 characters', () => {
     expect(Object.keys(SYSTEM_PROMPTS).sort()).toEqual([...ROLES].sort());
     for (const role of ROLES) {
       const prompt = SYSTEM_PROMPTS[role];
       const lower = prompt.toLowerCase();
       // The line the test responder of the job's tests keys on.
       expect(prompt.split('\n')[0]).toBe(`Qualor review: ${role}`);
-      expect(prompt.length, role).toBeLessThan(8_000);
+      expect(prompt.length, role).toBeLessThan(10_000);
       for (const placeholder of PLACEHOLDERS) {
         expect(prompt, `${role}: ${String(placeholder)}`).not.toMatch(placeholder);
       }
@@ -254,10 +298,18 @@ describe('the review prompts', () => {
       }
       for (const focus of FOCUS[role]) expect(lower, `${role}: ${focus}`).toContain(focus);
     }
-    // The verifier is given only its finding: it is told that the instructions and the analyzer
-    // findings were applied before, and not to take the instructions from the tools.
+    // The verifier is given only its finding: it is told that the instructions, the analyzer
+    // findings and the scope were settled before it, and not to take the instructions from the
+    // tools. What it is not told is how sure the reviewer was: the body says why it believed it.
     expect(SYSTEM_PROMPTS.verify).toContain('instructions files');
     expect(SYSTEM_PROMPTS.verify).toContain('analyzer findings');
+    expect(SYSTEM_PROMPTS.verify.toLowerCase()).not.toContain('nothing tells you why');
+  });
+
+  it('pins the text of each prompt to its prompt version', () => {
+    expect(REVIEW_PROMPT_VERSION).toBe('review-1');
+    const hashes = Object.fromEntries(ROLES.map((role) => [role, sha256(SYSTEM_PROMPTS[role])]));
+    expect(hashes).toEqual(PROMPT_HASHES[REVIEW_PROMPT_VERSION]);
   });
 
   it("each conversation is given one data object of the keys listed here, made from the context's shown texts", () => {
@@ -271,10 +323,26 @@ describe('the review prompts', () => {
         targetBranch: 'main',
       },
       instructions: [{ name: 'AGENTS.md', text: 'Money is kept in cents.' }],
+      // Each change with the ranges of lines its findings belong on: what it adds, and the line
+      // after each run it removed.
       changes: [
-        { path: 'src/cart.ts', status: 'modified', changedLines: 4 },
-        { path: 'src/new.ts', status: 'renamed', oldPath: 'src/old.ts', changedLines: 1 },
-        { path: 'src/gone.ts', status: 'deleted', changedLines: 9 },
+        {
+          path: 'src/cart.ts',
+          status: 'modified',
+          changedLines: 4,
+          lines: [
+            [3, 5],
+            [9, 9],
+          ],
+        },
+        {
+          path: 'src/new.ts',
+          status: 'renamed',
+          oldPath: 'src/old.ts',
+          changedLines: 1,
+          lines: [[3, 3]],
+        },
+        { path: 'src/gone.ts', status: 'deleted', changedLines: 9, lines: [] },
       ],
       unlistedChanges: 0,
       notInSlices: ['src/new.ts: changed, its text is not in the snapshot'],
@@ -292,6 +360,19 @@ describe('the review prompts', () => {
       snapshotPartial: true,
       slices: context.slices,
     });
+    // On a re-review a change's lines are those changed since the last reviewed commit.
+    const rereview = specialistData(
+      contextOf({
+        reviewed: [
+          change('src/cart.ts', {
+            added: new Set([3, 4, 5]),
+            removalPoints: [9],
+            since: [[4, 5]],
+          }),
+        ],
+      }),
+    );
+    expect(rereview.changes[0]?.lines).toEqual([[4, 5]]);
 
     const labelled: LabelledFinding[] = [
       { id: 's1', reviewer: 'quality', finding: finding() },
@@ -301,23 +382,12 @@ describe('the review prompts', () => {
         finding: finding({ category: 'security', assumption: null }),
       },
     ];
-    const judge = judgeData(context, labelled);
+    const judge = judgeData(context, labelled, 1_000_000);
     expect(Object.keys(judge)).toEqual(JUDGE_DATA_KEYS);
     const { priorFindings, specialistFindings, ...shared } = judge;
     expect(shared).toEqual(data);
-    // The most severe first; the fingerprint stays on the server.
+    // The open ones first, the dismissed after them; the fingerprint stays on the server.
     expect(priorFindings).toEqual([
-      {
-        id: 'issue-2',
-        category: 'logic',
-        severity: 'high',
-        status: 'wont_fix',
-        path: 'src/cart.ts',
-        line: 3,
-        endLine: 4,
-        title: 'Prior issue-2',
-        body: 'The total skips the last item.',
-      },
       {
         id: 'issue-1',
         category: 'logic',
@@ -327,6 +397,17 @@ describe('the review prompts', () => {
         line: 3,
         endLine: 4,
         title: 'Prior issue-1',
+        body: 'The total skips the last item.',
+      },
+      {
+        id: 'issue-2',
+        category: 'logic',
+        severity: 'high',
+        status: 'wont_fix',
+        path: 'src/cart.ts',
+        line: 3,
+        endLine: 4,
+        title: 'Prior issue-2',
         body: 'The total skips the last item.',
       },
     ]);
@@ -358,7 +439,9 @@ describe('the review prompts', () => {
     for (const hidden of ['removedLineText', 'f'.repeat(32), 'a'.repeat(40), 'b'.repeat(40)]) {
       expect(json).not.toContain(hidden);
     }
-    expect(json).not.toMatch(/"redactions"|"sensitive"|"added"|"unshown"|"hasPatch"|"fingerprint"/);
+    expect(json).not.toMatch(
+      /"redactions"|"sensitive"|"added"|"unshown"|"hasPatch"|"fingerprint"|"removalPoints"/,
+    );
   });
 
   it('the prompts print at most 200 changes, 100 skipped paths, 50 prior findings and 100 analyzer findings', () => {
@@ -368,6 +451,7 @@ describe('the review prompts', () => {
       priorFindings: 50,
       priorBodyChars: 500,
       analyzerFindings: 100,
+      lineRanges: 10,
     });
     // 248 small changes in path order, then a large one and a sensitive one: the 200 listed keep
     // the two that matter most, and stay in path order.
@@ -409,7 +493,7 @@ describe('the review prompts', () => {
       Array.from({ length: 100 }, (_, i) => i + 1),
     );
 
-    const judge = judgeData(context, []);
+    const judge = judgeData(context, [], 1_000_000);
     expect(judge.priorFindings.map((p) => p.id)).toEqual([
       ...Array.from({ length: 10 }, (_, i) => `high-${i}`),
       ...Array.from({ length: 40 }, (_, i) => `medium-${i}`),
@@ -418,5 +502,77 @@ describe('the review prompts', () => {
       expect([...shown.body].length).toBeLessThanOrEqual(500);
     }
     expect(judge.priorFindings[10]?.body).toBe(`${'é'.repeat(499)}…`);
+
+    // Open prior findings are shown before dismissed ones of any severity: the judge re-checks
+    // every open one it is shown, and one it is not shown is never closed as left out.
+    const mixed = judgeData(
+      contextOf({
+        prior: [
+          ...Array.from({ length: 50 }, (_, i) =>
+            prior(`dismissed-${i}`, { status: 'false_positive', severity: 'high' }),
+          ),
+          prior('open-low', { severity: 'low' }),
+          prior('open-medium'),
+        ],
+      }),
+      [],
+      1_000_000,
+    );
+    expect(mixed.priorFindings.slice(0, 3).map((p) => p.id)).toEqual([
+      'open-medium',
+      'open-low',
+      'dismissed-0',
+    ]);
+    expect(mixed.priorFindings).toHaveLength(50);
+  });
+
+  it('lists at most 10 ranges of lines for a change, joining the closest ones', () => {
+    // Fifteen added lines apart from one another; the gaps between them grow.
+    const added = new Set<number>();
+    let line = 1;
+    for (let gap = 2; added.size < 15; gap += 1) {
+      added.add(line);
+      line += gap;
+    }
+    const data = specialistData(contextOf({ reviewed: [change('src/a.ts', { added })] }));
+    const lines = data.changes[0]?.lines ?? [];
+    expect(lines).toHaveLength(10);
+    // Every line of the change is in a range still: the closest are joined, the far ones stay apart.
+    for (const each of added)
+      expect(lines.some(([from, to]) => from <= each && each <= to)).toBe(true);
+    const sorted = [...added].sort((a, b) => a - b);
+    expect(lines[0]).toEqual([sorted[0], sorted[5]]);
+    expect(lines.slice(1)).toEqual(sorted.slice(6).map((each) => [each, each]));
+  });
+
+  it("cuts the bodies of the reviewers' findings, and only them, when the judge's data does not fit", () => {
+    const context = contextOf();
+    const labelled: LabelledFinding[] = Array.from({ length: 20 }, (_, i) => ({
+      id: `s${i + 1}`,
+      reviewer: 'quality',
+      finding: finding({ body: `${i} ${'b'.repeat(1_100)}` }),
+    }));
+    const whole = judgeData(context, labelled, 1_000_000);
+    const size = JSON.stringify(whole).length;
+    expect(whole.specialistFindings.every((f) => f.body.length > 1_100)).toBe(true);
+
+    // Room for about half of the bodies' characters: each is cut to one length, and all fit.
+    const room = size - 10_000;
+    const cut = judgeData(context, labelled, room);
+    expect(JSON.stringify(cut).length).toBeLessThanOrEqual(room);
+    expect(cut.specialistFindings).toHaveLength(20);
+    const lengths = new Set(cut.specialistFindings.map((f) => [...f.body].length));
+    expect(lengths.size).toBe(1);
+    // About 500 characters less of each of the 20 bodies: the longest cut that fits, not the least.
+    expect([...lengths][0]).toBeLessThan(1_100);
+    expect([...lengths][0]).toBeGreaterThan(550);
+    expect(cut.specialistFindings[0]?.body.endsWith('…')).toBe(true);
+    // The rest of the data is as it was.
+    expect({ ...cut, specialistFindings: [] }).toEqual({ ...whole, specialistFindings: [] });
+
+    // No room at all: a body keeps its first 200 characters still; the judge sees every finding.
+    const tight = judgeData(context, labelled, 0);
+    expect(tight.specialistFindings).toHaveLength(20);
+    expect(tight.specialistFindings.every((f) => [...f.body].length === 200)).toBe(true);
   });
 });
