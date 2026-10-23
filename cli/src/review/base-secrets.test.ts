@@ -21,6 +21,7 @@ import {
   type BaseSecretScan,
   type BaseSecretScanResult,
 } from './base-secrets';
+import { SNAPSHOT_DEADLINE_MS, SnapshotDeadline, SnapshotTooSlow } from './deadline';
 
 const tmp = useTempDirs();
 const CONFIG = parseConfig({ version: 1, project: { key: 'acme/app' } });
@@ -51,6 +52,14 @@ function recordingScan(): { scan: BaseSecretScan; files: string[]; paths: string
 
 const secretsOf = (result: BaseSecretScanResult | undefined): string[] | 'failed' =>
   result === undefined || 'failed' in result ? 'failed' : [...result.secrets].sort();
+
+/** A snapshot deadline `ms` from now, on the real clock. */
+function deadlineIn(ms: number): SnapshotDeadline {
+  let ahead = 0;
+  const deadline = new SnapshotDeadline(() => Date.now() + ahead);
+  ahead = SNAPSHOT_DEADLINE_MS - ms;
+  return deadline;
+}
 
 /** The secrets the scan's own run of `analyzer` reports over `root` (`dir .`, in the root). */
 async function headSecrets(
@@ -241,6 +250,65 @@ describe('baseSecretScan: the secret engine over the merge base (R13)', () => {
       const engine = fakeSecretEngine(tmp(), mode).analyzer;
       expect(await baseSecrets(engine, tmp(), files), mode).toBe('failed');
     }
+  });
+
+  it("runs within the snapshot's deadline: its timeout is the shorter of its own and the time left (6I-3)", async () => {
+    const dir = tmp();
+    writeTree(dir, { 'a.ts': 'clean\n' });
+    const hang = fakeSecretEngine(tmp(), 'hang').analyzer;
+    const scanWith = (config: QualorConfig, deadline: SnapshotDeadline) =>
+      baseSecretScan({ analyzers: [hang], root: tmp(), config, log: silentLogger, deadline });
+    // Its own, when the deadline is further off: the run times out as configured.
+    const ownSecond = parseConfig({
+      version: 1,
+      project: { key: 'acme/app' },
+      analyzers: { gitleaks: { timeoutSeconds: 1 } },
+    });
+    expect(await scanWith(ownSecond, new SnapshotDeadline(Date.now))?.(dir, ['a.ts'])).toEqual({
+      failed: 'timed out after 1 s',
+    });
+    // The deadline's, a second away, before CONFIG's 300 seconds: the run is stopped there, and
+    // the deadline is the reason (the snapshot path says only that).
+    const started = Date.now();
+    await expect(scanWith(CONFIG, deadlineIn(1_000))?.(dir, ['a.ts'])).rejects.toBeInstanceOf(
+      SnapshotTooSlow,
+    );
+    expect(Date.now() - started).toBeLessThan(30_000);
+    // With no time left, it does not start at all.
+    const idle = fakeSecretEngine(tmp());
+    await expect(
+      baseSecretScan({
+        analyzers: [idle.analyzer],
+        root: tmp(),
+        config: CONFIG,
+        log: silentLogger,
+        deadline: deadlineIn(0),
+      })?.(dir, ['a.ts']),
+    ).rejects.toBeInstanceOf(SnapshotTooSlow);
+    expect(idle.ran()).toBeNull();
+  }, 60_000);
+
+  it('a scan past the deadline is not taken for a failed one (6I-3)', async () => {
+    const deadline = deadlineIn(0);
+    const warnings: string[] = [];
+    const log = { ...silentLogger, warn: (m: string) => void warnings.push(m) };
+    const engine = fakeSecretEngine(tmp()).analyzer;
+    const scan = baseSecretScan({
+      analyzers: [engine],
+      root: tmp(),
+      config: CONFIG,
+      log,
+      deadline,
+    });
+    await expect(
+      scanMergeBase(
+        noGit,
+        'b'.repeat(40),
+        { paths: [], instructions: [{ path: 'AGENTS.md', content: Buffer.from('none\n') }] },
+        { scan, budget: 1_000_000, log, tempRoot: tmp() },
+      ),
+    ).rejects.toBeInstanceOf(SnapshotTooSlow);
+    expect(warnings).toEqual([]);
   });
 });
 

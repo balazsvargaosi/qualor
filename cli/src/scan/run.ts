@@ -20,7 +20,7 @@ import { importCoverage } from '../coverage/import';
 import { discoverFiles } from '../discovery/discover';
 import { detectDuplications } from '../duplication/detect';
 import { CliError, EXIT, type ExitCode } from '../errors';
-import { createGit, GIT_LOCAL_TIMEOUT_MS, type Git } from '../git/git';
+import { createGit, type Git } from '../git/git';
 import { fetchPolicy, resolveScm } from '../git/scm';
 import { VERSION } from '../index';
 import type { CliIO } from '../io';
@@ -28,6 +28,7 @@ import type { Logger } from '../log';
 import { loadParsers, type Parsers } from '../parse/grammars';
 import { baseSecretScan, SECRET_ENGINE } from '../review/base-secrets';
 import { fetchReviewContext, type ReviewContext } from '../review/context';
+import { SnapshotDeadline, SnapshotTooSlow } from '../review/deadline';
 import { maskSecrets, prepareSecrets } from '../review/redact';
 import { buildReviewSnapshot, type BuiltSnapshot } from '../review/snapshot';
 import { uploadReviewSnapshot } from '../review/upload';
@@ -378,47 +379,8 @@ interface ReviewSnapshotOptions {
   deps: ScanDeps;
 }
 
-/**
- * The longest the snapshot path may take to build its snapshot (6I-3): the gate wait comes after
- * it, and a fetch that stalls must not hold the CI job until its own timeout.
- */
-const SNAPSHOT_DEADLINE_MS = 10 * 60_000;
 const SNAPSHOT_TOO_SLOW =
   'AI review: building the repository snapshot took longer than 10 minutes, so none is sent';
-
-/** The snapshot path is past its deadline: no snapshot is sent, and one warning says so. */
-class SnapshotTooSlow extends Error {
-  override name = 'SnapshotTooSlow';
-  constructor() {
-    super('the repository snapshot took longer than its deadline');
-  }
-}
-
-/** When the snapshot path must have built its snapshot by, on the scan's clock. */
-class SnapshotDeadline {
-  private readonly at: number;
-
-  constructor(private readonly now: () => number) {
-    this.at = now() + SNAPSHOT_DEADLINE_MS;
-  }
-
-  get passed(): boolean {
-    return this.now() >= this.at;
-  }
-
-  /**
-   * `git` that starts no call once the deadline has passed (it throws SnapshotTooSlow), and stops a
-   * call still running at the deadline: its timeout is cut to the time left.
-   */
-  git(git: Git): Git {
-    return (args, options) => {
-      const left = this.at - this.now();
-      if (left <= 0) return Promise.reject(new SnapshotTooSlow());
-      const timeoutMs = Math.min(options?.timeoutMs ?? GIT_LOCAL_TIMEOUT_MS, left);
-      return git(args, { ...options, timeoutMs });
-    };
-  }
-}
 
 /** An engine whose findings are secrets the report masks (its mapping's `redactRegion`). */
 function redactsSecrets(engineId: string): boolean {
@@ -545,6 +507,7 @@ async function buildAndUpload(
         env: o.env,
         log,
         tempRoot,
+        deadline,
       }),
       limits: s.context.limits,
       policy,
@@ -552,7 +515,7 @@ async function buildAndUpload(
       tempRoot,
     });
   } catch (err) {
-    // A git call stopped at the deadline fails as git does: the deadline is the reason.
+    // A failure past the deadline came of it (a call it cut, or one it refused): it is the reason.
     if (deadline.passed) throw new SnapshotTooSlow();
     throw err;
   }

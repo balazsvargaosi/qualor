@@ -379,6 +379,9 @@ function sent(server: Fake): { text: string; lines: SnapshotLine[] } {
 const reviewWarnings = (stderr: string) =>
   stderr.split('\n').filter((l) => l.startsWith('warn: AI review'));
 
+const TOO_SLOW =
+  'warn: AI review: building the repository snapshot took longer than 10 minutes, so none is sent';
+
 const UNTIL_REPORT = ['GET /api/v0/system/version', 'POST /api/v0/analyses'];
 const CONTEXT = 'GET /api/v0/projects/review-context';
 const SNAPSHOT = `POST /api/v0/analyses/${ID}/review-snapshot`;
@@ -481,6 +484,80 @@ describe('qualor scan: the AI review snapshot of a merge request (6I-2)', () => 
     // Nothing of the repository is left behind.
     expect(readdirSync(temp)).toEqual([]);
   });
+
+  it('a git call the deadline cuts short says the deadline only', { timeout: 60_000 }, async () => {
+    const mr = mrRepo();
+    const server = await fakeServer([done('passed')], undefined, { context: REVIEW_ON });
+    const temp = tmp();
+    const real = createGit(mr.root, { ...SCAN_TEST_ENV, ...gitlabMr(mr.head) });
+    let t = 0;
+    // The merge request's diff runs into the deadline: git is stopped there, and fails as git does.
+    const git: Git = (args, options) => {
+      if (!args.includes('-U3')) return real(args, options);
+      t = 10 * 60_000;
+      return Promise.resolve({ code: 1, stdout: '', stderr: 'git was stopped' });
+    };
+    const { code, stderr } = await scan(
+      mr.root,
+      server,
+      [],
+      { reviewTempRoot: temp, clock: () => t, git },
+      gitlabMr(mr.head),
+    );
+    expect(code, stderr).toBe(0);
+    expect(server.paths).toEqual([...UNTIL_REPORT, CONTEXT, GATE]);
+    // Not also that the diff could not be read: the deadline cut it.
+    expect(reviewWarnings(stderr)).toEqual([TOO_SLOW]);
+    expect(readdirSync(temp)).toEqual([]);
+  });
+
+  it(
+    'a snapshot whose build ends past the deadline is not sent',
+    { timeout: 120_000 },
+    async () => {
+      /** A scan whose snapshot path's git calls are counted; the clock passes the deadline as call `last` ends. */
+      const scanUntil = async (last: number | null) => {
+        const mr = mrRepo();
+        let t = 0;
+        let asked = false;
+        const server = await fakeServer([done('passed')], undefined, {
+          context: REVIEW_ON,
+          onContext: () => {
+            asked = true;
+          },
+        });
+        const real = createGit(mr.root, { ...SCAN_TEST_ENV, ...gitlabMr(mr.head) });
+        const calls: string[] = [];
+        const git: Git = async (args, options) => {
+          if (!asked) return real(args, options);
+          calls.push(args.join(' '));
+          const result = await real(args, options);
+          if (calls.length === last) t = 10 * 60_000;
+          return result;
+        };
+        const temp = tmp();
+        const out = await scan(
+          mr.root,
+          server,
+          [],
+          { reviewTempRoot: temp, clock: () => t, git },
+          gitlabMr(mr.head),
+        );
+        return { ...out, server, temp, calls };
+      };
+      const onTime = await scanUntil(null);
+      expect(onTime.server.snapshots).toHaveLength(1);
+      // The clock passes the deadline as the build's last git call ends: the build itself ends, and
+      // only its end finds the deadline passed.
+      const late = await scanUntil(onTime.calls.length);
+      expect(late.calls).toHaveLength(onTime.calls.length);
+      expect(late.code, late.stderr).toBe(0);
+      expect(late.server.paths).toEqual([...UNTIL_REPORT, CONTEXT, GATE]);
+      expect(reviewWarnings(late.stderr)).toEqual([TOO_SLOW]);
+      expect(late.stderr).not.toContain('AI review: uploading');
+      expect(readdirSync(late.temp)).toEqual([]);
+    },
+  );
 
   it('sends the snapshot without waiting for the gate as well', { timeout: 60_000 }, async () => {
     const mr = mrRepo();

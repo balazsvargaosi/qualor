@@ -14,6 +14,7 @@ import { gitText, type Git } from '../git/git';
 import { parseLsTreeLong, readObjects, type TreeEntry } from '../git/objects';
 import type { Logger } from '../log';
 import { gitleaksOverMergeBase } from './base-gitleaks';
+import { SnapshotTooSlow, type SnapshotDeadline } from './deadline';
 
 /*
  * The secrets of the merge base (ruling R13). The analyzers scan the merge request's head, so a
@@ -50,10 +51,30 @@ export interface BaseSecretScanOptions {
   log: Logger;
   /** Where the runner makes its work directory (the system's temporary directory). */
   tempRoot?: string;
+  /**
+   * The snapshot's deadline (6I-3): the engine's timeout is cut to the seconds left before it. A
+   * run that did not end well with the deadline passed (it cut the run), or one with no time left
+   * to start, throws SnapshotTooSlow: the snapshot path then says only that.
+   */
+  deadline?: SnapshotDeadline;
 }
 
 /** The engine whose findings are secrets the report redacts (its mapping's `redactRegion`). */
 export const SECRET_ENGINE = 'gitleaks';
+
+/** The scan's configuration with the engine's timeout cut to the whole seconds left. */
+function withinDeadline(config: QualorConfig, deadline: SnapshotDeadline): QualorConfig {
+  const left = Math.ceil(deadline.leftMs() / 1000);
+  if (left <= 0) throw new SnapshotTooSlow();
+  const gitleaks = config.analyzers.gitleaks;
+  return {
+    ...config,
+    analyzers: {
+      ...config.analyzers,
+      gitleaks: { ...gitleaks, timeoutSeconds: Math.min(gitleaks.timeoutSeconds, left) },
+    },
+  };
+}
 
 /** `log` with every line at debug: what the snapshot lacks, it says itself, once. */
 function debugOnly(log: Logger): Logger {
@@ -74,13 +95,14 @@ function debugOnly(log: Logger): Logger {
  * its rules and allowlists match are the repository's, with the scan's configuration file, its
  * extends, `GITLEAKS_CONFIG` and `.gitleaksignore`. When it cannot run there exactly as in the
  * scan, it does not run, as when it is not installed. Its secrets are collected as the report
- * collects them (`normalizeCaptures`).
+ * collects them (`normalizeCaptures`). It runs within the snapshot's deadline (`o.deadline`).
  */
 export function baseSecretScan(o: BaseSecretScanOptions): BaseSecretScan | null {
   const engine = o.analyzers.find((a) => a.id === SECRET_ENGINE);
   if (engine === undefined || o.config.analyzers.gitleaks.enabled === false) return null;
   const log = debugOnly(o.log);
   return async (dir, paths) => {
+    const config = o.deadline === undefined ? o.config : withinDeadline(o.config, o.deadline);
     const inDir: Analyzer = {
       ...engine,
       prepare: async (ctx) => {
@@ -102,14 +124,17 @@ export function baseSecretScan(o: BaseSecretScanOptions): BaseSecretScan | null 
     };
     const [capture] = await runAnalyzers([inDir], {
       root: o.root,
-      config: o.config,
+      config,
       files: [],
       log,
       concurrency: 1,
       ...(o.env !== undefined && { env: o.env }),
       ...(o.tempRoot !== undefined && { tempRoot: o.tempRoot }),
     });
-    if (capture?.status !== 'ok') return { failed: capture?.reason ?? 'it did not run' };
+    if (capture?.status !== 'ok') {
+      if (o.deadline?.passed === true) throw new SnapshotTooSlow();
+      return { failed: capture?.reason ?? 'it did not run' };
+    }
     const found: { texts: readonly string[] | null } = { texts: null };
     normalizeCaptures([capture], {
       repoRoot: dir,
@@ -269,6 +294,8 @@ async function scanned(
   try {
     return await scan(dir, paths);
   } catch (err) {
+    // Past the snapshot's deadline nothing is sent: the snapshot path says so, once.
+    if (err instanceof SnapshotTooSlow) throw err;
     log.debug(`AI review: the secret scan of the merge base threw: ${String(err)}`);
     return { failed: 'the scan threw' };
   }
