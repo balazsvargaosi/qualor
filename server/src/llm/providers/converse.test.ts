@@ -924,6 +924,17 @@ describe('converse: conversations with read-only tools (R5)', () => {
       [400, "This model doesn't support function calling"],
       [400, "Unsupported parameter: 'tools'"],
       [400, 'This endpoint cannot support tool use'],
+      // OpenRouter, when no provider behind the model can call tools: it says what is missing.
+      [
+        404,
+        'No endpoints found that support tool use. To learn more about provider routing, visit: https://openrouter.ai/docs/provider-routing',
+      ],
+      // The same kind of sentence with the other words for them.
+      [400, 'No model found that supports function calling'],
+      [404, 'Only an endpoint that supports tools can take tool_choice'],
+      [400, 'This route only serves models that support functions'],
+      // Whatever whitespace the words are set apart with.
+      [400, 'No endpoints found that\nsupport  tool use'],
     ])('HTTP %i %s is flagged, with a fixed message that names tools', async (status, message) => {
       const err = await refusal(errorBody(message), status);
       expect(err).toBeInstanceOf(LlmError);
@@ -931,6 +942,20 @@ describe('converse: conversations with read-only tools (R5)', () => {
       expect((err as Error).message).toMatch(/\btools\b/);
       // Fixed text: nothing of the provider's own words.
       expect((err as Error).message).not.toContain(message.slice(0, 20));
+    });
+
+    it('is flagged when the code of the error is a number, as OpenRouter writes it', async () => {
+      const err = await refusal(
+        {
+          error: {
+            message:
+              'No endpoints found that support tool use. To learn more about provider routing, visit: https://openrouter.ai/docs/provider-routing',
+            code: 404,
+          },
+        },
+        404,
+      );
+      expect(err).toMatchObject({ failure: 'rejected', status: 404, refusedTools: true });
     });
 
     it('is flagged when the error is at the top of the body or a plain string', async () => {
@@ -942,6 +967,16 @@ describe('converse: conversations with read-only tools (R5)', () => {
 
     it.each([
       ['a refusal that says nothing of tools', errorBody('Model not found')],
+      [
+        'a search for endpoints that says nothing of tools',
+        errorBody(
+          'No endpoints found for acme/some-model. To learn more about provider routing, visit: https://openrouter.ai/docs/provider-routing',
+        ),
+      ],
+      [
+        'a sentence about what an endpoint supports that does not name tools',
+        errorBody('No endpoints found that support the requested context length'),
+      ],
       ['an unreadable body', 'not json at all'],
       ['a body that is not an object', [1, 2]],
       [

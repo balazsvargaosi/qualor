@@ -169,11 +169,13 @@ const TOOL_WORDS = /\b(?:tools?|functions?|tool_choice|function_call)\b/i;
 /**
  * Phrases that say something is not supported: "does not support tools", "function calling is not
  * enabled", "unsupported parameter", "unrecognized request argument", "extra inputs are not
- * permitted", "requires --enable-auto-tool-choice". A message that names a tool and says none of them
- * (a name that does not match, an empty list, a role) is some other refusal.
+ * permitted", "requires --enable-auto-tool-choice", and what OpenRouter says (HTTP 404) when no
+ * provider behind the model can: "No endpoints found that support tool use". A message that names a
+ * tool and says none of them (a name that does not match, an empty list, a role) is some other
+ * refusal.
  */
 const NOT_SUPPORTED =
-  /\bunsupported\b|\bunrecognized\b|(?:\bnot|n't|\bcannot)\s+(?:currently\s+)?(?:support|enabled|available|allowed|permitted|implemented)|\brequires?\s+--/i;
+  /\bunsupported\b|\bunrecognized\b|(?:\bnot|n't|\bcannot)\s+(?:currently\s+)?(?:support|enabled|available|allowed|permitted|implemented)|\bthat\s+supports?\s+(?:tools?|functions?)\b|\brequires?\s+--/i;
 /**
  * The refusal of a tool's schema is Qualor's own schema refused, not a server without tools; it
  * names the tools and the functions all the same, and may say "not permitted" of one of its keywords.
