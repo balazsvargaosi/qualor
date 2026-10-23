@@ -23,9 +23,13 @@ export const CONTROL_CHARS = String.raw`\u0000-\u001f\u007f-\u009f\u061c\u200e\u
 /**
  * Removed: invisible format characters that could hide or smuggle text, and the blank-looking
  * fillers that are not whitespace (Hangul fillers U+115F, U+1160, U+3164, U+FFA0; the braille
- * blank U+2800), which would show a value as empty or spaced where it is not.
+ * blank U+2800), which would show a value as empty or spaced where it is not. With the controls and
+ * the joiners it holds every Unicode default-ignorable code point (a renderer draws nothing for
+ * one), so a value cannot be split by a character a reader does not see: the unassigned ones of
+ * U+FFF0 to U+FFF8 and of the tag block, the shorthand format controls U+1BCA0 to U+1BCA3 and the
+ * musical ones U+1D173 to U+1D17A are in it with the rest.
  */
-export const INVISIBLE_CHARS = String.raw`\u00ad\u115f\u1160\u180e\u200b\u2060-\u2065\u206a-\u206f\ufeff\ufff9-\ufffb\u2800\u3164\uffa0\u{e0000}-\u{e007f}`;
+export const INVISIBLE_CHARS = String.raw`\u00ad\u115f\u1160\u180e\u200b\u2060-\u2065\u206a-\u206f\ufeff\ufff0-\ufffb\u2800\u3164\uffa0\u{1bca0}-\u{1bca3}\u{1d173}-\u{1d17a}\u{e0000}-\u{e00ff}\u{e01f0}-\u{e0fff}`;
 
 /**
  * Kept in text for people (they shape emoji and scripts), refused in a suggestion, where they could

@@ -581,4 +581,111 @@ describe('model text in the section is inert', () => {
     }
     expect(outsideCodeSpans('` @all `')).not.toContain('@');
   });
+
+  it('accepts a fixed text that holds markup only as a whole line or where it belongs', () => {
+    const base = 'https://q.example/projects/p/issues/i';
+    // The lines the section writes, each in its place.
+    for (const good of [
+      '#### AI review',
+      'AI review in progress…',
+      '**Not on changed lines:**',
+      '<details><summary>Prompt for an AI agent</summary>',
+      '</details>',
+      '```text',
+      '`````text',
+      '```',
+      '**Findings:** 1 high · 2 medium · 0 low',
+      '…and 3 more in Qualor',
+      '- **High** · ` src/a.ts:1 `',
+      '- **Medium** · ` src/a.ts:1 ` · Some title words',
+      `- **Low** · \` src/a.ts:1 \` · [View in Qualor](${base})`,
+      `- **Unknown** · \` a \` · A title · [View in Qualor](${base}1)`,
+      '- **High** · ` a · b ` · A title with ` code · spans `',
+    ]) {
+      expect(checkSectionLine(good), good).toBe(true);
+    }
+    // The same texts anywhere else in a line are model text out of its code spans. (The ellipsis
+    // and the dashes are ordinary text now, so a line with one is no markup.)
+    for (const bad of [
+      'see </details> here',
+      '</details> x',
+      'x </details>',
+      'text <details><summary>Prompt for an AI agent</summary>',
+      '<details><summary>Prompt for an AI agent</summary> x',
+      'foo #### AI review',
+      '#### AI review x',
+      '#### AI review #### AI review',
+      'a **Not on changed lines:** b',
+      'x **Findings:** 1 high · 2 medium · 0 low',
+      '**Findings:** 1 high · 2 medium · 0 low x',
+      '**Findings:** 1 high · 2 medium',
+      'a **High** b',
+      'x - **High** · ` a `',
+      '- x **High** · ` a `',
+      '- **High** x ` a `',
+      '- **High** · a · b',
+      '- **High** · ` a ` · one · two',
+      '- **High** · ` a ` · title · **High** · ` b `',
+      '- **High** · ` a ` extra',
+      '- **Critical** · ` a `',
+      '1. **High** · ` a `',
+    ]) {
+      expect(checkSectionLine(bad), bad).toBe(false);
+    }
+    // A link is Qualor's: the test's base, over https, and nothing but a path after it.
+    for (const bad of [
+      '- **High** · ` a ` · [View in Qualor](https://evil.example/x)',
+      '- **High** · ` a ` · [View in Qualor](http://q.example/x)',
+      '- **High** · ` a ` · [View in Qualor](https://q.example.evil.example/x)',
+      '- **High** · ` a ` · [View in Qualor](https://q.example/x?y=1)',
+      '- **High** · ` a ` · [View in Qualor](https://q.example/x) more',
+      '- **High** · ` a ` · [Click](https://q.example/x)',
+      '- **High** · ` a ` · [View in Qualor](https://q.example/x) · [View in Qualor](https://q.example/y)',
+      '[View in Qualor](https://q.example/x)',
+    ]) {
+      expect(checkSectionLine(bad), bad).toBe(false);
+    }
+  });
+
+  it('shows the verdict, the notes and the commit of an older analysis, and none of the branch’s findings', () => {
+    // The findings of the branch are the current ones: an analysis that is no longer the newest
+    // is not given them, whatever the state holds.
+    const lines = section(
+      done({
+        latest: false,
+        counts: { high: 2, medium: 1, low: 0 },
+        unplaced: [finding(1)],
+        moreUnplaced: 3,
+        fixPrompt: [promptFinding(1)],
+        tokenLimitReached: true,
+        notes: ['reviewer_unreadable'],
+        mergeRequestHeadSha: NEWER,
+      }),
+    );
+    expect(lines).toEqual([
+      '#### AI review',
+      '',
+      'The change adds refunds; one path can fail silently.',
+      '',
+      'The review reached its token limit, so it may have missed problems. A reviewer’s answer could not be read, so part of the review is missing.',
+      '',
+      'Reviewed commit: ` aaaaaaaaaaaa `',
+    ]);
+    const text = lines.join('\n');
+    for (const gone of [
+      'Findings',
+      'No findings',
+      'Not on changed lines',
+      '<details>',
+      '- ',
+      'now at',
+    ]) {
+      expect(text, gone).not.toContain(gone);
+    }
+    // Nothing else of it changes: the newest analysis shows it all, whether `latest` is true or left out.
+    expect(section(done({ latest: true }))).toEqual(section(done()));
+    expect(section(done()).join('\n')).toContain('**Findings:**');
+    // A review that is not done has no findings to leave out.
+    expect(section({ kind: 'pending' })).toEqual(['#### AI review', '', 'AI review in progress…']);
+  });
 });

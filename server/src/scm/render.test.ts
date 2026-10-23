@@ -1076,9 +1076,14 @@ const REFERENCES: readonly (readonly [string, RegExp])[] = [
   ['a sigil of Markdown, a reference or a mention', /[@#~%&$<>[\]*_|=+\\/{}^`]/],
   ['a bang with a number', /!\d/],
   ['an emoji code', /:[\p{L}\p{N}_+-]+:/u],
-  ['a commit hash', /(?<![\p{L}\p{N}])[0-9a-f]{7,64}(?![\p{L}\p{N}])/iu],
-  ['a tracker key', /\p{L}-\p{N}/u],
-  ['a www address', /\bwww\.[\p{L}\p{N}]/iu],
+  // A hash is a word of its own to a provider unless a letter or a decimal digit touches it:
+  // GitHub links it beside a circled digit (①), GitLab beside ², ½ and ① as well.
+  ['a commit hash', /(?<![\p{L}\p{Nd}])[0-9a-f]{7,64}(?![\p{L}\p{Nd}])/iu],
+  // A part of a word that starts with a letter and is followed by a hyphen and a digit.
+  ['a tracker key', /(?<![\p{L}\p{Nd}\p{M}])\p{L}[\p{L}\p{Nd}\p{M}]*-\p{Nd}/u],
+  // GitHub links `www.` wherever it follows a space, a bracket or `*`, `_` or `~`, whatever follows
+  // it (a space, a closing mark): `www. x`, `(www. x`, `www.) x`, `www.… x`.
+  ['a www address', /(?:^|[\s(*_~])www\./iu],
 ];
 
 /** What the model's text may be made of, for the corpus and the fuzz of `safeProse`. */
@@ -1086,8 +1091,11 @@ const PROSE_OPTIONS = { maxChars: 20_000, maxLines: 200 } as const;
 const prose = (text: string, options: { maxChars?: number; maxLines?: number } = {}): string =>
   safeProse(text, { ...PROSE_OPTIONS, ...options });
 
-/** A line of prose starts with a letter, a digit, a backtick, an opening mark or the list marker. */
-const PROSE_LINE_START = /^(?:[\p{L}\p{N}`("“‘]|- )/u;
+/**
+ * A line of prose starts with a letter, a digit, a backtick, an opening mark, a dash by itself or
+ * the list marker.
+ */
+const PROSE_LINE_START = /^(?:[\p{L}\p{Nd}`("“‘—–]|- )/u;
 
 /**
  * Everything `safeProse` promises of its output: it is inert in GitLab and GitHub, whatever
@@ -1171,6 +1179,97 @@ describe('safeProse: the model’s words made inert', () => {
     expect(prose('a seven-eight pair')).toBe('a seven-eight pair');
   });
 
+  it('puts a tracker key in a code span whatever letters and digits it is made of', () => {
+    // A part that starts with a letter and is followed by a hyphen and a digit: the keys of Jira and
+    // GitHub's `GH-` are all of that shape. What it leaves out is a number or a range.
+    expect(prose('See AB1-123, X9-1, A1-2 and e2e-2 or Gh-7.')).toBe(
+      'See ` AB1-123, ` ` X9-1, ` ` A1-2 ` and ` e2e-2 ` or ` Gh-7. `',
+    );
+    expect(prose('about 5-10 or 2-way and well-known x-ray')).toBe(
+      'about 5-10 or 2-way and well-known x-ray',
+    );
+  });
+
+  it('puts www. in a code span whatever follows it and however it is written', () => {
+    // GitHub links `www.` wherever a space, a bracket, `*`, `_` or `~` comes before it, whatever
+    // comes after (a space, a closing mark), so a word that is `www` and a full stop is not plain.
+    expect(prose('www. example')).toBe('` www. ` example');
+    expect(prose('(www. x')).toBe('` (www. ` x');
+    expect(prose('www.) x')).toBe('` www.) ` x');
+    expect(prose('www.: e www.! f www.” h www.… i')).toBe(
+      '` www.: ` e ` www.! ` f ` www.” ` h ` www.… ` i',
+    );
+    expect(prose('WWW. y Www. z')).toBe('` WWW. ` y ` Www. ` z');
+    // `www` by itself, or with a mark that is no full stop, is an ordinary word.
+    expect(prose('www x www, y www… z')).toBe('www x www, y www… z');
+    // A mark on the www does not make it another word to the check.
+    const acute = String.fromCodePoint(0x301);
+    expect(prose(`www${acute}. x`)).toBe(`\` www${acute}. \` x`);
+  });
+
+  it('puts a hash next to a character that is no letter or decimal digit in a code span', () => {
+    // GitHub links 7fd1a60① (and GitLab 7fd1a60², 7fd1a60½): the circled digit, the superscript,
+    // the fraction and the numeral are numbers but no decimal digits, so they are no plain core.
+    expect(prose('7fd1a60① 7fd1a60b① 7fd1a60² 7fd1a60½ 7fd1a60Ⅷ')).toBe(
+      '` 7fd1a60① ` ` 7fd1a60b① ` ` 7fd1a60² ` ` 7fd1a60½ ` ` 7fd1a60Ⅷ `',
+    );
+    expect(prose('Item ① and 2² then ½ and Ⅷ')).toBe('Item ` ① ` and ` 2² ` then ` ½ ` and ` Ⅷ `');
+    // A hash with a combining mark is still a hash, and a letter of another script is a letter.
+    const acute = String.fromCodePoint(0x301);
+    expect(prose(`7fd1a60b${acute} x`)).toBe(`\` 7fd1a60b${acute} \` x`);
+    expect(prose('x7fd1a60 7fd1a60x 7fd1a60é')).toBe('x7fd1a60 7fd1a60x 7fd1a60é');
+    // A mark between a hash and the letters around it does not take the hash into a word: GitHub
+    // reads it as one, GitLab may not, and the check does not.
+    expect(prose(`7fd1a60b${acute}word x${acute}7fd1a60`)).toBe(
+      `\` 7fd1a60b${acute}word \` \` x${acute}7fd1a60 \``,
+    );
+  });
+
+  it('keeps what reads as ordinary text plain: combining marks, a dash by itself, the ellipsis', () => {
+    const acute = String.fromCodePoint(0x301);
+    const decomposed = `cafe${acute} au lait, nai${String.fromCodePoint(0x308)}ve.`;
+    expect(prose(decomposed)).toBe(decomposed);
+    const devanagari = 'नमस्ते दुनिया, यह एक परीक्षण है.';
+    expect(prose(devanagari)).toBe(devanagari);
+    // A mark after a digit, or one with nothing before it, is no part of a word.
+    expect(prose(`5${acute} ${acute}x`)).toBe(`\` 5${acute} \` \` ${acute}x \``);
+    // The dashes of running text, by themselves; stuck to a word they are not plain.
+    expect(prose('a — b – c')).toBe('a — b – c');
+    expect(prose('— start')).toBe('— start');
+    expect(prose('a—b a–b')).toBe('` a—b ` ` a–b `');
+    expect(prose('wait… what… really?!')).toBe('wait… what… really?!');
+    // An ellipsis closes a word, it does not make one.
+    expect(prose('… x')).toBe('` … ` x');
+  });
+
+  it('has an oracle that sees what GitHub links and GitLab references', () => {
+    const sees = (name: string, text: string): boolean =>
+      REFERENCES.find(([n]) => n === name)![1].test(text);
+    for (const text of ['see www. example', '(www. x', 'www.) x', '*www. x', 'www.… x', 'WWW. y']) {
+      expect(sees('a www address', text), text).toBe(true);
+    }
+    for (const text of ['www x', 'www, y', 'awww. x', 'x-www. y']) {
+      expect(sees('a www address', text), text).toBe(false);
+    }
+    for (const text of ['7fd1a60①', '7fd1a60½', 'x 7fd1a60. y', '7fd1a60b ']) {
+      expect(sees('a commit hash', text), text).toBe(true);
+    }
+    // A combining mark is no letter or digit to it, so a hash beside one is a hash.
+    const acute = String.fromCodePoint(0x301);
+    for (const text of [`7fd1a60b${acute}word`, `x${acute}7fd1a60`]) {
+      expect(sees('a commit hash', text), text).toBe(true);
+    }
+    for (const text of ['7fd1a60é', '7fd1a60x', 'x7fd1a60', '123456']) {
+      expect(sees('a commit hash', text), text).toBe(false);
+    }
+    for (const text of ['AB1-123', 'X9-1', 'x-JIRA-9', 'GH-26']) {
+      expect(sees('a tracker key', text), text).toBe(true);
+    }
+    for (const text of ['5-10', '2-way', 'well-known']) {
+      expect(sees('a tracker key', text), text).toBe(false);
+    }
+  });
+
   it('removes controls, bidirectional and invisible characters, and never joins what they split', () => {
     expect(prose('a\u202eb\u200bc\u2028d\u0000e\u00adf\u200dg\ufeffh\u{e0041}i')).toBe(
       'a b c d e f g h i',
@@ -1188,8 +1287,9 @@ describe('safeProse: the model’s words made inert', () => {
     expect(prose('\n\n  \na\n \n\n')).toBe('a');
     expect(prose('a\nb\nc', { maxLines: 2 })).toBe('a\nb');
     expect(prose('a\n\n\nb\nc', { maxLines: 3 })).toBe('a\n\nb');
-    expect(prose('x'.repeat(50), { maxChars: 10 })).toBe(`\` ${'x'.repeat(9)}… \``);
-    expect(prose('one two three four five', { maxChars: 12 })).toBe('one two ` thr… `');
+    // The ellipsis of a cut closes a word like a full stop does.
+    expect(prose('x'.repeat(50), { maxChars: 10 })).toBe(`${'x'.repeat(9)}…`);
+    expect(prose('one two three four five', { maxChars: 12 })).toBe('one two thr…');
     expect(prose('hello wörld 😀😀😀', { maxChars: 14 })).toBe('hello wörld ` 😀… `');
     for (const text of ['', '   ', '\n \n', '\u200b\u2028']) expect(prose(text), text).toBe('');
     expect(prose('text', { maxChars: 0 })).toBe('');
@@ -1210,6 +1310,10 @@ describe('safeProse: the model’s words made inert', () => {
     ['a Markdown link', '[x](https://e.example)', '` [x](https://e.example) `'],
     ['a bare URL', 'https://e.example', '` https://e.example `'],
     ['a www address', 'www.e.example', '` www.e.example `'],
+    ['a www link that ends a sentence', 'www. example', '` www. ` example'],
+    ['a www link in brackets', '(www. x', '` (www. ` x'],
+    ['a www link with a closing bracket', 'www.) x', '` www.) ` x'],
+    ['a hash next to a circled digit', '7fd1a60①', '` 7fd1a60① `'],
     ['an image tag', '<img src=x onerror=y>', '` <img ` ` src=x ` ` onerror=y> `'],
     ['a details tag', '<details>', '` <details> `'],
     ['a mention', '@user', '` @user `'],
@@ -1243,6 +1347,22 @@ describe('safeProse: the model’s words made inert', () => {
     ['a Markdown link', '[x](https://e.example)'],
     ['a bare URL', 'https://e.example'],
     ['a www address', 'www.e.example'],
+    ['a www link that ends a sentence', 'www. example'],
+    ['a www link in brackets', '(www. x'],
+    ['a www link with a closing bracket', 'www.) x'],
+    [
+      'a www link with a colon, a bang, a curly quote and an ellipsis',
+      'www.: e www.! f www.” h www.… i',
+    ],
+    ['a www link in capitals', 'WWW. y Www. z'],
+    ['a hash next to a circled digit', '7fd1a60①'],
+    ['a hash next to a superscript, a fraction and a numeral', '7fd1a60² 7fd1a60½ 7fd1a60Ⅷ'],
+    ['a hash next to a combining mark', '7fd1a60b\u0301'],
+    [
+      'a hash split from the letters around it by combining marks',
+      `7fd1a60b${String.fromCodePoint(0x301)}word x${String.fromCodePoint(0x301)}7fd1a60`,
+    ],
+    ['a tracker key with a digit in its first part', 'AB1-123 X9-1'],
     ['an image tag with a handler', '<img src=x onerror=y>'],
     ['a details tag', '<details>'],
     ['a mention', '@user'],
@@ -1467,6 +1587,23 @@ describe('the AI review section in the summary', () => {
       const body = summary({ review });
       expect(sectionOf(body)).toContain(text);
       checkBody(body, SUMMARY_MAX_BYTES);
+    }
+  });
+
+  it('is checked by a body check that refuses markup where it does not belong', () => {
+    const body = summary({ review: REVIEW });
+    expect(() => checkBody(body, SUMMARY_MAX_BYTES)).not.toThrow();
+    // Appended to the section: text out of a code span, or a fixed text of the section out of place.
+    for (const bad of [
+      'see </details> here',
+      'text <details><summary>Prompt for an AI agent</summary>',
+      'again #### AI review',
+      '**High** sneaks in',
+      '- **High** · ` a ` · [View in Qualor](https://evil.example/x)',
+      '- **High** · ` a ` · [View in Qualor](http://q.example/x)',
+      '[View in Qualor](https://q.example/ok) and [x](https://e.example)',
+    ]) {
+      expect(() => checkBody(`${body}\n${bad}`, SUMMARY_MAX_BYTES), bad).toThrow();
     }
   });
 

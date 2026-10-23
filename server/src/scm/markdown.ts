@@ -63,25 +63,54 @@ export function codeSpan(value: string, max: number = MAX_VALUE_CHARS): string {
  * the joiners (packages/shared's lists, imported). A line break is split off before.
  */
 const PROSE_UNSAFE = new RegExp(`[${CONTROL_CHARS}${INVISIBLE_CHARS}${JOINER_CHARS}]`, 'gu');
-/** A word of ordinary prose: letters and digits, with apostrophes and hyphens inside, and marks around. */
-const PROSE_WORD = /^[("“‘]?([\p{L}\p{N}]+(?:['’-][\p{L}\p{N}]+)*)[.,;:!?)"”’]*$/u;
+/**
+ * A word of ordinary prose: a core of letters, each with the combining marks that follow it, and
+ * decimal digits, with apostrophes and hyphens between its parts, one opening bracket or quote
+ * before it and closing marks after it. The other kinds of number (①, ², ½, Ⅷ) are no digits to a
+ * provider, and a commit hash beside one is still a hash it links: they are no plain core.
+ */
+const PROSE_WORD =
+  /^[("“‘]?((?:\p{L}\p{M}*|\p{Nd})+(?:['’-](?:\p{L}\p{M}*|\p{Nd})+)*)([.,;:!?)"”’…]*)$/u;
 /** The mark a plain word may open with, and the ones it may end in. */
 const PROSE_OPENERS = '("“‘';
-const PROSE_CLOSERS = '.,;:!?)"”’';
+const PROSE_CLOSERS = '.,;:!?)"”’…';
+/** The dashes of running text: plain by themselves, never stuck to a word. */
+const PROSE_DASHES: ReadonlySet<string> = new Set(['—', '–']);
 /** A list marker at the start of a line: `- `, `* ` or a number (at most the nine CommonMark reads) and a dot. */
 const PROSE_LIST_MARKER = /^(?:[-*]|(\d{1,9})\.) +(?=\S)/;
 /** Hexadecimal of a commit's size: GitLab and GitHub link it to the commit. */
 const COMMIT_LIKE = /^[0-9a-f]{7,64}$/i;
-/** A letter, a hyphen and a digit: `GH-26` links to an issue on GitHub, `JIRA-123` to a tracker. */
-const TRACKER_LIKE = /\p{L}-\p{N}/u;
+/**
+ * A part of a word that starts with a letter and is followed by a hyphen and a digit: `GH-26` links
+ * to an issue on GitHub, and `JIRA-123`, `AB1-123` and `X9-1` to the tracker a GitLab project has set up.
+ * Left plain, being words: GitLab's EWM integration matches `bug 12` and `task 3`, and ClickUp's
+ * matches `CU-abc`. Both link only to the tracker the project has configured.
+ */
+const TRACKER_LIKE = /(?<![^-'’])\p{L}[^-'’]*-\p{Nd}/u;
+/** A combining mark, which changes nothing of a word a provider reads for a link or a reference. */
+const COMBINING_MARKS = /\p{M}/gu;
+/** Where a hash may begin or end inside a plain core: at a hyphen, an apostrophe or a combining mark. */
+const HASH_EDGES = /['’-]|\p{M}+/u;
 /** A word or a model's span is cut to this many characters. */
 const PROSE_SPAN_CHARS = MAX_PATH_CHARS;
 
-/** Whether `word` is plain: ordinary letters and digits that no provider turns into a link or a reference. */
+/**
+ * Whether `word` is plain: ordinary letters and digits that no provider turns into a link or a
+ * reference. A word that is `www` and a full stop (`www. x`, `(www.) x`, `www.… x`) is not: GitHub
+ * links it to `http://www` wherever a space or a bracket comes before it and whatever comes after
+ * it. Only lower case links there; any case is refused.
+ */
 function isPlainProse(word: string): boolean {
-  const core = PROSE_WORD.exec(word)?.[1];
-  if (core === undefined) return false;
-  return !TRACKER_LIKE.test(core) && !core.split(/['’-]/).some((part) => COMMIT_LIKE.test(part));
+  if (PROSE_DASHES.has(word)) return true;
+  const match = PROSE_WORD.exec(word);
+  if (match === null) return false;
+  const marked = match[1] ?? '';
+  const core = marked.replace(COMBINING_MARKS, '');
+  if (core.toLowerCase() === 'www' && (match[2] ?? '').startsWith('.')) return false;
+  // A hash is read both with the marks taken out of the word and as the pieces the marks split it
+  // into: GitHub reads a hash beside a mark as part of a word, GitLab may not.
+  const parts = [...core.split(/['’-]/), ...marked.split(HASH_EDGES)];
+  return !TRACKER_LIKE.test(core) && !parts.some((part) => COMMIT_LIKE.test(part));
 }
 
 /**
@@ -168,13 +197,15 @@ function proseLine(line: string): string {
  *   rest;
  * - the backtick spans the model wrote are written again through {@link codeSpan}, with the marks
  *   that open before and end after them;
- * - every other word, as white space separates them, stays plain only when it is letters and digits
- *   (apostrophes and hyphens inside, a bracket or quote before, marks after) that no provider
- *   turns into a commit link or a tracker reference; anything else goes in a code span, so `@x`,
- *   `#1`, `!1`, `~x`, `%x`, `&x`, `$x`, `/x`, `<x>`, `[x](y)`, `*`, `|`, `=`, `www.x`, `x.y`, `a:b`
- *   and the like are never active; a lone surrogate, which is no letter, is in a code span, where
- *   it becomes U+FFFD.
- * A line therefore starts with a letter, a digit, a backtick, an opening mark or a list marker.
+ * - every other word, as white space separates them, stays plain only when it is letters and
+ *   decimal digits (apostrophes and hyphens inside, combining marks on the letters, a bracket or
+ *   quote before, closing marks after) that no provider turns into a commit link, a tracker
+ *   reference or a `www.` link; a dash by itself is plain too. Anything else goes in a code span,
+ *   so `@x`, `#1`, `!1`, `~x`, `%x`, `&x`, `$x`, `/x`, `<x>`, `[x](y)`, `*`, `|`, `=`, `www.x`,
+ *   `x.y`, `a:b`, `①` and the like are never active; a lone surrogate, which is no letter, is in a
+ *   code span, where it becomes U+FFFD.
+ * A line therefore starts with a letter, a digit, a backtick, an opening mark, a dash or a list
+ * marker.
  *
  * Nothing it takes out is deleted: a character it removes leaves a space, so that a provider's key
  * a model split with hidden characters cannot be joined again here (the shared `codeSpan` and

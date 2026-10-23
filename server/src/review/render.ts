@@ -33,6 +33,12 @@ export type ReviewSummaryState =
   | { kind: 'failed'; reason: ReviewFailureReason }
   | {
       kind: 'done';
+      /**
+       * False when the analysis is no longer the branch's newest: the findings below are the
+       * branch's now, not this run's, so the section tells the verdict, the notes and the commit
+       * only. Left out, the analysis is the newest.
+       */
+      latest?: boolean;
       /** The judge's one line about the merge request, and its walkthrough of what changed. */
       verdict: string;
       walkthrough: string[];
@@ -145,35 +151,16 @@ const PROMPT_INTRO = (words: Words): string[] => [
 ];
 
 /**
- * Every fixed text of the section, for the tests that check what is left of a line once code
- * spans and Qualor's own links are taken out (`checkProse` in server/test/markdown-check.ts).
+ * The fixed lines of the section that hold markup, each written whole on a line of its own: its
+ * heading, the label of its list of findings and the two tags of its prompt block. Its other fixed
+ * texts are prose, or sit in lines of a shape the checks of server/test/markdown-check.ts know (the
+ * count line, the line of a finding).
  */
-export const AI_SECTION_FIXED_TEXT: readonly string[] = [
+export const AI_SECTION_MARKUP_LINES: readonly string[] = [
   HEADING,
-  PENDING,
-  SKIPPED_OTHER,
-  REASON,
-  FAILED_OTHER,
-  NEXT_PUSH,
-  ...Object.values(FAILED),
-  ...Object.values(NOTES),
-  SNAPSHOT_PARTIAL,
-  FINDINGS,
-  NO_FINDINGS,
   UNPLACED,
-  ...Object.values(SEVERITY_LABEL),
-  SEVERITY_OTHER,
-  SEPARATOR,
-  MORE_PREFIX,
-  REVIEWED,
   PROMPT_OPEN,
   PROMPT_CLOSE,
-  ...Object.values(WORDS).flatMap((words) => [
-    ...Object.values(SKIPPED).map((sentence) => sentence(words)),
-    ...PROMPT_INTRO(words),
-    `the ${words.request} is now at`,
-    `the next ${words.run} reviews the new commits`,
-  ]),
 ];
 
 // ─── Pieces ──────────────────────────────────────────────────────────────────
@@ -247,6 +234,8 @@ function reviewedLine(state: Done, words: Words): string | null {
   if (state.reviewedSha === '') return null;
   const reviewed = `${REVIEWED} ${codeSpan(state.reviewedSha.slice(0, 12))}`;
   const head = state.mergeRequestHeadSha;
+  // An older analysis' commit is not the one the next run reviews: nothing is said of where the request is.
+  if (state.latest === false) return reviewed;
   if (head === null || head.toLowerCase() === state.reviewedSha.toLowerCase()) return reviewed;
   return `${reviewed}; the ${words.request} is now at ${codeSpan(head.slice(0, 12))}; the next ${words.run} reviews the new commits.`;
 }
@@ -310,6 +299,8 @@ interface Plan {
 }
 
 function doneSection(state: Done, words: Words, maxBytes: number): string[] {
+  // The findings are the branch's, as they are now: only the newest analysis' section shows them.
+  const current = state.latest !== false;
   const findings = findingsLine(state.counts);
   const walkthrough = state.walkthrough
     .slice(0, ANSWER_LIMITS.walkthroughItems)
@@ -325,19 +316,21 @@ function doneSection(state: Done, words: Words, maxBytes: number): string[] {
     const blocks: string[][] = [];
     const verdict = plan.verdictChars > 0 ? inlineProse(state.verdict, plan.verdictChars) : '';
     if (verdict !== '') blocks.push([verdict]);
-    blocks.push([findings]);
-    if (plan.walkthrough && walkthrough.length > 0) blocks.push(walkthrough);
-    if (items.length + beyond > 0) {
-      const listed = items.slice(0, plan.unplaced);
-      const more = beyond + items.length - listed.length;
-      const separator = listed.length > 0 && more > 0 ? [''] : [];
-      blocks.push([
-        UNPLACED,
-        '',
-        ...listed,
-        ...separator,
-        ...(more > 0 ? [`${MORE_PREFIX} ${more} more in Qualor`] : []),
-      ]);
+    if (current) {
+      blocks.push([findings]);
+      if (plan.walkthrough && walkthrough.length > 0) blocks.push(walkthrough);
+      if (items.length + beyond > 0) {
+        const listed = items.slice(0, plan.unplaced);
+        const more = beyond + items.length - listed.length;
+        const separator = listed.length > 0 && more > 0 ? [''] : [];
+        blocks.push([
+          UNPLACED,
+          '',
+          ...listed,
+          ...separator,
+          ...(more > 0 ? [`${MORE_PREFIX} ${more} more in Qualor`] : []),
+        ]);
+      }
     }
     if (notes !== '') blocks.push([notes]);
     if (reviewed !== null) blocks.push([reviewed]);
@@ -347,12 +340,12 @@ function doneSection(state: Done, words: Words, maxBytes: number): string[] {
   // In the order space gives way: the prompt, the walkthrough, the findings from the end of the
   // list, the verdict.
   const verdictChars = ANSWER_LIMITS.verdictChars;
-  const plans: Plan[] = [
-    { verdictChars, walkthrough: true, unplaced: items.length },
-    { verdictChars, walkthrough: false, unplaced: items.length },
-  ];
-  for (let listed = items.length - 1; listed >= 0; listed -= 1) {
-    plans.push({ verdictChars, walkthrough: false, unplaced: listed });
+  const plans: Plan[] = [{ verdictChars, walkthrough: true, unplaced: items.length }];
+  if (current) {
+    plans.push({ verdictChars, walkthrough: false, unplaced: items.length });
+    for (let listed = items.length - 1; listed >= 0; listed -= 1) {
+      plans.push({ verdictChars, walkthrough: false, unplaced: listed });
+    }
   }
   for (let chars = verdictChars >> 1; chars >= 25; chars >>= 1) {
     plans.push({ verdictChars: chars, walkthrough: false, unplaced: 0 });
@@ -361,7 +354,7 @@ function doneSection(state: Done, words: Words, maxBytes: number): string[] {
     const lines = assemble(plan);
     const size = bytesOf(lines);
     if (size > maxBytes) continue;
-    if (index > 0) return lines;
+    if (index > 0 || !current) return lines;
     // Whatever room the whole of it leaves is the prompt's: its two newlines are the blank line.
     const prompt = promptFor(state, words, maxBytes - size - 2);
     return prompt === null ? lines : [...lines, '', ...prompt];

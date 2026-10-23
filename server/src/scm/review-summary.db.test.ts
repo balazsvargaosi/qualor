@@ -1,3 +1,4 @@
+import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestDatabase, type TestDatabase } from '../../test/db';
 import { seedIssue, seedRule } from '../../test/issues';
@@ -30,7 +31,13 @@ describe('the state of the AI review for the summary', () => {
   let eslint: string;
   let n = 0;
 
-  /** A branch with an analysis, and the review run of that analysis when `run` is given. */
+  /** A new analysis of the branch, which becomes its newest. */
+  const newerAnalysis = async (branchId: string) => {
+    const id = first(await t.db.insert(analyses).values({ projectId, branchId }).returning()).id;
+    await t.db.update(branches).set({ lastAnalysisId: id }).where(eq(branches.id, branchId));
+    return id;
+  };
+  /** A branch with an analysis that is its newest, and the review run of that analysis when `run` is given. */
   const setup = async (run?: Partial<typeof reviewRuns.$inferInsert>) => {
     n += 1;
     const branchId = first(
@@ -39,9 +46,7 @@ describe('the state of the AI review for the summary', () => {
         .values({ projectId, kind: 'merge_request', name: String(n) })
         .returning(),
     ).id;
-    const analysisId = first(
-      await t.db.insert(analyses).values({ projectId, branchId }).returning(),
-    ).id;
+    const analysisId = await newerAnalysis(branchId);
     let runId: string | null = null;
     if (run !== undefined) {
       runId = first(
@@ -297,6 +302,55 @@ describe('the state of the AI review for the summary', () => {
       ['src/c.ts', 3, 'Third body'],
     ]);
     expect(loaded.fixPrompt.every((f) => f.title.startsWith('AI finding '))).toBe(true);
+  });
+
+  it('gives an analysis that is no longer the newest its verdict and none of the branch’s findings', async () => {
+    const { branchId, analysisId } = await setup({ tokenLimitReached: true });
+    await aiFinding(branchId, { severity: 'high', anchorLine: null, line: 4, path: 'src/old.ts' });
+    await aiFinding(branchId, { severity: 'medium', line: 5, body: 'A body' });
+    const whileNewest = await done(analysisId);
+    expect(whileNewest.counts).toEqual({ high: 1, medium: 1, low: 0 });
+    expect(whileNewest.latest).toBeUndefined();
+
+    // A newer analysis of the branch: the findings are the branch's now, not this run's.
+    const newer = await newerAnalysis(branchId);
+    const older = await done(analysisId);
+    expect(older).toEqual({
+      kind: 'done',
+      latest: false,
+      verdict: 'Adds refunds; one retry path can charge twice.',
+      walkthrough: ['Adds a refund endpoint', 'Validates the amount'],
+      counts: { high: 0, medium: 0, low: 0 },
+      unplaced: [],
+      moreUnplaced: 0,
+      reviewedSha: HEAD,
+      mergeRequestHeadSha: null,
+      tokenLimitReached: true,
+      snapshotPartial: false,
+      notes: ['reviewer_unreadable'],
+      fixPrompt: [],
+    });
+
+    // The newer analysis' own run is the branch's newest, and shows what the branch has.
+    await t.db.insert(reviewRuns).values({
+      projectId,
+      branchId,
+      analysisId: newer,
+      status: 'done',
+      deadlineAt: new Date(),
+      headSha: 'b'.repeat(40),
+      summary: STORED_SUMMARY,
+    });
+    const current = await done(newer);
+    expect(current.latest).toBeUndefined();
+    expect(current.counts).toEqual({ high: 1, medium: 1, low: 0 });
+    expect(current.unplaced.map((u) => u.path)).toEqual(['src/old.ts']);
+    expect(current.fixPrompt).toHaveLength(2);
+
+    // A run that has not finished says what it says, whichever analysis it is of.
+    const waiting = await setup({ status: 'waiting', headSha: null, summary: null });
+    await newerAnalysis(waiting.branchId);
+    expect(await state(waiting.analysisId)).toEqual({ kind: 'pending' });
   });
 
   it('lists twenty findings in the prompt at most', async () => {

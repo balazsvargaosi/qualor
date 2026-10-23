@@ -15,9 +15,10 @@ import {
 } from '../../../test/github';
 import { createIngestHarness, type IngestHarness } from '../../../test/ingest';
 import { engine, file, finding, reportWith } from '../../../test/reports';
+import { seedAiIssue } from '../../../test/review';
 import { PUBLIC_URL, queuedDecorations, runDecorations } from '../../../test/scm';
 import { encryptionKey, encryptSecret } from '../../crypto/secrets';
-import { analyses, branches, reviewRuns, scmConnections } from '../../db/schema';
+import { analyses, branches, reviewFindings, reviewRuns, scmConnections } from '../../db/schema';
 import { SCM_TOKEN_AAD } from '../connections';
 import { markerOf } from '../markdown';
 import { enqueueDecoration } from '../queue';
@@ -309,6 +310,83 @@ describe('GitHub decoration (github.md §5–§6)', () => {
       .set({ status: 'superseded' })
       .where(eq(reviewRuns.id, run!.id));
     expect(await decorateAgain()).not.toContain('AI review');
+  });
+
+  it('tells the check run of an older analysis its verdict and commit, and none of the branch’s findings', async () => {
+    const { project, repo, ingest } = await setup('gh/ai-older');
+    const older = await ingest([3]);
+    // A newer analysis, of a later commit, comes before the older one is decorated again.
+    const newer = await ingest(
+      [3],
+      { repositoryId: String(repo.id), checkout: 'head' },
+      '2'.repeat(40),
+    );
+    const [pull] = await h.ctx.db
+      .select()
+      .from(branches)
+      .where(and(eq(branches.projectId, project.id), eq(branches.kind, 'merge_request')));
+    expect(pull?.lastAnalysisId).toBe(newer);
+    const issueId = await seedAiIssue(h.ctx.db, {
+      branchId: pull!.id,
+      category: 'security',
+      path: 'src/a.ts',
+      line: 3,
+      severity: 'high',
+    });
+    await h.ctx.db.insert(reviewFindings).values({
+      issueId,
+      category: 'security',
+      body: 'Check the input first.',
+      anchorLine: null,
+      reviewedHeadSha: '1'.repeat(40),
+    });
+    const stored = { verdict: 'Adds refunds.', walkthrough: ['Adds an endpoint'], notes: [] };
+    await h.ctx.db.insert(reviewRuns).values([
+      {
+        projectId: project.id,
+        branchId: pull!.id,
+        analysisId: older,
+        status: 'done',
+        deadlineAt: new Date(),
+        headSha: HEAD,
+        summary: stored,
+      },
+      {
+        projectId: project.id,
+        branchId: pull!.id,
+        analysisId: newer,
+        status: 'done',
+        deadlineAt: new Date(),
+        headSha: '2'.repeat(40),
+        summary: stored,
+      },
+    ]);
+    const checkRunOf = (sha: string) =>
+      runsOf(repo.id)
+        .filter((r) => r.headSha === sha)
+        .at(-1)?.summary ?? null;
+
+    await enqueueAgain(newer, repo.id);
+    await runDecorations(h, githubDeps(h));
+    await enqueueAgain(older, repo.id);
+    await runDecorations(h, githubDeps(h));
+
+    // The newest analysis shows the branch’s findings.
+    const current = checkRunOf('2'.repeat(40));
+    expect(current).toContain('**Findings:** 1 high · 0 medium · 0 low');
+    expect(current).toContain('**Not on changed lines:**');
+    // The older one is its own review: the verdict and the commit it covered, no counts, no lists.
+    const past = checkRunOf(HEAD);
+    expect(past).toContain('#### AI review\n\nAdds refunds.\n\nReviewed commit: ` 111111111111 `');
+    for (const gone of [
+      'Findings',
+      'Not on changed lines',
+      '<details>',
+      'Adds an endpoint',
+      'now at',
+    ]) {
+      expect(past, gone).not.toContain(gone);
+    }
   });
 
   it('gives two issues on one line a thread each, and the same job again adds none', async () => {

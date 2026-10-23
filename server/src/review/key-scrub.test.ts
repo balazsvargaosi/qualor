@@ -492,6 +492,17 @@ describe('scrubText: a key split by characters that rendering leaves out', () =>
     ['a zero width joiner', '\u200d'],
     ['a zero width non-joiner', '\u200c'],
     ['a variation selector', '\ufe0f'],
+    // The default-ignorable code points no other list had (a comment shows none of them).
+    ['an unassigned format character (U+FFF0)', String.fromCodePoint(0xfff0)],
+    ['an unassigned format character (U+FFF8)', String.fromCodePoint(0xfff8)],
+    ['a shorthand format control (U+1BCA0)', String.fromCodePoint(0x1bca0)],
+    ['a shorthand format control (U+1BCA3)', String.fromCodePoint(0x1bca3)],
+    ['a musical format control (U+1D173)', String.fromCodePoint(0x1d173)],
+    ['a musical format control (U+1D17A)', String.fromCodePoint(0x1d17a)],
+    ['an unassigned tag block character (U+E0080)', String.fromCodePoint(0xe0080)],
+    ['an unassigned tag block character (U+E00FF)', String.fromCodePoint(0xe00ff)],
+    ['an unassigned tag block character (U+E01F0)', String.fromCodePoint(0xe01f0)],
+    ['an unassigned tag block character (U+E0FFF)', String.fromCodePoint(0xe0fff)],
   ];
   /** The key with `hidden` between each two of its characters. */
   const split = (hidden: string, key = KEY): string => [...key].join(hidden);
@@ -644,6 +655,29 @@ describe('scrubText: a key split by characters that rendering leaves out', () =>
       expect(out, `${key} as ${spelled}`).toBe(`{"a":"${before}${REDACTED}${after}"}`);
       const parsed = (JSON.parse(out) as { a: string }).a;
       for (const text of rendered(parsed)) expect(text, `${key} as ${spelled}`).not.toContain(key);
+    }
+  });
+
+  it('catches the key split by any code point of the ranges that were missing from the lists', () => {
+    const ranges = [
+      [0xfff0, 0xfff8],
+      [0x1bca0, 0x1bca3],
+      [0x1d173, 0x1d17a],
+      [0xe0080, 0xe00ff],
+      [0xe01f0, 0xe0fff],
+    ] as const;
+    for (const [from, to] of ranges) {
+      for (let codePoint = from; codePoint <= to; codePoint += 1) {
+        const hidden = String.fromCodePoint(codePoint);
+        const name = `U+${codePoint.toString(16).toUpperCase()}`;
+        const scrubbed = scrubText(split(hidden), KEY);
+        expect(scrubbed, name).toBe(REDACTED);
+        // A reader does not see the character, so the key must not be whole to a reader either,
+        // whichever way the text is rendered.
+        for (const text of rendered(scrubbed)) {
+          expect(text.replaceAll(hidden, ''), name).not.toContain(KEY);
+        }
+      }
     }
   });
 

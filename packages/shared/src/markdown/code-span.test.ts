@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { safeCodeSpan, safePlainValue } from './code-span';
+import {
+  CONTROL_CHARS,
+  INVISIBLE_CHARS,
+  JOINER_CHARS,
+  safeCodeSpan,
+  safePlainValue,
+} from './code-span';
 
 describe('safeCodeSpan (scm.md §6)', () => {
   it('wraps a value in a fence it cannot close, on one line', () => {
@@ -25,6 +31,38 @@ describe('safeCodeSpan (scm.md §6)', () => {
     expect(safePlainValue('a\u200bb\u2060c\ufeffd\u00ade', 100)).toBe('abcde');
     expect(safePlainValue('a\ud800b', 100)).toBe('a\ufffdb');
     expect(safePlainValue('😀😀😀', 2)).toBe('😀…');
+  });
+
+  it('removes the default-ignorable code points no other list had, so none can split a value', () => {
+    const ranges = [
+      [0xfff0, 0xfff8],
+      [0x1bca0, 0x1bca3],
+      [0x1d173, 0x1d17a],
+      [0xe0080, 0xe00ff],
+      [0xe01f0, 0xe0fff],
+    ] as const;
+    for (const [from, to] of ranges) {
+      for (let codePoint = from; codePoint <= to; codePoint += 1) {
+        const hidden = String.fromCodePoint(codePoint);
+        expect(safePlainValue(`a${hidden}b`, 100), `U+${codePoint.toString(16)}`).toBe('ab');
+      }
+    }
+    expect(safeCodeSpan(`k${String.fromCodePoint(0xe0080)}ey`, 100)).toBe('` key `');
+  });
+
+  it('has every default-ignorable code point in one of its lists (a reader sees none of them)', () => {
+    // Unicode's Default_Ignorable_Code_Point: renderers draw nothing for these, so each is either
+    // replaced by a space (the controls), removed (invisible) or kept for the scripts that need it.
+    const ignorable = /^\p{Default_Ignorable_Code_Point}$/u;
+    const listed = new RegExp(`^[${CONTROL_CHARS}${INVISIBLE_CHARS}${JOINER_CHARS}]$`, 'u');
+    const unlisted: string[] = [];
+    for (let codePoint = 0; codePoint <= 0x10ffff; codePoint += 1) {
+      const character = String.fromCodePoint(codePoint);
+      if (ignorable.test(character) && !listed.test(character)) {
+        unlisted.push(`U+${codePoint.toString(16).toUpperCase()}`);
+      }
+    }
+    expect(unlisted).toEqual([]);
   });
 
   it('removes the blank-looking fillers that would show a value as empty or spaced', () => {

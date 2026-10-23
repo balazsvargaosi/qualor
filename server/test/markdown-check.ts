@@ -3,7 +3,7 @@
  * rendering tests (server/src/scm/render.test.ts) and the AI assistant's end-to-end test.
  */
 
-import { AI_SECTION_FIXED_TEXT } from '../src/review/render';
+import { AI_SECTION_MARKUP_LINES } from '../src/review/render';
 
 /**
  * CommonMark code spans of one line, removed: a backtick run opens a span that the next run of
@@ -57,40 +57,65 @@ export const FIXED_TEXT = /^[A-Za-z0-9 .,;:()’…*|\-<>·]*$/;
 export const SUMMARY_FIXED_TEXT = /^(?:[A-Za-z0-9 .,;:()’…*|\-<>·✅❌➖⛔🔴🟠🟡🔵≤≥—→%'\\]|⚠️)*$/u;
 export const FORBIDDEN_ANYWHERE =
   // eslint-disable-next-line no-control-regex -- matching control characters is the point
-  /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b\u200e\u200f\u2028-\u202e\u2060-\u206f\u115f\u1160\u2800\u3164\uffa0\ufeff\ud800-\udfff]|[\u{e0000}-\u{e007f}]/u;
+  /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b\u200e\u200f\u2028-\u202e\u2060-\u206f\u115f\u1160\u2800\u3164\uffa0\ufeff\ufff0-\ufff8\ud800-\udfff]|[\u{e0000}-\u{e00ff}\u{e01f0}-\u{e0fff}\u{1bca0}-\u{1bca3}\u{1d173}-\u{1d17a}]/u;
 
 /**
- * What a model's prose may keep outside code spans (`safeProse`): letters, digits, spaces
- * and the punctuation of ordinary sentences, including the quotes and the bracket a word may
- * open with or end in. No character that GitLab or GitHub gives a meaning to is among them.
+ * What a model's prose may keep outside code spans (`safeProse`): letters with their combining
+ * marks, decimal digits, spaces and the punctuation of ordinary sentences: the quotes and the
+ * bracket a word may open with or end in, the ellipsis and the dashes. No character that GitLab or
+ * GitHub gives a meaning to is among them.
  */
-export const PROSE_TEXT = /^[\p{L}\p{N} .,;:!?'\u2019"\u201c\u201d\u2018()-]*$/u;
+export const PROSE_TEXT = /^[\p{L}\p{M}\p{Nd} .,;:!?'’"“”‘()…—–-]*$/u;
 /** A list marker at the start of a line, as `safeProse` writes it. */
 const LIST_MARKER = /^(?:- |\d+\. )/;
-/** Qualor's own link in the section: fixed text, and an address Qualor built from ids. */
-const SECTION_LINK = /\[(?:View in Qualor| )\]\(https?:\/\/[^\s()]+\)/g;
-
-/** A fence line of the section's prompt block: backticks, and the language on the opening one. */
-const FENCE_LINE = /^`{3,}(?:text)?$/;
 
 /**
- * Whether one line of the AI review section, or of `safeProse`'s output, is only ordinary words: once the
- * code spans, Qualor's own links, the list marker at its start and the section's `fixed` texts are
- * taken out, only ordinary words and their punctuation are left. `fixed` texts are compared as
- * they read with their code spans taken out, the way the line does.
+ * Whether one line of `safeProse`'s output is only ordinary words and their punctuation once its
+ * code spans and the list marker at its start are taken out.
  */
-export function checkProse(line: string, fixed: readonly string[] = []): boolean {
-  let rest = outsideCodeSpans(line).replace(SECTION_LINK, ' ');
-  rest = rest.replace(LIST_MARKER, '');
-  const known = fixed.map(outsideCodeSpans).sort((a, b) => b.length - a.length);
-  for (const text of known) if (text !== '') rest = rest.split(text).join(' ');
-  return PROSE_TEXT.test(rest);
+export function checkProse(line: string): boolean {
+  return PROSE_TEXT.test(outsideCodeSpans(line).replace(LIST_MARKER, ''));
+}
+
+// ─── The AI review section (server/src/review/render.ts) ─────────────────────
+//
+// Its fixed texts that are prose need no list: `checkProse` passes them. The ones that hold markup
+// are accepted where they belong only: as a whole line, or as the shape of the line they are in.
+
+/** A fence line of the prompt block: backticks, and the language on the opening one. */
+const FENCE_LINE = /^`{3,}(?:text)?$/;
+/** The count line: its markup and its separators are fixed text, and only here. */
+const FINDINGS_LINE = /^\*\*Findings:\*\* \d+ high · \d+ medium · \d+ low$/;
+/** A finding that sits on no changed line starts with its severity, at the start of the line. */
+const FINDING_START = /^- \*\*(?:High|Medium|Low|Unknown)\*\* · /;
+/** Qualor's link in the section: its fixed label, over https to the base the tests give Qualor. */
+const SECTION_LINK = /^\[View in Qualor\]\(https:\/\/q\.example\/[A-Za-z0-9/-]*\)$/;
+const MARKUP_LINES: ReadonlySet<string> = new Set(AI_SECTION_MARKUP_LINES);
+
+/**
+ * The line of a finding that sits on no changed line: after its severity, its place in a code span,
+ * then (each after a separator) its title, which is prose, and its link, in this order.
+ */
+function checkFindingLine(line: string): boolean {
+  const start = FINDING_START.exec(line);
+  if (start === null) return false;
+  const [place, ...parts] = outsideCodeSpans(line.slice(start[0].length)).split(' · ');
+  if (place !== ' ') return false;
+  const [first = '', second = ''] = parts;
+  const isLink = (part: string): boolean => SECTION_LINK.test(part);
+  const isTitle = (part: string): boolean => part !== '' && PROSE_TEXT.test(part);
+  if (parts.length === 0) return true;
+  if (parts.length === 1) return isLink(first) || isTitle(first);
+  return parts.length === 2 && isTitle(first) && isLink(second);
 }
 
 /**
- * Whether one line of the AI review section is only ordinary words: a fence line of its prompt block, or
- * prose besides the section's own fixed texts (the sentences of review/render.ts).
+ * Whether one line of the AI review section keeps to the rule that model text is only ordinary
+ * words outside code spans: a fence line of its prompt block, one of its fixed lines that hold
+ * markup, its count line or the line of a finding in their shapes, or prose.
  */
 export function checkSectionLine(line: string): boolean {
-  return FENCE_LINE.test(line) || checkProse(line, AI_SECTION_FIXED_TEXT);
+  if (FENCE_LINE.test(line) || MARKUP_LINES.has(line) || FINDINGS_LINE.test(line)) return true;
+  if (line.startsWith('- **')) return checkFindingLine(line);
+  return checkProse(line);
 }

@@ -239,6 +239,17 @@ function aiSeverity(severity: string): 'high' | 'medium' | 'low' {
   return severity === 'medium' ? 'medium' : 'low';
 }
 
+/** What the section holds of the branch's findings when it shows none. */
+const NO_OPEN_FINDINGS = {
+  counts: { high: 0, medium: 0, low: 0 },
+  unplaced: [],
+  moreUnplaced: 0,
+  fixPrompt: [],
+} as const satisfies Pick<
+  Extract<ReviewSummaryState, { kind: 'done' }>,
+  'counts' | 'unplaced' | 'moreUnplaced' | 'fixPrompt'
+>;
+
 /**
  * The finished review's part of its section that comes from the merge request's findings as they
  * are now (people dismiss them, later reviews close them): the open ones by severity, the ones that
@@ -339,17 +350,24 @@ async function openAiSummary(
  * waits or runs is in progress; one that was skipped or failed says why; one that is done gives the
  * summary it stored (its verdict and walkthrough, read back by `reviewSummarySchema`: one that
  * cannot be read has no verdict), the commit it covered, what it says of itself, and the merge
- * request's open AI findings as they are now. Null when the analysis has no run, and for a run an
- * older analysis was superseded by: a newer analysis' own run is the one the summary shows.
- * `mergeRequestHeadSha` is left for the decoration, which knows the live head.
+ * request's open AI findings as they are now, for the branch's newest analysis; an older one gets
+ * `latest: false` and none of them, since they are the branch's now and not that run's. Null when
+ * the analysis has no run, and for a run an older analysis was superseded by: a newer analysis' own
+ * run is the one the summary shows. `mergeRequestHeadSha` is left for the decoration, which knows
+ * the live head.
  */
 export async function loadReviewSummary(
   db: Executor,
   analysisId: string,
   publicUrl: string | null,
 ): Promise<ReviewSummaryState | null> {
-  const [run] = await db.select().from(reviewRuns).where(eq(reviewRuns.analysisId, analysisId));
-  if (run === undefined) return null;
+  const [found] = await db
+    .select({ run: reviewRuns, newest: branches.lastAnalysisId })
+    .from(reviewRuns)
+    .innerJoin(branches, eq(branches.id, reviewRuns.branchId))
+    .where(eq(reviewRuns.analysisId, analysisId));
+  if (found === undefined) return null;
+  const { run } = found;
   switch (run.status) {
     case 'waiting':
     case 'running':
@@ -361,11 +379,13 @@ export async function loadReviewSummary(
     case 'done': {
       const stored = reviewSummarySchema.safeParse(run.summary);
       const summary = stored.success ? stored.data : { verdict: '', walkthrough: [], notes: [] };
+      const latest = found.newest === analysisId;
       return {
         kind: 'done',
+        ...(latest ? {} : { latest: false }),
         verdict: summary.verdict,
         walkthrough: summary.walkthrough,
-        ...(await openAiSummary(db, run, publicUrl)),
+        ...(latest ? await openAiSummary(db, run, publicUrl) : NO_OPEN_FINDINGS),
         reviewedSha: run.headSha ?? '',
         mergeRequestHeadSha: null,
         tokenLimitReached: run.tokenLimitReached,
