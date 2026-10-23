@@ -5,18 +5,20 @@
  * glob has at most MAX_GLOB_WILDCARDS wildcards, a path is matched by walking the positions of it
  * the glob can have reached (so the time is at most the tokens times the path, however the
  * wildcards are placed, and a path that no position reaches ends the walk), and the paths of one
- * search share a bound on the steps of all their walks (MAX_GLOB_STEPS).
+ * search share a bound on the steps of all their walks (MAX_GLOB_STEPS), a path's own length
+ * charged before its tokens are.
  */
 
 /** The most wildcards (`?`, `*`, `**`, `**` followed by a slash) a glob may have. */
 export const MAX_GLOB_WILDCARDS = 16;
 /**
- * The most steps (positions of a path looked at, characters compared) the walks of all the paths
- * of one search may take: a quarter of a second at the worst, for a glob made to be slow. A glob
- * of a few wildcards takes a few hundred steps for a path, so that a search of the 50 000 files
- * of a snapshot is far inside it.
+ * The most steps the walks of all the paths of one search may take: the length of each path, the
+ * positions of it a token looks at and the characters it compares. The slowest globs and paths
+ * measured (16 wildcards over paths of 1 000 characters) take 5 ms for a million steps, so this is
+ * about a tenth of a second at the worst. A plain glob takes about 300 steps for a path of a
+ * hundred characters, so that a search over the 50 000 files of a snapshot is inside it.
  */
-export const MAX_GLOB_STEPS = 50_000_000;
+export const MAX_GLOB_STEPS = 20_000_000;
 
 /** What is left of the work bound of one search. */
 export interface GlobWork {
@@ -102,11 +104,22 @@ export function compilePathGlob(glob: string): PathGlob {
 }
 
 /** How many of the characters `chars` `text` holds from `at`, one after the other. */
-function holds(text: readonly string[], at: number, chars: readonly string[]): number {
+function holds(text: string | readonly string[], at: number, chars: readonly string[]): number {
   let k = 0;
   while (k < chars.length && text[at + k] === chars[k]) k += 1;
   return k;
 }
+
+/**
+ * The positions of a path the walk of a glob has reached so far, and the positions after the token
+ * it is walking: one array each, kept between walks so that a walk allocates nothing. Both are all
+ * zero between walks.
+ */
+let reachScratch = new Uint8Array(1_100);
+let nextScratch = new Uint8Array(1_100);
+
+/** A UTF-16 surrogate: a path with none is read by position, and one with a pair by character. */
+const SURROGATE = new RegExp(`[${String.fromCharCode(0xd800)}-${String.fromCharCode(0xdfff)}]`);
 
 function globMatches(
   tokens: readonly GlobToken[],
@@ -117,88 +130,122 @@ function globMatches(
     work.exhausted = true;
     return false;
   }
-  const text = Array.from(path);
+  const text: string | readonly string[] = SURROGATE.test(path) ? Array.from(path) : path;
   const size = text.length;
-  /** The positions of `text` the tokens so far can end at, and the positions after the next token. */
-  let reach = new Uint8Array(size + 1);
-  let next = new Uint8Array(size + 1);
+  // Looking at a path costs its length, before a token is walked: the walk of a path that no token
+  // takes anywhere is as long as that.
+  if (work !== undefined) {
+    work.steps -= size;
+    if (work.steps <= 0) {
+      work.exhausted = true;
+      return false;
+    }
+  }
+  if (reachScratch.length < size + 1) {
+    reachScratch = new Uint8Array(2 * (size + 1));
+    nextScratch = new Uint8Array(2 * (size + 1));
+  }
+  let reach = reachScratch;
+  let next = nextScratch;
   reach[0] = 1;
   /** The first and the last position in `reach`. */
   let lo = 0;
   let hi = 0;
-  let steps = 0;
-  for (const token of tokens) {
-    let nextLo = size + 1;
-    let nextHi = -1;
-    const reached = (j: number) => {
-      next[j] = 1;
-      if (j < nextLo) nextLo = j;
-      if (j > nextHi) nextHi = j;
-    };
-    switch (token.kind) {
-      case 'text': {
-        const length = token.chars.length;
-        for (let j = lo; j <= hi; j += 1) {
-          steps += 1;
-          if (reach[j] !== 1 || j + length > size) continue;
-          const matched = holds(text, j, token.chars);
-          steps += matched;
-          if (matched === length) reached(j + length);
+  /** The same in `next`: the positions are marked in order, so `nextHi` is -1 while there are none. */
+  let nextLo = 0;
+  let nextHi = -1;
+  try {
+    for (const token of tokens) {
+      nextLo = size + 1;
+      nextHi = -1;
+      let steps = 0;
+      switch (token.kind) {
+        case 'text': {
+          const chars = token.chars;
+          const length = chars.length;
+          for (let j = lo; j <= hi; j += 1) {
+            steps += 1;
+            if (reach[j] !== 1 || j + length > size) continue;
+            const matched = holds(text, j, chars);
+            steps += matched;
+            if (matched === length) {
+              next[j + length] = 1;
+              if (nextHi < 0) nextLo = j + length;
+              nextHi = j + length;
+            }
+          }
+          break;
         }
-        break;
+        case 'one':
+          for (let j = lo; j <= hi; j += 1) {
+            steps += 1;
+            if (reach[j] === 1 && j < size && text[j] !== '/') {
+              next[j + 1] = 1;
+              if (nextHi < 0) nextLo = j + 1;
+              nextHi = j + 1;
+            }
+          }
+          break;
+        case 'segment': {
+          // From a reachable position on, up to and not past the next '/'.
+          let open = false;
+          for (let j = lo; j <= size; j += 1) {
+            steps += 1;
+            if (reach[j] === 1) open = true;
+            if (!open) continue;
+            next[j] = 1;
+            if (nextHi < 0) nextLo = j;
+            nextHi = j;
+            if (text[j] === '/') {
+              if (j >= hi) break;
+              open = false;
+            }
+          }
+          break;
+        }
+        case 'any':
+          // Every position from the first reached on.
+          next.fill(1, lo, size + 1);
+          nextLo = lo;
+          nextHi = size;
+          steps += size - lo + 1;
+          break;
+        case 'dirs': {
+          // Nothing, or a run of characters that ends with the '/' just before this position.
+          let open = false;
+          for (let j = lo; j <= size; j += 1) {
+            steps += 1;
+            if (reach[j] === 1 || (open && j > 0 && text[j - 1] === '/')) {
+              next[j] = 1;
+              if (nextHi < 0) nextLo = j;
+              nextHi = j;
+            }
+            if (reach[j] === 1) open = true;
+          }
+          break;
+        }
       }
-      case 'one':
-        for (let j = lo; j <= hi; j += 1) {
-          steps += 1;
-          if (reach[j] === 1 && j < size && text[j] !== '/') reached(j + 1);
+      if (work !== undefined) {
+        work.steps -= steps;
+        if (work.steps <= 0) {
+          work.exhausted = true;
+          return false;
         }
-        break;
-      case 'segment': {
-        // From a reachable position on, up to and not past the next '/'.
-        let open = false;
-        for (let j = lo; j <= size; j += 1) {
-          steps += 1;
-          if (reach[j] === 1) open = true;
-          if (!open) continue;
-          reached(j);
-          if (text[j] === '/' && j >= hi) break;
-          if (text[j] === '/') open = false;
-        }
-        break;
       }
-      case 'any':
-        for (let j = lo; j <= size; j += 1) {
-          steps += 1;
-          reached(j);
-        }
-        break;
-      case 'dirs': {
-        // Nothing, or a run of characters that ends with the '/' just before this position.
-        let open = false;
-        for (let j = lo; j <= size; j += 1) {
-          steps += 1;
-          if (reach[j] === 1 || (open && j > 0 && text[j - 1] === '/')) reached(j);
-          if (reach[j] === 1) open = true;
-        }
-        break;
-      }
+      // Nothing is reachable: no later token can change that.
+      if (nextHi < 0) return false;
+      reach.fill(0, lo, hi + 1);
+      [reach, next] = [next, reach];
+      lo = nextLo;
+      hi = nextHi;
+      nextHi = -1;
     }
-    if (work !== undefined) {
-      work.steps -= steps;
-      steps = 0;
-      if (work.steps <= 0) {
-        work.exhausted = true;
-        return false;
-      }
-    }
-    // Nothing is reachable: no later token can change that.
-    if (nextHi < 0) return false;
+    return reach[size] === 1;
+  } finally {
+    // The scratch is clean for the next walk, whichever way this one ended.
     reach.fill(0, lo, hi + 1);
-    [reach, next] = [next, reach];
-    lo = nextLo;
-    hi = nextHi;
+    if (nextHi >= 0) next.fill(0, nextLo, nextHi + 1);
   }
-  return reach[size] === 1;
 }
 
 /**

@@ -192,19 +192,42 @@ describe('the walk of a glob over a path', () => {
 });
 
 describe('the work of matching a glob is bounded', () => {
-  it('sets exhausted when the walk it was cut in is the last', () => {
-    const work = { steps: 5, exhausted: false };
-    expect(compilePathGlob('*a*a*a').matches('a'.repeat(16), work)).toBe(false);
-    expect(work.exhausted).toBe(true);
-    // The same walk with enough steps matches.
-    expect(compilePathGlob('*a*a*a').matches('a'.repeat(16), newGlobWork())).toBe(true);
-  });
-
   const spent = (glob: string, path: string): number => {
     const work = newGlobWork();
     compilePathGlob(glob).matches(path, work);
     return MAX_GLOB_STEPS - work.steps;
   };
+
+  it('is 20 million steps for the walks of one search, about a tenth of a second at the worst', () => {
+    // The slowest shapes measured take 5 ms for a million steps (the test of the shapes below
+    // has them): more steps than this would be more time than a search may take.
+    expect(MAX_GLOB_STEPS).toBe(20_000_000);
+    expect(newGlobWork()).toEqual({ steps: MAX_GLOB_STEPS, exhausted: false });
+  });
+
+  it('charges the length of a path before it walks a token, and refuses a walk it cannot pay for', () => {
+    const path = 'a'.repeat(1_000);
+    // A glob that takes the path nowhere costs what looking at the path does, and no more.
+    expect(spent('zzz*', path)).toBeGreaterThanOrEqual(1_000);
+    expect(spent('zzz*', path)).toBeLessThan(1_010);
+    // A path longer than what is left of the bound is not walked: the search is out of steps.
+    const work = { steps: 999, exhausted: false };
+    expect(compilePathGlob('a*').matches(path, work)).toBe(false);
+    expect(work.exhausted).toBe(true);
+    // A path of characters outside the Basic Multilingual Plane is counted by characters.
+    expect(spent('zzz*', '😀'.repeat(500))).toBeGreaterThanOrEqual(500);
+    expect(spent('zzz*', '😀'.repeat(500))).toBeLessThan(510);
+  });
+
+  it('sets exhausted when the tokens of a walk spend the steps that are left', () => {
+    // 16 steps for the path, 17 for the first token: 30 are not enough, and the walk is cut in
+    // the middle.
+    const work = { steps: 30, exhausted: false };
+    expect(compilePathGlob('*a*a*a').matches('a'.repeat(16), work)).toBe(false);
+    expect(work.exhausted).toBe(true);
+    // The same walk with enough steps matches.
+    expect(compilePathGlob('*a*a*a').matches('a'.repeat(16), newGlobWork())).toBe(true);
+  });
 
   it('is not exponential, whatever the stars', () => {
     const started = performance.now();
@@ -225,8 +248,8 @@ describe('the work of matching a glob is bounded', () => {
     const early = spent(`zzz${'*a'.repeat(15)}*b`, path);
     // The same glob with a first run that matches: the whole path is walked for each token.
     const full = spent(`aaa${'*a'.repeat(15)}*b`, path);
-    expect(early).toBeLessThan(10);
-    expect(full).toBeGreaterThan(10_000);
+    expect(early - path.length).toBeLessThan(10);
+    expect(full - path.length).toBeGreaterThan(10_000);
   });
 
   it('charges every walk to the work of a search, and refuses the walks once it is spent', () => {
@@ -240,16 +263,16 @@ describe('the work of matching a glob is bounded', () => {
       walked += 1;
     }
     expect(work.exhausted).toBe(true);
-    // Each walk takes tens of thousands of steps: the bound ends the loop after a few thousand.
+    // Each walk takes tens of thousands of steps: the bound ends the loop after a few hundred.
     expect(walked).toBeGreaterThan(100);
-    expect(walked).toBeLessThan(20_000);
+    expect(walked).toBeLessThan(5_000);
     expect(work.steps).toBeLessThanOrEqual(0);
     // Once spent, no walk is made: a path that would match is answered false.
     expect(compilePathGlob('a*').matches('abc', work)).toBe(false);
     expect(compilePathGlob('a*').matches('abc')).toBe(true);
   });
 
-  it('leaves the search of a whole large snapshot with a plain glob far inside the bound', () => {
+  it('walks the whole of a large snapshot with a plain glob inside the bound', () => {
     // 50 000 paths of about 100 characters, the most files a snapshot holds.
     const paths = Array.from(
       { length: 50_000 },
@@ -260,25 +283,50 @@ describe('the work of matching a glob is bounded', () => {
       const work = newGlobWork();
       for (const path of paths) compiled.matches(path, work);
       expect(work.exhausted, glob).toBe(false);
-      expect(work.steps, glob).toBeGreaterThan(MAX_GLOB_STEPS / 2);
+      // A path of this size costs a few hundred steps: the bound is for something else.
+      expect(work.steps, glob).toBeGreaterThan(0);
     }
   });
 
-  it('takes a hostile glob over many long paths a fraction of a second, not minutes', () => {
-    const paths = Array.from(
-      { length: 20_000 },
-      (_, i) => `${'a'.repeat(990)}${String(i).padStart(6, '0')}`,
+  it('takes the shapes that cost most over many long paths a tenth of a second each, not minutes', () => {
+    // 50 000 paths of 1 006 characters. These are the globs that were slowest to walk: stars that
+    // look at every position, tokens that take a path nowhere (the walk then costs what looking
+    // at the path does), and `**/` over a path of many segments.
+    const flat = Array.from(
+      { length: 50_000 },
+      (_, i) => `${'a'.repeat(1_000)}${String(i).padStart(6, '0')}`,
     );
-    const glob = compilePathGlob(`${'*a'.repeat(MAX_GLOB_WILDCARDS - 1)}*b`);
-    const work = newGlobWork();
-    const started = performance.now();
-    let matched = 0;
-    for (const path of paths) {
-      if (glob.matches(path, work)) matched += 1;
-      if (work.exhausted) break;
+    const deep = Array.from(
+      { length: 50_000 },
+      (_, i) => `${'a/'.repeat(500)}${String(i).padStart(6, '0')}`,
+    );
+    const shapes: [string, string, string[]][] = [
+      ['?*', '?*', flat],
+      ['?**', '?**', flat],
+      ['?zzz*', '?zzz*', flat],
+      ['zzz*', 'zzz*', flat],
+      ['*? x8', '*?'.repeat(8), flat],
+      ['*a x15 *b', `${'*a'.repeat(15)}*b`, flat],
+      ['*/ x16 x', `${'*/'.repeat(16)}x`, flat],
+      ['**/ x16 x', `${'**/'.repeat(16)}x`, deep],
+      ['**/*a*/**/*b*/x', '**/*a*/**/*b*/x', deep],
+    ];
+    for (const [label, glob, paths] of shapes) {
+      const compiled = compilePathGlob(glob);
+      const work = newGlobWork();
+      const started = performance.now();
+      let walked = 0;
+      for (const path of paths) {
+        compiled.matches(path, work);
+        walked += 1;
+        if (work.exhausted) break;
+      }
+      const elapsed = performance.now() - started;
+      // The bound ends the search before the paths do, and a path costs at least its length.
+      expect(work.exhausted, label).toBe(true);
+      expect(walked, label).toBeLessThanOrEqual(Math.ceil(MAX_GLOB_STEPS / 1_006));
+      // About 100 ms here; the bound is 300 so that a busy machine does not fail it.
+      expect(elapsed, label).toBeLessThan(budgetMs(300));
     }
-    expect(performance.now() - started).toBeLessThan(budgetMs(2_000));
-    expect(work.exhausted).toBe(true);
-    expect(matched).toBe(0);
   });
 });
