@@ -8,50 +8,70 @@ import {
   reviewRuns,
   type AiCategory,
   type ReviewRunRow,
+  type ReviewTier,
 } from '../db/schema';
 import type { ReviewableChange, ReviewContext } from './context';
+import { planFindings, type CloseReason, type FindingsPlan } from './findings';
 import {
-  planFindings,
   renderFinding,
   reviewSummary,
-  type CloseReason,
-  type FindingsPlan,
   type RenderedFinding,
-} from './findings';
-import type { PriorFinding } from './findings-query';
+  type ReviewSummary,
+} from './findings-render';
 import type { MaskBudget, MaskedFiles, MaskedText } from './masked-files';
 import type { Masker } from './masker';
 import type { PipelineOutcome } from './pipeline';
 import { AI_RULES } from './rules';
 
 /*
- * The end of a review: its findings become issues of engine `ai`, each with a `review_findings` row
- * that keeps the text, the suggestion and where its thread sits, and the run is done. All of it is
- * written in the transaction the caller opens, so a review is stored whole or not at all, and a
- * run is stored once: the transaction takes the run's row, which must be storing its results.
+ * The end of a review, in two steps. `prepareReviewOutcome` decides what is stored and makes every
+ * value of it, which includes reading and masking the files the findings are in: it touches no
+ * database and runs before the transaction, so that the seconds masking can take hold nothing up.
+ * `storeReviewOutcome` only locks and writes, in the transaction the caller opens: the findings
+ * become issues of engine `ai`, each with a `review_findings` row that keeps the text, the
+ * suggestion and where its thread sits, and the run is done. A review is stored whole or not at
+ * all, and a run is stored once: the transaction takes the run's row, which must be storing its
+ * results.
  *
  * What the findings are, which earlier ones they are and which earlier ones are closed is decided in
- * findings.ts; this file reads the masked text of the files the findings are in, and writes. The
- * issues it touches are the open AI issues of the run's branch, taken in one pass in the order of
- * their ids, as every other writer of issues takes theirs, and read again once taken: a person may
- * have triaged one while the review ran, and what a person decided is never undone.
+ * findings.ts, and the values are made in findings-render.ts. The issues the store touches are the
+ * open AI issues of the run's branch, taken in one pass in the order of their ids, as every other
+ * writer of issues takes theirs, and read again once taken: a person may have triaged one while the
+ * review ran, and what a person decided is never undone.
  */
 
-export interface ReviewStoreDeps {
+export interface ReviewPrepareDeps {
   /**
-   * The ids of the eight AI rules by category: `ensureAiRules`, called on the pool before the
-   * transaction opens, so that the store never waits on another store's open transaction.
-   */
-  ruleIds: ReadonlyMap<AiCategory, string>;
-  /**
-   * The review's masked files, which the store reads the masked text of a finding's file from.
-   * It never reads a file's raw text into an issue.
+   * The review's masked files, which the masked text of a finding's file is read from. A file's raw
+   * text never goes into an issue.
    */
   files: MaskedFiles;
   /** The review's masker: a file that is not kept is masked only while it has time left. */
   masker: Masker;
   /** The review's budget of bytes to mask, which masking a file at this point is charged to. */
   budget: MaskBudget;
+}
+
+/** What a review stores, made and checked, as plain data: nothing in it holds a connection. */
+export interface PreparedOutcome {
+  /** The head commit of the review, in lower case: the run's own head is stored when it has one. */
+  headSha: string;
+  /** New issues. */
+  created: RenderedFinding[];
+  /**
+   * Earlier issues raised again where they can be placed: the new text, lines, snippet, suggestion
+   * and anchor are written together, with the head they were made for.
+   */
+  updated: { priorId: string; category: AiCategory; rows: RenderedFinding }[];
+  /** Earlier issues that stay as they are: the review only marks that it looked at them. */
+  kept: string[];
+  closed: { id: string; why: CloseReason }[];
+  /** Findings the review did not store. */
+  dropped: number;
+  summary: ReviewSummary;
+  tier: ReviewTier;
+  reviewers: string[];
+  tokenLimitReached: boolean;
 }
 
 export interface StoreCounts {
@@ -83,8 +103,6 @@ const short = (sha: string): string => sha.slice(0, 12);
 const raisedBy = (sha: string): string => `Raised by the AI review of commit ${short(sha)}.`;
 const closedBy: Readonly<Record<CloseReason, (sha: string) => string>> = {
   fixed: (sha) => `Closed by the AI review of commit ${short(sha)}: the problem is fixed.`,
-  left_out: (sha) =>
-    `Closed by the AI review of commit ${short(sha)}: it no longer reports the problem, and the lines it was on changed.`,
   deleted: (sha) => `Closed by the AI review of commit ${short(sha)}: the file was deleted.`,
 };
 
@@ -97,7 +115,7 @@ const closedBy: Readonly<Record<CloseReason, (sha: string) => string>> = {
 async function maskedHead(
   path: string,
   change: ReviewableChange | undefined,
-  deps: ReviewStoreDeps,
+  deps: ReviewPrepareDeps,
 ): Promise<MaskedText | null> {
   const known = change?.text ?? deps.files.keptText(path);
   if (known !== null && known !== undefined) return known;
@@ -110,42 +128,62 @@ async function maskedHead(
   }
 }
 
-interface Created {
-  id: string;
-  rows: RenderedFinding;
-}
-interface Updated {
-  prior: PriorFinding;
-  rows: RenderedFinding;
-}
-
-/**
- * The values to store for the findings of the plan. The files are read and masked here, before the
- * transaction takes a lock, so a slow masking holds nothing up.
- */
+/** The values to store for the findings of the plan, each file read and masked once. */
 async function renderPlan(
   plan: FindingsPlan,
-  deps: ReviewStoreDeps,
-): Promise<{ created: Created[]; updated: Updated[] }> {
+  deps: ReviewPrepareDeps,
+): Promise<Pick<PreparedOutcome, 'created' | 'updated'>> {
   const heads = new Map<string, MaskedText | null>();
   const headOf = async (path: string, change: ReviewableChange | undefined) => {
     if (!heads.has(path)) heads.set(path, await maskedHead(path, change, deps));
     return heads.get(path) ?? null;
   };
-  const created: Created[] = [];
+  const created: RenderedFinding[] = [];
   for (const planned of plan.creates) {
     const head = await headOf(planned.finding.path, planned.change);
-    created.push({
-      id: uuidv7(),
-      rows: renderFinding(planned, planned.finding.category, head),
-    });
+    created.push(renderFinding(planned, planned.finding.category, head));
   }
-  const updated: Updated[] = [];
+  const updated: PreparedOutcome['updated'] = [];
   for (const { prior, found } of plan.updates) {
     const head = await headOf(found.finding.path, found.change);
-    updated.push({ prior, rows: renderFinding(found, prior.category, head) });
+    updated.push({
+      priorId: prior.id,
+      category: prior.category,
+      rows: renderFinding(found, prior.category, head),
+    });
   }
   return { created, updated };
+}
+
+/**
+ * Decides what a review stores and makes the values of it: the findings that become issues, the
+ * earlier ones raised again, kept or closed, and the summary. It reads and masks the files the
+ * findings are in, and touches no database, so call it before the transaction opens. It does not
+ * look at the run: the caller moves the run to `storing` with an update that only a run still
+ * `running` passes, and that update is what refuses a run that was superseded or stored already,
+ * before any masking is spent on it. `storeReviewOutcome` takes the run's row again, under lock, and
+ * is the authority.
+ */
+export async function prepareReviewOutcome(
+  context: ReviewContext,
+  outcome: Extract<PipelineOutcome, { kind: 'reviewed' }>,
+  deps: ReviewPrepareDeps,
+): Promise<PreparedOutcome> {
+  const summary = reviewSummary(outcome);
+  const plan = planFindings(context, outcome);
+  const { created, updated } = await renderPlan(plan, deps);
+  return {
+    headSha: context.meta.headSha.toLowerCase(),
+    created,
+    updated,
+    kept: plan.keeps.map((prior) => prior.id),
+    closed: plan.closes.map(({ prior, why }) => ({ id: prior.id, why })),
+    dropped: plan.dropped.length,
+    summary,
+    tier: outcome.tier,
+    reviewers: [...outcome.specialists],
+    tokenLimitReached: outcome.tokenLimitReached,
+  };
 }
 
 /** The row of a finding, as the review that wrote it last left it. */
@@ -205,35 +243,32 @@ async function lockOpen(
 }
 
 /**
- * Stores the outcome of a review that reviewed: the new findings as issues, the earlier ones the
- * review raised again as updates of their issues, the ones it found fixed (or left out where the
- * code changed) as closed ones with a changelog entry, and the run as `done` with its counts and its
- * summary. Run it inside the transaction that ends the run, and call `ensureAiRules` on the pool
- * first; it throws {@link ReviewNotStoringError}, writing nothing, when the run is not storing.
+ * Stores a prepared outcome, in the transaction that ends the run: the new findings as issues, the
+ * earlier ones raised again as updates of their issues, the ones found fixed (or in a deleted file)
+ * as closed ones with a changelog entry, and the run as `done` with its counts and its summary.
+ * `ruleIds` are the ids of the eight AI rules by category: call `ensureAiRules` on the pool before
+ * the transaction opens, so that the store never waits on another store's open transaction. It
+ * throws {@link ReviewNotStoringError}, writing nothing, when the run is not storing.
  *
- * The snippet and the hashes of an issue are made of the masked text of its file and of nothing
- * else (`deps`); model text is cut to its columns and made storable.
+ * A finding is written with the head its anchor and its suggestion were made for. An earlier finding
+ * that is only kept or closed keeps the head of its last placement: the review marks that it looked
+ * at it (`run_id`, and `last_seen_analysis_id` of the issue) and nothing more.
  */
 export async function storeReviewOutcome(
   tx: Tx,
   run: ReviewRunRow,
-  context: ReviewContext,
-  outcome: Extract<PipelineOutcome, { kind: 'reviewed' }>,
-  deps: ReviewStoreDeps,
+  prepared: PreparedOutcome,
+  ruleIds: ReadonlyMap<AiCategory, string>,
 ): Promise<StoreCounts> {
-  const headSha = (run.headSha ?? context.meta.headSha).toLowerCase();
-  const summary = reviewSummary(outcome);
-  const plan = planFindings(context, outcome);
-  const { created, updated } = await renderPlan(plan, deps);
-
+  const headSha = (run.headSha ?? prepared.headSha).toLowerCase();
   await lockRun(tx, run.id);
-  const openNow = await lockOpen(tx, run, deps.ruleIds, [
-    ...plan.updates.map((u) => u.prior.id),
-    ...plan.keeps.map((p) => p.id),
-    ...plan.closes.map((c) => c.prior.id),
+  const openNow = await lockOpen(tx, run, ruleIds, [
+    ...prepared.updated.map((u) => u.priorId),
+    ...prepared.kept,
+    ...prepared.closed.map((c) => c.id),
   ]);
   const ruleOf = (category: AiCategory) => {
-    const id = deps.ruleIds.get(category);
+    const id = ruleIds.get(category);
     const quality = QUALITY.get(category);
     if (id === undefined || quality === undefined) {
       throw new Error(`no rule for the AI category ${category}`);
@@ -241,6 +276,7 @@ export async function storeReviewOutcome(
     return { id, quality };
   };
 
+  const created = prepared.created.map((rows) => ({ id: uuidv7(), rows }));
   if (created.length > 0) {
     await tx.insert(issues).values(
       created.map(({ id, rows }) => {
@@ -292,8 +328,8 @@ export async function storeReviewOutcome(
   // while the review ran, and the finding is dropped.
   let updates = 0;
   let notOpen = 0;
-  for (const { prior, rows } of updated) {
-    if (!openNow.has(prior.id)) {
+  for (const { priorId, category, rows } of prepared.updated) {
+    if (!openNow.has(priorId)) {
       notOpen += 1;
       continue;
     }
@@ -312,11 +348,11 @@ export async function storeReviewOutcome(
         snippet: rows.snippet,
         lastSeenAnalysisId: run.analysisId,
       })
-      .where(eq(issues.id, prior.id));
+      .where(eq(issues.id, priorId));
     const row = findingRow(rows, run.id, headSha);
     await tx
       .insert(reviewFindings)
-      .values({ issueId: prior.id, category: prior.category, ...row })
+      .values({ issueId: priorId, category, ...row })
       .onConflictDoUpdate({
         target: reviewFindings.issueId,
         set: { ...row, updatedAt: sql`now()` },
@@ -324,8 +360,10 @@ export async function storeReviewOutcome(
     updates += 1;
   }
 
-  // Found still there, but not raised again: checked at this commit, nothing else to say of it.
-  const kept = plan.keeps.filter((prior) => openNow.has(prior.id)).map((prior) => prior.id);
+  // Found still there, named by a finding that could not be used, or raised again where it cannot
+  // be placed: nothing of it is rewritten, and its anchor and suggestion keep the head they were
+  // made for.
+  const kept = prepared.kept.filter((id) => openNow.has(id));
   if (kept.length > 0) {
     await tx
       .update(issues)
@@ -333,15 +371,15 @@ export async function storeReviewOutcome(
       .where(inArray(issues.id, kept));
     await tx
       .update(reviewFindings)
-      .set({ runId: run.id, reviewedHeadSha: headSha })
+      .set({ runId: run.id })
       .where(inArray(reviewFindings.issueId, kept));
   }
 
   let closed = 0;
-  for (const why of ['fixed', 'left_out', 'deleted'] as const) {
-    const ids = plan.closes
-      .filter((close) => close.why === why && openNow.has(close.prior.id))
-      .map((close) => close.prior.id);
+  for (const why of ['fixed', 'deleted'] as const) {
+    const ids = prepared.closed
+      .filter((close) => close.why === why && openNow.has(close.id))
+      .map((close) => close.id);
     if (ids.length === 0) continue;
     const ended = await tx
       .update(issues)
@@ -360,7 +398,7 @@ export async function storeReviewOutcome(
     );
     await tx
       .update(reviewFindings)
-      .set({ runId: run.id, reviewedHeadSha: headSha })
+      .set({ runId: run.id })
       .where(
         inArray(
           reviewFindings.issueId,
@@ -377,7 +415,7 @@ export async function storeReviewOutcome(
       and(
         eq(issues.branchId, run.branchId),
         eq(issues.status, 'open'),
-        inArray(issues.ruleId, [...deps.ruleIds.values()]),
+        inArray(issues.ruleId, [...ruleIds.values()]),
       ),
     );
   await tx
@@ -387,10 +425,10 @@ export async function storeReviewOutcome(
       phase: null,
       reason: null,
       finishedAt: sql`now()`,
-      tier: outcome.tier,
-      reviewers: outcome.specialists,
-      tokenLimitReached: outcome.tokenLimitReached,
-      summary,
+      tier: prepared.tier,
+      reviewers: prepared.reviewers,
+      tokenLimitReached: prepared.tokenLimitReached,
+      summary: prepared.summary,
       findingsNew: created.length,
       findingsOpen: openRow?.open ?? 0,
       findingsFixed: closed,
@@ -401,6 +439,6 @@ export async function storeReviewOutcome(
     created: created.length,
     updated: updates + kept.length,
     closed,
-    dropped: plan.dropped.length + notOpen,
+    dropped: prepared.dropped + notOpen,
   };
 }

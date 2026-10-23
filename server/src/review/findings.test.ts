@@ -1,11 +1,3 @@
-import {
-  contextHash,
-  filelessHash,
-  lineHash,
-  normalizeSarif,
-  REDACTED,
-  type NormalizeOptions,
-} from '@qualor/shared';
 import { describe, expect, it } from 'vitest';
 import type { AiCategory } from '../db/schema';
 import type { ReviewableChange } from './context';
@@ -16,14 +8,9 @@ import {
   MAX_FINDINGS_PER_REVIEW,
   placeFinding,
   planFindings,
-  renderFinding,
   reviewScope,
-  reviewSummary,
-  reviewSummarySchema,
-  type PlannedFinding,
 } from './findings';
 import type { PriorFinding } from './findings-query';
-import { lineCountOf, MaskedText } from './masked-files';
 import type { JudgedFinding, PipelineOutcome } from './pipeline';
 
 const range = (from: number, to: number): number[] =>
@@ -296,6 +283,21 @@ describe('matchPrior', () => {
     ).toBeNull();
   });
 
+  it('a judge priorId names an issue in another file only for a rename', () => {
+    const p = prior('p', { path: 'src/a.ts', line: 10 });
+    const elsewhere = judged({ priorId: 'p', path: 'src/b.ts', line: 10 });
+    // Not a rename: the id is not followed, and by its words the finding is another file's.
+    expect(matchPrior(elsewhere, [p])).toBeNull();
+    expect(matchPrior(elsewhere, [p], new Map([['src/c.ts', 'src/a.ts']]))).toBeNull();
+    expect(matchPrior(elsewhere, [p], new Map([['src/b.ts', 'src/c.ts']]))).toBeNull();
+    // src/b.ts is src/a.ts renamed.
+    const renamed = new Map([['src/b.ts', 'src/a.ts']]);
+    expect(matchPrior(elsewhere, [p], renamed)).toBe(p);
+    // The judge may still call the file by the name the prior finding has, which is its own.
+    const old = judged({ priorId: 'p', path: 'src/a.ts', line: 90, title: 'Anything' });
+    expect(matchPrior(old, [p], renamed)).toBe(p);
+  });
+
   it('fingerprint and proximity match a re-worded finding', () => {
     const p = prior('p', { line: 10, title: 'Missing null check on `user`' });
     const reworded = (over: Partial<JudgedFinding>) =>
@@ -335,6 +337,34 @@ describe('matchPrior', () => {
     const late = prior('late', { line: 14 });
     expect(matchPrior(judged({ line: 12 }), [late, early])).toBe(early);
   });
+
+  it('a dismissed prior finding is a finding by its id, or by its words and the code in them', () => {
+    const gone = prior('gone', {
+      status: 'wont_fix',
+      line: 10,
+      title: 'Missing null check on `user`',
+    });
+    const finding = (title: string, over: Partial<JudgedFinding> = {}) =>
+      judged({ title, line: 12, ...over });
+    // The same code, in other words around it.
+    expect(matchPrior(finding('missing NULL check on `user`'), [gone])).toBe(gone);
+    // Other code, none, or more: another finding, which a dismissal does not cover.
+    expect(matchPrior(finding('Missing null check on `order`'), [gone])).toBeNull();
+    expect(matchPrior(finding('Missing null check on'), [gone])).toBeNull();
+    expect(matchPrior(finding('Missing null check on `user`, `order`'), [gone])).toBeNull();
+    // The order of the code and its repeats do not matter.
+    const swap = prior('swap', { status: 'false_positive', line: 10, title: 'Swap `a` and `b`' });
+    expect(matchPrior(finding('swap `b`, `a` and `b`'), [swap])).toBe(swap);
+    // The space inside a code span is not code, and naming only some of the code is another finding.
+    expect(matchPrior(finding('swap `  b `, `a` and `b`'), [swap])).toBe(swap);
+    const pair = prior('pair', { status: 'wont_fix', line: 10, title: 'Mix `a` and `b`' });
+    expect(matchPrior(finding('Mix `a` and'), [pair])).toBeNull();
+    // The judge's own id still names it.
+    expect(matchPrior(finding('Anything', { priorId: 'gone', line: 90 }), [gone])).toBe(gone);
+    // An open prior finding does not need the same code: a re-worded finding is still it.
+    const open = prior('open', { line: 10, title: 'Missing null check on `user`' });
+    expect(matchPrior(finding('Missing null check on `order`'), [open])).toBe(open);
+  });
 });
 
 describe('matchPriors', () => {
@@ -370,12 +400,19 @@ describe('matchPriors', () => {
     expect(matchPriors([judged({ line: 12 }), judged({ line: 8 })], [p])).toEqual([p, null]);
   });
 
-  it('lets a dismissed prior finding take any number of findings', () => {
+  it('gives a dismissed prior finding to one finding, as an open one', () => {
     const gone = prior('gone', { line: 10, status: 'false_positive' });
-    expect(matchPriors([judged({ line: 10 }), judged({ line: 12 })], [gone])).toEqual([gone, gone]);
+    expect(matchPriors([judged({ line: 10 }), judged({ line: 12 })], [gone])).toEqual([gone, null]);
     expect(matchPriors([judged({ priorId: 'gone' }), judged({ priorId: 'gone' })], [gone])).toEqual(
-      [gone, gone],
+      [gone, null],
     );
+  });
+
+  it('follows a claim into another file only for a rename', () => {
+    const p = prior('p', { path: 'src/a.ts' });
+    const claim = judged({ priorId: 'p', path: 'src/b.ts', title: 'Another problem' });
+    expect(matchPriors([claim], [p])).toEqual([null]);
+    expect(matchPriors([claim], [p], new Map([['src/b.ts', 'src/a.ts']]))).toEqual([p]);
   });
 });
 
@@ -475,14 +512,42 @@ describe('planFindings', () => {
     // A dismissed issue is neither updated nor closed, and does not count as left out.
     expect(result.updates).toEqual([]);
     expect(result.closes).toEqual([]);
+    expect(result.keeps).toEqual([]);
   });
 
-  it('a re-emitted prior finding is updated wherever it is, and stays open whatever the judge says', () => {
-    const p = prior('p', { line: 60, title: 'Old words for the problem' });
+  it('a dismissal covers one finding, and not the same words around other code', () => {
+    const dismissed = prior('fp', { status: 'false_positive', line: 12 });
+    const twice = plan(
+      {
+        findings: [
+          judged({ title: 'Total skips the last item', line: 12 }),
+          judged({ title: 'Total skips the last item!', line: 14 }),
+        ],
+      },
+      [dismissed],
+    );
+    expect(twice.dropped.map((d) => [d.finding.line, d.why])).toEqual([[12, 'dismissed']]);
+    expect(twice.creates.map((c) => c.finding.line)).toEqual([14]);
+
+    const user = prior('user', {
+      status: 'wont_fix',
+      line: 12,
+      title: 'Missing null check on `user`',
+    });
+    const other = plan(
+      { findings: [judged({ title: 'Missing null check on `order`', line: 14 })] },
+      [user],
+    );
+    expect(other.dropped).toEqual([]);
+    expect(other.creates.map((c) => c.finding.title)).toEqual(['Missing null check on `order`']);
+  });
+
+  it('a re-emitted prior finding is updated and stays open whatever the judge says of it', () => {
+    const p = prior('p', { line: 14, title: 'Old words for the problem' });
     const result = plan(
       {
-        // Out of scope, and the judge also says it is fixed: it is in the findings, so it stays.
-        findings: [judged({ priorId: 'p', line: 61, title: 'New words for the problem' })],
+        // The judge also says it is fixed: it is in the findings, so it stays.
+        findings: [judged({ priorId: 'p', line: 15, title: 'New words for the problem' })],
         prior: [verdict('p', 'fixed')],
         shownPriorIds: ['p'],
       },
@@ -490,10 +555,28 @@ describe('planFindings', () => {
     );
     expect(
       result.updates.map((u) => [u.prior.id, u.found.finding.title, u.found.anchorLine]),
-    ).toEqual([['p', 'New words for the problem', null]]);
+    ).toEqual([['p', 'New words for the problem', 15]]);
     expect(result.creates).toEqual([]);
     expect(result.closes).toEqual([]);
     expect(result.keeps).toEqual([]);
+  });
+
+  it('a prior finding raised again where it cannot be placed is kept as it is', () => {
+    const p = prior('p', { line: 60, title: 'Old words for the problem' });
+    const result = plan(
+      {
+        // No added line is near line 61: nothing of the new finding would fit its old anchor.
+        findings: [judged({ priorId: 'p', line: 61, title: 'New words for the problem' })],
+        prior: [verdict('p', 'fixed')],
+        shownPriorIds: ['p'],
+      },
+      [p],
+    );
+    expect(result.keeps.map((k) => k.id)).toEqual(['p']);
+    expect(result.updates).toEqual([]);
+    expect(result.closes).toEqual([]);
+    expect(result.creates).toEqual([]);
+    expect(result.dropped).toEqual([]);
   });
 
   it('two findings of one prior: the first updates it and the second is judged as new', () => {
@@ -537,36 +620,28 @@ describe('planFindings', () => {
     expect(ignored.keeps).toEqual([]);
   });
 
-  it('an omitted prior on changed lines is closed, on unchanged lines left open', () => {
+  it('an omitted or unclear prior is left open, on changed lines or not: only a fix or a deleted file closes it', () => {
     const changed = prior('changed', { line: 12, endLine: 13, title: 'Changed problem' });
     const nearby = prior('nearby', { line: 23, title: 'Nearby problem' });
     const unchanged = prior('unchanged', { line: 60, title: 'Unchanged problem' });
     const everything = ['changed', 'nearby', 'unchanged'];
-    // The judge shows no verdict for a prior finding it left out; one it could not tell is the same.
-    const omitted = plan({ shownPriorIds: everything }, [changed, nearby, unchanged]);
-    expect(omitted.closes.map((c) => [c.prior.id, c.why])).toEqual([
-      ['changed', 'left_out'],
-      ['nearby', 'left_out'],
-    ]);
+    const priors = [changed, nearby, unchanged];
+    // The judge gives no verdict for a prior finding it left out; one it could not tell is the same.
+    const omitted = plan({ shownPriorIds: everything }, priors);
+    expect(omitted.closes).toEqual([]);
+    expect(omitted.keeps).toEqual([]);
     const unclear = plan(
       { prior: everything.map((id) => verdict(id, 'unclear')), shownPriorIds: everything },
-      [changed, nearby, unchanged],
+      priors,
     );
-    expect(unclear.closes.map((c) => c.prior.id)).toEqual(['changed', 'nearby']);
-    // A prior finding the judge was not shown is not left out by it.
-    const unshown = plan({ shownPriorIds: ['unchanged'] }, [changed, nearby, unchanged]);
-    expect(unshown.closes).toEqual([]);
-    // Four lines from the changed lines is too far.
-    const far = prior('far', { line: 24, title: 'Far problem' });
-    expect(plan({ shownPriorIds: ['far'] }, [far]).closes).toEqual([]);
-  });
-
-  it('judges the lines a re-review changed, not the lines the change added in all', () => {
-    const rereview = [change('src/a.ts', { added: new Set(range(10, 40)), since: [[30, 32]] })];
-    const early = prior('early', { line: 12, title: 'Early problem' });
-    const late = prior('late', { line: 31, title: 'Late problem' });
-    const result = plan({ shownPriorIds: ['early', 'late'] }, [early, late], rereview);
-    expect(result.closes.map((c) => c.prior.id)).toEqual(['late']);
+    expect(unclear.closes).toEqual([]);
+    // The lines of a prior finding come from an older head than the lines changed since the last
+    // review: the same on a re-review.
+    const rereview = [change('src/a.ts', { added: new Set(range(10, 40)), since: [[11, 14]] })];
+    expect(plan({ shownPriorIds: everything }, priors, rereview).closes).toEqual([]);
+    // A fix the judge reports does close one.
+    const fixed = plan({ prior: [verdict('changed', 'fixed')], shownPriorIds: everything }, priors);
+    expect(fixed.closes.map((c) => [c.prior.id, c.why])).toEqual([['changed', 'fixed']]);
   });
 
   it('closes a prior finding left out whose file the merge request deleted, wherever it was', () => {
@@ -576,7 +651,8 @@ describe('planFindings', () => {
     const p = prior('p', { line: 60 });
     const result = plan({ shownPriorIds: ['p'] }, [p], gone);
     expect(result.closes.map((c) => [c.prior.id, c.why])).toEqual([['p', 'deleted']]);
-    // A prior finding on a file the merge request no longer changes is left as it is.
+    // One the judge was not shown is left as it is, and so is one on a file nobody deleted.
+    expect(plan({ shownPriorIds: [] }, [p], gone).closes).toEqual([]);
     expect(plan({ shownPriorIds: ['p'] }, [p], []).closes).toEqual([]);
   });
 
@@ -596,407 +672,134 @@ describe('planFindings', () => {
     expect(other.keeps).toEqual([]);
   });
 
-  it('drops a finding in a file the review knows nothing of, also one that names a prior finding', () => {
+  it('a prior finding named by a finding the plan drops stays open, whatever the judge says of it', () => {
     const p = prior('p', { line: 14 });
+    const filler = range(1, MAX_FINDINGS_PER_REVIEW).map((n) =>
+      judged({ title: `Filler ${'x'.repeat(n)}`, line: 15 }),
+    );
+    const cases: [string, JudgedFinding[], string][] = [
+      // A file the review knows nothing of.
+      ['bogus path', [judged({ priorId: 'p', path: 'src/bogus.ts', line: 14 })], 'out_of_scope'],
+      // The judge copied a stale line, and the push shortened the file.
+      ['stale line', [judged({ priorId: 'p', line: 500, endLine: 500 })], 'bad_lines'],
+      ['low confidence', [judged({ priorId: 'p', confidence: 'low' })], 'low_confidence'],
+      // The 41st finding of a hand-made outcome.
+      ['over the limit', [...filler, judged({ priorId: 'p', title: 'Last' })], 'over_limit'],
+    ];
+    for (const [label, findings, why] of cases) {
+      const result = plan({ findings, prior: [verdict('p', 'fixed')], shownPriorIds: ['p'] }, [p]);
+      expect(
+        result.dropped.map((d) => d.why).filter((w) => w === why),
+        label,
+      ).toHaveLength(1);
+      expect(
+        result.keeps.map((k) => k.id),
+        label,
+      ).toEqual(['p']);
+      expect(result.closes, label).toEqual([]);
+      expect(result.updates, label).toEqual([]);
+    }
+  });
+
+  it('a prior finding named in another file is kept, and the finding is judged as its own', () => {
+    const p = prior('p', { path: 'src/a.ts', line: 14 });
+    const two = [change('src/a.ts'), change('src/b.ts')];
     const result = plan(
       {
-        findings: [judged({ priorId: 'p', path: 'src/bogus.ts', line: 14, title: 'Elsewhere' })],
+        findings: [judged({ priorId: 'p', path: 'src/b.ts', line: 14, title: 'Another problem' })],
+        prior: [verdict('p', 'fixed')],
         shownPriorIds: ['p'],
       },
       [p],
+      two,
     );
-    expect(result.updates).toEqual([]);
-    expect(result.creates).toEqual([]);
-    expect(result.dropped.map((d) => [d.finding.path, d.why])).toEqual([
-      ['src/bogus.ts', 'out_of_scope'],
+    expect(result.creates.map((c) => [c.finding.path, c.finding.title])).toEqual([
+      ['src/b.ts', 'Another problem'],
     ]);
-    // The prior finding is then one the judge left out, and its lines changed.
-    expect(result.closes.map((c) => [c.prior.id, c.why])).toEqual([['p', 'left_out']]);
+    expect(result.updates).toEqual([]);
+    expect(result.keeps.map((k) => k.id)).toEqual(['p']);
+    expect(result.closes).toEqual([]);
+  });
 
-    // A file the review has no change of but an earlier finding is in: the judge may raise it again.
-    const gone = prior('gone', { path: 'src/left-the-mr.ts', line: 5 });
-    const again = plan(
+  it('looks a change up by the path a renamed file had, and stores the path it has', () => {
+    const renamed = [
+      change('src/new.ts', { oldPath: 'src/old.ts', status: 'renamed', lines: 100 }),
+    ];
+    const title = 'Problem in a renamed file';
+    const p = prior('p', { path: 'src/old.ts', line: 14, title });
+    const updated = (result: ReturnType<typeof plan>) =>
+      result.updates.map((u) => [u.prior.id, u.found.finding.path, u.found.anchorLine]);
+
+    // The judge names the prior finding with the old name of the file, or with the new one.
+    const old = plan(
       {
-        findings: [
-          judged({ priorId: 'gone', path: 'src/left-the-mr.ts', line: 5, title: 'Again' }),
-        ],
-        shownPriorIds: ['gone'],
+        findings: [judged({ priorId: 'p', path: 'src/old.ts', line: 15, title })],
+        shownPriorIds: ['p'],
       },
-      [gone],
+      [p],
+      renamed,
     );
-    expect(again.updates.map((u) => [u.prior.id, u.found.anchorLine])).toEqual([['gone', null]]);
-    expect(again.dropped).toEqual([]);
+    expect(updated(old)).toEqual([['p', 'src/new.ts', 15]]);
+    const named = plan(
+      {
+        findings: [judged({ priorId: 'p', path: 'src/new.ts', line: 15, title })],
+        shownPriorIds: ['p'],
+      },
+      [p],
+      renamed,
+    );
+    expect(updated(named)).toEqual([['p', 'src/new.ts', 15]]);
+    // With no id, the old name and the same words are the prior finding.
+    const byWords = plan(
+      { findings: [judged({ path: 'src/old.ts', line: 15, title })], shownPriorIds: ['p'] },
+      [p],
+      renamed,
+    );
+    expect(updated(byWords)).toEqual([['p', 'src/new.ts', 15]]);
+    // A new finding that uses the old name is a finding in the renamed file.
+    const created = plan(
+      { findings: [judged({ path: 'src/old.ts', line: 15, title: 'Something else' })] },
+      [],
+      renamed,
+    );
+    expect(created.creates.map((c) => [c.finding.path, c.change?.path])).toEqual([
+      ['src/new.ts', 'src/new.ts'],
+    ]);
+    // A prior finding in a renamed file the judge leaves out is not closed: the file is there.
+    expect(plan({ shownPriorIds: ['p'] }, [p], renamed).closes).toEqual([]);
+  });
+
+  it('a path that is a file of the review is that file, though another file was renamed from it', () => {
+    const files = [
+      change('src/a.ts', { status: 'added' }),
+      change('src/b.ts', { oldPath: 'src/a.ts', status: 'renamed' }),
+    ];
+    const result = plan(
+      { findings: [judged({ path: 'src/a.ts', line: 15, title: 'In the new file' })] },
+      [],
+      files,
+    );
+    expect(result.creates.map((c) => [c.finding.path, c.change?.path])).toEqual([
+      ['src/a.ts', 'src/a.ts'],
+    ]);
+  });
+
+  it('puts the whole file in scope for a new finding, and closes no prior finding for it', () => {
+    const blind = [
+      change('src/a.ts', { hasPatch: false, patchUsable: false, added: new Set(), lines: 100 }),
+    ];
+    const early = prior('early', { line: 60, title: 'Early problem' });
+    const result = plan(
+      { findings: [judged({ title: 'New', line: 50, endLine: 50 })], shownPriorIds: ['early'] },
+      [early],
+      blind,
+    );
+    expect(result.creates.map((c) => [c.finding.title, c.anchorLine])).toEqual([['New', null]]);
+    expect(result.closes).toEqual([]);
+    expect(result.keeps).toEqual([]);
   });
 
   it('plans nothing for an empty review', () => {
     expect(plan({})).toEqual({ creates: [], updates: [], keeps: [], closes: [], dropped: [] });
-  });
-});
-
-describe('renderFinding', () => {
-  /** A file of 60 lines `line N;`, masked as a whole, with `over` for some of its lines. */
-  const file = (over: Record<number, string> = {}): MaskedText => {
-    const text = `${range(1, 60)
-      .map((n) => over[n] ?? `line ${n};`)
-      .join('\n')}\n`;
-    return MaskedText.of(text, lineCountOf(text));
-  };
-  const planned = (
-    finding: JudgedFinding,
-    over: Partial<ReviewableChange> = {},
-  ): PlannedFinding => {
-    const ch = change('src/a.ts', { lines: 60, added: new Set(range(10, 30)), ...over });
-    const { anchorLine } = placeFinding(finding, ch, reviewScope([ch]));
-    return { finding, change: ch, anchorLine };
-  };
-
-  it('maps the severity and keeps the confidence, the verification and the lines', () => {
-    for (const [severity, expected] of [
-      ['critical', 'high'],
-      ['major', 'medium'],
-      ['minor', 'low'],
-    ] as const) {
-      const rendered = renderFinding(planned(judged({ severity })), 'logic', file());
-      expect(rendered.severity).toBe(expected);
-    }
-    const rendered = renderFinding(
-      planned(
-        judged({ confidence: 'medium', verification: 'needs_validation', line: 14, endLine: 16 }),
-      ),
-      'logic',
-      file(),
-    );
-    expect(rendered).toMatchObject({
-      category: 'logic',
-      path: 'src/a.ts',
-      startLine: 14,
-      endLine: 16,
-      confidence: 'medium',
-      verification: 'needs_validation',
-      anchorLine: 14,
-    });
-  });
-
-  it('cuts the texts to their columns and replaces what a text column cannot hold', () => {
-    const rendered = renderFinding(
-      planned(
-        judged({
-          title: `  A\u0000title ${'t'.repeat(300)}  `,
-          body: `Body\u0000${'b'.repeat(2500)}`,
-          assumption: `Assumes\u0000${'a'.repeat(400)}`,
-        }),
-      ),
-      'logic',
-      file(),
-    );
-    expect(rendered.message.startsWith('A\uFFFDtitle t')).toBe(true);
-    expect([...rendered.message]).toHaveLength(120);
-    expect(rendered.message.endsWith('…')).toBe(true);
-    expect(rendered.body.startsWith('Body\uFFFDb')).toBe(true);
-    expect([...rendered.body]).toHaveLength(2000);
-    expect(rendered.assumption?.startsWith('Assumes\uFFFDa')).toBe(true);
-    expect([...(rendered.assumption ?? '')]).toHaveLength(300);
-    for (const text of [rendered.message, rendered.body, rendered.assumption ?? '']) {
-      expect(text).not.toContain('\u0000');
-    }
-    // No assumption, or a blank one, is none.
-    expect(
-      renderFinding(planned(judged({ assumption: '  ' })), 'logic', file()).assumption,
-    ).toBeNull();
-    expect(
-      renderFinding(planned(judged({ assumption: null })), 'logic', file()).assumption,
-    ).toBeNull();
-  });
-
-  it('replaces a lone surrogate in model text, which a jsonb value cannot hold', () => {
-    const lone = String.fromCharCode(0xd800);
-    const replacement = String.fromCodePoint(0xfffd);
-    const rendered = renderFinding(
-      planned(judged({ title: `A${lone}B`, body: `Body${lone}`, assumption: `${lone}Assumes` })),
-      'logic',
-      file(),
-    );
-    expect(rendered.message).toBe(`A${replacement}B`);
-    expect(rendered.body).toBe(`Body${replacement}`);
-    expect(rendered.assumption).toBe(`${replacement}Assumes`);
-  });
-
-  it('makes the fingerprint of the category given, the path and the title', () => {
-    const f = judged({ category: 'security', title: 'Total skips the last item' });
-    const rendered = renderFinding(planned(f), 'logic', file());
-    expect(rendered.fingerprint).toBe(fingerprintOf('logic', 'src/a.ts', f.title));
-    expect(rendered.category).toBe('logic');
-  });
-
-  it("makes the snippet and the hashes of the masked head file, as ingestion makes a report's", () => {
-    // Line 14 is longer than a snippet line may be.
-    const all = range(1, 60).map((n) => (n === 14 ? 'y'.repeat(1000) : `line ${n};`));
-    const text = `${all.join('\n')}\n`;
-    const head = MaskedText.of(text, lineCountOf(text));
-
-    const ingestion = (startLine: number, endLine: number) => {
-      const out = normalizeSarif(
-        {
-          version: '2.1.0',
-          runs: [
-            {
-              tool: { driver: { name: 'ESLint', rules: [{ id: 'r' }] } },
-              results: [
-                {
-                  ruleId: 'r',
-                  message: { text: 'm' },
-                  locations: [
-                    {
-                      physicalLocation: {
-                        artifactLocation: { uri: 'src/a.ts' },
-                        region: { startLine, endLine },
-                      },
-                    },
-                  ],
-                },
-              ],
-            },
-          ],
-        },
-        { engineId: 'eslint', repoRoot: '/repo', readLines: () => all } satisfies NormalizeOptions,
-      );
-      return out.findings[0];
-    };
-    for (const [startLine, endLine] of [
-      [1, 1],
-      [2, 2],
-      [14, 14],
-      [30, 33],
-      [30, 40],
-      [57, 60],
-      [58, 60],
-      [60, 60],
-    ] as const) {
-      const rendered = renderFinding(
-        planned(judged({ line: startLine, endLine }), { added: new Set(range(1, 60)) }),
-        'logic',
-        head,
-      );
-      const reported = ingestion(startLine, endLine);
-      const where = `${startLine}-${endLine}`;
-      expect(rendered.snippet, where).toEqual(reported?.snippet);
-      expect([rendered.lineHash, rendered.contextHash], where).toEqual([
-        reported?.lineHash,
-        reported?.contextHash,
-      ]);
-      expect(rendered.lineHash, where).toBe(lineHash(all, startLine, endLine));
-      expect(rendered.contextHash, where).toBe(contextHash(all, startLine, endLine));
-    }
-    // A long line is cut as a report's snippet cuts it.
-    const cut = renderFinding(planned(judged({ line: 14, endLine: 14 })), 'logic', head);
-    expect(cut.snippet?.lines[3]).toHaveLength(400);
-    expect(cut.snippet?.lines[3]?.endsWith('…')).toBe(true);
-  });
-
-  it('cuts a long snippet line before a character outside the basic plane, never through it', () => {
-    // The 399th unit would be half of the emoji: jsonb refuses a lone surrogate.
-    const wide = `${'a'.repeat(398)}${String.fromCodePoint(0x1f600)}${'b'.repeat(10)}`;
-    const lines = range(1, 20).map((n) => (n === 5 ? wide : `line ${n};`));
-    const text = `${lines.join('\n')}\n`;
-    const head = MaskedText.of(text, lineCountOf(text));
-    const rendered = renderFinding(planned(judged({ line: 5, endLine: 5 })), 'logic', head);
-    const cut = rendered.snippet?.lines[3];
-    expect(cut).toBe(`${'a'.repeat(398)}…`);
-    expect(JSON.stringify(rendered.snippet)).not.toMatch(/ud[89a-f][0-9a-f]{2}/i);
-  });
-
-  it('keeps a suggestion that starts or ends within three lines of the finding, and no other', () => {
-    const suggestionAt = (startLine: number, endLine: number) =>
-      renderFinding(
-        planned(
-          judged({
-            line: 15,
-            endLine: 15,
-            suggestion: { startLine, endLine, lines: ['x;'] },
-          }),
-        ),
-        'logic',
-        file(),
-      ).suggestion;
-    expect(suggestionAt(18, 18)).not.toBeNull();
-    expect(suggestionAt(19, 19)).toBeNull();
-    expect(suggestionAt(12, 12)).not.toBeNull();
-    expect(suggestionAt(11, 11)).toBeNull();
-    expect(suggestionAt(11, 12)).not.toBeNull();
-  });
-
-  it('shows lines without their carriage returns, and hashes them as the same lines', () => {
-    const body = range(1, 60).map((n) => `line ${n};`);
-    const crlfText = `${body.join('\r\n')}\r\n`;
-    const crlf = MaskedText.of(crlfText, lineCountOf(crlfText));
-    const find = planned(judged({ line: 15, endLine: 15 }));
-    const lf = renderFinding(find, 'logic', file());
-    const windows = renderFinding(find, 'logic', crlf);
-    expect(windows.snippet).toEqual(lf.snippet);
-    expect(windows.snippet?.lines.some((line) => line.includes('\r'))).toBe(false);
-    expect([windows.lineHash, windows.contextHash]).toEqual([lf.lineHash, lf.contextHash]);
-  });
-
-  it('shows the masked lines, and hashes them as masked', () => {
-    const secret = `const key = "${REDACTED}";`;
-    const head = file({ 15: secret });
-    const rendered = renderFinding(planned(judged({ line: 15, endLine: 15 })), 'logic', head);
-    expect(rendered.snippet?.lines).toContain(secret);
-    expect(rendered.snippet?.startLine).toBe(12);
-    const lines = range(1, 60).map((n) => (n === 15 ? secret : `line ${n};`));
-    expect(rendered.lineHash).toBe(lineHash(lines, 15, 15));
-  });
-
-  it("hashes the finding's own words and gives no snippet where it has no masked text to read", () => {
-    const f = judged({ title: 'Total skips the last item', line: 15, endLine: 15 });
-    const expected = filelessHash('ai:logic', f.title, 'src/a.ts');
-    const unread = renderFinding(planned(f), 'logic', null);
-    expect(unread.snippet).toBeNull();
-    expect([unread.lineHash, unread.contextHash]).toEqual([expected, expected]);
-    // A place past the end of the file the text holds is no place to read.
-    const past = renderFinding(
-      planned(judged({ title: f.title, line: 75, endLine: 75 })),
-      'logic',
-      file(),
-    );
-    expect(past.snippet).toBeNull();
-    expect(past.lineHash).toBe(expected);
-  });
-
-  it("keeps a suggestion that passes the checks, and anchors the finding at the suggestion's first line", () => {
-    const suggestion = { startLine: 13, endLine: 14, lines: ['const total = items.length;'] };
-    const rendered = renderFinding(
-      planned(judged({ line: 15, endLine: 15, suggestion })),
-      'logic',
-      file(),
-    );
-    expect(rendered.suggestion).toEqual(suggestion);
-    expect(rendered.anchorLine).toBe(13);
-    // The finding lies within three lines of the suggestion, beyond them it is no suggestion for it.
-    const near = renderFinding(
-      planned(judged({ line: 17, endLine: 17, suggestion })),
-      'logic',
-      file(),
-    );
-    expect(near.suggestion).toEqual(suggestion);
-    const far = renderFinding(
-      planned(judged({ line: 18, endLine: 18, suggestion })),
-      'logic',
-      file(),
-    );
-    expect(far.suggestion).toBeNull();
-    expect(far.anchorLine).toBe(18);
-  });
-
-  it('drops a suggestion that fails a check, and the finding stays where the nearest added line puts it', () => {
-    const over = (suggestion: JudgedFinding['suggestion'], head: MaskedText | null = file()) =>
-      renderFinding(planned(judged({ line: 12, endLine: 12, suggestion })), 'logic', head);
-    // Over a context line, over 16 lines, a fence, unchanged, and with no text to compare.
-    for (const suggestion of [
-      { startLine: 8, endLine: 12, lines: ['x;'] },
-      { startLine: 10, endLine: 25, lines: ['x;'] },
-      { startLine: 10, endLine: 12, lines: ['```'] },
-      { startLine: 11, endLine: 12, lines: ['line 11;', 'line 12;'] },
-    ]) {
-      const rendered = over(suggestion);
-      expect(rendered.suggestion, JSON.stringify(suggestion)).toBeNull();
-      expect(rendered.anchorLine).toBe(12);
-    }
-    expect(over({ startLine: 11, endLine: 12, lines: ['x;'] }, null).suggestion).toBeNull();
-    // A finding on a file the review has no change of has no lines a suggestion could replace.
-    const withoutChange: PlannedFinding = {
-      finding: judged({ suggestion: { startLine: 12, endLine: 12, lines: ['x;'] } }),
-      change: undefined,
-      anchorLine: null,
-    };
-    const rendered = renderFinding(withoutChange, 'logic', file());
-    expect(rendered.suggestion).toBeNull();
-    expect(rendered.anchorLine).toBeNull();
-  });
-
-  it('checks a suggestion against the masked text it is given, not the change text', () => {
-    // The change has no masked text of the file; the caller had one made.
-    const suggestion = { startLine: 11, endLine: 12, lines: ['x;'] };
-    const f = judged({ line: 12, endLine: 12, suggestion });
-    const bare = planned(f, { text: null });
-    expect(renderFinding(bare, 'logic', file()).suggestion).toEqual(suggestion);
-    expect(renderFinding(bare, 'logic', null).suggestion).toBeNull();
-  });
-});
-
-describe('reviewSummary', () => {
-  const summaryOf = (summary: Reviewed['summary'], notes: Reviewed['notes'] = []) =>
-    reviewSummary(outcomeOf({ summary, notes }));
-
-  it('keeps a clean summary and its notes, and passes the schema', () => {
-    const summary = summaryOf(
-      { verdict: 'One problem, a missing check.', walkthrough: ['The cart.', 'The tests.'] },
-      ['token_limit_reached', 'reviewer_unreadable'],
-    );
-    expect(summary).toEqual({
-      verdict: 'One problem, a missing check.',
-      walkthrough: ['The cart.', 'The tests.'],
-      notes: ['token_limit_reached', 'reviewer_unreadable'],
-    });
-    expect(reviewSummarySchema.parse(summary)).toEqual(summary);
-  });
-
-  it('makes the model text plain text for people: one line each, no control or hidden characters', () => {
-    const summary = summaryOf({
-      verdict: '  Fine\u0000but\n a second line\u202e  ',
-      walkthrough: ['  A\u200bB  ', '\u0000\u0007', '   ', 'x'.repeat(300)],
-    });
-    expect(summary.verdict).toBe('Fine but');
-    expect(summary.walkthrough[0]).toBe('AB');
-    // Items that come to nothing are left out; a long one is cut.
-    expect(summary.walkthrough).toHaveLength(2);
-    expect([...(summary.walkthrough[1] ?? '')]).toHaveLength(200);
-    expect(reviewSummarySchema.safeParse(summary).success).toBe(true);
-    const hidden = [0x200b, 0x202e].map((code) => String.fromCharCode(code));
-    for (const text of [summary.verdict, ...summary.walkthrough]) {
-      expect([...text].filter((c) => c.charCodeAt(0) < 0x20 || hidden.includes(c))).toEqual([]);
-    }
-  });
-
-  it('cuts an over-long verdict and keeps at most six points', () => {
-    const summary = summaryOf({
-      verdict: 'v'.repeat(500),
-      walkthrough: range(1, 9).map((n) => `Point ${n}.`),
-    });
-    expect([...summary.verdict]).toHaveLength(200);
-    expect(summary.walkthrough).toHaveLength(6);
-    expect(reviewSummarySchema.safeParse(summary).success).toBe(true);
-    // Characters outside the basic plane count once, as the cut does.
-    const astral = summaryOf({ verdict: '😀'.repeat(150), walkthrough: [] });
-    expect(astral.verdict).toBe('😀'.repeat(150));
-    expect(reviewSummarySchema.safeParse(astral).success).toBe(true);
-  });
-
-  it('reads a verdict and a point that start with blank lines', () => {
-    const summary = summaryOf({
-      verdict: '\n\n  One problem.',
-      walkthrough: ['\n Point.'],
-    });
-    expect(summary.verdict).toBe('One problem.');
-    expect(summary.walkthrough).toEqual(['Point.']);
-  });
-
-  it('the schema refuses what a summary is not', () => {
-    const ok = { verdict: 'v', walkthrough: ['w'], notes: [] };
-    expect(reviewSummarySchema.safeParse(ok).success).toBe(true);
-    for (const bad of [
-      { ...ok, extra: 1 },
-      { ...ok, notes: ['made_up'] },
-      { ...ok, verdict: 'v'.repeat(201) },
-      { ...ok, walkthrough: ['w'.repeat(201)] },
-      { ...ok, walkthrough: range(1, 7).map(String) },
-      { ...ok, walkthrough: [''] },
-      { verdict: 'v', walkthrough: [] },
-      { ...ok, verdict: 3 },
-      null,
-      'text',
-    ]) {
-      expect(reviewSummarySchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
-    }
   });
 });

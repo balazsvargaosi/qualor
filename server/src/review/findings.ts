@@ -1,46 +1,28 @@
-import {
-  contextHash,
-  CONTEXT_LINES,
-  cutAtGrapheme,
-  filelessHash,
-  hex32,
-  LONE_SURROGATE_SOURCE,
-  lineHash,
-  MAX_HASHED_LINES,
-  REPORT_BOUNDS,
-  safeMultilineText,
-  type Severity,
-} from '@qualor/shared';
-import { z } from 'zod';
+import { hex32 } from '@qualor/shared';
 import type { AiCategory } from '../db/schema';
 import { SCOPE_MARGIN, scopeRanges, type ReviewableChange, type ReviewContext } from './context';
 import type { PriorFinding } from './findings-query';
-import type { MaskedText } from './masked-files';
-import { REVIEW_NOTES, type JudgedFinding, type PipelineOutcome } from './pipeline';
-import { aiRuleKey } from './rules';
-import { ANSWER_LIMITS, type FindingSeverity } from './schemas';
-import { checkReviewSuggestion, type ReviewSuggestion } from './suggestion';
+import type { JudgedFinding, PipelineOutcome } from './pipeline';
 
 /*
  * From the judge's findings to what is stored: which lines a review may raise findings on, where a
- * finding's thread sits, which earlier finding a new one is, which earlier findings are closed, and
- * the values of an issue and of its finding row. All of it is decided here without a database, from
- * the context and the outcome of the review; store.ts writes the decisions.
+ * finding's thread sits, which earlier finding a new one is, and which earlier findings are closed.
+ * All of it is decided here without a database, from the context and the outcome of the review;
+ * findings-render.ts makes the values of what is stored, and store.ts writes them.
  */
 
 type Reviewed = Extract<PipelineOutcome, { kind: 'reviewed' }>;
 
-/** At most this many findings become issues in one review: the most serious come first. */
+/**
+ * The most findings one review stores: the first the judge listed, as it lists them most serious
+ * first. The judge's answer holds no more (ANSWER_LIMITS.judgeFindings), so this bounds an outcome
+ * made some other way.
+ */
 export const MAX_FINDINGS_PER_REVIEW = 40;
 /** A finding and an earlier one of the same words are the same finding up to this many lines apart. */
 export const PRIOR_MATCH_LINES = 20;
 /** The largest line number the database holds (`integer`). */
 const MAX_LINE = 2_147_483_647;
-/** The columns' bounds, in characters. */
-const BODY_CHARS = 2_000;
-const ASSUMPTION_CHARS = 300;
-/** Lines of context a report's snippet keeps either side of the flagged lines (sarif/normalize.ts). */
-const SNIPPET_CONTEXT = 3;
 
 // ─── Scope and anchors ───────────────────────────────────────────────────────
 
@@ -129,6 +111,22 @@ function wordsOf(title: string): string {
     .trim();
 }
 
+/** The code a title names: the texts of its code spans, as a set. */
+function codeOf(title: string): Set<string> {
+  return new Set(
+    [...title.matchAll(CODE_SPAN)].map(([span, fence]) =>
+      span.slice(fence?.length ?? 0, span.length - (fence?.length ?? 0)).trim(),
+    ),
+  );
+}
+
+/** Two titles name the same code: the order and the repeats of the code do not matter. */
+function sameCode(a: string, b: string): boolean {
+  const first = codeOf(a);
+  const second = codeOf(b);
+  return first.size === second.size && [...first].every((span) => second.has(span));
+}
+
 /**
  * The identity of a finding across reviews, 32 hex digits: its category, its path and the words of
  * its title. A title of nothing but code and digits has no words to tell it from another, and stands
@@ -143,9 +141,24 @@ export function fingerprintOf(category: AiCategory, path: string, title: string)
 
 type Matchable = Pick<JudgedFinding, 'priorId' | 'category' | 'path' | 'line' | 'title'>;
 
-/** The prior finding the judge named, when it is one of those given. */
-const namedBy = (f: Matchable, prior: readonly PriorFinding[]): PriorFinding | null =>
-  f.priorId === null ? null : (prior.find((p) => p.id === f.priorId) ?? null);
+/** The files that were renamed, by their new path, with the path they had. */
+export type Renames = ReadonlyMap<string, string>;
+const NO_RENAMES: Renames = new Map();
+
+/**
+ * The prior finding the judge named, when it is one of those given and the finding is in its file:
+ * the judge's id puts an earlier finding in another file only where the file was renamed. Any other
+ * id is ignored, as a forged one is, and the finding is judged by its words and its place.
+ */
+function namedBy(
+  f: Matchable,
+  prior: readonly PriorFinding[],
+  renamedFrom: Renames,
+): PriorFinding | null {
+  const named = f.priorId === null ? undefined : prior.find((p) => p.id === f.priorId);
+  if (named === undefined) return null;
+  return named.path === f.path || renamedFrom.get(f.path) === named.path ? named : null;
+}
 
 const distance = (f: Matchable, p: PriorFinding): number => Math.abs(f.line - p.line);
 
@@ -158,7 +171,9 @@ function closer(f: Matchable, a: PriorFinding, b: PriorFinding): boolean {
 
 /**
  * The prior finding that is `f` by its words and its place: the same rule (category) and path, an
- * equal fingerprint, and no more than PRIOR_MATCH_LINES lines apart; the closest if several.
+ * equal fingerprint, and no more than PRIOR_MATCH_LINES lines apart; the closest if several. A
+ * dismissal is about the code its title names, and the fingerprint leaves code out, so a dismissed
+ * prior finding is `f` only if their titles name the same code.
  */
 function nearestSame(f: Matchable, prior: readonly PriorFinding[]): PriorFinding | null {
   const fingerprint = fingerprintOf(f.category, f.path, f.title);
@@ -168,42 +183,48 @@ function nearestSame(f: Matchable, prior: readonly PriorFinding[]): PriorFinding
       p.category === f.category &&
       p.path === f.path &&
       p.fingerprint === fingerprint &&
-      distance(f, p) <= PRIOR_MATCH_LINES;
+      distance(f, p) <= PRIOR_MATCH_LINES &&
+      (p.status === 'open' || sameCode(f.title, p.title));
     if (same && (best === null || closer(f, p, best))) best = p;
   }
   return best;
 }
 
 /**
- * The prior finding a finding is. The judge's `priorId` wins when it names one of those given (an id
- * that names none is ignored); else the rule of {@link nearestSame} decides.
+ * The prior finding a finding is. The judge's `priorId` wins when it names one of those given (see
+ * {@link namedBy}); else the rule of {@link nearestSame} decides.
  */
-export function matchPrior(f: Matchable, prior: readonly PriorFinding[]): PriorFinding | null {
-  return namedBy(f, prior) ?? nearestSame(f, prior);
+export function matchPrior(
+  f: Matchable,
+  prior: readonly PriorFinding[],
+  renamedFrom: Renames = NO_RENAMES,
+): PriorFinding | null {
+  return namedBy(f, prior, renamedFrom) ?? nearestSame(f, prior);
 }
 
 /**
- * The prior finding each of `findings` is, or null. An open prior finding is one finding's: a finding
- * that names one the judge named for an earlier finding is judged by its words and place; the rest
- * are paired by their words and place, the closest pair first, so the order the judge listed them in
- * decides nothing. A dismissed prior finding can be any number of findings: each is dropped.
+ * The prior finding each of `findings` is, or null. A prior finding, open or dismissed, is one
+ * finding's: a finding that names one the judge named for an earlier finding is judged by its words
+ * and place; the rest are paired by their words and place, the closest pair first, so the order the
+ * judge listed them in decides nothing.
  */
 export function matchPriors(
   findings: readonly Matchable[],
   prior: readonly PriorFinding[],
+  renamedFrom: Renames = NO_RENAMES,
 ): (PriorFinding | null)[] {
   const matches: (PriorFinding | null)[] = findings.map(() => null);
   const taken = new Set<string>();
   const take = (index: number, found: PriorFinding) => {
     matches[index] = found;
-    if (found.status === 'open') taken.add(found.id);
+    taken.add(found.id);
   };
   findings.forEach((f, index) => {
-    const named = namedBy(f, prior);
+    const named = namedBy(f, prior, renamedFrom);
     if (named !== null && !taken.has(named.id)) take(index, named);
   });
   for (;;) {
-    const free = prior.filter((p) => p.status !== 'open' || !taken.has(p.id));
+    const free = prior.filter((p) => !taken.has(p.id));
     let best: { index: number; found: PriorFinding; apart: number } | null = null;
     for (const [index, f] of findings.entries()) {
       if (matches[index] !== null) continue;
@@ -222,12 +243,16 @@ export function matchPriors(
 /** Why a finding is not stored. */
 export type DropReason =
   'low_confidence' | 'over_limit' | 'bad_lines' | 'dismissed' | 'out_of_scope';
-/** Why an earlier finding is closed: fixed, left out where the code changed, or its file deleted. */
-export type CloseReason = 'fixed' | 'left_out' | 'deleted';
+/**
+ * Why an earlier finding is closed: the judge found it fixed, or the merge request deleted its file.
+ * The lines of an earlier finding are of the head of the review that made it, and the lines changed
+ * since the last review are of this one: nothing is closed for the lines it is on.
+ */
+export type CloseReason = 'fixed' | 'deleted';
 
 /** A finding that is stored, with the change it is in and where its thread sits. */
 export interface PlannedFinding {
-  /** The judge's finding, its lines held to the file. */
+  /** The judge's finding, its lines held to the file and its path the file has now. */
   finding: JudgedFinding;
   change: ReviewableChange | undefined;
   anchorLine: number | null;
@@ -236,9 +261,12 @@ export interface PlannedFinding {
 export interface FindingsPlan {
   /** Findings that become issues. */
   creates: PlannedFinding[];
-  /** Earlier findings, open, that the judge raised again: updated from the finding. */
+  /** Earlier findings, open, that the judge raised again where they can be placed on this head. */
   updates: { prior: PriorFinding; found: PlannedFinding }[];
-  /** Earlier findings, open, that the judge found still there but did not raise again. */
+  /**
+   * Earlier findings, open, that stay as they are: the judge found them still there, or a finding
+   * named them but could not be used, or raised them again where they cannot be placed.
+   */
   keeps: PriorFinding[];
   closes: { prior: PriorFinding; why: CloseReason }[];
   dropped: { finding: JudgedFinding; why: DropReason }[];
@@ -260,29 +288,28 @@ function onTheFile(
 }
 
 /**
- * Whether the lines of an earlier finding that the judge was shown and did not raise again were
- * changed, so that it may be closed: they meet the scope, or the merge request deleted the file.
+ * The reviewed changes by path, and by the path a renamed file had: an earlier finding is in the
+ * file under its old name, and the judge may still use it.
  */
-function leftOut(
-  prior: PriorFinding,
-  change: ReviewableChange | undefined,
-  scope: Scope,
-): CloseReason | null {
-  if (change?.status === 'deleted') return 'deleted';
-  return meets(scope.get(prior.path) ?? [], prior.line, prior.endLine) ? 'left_out' : null;
+function changesByPath(reviewed: readonly ReviewableChange[]): Map<string, ReviewableChange> {
+  const byPath = new Map<string, ReviewableChange>();
+  for (const change of reviewed) if (change.oldPath !== null) byPath.set(change.oldPath, change);
+  for (const change of reviewed) byPath.set(change.path, change);
+  return byPath;
 }
 
 /**
  * What to store of a review. A finding of low confidence is never stored, nor more than
  * MAX_FINDINGS_PER_REVIEW, nor one that does not start on a line of its file. What the rest is:
  * - an earlier finding (named by the judge, or the same by its words and place): a dismissed one
- *   (false positive, won't fix) drops the finding, and is never raised again or reopened; an open
- *   one is updated, wherever in the file the finding is, and stays open whatever the judge says of
- *   it (the file is the earlier finding's, or one the review has a change of);
+ *   (false positive, won't fix) drops the finding, and is never raised again or reopened, one
+ *   finding for each; an open one stays open whatever the judge says of it, and is updated when the
+ *   finding can be placed on an added line of this head, else kept as it is;
  * - otherwise a new finding, kept when its lines meet the scope and dropped when they do not.
- * An open earlier finding that no finding is: the judge's `fixed` closes it, `present` keeps it open;
- * one it was shown, and left out or could not tell, is closed only where the code changed or the file
- * is deleted. One it was not shown is left as it is.
+ * An open earlier finding that no finding is: one that a finding named stays open, whatever becomes
+ * of that finding; else the judge's `fixed` closes it and `present` keeps it open. One the judge
+ * left out or could not tell stays open too, unless the merge request deleted its file. One the
+ * judge was not shown is left as it is.
  */
 export function planFindings(
   context: Pick<ReviewContext, 'reviewed' | 'prior'>,
@@ -290,8 +317,17 @@ export function planFindings(
 ): FindingsPlan {
   const plan: FindingsPlan = { creates: [], updates: [], keeps: [], closes: [], dropped: [] };
   const scope = reviewScope(context.reviewed);
-  const changes = new Map(context.reviewed.map((change) => [change.path, change]));
+  const changes = changesByPath(context.reviewed);
+  const renamedFrom = new Map(
+    context.reviewed.flatMap((change): [string, string][] =>
+      change.oldPath === null ? [] : [[change.path, change.oldPath]],
+    ),
+  );
   const drop = (finding: JudgedFinding, why: DropReason) => plan.dropped.push({ finding, why });
+
+  // The ids that findings name: an open prior finding named by one stays open whatever becomes of
+  // that finding. An id that is no prior finding's names nothing.
+  const named = new Set(outcome.findings.map(({ priorId }) => priorId));
 
   const candidates: { finding: JudgedFinding; change: ReviewableChange | undefined }[] = [];
   for (const given of outcome.findings) {
@@ -309,6 +345,7 @@ export function planFindings(
   const matches = matchPriors(
     candidates.map((c) => c.finding),
     context.prior,
+    renamedFrom,
   );
   const raisedAgain = new Set<string>();
   for (const [index, { finding, change }] of candidates.entries()) {
@@ -318,16 +355,18 @@ export function planFindings(
       continue;
     }
     const placed = placeFinding(finding, change, scope);
-    const found: PlannedFinding = { finding, change, anchorLine: placed.anchorLine };
+    // A finding in a renamed file is stored under the name the file has now.
+    const stored =
+      change === undefined || change.path === finding.path
+        ? finding
+        : { ...finding, path: change.path };
+    const found: PlannedFinding = { finding: stored, change, anchorLine: placed.anchorLine };
     if (prior !== null) {
-      // The judge's id puts an earlier finding in another file only where the review has a change
-      // of that file (a rename); a path from nowhere is not stored as the place of an issue.
-      if (change === undefined && finding.path !== prior.path) {
-        drop(finding, 'out_of_scope');
-        continue;
-      }
       raisedAgain.add(prior.id);
-      plan.updates.push({ prior, found });
+      // Where the new finding has no place on this head, the anchor and the suggestion of the old
+      // one are all there is, and they belong to the head they were made for: nothing is rewritten.
+      if (placed.anchorLine === null) plan.keeps.push(prior);
+      else plan.updates.push({ prior, found });
     } else if (placed.inScope) {
       plan.creates.push(found);
     } else {
@@ -341,185 +380,13 @@ export function planFindings(
   for (const prior of context.prior) {
     if (prior.status !== 'open' || raisedAgain.has(prior.id)) continue;
     const verdict = verdicts.get(prior.id);
-    if (verdict === 'fixed') {
-      plan.closes.push({ prior, why: 'fixed' });
-    } else if (verdict === 'present') {
+    if (named.has(prior.id) || verdict === 'present') {
       plan.keeps.push(prior);
-    } else if (shown.has(prior.id)) {
-      const why = leftOut(prior, changes.get(prior.path), scope);
-      if (why !== null) plan.closes.push({ prior, why });
+    } else if (verdict === 'fixed') {
+      plan.closes.push({ prior, why: 'fixed' });
+    } else if (shown.has(prior.id) && changes.get(prior.path)?.status === 'deleted') {
+      plan.closes.push({ prior, why: 'deleted' });
     }
   }
   return plan;
-}
-
-// ─── The values of an issue and its finding row ──────────────────────────────
-
-/** The severity of an issue by the finding's: critical is high, major medium, minor low. */
-const SEVERITY: Readonly<Record<FindingSeverity, Severity>> = {
-  critical: 'high',
-  major: 'medium',
-  minor: 'low',
-};
-
-/** What an issue and its finding row hold of a finding. */
-export interface RenderedFinding {
-  category: AiCategory;
-  path: string;
-  startLine: number;
-  endLine: number;
-  /** The title: the issue's message. */
-  message: string;
-  severity: Severity;
-  confidence: 'high' | 'medium';
-  fingerprint: string;
-  lineHash: string;
-  contextHash: string;
-  /** In ingestion's format, from the masked head file; null where there is none to read. */
-  snippet: { startLine: number; lines: string[] } | null;
-  body: string;
-  assumption: string | null;
-  verification: 'confirmed' | 'needs_validation' | null;
-  suggestion: ReviewSuggestion | null;
-  anchorLine: number | null;
-}
-
-const LONE_SURROGATES = new RegExp(LONE_SURROGATE_SOURCE, 'g');
-const REPLACEMENT_CHARACTER = String.fromCodePoint(0xfffd);
-
-/** Text a PostgreSQL column holds: a NUL and a lone surrogate become the replacement character. */
-const storable = (text: string): string =>
-  text.replaceAll('\u0000', REPLACEMENT_CHARACTER).replace(LONE_SURROGATES, REPLACEMENT_CHARACTER);
-
-/** A line of the snippet: without its carriage return, cut as a report cuts it. */
-function snippetLine(line: string): string {
-  const text = line.endsWith('\r') ? line.slice(0, -1) : line;
-  const max = REPORT_BOUNDS.snippetLineChars;
-  if (text.length <= max) return text;
-  const cut = text.slice(0, max - 1);
-  // Not through the middle of a character outside the basic plane: jsonb refuses half of one.
-  return `${/[\ud800-\udbff]$/u.test(cut) ? cut.slice(0, -1) : cut}…`;
-}
-
-/** The snippet a report gives a finding: its lines (at most MAX_HASHED_LINES) and some around them. */
-function snippetOf(text: MaskedText, startLine: number, endLine: number) {
-  const from = Math.max(1, startLine - SNIPPET_CONTEXT);
-  const to = Math.min(
-    text.lineCount,
-    Math.min(endLine, startLine + MAX_HASHED_LINES - 1) + SNIPPET_CONTEXT,
-  );
-  const lines: string[] = [];
-  for (let n = from; n <= to; n += 1) lines.push(snippetLine(text.line(n - 1)));
-  return { startLine: from, lines };
-}
-
-/**
- * The hashes of a finding's lines, as a report's are. They read the flagged lines (at most
- * MAX_HASHED_LINES) and CONTEXT_LINES either side, and only those are cut from the text.
- */
-function hashesOf(text: MaskedText, startLine: number, endLine: number) {
-  const flaggedEnd = Math.min(endLine, text.lineCount, startLine + MAX_HASHED_LINES - 1);
-  const first = Math.max(1, startLine - CONTEXT_LINES);
-  const last = Math.min(text.lineCount, flaggedEnd + CONTEXT_LINES);
-  const window: string[] = [];
-  for (let n = first; n <= last; n += 1) window.push(text.line(n - 1));
-  const shift = first - 1;
-  return {
-    lineHash: lineHash(window, startLine - shift, flaggedEnd - shift),
-    contextHash: contextHash(window, startLine - shift, flaggedEnd - shift),
-  };
-}
-
-/**
- * The suggestion of a finding when it may be posted: it replaces lines at or within SCOPE_MARGIN of
- * the finding's own, and passes `checkReviewSuggestion` against the masked head text `head`.
- */
-function usableSuggestion(
-  finding: JudgedFinding,
-  change: ReviewableChange | undefined,
-  head: MaskedText | null,
-): ReviewSuggestion | null {
-  const s = finding.suggestion;
-  if (s === null || change === undefined) return null;
-  if (s.endLine < finding.line - SCOPE_MARGIN || s.startLine > finding.endLine + SCOPE_MARGIN) {
-    return null;
-  }
-  if (!checkReviewSuggestion(s, { ...change, text: head }).ok) return null;
-  return { startLine: s.startLine, endLine: s.endLine, lines: [...s.lines] };
-}
-
-/**
- * The values to store for a planned finding. `category` is the rule's: the earlier finding's when the
- * judge raised it again. `head` is the masked text of the head file, or null when there is none: the
- * snippet and the hashes are made of it and of nothing else, so a secret never reaches them, and a
- * finding with no text hashes its rule, path and words as a finding with no source does.
- *
- * A finding with a suggestion that passes is anchored at the suggestion's first line, where GitLab's
- * suggestion block starts; one without is anchored where the plan put it. Texts are cut to their
- * columns.
- */
-export function renderFinding(
-  planned: PlannedFinding,
-  category: AiCategory,
-  head: MaskedText | null,
-): RenderedFinding {
-  const { finding, change } = planned;
-  if (finding.confidence === 'low') throw new Error('a finding of low confidence is not stored');
-  const message = cutAtGrapheme(storable(finding.title).trim(), ANSWER_LIMITS.titleChars);
-  const assumption = storable(finding.assumption ?? '').trim();
-  const readable = head !== null && finding.line <= head.lineCount ? head : null;
-  const words = filelessHash(aiRuleKey(category), message, finding.path);
-  const suggestion = usableSuggestion(finding, change, head);
-  return {
-    category,
-    path: finding.path,
-    startLine: finding.line,
-    endLine: finding.endLine,
-    message,
-    severity: SEVERITY[finding.severity],
-    confidence: finding.confidence,
-    fingerprint: fingerprintOf(category, finding.path, finding.title),
-    ...(readable === null
-      ? { lineHash: words, contextHash: words, snippet: null }
-      : {
-          ...hashesOf(readable, finding.line, finding.endLine),
-          snippet: snippetOf(readable, finding.line, finding.endLine),
-        }),
-    body: cutAtGrapheme(storable(finding.body), BODY_CHARS),
-    assumption: assumption === '' ? null : cutAtGrapheme(assumption, ASSUMPTION_CHARS),
-    verification: finding.verification,
-    suggestion,
-    anchorLine: suggestion === null ? planned.anchorLine : suggestion.startLine,
-  };
-}
-
-// ─── The summary ─────────────────────────────────────────────────────────────
-
-/** Text of at most `max` characters, counted as the cut counts them: whole characters. */
-const upTo = (max: number) =>
-  z.string().refine((value) => [...value].length <= max, `at most ${max} characters`);
-
-/** What a run keeps of the review's summary, and what its readers can rely on. */
-export const reviewSummarySchema = z.strictObject({
-  verdict: upTo(ANSWER_LIMITS.verdictChars),
-  walkthrough: z
-    .array(upTo(ANSWER_LIMITS.walkthroughChars).min(1))
-    .max(ANSWER_LIMITS.walkthroughItems),
-  notes: z.array(z.enum(REVIEW_NOTES)).max(REVIEW_NOTES.length),
-});
-export type ReviewSummary = z.infer<typeof reviewSummarySchema>;
-
-/** One line of the model's, as plain text for people: no control or hidden character, bounded. */
-const oneLine = (text: string, max: number): string => safeMultilineText(text.trim(), max, 1);
-
-/** The summary of a review as the run stores it: the model's words made plain, and the notes. */
-export function reviewSummary(outcome: Pick<Reviewed, 'summary' | 'notes'>): ReviewSummary {
-  return reviewSummarySchema.parse({
-    verdict: oneLine(outcome.summary.verdict, ANSWER_LIMITS.verdictChars),
-    walkthrough: outcome.summary.walkthrough
-      .map((item) => oneLine(item, ANSWER_LIMITS.walkthroughChars))
-      .filter((item) => item !== '')
-      .slice(0, ANSWER_LIMITS.walkthroughItems),
-    notes: [...outcome.notes],
-  });
 }

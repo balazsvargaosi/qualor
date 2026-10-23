@@ -19,16 +19,24 @@ import {
   type ReviewRunRow,
 } from '../db/schema';
 import type { ReviewableChange, ReviewContext } from './context';
-import { fingerprintOf, reviewSummary } from './findings';
+import { fingerprintOf } from './findings';
+import { reviewSummary } from './findings-render';
 import { priorAiFindings } from './findings-query';
 import { lineCountOf, MaskedFiles, MaskedText } from './masked-files';
 import { Masker } from './masker';
 import type { JudgedFinding, PipelineOutcome } from './pipeline';
 import { ensureAiRules } from './rules';
 import type { SnapshotReader } from './snapshot-reader';
-import { ReviewNotStoringError, storeReviewOutcome, type ReviewStoreDeps } from './store';
+import {
+  prepareReviewOutcome,
+  ReviewNotStoringError,
+  storeReviewOutcome,
+  type ReviewPrepareDeps,
+} from './store';
 
 const HEAD = 'a1'.repeat(20);
+/** The head an earlier review placed its findings at. */
+const OLD_HEAD = 'b2'.repeat(20);
 const j = (...parts: string[]) => parts.join('');
 const range = (from: number, to: number): number[] =>
   Array.from({ length: to - from + 1 }, (_, i) => from + i);
@@ -221,7 +229,7 @@ describe('storeReviewOutcome (6I-3)', () => {
       verification: 'confirmed',
       suggestion: { startLine: line, endLine: line, lines: ['old;'] },
       anchorLine: line,
-      reviewedHeadSha: 'b2'.repeat(20),
+      reviewedHeadSha: OLD_HEAD,
     });
     return issue.id;
   }
@@ -250,21 +258,24 @@ describe('storeReviewOutcome (6I-3)', () => {
     redactions: 0,
   });
 
-  const depsOf = (files: Record<string, string> = {}, over: Partial<ReviewStoreDeps> = {}) =>
+  const depsOf = (files: Record<string, string> = {}, over: Partial<ReviewPrepareDeps> = {}) =>
     ({
-      ruleIds,
       files: new MaskedFiles(memorySnapshot({ files }), { masker }),
       masker,
       budget: { maskedBytes: 10_000_000 },
       ...over,
-    }) satisfies ReviewStoreDeps;
+    }) satisfies ReviewPrepareDeps;
 
-  const store = (
+  /** What the review job does: prepare the outcome outside any transaction, then store it in one. */
+  const store = async (
     run: ReviewRunRow,
     context: ReviewContext,
     outcome: Reviewed,
-    deps: ReviewStoreDeps = depsOf(),
-  ) => t.db.transaction((tx) => storeReviewOutcome(tx, run, context, outcome, deps));
+    deps: ReviewPrepareDeps = depsOf(),
+  ) => {
+    const prepared = await prepareReviewOutcome(context, outcome, deps);
+    return t.db.transaction((tx) => storeReviewOutcome(tx, run, prepared, ruleIds));
+  };
 
   /** The constraint a failed action was refused by, or undefined when it did not fail on one. */
   const refusedBy = (action: PromiseLike<unknown>) =>
@@ -319,7 +330,7 @@ describe('storeReviewOutcome (6I-3)', () => {
     const reviewed = [change('src/cart.ts', { text: maskedOf(lines) })];
 
     const reEmitted = await seedPrior(branchId, {
-      line: 40,
+      line: 25,
       title: 'Old words for the problem',
       severity: 'high',
     });
@@ -368,8 +379,8 @@ describe('storeReviewOutcome (6I-3)', () => {
       severity: 'minor',
       confidence: 'high',
       priorId: reEmitted,
-      line: 41,
-      endLine: 41,
+      line: 26,
+      endLine: 26,
       body: 'The newer body.',
     });
     const outcome = outcomeOf({
@@ -465,24 +476,25 @@ describe('storeReviewOutcome (6I-3)', () => {
     expect(await issueRow(reEmitted)).toMatchObject({
       status: 'open',
       message: 'New words for the problem',
-      startLine: 41,
-      endLine: 41,
+      startLine: 26,
+      endLine: 26,
       severity: 'low',
       confidence: 'high',
       lastSeenAnalysisId: analysisId,
       closedAt: null,
       fingerprint: fingerprintOf('logic', 'src/cart.ts', 'New words for the problem'),
-      snippet: { startLine: 38, lines: fileLines().slice(37, 44) },
-      lineHash: lineHash(fileLines(), 41, 41),
-      contextHash: contextHash(fileLines(), 41, 41),
+      snippet: { startLine: 23, lines: lines.slice(22, 29) },
+      lineHash: lineHash(lines, 26, 26),
+      contextHash: contextHash(lines, 26, 26),
     });
+    // The anchor, the suggestion and the head are written together: the old ones went with the old head.
     expect(await findingRow(reEmitted)).toMatchObject({
       runId: run.id,
       body: 'The newer body.',
       assumption: null,
       verification: null,
       suggestion: null,
-      anchorLine: null,
+      anchorLine: 26,
       reviewedHeadSha: HEAD,
     });
     expect(await changesOf(reEmitted)).toEqual([]);
@@ -502,7 +514,7 @@ describe('storeReviewOutcome (6I-3)', () => {
     });
     expect(entry?.comment).toMatch(/AI review/);
     expect(entry?.comment).toContain(HEAD.slice(0, 12));
-    expect(await findingRow(fixed)).toMatchObject({ runId: run.id, reviewedHeadSha: HEAD });
+    expect(await findingRow(fixed)).toMatchObject({ runId: run.id, reviewedHeadSha: OLD_HEAD });
 
     // What the review left alone, and what a person dismissed, are exactly as they were.
     expect(await issueRow(left)).toEqual(leftBefore);
@@ -577,20 +589,19 @@ describe('storeReviewOutcome (6I-3)', () => {
     const context = await contextOf(branchId, [change('src/cart.ts')]);
     const before = await everything(branchId);
     const runBefore = await runRow(run.id);
+    const prepared = await prepareReviewOutcome(
+      context,
+      outcomeOf({
+        findings: [judged({ title: 'A new problem', line: 12 })],
+        prior: [{ id: fixed, status: 'fixed', reason: 'Gone.' }],
+        shownPriorIds: [fixed],
+      }),
+      depsOf(),
+    );
 
     await expect(
       t.db.transaction(async (tx) => {
-        const counts = await storeReviewOutcome(
-          tx,
-          run,
-          context,
-          outcomeOf({
-            findings: [judged({ title: 'A new problem', line: 12 })],
-            prior: [{ id: fixed, status: 'fixed', reason: 'Gone.' }],
-            shownPriorIds: [fixed],
-          }),
-          depsOf(),
-        );
+        const counts = await storeReviewOutcome(tx, run, prepared, ruleIds);
         expect(counts).toMatchObject({ created: 1, closed: 1 });
         // Written, and seen by this transaction alone: the pool's other connections see none of it.
         expect(await aiIssues(branchId)).toHaveLength(1);
@@ -622,6 +633,37 @@ describe('storeReviewOutcome (6I-3)', () => {
     );
     expect(await everything(branchId)).toEqual(after);
     expect(await runRow(run.id)).toEqual(done);
+  });
+
+  it('prepares an outcome as plain data before any transaction opens, and a failed transaction can be tried again with it', async () => {
+    const { branchId, run } = await newRun();
+    const fixed = await seedPrior(branchId, { line: 14, title: 'Fixed words' });
+    const context = await contextOf(branchId, [change('src/cart.ts')]);
+    const prepared = await prepareReviewOutcome(
+      context,
+      outcomeOf({
+        findings: [judged({ title: 'A new problem', line: 12 })],
+        prior: [{ id: fixed, status: 'fixed', reason: 'Gone.' }],
+        shownPriorIds: [fixed],
+      }),
+      depsOf(),
+    );
+    // Nothing in it is a handle or a function: it can be copied, kept and stored later.
+    expect(structuredClone(prepared)).toEqual(prepared);
+    const before = await everything(branchId);
+
+    // The first transaction fails, as one can, and leaves nothing; the same prepared outcome stores.
+    expect(
+      await refusedBy(
+        t.db.transaction((tx) =>
+          storeReviewOutcome(tx, { ...run, headSha: 'NOT-A-SHA' }, prepared, ruleIds),
+        ),
+      ),
+    ).toBe('review_findings_reviewed_head_sha_format');
+    expect(await everything(branchId)).toEqual(before);
+    const counts = await t.db.transaction((tx) => storeReviewOutcome(tx, run, prepared, ruleIds));
+    expect(counts).toEqual({ created: 1, updated: 0, closed: 1, dropped: 0 });
+    expect(await aiIssues(branchId)).toHaveLength(2);
   });
 
   it('a fixed prior is closed with a changelog entry', async () => {
@@ -657,6 +699,8 @@ describe('storeReviewOutcome (6I-3)', () => {
     expect(entries[0]?.comment).toBe(
       `Closed by the AI review of commit ${HEAD.slice(0, 12)}: the problem is fixed.`,
     );
+    // Its row says which review closed it; the head its anchor belongs to is not changed.
+    expect(await findingRow(fixed)).toMatchObject({ runId: run.id, reviewedHeadSha: OLD_HEAD });
     expect(await issueRow(other)).toEqual(otherBefore);
     expect(await runRow(run.id)).toMatchObject({ findingsFixed: 1, findingsOpen: 1 });
   });
@@ -689,7 +733,7 @@ describe('storeReviewOutcome (6I-3)', () => {
       await expect(
         store(run, context, outcomeOf({ findings: [judged({ line: 12 })] })),
         JSON.stringify(over),
-      ).rejects.toThrow();
+      ).rejects.toBeInstanceOf(ReviewNotStoringError);
       expect(await aiIssues(branchId)).toEqual([]);
       expect(await runRow(run.id)).toMatchObject(over);
     }
@@ -799,6 +843,23 @@ describe('storeReviewOutcome (6I-3)', () => {
     for (const snippet of snippets) expect(snippet).not.toBeNull();
   });
 
+  it('refuses an outcome whose summary cannot be kept before it reads a file', async () => {
+    const source = { 'src/cart.ts': textOf(fileLines()) };
+    const { reader, read } = counting(memorySnapshot({ files: source }));
+    const files = new MaskedFiles(reader, { masker });
+    const { branchId } = await newRun();
+    const context = await contextOf(branchId, [change('src/cart.ts', { text: null })]);
+    // Only a hand-made outcome has a note that is none of the known ones.
+    const outcome = outcomeOf({
+      findings: [judged({ line: 12, endLine: 12 })],
+      notes: ['not a note' as never],
+    });
+    await expect(
+      prepareReviewOutcome(context, outcome, depsOf({}, { files })),
+    ).rejects.toMatchObject({ name: 'ZodError' });
+    expect(read).toEqual([]);
+  });
+
   it('stores a review whose masker fails: its findings have no snippet', async () => {
     const broken = new Masker();
     await broken.close();
@@ -846,20 +907,26 @@ describe('storeReviewOutcome (6I-3)', () => {
     expect(await issueRow(free)).toMatchObject({ severity: 'high', severityOverridden: false });
   });
 
-  it('closes an omitted prior finding on the lines that changed, with a changelog that says why, and no other', async () => {
+  it('closes an omitted or unclear prior finding only when its file was deleted, with a changelog that says why', async () => {
     const { branchId, analysisId, run } = await newRun();
     const reviewed = [
       change('src/cart.ts'),
       change('src/gone.ts', { status: 'deleted', lines: null, added: new Set(), text: null }),
     ];
+    // On the lines the change added, far from them, not clear, and in a file the merge request
+    // deleted (one of those the judge was not shown, and one it was).
     const onChanged = await seedPrior(branchId, { line: 14, title: 'On changed lines' });
     const far = await seedPrior(branchId, { line: 50, title: 'On unchanged lines' });
-    const unshown = await seedPrior(branchId, { line: 16, title: 'Not shown to the judge' });
-    const inDeleted = await seedPrior(branchId, { path: 'src/gone.ts', line: 3, title: 'Deleted' });
     const unclear = await seedPrior(branchId, { line: 18, title: 'Not clear' });
+    const unshown = await seedPrior(branchId, {
+      path: 'src/gone.ts',
+      line: 4,
+      title: 'Not shown to the judge',
+    });
+    const inDeleted = await seedPrior(branchId, { path: 'src/gone.ts', line: 3, title: 'Deleted' });
     const context = await contextOf(branchId, reviewed);
-    const farBefore = await issueRow(far);
-    const unshownBefore = await issueRow(unshown);
+    const untouched = [onChanged, far, unclear, unshown];
+    const before = await Promise.all(untouched.map((id) => issueRow(id)));
 
     const counts = await store(
       run,
@@ -869,28 +936,26 @@ describe('storeReviewOutcome (6I-3)', () => {
         shownPriorIds: [onChanged, far, inDeleted, unclear],
       }),
     );
-    expect(counts).toMatchObject({ created: 0, updated: 0, closed: 3 });
-    const comment = async (id: string) => (await changesOf(id)).map((c) => c.comment);
-    for (const id of [onChanged, inDeleted, unclear]) {
-      expect(await issueRow(id), id).toMatchObject({ status: 'closed' });
-      const entries = await changesOf(id);
-      expect(entries).toHaveLength(1);
-      expect(entries[0]).toMatchObject({
-        analysisId,
-        field: 'status',
-        oldValue: 'open',
-        newValue: 'closed',
-      });
-    }
-    expect((await comment(onChanged))[0]).toMatch(/no longer reports/);
-    expect((await comment(inDeleted))[0]).toMatch(/file was deleted/);
-    expect(await issueRow(far)).toEqual(farBefore);
-    expect(await issueRow(unshown)).toEqual(unshownBefore);
-    expect(await changesOf(far)).toEqual([]);
-    expect(await changesOf(unshown)).toEqual([]);
+    expect(counts).toEqual({ created: 0, updated: 0, closed: 1, dropped: 0 });
+    // The lines of an earlier finding are of an older head than the lines this review changed, so
+    // they close nothing.
+    expect(await Promise.all(untouched.map((id) => issueRow(id)))).toEqual(before);
+    for (const id of untouched) expect(await changesOf(id), id).toEqual([]);
+
+    expect(await issueRow(inDeleted)).toMatchObject({ status: 'closed' });
+    const entries = await changesOf(inDeleted);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      analysisId,
+      field: 'status',
+      oldValue: 'open',
+      newValue: 'closed',
+      comment: `Closed by the AI review of commit ${HEAD.slice(0, 12)}: the file was deleted.`,
+    });
+    expect(await findingRow(inDeleted)).toMatchObject({ runId: run.id, reviewedHeadSha: OLD_HEAD });
   });
 
-  it('keeps a prior finding the judge found still present but did not repeat, and checks it at this commit', async () => {
+  it('marks a prior finding the judge found still present but did not repeat as looked at, and nothing else', async () => {
     const { branchId, analysisId, run } = await newRun();
     const present = await seedPrior(branchId, { line: 14, title: 'Still here' });
     const context = await contextOf(branchId, [change('src/cart.ts')]);
@@ -905,23 +970,161 @@ describe('storeReviewOutcome (6I-3)', () => {
         shownPriorIds: [present],
       }),
     );
-    expect(counts).toMatchObject({ created: 0, updated: 1, closed: 0 });
-    // Open, with its lines and words, and seen by this analysis.
+    expect(counts).toEqual({ created: 0, updated: 1, closed: 0, dropped: 0 });
+    // Open, with its lines and words as they were, and seen by this analysis.
     expect(await issueRow(present)).toMatchObject({
       status: 'open',
+      message: before.message,
+      startLine: before.startLine,
+      endLine: before.endLine,
+      snippet: before.snippet,
+      lineHash: before.lineHash,
+      lastSeenAnalysisId: analysisId,
+    });
+    // Its anchor and its suggestion still belong to the head they were made for.
+    const row = await findingRow(present);
+    expect(row).toMatchObject({
+      body: rowBefore.body,
+      anchorLine: rowBefore.anchorLine,
+      suggestion: rowBefore.suggestion,
+      reviewedHeadSha: OLD_HEAD,
+      runId: run.id,
+    });
+    expect(await changesOf(present)).toEqual([]);
+  });
+
+  it('keeps an earlier finding that a finding named but the review could not use, as it is', async () => {
+    const { branchId, analysisId, run } = await newRun();
+    const earlier = await seedPrior(branchId, { line: 14, title: 'Named by a stale line' });
+    const context = await contextOf(branchId, [change('src/cart.ts')]);
+    const before = await issueRow(earlier);
+    const rowBefore = await findingRow(earlier);
+
+    const counts = await store(
+      run,
+      context,
+      outcomeOf({
+        // The judge copied a line the push has taken away, and called the problem fixed as well.
+        findings: [
+          judged({ title: 'Named by a stale line', priorId: earlier, line: 500, endLine: 500 }),
+        ],
+        prior: [{ id: earlier, status: 'fixed', reason: 'Gone.' }],
+        shownPriorIds: [earlier],
+      }),
+    );
+    expect(counts).toEqual({ created: 0, updated: 1, closed: 0, dropped: 1 });
+    expect(await issueRow(earlier)).toMatchObject({
+      status: 'open',
+      closedAt: null,
       message: before.message,
       startLine: before.startLine,
       snippet: before.snippet,
       lastSeenAnalysisId: analysisId,
     });
-    expect(await findingRow(present)).toMatchObject({
+    expect(await findingRow(earlier)).toMatchObject({
       body: rowBefore.body,
       anchorLine: rowBefore.anchorLine,
       suggestion: rowBefore.suggestion,
+      reviewedHeadSha: OLD_HEAD,
       runId: run.id,
-      reviewedHeadSha: HEAD,
     });
-    expect(await changesOf(present)).toEqual([]);
+    expect(await changesOf(earlier)).toEqual([]);
+    expect(await aiIssues(branchId)).toHaveLength(1);
+  });
+
+  it('keeps a prior finding the judge raises again where it cannot be placed, with the head of its last placement', async () => {
+    const { branchId, analysisId, run } = await newRun();
+    const earlier = await seedPrior(branchId, { line: 45, title: 'Old words for the problem' });
+    const context = await contextOf(branchId, [change('src/cart.ts')]);
+    const before = await issueRow(earlier);
+    const rowBefore = await findingRow(earlier);
+
+    // No line the change added is near line 46: its new words have no place on this head.
+    const counts = await store(
+      run,
+      context,
+      outcomeOf({
+        findings: [
+          judged({
+            title: 'New words for the problem',
+            body: 'A newer body.',
+            priorId: earlier,
+            line: 46,
+            endLine: 46,
+          }),
+        ],
+        shownPriorIds: [earlier],
+      }),
+    );
+    expect(counts).toEqual({ created: 0, updated: 1, closed: 0, dropped: 0 });
+    expect(await issueRow(earlier)).toMatchObject({
+      status: 'open',
+      message: before.message,
+      startLine: before.startLine,
+      fingerprint: before.fingerprint,
+      snippet: before.snippet,
+      lastSeenAnalysisId: analysisId,
+    });
+    expect(await findingRow(earlier)).toMatchObject({
+      body: rowBefore.body,
+      anchorLine: rowBefore.anchorLine,
+      suggestion: rowBefore.suggestion,
+      reviewedHeadSha: OLD_HEAD,
+      runId: run.id,
+    });
+  });
+
+  it('names an issue in another file only for a rename: otherwise the earlier finding stays and the finding is its own', async () => {
+    const { branchId, run } = await newRun();
+    const earlier = await seedPrior(branchId, {
+      path: 'src/cart.ts',
+      line: 14,
+      title: 'In the cart',
+    });
+    const context = await contextOf(branchId, [change('src/cart.ts'), change('src/other.ts')]);
+    const counts = await store(
+      run,
+      context,
+      outcomeOf({
+        findings: [
+          judged({ path: 'src/other.ts', title: 'In the other file', priorId: earlier, line: 14 }),
+        ],
+        shownPriorIds: [earlier],
+      }),
+    );
+    expect(counts).toEqual({ created: 1, updated: 1, closed: 0, dropped: 0 });
+    expect(await issueRow(earlier)).toMatchObject({
+      status: 'open',
+      path: 'src/cart.ts',
+      message: 'In the cart',
+    });
+    const stored = await aiIssues(branchId);
+    expect(stored.map((r) => [r.issue.path, r.issue.message]).sort()).toEqual([
+      ['src/cart.ts', 'In the cart'],
+      ['src/other.ts', 'In the other file'],
+    ]);
+  });
+
+  it('moves an issue to the new path when the judge still calls a renamed file by its old name', async () => {
+    const { branchId, run } = await newRun();
+    const title = 'A problem in a renamed file';
+    const renamed = await seedPrior(branchId, { path: 'src/old.ts', line: 14, title });
+    const context = await contextOf(branchId, [
+      change('src/new.ts', { oldPath: 'src/old.ts', status: 'renamed' }),
+    ]);
+    await store(
+      run,
+      context,
+      outcomeOf({
+        findings: [judged({ path: 'src/old.ts', title, priorId: renamed, line: 14 })],
+        shownPriorIds: [renamed],
+      }),
+    );
+    expect(await issueRow(renamed)).toMatchObject({
+      path: 'src/new.ts',
+      fingerprint: fingerprintOf('logic', 'src/new.ts', title),
+    });
+    expect(await aiIssues(branchId)).toHaveLength(1);
   });
 
   it('keeps one prior finding for one finding when two claim it: the second becomes a new issue', async () => {
@@ -1047,7 +1250,7 @@ describe('storeReviewOutcome (6I-3)', () => {
     try {
       for (const spentTime of [true, false]) {
         const { reader, read } = counting(memorySnapshot({ files }));
-        const over: Partial<ReviewStoreDeps> = spentTime
+        const over: Partial<ReviewPrepareDeps> = spentTime
           ? { masker: spent, files: new MaskedFiles(reader, { masker: spent }) }
           : { files: new MaskedFiles(reader, { masker }), budget: { maskedBytes: 5 } };
         const { branchId, run } = await newRun();

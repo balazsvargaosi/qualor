@@ -1839,7 +1839,12 @@ export const reviewFindings = pgTable(
     }>(),
     /** The added line a thread sits on; null when the finding cannot be placed inline. */
     anchorLine: integer('anchor_line'),
-    /** The head commit the finding was last emitted or re-checked at. */
+    /**
+     * The head commit its `anchor_line` and `suggestion` were made for. The three are written
+     * together, when a review raises the finding, or raises it again where it can be placed on that
+     * head. A finding the review only finds still there, or closes, keeps the head of its last
+     * placement (`run_id` says which review looked at it last).
+     */
     reviewedHeadSha: text('reviewed_head_sha').notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
