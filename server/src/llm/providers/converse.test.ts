@@ -744,4 +744,93 @@ describe('converse: conversations with read-only tools (R5)', () => {
       });
     });
   });
+
+  // Anthropic's errors name no parameter, so this one is OpenAI's alone.
+  it('openai: a refusal is flagged by the parameter it refuses, whatever the words', async () => {
+    fake.enqueue({
+      status: 400,
+      body: {
+        error: {
+          message: 'Invalid value',
+          type: 'invalid_request_error',
+          param: 'tools',
+          code: null,
+        },
+      },
+    });
+    const err = await converse(openai, fake.apiKey, start, http).catch((e: unknown) => e);
+    expect(err).toMatchObject({ failure: 'rejected', status: 400, refusedTools: true });
+  });
+
+  describe.each(KINDS)('%s: a refusal that names tools', (kind) => {
+    // The error body of each kind's API.
+    const errorBody = (message: string, over: { param?: string; code?: string } = {}): unknown =>
+      kind === 'anthropic'
+        ? { type: 'error', error: { type: 'invalid_request_error', message } }
+        : { error: { message, type: 'invalid_request_error', param: null, code: null, ...over } };
+    const refusal = async (body: unknown, status = 400, conversation = start) => {
+      fake.enqueue({ status, body });
+      return converse(configFor(kind), fake.apiKey, conversation, http).catch((e: unknown) => e);
+    };
+
+    it.each([
+      [400, 'registry.ollama.ai/library/gemma:2b does not support tools'],
+      [404, 'This model does not support tool use'],
+      [422, 'Function calling is not enabled for this model'],
+      [400, 'Unrecognized request argument supplied: tool_choice'],
+      [400, '"auto" tool choice requires --enable-auto-tool-choice and --tool-call-parser'],
+    ])('HTTP %i %s is flagged, with a fixed message that names tools', async (status, message) => {
+      const err = await refusal(errorBody(message), status);
+      expect(err).toBeInstanceOf(LlmError);
+      expect(err).toMatchObject({ failure: 'rejected', status, refusedTools: true });
+      expect((err as Error).message).toMatch(/\btools\b/);
+      // Fixed text: nothing of the provider's own words.
+      expect((err as Error).message).not.toContain(message.slice(0, 20));
+    });
+
+    it('is flagged when the error is at the top of the body or a plain string', async () => {
+      const top = await refusal({ object: 'error', message: 'tools are not supported', code: 400 });
+      const text = await refusal({ error: 'model does not support tools' });
+      expect(top).toMatchObject({ failure: 'rejected', refusedTools: true });
+      expect(text).toMatchObject({ failure: 'rejected', refusedTools: true });
+    });
+
+    it.each([
+      ['a refusal that says nothing of tools', errorBody('Model not found')],
+      ['an unreadable body', 'not json at all'],
+      ['a body that is not an object', [1, 2]],
+      [
+        'a context length error that counts the functions',
+        errorBody(
+          "This model's maximum context length is 8192 tokens. However, your messages resulted in 9000 tokens (8000 in the messages, 1000 in the functions). Please reduce the length of the messages or functions.",
+          { param: 'messages', code: 'context_length_exceeded' },
+        ),
+      ],
+    ])('is not flagged: %s', async (_name, body) => {
+      const err = await refusal(body);
+      expect(err).toMatchObject({ failure: 'rejected', status: 400, refusedTools: false });
+      expect((err as Error).message).toBe(
+        'The provider refused the request (HTTP 400); check the base URL and model',
+      );
+    });
+
+    it('is not flagged for a status that is not a refusal of the request, such as a 5xx', async () => {
+      const err = await refusal(errorBody('tools are down'), 503);
+      expect(err).toMatchObject({ failure: 'unavailable', refusedTools: false });
+    });
+
+    it('is not flagged when no tools were sent, by converse or by callProvider', async () => {
+      const body = errorBody('This model does not support tools');
+      const without = await refusal(body, 400, { ...start, tools: [] });
+      expect(without).toMatchObject({ failure: 'rejected', refusedTools: false });
+      fake.enqueue({ status: 400, body });
+      const single = await callProvider(
+        configFor(kind),
+        fake.apiKey,
+        { system: 'S', user: 'U', maxOutputTokens: 50 },
+        http,
+      ).catch((e: unknown) => e);
+      expect(single).toMatchObject({ failure: 'rejected', refusedTools: false });
+    });
+  });
 });

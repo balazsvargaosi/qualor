@@ -1,0 +1,369 @@
+import { cutAtGrapheme } from '@qualor/shared';
+import {
+  LlmError,
+  type LlmConversation,
+  type LlmMessage,
+  type LlmToolCall,
+  type LlmToolSpec,
+  type LlmTurn,
+} from '../llm/providers';
+import { toolResultMessage } from './envelope';
+
+/*
+ * The conversation a reviewer has with the model over the read-only tools (llm.md §2.5, review.md
+ * §9.1). The provider layer answers one turn at a time and runs nothing; this loop sends a turn,
+ * runs the calls the model made, sends the results and goes on, until the model answers in text.
+ * It owns what bounds a model: the caps on turns, on calls per turn and on the arguments it sends,
+ * the wrap-up turn when the tokens or the turns are used up, the retries, and the stop check
+ * before every call to the provider. It does not make a call itself (`send` does, and records
+ * it), run a tool (`runTool`) or read an answer's JSON (the pipeline does).
+ *
+ * Nothing the model said is logged here, and nothing in the result of a conversation that did not
+ * answer carries any of it.
+ */
+
+export const CONVERSATION_LIMITS = {
+  /** Turns the model may take with tools; the wrap-up turn comes after the last of them. */
+  maxTurns: 16,
+  maxCallsPerTurn: 8,
+  /** The share of the token budget after which the next turn is the wrap-up. */
+  wrapUpAt: 0.85,
+  /** Arguments of one call, as JSON text. */
+  maxArgumentBytes: 16_384,
+  /** Levels of objects and lists inside the arguments of one call; the arguments are level 1. */
+  maxArgumentDepth: 20,
+} as const;
+
+/** How a call the provider failed is tried again; each call of the conversation has its own. */
+export const CONVERSATION_RETRIES = {
+  /** Retries after a rate limit, each after the provider's Retry-After. */
+  rateLimited: 2,
+  /** Retries in all after a timeout or an unreachable provider. */
+  transient: 1,
+  /** The waits, in seconds, when the provider named none: llm.md §14's backoff. */
+  backoffSeconds: [5, 30],
+  minWaitSeconds: 1,
+  maxWaitSeconds: 60,
+} as const;
+
+/** What the loop itself says to the model, word for word. */
+export const CONVERSATION_TEXTS = {
+  wrapUp: 'Token budget reached: answer now, with what you have, in the required JSON.',
+  shorter:
+    'Your answer was cut off because it was too long: answer again, shorter, in the required JSON.',
+  tooManyCalls: 'too many calls in one turn; this one was not run',
+  badArguments: 'the arguments were not valid JSON; call again',
+} as const;
+
+/** Characters of a tool's name the envelope shows. */
+const TOOL_LABEL_CHARS = 100;
+/** The refusals of a request that tools can be the reason for. */
+const TOOL_REFUSAL_STATUSES: readonly number[] = [400, 404, 422];
+
+export interface ConversationInput {
+  system: string;
+  /** The first message: the data under review, already in its envelope (envelope.ts). */
+  user: string;
+  /** The nonce of that envelope: every tool message is put between the same markers. */
+  nonce: string;
+  tools: readonly LlmToolSpec[];
+  /**
+   * Runs one call and answers what to tell the model. It is given the arguments checked and
+   * limited here. A rejection (a closed masker, a reader that failed) ends the conversation.
+   */
+  runTool: (call: LlmToolCall) => Promise<string>;
+  limits: {
+    maxTurns: number;
+    maxCallsPerTurn: number;
+    /**
+     * The tokens, input and output of all its calls, the conversation aims to stay within: at 85 %
+     * of it the next turn is the wrap-up, whose own call can still go past it.
+     */
+    tokenBudget: number;
+    maxOutputTokens: number;
+  };
+  /**
+   * One call to the provider, recorded, through its circuit. It throws an `LlmError` for a call
+   * the provider did not answer, and a `CircuitOpenError` for one it was not asked, which fails the
+   * conversation at once. Anything else it throws ends the conversation.
+   */
+  send: (conversation: LlmConversation) => Promise<LlmTurn>;
+  /** Asked before every call to the provider, a retry included. */
+  shouldStop: () => Promise<boolean>;
+  /**
+   * How a retry waits, in milliseconds.
+   * @internal Tests only: nothing else sets it.
+   */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * How a conversation ended. `text` of an answer is the model's: it goes to the parser, never to a
+ * log. `turns` counts the provider's answers (retried failures and the stop check not), `toolCalls`
+ * the calls that were run, and `budgetReached` says that the answer came after the wrap-up turn.
+ * A conversation that did not answer reports no tokens: they are on the rows `send` records.
+ */
+export type ConversationResult =
+  | {
+      kind: 'answer';
+      text: string;
+      inputTokens: number;
+      outputTokens: number;
+      turns: number;
+      toolCalls: number;
+      budgetReached: boolean;
+    }
+  | { kind: 'stopped' }
+  | { kind: 'failed'; reason: 'provider_error' | 'provider_no_tools' | 'bad_answer' };
+
+type Ended = Extract<ConversationResult, { kind: 'stopped' | 'failed' }>;
+const failed = (reason: Extract<ConversationResult, { kind: 'failed' }>['reason']): Ended => ({
+  kind: 'failed',
+  reason,
+});
+
+/** What `send` throws when it made no call because the provider's circuit is open. */
+export class CircuitOpenError extends Error {
+  constructor() {
+    super('The model provider is failing; Qualor is not calling it for now');
+    this.name = 'CircuitOpenError';
+  }
+}
+
+// ─── The arguments a model sends ─────────────────────────────────────────────
+
+/**
+ * Whether objects and lists inside `root` (level 1) go deeper than `limit` levels. It follows the
+ * structure with a list of its own, not the call stack, and goes no further than `limit` levels:
+ * a model can send arguments that JSON.parse reads and JSON.stringify cannot follow.
+ */
+function nestedDeeperThan(root: object, limit: number): boolean {
+  const pending: { node: object; depth: number }[] = [{ node: root, depth: 1 }];
+  for (let item = pending.pop(); item !== undefined; item = pending.pop()) {
+    if (item.depth > limit) return true;
+    for (const child of Object.values(item.node)) {
+      if (typeof child === 'object' && child !== null) {
+        pending.push({ node: child, depth: item.depth + 1 });
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * The arguments to run a call with, and to echo back in the history, or null when they cannot be
+ * either. A call with none has `{}`. Text that was not JSON, a list, a number or a boolean is not
+ * an object, which every tool takes; arguments nested too deep or too long are refused before
+ * they are written out (a strict server refuses the echo of a raw string, and JSON.stringify of
+ * a deep value throws a RangeError, which is not an LlmError).
+ */
+function usableArguments(raw: unknown): Record<string, unknown> | null {
+  if (raw === undefined || raw === null) return {};
+  if (typeof raw !== 'object' || Array.isArray(raw)) return null;
+  if (nestedDeeperThan(raw, CONVERSATION_LIMITS.maxArgumentDepth)) return null;
+  let json: string;
+  try {
+    json = JSON.stringify(raw);
+  } catch {
+    return null;
+  }
+  if (Buffer.byteLength(json, 'utf8') > CONVERSATION_LIMITS.maxArgumentBytes) return null;
+  return raw as Record<string, unknown>;
+}
+
+// ─── One call to the provider, and what a failure of it means ────────────────
+
+const sleepFor = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
+/**
+ * Whether the provider refused a first request because it carried tools: a refusal of the request
+ * itself (400, 404 or 422) whose own words named tools or functions (the provider layer says so
+ * with `refusedTools`). A server without tool calling cannot review, whatever else is right.
+ */
+function refusedForTools(err: LlmError, tools: readonly LlmToolSpec[]): boolean {
+  return (
+    tools.length > 0 &&
+    err.failure === 'rejected' &&
+    err.refusedTools &&
+    err.status !== null &&
+    TOOL_REFUSAL_STATUSES.includes(err.status)
+  );
+}
+
+/**
+ * The seconds to wait before trying a failed call again, counted against the retries of that call
+ * (`retried`), or null when it is not tried again: a rate limit waits what the provider asked, but
+ * never more than a minute and never less than a second, and twice at most; a timeout or an
+ * unreachable provider waits the backoff, once in all; anything else is not tried again.
+ */
+function retryWait(
+  err: LlmError,
+  retried: { rateLimited: number; transient: number },
+): number | null {
+  const { backoffSeconds, minWaitSeconds, maxWaitSeconds } = CONVERSATION_RETRIES;
+  if (err.failure === 'rate_limited' && retried.rateLimited < CONVERSATION_RETRIES.rateLimited) {
+    const asked = err.retryAfterSeconds ?? backoffSeconds[retried.rateLimited] ?? maxWaitSeconds;
+    retried.rateLimited += 1;
+    return Math.min(maxWaitSeconds, Math.max(minWaitSeconds, asked));
+  }
+  if (
+    (err.failure === 'timeout' || err.failure === 'unavailable') &&
+    retried.transient < CONVERSATION_RETRIES.transient
+  ) {
+    retried.transient += 1;
+    return backoffSeconds[0];
+  }
+  return null;
+}
+
+/**
+ * The model's next turn, or why there is none: the stop check is asked before every call, a
+ * failed call is tried again as `retryWait` says, and the first call refused for its tools ends
+ * the conversation as such.
+ */
+async function nextTurn(
+  input: ConversationInput,
+  conversation: () => LlmConversation,
+  first: boolean,
+): Promise<LlmTurn | Ended> {
+  const retried = { rateLimited: 0, transient: 0 };
+  for (;;) {
+    if (await input.shouldStop()) return { kind: 'stopped' };
+    try {
+      return await input.send(conversation());
+    } catch (err) {
+      if (err instanceof CircuitOpenError) return failed('provider_error');
+      if (!(err instanceof LlmError)) throw err;
+      if (first && refusedForTools(err, input.tools)) return failed('provider_no_tools');
+      const wait = retryWait(err, retried);
+      if (wait === null) return failed('provider_error');
+      await (input.sleep ?? sleepFor)(wait * 1_000);
+    }
+  }
+}
+
+// ─── The calls of a turn ─────────────────────────────────────────────────────
+
+/**
+ * Adds the model's turn to the history, with every call echoed (so that each has its answer), and
+ * the answer to each: the first `maxCallsPerTurn` calls are run, in order, unless their arguments
+ * are unusable, and the others are told there were too many. Every answer is put in the data
+ * envelope. Returns how many calls were run.
+ */
+async function answerCalls(
+  input: ConversationInput,
+  text: string,
+  calls: readonly LlmToolCall[],
+  messages: LlmMessage[],
+): Promise<number> {
+  const prepared = calls.map((call) => ({ call, args: usableArguments(call.arguments) }));
+  messages.push({
+    role: 'assistant',
+    text,
+    toolCalls: prepared.map(({ call, args }) => ({
+      id: call.id,
+      name: call.name,
+      arguments: args ?? {},
+    })),
+  });
+  let run = 0;
+  for (const [index, { call, args }] of prepared.entries()) {
+    let answer: string;
+    if (index >= input.limits.maxCallsPerTurn) {
+      answer = CONVERSATION_TEXTS.tooManyCalls;
+    } else if (args === null) {
+      answer = CONVERSATION_TEXTS.badArguments;
+    } else {
+      answer = await input.runTool({ id: call.id, name: call.name, arguments: args });
+      run += 1;
+    }
+    messages.push({
+      role: 'tool',
+      callId: call.id,
+      name: call.name,
+      text: toolResultMessage(cutAtGrapheme(call.name, TOOL_LABEL_CHARS), answer, input.nonce),
+    });
+  }
+  return run;
+}
+
+// ─── The conversation ────────────────────────────────────────────────────────
+
+/**
+ * Talks with the model until it answers in text:
+ * - the tool list goes with every turn, the wrap-up included (Anthropic refuses tool blocks in the
+ *   history without it);
+ * - once the model has had `maxTurns` turns, or the calls have used 85 % of the token budget, the
+ *   next turn is the wrap-up: a user message that says to answer now. Calls in its answer are not
+ *   run, and its text is the answer;
+ * - a call is told apart by what is there, not by the finish reason: `tool` also comes without
+ *   calls, and then text is an answer and no text is none;
+ * - an answer cut off at the output limit is asked for again, shorter, once; a refusal, a blank
+ *   answer and a call id used twice in a turn end the conversation as a bad answer.
+ *
+ * A token count the provider did not give counts for nothing, so only the turn caps bound a
+ * conversation with such a provider.
+ */
+export async function runConversation(input: ConversationInput): Promise<ConversationResult> {
+  const { limits } = input;
+  const messages: LlmMessage[] = [{ role: 'user', text: input.user }];
+  // A copy of the history for each call: what `send` is given is not changed after it.
+  const conversation = (): LlmConversation => ({
+    system: input.system,
+    messages: [...messages],
+    tools: input.tools,
+    maxOutputTokens: limits.maxOutputTokens,
+  });
+  let turns = 0;
+  let toolCalls = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let wrappingUp = false;
+  let askedForShorter = false;
+
+  for (;;) {
+    const next = await nextTurn(input, conversation, turns === 0);
+    if ('kind' in next) return next;
+    turns += 1;
+    inputTokens += next.usage.inputTokens ?? 0;
+    outputTokens += next.usage.outputTokens ?? 0;
+    if (next.finishReason === 'refusal') return failed('bad_answer');
+
+    if (next.toolCalls.length > 0 && !wrappingUp) {
+      const ids = new Set(next.toolCalls.map((call) => call.id));
+      if (ids.size !== next.toolCalls.length) return failed('bad_answer');
+      toolCalls += await answerCalls(input, next.text, next.toolCalls, messages);
+      const used = inputTokens + outputTokens;
+      if (turns >= limits.maxTurns || used >= CONVERSATION_LIMITS.wrapUpAt * limits.tokenBudget) {
+        messages.push({ role: 'user', text: CONVERSATION_TEXTS.wrapUp });
+        wrappingUp = true;
+      }
+      continue;
+    }
+
+    if (next.finishReason === 'length' && next.toolCalls.length === 0) {
+      if (askedForShorter) return failed('bad_answer');
+      askedForShorter = true;
+      // The API refuses an assistant message with nothing in it.
+      if (next.text.trim() !== '') {
+        messages.push({ role: 'assistant', text: next.text, toolCalls: [] });
+      }
+      messages.push({ role: 'user', text: CONVERSATION_TEXTS.shorter });
+      continue;
+    }
+
+    if (next.text.trim() === '') return failed('bad_answer');
+    return {
+      kind: 'answer',
+      text: next.text,
+      inputTokens,
+      outputTokens,
+      turns,
+      toolCalls,
+      budgetReached: wrappingUp,
+    };
+  }
+}

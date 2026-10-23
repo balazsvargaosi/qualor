@@ -1,4 +1,4 @@
-import { llmIneligibility, PROMPT_VERSIONS, type LlmFeature } from '@qualor/shared';
+import { llmIneligibility, LLM_FEATURES, PROMPT_VERSIONS, type LlmFeature } from '@qualor/shared';
 import { and, desc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import type { AuditActorContext, AuditRecorder } from '../audit/recorder';
 import { projectRefs } from '../audit/refs';
@@ -134,12 +134,21 @@ export const UNCOUNTED_FAILURES = [
   'ISSUE_GONE',
 ] as const satisfies readonly LlmErrorCode[];
 
+/** The start of the current UTC day, which every daily budget counts from. */
+export const UTC_DAY_START = sql`date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`;
+
 /**
  * llm.md §12.1: the organisation's requests, tokens and estimated cost of the current UTC day.
  * A request queued or running counts (it holds its unit of the budget); a failed one that used
- * nothing does not (UNCOUNTED_FAILURES).
+ * nothing does not (UNCOUNTED_FAILURES). Only explain, triage and fix count: the calls of an AI
+ * review are rows of their own feature, with budgets of their own (`reviewUsageToday`), and
+ * neither takes from the other.
  */
 export async function todayUsage(db: Executor, organizationId: string): Promise<AiUsage> {
+  const features = sql.join(
+    LLM_FEATURES.map((feature) => sql`${feature}`),
+    sql`, `,
+  );
   const uncounted = sql.join(
     UNCOUNTED_FAILURES.map((code) => sql`${code}`),
     sql`, `,
@@ -162,7 +171,8 @@ export async function todayUsage(db: Executor, organizationId: string): Promise<
            coalesce(sum(cost_micro_usd), 0)::bigint AS cost
       FROM llm_requests
      WHERE organization_id = ${organizationId}
-       AND created_at >= date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`);
+       AND feature IN (${features})
+       AND created_at >= ${UTC_DAY_START}`);
   const u = first(rows);
   return {
     explain: u.explain,

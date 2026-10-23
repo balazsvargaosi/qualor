@@ -434,9 +434,13 @@ async function prepare(
 /**
  * Tells the circuit how a failed call went: a transient failure counts against the provider, a
  * call the provider answered (with a status) counts for it, and anything else only releases the
- * probe. Whether the failure is transient.
+ * probe. Whether the failure is transient. The AI review's calls tell their circuit the same way.
  */
-function noteCallFailure(circuit: CircuitBreaker, circuitKey: string, err: LlmError): boolean {
+export function noteCallFailure(
+  circuit: CircuitBreaker,
+  circuitKey: string,
+  err: LlmError,
+): boolean {
   const transient = TRANSIENT_FAILURES.has(err.failure);
   if (transient) circuit.failure(circuitKey);
   else if (err.status !== null) circuit.success(circuitKey);

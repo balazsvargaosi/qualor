@@ -534,6 +534,37 @@ describe('AI requests (llm.md §5, §10, §12, §16)', () => {
     expect(Number(second.headers['retry-after'])).toBeGreaterThan(0);
   });
 
+  it('does not count the calls of an AI review against the explain, triage and fix budgets', async () => {
+    // Budgets a single token or cent would exceed, and a review that spent far more than both.
+    await configure({
+      budgets: { ...DEFAULT_LLM_SETTINGS.budgets, tokensPerDay: 100, costPerDayUsd: 0.01 },
+      pricing: { inputUsdPerMTok: 3, outputUsdPerMTok: 15 },
+    });
+    await h.ctx.db.insert(llmRequests).values({
+      organizationId: h.organizationId,
+      projectId: p.id,
+      feature: 'review',
+      cacheKey: 'a'.repeat(64),
+      provider: 'openai',
+      providerHost: fake.host,
+      model: 'fake-model',
+      promptVersion: 'review-1',
+      status: 'succeeded',
+      inputSha256: 'a'.repeat(64),
+      inputBytes: 1_000,
+      fields: ['review'],
+      inputTokens: 900_000,
+      outputTokens: 100_000,
+      costMicroUsd: 4_200_000,
+    });
+    const usage = (await get(`/api/v0/organizations/${h.organizationId}/ai`)).json().usage;
+    expect(usage).toEqual({ explain: 0, triage: 0, fix: 0, tokens: 0, costUsd: 0 });
+    for (const feature of ['explain', 'triage', 'fix']) {
+      const res = await ask(eqIssue, feature, { refresh: true });
+      expect([feature, res.statusCode]).toEqual([feature, 202]);
+    }
+  });
+
   it('cannot overshoot a budget with concurrent requests', async () => {
     await configure({
       budgets: { ...DEFAULT_LLM_SETTINGS.budgets, fixPerDay: 3, perUserPerHour: 10_000 },

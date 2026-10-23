@@ -129,6 +129,15 @@ export async function postJson(
         status,
       );
     }
+    if (carriesTools(body) && refusesTools(result.body)) {
+      throw new LlmError(
+        'rejected',
+        `The provider refused the request (HTTP ${status}): the model or its server does not accept tools`,
+        status,
+        null,
+        true,
+      );
+    }
     throw new LlmError(
       'rejected',
       `The provider refused the request (HTTP ${status}); check the base URL and model`,
@@ -140,6 +149,59 @@ export async function postJson(
   } catch {
     throw new LlmError('bad_answer', NOT_UNDERSTOOD, status);
   }
+}
+
+/** Whether the request body offers the model tools (the key both wires use for them). */
+function carriesTools(body: unknown): boolean {
+  const tools = (body as { tools?: unknown } | null)?.tools;
+  return Array.isArray(tools) && tools.length > 0;
+}
+
+/** The parameters of a request that servers without tool calling refuse by name. */
+const TOOL_PARAMS: ReadonlySet<string> = new Set([
+  'tools',
+  'tool_choice',
+  'functions',
+  'function_call',
+]);
+/** Words that name tools or functions: `tool use`, `--enable-auto-tool-choice`, `function calling`. */
+const TOOL_WORDS = /\b(?:tools?|functions?|tool_choice|function_call)\b/i;
+/**
+ * OpenAI's context length error counts the tokens "in the functions" and tells the caller to
+ * shorten "the messages or functions": it is a request that is too long, not one without tools.
+ */
+const CONTEXT_LENGTH = /context (?:length|window)/i;
+
+const asRecord = (value: unknown): Record<string, unknown> | null =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+
+/**
+ * Whether an error body says that the model or its server cannot call tools or functions: the
+ * parameter it refuses is one of the tool parameters, or its message names tools or functions.
+ * The error is at `error` (OpenAI, Anthropic, Ollama's OpenAI endpoint), is `error` itself when
+ * that is a string (Ollama's own API), or is at the top of the body (vLLM). Only this yes or no is
+ * used: nothing of the text is shown, stored or logged.
+ */
+function refusesTools(body: Buffer): boolean {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body.toString('utf8'));
+  } catch {
+    return false;
+  }
+  const top = asRecord(parsed);
+  const detail = asRecord(top?.error) ?? top;
+  const message =
+    typeof detail?.message === 'string'
+      ? detail.message
+      : typeof top?.error === 'string'
+        ? top.error
+        : '';
+  if (detail?.code === 'context_length_exceeded' || CONTEXT_LENGTH.test(message)) return false;
+  const param = detail?.param;
+  return (typeof param === 'string' && TOOL_PARAMS.has(param)) || TOOL_WORDS.test(message);
 }
 
 /** The `error.param` of an OpenAI-style error body, when it is a string; null otherwise. */

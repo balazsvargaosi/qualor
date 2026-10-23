@@ -85,7 +85,9 @@ export type LlmFailure = (typeof LLM_FAILURES)[number];
 
 /**
  * A provider call that did not answer usably. `message` is a fixed text, never the provider's
- * body, a header or the API key.
+ * body, a header or the API key. `refusedTools` is a yes or no read from the provider's error
+ * body: the request carried tools and was refused in words that name tools or functions (the model
+ * or its server cannot call tools).
  */
 export class LlmError extends Error {
   constructor(
@@ -93,6 +95,7 @@ export class LlmError extends Error {
     message: string,
     readonly status: number | null = null,
     readonly retryAfterSeconds: number | null = null,
+    readonly refusedTools = false,
   ) {
     super(message);
     this.name = 'LlmError';
