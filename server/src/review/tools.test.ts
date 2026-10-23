@@ -1,6 +1,5 @@
 import { OMISSION_REASONS, REDACTED } from '@qualor/shared';
 import { afterAll, describe, expect, it } from 'vitest';
-import { budgetMs } from '../../test/perf';
 import { HOSTILE_TEXT, memorySnapshot } from '../../test/review';
 import type { LlmToolCall } from '../llm/providers/types';
 import { MaskedFiles } from './masked-files';
@@ -1310,12 +1309,13 @@ describe('masking that takes too long', () => {
     // The time was spent, and so were the bytes, once.
     const spent = bytes - Buffer.byteLength(`${HOSTILE_TEXT}\nneedle`);
     expect(policy.budget.maskedBytes).toBe(spent);
-    const started = performance.now();
+    // Asked again, it is not masked again: no bytes are spent, and the masker is not asked.
+    const masked = policy.masker?.spentMs;
     expect(
       await answer(reader, 'read_file', { path: 'a/hostile.txt', from: 2, to: 3 }, policy),
     ).toBe(NOT_IN_TIME);
-    expect(performance.now() - started).toBeLessThan(budgetMs(250));
     expect(policy.budget.maskedBytes).toBe(spent);
+    expect(policy.masker?.spentMs).toBe(masked);
     // The other files are read as ever.
     expect(await answer(reader, 'read_file', { path: 'b/ok.ts' }, policy)).toBe(
       '1│ const needle = 1;',
@@ -1328,12 +1328,12 @@ describe('masking that takes too long', () => {
     expect(await answer(reader, 'grep', { pattern: 'needle' }, policy)).toBe(
       ['b/ok.ts:1: const needle = 1;', 'd/ok.ts:1: const needle = 2;'].join('\n'),
     );
-    // Asked again, the files that took too long are not masked again.
-    const started = performance.now();
+    // Asked again, the files that took too long are not masked again: the masker is not asked.
+    const masked = policy.masker?.spentMs;
     expect(await answer(reader, 'grep', { pattern: 'needle', path_glob: 'a/**' }, policy)).toBe(
       'no matches',
     );
-    expect(performance.now() - started).toBeLessThan(budgetMs(250));
+    expect(policy.masker?.spentMs).toBe(masked);
     expect(await answer(reader, 'grep', { pattern: 'needle', path_glob: 'b/**' }, policy)).toBe(
       'b/ok.ts:1: const needle = 1;',
     );
