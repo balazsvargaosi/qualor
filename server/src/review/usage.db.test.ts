@@ -737,6 +737,51 @@ const port = 8080;
       expect(stored).toContain(REDACTED);
     });
 
+    it('takes a key with slashes out of the answer however the answer writes them, also in the stored result', async () => {
+      // The kind of key base64 makes. A `/` can be written as it is, as `\/`, or as the escape of
+      // its code; the answer below does all three, and splits the key across escapes.
+      const slashed = 'sk-proj/AbCdEf+0123/GhIjKl==';
+      const other = await createFakeLlm({ apiKey: slashed });
+      try {
+        const otherConfig = testConfig({ llmInternalHosts: parseInternalHosts(other.host) });
+        const sender = senderFor('openai', {
+          config: otherConfig,
+          settings: {
+            ...DEFAULT_LLM_SETTINGS,
+            provider: configuredProvider(otherConfig.secretKey, other, 'openai'),
+            storePrompts: true,
+          },
+        });
+        const written = [
+          slashed,
+          'sk-proj\\/AbCdEf+0123\\/GhIjKl==',
+          'sk-pro\\u006a\\/AbC\\u0064Ef\\u002B0123\\u002fGhIjKl\\u003d=',
+        ];
+        const rest = '"rest":"caf\\u00e9 \\/ ok"';
+        other.enqueue({
+          status: 200,
+          body: openAiToolCalls([{ id: 'c1', name: 'read_file', arguments: { path: slashed } }], {
+            text: `{"summary":"${written.join(' and ')}",${rest}}`,
+          }),
+        });
+        const turn = await converse1(sender);
+        // The text as it was written, but for the key; and the same once it is parsed.
+        const scrubbed = `{"summary":"${[REDACTED, REDACTED, REDACTED].join(' and ')}",${rest}}`;
+        expect(turn.text).toBe(scrubbed);
+        expect((JSON.parse(turn.text) as { summary: string }).summary).not.toContain(slashed);
+        expect(turn.toolCalls).toEqual([
+          { id: 'c1', name: 'read_file', arguments: { path: REDACTED } },
+        ]);
+        const stored = first(await rows()).result as { text: string };
+        expect(stored.text).toBe(scrubbed);
+        expect(JSON.stringify(stored)).not.toContain(slashed);
+        // A backslash is written twice in JSON text: the key as the answer wrote it is not there.
+        expect(JSON.stringify(stored)).not.toContain('sk-proj\\\\/AbCdEf');
+      } finally {
+        await other.close();
+      }
+    });
+
     it('keeps null on the row of a call the provider did not count, which fills the day by the bytes it was sent', async () => {
       fake.enqueue({ status: 200, body: openAiAnswer('done', { usage: null }) });
       await converse1(
