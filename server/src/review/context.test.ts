@@ -19,6 +19,7 @@ import {
 import { envelope } from './envelope';
 import { MaskedFiles, type MaskBudget, type MaskedFilesOptions } from './masked-files';
 import { Masker, type MaskerOptions } from './masker';
+import { specialistData } from './prompts';
 import type { SnapshotReader } from './snapshot-reader';
 import { TOOL_LIMITS } from './tools';
 
@@ -705,6 +706,30 @@ describe('the changes that are reviewed', () => {
       ['src/auth/login.ts', true],
       ['src/main.ts', false],
     ]);
+  });
+
+  it('gives only a rename an old path: any other change has none, and no model is shown the one it claims', async () => {
+    const patch = addedFile(['x']).patch;
+    const { context } = await contextOf({
+      changes: [
+        { path: 'a.ts', status: 'added', oldPath: 'forged/a.ts', patch },
+        { path: 'm.ts', status: 'modified', oldPath: 'forged/m.ts', patch },
+        { path: 'd.ts', status: 'deleted', oldPath: 'forged/d.ts', patch: '@@ -1 +0,0 @@\n-x\n' },
+        { path: 'ok.ts', status: 'renamed', oldPath: 'old.ts', patch },
+      ],
+      files: { 'a.ts': 'x\n', 'm.ts': 'x\n', 'ok.ts': 'x\n' },
+    });
+    const reviewed = [...context.reviewed].sort((a, b) => (a.path < b.path ? -1 : 1));
+    expect(reviewed.map((c) => [c.path, c.status, c.oldPath])).toEqual([
+      ['a.ts', 'added', null],
+      ['d.ts', 'deleted', null],
+      ['m.ts', 'modified', null],
+      ['ok.ts', 'renamed', 'old.ts'],
+    ]);
+    // What the reviewers and the judge are given names the old path of the rename, and no other.
+    const shown = JSON.stringify(specialistData(context));
+    expect(shown).toContain('old.ts');
+    expect(shown).not.toContain('forged');
   });
 
   it('reads a change with no patch from its text, and a renamed change with no old path as added', async () => {
@@ -1753,6 +1778,26 @@ describe('what the model is shown is masked as a whole text', () => {
 });
 
 describe('the administrator’s excluded paths', () => {
+  it('do not exclude a change for an old path it has no right to: only a rename has one', async () => {
+    const patch = addedFile(['x']).patch;
+    const { context } = await contextOf(
+      {
+        changes: [
+          { path: 'src/edited.ts', status: 'modified', oldPath: 'secrets/a.ts', patch },
+          { path: 'src/moved.ts', status: 'renamed', oldPath: 'secrets/b.ts', patch },
+        ],
+        files: { 'src/edited.ts': 'x\n', 'src/moved.ts': 'x\n' },
+      },
+      masker,
+      NO_FINDINGS,
+      { excluded: excludedPathMatcher(['secrets/**']) },
+    );
+    // The rename from an excluded path is left out whole; the other change claims a path it was
+    // not renamed from, which is neither looked at nor shown.
+    expect(context.reviewed.map((c) => [c.path, c.oldPath])).toEqual([['src/edited.ts', null]]);
+    expect(context.skipped).toEqual([]);
+  });
+
   it('leave no change, finding or instructions file of theirs in what the model is shown', async () => {
     const excluded = excludedPathMatcher(['secrets/**', 'AGENTS.md']);
     const ok = addedFile(['fine']);

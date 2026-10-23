@@ -344,6 +344,19 @@ function clipSince(
 const isExcluded = (change: SnapshotChange, options: ContextOptions): boolean =>
   options.excluded(change.path) || (change.oldPath !== null && options.excluded(change.oldPath));
 
+/**
+ * The change as the review reads it. Only a rename has an old path, and an upload is not made to
+ * keep to that: any other change has none here, so an old path it claims is not excluded by, not
+ * followed by a finding and not shown to a model. A rename that does not say what it was renamed
+ * from is an added file.
+ */
+function readChange(given: SnapshotChange): SnapshotChange {
+  if (given.status === 'renamed') {
+    return given.oldPath === null ? { ...given, status: 'added' } : given;
+  }
+  return given.oldPath === null ? given : { ...given, oldPath: null };
+}
+
 /** A change that is reviewed, and what the cutting of the slices needs of it besides. */
 interface Candidate {
   change: ReviewableChange;
@@ -365,9 +378,10 @@ interface Candidate {
  * read. The files are read as the snapshot stores them, to tell what they are: nothing is masked
  * here, and the texts do not leave this function.
  *
- * Defensive reading: a `renamed` change that does not say what it was renamed from is `added`; the
- * ranges changed since the last review are cut to the file; a patch that does not parse, or has a
- * row past the end of the file, drops that file's slices and nothing else.
+ * Defensive reading: a `renamed` change that does not say what it was renamed from is `added`, and
+ * a change that is not a rename has no old path, whatever the upload says; the ranges changed since
+ * the last review are cut to the file; a patch that does not parse, or has a row past the end of
+ * the file, drops that file's slices and nothing else.
  */
 async function classify(
   changes: readonly SnapshotChange[],
@@ -377,9 +391,8 @@ async function classify(
   const candidates: Candidate[] = [];
   const skipped: SkippedChange[] = [];
   for (const given of changes) {
-    if (isExcluded(given, options)) continue;
-    const change: SnapshotChange =
-      given.status === 'renamed' && given.oldPath === null ? { ...given, status: 'added' } : given;
+    const change = readChange(given);
+    if (isExcluded(change, options)) continue;
     const byName = skippedByName(change.path);
     if (byName !== null) {
       skipped.push({ path: change.path, why: byName });

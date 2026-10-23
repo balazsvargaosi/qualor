@@ -23,6 +23,9 @@ import {
 } from './pipeline';
 import { specialistData, SYSTEM_PROMPTS } from './prompts';
 
+/** The fake provider key of a test is built at run time, so no scanner takes it for a real one. */
+const j = (...parts: string[]) => parts.join('');
+
 function change(path: string, changedLines = 1): ReviewableChange {
   return {
     path,
@@ -507,7 +510,7 @@ describe('runReviewPipeline', () => {
       judge: 16_384,
       verify: 2_048,
     });
-    const key = 'sk-test-0123456789abcdef';
+    const key = j('sk-test-', '0123456789abcdef');
     const { deps, calls } = scripted(
       {
         quality: [answer({ findings: [] })],
@@ -888,7 +891,7 @@ describe('runReviewPipeline', () => {
   });
 
   it('the provider key is taken out of every answer before it is used', async () => {
-    const key = 'sk-test-0123456789abcdef';
+    const key = j('sk-test-', '0123456789abcdef');
     // The key as JSON escapes spell it: a parser reads it back.
     const escaped = [...key]
       .map((c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)

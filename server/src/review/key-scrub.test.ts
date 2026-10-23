@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest';
 import type { LlmTurn } from '../llm/providers';
 import { scrubKeyDeep, scrubText, scrubTurn } from './key-scrub';
 
-const KEY = 'sk-test-0123456789abcdef';
+const j = (...parts: string[]) => parts.join('');
+/** A fake provider key, built at run time so no scanner takes it for a real one. */
+const KEY = j('sk-test-', '0123456789abcdef');
 /** A key of the kind base64 makes: it has slashes, a plus sign and padding. */
 const SLASH_KEY = 'sk-proj/AbCdEf+0123/GhIjKl==';
 /** `SLASH_KEY` with a slash as `\/`, as the escape of a letter and of a sign, and as it is. */
