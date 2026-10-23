@@ -407,6 +407,129 @@ describe('converse: conversations with read-only tools (R5)', () => {
     ]);
   });
 
+  it('anthropic: a user message that follows tool results is a text block after them, in their message', async () => {
+    await converse(
+      anthropic,
+      fake.apiKey,
+      {
+        ...start,
+        messages: [
+          { role: 'user', text: 'Review this change' },
+          {
+            role: 'assistant',
+            text: '',
+            toolCalls: [
+              { id: 'toolu_a', name: 'read_file', arguments: { path: 'a.ts' } },
+              { id: 'toolu_b', name: 'read_file', arguments: { path: 'b.ts' } },
+            ],
+          },
+          { role: 'tool', callId: 'toolu_a', name: 'read_file', text: 'A' },
+          { role: 'tool', callId: 'toolu_b', name: 'read_file', text: 'B' },
+          { role: 'user', text: 'Answer now' },
+        ],
+      },
+      http,
+    );
+    // One user message, the results first: a strict endpoint refuses two user messages in a row.
+    expect((sent() as { messages: unknown[] }).messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'Review this change' }] },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'tool_use', id: 'toolu_a', name: 'read_file', input: { path: 'a.ts' } },
+          { type: 'tool_use', id: 'toolu_b', name: 'read_file', input: { path: 'b.ts' } },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'toolu_a', content: 'A' },
+          { type: 'tool_result', tool_use_id: 'toolu_b', content: 'B' },
+          { type: 'text', text: 'Answer now' },
+        ],
+      },
+    ]);
+  });
+
+  it('anthropic: user messages in a row are one user message of text blocks', async () => {
+    await converse(
+      anthropic,
+      fake.apiKey,
+      {
+        ...start,
+        messages: [
+          { role: 'user', text: 'Review this change' },
+          { role: 'user', text: 'Answer shorter' },
+        ],
+      },
+      http,
+    );
+    expect((sent() as { messages: unknown[] }).messages).toEqual([
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Review this change' },
+          { type: 'text', text: 'Answer shorter' },
+        ],
+      },
+    ]);
+  });
+
+  it('anthropic: an assistant message between two user messages keeps them apart', async () => {
+    await converse(
+      anthropic,
+      fake.apiKey,
+      {
+        ...start,
+        messages: [
+          { role: 'user', text: 'Review this change' },
+          {
+            role: 'assistant',
+            text: '',
+            toolCalls: [{ id: 'toolu_a', name: 'read_file', arguments: { path: 'a.ts' } }],
+          },
+          { role: 'tool', callId: 'toolu_a', name: 'read_file', text: 'A' },
+          { role: 'assistant', text: 'Looks fine.', toolCalls: [] },
+          { role: 'user', text: 'Go on' },
+          {
+            role: 'assistant',
+            text: '',
+            toolCalls: [{ id: 'toolu_b', name: 'read_file', arguments: { path: 'b.ts' } }],
+          },
+          { role: 'tool', callId: 'toolu_b', name: 'read_file', text: 'B' },
+        ],
+      },
+      http,
+    );
+    expect(
+      (sent() as { messages: { role: string }[] }).messages.map((message) => message.role),
+    ).toEqual(['user', 'assistant', 'user', 'assistant', 'user', 'assistant', 'user']);
+  });
+
+  it('openai: a user message after tool messages is a message of its own', async () => {
+    await converse(
+      openai,
+      fake.apiKey,
+      {
+        ...start,
+        messages: [
+          { role: 'user', text: 'Review this change' },
+          {
+            role: 'assistant',
+            text: '',
+            toolCalls: [{ id: 'call_1', name: 'read_file', arguments: { path: 'a.ts' } }],
+          },
+          { role: 'tool', callId: 'call_1', name: 'read_file', text: 'A' },
+          { role: 'user', text: 'Answer now' },
+        ],
+      },
+      http,
+    );
+    expect(
+      (sent() as { messages: { role: string }[] }).messages.map((message) => message.role),
+    ).toEqual(['system', 'user', 'assistant', 'tool', 'user']);
+  });
+
   it('anthropic: a call whose input is missing has none (an empty object)', async () => {
     const body = anthropicToolUse([{ id: 'toolu_1', name: 'list_files', input: {} }]);
     delete (body as AnthropicToolBody).content[0]!.input;
@@ -745,8 +868,24 @@ describe('converse: conversations with read-only tools (R5)', () => {
     });
   });
 
-  // Anthropic's errors name no parameter, so this one is OpenAI's alone.
-  it('openai: a refusal is flagged by the parameter it refuses, whatever the words', async () => {
+  // Anthropic's errors name no parameter and no code, so these two are OpenAI's alone.
+  it('openai: a refusal is flagged by the parameter it refuses and the code that says it is unsupported, whatever the words', async () => {
+    fake.enqueue({
+      status: 400,
+      body: {
+        error: {
+          message: 'Invalid value',
+          type: 'invalid_request_error',
+          param: 'tools',
+          code: 'unsupported_parameter',
+        },
+      },
+    });
+    const err = await converse(openai, fake.apiKey, start, http).catch((e: unknown) => e);
+    expect(err).toMatchObject({ failure: 'rejected', status: 400, refusedTools: true });
+  });
+
+  it('openai: the parameter alone, with nothing that says it is unsupported, is some other refusal', async () => {
     fake.enqueue({
       status: 400,
       body: {
@@ -759,7 +898,7 @@ describe('converse: conversations with read-only tools (R5)', () => {
       },
     });
     const err = await converse(openai, fake.apiKey, start, http).catch((e: unknown) => e);
-    expect(err).toMatchObject({ failure: 'rejected', status: 400, refusedTools: true });
+    expect(err).toMatchObject({ failure: 'rejected', status: 400, refusedTools: false });
   });
 
   describe.each(KINDS)('%s: a refusal that names tools', (kind) => {
@@ -779,6 +918,12 @@ describe('converse: conversations with read-only tools (R5)', () => {
       [422, 'Function calling is not enabled for this model'],
       [400, 'Unrecognized request argument supplied: tool_choice'],
       [400, '"auto" tool choice requires --enable-auto-tool-choice and --tool-call-parser'],
+      [400, 'tools param requires --jinja flag'],
+      [400, "Unsupported parameter: 'tools' is not supported with this model."],
+      [400, 'tools: Extra inputs are not permitted'],
+      [400, "This model doesn't support function calling"],
+      [400, "Unsupported parameter: 'tools'"],
+      [400, 'This endpoint cannot support tool use'],
     ])('HTTP %i %s is flagged, with a fixed message that names tools', async (status, message) => {
       const err = await refusal(errorBody(message), status);
       expect(err).toBeInstanceOf(LlmError);
@@ -804,6 +949,50 @@ describe('converse: conversations with read-only tools (R5)', () => {
         errorBody(
           "This model's maximum context length is 8192 tokens. However, your messages resulted in 9000 tokens (8000 in the messages, 1000 in the functions). Please reduce the length of the messages or functions.",
           { param: 'messages', code: 'context_length_exceeded' },
+        ),
+      ],
+      [
+        "OpenAI's refusal of the schema of a function",
+        errorBody(
+          "Invalid schema for function 'read_file': In context=('properties', 'path'), 'minimum' is not permitted.",
+          { param: 'tools[0].function.parameters' },
+        ),
+      ],
+      [
+        'a refusal of a schema that names the parameter tools',
+        errorBody("Invalid schema for function 'read_file': 'type' is required.", {
+          param: 'tools',
+        }),
+      ],
+      [
+        "Anthropic's refusal of an input schema",
+        errorBody(
+          'tools.0.input_schema: JSON schema is invalid. It must match JSON Schema draft 2020-12 (https://json-schema.org/draft/2020-12). Learn more about tool use at https://docs.claude.com/en/docs/tool-use.',
+        ),
+      ],
+      [
+        'a tool name that does not match the pattern',
+        errorBody("tools[0].function.name: string does not match pattern '^[a-zA-Z0-9_-]{1,64}$'"),
+      ],
+      [
+        'an empty list of tools',
+        errorBody("Invalid 'tools': empty array. Expected an array with minimum length 1."),
+      ],
+      [
+        'an unsupported parameter that is not a tool one',
+        errorBody("Unsupported parameter: 'temperature' is not supported with this model.", {
+          param: 'temperature',
+          code: 'unsupported_parameter',
+        }),
+      ],
+      [
+        'a refusal of an input schema that says only "input_schema"',
+        errorBody('tools.0.input_schema: Extra inputs are not permitted'),
+      ],
+      [
+        'a role the server does not know',
+        errorBody(
+          "Invalid value: 'tool'. Supported values are: 'system', 'assistant', 'user', and 'function'.",
         ),
       ],
     ])('is not flagged: %s', async (_name, body) => {

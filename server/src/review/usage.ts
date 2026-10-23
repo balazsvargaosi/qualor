@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import { cutAtGrapheme, LONE_SURROGATE_SOURCE } from '@qualor/shared';
 import { eq, sql } from 'drizzle-orm';
 import type { Config } from '../config';
 import type { Executor } from '../db/client';
@@ -7,19 +6,11 @@ import { first } from '../db/rows';
 import { llmRequests, projects, type ReviewRunRow } from '../db/schema';
 import { VERSION } from '../index';
 import { errorCodeOf } from '../llm/errors';
-import {
-  costOf,
-  jsonbTextBytes,
-  LLM_RESULT_MAX_BYTES,
-  noteCallFailure,
-  type LlmRuntime,
-} from '../llm/job';
+import { costOf, noteCallFailure, type LlmRuntime } from '../llm/job';
 import {
   converse,
   LlmError,
   type LlmConversation,
-  type LlmMessage,
-  type LlmToolCall,
   type LlmTurn,
   type ProviderKind,
 } from '../llm/providers';
@@ -27,7 +18,9 @@ import { UTC_DAY_START } from '../llm/service';
 import { providerApiKey, providerConfig, type StoredLlmSettings } from '../llm/settings';
 import type { WorkerLogger } from '../queue/worker';
 import { CircuitOpenError } from './conversation';
+import { scrubTurn } from './key-scrub';
 import type { ReviewBudgets } from './settings';
+import { storedPrompt, storedResult } from './usage-store';
 
 /*
  * What an AI review spends. Every call a review makes to the provider is one finished
@@ -73,118 +66,6 @@ export interface ReviewCallRecord {
 }
 
 /**
- * The stored prompt stays under the column's CHECK (64 KiB as PostgreSQL writes jsonb text), and
- * the stored result under the one the answers of explain, triage and fix keep to.
- */
-const STORED_PROMPT_BYTES = 60 * 1024;
-const STORED_RESULT_BYTES = LLM_RESULT_MAX_BYTES;
-/**
- * The characters a stored text is cut to, widest first: a document that is too big is made again
- * with the next.
- */
-const TEXT_CAPS = [16_000, 4_000, 1_000, 250, 60] as const;
-const STORED_SYSTEM_CHARS = 1_000;
-const STORED_NAME_CHARS = 100;
-const STORED_ARGUMENT_CHARS = 300;
-const STORED_CALLS = 20;
-
-const LONE_SURROGATES = new RegExp(LONE_SURROGATE_SOURCE, 'g');
-
-/** U+FFFD, the character that stands for text that could not be read. */
-const REPLACEMENT_CHARACTER = String.fromCodePoint(0xfffd);
-
-/** Text a jsonb value can hold: PostgreSQL refuses a NUL and a lone surrogate. */
-const storable = (text: string): string =>
-  text.replaceAll('\u0000', '').replace(LONE_SURROGATES, REPLACEMENT_CHARACTER);
-
-/** `text` made storable and cut to `max` characters, the cut marked. */
-function shown(text: string, max: number): string {
-  // Twice the characters hold more than `max` code points whenever the text has more: no need to
-  // take apart a megabyte to cut it.
-  return cutAtGrapheme(storable(text.slice(0, 2 * max + 4)), max);
-}
-
-function argumentsText(value: unknown): string {
-  if (typeof value === 'string') return value;
-  try {
-    return JSON.stringify(value) ?? '';
-  } catch {
-    // Arguments nested deeper than JSON.stringify can follow.
-    return '[too deeply nested to show]';
-  }
-}
-
-function storedCall(call: LlmToolCall) {
-  return {
-    id: shown(call.id, STORED_NAME_CHARS),
-    name: shown(call.name, STORED_NAME_CHARS),
-    arguments: shown(argumentsText(call.arguments), STORED_ARGUMENT_CHARS),
-  };
-}
-
-function storedMessage(message: LlmMessage, chars: number) {
-  switch (message.role) {
-    case 'user':
-      return { role: 'user', text: shown(message.text, chars) };
-    case 'tool':
-      return {
-        role: 'tool',
-        callId: shown(message.callId, STORED_NAME_CHARS),
-        name: shown(message.name, STORED_NAME_CHARS),
-        text: shown(message.text, chars),
-      };
-    case 'assistant':
-      return {
-        role: 'assistant',
-        text: shown(message.text, chars),
-        callCount: message.toolCalls.length,
-        calls: message.toolCalls.slice(0, STORED_CALLS).map(storedCall),
-      };
-  }
-}
-
-/**
- * The prompt of a call as a person reads it back: the run, the system prompt (cut), and the newest
- * messages of the conversation that fit, oldest first, with how many came before them. The newest
- * are what the call added, which is what a person looks for; each text is cut, to fewer characters
- * until the newest message fits at all.
- */
-function storedPrompt(runId: string, conversation: LlmConversation): unknown {
-  const system = shown(conversation.system, STORED_SYSTEM_CHARS);
-  const all = conversation.messages;
-  for (const chars of TEXT_CAPS) {
-    const kept: unknown[] = [];
-    let bytes = jsonbTextBytes({ runId, system, omitted: all.length, messages: [] });
-    for (const message of [...all].reverse()) {
-      const stored = storedMessage(message, chars);
-      // The separator between two elements of the list, counted for the first one too.
-      const size = jsonbTextBytes(stored) + 2;
-      if (bytes + size > STORED_PROMPT_BYTES) break;
-      kept.push(stored);
-      bytes += size;
-    }
-    if (kept.length > 0 || all.length === 0) {
-      return { runId, system, omitted: all.length - kept.length, messages: kept.reverse() };
-    }
-  }
-  return { runId, system, omitted: all.length, messages: [] };
-}
-
-/** The answer of a call as a person reads it back: what the model said, and the calls it made. */
-function storedResult(turn: LlmTurn): unknown {
-  for (const chars of TEXT_CAPS) {
-    const document = {
-      finishReason: turn.finishReason,
-      text: shown(turn.text, chars),
-      callCount: turn.toolCalls.length,
-      calls: turn.toolCalls.slice(0, STORED_CALLS).map(storedCall),
-    };
-    if (jsonbTextBytes(document) <= STORED_RESULT_BYTES) return document;
-  }
-  return { finishReason: turn.finishReason, text: '', callCount: turn.toolCalls.length, calls: [] };
-}
-
-/**
  * Writes the row of one call to the provider, finished: `feature` is `review`, there is no issue
  * and no user. `cache_key` is the hash of the request body, as `input_sha256` is, and is never
  * looked up as a cache (the lookups ask for an issue). The prompt and the result are kept only
@@ -223,7 +104,10 @@ export async function recordReviewCall(db: Executor, call: ReviewCallRecord): Pr
 // ─── What the day has used, and what is left ─────────────────────────────────
 
 export interface ReviewUsage {
-  /** Tokens, input and output, of the calls made since the UTC day began. */
+  /**
+   * Tokens, input and output, of the calls made since the UTC day began. A call the provider
+   * answered or timed out on without counting the input is counted at a quarter of the bytes sent.
+   */
   tokens: number;
   costMicroUsd: number;
   /** Reviews that began the day and spent, or were spending: not the ones skipped. */
@@ -235,6 +119,13 @@ export interface ReviewUsage {
  * the tokens and the estimated cost of the `review` rows, and how many reviews ran. The rows of
  * explain, triage and fix are not counted. The number of reviews is that of the runs that started
  * today and did not end skipped: the rows are calls, and carry no run.
+ *
+ * A provider that does not count its tokens must not spend without limit: the input of a row that
+ * succeeded or timed out, and has no count, is a quarter of its `input_bytes` (the guess the loop
+ * makes too). The row keeps its null (llm.md §10.1) and so does its cost: the cost of the day is
+ * the sum of the costs that are known. An output count the provider did not give is 0 here: the
+ * row does not know the limit its call was made with. A call the provider refused, did not take or
+ * could not be reached for is not counted.
  */
 export async function reviewUsageToday(
   db: Executor,
@@ -242,7 +133,11 @@ export async function reviewUsageToday(
   projectId?: string,
 ): Promise<ReviewUsage> {
   const spent = await db.execute<{ tokens: string; cost: string }>(sql`
-    SELECT coalesce(sum(coalesce(input_tokens, 0) + coalesce(output_tokens, 0)), 0)::bigint AS tokens,
+    SELECT coalesce(sum(
+             CASE WHEN status = 'succeeded' OR error_code = 'PROVIDER_TIMEOUT'
+                  THEN coalesce(input_tokens, ceil(input_bytes / 4.0))
+                  ELSE coalesce(input_tokens, 0) END
+             + coalesce(output_tokens, 0)), 0)::bigint AS tokens,
            coalesce(sum(cost_micro_usd), 0)::bigint AS cost
       FROM llm_requests
      WHERE feature = ${REVIEW_FEATURE}
@@ -267,20 +162,33 @@ export async function reviewUsageToday(
 
 /**
  * The tokens one review may use now: the smallest of what one review may use, what the
- * organisation has left of its day, and what its project has left of the day when the project has
- * a budget. A cost budget at or past its limit leaves nothing. `maxCostMicroUsd` is that budget in
- * micro-USD, null when there is none or when no prices are set (a cost is then unknown).
+ * organisation has left of its day, what its project has left of the day when the project has a
+ * budget, and, when the review has a cost budget (`costPerDayUsd`) and prices are set, what the
+ * cost left buys at the dearer of the two prices (the cost of a call is not known before it is
+ * made, so the dearer is the price that cannot overspend). A cost budget at or past its limit
+ * leaves nothing. `usage` is the day so far, as `reviewUsageToday` counts it for the organisation
+ * and for the project.
  */
 export function remainingReviewTokens(
   budgets: ReviewBudgets,
-  org: { tokens: number; costMicroUsd: number },
-  project: { tokens: number } | null,
-  maxCostMicroUsd: number | null,
+  usage: {
+    organization: { tokens: number; costMicroUsd: number };
+    project: { tokens: number } | null;
+  },
+  pricing: StoredLlmSettings['pricing'],
 ): number {
-  if (maxCostMicroUsd !== null && org.costMicroUsd >= maxCostMicroUsd) return 0;
-  const left = [budgets.maxTokensPerReview, budgets.tokensPerDay - org.tokens];
-  if (project !== null && budgets.perProjectTokensPerDay !== null) {
-    left.push(budgets.perProjectTokensPerDay - project.tokens);
+  const left = [budgets.maxTokensPerReview, budgets.tokensPerDay - usage.organization.tokens];
+  if (usage.project !== null && budgets.perProjectTokensPerDay !== null) {
+    left.push(budgets.perProjectTokensPerDay - usage.project.tokens);
+  }
+  if (budgets.costPerDayUsd !== null) {
+    const costLeft =
+      Math.round(budgets.costPerDayUsd * 1_000_000) - usage.organization.costMicroUsd;
+    if (costLeft <= 0) return 0;
+    // A price is in dollars for a million tokens, which is micro-USD for a token.
+    const dearest =
+      pricing === null ? 0 : Math.max(pricing.inputUsdPerMTok, pricing.outputUsdPerMTok);
+    if (dearest > 0) left.push(Math.floor(costLeft / dearest));
   }
   return Math.max(0, Math.min(...left));
 }
@@ -353,9 +261,9 @@ interface Outcome {
  * `converse`, recorded as a row whether it succeeds or fails. The provider's circuit is asked
  * first (open: `CircuitOpenError`, nothing sent and no row) and told how the call went. A review
  * takes no slot of the organisation's `llm` requests: it shares the circuit with that queue and
- * nothing else, so it never holds explain, triage or fix behind it, and they never hold it. A
- * failure is thrown after it is recorded; a key that cannot be read is thrown as the provider
- * refusing it.
+ * nothing else, so it never holds explain, triage or fix behind it, and they never hold it. The
+ * provider's key is taken out of what the model said before it is returned or stored. A failure is
+ * thrown after it is recorded; a key that cannot be read is thrown as the provider refusing it.
  */
 export function reviewSender(
   deps: ReviewSenderDeps,
@@ -436,9 +344,9 @@ export function reviewSender(
       started: Date.now(),
     };
 
-    let turn: LlmTurn;
+    let answered: LlmTurn;
     try {
-      turn = await converse(config, key.key, conversation, http);
+      answered = await converse(config, key.key, conversation, http);
       deps.runtime.circuit.success(circuitKey);
     } catch (err) {
       if (!(err instanceof LlmError)) {
@@ -458,6 +366,8 @@ export function reviewSender(
       });
       throw err;
     }
+    // What the model said leaves here without the provider's key, also in the stored result.
+    const turn = scrubTurn(answered, key.key);
     await finish(sent, {
       status: 'succeeded',
       errorCode: null,

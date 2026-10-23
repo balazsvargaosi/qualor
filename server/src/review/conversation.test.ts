@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   anthropicAnswer,
   anthropicToolUse,
@@ -62,19 +62,33 @@ const LIMITS: ConversationInput['limits'] = {
 
 type Call = { id: string; name?: string; args: unknown };
 
-/** The model asks for tool calls (and says `text` beside them, when given). */
-function toolTurn(kind: Kind, calls: Call[], tokens = [100, 10], text?: string): LlmReply {
-  const [input = 0, output = 0] = tokens;
+/**
+ * The model asks for tool calls (and says `text` beside them, when given). `tokens` null: the
+ * provider sends no usage, as some servers do not.
+ */
+function toolTurn(
+  kind: Kind,
+  calls: Call[],
+  tokens: number[] | null = [100, 10],
+  text?: string,
+): LlmReply {
+  const [input = 0, output = 0] = tokens ?? [];
   const over = text === undefined ? {} : { text };
   const body =
     kind === 'openai'
       ? openAiToolCalls(
           calls.map(({ id, name = 'read_file', args }) => ({ id, name, arguments: args })),
-          { usage: { prompt_tokens: input, completion_tokens: output }, ...over },
+          {
+            usage: tokens === null ? null : { prompt_tokens: input, completion_tokens: output },
+            ...over,
+          },
         )
       : anthropicToolUse(
           calls.map(({ id, name = 'read_file', args }) => ({ id, name, input: args })),
-          { usage: { input_tokens: input, output_tokens: output }, ...over },
+          {
+            usage: tokens === null ? null : { input_tokens: input, output_tokens: output },
+            ...over,
+          },
         );
   return { status: 200, body };
 }
@@ -83,10 +97,10 @@ function toolTurn(kind: Kind, calls: Call[], tokens = [100, 10], text?: string):
 function textTurn(
   kind: Kind,
   text: string,
-  tokens = [100, 10],
+  tokens: number[] | null = [100, 10],
   finish: 'stop' | 'length' | 'tool' | 'refusal' = 'stop',
 ): LlmReply {
-  const [input = 0, output = 0] = tokens;
+  const [input = 0, output = 0] = tokens ?? [];
   const body =
     kind === 'openai'
       ? openAiAnswer(text, {
@@ -96,7 +110,7 @@ function textTurn(
             tool: 'tool_calls',
             refusal: 'content_filter',
           }[finish],
-          usage: { prompt_tokens: input, completion_tokens: output },
+          usage: tokens === null ? null : { prompt_tokens: input, completion_tokens: output },
         })
       : anthropicAnswer(text, {
           stopReason: {
@@ -105,7 +119,7 @@ function textTurn(
             tool: 'tool_use',
             refusal: 'refusal',
           }[finish],
-          usage: { input_tokens: input, output_tokens: output },
+          usage: tokens === null ? null : { input_tokens: input, output_tokens: output },
         });
   return { status: 200, body };
 }
@@ -388,33 +402,62 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
     it.each(KINDS)(
       'the wrap-up comes once 85 % of the token budget is used, not before (%s)',
       async (kind) => {
-        const limits = { ...LIMITS, tokenBudget: 1_000 };
-        // 500, then 860 of 1000: the third request is the wrap-up.
-        fake.enqueue(
-          toolTurn(kind, [{ id: 'c1', args: { path: 'a.ts' } }], [400, 100]),
-          toolTurn(kind, [{ id: 'c2', args: { path: 'b.ts' } }], [300, 60]),
-          textTurn(kind, '{"findings":[]}', [10, 1]),
-        );
+        const limits = { ...LIMITS, tokenBudget: 10_000 };
+        // Turns of 4 000, 2 500, 1 000 and 1 100 tokens make 8 600 of the 10 000 after the fourth.
+        // No call of the size of any of them would reach the budget, so the 85 % alone makes the
+        // fifth request the wrap-up.
+        const turnsOf = (last: number) =>
+          [
+            [3_900, 100],
+            [2_400, 100],
+            [900, 100],
+            [last - 100, 100],
+          ].map(([input, output], n) =>
+            toolTurn(kind, [{ id: `c${n + 1}`, args: { path: 'a.ts' } }], [input!, output!]),
+          );
+        fake.enqueue(...turnsOf(1_100), textTurn(kind, '{"findings":[]}', [10, 1]));
         const over = await run(kind, { limits });
         expect(over.result).toMatchObject({
           kind: 'answer',
-          inputTokens: 710,
-          outputTokens: 161,
-          turns: 3,
+          inputTokens: 3_900 + 2_400 + 900 + 1_000 + 10,
+          outputTokens: 4 * 100 + 1,
+          turns: 5,
           budgetReached: true,
         });
-        expect(WIRES[kind].lastUser(fake.requests[2]!)).toBe(WRAP_UP);
+        expect(WIRES[kind].lastUser(fake.requests[4]!)).toBe(WRAP_UP);
+        expect(WIRES[kind].lastUser(fake.requests[3]!)).not.toContain('Token budget');
 
-        // 500, then 840 of 1000: the model goes on with its tools.
+        // 8 400 after the fourth turn: not 85 % yet, and the next call of 900 would fit.
         fake.requests.length = 0;
+        fake.enqueue(...turnsOf(900), textTurn(kind, '{"findings":[]}', [10, 1]));
+        const under = await run(kind, { limits });
+        expect(under.result).toMatchObject({ kind: 'answer', turns: 5, budgetReached: false });
+        expect(WIRES[kind].lastUser(fake.requests[4]!)).not.toContain('Token budget');
+      },
+    );
+
+    it.each(KINDS)(
+      'the wrap-up comes when the next call would reach the budget, whatever the share used (%s)',
+      async (kind) => {
+        const limits = { ...LIMITS, tokenBudget: 10_000 };
+        // 5 000 used, half of the budget, and a call as large as the last would make 10 000.
         fake.enqueue(
-          toolTurn(kind, [{ id: 'c1', args: { path: 'a.ts' } }], [400, 100]),
-          toolTurn(kind, [{ id: 'c2', args: { path: 'b.ts' } }], [300, 40]),
+          toolTurn(kind, [{ id: 'c1', args: { path: 'a.ts' } }], [4_900, 100]),
           textTurn(kind, '{"findings":[]}', [10, 1]),
         );
-        const under = await run(kind, { limits });
-        expect(under.result).toMatchObject({ kind: 'answer', turns: 3, budgetReached: false });
-        expect(WIRES[kind].lastUser(fake.requests[2]!)).not.toContain('Token budget');
+        const reached = await run(kind, { limits });
+        expect(reached.result).toMatchObject({ kind: 'answer', turns: 2, budgetReached: true });
+        expect(WIRES[kind].lastUser(fake.requests[1]!)).toBe(WRAP_UP);
+
+        // A hundred tokens fewer, and it would still fit: the model goes on.
+        fake.requests.length = 0;
+        fake.enqueue(
+          toolTurn(kind, [{ id: 'c1', args: { path: 'a.ts' } }], [4_800, 100]),
+          textTurn(kind, '{"findings":[]}', [10, 1]),
+        );
+        const fits = await run(kind, { limits });
+        expect(fits.result).toMatchObject({ kind: 'answer', turns: 2, budgetReached: false });
+        expect(WIRES[kind].lastUser(fake.requests[1]!)).not.toContain('Token budget');
       },
     );
 
@@ -424,14 +467,14 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
         toolTurn(kind, [{ id: 'c2', args: { path: 'b.ts' } }]),
       );
       const { result, ran } = await run(kind, { limits: { ...LIMITS, maxTurns: 1 } });
-      expect(result).toEqual({ kind: 'failed', reason: 'bad_answer' });
+      expect(result).toMatchObject({ kind: 'failed', reason: 'bad_answer' });
       expect(ran.map((c) => c.id)).toEqual(['c1']);
       expect(fake.requests).toHaveLength(2);
     });
 
     describe('a model that keeps calling tools', () => {
       // Answers every request with a call of its own, however it is asked, and the tokens given.
-      const insatiable = (kind: Kind, tokens: number[]): LlmResponder => {
+      const insatiable = (kind: Kind, tokens: number[] | null): LlmResponder => {
         return (request) =>
           toolTurn(
             kind,
@@ -445,7 +488,15 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
         async (kind) => {
           fake.enqueue(...Array.from({ length: 40 }, () => insatiable(kind, [100, 10])));
           const { result, ran } = await run(kind);
-          expect(result).toEqual({ kind: 'failed', reason: 'bad_answer' });
+          // What it spent is reported although it never answered.
+          expect(result).toEqual({
+            kind: 'failed',
+            reason: 'bad_answer',
+            inputTokens: 17 * 100,
+            outputTokens: 17 * 10,
+            turns: 17,
+            toolCalls: 16,
+          });
           // The 16 turns of the limit, then the wrap-up, which is not answered with a call that runs.
           expect(fake.requests).toHaveLength(CONVERSATION_LIMITS.maxTurns + 1);
           expect(ran).toHaveLength(CONVERSATION_LIMITS.maxTurns);
@@ -456,14 +507,107 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
       it.each(KINDS)('is stopped by the token budget too (%s)', async (kind) => {
         fake.enqueue(...Array.from({ length: 40 }, () => insatiable(kind, [4_000, 1_000])));
         const { result, ran } = await run(kind, { limits: { ...LIMITS, tokenBudget: 20_000 } });
-        expect(result).toEqual({ kind: 'failed', reason: 'bad_answer' });
-        // 3 turns are 15 000 of the 20 000 tokens; the 4th makes 20 000, past 85 %: the wrap-up
-        // is the 5th request.
-        expect(fake.requests).toHaveLength(5);
-        expect(ran).toHaveLength(4);
-        expect(WIRES[kind].lastUser(fake.requests[4]!)).toBe(WRAP_UP);
-        expect(WIRES[kind].lastUser(fake.requests[3]!)).not.toBe(WRAP_UP);
+        // 3 turns are 15 000 of the 20 000 tokens, and a 4th call of 5 000 would reach it: the
+        // 4th request is the wrap-up, not the 5th that the 85 % alone would make it.
+        expect(result).toEqual({
+          kind: 'failed',
+          reason: 'bad_answer',
+          inputTokens: 4 * 4_000,
+          outputTokens: 4 * 1_000,
+          turns: 4,
+          toolCalls: 3,
+        });
+        expect(fake.requests).toHaveLength(4);
+        expect(ran).toHaveLength(3);
+        expect(WIRES[kind].lastUser(fake.requests[3]!)).toBe(WRAP_UP);
+        expect(WIRES[kind].lastUser(fake.requests[2]!)).not.toBe(WRAP_UP);
       });
+
+      it.each(KINDS)(
+        'is stopped by the budget when the provider counts no tokens, on what it was sent (%s)',
+        async (kind) => {
+          fake.enqueue(...Array.from({ length: 40 }, () => insatiable(kind, null)));
+          const limits = { ...LIMITS, tokenBudget: 2_000, maxOutputTokens: 400 };
+          const { result, ran } = await run(kind, { limits });
+          // Counted as nothing it would call until the turn limit; charged what it was sent and
+          // the longest answer it may write, it is asked to answer after a few turns.
+          expect(result).toMatchObject({ kind: 'failed', reason: 'bad_answer' });
+          expect(fake.requests.length).toBeLessThan(CONVERSATION_LIMITS.maxTurns + 1);
+          expect(WIRES[kind].lastUser(fake.requests.at(-1)!)).toBe(WRAP_UP);
+          expect(ran).toHaveLength(fake.requests.length - 1);
+          expect(result.turns).toBe(fake.requests.length);
+          expect(result.outputTokens).toBe(fake.requests.length * 400);
+          expect(result.inputTokens).toBeGreaterThan(0);
+        },
+      );
+    });
+  });
+
+  describe('the Anthropic wire', () => {
+    const rolesOf = (request: RecordedLlmRequest) =>
+      (request.json as AnthropicWire).messages.map((message) => message.role);
+    /** No request of the conversation has two messages of one role in a row. */
+    const expectAlternating = () => {
+      for (const request of fake.requests) {
+        const roles = rolesOf(request);
+        roles.forEach((role, i) => {
+          if (i > 0) expect(role, `message ${i} of ${roles.join(', ')}`).not.toBe(roles[i - 1]);
+        });
+      }
+    };
+
+    it('sends the wrap-up as a text block in the user message of the tool results', async () => {
+      fake.enqueue(
+        toolTurn('anthropic', [
+          { id: 'c1', args: { path: 'a.ts' } },
+          { id: 'c2', args: { path: 'b.ts' } },
+        ]),
+        textTurn('anthropic', '{"findings":[]}'),
+      );
+      await run('anthropic', { limits: { ...LIMITS, maxTurns: 1 } });
+      const wrapUp = fake.requests[1]!.json as AnthropicWire;
+      expect(wrapUp.messages.map((message) => message.role)).toEqual(['user', 'assistant', 'user']);
+      expect(wrapUp.messages[2]!.content.map((block) => block.type)).toEqual([
+        'tool_result',
+        'tool_result',
+        'text',
+      ]);
+      expect(WIRES.anthropic.lastUser(fake.requests[1]!)).toBe(WRAP_UP);
+      expectAlternating();
+    });
+
+    it('sends a shorter-answer text after a blank cut-off answer in the user message before it', async () => {
+      fake.enqueue(textTurn('anthropic', '', [10, 1], 'length'), textTurn('anthropic', 'done'));
+      await run('anthropic');
+      const second = fake.requests[1]!.json as AnthropicWire;
+      expect(second.messages.map((message) => message.role)).toEqual(['user']);
+      expect(second.messages[0]!.content.map((block) => block.text)).toEqual([
+        USER_TEXT,
+        expect.stringMatching(/shorter/),
+      ]);
+      expectAlternating();
+    });
+
+    it('keeps a shorter-answer text after an answer that has text in a message of its own', async () => {
+      fake.enqueue(
+        textTurn('anthropic', '{"findings":[{"ti', [10, 1], 'length'),
+        textTurn('anthropic', 'done'),
+      );
+      await run('anthropic');
+      expect(rolesOf(fake.requests[1]!)).toEqual(['user', 'assistant', 'user']);
+      expectAlternating();
+    });
+
+    it('alternates in a conversation that wraps up and then asks for a shorter answer', async () => {
+      fake.enqueue(
+        toolTurn('anthropic', [{ id: 'c1', args: { path: 'a.ts' } }]),
+        textTurn('anthropic', '', [10, 1], 'length'),
+        textTurn('anthropic', '{"findings":[]}'),
+      );
+      const { result } = await run('anthropic', { limits: { ...LIMITS, maxTurns: 1 } });
+      expect(result).toMatchObject({ kind: 'answer', budgetReached: true, turns: 3 });
+      expect(rolesOf(fake.requests[2]!)).toEqual(['user', 'assistant', 'user']);
+      expectAlternating();
     });
   });
 
@@ -496,7 +640,7 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
         ]),
       );
       const { result, ran } = await run(kind);
-      expect(result).toEqual({ kind: 'failed', reason: 'bad_answer' });
+      expect(result).toMatchObject({ kind: 'failed', reason: 'bad_answer' });
       expect(ran).toEqual([]);
       expect(fake.requests).toHaveLength(1);
     });
@@ -562,7 +706,7 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
 
       fake.enqueue(textTurn(kind, '  \n', [10, 2], 'tool'));
       const blank = await run(kind);
-      expect(blank.result).toEqual({ kind: 'failed', reason: 'bad_answer' });
+      expect(blank.result).toMatchObject({ kind: 'failed', reason: 'bad_answer' });
     });
 
     it.each(KINDS)('a refusal is a bad answer, with text or without (%s)', async (kind) => {
@@ -571,7 +715,7 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
         fake.requests.length = 0;
         fake.enqueue(textTurn(kind, text, [10, 2], 'refusal'));
         const { result } = await run(kind);
-        expect(result).toEqual({ kind: 'failed', reason: 'bad_answer' });
+        expect(result).toMatchObject({ kind: 'failed', reason: 'bad_answer' });
         expect(fake.requests).toHaveLength(1);
       }
     });
@@ -582,7 +726,7 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
         textTurn(kind, '{"findings":[{"title"', [200, 50], 'length'),
       );
       const { result } = await run(kind);
-      expect(result).toEqual({ kind: 'failed', reason: 'bad_answer' });
+      expect(result).toMatchObject({ kind: 'failed', reason: 'bad_answer' });
 
       const wire = WIRES[kind];
       expect(fake.requests).toHaveLength(2);
@@ -634,7 +778,7 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
           failure(kind, 429, { headers: { 'retry-after': '3' } }),
         );
         const given = await run(kind);
-        expect(given.result).toEqual({ kind: 'failed', reason: 'provider_error' });
+        expect(given.result).toMatchObject({ kind: 'failed', reason: 'provider_error' });
         expect(given.sleeps).toEqual([1_000, 2_000]);
         expect(fake.requests).toHaveLength(3);
       },
@@ -658,7 +802,7 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
     it.each(KINDS)('an unavailable provider is retried once (%s)', async (kind) => {
       fake.enqueue(failure(kind, 503), failure(kind, 500));
       const failed = await run(kind);
-      expect(failed.result).toEqual({ kind: 'failed', reason: 'provider_error' });
+      expect(failed.result).toMatchObject({ kind: 'failed', reason: 'provider_error' });
       expect(failed.sleeps).toEqual([5_000]);
       expect(fake.requests).toHaveLength(2);
 
@@ -674,7 +818,7 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
         fake.requests.length = 0;
         fake.enqueue(failure(kind, status));
         const { result, sleeps } = await run(kind);
-        expect(result).toEqual({ kind: 'failed', reason: 'provider_error' });
+        expect(result).toMatchObject({ kind: 'failed', reason: 'provider_error' });
         expect(sleeps).toEqual([]);
         expect(fake.requests).toHaveLength(1);
       }
@@ -699,7 +843,7 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
         async (kind) => {
           fake.enqueue(failure(kind, status, { message: 'This model does not support tools' }));
           const { result, sleeps } = await run(kind);
-          expect(result).toEqual({ kind: 'failed', reason: 'provider_no_tools' });
+          expect(result).toMatchObject({ kind: 'failed', reason: 'provider_no_tools' });
           expect(sleeps).toEqual([]);
           expect(fake.requests).toHaveLength(1);
         },
@@ -711,7 +855,7 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
           failure(kind, status, { message: 'This model does not support tools' }),
         );
         const { result } = await run(kind);
-        expect(result).toEqual({ kind: 'failed', reason: 'provider_error' });
+        expect(result).toMatchObject({ kind: 'failed', reason: 'provider_error' });
         expect(fake.requests).toHaveLength(2);
       });
     });
@@ -719,7 +863,7 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
     it.each(KINDS)('a refusal that does not name tools is a provider error (%s)', async (kind) => {
       fake.enqueue(failure(kind, 400, { message: 'Model not found' }));
       const { result } = await run(kind);
-      expect(result).toEqual({ kind: 'failed', reason: 'provider_error' });
+      expect(result).toMatchObject({ kind: 'failed', reason: 'provider_error' });
     });
   });
 
@@ -734,7 +878,7 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
         // Not stopped before the first call, stopped before the second.
         shouldStop: () => Promise.resolve(++asked > 1),
       });
-      expect(result).toEqual({ kind: 'stopped' });
+      expect(result).toMatchObject({ kind: 'stopped' });
       expect(fake.requests).toHaveLength(1);
       expect(ran).toHaveLength(1);
       expect(asked).toBe(2);
@@ -743,7 +887,7 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
     it.each(KINDS)('is checked before the first call, and sends nothing (%s)', async (kind) => {
       fake.enqueue(textTurn(kind, '{"findings":[]}'));
       const { result } = await run(kind, { shouldStop: () => Promise.resolve(true) });
-      expect(result).toEqual({ kind: 'stopped' });
+      expect(result).toMatchObject({ kind: 'stopped' });
       expect(fake.requests).toHaveLength(0);
     });
 
@@ -756,7 +900,7 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
       const { result, sleeps } = await run(kind, {
         shouldStop: () => Promise.resolve(++asked > 1),
       });
-      expect(result).toEqual({ kind: 'stopped' });
+      expect(result).toMatchObject({ kind: 'stopped' });
       expect(sleeps).toEqual([5_000]);
       expect(fake.requests).toHaveLength(1);
     });
@@ -998,23 +1142,93 @@ describe('runConversation with a scripted provider', () => {
       expect(s.seen).toHaveLength(2);
     });
 
-    it('counts a token count the provider did not give as nothing', async () => {
+    describe('a provider that does not count tokens', () => {
       const unknown = { inputTokens: null, outputTokens: null };
-      const s = scripted(
-        callTurn([call('c1')], { usage: unknown }),
-        turn('done', { usage: { inputTokens: 30, outputTokens: null } }),
-      );
-      s.input.limits = { ...LIMITS, tokenBudget: 10 };
-      const result = await runConversation(s.input);
-      // Nothing was counted after the first turn, so no wrap-up came.
-      expect(result).toEqual({
-        kind: 'answer',
-        text: 'done',
-        inputTokens: 30,
-        outputTokens: 0,
-        turns: 2,
-        toolCalls: 1,
-        budgetReached: false,
+      /** What the loop charges for the input it sent: a quarter of the bytes of its JSON, rounded up. */
+      const quarterOfBytes = (conversation: LlmConversation) =>
+        Math.ceil(Buffer.byteLength(JSON.stringify(conversation), 'utf8') / 4);
+
+      it('is charged a quarter of the bytes it was sent and the longest answer it may write, and the result says so', async () => {
+        const s = scripted(
+          callTurn([call('c1')], { usage: unknown }),
+          turn('done', { usage: unknown }),
+        );
+        const result = await runConversation(s.input);
+        expect(result).toEqual({
+          kind: 'answer',
+          text: 'done',
+          inputTokens: quarterOfBytes(s.seen[0]!) + quarterOfBytes(s.seen[1]!),
+          outputTokens: 2 * LIMITS.maxOutputTokens,
+          turns: 2,
+          toolCalls: 1,
+          budgetReached: false,
+        });
+      });
+
+      it('is charged only for the count it did not give', async () => {
+        const s = scripted(
+          callTurn([call('c1')], { usage: { inputTokens: 7, outputTokens: null } }),
+          turn('done', { usage: { inputTokens: null, outputTokens: 9 } }),
+        );
+        const result = await runConversation(s.input);
+        expect(result).toMatchObject({
+          inputTokens: 7 + quarterOfBytes(s.seen[1]!),
+          outputTokens: LIMITS.maxOutputTokens + 9,
+        });
+      });
+
+      it('is asked to answer once its guessed tokens reach the budget', async () => {
+        // Always calls, never counts; 400 tokens are charged for each answer.
+        const steps = Array.from({ length: 20 }, (_, i) =>
+          callTurn([call(`c${i}`)], { usage: unknown }),
+        );
+        const s = scripted(...steps);
+        s.input.limits = { ...LIMITS, tokenBudget: 2_000, maxOutputTokens: 400 };
+        const result = await runConversation(s.input);
+        expect(result).toMatchObject({ kind: 'failed', reason: 'bad_answer' });
+        // Not the 17 requests of the turn limit: the guess ends the calls far sooner.
+        expect(s.seen.length).toBeLessThan(CONVERSATION_LIMITS.maxTurns + 1);
+        expect(s.seen.at(-1)!.messages.at(-1)).toEqual({ role: 'user', text: WRAP_UP });
+        expect(result.inputTokens).toBe(
+          s.seen.reduce((sum, conversation) => sum + quarterOfBytes(conversation), 0),
+        );
+        expect(result.outputTokens).toBe(s.seen.length * 400);
+      });
+
+      it('serialises the conversation only for a call whose input it has to estimate', async () => {
+        const stringify = vi.spyOn(JSON, 'stringify');
+        const serialisedConversations = () =>
+          stringify.mock.calls.filter(
+            ([value]) =>
+              typeof value === 'object' &&
+              value !== null &&
+              'system' in value &&
+              'messages' in value,
+          ).length;
+        try {
+          await runConversation(scripted(callTurn([call('c1')]), turn('done')).input);
+          expect(serialisedConversations()).toBe(0);
+
+          stringify.mockClear();
+          await runConversation(
+            scripted(
+              callTurn([call('c1')], { usage: { inputTokens: null, outputTokens: 5 } }),
+              turn('done'),
+            ).input,
+          );
+          expect(serialisedConversations()).toBe(1);
+
+          stringify.mockClear();
+          await runConversation(
+            scripted(
+              callTurn([call('c1')], { usage: { inputTokens: 5, outputTokens: null } }),
+              turn('done'),
+            ).input,
+          );
+          expect(serialisedConversations()).toBe(0);
+        } finally {
+          stringify.mockRestore();
+        }
       });
     });
 
@@ -1059,10 +1273,98 @@ describe('runConversation with a scripted provider', () => {
     });
   });
 
+  describe('what a conversation reports, whatever its end', () => {
+    // Two turns of 10 + 5 tokens, and three calls run.
+    const spent = { inputTokens: 20, outputTokens: 10, turns: 2, toolCalls: 3 };
+    const twoTurns = () => [callTurn([call('c1')]), callTurn([call('c2'), call('c3')])];
+
+    it('a failure carries what was spent before it', async () => {
+      const s = scripted(...twoTurns(), new LlmError('rejected', 'refused', 400));
+      expect(await runConversation(s.input)).toEqual({
+        kind: 'failed',
+        reason: 'provider_error',
+        ...spent,
+      });
+    });
+
+    it('a bad answer carries the turn that was one', async () => {
+      const s = scripted(callTurn([call('c1')]), turn('  '));
+      expect(await runConversation(s.input)).toEqual({
+        kind: 'failed',
+        reason: 'bad_answer',
+        inputTokens: 20,
+        outputTokens: 10,
+        turns: 2,
+        toolCalls: 1,
+      });
+    });
+
+    it('a call id used twice carries the tokens of its turn and runs none of its calls', async () => {
+      const s = scripted(callTurn([call('c1')]), callTurn([call('c2'), call('c2')]));
+      expect(await runConversation(s.input)).toEqual({
+        kind: 'failed',
+        reason: 'bad_answer',
+        inputTokens: 20,
+        outputTokens: 10,
+        turns: 2,
+        toolCalls: 1,
+      });
+    });
+
+    it('a stop carries what was spent before it', async () => {
+      const s = scripted(...twoTurns(), turn('never asked'));
+      let asked = 0;
+      // Not stopped before the first call and the second, stopped before the third.
+      s.input.shouldStop = () => Promise.resolve(++asked > 2);
+      expect(await runConversation(s.input)).toEqual({ kind: 'stopped', ...spent });
+    });
+
+    it('an open circuit carries what was spent before it', async () => {
+      const s = scripted(...twoTurns(), new CircuitOpenError());
+      expect(await runConversation(s.input)).toEqual({
+        kind: 'failed',
+        reason: 'provider_error',
+        ...spent,
+      });
+    });
+
+    it('a stop before the first call, and a first call refused for its tools, carry nothing', async () => {
+      const none = { inputTokens: 0, outputTokens: 0, turns: 0, toolCalls: 0 };
+      const stopped = scripted(turn('never asked'));
+      stopped.input.shouldStop = () => Promise.resolve(true);
+      expect(await runConversation(stopped.input)).toEqual({ kind: 'stopped', ...none });
+
+      const refused = scripted(new LlmError('rejected', 'refused', 400, null, true));
+      expect(await runConversation(refused.input)).toEqual({
+        kind: 'failed',
+        reason: 'provider_no_tools',
+        ...none,
+      });
+    });
+
+    it('a failure after turns the provider did not count carries the guessed tokens', async () => {
+      const unknown = { inputTokens: null, outputTokens: null };
+      const s = scripted(
+        callTurn([call('c1')], { usage: unknown }),
+        new LlmError('timeout', 'The model did not answer within 60 s'),
+        new LlmError('unavailable', 'The model provider could not be reached'),
+      );
+      const result = await runConversation(s.input);
+      expect(result).toMatchObject({ kind: 'failed', reason: 'provider_error', turns: 1 });
+      expect(result.outputTokens).toBe(LIMITS.maxOutputTokens);
+      expect(result.inputTokens).toBe(
+        Math.ceil(Buffer.byteLength(JSON.stringify(s.seen[0]), 'utf8') / 4),
+      );
+    });
+  });
+
   describe('failures', () => {
     it('an open circuit fails at once, with no retry', async () => {
       const s = scripted(new CircuitOpenError());
-      expect(await runConversation(s.input)).toEqual({ kind: 'failed', reason: 'provider_error' });
+      expect(await runConversation(s.input)).toMatchObject({
+        kind: 'failed',
+        reason: 'provider_error',
+      });
       expect(s.seen).toHaveLength(1);
       expect(s.sleeps).toEqual([]);
     });
@@ -1071,7 +1373,7 @@ describe('runConversation with a scripted provider', () => {
       const timeout = new LlmError('timeout', 'The model did not answer within 60 s');
       const unavailable = new LlmError('unavailable', 'The model provider could not be reached');
       const both = scripted(timeout, unavailable, turn('done'));
-      expect(await runConversation(both.input)).toEqual({
+      expect(await runConversation(both.input)).toMatchObject({
         kind: 'failed',
         reason: 'provider_error',
       });
@@ -1105,26 +1407,29 @@ describe('runConversation with a scripted provider', () => {
         const s = scripted(error);
         return runConversation({ ...s.input, tools });
       };
-      expect(await reasonFor(refused(400, true))).toEqual({
+      expect(await reasonFor(refused(400, true))).toMatchObject({
         kind: 'failed',
         reason: 'provider_no_tools',
       });
-      expect(await reasonFor(refused(413, true))).toEqual({
+      expect(await reasonFor(refused(413, true))).toMatchObject({
         kind: 'failed',
         reason: 'provider_error',
       });
-      expect(await reasonFor(refused(400, false))).toEqual({
+      expect(await reasonFor(refused(400, false))).toMatchObject({
         kind: 'failed',
         reason: 'provider_error',
       });
       // A conversation that sent no tools cannot have been refused for them.
-      expect(await reasonFor(refused(400, true), [])).toEqual({
+      expect(await reasonFor(refused(400, true), [])).toMatchObject({
         kind: 'failed',
         reason: 'provider_error',
       });
       // Only a refusal: a bad answer that happens to say so is not one.
       const badAnswer = new LlmError('bad_answer', 'x', 400, null, true);
-      expect(await reasonFor(badAnswer)).toEqual({ kind: 'failed', reason: 'provider_error' });
+      expect(await reasonFor(badAnswer)).toMatchObject({
+        kind: 'failed',
+        reason: 'provider_error',
+      });
     });
 
     it('lets an error that is not the provider’s end the conversation', async () => {

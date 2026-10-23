@@ -132,8 +132,17 @@ export function jsonbTextBytes(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value) ?? 'null', 'utf8');
 }
 
-function scrub(text: string, key: string | null): string {
-  return key !== null && key.length >= 8 ? text.split(key).join(REDACTED) : text;
+/** A key of fewer characters is not looked for in a text: it would take common words with it. */
+export const MIN_SCRUBBED_KEY_LENGTH = 8;
+
+/**
+ * `text` without the provider key (llm.md §5.2 item 2, §9.3). The AI review scrubs its answers
+ * with it too.
+ */
+export function scrub(text: string, key: string | null): string {
+  return key !== null && key.length >= MIN_SCRUBBED_KEY_LENGTH
+    ? text.split(key).join(REDACTED)
+    : text;
 }
 
 /**

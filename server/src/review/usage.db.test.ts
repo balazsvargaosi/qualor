@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { REDACTED } from '@qualor/shared';
 import { asc, sql } from 'drizzle-orm';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { testConfig } from '../../test/config';
@@ -37,7 +38,12 @@ import { parseInternalHosts } from '../scm/url';
 import { CircuitOpenError, runConversation, type ConversationInput } from './conversation';
 import { newNonce } from './envelope';
 import { Masker } from './masker';
-import { DEFAULT_REVIEW_BUDGETS } from './settings';
+import {
+  defaultReview,
+  DEFAULT_REVIEW_BUDGETS,
+  effectiveReviewBudgets,
+  withOrganizationReview,
+} from './settings';
 import { runReviewTool, TOOL_LIMITS } from './tools';
 import {
   recordReviewCall,
@@ -68,31 +74,35 @@ const PASSWORD_VALUE = ['"hunter2', '-very-secret"'].join('');
 const PASSWORD_LINE = `const password = ${PASSWORD_VALUE};`;
 const sha256 = (text: string) => createHash('sha256').update(text).digest('hex');
 
-/** The model asks for one call to read a file. */
-function toolTurn(kind: Kind, tokens: [number, number]): LlmReply {
-  const [input, output] = tokens;
+/** The model asks for one call to read a file. `tokens` null: the provider counts none. */
+function toolTurn(kind: Kind, tokens: [number, number] | null): LlmReply {
+  const [input = 0, output = 0] = tokens ?? [];
   const call = { id: 'c1', name: 'read_file' };
   return {
     status: 200,
     body:
       kind === 'openai'
         ? openAiToolCalls([{ ...call, arguments: { path: 'a.ts' } }], {
-            usage: { prompt_tokens: input, completion_tokens: output },
+            usage: tokens === null ? null : { prompt_tokens: input, completion_tokens: output },
           })
         : anthropicToolUse([{ ...call, input: { path: 'a.ts' } }], {
-            usage: { input_tokens: input, output_tokens: output },
+            usage: tokens === null ? null : { input_tokens: input, output_tokens: output },
           }),
   };
 }
 
-function textTurn(kind: Kind, text: string, tokens: [number, number]): LlmReply {
-  const [input, output] = tokens;
+function textTurn(kind: Kind, text: string, tokens: [number, number] | null): LlmReply {
+  const [input = 0, output = 0] = tokens ?? [];
   return {
     status: 200,
     body:
       kind === 'openai'
-        ? openAiAnswer(text, { usage: { prompt_tokens: input, completion_tokens: output } })
-        : anthropicAnswer(text, { usage: { input_tokens: input, output_tokens: output } }),
+        ? openAiAnswer(text, {
+            usage: tokens === null ? null : { prompt_tokens: input, completion_tokens: output },
+          })
+        : anthropicAnswer(text, {
+            usage: tokens === null ? null : { input_tokens: input, output_tokens: output },
+          }),
   };
 }
 
@@ -398,6 +408,33 @@ const port = 8080;
       }
     });
 
+    it.each(KINDS)(
+      'charges a provider that counts nothing the same input in the result of the loop and in the day (%s)',
+      async (kind) => {
+        const { result } = await converseThrough(
+          kind,
+          [toolTurn(kind, null), textTurn(kind, 'done', null)],
+          settingsFor(kind, { pricing: PRICING }),
+        );
+        const stored = await rows();
+        // The rows say what the provider said, which is nothing, and so is their cost.
+        expect(stored).toHaveLength(2);
+        for (const row of stored) {
+          expect(row).toMatchObject({ inputTokens: null, outputTokens: null, costMicroUsd: null });
+        }
+        const guessedInput = stored.reduce((sum, row) => sum + Math.ceil(row.inputBytes / 4), 0);
+        // The loop charged a quarter of the bytes sent, and the most each call could write; the
+        // day counts the same input and cannot know the output limit.
+        expect(result).toMatchObject({
+          kind: 'answer',
+          turns: 2,
+          inputTokens: guessedInput,
+          outputTokens: 2 * 50,
+        });
+        expect((await reviewUsageToday(t.db, orgA)).tokens).toBe(guessedInput);
+      },
+    );
+
     it('has no cost without prices', async () => {
       await converseThrough('openai', [textTurn('openai', 'done', [10, 5])], settingsFor('openai'));
       expect(first(await rows())).toMatchObject({
@@ -672,6 +709,49 @@ const port = 8080;
       );
     });
 
+    it('takes the provider key out of what the model says: the turn the loop gets and the stored result', async () => {
+      const key = fake.apiKey;
+      // The key as it is, and with every character of it spelled as a JSON escape.
+      const escaped = [...key]
+        .map((character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`)
+        .join('');
+      const sender = senderFor('openai', {
+        settings: settingsFor('openai', { storePrompts: true }),
+      });
+      fake.enqueue({
+        status: 200,
+        body: openAiToolCalls([{ id: 'c1', name: 'read_file', arguments: { path: key } }], {
+          text: `{"summary":"the key is ${key} or ${escaped}"}`,
+        }),
+      });
+      const turn = await converse1(sender);
+      const summary = (JSON.parse(turn.text) as { summary: string }).summary;
+      expect(turn.text).not.toContain(key);
+      expect(summary).not.toContain(key);
+      expect(summary).toBe(`the key is ${REDACTED} or ${REDACTED}`);
+      expect(turn.toolCalls).toEqual([
+        { id: 'c1', name: 'read_file', arguments: { path: REDACTED } },
+      ]);
+      const stored = JSON.stringify(first(await rows()).result);
+      expect(stored).not.toContain(key);
+      expect(stored).toContain(REDACTED);
+    });
+
+    it('keeps null on the row of a call the provider did not count, which fills the day by the bytes it was sent', async () => {
+      fake.enqueue({ status: 200, body: openAiAnswer('done', { usage: null }) });
+      await converse1(
+        senderFor('openai', { settings: settingsFor('openai', { pricing: PRICING }) }),
+      );
+      const row = first(await rows());
+      expect(row).toMatchObject({
+        status: 'succeeded',
+        inputTokens: null,
+        outputTokens: null,
+        costMicroUsd: null,
+      });
+      expect((await reviewUsageToday(t.db, orgA)).tokens).toBe(Math.ceil(row.inputBytes / 4));
+    });
+
     it('logs one line for each call with the run, the outcome and the counts, and nothing that was said', async () => {
       const lines: { data: Record<string, unknown>; message: string }[] = [];
       const logger = {
@@ -829,10 +909,53 @@ const port = 8080;
       expect((await reviewUsageToday(t.db, orgA)).tokens).toBe(10);
     });
 
-    it('counts a row with unknown tokens as no tokens', async () => {
-      await insertRow({ inputTokens: null, outputTokens: 4, costMicroUsd: null });
-      await insertRow({ inputTokens: 6, outputTokens: null, costMicroUsd: 3 });
-      expect(await reviewUsageToday(t.db, orgA)).toMatchObject({ tokens: 10, costMicroUsd: 3 });
+    it('counts the input of a call whose tokens are unknown as a quarter of its bytes, when it succeeded or timed out', async () => {
+      // The provider answered and did not count: a quarter of the bytes sent, and the output it did count.
+      await insertRow({ inputTokens: null, outputTokens: null, inputBytes: 4_000 });
+      await insertRow({ inputTokens: null, outputTokens: 7, inputBytes: 401 });
+      // A call that timed out may have been worked on all the same.
+      await insertRow({
+        status: 'failed',
+        errorCode: 'PROVIDER_TIMEOUT',
+        inputTokens: null,
+        outputTokens: null,
+        inputBytes: 2_000,
+      });
+      // A call the provider refused, would not take or could not be reached for cost nothing.
+      for (const errorCode of [
+        'PROVIDER_REFUSED_KEY',
+        'PROVIDER_RATE_LIMITED',
+        'PROVIDER_UNAVAILABLE',
+        'PROVIDER_REJECTED_REQUEST',
+      ]) {
+        await insertRow({
+          status: 'failed',
+          errorCode,
+          inputTokens: null,
+          outputTokens: null,
+          inputBytes: 8_000,
+        });
+      }
+      // A call it counted is what it said, whatever the bytes.
+      await insertRow({ inputTokens: 50, outputTokens: 10, inputBytes: 99_999 });
+
+      expect((await reviewUsageToday(t.db, orgA)).tokens).toBe(1_000 + (101 + 7) + 500 + 60);
+      // The rows keep what the provider said: nothing.
+      expect((await rows()).filter((row) => row.inputTokens === null)).toHaveLength(7);
+    });
+
+    it('does not guess a cost: the cost of the day is that of the calls whose cost is known', async () => {
+      await insertRow({
+        inputTokens: null,
+        outputTokens: null,
+        inputBytes: 4_000,
+        costMicroUsd: null,
+      });
+      await insertRow({ inputTokens: 10, outputTokens: 10, costMicroUsd: 300 });
+      expect(await reviewUsageToday(t.db, orgA)).toMatchObject({
+        tokens: 1_020,
+        costMicroUsd: 300,
+      });
     });
   });
 
@@ -843,50 +966,119 @@ const port = 8080;
       perProjectTokensPerDay: 400_000,
       maxTokensPerReview: 300_000,
     };
-    const used = (tokens: number, costMicroUsd = 0) => ({ tokens, costMicroUsd });
+    /** The day so far: the organisation's tokens and cost, and the project's tokens (null: not asked). */
+    const day = (organization: number, project: number | null = 0, costMicroUsd = 0) => ({
+      organization: { tokens: organization, costMicroUsd },
+      project: project === null ? null : { tokens: project },
+    });
 
     it('takes the smallest of the review ceiling, the org and the project remainder', () => {
       // The ceiling of one review.
-      expect(remainingReviewTokens(budgets, used(0), { tokens: 0 }, null)).toBe(300_000);
+      expect(remainingReviewTokens(budgets, day(0), null)).toBe(300_000);
       // The organisation's day: 1 000 000 − 900 000.
-      expect(remainingReviewTokens(budgets, used(900_000), { tokens: 0 }, null)).toBe(100_000);
+      expect(remainingReviewTokens(budgets, day(900_000), null)).toBe(100_000);
       // The project's day: 400 000 − 250 000.
-      expect(remainingReviewTokens(budgets, used(500_000), { tokens: 250_000 }, null)).toBe(
-        150_000,
-      );
+      expect(remainingReviewTokens(budgets, day(500_000, 250_000), null)).toBe(150_000);
       // The organisation's day is the smaller of the two.
-      expect(remainingReviewTokens(budgets, used(950_000), { tokens: 250_000 }, null)).toBe(50_000);
+      expect(remainingReviewTokens(budgets, day(950_000, 250_000), null)).toBe(50_000);
     });
 
     it('leaves a project without a budget out of it', () => {
       const noProjectBudget = { ...budgets, perProjectTokensPerDay: null };
-      expect(remainingReviewTokens(noProjectBudget, used(0), { tokens: 9_999_999 }, null)).toBe(
-        300_000,
-      );
-      expect(remainingReviewTokens(budgets, used(0), null, null)).toBe(300_000);
+      expect(remainingReviewTokens(noProjectBudget, day(0, 9_999_999), null)).toBe(300_000);
+      expect(remainingReviewTokens(budgets, day(0, null), null)).toBe(300_000);
     });
 
     it('never goes below 0', () => {
-      expect(remainingReviewTokens(budgets, used(1_000_000), { tokens: 0 }, null)).toBe(0);
-      expect(remainingReviewTokens(budgets, used(1_200_000), { tokens: 0 }, null)).toBe(0);
-      expect(remainingReviewTokens(budgets, used(0), { tokens: 400_000 }, null)).toBe(0);
-      expect(remainingReviewTokens(budgets, used(0), { tokens: 500_000 }, null)).toBe(0);
-      expect(remainingReviewTokens({ ...budgets, tokensPerDay: 0 }, used(0), null, null)).toBe(0);
+      expect(remainingReviewTokens(budgets, day(1_000_000), null)).toBe(0);
+      expect(remainingReviewTokens(budgets, day(1_200_000), null)).toBe(0);
+      expect(remainingReviewTokens(budgets, day(0, 400_000), null)).toBe(0);
+      expect(remainingReviewTokens(budgets, day(0, 500_000), null)).toBe(0);
+      expect(remainingReviewTokens({ ...budgets, tokensPerDay: 0 }, day(0, null), null)).toBe(0);
     });
 
-    it('a cost budget at or past its limit leaves 0', () => {
-      const limit = 5_000_000;
-      expect(remainingReviewTokens(budgets, used(0, limit - 1), { tokens: 0 }, limit)).toBe(
-        300_000,
+    describe('with a cost budget of the review', () => {
+      // $5 a day is 5 000 000 micro-USD.
+      const priced = { ...budgets, costPerDayUsd: 5 };
+
+      it('a cost budget at or past its limit leaves 0', () => {
+        // A micro-USD left buys no whole token at 15 micro-USD a token.
+        expect(remainingReviewTokens(priced, day(0, 0, 5_000_000 - 1), PRICING)).toBe(0);
+        expect(remainingReviewTokens(priced, day(0, 0, 5_000_000), PRICING)).toBe(0);
+        expect(remainingReviewTokens(priced, day(0, 0, 5_000_001), PRICING)).toBe(0);
+        // Without prices nothing turns the cost into tokens, but a limit that is reached is reached.
+        expect(remainingReviewTokens(priced, day(0, 0, 5_000_000), null)).toBe(0);
+        // A limit of 0 is spent before anything is.
+        expect(remainingReviewTokens({ ...budgets, costPerDayUsd: 0 }, day(0, 0, 0), PRICING)).toBe(
+          0,
+        );
+      });
+
+      it('turns the cost that is left into tokens at the dearer of the two prices', () => {
+        // $3 left at the output price of 15 micro-USD a token (the dearer): 200 000 tokens.
+        expect(remainingReviewTokens(priced, day(0, 0, 2_000_000), PRICING)).toBe(200_000);
+        // 500 000 / 15 is 33 333.3, and a token not bought is not counted.
+        expect(remainingReviewTokens(priced, day(0, 0, 4_500_000), PRICING)).toBe(33_333);
+        // Here the input price is the dearer: 1 000 000 / 20.
+        expect(
+          remainingReviewTokens(priced, day(0, 0, 4_000_000), {
+            inputUsdPerMTok: 20,
+            outputUsdPerMTok: 5,
+          }),
+        ).toBe(50_000);
+      });
+
+      it('is the smallest of what the tokens and the cost leave', () => {
+        // The cost leaves 200 000 tokens, the review ceiling 300 000, the organisation's day 1 000 000.
+        expect(remainingReviewTokens(priced, day(0, 0, 2_000_000), PRICING)).toBe(200_000);
+        // The organisation's day leaves 100 000, the cost 200 000.
+        expect(remainingReviewTokens(priced, day(900_000, 0, 2_000_000), PRICING)).toBe(100_000);
+      });
+
+      it('leaves the cost out when the review has no cost budget, or the prices are free or unset', () => {
+        // The explain, triage and fix budget has no say here: only the review's own `costPerDayUsd`.
+        expect(remainingReviewTokens(budgets, day(0, 0, 99_000_000), PRICING)).toBe(300_000);
+        expect(
+          remainingReviewTokens(priced, day(0, 0, 4_000_000), {
+            inputUsdPerMTok: 0,
+            outputUsdPerMTok: 0,
+          }),
+        ).toBe(300_000);
+        expect(remainingReviewTokens(priced, day(0, 0, 4_000_000), null)).toBe(300_000);
+      });
+    });
+
+    it('goes through effectiveReviewBudgets: the instance ceiling caps the organisation’s own day', async () => {
+      const ceiling = {
+        ...DEFAULT_LLM_SETTINGS,
+        budgets: { ...DEFAULT_LLM_SETTINGS.budgets, reviewTokensPerOrganizationPerDay: 500_000 },
+      };
+      const own = {
+        ...defaultReview(),
+        enabled: true,
+        budgets: {
+          ...DEFAULT_REVIEW_BUDGETS,
+          tokensPerDay: 2_000_000,
+          maxTokensPerReview: 300_000,
+        },
+      };
+      const settings = withOrganizationReview(ceiling, orgA, own);
+      // Today's use: 350 000 tokens.
+      await insertRow({ inputTokens: 300_000, outputTokens: 50_000 });
+      const organization = await reviewUsageToday(t.db, orgA);
+
+      const effective = effectiveReviewBudgets(settings, orgA);
+      expect(effective.tokensPerDay).toBe(500_000);
+      // The ceiling leaves 150 000 of the day; the 2 000 000 of the organisation's own budget would
+      // have left more than the 300 000 of one review.
+      expect(
+        remainingReviewTokens(effective, { organization, project: null }, settings.pricing),
+      ).toBe(150_000);
+      const uncapped = effectiveReviewBudgets(
+        withOrganizationReview(DEFAULT_LLM_SETTINGS, orgA, own),
+        orgA,
       );
-      expect(remainingReviewTokens(budgets, used(0, limit), { tokens: 0 }, limit)).toBe(0);
-      expect(remainingReviewTokens(budgets, used(0, limit + 1), { tokens: 0 }, limit)).toBe(0);
-      // No cost budget, or no prices to measure it with: the tokens alone decide.
-      expect(remainingReviewTokens(budgets, used(0, limit * 10), { tokens: 0 }, null)).toBe(
-        300_000,
-      );
-      // A limit of 0 is spent before anything is.
-      expect(remainingReviewTokens(budgets, used(0, 0), { tokens: 0 }, 0)).toBe(0);
+      expect(remainingReviewTokens(uncapped, { organization, project: null }, null)).toBe(300_000);
     });
   });
 });

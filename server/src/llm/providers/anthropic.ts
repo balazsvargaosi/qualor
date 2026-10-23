@@ -104,15 +104,24 @@ export async function anthropicMessages(
   return (await send(config, apiKey, body, http)).answer;
 }
 
+/** A message as the Messages API takes it. */
+interface WireMessage {
+  role: 'user' | 'assistant';
+  content: unknown[];
+}
+
 /**
  * The conversation's messages as the Messages API takes them (R5). An assistant turn is its text
  * block (when it has text: the API refuses a text block that is empty or only whitespace) then a
  * `tool_use` block per call. The `tool` messages answering one turn's calls (a run of them)
  * become one `user` message of `tool_result` blocks, in order: the API wants every result of a
- * turn together, straight after the turn.
+ * turn together, straight after the turn. A `user` message that comes straight after a user
+ * message (the results of a turn, or the message before an assistant turn that had no text to
+ * send) is a text block of that message, after the results: a strict endpoint refuses two user
+ * messages in a row.
  */
-function wireMessages(messages: readonly LlmMessage[]): Record<string, unknown>[] {
-  const wire: Record<string, unknown>[] = [];
+function wireMessages(messages: readonly LlmMessage[]): WireMessage[] {
+  const wire: WireMessage[] = [];
   let results: unknown[] | null = null;
   for (const message of messages) {
     if (message.role === 'tool') {
@@ -126,7 +135,10 @@ function wireMessages(messages: readonly LlmMessage[]): Record<string, unknown>[
     }
     results = null;
     if (message.role === 'user') {
-      wire.push({ role: 'user', content: [{ type: 'text', text: message.text }] });
+      const block = { type: 'text', text: message.text };
+      const last = wire.at(-1);
+      if (last?.role === 'user') last.content.push(block);
+      else wire.push({ role: 'user', content: [block] });
     } else {
       wire.push({
         role: 'assistant',

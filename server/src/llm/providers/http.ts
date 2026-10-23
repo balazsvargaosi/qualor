@@ -167,10 +167,18 @@ const TOOL_PARAMS: ReadonlySet<string> = new Set([
 /** Words that name tools or functions: `tool use`, `--enable-auto-tool-choice`, `function calling`. */
 const TOOL_WORDS = /\b(?:tools?|functions?|tool_choice|function_call)\b/i;
 /**
- * OpenAI's context length error counts the tokens "in the functions" and tells the caller to
- * shorten "the messages or functions": it is a request that is too long, not one without tools.
+ * Phrases that say something is not supported: "does not support tools", "function calling is not
+ * enabled", "unsupported parameter", "unrecognized request argument", "extra inputs are not
+ * permitted", "requires --enable-auto-tool-choice". A message that names a tool and says none of them
+ * (a name that does not match, an empty list, a role) is some other refusal.
  */
-const CONTEXT_LENGTH = /context (?:length|window)/i;
+const NOT_SUPPORTED =
+  /\bunsupported\b|\bunrecognized\b|(?:\bnot|n't|\bcannot)\s+(?:currently\s+)?(?:support|enabled|available|allowed|permitted|implemented)|\brequires?\s+--/i;
+/**
+ * The refusal of a tool's schema is Qualor's own schema refused, not a server without tools; it
+ * names the tools and the functions all the same, and may say "not permitted" of one of its keywords.
+ */
+const SCHEMA = /\bschema\b|input_schema/i;
 
 const asRecord = (value: unknown): Record<string, unknown> | null =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -178,8 +186,11 @@ const asRecord = (value: unknown): Record<string, unknown> | null =>
     : null;
 
 /**
- * Whether an error body says that the model or its server cannot call tools or functions: the
- * parameter it refuses is one of the tool parameters, or its message names tools or functions.
+ * Whether an error body says that the model or its server cannot call tools or functions: it is
+ * about tools (the parameter it refuses is one of the tool parameters, or its message names tools
+ * or functions) and it says they are not supported (a phrase of that, or the code
+ * `unsupported_parameter`). A refusal of a schema is not it, and neither is a request that is too
+ * long, although OpenAI's message for that counts the tokens "in the functions".
  * The error is at `error` (OpenAI, Anthropic, Ollama's OpenAI endpoint), is `error` itself when
  * that is a string (Ollama's own API), or is at the top of the body (vLLM). Only this yes or no is
  * used: nothing of the text is shown, stored or logged.
@@ -199,9 +210,14 @@ function refusesTools(body: Buffer): boolean {
       : typeof top?.error === 'string'
         ? top.error
         : '';
-  if (detail?.code === 'context_length_exceeded' || CONTEXT_LENGTH.test(message)) return false;
+  const code = detail?.code;
+  if (SCHEMA.test(message)) return false;
   const param = detail?.param;
-  return (typeof param === 'string' && TOOL_PARAMS.has(param)) || TOOL_WORDS.test(message);
+  const aboutTools =
+    (typeof param === 'string' && TOOL_PARAMS.has(param)) || TOOL_WORDS.test(message);
+  const unsupported =
+    NOT_SUPPORTED.test(message) || (typeof code === 'string' && code.startsWith('unsupported'));
+  return aboutTools && unsupported;
 }
 
 /** The `error.param` of an OpenAI-style error body, when it is a string; null otherwise. */

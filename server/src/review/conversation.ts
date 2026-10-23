@@ -77,7 +77,9 @@ export interface ConversationInput {
     maxCallsPerTurn: number;
     /**
      * The tokens, input and output of all its calls, the conversation aims to stay within: at 85 %
-     * of it the next turn is the wrap-up, whose own call can still go past it.
+     * of it, or when another call as large as the last would reach it, the next turn is the
+     * wrap-up, whose own call can still go past it. More than 0: a caller with nothing to spend
+     * does not start a conversation.
      */
     tokenBudget: number;
     maxOutputTokens: number;
@@ -98,29 +100,35 @@ export interface ConversationInput {
 }
 
 /**
+ * What a conversation spent and did, whichever way it ended: a conversation that fails after
+ * spending its share still counts against the review's ceiling. `turns` counts the provider's
+ * answers (retried failures and the stop check not), `toolCalls` the calls that were run. The
+ * tokens are the provider's counts; for a count it did not give they are a guess made for the
+ * budget (see `tokensOf`).
+ */
+export interface ConversationCounts {
+  inputTokens: number;
+  outputTokens: number;
+  turns: number;
+  toolCalls: number;
+}
+
+/**
  * How a conversation ended. `text` of an answer is the model's: it goes to the parser, never to a
- * log. `turns` counts the provider's answers (retried failures and the stop check not), `toolCalls`
- * the calls that were run, and `budgetReached` says that the answer came after the wrap-up turn.
- * A conversation that did not answer reports no tokens: they are on the rows `send` records.
+ * log. `budgetReached` says that the answer came after the wrap-up turn.
  */
 export type ConversationResult =
-  | {
-      kind: 'answer';
-      text: string;
-      inputTokens: number;
-      outputTokens: number;
-      turns: number;
-      toolCalls: number;
-      budgetReached: boolean;
-    }
-  | { kind: 'stopped' }
-  | { kind: 'failed'; reason: 'provider_error' | 'provider_no_tools' | 'bad_answer' };
+  | ({ kind: 'answer'; text: string; budgetReached: boolean } & ConversationCounts)
+  | ({ kind: 'stopped' } & ConversationCounts)
+  | ({
+      kind: 'failed';
+      reason: 'provider_error' | 'provider_no_tools' | 'bad_answer';
+    } & ConversationCounts);
 
-type Ended = Extract<ConversationResult, { kind: 'stopped' | 'failed' }>;
-const failed = (reason: Extract<ConversationResult, { kind: 'failed' }>['reason']): Ended => ({
-  kind: 'failed',
-  reason,
-});
+/** How a conversation ends without an answer, before the counts are put to it. */
+type FailureReason = Extract<ConversationResult, { kind: 'failed' }>['reason'];
+type Ended = { kind: 'stopped' } | { kind: 'failed'; reason: FailureReason };
+const failed = (reason: FailureReason): Ended => ({ kind: 'failed', reason });
 
 /** What `send` throws when it made no call because the provider's circuit is open. */
 export class CircuitOpenError extends Error {
@@ -219,6 +227,12 @@ function retryWait(
   return null;
 }
 
+/** A turn of the model, with the conversation that was sent for it. */
+interface Taken {
+  turn: LlmTurn;
+  sent: LlmConversation;
+}
+
 /**
  * The model's next turn, or why there is none: the stop check is asked before every call, a
  * failed call is tried again as `retryWait` says, and the first call refused for its tools ends
@@ -228,12 +242,13 @@ async function nextTurn(
   input: ConversationInput,
   conversation: () => LlmConversation,
   first: boolean,
-): Promise<LlmTurn | Ended> {
+): Promise<Taken | Ended> {
   const retried = { rateLimited: 0, transient: 0 };
   for (;;) {
     if (await input.shouldStop()) return { kind: 'stopped' };
+    const sent = conversation();
     try {
-      return await input.send(conversation());
+      return { turn: await input.send(sent), sent };
     } catch (err) {
       if (err instanceof CircuitOpenError) return failed('provider_error');
       if (!(err instanceof LlmError)) throw err;
@@ -293,19 +308,37 @@ async function answerCalls(
 // ─── The conversation ────────────────────────────────────────────────────────
 
 /**
+ * What a turn costs the budget: the provider's counts, and for a count it did not give a guess, so
+ * that a provider which counts nothing cannot spend without limit. The guess for the input is a
+ * quarter of a token for each byte of the JSON that was sent, and for the output the longest
+ * answer a call may write. The conversation is serialised only when the input count is missing.
+ */
+function tokensOf(
+  turn: LlmTurn,
+  sent: LlmConversation,
+  maxOutputTokens: number,
+): { input: number; output: number } {
+  return {
+    input: turn.usage.inputTokens ?? Math.ceil(Buffer.byteLength(JSON.stringify(sent), 'utf8') / 4),
+    output: turn.usage.outputTokens ?? maxOutputTokens,
+  };
+}
+
+/**
  * Talks with the model until it answers in text:
  * - the tool list goes with every turn, the wrap-up included (Anthropic refuses tool blocks in the
  *   history without it);
- * - once the model has had `maxTurns` turns, or the calls have used 85 % of the token budget, the
- *   next turn is the wrap-up: a user message that says to answer now. Calls in its answer are not
- *   run, and its text is the answer;
+ * - once the model has had `maxTurns` turns, or the calls have used 85 % of the token budget, or
+ *   another call as large as the last would reach it (the history only grows), the next turn is
+ *   the wrap-up: a user message that says to answer now. Calls in its answer are not run, and its
+ *   text is the answer;
  * - a call is told apart by what is there, not by the finish reason: `tool` also comes without
  *   calls, and then text is an answer and no text is none;
  * - an answer cut off at the output limit is asked for again, shorter, once; a refusal, a blank
  *   answer and a call id used twice in a turn end the conversation as a bad answer.
  *
- * A token count the provider did not give counts for nothing, so only the turn caps bound a
- * conversation with such a provider.
+ * Every end reports what was spent (`ConversationCounts`), the tokens of a call the provider did
+ * not count being guessed. The token budget must be more than 0 (see `limits.tokenBudget`).
  */
 export async function runConversation(input: ConversationInput): Promise<ConversationResult> {
   const { limits } = input;
@@ -323,42 +356,57 @@ export async function runConversation(input: ConversationInput): Promise<Convers
   let outputTokens = 0;
   let wrappingUp = false;
   let askedForShorter = false;
+  /** An end without an answer, with what the conversation spent. */
+  const ended = (end: Ended): ConversationResult => ({
+    ...end,
+    inputTokens,
+    outputTokens,
+    turns,
+    toolCalls,
+  });
 
   for (;;) {
     const next = await nextTurn(input, conversation, turns === 0);
-    if ('kind' in next) return next;
+    if (!('turn' in next)) return ended(next);
+    const { turn, sent } = next;
     turns += 1;
-    inputTokens += next.usage.inputTokens ?? 0;
-    outputTokens += next.usage.outputTokens ?? 0;
-    if (next.finishReason === 'refusal') return failed('bad_answer');
+    const spent = tokensOf(turn, sent, limits.maxOutputTokens);
+    inputTokens += spent.input;
+    outputTokens += spent.output;
+    if (turn.finishReason === 'refusal') return ended(failed('bad_answer'));
 
-    if (next.toolCalls.length > 0 && !wrappingUp) {
-      const ids = new Set(next.toolCalls.map((call) => call.id));
-      if (ids.size !== next.toolCalls.length) return failed('bad_answer');
-      toolCalls += await answerCalls(input, next.text, next.toolCalls, messages);
+    if (turn.toolCalls.length > 0 && !wrappingUp) {
+      const ids = new Set(turn.toolCalls.map((call) => call.id));
+      if (ids.size !== turn.toolCalls.length) return ended(failed('bad_answer'));
+      toolCalls += await answerCalls(input, turn.text, turn.toolCalls, messages);
       const used = inputTokens + outputTokens;
-      if (turns >= limits.maxTurns || used >= CONVERSATION_LIMITS.wrapUpAt * limits.tokenBudget) {
+      // The next call sends at least this one's input and its output again: if that alone would
+      // reach the budget, this is the last turn of tools whatever share is used.
+      const reached =
+        used >= CONVERSATION_LIMITS.wrapUpAt * limits.tokenBudget ||
+        used + spent.input + spent.output >= limits.tokenBudget;
+      if (turns >= limits.maxTurns || reached) {
         messages.push({ role: 'user', text: CONVERSATION_TEXTS.wrapUp });
         wrappingUp = true;
       }
       continue;
     }
 
-    if (next.finishReason === 'length' && next.toolCalls.length === 0) {
-      if (askedForShorter) return failed('bad_answer');
+    if (turn.finishReason === 'length' && turn.toolCalls.length === 0) {
+      if (askedForShorter) return ended(failed('bad_answer'));
       askedForShorter = true;
       // The API refuses an assistant message with nothing in it.
-      if (next.text.trim() !== '') {
-        messages.push({ role: 'assistant', text: next.text, toolCalls: [] });
+      if (turn.text.trim() !== '') {
+        messages.push({ role: 'assistant', text: turn.text, toolCalls: [] });
       }
       messages.push({ role: 'user', text: CONVERSATION_TEXTS.shorter });
       continue;
     }
 
-    if (next.text.trim() === '') return failed('bad_answer');
+    if (turn.text.trim() === '') return ended(failed('bad_answer'));
     return {
       kind: 'answer',
-      text: next.text,
+      text: turn.text,
       inputTokens,
       outputTokens,
       turns,
