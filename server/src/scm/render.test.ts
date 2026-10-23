@@ -1079,8 +1079,10 @@ const REFERENCES: readonly (readonly [string, RegExp])[] = [
   // A hash is a word of its own to a provider unless a letter or a decimal digit touches it:
   // GitHub links it beside a circled digit (①), GitLab beside ², ½ and ① as well.
   ['a commit hash', /(?<![\p{L}\p{Nd}])[0-9a-f]{7,64}(?![\p{L}\p{Nd}])/iu],
-  // A part of a word that starts with a letter and is followed by a hyphen and a digit.
-  ['a tracker key', /(?<![\p{L}\p{Nd}\p{M}])\p{L}[\p{L}\p{Nd}\p{M}]*-\p{Nd}/u],
+  // A part of a word that holds a letter and is followed by a hyphen and a digit. What comes before
+  // the key in its part does not matter: a provider ends a key at any character that is no ASCII
+  // letter or digit, so a digit or a letter of another script before `GH-1` ends nothing.
+  ['a tracker key', /\p{L}[\p{L}\p{Nd}\p{M}]*-\p{Nd}/u],
   // GitHub links `www.` wherever it follows a space, a bracket or `*`, `_` or `~`, whatever follows
   // it (a space, a closing mark): `www. x`, `(www. x`, `www.) x`, `www.… x`.
   ['a www address', /(?:^|[\s(*_~])www\./iu],
@@ -1120,6 +1122,30 @@ function expectInertProse(out: string, label: string): void {
 }
 
 describe('safeProse: the model’s words made inert', () => {
+  const cp = (...codePoints: number[]): string => String.fromCodePoint(...codePoints);
+  /**
+   * A tracker key (`GH-1`, `AB1-123`) after characters that are no ASCII letter or digit, named by
+   * code point. GitHub links `GH-1` wherever the character before the G is none, and GitLab's Jira
+   * pattern ends a key at the same characters.
+   */
+  const KEYS_AFTER_OTHER_CHARACTERS: readonly string[] = [
+    `${cp(0x663)}GH-1`, // ARABIC-INDIC DIGIT THREE
+    `${cp(0x663)}gh-1`,
+    `${cp(0xff10)}GH-1`, // FULLWIDTH DIGIT ZERO
+    `${cp(0x1d7ce)}GH-1`, // MATHEMATICAL BOLD DIGIT ZERO
+    `${cp(0x967)}GH-1`, // DEVANAGARI DIGIT ONE
+    `9${cp(0x663)}GH-1`,
+    `9${cp(0xe9)}GH-1`, // LATIN SMALL LETTER E WITH ACUTE
+    `9${cp(0x4e2d)}GH-1`, // a Han character
+    `9${cp(0xaa)}GH-1`, // FEMININE ORDINAL INDICATOR, a letter
+    `9${cp(0x207f)}GH-1`, // SUPERSCRIPT LATIN SMALL LETTER N, a letter
+    `x${cp(0x2019)}${cp(0x663)}GH-1`, // after an apostrophe
+    `${cp(0x663)}GH-1.`,
+    `(${cp(0x663)}GH-1)`,
+    `${cp(0x663)}GH-1${cp(0x2019)}s`,
+    `${cp(0x663)}AB1-123`,
+  ];
+
   it('plain words stay plain and list markers are normalised', () => {
     const same = [
       "Don't call it twice; it's slow-ish (see below).",
@@ -1180,13 +1206,51 @@ describe('safeProse: the model’s words made inert', () => {
   });
 
   it('puts a tracker key in a code span whatever letters and digits it is made of', () => {
-    // A part that starts with a letter and is followed by a hyphen and a digit: the keys of Jira and
+    // A part that holds a letter and is followed by a hyphen and a digit: the keys of Jira and
     // GitHub's `GH-` are all of that shape. What it leaves out is a number or a range.
     expect(prose('See AB1-123, X9-1, A1-2 and e2e-2 or Gh-7.')).toBe(
       'See ` AB1-123, ` ` X9-1, ` ` A1-2 ` and ` e2e-2 ` or ` Gh-7. `',
     );
     expect(prose('about 5-10 or 2-way and well-known x-ray')).toBe(
       'about 5-10 or 2-way and well-known x-ray',
+    );
+    for (const key of [
+      'AB1-123',
+      'X9-1',
+      'A1-2',
+      'e2e-2',
+      'Gh-7',
+      'GH-26',
+      'x-JIRA-9',
+      'v-1',
+      'sha-256',
+      'UTF-8',
+    ]) {
+      expect(prose(key), key).toBe(`\` ${key} \``);
+    }
+    for (const word of [
+      '5-10',
+      '2-way',
+      'well-known',
+      'x-ray',
+      'seven-eight',
+      '1-2-3',
+      'decade-old',
+    ]) {
+      expect(prose(word), word).toBe(word);
+    }
+  });
+
+  it('puts a tracker key in a code span whatever stands before it in its part', () => {
+    // A digit, or a letter of another script, before the key ends nothing for a provider: GitHub
+    // links `GH-1` after an Arabic-Indic digit, an accented letter or a Han character. The rule is
+    // the part (a letter, a hyphen, a digit), not what is before the letter: `9GH-1` and `2D-1`,
+    // which no provider links, are in a code span too.
+    for (const word of [...KEYS_AFTER_OTHER_CHARACTERS, '9GH-1', '2D-1']) {
+      expect(prose(word), word).toBe(`\` ${word} \``);
+    }
+    expect(prose(`see ${cp(0x663)}GH-1 and 9${cp(0xe9)}GH-1 now`)).toBe(
+      `see \` ${cp(0x663)}GH-1 \` and \` 9${cp(0xe9)}GH-1 \` now`,
     );
   });
 
@@ -1262,10 +1326,27 @@ describe('safeProse: the model’s words made inert', () => {
     for (const text of ['7fd1a60é', '7fd1a60x', 'x7fd1a60', '123456']) {
       expect(sees('a commit hash', text), text).toBe(false);
     }
-    for (const text of ['AB1-123', 'X9-1', 'x-JIRA-9', 'GH-26']) {
+    // A key is a letter, a hyphen and a digit in one part, whatever stands before the letter.
+    for (const text of [
+      'AB1-123',
+      'X9-1',
+      'x-JIRA-9',
+      'GH-26',
+      '9GH-1',
+      '2D-1',
+      ...KEYS_AFTER_OTHER_CHARACTERS,
+    ]) {
       expect(sees('a tracker key', text), text).toBe(true);
     }
-    for (const text of ['5-10', '2-way', 'well-known']) {
+    for (const text of [
+      '5-10',
+      '2-way',
+      'well-known',
+      'x-ray',
+      'seven-eight',
+      '1-2-3',
+      'decade-old',
+    ]) {
       expect(sees('a tracker key', text), text).toBe(false);
     }
   });
@@ -1363,6 +1444,16 @@ describe('safeProse: the model’s words made inert', () => {
       `7fd1a60b${String.fromCodePoint(0x301)}word x${String.fromCodePoint(0x301)}7fd1a60`,
     ],
     ['a tracker key with a digit in its first part', 'AB1-123 X9-1'],
+    ['a tracker key after a digit of another script', `${cp(0x663)}GH-1`],
+    ['a tracker key after a digit and an accented letter', `9${cp(0xe9)}GH-1`],
+    [
+      'a tracker key after an apostrophe and a digit of another script',
+      `x${cp(0x2019)}${cp(0x663)}GH-1`,
+    ],
+    [
+      'a tracker key with a digit in its first part, after a digit of another script',
+      `${cp(0x663)}AB1-123`,
+    ],
     ['an image tag with a handler', '<img src=x onerror=y>'],
     ['a details tag', '<details>'],
     ['a mention', '@user'],

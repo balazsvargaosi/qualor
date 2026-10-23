@@ -81,12 +81,18 @@ const PROSE_LIST_MARKER = /^(?:[-*]|(\d{1,9})\.) +(?=\S)/;
 /** Hexadecimal of a commit's size: GitLab and GitHub link it to the commit. */
 const COMMIT_LIKE = /^[0-9a-f]{7,64}$/i;
 /**
- * A part of a word that starts with a letter and is followed by a hyphen and a digit: `GH-26` links
- * to an issue on GitHub, and `JIRA-123`, `AB1-123` and `X9-1` to the tracker a GitLab project has set up.
- * Left plain, being words: GitLab's EWM integration matches `bug 12` and `task 3`, and ClickUp's
- * matches `CU-abc`. Both link only to the tracker the project has configured.
+ * A part of a word that holds a letter and is followed by a hyphen and a digit: `GH-26` links to an
+ * issue on GitHub, and `JIRA-123`, `AB1-123` and `X9-1` to the tracker a GitLab project has set up.
+ * What comes before the letter in its part is no matter: GitHub links `GH-1` wherever the character
+ * before the G is no ASCII letter or digit (after an Arabic-Indic digit, an accented letter or a Han
+ * character), and GitLab's Jira pattern ends a key at the same characters. So `9GH-1`, which no
+ * provider links, is in a code span too.
+ * Left plain, being words: GitLab's EWM integration matches `bug 12` and `task 3`, ClickUp's matches
+ * `CU-abc`, the autolinks a GitHub repository sets up can match an alphanumeric id (`TICKET-abc`),
+ * and a GitLab Jira integration can be given a `jira_issue_regex` of its own. All of them link only
+ * to what the project or the repository has configured.
  */
-const TRACKER_LIKE = /(?<![^-'’])\p{L}[^-'’]*-\p{Nd}/u;
+const TRACKER_LIKE = /\p{L}[^-'’]*-\p{Nd}/u;
 /** A combining mark, which changes nothing of a word a provider reads for a link or a reference. */
 const COMBINING_MARKS = /\p{M}/gu;
 /** Where a hash may begin or end inside a plain core: at a hyphen, an apostrophe or a combining mark. */
