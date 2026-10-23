@@ -87,7 +87,7 @@ export class MaskedText {
     starts[found] = at;
     // The end of the last line, its line end not counted: the text past it is not kept.
     return new MaskedText(
-      text.slice(0, Math.min(text.length, at - 1)),
+      text.slice(0, Math.max(0, Math.min(text.length, at - 1))),
       starts.subarray(0, found + 1),
       found,
     );

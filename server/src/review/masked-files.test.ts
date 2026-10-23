@@ -101,6 +101,9 @@ describe('lineCountOf and MaskedText', () => {
     // Fewer lines than asked for: the lines there are.
     const short = MaskedText.of('a\nb', 5);
     expect([short.lineCount, short.line(1), short.line(2)]).toEqual([2, 'b', '']);
+    // No line asked for: no text kept.
+    const none = MaskedText.of('abc', 0);
+    expect([none.lineCount, none.length, none.bytes, none.line(0)]).toEqual([0, 0, 0, '']);
   });
 
   it('cost the UTF-8 bytes of the text and four for each line', () => {
