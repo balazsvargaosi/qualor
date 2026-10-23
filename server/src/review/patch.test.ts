@@ -1,5 +1,7 @@
+import { REDACTED } from '@qualor/shared';
 import { describe, expect, it } from 'vitest';
-import { parsePatch } from './patch';
+import type { MaskResult } from './masker';
+import { parsePatch, patchFacts, removedLines, type Mask } from './patch';
 
 /** `git diff -U3` of a 30-line file against a 28-line base: three hunks, the last one at the last line. */
 const APP_PATCH = `${[
@@ -260,5 +262,169 @@ describe('parsePatch', () => {
       'one good hunk and one that does not parse': '@@ -1 +1 @@\n-a\n+b\n@@ -x +1 @@\n+c\n',
     };
     for (const [why, patch] of Object.entries(invalid)) expect(parsePatch(patch), why).toBeNull();
+  });
+});
+
+describe('patchFacts', () => {
+  it('reads the lines a change adds and removes, a marker counting as the lines it stands for', () => {
+    const patch = '@@ -1,4 +1,3 @@\n a\n-b\n+B\n-[3 removed lines not sent]\n c\n';
+    const facts = patchFacts({ status: 'modified', patch }, 3);
+    expect(facts.added).toEqual(new Set([2]));
+    expect(facts.changedLines).toBe(1 + 1 + 3);
+    expect(facts.readable).toBe(true);
+    expect(facts.removals).toEqual([
+      { after: 1, kind: '-', text: 'b' },
+      { after: 2, kind: 'removed-marker', text: '[3 removed lines not sent]' },
+    ]);
+    // A patch is believed as it is when there is no file to hold it against.
+    expect(patchFacts({ status: 'modified', patch }, null)).toMatchObject({ readable: true });
+  });
+
+  it('reads a change with no patch from the file: a new file is all added, any other adds nothing', () => {
+    expect(patchFacts({ status: 'added', patch: null }, 3)).toEqual({
+      added: new Set([1, 2, 3]),
+      removals: [],
+      changedLines: 3,
+      readable: true,
+    });
+    expect(patchFacts({ status: 'modified', patch: null }, 3)).toEqual({
+      added: new Set(),
+      removals: [],
+      changedLines: 3,
+      readable: true,
+    });
+    expect(patchFacts({ status: 'added', patch: null }, null)).toEqual({
+      added: new Set(),
+      removals: [],
+      changedLines: 0,
+      readable: true,
+    });
+  });
+
+  it('reads a patch that does not parse, or does not fit the file, from the file, and calls it unreadable', () => {
+    const unreadable = {
+      'does not parse': '@@ nope',
+      'adds a line past the end': '@@ -1 +50 @@\n-a\n+b\n',
+      'removes lines past the end': '@@ -50,2 +49,0 @@\n-x\n-y\n',
+      'has a context row past the end': '@@ -9,1 +9,1 @@\n a\n',
+    };
+    for (const [why, patch] of Object.entries(unreadable)) {
+      expect(patchFacts({ status: 'modified', patch }, 3), why).toEqual({
+        added: new Set(),
+        removals: [],
+        changedLines: 3,
+        readable: false,
+      });
+      // A new file is all added, whatever its patch says.
+      expect(patchFacts({ status: 'added', patch }, 3).added, why).toEqual(new Set([1, 2, 3]));
+    }
+  });
+});
+
+describe('removedLines', () => {
+  const PASSWORD = ['pass', 'word: hunter2hunter2'].join('');
+  /** A mask that is given what it must be given, and answers `mask(text)`. */
+  const masking = (mask: (text: string) => MaskResult) => {
+    const seen: string[] = [];
+    const run: Mask = (text) => {
+      seen.push(text);
+      return Promise.resolve(mask(text));
+    };
+    return { seen, run };
+  };
+  const identity = (text: string): MaskResult => ({ kind: 'masked', text, count: 0 });
+  const factsOf = (patch: string, lines = 20) => patchFacts({ status: 'modified', patch }, lines);
+
+  it('gives the removed rows as the mask returns them, with what it replaced', async () => {
+    const patch = `@@ -1,3 +1,1 @@\n keep\n-${PASSWORD}\n-plain\n`;
+    const mask = masking((text) => ({
+      kind: 'masked',
+      text: text.replace(PASSWORD, REDACTED),
+      count: 1,
+    }));
+    const result = await removedLines(patch, factsOf(patch), mask.run);
+    // The whole patch is what the mask is given.
+    expect(mask.seen).toEqual([patch]);
+    expect(result).toEqual({
+      removed: [
+        { after: 1, text: REDACTED },
+        { after: 1, text: 'plain' },
+      ],
+      redactions: 1,
+    });
+  });
+
+  it('puts the diff prefix back on a row the masking took whole, as it does a private key', async () => {
+    const patch = '@@ -1,4 +1,1 @@\n keep\n-secret one\n-secret two\n-plain\n';
+    const mask = masking((text) => ({
+      kind: 'masked',
+      text: text
+        .split('\n')
+        .map((line) => (line.includes('secret') ? REDACTED : line))
+        .join('\n'),
+      count: 2,
+    }));
+    const { removed } = await removedLines(patch, factsOf(patch), mask.run);
+    expect(removed.map((line) => line.text)).toEqual([REDACTED, REDACTED, 'plain']);
+  });
+
+  it('masks nothing for a patch whose only removed lines are the scanner’s markers', async () => {
+    const patch = '@@ -1,2 +1,1 @@\n keep\n-[4 removed lines not sent]\n';
+    const mask = masking(identity);
+    expect(await removedLines(patch, factsOf(patch), mask.run)).toEqual({
+      removed: [{ after: 1, text: '[4 removed lines not sent]' }],
+      redactions: 0,
+    });
+    expect(mask.seen).toEqual([]);
+  });
+
+  it('puts one note for each run of removed rows when the masker gives up, and keeps a marker', async () => {
+    const patch = '@@ -1,6 +1,1 @@\n keep\n-a\n-b\n-[7 removed lines not sent]\n-c\n-d\n';
+    for (const [kind, why] of [
+      ['timeout', 'it could not be masked in time'],
+      ['budget', 'the review has used up its budget for masking'],
+    ] as const) {
+      const mask = masking(() => ({ kind }));
+      const result = await removedLines(patch, factsOf(patch), mask.run);
+      expect(result.redactions).toBe(0);
+      expect(
+        result.removed.map((line) => [line.after, line.text]),
+        kind,
+      ).toEqual([
+        [1, `[2 removed lines not shown: ${why}]`],
+        [1, '[7 removed lines not sent]'],
+        [1, `[2 removed lines not shown: ${why}]`],
+      ]);
+    }
+    const one = '@@ -1,2 +1,1 @@\n keep\n-a\n';
+    const { removed } = await removedLines(
+      one,
+      factsOf(one),
+      masking(() => ({ kind: 'timeout' })).run,
+    );
+    expect(removed).toEqual([
+      { after: 1, text: '[1 removed line not shown: it could not be masked in time]' },
+    ]);
+  });
+
+  it('puts the notes when the masking takes a hunk header with it, or does not keep the lines', async () => {
+    const patch = '@@ -1,2 +1,1 @@\n keep\n-a\n@@ -9,2 +8,1 @@\n keep\n-b\n';
+    const note = '[1 removed line not shown: its masked text could not be read]';
+    // The second header is gone: its row is no row of any hunk.
+    const noHeader = masking((text) => ({
+      kind: 'masked',
+      text: text.replace('@@ -9,2 +8,1 @@', REDACTED),
+      count: 1,
+    }));
+    const lost = await removedLines(patch, factsOf(patch), noHeader.run);
+    expect(lost.removed).toEqual([
+      { after: 1, text: note },
+      { after: 8, text: note },
+    ]);
+    expect(lost.redactions).toBe(0);
+    // Fewer lines than the patch has.
+    const short = masking(() => ({ kind: 'masked', text: '@@ -1,2 +1,1 @@', count: 1 }));
+    const cut = await removedLines(patch, factsOf(patch), short.run);
+    expect(cut.removed.map((line) => line.text)).toEqual([note, note]);
   });
 });

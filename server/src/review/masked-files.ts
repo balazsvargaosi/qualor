@@ -175,6 +175,15 @@ export class MaskedFiles {
     return this.kept.size;
   }
 
+  /**
+   * The masked text of a file if it is kept, with nothing masked and nothing charged; null when it
+   * is not (never asked for, or too large to keep). For a caller that has just had a file masked and
+   * holds on to its text only for as long as these files do.
+   */
+  keptText(path: string): MaskedText | null {
+    return this.kept.get(path) ?? null;
+  }
+
   /** Stops the masker these files made for themselves; one they were given is its owner's. */
   async close(): Promise<void> {
     if (this.ownsMasker) await this.masker.close();

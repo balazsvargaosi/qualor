@@ -49,15 +49,27 @@ export function envelope(data: unknown, nonce: string): string {
   return [introduction(nonce), fenced(json, nonce)].join('\n');
 }
 
+/** What stands for the nonce in the name and the result of a tool. */
+const NONCE_PLACEHOLDER = '[the nonce]';
+/** What a result is replaced with when its line spells the nonce out all the same. */
+const WITHHELD = '[not shown: it holds the nonce of this conversation]';
+
 /**
  * What a tool answered, as its own message: `{ "tool": …, "result": … }` between the same markers,
  * with no introduction (the first message said what the markers mean). The name is the model's
  * and the result may echo what it asked, and the nonce is in its prompt: an argument named for it
  * comes back in the answer. So a result that holds the nonce is not refused, as the first
- * message's data is, which would let a model end its own review. It cannot make a marker either:
- * a marker needs the marker word, and that is escaped.
+ * message's data is, which would let a model end its own review: the nonce in the name and in the
+ * result is replaced with a placeholder, and the line carries it nowhere but in the two markers.
+ * It cannot make a marker either: a marker needs the marker word, and that is escaped.
  */
 export function toolResultMessage(tool: string, text: string, nonce: string): string {
   checkNonce(nonce);
-  return fenced(oneLine({ tool, result: text }), nonce);
+  const line = oneLine({
+    tool: tool.replaceAll(nonce, NONCE_PLACEHOLDER),
+    result: text.replaceAll(nonce, NONCE_PLACEHOLDER),
+  });
+  // The escaping can spell the nonce out of text that does not hold it: a lone surrogate is written
+  // `\ud800`, and 28 hex digits after it are a nonce that begins d800.
+  return fenced(line.includes(nonce) ? oneLine({ tool: '', result: WITHHELD }) : line, nonce);
 }

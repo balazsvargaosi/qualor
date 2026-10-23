@@ -203,7 +203,7 @@ export function patchFacts(
 /** Why a text is not shown: the fixed wording of every note that stands for one. */
 export const WHY = {
   timeout: 'it could not be masked in time',
-  budget: 'the review has used up the time it may spend masking',
+  budget: 'the review has used up its budget for masking',
   unreadable: 'its masked text could not be read',
 } as const;
 export type NoteReason = keyof typeof WHY;

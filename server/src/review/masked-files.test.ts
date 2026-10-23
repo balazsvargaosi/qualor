@@ -208,6 +208,23 @@ describe('MaskedFiles', () => {
     expect(files.bytes).toBeLessThanOrEqual(1_300);
   });
 
+  it('gives the text of a file it keeps without masking anything, and none for a file it does not', async () => {
+    const { reader, asked } = counting(
+      memorySnapshot({ files: { 'a.txt': 'a\n', 'big.txt': 'x\n'.repeat(50) } }),
+    );
+    // 6 bytes for a (the text and a line), 300 for big: the bound keeps the first and not the second.
+    const files = filesOf(reader, { maxBytes: 100 });
+    expect(files.keptText('a.txt')).toBeNull();
+    const a = await files.file('a.txt');
+    await files.file('big.txt');
+    expect(a.kind === 'text' ? files.keptText('a.txt') === a.text : null).toBe(true);
+    expect(files.keptText('big.txt')).toBeNull();
+    expect(files.keptText('missing.txt')).toBeNull();
+    // Asking for the text reads and masks nothing.
+    expect(asked).toEqual(['a.txt', 'big.txt']);
+    expect(files.maskings).toBe(2);
+  });
+
   it('counts the lines of a file against the bound, so that many short lines cost more than their text', async () => {
     // 1 000 lines of "x": 1 999 bytes of text and 4 000 of index.
     const reader = memorySnapshot({ files: { 'many.txt': 'x\n'.repeat(1_000) } });
