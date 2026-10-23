@@ -53,6 +53,19 @@ describe('readMergeRequestState (6I-3)', () => {
       state: 'opened',
       draft: true,
     });
+    // As a GitLab before 14 answers: no `draft`, only `work_in_progress`.
+    gitlab.addMergeRequest(GITLAB_PROJECT, {
+      ...mergeRequest,
+      iid: 5,
+      state: 'opened',
+      legacyDraft: true,
+    });
+    gitlab.addMergeRequest(GITLAB_PROJECT, {
+      ...mergeRequest,
+      iid: 6,
+      state: 'opened',
+      legacyDraft: false,
+    });
     gitlabProject = (await mappedProject(h, gitlab, 'mrs/gitlab', GITLAB_PROJECT)).id;
 
     github.addRepository({ id: REPOSITORY, owner: 'acme', name: 'prs', installationId: 701 });
@@ -80,6 +93,19 @@ describe('readMergeRequestState (6I-3)', () => {
         { state: 'open', draft: true, headSha: HEAD },
       ]);
     }
+  });
+
+  it('a GitLab before 14 says a draft by work_in_progress', async () => {
+    expect(await stateOf(gitlabProject, '5')).toEqual({
+      state: 'open',
+      draft: true,
+      headSha: HEAD,
+    });
+    expect(await stateOf(gitlabProject, '6')).toEqual({
+      state: 'open',
+      draft: false,
+      headSha: HEAD,
+    });
   });
 
   it('an SCM error answers null', async () => {

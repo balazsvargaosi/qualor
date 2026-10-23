@@ -2,9 +2,12 @@ import { gzipSync } from 'node:zlib';
 import { encodeSnapshotLine, type SnapshotLine } from '@qualor/shared';
 import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { createFakeGitHub, type FakeGitHub } from '../../test/fake-github';
 import { createFakeGitLab, type FakeGitLab, type FakeMergeRequest } from '../../test/fake-gitlab';
 import { createFakeLlm, type FakeLlm } from '../../test/fake-llm';
+import { mappedGitHubProject, pullRequestReport } from '../../test/github';
 import { createIngestHarness, type IngestHarness, type IngestProject } from '../../test/ingest';
+import { configuredProvider } from '../../test/llm';
 import {
   REVIEW_CALL_USAGE,
   reviewResponder,
@@ -44,6 +47,7 @@ import { reviewUsageToday } from './usage';
 const MiB = 1024 * 1024;
 const LIMITS = { maxCompressedBytes: 50 * MiB, maxDecompressedBytes: 500 * MiB };
 const GITLAB_PROJECT = 710;
+const GITHUB_REPOSITORY = 9_710;
 /** The head and base of `storeTestSnapshot`'s header. */
 const HEAD = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
@@ -93,8 +97,11 @@ const FOUND: ReviewScript = {
 describe('the ai-review job (6I-3, R15)', () => {
   let llm: FakeLlm;
   let gitlab: FakeGitLab;
+  let github: FakeGitHub;
   let h: IngestHarness;
   let p: IngestProject;
+  /** Mapped to a repository of the fake GitHub. */
+  let gh: IngestProject;
   let iid = 0;
   /** Every line the job logged. */
   const logged: unknown[][] = [];
@@ -211,19 +218,30 @@ describe('the ai-review job (6I-3, R15)', () => {
   beforeAll(async () => {
     llm = await createFakeLlm();
     gitlab = await createFakeGitLab();
+    github = await createFakeGitHub();
     h = await createIngestHarness({
       config: {
         publicUrl: PUBLIC_URL,
-        scmInternalHosts: parseInternalHosts(new URL(gitlab.url).host),
+        scmInternalHosts: parseInternalHosts(
+          `${new URL(gitlab.url).host},${new URL(github.url).host}`,
+        ),
         llmInternalHosts: parseInternalHosts(llm.host),
       },
     });
     gitlab.addProject({ id: GITLAB_PROJECT, path: 'acme/review' });
     p = await mappedProject(h, gitlab, 'review/p', GITLAB_PROJECT);
+    github.addRepository({
+      id: GITHUB_REPOSITORY,
+      owner: 'acme',
+      name: 'reviewed',
+      installationId: 710,
+    });
+    gh = await mappedGitHubProject(h, github, 'review/gh', 'acme/reviewed');
   });
   afterAll(async () => {
     await h.close();
     await gitlab.close();
+    await github.close();
     await llm.close();
   });
   beforeEach(async () => {
@@ -603,18 +621,214 @@ describe('the ai-review job (6I-3, R15)', () => {
       .where(and(eq(jobs.queue, AI_REVIEW_QUEUE), sql`${jobs.payload} ->> 'runId' = ${run.id}`));
     expect(job).toEqual({ status: 'succeeded' });
 
-    // A run its job finds running already was left so by a job that died: it ends failed too.
+    // A run its job finds running already was left so by a job that died: it ends failed too,
+    // and what that job wrote of its spend stays (this job spent nothing).
     const other = mergeRequest();
     const crashed = await analysisOf(other);
     const stuck = await runOf(crashed);
+    const spent = {
+      providerHost: llm.host,
+      model: 'fake-model',
+      modelCalls: 3,
+      toolCalls: 1,
+      inputTokens: 3_000,
+      outputTokens: 300,
+      costMicroUsd: 13_500,
+    };
     await h.ctx.db
       .update(reviewRuns)
-      .set({ status: 'running', startedAt: new Date(), headSha: HEAD })
+      .set({ status: 'running', startedAt: new Date(), headSha: HEAD, ...spent })
       .where(eq(reviewRuns.id, stuck.id));
     await dueNow(stuck.id);
     await forgetDecorations();
     expect(await runReviews()).toBe(1);
-    expect(await runOf(crashed)).toMatchObject({ status: 'failed', reason: 'internal' });
+    expect(await runOf(crashed)).toMatchObject({
+      status: 'failed',
+      reason: 'internal',
+      ...spent,
+    });
     expect(await decorationsOf(crashed)).toHaveLength(1);
+  });
+
+  it('a failure before the run starts leaves it as it was for the second try: an end and its decoration are one step', async () => {
+    const mr = mergeRequest();
+    const analysisId = await analysisOf(mr);
+    await snapshotOf(analysisId, mr);
+    const run = await runOf(analysisId);
+    await forgetDecorations();
+    // Review is off when the job decides: it ends the run, and the decoration it queues with that
+    // end fails once, as a database can.
+    await reviewOff();
+    await h.ctx.db.execute(sql`CREATE SEQUENCE review_test_fail_once`);
+    await h.ctx.db.execute(sql`
+      CREATE FUNCTION review_test_fail_once() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.queue = 'scm' AND nextval('review_test_fail_once') = 1 THEN
+          RAISE EXCEPTION 'a transient failure' USING ERRCODE = '40001';
+        END IF;
+        RETURN NEW;
+      END $$`);
+    await h.ctx.db.execute(sql`
+      CREATE TRIGGER review_test_fail_once BEFORE INSERT ON jobs
+         FOR EACH ROW EXECUTE FUNCTION review_test_fail_once()`);
+    try {
+      expect(await runReviews()).toBe(1);
+      // Nothing of that step is kept: the run waits, undecorated, and its job is tried again.
+      expect(await runOf(analysisId)).toMatchObject({ status: 'waiting', finishedAt: null });
+      expect(await decorationsOf(analysisId)).toEqual([]);
+      const [job] = await h.ctx.db
+        .select({ status: jobs.status, attempts: jobs.attempts })
+        .from(jobs)
+        .where(and(eq(jobs.queue, AI_REVIEW_QUEUE), sql`${jobs.payload} ->> 'runId' = ${run.id}`));
+      expect(job).toEqual({ status: 'queued', attempts: 1 });
+      expect(logged).toContainEqual([
+        'warn',
+        { runId: run.id, errorClass: expect.any(String), code: '40001' },
+        'AI review run not decided; its job is tried again',
+      ]);
+      expect(logged.filter(([level]) => level === 'error')).toEqual([]);
+      // The second try decides it: ended, and decorated in the same step.
+      await dueNow(run.id);
+      expect(await runReviews()).toBe(1);
+      expect(await runOf(analysisId)).toMatchObject({
+        status: 'skipped',
+        reason: 'inactive',
+        detail: 'review_disabled',
+      });
+      expect(await decorationsOf(analysisId)).toHaveLength(1);
+    } finally {
+      await h.ctx.db.execute(sql`DROP TRIGGER review_test_fail_once ON jobs`);
+      await h.ctx.db.execute(sql`DROP FUNCTION review_test_fail_once()`);
+      await h.ctx.db.execute(sql`DROP SEQUENCE review_test_fail_once`);
+    }
+  });
+
+  it('a provider changed during the run stops it before its next call', async () => {
+    const mr = mergeRequest();
+    const analysisId = await analysisOf(mr);
+    await snapshotOf(analysisId, mr);
+    await forgetDecorations();
+    // The quality reviewer answers once the instance has moved to another model, with a consent
+    // that names it: review is still on, but not with the provider the run started with (R10).
+    llm.enqueue(
+      reviewResponder({
+        quality: async () => {
+          await switchReviewOn(h.ctx.db, {
+            secretKey: h.ctx.config.secretKey,
+            fake: llm,
+            organizationId: h.organizationId,
+            userId: h.ctx.adminId,
+            over: {
+              pricing: null,
+              provider: {
+                ...configuredProvider(h.ctx.config.secretKey, llm),
+                model: 'other-model',
+              },
+            },
+          });
+          return JSON.stringify({ findings: [FINDING] });
+        },
+      }),
+    );
+    const calls = reviewCalls().length;
+    expect(await runReviews()).toBe(1);
+    const run = await runOf(analysisId);
+    expect(run).toMatchObject({
+      status: 'skipped',
+      reason: 'inactive',
+      detail: 'provider_changed',
+      modelCalls: 1,
+      model: 'fake-model',
+      findingsNew: 0,
+    });
+    // The judge was never asked, of either model.
+    expect(reviewCalls().slice(calls).map(reviewRoleOf)).toEqual(['quality']);
+    expect(await aiIssuesOf(run.branchId)).toEqual([]);
+    expect(await decorationsOf(analysisId)).toHaveLength(1);
+  });
+
+  it('a GitHub pull request is decorated with its Actions context, and one without it is not', async () => {
+    const pull = (number: number) =>
+      github.addPull(GITHUB_REPOSITORY, {
+        number,
+        title: 'Add the cart total',
+        headSha: HEAD,
+        baseSha: BASE,
+        files: [],
+        state: 'open',
+        draft: true,
+      });
+    const githubContext = { repositoryId: String(GITHUB_REPOSITORY), checkout: 'head' as const };
+    pull(1);
+    const analysisId = await gh.ingestOk(
+      pullRequestReport(1, revision(1), {
+        projectKey: gh.key,
+        analysisDate: '2026-10-01T10:00:00Z',
+        github: githubContext,
+      }),
+    );
+    await snapshotOf(analysisId, 1);
+    await forgetDecorations();
+    expect(await runReviews()).toBe(1);
+    // A draft on GitHub, as the provider says now: skipped, and the summary says so.
+    expect(await runOf(analysisId)).toMatchObject({ status: 'skipped', reason: 'draft' });
+    const queued = await h.ctx.db
+      .select({ payload: jobs.payload })
+      .from(jobs)
+      .where(
+        and(
+          eq(jobs.queue, SCM_QUEUE),
+          eq(jobs.status, 'queued'),
+          sql`${jobs.payload} ->> 'analysisId' = ${analysisId}`,
+        ),
+      );
+    expect(queued).toEqual([
+      { payload: { analysisId, attempt: 0, gitlab: null, github: githubContext } },
+    ]);
+
+    // An analysis an older CLI sent, without the Actions context: which revision it checked out
+    // is unknown, so it is not decorated (fail closed), and that is said once.
+    pull(2);
+    const older = pullRequestReport(2, revision(2), {
+      projectKey: gh.key,
+      analysisDate: '2026-10-02T10:00:00Z',
+    });
+    const scm = { ...older.scm };
+    delete scm.github;
+    const withoutContext = await gh.ingestOk({ ...older, scm });
+    await snapshotOf(withoutContext, 2);
+    await forgetDecorations();
+    logged.length = 0;
+    expect(await runReviews()).toBe(1);
+    const run = await runOf(withoutContext);
+    expect(run).toMatchObject({ status: 'skipped', reason: 'draft' });
+    expect(await decorationsOf(withoutContext)).toEqual([]);
+    expect(logged).toContainEqual([
+      'warn',
+      { runId: run.id, analysisId: withoutContext },
+      'AI review ended but not decorated: the analysis has no stored GitHub Actions context',
+    ]);
+  });
+
+  it('a run of an analysis from another provider than its project connection is not decorated, and says so', async () => {
+    // A GitHub Actions report uploaded to the project mapped to GitLab (github.md §5.1).
+    const analysisId = await p.ingestOk(
+      pullRequestReport(9_100, revision(1), {
+        projectKey: p.key,
+        analysisDate: '2026-10-01T10:00:00Z',
+      }),
+    );
+    const run = await runOf(analysisId);
+    await forgetDecorations();
+    await dueNow(run.id);
+    const late = new Date(run.deadlineAt.getTime() + 1_000);
+    expect(await runReviews({ now: () => late })).toBe(1);
+    expect(await runOf(analysisId)).toMatchObject({ status: 'skipped', reason: 'no_snapshot' });
+    expect(await decorationsOf(analysisId)).toEqual([]);
+    expect(logged).toContainEqual([
+      'warn',
+      { runId: run.id, analysisId, provider: 'github', connection: 'gitlab' },
+      "AI review ended but not decorated: the analysis is not of the provider of its project's SCM connection",
+    ]);
   });
 });

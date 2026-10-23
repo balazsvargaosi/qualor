@@ -39,7 +39,9 @@ async function gitlabState(
   const mr = await found.client.mergeRequest(ref, iid);
   const state = GITLAB_STATES[mr.state];
   if (state === undefined) return null;
-  return { state, draft: mr.draft, headSha: mr.diff_refs?.head_sha ?? mr.sha };
+  // A GitLab before 14 says a draft by `work_in_progress` only.
+  const draft = mr.draft || mr.work_in_progress;
+  return { state, draft, headSha: mr.diff_refs?.head_sha ?? mr.sha };
 }
 
 /** GitHub says `closed` for a pull request that was merged too: its `merged` flag tells them apart. */

@@ -59,11 +59,24 @@ export function decorationRetryDelaySeconds(attempt: number): number {
   return 60 * 2 ** (attempt - 1);
 }
 
-/** Serialises the enqueueing of one branch's decorations until the transaction ends. */
-async function lockBranchQueue(db: Executor, branchId: string): Promise<void> {
+/**
+ * Serialises the enqueueing of one branch's decorations until the transaction ends. Ingestion
+ * takes it after the analysis and the branch, before the branch's review snapshots and runs (its
+ * SCM stage, then its review snapshot stage); a review run's end takes it before the run's row,
+ * so that the end and its decoration are one step (review/run-ends.ts).
+ */
+export async function lockBranchQueue(db: Executor, branchId: string): Promise<void> {
   await db.execute(
     sql`SELECT pg_advisory_xact_lock(${LOCKS.scmDecoration}, hashtext(${branchId}))`,
   );
+}
+
+/** {@link lockBranchQueue} without waiting: false while another transaction holds it. */
+export async function tryLockBranchQueue(db: Executor, branchId: string): Promise<boolean> {
+  const result = await db.execute<{ locked: boolean }>(
+    sql`SELECT pg_try_advisory_xact_lock(${LOCKS.scmDecoration}, hashtext(${branchId})) AS locked`,
+  );
+  return result.rows[0]?.locked === true;
 }
 
 /**
@@ -116,7 +129,8 @@ export async function enqueueDecoration(
  * would replace, and the merge request part of an older analysis' decoration does nothing anyway.
  * For a job that ends after the analysis was ingested (an AI review run). The check and the
  * enqueueing are one step for the branch: a newer analysis being ingested meanwhile is waited for,
- * then seen. Answers whether it was queued.
+ * then seen. In a transaction that holds the branch's lock already (an end of a review run), it
+ * is one step with what that transaction did. Answers whether it was queued.
  */
 export async function enqueueLatestDecoration(
   db: Executor,

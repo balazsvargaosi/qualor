@@ -1,21 +1,17 @@
 import { createHash } from 'node:crypto';
-import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { and, eq, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Config } from '../config';
 import type { Db, Executor } from '../db/client';
 import { pgErrorCode } from '../db/errors';
 import {
-  analyses,
   branches,
   projects,
   reviewRuns,
   reviewSnapshots,
-  scmConnections,
-  type ReviewFailureReason,
   type ReviewPhase,
   type ReviewRunRow,
   type ReviewRunStatus,
-  type ReviewSkipReason,
 } from '../db/schema';
 import { costOf, type LlmRuntime } from '../llm/job';
 import { LlmError, type LlmConversation, type LlmTurn } from '../llm/providers';
@@ -26,10 +22,9 @@ import {
   type StoredLlmSettings,
 } from '../llm/settings';
 import type { JobHandlers, WorkerLogger } from '../queue/worker';
-import { readScmContext } from '../scm/context';
 import type { DecorationDeps } from '../scm/decorate';
 import { readMergeRequestState } from '../scm/mr-state';
-import { enqueueLatestDecoration } from '../scm/queue';
+import { lockBranchQueue } from '../scm/queue';
 import {
   analyzerFindings,
   buildReviewContext,
@@ -53,6 +48,16 @@ import {
 } from './pipeline';
 import { REVIEW_PROMPT_VERSION, SYSTEM_PROMPTS } from './prompts';
 import { ensureAiRules } from './rules';
+import {
+  decorateRun,
+  endAndDecorate,
+  endRun,
+  logRunEnd,
+  writeRunSpend,
+  type RunEnd,
+  type RunRef,
+  type RunSpend,
+} from './run-ends';
 import { AI_REVIEW_QUEUE, lastReviewedDigest, queueAtDeadline } from './runs';
 import {
   effectiveReviewBudgets,
@@ -86,10 +91,13 @@ import { RedactionTally, remainingReviewTokens, reviewSender, reviewUsageToday }
  *    the next call to the provider when the run is superseded or review is switched off; then the
  *    findings are stored (store.ts), or the run fails with the pipeline's reason.
  *
- * Every end but `superseded` queues the decoration of the analysis, so the summary of the merge
- * request says how the review ended. An exception ends the run `failed: internal`, and the job
- * completes: a review is never tried again into more spend. Nothing the model said, no prompt and
- * no file of the repository is ever logged: the run's id, codes and counts only.
+ * Every end but `superseded` queues the decoration of the analysis in the same transaction
+ * (run-ends.ts), so the summary of the merge request says how the review ended. An exception once
+ * the run is running ends it `failed: internal`, and the job completes: a review is never tried
+ * again into more spend. One before (steps 1 to 5 decide in one transaction, which then wrote
+ * nothing) fails the job, whose second try decides again; a run whose job is gone for good is ended
+ * by the sweep (runs.ts). Nothing the model said, no prompt and no file of the repository is ever
+ * logged: the run's id, codes and counts only.
  */
 
 /** The job's lease: a review waits on its provider, call after call; the worker extends it. */
@@ -113,12 +121,6 @@ export interface ReviewJobDeps {
 }
 
 const payloadSchema = z.object({ runId: z.uuid() });
-
-/** How a run ends. */
-type RunEnd =
-  | { status: 'superseded' }
-  | { status: 'skipped'; reason: ReviewSkipReason; detail?: string | null }
-  | { status: 'failed'; reason: ReviewFailureReason };
 
 /** Why the pipeline was told to stop. */
 type StopReason = { kind: 'superseded' } | { kind: 'inactive'; detail: string };
@@ -146,8 +148,9 @@ interface Running {
   organizationId: string;
 }
 
-/** The parts of a run its decoration needs. */
-type RunRef = Pick<ReviewRunRow, 'id' | 'analysisId' | 'branchId'>;
+/** What steps 1 to 5 decided, in the transaction that holds the run's row. */
+type Decision =
+  { kind: 'started'; running: Running } | { kind: 'ended'; end: RunEnd } | { kind: 'none' };
 
 const errorClass = (err: unknown): string =>
   err instanceof Error ? err.constructor.name : typeof err;
@@ -199,6 +202,8 @@ class ReviewJob {
   private provider: { host: string; model: string; pricing: StoredLlmSettings['pricing'] } | null =
     null;
   private stop: StopReason | null = null;
+  /** The run, once this job has made it `running`: from then on an exception ends it. */
+  private started: ReviewRunRow | null = null;
 
   constructor(
     private readonly deps: ReviewJobDeps,
@@ -209,11 +214,19 @@ class ReviewJob {
     try {
       await this.review();
     } catch (err) {
-      this.deps.logger.error(
-        { runId: this.runId, errorClass: errorClass(err), code: pgErrorCode(err) ?? null },
-        'AI review run failed',
-      );
-      await this.end(['waiting', 'running'], { status: 'failed', reason: 'internal' });
+      const fields = {
+        runId: this.runId,
+        errorClass: errorClass(err),
+        code: pgErrorCode(err) ?? null,
+      };
+      const running = this.started;
+      if (running === null) {
+        // Steps 1 to 5 wrote nothing: the run is as it was, and the job's next try decides it.
+        this.deps.logger.warn(fields, 'AI review run not decided; its job is tried again');
+        throw err;
+      }
+      this.deps.logger.error(fields, 'AI review run failed');
+      await this.endRunning(running, { status: 'failed', reason: 'internal' });
     }
   }
 
@@ -221,25 +234,29 @@ class ReviewJob {
 
   /**
    * Decides, holding the run's row, whether the run starts, waits on or ends; a run that ends here
-   * is decorated once the decision is committed (the decoration's queue lock is never taken while
-   * a run's row is held: ingestion takes them the other way round). A run that starts is reviewed.
+   * is decorated in the same transaction. A run that starts is reviewed.
    */
   private async review(): Promise<void> {
     const decided = await this.deps.db.transaction((tx) => this.decide(tx));
     if (decided.kind === 'ended') {
-      if (decided.decorate) await this.decorate(decided.run);
+      logRunEnd(this.deps.logger, this.runId, decided.end);
       return;
     }
-    if (decided.kind === 'started') await this.reviewRunning(decided.running);
+    if (decided.kind === 'started') {
+      this.started = decided.running.run;
+      await this.reviewRunning(decided.running);
+    }
   }
 
-  private async decide(
-    tx: Executor,
-  ): Promise<
-    | { kind: 'started'; running: Running }
-    | { kind: 'ended'; run: RunRef; decorate: boolean }
-    | { kind: 'none' }
-  > {
+  private async decide(tx: Executor): Promise<Decision> {
+    // A run's branch never changes. Its decoration lock is taken before the run's row, as
+    // ingestion takes them: an end here and its decoration are one step (run-ends.ts).
+    const [ref] = await tx
+      .select({ branchId: reviewRuns.branchId })
+      .from(reviewRuns)
+      .where(eq(reviewRuns.id, this.runId));
+    if (ref === undefined) return { kind: 'none' };
+    await lockBranchQueue(tx, ref.branchId);
     const clock: SQL =
       this.deps.now === undefined ? sql`now()` : sql`${this.deps.now().toISOString()}::timestamptz`;
     const [found] = await tx
@@ -249,11 +266,15 @@ class ReviewJob {
       .for('update');
     if (found === undefined) return { kind: 'none' };
     const { run, due } = found;
-    const ended = async (end: RunEnd) => {
-      const done = await this.endIn(tx, run.status === 'running' ? ['running'] : ['waiting'], end);
-      return { kind: 'ended' as const, run, decorate: done && end.status !== 'superseded' };
+    const from: ReviewRunStatus[] = [run.status];
+    // Nothing is spent yet: an end here leaves the spend columns as they are.
+    const ended = async (end: RunEnd): Promise<Decision> => {
+      if (!(await endRun(tx, run, from, end))) return { kind: 'none' };
+      if (end.status !== 'superseded') await decorateRun(tx, run, this.deps.logger);
+      return { kind: 'ended', end };
     };
     // A job that died left its run running: this is the job tried again after its lease expired.
+    // What that job spent is on the run as far as it wrote it, and stays so.
     if (run.status === 'running') return ended({ status: 'failed', reason: 'internal' });
     if (run.status !== 'waiting') return { kind: 'none' };
 
@@ -648,9 +669,12 @@ class ReviewJob {
       budget: o.policy.budget,
     });
     try {
+      // One step with its decoration, the branch's decoration lock first (run-ends.ts).
       await db.transaction(async (tx) => {
+        await lockBranchQueue(tx, run.branchId);
         await storeReviewOutcome(tx, storing, prepared, ruleIds);
         await tx.update(reviewRuns).set(this.spend()).where(eq(reviewRuns.id, run.id));
+        await decorateRun(tx, run, this.deps.logger);
       });
     } catch (err) {
       if (!(err instanceof ReviewNotStoringError)) throw err;
@@ -662,7 +686,6 @@ class ReviewJob {
       { runId: run.id, status: 'done', findings: prepared.created.length },
       'AI review run ended',
     );
-    await this.decorate(run);
   }
 
   /** The pipeline stopped: the run was superseded, or review was switched off meanwhile. */
@@ -675,13 +698,13 @@ class ReviewJob {
       });
     }
     // Superseded by a newer analysis (already ended), or its analysis is no longer the newest.
-    if (!(await this.end(['running'], { status: 'superseded' }))) await this.writeSpend();
+    return this.endRunning(run, { status: 'superseded' });
   }
 
-  // ─── Ends ───────────────────────────────────────────────────────────────────
+  // ─── Ends (run-ends.ts) ─────────────────────────────────────────────────────
 
   /** What the run spent: where its calls went, how many, their tokens and their estimated cost. */
-  private spend() {
+  private spend(): RunSpend {
     return {
       providerHost: this.provider?.host ?? null,
       model: this.provider?.model ?? null,
@@ -696,116 +719,28 @@ class ReviewJob {
   /** The spend of a run another job or a newer analysis ended: it was spent all the same. */
   private async writeSpend(): Promise<void> {
     if (this.calls === 0) return;
-    await this.deps.db.update(reviewRuns).set(this.spend()).where(eq(reviewRuns.id, this.runId));
+    await writeRunSpend(this.deps.db, this.runId, this.spend());
   }
 
   /**
-   * Ends the run when its status is one of `from`, with what it spent: `phase` and `reason` are set
-   * in the same update. Answers whether it ended it.
+   * Ends the running run with what it spent, and queues its decoration unless it was superseded,
+   * in one transaction. A run that something else ended meanwhile keeps that end, with this
+   * job's spend written on it.
    */
-  private async endIn(
-    db: Executor,
-    from: readonly ReviewRunStatus[],
+  private async endRunning(
+    run: RunRef,
     end: RunEnd,
     extra: { diffDigest?: string | null } = {},
-  ): Promise<boolean> {
-    const ended = await db
-      .update(reviewRuns)
-      .set({
-        status: end.status,
-        phase: null,
-        reason: end.status === 'superseded' ? null : end.reason,
-        detail: end.status === 'skipped' ? (end.detail ?? null) : null,
-        finishedAt: sql`now()`,
-        ...this.spend(),
-        ...(extra.diffDigest === undefined || extra.diffDigest === null
-          ? {}
-          : { diffDigest: extra.diffDigest }),
-      })
-      .where(and(eq(reviewRuns.id, this.runId), inArray(reviewRuns.status, [...from])))
-      .returning({ id: reviewRuns.id });
-    if (ended.length === 0) return false;
-    this.deps.logger.info(
-      {
-        runId: this.runId,
-        status: end.status,
-        reason: end.status === 'superseded' ? null : end.reason,
-      },
-      'AI review run ended',
-    );
-    return true;
-  }
-
-  /** Ends the run as `end` (from `from`), then queues its decoration unless it was superseded. */
-  private async end(from: readonly ReviewRunStatus[], end: RunEnd): Promise<boolean> {
-    const ended = await this.endIn(this.deps.db, from, end);
-    if (!ended || end.status === 'superseded') return ended;
-    const [run] = await this.deps.db
-      .select({
-        id: reviewRuns.id,
-        analysisId: reviewRuns.analysisId,
-        branchId: reviewRuns.branchId,
-      })
-      .from(reviewRuns)
-      .where(eq(reviewRuns.id, this.runId));
-    if (run !== undefined) await this.decorate(run);
-    return true;
-  }
-
-  /** Ends a running run, then queues its decoration. */
-  private async endRunning(
-    run: ReviewRunRow,
-    end: Exclude<RunEnd, { status: 'superseded' }>,
-    extra: { diffDigest?: string | null } = {},
   ): Promise<void> {
-    if (await this.endIn(this.deps.db, ['running'], end, extra)) await this.decorate(run);
-    else await this.writeSpend();
-  }
-
-  /**
-   * Queues the decoration of the run's analysis (scm.md §4.1) with the CI context its ingestion
-   * stored, through the connection of the analysis' own provider, so that the summary says how the
-   * review ended. Only while the analysis is the branch's newest: a newer one has a decoration of
-   * its own (enqueueLatestDecoration). An analysis without a usable context is not decorated again
-   * (as a re-evaluation fails closed).
-   */
-  private async decorate(run: RunRef): Promise<void> {
-    const { db, logger } = this.deps;
-    const [found] = await db
-      .select({
-        scmContext: analyses.scmContext,
-        ref: projects.scmProjectRef,
-        provider: scmConnections.provider,
-      })
-      .from(analyses)
-      .innerJoin(projects, eq(projects.id, analyses.projectId))
-      .innerJoin(scmConnections, eq(scmConnections.id, projects.scmConnectionId))
-      .where(eq(analyses.id, run.analysisId));
-    if (found === undefined || found.ref === null) return;
-    const stored = readScmContext(found.scmContext);
-    if (stored.kind !== 'ok') {
-      logger.warn(
-        { runId: run.id, analysisId: run.analysisId, context: stored.kind },
-        'AI review ended but not decorated: the stored SCM context of the analysis is missing or not valid',
-      );
-      return;
-    }
-    if (stored.context.provider !== found.provider) return;
-    const target = { analysisId: run.analysisId, branchId: run.branchId };
-    if (stored.context.provider === 'gitlab') {
-      await enqueueLatestDecoration(db, { ...target, gitlab: stored.context.gitlab });
-      return;
-    }
-    const github = stored.context.github ?? null;
-    if (github === null) {
-      // Without the GitHub context, which revision was checked out is unknown: fail closed.
-      logger.warn(
-        { runId: run.id, analysisId: run.analysisId },
-        'AI review ended but not decorated: the analysis has no stored GitHub Actions context',
-      );
-      return;
-    }
-    await enqueueLatestDecoration(db, { ...target, gitlab: null, github });
+    const ended = await endAndDecorate(
+      this.deps.db,
+      run,
+      ['running'],
+      end,
+      { ...extra, spend: this.spend() },
+      this.deps.logger,
+    );
+    if (!ended) await this.writeSpend();
   }
 }
 

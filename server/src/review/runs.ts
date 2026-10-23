@@ -1,8 +1,11 @@
 import { and, desc, eq, inArray, ne, or, sql, type SQL } from 'drizzle-orm';
-import type { Executor, Tx } from '../db/client';
+import type { Db, Executor, Tx } from '../db/client';
 import { uuidv7 } from '../db/ids';
 import { branches, jobs, reviewRuns } from '../db/schema';
 import { enqueue } from '../queue/queue';
+import type { WorkerLogger } from '../queue/worker';
+import { tryLockBranchQueue } from '../scm/queue';
+import { decorateRun, endRun, type RunEnd } from './run-ends';
 
 /*
  * The life of a review run (6I-3, R15). The ingestion stage creates one for each merge request
@@ -21,7 +24,13 @@ import { enqueue } from '../queue/queue';
  * A wake updates the run's row only while it is `waiting`, and the job decides while it holds that
  * row (job.ts), so a snapshot linked while the job looks is never missed: either the job sees it, or
  * the wake comes after and makes the job it queued due. The run's row is taken after the analysis,
- * the branch and the snapshots, as ingestion and the snapshot's link take them.
+ * the branch, the branch's decoration lock and the snapshots, as ingestion and the snapshot's link
+ * take them (the link takes no decoration lock: it ends no run).
+ *
+ * Every job queued for an existing run is queued by a transaction that holds the run's row (a
+ * wake, the job's own decision, the sweep below); only the queue itself takes a job away, when its
+ * tries are spent. A run with no job queued or running for it would wait or run for good: the sweep
+ * after every reap ends it (reconcileStuckReviewRuns).
  */
 
 export const AI_REVIEW_QUEUE = 'ai-review';
@@ -62,6 +71,16 @@ const queuedJobsOf = (runIds: readonly string[]): SQL | undefined =>
     eq(jobs.status, 'queued'),
     inArray(sql`${jobs.payload} ->> 'runId'`, [...runIds]),
   );
+
+/**
+ * Whether a job of the run `runId` (an id, or the column of an outer query) is queued or running:
+ * one will decide the run. Compared as text, so that a malformed payload never fails the query.
+ */
+const liveJobOf = (runId: SQL): SQL =>
+  sql`EXISTS (SELECT 1 FROM ${jobs}
+               WHERE ${jobs.queue} = ${AI_REVIEW_QUEUE}
+                 AND ${jobs.status} IN ('queued', 'running')
+                 AND ${jobs.payload} ->> 'runId' = (${runId})::text)`;
 
 /**
  * The run of a merge request analysis, `waiting` for its snapshot, and its job at the deadline,
@@ -180,6 +199,91 @@ export async function queueAtDeadline(tx: Executor, run: RunRef): Promise<void> 
     run,
     sql`(SELECT ${reviewRuns.deadlineAt} FROM ${reviewRuns} WHERE ${reviewRuns.id} = ${run.id})`,
   );
+}
+
+/** How many runs one sweep looks at; the next sweep, 30 seconds on, takes the rest. */
+const SWEEP_BATCH = 100;
+
+/** What a sweep did: the runs it ended, and the waiting ones it queued a job for. */
+export interface ReviewSweep {
+  ended: number;
+  queued: number;
+}
+
+/**
+ * The runs that wait or review with no `ai-review` job queued or running for them: both tries of
+ * their job died (its lease expired, or it failed, twice), so nothing would ever end them and the
+ * merge request's summary would say the review is in progress for good. After every reap of the
+ * review worker (main.ts, every 30 seconds), each is ended here, never through a job: a running one
+ * `failed: internal`, a waiting one past its deadline `skipped: no_snapshot`, and a waiting one
+ * before its deadline gets a job at the deadline. Each end is decorated (run-ends.ts). Decided by
+ * whether a job is there, never by the run's age: a long review keeps its job running, its lease
+ * extended by the worker. Each run is decided in a transaction of its own, which takes the branch's
+ * decoration lock, then the run's row, then looks for its job once more: a job queued meanwhile, by
+ * a wake, is seen. It waits for neither lock: a run whose branch or row another transaction holds
+ * (an ingestion, a job deciding) is left to the next sweep, so the worker it runs on never stalls.
+ */
+export async function reconcileStuckReviewRuns(
+  db: Db,
+  logger: Pick<WorkerLogger, 'info' | 'warn'>,
+): Promise<ReviewSweep> {
+  const stuck = await db
+    .select({ id: reviewRuns.id, branchId: reviewRuns.branchId })
+    .from(reviewRuns)
+    .where(
+      and(
+        inArray(reviewRuns.status, ['waiting', 'running']),
+        sql`NOT ${liveJobOf(sql`${reviewRuns.id}`)}`,
+      ),
+    )
+    .orderBy(reviewRuns.id)
+    .limit(SWEEP_BATCH);
+  const swept: ReviewSweep = { ended: 0, queued: 0 };
+  for (const candidate of stuck) {
+    const outcome = await db.transaction(async (tx): Promise<RunEnd | 'queued' | 'none'> => {
+      if (!(await tryLockBranchQueue(tx, candidate.branchId))) return 'none';
+      const [locked] = await tx
+        .select({ run: reviewRuns, due: sql<boolean>`${reviewRuns.deadlineAt} <= now()` })
+        .from(reviewRuns)
+        .where(
+          and(eq(reviewRuns.id, candidate.id), inArray(reviewRuns.status, ['waiting', 'running'])),
+        )
+        .for('update', { skipLocked: true });
+      if (locked === undefined) return 'none';
+      // Under the run's lock, in a statement of its own: it sees a job queued until now.
+      const live = await tx.execute<{ live: boolean }>(
+        sql`SELECT ${liveJobOf(sql`${candidate.id}`)} AS live`,
+      );
+      if (live.rows[0]?.live === true) return 'none';
+      const { run, due } = locked;
+      if (run.status === 'waiting' && !due) {
+        await queueAtDeadline(tx, run);
+        return 'queued';
+      }
+      const end: RunEnd =
+        run.status === 'running'
+          ? { status: 'failed', reason: 'internal' }
+          : { status: 'skipped', reason: 'no_snapshot' };
+      // What the dead job spent is on the run as far as it wrote it, and stays so.
+      if (!(await endRun(tx, run, [run.status], end))) return 'none';
+      await decorateRun(tx, run, logger);
+      return end;
+    });
+    if (outcome === 'queued') {
+      swept.queued += 1;
+    } else if (outcome !== 'none') {
+      swept.ended += 1;
+      logger.warn(
+        {
+          runId: candidate.id,
+          status: outcome.status,
+          reason: outcome.status === 'superseded' ? null : outcome.reason,
+        },
+        'AI review run ended without its job',
+      );
+    }
+  }
+  return swept;
 }
 
 /**

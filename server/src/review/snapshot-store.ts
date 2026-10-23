@@ -29,6 +29,7 @@ import { first } from '../db/rows';
 import {
   analyses,
   branches,
+  jobs,
   reviewSnapshotFiles,
   reviewSnapshots,
   type BranchKind,
@@ -46,13 +47,26 @@ import { wakeReviewRun } from './runs';
  * The repository snapshot of a merge request (6I-2, rulings R2 and R3): the scanner uploads it as
  * gzip'd JSON Lines next to its report; the upload is kept as sent (`uploaded`) until a job of the
  * analysis worker unpacks it into one `review_snapshot_files` row per path (`ready`), or refuses it
- * whole (`rejected`, with the reason). A merge request keeps the snapshot of its newest analysis
- * only (`linkSnapshot`); housekeeping deletes the rest (housekeeping/run.ts). A snapshot that is
- * linked, or refused, wakes its analysis' review run (6I-3, R15).
+ * whole (`rejected`, with the reason). The job waits for the analysis to be ingested first (6I-3,
+ * R22: the analysis' merge request is known only then). A merge request keeps the snapshot of its
+ * newest analysis only (`linkSnapshot`); housekeeping deletes the rest (housekeeping/run.ts). A
+ * snapshot that is linked, or refused, wakes its analysis' review run (6I-3, R15).
  */
 
 /** The queue of the job that unpacks an upload (main.ts: the analysis worker runs it). */
 export const REVIEW_SNAPSHOT_QUEUE = 'review-snapshot';
+
+/** One unpack at a time per project: a burst of uploads never fills the analysis worker. */
+const unpackKey = (projectId: string): string => `review-snapshot:project:${projectId}`;
+
+/**
+ * How long an unpack whose analysis is not ingested yet waits before it looks again: 15 seconds,
+ * doubling with each wait (`deferrals` before this one), to 5 minutes at most. The ingestion makes
+ * the waiting job due at once (unpackDueNow), so this bounds only a wait that ends otherwise.
+ */
+export function unpackDeferralSeconds(deferrals: number): number {
+  return Math.min(300, 15 * 2 ** Math.min(Math.max(deferrals, 0), 5));
+}
 
 /** The snapshot's limits: QUALOR_REVIEW_SNAPSHOT_MAX_* (`config.reviewSnapshot`). */
 export interface SnapshotLimits {
@@ -71,8 +85,11 @@ const NEWLINE = 0x0a;
 /** A stored reason never holds a line's content; this only bounds the column. */
 const MAX_ERROR_CHARS = 500;
 
-/** What unpacking did: `gone` when the snapshot is no longer stored (or went while unpacking). */
-export type UnpackOutcome = 'ready' | 'rejected' | 'gone';
+/**
+ * What unpacking did: `gone` when the snapshot is no longer stored (or went while unpacking);
+ * `deferred` when its analysis is not ingested yet, so another job unpacks it later.
+ */
+export type UnpackOutcome = 'ready' | 'rejected' | 'gone' | 'deferred';
 
 /** The branch an ingestion stores its analysis on: the review snapshot stage's `ctx.branch`. */
 export interface IngestedBranch {
@@ -127,8 +144,7 @@ export async function storeSnapshotUpload(
       await enqueue(tx, {
         queue: REVIEW_SNAPSHOT_QUEUE,
         payload: { snapshotId: id },
-        // One unpack at a time per project: a burst of uploads never fills the analysis worker.
-        concurrencyKey: `review-snapshot:project:${analysis.projectId}`,
+        concurrencyKey: unpackKey(analysis.projectId),
       });
       return id;
     });
@@ -521,14 +537,13 @@ async function analysisShared(
 
 /**
  * R22: why a snapshot cannot be of the analysis' merge request, or null. Its header must name the
- * merge request of the analysis' SCM context (the report's): one of another merge request, or of a
- * branch analysis (which has none), or an analysis whose context Qualor cannot read, is refused. An
- * analysis not ingested yet has no context to compare with: its snapshot is unpacked, and the
- * ingestion links it.
+ * merge request of the analysis' SCM context (the report's). The analysis is ingested, or failed,
+ * by now (unpackSnapshot waits for it), so its context is what it will stay: a snapshot of another
+ * merge request, or of a branch analysis (which has none), or of an analysis without a context
+ * Qualor can read (one that failed before its report was read, say), is refused.
  */
 function mergeRequestProblem(scmContext: unknown, header: SnapshotHeaderLine): string | null {
   const stored = readScmContext(scmContext);
-  if (stored.kind === 'missing') return null;
   if (stored.kind === 'ok' && stored.context.mergeRequestId === header.mergeRequest.id) return null;
   return 'merge_request_mismatch';
 }
@@ -632,37 +647,96 @@ async function unpackBody(
 }
 
 /**
+ * R22 is checked against the analysis' SCM context, which its ingestion stores: while the analysis
+ * is `queued` or `processing`, the unpack waits. Another job of the queue is queued for later
+ * (unpackDeferralSeconds), this one completes, and the outcome is `deferred`. The analysis is read
+ * FOR SHARE, which waits for an ingestion in flight: either the job is queued before the ingestion
+ * reads the analysis (its review stage then makes the job due at once, unpackDueNow), or this sees
+ * the analysis as the ingestion committed it. The wait ends when the analysis is ingested or fails,
+ * which `reconcileDeadAnalyses` bounds. Answers whether it waits.
+ */
+async function deferWhileIngesting(
+  db: Db,
+  snapshot: { id: string; analysisId: string; projectId: string },
+  deferrals: number,
+): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    const [analysis] = await tx
+      .select({ status: analyses.status })
+      .from(analyses)
+      .where(eq(analyses.id, snapshot.analysisId))
+      .for('share');
+    if (analysis?.status !== 'queued' && analysis?.status !== 'processing') return false;
+    await enqueue(tx, {
+      queue: REVIEW_SNAPSHOT_QUEUE,
+      payload: { snapshotId: snapshot.id, deferrals: deferrals + 1 },
+      concurrencyKey: unpackKey(snapshot.projectId),
+      runAt: sql`now() + make_interval(secs => ${unpackDeferralSeconds(deferrals)})`,
+    });
+    return true;
+  });
+}
+
+/**
  * Unpacks an uploaded snapshot (the job of REVIEW_SNAPSHOT_QUEUE), then links it (linkSnapshot).
- * On any violation nothing of it is kept but the reason (`rejected`, `SNAPSHOT_INVALID:<reason>`),
- * a header that names another merge request than the analysis' among them (R22). Idempotent: a
- * snapshot already `ready` is only linked again, a `rejected` one is left as it is.
+ * Before anything of it is read, it waits for its analysis to be ingested (deferWhileIngesting;
+ * `deferrals`: how often it waited already). On any violation nothing of it is kept but the reason
+ * (`rejected`, `SNAPSHOT_INVALID:<reason>`), a header that names another merge request than the
+ * analysis' among them (R22). Idempotent: a snapshot already `ready` is only linked again, a
+ * `rejected` one is left as it is.
  */
 export async function unpackSnapshot(
   db: Db,
   snapshotId: string,
   limits: SnapshotLimits,
+  o: { deferrals?: number } = {},
 ): Promise<UnpackOutcome> {
   const [stored] = await db
     .select({
       analysisId: reviewSnapshots.analysisId,
+      projectId: reviewSnapshots.projectId,
       status: reviewSnapshots.status,
-      body: reviewSnapshots.body,
     })
     .from(reviewSnapshots)
     .where(eq(reviewSnapshots.id, snapshotId));
   if (!stored) return 'gone';
   if (stored.status === 'rejected') return 'rejected';
-  const outcome =
-    stored.status === 'ready'
-      ? 'ready'
-      : await unpackBody(
-          db,
-          { snapshotId, analysisId: stored.analysisId, body: stored.body },
-          limits,
-        );
+  let outcome: UnpackOutcome = 'ready';
+  if (stored.status === 'uploaded') {
+    if (await deferWhileIngesting(db, { id: snapshotId, ...stored }, o.deferrals ?? 0)) {
+      return 'deferred';
+    }
+    const [upload] = await db
+      .select({ body: reviewSnapshots.body })
+      .from(reviewSnapshots)
+      .where(eq(reviewSnapshots.id, snapshotId));
+    if (!upload) return 'gone';
+    outcome = await unpackBody(
+      db,
+      { snapshotId, analysisId: stored.analysisId, body: upload.body },
+      limits,
+    );
+  }
   // Also for a snapshot already `ready`: a run may have stopped between unpacking and linking.
   if (outcome === 'ready') await linkSnapshot(db, stored.analysisId);
   return outcome;
+}
+
+/**
+ * The analysis is being ingested (the review snapshot stage, in the ingestion's transaction): an
+ * unpack of its snapshot that waits for it (deferWhileIngesting) is due now, not at its next look.
+ */
+export async function unpackDueNow(tx: Executor, analysisId: string): Promise<void> {
+  await tx
+    .update(jobs)
+    .set({ runAt: sql`now()` })
+    .where(
+      and(
+        eq(jobs.queue, REVIEW_SNAPSHOT_QUEUE),
+        eq(jobs.status, 'queued'),
+        sql`${jobs.payload} ->> 'snapshotId' = (SELECT ${reviewSnapshots.id}::text FROM ${reviewSnapshots} WHERE ${reviewSnapshots.analysisId} = ${analysisId})`,
+      ),
+    );
 }
 
 // ─── Linking ─────────────────────────────────────────────────────────────────
@@ -708,8 +782,9 @@ async function keepOnly(db: Executor, analysisId: string, branchId: string): Pro
  * it still in flight: either that ingestion's stage has linked the snapshot, or the analysis is
  * read as it committed. The branch row is then locked, as ingestion locks it, so the links of one
  * merge request are made one at a time. A snapshot linked here wakes the analysis' review run
- * (R15); the ingestion stage wakes the run it creates itself. Locks are taken in ingestion's order:
- * analysis, branch, snapshots, the review run.
+ * (R15): a snapshot is unpacked only once its analysis is ingested (unpackSnapshot), so the run is
+ * there to be woken. Locks are taken in ingestion's order: analysis, branch, snapshots, the review
+ * run.
  */
 export async function linkSnapshot(
   db: Executor,

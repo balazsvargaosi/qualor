@@ -38,6 +38,7 @@ import { ensurePluginSchedules, startPluginWorker } from './plugins/mount';
 import { startWorker } from './queue/worker';
 import { REVIEW_LEASE_MS, reviewHandlers } from './review/job';
 import { reviewSnapshotHandlers } from './review/jobs';
+import { reconcileStuckReviewRuns } from './review/runs';
 import { scmHandlers } from './scm/decorate';
 import { createScmRuntime } from './scm/runtime';
 import { supportBundleCommand } from './support/command';
@@ -351,6 +352,13 @@ async function main(): Promise<void> {
     concurrency: config.reviewWorkerConcurrency,
     leaseMs: REVIEW_LEASE_MS,
     logger,
+    afterReap: async (db) => {
+      // A run whose job is gone for good (both tries died) is ended, or given a job, here.
+      const swept = await reconcileStuckReviewRuns(db, logger);
+      if (swept.ended > 0 || swept.queued > 0) {
+        logger.warn(swept, 'reconciled AI review runs whose job was lost');
+      }
+    },
   });
   // E1 spec: email has its own worker, so a slow SMTP server never delays analyses, deliveries
   // or decorations.

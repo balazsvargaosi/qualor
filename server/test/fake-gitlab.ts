@@ -71,6 +71,8 @@ export interface FakeMergeRequest {
   state: 'opened' | 'closed' | 'merged';
   /** A draft merge request (GitLab's `draft`); false when left out. */
   draft?: boolean;
+  /** Answered as a GitLab before 14 does: no `draft`, a draft said by `work_in_progress` only. */
+  legacyDraft?: boolean;
   sourceBranch: string;
   targetBranch: string;
   headSha: string;
@@ -275,21 +277,28 @@ export async function createFakeGitLab(
     individual_note: d.individualNote,
     notes: d.notes.map(noteJson),
   });
-  const mrJson = (project: FakeProject, mr: FakeMergeRequest) => ({
-    ...(mrShape as Record<string, unknown>),
-    id: 3000 + mr.iid,
-    iid: mr.iid,
-    project_id: project.id,
-    title: mr.title,
-    state: mr.state,
-    draft: mr.draft ?? false,
-    work_in_progress: mr.draft ?? false,
-    source_branch: mr.sourceBranch,
-    target_branch: mr.targetBranch,
-    sha: mr.headSha,
-    web_url: `${url}/${project.path}/-/merge_requests/${mr.iid}`,
-    diff_refs: { base_sha: mr.baseSha, head_sha: mr.headSha, start_sha: mr.startSha },
-  });
+  const mrJson = (project: FakeProject, mr: FakeMergeRequest) => {
+    const json: Record<string, unknown> = {
+      ...(mrShape as Record<string, unknown>),
+      id: 3000 + mr.iid,
+      iid: mr.iid,
+      project_id: project.id,
+      title: mr.title,
+      state: mr.state,
+      draft: mr.draft ?? false,
+      work_in_progress: mr.draft ?? false,
+      source_branch: mr.sourceBranch,
+      target_branch: mr.targetBranch,
+      sha: mr.headSha,
+      web_url: `${url}/${project.path}/-/merge_requests/${mr.iid}`,
+      diff_refs: { base_sha: mr.baseSha, head_sha: mr.headSha, start_sha: mr.startSha },
+    };
+    if (mr.legacyDraft !== undefined) {
+      delete json.draft;
+      json.work_in_progress = mr.legacyDraft;
+    }
+    return json;
+  };
   const paged = (res: ServerResponse, query: URLSearchParams, all: unknown[]) => {
     const perPage = Math.min(100, Math.max(1, Number(query.get('per_page') ?? '20')));
     const page = Math.max(1, Number(query.get('page') ?? '1'));

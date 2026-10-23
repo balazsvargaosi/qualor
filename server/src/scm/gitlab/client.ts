@@ -99,8 +99,10 @@ const mergeRequest = z.looseObject({
   diff_refs: z
     .looseObject({ base_sha: sha.nullable(), head_sha: sha.nullable(), start_sha: sha.nullable() })
     .nullable(),
-  /** A draft merge request (GitLab 14+; `work_in_progress` before it), which AI review skips. */
+  /** A draft merge request (GitLab 14+), which AI review skips. */
   draft: z.boolean().default(false),
+  /** What GitLab before 14 says a draft by (deprecated since, as the same flag as `draft`). */
+  work_in_progress: z.boolean().default(false),
 });
 export type GitLabMergeRequest = z.infer<typeof mergeRequest>;
 

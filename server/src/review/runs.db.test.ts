@@ -1,6 +1,6 @@
 import { gzipSync } from 'node:zlib';
 import { encodeSnapshotLine, type SnapshotLine } from '@qualor/shared';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { bearer } from '../../test/app';
 import { createFakeLlm, type FakeLlm } from '../../test/fake-llm';
@@ -16,8 +16,10 @@ import { jobHandlers } from '../ingest/handlers';
 import { DEFAULT_LLM_SETTINGS, writeLlmSettings } from '../llm/settings';
 import { runUntilIdle } from '../queue/worker';
 import { SCM_TOKEN_AAD } from '../scm/connections';
+import { lockBranchQueue, SCM_QUEUE } from '../scm/queue';
 import {
   AI_REVIEW_QUEUE,
+  reconcileStuckReviewRuns,
   REVIEW_SNAPSHOT_WAIT_SECONDS,
   supersedeRuns,
   wakeReviewRun,
@@ -93,6 +95,54 @@ describe('the review run lifecycle (6I-3, R15)', () => {
     storeTestSnapshot(h.ctx.db, analysisId, SNAPSHOT_LINES, {
       mergeRequest: { id: String(mr), title: 'A change', description: null },
     });
+  /** Uploads a snapshot of the merge request `mr` for the analysis, without unpacking it. */
+  const uploadSnapshot = (analysisId: string, mr: number) => {
+    const lines: SnapshotLine[] = [
+      {
+        type: 'header',
+        v: 1,
+        headSha: 'a'.repeat(40),
+        baseSha: 'b'.repeat(40),
+        sinceSha: null,
+        targetBranch: 'main',
+        mergeRequest: { id: String(mr), title: null, description: null },
+        partial: false,
+        generator: 'qualor-cli/test',
+      },
+      ...SNAPSHOT_LINES,
+      { type: 'end', files: 1, changes: 1, omitted: 0 },
+    ];
+    const body = gzipSync(lines.map(encodeSnapshotLine).join(''));
+    return storeSnapshotUpload(h.ctx.db, {
+      analysisId,
+      projectId: p.id,
+      body,
+      compressedBytes: body.length,
+    });
+  };
+  /** The decorations queued for the analysis. */
+  const decorationsOf = (analysisId: string) =>
+    h.ctx.db
+      .select({ id: jobs.id })
+      .from(jobs)
+      .where(
+        and(
+          eq(jobs.queue, SCM_QUEUE),
+          eq(jobs.status, 'queued'),
+          sql`${jobs.payload} ->> 'analysisId' = ${analysisId}`,
+        ),
+      );
+  /** The run's job dies: its tries are spent (the reaper made it dead). */
+  const jobDies = (runId: string) =>
+    h.ctx.db
+      .update(jobs)
+      .set({ status: 'dead', lastError: 'lease expired' })
+      .where(and(eq(jobs.queue, AI_REVIEW_QUEUE), sql`${jobs.payload} ->> 'runId' = ${runId}`));
+  const warned: unknown[][] = [];
+  const sweepLogger = {
+    info: () => undefined,
+    warn: (...args: unknown[]) => void warned.push(args),
+  };
 
   beforeAll(async () => {
     llm = await createFakeLlm();
@@ -217,15 +267,18 @@ describe('the review run lifecycle (6I-3, R15)', () => {
     });
   });
 
-  it('a snapshot linked during or after ingestion wakes the run', async () => {
-    // During: the snapshot is unpacked while its analysis is still queued, so the ingestion links
-    // it, and the run it creates is due at once.
-    const during = nextMergeRequest();
-    const queued = await queuedAnalysis(during);
-    await snapshotOf(queued, during);
+  it('a snapshot uploaded before or after ingestion wakes the run once it is linked', async () => {
+    // Before: the snapshot comes while its analysis is still queued. Its unpack waits for the
+    // ingestion (R22), which creates the run; unpacked and linked then, it makes the run due.
+    const before = nextMergeRequest();
+    const queued = await queuedAnalysis(before);
+    const early = await uploadSnapshot(queued, before);
+    expect(await unpackSnapshot(h.ctx.db, early, LIMITS)).toBe('deferred');
     await runIngestion();
     const linked = await runOf(queued);
     expect(linked.status).toBe('waiting');
+    expect(await jobsOf(linked.id)).toEqual([expect.objectContaining({ due: false })]);
+    expect(await unpackSnapshot(h.ctx.db, early, LIMITS)).toBe('ready');
     expect(await jobsOf(linked.id)).toEqual([expect.objectContaining({ due: true })]);
 
     // After: the run waits for its deadline until the snapshot is linked.
@@ -241,19 +294,16 @@ describe('the review run lifecycle (6I-3, R15)', () => {
     expect(await jobsOf(run.id)).toEqual([expect.objectContaining({ id: job!.id, due: true })]);
   });
 
-  it('a snapshot refused before its analysis is ingested wakes the run the ingestion creates', async () => {
+  it('a snapshot of another merge request uploaded before the ingestion is refused after it, and wakes the run', async () => {
     const mr = nextMergeRequest();
     const queued = await queuedAnalysis(mr);
-    const snapshotId = await storeSnapshotUpload(h.ctx.db, {
-      analysisId: queued,
-      projectId: p.id,
-      body: gzipSync('not a snapshot'),
-      compressedBytes: 14,
-    });
-    expect(await unpackSnapshot(h.ctx.db, snapshotId, LIMITS)).toBe('rejected');
+    const snapshotId = await uploadSnapshot(queued, mr + 1_000);
+    expect(await unpackSnapshot(h.ctx.db, snapshotId, LIMITS)).toBe('deferred');
     await runIngestion();
     const run = await runOf(queued);
     expect(run.status).toBe('waiting');
+    expect(await jobsOf(run.id)).toEqual([expect.objectContaining({ due: false })]);
+    expect(await unpackSnapshot(h.ctx.db, snapshotId, LIMITS)).toBe('rejected');
     expect(await jobsOf(run.id)).toEqual([expect.objectContaining({ due: true })]);
   });
 
@@ -312,5 +362,144 @@ describe('the review run lifecycle (6I-3, R15)', () => {
     expect(await runOf(run.analysisId)).toMatchObject({ status: 'skipped', reason: 'no_snapshot' });
     expect(await jobsOf(run.id)).toEqual([]);
     expect((await runOf(newer.analysisId)).status).toBe('waiting');
+  });
+
+  describe('the sweep of runs whose job is gone (reconcileStuckReviewRuns)', () => {
+    beforeEach(async () => {
+      // Each case sees only its own runs: the others' are ended first.
+      await h.ctx.db
+        .update(reviewRuns)
+        .set({ status: 'superseded', phase: null, reason: null, finishedAt: new Date() })
+        .where(inArray(reviewRuns.status, ['waiting', 'running']));
+      warned.length = 0;
+    });
+
+    it('ends a running run whose job died as failed internal, keeps its spend and decorates it', async () => {
+      const analysisId = await p.ingestOk(report(nextMergeRequest()));
+      const run = await runOf(analysisId);
+      await h.ctx.db
+        .update(reviewRuns)
+        .set({
+          status: 'running',
+          phase: 'specialists',
+          startedAt: new Date(),
+          headSha: revision(1),
+          modelCalls: 2,
+          inputTokens: 2_000,
+          outputTokens: 200,
+        })
+        .where(eq(reviewRuns.id, run.id));
+      await jobDies(run.id);
+      await h.ctx.db.delete(jobs).where(eq(jobs.queue, SCM_QUEUE));
+      expect(await reconcileStuckReviewRuns(h.ctx.db, sweepLogger)).toEqual({
+        ended: 1,
+        queued: 0,
+      });
+      expect(await runOf(analysisId)).toMatchObject({
+        status: 'failed',
+        reason: 'internal',
+        phase: null,
+        finishedAt: expect.any(Date),
+        modelCalls: 2,
+        inputTokens: 2_000,
+        outputTokens: 200,
+      });
+      // Ended directly: no job is queued for it, and its end is decorated.
+      expect(await jobsOf(run.id)).toEqual([]);
+      expect(await decorationsOf(analysisId)).toHaveLength(1);
+      expect(warned).toEqual([
+        [
+          { runId: run.id, status: 'failed', reason: 'internal' },
+          'AI review run ended without its job',
+        ],
+      ]);
+      // A second sweep finds nothing to do.
+      expect(await reconcileStuckReviewRuns(h.ctx.db, sweepLogger)).toEqual({
+        ended: 0,
+        queued: 0,
+      });
+    });
+
+    it('ends a waiting run past its deadline as no_snapshot; one before it gets a job at its deadline', async () => {
+      const late = await runOf(await p.ingestOk(report(nextMergeRequest())));
+      await h.ctx.db
+        .update(reviewRuns)
+        .set({ deadlineAt: sql`now() - interval '1 minute'` })
+        .where(eq(reviewRuns.id, late.id));
+      await jobDies(late.id);
+      const early = await runOf(await p.ingestOk(report(nextMergeRequest())));
+      await h.ctx.db.delete(jobs).where(sql`${jobs.payload} ->> 'runId' = ${early.id}`);
+      await h.ctx.db.delete(jobs).where(eq(jobs.queue, SCM_QUEUE));
+      expect(await reconcileStuckReviewRuns(h.ctx.db, sweepLogger)).toEqual({
+        ended: 1,
+        queued: 1,
+      });
+      expect(await runOf(late.analysisId)).toMatchObject({
+        status: 'skipped',
+        reason: 'no_snapshot',
+        finishedAt: expect.any(Date),
+      });
+      expect(await decorationsOf(late.analysisId)).toHaveLength(1);
+      // The one before its deadline waits on, with a job at the deadline, and no decoration.
+      expect(await runOf(early.analysisId)).toMatchObject({ status: 'waiting', finishedAt: null });
+      expect(await jobsOf(early.id)).toEqual([
+        expect.objectContaining({ runAt: early.deadlineAt, due: false }),
+      ]);
+      expect(await decorationsOf(early.analysisId)).toEqual([]);
+    });
+
+    it('leaves a run alone while a job of it is queued or running, however old the run', async () => {
+      const waiting = await runOf(await p.ingestOk(report(nextMergeRequest())));
+      const running = await runOf(await p.ingestOk(report(nextMergeRequest())));
+      const long = sql`now() - interval '3 hours'`;
+      await h.ctx.db
+        .update(reviewRuns)
+        .set({ deadlineAt: long, createdAt: long })
+        .where(eq(reviewRuns.id, waiting.id));
+      await h.ctx.db
+        .update(reviewRuns)
+        .set({ status: 'running', phase: 'judge', startedAt: long, headSha: revision(1) })
+        .where(eq(reviewRuns.id, running.id));
+      // A long review: its job runs, its lease kept by the worker.
+      await h.ctx.db
+        .update(jobs)
+        .set({
+          status: 'running',
+          attempts: 1,
+          lockedBy: 'a-worker',
+          lockedUntil: sql`now() + interval '20 minutes'`,
+        })
+        .where(sql`${jobs.payload} ->> 'runId' = ${running.id}`);
+      expect(await reconcileStuckReviewRuns(h.ctx.db, sweepLogger)).toEqual({
+        ended: 0,
+        queued: 0,
+      });
+      expect((await runOf(waiting.analysisId)).status).toBe('waiting');
+      expect((await runOf(running.analysisId)).status).toBe('running');
+      expect(warned).toEqual([]);
+    });
+
+    it('never waits on a branch another transaction holds: the next sweep ends its run', async () => {
+      const run = await runOf(await p.ingestOk(report(nextMergeRequest())));
+      await jobDies(run.id);
+      await h.ctx.db
+        .update(reviewRuns)
+        .set({ status: 'running', phase: 'judge', startedAt: new Date(), headSha: revision(1) })
+        .where(eq(reviewRuns.id, run.id));
+      // An ingestion of the merge request holds the branch's decoration lock meanwhile.
+      await h.ctx.db.transaction(async (tx) => {
+        await lockBranchQueue(tx, run.branchId);
+        expect(await reconcileStuckReviewRuns(h.ctx.db, sweepLogger)).toEqual({
+          ended: 0,
+          queued: 0,
+        });
+      });
+      expect((await runOf(run.analysisId)).status).toBe('running');
+      expect(await reconcileStuckReviewRuns(h.ctx.db, sweepLogger)).toEqual({
+        ended: 1,
+        queued: 0,
+      });
+      expect(await runOf(run.analysisId)).toMatchObject({ status: 'failed', reason: 'internal' });
+    });
   });
 });

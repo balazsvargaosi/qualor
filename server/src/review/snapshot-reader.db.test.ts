@@ -179,6 +179,16 @@ function fixtureMemory(): SnapshotReader {
   });
 }
 
+/**
+ * An analysis that is done (it failed, so it is on no branch), of the merge request `7` that
+ * storeTestSnapshot's header names: its snapshot unpacks at once (R22).
+ */
+const doneAnalysis = (projectId: string) => ({
+  projectId,
+  status: 'failed' as const,
+  scmContext: { provider: 'gitlab', mergeRequestId: '7', gitlab: null },
+});
+
 describe('the snapshot reader (6I-3)', () => {
   let t: TestDatabase;
   let projectId: string;
@@ -188,8 +198,9 @@ describe('the snapshot reader (6I-3)', () => {
   /** The masker of the review tools of these tests: one worker, stopped with them. */
   const masker = new Masker();
 
+  /** An analysis that is done, of the merge request `7` of the test snapshots (R22). */
   const newAnalysis = async (): Promise<string> =>
-    first(await t.db.insert(analyses).values({ projectId }).returning()).id;
+    first(await t.db.insert(analyses).values(doneAnalysis(projectId)).returning()).id;
 
   beforeAll(async () => {
     t = await createTestDatabase();
@@ -789,7 +800,9 @@ describe('the snapshot reader on a database with another collation (6I-3)', () =
         .values({ organizationId, key: 'collation/api', name: 'api' })
         .returning(),
     ).id;
-    const analysisId = first(await t.db.insert(analyses).values({ projectId }).returning()).id;
+    const analysisId = first(
+      await t.db.insert(analyses).values(doneAnalysis(projectId)).returning(),
+    ).id;
     const names = ['B.ts', 'a.ts', 'Z.ts', '_x.ts', 'é.ts', 'a_b/x.ts', 'a%b/x.ts', 'ab/x.ts'];
     const id = await storeTestSnapshot(t.db, analysisId, [
       ...names.map((path): SnapshotLine => ({ type: 'file', path, text: 'needle\n' })),

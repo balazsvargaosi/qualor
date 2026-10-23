@@ -30,6 +30,7 @@ import {
   linkSnapshot,
   REVIEW_SNAPSHOT_QUEUE,
   storeSnapshotUpload,
+  unpackDeferralSeconds,
   unpackSnapshot,
 } from './snapshot-store';
 
@@ -113,8 +114,21 @@ describe('review snapshots: store, unpack and link (6I-2, R2, R3)', () => {
   let h: IngestHarness;
   let p: IngestProject;
 
+  /**
+   * An analysis whose snapshot is unpacked at once: done (it failed, so it is linked to no
+   * branch), of the merge request `7` of the test header (R22).
+   */
   const newAnalysis = async (): Promise<string> =>
-    first(await h.ctx.db.insert(analyses).values({ projectId: p.id }).returning()).id;
+    first(
+      await h.ctx.db
+        .insert(analyses)
+        .values({
+          projectId: p.id,
+          status: 'failed',
+          scmContext: { provider: 'gitlab', mergeRequestId: '7', gitlab: null },
+        })
+        .returning(),
+    ).id;
   const store = async (body: Buffer, analysisId?: string) => {
     const id = analysisId ?? (await newAnalysis());
     const snapshotId = await storeSnapshotUpload(h.ctx.db, {
@@ -750,10 +764,12 @@ describe('review snapshots: store, unpack and link (6I-2, R2, R3)', () => {
       const s1 = await unpackFor(first1, iid);
       const branchId = await branchOf(first1);
       expect(await kept([s1])).toEqual([{ id: s1, branchId }]);
-      // The second analysis's snapshot is unpacked while the analysis is still queued: the
-      // ingestion links it, and deletes the older one.
+      // The second analysis's snapshot comes while the analysis is still queued: its unpack waits
+      // for the ingestion (6I-3, R22), which deletes the older snapshot; unpacked then, the newer
+      // one is linked.
       const second = await queuedAnalysis(iid, 2);
-      const s2 = await unpackFor(second, iid);
+      const { snapshotId: s2 } = await store(snapshotBody(iid), second);
+      expect(await unpackSnapshot(h.ctx.db, s2, LIMITS)).toBe('deferred');
       expect(await kept([s1, s2])).toEqual(
         [
           { id: s1, branchId },
@@ -761,6 +777,8 @@ describe('review snapshots: store, unpack and link (6I-2, R2, R3)', () => {
         ].sort((a, b) => a.id.localeCompare(b.id)),
       );
       await runIngestion();
+      expect(await kept([s1, s2])).toEqual([{ id: s2, branchId: null }]);
+      expect(await unpackSnapshot(h.ctx.db, s2, LIMITS)).toBe('ready');
       expect(await kept([s1, s2])).toEqual([{ id: s2, branchId }]);
       // Linking again changes nothing.
       await linkSnapshot(h.ctx.db, second);
@@ -820,8 +838,8 @@ describe('review snapshots: store, unpack and link (6I-2, R2, R3)', () => {
     });
 
     it('a snapshot of a branch analysis is never linked', async () => {
-      // Unpacked after the analysis: a branch analysis has no merge request, so it is refused
-      // (R22); unpacked before it, it is kept unlinked until it expires.
+      // A branch analysis has no merge request, so its snapshot is refused (R22), whether it came
+      // after the ingestion or before it (its unpack then waits for the ingestion).
       const done = await p.ingestOk(
         reportWith({
           projectKey: p.key,
@@ -846,9 +864,15 @@ describe('review snapshots: store, unpack and link (6I-2, R2, R3)', () => {
           }),
         ),
       );
-      const s2 = await unpackFor(pending, 7);
+      const early = await store(snapshotBody(7), pending);
+      expect(await unpackSnapshot(h.ctx.db, early.snapshotId, LIMITS)).toBe('deferred');
       await runIngestion();
-      expect(await kept([s2])).toEqual([{ id: s2, branchId: null }]);
+      expect(await unpackSnapshot(h.ctx.db, early.snapshotId, LIMITS)).toBe('rejected');
+      expect(await snapshotRow(early.snapshotId)).toMatchObject({
+        status: 'rejected',
+        error: 'SNAPSHOT_INVALID:merge_request_mismatch',
+        branchId: null,
+      });
       const [branch] = await h.ctx.db
         .select({ kind: branches.kind })
         .from(branches)
@@ -870,10 +894,172 @@ describe('review snapshots: store, unpack and link (6I-2, R2, R3)', () => {
         { id: uploaded.snapshotId, branchId: await branchOf(a1) },
       ]);
       const failed = first(
-        await h.ctx.db.insert(analyses).values({ projectId: p.id, status: 'failed' }).returning(),
+        await h.ctx.db
+          .insert(analyses)
+          .values({
+            projectId: p.id,
+            status: 'failed',
+            scmContext: { provider: 'gitlab', mergeRequestId: String(iid), gitlab: null },
+          })
+          .returning(),
       ).id;
       const s = await unpackFor(failed, iid);
       expect(await kept([s])).toEqual([{ id: s, branchId: null }]);
+    });
+  });
+
+  describe('an unpack waits for its analysis to be ingested (6I-3, R22)', () => {
+    let mr = 500;
+    const nextMergeRequest = () => (mr += 1);
+    const report = (iid: number, n = 1) =>
+      mergeRequestReport(iid, String(n).repeat(40), {
+        projectKey: p.key,
+        analysisDate: `2026-10-0${n}T10:00:00Z`,
+      });
+    const snapshotBody = (iid: number) =>
+      gzipSync(
+        snapshotText([fileLine('src/a.ts')], {
+          header: headerLine({
+            mergeRequest: { id: String(iid), title: 'Parse the config', description: null },
+          }),
+        }),
+      );
+    const queuedAnalysis = (iid: number) =>
+      uploadReport(h.ctx, bearer(p.token), p.key, gzipJson(report(iid)));
+    const runIngestion = () =>
+      runUntilIdle(
+        h.ctx.db,
+        {
+          ...jobHandlers({ db: h.ctx.db, upload: h.ctx.config.upload, logger: h.ctx.app.log }),
+          ...gateHandlers({ db: h.ctx.db }),
+        },
+        h.ctx.app.log,
+      );
+    const logs: unknown[][] = [];
+    /** The unpack jobs that are due, as the analysis worker runs them. */
+    const runUnpacks = () =>
+      runUntilIdle(
+        h.ctx.db,
+        reviewSnapshotHandlers({
+          db: h.ctx.db,
+          logger: {
+            info: (...args: unknown[]) => void logs.push(args),
+            warn: (...args: unknown[]) => void logs.push(args),
+          },
+          limits: LIMITS,
+        }),
+        h.ctx.app.log,
+      );
+    /** The unpack jobs of the snapshot, oldest first, each with how far off it is due. */
+    const unpackJobsOf = async (snapshotId: string) =>
+      (
+        await h.ctx.db
+          .select({
+            status: jobs.status,
+            payload: jobs.payload,
+            key: jobs.concurrencyKey,
+            attempts: jobs.attempts,
+            inSeconds: sql<number>`round(extract(epoch FROM ${jobs.runAt} - now()))::int`,
+          })
+          .from(jobs)
+          .where(
+            and(
+              eq(jobs.queue, REVIEW_SNAPSHOT_QUEUE),
+              sql`${jobs.payload} ->> 'snapshotId' = ${snapshotId}`,
+            ),
+          )
+          .orderBy(asc(jobs.id))
+      ).map((job) => ({ ...job, inSeconds: Math.max(job.inSeconds, 0) }));
+
+    it('a snapshot uploaded while its analysis is processing waits, then is checked and linked', async () => {
+      // Only this test's job is left to run: the earlier tests unpacked theirs themselves.
+      await h.ctx.db.delete(jobs).where(eq(jobs.queue, REVIEW_SNAPSHOT_QUEUE));
+      const iid = nextMergeRequest();
+      const analysisId = await queuedAnalysis(iid);
+      // The analysis worker has taken the analysis and reads its report: it is not ingested yet.
+      await h.ctx.db
+        .update(analyses)
+        .set({ status: 'processing' })
+        .where(eq(analyses.id, analysisId));
+      const { snapshotId } = await store(snapshotBody(iid), analysisId);
+      logs.length = 0;
+      expect(await runUnpacks()).toBe(1);
+      // Nothing of it is read: the job that looked completed, and the next looks in 15 seconds.
+      expect(await snapshotRow(snapshotId)).toMatchObject({ status: 'uploaded', hasBody: true });
+      expect(await fileRows(snapshotId)).toEqual([]);
+      const key = `review-snapshot:project:${p.id}`;
+      const [looked, next] = await unpackJobsOf(snapshotId);
+      expect(looked).toEqual({
+        status: 'succeeded',
+        payload: { snapshotId },
+        key,
+        attempts: 1,
+        inSeconds: 0,
+      });
+      expect(next).toMatchObject({
+        status: 'queued',
+        payload: { snapshotId, deferrals: 1 },
+        key,
+        attempts: 0,
+      });
+      expect(next!.inSeconds).toBeGreaterThanOrEqual(13);
+      expect(next!.inSeconds).toBeLessThanOrEqual(15);
+      expect(logs).toContainEqual([
+        { snapshotId, deferrals: 1 },
+        'review snapshot waits for its analysis to be ingested',
+      ]);
+      // The ingestion makes it due; it is checked against the analysis' merge request, and linked.
+      await runIngestion();
+      expect((await unpackJobsOf(snapshotId))[1]).toMatchObject({ status: 'queued', inSeconds: 0 });
+      expect(await runUnpacks()).toBe(1);
+      const [analysis] = await h.ctx.db
+        .select({ branchId: analyses.branchId })
+        .from(analyses)
+        .where(eq(analyses.id, analysisId));
+      expect(await snapshotRow(snapshotId)).toMatchObject({
+        status: 'ready',
+        branchId: analysis!.branchId,
+        hasBody: false,
+      });
+      expect(await fileRows(snapshotId)).toHaveLength(1);
+    });
+
+    it('a snapshot of another merge request uploaded before the ingestion is rejected after it', async () => {
+      const iid = nextMergeRequest();
+      const analysisId = await queuedAnalysis(iid);
+      const { snapshotId } = await store(snapshotBody(iid + 1000), analysisId);
+      expect(await unpackSnapshot(h.ctx.db, snapshotId, LIMITS)).toBe('deferred');
+      expect(await snapshotRow(snapshotId)).toMatchObject({ status: 'uploaded' });
+      await runIngestion();
+      expect(await unpackSnapshot(h.ctx.db, snapshotId, LIMITS)).toBe('rejected');
+      expect(await snapshotRow(snapshotId)).toMatchObject({
+        status: 'rejected',
+        error: 'SNAPSHOT_INVALID:merge_request_mismatch',
+        hasBody: false,
+        branchId: null,
+      });
+      expect(await fileRows(snapshotId)).toEqual([]);
+    });
+
+    it('waits longer each time, and decides at once for an analysis that failed', async () => {
+      expect([0, 1, 2, 3, 4, 5, 6, 40].map(unpackDeferralSeconds)).toEqual([
+        15, 30, 60, 120, 240, 300, 300, 300,
+      ]);
+      const iid = nextMergeRequest();
+      const analysisId = await queuedAnalysis(iid);
+      const { snapshotId } = await store(snapshotBody(iid), analysisId);
+      expect(await unpackSnapshot(h.ctx.db, snapshotId, LIMITS, { deferrals: 3 })).toBe('deferred');
+      const next = (await unpackJobsOf(snapshotId)).at(-1);
+      expect(next).toMatchObject({ status: 'queued', payload: { snapshotId, deferrals: 4 } });
+      expect(next!.inSeconds).toBeGreaterThanOrEqual(118);
+      expect(next!.inSeconds).toBeLessThanOrEqual(120);
+      // Its report could not be read: the analysis failed before it had a merge request, and
+      // the snapshot is refused (R22).
+      await h.ctx.db.update(analyses).set({ status: 'failed' }).where(eq(analyses.id, analysisId));
+      expect(await unpackSnapshot(h.ctx.db, snapshotId, LIMITS, { deferrals: 4 })).toBe('rejected');
+      expect((await snapshotRow(snapshotId))!.error).toBe(
+        'SNAPSHOT_INVALID:merge_request_mismatch',
+      );
     });
   });
 });
