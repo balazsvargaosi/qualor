@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   createFakeGitHub,
@@ -17,7 +17,7 @@ import { createIngestHarness, type IngestHarness } from '../../../test/ingest';
 import { engine, file, finding, reportWith } from '../../../test/reports';
 import { PUBLIC_URL, queuedDecorations, runDecorations } from '../../../test/scm';
 import { encryptionKey, encryptSecret } from '../../crypto/secrets';
-import { analyses, branches, scmConnections } from '../../db/schema';
+import { analyses, branches, reviewRuns, scmConnections } from '../../db/schema';
 import { SCM_TOKEN_AAD } from '../connections';
 import { markerOf } from '../markdown';
 import { enqueueDecoration } from '../queue';
@@ -234,6 +234,81 @@ describe('GitHub decoration (github.md §5–§6)', () => {
     expect(runsOf(repo.id)).toHaveLength(1);
     expect(reviewCommentsOf(repo.id).map((c) => c.id)).toEqual(comments);
     expect(summaries(repo.id)).toHaveLength(1);
+  });
+
+  it('puts the state of the AI review in the summary comment and the check run, in GitHub’s words', async () => {
+    const { project, repo, ingest } = await setup('gh/ai-section');
+    const analysisId = await ingest([3]);
+    await runDecorations(h, githubDeps(h));
+    expect(summaries(repo.id)[0]?.body).not.toContain('AI review');
+    expect(newestRun(repo.id)?.summary).not.toContain('AI review');
+    const [pull] = await h.ctx.db
+      .select()
+      .from(branches)
+      .where(and(eq(branches.projectId, project.id), eq(branches.kind, 'merge_request')));
+    const decorateAgain = async () => {
+      fake.clearRequests();
+      await enqueueAgain(analysisId, repo.id);
+      await runDecorations(h, githubDeps(h));
+      // The check run is written once, already with the section the comment gets after it.
+      expect(writes().filter((w) => w.startsWith('PATCH') && w.includes('/check-runs/'))).toEqual([
+        `PATCH /repos/acme/${repo.name}/check-runs/${newestRun(repo.id)!.id}`,
+      ]);
+      // The comment and the check run are edited in place, and say the same.
+      expect(summaries(repo.id)).toHaveLength(1);
+      expect(runsOf(repo.id)).toHaveLength(1);
+      expect(newestRun(repo.id)?.summary).toBe(
+        summaries(repo.id)[0]!.body.split('\n').slice(1).join('\n'),
+      );
+      return summaries(repo.id)[0]!.body;
+    };
+
+    const [run] = await h.ctx.db
+      .insert(reviewRuns)
+      .values({
+        projectId: project.id,
+        branchId: pull!.id,
+        analysisId,
+        status: 'running',
+        phase: 'judge',
+        deadlineAt: new Date(),
+      })
+      .returning();
+    expect((await decorateAgain()).endsWith('\n\n#### AI review\n\nAI review in progress…')).toBe(
+      true,
+    );
+
+    await h.ctx.db
+      .update(reviewRuns)
+      .set({ status: 'failed', phase: null, reason: 'provider_error' })
+      .where(eq(reviewRuns.id, run!.id));
+    expect(await decorateAgain()).toContain(
+      'AI review failed: the model provider returned an error or could not be reached. The next push reviews again.',
+    );
+
+    // Done for another commit than the pull request is at now: GitHub's words for the move.
+    await h.ctx.db
+      .update(reviewRuns)
+      .set({
+        status: 'done',
+        reason: null,
+        headSha: '2'.repeat(40),
+        summary: { verdict: 'Adds refunds.', walkthrough: [], notes: [] },
+      })
+      .where(eq(reviewRuns.id, run!.id));
+    const done = await decorateAgain();
+    expect(done).toContain('#### AI review\n\nAdds refunds.\n\nNo findings.');
+    expect(done).toContain(
+      'Reviewed commit: ` 222222222222 `; the pull request is now at ` 111111111111 `; the next workflow run reviews the new commits.',
+    );
+    expect(done).not.toContain('merge request');
+
+    // The run of an older analysis a newer one superseded shows nothing.
+    await h.ctx.db
+      .update(reviewRuns)
+      .set({ status: 'superseded' })
+      .where(eq(reviewRuns.id, run!.id));
+    expect(await decorateAgain()).not.toContain('AI review');
   });
 
   it('gives two issues on one line a thread each, and the same job again adds none', async () => {

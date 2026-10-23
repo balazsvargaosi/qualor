@@ -1,4 +1,4 @@
-import { REDACTED } from '@qualor/shared';
+import { INVISIBLE_CHARS, JOINER_CHARS, REDACTED } from '@qualor/shared';
 import { MIN_SCRUBBED_KEY_LENGTH, scrub } from '../llm/job';
 import type { LlmTurn } from '../llm/providers';
 
@@ -17,10 +17,26 @@ import type { LlmTurn } from '../llm/providers';
  *   and replaces what spells the key where it stands. The rest of the text is not touched.
  * - `scrubKeyDeep` reads what a parser made of the answer. Whatever the parser understood by an
  *   escape (a lenient one reads more than JSON does), the strings it holds are what gets posted.
+ *
+ * A text can also write the key with characters between its own that a comment does not show:
+ * `safePlainValue` of packages/shared deletes the invisible ones (under `codeSpan` and
+ * `safeMultilineText`), and the joiners it keeps are invisible between two characters too. A key
+ * split by a zero width space is the key once it is posted, so both readings skip those
+ * characters, escapes of them included, between the characters of the key. A match takes in what
+ * it skips and nothing before or after it.
  */
 
 const BACKSLASH = 0x5c;
 const HEX_ESCAPE = /^[0-9a-fA-F]{4}$/;
+
+/**
+ * The characters a comment leaves out or does not show: the invisible ones `safePlainValue` deletes
+ * and the joiners it keeps, the lists of packages/shared (imported, so that they cannot drift).
+ */
+const HIDDEN = new RegExp(`[${INVISIBLE_CHARS}${JOINER_CHARS}]`, 'u');
+const HIDDEN_EVERYWHERE = new RegExp(HIDDEN.source, 'gu');
+/** Nothing below this code point is hidden: the soft hyphen U+00AD is the first. */
+const FIRST_HIDDEN = 0xad;
 
 /** What the short escapes of a JSON string stand for, by the character after the backslash. */
 const SHORT_ESCAPES: ReadonlyMap<string, number> = new Map([
@@ -61,10 +77,44 @@ function spelledAt(text: string, at: number): Spelled {
   return { unit, length: 1 };
 }
 
-/** Where the key ends, if the text spells it from `from` on; -1 if it does not. */
+/**
+ * How many characters of the text spell the hidden character at `at` (0 if the character there is
+ * not hidden): a code point outside the basic plane is two surrogates, each written as it is or as
+ * an escape, and half of a pair is no character of those lists.
+ */
+function hiddenLength(text: string, at: number): number {
+  if (at >= text.length) return 0;
+  const first = spelledAt(text, at);
+  if (first.unit < FIRST_HIDDEN) return 0;
+  let codePoint = first.unit;
+  let length = first.length;
+  if (first.unit >= 0xd800 && first.unit <= 0xdbff && at + length < text.length) {
+    const second = spelledAt(text, at + length);
+    if (second.unit >= 0xdc00 && second.unit <= 0xdfff) {
+      codePoint = 0x10000 + ((first.unit - 0xd800) << 10) + (second.unit - 0xdc00);
+      length += second.length;
+    }
+  }
+  return HIDDEN.test(String.fromCodePoint(codePoint)) ? length : 0;
+}
+
+/** The place after the hidden characters that begin at `at`. */
+function skipHidden(text: string, at: number): number {
+  let next = at;
+  for (let length = hiddenLength(text, next); length > 0; length = hiddenLength(text, next)) {
+    next += length;
+  }
+  return next;
+}
+
+/**
+ * Where the key ends, if the text spells it from `from` on, with hidden characters between its
+ * own; -1 if it does not. `key` has none of its own (see `scrubText`).
+ */
 function endOfKeyAt(text: string, from: number, key: string): number {
   let at = from;
   for (let index = 0; index < key.length; index += 1) {
+    if (index > 0) at = skipHidden(text, at);
     if (at >= text.length) return -1;
     const spelled = spelledAt(text, at);
     if (spelled.unit !== key.charCodeAt(index)) return -1;
@@ -74,9 +124,9 @@ function endOfKeyAt(text: string, from: number, key: string): number {
 }
 
 /**
- * `text` with each place that spells the key, escapes included, replaced as a whole. A match
- * begins and ends between two characters of the text, never inside an escape, and everything
- * outside the matches stays as it was written, byte for byte.
+ * `text` with each place that spells the key, escapes and hidden characters between its own
+ * included, replaced as a whole. A match begins and ends between two characters of the text, never
+ * inside an escape, and everything outside the matches stays as it was written, byte for byte.
  */
 function scrubSpelled(text: string, key: string): string {
   let scrubbed = '';
@@ -98,15 +148,20 @@ function scrubSpelled(text: string, key: string): string {
 /**
  * `text` without the key, however it is written: as it is, and with any of the escapes of a JSON
  * string for any of its characters (`\/`, `\"`, `\\`, `\b`, `\f`, `\n`, `\r`, `\t` and `\uXXXX`,
- * a surrogate pair included), in any mix. A key of fewer than 8 characters, and none, are not
- * looked for.
+ * a surrogate pair included), in any mix, and with hidden characters (invisible ones and joiners,
+ * escaped or not) between its characters. A key of fewer than 8 characters, and none, are not
+ * looked for; nor is one of which fewer than 8 characters show, other than as it is written.
  */
 export function scrubText(text: string, key: string | null): string {
   if (key === null || key.length < MIN_SCRUBBED_KEY_LENGTH) return text;
   // As it is first: a key with a backslash in it can be in the text as it stands, and the escapes
   // would read its backslash and the character after it as something else.
   const plain = scrub(text, key);
-  return plain.includes('\\') ? scrubSpelled(plain, key) : plain;
+  // What shows of a key that has hidden characters of its own is what a comment gives away.
+  const shown = HIDDEN.test(key) ? key.replace(HIDDEN_EVERYWHERE, '') : key;
+  if (shown.length < MIN_SCRUBBED_KEY_LENGTH) return plain;
+  const spelledOtherwise = plain.includes('\\') || HIDDEN.test(plain) || shown !== key;
+  return spelledOtherwise ? scrubSpelled(plain, shown) : plain;
 }
 
 /** A list or an object of the value, and the copy that is being filled with what is in it. */

@@ -3,11 +3,14 @@ import { marked } from 'marked';
 import { describe, expect, it } from 'vitest';
 import { safeCodeSpan, safePlainValue } from '@qualor/shared';
 import {
+  checkProse,
+  checkSectionLine,
   FIXED_TEXT,
   FORBIDDEN_ANYWHERE,
   outsideCodeSpans,
   SUMMARY_FIXED_TEXT,
 } from '../../test/markdown-check';
+import { AI_SECTION_MAX_BYTES, aiSummarySection, type ReviewSummaryState } from '../review/render';
 import {
   codeSpan,
   markerOf,
@@ -16,6 +19,7 @@ import {
   qualorLink,
   ruleDocUrl,
   ruleKeyMarkdown,
+  safeProse,
   summaryMarker,
 } from './markdown';
 import {
@@ -69,6 +73,36 @@ const failed = gate('failed', [
     status: 'no_value',
   },
 ]);
+
+/** A finished review in which every slot of the model's words, a path and a title holds `value`. */
+function hostileReview(value: string): ReviewSummaryState {
+  const url = `https://q.example/projects/${PROJECT}/issues/${ISSUE}`;
+  return {
+    kind: 'done',
+    verdict: value,
+    walkthrough: [value, value],
+    counts: { high: 1, medium: 1, low: 1 },
+    unplaced: Array.from({ length: 3 }, () => ({
+      severity: 'high',
+      path: value,
+      line: 7,
+      title: value,
+      url,
+    })),
+    moreUnplaced: 2,
+    reviewedSha: 'abcdef0123456789abcdef0123456789abcdef01',
+    mergeRequestHeadSha: 'b'.repeat(40),
+    tokenLimitReached: true,
+    snapshotPartial: true,
+    notes: ['reviewer_unreadable', 'verification_capped'],
+    fixPrompt: Array.from({ length: 3 }, () => ({
+      path: value,
+      line: 7,
+      title: value,
+      body: value,
+    })),
+  };
+}
 
 function summary(overrides: Partial<SummaryInput> = {}): string {
   return summaryBody({
@@ -648,9 +682,16 @@ function checkBody(body: string, maxBytes: number): void {
   expect(body).not.toMatch(FORBIDDEN_ANYWHERE);
   const lines = body.split('\n');
   expect(markerOf(body)).not.toBeNull();
+  // The AI review section holds the model's prose too: its lines are checked as prose.
+  let inAiSection = false;
   for (const [index, line] of lines.entries()) {
     expect(line, line).not.toMatch(/^\s*\//);
     if (index === 0) continue; // the marker, checked by markerOf above
+    if (line === '#### AI review') inAiSection = true;
+    if (inAiSection) {
+      expect(checkSectionLine(line), line).toBe(true);
+      continue;
+    }
     let markdown = outsideCodeSpans(line).replace(OWN_LINK, ' ');
     markdown = markdown.replace(/^#{3,4} /, ''); // the fixed headings
     expect(markdown, line).toMatch(
@@ -702,6 +743,25 @@ describe('adversarial corpus (scm.md §6)', () => {
         gate: hostileGate,
         topIssues: Array.from({ length: 10 }, () => issue),
         topIssuesTotal: 10,
+      }),
+      SUMMARY_MAX_BYTES,
+    );
+    // The same value in every slot of the AI review section as well, within the section's bound.
+    const withReview = summary({
+      gate: hostileGate,
+      topIssues: Array.from({ length: 10 }, () => issue),
+      topIssuesTotal: 10,
+      review: hostileReview(value),
+    });
+    checkBody(withReview, SUMMARY_MAX_BYTES);
+    expect(
+      Buffer.byteLength(withReview.slice(withReview.indexOf('#### AI review')), 'utf8'),
+    ).toBeLessThanOrEqual(AI_SECTION_MAX_BYTES);
+    checkBody(
+      summary({
+        review: hostileReview(value),
+        vocabulary: 'github',
+        mergeRequestHead: 'c'.repeat(40),
       }),
       SUMMARY_MAX_BYTES,
     );
@@ -1006,3 +1066,492 @@ describe('rule documentation links in comments', () => {
     expect(summary(input)).toBe(summary(structuredClone(input)));
   });
 });
+
+/**
+ * What GitLab and GitHub turn into a link, a mention, a reference or a quick action when it is
+ * not in a code span, for the check of `safeProse`'s output against the ordinary reading of it
+ * (rather than against the charset alone).
+ */
+const REFERENCES: readonly (readonly [string, RegExp])[] = [
+  ['a sigil of Markdown, a reference or a mention', /[@#~%&$<>[\]*_|=+\\/{}^`]/],
+  ['a bang with a number', /!\d/],
+  ['an emoji code', /:[\p{L}\p{N}_+-]+:/u],
+  ['a commit hash', /(?<![\p{L}\p{N}])[0-9a-f]{7,64}(?![\p{L}\p{N}])/iu],
+  ['a tracker key', /\p{L}-\p{N}/u],
+  ['a www address', /\bwww\.[\p{L}\p{N}]/iu],
+];
+
+/** What the model's text may be made of, for the corpus and the fuzz of `safeProse`. */
+const PROSE_OPTIONS = { maxChars: 20_000, maxLines: 200 } as const;
+const prose = (text: string, options: { maxChars?: number; maxLines?: number } = {}): string =>
+  safeProse(text, { ...PROSE_OPTIONS, ...options });
+
+/** A line of prose starts with a letter, a digit, a backtick, an opening mark or the list marker. */
+const PROSE_LINE_START = /^(?:[\p{L}\p{N}`("“‘]|- )/u;
+
+/**
+ * Everything `safeProse` promises of its output: it is inert in GitLab and GitHub, whatever
+ * the text was.
+ */
+function expectInertProse(out: string, label: string): void {
+  expect(out, label).not.toMatch(FORBIDDEN_ANYWHERE);
+  expect(markerOf(out), label).toBeNull();
+  for (const line of out.split('\n')) {
+    const where = `${label} → ${JSON.stringify(line)}`;
+    expect(line, where).not.toMatch(/^\s*\//);
+    expect(checkProse(line), where).toBe(true);
+    if (line !== '') expect(line, where).toMatch(PROSE_LINE_START);
+    const outside = outsideCodeSpans(line);
+    for (const [name, pattern] of REFERENCES)
+      expect(outside, `${where}: ${name}`).not.toMatch(pattern);
+  }
+  const html = marked.parse(out, { async: false, gfm: true, breaks: false });
+  expect(html, label).not.toMatch(
+    /<(?:a|img|script|style|details|summary|h[1-6]|blockquote|table|hr|pre|iframe|input|br)\b/,
+  );
+}
+
+describe('safeProse: the model’s words made inert', () => {
+  it('plain words stay plain and list markers are normalised', () => {
+    const same = [
+      "Don't call it twice; it's slow-ish (see below).",
+      '"Quoted" and “curly” words, done!',
+      'Café déjà vu naïve 界面 and ß',
+      'Line 42 of 7: why? Because.',
+      '1) a parenthesis marker stays a word',
+    ];
+    for (const text of same) expect(prose(text), text).toBe(text);
+    expect(prose('* one\n- two\n3. three\n10. ten')).toBe('- one\n- two\n3. three\n10. ten');
+    expect(prose('   *   spaced   out  \n\t- tabbed')).toBe('- spaced out\n- tabbed');
+    // A marker with nothing after it is no marker: it is not a word either.
+    expect(prose('-')).toBe('` - `');
+    expect(prose('* ')).toBe('` * `');
+    expect(prose('1.')).toBe('1.');
+    expect(prose('**bold** and __under__')).toBe('` **bold** ` and ` __under__ `');
+    expect(prose('- - nested')).toBe('- ` - ` nested');
+    // Only the three markers: a plus is a word like any other.
+    expect(prose('+ plus')).toBe('` + ` plus');
+    expect(prose('1) one')).toBe('1) one');
+    // More than nine digits is no list marker (CommonMark's own bound), only a number.
+    expect(prose('1234567890. text')).toBe('` 1234567890. ` text');
+  });
+
+  it('puts every other word in a code span', () => {
+    expect(prose('Call foo() or a_b, e.g. C++ at 10% or x=1.')).toBe(
+      'Call ` foo() ` or ` a_b, ` ` e.g. ` ` C++ ` at ` 10% ` or ` x=1. `',
+    );
+    expect(prose('src/a.ts: it is v2.1 now')).toBe('` src/a.ts: ` it is ` v2.1 ` now');
+    // A word that ends the way a plain word does, but starts with what it may not.
+    expect(prose("'single' (nested(x)) ((x)")).toBe("` 'single' ` ` (nested(x)) ` ` ((x) `");
+  });
+
+  it('re-emits the model’s own backtick spans through codeSpan, as CommonMark reads them', () => {
+    expect(prose('Call `foo()` now.')).toBe('Call ` foo() ` now.');
+    expect(prose('use `two words` here')).toBe('use ` two words ` here');
+    expect(prose('use ` padded ` and `` a ` b `` too')).toBe('use ` padded ` and `` a ` b `` too');
+    // The mark that follows a span, and the one that opens before it, are part of the word.
+    expect(prose('Returns `null`. Or (`undefined`), "`x`"; ok')).toBe(
+      'Returns ` null `. Or (` undefined `), "` x `"; ok',
+    );
+    // A span that is cut off, or glued to letters, is an ordinary word: nothing is lost or joined.
+    expect(prose('`oops here')).toBe('`` `oops `` here');
+    expect(prose('word`glued` and `a`b')).toBe('`` word`glued` `` and `` `a`b ``');
+    expect(prose('`` ` ``')).toBe('`` ` ``');
+    expect(prose('` `')).toBe('` `');
+  });
+
+  it('puts a word that a provider would link or reference in a code span, whatever it looks like', () => {
+    const text =
+      'See deadbeef0 and 1234567. Also GH-26, JIRA-123 and x-JIRA-9, then v-1 or sha-256.';
+    expect(prose(text)).toBe(
+      'See ` deadbeef0 ` and ` 1234567. ` Also ` GH-26, ` ` JIRA-123 ` and ` x-JIRA-9, ` then ` v-1 ` or ` sha-256. `',
+    );
+    // Six hex characters are an ordinary word, and so are hyphens between letters.
+    expect(prose('a decade of well-known facade work')).toBe('a decade of well-known facade work');
+    expect(prose('a seven-eight pair')).toBe('a seven-eight pair');
+  });
+
+  it('removes controls, bidirectional and invisible characters, and never joins what they split', () => {
+    expect(prose('a\u202eb\u200bc\u2028d\u0000e\u00adf\u200dg\ufeffh\u{e0041}i')).toBe(
+      'a b c d e f g h i',
+    );
+    expect(prose('x\u0085y\u000bz\u000cw\u061cv')).toBe('x y z w v');
+    // White space of other kinds separates words as a space does.
+    expect(prose('a\u00a0b\u2003c\u3000d\u2009e')).toBe('a b c d e');
+    expect(prose('lone \ud800 and \udc00 halves')).toBe('lone ` \ufffd ` and ` \ufffd ` halves');
+    // CR and CRLF end a line like LF does, and a line that follows is a line of its own.
+    expect(prose('a\r\nb\rc\n/close')).toBe('a\nb\nc\n` /close `');
+  });
+
+  it('cuts the text to its bounds and collapses blank lines', () => {
+    expect(prose('a\n\n\n\nb')).toBe('a\n\nb');
+    expect(prose('\n\n  \na\n \n\n')).toBe('a');
+    expect(prose('a\nb\nc', { maxLines: 2 })).toBe('a\nb');
+    expect(prose('a\n\n\nb\nc', { maxLines: 3 })).toBe('a\n\nb');
+    expect(prose('x'.repeat(50), { maxChars: 10 })).toBe(`\` ${'x'.repeat(9)}… \``);
+    expect(prose('one two three four five', { maxChars: 12 })).toBe('one two ` thr… `');
+    expect(prose('hello wörld 😀😀😀', { maxChars: 14 })).toBe('hello wörld ` 😀… `');
+    for (const text of ['', '   ', '\n \n', '\u200b\u2028']) expect(prose(text), text).toBe('');
+    expect(prose('text', { maxChars: 0 })).toBe('');
+    expect(prose('text', { maxLines: 0 })).toBe('');
+  });
+
+  it('is its own result when it is given it again', () => {
+    const texts = [
+      'Call `foo()` now, e.g. with @user or #12.\n\n- one\n* two\n3. three\n/close',
+      '`` a ` b `` and ` padded ` and `` `x` ``',
+      '(`x`), "`y`"; (open `z',
+      '```\ncode\n```\n~~~',
+    ];
+    for (const text of texts) expect(prose(prose(text)), text).toBe(prose(text));
+  });
+
+  it.each([
+    ['a Markdown link', '[x](https://e.example)', '` [x](https://e.example) `'],
+    ['a bare URL', 'https://e.example', '` https://e.example `'],
+    ['a www address', 'www.e.example', '` www.e.example `'],
+    ['an image tag', '<img src=x onerror=y>', '` <img ` ` src=x ` ` onerror=y> `'],
+    ['a details tag', '<details>', '` <details> `'],
+    ['a mention', '@user', '` @user `'],
+    ['a mention of a group path', '@group/sub', '` @group/sub `'],
+    ['an issue reference', '#12', '` #12 `'],
+    ['a merge request reference', '!12', '` !12 `'],
+    ['a label', '~label', '` ~label `'],
+    ['a milestone', '%milestone', '` %milestone `'],
+    ['an epic', '&epic', '` &epic `'],
+    ['a snippet', '$snippet', '` $snippet `'],
+    ['a quick action line', '/close', '` /close `'],
+    ['a quote', '> quote', '` > ` quote'],
+    ['a heading', '# heading', '` # ` heading'],
+    ['a table row', '| a | b |', '` | ` a ` | ` b ` | `'],
+    ['a code fence', '```', '```` ``` ````'],
+    ['a tilde fence', '~~~', '` ~~~ `'],
+    ['a right-to-left override', 'x\u202ey', 'x y'],
+    ['a zero width space', 'x\u200by', 'x y'],
+    ['a line separator before a quick action', 'x\u2028/close', 'x ` /close `'],
+    [
+      'a forged summary marker',
+      '<!-- qualor:summary x -->',
+      '` <!-- ` ` qualor:summary ` x ` --> `',
+    ],
+  ] as const)('puts %s in a code span, or leaves it out', (_name, text, expected) => {
+    expect(prose(text)).toBe(expected);
+  });
+
+  // The plan's corpus and more, each in every place a line of prose can hold it.
+  const PROSE_CORPUS: readonly (readonly [string, string])[] = [
+    ['a Markdown link', '[x](https://e.example)'],
+    ['a bare URL', 'https://e.example'],
+    ['a www address', 'www.e.example'],
+    ['an image tag with a handler', '<img src=x onerror=y>'],
+    ['a details tag', '<details>'],
+    ['a mention', '@user'],
+    ['a mention of a group path', '@group/sub'],
+    ['an issue reference', '#12'],
+    ['a merge request reference', '!12'],
+    ['a label', '~label'],
+    ['a milestone', '%milestone'],
+    ['an epic', '&epic'],
+    ['a snippet', '$snippet'],
+    ['a quick action', '/close'],
+    ['a quote', '> quote'],
+    ['a heading', '# heading'],
+    ['a table row', '| a | b |'],
+    ['a code fence', '```'],
+    ['a tilde fence', '~~~'],
+    ['a right-to-left override', 'x\u202ey'],
+    ['a zero width space', 'x\u200by'],
+    ['a line separator', 'x\u2028/close'],
+    ['a forged summary marker', '<!-- qualor:summary x -->'],
+    ['a forged issue marker', '<!-- qualor:issue 01920000-0000-7000-8000-00000000ffff -->'],
+    ['a commit hash', 'deadbeef0123'],
+    ['a tracker key', 'GH-26'],
+    ['a Jira key', 'JIRA-123'],
+    ['an emoji code', ':thumbsup:'],
+    ['an email address', 'someone@example.com'],
+    ['an HTML entity', '&lt;script&gt;'],
+    ['a script', '<script>alert(1)</script>'],
+    ['math', '$`x`$ $$x$$'],
+    ['a task list', '- [ ] task'],
+    ['a setext underline', '---'],
+    ['an escaped bracket', '\\[x\\] end\\'],
+    ['a reference link definition', '[1]: http://evil.example'],
+    ['a mention in a span', '`@all` and `#1`'],
+    ['a bare backtick', '`'],
+    ['backtick runs', '`'.repeat(500)],
+    ['mixed backtick runs', 'a ` b `` c ``` d ```` e'],
+    ['tag characters', 'ok\u{e002f}\u{e006d}\u{e0065}'],
+    ['controls', 'a\u0000b\u0001c\u001bd\u007fe\u009bf'],
+    [
+      'bidirectional controls',
+      '\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\u200e\u200f\u061c',
+    ],
+    ['joiners and fillers', 'a\u200db\u200cc\ufe0fd\u3164e\u2800f\u115fg'],
+    ['lone surrogates', 'a\ud800b\udc00c'],
+    ['a very long word', 'w'.repeat(5_000)],
+    ['very many words', 'w '.repeat(5_000)],
+  ];
+  const PLACES: readonly (readonly [string, (v: string) => string])[] = [
+    ['alone', (v) => v],
+    ['mid-sentence', (v) => `Look at ${v} now.`],
+    ['first on a line', (v) => `${v} comes first\nand a second line`],
+    ['on a line of its own', (v) => `fine\n${v}\nfine`],
+    ['in list items', (v) => `- ${v}\n* ${v}\n1. ${v}`],
+    ['after indentation', (v) => `    ${v}\n\t${v}`],
+    ['between blank lines', (v) => `a\n\n\n${v}\n\n\nb`],
+    ['in a span of the model’s', (v) => `\`${v}\` and \`\`${v}\`\``],
+  ];
+
+  it.each(PROSE_CORPUS)(
+    'keeps %s inert in every place a line of prose can hold it',
+    (name, value) => {
+      for (const [place, put] of PLACES) {
+        expectInertProse(prose(put(value)), `${name} ${place}`);
+      }
+    },
+  );
+
+  it('keeps three thousand random mixes of hostile pieces inert, and the result stable', () => {
+    const pieces = [
+      ...PROSE_CORPUS.map(([, value]) => value).filter((value) => value.length < 200),
+      'word',
+      'Words',
+      "it's",
+      'well-known',
+      'done.',
+      '(open',
+      'close)',
+      '"q"',
+      '“q”',
+      'ok,',
+      ' ',
+      '  ',
+      '\t',
+      '\n',
+      '\n\n',
+      '\r\n',
+      '\r',
+      '\u2028',
+      '\u202e',
+      '\u200b',
+      '`',
+      '``',
+      '- ',
+      '* ',
+      '1. ',
+      '12.',
+      '99999999999. ',
+      'ab:cd',
+      'x_y',
+      '*b*',
+      '\\',
+      '&amp;',
+      'é',
+      '界',
+    ];
+    const next = seededRandom(20_261_024);
+    for (let round = 0; round < 3_000; round += 1) {
+      const length = 1 + Math.floor(next() * 30);
+      let text = '';
+      for (let i = 0; i < length; i += 1) {
+        text += pieces[Math.floor(next() * pieces.length)]!;
+        if (next() < 0.5) text += ' ';
+      }
+      const out = prose(text);
+      expectInertProse(out, `round ${round}: ${JSON.stringify(text)}`);
+      expect(prose(out), `round ${round}: ${JSON.stringify(text)}`).toBe(out);
+    }
+  });
+
+  it('leaves a space where it takes a character out, so that it never joins what stood apart', () => {
+    const key = ['sk-test-', '0123456789abcdef'].join('');
+    for (const hidden of ['\u200b', '\u2060', '\ufeff', '\u200d', '\u0000', '\u202e', '\u00ad']) {
+      const out = prose(`${key.slice(0, 8)}${hidden}${key.slice(8)}`);
+      expect(out).not.toContain(key);
+      expect(out.replaceAll(/[\s`]/g, '')).toBe(key);
+    }
+  });
+});
+
+describe('the AI review section in the summary', () => {
+  const ISSUE_URL = `https://q.example/projects/${PROJECT}/issues/${ISSUE}`;
+  const REVIEWED = 'abcdef0123456789abcdef0123456789abcdef01';
+  const REVIEW: Extract<ReviewSummaryState, { kind: 'done' }> = {
+    kind: 'done',
+    verdict:
+      'The change adds refunds, but the retry path can charge a customer twice when the first call times out and is repeated.',
+    walkthrough: Array.from(
+      { length: 6 },
+      (_, i) => `Walkthrough item number ${i + 1} describes one part of the change in some detail`,
+    ),
+    counts: { high: 2, medium: 3, low: 1 },
+    unplaced: Array.from({ length: 6 }, (_, i) => ({
+      severity: 'medium',
+      path: `src/refunds/file${i + 1}.ts`,
+      line: i + 10,
+      title: `Problem number ${i + 1} sits where no changed line is`,
+      url: ISSUE_URL,
+    })),
+    moreUnplaced: 2,
+    reviewedSha: REVIEWED,
+    mergeRequestHeadSha: null,
+    tokenLimitReached: true,
+    snapshotPartial: true,
+    notes: ['reviewer_unreadable'],
+    fixPrompt: Array.from({ length: 4 }, (_, i) => ({
+      path: `src/refunds/file${i + 1}.ts`,
+      line: i + 10,
+      title: `Problem number ${i + 1} sits where no changed line is`,
+      body: 'When the first call times out it is repeated with a new request id, so the provider may charge twice. Send the same idempotency key on every retry. '.repeat(
+        2,
+      ),
+    })),
+  };
+  const sectionOf = (body: string): string => body.slice(body.indexOf('#### AI review'));
+  /** The analyzers' issues the note lists: its numbered items before the AI section. */
+  const listedIssues = (body: string): number => {
+    const end = body.indexOf('#### AI review');
+    const analyzers = end < 0 ? body : body.slice(0, end);
+    return analyzers.split('\n').filter((line) => /^\d+\. /.test(line)).length;
+  };
+  const bytes = (text: string): number => Buffer.byteLength(text, 'utf8');
+  /** Ten analyzer issues of the largest size, in the widest characters. */
+  const bigIssues = Array.from({ length: 10 }, (_, i) => ({
+    id: ISSUE,
+    severity: 'high' as const,
+    quality: 'security' as const,
+    ruleKey: '界'.repeat(100),
+    path: `src/${'界'.repeat(200)}`,
+    line: i + 1,
+    message: '😀'.repeat(300),
+    url: null,
+  }));
+
+  it('comes last, after the analyzers’ part and behind a blank line', () => {
+    const plain = summary();
+    const body = summary({ review: REVIEW });
+    const at = body.indexOf('\n\n#### AI review\n');
+    expect(at).toBeGreaterThan(0);
+    expect(body.slice(0, at)).toBe(plain);
+    expect(body.slice(at + 2)).toBe(
+      aiSummarySection(REVIEW, 'gitlab', AI_SECTION_MAX_BYTES).join('\n'),
+    );
+    checkBody(body, SUMMARY_MAX_BYTES);
+    // Without a review, or with a null one, the summary is what it was.
+    expect(summary({ review: null })).toBe(plain);
+    expect(plain).not.toContain('AI review');
+  });
+
+  it('says in GitHub’s words what GitHub’s summary says, and in GitLab’s what GitLab’s does', () => {
+    const moved = { ...REVIEW, mergeRequestHeadSha: 'b'.repeat(40) };
+    const github = summary({ review: moved, vocabulary: 'github' });
+    expect(github).toContain(
+      '; the pull request is now at ` bbbbbbbbbbbb `; the next workflow run reviews the new commits.',
+    );
+    expect(sectionOf(github)).not.toContain('merge request');
+    expect(summary({ review: moved })).toContain(
+      '; the merge request is now at ` bbbbbbbbbbbb `; the next pipeline reviews the new commits.',
+    );
+  });
+
+  it('says how the review stands while it has not finished or did not run', () => {
+    const states: [ReviewSummaryState, string][] = [
+      [{ kind: 'pending' }, 'AI review in progress…'],
+      [
+        { kind: 'skipped', reason: 'budget_spent', detail: null },
+        'its token budget for today is spent',
+      ],
+      [{ kind: 'failed', reason: 'provider_error' }, 'The next push reviews again.'],
+    ];
+    for (const [review, text] of states) {
+      const body = summary({ review });
+      expect(sectionOf(body)).toContain(text);
+      checkBody(body, SUMMARY_MAX_BYTES);
+    }
+  });
+
+  it('the summary with a full AI section and ten analyzer issues stays within 16 KiB, dropping in order', () => {
+    const body = summary({ topIssues: bigIssues, topIssuesTotal: 500, review: REVIEW });
+    checkBody(body, SUMMARY_MAX_BYTES);
+    // The section is whole; the analyzers' issue list gave way.
+    const whole = sectionOf(body);
+    expect(whole).toBe(aiSummarySection(REVIEW, 'gitlab', AI_SECTION_MAX_BYTES).join('\n'));
+    expect(whole).toContain('<details><summary>Prompt for an AI agent</summary>');
+    expect(bytes(whole)).toBeLessThanOrEqual(AI_SECTION_MAX_BYTES);
+    const kept = listedIssues(body);
+    expect(kept).toBeGreaterThan(0);
+    expect(kept).toBeLessThan(10);
+    expect(body).toContain(`…and ${500 - kept} more`);
+
+    // As the note fills up (a table of conditions takes the room), the issue list is cut first,
+    // and then the section gives way: its prompt, its walkthrough, the tail of its list of
+    // findings, its verdict, and last all of it.
+    /** A gate with `rows` failed conditions: the room the note leaves its AI section. */
+    const gateRows = (rows: number): GateResult =>
+      gate(
+        'failed',
+        Array.from({ length: rows }, () => ({
+          metric: 'new_duplicated_lines_density',
+          operator: 'gt' as const,
+          threshold: 3,
+          value: 12.5,
+          status: 'failed' as const,
+        })),
+      );
+    const seen = new Set<string>();
+    let previousListed = Infinity;
+    let sectionGone = false;
+    for (let rows = 0; rows <= 330; rows += 3) {
+      const body = summary({
+        gate: gateRows(rows),
+        topIssues: bigIssues,
+        topIssuesTotal: 500,
+        review: REVIEW,
+      });
+      expect(bytes(body), `${rows} rows`).toBeLessThanOrEqual(SUMMARY_MAX_BYTES);
+      const listed = listedIssues(body);
+      // The issue list gives way before anything of the section does.
+      expect(listed, `${rows} rows`).toBeLessThanOrEqual(previousListed);
+      previousListed = listed;
+      if (!body.includes('#### AI review')) {
+        sectionGone = true;
+        continue;
+      }
+      // Once the section is gone it stays gone as the note fills up.
+      expect(sectionGone, `${rows} rows`).toBe(false);
+      const section = sectionOf(body);
+      const prompt = section.includes('<details>');
+      const walkthrough = section.includes('- Walkthrough item');
+      const unplaced = section.split('\n').filter((line) => line.startsWith('- **Medium**')).length;
+      const verdict = section.includes(
+        'retry path can charge a customer twice when the first call times out and is repeated.',
+      );
+      if (!prompt) expect(listed, `${rows} rows`).toBe(0);
+      if (prompt) expect(walkthrough && unplaced === 6 && verdict, `${rows} rows`).toBe(true);
+      if (walkthrough) expect(unplaced === 6 && verdict, `${rows} rows`).toBe(true);
+      if (unplaced > 0) expect(section, `${rows} rows`).toContain('retry path');
+      seen.add(`${prompt}|${walkthrough}|${unplaced === 6}|${verdict}`);
+    }
+    expect([...seen]).toEqual(
+      expect.arrayContaining([
+        'true|true|true|true',
+        'false|true|true|true',
+        'false|false|true|true',
+        'false|false|false|true',
+        'false|false|false|false',
+      ]),
+    );
+    expect(sectionGone).toBe(true);
+  });
+});
+
+/** A small seeded generator, so that a text that fails can be found again. */
+function seededRandom(seed: number): () => number {
+  let state = seed;
+  return () => {
+    state = (state + 0x6d2b79f5) | 0;
+    let mixed = Math.imul(state ^ (state >>> 15), 1 | state);
+    mixed = (mixed + Math.imul(mixed ^ (mixed >>> 7), 61 | mixed)) ^ mixed;
+    return ((mixed ^ (mixed >>> 14)) >>> 0) / 4_294_967_296;
+  };
+}

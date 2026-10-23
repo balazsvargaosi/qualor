@@ -1,0 +1,400 @@
+import type { ReviewFailureReason, ReviewSkipReason } from '../db/schema';
+import { codeSpan, MAX_PATH_CHARS, qualorLink, safeProse } from '../scm/markdown';
+import { ANSWER_LIMITS, type ReviewNote } from './schemas';
+
+/*
+ * The AI review section of the summary comment, for GitLab and GitHub alike: what the review of
+ * the merge request is doing or did, as lines of Markdown that the summary adds after the
+ * analyzers' part. Everything in it is Qualor's fixed text (a sentence for each reason a review was
+ * skipped or failed, for each note it makes of itself), a number, a code in a code span, Qualor's
+ * own link, or the model's words through `safeProse`: its verdict, the items of its walkthrough,
+ * the titles and bodies of its findings. A path is a code span. Nothing the model or the
+ * repository wrote is anything but a word to GitLab or GitHub.
+ *
+ * The section has its own bound (AI_SECTION_MAX_BYTES) and gives way to the room the note has, by
+ * whole lines: it drops the prompt for an agent first (or lists fewer findings in it), then the
+ * walkthrough, then the tail of the findings not on changed lines, then cuts the verdict; and shows
+ * nothing when even that does not fit.
+ */
+
+/** The most bytes of the section; the summary comment as a whole has 16 KiB. */
+export const AI_SECTION_MAX_BYTES = 6 * 1024;
+/** The findings not on changed lines the section lists; the rest are counted. */
+export const UNPLACED_LISTED = 10;
+/** The open findings the prompt for an agent may list, and what it keeps of the body of each. */
+export const PROMPT_FINDINGS = 20;
+const PROMPT_BODY_CHARS = 600;
+const PROMPT_BODY_LINES = 8;
+
+/** What the section says: the state of the review of the analysis' merge request. */
+export type ReviewSummaryState =
+  | { kind: 'pending' }
+  | { kind: 'skipped'; reason: ReviewSkipReason; detail: string | null }
+  | { kind: 'failed'; reason: ReviewFailureReason }
+  | {
+      kind: 'done';
+      /** The judge's one line about the merge request, and its walkthrough of what changed. */
+      verdict: string;
+      walkthrough: string[];
+      /** The merge request's open AI findings by severity (Qualor's: `blocker` counts as high). */
+      counts: { high: number; medium: number; low: number };
+      /** Open AI findings with no changed line to sit on, most severe first, and how many more. */
+      unplaced: {
+        severity: string;
+        path: string;
+        line: number;
+        title: string;
+        url: string | null;
+      }[];
+      moreUnplaced: number;
+      /** The commit the review covered, and the merge request's head now, when it is known. */
+      reviewedSha: string;
+      mergeRequestHeadSha: string | null;
+      tokenLimitReached: boolean;
+      snapshotPartial: boolean;
+      /** What the review said of itself besides those two (`reviewer_unreadable`, ...). */
+      notes?: readonly ReviewNote[];
+      /** The open findings the prompt for an agent lists. */
+      fixPrompt: { path: string; line: number; title: string; body: string }[];
+    };
+type Done = Extract<ReviewSummaryState, { kind: 'done' }>;
+
+/** The state with the merge request's head as the provider says it is now, when the review is done. */
+export function withMergeRequestHead(
+  state: ReviewSummaryState | null,
+  head: string | null,
+): ReviewSummaryState | null {
+  return state?.kind === 'done' ? { ...state, mergeRequestHeadSha: head } : state;
+}
+
+// ─── Qualor's fixed text ─────────────────────────────────────────────────────
+
+type Provider = 'gitlab' | 'github';
+/** The words that differ between GitLab and GitHub. */
+interface Words {
+  request: string;
+  run: string;
+}
+const WORDS: Record<Provider, Words> = {
+  gitlab: { request: 'merge request', run: 'pipeline' },
+  github: { request: 'pull request', run: 'workflow run' },
+};
+
+const HEADING = '#### AI review';
+const PENDING = 'AI review in progress…';
+
+/** Why a review did not run. A missing snapshot points to the CI job's log and the guide's `fetch-depth` note. */
+const SKIPPED: Record<ReviewSkipReason, (words: Words) => string> = {
+  no_snapshot: () =>
+    'AI review did not run: no repository snapshot came for this commit. See the CI job’s log and the guide’s `fetch-depth` note.',
+  snapshot_rejected: () =>
+    'AI review did not run: the server refused the repository snapshot of this commit.',
+  draft: (words) =>
+    `AI review is skipped while this ${words.request} is a draft; the next ${words.run} after it is ready reviews it.`,
+  closed: (words) => `AI review did not run because this ${words.request} is merged or closed.`,
+  inactive: () => 'AI review is switched off for this project.',
+  empty_diff: () => 'AI review found nothing to review in the changed files.',
+  unchanged: () =>
+    'AI review did not repeat: the changes it reviews are the same as in its last review, whose findings stay open.',
+  budget_spent: () => 'AI review did not run because its token budget for today is spent.',
+};
+const SKIPPED_OTHER = 'AI review did not run.';
+const REASON = 'Reason:';
+/** A code of Qualor's own that a skip carries (`SNAPSHOT_INVALID`, `consent_outdated`): never content. */
+const DETAIL_CODE = /^[A-Za-z0-9_]{1,64}$/;
+
+/** Why a review failed. */
+const FAILED: Record<ReviewFailureReason, string> = {
+  provider_error: 'AI review failed: the model provider returned an error or could not be reached.',
+  provider_no_tools:
+    'AI review failed: the model provider does not support the tool calls the review needs.',
+  bad_answer: 'AI review failed: the model’s answers could not be read.',
+  internal: 'AI review failed because of an error in Qualor.',
+};
+const FAILED_OTHER = 'AI review failed.';
+const NEXT_PUSH = 'The next push reviews again.';
+
+/** What a finished review says of itself. */
+const NOTES: Record<ReviewNote, string> = {
+  reviewer_unreadable: 'A reviewer’s answer could not be read, so part of the review is missing.',
+  token_limit_reached: 'The review reached its token limit, so it may have missed problems.',
+  verification_capped:
+    'There were more serious security findings than the review verifies, so the rest were not checked a second time.',
+};
+const SNAPSHOT_PARTIAL =
+  'The scanner left some files out of the repository snapshot to stay within its limits, so the review did not see all of them.';
+
+const FINDINGS = '**Findings:**';
+const NO_FINDINGS = 'No findings.';
+const UNPLACED = '**Not on changed lines:**';
+const SEVERITY_LABEL: Readonly<Record<string, string>> = {
+  high: '**High**',
+  medium: '**Medium**',
+  low: '**Low**',
+};
+const SEVERITY_OTHER = '**Unknown**';
+const SEPARATOR = ' · ';
+const MORE_PREFIX = '…and';
+const REVIEWED = 'Reviewed commit:';
+const PROMPT_OPEN = '<details><summary>Prompt for an AI agent</summary>';
+const PROMPT_CLOSE = '</details>';
+const PROMPT_INTRO = (words: Words): string[] => [
+  `Fix the problems below, which an AI review found in this ${words.request}.`,
+  'The review can be wrong: read the code first and skip a finding that does not hold.',
+  'Keep each change small and run the tests afterwards.',
+];
+
+/**
+ * Every fixed text of the section, for the tests that check what is left of a line once code
+ * spans and Qualor's own links are taken out (`checkProse` in server/test/markdown-check.ts).
+ */
+export const AI_SECTION_FIXED_TEXT: readonly string[] = [
+  HEADING,
+  PENDING,
+  SKIPPED_OTHER,
+  REASON,
+  FAILED_OTHER,
+  NEXT_PUSH,
+  ...Object.values(FAILED),
+  ...Object.values(NOTES),
+  SNAPSHOT_PARTIAL,
+  FINDINGS,
+  NO_FINDINGS,
+  UNPLACED,
+  ...Object.values(SEVERITY_LABEL),
+  SEVERITY_OTHER,
+  SEPARATOR,
+  MORE_PREFIX,
+  REVIEWED,
+  PROMPT_OPEN,
+  PROMPT_CLOSE,
+  ...Object.values(WORDS).flatMap((words) => [
+    ...Object.values(SKIPPED).map((sentence) => sentence(words)),
+    ...PROMPT_INTRO(words),
+    `the ${words.request} is now at`,
+    `the next ${words.run} reviews the new commits`,
+  ]),
+];
+
+// ─── Pieces ──────────────────────────────────────────────────────────────────
+
+const bytesOf = (lines: readonly string[]): number => Buffer.byteLength(lines.join('\n'), 'utf8');
+
+/** A count as fixed text: a non-negative integer, else 0. */
+const count = (n: number): number => (Number.isSafeInteger(n) && n > 0 ? n : 0);
+
+const LIST_MARKER = /^(?:- |\d+\. )/;
+
+/** The model's words as one line inside a line of ours: prose without the marker of a list item. */
+function inlineProse(text: string, maxChars: number): string {
+  return safeProse(text, { maxChars, maxLines: 1 }).replace(LIST_MARKER, '');
+}
+
+const location = (path: string, line: number): string =>
+  Number.isSafeInteger(line) && line > 0 ? `${path}:${line}` : path;
+
+function skippedText(
+  state: Extract<ReviewSummaryState, { kind: 'skipped' }>,
+  words: Words,
+): string {
+  const sentence = Object.hasOwn(SKIPPED, state.reason)
+    ? SKIPPED[state.reason](words)
+    : SKIPPED_OTHER;
+  const detail = state.detail ?? '';
+  return DETAIL_CODE.test(detail) ? `${sentence} ${REASON} ${codeSpan(detail)}.` : sentence;
+}
+
+function failedText(state: Extract<ReviewSummaryState, { kind: 'failed' }>): string {
+  const sentence = Object.hasOwn(FAILED, state.reason) ? FAILED[state.reason] : FAILED_OTHER;
+  return `${sentence} ${NEXT_PUSH}`;
+}
+
+function findingsLine(counts: Done['counts']): string {
+  const [high, medium, low] = [count(counts.high), count(counts.medium), count(counts.low)];
+  return high + medium + low === 0
+    ? NO_FINDINGS
+    : `${FINDINGS} ${high} high${SEPARATOR}${medium} medium${SEPARATOR}${low} low`;
+}
+
+function unplacedItem(finding: Done['unplaced'][number]): string {
+  const known = Object.hasOwn(SEVERITY_LABEL, finding.severity)
+    ? SEVERITY_LABEL[finding.severity]
+    : undefined;
+  const severity = known ?? SEVERITY_OTHER;
+  const title = inlineProse(finding.title, ANSWER_LIMITS.titleChars);
+  const link = qualorLink('View in Qualor', finding.url);
+  const parts = [severity, codeSpan(location(finding.path, finding.line), MAX_PATH_CHARS)];
+  if (title !== '') parts.push(title);
+  if (link !== null) parts.push(link);
+  return `- ${parts.join(SEPARATOR)}`;
+}
+
+/** The notes the review makes of itself, once each, in the order they are told. */
+function noteSentences(state: Done): string[] {
+  const notes = new Set<string>(state.notes ?? []);
+  const sentences: string[] = [];
+  if (state.tokenLimitReached || notes.has('token_limit_reached')) {
+    sentences.push(NOTES.token_limit_reached);
+  }
+  if (state.snapshotPartial) sentences.push(SNAPSHOT_PARTIAL);
+  if (notes.has('reviewer_unreadable')) sentences.push(NOTES.reviewer_unreadable);
+  if (notes.has('verification_capped')) sentences.push(NOTES.verification_capped);
+  return sentences;
+}
+
+/** The commit the review covered, and where the merge request is now when it has moved on. */
+function reviewedLine(state: Done, words: Words): string | null {
+  if (state.reviewedSha === '') return null;
+  const reviewed = `${REVIEWED} ${codeSpan(state.reviewedSha.slice(0, 12))}`;
+  const head = state.mergeRequestHeadSha;
+  if (head === null || head.toLowerCase() === state.reviewedSha.toLowerCase()) return reviewed;
+  return `${reviewed}; the ${words.request} is now at ${codeSpan(head.slice(0, 12))}; the next ${words.run} reviews the new commits.`;
+}
+
+// ─── The prompt for an AI agent ──────────────────────────────────────────────
+
+/** A finding of the prompt: its place, its title and a part of its body, indented under it. */
+function promptItem(finding: Done['fixPrompt'][number], index: number): string[] {
+  const where = codeSpan(location(finding.path, finding.line), MAX_PATH_CHARS);
+  const title = inlineProse(finding.title, ANSWER_LIMITS.titleChars);
+  const body = safeProse(finding.body, {
+    maxChars: PROMPT_BODY_CHARS,
+    maxLines: PROMPT_BODY_LINES,
+  });
+  return [
+    `${index + 1}. ${title === '' ? where : `${where} ${title}`}`,
+    ...(body === '' ? [] : body.split('\n').map((line) => (line === '' ? '' : `   ${line}`))),
+  ];
+}
+
+/** The block: a fence longer than any run of backticks inside it, so that nothing in it can end it. */
+function promptBlock(content: readonly string[]): string[] {
+  let longest = 0;
+  for (const line of content) {
+    for (const run of line.match(/`+/g) ?? []) longest = Math.max(longest, run.length);
+  }
+  const fence = '`'.repeat(Math.max(3, longest + 1));
+  return [PROMPT_OPEN, '', `${fence}text`, ...content, fence, '', PROMPT_CLOSE];
+}
+
+/**
+ * The prompt for an agent that lists the open findings: as many, from the most severe, as fit in
+ * `budget` bytes, and how many it leaves out; null when not even one fits (or there is none).
+ */
+function promptFor(state: Done, words: Words, budget: number): string[] | null {
+  const items = state.fixPrompt.slice(0, PROMPT_FINDINGS).map(promptItem);
+  const open = count(state.counts.high) + count(state.counts.medium) + count(state.counts.low);
+  for (let listed = items.length; listed >= 1; listed -= 1) {
+    const left = Math.max(0, open - listed);
+    const block = promptBlock([
+      ...PROMPT_INTRO(words),
+      '',
+      ...items.slice(0, listed).flat(),
+      ...(left > 0
+        ? ['', `And ${left} more open ${left === 1 ? 'finding is' : 'findings are'} in Qualor.`]
+        : []),
+    ]);
+    if (bytesOf(block) <= budget) return block;
+  }
+  return null;
+}
+
+// ─── The section ─────────────────────────────────────────────────────────────
+
+/** What of a finished review's section is kept when space is short. */
+interface Plan {
+  verdictChars: number;
+  walkthrough: boolean;
+  /** How many of the findings not on changed lines are listed. */
+  unplaced: number;
+}
+
+function doneSection(state: Done, words: Words, maxBytes: number): string[] {
+  const findings = findingsLine(state.counts);
+  const walkthrough = state.walkthrough
+    .slice(0, ANSWER_LIMITS.walkthroughItems)
+    .map((item) => inlineProse(item, ANSWER_LIMITS.walkthroughChars))
+    .filter((item) => item !== '')
+    .map((item) => `- ${item}`);
+  const items = state.unplaced.slice(0, UNPLACED_LISTED).map(unplacedItem);
+  const beyond = count(state.moreUnplaced) + Math.max(0, state.unplaced.length - items.length);
+  const notes = noteSentences(state).join(' ');
+  const reviewed = reviewedLine(state, words);
+
+  const assemble = (plan: Plan): string[] => {
+    const blocks: string[][] = [];
+    const verdict = plan.verdictChars > 0 ? inlineProse(state.verdict, plan.verdictChars) : '';
+    if (verdict !== '') blocks.push([verdict]);
+    blocks.push([findings]);
+    if (plan.walkthrough && walkthrough.length > 0) blocks.push(walkthrough);
+    if (items.length + beyond > 0) {
+      const listed = items.slice(0, plan.unplaced);
+      const more = beyond + items.length - listed.length;
+      const separator = listed.length > 0 && more > 0 ? [''] : [];
+      blocks.push([
+        UNPLACED,
+        '',
+        ...listed,
+        ...separator,
+        ...(more > 0 ? [`${MORE_PREFIX} ${more} more in Qualor`] : []),
+      ]);
+    }
+    if (notes !== '') blocks.push([notes]);
+    if (reviewed !== null) blocks.push([reviewed]);
+    return [HEADING, ...blocks.flatMap((block) => ['', ...block])];
+  };
+
+  // In the order space gives way: the prompt, the walkthrough, the findings from the end of the
+  // list, the verdict.
+  const verdictChars = ANSWER_LIMITS.verdictChars;
+  const plans: Plan[] = [
+    { verdictChars, walkthrough: true, unplaced: items.length },
+    { verdictChars, walkthrough: false, unplaced: items.length },
+  ];
+  for (let listed = items.length - 1; listed >= 0; listed -= 1) {
+    plans.push({ verdictChars, walkthrough: false, unplaced: listed });
+  }
+  for (let chars = verdictChars >> 1; chars >= 25; chars >>= 1) {
+    plans.push({ verdictChars: chars, walkthrough: false, unplaced: 0 });
+  }
+  for (const [index, plan] of plans.entries()) {
+    const lines = assemble(plan);
+    const size = bytesOf(lines);
+    if (size > maxBytes) continue;
+    if (index > 0) return lines;
+    // Whatever room the whole of it leaves is the prompt's: its two newlines are the blank line.
+    const prompt = promptFor(state, words, maxBytes - size - 2);
+    return prompt === null ? lines : [...lines, '', ...prompt];
+  }
+  return [];
+}
+
+/**
+ * The AI review section for the summary comment, as lines: its heading and the state of the
+ * review in Qualor's words, at most `maxBytes` (no lines at all when it does not fit). A state this
+ * code does not know shows nothing.
+ */
+export function aiSummarySection(
+  state: ReviewSummaryState,
+  provider: Provider,
+  maxBytes: number,
+): string[] {
+  const words = provider === 'github' ? WORDS.github : WORDS.gitlab;
+  let lines: string[];
+  switch (state.kind) {
+    case 'pending':
+      lines = [HEADING, '', PENDING];
+      break;
+    case 'skipped':
+      lines = [HEADING, '', skippedText(state, words)];
+      break;
+    case 'failed':
+      lines = [HEADING, '', failedText(state)];
+      break;
+    case 'done':
+      return doneSection(state, words, maxBytes);
+    default:
+      return [];
+  }
+  return bytesOf(lines) <= maxBytes ? lines : [];
+}

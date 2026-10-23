@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import type { GateResult } from '@qualor/shared';
 import { describe, expect, it } from 'vitest';
+import { checkSectionLine } from '../../../test/markdown-check';
+import type { ReviewSummaryState } from '../../review/render';
 import { markerOf } from '../markdown';
 import {
   INLINE_MAX_BYTES,
@@ -159,6 +161,58 @@ describe('the summary in GitHub’s words (github.md §6.2)', () => {
     expect(checkRunSummary(body).startsWith('### ✅ Qualor:')).toBe(true);
   });
 
+  it('the GitHub check-run summary carries the section', () => {
+    const review: ReviewSummaryState = {
+      kind: 'done',
+      verdict: 'Adds refunds; the retry path can charge twice.',
+      walkthrough: ['Adds a refund endpoint'],
+      counts: { high: 1, medium: 0, low: 0 },
+      unplaced: [
+        {
+          severity: 'high',
+          path: 'src/retry.ts',
+          line: 41,
+          title: 'Retried without a key',
+          url: 'https://q.example/projects/p/issues/i',
+        },
+      ],
+      moreUnplaced: 0,
+      reviewedSha: 'a'.repeat(40),
+      mergeRequestHeadSha: 'b'.repeat(40),
+      tokenLimitReached: false,
+      snapshotPartial: false,
+      fixPrompt: [
+        { path: 'src/retry.ts', line: 41, title: 'Retried without a key', body: 'Send a key.' },
+      ],
+    };
+    const body = summaryBody({
+      ...input({ commented: 0, unplaced: 0, skipped: null }),
+      review,
+    });
+    const output = checkRunSummary(body);
+    // The check run says what the comment says, less its marker line.
+    expect(output).toBe(body.split('\n').slice(1).join('\n'));
+    expect(output.startsWith('### ✅ Qualor:')).toBe(true);
+    expect(output).toContain(
+      '\n\n#### AI review\n\nAdds refunds; the retry path can charge twice.\n',
+    );
+    expect(output).toContain('**Findings:** 1 high · 0 medium · 0 low');
+    expect(output).toContain(
+      'Reviewed commit: ` aaaaaaaaaaaa `; the pull request is now at ` bbbbbbbbbbbb `; the next workflow run reviews the new commits.',
+    );
+    expect(output).toContain('<details><summary>Prompt for an AI agent</summary>');
+    expect(output).not.toContain('merge request');
+    // A review still going shows as such there too.
+    expect(
+      checkRunSummary(
+        summaryBody({
+          ...input({ commented: 0, unplaced: 0, skipped: null }),
+          review: { kind: 'pending' },
+        }),
+      ).endsWith('#### AI review\n\nAI review in progress…'),
+    ).toBe(true);
+  });
+
   it('keeps GitLab’s words when no vocabulary is given', () => {
     const gitlab = input({ commented: 2, unplaced: 0, skipped: null });
     delete gitlab.vocabulary;
@@ -255,6 +309,63 @@ describe('GitHub bounds and hostile values (github.md §6.1, §6.4, §7)', () =>
       const output = checkRunSummary(body);
       expect(output.length).toBeLessThanOrEqual(GITHUB_SUMMARY_MAX_CHARS);
       expect(output.startsWith('### ❌ Qualor: ')).toBe(true);
+    },
+  );
+
+  it.each(HOSTILE.map((v, i) => [i, v] as const))(
+    'keeps hostile value %i inert in the AI review section of the GitHub summary and check run output',
+    (_i, value) => {
+      const review: ReviewSummaryState = {
+        kind: 'done',
+        verdict: value,
+        walkthrough: [value, value],
+        counts: { high: 1, medium: 1, low: 1 },
+        unplaced: Array.from({ length: 3 }, () => ({
+          severity: value,
+          path: value,
+          line: 7,
+          title: value,
+          url: 'https://q.example/projects/p/issues/i',
+        })),
+        moreUnplaced: 2,
+        reviewedSha: 'a'.repeat(40),
+        mergeRequestHeadSha: 'b'.repeat(40),
+        tokenLimitReached: true,
+        snapshotPartial: true,
+        notes: ['reviewer_unreadable', 'verification_capped'],
+        fixPrompt: Array.from({ length: 3 }, () => ({
+          path: value,
+          line: 7,
+          title: value,
+          body: value,
+        })),
+      };
+      const body = summaryBody({
+        projectId: PROJECT,
+        revision: 'a'.repeat(40),
+        gate: gate('passed'),
+        newIssues: { total: 0, bySeverity: {} },
+        topIssues: [],
+        topIssuesTotal: 0,
+        inline: { commented: 0, unplaced: 0, skipped: null },
+        branchUrl: null,
+        mergeRequestHead: null,
+        vocabulary: 'github',
+        review,
+      });
+      expect(markerOf(body)).not.toBeNull();
+      expect(body).not.toMatch(FORBIDDEN);
+      expect(Buffer.byteLength(body, 'utf8')).toBeLessThanOrEqual(SUMMARY_MAX_BYTES);
+      const lines = body.split('\n');
+      const section = lines.slice(lines.indexOf('#### AI review'));
+      expect(section.length).toBeGreaterThan(1);
+      for (const line of section) {
+        expect(line).not.toMatch(/^\s*\//);
+        expect(checkSectionLine(line), line).toBe(true);
+      }
+      const output = checkRunSummary(body);
+      expect(output.length).toBeLessThanOrEqual(GITHUB_SUMMARY_MAX_CHARS);
+      expect(output).toContain('#### AI review');
     },
   );
 

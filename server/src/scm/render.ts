@@ -6,6 +6,7 @@ import {
   type Quality,
   type Severity,
 } from '@qualor/shared';
+import { AI_SECTION_MAX_BYTES, aiSummarySection, type ReviewSummaryState } from '../review/render';
 import type { CommitState } from './gitlab/client';
 import {
   codeSpan,
@@ -186,6 +187,12 @@ export interface SummaryInput {
    * condition; without it the reason says "small change".
    */
   smallChangesetLines?: number | null;
+  /**
+   * How the AI review of this analysis stands, or null/absent when it has none: the summary
+   * ends with its section. It has up to {@link AI_SECTION_MAX_BYTES} of the note; the analyzers'
+   * issue list gives way for it.
+   */
+  review?: ReviewSummaryState | null;
 }
 
 /** The words that differ between GitLab and GitHub (github.md §6.2). */
@@ -436,8 +443,11 @@ function footer(
 
 /**
  * scm.md §5.2: the summary note. Only fixed text, catalog keys, numbers, Qualor's own links, rules'
- * documentation links and code spans; at most {@link SUMMARY_MAX_BYTES} (the issue list is shortened first, then whole
- * lines are dropped from the end).
+ * documentation links, code spans and, in the AI review section, the model's words made inert by
+ * `safeProse`; at most {@link SUMMARY_MAX_BYTES}. The section comes last, within what the note
+ * has left once its head and footer are in; the issue list is shortened first, then the section
+ * gives way part by part (review/render.ts), and only a head too large for the note is cut at
+ * whole lines from the end.
  */
 export function summaryBody(input: SummaryInput): string {
   const words = WORDS[input.vocabulary === 'github' ? 'github' : 'gitlab'];
@@ -459,16 +469,31 @@ export function summaryBody(input: SummaryInput): string {
   } else if (counts.length > 0) {
     head.push('', `**By severity:** ${counts.join(' · ')}`);
   }
+  // The AI section takes the room the head and the footer without any issue leave, up to its own
+  // bound, and the issue list the rest: the section is whole whenever it can be.
+  const bare = [...head, ...footer(input, words, 0)];
+  const room = SUMMARY_MAX_BYTES - Buffer.byteLength(bare.join('\n'), 'utf8') - 2; // the blank line
+  const review = input.review ?? null;
+  const section =
+    review === null
+      ? []
+      : aiSummarySection(
+          review,
+          input.vocabulary === 'github' ? 'github' : 'gitlab',
+          Math.min(AI_SECTION_MAX_BYTES, room),
+        );
+  const tail = section.length === 0 ? [] : ['', ...section];
   for (let listed = Math.min(input.topIssues.length, SUMMARY_TOP_ISSUES); listed >= 0; listed--) {
     const list = input.topIssues.slice(0, listed).flatMap(issueItem);
     const body = [
       ...head,
       ...(list.length > 0 ? ['', '#### Most severe new issues', '', ...list] : []),
       ...footer(input, words, listed),
+      ...tail,
     ].join('\n');
     if (Buffer.byteLength(body, 'utf8') <= SUMMARY_MAX_BYTES) return body;
   }
-  return linesWithinBytes([...head, ...footer(input, words, 0)], SUMMARY_MAX_BYTES);
+  return linesWithinBytes(bare, SUMMARY_MAX_BYTES);
 }
 
 export interface InlineInput {

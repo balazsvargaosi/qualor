@@ -30,11 +30,12 @@ import {
   type JudgeAnswer,
   type PriorStatus,
   type ReviewFinding,
+  type ReviewNote,
   type VerifyVerdict,
 } from './schemas';
 
 export type { ReviewRole, Specialist } from './prompts';
-export type { ReviewFinding } from './schemas';
+export { REVIEW_NOTES, type ReviewFinding, type ReviewNote } from './schemas';
 
 /*
  * The review of a merge request, from its context to the findings it stores (spec §6.3). The size
@@ -119,17 +120,6 @@ export interface PriorVerdict {
   status: PriorStatus;
   reason: string;
 }
-
-/**
- * What the review says of itself in the summary: a reviewer whose answers could not be read, a
- * stage that reached its share of the tokens, more serious security findings than are verified.
- */
-export const REVIEW_NOTES = [
-  'reviewer_unreadable',
-  'token_limit_reached',
-  'verification_capped',
-] as const;
-export type ReviewNote = (typeof REVIEW_NOTES)[number];
 
 export type PipelineOutcome =
   | {

@@ -7,18 +7,25 @@ import {
 } from '@qualor/shared';
 import { z } from 'zod';
 import { and, asc, count, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
-import type { Db } from '../db/client';
+import type { Db, Executor } from '../db/client';
 import {
   analyses,
   branches,
   issues,
   measures,
   projects,
+  reviewFindings,
+  reviewRuns,
   rules,
   scmConnections,
+  type ReviewFailureReason,
+  type ReviewRunRow,
+  type ReviewSkipReason,
 } from '../db/schema';
 import { SMALL_CHANGESET_SETTING } from '../gates/stage';
+import { PROMPT_FINDINGS, UNPLACED_LISTED, type ReviewSummaryState } from '../review/render';
 import { notAiIssue } from '../review/rules';
+import { reviewSummarySchema } from '../review/schemas';
 import { AI_ENGINE } from '../rules/server-engines';
 import { instanceSetting } from '../settings';
 import { readScmContext } from './context';
@@ -213,6 +220,162 @@ export async function summaryData(
       DEFAULT_SMALL_CHANGESET_LINES,
     ),
   };
+}
+
+/** An open AI finding of the branch: not a duplicate, and an issue of its own engine. */
+function openAiFindings(branchId: string) {
+  return and(
+    eq(issues.branchId, branchId),
+    eq(issues.status, 'open'),
+    isNull(issues.duplicateOfIssueId),
+    eq(issues.kind, 'issue'),
+    eq(rules.engineId, AI_ENGINE),
+  );
+}
+
+/** Qualor's severity as the AI review's three: a person can raise one to blocker or lower it to info. */
+function aiSeverity(severity: string): 'high' | 'medium' | 'low' {
+  if (severity === 'blocker' || severity === 'high') return 'high';
+  return severity === 'medium' ? 'medium' : 'low';
+}
+
+/**
+ * The finished review's part of its section that comes from the merge request's findings as they
+ * are now (people dismiss them, later reviews close them): the open ones by severity, the ones that
+ * sit on no changed line, and the ones the prompt for an agent lists.
+ */
+async function openAiSummary(
+  db: Executor,
+  run: Pick<ReviewRunRow, 'branchId' | 'projectId'>,
+  publicUrl: string | null,
+): Promise<
+  Pick<
+    Extract<ReviewSummaryState, { kind: 'done' }>,
+    'counts' | 'unplaced' | 'moreUnplaced' | 'fixPrompt'
+  >
+> {
+  const where = openAiFindings(run.branchId);
+  const withPlace = and(isNotNull(issues.path), isNotNull(issues.startLine));
+  const order = [
+    asc(issues.severityRank),
+    asc(issues.path),
+    asc(issues.startLine),
+    asc(issues.id),
+  ] as const;
+  const grouped = await db
+    .select({
+      severity: issues.severity,
+      total: count(),
+      // A finding without a row of its own has no anchor either.
+      unplaced: sql<number>`count(*) FILTER (WHERE ${reviewFindings.anchorLine} IS NULL)`.mapWith(
+        Number,
+      ),
+    })
+    .from(issues)
+    .innerJoin(rules, eq(rules.id, issues.ruleId))
+    .leftJoin(reviewFindings, eq(reviewFindings.issueId, issues.id))
+    .where(where)
+    .groupBy(issues.severity);
+  const counts = { high: 0, medium: 0, low: 0 };
+  let unplacedTotal = 0;
+  for (const row of grouped) {
+    counts[aiSeverity(row.severity)] += row.total;
+    unplacedTotal += row.unplaced;
+  }
+  const unplaced = await db
+    .select({
+      id: issues.id,
+      severity: issues.severity,
+      path: issues.path,
+      line: issues.startLine,
+      title: issues.message,
+    })
+    .from(issues)
+    .innerJoin(rules, eq(rules.id, issues.ruleId))
+    .leftJoin(reviewFindings, eq(reviewFindings.issueId, issues.id))
+    .where(and(where, withPlace, isNull(reviewFindings.anchorLine)))
+    .orderBy(...order)
+    .limit(UNPLACED_LISTED);
+  const prompt = await db
+    .select({
+      path: issues.path,
+      line: issues.startLine,
+      title: issues.message,
+      body: reviewFindings.body,
+    })
+    .from(issues)
+    .innerJoin(rules, eq(rules.id, issues.ruleId))
+    .leftJoin(reviewFindings, eq(reviewFindings.issueId, issues.id))
+    .where(and(where, withPlace))
+    .orderBy(...order)
+    .limit(PROMPT_FINDINGS);
+  const listed = unplaced.flatMap((u) =>
+    u.path === null || u.line === null
+      ? []
+      : [
+          {
+            severity: aiSeverity(u.severity),
+            path: u.path,
+            line: u.line,
+            title: u.title,
+            url: issueUrl(publicUrl, run.projectId, u.id),
+          },
+        ],
+  );
+  return {
+    counts,
+    unplaced: listed,
+    moreUnplaced: Math.max(0, unplacedTotal - listed.length),
+    fixPrompt: prompt.flatMap((p) =>
+      p.path === null || p.line === null
+        ? []
+        : [{ path: p.path, line: p.line, title: p.title, body: p.body ?? '' }],
+    ),
+  };
+}
+
+/**
+ * How the AI review of the analysis stands, for the AI section of the summary: a run that
+ * waits or runs is in progress; one that was skipped or failed says why; one that is done gives the
+ * summary it stored (its verdict and walkthrough, read back by `reviewSummarySchema`: one that
+ * cannot be read has no verdict), the commit it covered, what it says of itself, and the merge
+ * request's open AI findings as they are now. Null when the analysis has no run, and for a run an
+ * older analysis was superseded by: a newer analysis' own run is the one the summary shows.
+ * `mergeRequestHeadSha` is left for the decoration, which knows the live head.
+ */
+export async function loadReviewSummary(
+  db: Executor,
+  analysisId: string,
+  publicUrl: string | null,
+): Promise<ReviewSummaryState | null> {
+  const [run] = await db.select().from(reviewRuns).where(eq(reviewRuns.analysisId, analysisId));
+  if (run === undefined) return null;
+  switch (run.status) {
+    case 'waiting':
+    case 'running':
+      return { kind: 'pending' };
+    case 'skipped':
+      return { kind: 'skipped', reason: run.reason as ReviewSkipReason, detail: run.detail };
+    case 'failed':
+      return { kind: 'failed', reason: run.reason as ReviewFailureReason };
+    case 'done': {
+      const stored = reviewSummarySchema.safeParse(run.summary);
+      const summary = stored.success ? stored.data : { verdict: '', walkthrough: [], notes: [] };
+      return {
+        kind: 'done',
+        verdict: summary.verdict,
+        walkthrough: summary.walkthrough,
+        ...(await openAiSummary(db, run, publicUrl)),
+        reviewedSha: run.headSha ?? '',
+        mergeRequestHeadSha: null,
+        tokenLimitReached: run.tokenLimitReached,
+        snapshotPartial: run.snapshotPartial,
+        notes: summary.notes,
+      };
+    }
+    default:
+      return null;
+  }
 }
 
 /**

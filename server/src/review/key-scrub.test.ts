@@ -1,6 +1,8 @@
-import { LONE_SURROGATE_SOURCE, REDACTED } from '@qualor/shared';
+import { LONE_SURROGATE_SOURCE, REDACTED, safePlainValue } from '@qualor/shared';
 import { describe, expect, it } from 'vitest';
+import { budgetMs } from '../../test/perf';
 import type { LlmTurn } from '../llm/providers';
+import { codeSpan, safeProse } from '../scm/markdown';
 import { scrubKeyDeep, scrubText, scrubTurn } from './key-scrub';
 
 const j = (...parts: string[]) => parts.join('');
@@ -470,5 +472,187 @@ describe('scrubTurn', () => {
     }
     expect(levels).toBe(100_000);
     expect(node).toEqual({ path: REDACTED });
+  });
+});
+
+/**
+ * What the comments are made of leaves some characters out (`safePlainValue` of packages/shared
+ * deletes the invisible ones, under `codeSpan` and `safeMultilineText`): a key written with such
+ * characters between its own is the key once rendered, so it is scrubbed as the key.
+ */
+describe('scrubText: a key split by characters that rendering leaves out', () => {
+  const HIDDEN: readonly (readonly [string, string])[] = [
+    ['a zero width space', '\u200b'],
+    ['a word joiner', '\u2060'],
+    ['a byte order mark', '\ufeff'],
+    ['a soft hyphen', '\u00ad'],
+    ['a Hangul filler', '\u3164'],
+    ['the braille blank', '\u2800'],
+    ['a tag character', '\u{e0041}'],
+    ['a zero width joiner', '\u200d'],
+    ['a zero width non-joiner', '\u200c'],
+    ['a variation selector', '\ufe0f'],
+  ];
+  /** The key with `hidden` between each two of its characters. */
+  const split = (hidden: string, key = KEY): string => [...key].join(hidden);
+  /** `hidden` as the escapes of a JSON string. */
+  const escaped = (hidden: string): string =>
+    unitsOf(hidden)
+      .map((unit) => `\\u${hex4(unit)}`)
+      .join('');
+  /** What the comments make of a text: the three ways a value is rendered. */
+  const rendered = (text: string): string[] => [
+    safePlainValue(text, 10_000),
+    codeSpan(text, 10_000),
+    safeProse(text, { maxChars: 10_000, maxLines: 10 }),
+  ];
+
+  it.each(HIDDEN)('catches the key with %s between its characters', (_name, hidden) => {
+    expect(scrubText(`a ${split(hidden)} b`, KEY)).toBe(`a ${REDACTED} b`);
+    // At one place, with a run of them, and around the key too.
+    const once = `${KEY.slice(0, 8)}${hidden}${KEY.slice(8)}`;
+    expect(scrubText(`<${once}>`, KEY)).toBe(`<${REDACTED}>`);
+    const run = `${KEY.slice(0, 8)}${hidden.repeat(40)}${KEY.slice(8)}`;
+    expect(scrubText(run, KEY)).toBe(REDACTED);
+    expect(scrubText(`${hidden}${split(hidden)}${hidden}`, KEY)).toBe(
+      `${hidden}${REDACTED}${hidden}`,
+    );
+  });
+
+  it('leaves no key in what rendering makes of a scrubbed text, where the text alone would', () => {
+    for (const [name, hidden] of HIDDEN) {
+      const scrubbed = scrubText(`the key is ${split(hidden)}, really`, KEY);
+      for (const out of rendered(scrubbed)) {
+        expect(out, name).not.toContain(KEY);
+        expect(out, name).toContain('redacted');
+      }
+    }
+    // Why the scrub reads past them: the deleting helpers of packages/shared join the key again.
+    expect(safePlainValue(split('\u200b'), 200)).toBe(KEY);
+    expect(codeSpan(split('\u2060'))).toBe(`\` ${KEY} \``);
+  });
+
+  it('makes no key of a split one in prose, scrubbed or not: prose leaves a space, never nothing', () => {
+    for (const [name, hidden] of HIDDEN) {
+      const out = safeProse(split(hidden), { maxChars: 10_000, maxLines: 10 });
+      expect(out, name).not.toContain(KEY);
+    }
+  });
+
+  it('catches the key when escapes of JSON spell the hidden characters', () => {
+    for (const [name, hidden] of HIDDEN) {
+      const text = `{"a":"${[...KEY].join(escaped(hidden))}"}`;
+      expect(scrubText(text, KEY), name).toBe(`{"a":"${REDACTED}"}`);
+      const parsed = JSON.parse(scrubText(text, KEY)) as { a: string };
+      for (const out of rendered(parsed.a)) expect(out, name).not.toContain(KEY);
+    }
+  });
+
+  it('reads a tag character as the pair it is: raw, escaped, or one half of each', () => {
+    const [high, low] = unitsOf('\u{e0041}') as [number, number];
+    const halves = [
+      `\\u${hex4(high)}\\u${hex4(low)}`,
+      `\\u${hex4(high)}${String.fromCharCode(low)}`,
+      `${String.fromCharCode(high)}\\u${hex4(low)}`,
+      `${String.fromCharCode(high)}${String.fromCharCode(low)}`,
+    ];
+    for (const pair of halves) {
+      expect(scrubText(`${KEY.slice(0, 9)}${pair}${KEY.slice(9)}`, KEY), pair).toBe(REDACTED);
+    }
+  });
+
+  it('catches the key spelled with escapes and hidden characters together', () => {
+    const text = `\\u0073${'\u200b'}k-\\u0074${'\u2060'}est-0\\u0031${'\ufeff'}23456789abcdef`;
+    expect(scrubText(text, KEY)).toBe(REDACTED);
+  });
+
+  it('does not take half of a surrogate pair for a hidden character', () => {
+    // The high half of a tag character with nothing after it is no tag character: it renders as
+    // a replacement character, which shows.
+    const lone = String.fromCharCode(unitsOf('\u{e0041}')[0]!);
+    const text = `${KEY.slice(0, 8)}${lone}${KEY.slice(8)}`;
+    expect(scrubText(text, KEY)).toBe(text);
+  });
+
+  it('leaves a text without the key as it was, hidden characters and all', () => {
+    const text = `a\u200bb \u2060 c\ufeff${'\u{e0041}'} and sk-test-\u200b0123 and ${KEY.slice(0, -1)}\u200b`;
+    expect(scrubText(text, KEY)).toBe(text);
+    expect(scrubText('plain text', KEY)).toBe('plain text');
+  });
+
+  it('leaves the hidden characters around a match where they are', () => {
+    const text = `\u200b${split('\u200b')}\u2060 and ${split('\ufeff')}\u200b`;
+    expect(scrubText(text, KEY)).toBe(`\u200b${REDACTED}\u2060 and ${REDACTED}\u200b`);
+  });
+
+  it('finds a key that has a hidden character in it, by what shows of it', () => {
+    const odd = 'abcd\u200befghij';
+    expect(scrubText(`x ${odd} y`, odd)).toBe(`x ${REDACTED} y`);
+    expect(scrubText('x abcdefghij y', odd)).toBe(`x ${REDACTED} y`);
+    expect(scrubText('x abc\u2060defghij y', odd)).toBe(`x ${REDACTED} y`);
+  });
+
+  it('looks for a key that is mostly hidden only as it is written', () => {
+    // Fewer than 8 characters show of it: those are not looked for, but the key as written is.
+    const odd = `ab${'\u200b'.repeat(7)}cd`;
+    expect(scrubText('xx abcd yy', odd)).toBe('xx abcd yy');
+    expect(scrubText(`xx ${odd} yy`, odd)).toBe(`xx ${REDACTED} yy`);
+  });
+
+  it('takes the key out of every string and every name of a parsed answer', () => {
+    const value = {
+      [`name-${split('\u200b')}`]: `value ${split('\u2060')}`,
+      list: [split('\ufeff'), { deeper: [`x${split('\u200d')}y`] }],
+    };
+    expect(scrubKeyDeep(value, KEY)).toEqual({
+      [`name-${REDACTED}`]: `value ${REDACTED}`,
+      list: [REDACTED, { deeper: [`x${REDACTED}y`] }],
+    });
+  });
+
+  it('takes the key out of a turn whose text splits it', () => {
+    const turn = turnOf({
+      text: `{"summary":"${split('\u200b')}"}`,
+      toolCalls: [{ id: 'c1', name: 'read_file', arguments: { path: split('\u2060') } }],
+    });
+    const scrubbed = scrubTurn(turn, KEY);
+    expect(scrubbed.text).toBe(`{"summary":"${REDACTED}"}`);
+    expect(scrubbed.toolCalls[0]!.arguments).toEqual({ path: REDACTED });
+  });
+
+  it('finds the key however hidden characters and spellings are mixed in it', () => {
+    const next = seeded(20_261_024);
+    const hiddenOf = HIDDEN.map(([, hidden]) => hidden);
+    const alphabet = unitsOf('abcXYZ019-_/+=.:');
+    const before = 'pre \\u00e9 \\/ ';
+    const after = ' \\\\ post';
+    for (let round = 0; round < 400; round += 1) {
+      const length = 8 + Math.floor(next() * 12);
+      const units = Array.from({ length }, () => alphabet[Math.floor(next() * alphabet.length)]!);
+      const key = String.fromCharCode(...units);
+      const spelled = units
+        .map((unit, at) => {
+          const gap = at === 0 ? 0 : Math.floor(next() * 3);
+          const hiddenRun = Array.from({ length: gap }, () => {
+            const hidden = hiddenOf[Math.floor(next() * hiddenOf.length)]!;
+            return next() < 0.3 ? escaped(hidden) : hidden;
+          }).join('');
+          return hiddenRun + spelledAnyWay(unit, next);
+        })
+        .join('');
+      const out = scrubText(`{"a":"${before}${spelled}${after}"}`, key);
+      expect(out, `${key} as ${spelled}`).toBe(`{"a":"${before}${REDACTED}${after}"}`);
+      const parsed = (JSON.parse(out) as { a: string }).a;
+      for (const text of rendered(parsed)) expect(text, `${key} as ${spelled}`).not.toContain(key);
+    }
+  });
+
+  it('reads a megabyte of hidden characters in well under a second', () => {
+    const mixed = `${'\u200b'.repeat(500_000)}${KEY.slice(0, 8)}${'\u2060'.repeat(500_000)}`;
+    const spread = `${[...KEY.slice(0, 8)].join('\u200b'.repeat(100_000))}!`;
+    const started = performance.now();
+    expect(scrubText(mixed, KEY)).toBe(mixed);
+    expect(scrubText(spread, KEY)).toBe(spread);
+    expect(performance.now() - started).toBeLessThan(budgetMs(1_000));
   });
 });

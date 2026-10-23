@@ -4,6 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createFakeGitLab, type FakeGitLab } from '../../test/fake-gitlab';
 import { createIngestHarness, type IngestHarness } from '../../test/ingest';
 import { reportWith } from '../../test/reports';
+import { seedAiIssue } from '../../test/review';
 import {
   decorationDeps,
   mappedProject,
@@ -15,7 +16,7 @@ import {
 } from '../../test/scm';
 import { encryptionKey, encryptSecret } from '../crypto/secrets';
 import type { Db } from '../db/client';
-import { branches, jobs, scmConnections } from '../db/schema';
+import { branches, jobs, reviewFindings, reviewRuns, scmConnections } from '../db/schema';
 import type { Job } from '../queue/queue';
 import { SCM_TOKEN_AAD } from './connections';
 import { markerOf } from './markdown';
@@ -81,6 +82,8 @@ describe('GitLab decoration: commit status and summary (scm.md §4, §5.1–§5.
   const statusesOf = (gitlabId: number) => fake.statuses.filter((s) => s.projectId === gitlabId);
   const writes = () =>
     fake.requests.filter((r) => r.method !== 'GET').map((r) => r.method + r.path);
+  /** The AI review section of a summary: from its heading to the end. */
+  const sectionOf = (body: string) => body.slice(body.indexOf('#### AI review'));
 
   beforeAll(async () => {
     fake = await createFakeGitLab();
@@ -220,6 +223,112 @@ describe('GitLab decoration: commit status and summary (scm.md §4, §5.1–§5.
     await runDecorations(h, decorationDeps(h));
     expect(writes()).toEqual([]);
     expect(statusesOf(gitlabId)).toHaveLength(2);
+  });
+
+  it('puts the state of the AI review in the summary, edited in place as the review goes on', async () => {
+    const { project, gitlabId } = await setup('scm/ai-section');
+    const analysisId = await project.ingestOk(
+      mergeRequestReport(12, HEAD, {
+        projectKey: project.key,
+        gitlab: { projectId: String(gitlabId), mergeRequestEventType: 'detached' },
+      }),
+    );
+    await runDecorations(h, decorationDeps(h));
+    const body = () => summaries(gitlabId)[0]!.body;
+    expect(body()).not.toContain('AI review');
+    const [mr] = await h.ctx.db
+      .select()
+      .from(branches)
+      .where(and(eq(branches.projectId, project.id), eq(branches.kind, 'merge_request')));
+    const decorateAgain = async () => {
+      await enqueueDecoration(h.ctx.db, { analysisId, branchId: mr!.id, gitlab: null });
+      await runDecorations(h, decorationDeps(h));
+      expect(summaries(gitlabId)).toHaveLength(1);
+    };
+
+    // The review waits for its snapshot: the summary says it is in progress, in the same note.
+    const [run] = await h.ctx.db
+      .insert(reviewRuns)
+      .values({
+        projectId: project.id,
+        branchId: mr!.id,
+        analysisId,
+        status: 'waiting',
+        deadlineAt: new Date(Date.now() + 900_000),
+      })
+      .returning();
+    await decorateAgain();
+    expect(body()).toContain('### ❌ Qualor: quality gate failed');
+    expect(body().endsWith('\n\n#### AI review\n\nAI review in progress…')).toBe(true);
+
+    // It ended without a review: the reason, in a sentence of Qualor's.
+    await h.ctx.db
+      .update(reviewRuns)
+      .set({ status: 'skipped', reason: 'no_snapshot' })
+      .where(eq(reviewRuns.id, run!.id));
+    await decorateAgain();
+    expect(body()).toContain('no repository snapshot came for this commit');
+    expect(body()).not.toContain('in progress');
+
+    // It is done, for another commit than the merge request is at now, with a finding that sits on
+    // no changed line, and the summary says so.
+    const issueId = await seedAiIssue(h.ctx.db, {
+      branchId: mr!.id,
+      category: 'security',
+      path: 'src/a.ts',
+      line: 3,
+      severity: 'high',
+    });
+    await h.ctx.db.insert(reviewFindings).values({
+      issueId,
+      category: 'security',
+      body: 'Check the input first.',
+      anchorLine: null,
+      reviewedHeadSha: '2'.repeat(40),
+    });
+    await h.ctx.db
+      .update(reviewRuns)
+      .set({
+        status: 'done',
+        reason: null,
+        headSha: '2'.repeat(40),
+        summary: {
+          verdict: 'Adds refunds @all, but one path can fail.',
+          walkthrough: ['Adds a refund endpoint'],
+          notes: [],
+        },
+      })
+      .where(eq(reviewRuns.id, run!.id));
+    await decorateAgain();
+    expect(body()).toContain('#### AI review\n\nAdds refunds ` @all, ` but one path can fail.');
+    expect(body()).toContain('**Findings:** 1 high · 0 medium · 0 low');
+    expect(body()).toContain('- Adds a refund endpoint');
+    expect(body()).toMatch(
+      /^- \*\*High\*\* · ` src\/a\.ts:3 ` · AI finding \d+ · \[View in Qualor\]/m,
+    );
+    expect(body()).toContain(
+      `[View in Qualor](${PUBLIC_URL}/projects/${project.id}/issues/${issueId})`,
+    );
+    // The merge request is at HEAD; the review covered another commit, and the summary says so.
+    expect(body()).toContain(
+      'Reviewed commit: ` 222222222222 `; the merge request is now at ` 111111111111 `; the next pipeline reviews the new commits.',
+    );
+    // The AI finding is none of the analyzers' numbers.
+    expect(body()).toContain('**1 new issue** in this merge request');
+
+    // The review covered the head: the merge request has not moved on.
+    await h.ctx.db.update(reviewRuns).set({ headSha: HEAD }).where(eq(reviewRuns.id, run!.id));
+    await decorateAgain();
+    expect(body()).toContain('Reviewed commit: ` 111111111111 `');
+    expect(sectionOf(body())).not.toContain('is now at');
+
+    // The run of an older analysis a newer one superseded shows nothing.
+    await h.ctx.db
+      .update(reviewRuns)
+      .set({ status: 'superseded' })
+      .where(eq(reviewRuns.id, run!.id));
+    await decorateAgain();
+    expect(body()).not.toContain('AI review');
   });
 
   it('never edits a summary marker in someone else’s note, and a stale analysis only sets its status', async () => {

@@ -175,3 +175,31 @@ export function reviewFindingOf(found: z.infer<typeof findingSchema>): ReviewFin
           },
   };
 }
+
+// ─── What a run keeps of the review's summary ────────────────────────────────
+
+/**
+ * What the review says of itself in the summary: a reviewer whose answers could not be read, a
+ * stage that reached its share of the tokens, more serious security findings than are verified.
+ */
+export const REVIEW_NOTES = [
+  'reviewer_unreadable',
+  'token_limit_reached',
+  'verification_capped',
+] as const;
+export type ReviewNote = (typeof REVIEW_NOTES)[number];
+
+/** Text of at most `max` characters, counted as the cut counts them: whole characters. */
+const upTo = (max: number) =>
+  z.string().refine((value) => [...value].length <= max, `at most ${max} characters`);
+
+/**
+ * What a run keeps of the review's summary, and what its readers can rely on. It lives here, with
+ * the bounds it checks, so that the summary comment can read it without the pipeline.
+ */
+export const reviewSummarySchema = z.strictObject({
+  verdict: upTo(L.verdictChars),
+  walkthrough: z.array(upTo(L.walkthroughChars).min(1)).max(L.walkthroughItems),
+  notes: z.array(z.enum(REVIEW_NOTES)).max(REVIEW_NOTES.length),
+});
+export type ReviewSummary = z.infer<typeof reviewSummarySchema>;

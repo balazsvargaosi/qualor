@@ -1,8 +1,10 @@
+import { withMergeRequestHead, type ReviewSummaryState } from '../../review/render';
 import type { DecorationDeps, DecorationOutcome } from '../decorate';
 import {
   branchUrl,
   comparable,
   issueUrl,
+  loadReviewSummary,
   recordMergeRequest,
   summaryData,
   type Loaded,
@@ -288,11 +290,15 @@ async function reconcileComment(
   }
 }
 
-/** The summary comment's body (github.md §6.2) with `inline` as its sentence on inline comments. */
+/**
+ * The summary comment's body (github.md §6.2) with `inline` as its sentence on inline comments and
+ * `review` as the state of the AI review (the pull request's head as it is now, when it is known).
+ */
 function summaryFor(
   deps: DecorationDeps,
   loaded: Loaded,
   data: SummaryData,
+  review: ReviewSummaryState | null,
   pull: GitHubPullRequest | null,
   inline: Inline,
 ): string {
@@ -308,6 +314,7 @@ function summaryFor(
     mergeRequestHead: pull !== null && pull.head.sha !== loaded.revision ? pull.head.sha : null,
     vocabulary: 'github',
     smallChangesetLines: data.smallChangesetLines,
+    review: withMergeRequestHead(review, pull?.head.sha ?? null),
   });
 }
 
@@ -327,7 +334,8 @@ async function writeDecoration(
   failures: Failures,
 ): Promise<ScmError | null> {
   const data = await summaryData(deps.db, loaded, deps.publicUrl);
-  const planned = summaryFor(deps, loaded, data, part.pull, part.inline);
+  const review = await loadReviewSummary(deps.db, loaded.analysis.id, deps.publicUrl);
+  const planned = summaryFor(deps, loaded, data, review, part.pull, part.inline);
   const name = statusName(loaded.project.key);
   const runId = await attempt(failures, () =>
     reconcileCheckRun(client, name, loaded.revision, checkRunFields(deps, loaded, planned)),
@@ -335,7 +343,7 @@ async function writeDecoration(
   if (failures.stop !== null) return failures.stop;
   const inline = part.planned === null ? part.inline : await applyThreads(part.planned, failures);
   if (failures.stop !== null) return failures.stop;
-  const body = summaryFor(deps, loaded, data, part.pull, inline);
+  const body = summaryFor(deps, loaded, data, review, part.pull, inline);
   if (part.pull?.state === 'open') {
     await attempt(failures, () =>
       reconcileComment(deps, client, loaded, loaded.branch.name, body, slug),

@@ -3,12 +3,14 @@ import type { Db } from '../db/client';
 import type { Limits } from '../limits';
 import { AI_FIX_QUEUE, postFixHandler } from '../llm/post';
 import type { JobHandlers } from '../queue/worker';
+import { withMergeRequestHead } from '../review/render';
 import { gitlabClientFor, type ScmDeps } from './connections';
 import {
   branchUrl,
   comparable,
   issueUrl,
   loadDecoration,
+  loadReviewSummary,
   recordMergeRequest,
   summaryData,
   type Loaded,
@@ -229,6 +231,10 @@ async function decorateMergeRequest(
     branchUrl: branchUrl(deps.publicUrl, loaded),
     mergeRequestHead: head !== null && head !== revision ? head : null,
     smallChangesetLines,
+    review: withMergeRequestHead(
+      await loadReviewSummary(deps.db, loaded.analysis.id, deps.publicUrl),
+      head,
+    ),
   });
   const { own, foreign } = summaryNotes(listed.items, me.id, loaded.project.id);
   if (own) {

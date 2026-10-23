@@ -10,14 +10,18 @@ import {
   safeMultilineText,
   type Severity,
 } from '@qualor/shared';
-import { z } from 'zod';
 import type { AiCategory } from '../db/schema';
 import { SCOPE_MARGIN, type ReviewableChange } from './context';
 import { fingerprintOf, type PlannedFinding } from './findings';
 import type { MaskedText } from './masked-files';
-import { REVIEW_NOTES, type JudgedFinding, type PipelineOutcome } from './pipeline';
+import type { JudgedFinding, PipelineOutcome } from './pipeline';
 import { aiRuleKey } from './rules';
-import { ANSWER_LIMITS, type FindingSeverity } from './schemas';
+import {
+  ANSWER_LIMITS,
+  reviewSummarySchema,
+  type FindingSeverity,
+  type ReviewSummary,
+} from './schemas';
 import { checkReviewSuggestion, type ReviewSuggestion } from './suggestion';
 
 /*
@@ -177,19 +181,8 @@ export function renderFinding(
 
 // ─── The summary ─────────────────────────────────────────────────────────────
 
-/** Text of at most `max` characters, counted as the cut counts them: whole characters. */
-const upTo = (max: number) =>
-  z.string().refine((value) => [...value].length <= max, `at most ${max} characters`);
-
-/** What a run keeps of the review's summary, and what its readers can rely on. */
-export const reviewSummarySchema = z.strictObject({
-  verdict: upTo(ANSWER_LIMITS.verdictChars),
-  walkthrough: z
-    .array(upTo(ANSWER_LIMITS.walkthroughChars).min(1))
-    .max(ANSWER_LIMITS.walkthroughItems),
-  notes: z.array(z.enum(REVIEW_NOTES)).max(REVIEW_NOTES.length),
-});
-export type ReviewSummary = z.infer<typeof reviewSummarySchema>;
+// What a run keeps of the review's summary is `reviewSummarySchema` (schemas.ts).
+export { reviewSummarySchema, type ReviewSummary };
 
 /** One line of the model's, as plain text for people: no control or hidden character, bounded. */
 const oneLine = (text: string, max: number): string => safeMultilineText(text.trim(), max, 1);
