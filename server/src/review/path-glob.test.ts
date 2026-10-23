@@ -234,7 +234,8 @@ describe('the work of matching a glob is bounded', () => {
     const work = newGlobWork();
     const path = 'a'.repeat(1_000);
     let walked = 0;
-    while (!work.exhausted && walked < 1_000_000) {
+    // A bound that does not hold ends the loop here, not after minutes.
+    while (!work.exhausted && walked < 20_000) {
       glob.matches(path, work);
       walked += 1;
     }
