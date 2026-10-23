@@ -479,6 +479,60 @@ describe('the review run lifecycle (6I-3, R15)', () => {
       expect(warned).toEqual([]);
     });
 
+    it('a run whose end fails is said and left to the next sweep; the runs after it are swept all the same', async () => {
+      const failing = await runOf(await p.ingestOk(report(nextMergeRequest())));
+      const after = await runOf(await p.ingestOk(report(nextMergeRequest())));
+      for (const run of [failing, after]) {
+        await jobDies(run.id);
+        await h.ctx.db
+          .update(reviewRuns)
+          .set({ status: 'running', phase: 'judge', startedAt: new Date(), headSha: revision(1) })
+          .where(eq(reviewRuns.id, run.id));
+      }
+      // The first run's end fails, as a database can: its transaction is rolled back.
+      await h.ctx.db.execute(
+        sql.raw(`
+          CREATE FUNCTION review_test_end_fails() RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN
+            IF NEW.id = '${failing.id}' AND NEW.status = 'failed' THEN
+              RAISE EXCEPTION 'a failing end' USING ERRCODE = '40001';
+            END IF;
+            RETURN NEW;
+          END $$`),
+      );
+      await h.ctx.db.execute(sql`
+        CREATE TRIGGER review_test_end_fails BEFORE UPDATE ON review_runs
+           FOR EACH ROW EXECUTE FUNCTION review_test_end_fails()`);
+      try {
+        expect(failing.id < after.id).toBe(true);
+        expect(await reconcileStuckReviewRuns(h.ctx.db, sweepLogger)).toEqual({
+          ended: 1,
+          queued: 0,
+        });
+        expect((await runOf(failing.analysisId)).status).toBe('running');
+        expect(await runOf(after.analysisId)).toMatchObject({
+          status: 'failed',
+          reason: 'internal',
+        });
+        expect(warned).toContainEqual([
+          { runId: failing.id, errorClass: expect.any(String) },
+          'AI review run without its job could not be reconciled',
+        ]);
+      } finally {
+        await h.ctx.db.execute(sql`DROP TRIGGER review_test_end_fails ON review_runs`);
+        await h.ctx.db.execute(sql`DROP FUNCTION review_test_end_fails()`);
+      }
+      // The next sweep ends it.
+      expect(await reconcileStuckReviewRuns(h.ctx.db, sweepLogger)).toEqual({
+        ended: 1,
+        queued: 0,
+      });
+      expect(await runOf(failing.analysisId)).toMatchObject({
+        status: 'failed',
+        reason: 'internal',
+      });
+    });
+
     it('never waits on a branch another transaction holds: the next sweep ends its run', async () => {
       const run = await runOf(await p.ingestOk(report(nextMergeRequest())));
       await jobDies(run.id);

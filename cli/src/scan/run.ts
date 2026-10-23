@@ -467,8 +467,8 @@ function unavailableText(
 /**
  * The snapshot of `s.mr`, built in `s.tempRoot` and uploaded, then removed whatever happens. Its
  * warnings are those of `sendReviewSnapshot`; it throws on a git, disk or network failure, and
- * SnapshotTooSlow when the snapshot is not built by `s.deadline`: git stops there (the snapshot
- * is not built at all, or not sent).
+ * SnapshotTooSlow when the snapshot is not built by `s.deadline`: git and the merge base's secret
+ * scan stop there (the snapshot is not built at all, or not sent).
  */
 async function buildAndUpload(
   o: ReviewSnapshotOptions,

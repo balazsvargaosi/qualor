@@ -99,6 +99,35 @@ describe('GitLab client (scm.md §4.3) against the fake GitLab', () => {
     }
   });
 
+  it('reads a draft flag that is missing, null or not a boolean as false: the merge request still parses', () => {
+    const shape = gitlabShape('merge_request') as Record<string, unknown>;
+    /** The recorded merge request with `flags` over it; a flag set to undefined is left out. */
+    const parse = (flags: Record<string, unknown>) =>
+      GITLAB_SHAPES.mergeRequest.safeParse(
+        Object.fromEntries(
+          Object.entries({ ...shape, ...flags }).filter(([, value]) => value !== undefined),
+        ),
+      );
+    for (const flags of [
+      { draft: null, work_in_progress: null },
+      { draft: undefined, work_in_progress: undefined },
+      { draft: 'yes', work_in_progress: 1 },
+    ]) {
+      const parsed = parse(flags);
+      expect(parsed.success, JSON.stringify(flags)).toBe(true);
+      expect(parsed.data, JSON.stringify(flags)).toMatchObject({
+        draft: false,
+        work_in_progress: false,
+      });
+    }
+    // A flag that says draft still does.
+    expect(parse({ draft: null, work_in_progress: true }).data).toMatchObject({
+      draft: false,
+      work_in_progress: true,
+    });
+    expect(parse({ draft: true }).data).toMatchObject({ draft: true });
+  });
+
   it('sends the token only in PRIVATE-TOKEN, never in the URL', async () => {
     const user = await client().currentUser();
     expect(user).toMatchObject({ id: fake.botUserId });

@@ -88,6 +88,10 @@ export async function endRun(
   return ended.length > 0;
 }
 
+/** The class of a thrown value, for a log line that holds no message (it could hold content). */
+export const errorClass = (err: unknown): string =>
+  err instanceof Error ? err.constructor.name : typeof err;
+
 /** The log line of a run's end, once it is committed: its id, status and reason only. */
 export function logRunEnd(logger: Logger, runId: string, end: RunEnd): void {
   logger.info(

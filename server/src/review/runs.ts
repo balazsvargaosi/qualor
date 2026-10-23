@@ -5,7 +5,7 @@ import { branches, jobs, reviewRuns } from '../db/schema';
 import { enqueue } from '../queue/queue';
 import type { WorkerLogger } from '../queue/worker';
 import { tryLockBranchQueue } from '../scm/queue';
-import { decorateRun, endRun, type RunEnd } from './run-ends';
+import { decorateRun, endRun, errorClass, type RunEnd } from './run-ends';
 
 /*
  * The life of a review run (6I-3, R15). The ingestion stage creates one for each merge request
@@ -37,8 +37,10 @@ export const AI_REVIEW_QUEUE = 'ai-review';
 /** How long a run waits for its snapshot (R15). */
 export const REVIEW_SNAPSHOT_WAIT_SECONDS = 900;
 /**
- * A run's job is tried twice at most: the second try is for a lease that expired, and it finds the
- * run running and ends it failed, so a review is never run twice into more spend.
+ * A run's job is tried twice at most. The second try is for an error before the run started (the
+ * first try's decision wrote nothing), or for a lease that expired: it finds the run running and
+ * ends it failed, so a review is never run twice into more spend. An error on the last try ends
+ * the run failed too (job.ts).
  */
 export const AI_REVIEW_MAX_ATTEMPTS = 2;
 
@@ -210,23 +212,63 @@ export interface ReviewSweep {
   queued: number;
 }
 
+type SweepLogger = Pick<WorkerLogger, 'info' | 'warn'>;
+
 /**
- * The runs that wait or review with no `ai-review` job queued or running for them: both tries of
- * their job died (its lease expired, or it failed, twice), so nothing would ever end them and the
- * merge request's summary would say the review is in progress for good. After every reap of the
- * review worker (main.ts, every 30 seconds), each is ended here, never through a job: a running one
- * `failed: internal`, a waiting one past its deadline `skipped: no_snapshot`, and a waiting one
- * before its deadline gets a job at the deadline. Each end is decorated (run-ends.ts). Decided by
- * whether a job is there, never by the run's age: a long review keeps its job running, its lease
- * extended by the worker. Each run is decided in a transaction of its own, which takes the branch's
- * decoration lock, then the run's row, then looks for its job once more: a job queued meanwhile, by
- * a wake, is seen. It waits for neither lock: a run whose branch or row another transaction holds
- * (an ingestion, a job deciding) is left to the next sweep, so the worker it runs on never stalls.
+ * One run of the sweep, in a transaction of its own: the branch's decoration lock, then the run's
+ * row, then a look for its job once more (a job queued meanwhile, by a wake, is seen). It waits
+ * for neither lock: a run whose branch or row another transaction holds (an ingestion, a job
+ * deciding) is left to the next sweep, so the worker it runs on never stalls.
  */
-export async function reconcileStuckReviewRuns(
+async function reconcileRun(
   db: Db,
-  logger: Pick<WorkerLogger, 'info' | 'warn'>,
-): Promise<ReviewSweep> {
+  candidate: { id: string; branchId: string },
+  logger: SweepLogger,
+): Promise<RunEnd | 'queued' | 'none'> {
+  return db.transaction(async (tx) => {
+    if (!(await tryLockBranchQueue(tx, candidate.branchId))) return 'none';
+    const [locked] = await tx
+      .select({ run: reviewRuns, due: sql<boolean>`${reviewRuns.deadlineAt} <= now()` })
+      .from(reviewRuns)
+      .where(
+        and(eq(reviewRuns.id, candidate.id), inArray(reviewRuns.status, ['waiting', 'running'])),
+      )
+      .for('update', { skipLocked: true });
+    if (locked === undefined) return 'none';
+    // Under the run's lock, in a statement of its own: it sees a job queued until now.
+    const live = await tx.execute<{ live: boolean }>(
+      sql`SELECT ${liveJobOf(sql`${candidate.id}`)} AS live`,
+    );
+    if (live.rows[0]?.live === true) return 'none';
+    const { run, due } = locked;
+    if (run.status === 'waiting' && !due) {
+      await queueAtDeadline(tx, run);
+      return 'queued';
+    }
+    const end: RunEnd =
+      run.status === 'running'
+        ? { status: 'failed', reason: 'internal' }
+        : { status: 'skipped', reason: 'no_snapshot' };
+    // What the dead job spent is on the run as far as it wrote it, and stays so.
+    if (!(await endRun(tx, run, [run.status], end))) return 'none';
+    await decorateRun(tx, run, logger);
+    return end;
+  });
+}
+
+/**
+ * The runs that wait or review with no `ai-review` job queued or running for them: their job is
+ * gone for good (its lease expired on both tries, or its last try could not end the run either),
+ * so nothing would ever end them and the merge request's summary would say the review is in
+ * progress for good. After every reap of the review worker (main.ts, every 30 seconds), each is
+ * ended here, never through a job: a running one `failed: internal`, a waiting one past its
+ * deadline `skipped: no_snapshot`, and a waiting one before its deadline gets a job at the
+ * deadline. Each end is decorated (run-ends.ts). Decided by whether a job is there, never by the
+ * run's age: a long review keeps its job running, its lease extended by the worker. A run whose
+ * transaction fails is said once (its id and the error's class) and left to the next sweep; the
+ * runs after it are swept all the same.
+ */
+export async function reconcileStuckReviewRuns(db: Db, logger: SweepLogger): Promise<ReviewSweep> {
   const stuck = await db
     .select({ id: reviewRuns.id, branchId: reviewRuns.branchId })
     .from(reviewRuns)
@@ -240,35 +282,16 @@ export async function reconcileStuckReviewRuns(
     .limit(SWEEP_BATCH);
   const swept: ReviewSweep = { ended: 0, queued: 0 };
   for (const candidate of stuck) {
-    const outcome = await db.transaction(async (tx): Promise<RunEnd | 'queued' | 'none'> => {
-      if (!(await tryLockBranchQueue(tx, candidate.branchId))) return 'none';
-      const [locked] = await tx
-        .select({ run: reviewRuns, due: sql<boolean>`${reviewRuns.deadlineAt} <= now()` })
-        .from(reviewRuns)
-        .where(
-          and(eq(reviewRuns.id, candidate.id), inArray(reviewRuns.status, ['waiting', 'running'])),
-        )
-        .for('update', { skipLocked: true });
-      if (locked === undefined) return 'none';
-      // Under the run's lock, in a statement of its own: it sees a job queued until now.
-      const live = await tx.execute<{ live: boolean }>(
-        sql`SELECT ${liveJobOf(sql`${candidate.id}`)} AS live`,
+    let outcome: RunEnd | 'queued' | 'none';
+    try {
+      outcome = await reconcileRun(db, candidate, logger);
+    } catch (err) {
+      logger.warn(
+        { runId: candidate.id, errorClass: errorClass(err) },
+        'AI review run without its job could not be reconciled',
       );
-      if (live.rows[0]?.live === true) return 'none';
-      const { run, due } = locked;
-      if (run.status === 'waiting' && !due) {
-        await queueAtDeadline(tx, run);
-        return 'queued';
-      }
-      const end: RunEnd =
-        run.status === 'running'
-          ? { status: 'failed', reason: 'internal' }
-          : { status: 'skipped', reason: 'no_snapshot' };
-      // What the dead job spent is on the run as far as it wrote it, and stays so.
-      if (!(await endRun(tx, run, [run.status], end))) return 'none';
-      await decorateRun(tx, run, logger);
-      return end;
-    });
+      continue;
+    }
     if (outcome === 'queued') {
       swept.queued += 1;
     } else if (outcome !== 'none') {

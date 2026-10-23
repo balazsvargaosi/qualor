@@ -703,6 +703,69 @@ describe('the ai-review job (6I-3, R15)', () => {
     }
   });
 
+  it('an error before the run starts that comes again on its last try ends the run failed', async () => {
+    const mr = mergeRequest();
+    const analysisId = await analysisOf(mr);
+    await snapshotOf(analysisId, mr);
+    const run = await runOf(analysisId);
+    await forgetDecorations();
+    // The run cannot start, on either try: its snapshot is gone under the start (23503) each time.
+    await h.ctx.db.execute(sql`
+      CREATE FUNCTION review_test_never_starts() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF OLD.status = 'waiting' AND NEW.status = 'running' THEN
+          RAISE EXCEPTION 'the snapshot is gone' USING ERRCODE = '23503';
+        END IF;
+        RETURN NEW;
+      END $$`);
+    await h.ctx.db.execute(sql`
+      CREATE TRIGGER review_test_never_starts BEFORE UPDATE ON review_runs
+         FOR EACH ROW EXECUTE FUNCTION review_test_never_starts()`);
+    const notDecided = 'AI review run not decided; its job is tried again';
+    const jobOfRun = async () =>
+      first(
+        await h.ctx.db
+          .select({ status: jobs.status, attempts: jobs.attempts })
+          .from(jobs)
+          .where(
+            and(eq(jobs.queue, AI_REVIEW_QUEUE), sql`${jobs.payload} ->> 'runId' = ${run.id}`),
+          ),
+      );
+    try {
+      // The first try is tried again: such a race is over by the second, as a rule.
+      expect(await runReviews()).toBe(1);
+      expect(await runOf(analysisId)).toMatchObject({ status: 'waiting', finishedAt: null });
+      expect(await jobOfRun()).toEqual({ status: 'queued', attempts: 1 });
+      expect(logged).toContainEqual([
+        'warn',
+        { runId: run.id, errorClass: expect.any(String), code: '23503' },
+        notDecided,
+      ]);
+      // The last try fails as the first did: the run ends failed, with its decoration, rather than
+      // be left to the sweep (which would say it had no snapshot), and the job completes.
+      logged.length = 0;
+      await dueNow(run.id);
+      expect(await runReviews()).toBe(1);
+      expect(await runOf(analysisId)).toMatchObject({
+        status: 'failed',
+        reason: 'internal',
+        startedAt: null,
+        finishedAt: expect.any(Date),
+      });
+      expect(await decorationsOf(analysisId)).toHaveLength(1);
+      expect(await jobOfRun()).toEqual({ status: 'succeeded', attempts: 2 });
+      expect(logged.filter((line) => line[2] === notDecided)).toEqual([]);
+      expect(logged).toContainEqual([
+        'error',
+        { runId: run.id, errorClass: expect.any(String), code: '23503' },
+        'AI review run failed',
+      ]);
+    } finally {
+      await h.ctx.db.execute(sql`DROP TRIGGER review_test_never_starts ON review_runs`);
+      await h.ctx.db.execute(sql`DROP FUNCTION review_test_never_starts()`);
+    }
+  });
+
   it('a provider changed during the run stops it before its next call', async () => {
     const mr = mergeRequest();
     const analysisId = await analysisOf(mr);

@@ -52,6 +52,7 @@ import {
   decorateRun,
   endAndDecorate,
   endRun,
+  errorClass,
   logRunEnd,
   writeRunSpend,
   type RunEnd,
@@ -95,9 +96,10 @@ import { RedactionTally, remainingReviewTokens, reviewSender, reviewUsageToday }
  * (run-ends.ts), so the summary of the merge request says how the review ended. An exception once
  * the run is running ends it `failed: internal`, and the job completes: a review is never tried
  * again into more spend. One before (steps 1 to 5 decide in one transaction, which then wrote
- * nothing) fails the job, whose second try decides again; a run whose job is gone for good is ended
- * by the sweep (runs.ts). Nothing the model said, no prompt and no file of the repository is ever
- * logged: the run's id, codes and counts only.
+ * nothing) fails the job into its second try, which decides again; on that last try it ends the
+ * run `failed: internal` too, so an error that comes every time is said as one. A run whose job is
+ * gone for good is ended by the sweep (runs.ts). Nothing the model said, no prompt and no file of
+ * the repository is ever logged: the run's id, codes and counts only.
  */
 
 /** The job's lease: a review waits on its provider, call after call; the worker extends it. */
@@ -152,9 +154,6 @@ interface Running {
 type Decision =
   { kind: 'started'; running: Running } | { kind: 'ended'; end: RunEnd } | { kind: 'none' };
 
-const errorClass = (err: unknown): string =>
-  err instanceof Error ? err.constructor.name : typeof err;
-
 /** Whether two providers are the same address, host and model (R10). */
 const sameProvider = (a: ReviewProvider | null, b: ReviewProvider): boolean =>
   a !== null && a.url === b.url && a.host === b.host && a.model === b.model;
@@ -208,6 +207,8 @@ class ReviewJob {
   constructor(
     private readonly deps: ReviewJobDeps,
     private readonly runId: string,
+    /** Whether this is the job's last try (its attempts are spent with it). */
+    private readonly lastTry: boolean,
   ) {}
 
   async run(): Promise<void> {
@@ -220,13 +221,36 @@ class ReviewJob {
         code: pgErrorCode(err) ?? null,
       };
       const running = this.started;
-      if (running === null) {
-        // Steps 1 to 5 wrote nothing: the run is as it was, and the job's next try decides it.
+      if (running === null && !this.lastTry) {
+        // Steps 1 to 5 wrote nothing: the run is as it was, and the job's next try decides it (a
+        // snapshot deleted under the start, say, is found gone then).
         this.deps.logger.warn(fields, 'AI review run not decided; its job is tried again');
         throw err;
       }
       this.deps.logger.error(fields, 'AI review run failed');
-      await this.endRunning(running, { status: 'failed', reason: 'internal' });
+      if (running !== null) {
+        await this.endRunning(running, { status: 'failed', reason: 'internal' });
+        return;
+      }
+      // The last try: nothing will try again, so the run ends here rather than be left to the
+      // sweep, which would end it for want of a snapshot.
+      const [run] = await this.deps.db
+        .select({
+          id: reviewRuns.id,
+          analysisId: reviewRuns.analysisId,
+          branchId: reviewRuns.branchId,
+        })
+        .from(reviewRuns)
+        .where(eq(reviewRuns.id, this.runId));
+      if (run === undefined) return;
+      await endAndDecorate(
+        this.deps.db,
+        run,
+        ['waiting', 'running'],
+        { status: 'failed', reason: 'internal' },
+        {},
+        this.deps.logger,
+      );
     }
   }
 
@@ -273,8 +297,8 @@ class ReviewJob {
       if (end.status !== 'superseded') await decorateRun(tx, run, this.deps.logger);
       return { kind: 'ended', end };
     };
-    // A job that died left its run running: this is the job tried again after its lease expired.
-    // What that job spent is on the run as far as it wrote it, and stays so.
+    // A job that died left its run running (its lease expired, or it could not end the run): this
+    // is its second try. What that job spent is on the run as far as it wrote it, and stays so.
     if (run.status === 'running') return ended({ status: 'failed', reason: 'internal' });
     if (run.status !== 'waiting') return { kind: 'none' };
 
@@ -747,7 +771,9 @@ class ReviewJob {
 /**
  * The `ai-review` queue's handler (R21): main.ts runs it on a worker of its own, with the `llm`
  * worker's circuit. A payload that does not parse never will: the job completes. A review's job
- * never fails into a retry (its run ends `failed: internal`), so a review is never run twice.
+ * fails into its retry only for an error before its run started, which left the run as it was, and
+ * never on its last try; once the run is running, an error ends it `failed: internal` and the job
+ * completes, so a review is never run twice.
  */
 export function reviewHandlers(deps: ReviewJobDeps): JobHandlers {
   return {
@@ -760,7 +786,7 @@ export function reviewHandlers(deps: ReviewJobDeps): JobHandlers {
         );
         return;
       }
-      await new ReviewJob(deps, parsed.data.runId).run();
+      await new ReviewJob(deps, parsed.data.runId, job.attempts >= job.maxAttempts).run();
     },
   };
 }

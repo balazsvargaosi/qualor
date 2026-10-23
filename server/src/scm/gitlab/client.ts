@@ -99,10 +99,14 @@ const mergeRequest = z.looseObject({
   diff_refs: z
     .looseObject({ base_sha: sha.nullable(), head_sha: sha.nullable(), start_sha: sha.nullable() })
     .nullable(),
-  /** A draft merge request (GitLab 14+), which AI review skips. */
-  draft: z.boolean().default(false),
+  /**
+   * A draft merge request (GitLab 14+), which AI review skips. The decoration reads this merge
+   * request too: a flag that is missing, `null` or not a boolean reads as false, so it never fails
+   * the whole answer.
+   */
+  draft: z.boolean().catch(false),
   /** What GitLab before 14 says a draft by (deprecated since, as the same flag as `draft`). */
-  work_in_progress: z.boolean().default(false),
+  work_in_progress: z.boolean().catch(false),
 });
 export type GitLabMergeRequest = z.infer<typeof mergeRequest>;
 

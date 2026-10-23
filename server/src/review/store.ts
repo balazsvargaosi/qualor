@@ -25,8 +25,9 @@ import { AI_RULES } from './rules';
 
 /*
  * The end of a review, in two steps. `prepareReviewOutcome` decides what is stored and makes every
- * value of it, which includes reading and masking the files the findings are in: it touches no
- * database and runs before the transaction, so that the seconds masking can take hold nothing up.
+ * value of it, which includes reading and masking the files the findings are in: it writes no
+ * database (it reads the snapshot's files, through the review's reader on the pool) and runs before
+ * the transaction, so that the seconds masking can take hold nothing up.
  * `storeReviewOutcome` only locks and writes, in the transaction the caller opens: the findings
  * become issues of engine `ai`, each with a `review_findings` row that keeps the text, the
  * suggestion and where its thread sits, and the run is done. A review is stored whole or not at

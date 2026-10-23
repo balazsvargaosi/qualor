@@ -518,10 +518,10 @@ function reasonOf(err: unknown): string {
 }
 
 /**
- * Reads the analysis row FOR SHARE, which waits for an ingestion of it in flight, as linkSnapshot
- * does: whatever the transaction then does to the analysis' snapshot, the ingestion either has
- * committed (its review run is there to be woken, and its SCM context to be read) or has not
- * started yet. Answers the analysis' stored SCM context, or undefined when the analysis is gone.
+ * Reads the analysis row FOR SHARE, as linkSnapshot does, so that it stays as it is while the
+ * transaction changes the analysis' snapshot. The analysis is ingested, or failed, by then
+ * (unpackSnapshot waits for it): its review run is there to be woken, and its SCM context to be
+ * read. Answers the analysis' stored SCM context, or undefined when the analysis is gone.
  */
 async function analysisShared(
   tx: Tx,
