@@ -104,6 +104,7 @@ process, plus its own PostgreSQL 18, which it starts itself and keeps on the vol
 | `QUALOR_MAX_CONCURRENT_UPLOADS`                                      | `4`               | uploads read at once                                                                                              |
 | `QUALOR_REQUEST_TIMEOUT_MS`                                          | `300000`          | the longest any one request may run                                                                               |
 | `QUALOR_WORKER_CONCURRENCY`                                          | `1`               | analysis jobs processed at once                                                                                   |
+| `QUALOR_REVIEW_WORKER_CONCURRENCY`                                   | `2`               | AI reviews run at once, 1 to 8                                                                                    |
 
 Give the server at least 1 GiB of memory; reports near the 500 MiB ceiling need about 4 GiB.
 

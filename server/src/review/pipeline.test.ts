@@ -14,6 +14,7 @@ import {
   CHARS_PER_TOKEN,
   planReview,
   REVIEW_OUTPUT_TOKENS,
+  reviewFits,
   reviewLimits,
   runReviewPipeline,
   STAGE_SHARES,
@@ -1184,5 +1185,33 @@ describe('reviewLimits', () => {
     // Without instructions the slices have the room.
     const none = reviewLimits(shapeOf(changes(30, 40), 10, []), 1_000_000);
     expect(none.sliceChars).toBeGreaterThan(ample.sliceChars);
+  });
+
+  it('reviewFits: the smallest share has room before the instructions floors, as reviewLimits counts it', () => {
+    // Without instructions files the room is what the slices get: it fits exactly when they get some.
+    const bare = shapeOf(changes(1, 6), 0, []);
+    for (let budget = 10_000; budget <= 120_000; budget += 2_500) {
+      expect(reviewFits(bare, budget), String(budget)).toBe(
+        reviewLimits(bare, budget).sliceChars > 0,
+      );
+    }
+    expect(reviewFits(bare, 10_000)).toBe(false);
+    expect(reviewFits(bare, 120_000)).toBe(true);
+    // The floors of the instructions files are not counted: a long AGENTS.md changes nothing.
+    const instructed = shapeOf(changes(1, 6), 0, [['AGENTS.md', 40_000]]);
+    for (const budget of [10_000, 60_000, 120_000]) {
+      expect(reviewFits(instructed, budget), String(budget)).toBe(reviewFits(bare, budget));
+    }
+    // The lists count: a hundred findings of the analyzers need a larger budget.
+    const listed = shapeOf(changes(1, 6), 100, []);
+    const smallest = (shape: ContextShape) => {
+      let budget = 0;
+      while (!reviewFits(shape, budget)) budget += 1_000;
+      return budget;
+    };
+    expect(smallest(listed)).toBeGreaterThan(smallest(bare));
+    // Nothing to spend fits nothing; a full tier needs more than a trivial one.
+    for (const budget of [0, -1, Number.NaN]) expect(reviewFits(bare, budget)).toBe(false);
+    expect(smallest(shapeOf(changes(30, 40), 0, []))).toBeGreaterThan(smallest(bare));
   });
 });

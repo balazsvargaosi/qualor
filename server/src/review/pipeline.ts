@@ -228,27 +228,46 @@ function evenCut(lengths: readonly number[], total: number, max: number): number
 }
 
 /**
- * How much of the slices and of the instructions a review of `budget` tokens shows of a change of
- * this shape: what buildReviewContext's `limits` answers (the job passes it this, bound to the
- * budget). The data the specialists share is sized so that a specialist's first message takes at
- * most a third of its part, and half of the judge's third (the judge keeps the other half for the
- * findings). What is left after the system prompt and the lists, counted as the change has them,
- * goes first to the instructions files, which no tool can stand in for: each at least
- * INSTRUCTIONS_MIN_CHARS (or all of it, if shorter) even past that room, the long ones cut evenly
- * when they do not all fit. The slices have the rest. Each part is at most CONTEXT_MAXIMA.
+ * The characters the data the specialists share has for the instructions files and the slices: a
+ * third of the smallest of a specialist's part and half the judge's share (the judge keeps the
+ * other half of its third for the findings), less the longest system prompt, the envelope and the
+ * lists, counted as the change has them. Not positive when the lists alone do not fit.
  */
-export function reviewLimits(shape: ContextShape, budget: number): ContextLimits {
+function dataRoom(shape: ContextShape, budget: number): number {
   const { specialists } = planReview(shape.reviewed);
   const part = Math.floor(shareOf(budget, STAGE_SHARES.specialists) / specialists.length);
   const judgeHalf = Math.floor(shareOf(budget, STAGE_SHARES.judge) / 2);
   const prompt = Math.max(...specialists.map((role) => SYSTEM_PROMPTS[role].length));
-  const room = Math.floor(
+  return Math.floor(
     (firstMessageChars(Math.min(part, judgeHalf)) -
       prompt -
       ENVELOPE_CHARS -
       listedDataChars(shape)) /
       JSON_ALLOWANCE,
   );
+}
+
+/**
+ * Whether a review of `budget` tokens can run on a change of this shape: its smallest share has
+ * room for its first message, before the instructions files' floors, as `reviewLimits` counts it.
+ * When it has none, `reviewLimits` still gives the instructions their floors, and the review would
+ * send a first message larger than a third of its share: the job skips it instead (`budget_spent`).
+ */
+export function reviewFits(shape: ContextShape, budget: number): boolean {
+  return dataRoom(shape, budget) > 0;
+}
+
+/**
+ * How much of the slices and of the instructions a review of `budget` tokens shows of a change of
+ * this shape: what buildReviewContext's `limits` answers (the job passes it this, bound to the
+ * budget). The data the specialists share is sized so that a specialist's first message takes at
+ * most a third of its part, and half of the judge's third (`dataRoom`). That room goes first to the
+ * instructions files, which no tool can stand in for: each at least INSTRUCTIONS_MIN_CHARS (or all
+ * of it, if shorter) even past that room, the long ones cut evenly when they do not all fit. The
+ * slices have the rest. Each part is at most CONTEXT_MAXIMA.
+ */
+export function reviewLimits(shape: ContextShape, budget: number): ContextLimits {
+  const room = dataRoom(shape, budget);
   const labels = shape.instructionChars.length * CUT_LABEL_CHARS;
   const instructionsChars = Math.max(
     INSTRUCTIONS_MIN_CHARS,

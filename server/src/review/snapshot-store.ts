@@ -39,13 +39,16 @@ import {
 import { notFound, ProblemError } from '../http/problem';
 import { isZlibError } from '../ingest/upload';
 import { enqueue } from '../queue/queue';
+import { readScmContext } from '../scm/context';
+import { wakeReviewRun } from './runs';
 
 /*
  * The repository snapshot of a merge request (6I-2, rulings R2 and R3): the scanner uploads it as
  * gzip'd JSON Lines next to its report; the upload is kept as sent (`uploaded`) until a job of the
  * analysis worker unpacks it into one `review_snapshot_files` row per path (`ready`), or refuses it
  * whole (`rejected`, with the reason). A merge request keeps the snapshot of its newest analysis
- * only (`linkSnapshot`); housekeeping deletes the rest (housekeeping/run.ts).
+ * only (`linkSnapshot`); housekeeping deletes the rest (housekeeping/run.ts). A snapshot that is
+ * linked, or refused, wakes its analysis' review run (6I-3, R15).
  */
 
 /** The queue of the job that unpacks an upload (main.ts: the analysis worker runs it). */
@@ -499,11 +502,51 @@ function reasonOf(err: unknown): string {
 }
 
 /**
- * Refuses the snapshot: the rows stored so far are deleted, then it is `rejected` with its reason
- * and without its body, in one transaction. A snapshot no longer `uploaded` is left as it is.
+ * Reads the analysis row FOR SHARE, which waits for an ingestion of it in flight, as linkSnapshot
+ * does: whatever the transaction then does to the analysis' snapshot, the ingestion either has
+ * committed (its review run is there to be woken, and its SCM context to be read) or has not
+ * started yet. Answers the analysis' stored SCM context, or undefined when the analysis is gone.
  */
-async function reject(db: Db, snapshotId: string, reason: string): Promise<UnpackOutcome> {
+async function analysisShared(
+  tx: Tx,
+  analysisId: string,
+): Promise<{ scmContext: unknown } | undefined> {
+  const [analysis] = await tx
+    .select({ scmContext: analyses.scmContext })
+    .from(analyses)
+    .where(eq(analyses.id, analysisId))
+    .for('share');
+  return analysis;
+}
+
+/**
+ * R22: why a snapshot cannot be of the analysis' merge request, or null. Its header must name the
+ * merge request of the analysis' SCM context (the report's): one of another merge request, or of a
+ * branch analysis (which has none), or an analysis whose context Qualor cannot read, is refused. An
+ * analysis not ingested yet has no context to compare with: its snapshot is unpacked, and the
+ * ingestion links it.
+ */
+function mergeRequestProblem(scmContext: unknown, header: SnapshotHeaderLine): string | null {
+  const stored = readScmContext(scmContext);
+  if (stored.kind === 'missing') return null;
+  if (stored.kind === 'ok' && stored.context.mergeRequestId === header.mergeRequest.id) return null;
+  return 'merge_request_mismatch';
+}
+
+/**
+ * Refuses the snapshot: the rows stored so far are deleted, then it is `rejected` with its reason
+ * and without its body, in one transaction, which wakes the analysis' review run (the run ends for
+ * the refused snapshot rather than at its deadline). A snapshot no longer `uploaded` is left as it
+ * is.
+ */
+async function reject(
+  db: Db,
+  snapshotId: string,
+  analysisId: string,
+  reason: string,
+): Promise<UnpackOutcome> {
   return db.transaction(async (tx) => {
+    await analysisShared(tx, analysisId);
     try {
       await lockUploaded(tx, snapshotId);
     } catch (err) {
@@ -520,20 +563,29 @@ async function reject(db: Db, snapshotId: string, reason: string): Promise<Unpac
         body: null,
       })
       .where(eq(reviewSnapshots.id, snapshotId));
+    await wakeReviewRun(tx, analysisId);
     return 'rejected';
   });
 }
 
-/** The snapshot is unpacked: `ready`, the header's fields and the counts, without the body. */
+/**
+ * The snapshot is unpacked: `ready`, the header's fields and the counts, without the body. Its
+ * header must name the analysis' merge request (R22), read as the analysis is committed: a snapshot
+ * of another one is refused instead (`merge_request_mismatch`).
+ */
 async function markReady(
   db: Db,
   snapshotId: string,
+  analysisId: string,
   unpacker: Unpacker,
   header: SnapshotHeaderLine,
   inflatedBytes: number,
 ): Promise<void> {
   await db.transaction(async (tx) => {
+    const analysis = await analysisShared(tx, analysisId);
     await lockUploaded(tx, snapshotId);
+    const problem = mergeRequestProblem(analysis?.scmContext ?? null, header);
+    if (problem !== null) throw new Rejection(problem);
     await tx
       .update(reviewSnapshots)
       .set({
@@ -558,10 +610,10 @@ async function markReady(
 
 async function unpackBody(
   db: Db,
-  snapshotId: string,
-  body: Buffer | null,
+  stored: { snapshotId: string; analysisId: string; body: Buffer | null },
   limits: SnapshotLimits,
 ): Promise<UnpackOutcome> {
+  const { snapshotId, analysisId, body } = stored;
   const unpacker = new Unpacker(db, snapshotId);
   try {
     // The CHECK keeps a body on every `uploaded` snapshot; the limit may have been lowered since.
@@ -571,18 +623,19 @@ async function unpackBody(
     );
     const header = unpacker.finish();
     await unpacker.flush();
-    await markReady(db, snapshotId, unpacker, header, inflated);
+    await markReady(db, snapshotId, analysisId, unpacker, header, inflated);
     return 'ready';
   } catch (err) {
     if (err instanceof Stopped) return err.outcome;
-    return reject(db, snapshotId, reasonOf(err));
+    return reject(db, snapshotId, analysisId, reasonOf(err));
   }
 }
 
 /**
  * Unpacks an uploaded snapshot (the job of REVIEW_SNAPSHOT_QUEUE), then links it (linkSnapshot).
- * On any violation nothing of it is kept but the reason (`rejected`, `SNAPSHOT_INVALID:<reason>`).
- * Idempotent: a snapshot already `ready` is only linked again, a `rejected` one is left as it is.
+ * On any violation nothing of it is kept but the reason (`rejected`, `SNAPSHOT_INVALID:<reason>`),
+ * a header that names another merge request than the analysis' among them (R22). Idempotent: a
+ * snapshot already `ready` is only linked again, a `rejected` one is left as it is.
  */
 export async function unpackSnapshot(
   db: Db,
@@ -600,7 +653,13 @@ export async function unpackSnapshot(
   if (!stored) return 'gone';
   if (stored.status === 'rejected') return 'rejected';
   const outcome =
-    stored.status === 'ready' ? 'ready' : await unpackBody(db, snapshotId, stored.body, limits);
+    stored.status === 'ready'
+      ? 'ready'
+      : await unpackBody(
+          db,
+          { snapshotId, analysisId: stored.analysisId, body: stored.body },
+          limits,
+        );
   // Also for a snapshot already `ready`: a run may have stopped between unpacking and linking.
   if (outcome === 'ready') await linkSnapshot(db, stored.analysisId);
   return outcome;
@@ -648,8 +707,9 @@ async function keepOnly(db: Executor, analysisId: string, branchId: string): Pro
  * Without it (the unpack job), the analysis row is read FOR SHARE, which waits for an ingestion of
  * it still in flight: either that ingestion's stage has linked the snapshot, or the analysis is
  * read as it committed. The branch row is then locked, as ingestion locks it, so the links of one
- * merge request are made one at a time. Locks are taken in ingestion's order: analysis, branch,
- * snapshots.
+ * merge request are made one at a time. A snapshot linked here wakes the analysis' review run
+ * (R15); the ingestion stage wakes the run it creates itself. Locks are taken in ingestion's order:
+ * analysis, branch, snapshots, the review run.
  */
 export async function linkSnapshot(
   db: Executor,
@@ -675,6 +735,7 @@ export async function linkSnapshot(
     if (branch?.kind !== 'merge_request') return;
     if (branch.lastAnalysisId === analysisId) {
       await keepOnly(tx, analysisId, analysis.branchId);
+      await wakeReviewRun(tx, analysisId);
     } else {
       // A newer analysis of the merge request has succeeded since: this copy is of an older head.
       await tx.delete(reviewSnapshots).where(eq(reviewSnapshots.analysisId, analysisId));

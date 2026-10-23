@@ -34,6 +34,7 @@ export async function openApiDocument(plugins?: OpenApiPlugins): Promise<unknown
     upload: { maxCompressedBytes: 50 * MiB, maxDecompressedBytes: 500 * MiB },
     reviewSnapshot: { maxCompressedBytes: 50 * MiB, maxDecompressedBytes: 500 * MiB },
     workerConcurrency: 1,
+    reviewWorkerConcurrency: 2,
     requestTimeoutMs: 300_000,
     maxConcurrentUploads: 4,
     uiDir: null,

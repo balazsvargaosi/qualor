@@ -75,6 +75,10 @@ export interface FakePull {
   number: number;
   title: string;
   state: 'open' | 'closed';
+  /** A draft pull request; false when left out. */
+  draft?: boolean;
+  /** A closed pull request that was merged; false when left out. */
+  merged?: boolean;
   headSha: string;
   baseSha: string;
   files: FakeFile[];
@@ -1097,6 +1101,8 @@ export async function createFakeGitHub(
         number: pull.number,
         title: pull.title,
         state: pull.state,
+        draft: pull.draft ?? false,
+        merged: pull.merged ?? false,
         html_url: `${webBase()}/${repo.owner}/${repo.name}/pull/${pull.number}`,
         head: { ref: 'feature/x', sha: pull.headSha, label: 'x' },
         base: { ref: 'main', sha: pull.baseSha, label: 'y' },

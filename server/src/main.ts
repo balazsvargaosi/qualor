@@ -36,6 +36,7 @@ import { notifyDeps } from './notifications/deps';
 import { bootEnterprise, type EnterpriseBoot } from './plugins/boot';
 import { ensurePluginSchedules, startPluginWorker } from './plugins/mount';
 import { startWorker } from './queue/worker';
+import { REVIEW_LEASE_MS, reviewHandlers } from './review/job';
 import { reviewSnapshotHandlers } from './review/jobs';
 import { scmHandlers } from './scm/decorate';
 import { createScmRuntime } from './scm/runtime';
@@ -306,6 +307,9 @@ async function main(): Promise<void> {
     leaseMs: SCM_LEASE_MS,
     logger,
   });
+  // One runtime for the AI requests and the AI reviews: a provider that is failing is left alone by
+  // both (its circuit). Only the `llm` worker takes an organisation's slots.
+  const llmRuntime = createLlmRuntime();
   // llm.md §12.3: AI requests have their own worker, so a slow or absent model never delays
   // analyses, deliveries or decorations. It also runs the automatic fix suggestions of an analysed
   // merge request (4E-3a §3), which queue requests and never call the model themselves.
@@ -316,7 +320,7 @@ async function main(): Promise<void> {
         db: database.db,
         secretKey: config.secretKey,
         internalHosts: config.llmInternalHosts,
-        runtime: createLlmRuntime(),
+        runtime: llmRuntime,
         logger,
         version: VERSION,
         limits: () => edition.limits(),
@@ -332,6 +336,21 @@ async function main(): Promise<void> {
       const abandoned = await reconcileStuckLlmRequests(db);
       if (abandoned > 0) logger.warn({ abandoned }, 'failed AI requests whose job was lost');
     },
+  });
+  // 6I-3 R21: AI reviews have their own worker, so a review never holds explain, triage or fix
+  // behind it, nor an analysis or a decoration. It shares the `llm` worker's circuit.
+  const reviewWorker = startWorker({
+    db: database.db,
+    handlers: reviewHandlers({
+      db: database.db,
+      config,
+      logger,
+      llmCircuit: llmRuntime.circuit,
+      scm: { secretKey: config.secretKey, internalHosts: config.scmInternalHosts },
+    }),
+    concurrency: config.reviewWorkerConcurrency,
+    leaseMs: REVIEW_LEASE_MS,
+    logger,
   });
   // E1 spec: email has its own worker, so a slow SMTP server never delays analyses, deliveries
   // or decorations.
@@ -398,6 +417,7 @@ async function main(): Promise<void> {
       await webhookWorker.stop();
       await scmWorker.stop();
       await llmWorker.stop();
+      await reviewWorker.stop();
       await mailWorker.stop();
       await pluginWorker?.stop();
       await database.close();

@@ -69,6 +69,8 @@ export interface FakeMergeRequest {
   iid: number;
   title: string;
   state: 'opened' | 'closed' | 'merged';
+  /** A draft merge request (GitLab's `draft`); false when left out. */
+  draft?: boolean;
   sourceBranch: string;
   targetBranch: string;
   headSha: string;
@@ -280,6 +282,8 @@ export async function createFakeGitLab(
     project_id: project.id,
     title: mr.title,
     state: mr.state,
+    draft: mr.draft ?? false,
+    work_in_progress: mr.draft ?? false,
     source_branch: mr.sourceBranch,
     target_branch: mr.targetBranch,
     sha: mr.headSha,

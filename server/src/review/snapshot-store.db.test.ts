@@ -695,10 +695,18 @@ describe('review snapshots: store, unpack and link (6I-2, R2, R3)', () => {
         projectKey: p.key,
         analysisDate: `2026-10-0${n}T10:00:00Z`,
       });
-    const snapshotBody = () => gzipSync(snapshotText([fileLine('src/a.ts')]));
-    /** Stores and unpacks the snapshot of `analysisId`, as its job does. */
-    const unpackFor = async (analysisId: string) => {
-      const { snapshotId } = await store(snapshotBody(), analysisId);
+    /** A snapshot of the merge request `iid` (R22: the one its analysis is of). */
+    const snapshotBody = (iid: number) =>
+      gzipSync(
+        snapshotText([fileLine('src/a.ts')], {
+          header: headerLine({
+            mergeRequest: { id: String(iid), title: 'Parse the config', description: null },
+          }),
+        }),
+      );
+    /** Stores and unpacks the snapshot of `analysisId`, of the merge request `iid`, as its job does. */
+    const unpackFor = async (analysisId: string, iid: number) => {
+      const { snapshotId } = await store(snapshotBody(iid), analysisId);
       expect(await unpackSnapshot(h.ctx.db, snapshotId, LIMITS)).toBe('ready');
       return snapshotId;
     };
@@ -739,13 +747,13 @@ describe('review snapshots: store, unpack and link (6I-2, R2, R3)', () => {
       const iid = nextMergeRequest();
       // The first analysis succeeds, then its snapshot is unpacked: it is linked by its job.
       const first1 = await p.ingestOk(report(iid, 1));
-      const s1 = await unpackFor(first1);
+      const s1 = await unpackFor(first1, iid);
       const branchId = await branchOf(first1);
       expect(await kept([s1])).toEqual([{ id: s1, branchId }]);
       // The second analysis's snapshot is unpacked while the analysis is still queued: the
       // ingestion links it, and deletes the older one.
       const second = await queuedAnalysis(iid, 2);
-      const s2 = await unpackFor(second);
+      const s2 = await unpackFor(second, iid);
       expect(await kept([s1, s2])).toEqual(
         [
           { id: s1, branchId },
@@ -762,12 +770,12 @@ describe('review snapshots: store, unpack and link (6I-2, R2, R3)', () => {
     it('a newer analysis replaces the snapshot even before its own is unpacked', async () => {
       const iid = nextMergeRequest();
       const a1 = await p.ingestOk(report(iid, 1));
-      const s1 = await unpackFor(a1);
+      const s1 = await unpackFor(a1, iid);
       const a2 = await p.ingestOk(report(iid, 2));
       // The copy of the older head goes with the newer analysis; the newer copy is linked when
       // its job has unpacked it.
       expect(await kept([s1])).toEqual([]);
-      const s2 = await unpackFor(a2);
+      const s2 = await unpackFor(a2, iid);
       expect(await kept([s2])).toEqual([{ id: s2, branchId: await branchOf(a2) }]);
     });
 
@@ -775,9 +783,9 @@ describe('review snapshots: store, unpack and link (6I-2, R2, R3)', () => {
       const iid = nextMergeRequest();
       const a1 = await p.ingestOk(report(iid, 1));
       const a2 = await p.ingestOk(report(iid, 2));
-      const s2 = await unpackFor(a2);
+      const s2 = await unpackFor(a2, iid);
       // Unpacked, then deleted by its own link: its analysis is no longer the newest.
-      const s1 = await unpackFor(a1);
+      const s1 = await unpackFor(a1, iid);
       expect(await kept([s1, s2])).toEqual([{ id: s2, branchId: await branchOf(a2) }]);
     });
 
@@ -785,16 +793,35 @@ describe('review snapshots: store, unpack and link (6I-2, R2, R3)', () => {
       const iid = nextMergeRequest();
       const a1 = await p.ingestOk(report(iid, 1));
       const a2 = await p.ingestOk(report(iid, 2));
-      const waiting = await store(snapshotBody(), a1);
-      const s2 = await unpackFor(a2);
+      const waiting = await store(snapshotBody(iid), a1);
+      const s2 = await unpackFor(a2, iid);
       expect(await unpackSnapshot(h.ctx.db, waiting.snapshotId, LIMITS)).toBe('gone');
       expect(await kept([waiting.snapshotId, s2])).toEqual([
         { id: s2, branchId: await branchOf(a2) },
       ]);
     });
 
+    it('a snapshot of another merge request is rejected at unpack (R22)', async () => {
+      const iid = nextMergeRequest();
+      const analysisId = await p.ingestOk(report(iid, 1));
+      const { snapshotId } = await store(snapshotBody(iid + 1000), analysisId);
+      expect(await unpackSnapshot(h.ctx.db, snapshotId, LIMITS)).toBe('rejected');
+      expect(await snapshotRow(snapshotId)).toMatchObject({
+        status: 'rejected',
+        error: 'SNAPSHOT_INVALID:merge_request_mismatch',
+        hasBody: false,
+        branchId: null,
+      });
+      expect(await fileRows(snapshotId)).toEqual([]);
+      // The analysis' own merge request's snapshot is unpacked and linked.
+      const own = await p.ingestOk(report(iid, 2));
+      const s = await unpackFor(own, iid);
+      expect(await kept([s])).toEqual([{ id: s, branchId: await branchOf(own) }]);
+    });
+
     it('a snapshot of a branch analysis is never linked', async () => {
-      // Unpacked after the analysis, and before it.
+      // Unpacked after the analysis: a branch analysis has no merge request, so it is refused
+      // (R22); unpacked before it, it is kept unlinked until it expires.
       const done = await p.ingestOk(
         reportWith({
           projectKey: p.key,
@@ -802,7 +829,11 @@ describe('review snapshots: store, unpack and link (6I-2, R2, R3)', () => {
           analysisDate: '2026-10-01T10:00:00Z',
         }),
       );
-      const s1 = await unpackFor(done);
+      const refused = await store(snapshotBody(7), done);
+      expect(await unpackSnapshot(h.ctx.db, refused.snapshotId, LIMITS)).toBe('rejected');
+      expect((await snapshotRow(refused.snapshotId))!.error).toBe(
+        'SNAPSHOT_INVALID:merge_request_mismatch',
+      );
       const pending = await uploadReport(
         h.ctx,
         bearer(p.token),
@@ -815,14 +846,9 @@ describe('review snapshots: store, unpack and link (6I-2, R2, R3)', () => {
           }),
         ),
       );
-      const s2 = await unpackFor(pending);
+      const s2 = await unpackFor(pending, 7);
       await runIngestion();
-      expect(await kept([s1, s2])).toEqual(
-        [
-          { id: s1, branchId: null },
-          { id: s2, branchId: null },
-        ].sort((a, b) => a.id.localeCompare(b.id)),
-      );
+      expect(await kept([s2])).toEqual([{ id: s2, branchId: null }]);
       const [branch] = await h.ctx.db
         .select({ kind: branches.kind })
         .from(branches)
@@ -833,7 +859,7 @@ describe('review snapshots: store, unpack and link (6I-2, R2, R3)', () => {
     it('never links a snapshot that is not unpacked, nor one of a failed analysis', async () => {
       const iid = nextMergeRequest();
       const a1 = await queuedAnalysis(iid, 1);
-      const uploaded = await store(snapshotBody(), a1);
+      const uploaded = await store(snapshotBody(iid), a1);
       await runIngestion();
       // Ingested while the snapshot was still waiting for its job: linked once it is unpacked.
       expect(await kept([uploaded.snapshotId])).toEqual([
@@ -846,7 +872,7 @@ describe('review snapshots: store, unpack and link (6I-2, R2, R3)', () => {
       const failed = first(
         await h.ctx.db.insert(analyses).values({ projectId: p.id, status: 'failed' }).returning(),
       ).id;
-      const s = await unpackFor(failed);
+      const s = await unpackFor(failed, iid);
       expect(await kept([s])).toEqual([{ id: s, branchId: null }]);
     });
   });

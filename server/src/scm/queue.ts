@@ -3,7 +3,7 @@ import { and, eq, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Executor } from '../db/client';
 import { LOCKS } from '../db/locks';
-import { jobs } from '../db/schema';
+import { branches, jobs } from '../db/schema';
 import { enqueue } from '../queue/queue';
 
 /** scm.md §4.2: decoration jobs run on their own queue and worker. */
@@ -107,6 +107,30 @@ export async function enqueueDecoration(
     // Ruling G7: the queued ones were just deleted, so the last re-decoration is one that ran (or
     // runs); a toggle while this one waits replaces it with the same time, never a later one.
     ...(reevaluation ? { runAt: redecorationTime(key) } : {}),
+  });
+}
+
+/**
+ * A new decoration of `analysisId`, as {@link enqueueDecoration} queues one, but only while the
+ * analysis is its branch's newest: a newer analysis has queued its own decoration, which this one
+ * would replace, and the merge request part of an older analysis' decoration does nothing anyway.
+ * For a job that ends after the analysis was ingested (an AI review run). The check and the
+ * enqueueing are one step for the branch: a newer analysis being ingested meanwhile is waited for,
+ * then seen. Answers whether it was queued.
+ */
+export async function enqueueLatestDecoration(
+  db: Executor,
+  input: Parameters<typeof enqueueDecoration>[1],
+): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    await lockBranchQueue(tx, input.branchId);
+    const [branch] = await tx
+      .select({ lastAnalysisId: branches.lastAnalysisId })
+      .from(branches)
+      .where(eq(branches.id, input.branchId));
+    if (branch?.lastAnalysisId !== input.analysisId) return false;
+    await enqueueDecoration(tx, input);
+    return true;
   });
 }
 

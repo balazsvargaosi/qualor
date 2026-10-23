@@ -15,7 +15,15 @@ import {
 } from '../../test/app';
 import { grantProject, rbacContext } from '../../test/rbac';
 import { encryptionKey, encryptSecret } from '../crypto/secrets';
-import { auditEvents, instanceSettings, projects, scmConnections } from '../db/schema';
+import {
+  analyses,
+  auditEvents,
+  branches,
+  instanceSettings,
+  projects,
+  reviewRuns,
+  scmConnections,
+} from '../db/schema';
 import {
   DEFAULT_AUTO_FIX,
   DEFAULT_BUDGETS,
@@ -1226,6 +1234,50 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
         maxFileBytes: 1_048_576,
         maxFiles: 50_000,
       });
+    });
+
+    it('review-context answers the last reviewed head', async () => {
+      expect((await putReview(onBody())).statusCode).toBe(200);
+      /** A merge request branch of `project` with runs ending as given, oldest first. */
+      const withRuns = async (name: string, runs: [string, 'done' | 'running' | 'failed'][]) => {
+        const [branch] = await ctx.db
+          .insert(branches)
+          .values({ projectId: project.id, kind: 'merge_request', name })
+          .returning();
+        for (const [n, [head, status]] of runs.entries()) {
+          const [analysis] = await ctx.db
+            .insert(analyses)
+            .values({ projectId: project.id, branchId: branch!.id })
+            .returning();
+          await ctx.db.insert(reviewRuns).values({
+            projectId: project.id,
+            branchId: branch!.id,
+            analysisId: analysis!.id,
+            status,
+            headSha: head,
+            startedAt: new Date(),
+            reason: status === 'failed' ? 'provider_error' : null,
+            deadlineAt: new Date(),
+            createdAt: new Date(Date.UTC(2026, 9, 1, 10, n)),
+          });
+        }
+      };
+      const head = (c: string) => c.repeat(40);
+      const lastOf = async (mergeRequest: string) =>
+        (await contextOf(project.key, bearer(projectToken), mergeRequest)).json()
+          .lastReviewedCommit as string | null;
+      expect(await lastOf('41')).toBeNull();
+      // The newest run that is done: a newer one still running, or one that failed, covers nothing.
+      await withRuns('41', [
+        [head('1'), 'done'],
+        [head('2'), 'done'],
+        [head('3'), 'failed'],
+        [head('4'), 'running'],
+      ]);
+      await withRuns('42', [[head('5'), 'done']]);
+      expect(await lastOf('41')).toBe(head('2'));
+      expect(await lastOf('42')).toBe(head('5'));
+      expect(await lastOf('43')).toBeNull();
     });
 
     it('answers not_mapped for a project without an SCM connection', async () => {

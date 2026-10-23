@@ -306,6 +306,9 @@ const envSchema = z
     // several GB while decoding a report near the decompressed-bytes ceiling, and decoding runs
     // synchronously on the event loop (moving it to a worker thread is deferred).
     QUALOR_WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(1),
+    // 6I-3 R21: AI reviews run on a worker of their own, this many at once. Each holds a masking
+    // worker thread (up to 512 MiB) and waits on the provider, so the bound is small.
+    QUALOR_REVIEW_WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(8).default(2),
     // S11: bounds how long Fastify lets a request run (protects against a client that never
     // finishes sending) and how many report uploads are read/decompressed concurrently (each holds
     // up to maxCompressedBytes in memory). Minimum 1000: 0 would disable the timeout entirely,
@@ -430,6 +433,8 @@ export interface Config {
   /** 6I-2: the AI review snapshot's limits, QUALOR_REVIEW_SNAPSHOT_MAX_* (as sent, and inflated). */
   reviewSnapshot: UploadLimits;
   workerConcurrency: number;
+  /** 6I-3 R21: QUALOR_REVIEW_WORKER_CONCURRENCY, the AI reviews the review worker runs at once. */
+  reviewWorkerConcurrency: number;
   requestTimeoutMs: number;
   maxConcurrentUploads: number;
   /** Absolute path of the built web UI (QUALOR_UI_DIR), or null when the server is API-only. */
@@ -501,6 +506,7 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
       maxDecompressedBytes: e.QUALOR_REVIEW_SNAPSHOT_MAX_DECOMPRESSED_BYTES,
     },
     workerConcurrency: e.QUALOR_WORKER_CONCURRENCY,
+    reviewWorkerConcurrency: e.QUALOR_REVIEW_WORKER_CONCURRENCY,
     requestTimeoutMs: e.QUALOR_REQUEST_TIMEOUT_MS,
     maxConcurrentUploads: e.QUALOR_MAX_CONCURRENT_UPLOADS,
     uiDir: e.QUALOR_UI_DIR?.trim() ? resolve(e.QUALOR_UI_DIR.trim()) : null,

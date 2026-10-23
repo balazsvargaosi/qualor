@@ -49,6 +49,7 @@ import {
   type ReviewConsent,
   type ReviewSettings,
 } from '../review/settings';
+import { lastReviewedCommit } from '../review/runs';
 import { hasSnapshot, snapshotExists, storeSnapshotUpload } from '../review/snapshot-store';
 
 /**
@@ -146,7 +147,7 @@ const reviewContextSchema = z.object({
   review: z.boolean(),
   /** Why not, when `review` is false. */
   reason: z.enum(REVIEW_INACTIVE_REASONS).nullable(),
-  /** The commit of this merge request the last review covered; always null before the review itself exists. */
+  /** The head commit of this merge request the last review that was done covered; null before one. */
   lastReviewedCommit: z.string().nullable(),
   /** The snapshot limits this server accepts: the scanner stays within them. */
   limits: z.object({
@@ -407,8 +408,7 @@ export const reviewRoutes: FastifyPluginAsyncZod<{
           'Whether the scanner should upload a repository snapshot of a merge request (AI review is on for the project), and the limits of a snapshot; the CLI calls this before a merge request scan uploads',
         querystring: z.strictObject({
           projectKey: z.string().regex(PROJECT_KEY_PATTERN),
-          // The merge request's number. The last reviewed commit of that merge request will be
-          // answered from it; until the review exists `lastReviewedCommit` is null.
+          // The merge request's number: `lastReviewedCommit` is that merge request's.
           mergeRequest: z.string().regex(/^[0-9]{1,10}$/),
         }),
         response: { 200: reviewContextSchema },
@@ -421,7 +421,12 @@ export const reviewRoutes: FastifyPluginAsyncZod<{
       return {
         review: verdict.active,
         reason: verdict.active ? null : verdict.reason,
-        lastReviewedCommit: null,
+        // R4: the scanner sends the lines changed since this commit (`since`).
+        lastReviewedCommit: await lastReviewedCommit(
+          deps.db,
+          project.id,
+          request.query.mergeRequest,
+        ),
         limits: {
           maxCompressedBytes: deps.config.reviewSnapshot.maxCompressedBytes,
           maxDecompressedBytes: deps.config.reviewSnapshot.maxDecompressedBytes,

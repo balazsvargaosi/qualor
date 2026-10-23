@@ -66,10 +66,10 @@ const HEADER: SnapshotHeaderLine = {
   generator: 'qualor-cli/test',
 };
 
-/** A small valid snapshot: one changed file and one omitted. */
-function snapshotBody(): Buffer {
+/** A small valid snapshot of the merge request `mergeRequestId`: one changed file and one omitted. */
+function snapshotBody(mergeRequestId = HEADER.mergeRequest.id): Buffer {
   const lines: SnapshotLine[] = [
-    HEADER,
+    { ...HEADER, mergeRequest: { ...HEADER.mergeRequest, id: mergeRequestId } },
     {
       type: 'change',
       path: 'src/a.ts',
@@ -257,7 +257,8 @@ describe('POST /analyses/{id}/review-snapshot (6I-2)', () => {
 
   it('answers 202 and stores the snapshot as sent; its job unpacks it and links it to the merge request', async () => {
     const analysisId = await mergeRequestAnalysis();
-    const body = snapshotBody();
+    // R22: the snapshot is of the merge request the analysis is of.
+    const body = snapshotBody(String(mr));
     const res = await post(analysisId, body);
     expect(res.statusCode, res.body).toBe(202);
     const answer = res.json() as { snapshotId: string; status: string };

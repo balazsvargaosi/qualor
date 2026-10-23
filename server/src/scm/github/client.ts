@@ -137,6 +137,10 @@ const pullRequest = z.looseObject({
   html_url: z.string(),
   head: z.looseObject({ sha, ref: z.string() }),
   base: z.looseObject({ ref: z.string() }),
+  /** A draft pull request, which AI review skips. */
+  draft: z.boolean().default(false),
+  /** A `closed` pull request that was merged. */
+  merged: z.boolean().default(false),
 });
 export type GitHubPullRequest = z.infer<typeof pullRequest>;
 const file = z.looseObject({

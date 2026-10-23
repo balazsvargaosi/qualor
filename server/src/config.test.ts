@@ -32,6 +32,7 @@ describe('loadConfig', () => {
       upload: { maxCompressedBytes: 52_428_800, maxDecompressedBytes: 524_288_000 },
       reviewSnapshot: { maxCompressedBytes: 52_428_800, maxDecompressedBytes: 524_288_000 },
       workerConcurrency: 1,
+      reviewWorkerConcurrency: 2,
       requestTimeoutMs: 300_000,
       maxConcurrentUploads: 4,
       uiDir: null,
@@ -162,6 +163,20 @@ describe('loadConfig', () => {
       c.requestTimeoutMs,
       c.maxConcurrentUploads,
     ]).toEqual([9000, 2, 4, 60_000, 8]);
+  });
+
+  it('QUALOR_REVIEW_WORKER_CONCURRENCY: AI reviews at once, 1 to 8, default 2 (6I-3 R21)', () => {
+    expect(loadConfig(base).reviewWorkerConcurrency).toBe(2);
+    for (const value of ['1', '8', ' 5 ']) {
+      expect(
+        loadConfig({ ...base, QUALOR_REVIEW_WORKER_CONCURRENCY: value }).reviewWorkerConcurrency,
+      ).toBe(Number(value));
+    }
+    for (const bad of ['0', '9', '-1', '1.5', 'two']) {
+      expect(problems({ ...base, QUALOR_REVIEW_WORKER_CONCURRENCY: bad }), bad).toEqual([
+        expect.stringContaining('QUALOR_REVIEW_WORKER_CONCURRENCY'),
+      ]);
+    }
   });
 
   describe('QUALOR_TRUST_PROXY', () => {

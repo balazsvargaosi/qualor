@@ -229,7 +229,9 @@ install both variables go into `extraEnv`.
 Each merge request analysis with AI review on also adds an unpack job to the server's analysis
 worker. With the default `QUALOR_WORKER_CONCURRENCY=1` that job can delay the quality gates of
 other projects by a few seconds, so set it to 2 or more on a busy server
-([Server settings](./install-server.md#server-settings)).
+([Server settings](./install-server.md#server-settings)). The reviews themselves run on a worker
+of their own, `QUALOR_REVIEW_WORKER_CONCURRENCY` at once (2 by default, at most 8), so a review
+never delays an analysis or an answer of the AI assistant.
 
 Fixed limits: 1 MiB per file, 50 000 files, 256 KiB per diff and 64 MiB of diffs in all, 1 024
 bytes per path.
