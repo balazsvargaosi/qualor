@@ -1,5 +1,6 @@
 import { OMISSION_REASONS, REDACTED } from '@qualor/shared';
 import { afterAll, describe, expect, it } from 'vitest';
+import { budgetMs } from '../../test/perf';
 import { HOSTILE_TEXT, memorySnapshot } from '../../test/review';
 import type { LlmToolCall } from '../llm/providers/types';
 import { MaskedFiles } from './masked-files';
@@ -463,18 +464,44 @@ describe('searching', () => {
     expect(received[0]?.('b/ok.ts')).toBe(false);
   });
 
-  it('grep asks a reader that has no more to give once, and says there is more', async () => {
+  it('grep asks a reader that has no more to give once, and says nothing of what it left out', async () => {
     let asked = 0;
-    // A search the reader ended early (a glob that took too much work): it has nothing, and more.
-    const ended: SnapshotReader = {
-      ...memorySnapshot(),
+    // A search the reader ended early (a glob that took too much work): it has less, and more.
+    const ended = (hits: { path: string; line: number; text: string }[]): SnapshotReader => ({
+      ...memorySnapshot({ files: { 'a.ts': 'needle\n' } }),
       grep: () => {
         asked += 1;
-        return Promise.resolve({ hits: [], truncated: true });
+        return Promise.resolve({ hits, truncated: true });
       },
-    };
-    expect(await answer(ended, 'grep', { pattern: 'needle' })).toBe(MORE_MATCHES);
+    });
+    expect(await answer(ended([]), 'grep', { pattern: 'needle' })).toBe('no matches');
     expect(asked).toBe(1);
+    // The lines it did find are the answer. Whether the reader had more is a fact about the text
+    // as stored, which the model may not see, and it is not told.
+    asked = 0;
+    const one = [{ path: 'a.ts', line: 1, text: 'needle' }];
+    expect(await answer(ended(one), 'grep', { pattern: 'needle' })).toBe('a.ts:1: needle');
+    expect(asked).toBe(1);
+  });
+
+  it('grep does not say there is more when what it could not show is the reason it stopped', async () => {
+    // A private key of 2 100 lines that hold the needle in the text as stored: the 2 000 hits the
+    // reader is asked for at most are used up on lines that are masked away, and it has more. That
+    // is a fact about text the model may not see, and it is not told.
+    const key = [
+      KEY_BEGIN,
+      ...Array.from({ length: 2_100 }, (_, i) => `needle ${i}`),
+      KEY_END,
+    ].join('\n');
+    const reader = memorySnapshot({ files: { 'a/key.txt': key } });
+    expect(await answer(reader, 'grep', { pattern: 'needle' })).toBe('no matches');
+    // A listing is names the model may see, and says that it has more.
+    const files = Object.fromEntries(
+      Array.from({ length: 10_100 }, (_, i) => [`a${String(i).padStart(5, '0')}.ts`, 'x']),
+    );
+    const names = memorySnapshot({ files: { ...files, 'z.ts': 'z' } });
+    const listed = await answer(names, 'list_files', {}, newPolicy({ excludePaths: ['a*'] }));
+    expect(listed).toBe('… more entries; list a subdirectory to see them');
   });
 
   it('grep takes a glob of at most 16 wildcards', async () => {
@@ -1126,23 +1153,27 @@ describe('all tools', () => {
       expect(asked).toEqual(['a.txt', 'b.txt', 'c.txt', 'nope.txt']);
     });
 
-    it('a grep that comes to a file it cannot afford to mask ends with the budget line after its hits', async () => {
+    it('a grep leaves out a file it cannot afford to mask, and says nothing of it', async () => {
       const files = {
         'a/one.txt': `${'a'.repeat(300)} needle\n`,
         'b/two.txt': `${'b'.repeat(300)} needle\n`,
         'c/three.txt': `${'c'.repeat(300)} needle\n`,
-        // It would fit in what is left, but the search has ended.
+        // It fits in what is left after the first.
         'd/four.txt': 'needle\n',
       };
       const { reader } = counting(memorySnapshot({ files }));
-      // 308 bytes a file: the first fits, the second does not.
+      // 308 bytes a file: the first fits, the second and the third do not, the fourth does.
       const policy = newPolicy({ budget: { calls: 99, greps: 99, maskedBytes: 400 } });
       const out = (await answer(reader, 'grep', { pattern: 'needle' }, policy)).split('\n');
-      expect(out).toEqual([`a/one.txt:1: ${'a'.repeat(199)}…`, BUDGET_USED_UP]);
-      expect(policy.budget.maskedBytes).toBe(400 - 308);
-      // With nothing left to mask a file with, a grep finds only the budget line.
-      const empty = newPolicy({ budget: { calls: 99, greps: 99, maskedBytes: 100 } });
-      expect(await answer(reader, 'grep', { pattern: 'needle' }, empty)).toBe(BUDGET_USED_UP);
+      expect(out).toEqual([`a/one.txt:1: ${'a'.repeat(199)}…`, 'd/four.txt:1: needle']);
+      expect(policy.budget.maskedBytes).toBe(400 - 308 - 7);
+      // With nothing left to mask a file with, the answer is the one for a needle that is nowhere:
+      // the files the reader found it in are not named, counted or hinted at.
+      const nothing = () => newPolicy({ budget: { calls: 99, greps: 99, maskedBytes: 0 } });
+      const nowhere = await run(reader, 'grep', { pattern: 'a needle that is nowhere' }, nothing());
+      const refused = await run(reader, 'grep', { pattern: 'needle' }, nothing());
+      expect(refused).toEqual(nowhere);
+      expect(refused.text).toBe('no matches');
     });
 
     it('a file masked again after the bound kept it out is spent again', async () => {
@@ -1283,7 +1314,7 @@ describe('masking that takes too long', () => {
     expect(
       await answer(reader, 'read_file', { path: 'a/hostile.txt', from: 2, to: 3 }, policy),
     ).toBe(NOT_IN_TIME);
-    expect(performance.now() - started).toBeLessThan(250);
+    expect(performance.now() - started).toBeLessThan(budgetMs(250));
     expect(policy.budget.maskedBytes).toBe(spent);
     // The other files are read as ever.
     expect(await answer(reader, 'read_file', { path: 'b/ok.ts' }, policy)).toBe(
@@ -1291,28 +1322,72 @@ describe('masking that takes too long', () => {
     );
   });
 
-  it('grep leaves a file that could not be masked in time out of its search, and says so', async () => {
+  it('grep leaves a file that could not be masked in time out of its search, and says nothing of it', async () => {
     const policy = slowPolicy();
+    // The two files that take too long are not named, counted or hinted at.
     expect(await answer(reader, 'grep', { pattern: 'needle' }, policy)).toBe(
-      [
-        'b/ok.ts:1: const needle = 1;',
-        'd/ok.ts:1: const needle = 2;',
-        '… 2 files could not be masked in time and were not searched',
-      ].join('\n'),
+      ['b/ok.ts:1: const needle = 1;', 'd/ok.ts:1: const needle = 2;'].join('\n'),
     );
     // Asked again, the files that took too long are not masked again.
     const started = performance.now();
     expect(await answer(reader, 'grep', { pattern: 'needle', path_glob: 'a/**' }, policy)).toBe(
-      ['no matches', '… 1 file could not be masked in time and was not searched'].join('\n'),
+      'no matches',
     );
-    expect(performance.now() - started).toBeLessThan(250);
-    // Searched for the files that are fine alone, there is no note.
+    expect(performance.now() - started).toBeLessThan(budgetMs(250));
     expect(await answer(reader, 'grep', { pattern: 'needle', path_glob: 'b/**' }, policy)).toBe(
       'b/ok.ts:1: const needle = 1;',
     );
   });
 
-  it('a review that has spent its time for masking gets the budget line, and masks no more', async () => {
+  it('grep answers for a needle that is only in a file that took too long as for one that is nowhere', async () => {
+    const only = memorySnapshot({
+      files: {
+        'a/hostile.txt': `${HOSTILE_TEXT}\nthe needle that is only here`,
+        'b/other.ts': 'x\n',
+      },
+    });
+    const policy = slowPolicy();
+    const nowhere = await run(only, 'grep', { pattern: 'a needle that is nowhere' }, policy);
+    // The file is masked now, and takes too long.
+    const first = await run(only, 'grep', { pattern: 'needle that is only here' }, policy);
+    expect(first).toEqual(nowhere);
+    expect(first.text).toBe('no matches');
+    // And once it is known to be one that takes too long: the same.
+    const again = await run(only, 'grep', { pattern: 'needle that is only here' }, policy);
+    expect(again).toEqual(nowhere);
+    // A glob that names only it: the same.
+    expect(
+      await run(only, 'grep', { pattern: 'needle that is only', path_glob: 'a/*' }, policy),
+    ).toEqual(nowhere);
+    // read_file of it says so, as its answer depends on the path asked for and not on a needle.
+    expect(await answer(only, 'read_file', { path: 'a/hostile.txt' }, policy)).toBe(NOT_IN_TIME);
+  });
+
+  it('the "more matches" line of a grep is that of the lines the model can see, whatever a file that took too long holds', async () => {
+    const lines = (n: number) => Array.from({ length: n }, (_, i) => `needle ${i + 1}`).join('\n');
+    const slow = (extra: string) => `${HOSTILE_TEXT}\n${extra}`;
+    // 60, 50 and 10 lines in the other file; a file that takes too long holds 100, 50 or none.
+    for (const [visible, hidden] of [
+      [60, 100],
+      [50, 100],
+      [50, 51],
+      [10, 100],
+      [0, 100],
+    ] as const) {
+      const base: Record<string, string> = visible === 0 ? {} : { 'b/many.ts': lines(visible) };
+      const withSlow = memorySnapshot({ files: { 'a/slow.txt': slow(lines(hidden)), ...base } });
+      const without = memorySnapshot({ files: { ...base, 'a/quiet.txt': 'nothing\n' } });
+      const label = JSON.stringify([visible, hidden]);
+      const a = await answer(withSlow, 'grep', { pattern: 'needle' }, slowPolicy());
+      const b = await answer(without, 'grep', { pattern: 'needle' }, slowPolicy());
+      expect(a, label).toBe(b);
+      const rows = a.split('\n');
+      if (visible > TOOL_LIMITS.grepHits) expect(rows.at(-1), label).toBe(MORE_MATCHES);
+      else expect(a, label).not.toContain(MORE_MATCHES);
+    }
+  });
+
+  it('a review that has spent its time for masking gets the budget line from read_file, and masks no more', async () => {
     const policy = slowPolicy(500);
     // 300 ms for the first, and the 200 that are left are not enough for the second.
     expect(await answer(reader, 'read_file', { path: 'a/hostile.txt' }, policy)).toBe(NOT_IN_TIME);
@@ -1322,9 +1397,8 @@ describe('masking that takes too long', () => {
     // The bytes of a text that was not masked are not spent.
     const left = policy.budget.maskedBytes;
     expect(await answer(reader, 'read_file', { path: 'b/ok.ts' }, policy)).toBe(BUDGET_USED_UP);
-    expect(await answer(reader, 'grep', { pattern: 'needle' }, policy)).toBe(
-      ['… 1 file could not be masked in time and was not searched', BUDGET_USED_UP].join('\n'),
-    );
+    // A grep leaves out what it can no longer mask, and says nothing of it.
+    expect(await answer(reader, 'grep', { pattern: 'needle' }, policy)).toBe('no matches');
     expect(policy.budget.maskedBytes).toBe(left);
   });
 

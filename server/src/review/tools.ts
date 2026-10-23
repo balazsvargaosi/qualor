@@ -315,16 +315,19 @@ function invalidArguments(error: z.ZodError): ToolAnswer {
  * away (nor, for a listing, which entries the administrator excluded), and `keep` answers null for
  * those. When items were dropped and the reader had more, it is asked again for more, up to
  * `maxFetch`, instead of letting the dropped items use up the cap; `keep` is called once for each
- * item, in order, and the items after the `want`th result are not looked at. `halted` ends the
- * search early, with the results so far.
+ * item, in order, and the items after the `want`th result are not looked at.
+ *
+ * `over` says that there are more than `want` results. `cut` says that the search stopped with
+ * items the reader had left unlooked at (it came to `maxFetch`, or the reader could not give more
+ * than it did): whether any of them would have been a result is not known. A search over text
+ * must not tell, as the items it dropped are lines of text the model may not see.
  */
 async function takeKept<T, U>(
   want: number,
   maxFetch: number,
   load: (limit: number) => Promise<{ items: T[]; truncated: boolean }>,
   keep: (item: T) => U | null | Promise<U | null>,
-  halted: () => boolean = () => false,
-): Promise<{ items: U[]; truncated: boolean }> {
+): Promise<{ items: U[]; over: boolean; cut: boolean }> {
   const items: U[] = [];
   /** The items of the reader looked at so far. */
   let seen = 0;
@@ -336,14 +339,13 @@ async function takeKept<T, U>(
       if (item === undefined) break;
       const kept = await keep(item);
       if (kept !== null) items.push(kept);
-      if (items.length > want) return { items: items.slice(0, want), truncated: true };
-      if (halted()) return { items, truncated: false };
+      if (items.length > want) return { items: items.slice(0, want), over: true, cut: false };
     }
-    if (!page.truncated) return { items, truncated: false };
+    if (!page.truncated) return { items, over: false, cut: false };
     // Fewer items than asked for, and more to come: the reader cannot find more (a search it ended
     // early), and asking for more would give the same answer.
-    if (page.items.length < limit) return { items, truncated: true };
-    if (limit >= maxFetch) return { items, truncated: true };
+    if (page.items.length < limit) return { items, over: false, cut: true };
+    if (limit >= maxFetch) return { items, over: false, cut: true };
     limit = Math.min(limit * 4, maxFetch);
   }
 }
@@ -482,10 +484,6 @@ async function grep(
   let counted = 0;
   /** The file the hits looked at last: the reader gives the hits of a file one after the other. */
   let current: { path: string; file: MaskedFile } | null = null;
-  /** A file would take the review past its budget for masking: no more files are looked at. */
-  let spent = false;
-  /** The files that took too long to mask: they are not searched, and the model is told. */
-  const notSearched = new Set<string>();
   const found = await takeKept(
     TOOL_LIMITS.grepHits,
     MAX_FETCHED_HITS,
@@ -503,14 +501,10 @@ async function grep(
         current = { path: hit.path, file };
       }
       const { file } = current;
-      if (file.kind === 'budget') {
-        spent = true;
-        return null;
-      }
-      if (file.kind === 'timeout') {
-        notSearched.add(hit.path);
-        return null;
-      }
+      // A file that cannot be masked (it took too long, or the review has no budget left for it) is
+      // left out of the search, and the answer says nothing of it: the reader found it on the text
+      // as stored, so a note, a count or a "more matches" would tell the model that the needle is
+      // in text it may not see.
       if (file.kind !== 'text') return null;
       const line = file.text.line(hit.line - 1);
       if (!line.includes(pattern)) return null;
@@ -522,22 +516,13 @@ async function grep(
         text: withoutCr(line).slice(0, 2 * TOOL_LIMITS.grepLineChars),
       };
     },
-    () => spent,
   );
   const lines = found.items.map(
     (hit) => `${hit.path}:${hit.line}: ${cutAtGrapheme(hit.text, TOOL_LIMITS.grepLineChars)}`,
   );
-  if (lines.length === 0 && !spent && !found.truncated) lines.push(NO_MATCHES);
-  if (notSearched.size > 0) {
-    const n = notSearched.size;
-    const files = n === 1 ? '1 file' : `${n} files`;
-    lines.push(
-      `… ${files} could not be masked in time and ${n === 1 ? 'was' : 'were'} not searched`,
-    );
-  }
-  // What is left of the search is dropped when the budget is spent, and the model is told.
-  if (spent) lines.push(BUDGET_USED_UP);
-  else if (found.truncated) lines.push(MORE_MATCHES);
+  // Only the lines the model can see are counted: a search the reader cut short says nothing.
+  if (lines.length === 0) lines.push(NO_MATCHES);
+  else if (found.over) lines.push(MORE_MATCHES);
   return redactedAnswer(lines.join('\n'), counted);
 }
 
@@ -574,13 +559,14 @@ async function listFiles(
       return entry;
     },
   );
-  if (found.items.length === 0 && !found.truncated) {
+  const more = found.over || found.cut;
+  if (found.items.length === 0 && !more) {
     // A directory with nothing in it but excluded entries is answered as an excluded file is.
     if (hidden > 0) return fixed(EXCLUDED);
     return fixed(dir === '' ? 'the snapshot holds no files' : NO_SUCH_DIRECTORY);
   }
   const lines = found.items.map((entry) => (entry.kind === 'dir' ? `${entry.name}/` : entry.name));
-  if (found.truncated) lines.push(MORE_ENTRIES);
+  if (more) lines.push(MORE_ENTRIES);
   return redactedAnswer(lines.join('\n'));
 }
 
