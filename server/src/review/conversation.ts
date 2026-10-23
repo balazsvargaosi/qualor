@@ -78,10 +78,11 @@ export interface ConversationInput {
     maxTurns: number;
     maxCallsPerTurn: number;
     /**
-     * The tokens, input and output of all its calls, the conversation aims to stay within: at 85 %
-     * of it, or when the next call (as large as the last, with what the tools just answered) would
-     * reach it, the next turn is the wrap-up, whose own call can still go past it. More than 0: a
-     * caller with nothing to spend does not start a conversation.
+     * The tokens, input and output of all its calls, the conversation stays within as far as it
+     * can tell ahead: at 85 % of it, or when another turn of tools would leave no room for the
+     * wrap-up after it, the next turn is the wrap-up (`wrapUpDue`). That call can still go past it,
+     * by as much as the guesses fell short, and by more when the first turn of tools already left
+     * no room for it. More than 0: a caller with nothing to spend does not start a conversation.
      */
     tokenBudget: number;
     maxOutputTokens: number;
@@ -346,13 +347,39 @@ function tokensOf(
 }
 
 /**
+ * Whether the turn after a turn of tools must be the wrap-up for the tokens: `used` has reached
+ * 85 % of the budget, or another turn of tools would leave no room for the wrap-up after it. Both
+ * calls are guessed from the last one (`last`, what it cost) and from what its tools answered
+ * (`grown`), since the history only grows:
+ * - the next call sends the last one's input, its output and what the tools answered, and writes
+ *   as much as the last one wrote;
+ * - the wrap-up after it sends that call's input and output again, with as much more from its
+ *   tools, and writes at most `maxOutputTokens`.
+ * The wrap-up can still go past the budget: by as much as those guesses fall short, or when the
+ * first turn of tools, which runs before anything is known of what a turn costs, already left no
+ * room for it. A whole turn of tools past it cannot.
+ */
+function wrapUpDue(
+  limits: ConversationInput['limits'],
+  used: number,
+  last: { input: number; output: number },
+  grown: number,
+): boolean {
+  if (used >= CONVERSATION_LIMITS.wrapUpAt * limits.tokenBudget) return true;
+  const nextInput = last.input + last.output + grown;
+  const nextCall = nextInput + last.output;
+  const wrapUpAfter = nextInput + last.output + grown + limits.maxOutputTokens;
+  return used + nextCall + wrapUpAfter >= limits.tokenBudget;
+}
+
+/**
  * Talks with the model until it answers in text:
  * - the tool list goes with every turn, the wrap-up included (Anthropic refuses tool blocks in the
  *   history without it);
  * - once the model has had `maxTurns` turns, or the calls have used 85 % of the token budget, or
- *   the next call would reach it (as large as the last, with what the tools just answered added:
- *   the history only grows), the next turn is the wrap-up: a user message that says to answer now.
- *   Calls in its answer are not run, and its text is the answer;
+ *   another turn of tools would leave no room for the wrap-up after it (`wrapUpDue`), the next turn
+ *   is the wrap-up: a user message that says to answer now. Calls in its answer are not run, and
+ *   its text is the answer;
  * - a call is told apart by what is there, not by the finish reason: `tool` also comes without
  *   calls, and then text is an answer and no text is none;
  * - an answer cut off at the output limit is asked for again, shorter, once; a refusal, a blank
@@ -410,14 +437,8 @@ export async function runConversation(input: ConversationInput): Promise<Convers
       // The model's turn joins the history first, then the answers to its calls.
       const answersFrom = messages.length + 1;
       toolCalls += await answerCalls(input, turn.text, turn.toolCalls, messages);
-      const used = inputTokens + outputTokens;
-      // The next call sends this one's input and its output again, and what the tools answered:
-      // if that would reach the budget, this is the last turn of tools whatever share is used.
-      const nextCall = spent.input + spent.output + guessedTokens(messages.slice(answersFrom));
-      const reached =
-        used >= CONVERSATION_LIMITS.wrapUpAt * limits.tokenBudget ||
-        used + nextCall >= limits.tokenBudget;
-      if (turns >= limits.maxTurns || reached) {
+      const grown = guessedTokens(messages.slice(answersFrom));
+      if (turns >= limits.maxTurns || wrapUpDue(limits, inputTokens + outputTokens, spent, grown)) {
         messages.push({ role: 'user', text: CONVERSATION_TEXTS.wrapUp });
         wrappingUp = true;
       }

@@ -55,8 +55,8 @@ export type { ReviewFinding } from './schemas';
  * given an even part of what is left of it. A conversation that used up its part answers through
  * its wrap-up, and one with nothing to spend does not run; the review goes on, with
  * `tokenLimitReached`. Only a judge cannot be done without. What a first message holds is sized to
- * a third of its conversation's tokens (`reviewLimits`, and the judge's data), so that two turns
- * of tools and the answer fit after it.
+ * a third of its conversation's tokens (`reviewLimits`, and the judge's data): every call sends it
+ * again, and a third leaves room for a turn of tools, what the tools answer, and the wrap-up.
  *
  * Nothing here calls a provider: `deps.converse` does, with the role's system prompt, the tools and
  * the first message it is given.
@@ -375,9 +375,11 @@ const isSerious = (finding: JudgedFinding): boolean =>
 
 /**
  * Reviews the merge request the context is of, with `budget` tokens shared out between its stages:
- * each conversation is given what is left of its part, and may go past it only through its wrap-up
- * (so a stage, whose share the others cannot spend, can take the review past `budget` by what the
- * stages before it overspent). `onPhase` is told each stage as it starts. The outcome is `stopped`
+ * each conversation is given what is left of its part, and keeps room in it for its wrap-up: it
+ * goes past it only by as much as the loop's guesses fell short, or when its first turn of tools
+ * already left no room (conversation.ts). A stage, whose share the others cannot spend, can still
+ * take the review past `budget` by what the stages before it overspent. `onPhase` is told each
+ * stage as it starts. The outcome is `stopped`
  * as soon as a conversation is, and `failed` when the provider fails or the judge gives no answer
  * of its schema: nothing of a failed review is stored.
  */

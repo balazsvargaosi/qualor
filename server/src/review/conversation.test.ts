@@ -402,57 +402,61 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
     it.each(KINDS)(
       'the wrap-up comes once 85 % of the token budget is used, not before (%s)',
       async (kind) => {
-        const limits = { ...LIMITS, tokenBudget: 10_000 };
-        // Turns of 4 000, 2 500, 1 000 and 1 100 tokens make 8 600 of the 10 000 after the fourth.
-        // No call of the size of any of them would reach the budget, so the 85 % alone makes the
-        // fifth request the wrap-up.
+        const limits = { ...LIMITS, tokenBudget: 100_000 };
+        // Turns of 30 000, 20 000, 14 000, 10 000, 6 500 and 4 500 tokens make 85 000 of the
+        // 100 000 after the sixth: 85 % exactly. After each of them another turn as large, and the
+        // wrap-up after it, would still fit, so the 85 % alone makes the seventh request the wrap-up.
         const turnsOf = (last: number) =>
           [
-            [3_900, 100],
-            [2_400, 100],
-            [900, 100],
+            [29_000, 1_000],
+            [19_000, 1_000],
+            [13_000, 1_000],
+            [9_000, 1_000],
+            [6_000, 500],
             [last - 100, 100],
           ].map(([input, output], n) =>
             toolTurn(kind, [{ id: `c${n + 1}`, args: { path: 'a.ts' } }], [input!, output!]),
           );
-        fake.enqueue(...turnsOf(1_100), textTurn(kind, '{"findings":[]}', [10, 1]));
+        fake.enqueue(...turnsOf(4_500), textTurn(kind, '{"findings":[]}', [10, 1]));
         const over = await run(kind, { limits });
         expect(over.result).toMatchObject({
           kind: 'answer',
-          inputTokens: 3_900 + 2_400 + 900 + 1_000 + 10,
-          outputTokens: 4 * 100 + 1,
-          turns: 5,
+          inputTokens: 29_000 + 19_000 + 13_000 + 9_000 + 6_000 + 4_400 + 10,
+          outputTokens: 4 * 1_000 + 500 + 100 + 1,
+          turns: 7,
           budgetReached: true,
         });
-        expect(WIRES[kind].lastUser(fake.requests[4]!)).toBe(WRAP_UP);
-        expect(WIRES[kind].lastUser(fake.requests[3]!)).not.toContain('Token budget');
+        expect(WIRES[kind].lastUser(fake.requests[6]!)).toBe(WRAP_UP);
+        expect(WIRES[kind].lastUser(fake.requests[5]!)).not.toContain('Token budget');
 
-        // 8 400 after the fourth turn: not 85 % yet, and the next call of 900 would fit.
+        // 84 900 after the sixth turn: not 85 % yet, and another turn and its wrap-up would fit.
         fake.requests.length = 0;
-        fake.enqueue(...turnsOf(900), textTurn(kind, '{"findings":[]}', [10, 1]));
+        fake.enqueue(...turnsOf(4_400), textTurn(kind, '{"findings":[]}', [10, 1]));
         const under = await run(kind, { limits });
-        expect(under.result).toMatchObject({ kind: 'answer', turns: 5, budgetReached: false });
-        expect(WIRES[kind].lastUser(fake.requests[4]!)).not.toContain('Token budget');
+        expect(under.result).toMatchObject({ kind: 'answer', turns: 7, budgetReached: false });
+        expect(WIRES[kind].lastUser(fake.requests[6]!)).not.toContain('Token budget');
       },
     );
 
     it.each(KINDS)(
-      'the wrap-up comes when the next call would reach the budget, whatever the share used (%s)',
+      'the wrap-up comes a turn early when the next turn of tools would fit but not the wrap-up after it, whatever the share used (%s)',
       async (kind) => {
         const limits = { ...LIMITS, tokenBudget: 10_000 };
-        // 5 000 used, half of the budget, and a call as large as the last would make 10 000.
+        // 3 300 used, a third of the budget. Another turn as large (the 3 300 sent again with the
+        // results, and 100 written) would make under 7 000; the wrap-up after it sends all that
+        // again and may write 50, which would make more than 10 000.
         fake.enqueue(
-          toolTurn(kind, [{ id: 'c1', args: { path: 'a.ts' } }], [4_900, 100]),
+          toolTurn(kind, [{ id: 'c1', args: { path: 'a.ts' } }], [3_200, 100]),
           textTurn(kind, '{"findings":[]}', [10, 1]),
         );
         const reached = await run(kind, { limits });
         expect(reached.result).toMatchObject({ kind: 'answer', turns: 2, budgetReached: true });
         expect(WIRES[kind].lastUser(fake.requests[1]!)).toBe(WRAP_UP);
 
-        // A hundred tokens fewer, and it would still fit: the model goes on.
+        // Three hundred tokens fewer, and the wrap-up after another turn would fit: the model goes on.
         fake.requests.length = 0;
         fake.enqueue(
-          toolTurn(kind, [{ id: 'c1', args: { path: 'a.ts' } }], [4_800, 100]),
+          toolTurn(kind, [{ id: 'c1', args: { path: 'a.ts' } }], [2_900, 100]),
           textTurn(kind, '{"findings":[]}', [10, 1]),
         );
         const fits = await run(kind, { limits });
@@ -462,24 +466,75 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
     );
 
     it.each(KINDS)(
-      'the wrap-up counts what the tools just added to the history in the next call (%s)',
+      'the wrap-up after the next turn is counted with the longest answer it may write (%s)',
+      async (kind) => {
+        // 2 900 used; another turn as large and the wrap-up after it make about 9 100 with the
+        // wrap-up's answer counted at 50 tokens, and about 11 100 at 2 000.
+        const reply = () => [
+          toolTurn(kind, [{ id: 'c1', args: { path: 'a.ts' } }], [2_800, 100]),
+          textTurn(kind, '{"findings":[]}', [10, 1]),
+        ];
+        fake.enqueue(...reply());
+        const long = await run(kind, {
+          limits: { ...LIMITS, tokenBudget: 10_000, maxOutputTokens: 2_000 },
+        });
+        expect(long.result).toMatchObject({ kind: 'answer', turns: 2, budgetReached: true });
+        expect(WIRES[kind].lastUser(fake.requests[1]!)).toBe(WRAP_UP);
+
+        fake.requests.length = 0;
+        fake.enqueue(...reply());
+        const short = await run(kind, { limits: { ...LIMITS, tokenBudget: 10_000 } });
+        expect(short.result).toMatchObject({ kind: 'answer', turns: 2, budgetReached: false });
+        expect(WIRES[kind].lastUser(fake.requests[1]!)).not.toContain('Token budget');
+      },
+    );
+
+    it.each(KINDS)(
+      'what the model wrote beside its calls is counted in the next turn and the wrap-up after it (%s)',
       async (kind) => {
         const limits = { ...LIMITS, tokenBudget: 10_000 };
-        // 2 100 used, and a call as large as the last would make 4 200: under the budget. But the
-        // file read in the turn adds about 6 000 tokens to what the next call sends: it would reach it.
-        const read = (text: string) => () => Promise.resolve(text);
+        // 1 000 read and 1 500 written. The next turn sends the 1 500 again and is guessed to write
+        // as much; the wrap-up after it sends both: about 10 700 in all, past the budget.
         fake.enqueue(
-          toolTurn(kind, [{ id: 'c1', args: { path: 'a.ts' } }], [2_000, 100]),
+          toolTurn(kind, [{ id: 'c1', args: { path: 'a.ts' } }], [1_000, 1_500]),
           textTurn(kind, '{"findings":[]}', [10, 1]),
         );
-        const large = await run(kind, { limits, runTool: read('x'.repeat(24_000)) });
+        const wordy = await run(kind, { limits });
+        expect(wordy.result).toMatchObject({ kind: 'answer', turns: 2, budgetReached: true });
+        expect(WIRES[kind].lastUser(fake.requests[1]!)).toBe(WRAP_UP);
+
+        // 1 000 written: about 8 200 in all, and the model goes on.
+        fake.requests.length = 0;
+        fake.enqueue(
+          toolTurn(kind, [{ id: 'c1', args: { path: 'a.ts' } }], [1_000, 1_000]),
+          textTurn(kind, '{"findings":[]}', [10, 1]),
+        );
+        const terse = await run(kind, { limits });
+        expect(terse.result).toMatchObject({ kind: 'answer', turns: 2, budgetReached: false });
+        expect(WIRES[kind].lastUser(fake.requests[1]!)).not.toContain('Token budget');
+      },
+    );
+
+    it.each(KINDS)(
+      'the wrap-up counts what the tools just added, in the next turn and in the wrap-up after it (%s)',
+      async (kind) => {
+        const limits = { ...LIMITS, tokenBudget: 10_000 };
+        // 1 100 used, and another turn as large with its wrap-up would make about 3 700 if the tools
+        // added little. The file read adds about 2 300 tokens to what both of them send, and the
+        // next turn is guessed to read as much again: about 10 500, past the budget.
+        const read = (text: string) => () => Promise.resolve(text);
+        fake.enqueue(
+          toolTurn(kind, [{ id: 'c1', args: { path: 'a.ts' } }], [1_000, 100]),
+          textTurn(kind, '{"findings":[]}', [10, 1]),
+        );
+        const large = await run(kind, { limits, runTool: read('x'.repeat(9_000)) });
         expect(large.result).toMatchObject({ kind: 'answer', turns: 2, budgetReached: true });
         expect(WIRES[kind].lastUser(fake.requests[1]!)).toBe(WRAP_UP);
 
         // A small result leaves room for another turn: the model goes on.
         fake.requests.length = 0;
         fake.enqueue(
-          toolTurn(kind, [{ id: 'c1', args: { path: 'a.ts' } }], [2_000, 100]),
+          toolTurn(kind, [{ id: 'c1', args: { path: 'a.ts' } }], [1_000, 100]),
           textTurn(kind, '{"findings":[]}', [10, 1]),
         );
         const small = await run(kind, { limits, runTool: read('a small file') });
@@ -534,32 +589,35 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
       it.each(KINDS)('is stopped by the token budget too (%s)', async (kind) => {
         fake.enqueue(...Array.from({ length: 40 }, () => insatiable(kind, [4_000, 1_000])));
         const { result, ran } = await run(kind, { limits: { ...LIMITS, tokenBudget: 20_000 } });
-        // 3 turns are 15 000 of the 20 000 tokens, and a 4th call of 5 000 would reach it: the
-        // 4th request is the wrap-up, not the 5th that the 85 % alone would make it.
+        // 2 turns are 10 000 of the 20 000 tokens. A 3rd turn (its 5 000 sent again, with the
+        // results, and 1 000 written) would fit, but not the wrap-up after it: the 3rd request is
+        // the wrap-up, a turn before the 4th that the next call alone would make it, and so the
+        // conversation stays within the budget.
         expect(result).toEqual({
           kind: 'failed',
           reason: 'bad_answer',
-          inputTokens: 4 * 4_000,
-          outputTokens: 4 * 1_000,
-          turns: 4,
-          toolCalls: 3,
+          inputTokens: 3 * 4_000,
+          outputTokens: 3 * 1_000,
+          turns: 3,
+          toolCalls: 2,
         });
-        expect(fake.requests).toHaveLength(4);
-        expect(ran).toHaveLength(3);
-        expect(WIRES[kind].lastUser(fake.requests[3]!)).toBe(WRAP_UP);
-        expect(WIRES[kind].lastUser(fake.requests[2]!)).not.toBe(WRAP_UP);
+        expect(fake.requests).toHaveLength(3);
+        expect(ran).toHaveLength(2);
+        expect(WIRES[kind].lastUser(fake.requests[2]!)).toBe(WRAP_UP);
+        expect(WIRES[kind].lastUser(fake.requests[1]!)).not.toBe(WRAP_UP);
       });
 
       it.each(KINDS)(
         'is stopped by the budget when the provider counts no tokens, on what it was sent (%s)',
         async (kind) => {
           fake.enqueue(...Array.from({ length: 40 }, () => insatiable(kind, null)));
-          const limits = { ...LIMITS, tokenBudget: 2_000, maxOutputTokens: 400 };
+          const limits = { ...LIMITS, tokenBudget: 8_000, maxOutputTokens: 400 };
           const { result, ran } = await run(kind, { limits });
           // Counted as nothing it would call until the turn limit; charged what it was sent and
           // the longest answer it may write, it is asked to answer after a few turns.
           expect(result).toMatchObject({ kind: 'failed', reason: 'bad_answer' });
           expect(fake.requests.length).toBeLessThan(CONVERSATION_LIMITS.maxTurns + 1);
+          expect(ran.length).toBeGreaterThan(1);
           expect(WIRES[kind].lastUser(fake.requests.at(-1)!)).toBe(WRAP_UP);
           expect(ran).toHaveLength(fake.requests.length - 1);
           expect(result.turns).toBe(fake.requests.length);
@@ -1062,9 +1120,12 @@ const call = (id: string, args: unknown = FILE, name = 'read_file'): LlmToolCall
   arguments: args,
 });
 
-/** What the loop charges for the input it sent: a quarter of the bytes of its JSON, rounded up. */
-const quarterOfBytes = (conversation: LlmConversation) =>
-  Math.ceil(Buffer.byteLength(JSON.stringify(conversation), 'utf8') / 4);
+/**
+ * What the loop charges for the input it sent, and guesses for a part of it: a quarter of the
+ * bytes of its JSON, rounded up.
+ */
+const quarterOfBytes = (sent: LlmConversation | readonly LlmMessage[]) =>
+  Math.ceil(Buffer.byteLength(JSON.stringify(sent), 'utf8') / 4);
 
 describe('runConversation with a scripted provider', () => {
   /** A provider that plays `steps` in order (an Error is thrown) and keeps what it was sent. */
@@ -1271,6 +1332,29 @@ describe('runConversation with a scripted provider', () => {
       expect(lastUser(3)).toEqual({ role: 'user', text: WRAP_UP });
     });
 
+    it('wraps up exactly when what was used, the next turn and the wrap-up after it reach the budget', async () => {
+      // One turn of tools that was sent 100 tokens and wrote 20, then the answer.
+      const play = async (tokenBudget: number) => {
+        const s = scripted(
+          callTurn([call('c1')], { usage: { inputTokens: 100, outputTokens: 20 } }),
+          turn('done'),
+        );
+        s.input.limits = { ...LIMITS, tokenBudget, maxOutputTokens: 30 };
+        return { s, result: await runConversation(s.input) };
+      };
+      const { s } = await play(1_000_000);
+      // What the tool answered, as the next call sends it, at a quarter of its bytes.
+      const grown = quarterOfBytes(s.seen[1]!.messages.slice(2));
+      // The next turn sends the 100 and the 20 again with what the tool answered, and writes 20;
+      // the wrap-up after it sends all that again with 20 and as much from its tools, and may
+      // write 30.
+      const next = 100 + 20 + grown + 20;
+      const wrapUpAfter = 100 + 20 + grown + 20 + grown + 30;
+      const due = 100 + 20 + next + wrapUpAfter;
+      expect((await play(due)).result).toMatchObject({ kind: 'answer', budgetReached: true });
+      expect((await play(due + 1)).result).toMatchObject({ kind: 'answer', budgetReached: false });
+    });
+
     it('sends the tools and the output limit on the wrap-up turn too', async () => {
       const s = scripted(callTurn([call('c1')]), turn('done'));
       s.input.limits = { ...LIMITS, maxTurns: 1 };
@@ -1330,11 +1414,12 @@ describe('runConversation with a scripted provider', () => {
           callTurn([call(`c${i}`)], { usage: unknown }),
         );
         const s = scripted(...steps);
-        s.input.limits = { ...LIMITS, tokenBudget: 2_000, maxOutputTokens: 400 };
+        s.input.limits = { ...LIMITS, tokenBudget: 8_000, maxOutputTokens: 400 };
         const result = await runConversation(s.input);
         expect(result).toMatchObject({ kind: 'failed', reason: 'bad_answer' });
         // Not the 17 requests of the turn limit: the guess ends the calls far sooner.
         expect(s.seen.length).toBeLessThan(CONVERSATION_LIMITS.maxTurns + 1);
+        expect(s.ran.length).toBeGreaterThan(1);
         expect(s.seen.at(-1)!.messages.at(-1)).toEqual({ role: 'user', text: WRAP_UP });
         expect(result.inputTokens).toBe(
           s.seen.reduce((sum, conversation) => sum + quarterOfBytes(conversation), 0),
@@ -1590,14 +1675,18 @@ describe('runConversation with a scripted provider', () => {
       const play = (tokenBudget: number) => {
         // A call with a tool, a call that times out, its retry with another tool, and the answer.
         const s = scripted(callTurn([call('c1')]), timeout, callTurn([call('c2')]), turn('done'));
+        // A long first message, so that the call that timed out is charged much more than the
+        // turns the provider counted, and than another turn with the wrap-up after it.
+        s.input.user = 'x'.repeat(8_000);
         s.input.limits = { ...LIMITS, tokenBudget };
         return { s, result: runConversation(s.input) };
       };
       // What the call that timed out is charged: the rest of the input is that of the three turns.
       const guessed = (await play(1_000_000).result).inputTokens - 30;
-      expect(guessed).toBeGreaterThan(30);
-      // The two turns of tools used 30 tokens, well short of this budget; with the call that timed
-      // out they used 30 and its guess, and the next call would reach it.
+      expect(guessed).toBeGreaterThan(2_000);
+      // The two turns of tools used 30 tokens, and another turn with the wrap-up after it would
+      // take a few hundred more: well short of this budget. With the call that timed out they used
+      // 30 and its guess, nearly all of it.
       const { s, result } = play(40 + guessed);
       expect(await result).toMatchObject({ kind: 'answer', budgetReached: true });
       expect(s.seen.at(-1)!.messages.at(-1)).toEqual({ role: 'user', text: WRAP_UP });
