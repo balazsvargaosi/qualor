@@ -113,8 +113,9 @@ describe('the summary in GitHub’s words (github.md §6.2)', () => {
       'Inline comments wait for the analysis of the pull request’s latest commit.',
     );
     expect(body('checkout_other')).toContain(
-      'No inline comments: the workflow analysed a commit other than the pull request’s head (GitHub’s merge commit, by default); check out the head to get them (`ref: ${{ github.event.pull_request.head.sha }}`).',
+      'The analyzers’ issues are not commented inline: the workflow analysed a commit other than the pull request’s head (GitHub’s merge commit, by default); check out the head to get them (`ref: ${{ github.event.pull_request.head.sha }}`).',
     );
+    expect(body('checkout_other')).not.toContain('No inline comments');
     expect(body(null)).toContain('**no new issues** in this pull request');
     expect(
       summaryBody(input({ commented: 0, unplaced: 0, skipped: null }, 'b'.repeat(40))),

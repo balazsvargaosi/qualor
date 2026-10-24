@@ -393,9 +393,12 @@ describe('summary, inline note and commit status (scm.md §5)', () => {
     expect(github({ ...none, skipped: 'stale' })).toContain(
       'Inline comments wait for the analysis of the pull request’s latest commit.',
     );
-    expect(github({ ...none, skipped: 'checkout_other' })).toContain(
-      'No inline comments: the workflow analysed a commit other than the pull request’s head (GitHub’s merge commit, by default); check out the head to get them (`ref: ${{ github.event.pull_request.head.sha }}`).',
+    // It speaks for the analyzers' issues: the AI review's threads are posted after such a checkout.
+    const other = github({ ...none, skipped: 'checkout_other' });
+    expect(other).toContain(
+      'The analyzers’ issues are not commented inline: the workflow analysed a commit other than the pull request’s head (GitHub’s merge commit, by default); check out the head to get them (`ref: ${{ github.event.pull_request.head.sha }}`).',
     );
+    expect(other).not.toContain('No inline comments');
     // Annotations are gone: no GitHub text says so any more.
     for (const skipped of ['stale', 'checkout_other'] as const) {
       expect(github({ ...none, skipped })).not.toMatch(/annotat/i);

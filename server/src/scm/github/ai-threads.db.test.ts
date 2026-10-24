@@ -63,7 +63,7 @@ const LINES5TO6: Suggestion = {
 };
 /** github.md §6.2: what the summary says when the workflow analysed another commit than the head. */
 const CHECKOUT_OTHER =
-  'No inline comments: the workflow analysed a commit other than the pull request’s head (GitHub’s merge commit, by default); check out the head to get them (`ref: ${{ github.event.pull_request.head.sha }}`).';
+  'The analyzers’ issues are not commented inline: the workflow analysed a commit other than the pull request’s head (GitHub’s merge commit, by default); check out the head to get them (`ref: ${{ github.event.pull_request.head.sha }}`).';
 const STALE = 'Inline comments wait for the analysis of the pull request’s latest commit.';
 
 /** A comment of a review as the client sent it. */
@@ -844,9 +844,11 @@ describe('GitHub decoration: AI review threads (6I-3, R16, R18)', () => {
       [12, undefined],
     ]);
     expect([...threadsOf(repo.id).keys()].sort()).toEqual([id, closing].sort());
-    // The summary says why the analyzers' issues are not inline, and the AI section is there.
+    // The summary says why the analyzers' issues are not inline (it does not claim there are no
+    // inline comments, the AI review's are), and the AI section is there.
     for (const body of [summaryOf(repo.id), checkRunSummary(repo.id)]) {
       expect(body).toContain(CHECKOUT_OTHER);
+      expect(body).not.toContain('No inline comments');
       expect(body).toContain(
         '#### AI review\n\nThe cart has problems.\n\n**Findings:** 1 high · 1 medium · 0 low',
       );

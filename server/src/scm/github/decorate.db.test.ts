@@ -32,7 +32,7 @@ const PATCH = '@@ -1,2 +1,5 @@\n a\n b\n+c\n+d\n+e';
 const GRAPHQL = '/api/graphql';
 /** github.md §6.2: the exact sentences of GitHub's summary (Global Constraints of 6I-1). */
 const CHECKOUT_OTHER =
-  'No inline comments: the workflow analysed a commit other than the pull request’s head (GitHub’s merge commit, by default); check out the head to get them (`ref: ${{ github.event.pull_request.head.sha }}`).';
+  'The analyzers’ issues are not commented inline: the workflow analysed a commit other than the pull request’s head (GitHub’s merge commit, by default); check out the head to get them (`ref: ${{ github.event.pull_request.head.sha }}`).';
 const STALE = 'Inline comments wait for the analysis of the pull request’s latest commit.';
 
 describe('GitHub decoration (github.md §5–§6)', () => {

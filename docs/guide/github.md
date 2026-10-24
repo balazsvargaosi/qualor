@@ -261,7 +261,7 @@ person can resolve it too.
 | Exit 5 | the `QUALOR_TOKEN` secret is wrong or revoked |
 | Gate `error`, new code unavailable | `fetch-depth: 0` is missing |
 | No check run | no App connection or mapping, the App is not installed on the repository, or it lacks a permission |
-| No review comment on an issue | the workflow checked out GitHub's merge commit (the summary says "No inline comments"; use the `ref:` of [the workflow](#2-the-workflow)), the issue is not on a line the pull request added, or it is past the 50 per pull request. The summary counts the ones it could not place |
+| No review comment on an issue | the workflow checked out GitHub's merge commit (the summary says "The analyzers’ issues are not commented inline"; use the `ref:` of [the workflow](#2-the-workflow)), the issue is not on a line the pull request added, or it is past the 50 per pull request. The summary counts the ones it could not place |
 | A conversation stays open after the issue is fixed or marked | someone else replied in it. Qualor leaves such a conversation for people to resolve |
 | The summary says "Inline comments could not be updated this time." | GitHub failed or refused a request for the review comments: an outage or a rate limit (Qualor tries again on its own), or a missing permission (it tries again at the next analysis). The server log's `GitHub decoration retried` or `GitHub decoration stopped` line says why |
 | `The GitHub repository was not found` after a rename | update the mapping to the new `owner/repo` |

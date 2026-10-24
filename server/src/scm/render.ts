@@ -208,9 +208,12 @@ const WORDS = {
     stale: 'Inline comments wait for the analysis of the pull request’s latest commit.',
   },
 } as const;
-/** github.md §6.2. Fixed text: the `${{ … }}` is an Actions expression, not a template. */
+/**
+ * github.md §6.2. Fixed text: the `${{ … }}` is an Actions expression, not a template. It speaks of
+ * the analyzers' issues only: the AI review's threads are posted after such a checkout too.
+ */
 const CHECKOUT_OTHER =
-  'No inline comments: the workflow analysed a commit other than the pull request’s head (GitHub’s merge commit, by default); check out the head to get them (`ref: ${{ github.event.pull_request.head.sha }}`).';
+  'The analyzers’ issues are not commented inline: the workflow analysed a commit other than the pull request’s head (GitHub’s merge commit, by default); check out the head to get them (`ref: ${{ github.event.pull_request.head.sha }}`).';
 /** github.md §6.2: the threads could not be read or changed; the next decoration tries again. */
 const NOT_UPDATED = 'Inline comments could not be updated this time.';
 
@@ -376,7 +379,10 @@ function issueItem(issue: IssueLine, index: number): string[] {
   return [`${parts.join(' · ')}\\`, `   ${codeSpan(issue.message, MAX_MESSAGE_CHARS)}`];
 }
 
-/** Why there are no inline comments, or how many there are; null when there is nothing to say. */
+/**
+ * Why the analyzers' issues have no inline comments, or how many have; null when there is nothing
+ * to say.
+ */
 function inlineSentence(
   input: SummaryInput,
   words: (typeof WORDS)[keyof typeof WORDS],
@@ -385,7 +391,9 @@ function inlineSentence(
   const commented = count(inline.commented);
   const unplaced = count(inline.unplaced);
   if (inline.skipped === 'stale') return words.stale;
-  // The AI review's threads follow the head it read, and are posted in such a pipeline too.
+  // The AI review's threads follow the head it read, and are posted after these two too (a
+  // merged-results pipeline, a checkout of GitHub's merge commit): the sentences speak for the
+  // analyzers' issues only.
   if (inline.skipped === 'merged_result') {
     return 'The analyzers’ issues are not commented inline: this was a merged-results pipeline, whose line numbers are not the merge request’s.';
   }
