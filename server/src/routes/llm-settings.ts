@@ -53,6 +53,7 @@ import {
 import { llmBaseUrlProblem } from '../llm/url';
 import { refusedForTools } from '../review/conversation';
 import { queueSnapshotPurge } from '../review/jobs';
+import { tierModels } from '../review/model-tiers';
 import { isDefaultReview } from '../review/settings';
 import { normalBaseUrl } from '../scm/url';
 
@@ -82,7 +83,7 @@ const providerBody = z.strictObject({
   }),
   fastModel: modelField.nullable().default(null).meta({
     description:
-      "The model of AI review's fast tier (the reviewer of a small merge request). Null or absent: the standard model",
+      "The model of AI review's fast tier (the quality reviewer of a small merge request). Null or absent: the standard model",
   }),
   auth: z.enum(['bearer', 'api-key']).default('bearer'),
   jsonMode: z.enum(['json_object', 'none']).default('json_object'),
@@ -211,21 +212,49 @@ const settingsDto = z.object({
 const TOOL_CALLING = ['supported', 'not_supported', 'not_checked'] as const;
 type ToolCalling = (typeof TOOL_CALLING)[number];
 
+const testProblem = z.object({
+  code: z.enum(LLM_ERROR_CODES),
+  message: z.string(),
+  /** The provider's HTTP status when it answered with an error (401 and 403 read apart). */
+  providerStatus: z.number().int().nullable(),
+});
+
+/**
+ * The Test's answer: the standard model's own fields (`ok`, `model`, `latencyMs`, `toolCalling`,
+ * `problem`, which the answer had before the tiers), and the same for every model of the provider.
+ */
 const testResult = z.object({
   ok: z.boolean(),
+  /** The standard model's name as the provider gave it; null when it gave none, or the call failed. */
   model: z.string().nullable(),
   latencyMs: z.number().int(),
   toolCalling: z.enum(TOOL_CALLING),
-  problem: z
-    .object({
-      code: z.enum(LLM_ERROR_CODES),
-      message: z.string(),
-      /** The provider's HTTP status when it answered with an error (401 and 403 read apart). */
-      providerStatus: z.number().int().nullable(),
-    })
-    .nullable(),
+  problem: testProblem.nullable(),
+  models: z
+    .array(
+      z.object({
+        /** The first tier that uses the model. */
+        tier: z.enum(['standard', 'strong', 'fast']),
+        /** The model as configured. */
+        model: z.string(),
+        ok: z.boolean(),
+        /**
+         * The model's name as the provider gave it, at most 200 characters; null when it gave
+         * none or one that holds the API key, or the call failed.
+         */
+        reportedModel: z.string().nullable(),
+        latencyMs: z.number().int(),
+        toolCalling: z.enum(TOOL_CALLING),
+        problem: testProblem.nullable(),
+      }),
+    )
+    .meta({
+      description:
+        "Every model of the provider, once each: the standard model first (its line repeats the answer's own fields), then the strong and the fast model unless they name a model already listed. Each is checked on its own, so one that fails never fails another",
+    }),
 });
 type TestResult = z.infer<typeof testResult>;
+type ModelTest = TestResult['models'][number];
 
 /**
  * llm.md §3.2: the model name as the provider gave it, at most 200 UTF-16 units, never cut inside
@@ -301,6 +330,71 @@ async function checkToolCalling(
   } catch (err) {
     if (!(err instanceof LlmError)) throw err;
     return refusedForTools(err, TOOL_CHECK.tools) ? 'not_supported' : 'not_checked';
+  }
+}
+
+/** What the Test found out about one model: a line of `models` without its tier and its model. */
+type ModelCheck = Omit<ModelTest, 'tier' | 'model'>;
+
+const failedCheck = (
+  code: LlmErrorCode,
+  message: string,
+  latencyMs: number,
+  providerStatus: number | null = null,
+): ModelCheck => ({
+  ok: false,
+  reportedModel: null,
+  latencyMs,
+  toolCalling: 'not_checked',
+  problem: { code, message, providerStatus },
+});
+
+/**
+ * The Test of one model, `provider`'s own settings with `model` in place of its standard model:
+ * the plain call, and when it passes, the tool-calling check. Whatever goes wrong with it is that
+ * model's failure alone.
+ */
+async function checkModel(
+  provider: StoredProvider,
+  model: string,
+  apiKey: ReturnType<typeof providerApiKey>,
+  http: ProviderHttpOptions,
+): Promise<ModelCheck> {
+  if (!apiKey.ok) return failedCheck('KEY_UNDECRYPTABLE', ERROR_TEXTS.KEY_UNDECRYPTABLE, 0);
+  const config = { ...providerConfig(provider), model };
+  const started = Date.now();
+  try {
+    const answer = await callProvider(config, apiKey.key, TEST_CALL, http);
+    const latencyMs = Date.now() - started;
+    // The model name is the provider's text: bounded, and never anything holding the key.
+    const reportedModel =
+      answer.model === null || (apiKey.key !== null && answer.model.includes(apiKey.key))
+        ? null
+        : modelName(answer.model);
+    const code: LlmErrorCode | null =
+      answer.finishReason === 'length'
+        ? 'OUTPUT_TRUNCATED'
+        : answer.finishReason === 'refusal'
+          ? 'MODEL_REFUSED'
+          : answer.finishReason === 'tool' || parseModelJson(answer.text) === undefined
+            ? 'MALFORMED_OUTPUT'
+            : null;
+    return {
+      ok: code === null,
+      reportedModel,
+      latencyMs,
+      problem: code === null ? null : { code, message: ERROR_TEXTS[code], providerStatus: null },
+      // Only a provider that answered the plain test is asked whether it calls tools.
+      toolCalling: code === null ? await checkToolCalling(config, apiKey.key, http) : 'not_checked',
+    };
+  } catch (err) {
+    if (!(err instanceof LlmError)) throw err;
+    return failedCheck(
+      errorCodeOf(err),
+      err.message + missingV1Hint(provider, err.status),
+      Date.now() - started,
+      err.status,
+    );
   }
 }
 
@@ -788,7 +882,7 @@ export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
       schema: {
         tags: ['llm'],
         summary:
-          'Send a fixed prompt holding no repository data to the saved provider, and when it answers, a second one that asks the model to call a tool (instance admins); no audit row, no quota',
+          'Send a fixed prompt holding no repository data to each model of the saved provider at once, and when one answers, a second one that asks that model to call a tool (instance admins); no audit row, no quota',
         response: { 200: testResult },
       },
     },
@@ -815,59 +909,38 @@ export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
     },
   );
 
+  /**
+   * Tests every model of the saved provider at once, each on its own (the standard model, then the
+   * strong and the fast model where they name another). The answer's own fields are the standard
+   * model's.
+   */
   async function runTest(): Promise<TestResult> {
     const settings = await readLlmSettings(deps.db);
-    if (!settings.provider) throw conflict('AI_DISABLED', 'No LLM provider is configured');
+    const provider = settings.provider;
+    if (!provider) throw conflict('AI_DISABLED', 'No LLM provider is configured');
     const apiKey = providerApiKey(settings, deps.config.secretKey);
-    const failed = (
-      code: LlmErrorCode,
-      message: string,
-      latencyMs: number,
-      providerStatus: number | null = null,
-    ): TestResult => ({
-      ok: false,
-      model: null,
-      latencyMs,
-      problem: { code, message, providerStatus },
-      toolCalling: 'not_checked',
-    });
-    if (!apiKey.ok) return failed('KEY_UNDECRYPTABLE', ERROR_TEXTS.KEY_UNDECRYPTABLE, 0);
     const http = { internalHosts: deps.config.llmInternalHosts, version: VERSION };
-    const config = providerConfig(settings.provider);
-    const started = Date.now();
-    try {
-      const answer = await callProvider(config, apiKey.key, TEST_CALL, http);
-      const latencyMs = Date.now() - started;
-      // The model name is the provider's text: bounded, and never anything holding the key.
-      const model =
-        answer.model === null || (apiKey.key !== null && answer.model.includes(apiKey.key))
-          ? null
-          : modelName(answer.model);
-      const code: LlmErrorCode | null =
-        answer.finishReason === 'length'
-          ? 'OUTPUT_TRUNCATED'
-          : answer.finishReason === 'refusal'
-            ? 'MODEL_REFUSED'
-            : answer.finishReason === 'tool' || parseModelJson(answer.text) === undefined
-              ? 'MALFORMED_OUTPUT'
-              : null;
-      return {
-        ok: code === null,
-        model,
-        latencyMs,
-        problem: code === null ? null : { code, message: ERROR_TEXTS[code], providerStatus: null },
-        // Only a provider that answered the plain test is asked whether it calls tools.
-        toolCalling:
-          code === null ? await checkToolCalling(config, apiKey.key, http) : 'not_checked',
-      };
-    } catch (err) {
-      if (!(err instanceof LlmError)) throw err;
-      return failed(
-        errorCodeOf(err),
-        err.message + missingV1Hint(settings.provider, err.status),
-        Date.now() - started,
-        err.status,
-      );
-    }
+    const lineOf = async ({
+      tier,
+      model,
+    }: Pick<ModelTest, 'tier' | 'model'>): Promise<ModelTest> => ({
+      tier,
+      model,
+      ...(await checkModel(provider, model, apiKey, http)),
+    });
+    const [standard, ...others] = await Promise.all([
+      lineOf({ tier: 'standard', model: provider.model }),
+      ...tierModels(provider)
+        .filter(({ tier }) => tier !== 'standard')
+        .map(lineOf),
+    ]);
+    return {
+      ok: standard.ok,
+      model: standard.reportedModel,
+      latencyMs: standard.latencyMs,
+      toolCalling: standard.toolCalling,
+      problem: standard.problem,
+      models: [standard, ...others],
+    };
   }
 };

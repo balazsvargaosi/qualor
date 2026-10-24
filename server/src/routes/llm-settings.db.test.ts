@@ -21,6 +21,8 @@ import {
   openAiToolCalls,
   type FakeLlm,
   type LlmReply,
+  type LlmResponder,
+  type RecordedLlmRequest,
 } from '../../test/fake-llm';
 import { encryptionKey, encryptSecret } from '../crypto/secrets';
 import { auditEvents, instanceSettings, llmRequests } from '../db/schema';
@@ -982,6 +984,309 @@ describe('/system/llm (llm.md §3, §16)', () => {
       // The slow check is not part of the latency of the test.
       expect(res.latencyMs).toBeLessThan(700);
       expect(await rows()).toEqual(before);
+    });
+  });
+
+  describe('the provider test, with a model for each tier', () => {
+    const tiers = { strongModel: 'fake-strong', fastModel: 'fake-fast' };
+    const modelOf = (request: RecordedLlmRequest) => (request.json as { model: string }).model;
+    const asksForTool = (request: RecordedLlmRequest) =>
+      (request.json as { tools?: unknown }).tools !== undefined;
+    /**
+     * A provider that serves every model: the plain call answers the JSON object and the tool
+     * check calls the echo tool, each naming the model it ran as `reported-<model>`. A model of
+     * `refused` is refused with a 404, as a provider does for a model it does not have.
+     */
+    const serving =
+      (refused: readonly string[] = []): LlmResponder =>
+      (request) => {
+        const model = modelOf(request);
+        if (refused.includes(model)) {
+          return { status: 404, body: { error: { message: `no model ${model}` } } };
+        }
+        const reported = { model: `reported-${model}` };
+        return {
+          status: 200,
+          body: asksForTool(request)
+            ? openAiToolCalls([ECHO_CALL], reported)
+            : openAiAnswer('{"ok": true}', reported),
+        };
+      };
+    const enqueue = (calls: number, responder: LlmResponder) =>
+      fake.enqueue(...Array.from({ length: calls }, () => responder));
+    /** The line a model that answered both calls gets; `over` changes what differs. */
+    const line = (tier: string, model: string, over: Record<string, unknown> = {}) => ({
+      tier,
+      model,
+      ok: true,
+      reportedModel: `reported-${model}`,
+      latencyMs: expect.any(Number),
+      toolCalling: 'supported',
+      problem: null,
+      ...over,
+    });
+    afterEach(async () => {
+      await put(body());
+    });
+    // The Test button is limited to ten presses a minute per admin: each case has an admin of its own.
+    let testers = 0;
+    let checker: Session;
+    beforeEach(async () => {
+      testers += 1;
+      const u = await createUser(ctx, {
+        username: `llm-model-check-${testers}`,
+        isInstanceAdmin: true,
+      });
+      checker = await login(ctx, u.username, u.password);
+    });
+    const check = () => test(checker);
+
+    it('the Test checks each distinct model at once and charges one test', async () => {
+      await put(body({ provider: provider(tiers) }));
+      let inFlight = 0;
+      let peak = 0;
+      let allIn: () => void = () => undefined;
+      const everyoneIn = new Promise<void>((resolve) => {
+        allIn = resolve;
+      });
+      // Holds each plain call until all three are in. Checks that ran one after the other would
+      // each sit here alone, until the timeout lets the test fail on `peak`.
+      const giveUp = setTimeout(() => allIn(), 3_000);
+      const provides = serving();
+      const together: LlmResponder = async (request) => {
+        if (!asksForTool(request)) {
+          inFlight += 1;
+          peak = Math.max(peak, inFlight);
+          if (inFlight === 3) allIn();
+          await everyoneIn;
+          inFlight -= 1;
+        }
+        return provides(request);
+      };
+      // Three plain calls, then a tool check of each model.
+      enqueue(6, together);
+      const rows = async () => [
+        (await ctx.db.select({ n: count() }).from(llmRequests))[0]!.n,
+        (await ctx.db.select({ n: count() }).from(auditEvents))[0]!.n,
+      ];
+      const before = await rows();
+
+      const res = await check();
+      clearTimeout(giveUp);
+      expect(res.statusCode, res.body).toBe(200);
+      expect(peak).toBe(3);
+      const json = res.json();
+      // The answer's own fields are the standard model's, as before the tiers.
+      expect(json).toMatchObject({
+        ok: true,
+        model: 'reported-fake-model',
+        problem: null,
+        toolCalling: 'supported',
+      });
+      expect(json.models).toEqual([
+        line('standard', 'fake-model'),
+        line('strong', 'fake-strong'),
+        line('fast', 'fake-fast'),
+      ]);
+      // Each call names its model: two for each, the plain one and the tool check.
+      expect(fake.requests.map(modelOf).sort()).toEqual([
+        'fake-fast',
+        'fake-fast',
+        'fake-model',
+        'fake-model',
+        'fake-strong',
+        'fake-strong',
+      ]);
+      expect(fake.requests.filter(asksForTool)).toHaveLength(3);
+      expect(res.body).not.toContain(fake.apiKey);
+      // No usage row and no audit row, no matter how many models.
+      expect(await rows()).toEqual(before);
+
+      // The press took one of the ten tests a minute, not one per model.
+      for (let i = 1; i < 10; i += 1) expect((await check()).statusCode).toBe(200);
+      const limited = await check();
+      expect([limited.statusCode, limited.json().code]).toEqual([429, 'RATE_LIMITED']);
+    });
+
+    it('a failing fast model fails only its own line', async () => {
+      await put(body({ provider: provider(tiers) }));
+      // Three plain calls, and a tool check for the two models that answered.
+      enqueue(5, serving(['fake-fast']));
+      const res = await check();
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json()).toMatchObject({
+        ok: true,
+        model: 'reported-fake-model',
+        problem: null,
+        toolCalling: 'supported',
+      });
+      expect(res.json().models).toEqual([
+        line('standard', 'fake-model'),
+        line('strong', 'fake-strong'),
+        line('fast', 'fake-fast', {
+          ok: false,
+          reportedModel: null,
+          toolCalling: 'not_checked',
+          problem: {
+            code: 'PROVIDER_REJECTED_REQUEST',
+            message: 'The provider refused the request (HTTP 404); check the base URL and model',
+            providerStatus: 404,
+          },
+        }),
+      ]);
+      expect(fake.requests).toHaveLength(5);
+    });
+
+    it('a failing standard model is the failure of the answer itself, and the other lines stay', async () => {
+      await put(body({ provider: provider(tiers) }));
+      enqueue(5, serving(['fake-model']));
+      const json = (await check()).json();
+      expect(json).toMatchObject({
+        ok: false,
+        model: null,
+        toolCalling: 'not_checked',
+        problem: { code: 'PROVIDER_REJECTED_REQUEST', providerStatus: 404 },
+      });
+      expect(json.models).toEqual([
+        expect.objectContaining({ tier: 'standard', ok: false, toolCalling: 'not_checked' }),
+        line('strong', 'fake-strong'),
+        line('fast', 'fake-fast'),
+      ]);
+    });
+
+    it('says what a tool check found for each model on its own', async () => {
+      await put(body({ provider: provider(tiers) }));
+      const provides = serving();
+      // The strong model answers its tool check in text, and the fast model's check is cut short.
+      enqueue(6, (request) => {
+        if (asksForTool(request) && modelOf(request) === 'fake-strong') {
+          return { status: 200, body: openAiAnswer('ok', { model: 'reported-fake-strong' }) };
+        }
+        if (asksForTool(request) && modelOf(request) === 'fake-fast') {
+          return {
+            status: 200,
+            body: openAiAnswer('Sure! I will call', {
+              model: 'reported-fake-fast',
+              finishReason: 'length',
+            }),
+          };
+        }
+        return provides(request);
+      });
+      const json = (await check()).json();
+      expect(json.models).toEqual([
+        line('standard', 'fake-model'),
+        line('strong', 'fake-strong', { toolCalling: 'not_supported' }),
+        line('fast', 'fake-fast', { toolCalling: 'not_checked' }),
+      ]);
+      expect(json).toMatchObject({ ok: true, toolCalling: 'supported' });
+    });
+
+    it('never reports a model name that holds the key, for the line of that model only', async () => {
+      await put(body({ provider: provider(tiers) }));
+      const provides = serving();
+      enqueue(6, (request) =>
+        modelOf(request) === 'fake-strong'
+          ? {
+              status: 200,
+              body: asksForTool(request)
+                ? openAiToolCalls([ECHO_CALL], { model: `x-${fake.apiKey}` })
+                : openAiAnswer('{"ok": true}', { model: `x-${fake.apiKey}` }),
+            }
+          : provides(request),
+      );
+      const res = await check();
+      expect(res.body).not.toContain(fake.apiKey);
+      expect(res.json().models).toEqual([
+        line('standard', 'fake-model'),
+        line('strong', 'fake-strong', { reportedModel: null }),
+        line('fast', 'fake-fast'),
+      ]);
+    });
+
+    it('checks a model that several tiers name once, and a tier on the standard model not at all', async () => {
+      await put(
+        body({ provider: provider({ strongModel: 'fake-strong', fastModel: 'fake-strong' }) }),
+      );
+      enqueue(4, serving());
+      const shared = (await check()).json();
+      // The first tier to use the model names it.
+      expect(shared.models).toEqual([
+        line('standard', 'fake-model'),
+        line('strong', 'fake-strong'),
+      ]);
+      expect(fake.requests).toHaveLength(4);
+
+      await put(
+        body({ provider: provider({ strongModel: 'fake-model', fastModel: 'fake-model' }) }),
+      );
+      fake.requests.length = 0;
+      enqueue(2, serving());
+      const alone = (await check()).json();
+      expect(alone.models).toEqual([line('standard', 'fake-model')]);
+      expect(fake.requests).toHaveLength(2);
+    });
+
+    it('answers one line, the answer’s own, for a provider without tier models', async () => {
+      await put(body());
+      enqueue(2, serving());
+      const json = (await check()).json();
+      expect(json.models).toEqual([line('standard', 'fake-model')]);
+      expect(json).toMatchObject({
+        ok: true,
+        model: 'reported-fake-model',
+        toolCalling: 'supported',
+      });
+    });
+
+    it('reports a key that no longer decrypts on every line, asking nothing of the provider', async () => {
+      const secret = encryptionKey(ctx.config.secretKey);
+      await writeLlmSettings(ctx.db, {
+        ...DEFAULT_LLM_SETTINGS,
+        provider: {
+          kind: 'openai',
+          baseUrl: fake.openAiBaseUrl,
+          model: 'fake-model',
+          ...tiers,
+          auth: 'bearer',
+          jsonMode: 'json_object',
+          maxTokensField: 'max_tokens',
+          temperature: null,
+          timeoutSeconds: 60,
+          apiKeyEnc: encryptSecret(secret, fake.apiKey, 'scm_connections.token_enc'),
+        },
+      });
+      const json = (await check()).json();
+      const problem = {
+        code: 'KEY_UNDECRYPTABLE',
+        message: 'Set the API key again',
+        providerStatus: null,
+      };
+      expect(json).toMatchObject({ ok: false, model: null, toolCalling: 'not_checked', problem });
+      expect(json.models).toEqual([
+        line('standard', 'fake-model', {
+          ok: false,
+          reportedModel: null,
+          latencyMs: 0,
+          toolCalling: 'not_checked',
+          problem,
+        }),
+        line('strong', 'fake-strong', {
+          ok: false,
+          reportedModel: null,
+          latencyMs: 0,
+          toolCalling: 'not_checked',
+          problem,
+        }),
+        line('fast', 'fake-fast', {
+          ok: false,
+          reportedModel: null,
+          latencyMs: 0,
+          toolCalling: 'not_checked',
+          problem,
+        }),
+      ]);
+      expect(fake.requests).toHaveLength(0);
     });
   });
 

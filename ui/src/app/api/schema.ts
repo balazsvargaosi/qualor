@@ -9876,7 +9876,7 @@ export interface paths {
                              */
                             strongModel?: string | null;
                             /**
-                             * @description The model of AI review's fast tier (the reviewer of a small merge request). Null or absent: the standard model
+                             * @description The model of AI review's fast tier (the quality reviewer of a small merge request). Null or absent: the standard model
                              * @default null
                              */
                             fastModel?: string | null;
@@ -10088,7 +10088,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Send a fixed prompt holding no repository data to the saved provider, and when it answers, a second one that asks the model to call a tool (instance admins); no audit row, no quota */
+        /** Send a fixed prompt holding no repository data to each model of the saved provider at once, and when one answers, a second one that asks that model to call a tool (instance admins); no audit row, no quota */
         post: {
             parameters: {
                 query?: never;
@@ -10116,6 +10116,23 @@ export interface paths {
                                 message: string;
                                 providerStatus: number | null;
                             } | null;
+                            /** @description Every model of the provider, once each: the standard model first (its line repeats the answer's own fields), then the strong and the fast model unless they name a model already listed. Each is checked on its own, so one that fails never fails another */
+                            models: {
+                                /** @enum {string} */
+                                tier: "standard" | "strong" | "fast";
+                                model: string;
+                                ok: boolean;
+                                reportedModel: string | null;
+                                latencyMs: number;
+                                /** @enum {string} */
+                                toolCalling: "supported" | "not_supported" | "not_checked";
+                                problem: {
+                                    /** @enum {string} */
+                                    code: "PROVIDER_TIMEOUT" | "PROVIDER_UNAVAILABLE" | "PROVIDER_RATE_LIMITED" | "PROVIDER_REFUSED_KEY" | "PROVIDER_REJECTED_REQUEST" | "PROVIDER_BAD_ANSWER" | "URL_NOT_ALLOWED" | "KEY_UNDECRYPTABLE" | "MALFORMED_OUTPUT" | "OUTPUT_TRUNCATED" | "MODEL_REFUSED" | "OUTPUT_REFUSED" | "AI_DISABLED" | "SETTINGS_CHANGED" | "ISSUE_CHANGED" | "ISSUE_GONE" | "REQUEST_ABANDONED";
+                                    message: string;
+                                    providerStatus: number | null;
+                                } | null;
+                            }[];
                         };
                     };
                 };
