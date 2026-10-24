@@ -34,19 +34,12 @@ import {
   type ReviewableChange,
   type ReviewContext,
 } from './context';
-import { CONVERSATION_LIMITS, runConversation, type ConversationResult } from './conversation';
+import type { ConversationResult } from './conversation';
 import { deleteBranchSnapshots } from './lifecycle';
 import { MaskedFiles } from './masked-files';
 import { Masker } from './masker';
-import {
-  REVIEW_OUTPUT_TOKENS,
-  reviewFits,
-  reviewLimits,
-  runReviewPipeline,
-  type PipelineOutcome,
-  type ReviewRole,
-} from './pipeline';
-import { REVIEW_PROMPT_VERSION, SYSTEM_PROMPTS } from './prompts';
+import { reviewFits, reviewLimits, runReviewPipeline, type PipelineOutcome } from './pipeline';
+import { REVIEW_PROMPT_VERSION } from './prompts';
 import { ensureAiRules } from './rules';
 import {
   decorateRun,
@@ -68,7 +61,8 @@ import {
 } from './settings';
 import { openSnapshotReader, type SnapshotChange, type SnapshotReader } from './snapshot-reader';
 import { prepareReviewOutcome, ReviewNotStoringError, storeReviewOutcome } from './store';
-import { REVIEW_TOOLS, runReviewTool, TOOL_LIMITS, type ToolPolicy } from './tools';
+import { converseOverTools, newToolPolicy, type RoleCall } from './tool-conversation';
+import type { ToolPolicy } from './tools';
 import { RedactionTally, remainingReviewTokens, reviewSender, reviewUsageToday } from './usage';
 
 /*
@@ -404,16 +398,7 @@ class ReviewJob {
     const masker = new Masker({ signal: controller.signal });
     try {
       const files = new MaskedFiles(reader, { masker });
-      const policy: ToolPolicy = {
-        excludePaths: settings.excludePaths,
-        budget: {
-          calls: TOOL_LIMITS.callsPerReview,
-          greps: TOOL_LIMITS.grepsPerReview,
-          maskedBytes: TOOL_LIMITS.maskedBytesPerReview,
-        },
-        masked: files,
-        masker,
-      };
+      const policy = newToolPolicy({ excludePaths: settings.excludePaths, masked: files, masker });
       const budget = await this.tokensLeft(running);
       let built: ContextOutcome;
       try {
@@ -579,13 +564,7 @@ class ReviewJob {
       context: ReviewContext;
       shouldStop: () => Promise<boolean>;
     },
-    call: {
-      role: ReviewRole;
-      user: string;
-      nonce: string;
-      tokenBudget: number;
-      accept: (text: string) => boolean;
-    },
+    call: RoleCall,
   ): Promise<ConversationResult> {
     const { running, reader, policy, context, shouldStop } = ctx;
     const tally = new RedactionTally();
@@ -600,25 +579,12 @@ class ReviewJob {
       redactions: tally,
       logger: this.deps.logger,
     });
-    const result = await runConversation({
-      system: SYSTEM_PROMPTS[call.role],
-      user: call.user,
-      nonce: call.nonce,
-      tools: REVIEW_TOOLS,
-      runTool: async (toolCall) => {
-        const answer = await runReviewTool(reader, toolCall, policy);
-        tally.add(answer.redactions);
-        return answer.text;
-      },
-      limits: {
-        maxTurns: CONVERSATION_LIMITS.maxTurns,
-        maxCallsPerTurn: CONVERSATION_LIMITS.maxCallsPerTurn,
-        tokenBudget: call.tokenBudget,
-        maxOutputTokens: REVIEW_OUTPUT_TOKENS[call.role],
-      },
+    const result = await converseOverTools(call, {
+      reader,
+      policy,
       send: (conversation) => this.counted(sender, conversation),
       shouldStop,
-      accept: call.accept,
+      onToolRedactions: (count) => tally.add(count),
     });
     // Whichever way it ended, what it spent is the run's.
     this.inputTokens += result.inputTokens;
