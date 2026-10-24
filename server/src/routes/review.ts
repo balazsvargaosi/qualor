@@ -52,6 +52,7 @@ import {
 } from '../review/settings';
 import { lastReviewedCommit } from '../review/runs';
 import { hasSnapshot, snapshotExists, storeSnapshotUpload } from '../review/snapshot-store';
+import { reviewUsageToday, type ReviewUsage } from '../review/usage';
 
 /**
  * The project DTO's `aiReview` (6I-2): whether AI review runs for the project, and whether its
@@ -93,6 +94,16 @@ function consentAnswer(consent: ReviewConsent | null): ConsentAnswer | null {
   };
 }
 
+/** What the organisation's reviews have used since the UTC day began. */
+const reviewUsageSchema = z.object({
+  /** Tokens, input and output, of the day's review calls. */
+  tokensToday: z.number().int(),
+  /** The estimated cost of those calls; null while the instance sets no model prices. */
+  costTodayUsd: z.number().nullable(),
+  /** Reviews that began the day and spent, or were spending: not the ones skipped. */
+  reviewsToday: z.number().int(),
+});
+
 /** `GET`/`PUT /organizations/{id}/ai/review` (6I-2, spec C1, D4, R10). */
 export const organizationReviewSchema = z.object({
   /** AI review can be switched on: a provider is configured and the organisation is enabled. */
@@ -119,6 +130,8 @@ export const organizationReviewSchema = z.object({
     /** The most tokens per organisation per day the instance administrator allows; null: none. */
     tokensPerDay: z.number().int().nullable(),
   }),
+  /** The use of the whole organisation today (UTC), against the budgets above. */
+  usage: reviewUsageSchema,
 });
 type OrganizationReview = z.infer<typeof organizationReviewSchema>;
 
@@ -182,12 +195,25 @@ const SNAPSHOT_UPLOAD_PROBLEMS: UploadProblems = {
     }),
 };
 
+/**
+ * The day's use as the answer shows it. The cost is known only while the instance sets prices
+ * (as `GET /organizations/{id}/ai` shows it).
+ */
+function usageAnswer(settings: StoredLlmSettings, spent: ReviewUsage): OrganizationReview['usage'] {
+  return {
+    tokensToday: spent.tokens,
+    costTodayUsd: settings.pricing === null ? null : spent.costMicroUsd / 1e6,
+    reviewsToday: spent.reviews,
+  };
+}
+
 /** The answer for the organisation: `projectIds` are those of its projects that still exist. */
 function organizationReview(
   settings: StoredLlmSettings,
   organizationId: string,
   retentionDays: number,
   projectIds: readonly string[],
+  spent: ReviewUsage,
 ): OrganizationReview {
   const provider = reviewProvider(settings);
   const organization = organizationSettings(settings, organizationId);
@@ -207,6 +233,7 @@ function organizationReview(
     consent: consentAnswer(review.consent),
     consentCurrent: consentCurrent(settings, review),
     instanceCeiling: { tokensPerDay: settings.budgets.reviewTokensPerOrganizationPerDay },
+    usage: usageAnswer(settings, spent),
   };
 }
 
@@ -242,9 +269,10 @@ export const reviewRoutes: FastifyPluginAsyncZod<{
       const principal = requireUser(request);
       const organizationId = request.params.id;
       await requireOrganizationAccess(accessOf(deps), principal, organizationId, 'org.ai.manage');
-      const [settings, retention] = await Promise.all([
+      const [settings, retention, spent] = await Promise.all([
         readLlmSettings(deps.db),
         retentionSettings(deps.db),
+        reviewUsageToday(deps.db, organizationId),
       ]);
       // llm.md §3.3: the id of a project deleted since is left out.
       const listed = reviewSettingsOf(settings, organizationId).projectIds;
@@ -254,6 +282,7 @@ export const reviewRoutes: FastifyPluginAsyncZod<{
         organizationId,
         retention.reviewSnapshotsDays,
         listed.filter((id) => owners.get(id) === organizationId),
+        spent,
       );
     },
   );
@@ -291,7 +320,8 @@ export const reviewRoutes: FastifyPluginAsyncZod<{
       );
       const body = request.body;
       const retentionDays = (await retentionSettings(deps.db)).reviewSnapshotsDays;
-      return deps.db.transaction(async (tx): Promise<OrganizationReview> => {
+      // The settings the answer shows, and the projects of the review among them.
+      const shown = await deps.db.transaction(async (tx) => {
         const settings = await lockLlmSettings(tx);
         const current = reviewSettingsOf(settings, organizationId);
         // UUIDs compare in lower case, as the database returns them.
@@ -359,9 +389,7 @@ export const reviewRoutes: FastifyPluginAsyncZod<{
           consent,
         };
         // Nothing to save: the stored block already holds these values.
-        if (sameReview(current, next)) {
-          return organizationReview(settings, organizationId, retentionDays, next.projectIds);
-        }
+        if (sameReview(current, next)) return { settings, projectIds: next.projectIds };
         const saved = withOrganizationReview(settings, organizationId, next);
         await writeLlmSettings(tx, saved);
         // Projects may have left the review (switched off, out of the selection): a job deletes
@@ -390,8 +418,17 @@ export const reviewRoutes: FastifyPluginAsyncZod<{
             },
           ]);
         }
-        return organizationReview(saved, organizationId, retentionDays, next.projectIds);
+        return { settings: saved, projectIds: next.projectIds };
       });
+      // Read after the commit, so that the settings lock is held for the write alone.
+      const spent = await reviewUsageToday(deps.db, organizationId);
+      return organizationReview(
+        shown.settings,
+        organizationId,
+        retentionDays,
+        shown.projectIds,
+        spent,
+      );
     },
   );
 

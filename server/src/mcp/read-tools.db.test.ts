@@ -10,9 +10,10 @@ import {
   type TestContext,
 } from '../../test/app';
 import { mainBranchId, seedIssue, seedRule } from '../../test/issues';
-import { callTool } from '../../test/mcp';
+import { callTool, mcpCall } from '../../test/mcp';
 import { oauthTokens as runOAuth } from '../../test/oauth';
-import { analyses, branchFiles, branches, measures } from '../db/schema';
+import { seedAiIssue } from '../../test/review';
+import { analyses, branchFiles, branches, measures, reviewFindings } from '../db/schema';
 
 const DONE = 'aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111';
 const RUNNING = 'bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222';
@@ -317,6 +318,166 @@ describe('MCP read tools', () => {
     });
     expect(r.text).toContain('CWE: CWE-95');
     expect(r.text).toContain('  2 | const x = 1;\n> 3 | eval(x);\n  4 | done();');
+  });
+
+  describe('findings of the AI review', () => {
+    const HEAD = 'c'.repeat(40);
+    let analyzerId: string;
+    let aiId: string;
+    let bareAiId: string;
+
+    beforeAll(async () => {
+      const admin = await login(ctx, 'admin', 'correct horse battery staple');
+      const org = await organizationId(ctx, 'default');
+      const project = await createProject(ctx, admin, { organizationId: org, key: 'ai-shop' });
+      const branchId = await mainBranchId(ctx.db, project.id);
+      const rule = await seedRule(ctx.db, { key: 'eslint:eqeqeq', quality: 'reliability' });
+      analyzerId = await seedIssue(ctx.db, {
+        projectId: project.id,
+        branchId,
+        ruleId: rule,
+        message: 'Use ===',
+        path: 'src/a.ts',
+        startLine: 3,
+        severity: 'high',
+        quality: 'reliability',
+        inNewCode: true,
+      });
+      aiId = await seedAiIssue(ctx.db, {
+        branchId,
+        category: 'logic',
+        path: 'src/b.ts',
+        line: 9,
+        severity: 'medium',
+        snippet: { startLine: 8, lines: ['let total = 0;', 'for (const x of xs.slice(1)) {', '}'] },
+      });
+      await ctx.db.insert(reviewFindings).values({
+        issueId: aiId,
+        category: 'logic',
+        body: 'The loop stops one element early.',
+        assumption: 'xs is never empty',
+        verification: 'needs_validation',
+        suggestion: {
+          startLine: 9,
+          endLine: 10,
+          lines: ['for (const x of xs) {', '  total += x;'],
+        },
+        anchorLine: 9,
+        reviewedHeadSha: HEAD,
+      });
+      // A finding with nothing but its text: no assumption, no second check, no suggestion.
+      bareAiId = await seedAiIssue(ctx.db, {
+        branchId,
+        category: 'docs',
+        path: 'README.md',
+        line: 2,
+        severity: 'low',
+      });
+      await ctx.db.insert(reviewFindings).values({
+        issueId: bareAiId,
+        category: 'docs',
+        body: 'The README still names the old command.',
+        reviewedHeadSha: HEAD,
+      });
+    });
+
+    it('qualor_issues marks AI findings and names engines', async () => {
+      const r = await callTool(ctx, token, 'qualor_issues', { project: 'ai-shop' });
+      expect(r.isError).toBe(false);
+      // The mark stands before the severity; the analyzer's line is as it always was.
+      expect(r.text).toContain(
+        `src/a.ts:3 [high reliability] eslint:eqeqeq — Use === (new code; id ${analyzerId})`,
+      );
+      expect(r.text).toMatch(
+        new RegExp(
+          `src/b\\.ts:9 \\[AI medium reliability\\] ai:logic — .+ \\(new code; id ${aiId}\\)`,
+        ),
+      );
+      expect(r.text).toMatch(/README\.md:2 \[AI low maintainability\] ai:docs — /);
+      expect(r.text.split('\n').filter((line) => line.includes('[AI '))).toHaveLength(2);
+      expect(r.structured?.issues).toMatchObject([
+        { id: analyzerId, rule: 'eslint:eqeqeq', engine: 'eslint', ai: false },
+        { id: aiId, rule: 'ai:logic', engine: 'ai', ai: true },
+        { id: bareAiId, rule: 'ai:docs', engine: 'ai', ai: true },
+      ]);
+      // The mark also reaches the agents that read the tool list.
+      const listed = await mcpCall(ctx, token, 'tools/list');
+      const tools = (listed.body?.result as { tools: { name: string; description: string }[] })
+        .tools;
+      expect(tools.find((t) => t.name === 'qualor_issues')?.description).toContain(
+        'Findings of the AI review are marked AI: they may be wrong, and the gate never counts them.',
+      );
+    });
+
+    it('qualor_issue shows the AI review of a finding after its code, and nothing of it for an analyzer’s issue', async () => {
+      const r = await callTool(ctx, token, 'qualor_issue', { issueId: aiId });
+      expect(r.isError).toBe(false);
+      expect(r.text).toContain('src/b.ts:9 [AI medium reliability] ai:logic — ');
+      expect(r.text).toContain(
+        [
+          'AI review:',
+          'The loop stops one element early.',
+          'Assumes: xs is never empty',
+          'A second check could not confirm it: check it yourself.',
+          'Suggested change (lines 9–10):',
+          '   9 | for (const x of xs) {',
+          '  10 |   total += x;',
+          `Reviewed commit: ${HEAD}`,
+        ].join('\n'),
+      );
+      // After the code, before the rule.
+      const at = (part: string) => r.text.indexOf(part);
+      expect(at('Code:')).toBeGreaterThan(-1);
+      expect(at('AI review:')).toBeGreaterThan(at('Code:'));
+      expect(at('Rule:')).toBeGreaterThan(at('AI review:'));
+      // The REST detail goes through as it is.
+      expect(r.structured).toMatchObject({
+        issue: {
+          id: aiId,
+          aiReview: {
+            category: 'logic',
+            body: 'The loop stops one element early.',
+            assumption: 'xs is never empty',
+            verification: 'needs_validation',
+            suggestion: {
+              startLine: 9,
+              endLine: 10,
+              lines: ['for (const x of xs) {', '  total += x;'],
+            },
+            reviewedCommit: HEAD,
+          },
+        },
+      });
+
+      const plain = await callTool(ctx, token, 'qualor_issue', { issueId: analyzerId });
+      expect(plain.text).not.toContain('AI review:');
+      expect(plain.structured).toMatchObject({ issue: { id: analyzerId, aiReview: null } });
+    });
+
+    it('qualor_issue leaves out what the review did not say', async () => {
+      const r = await callTool(ctx, token, 'qualor_issue', { issueId: bareAiId });
+      expect(r.text).toContain(
+        ['AI review:', 'The README still names the old command.', `Reviewed commit: ${HEAD}`].join(
+          '\n',
+        ),
+      );
+      expect(r.text).not.toContain('Assumes');
+      expect(r.text).not.toContain('Suggested change');
+      expect(r.text).not.toContain('second check');
+    });
+
+    it('qualor_issue says a second check confirmed a finding, and shows a one-line suggestion as one line', async () => {
+      await ctx.db
+        .update(reviewFindings)
+        .set({
+          verification: 'confirmed',
+          suggestion: { startLine: 9, endLine: 9, lines: ['for (const x of xs) {'] },
+        })
+        .where(eq(reviewFindings.issueId, aiId));
+      const r = await callTool(ctx, token, 'qualor_issue', { issueId: aiId });
+      expect(r.text).toContain('A second check confirmed it.');
+      expect(r.text).toContain('Suggested change (line 9):\n   9 | for (const x of xs) {');
+    });
   });
 
   it('qualor_issue: an unknown issue is a tool error', async () => {

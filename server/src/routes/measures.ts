@@ -66,6 +66,8 @@ const lineRanges = z.array(z.tuple([z.number().int(), z.number().int()]));
 const fileIssueSchema = z.object({
   id: z.uuid(),
   ruleKey: z.string(),
+  /** The rule's engine: the file page marks the AI review's findings (engine `ai`). */
+  engine: z.string(),
   message: z.string(),
   severity: z.string(),
   quality: z.string(),
@@ -289,9 +291,10 @@ export const measureRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = async (
         newLines: (row.newLines ?? null) as z.infer<typeof fileSchema>['newLines'],
         duplications,
         duplicationsTruncated: (row.metrics?.duplicationEntries ?? 0) > duplications.length,
-        issues: rows.map(({ issue, ruleKey }) => ({
+        issues: rows.map(({ issue, ruleKey, engine }) => ({
           id: issue.id,
           ruleKey,
+          engine,
           message: issue.message,
           severity: issue.severity,
           quality: issue.quality,

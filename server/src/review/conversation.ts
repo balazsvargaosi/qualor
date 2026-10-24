@@ -198,9 +198,10 @@ const sleepFor = (ms: number): Promise<void> =>
 /**
  * Whether the provider refused a first request because it carried tools: a refusal of the request
  * itself (400, 404 or 422) whose own words named tools or functions (the provider layer says so
- * with `refusedTools`). A server without tool calling cannot review, whatever else is right.
+ * with `refusedTools`). A server without tool calling cannot review, whatever else is right. The
+ * provider test reads a refusal the same way.
  */
-function refusedForTools(err: LlmError, tools: readonly LlmToolSpec[]): boolean {
+export function refusedForTools(err: LlmError, tools: readonly LlmToolSpec[]): boolean {
   return (
     tools.length > 0 &&
     err.failure === 'rejected' &&

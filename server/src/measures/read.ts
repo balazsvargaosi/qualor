@@ -332,10 +332,14 @@ export async function fileDetail(db: Executor, branchId: string, path: string) {
   return { row, measures: measuresOfFile };
 }
 
-/** The file's issues that are not closed (duplicates included, flagged), by line. */
+/**
+ * The file's issues that are not closed (duplicates included, flagged), by line. Those of the AI
+ * review are listed too, each with the engine of its rule: they count in no measure, but they are
+ * shown.
+ */
 export async function fileIssues(db: Executor, branchId: string, path: string) {
   const rows = await db
-    .select({ issue: issues, ruleKey: rules.key })
+    .select({ issue: issues, ruleKey: rules.key, engine: rules.engineId })
     .from(issues)
     .innerJoin(rules, eq(rules.id, issues.ruleId))
     .where(and(eq(issues.branchId, branchId), eq(issues.path, path), ne(issues.status, 'closed')))

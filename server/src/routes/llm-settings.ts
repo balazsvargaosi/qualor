@@ -15,7 +15,16 @@ import { noNul } from '../http/schemas';
 import { VERSION } from '../index';
 import { IssueChangeLimiter } from '../issues/rate-limit';
 import { ERROR_TEXTS, errorCodeOf, LLM_ERROR_CODES, type LlmErrorCode } from '../llm/errors';
-import { callProvider, LlmError, PROVIDER_KINDS } from '../llm/providers';
+import {
+  callProvider,
+  converse,
+  LlmError,
+  PROVIDER_KINDS,
+  type LlmConversation,
+  type LlmToolSpec,
+  type ProviderConfig,
+  type ProviderHttpOptions,
+} from '../llm/providers';
 import {
   ANTHROPIC_TEMPERATURE_TEXT,
   autoFixSettingsSchema,
@@ -41,6 +50,7 @@ import {
   type StoredProvider,
 } from '../llm/settings';
 import { llmBaseUrlProblem } from '../llm/url';
+import { refusedForTools } from '../review/conversation';
 import { queueSnapshotPurge } from '../review/jobs';
 import { isDefaultReview } from '../review/settings';
 import { normalBaseUrl } from '../scm/url';
@@ -171,10 +181,20 @@ const settingsDto = z.object({
   promptRetentionDays: z.number().int(),
 });
 
+/**
+ * Whether the model can call tools, which AI review needs: `supported` when the check asked for a
+ * call and got one, `not_supported` when it did not (the model answered in text, or the server
+ * refused the tools), `not_checked` when the check could not tell (the plain test failed, the check
+ * itself failed, or the model was cut off before it called the tool).
+ */
+const TOOL_CALLING = ['supported', 'not_supported', 'not_checked'] as const;
+type ToolCalling = (typeof TOOL_CALLING)[number];
+
 const testResult = z.object({
   ok: z.boolean(),
   model: z.string().nullable(),
   latencyMs: z.number().int(),
+  toolCalling: z.enum(TOOL_CALLING),
   problem: z
     .object({
       code: z.enum(LLM_ERROR_CODES),
@@ -214,6 +234,47 @@ const TEST_CALL = {
   user: 'ping',
   maxOutputTokens: 20,
 };
+
+/**
+ * The tool-calling check that follows a passing Test, because only the review calls tools: a fixed
+ * prompt holding no repository data, one read-only tool and the plain test's output limit.
+ */
+const ECHO_TOOL: LlmToolSpec = {
+  name: 'echo',
+  description: 'Returns the text it is given.',
+  parameters: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
+};
+const TOOL_CHECK: LlmConversation = {
+  system: 'This is a connection check. Call the echo tool with the text ok.',
+  messages: [{ role: 'user', text: 'Call the echo tool with the text ok.' }],
+  tools: [ECHO_TOOL],
+  maxOutputTokens: TEST_CALL.maxOutputTokens,
+};
+
+/**
+ * Asks the model to call the echo tool. `supported`: the turn asks for a call. `not_supported`:
+ * it asks for none (the model answered in text, or the server dropped the tools), or the provider
+ * refused the request in words that name tools. `not_checked`: the check failed in any other way,
+ * which says nothing of tools (a timeout, an unreachable or rate-limiting provider, a refused key,
+ * an address that is not allowed, an answer that cannot be read, a refusal that names no tools), or
+ * the output limit cut the model off before it called the tool (a model that says what it will do
+ * first may use the limit up before it does it).
+ * Like the plain test it leaves no usage row and no audit row and takes no quota.
+ */
+async function checkToolCalling(
+  config: ProviderConfig,
+  apiKey: string | null,
+  http: ProviderHttpOptions,
+): Promise<ToolCalling> {
+  try {
+    const turn = await converse(config, apiKey, TOOL_CHECK, http);
+    if (turn.toolCalls.length > 0) return 'supported';
+    return turn.finishReason === 'length' ? 'not_checked' : 'not_supported';
+  } catch (err) {
+    if (!(err instanceof LlmError)) throw err;
+    return refusedForTools(err, TOOL_CHECK.tools) ? 'not_supported' : 'not_checked';
+  }
+}
 
 /** Every project id the organisations list (excluded, or opted out of auto-fix). */
 const listedProjectIdsOf = (
@@ -666,7 +727,7 @@ export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
       schema: {
         tags: ['llm'],
         summary:
-          'Send a fixed prompt holding no repository data to the saved provider (instance admins); no audit row, no quota',
+          'Send a fixed prompt holding no repository data to the saved provider, and when it answers, a second one that asks the model to call a tool (instance admins); no audit row, no quota',
         response: { 200: testResult },
       },
     },
@@ -707,14 +768,14 @@ export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
       model: null,
       latencyMs,
       problem: { code, message, providerStatus },
+      toolCalling: 'not_checked',
     });
     if (!apiKey.ok) return failed('KEY_UNDECRYPTABLE', ERROR_TEXTS.KEY_UNDECRYPTABLE, 0);
+    const http = { internalHosts: deps.config.llmInternalHosts, version: VERSION };
+    const config = providerConfig(settings.provider);
     const started = Date.now();
     try {
-      const answer = await callProvider(providerConfig(settings.provider), apiKey.key, TEST_CALL, {
-        internalHosts: deps.config.llmInternalHosts,
-        version: VERSION,
-      });
+      const answer = await callProvider(config, apiKey.key, TEST_CALL, http);
       const latencyMs = Date.now() - started;
       // The model name is the provider's text: bounded, and never anything holding the key.
       const model =
@@ -734,6 +795,9 @@ export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
         model,
         latencyMs,
         problem: code === null ? null : { code, message: ERROR_TEXTS[code], providerStatus: null },
+        // Only a provider that answered the plain test is asked whether it calls tools.
+        toolCalling:
+          code === null ? await checkToolCalling(config, apiKey.key, http) : 'not_checked',
       };
     } catch (err) {
       if (!(err instanceof LlmError)) throw err;

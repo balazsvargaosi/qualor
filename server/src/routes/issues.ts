@@ -13,7 +13,7 @@ import type { RouteDeps } from '../app';
 import { actorOf } from '../audit/recorder';
 import { accessOf, requireUser } from '../auth/access';
 import { first } from '../db/rows';
-import { issueChanges, rules, users } from '../db/schema';
+import { AI_CATEGORIES, issueChanges, reviewFindings, rules, users } from '../db/schema';
 import { decodeCursor, pageQuery, pageSchema, toPage } from '../http/pagination';
 import { conflict, forbidden, notFound, ProblemError, validationFailed } from '../http/problem';
 import { idParams, iso, isoOrNull, noNul, text, timestamp } from '../http/schemas';
@@ -79,6 +79,30 @@ export const issueSchema = z.object({
 });
 export type IssueDto = z.infer<typeof issueSchema>;
 
+/**
+ * What an AI review kept beside the issue it raised: the finding's own text, what it takes
+ * for granted, the second check of a security finding and its one-click suggestion. All of it
+ * was bounded and scrubbed when stored, and goes out as stored.
+ */
+const aiReviewSchema = z.object({
+  category: z.enum(AI_CATEGORIES),
+  body: z.string(),
+  /** What the finding takes for granted; null when it says nothing. */
+  assumption: z.string().nullable(),
+  /** The independent check of a security finding; null when it was not checked. */
+  verification: z.enum(['confirmed', 'needs_validation']).nullable(),
+  /** The head lines `startLine` to `endLine` become `lines`; null without a suggestion. */
+  suggestion: z
+    .object({
+      startLine: z.number().int(),
+      endLine: z.number().int(),
+      lines: z.array(z.string()),
+    })
+    .nullable(),
+  /** The head commit the review read when it made the suggestion and placed the finding. */
+  reviewedCommit: z.string(),
+});
+
 export const issueDetailSchema = issueSchema.extend({
   rule: z.object({
     key: z.string(),
@@ -98,6 +122,8 @@ export const issueDetailSchema = issueSchema.extend({
   firstSeenAnalysisId: z.uuid().nullable(),
   lastSeenAnalysisId: z.uuid().nullable(),
   resolvedBy: z.object({ id: z.uuid(), username: z.string() }).nullable(),
+  /** The finding of an AI review; null for every issue the analyzers report. */
+  aiReview: aiReviewSchema.nullable(),
 });
 
 const changeSchema = z.object({
@@ -236,6 +262,10 @@ export const issueRoutes: FastifyPluginAsyncZod<{
           .from(users)
           .where(eq(users.id, issue.resolvedBy))
       : [];
+    const [finding] = await deps.db
+      .select()
+      .from(reviewFindings)
+      .where(eq(reviewFindings.issueId, issue.id));
     return {
       ...issueDto({
         ...issue,
@@ -261,6 +291,16 @@ export const issueRoutes: FastifyPluginAsyncZod<{
       firstSeenAnalysisId: issue.firstSeenAnalysisId,
       lastSeenAnalysisId: issue.lastSeenAnalysisId,
       resolvedBy: resolver ?? null,
+      aiReview: finding
+        ? {
+            category: finding.category,
+            body: finding.body,
+            assumption: finding.assumption,
+            verification: finding.verification,
+            suggestion: finding.suggestion,
+            reviewedCommit: finding.reviewedHeadSha,
+          }
+        : null,
     };
   };
 

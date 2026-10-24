@@ -1,5 +1,5 @@
 import { MAX_SNAPSHOT_FILE_BYTES, MAX_SNAPSHOT_FILES } from '@qualor/shared';
-import { asc, eq } from 'drizzle-orm';
+import { asc, eq, inArray } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   addMember,
@@ -20,6 +20,7 @@ import {
   auditEvents,
   branches,
   instanceSettings,
+  llmRequests,
   projects,
   reviewRuns,
   scmConnections,
@@ -40,6 +41,7 @@ import {
   reviewSettingsOf,
   type ReviewSettings,
 } from '../review/settings';
+import { recordReviewCall } from '../review/usage';
 
 const NOW = new Date('2027-01-01T00:00:00Z');
 const MiB = 1024 * 1024;
@@ -270,6 +272,7 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
           consent: null,
           consentCurrent: false,
           instanceCeiling: { tokensPerDay: null },
+          usage: { tokensToday: 0, costTodayUsd: null, reviewsToday: 0 },
         });
       }
       for (const s of [member, viewer, grantee]) {
@@ -356,6 +359,105 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
         await ctx.db.delete(instanceSettings).where(eq(instanceSettings.key, 'retention'));
       }
       expect((await getReview()).json().notice).toContain('(at most 14 days)');
+    });
+
+    it("the organisation review answer carries today's usage", async () => {
+      const none = { tokensToday: 0, costTodayUsd: null, reviewsToday: 0 };
+      expect((await getReview()).json().usage).toEqual(none);
+      expect((await putReview(onBody())).json().usage).toEqual(none);
+
+      let branchNumber = 0;
+      /** A run of a new merge request branch of `projectId`, started now. */
+      const runOf = async (
+        projectId: string,
+        status: 'running' | 'done' | 'failed' | 'skipped',
+      ) => {
+        branchNumber += 1;
+        const [branch] = await ctx.db
+          .insert(branches)
+          .values({ projectId, kind: 'merge_request', name: `usage-${branchNumber}` })
+          .returning();
+        const [analysis] = await ctx.db
+          .insert(analyses)
+          .values({ projectId, branchId: branch!.id })
+          .returning();
+        const reason =
+          status === 'failed' ? 'internal' : status === 'skipped' ? 'draft' : undefined;
+        const [row] = await ctx.db
+          .insert(reviewRuns)
+          .values({
+            projectId,
+            branchId: branch!.id,
+            analysisId: analysis!.id,
+            status,
+            ...(reason === undefined ? {} : { reason }),
+            startedAt: status === 'skipped' ? null : new Date(),
+            deadlineAt: new Date(),
+          })
+          .returning();
+        return row!.id;
+      };
+      const spend = (
+        organizationId: string,
+        projectId: string,
+        runId: string,
+        tokens: [number, number],
+        costMicroUsd: number,
+      ) =>
+        recordReviewCall(ctx.db, {
+          organizationId,
+          projectId,
+          runId,
+          provider: 'openai',
+          providerHost: 'llm.example',
+          model: 'fake-model',
+          promptVersion: 'review-1',
+          inputSha256: 'a'.repeat(64),
+          inputBytes: 100,
+          redactions: 0,
+          status: 'succeeded',
+          errorCode: null,
+          inputTokens: tokens[0],
+          outputTokens: tokens[1],
+          costMicroUsd,
+          durationMs: 10,
+        });
+      const runs = [
+        await runOf(project.id, 'done'),
+        await runOf(project.id, 'running'),
+        await runOf(second.id, 'failed'),
+        // A skipped run reviewed nothing, and another organisation's run is not this one's.
+        await runOf(project.id, 'skipped'),
+        await runOf(otherProject.id, 'done'),
+      ];
+      try {
+        // Two projects of the organisation spend; another organisation's spend is not counted.
+        await spend(org, project.id, runs[0]!, [1_000, 200], 3_600);
+        await spend(org, second.id, runs[2]!, [500, 100], 1_800);
+        await spend(otherOrg, otherProject.id, runs[4]!, [9_000, 900], 9_999);
+
+        // Without prices there is no cost to show.
+        const today = { tokensToday: 1_800, costTodayUsd: null, reviewsToday: 3 };
+        expect((await getReview()).json().usage).toEqual(today);
+        expect((await putReview(onBody())).json().usage).toEqual(today);
+        expect((await getReview(admin, otherOrg)).json().usage).toEqual({
+          tokensToday: 9_900,
+          costTodayUsd: null,
+          reviewsToday: 1,
+        });
+
+        // With prices set, the cost is the micro-dollars of the calls, in dollars.
+        await writeLlmSettings(ctx.db, {
+          ...(await readLlmSettings(ctx.db)),
+          pricing: { inputUsdPerMTok: 3, outputUsdPerMTok: 15 },
+        });
+        const priced = { tokensToday: 1_800, costTodayUsd: 0.0054, reviewsToday: 3 };
+        expect((await getReview()).json().usage).toEqual(priced);
+        expect((await putReview(onBody())).json().usage).toEqual(priced);
+      } finally {
+        await ctx.db.delete(llmRequests);
+        await ctx.db.delete(reviewRuns).where(inArray(reviewRuns.id, runs));
+      }
     });
   });
 

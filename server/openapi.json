@@ -9331,6 +9331,9 @@
                           "ruleKey": {
                             "type": "string"
                           },
+                          "engine": {
+                            "type": "string"
+                          },
                           "message": {
                             "type": "string"
                           },
@@ -9427,6 +9430,7 @@
                         "required": [
                           "id",
                           "ruleKey",
+                          "engine",
                           "message",
                           "severity",
                           "quality",
@@ -12401,6 +12405,100 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "aiReview": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "category": {
+                              "type": "string",
+                              "enum": [
+                                "logic",
+                                "error-handling",
+                                "compatibility",
+                                "concurrency",
+                                "security",
+                                "performance",
+                                "tests",
+                                "docs"
+                              ]
+                            },
+                            "body": {
+                              "type": "string"
+                            },
+                            "assumption": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "verification": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "confirmed",
+                                    "needs_validation"
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "suggestion": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "startLine": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "endLine": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "lines": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "required": [
+                                    "startLine",
+                                    "endLine",
+                                    "lines"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "reviewedCommit": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "category",
+                            "body",
+                            "assumption",
+                            "verification",
+                            "suggestion",
+                            "reviewedCommit"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -12432,7 +12530,8 @@
                     "secondaryLocations",
                     "firstSeenAnalysisId",
                     "lastSeenAnalysisId",
-                    "resolvedBy"
+                    "resolvedBy",
+                    "aiReview"
                   ],
                   "additionalProperties": false
                 }
@@ -12882,6 +12981,100 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "aiReview": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "category": {
+                              "type": "string",
+                              "enum": [
+                                "logic",
+                                "error-handling",
+                                "compatibility",
+                                "concurrency",
+                                "security",
+                                "performance",
+                                "tests",
+                                "docs"
+                              ]
+                            },
+                            "body": {
+                              "type": "string"
+                            },
+                            "assumption": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "verification": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "confirmed",
+                                    "needs_validation"
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "suggestion": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "startLine": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "endLine": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "lines": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "required": [
+                                    "startLine",
+                                    "endLine",
+                                    "lines"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "reviewedCommit": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "category",
+                            "body",
+                            "assumption",
+                            "verification",
+                            "suggestion",
+                            "reviewedCommit"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -12913,7 +13106,8 @@
                     "secondaryLocations",
                     "firstSeenAnalysisId",
                     "lastSeenAnalysisId",
-                    "resolvedBy"
+                    "resolvedBy",
+                    "aiReview"
                   ],
                   "additionalProperties": false
                 }
@@ -13403,6 +13597,100 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "aiReview": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "category": {
+                              "type": "string",
+                              "enum": [
+                                "logic",
+                                "error-handling",
+                                "compatibility",
+                                "concurrency",
+                                "security",
+                                "performance",
+                                "tests",
+                                "docs"
+                              ]
+                            },
+                            "body": {
+                              "type": "string"
+                            },
+                            "assumption": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "verification": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "confirmed",
+                                    "needs_validation"
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "suggestion": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "startLine": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "endLine": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "lines": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "required": [
+                                    "startLine",
+                                    "endLine",
+                                    "lines"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "reviewedCommit": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "category",
+                            "body",
+                            "assumption",
+                            "verification",
+                            "suggestion",
+                            "reviewedCommit"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -13434,7 +13722,8 @@
                     "secondaryLocations",
                     "firstSeenAnalysisId",
                     "lastSeenAnalysisId",
-                    "resolvedBy"
+                    "resolvedBy",
+                    "aiReview"
                   ],
                   "additionalProperties": false
                 }
@@ -20411,7 +20700,7 @@
     },
     "/api/v0/system/llm/test": {
       "post": {
-        "summary": "Send a fixed prompt holding no repository data to the saved provider (instance admins); no audit row, no quota",
+        "summary": "Send a fixed prompt holding no repository data to the saved provider, and when it answers, a second one that asks the model to call a tool (instance admins); no audit row, no quota",
         "tags": [
           "llm"
         ],
@@ -20436,6 +20725,14 @@
                       "type": "integer",
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991
+                    },
+                    "toolCalling": {
+                      "type": "string",
+                      "enum": [
+                        "supported",
+                        "not_supported",
+                        "not_checked"
+                      ]
                     },
                     "problem": {
                       "anyOf": [
@@ -20497,6 +20794,7 @@
                     "ok",
                     "model",
                     "latencyMs",
+                    "toolCalling",
                     "problem"
                   ],
                   "additionalProperties": false
@@ -26579,6 +26877,33 @@
                         "tokensPerDay"
                       ],
                       "additionalProperties": false
+                    },
+                    "usage": {
+                      "type": "object",
+                      "properties": {
+                        "tokensToday": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "costTodayUsd": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "reviewsToday": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "tokensToday",
+                        "costTodayUsd",
+                        "reviewsToday"
+                      ],
+                      "additionalProperties": false
                     }
                   },
                   "required": [
@@ -26592,7 +26917,8 @@
                     "budgets",
                     "consent",
                     "consentCurrent",
-                    "instanceCeiling"
+                    "instanceCeiling",
+                    "usage"
                   ],
                   "additionalProperties": false
                 }
@@ -26943,6 +27269,33 @@
                         "tokensPerDay"
                       ],
                       "additionalProperties": false
+                    },
+                    "usage": {
+                      "type": "object",
+                      "properties": {
+                        "tokensToday": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "costTodayUsd": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "reviewsToday": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "tokensToday",
+                        "costTodayUsd",
+                        "reviewsToday"
+                      ],
+                      "additionalProperties": false
                     }
                   },
                   "required": [
@@ -26956,7 +27309,8 @@
                     "budgets",
                     "consent",
                     "consentCurrent",
-                    "instanceCeiling"
+                    "instanceCeiling",
+                    "usage"
                   ],
                   "additionalProperties": false
                 }

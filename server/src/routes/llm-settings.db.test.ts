@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { count, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   addMember,
@@ -13,11 +13,27 @@ import {
   type Session,
   type TestContext,
 } from '../../test/app';
-import { createFakeLlm, openAiAnswer, type FakeLlm } from '../../test/fake-llm';
+import {
+  anthropicAnswer,
+  anthropicToolUse,
+  createFakeLlm,
+  openAiAnswer,
+  openAiToolCalls,
+  type FakeLlm,
+  type LlmReply,
+} from '../../test/fake-llm';
 import { encryptionKey, encryptSecret } from '../crypto/secrets';
-import { instanceSettings } from '../db/schema';
+import { auditEvents, instanceSettings, llmRequests } from '../db/schema';
 import { DEFAULT_LLM_SETTINGS, writeLlmSettings } from '../llm/settings';
 import { parseInternalHosts } from '../scm/url';
+
+/** The call the model makes to the echo tool of the tool-calling check. */
+const ECHO_CALL = { id: 'call_1', name: 'echo', arguments: { text: 'ok' } };
+const ECHO_PARAMETERS = {
+  type: 'object',
+  properties: { text: { type: 'string' } },
+  required: ['text'],
+};
 
 describe('/system/llm (llm.md §3, §16)', () => {
   let ctx: TestContext;
@@ -401,10 +417,20 @@ describe('/system/llm (llm.md §3, §16)', () => {
 
   it('tests the saved provider with a fixed prompt that holds no repository data', async () => {
     await put(body());
+    fake.enqueue(
+      { status: 200, body: openAiAnswer('{"ok": true}') },
+      { status: 200, body: openAiToolCalls([ECHO_CALL]) },
+    );
     const res = await test();
     expect(res.statusCode, res.body).toBe(200);
-    expect(res.json()).toMatchObject({ ok: true, model: 'fake-openai-model', problem: null });
-    expect(fake.requests).toHaveLength(1);
+    expect(res.json()).toMatchObject({
+      ok: true,
+      model: 'fake-openai-model',
+      problem: null,
+      toolCalling: 'supported',
+    });
+    // The plain test, then the tool-calling check.
+    expect(fake.requests).toHaveLength(2);
     const sent = fake.requests[0]!;
     expect(sent.body).not.toMatch(/QUALOR-DATA/);
     expect(sent.json).toEqual({
@@ -438,6 +464,249 @@ describe('/system/llm (llm.md §3, §16)', () => {
     expect(fake.requests[0]!.path).toBe('/v1/messages');
     expect(fake.requests[0]!.headers['x-api-key']).toBe(fake.apiKey);
     await put(body());
+  });
+
+  describe('the provider test reports tool calling', () => {
+    type Kind = 'openai' | 'anthropic';
+    /** Saves the provider of that kind, which points at the fake. */
+    const useProvider = (kind: Kind) =>
+      put(
+        body(
+          kind === 'openai'
+            ? {}
+            : {
+                provider: {
+                  kind: 'anthropic',
+                  baseUrl: fake.anthropicBaseUrl,
+                  model: 'claude-x',
+                  apiKey: fake.apiKey,
+                },
+              },
+        ),
+      );
+    const plainOk = (kind: Kind): LlmReply => ({
+      status: 200,
+      body: kind === 'openai' ? openAiAnswer('{"ok": true}') : anthropicAnswer('{"ok": true}'),
+    });
+    const textAnswer = (kind: Kind): LlmReply => ({
+      status: 200,
+      body: kind === 'openai' ? openAiAnswer('ok') : anthropicAnswer('ok'),
+    });
+    const toolAnswer = (kind: Kind): LlmReply => ({
+      status: 200,
+      body:
+        kind === 'openai'
+          ? openAiToolCalls([ECHO_CALL])
+          : anthropicToolUse([{ id: 'toolu_1', name: 'echo', input: ECHO_CALL.arguments }]),
+    });
+    const refusal = (kind: Kind, status: number, message: string): LlmReply => ({
+      status,
+      body:
+        kind === 'openai'
+          ? { error: { message, type: 'invalid_request_error', param: null, code: null } }
+          : { type: 'error', error: { type: 'invalid_request_error', message } },
+    });
+    afterAll(async () => {
+      await put(body());
+    });
+    // The Test button is limited to ten presses a minute per admin: each case has an admin of its own.
+    let checkers = 0;
+    let checker: Session;
+    beforeEach(async () => {
+      checkers += 1;
+      const u = await createUser(ctx, {
+        username: `llm-tool-check-${checkers}`,
+        isInstanceAdmin: true,
+      });
+      checker = await login(ctx, u.username, u.password);
+    });
+    const check = () => test(checker);
+
+    it('sends one fixed prompt with the echo tool and reads a call as supported', async () => {
+      await useProvider('openai');
+      fake.enqueue(plainOk('openai'), toolAnswer('openai'));
+      const res = await check();
+      expect(res.json()).toMatchObject({ ok: true, problem: null, toolCalling: 'supported' });
+      expect(fake.requests).toHaveLength(2);
+      const sent = fake.requests[1]!;
+      expect(sent.path).toBe('/v1/chat/completions');
+      expect(sent.body).not.toMatch(/QUALOR-DATA/);
+      expect(sent.json).toEqual({
+        model: 'fake-model',
+        messages: [
+          { role: 'system', content: expect.stringContaining('echo') },
+          { role: 'user', content: expect.stringContaining('echo') },
+        ],
+        // The plain test's output limit, and the tools in place of its JSON mode.
+        max_tokens: 20,
+        tools: [
+          {
+            type: 'function',
+            function: {
+              name: 'echo',
+              description: expect.any(String),
+              parameters: ECHO_PARAMETERS,
+            },
+          },
+        ],
+        tool_choice: 'auto',
+      });
+      expect(sent.headers.authorization).toBe(`Bearer ${fake.apiKey}`);
+      expect(res.body).not.toContain(fake.apiKey);
+    });
+
+    it('sends the same check to an Anthropic provider, in its own wire format', async () => {
+      await useProvider('anthropic');
+      try {
+        fake.enqueue(plainOk('anthropic'), toolAnswer('anthropic'));
+        const res = await check();
+        expect(res.json()).toMatchObject({ ok: true, problem: null, toolCalling: 'supported' });
+        expect(fake.requests.map((r) => r.path)).toEqual(['/v1/messages', '/v1/messages']);
+        expect(fake.requests[1]!.json).toEqual({
+          model: 'claude-x',
+          max_tokens: 20,
+          system: expect.stringContaining('echo'),
+          messages: [{ role: 'user', content: [{ type: 'text', text: expect.any(String) }] }],
+          tools: [{ name: 'echo', description: expect.any(String), input_schema: ECHO_PARAMETERS }],
+        });
+        expect(fake.requests[1]!.headers['x-api-key']).toBe(fake.apiKey);
+      } finally {
+        await useProvider('openai');
+      }
+    });
+
+    it.each(['openai', 'anthropic'] as const)(
+      'is not_supported when the model answers in text instead of calling the tool (%s)',
+      async (kind) => {
+        await useProvider(kind);
+        try {
+          fake.enqueue(plainOk(kind), textAnswer(kind));
+          const res = await check();
+          expect(res.json()).toMatchObject({
+            ok: true,
+            problem: null,
+            toolCalling: 'not_supported',
+          });
+          expect(fake.requests).toHaveLength(2);
+        } finally {
+          await useProvider('openai');
+        }
+      },
+    );
+
+    it.each(['openai', 'anthropic'] as const)(
+      'is not_checked when the output limit cut the model off before any call (%s)',
+      async (kind) => {
+        await useProvider(kind);
+        try {
+          // A model that says what it will do first may use up the limit before it does it.
+          fake.enqueue(plainOk(kind), {
+            status: 200,
+            body:
+              kind === 'openai'
+                ? openAiAnswer('Sure! I will call the echo tool', { finishReason: 'length' })
+                : anthropicAnswer('Sure! I will call the echo tool', { stopReason: 'max_tokens' }),
+          });
+          const res = await check();
+          expect(res.json()).toMatchObject({ ok: true, problem: null, toolCalling: 'not_checked' });
+        } finally {
+          await useProvider('openai');
+        }
+      },
+    );
+
+    it('is supported when the limit cut the call itself short: the model did call the tool', async () => {
+      const cut = toolAnswer('openai').body as { choices: { finish_reason: string }[] };
+      cut.choices[0]!.finish_reason = 'length';
+      fake.enqueue(plainOk('openai'), { status: 200, body: cut });
+      expect((await check()).json()).toMatchObject({ ok: true, toolCalling: 'supported' });
+    });
+
+    it.each(['openai', 'anthropic'] as const)(
+      'is not_supported when the provider refuses the request in words that name tools (%s)',
+      async (kind) => {
+        await useProvider(kind);
+        try {
+          fake.enqueue(plainOk(kind), refusal(kind, 400, 'This model does not support tools'));
+          const res = await check();
+          // The plain test passed: the refusal of the tools answers the check, it does not fail the test.
+          expect(res.json()).toMatchObject({
+            ok: true,
+            problem: null,
+            toolCalling: 'not_supported',
+          });
+          fake.enqueue(
+            plainOk(kind),
+            refusal(kind, 404, 'No endpoints found that support tool use'),
+          );
+          expect((await check()).json()).toMatchObject({ toolCalling: 'not_supported' });
+        } finally {
+          await useProvider('openai');
+        }
+      },
+    );
+
+    it.each([
+      ['a refusal that names no tools', 400, 'Invalid request'],
+      ['a refused key', 401, 'bad key'],
+      ['a rate limit', 429, 'slow down'],
+      ['an unavailable provider', 500, 'oops'],
+    ] as const)(
+      'is not_checked after %s, which says nothing of tools',
+      async (_name, status, message) => {
+        fake.enqueue(plainOk('openai'), refusal('openai', status, message));
+        const res = await check();
+        // The plain test's result stands: the check's failure changes nothing but its own field.
+        expect(res.json()).toMatchObject({
+          ok: true,
+          model: 'fake-openai-model',
+          problem: null,
+          toolCalling: 'not_checked',
+        });
+        expect(fake.requests).toHaveLength(2);
+      },
+    );
+
+    it('is not_checked when the check is answered with something that is not an answer', async () => {
+      fake.enqueue(plainOk('openai'), { status: 200, body: 'not json at all' });
+      expect((await check()).json()).toMatchObject({ ok: true, toolCalling: 'not_checked' });
+    });
+
+    it('asks nothing more when the plain test failed: not_checked', async () => {
+      fake.enqueue({ status: 401, body: { error: { message: 'bad key' } } });
+      const refused = await check();
+      expect(refused.json()).toMatchObject({
+        ok: false,
+        problem: { code: 'PROVIDER_REFUSED_KEY' },
+        toolCalling: 'not_checked',
+      });
+      expect(fake.requests).toHaveLength(1);
+      fake.requests.length = 0;
+      fake.say('Sure! Here it is: {"ok": true}');
+      expect((await check()).json()).toMatchObject({
+        ok: false,
+        problem: { code: 'MALFORMED_OUTPUT' },
+        toolCalling: 'not_checked',
+      });
+      expect(fake.requests).toHaveLength(1);
+    });
+
+    it('keeps the latency of the plain test, and writes no usage row and no audit row', async () => {
+      const rows = async () => [
+        (await ctx.db.select({ n: count() }).from(llmRequests))[0]!.n,
+        (await ctx.db.select({ n: count() }).from(auditEvents))[0]!.n,
+      ];
+      const before = await rows();
+      fake.enqueue(plainOk('openai'), async () => {
+        await new Promise((r) => setTimeout(r, 800));
+        return toolAnswer('openai');
+      });
+      const res = (await check()).json();
+      expect(res.toolCalling).toBe('supported');
+      // The slow check is not part of the latency of the test.
+      expect(res.latencyMs).toBeLessThan(700);
+      expect(await rows()).toEqual(before);
+    });
   });
 
   it('names the base URL and model in the test result on a 404', async () => {
@@ -619,7 +888,8 @@ describe('/system/llm (llm.md §3, §16)', () => {
     expect(codes).toEqual([200, 429]);
     const ok = a.statusCode === 200 ? a : b;
     expect(ok.json().model).toBe('m'.repeat(199));
-    expect(fake.requests).toHaveLength(1);
+    // The plain test and the tool-calling check of the one that ran.
+    expect(fake.requests).toHaveLength(2);
     // Done: the next one runs.
     expect((await test(s)).statusCode).toBe(200);
   });

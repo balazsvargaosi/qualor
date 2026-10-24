@@ -2,6 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { addMember, bearer, createUser, login, type Session } from '../../test/app';
 import { createIngestHarness, type IngestHarness } from '../../test/ingest';
 import { mainBranchId, seedIssue, seedRule } from '../../test/issues';
+import { seedAiIssue } from '../../test/review';
+import { reviewFindings } from '../db/schema';
 
 interface Item {
   id: string;
@@ -449,6 +451,84 @@ describe('issues API: list, filters, facets, keyset pages (api.md §3, server st
     expect((await get('/issues/019a0000-0000-7000-8000-000000000000')).statusCode).toBe(404);
     expect((await get('/issues/not-a-uuid')).statusCode).toBe(422);
     expect((await get(`/issues/${ids.blocker}`, {})).statusCode).toBe(401);
+  });
+
+  it('issue detail carries aiReview for an AI issue and null for others', async () => {
+    const db = h.ctx.db;
+    const project = await h.project('acme/ai-detail');
+    const branch = await mainBranchId(db, project.id);
+    const headSha = 'c'.repeat(40);
+    const aiIssue = async (finding: Partial<typeof reviewFindings.$inferInsert> | null) => {
+      const id = await seedAiIssue(db, {
+        branchId: branch,
+        category: 'logic',
+        path: 'src/a.ts',
+        line: 12,
+        severity: 'medium',
+      });
+      if (finding) {
+        await db.insert(reviewFindings).values({
+          issueId: id,
+          category: 'logic',
+          body: 'The loop stops one element early.',
+          reviewedHeadSha: headSha,
+          ...finding,
+        });
+      }
+      return id;
+    };
+    const aiReviewOf = async (id: string) => {
+      const res = await get(`/issues/${id}`);
+      expect(res.statusCode, res.body).toBe(200);
+      return (res.json() as { aiReview: unknown }).aiReview;
+    };
+
+    // An analyzer's issue has no finding row.
+    expect(await aiReviewOf(ids.blocker!)).toBeNull();
+
+    // The finding goes out as stored; the commit is the head it was made for.
+    const full = await aiIssue({
+      body: 'The loop stops one element early.\n<b>Not markup</b>',
+      assumption: 'The list is never empty.',
+      verification: 'needs_validation',
+      suggestion: { startLine: 12, endLine: 13, lines: ['for (const x of xs) {', '  total += x;'] },
+      anchorLine: 12,
+    });
+    const expected = {
+      category: 'logic',
+      body: 'The loop stops one element early.\n<b>Not markup</b>',
+      assumption: 'The list is never empty.',
+      verification: 'needs_validation',
+      suggestion: { startLine: 12, endLine: 13, lines: ['for (const x of xs) {', '  total += x;'] },
+      reviewedCommit: headSha,
+    };
+    expect(await aiReviewOf(full)).toEqual(expected);
+
+    // What the review left out is null, not absent.
+    expect(await aiReviewOf(await aiIssue({}))).toEqual({
+      category: 'logic',
+      body: 'The loop stops one element early.',
+      assumption: null,
+      verification: null,
+      suggestion: null,
+      reviewedCommit: headSha,
+    });
+
+    // An issue of the AI engine without a finding row has none to show.
+    expect(await aiReviewOf(await aiIssue(null))).toBeNull();
+
+    // The answers of a severity change and of a transition are the same detail.
+    const send = (method: 'PATCH' | 'POST', url: string, payload: object) =>
+      h.ctx.app.inject({ method, url: `/api/v0${url}`, headers: member.headers, payload });
+    const patched = await send('PATCH', `/issues/${full}`, { severity: 'high' });
+    expect(patched.statusCode, patched.body).toBe(200);
+    expect(patched.json()).toMatchObject({ severity: 'high', aiReview: expected });
+    const moved = await send('POST', `/issues/${full}/transition`, {
+      to: 'false_positive',
+      comment: 'The list is checked by the caller.',
+    });
+    expect(moved.statusCode, moved.body).toBe(200);
+    expect(moved.json()).toMatchObject({ status: 'false_positive', aiReview: expected });
   });
 
   it('shows working rule links for rules stored with a dead one or none (SonarJS, Qualor rules)', async () => {

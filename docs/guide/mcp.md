@@ -77,8 +77,8 @@ change statuses, allowing it again keeps that right. To take it away, disconnect
 |---|---|---|
 | `qualor_projects` | Lists the projects you can see, so the agent can match the `projectKey` of `qualor.yml` | read |
 | `qualor_gate_status` | Whether the quality gate of a branch or merge request passes, and which conditions fail. With a commit SHA, also whether CI has analysed that commit yet | read |
-| `qualor_issues` | The issues of a branch or merge request, most severe first; by default the open issues in new code, which is what the gate counts. Security hotspots, which the gate does not count, are listed with `kind: hotspot` | read |
-| `qualor_issue` | One issue in full: the code, secondary locations, the rule and its history | read |
+| `qualor_issues` | The issues of a branch or merge request, most severe first; by default the open issues in new code, which is what the gate counts. Security hotspots, which the gate does not count, are listed with `kind: hotspot`. Findings of the [AI review](./ai-review.md) are marked `AI`: they may be wrong, and the gate never counts them | read |
+| `qualor_issue` | One issue in full: the code, secondary locations, the rule and its history. For a finding of the AI review it also gives the review's text, what it assumes, the suggested change and the commit it read | read |
 | `qualor_rule` | What a rule checks and how to fix what it reports | read |
 | `qualor_measures` | Coverage, duplication and ratings; with a file, its covered and uncovered lines | read |
 | `qualor_explain` | Asks the AI assistant to explain an issue | read, and the AI assistant on |

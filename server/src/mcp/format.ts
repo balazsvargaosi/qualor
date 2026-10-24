@@ -1,4 +1,5 @@
 import type { ConditionResult } from '@qualor/shared';
+import { AI_ENGINE } from '../rules/server-engines';
 
 /** What one tool answer's text may hold before it is cut (a model reads all of it). */
 export const MAX_TEXT = 12_000;
@@ -8,7 +9,7 @@ export interface IssueListItem {
   id: string;
   severity: string;
   quality: string;
-  rule: { key: string; name: string };
+  rule: { key: string; name: string; engine: string };
   message: string;
   path: string | null;
   startLine: number | null;
@@ -18,13 +19,22 @@ export interface IssueListItem {
   kind?: 'issue' | 'hotspot';
 }
 
-/** `src/db.ts:42 [high security] qualor:js.sqli — message (new code; id …)`: one line to act on. */
+/** A finding of the AI review: it may be wrong, and the quality gate never counts it. */
+export function isAiFinding(i: Pick<IssueListItem, 'rule'>): boolean {
+  return i.rule.engine === AI_ENGINE;
+}
+
+/**
+ * `src/db.ts:42 [high security] qualor:js.sqli — message (new code; id …)`: one line to act on. A
+ * finding of the AI review has AI before its severity: `[AI medium reliability]`.
+ */
 export function issueLine(i: IssueListItem): string {
   const line = i.startLine ? `:${i.startLine}` : '';
   const where = i.path ? i.path + line : '(project)';
   const tags = i.inNewCode ? `new code; id ${i.id}` : `id ${i.id}`;
   const hotspot = i.kind === 'hotspot' ? ' hotspot' : '';
-  return `${where} [${i.severity} ${i.quality}${hotspot}] ${i.rule.key} — ${i.message} (${tags})`;
+  const ai = isAiFinding(i) ? 'AI ' : '';
+  return `${where} [${ai}${i.severity} ${i.quality}${hotspot}] ${i.rule.key} — ${i.message} (${tags})`;
 }
 
 /** `new_coverage is 61.5, must not be below 80`. */

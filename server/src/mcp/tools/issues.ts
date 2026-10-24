@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { issueLine, truncate, type IssueListItem } from '../format';
+import { isAiFinding, issueLine, truncate, type IssueListItem } from '../format';
 import { unwrap } from '../inject';
 import { branchOf, describeBranch, projectByKey, targetInput } from '../resolve';
 import type { McpTool } from '../tool';
@@ -53,7 +53,8 @@ export const issuesTool: McpTool<typeof input> = {
   description:
     'Issues of a branch or merge request, most severe first; by default only open issues in new code, which is what the quality gate counts. ' +
     'Security hotspots (code to review, not counted by the gate) are listed only with kind hotspot. ' +
-    'Each line has path:line, severity, quality, rule and the issue id for qualor_issue.',
+    'Each line has path:line, severity, quality, rule and the issue id for qualor_issue. ' +
+    'Findings of the AI review are marked AI: they may be wrong, and the gate never counts them.',
   access: 'read',
   inputSchema: input,
   annotations: { readOnlyHint: true, openWorldHint: false },
@@ -88,6 +89,8 @@ export const issuesTool: McpTool<typeof input> = {
           severity: i.severity,
           quality: i.quality,
           rule: i.rule.key,
+          engine: i.rule.engine,
+          ai: isAiFinding(i),
           message: i.message,
           inNewCode: i.inNewCode,
           status: i.status,

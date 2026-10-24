@@ -8,7 +8,7 @@ describe('format', () => {
         id: '11111111-1111-4111-8111-111111111111',
         severity: 'high',
         quality: 'security',
-        rule: { key: 'qualor:js.sqli', name: 'SQL injection' },
+        rule: { key: 'qualor:js.sqli', name: 'SQL injection', engine: 'qualor' },
         message: 'User input reaches a SQL query',
         path: 'src/db.ts',
         startLine: 42,
@@ -20,13 +20,34 @@ describe('format', () => {
     );
   });
 
+  it('marks a finding of the AI review with AI before its severity, and no other', () => {
+    const issue = {
+      id: '22222222-2222-4222-8222-222222222222',
+      severity: 'medium',
+      quality: 'reliability',
+      rule: { key: 'ai:logic', name: 'AI review: logic error', engine: 'ai' },
+      message: 'The loop stops one element early',
+      path: 'src/db.ts',
+      startLine: 42,
+      inNewCode: true,
+      status: 'open',
+    };
+    expect(issueLine(issue)).toBe(
+      'src/db.ts:42 [AI medium reliability] ai:logic — The loop stops one element early (new code; id 22222222-2222-4222-8222-222222222222)',
+    );
+    // The engine decides, not the key.
+    expect(issueLine({ ...issue, rule: { ...issue.rule, engine: 'semgrep' } })).toContain(
+      ' [medium reliability] ',
+    );
+  });
+
   it('handles an issue without a location', () => {
     expect(
       issueLine({
         id: 'x',
         severity: 'low',
         quality: 'maintainability',
-        rule: { key: 'r', name: 'R' },
+        rule: { key: 'r', name: 'R', engine: 'e' },
         message: 'm',
         path: null,
         startLine: null,

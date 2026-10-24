@@ -3,7 +3,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { bearer, createUser, login, type Session } from '../../test/app';
 import { createIngestHarness, type IngestHarness, type IngestProject } from '../../test/ingest';
 import { file, finding, reportWith } from '../../test/reports';
-import { analyses, branches, measures } from '../db/schema';
+import { seedAiIssue } from '../../test/review';
+import { analyses, branches, issues, measures } from '../db/schema';
 import { downsample, measureHistory } from '../measures/read';
 import { MAX_FILE_DUPLICATIONS } from '../measures/store';
 
@@ -176,10 +177,45 @@ describe('measures and files API (api.md, server step 10)', () => {
       newLines: [[1, 4]],
       duplications: [],
       duplicationsTruncated: false,
-      issues: [{ ruleKey: 'eslint:no-console', status: 'open', startLine: 2, inNewCode: true }],
+      issues: [
+        {
+          ruleKey: 'eslint:no-console',
+          engine: 'eslint',
+          status: 'open',
+          startLine: 2,
+          inNewCode: true,
+        },
+      ],
       issuesTruncated: false,
     });
     expect((await get(`/branches/${mainId}/file?path=src/missing.ts`)).statusCode).toBe(404);
+  });
+
+  it('GET /branches/{id}/file lists an AI finding of the file, labelled with its engine, and counts it in no measure', async () => {
+    const aiId = await seedAiIssue(h.ctx.db, {
+      branchId: mainId,
+      category: 'logic',
+      path: 'src/a.ts',
+      line: 3,
+    });
+    try {
+      const res = await get(`/branches/${mainId}/file?path=src/a.ts`);
+      expect(res.statusCode).toBe(200);
+      const body = res.json() as {
+        measures: Record<string, number>;
+        issues: { id: string; ruleKey: string; engine: string; startLine: number }[];
+      };
+      // Shown, never filtered: both rows, each with the engine of its rule.
+      expect(body.issues.map((i) => [i.ruleKey, i.engine, i.startLine])).toEqual([
+        ['eslint:no-console', 'eslint', 2],
+        ['ai:logic', 'ai', 3],
+      ]);
+      expect(body.issues[1]!.id).toBe(aiId);
+      // The measures are the analyzers' alone.
+      expect(body.measures.issues).toBe(1);
+    } finally {
+      await h.ctx.db.delete(issues).where(eq(issues.id, aiId));
+    }
   });
 
   it('puts headline measures on project and branch list items', async () => {
