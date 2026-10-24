@@ -350,8 +350,10 @@ describe('summary, inline note and commit status (scm.md §5)', () => {
     expect(summary({ inline: { commented: 0, unplaced: 0, skipped: 'stale' } })).toContain(
       'Inline comments wait for the analysis',
     );
+    // The AI review's threads follow the head it read, so they are posted in such a pipeline too:
+    // the sentence speaks for the analyzers' issues, whatever else the merge request has.
     expect(summary({ inline: { commented: 0, unplaced: 0, skipped: 'merged_result' } })).toContain(
-      'merged-results pipeline',
+      '\n\nThe analyzers’ issues are not commented inline: this was a merged-results pipeline, whose line numbers are not the merge request’s.',
     );
     expect(summary({ mergeRequestHead: 'f'.repeat(40) })).toContain(
       'the merge request is now at ` ffffffffffff `.',

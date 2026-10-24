@@ -13,6 +13,35 @@ export function aiRuleKey(category: AiCategory): string {
   return `${AI_ENGINE}:${category}`;
 }
 
+/** The AI review's three severities. */
+export type AiSeverity = 'high' | 'medium' | 'low';
+
+/**
+ * An issue's severity as the AI review's three: a review stores its critical, major and minor
+ * findings as high, medium and low, and a person may raise one to blocker or lower one to info.
+ */
+export const AI_SEVERITY: Readonly<Record<Severity, AiSeverity>> = {
+  blocker: 'high',
+  high: 'high',
+  medium: 'medium',
+  low: 'low',
+  info: 'low',
+};
+
+/** `severity` as the AI review's three; null for one that is none of Qualor's. */
+export function aiSeverityOf(severity: string): AiSeverity | null {
+  return Object.hasOwn(AI_SEVERITY, severity) ? AI_SEVERITY[severity as Severity] : null;
+}
+
+/**
+ * The issue severities at which an AI finding gets an inline thread for itself: the ones that read
+ * as high or medium. A low one gets a thread only for a suggestion that still applies, and is
+ * otherwise counted in the summary and never listed.
+ */
+export const AI_THREAD_SEVERITIES: ReadonlySet<string> = new Set(
+  Object.entries(AI_SEVERITY).flatMap(([severity, three]) => (three === 'low' ? [] : [severity])),
+);
+
 export interface AiRule {
   category: AiCategory;
   name: string;

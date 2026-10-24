@@ -27,7 +27,7 @@ import {
 } from '../db/schema';
 import { SMALL_CHANGESET_SETTING } from '../gates/stage';
 import { PROMPT_FINDINGS, UNPLACED_LISTED, type ReviewSummaryState } from '../review/render';
-import { notAiIssue } from '../review/rules';
+import { AI_THREAD_SEVERITIES, aiSeverityOf, notAiIssue, type AiSeverity } from '../review/rules';
 import { reviewSummarySchema } from '../review/schemas';
 import type { ReviewSuggestion } from '../review/suggestion';
 import { AI_ENGINE } from '../rules/server-engines';
@@ -237,11 +237,8 @@ function openAiFindings(branchId: string) {
   );
 }
 
-/** Qualor's severity as the AI review's three: a person can raise one to blocker or lower it to info. */
-function aiSeverity(severity: string): 'high' | 'medium' | 'low' {
-  if (severity === 'blocker' || severity === 'high') return 'high';
-  return severity === 'medium' ? 'medium' : 'low';
-}
+/** An issue's severity as the AI review's three, as the section counts and lists them. */
+const aiSeverity = (severity: string): AiSeverity => aiSeverityOf(severity) ?? 'low';
 
 /** What the section holds of the branch's findings when it shows none. */
 const NO_OPEN_FINDINGS = {
@@ -476,7 +473,7 @@ const storedSuggestion = z.object({
 /**
  * The branch's open AI findings that get a thread on the head `reviewedHeadSha` (R18), most severe
  * first, then by place: those the review placed on that head (their row's head and its anchor), of
- * severity high or medium (blocker counts as high), or low (info counts as low) with a suggestion.
+ * a severity in AI_THREAD_SEVERITIES, or of another one with a suggestion (posted only for it).
  * The caller asks only for the head of the branch's newest finished review, and creates threads only
  * while the merge request is at it: a finding kept from an older head keeps that head's numbers,
  * and is never posted with them.
@@ -516,7 +513,7 @@ export async function desiredAiIssues(
         isNotNull(issues.path),
         isNotNull(issues.startLine),
         or(
-          inArray(issues.severity, ['blocker', 'high', 'medium']),
+          inArray(issues.severity, [...AI_THREAD_SEVERITIES]),
           sql`jsonb_typeof(${reviewFindings.suggestion}) = 'object'`,
         ),
       ),

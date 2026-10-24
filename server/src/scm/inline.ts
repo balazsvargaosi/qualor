@@ -3,6 +3,7 @@ import { and, eq, inArray } from 'drizzle-orm';
 import type { Db } from '../db/client';
 import { issues, rules } from '../db/schema';
 import { aiThreadBody } from '../review/render';
+import { AI_THREAD_SEVERITIES } from '../review/rules';
 import { suggestionApplies, type ReviewSuggestion } from '../review/suggestion';
 import { AI_ENGINE } from '../rules/server-engines';
 import {
@@ -91,8 +92,9 @@ export interface InlineReconciled extends InlineResult {
   /**
    * The AI findings with no thread that got none this time, most severe first, which the summary
    * lists instead: the merge request moved on from the head the review read, they were past
-   * {@link MAX_AI_THREADS}, or the diff or GitLab had no place for them. Empty when the discussions
-   * were cut by the page bound: a thread of any of them may exist unseen.
+   * {@link MAX_AI_THREADS}, or the diff or GitLab had no place for them. Only findings of the
+   * severities that get a thread for themselves: a low one is counted, never listed. Empty when
+   * the discussions were cut by the page bound: a thread of any of them may exist unseen.
    */
   aiNotPosted: DesiredAiIssue[];
 }
@@ -174,9 +176,6 @@ async function setResolved(ctx: InlineContext, id: string, resolved: boolean): P
     throw err;
   }
 }
-
-/** The severities an AI finding is commented inline at without a suggestion (R18). */
-const AI_THREAD_SEVERITIES: ReadonlySet<string> = new Set(['blocker', 'high', 'medium']);
 
 interface AiThreads {
   /** The head commit of the branch's newest finished review: the line numbers are its. */
@@ -299,10 +298,13 @@ export async function reconcileInline(ctx: InlineContext): Promise<InlineReconci
   const ai = await aiThreads(ctx, threads);
   const toCreate = new Set(ai?.create ?? []);
   const notPosted = new Set((ai?.waiting ?? []).filter((issue) => !toCreate.has(issue)));
+  // A low finding is posted for its suggestion only: one that is not is counted, never listed.
   const result = (unplaced: number): InlineReconciled => ({
     commented,
     unplaced,
-    aiNotPosted: (ai?.waiting ?? []).filter((issue) => notPosted.has(issue)),
+    aiNotPosted: (ai?.waiting ?? []).filter(
+      (issue) => notPosted.has(issue) && AI_THREAD_SEVERITIES.has(issue.severity),
+    ),
   });
   if (missing.length === 0 && toCreate.size === 0) return result(0);
   // The position's SHAs are the merge request's own: a stale diff never gets a thread.

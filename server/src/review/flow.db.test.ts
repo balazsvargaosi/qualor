@@ -22,6 +22,7 @@ import {
   mappedProject,
   mergeRequestReport,
   PUBLIC_URL,
+  queuedDecorations,
   runDecorations,
   silentLogger,
 } from '../../test/scm';
@@ -313,15 +314,21 @@ describe('the AI review of a GitLab merge request (6I-3)', () => {
     });
 
     // The pipeline of the first head: the report is ingested and the review run waits for the
-    // snapshot, which the scanner uploads and the analysis worker unpacks; that wakes the run.
+    // snapshot. The analyzers' decoration does not wait for it: the summary says the review is in
+    // progress, and there is no AI thread yet.
     const a1 = await pipeline(H1, 1);
     expect(await runOf(a1)).toMatchObject({ status: 'waiting' });
+    await runDecorations(h, decorationDeps(h));
+    expect(summary()).toContain('#### AI review\n\nAI review in progress…');
+    expect(threads().size).toBe(0);
+    // The scanner uploads the snapshot and the analysis worker unpacks it, which wakes the run.
     const sent = await upload(
       a1,
       snapshotOf({ head: H1, since: null, lines: AT_H1, ranges: null }),
     );
     expect(sent.statusCode).toBe(202);
     expect(await unpack()).toBe(1);
+    expect(await queuedDecorations(h)).toEqual([]);
     const calls = llm.requests.length;
     expect(await review(FIRST, FIRST)).toBe(1);
     expect(llm.requests.slice(calls).map(reviewRoleOf)).toEqual(['quality', 'judge']);
@@ -336,8 +343,10 @@ describe('the AI review of a GitLab merge request (6I-3)', () => {
     const loop = await aiIssueId(LOOP.title);
     const discount = await aiIssueId(DISCOUNT.title);
 
-    // The scm worker decorates: the summary has the review's section, and each finding a thread on
-    // its line at the head the review read, the loop's with its one-click suggestion.
+    // The review's end queues the decoration of its analysis. The scm worker runs it: the summary
+    // has the review's section, and each finding a thread on its line at the head the review read,
+    // the loop's with its one-click suggestion.
+    expect(await queuedDecorations(h)).toMatchObject([{ payload: { analysisId: a1 } }]);
     await runDecorations(h, decorationDeps(h));
     expect(summary()).toContain(
       [
@@ -374,20 +383,34 @@ describe('the AI review of a GitLab merge request (6I-3)', () => {
     expect(discountThread?.notes[0]?.body).toContain('**AI review** · High · Logic · likely');
     expect(discountThread?.notes[0]?.body).not.toContain('```suggestion');
 
-    // A second push fixes the discount. Its snapshot says which lines changed since the reviewed
-    // commit: line 9 only, which misses the loop's lines.
+    // A second push fixes the discount. The analyzers' decoration of its pipeline says the review
+    // is in progress again, and changes no AI thread: the merge request is at a head no finished
+    // review read.
     gitlab.updateMergeRequest(GITLAB_PROJECT, IID, {
       headSha: H2,
       diffs: [{ oldPath: PATH, newPath: PATH, diff: added(AT_H2), newFile: true }],
     });
     const a2 = await pipeline(H2, 2);
     expect(await runOf(a2)).toMatchObject({ status: 'waiting' });
+    const discussions = `/projects/${GITLAB_PROJECT}/merge_requests/${IID}/discussions`;
+    const threadWrites = () =>
+      gitlab.requests
+        .filter((r) => r.method !== 'GET' && r.path.startsWith(discussions))
+        .map((r) => `${r.method} ${r.path}`);
+    gitlab.clearRequests();
+    await runDecorations(h, decorationDeps(h));
+    expect(summary()).toContain('#### AI review\n\nAI review in progress…');
+    expect(threadWrites()).toEqual([]);
+    expect(threads().size).toBe(2);
+    // Its snapshot says which lines changed since the reviewed commit: line 9 only, which misses
+    // the loop's lines.
     const resent = await upload(
       a2,
       snapshotOf({ head: H2, since: H1, lines: AT_H2, ranges: [[9, 9]] }),
     );
     expect(resent.statusCode).toBe(202);
     expect(await unpack()).toBe(1);
+    expect(await queuedDecorations(h)).toEqual([]);
     expect(await review(second(loop, discount), second(loop, discount))).toBe(1);
     expect(await runOf(a2)).toMatchObject({
       status: 'done',
@@ -398,17 +421,17 @@ describe('the AI review of a GitLab merge request (6I-3)', () => {
       findingsFixed: 1,
     });
     const negative = await aiIssueId(NEGATIVE.title);
+    // The review's end queues the decoration that changes the threads.
+    expect(await queuedDecorations(h)).toMatchObject([{ payload: { analysisId: a2 } }]);
     gitlab.clearRequests();
     await runDecorations(h, decorationDeps(h));
     // The judge said the discount is fixed: its thread is resolved, by Qualor. The loop's is
     // untouched: not resolved, not written to, not posted again. The new finding gets its thread,
     // on the line of the new head.
-    const discussions = `/projects/${GITLAB_PROJECT}/merge_requests/${IID}/discussions`;
-    expect(
-      gitlab.requests
-        .filter((r) => r.method !== 'GET' && r.path.startsWith(discussions))
-        .map((r) => `${r.method} ${r.path}`),
-    ).toEqual([`PUT ${discussions}/${discountThread?.id}`, `POST ${discussions}`]);
+    expect(threadWrites()).toEqual([
+      `PUT ${discussions}/${discountThread?.id}`,
+      `POST ${discussions}`,
+    ]);
     const second1 = threads();
     expect(second1.size).toBe(3);
     expect(second1.get(discount)?.notes[0]).toMatchObject({

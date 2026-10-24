@@ -385,8 +385,9 @@ function inlineSentence(
   const commented = count(inline.commented);
   const unplaced = count(inline.unplaced);
   if (inline.skipped === 'stale') return words.stale;
+  // The AI review's threads follow the head it read, and are posted in such a pipeline too.
   if (inline.skipped === 'merged_result') {
-    return 'No inline comments: this was a merged-results pipeline, whose line numbers are not the merge request’s.';
+    return 'The analyzers’ issues are not commented inline: this was a merged-results pipeline, whose line numbers are not the merge request’s.';
   }
   if (inline.skipped === 'checkout_other') return CHECKOUT_OTHER;
   if (inline.skipped === 'failed') return NOT_UPDATED;

@@ -8,6 +8,7 @@ import {
   qualorLink,
   safeProse,
 } from '../scm/markdown';
+import { aiSeverityOf, type AiSeverity } from './rules';
 import { ANSWER_LIMITS, type ReviewNote } from './schemas';
 
 /*
@@ -94,9 +95,8 @@ const severityOrder = (severity: string): number =>
  * The finished review of the newest analysis with `more` among its findings not on changed lines:
  * the ones a decoration could not post as threads this time (the merge request moved on, they are
  * past the cap of threads, the provider's diff had no place for them or the provider refused the
- * place). Most severe first, as the loader
- * gives its own (a stable order within a severity), at most UNPLACED_LISTED of them listed and the
- * rest counted. Any other state is given back as it is.
+ * place). Most severe first, as the loader gives its own (a stable order within a severity), at
+ * most UNPLACED_LISTED of them listed and the rest counted. Any other state is given back as it is.
  */
 export function withUnplacedFindings(
   state: ReviewSummaryState | null,
@@ -442,13 +442,11 @@ const THREAD_BODY_CHARS = [ANSWER_LIMITS.bodyChars, 600, 300, 0] as const;
 const THREAD_BODY_LINES = 20;
 
 const THREAD_HEADING = '**AI review**';
-/** The AI review's three severities; a person may have set one of Qualor's five on the issue. */
-const THREAD_SEVERITY: Readonly<Record<string, string>> = {
-  blocker: 'High',
+/** The words of the AI review's three severities in the header. */
+const THREAD_SEVERITY: Readonly<Record<AiSeverity, string>> = {
   high: 'High',
   medium: 'Medium',
   low: 'Low',
-  info: 'Low',
 };
 const CATEGORY_LABEL: Readonly<Record<AiCategory, string>> = {
   logic: 'Logic',
@@ -520,15 +518,13 @@ function suggestionBlock(input: AiThreadInput): string[] | null {
  * out first, then the body is shortened.
  */
 export function aiThreadBody(input: AiThreadInput): string {
-  const severity = Object.hasOwn(THREAD_SEVERITY, input.severity)
-    ? THREAD_SEVERITY[input.severity]
-    : undefined;
+  const severity = aiSeverityOf(input.severity);
   const category = Object.hasOwn(CATEGORY_LABEL, input.category)
     ? CATEGORY_LABEL[input.category]
     : undefined;
   const header = [
     THREAD_HEADING,
-    severity ?? 'Unknown',
+    severity === null ? 'Unknown' : THREAD_SEVERITY[severity],
     category ?? 'Unknown',
     input.confidence === 'high' ? CONFIDENCE_WORD.high : CONFIDENCE_WORD.medium,
     codeSpan(input.ruleKey),

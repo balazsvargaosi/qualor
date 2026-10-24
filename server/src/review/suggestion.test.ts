@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { ReviewableChange } from './context';
 import { lineCountOf, MaskedText } from './masked-files';
 import { ANSWER_LIMITS } from './schemas';
-import { checkReviewSuggestion, type ReviewSuggestion } from './suggestion';
+import { checkReviewSuggestion, suggestionApplies, type ReviewSuggestion } from './suggestion';
 
 const j = (...parts: string[]) => parts.join('');
 
@@ -171,5 +171,47 @@ describe('checkReviewSuggestion', () => {
     expect(problem(suggest(4, 6, fenced))).toBe('not_added');
     expect(problem(suggest(5, 21, fenced))).toBe('range');
     expect(problem(suggest(6, 7, fenced), change({ text: null }))).toBe('no_text');
+  });
+});
+
+describe('suggestionApplies', () => {
+  /** GitLab's diff of the file: lines 2, 3, 5 and 6 added, 4 kept as context. */
+  const added = new Map([
+    [2, '  const fee = 1;'],
+    [3, '  const label = "plain";'],
+    [5, '  const rounded = Math.round(total);'],
+    [6, ''],
+  ]);
+  const at = (startLine: number, endLine: number) => ({ startLine, endLine, lines: ['x'] });
+
+  it.each([
+    [
+      'the added lines, as the review read them',
+      at(2, 3),
+      ['  const fee = 1;', '  const label = "plain";'],
+      true,
+    ],
+    ['one added line', at(5, 5), ['  const rounded = Math.round(total);'], true],
+    ['an added empty line', at(6, 6), [''], true],
+    [
+      'a range over a context line',
+      at(3, 5),
+      ['  const label = "plain";', '  const total = 2;', '  const rounded = Math.round(total);'],
+      false,
+    ],
+    ['a line that is no line of the diff', at(7, 7), ['}'], false],
+    ['a line the review read masked', at(2, 2), ['  const fee = «redacted»;'], false],
+    ['a line the review read otherwise', at(3, 3), ['  const label = "paid";'], false],
+    ['a line end the diff does not keep', at(2, 2), ['  const fee = 1;\r'], false],
+    ['fewer lines than the range', at(2, 3), ['  const fee = 1;'], false],
+    [
+      'more lines than the range',
+      at(2, 2),
+      ['  const fee = 1;', '  const label = "plain";'],
+      false,
+    ],
+    ['no snapshot to read them from', at(2, 3), null, false],
+  ] as const)('%s', (_name, s, reviewed, expected) => {
+    expect(suggestionApplies(s, added, reviewed)).toBe(expected);
   });
 });
