@@ -234,6 +234,8 @@ export interface ReviewSenderDeps {
   redactions?: RedactionTally;
   /** Gets one line for each call: the run, the outcome and the counts, never what was said. */
   logger?: WorkerLogger;
+  /** Gives up the call in flight when it aborts (the server is stopping): see `reviewSender`. */
+  signal?: AbortSignal;
 }
 
 /** A call as it was sent, which is what its row is made of besides the outcome. */
@@ -266,7 +268,10 @@ interface Outcome {
  * takes no slot of the organisation's `llm` requests: it shares the circuit with that queue and
  * nothing else, so it never holds explain, triage or fix behind it, and they never hold it. The
  * provider's key is taken out of what the model said before it is returned or stored. A failure is
- * thrown after it is recorded; a key that cannot be read is thrown as the provider refusing it.
+ * thrown after it is recorded; a key that cannot be read is thrown as the provider refusing it. A
+ * call that `deps.signal` gives up is cut at once and thrown as `LlmCallAborted`, with no row: the
+ * provider gave no answer and failed at nothing, so the call is charged to no budget and the
+ * circuit only hands its probe on.
  */
 export function reviewSender(
   deps: ReviewSenderDeps,
@@ -276,7 +281,11 @@ export function reviewSender(
   const config = providerConfig(provider);
   const providerHost = new URL(provider.baseUrl).host;
   const circuitKey = provider.baseUrl;
-  const http = { internalHosts: deps.config.llmInternalHosts, version: VERSION };
+  const http = {
+    internalHosts: deps.config.llmInternalHosts,
+    version: VERSION,
+    ...(deps.signal === undefined ? {} : { signal: deps.signal }),
+  };
   let organizationId: string | undefined;
 
   /** The organisation of the run's project, read once. */

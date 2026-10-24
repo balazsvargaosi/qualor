@@ -4,6 +4,7 @@ import { isInternalHostAllowed, scmRefusedAddress } from '../../scm/url';
 import { llmBaseUrlProblem } from '../url';
 import {
   LLM_MAX_ANSWER_BYTES,
+  LlmCallAborted,
   LlmError,
   type ProviderConfig,
   type ProviderHttpOptions,
@@ -40,7 +41,8 @@ export function retryAfterSeconds(
  * read, the whole exchange within `timeoutSeconds`): the parsed JSON of a 2xx, else an LlmError.
  * An error body is read only to classify (llm.md §14): `outputLimitField`, the output limit field
  * the request carried, is matched against the error's `param`; nothing of the body is shown or
- * logged.
+ * logged. A call that `http.signal` gives up is cut where it is, as the timeout cuts it, and throws
+ * LlmCallAborted: no LlmError, since the provider neither failed nor was slow.
  */
 export async function postJson(
   config: ProviderConfig,
@@ -74,10 +76,13 @@ export async function postJson(
       overflow: 'fail',
       names: { noun: 'model provider', target: 'the model provider' },
       ...(http.resolve ? { resolve: http.resolve } : {}),
+      ...(http.signal ? { signal: http.signal } : {}),
     },
   );
   if (result.kind === 'failed') {
     switch (result.cause) {
+      case 'aborted':
+        throw new LlmCallAborted();
       case 'timeout':
         throw new LlmError(
           'timeout',

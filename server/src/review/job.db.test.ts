@@ -1,7 +1,7 @@
 import { gzipSync } from 'node:zlib';
 import { encodeSnapshotLine, type SnapshotLine } from '@qualor/shared';
 import { and, eq, inArray, or, sql } from 'drizzle-orm';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFakeGitHub, type FakeGitHub } from '../../test/fake-github';
 import { createFakeGitLab, type FakeGitLab, type FakeMergeRequest } from '../../test/fake-gitlab';
 import { createFakeLlm, type FakeLlm } from '../../test/fake-llm';
@@ -35,10 +35,10 @@ import {
   rules,
 } from '../db/schema';
 import { createLlmRuntime } from '../llm/job';
-import { runUntilIdle } from '../queue/worker';
+import { runUntilIdle, startWorker } from '../queue/worker';
 import { enqueueLatestDecoration, SCM_QUEUE } from '../scm/queue';
 import { parseInternalHosts } from '../scm/url';
-import { reviewHandlers, type ReviewJobDeps } from './job';
+import { REVIEW_LEASE_MS, reviewHandlers, type ReviewJobDeps } from './job';
 import { mergeRequestStateHandlers, REVIEW_MR_STATE_QUEUE } from './lifecycle';
 import { AI_REVIEW_QUEUE } from './runs';
 import type { ReviewBudgets } from './settings';
@@ -166,6 +166,7 @@ describe('the ai-review job (6I-3, R15)', () => {
     logger,
     llmCircuit: createLlmRuntime().circuit,
     scm: decorationDeps(h).scm,
+    shutdown: new AbortController().signal,
     ...over,
   });
   /** Runs the `ai-review` jobs that are due, as its worker does. */
@@ -897,6 +898,107 @@ describe('the ai-review job (6I-3, R15)', () => {
     expect(reviewCalls().slice(calls).map(reviewRoleOf)).toEqual(['quality']);
     expect(await aiIssuesOf(run.branchId)).toEqual([]);
     expect(await decorationsOf(analysisId)).toHaveLength(1);
+  });
+
+  it('a server stop ends a running review at once', async () => {
+    const mr = mergeRequest();
+    const analysisId = await analysisOf(mr);
+    await snapshotOf(analysisId, mr);
+    await forgetDecorations();
+    const calls = reviewCalls().length;
+    const rows = async () =>
+      (await h.ctx.db.select({ id: llmRequests.id }).from(llmRequests)).length;
+    const rowsBefore = await rows();
+    // The quality reviewer's call is in flight when the server stops: the provider holds it.
+    let asked!: () => void;
+    const inFlight = new Promise<void>((resolve) => {
+      asked = resolve;
+    });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    llm.enqueue(async (request) => {
+      asked();
+      await held;
+      return reviewResponder(FOUND)(request);
+    });
+    const circuit = createLlmRuntime().circuit;
+    const shutdown = new AbortController();
+    const worker = startWorker({
+      db: h.ctx.db,
+      handlers: reviewHandlers(jobDeps({ llmCircuit: circuit, shutdown: shutdown.signal })),
+      concurrency: 1,
+      leaseMs: REVIEW_LEASE_MS,
+      pollIntervalMs: 20,
+      logger: silentLogger,
+    });
+    try {
+      await inFlight;
+      // As main.ts stops: the signal first, then the wait for the worker.
+      const stopping = Date.now();
+      shutdown.abort();
+      await worker.stop();
+      // Well within a stop's grace period, and before the provider's own timeout of 5 s.
+      expect(Date.now() - stopping).toBeLessThan(4_000);
+    } finally {
+      release();
+    }
+    const run = await runOf(analysisId);
+    expect(run).toMatchObject({
+      status: 'failed',
+      reason: 'internal',
+      phase: null,
+      finishedAt: expect.any(Date),
+      findingsNew: 0,
+      modelCalls: 0,
+      inputTokens: 0,
+    });
+    expect(await aiIssuesOf(run.branchId)).toEqual([]);
+    // Its end is decorated: the summary is final at once, not "in progress" until the sweep.
+    expect(await decorationsOf(analysisId)).toHaveLength(1);
+    const [job] = await h.ctx.db
+      .select({ status: jobs.status })
+      .from(jobs)
+      .where(and(eq(jobs.queue, AI_REVIEW_QUEUE), sql`${jobs.payload} ->> 'runId' = ${run.id}`));
+    expect(job).toEqual({ status: 'succeeded' });
+    // The call in flight was cut, and the provider was not asked again.
+    const quality = reviewCalls().slice(calls);
+    expect(quality.map(reviewRoleOf)).toEqual(['quality']);
+    await vi.waitFor(() => expect(llm.abandoned).toContain(quality[0]));
+    // A call given up is no failure of the provider's: its circuit counts nothing, and no row is
+    // left that the day's budget would charge as a call that timed out.
+    expect(circuit.inspect(llm.openAiBaseUrl)).toMatchObject({ state: 'closed', failures: 0 });
+    expect(await rows()).toBe(rowsBefore);
+  });
+
+  it('a server that is stopping starts no review: the run waits, and its job comes again', async () => {
+    const mr = mergeRequest();
+    const analysisId = await analysisOf(mr);
+    await snapshotOf(analysisId, mr);
+    await forgetDecorations();
+    const calls = reviewCalls().length;
+    expect(await runReviews({ shutdown: AbortSignal.abort() })).toBe(1);
+    const run = await runOf(analysisId);
+    expect(run).toMatchObject({ status: 'waiting', startedAt: null, finishedAt: null });
+    expect(reviewCalls()).toHaveLength(calls);
+    expect(await decorationsOf(analysisId)).toEqual([]);
+    // Its job is queued again, a few seconds on, for the server that is up then.
+    const queued = await h.ctx.db
+      .select({ due: sql<boolean>`${jobs.runAt} > now()` })
+      .from(jobs)
+      .where(
+        and(
+          eq(jobs.queue, AI_REVIEW_QUEUE),
+          eq(jobs.status, 'queued'),
+          sql`${jobs.payload} ->> 'runId' = ${run.id}`,
+        ),
+      );
+    expect(queued).toEqual([{ due: true }]);
+    await dueNow(run.id);
+    llm.enqueue(reviewResponder(FOUND), reviewResponder(FOUND));
+    expect(await runReviews()).toBe(1);
+    expect(await runOf(analysisId)).toMatchObject({ status: 'done', findingsNew: 1 });
   });
 
   it('a GitHub pull request is decorated with its Actions context, and one without it is not', async () => {

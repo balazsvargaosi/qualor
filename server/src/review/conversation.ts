@@ -1,5 +1,6 @@
 import { cutAtGrapheme } from '@qualor/shared';
 import {
+  LlmCallAborted,
   LlmError,
   type LlmConversation,
   type LlmMessage,
@@ -89,8 +90,9 @@ export interface ConversationInput {
   };
   /**
    * One call to the provider, recorded, through its circuit. It throws an `LlmError` for a call
-   * the provider did not answer, and a `CircuitOpenError` for one it was not asked, which fails the
-   * conversation at once. Anything else it throws ends the conversation.
+   * the provider did not answer, a `CircuitOpenError` for one it was not asked, which fails the
+   * conversation at once, and an `LlmCallAborted` for one its caller gave up (the server is
+   * stopping), which stops it. Anything else it throws ends the conversation.
    */
   send: (conversation: LlmConversation) => Promise<LlmTurn>;
   /** Asked before every call to the provider, a retry included. */
@@ -258,6 +260,8 @@ const guessedInput = (sent: LlmConversation): number => guessedTokens(sent);
  * failed call is tried again as `retryWait` says, and the first call refused for its tools ends
  * the conversation as such. A call the provider most likely billed although it gave no turn, one
  * that timed out or whose answer could not be read, is charged its guessed input through `charge`.
+ * A call its caller gave up stops the conversation: it is no failure of the provider's, so it is
+ * neither tried again nor charged.
  */
 async function nextTurn(
   input: ConversationInput,
@@ -273,6 +277,7 @@ async function nextTurn(
       return { turn: await input.send(sent), sent };
     } catch (err) {
       if (err instanceof CircuitOpenError) return failed('provider_error');
+      if (err instanceof LlmCallAborted) return { kind: 'stopped' };
       if (!(err instanceof LlmError)) throw err;
       if (first && refusedForTools(err, input.tools)) return failed('provider_no_tools');
       if (err.failure === 'timeout' || err.failure === 'bad_answer') charge(guessedInput(sent));

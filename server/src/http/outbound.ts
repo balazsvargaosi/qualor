@@ -49,6 +49,12 @@ export interface OutboundOptions {
    */
   overflow: 'truncate' | 'fail';
   names: OutboundNames;
+  /**
+   * The caller gives the exchange up when this aborts: the request is cut where it is, as its
+   * deadline cuts it, and the answer is `aborted`, never a timeout or a failed connection (the
+   * other side was neither slow nor down).
+   */
+  signal?: AbortSignal;
 }
 
 export type OutboundResult =
@@ -74,7 +80,9 @@ export type OutboundFailure =
   | 'connect_timeout'
   | 'request'
   | 'connection'
-  | 'too_large';
+  | 'too_large'
+  /** The caller's signal gave the exchange up. */
+  | 'aborted';
 
 const systemResolver: Resolver = (hostname) =>
   new Promise((resolve, reject) => {
@@ -126,7 +134,9 @@ function durationText(ms: number): string {
  *   verified against the URL's host name;
  * - one deadline for the whole exchange, the lookup included, and a shorter one for the
  *   connection ({@link CONNECT_TIMEOUT_MS}, ruling X7), which a lookup must also meet (else the
- *   host is `unresolved`); at most `maxResponseBytes` of the body are read.
+ *   host is `unresolved`); at most `maxResponseBytes` of the body are read;
+ * - a caller's `signal` that aborts cuts the exchange as the deadline does (`aborted`); one that
+ *   aborted before sends nothing.
  * Never throws; a failure is `kind: 'failed'` with a short fixed reason.
  */
 export async function outboundRequest(
@@ -141,6 +151,9 @@ export async function outboundRequest(
     code: string | null = null,
   ): OutboundResult => ({ kind: 'failed', reason, unreachable, cause, code });
   const timedOut = fail(`No response within ${durationText(options.timeoutMs)}`, 'timeout', true);
+  const givenUp = fail(`The request to ${target} was given up`, 'aborted');
+  const gaveUp = (): boolean => options.signal?.aborted === true;
+  if (gaveUp()) return givenUp;
   // The connection has a deadline of its own only when it is shorter than the whole request's.
   const connectMs = Math.min(options.connectTimeoutMs ?? CONNECT_TIMEOUT_MS, options.timeoutMs);
   const notConnected =
@@ -208,6 +221,8 @@ export async function outboundRequest(
   const connectRemainingMs = connectMs - elapsedMs;
   if (remainingMs <= 0) return timedOut;
   if (connectRemainingMs <= 0) return notConnected;
+  // Given up during the lookup: nothing is sent.
+  if (gaveUp()) return givenUp;
 
   return new Promise<OutboundResult>((resolve) => {
     const secure = url.protocol === 'https:';
@@ -251,8 +266,15 @@ export async function outboundRequest(
       settled = true;
       clearTimeout(deadline);
       clearTimeout(connectDeadline);
+      options.signal?.removeEventListener('abort', giveUp);
       resolve(outcome);
     };
+    // The caller gave up: the exchange is cut where it is, as the deadline cuts it.
+    const giveUp = (): void => {
+      settle(givenUp);
+      req.destroy();
+    };
+    options.signal?.addEventListener('abort', giveUp, { once: true });
     if (connectMs < options.timeoutMs) {
       connectDeadline = setTimeout(() => {
         settle(notConnected);

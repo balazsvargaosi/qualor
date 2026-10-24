@@ -13,6 +13,7 @@ import {
 } from '../../test/fake-llm';
 import {
   converse,
+  LlmCallAborted,
   LlmError,
   type LlmConversation,
   type LlmMessage,
@@ -1789,6 +1790,20 @@ describe('runConversation with a scripted provider', () => {
         kind: 'failed',
         reason: 'provider_error',
       });
+    });
+
+    it('stops at a call its caller gave up, which is not tried again or charged', async () => {
+      const s = scripted(callTurn([call('c1')]), new LlmCallAborted(), turn('never asked'));
+      // The server stopped while the provider was answering the second call.
+      expect(await runConversation(s.input)).toEqual({
+        kind: 'stopped',
+        inputTokens: 10,
+        outputTokens: 5,
+        turns: 1,
+        toolCalls: 1,
+      });
+      expect(s.seen).toHaveLength(2);
+      expect(s.sleeps).toEqual([]);
     });
 
     it('lets an error that is not the provider’s end the conversation', async () => {

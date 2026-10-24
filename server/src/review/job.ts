@@ -52,7 +52,7 @@ import {
   type RunRef,
   type RunSpend,
 } from './run-ends';
-import { AI_REVIEW_QUEUE, lastReviewedDigest, queueAtDeadline } from './runs';
+import { AI_REVIEW_QUEUE, lastReviewedDigest, queueAfterStop, queueAtDeadline } from './runs';
 import {
   effectiveReviewBudgets,
   reviewActive,
@@ -87,6 +87,10 @@ import { RedactionTally, remainingReviewTokens, reviewSender, reviewUsageToday }
  *    snapshot is deleted (the merge request was merged or closed: `skipped: closed`); then the
  *    findings are stored (store.ts), or the run fails with the pipeline's reason.
  *
+ * A stop of the server (`ReviewJobDeps.shutdown`) ends a running review at once, `failed:
+ * internal`: its masking and its call in flight are given up, no other call is made and nothing is
+ * stored. A stopping server starts no run: the run waits for the next server's job.
+ *
  * Every end but `superseded` queues the decoration of the analysis in the same transaction
  * (run-ends.ts), so the summary of the merge request says how the review ended. An exception once
  * the run is running ends it `failed: internal`, and the job completes: a review is never tried
@@ -113,6 +117,13 @@ export interface ReviewJobDeps {
    */
   llmCircuit: LlmRuntime['circuit'];
   scm: DecorationDeps['scm'];
+  /**
+   * Aborted when the server stops (main.ts), before it waits for its workers: a review takes
+   * minutes, and would keep the stop waiting past its grace period. A running review then ends at
+   * once, `failed: internal` (the next push reviews again): its masking and its call in flight are
+   * given up, and no other call is made. A run not yet started is left waiting for the next server.
+   */
+  shutdown: AbortSignal;
   /** The clock a run's deadline is compared with; the database's when left out. */
   now?: () => Date;
 }
@@ -121,7 +132,10 @@ const payloadSchema = z.object({ runId: z.uuid() });
 
 /** Why the pipeline was told to stop. */
 type StopReason =
-  { kind: 'superseded' } | { kind: 'inactive'; detail: string } | { kind: 'snapshot_deleted' };
+  | { kind: 'superseded' }
+  | { kind: 'inactive'; detail: string }
+  | { kind: 'snapshot_deleted' }
+  | { kind: 'shutdown' };
 
 /** What the context's limits throw, before anything is masked: the review is skipped. */
 class SkipReview extends Error {
@@ -222,6 +236,11 @@ class ReviewJob {
         // snapshot deleted under the start, say, is found gone then).
         this.deps.logger.warn(fields, 'AI review run not decided; its job is tried again');
         throw err;
+      }
+      if (running !== null && this.deps.shutdown.aborted) {
+        // The stop gave up what the review was waiting on (its masking, say): no error of its own.
+        await this.givenUp(running);
+        return;
       }
       this.deps.logger.error(fields, 'AI review run failed');
       if (running !== null) {
@@ -345,6 +364,11 @@ class ReviewJob {
       }
       return ended({ status: 'skipped', reason: 'no_snapshot' });
     }
+    if (this.deps.shutdown.aborted) {
+      // A stopping server starts no review: the run waits for the server that takes its job next.
+      await queueAfterStop(tx, run);
+      return { kind: 'none' };
+    }
 
     const [started] = await tx
       .update(reviewRuns)
@@ -395,7 +419,8 @@ class ReviewJob {
     }
     const { reader, release } = changesReadOnce(opened);
     const controller = new AbortController();
-    const masker = new Masker({ signal: controller.signal });
+    // A stop of the server gives up the masking at once, whatever is masked: the review ends.
+    const masker = new Masker({ signal: AbortSignal.any([controller.signal, this.deps.shutdown]) });
     try {
       const files = new MaskedFiles(reader, { masker });
       const policy = newToolPolicy({ excludePaths: settings.excludePaths, masked: files, masker });
@@ -504,18 +529,23 @@ class ReviewJob {
   }
 
   /**
-   * Asked before every call to the provider, and once more after the last: the run was superseded
-   * (or its analysis is no longer the newest), or review is no longer on for the project, or the
-   * provider is no longer the one the run started with (R10), or the run's snapshot is gone (the
-   * merge request was merged or closed, which deletes its snapshots, R16; the run's reference to
-   * it is then null). What the run reads of a snapshot that is gone is nothing, and an outcome
-   * built on that is not stored. The masker's signal is aborted with the stop.
+   * Asked before every call to the provider, and once more after the last: the server is stopping,
+   * or the run was superseded (or its analysis is no longer the newest), or review is no longer on
+   * for the project, or the provider is no longer the one the run started with (R10), or the run's
+   * snapshot is gone (the merge request was merged or closed, which deletes its snapshots, R16; the
+   * run's reference to it is then null). What the run reads of a snapshot that is gone is nothing,
+   * and an outcome built on that is not stored. The masker's signal is aborted with the stop.
    */
   private stopCheck(running: Running, controller: AbortController): () => Promise<boolean> {
     const { db } = this.deps;
     const { run, provider } = running;
     return async () => {
       if (this.stop !== null) return true;
+      if (this.deps.shutdown.aborted) {
+        this.stop = { kind: 'shutdown' };
+        controller.abort();
+        return true;
+      }
       const [now] = await db
         .select({
           status: reviewRuns.status,
@@ -554,7 +584,8 @@ class ReviewJob {
   /**
    * One conversation of the pipeline: its own redaction tally (the context's replacements go with
    * the first message of a reviewer or the judge, each tool answer's with the call after it), the
-   * role's output limit, and every call through the sender that records it.
+   * role's output limit, and every call through the sender that records it, which a stop of the
+   * server cuts short.
    */
   private async converse(
     ctx: {
@@ -578,6 +609,7 @@ class ReviewJob {
       promptVersion: REVIEW_PROMPT_VERSION,
       redactions: tally,
       logger: this.deps.logger,
+      signal: this.deps.shutdown,
     });
     const result = await converseOverTools(call, {
       reader,
@@ -596,7 +628,8 @@ class ReviewJob {
   /**
    * One call through the sender, counted: a call the provider answered, with its estimated cost,
    * and one that failed (the sender recorded it; the key was read before the review began, so
-   * every failure it throws as the provider's is a call that was made).
+   * every failure it throws as the provider's is a call that was made). A call the stopping server
+   * gave up is not counted: the provider answered nothing, and the sender recorded nothing.
    */
   private async counted(
     sender: (conversation: LlmConversation) => Promise<LlmTurn>,
@@ -690,18 +723,22 @@ class ReviewJob {
   }
 
   /**
-   * The pipeline stopped: the run was superseded, review was switched off meanwhile, or its
-   * snapshot was deleted.
+   * The pipeline stopped: the run was superseded, review was switched off meanwhile, its snapshot
+   * was deleted, or the server is stopping. A call the stopping server gave up stops a conversation
+   * without the stop check, so the signal itself is asked when the check gave no reason.
    */
   private async stopped(run: ReviewRunRow): Promise<void> {
-    if (this.stop?.kind === 'inactive') {
+    const stop: StopReason | null =
+      this.stop ?? (this.deps.shutdown.aborted ? { kind: 'shutdown' } : null);
+    if (stop?.kind === 'shutdown') return this.givenUp(run);
+    if (stop?.kind === 'inactive') {
       return this.endRunning(run, {
         status: 'skipped',
         reason: 'inactive',
-        detail: this.stop.detail,
+        detail: stop.detail,
       });
     }
-    if (this.stop?.kind === 'snapshot_deleted') {
+    if (stop?.kind === 'snapshot_deleted') {
       return this.endRunning(run, {
         status: 'skipped',
         reason: 'closed',
@@ -710,6 +747,15 @@ class ReviewJob {
     }
     // Superseded by a newer analysis (already ended), or its analysis is no longer the newest.
     return this.endRunning(run, { status: 'superseded' });
+  }
+
+  /**
+   * The server is stopping: the run ends now, `failed: internal`, with its decoration, rather than
+   * keep the stop waiting for a review that takes minutes. The next push reviews again.
+   */
+  private async givenUp(run: RunRef): Promise<void> {
+    this.deps.logger.warn({ runId: run.id }, 'AI review run given up: the server is stopping');
+    await this.endRunning(run, { status: 'failed', reason: 'internal' });
   }
 
   // ─── Ends (run-ends.ts) ─────────────────────────────────────────────────────

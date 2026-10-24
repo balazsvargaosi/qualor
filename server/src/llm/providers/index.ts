@@ -26,9 +26,10 @@ export function callProvider(
 
 /**
  * R5: the next turn of a conversation with read-only tools, to the configured provider; a turn or
- * an LlmError. Only the review features use it; explain, triage and fix stay `callProvider` calls
- * and never send tools. A turn with `toolCalls` asks the caller to answer them (as `tool`
- * messages) and call again; the provider layer runs no tool and keeps no state.
+ * an LlmError, or LlmCallAborted for a call its signal gave up (`http.signal`). Only the review
+ * features use it; explain, triage and fix stay `callProvider` calls and never send tools. A turn
+ * with `toolCalls` asks the caller to answer them (as `tool` messages) and call again; the provider
+ * layer runs no tool and keeps no state.
  */
 export function converse(
   config: ProviderConfig,

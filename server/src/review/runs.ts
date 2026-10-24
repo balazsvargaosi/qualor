@@ -191,6 +191,18 @@ export async function wakeReviewRun(tx: Executor, analysisId: string): Promise<v
   if (restarted !== undefined) await dueNow(tx, restarted);
 }
 
+/** How long a run the stopping server did not start waits for its next job (`queueAfterStop`). */
+export const REVIEW_AFTER_STOP_SECONDS = 5;
+
+/**
+ * A waiting run its job did not start because the server is stopping: the job comes again a few
+ * seconds on, for another replica, or for this server once it is up again. Not at once, so that a
+ * worker of the stopping server that is still polling does not take it straight back.
+ */
+export async function queueAfterStop(tx: Executor, run: RunRef): Promise<void> {
+  await queueJob(tx, run, sql`now() + make_interval(secs => ${REVIEW_AFTER_STOP_SECONDS})`);
+}
+
 /**
  * A waiting run whose job came early, before its snapshot: the job comes again at the run's
  * deadline. The time is read from the row, so that it is exactly the deadline.

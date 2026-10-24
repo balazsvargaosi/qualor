@@ -231,6 +231,8 @@ export interface FakeLlm {
   /** The key the fake expects; '' when it expects none. */
   apiKey: string;
   requests: RecordedLlmRequest[];
+  /** The requests whose caller hung up before they were answered, in the order they hung up. */
+  abandoned: RecordedLlmRequest[];
   /** Replies (or responders) for the next requests, first in first out. */
   enqueue(...replies: (LlmReply | LlmResponder)[]): void;
   /** The model's text for the next answers, in the shape of the path asked. */
@@ -250,6 +252,7 @@ export async function createFakeLlm(options: { apiKey?: string | null } = {}): P
       ? ''
       : (options.apiKey ?? ['fake', 'llm', 'key', '0123456789'].join('-'));
   const requests: RecordedLlmRequest[] = [];
+  const abandoned: RecordedLlmRequest[] = [];
   const queue: (LlmReply | LlmResponder | { say: string })[] = [];
 
   const shaped = (request: RecordedLlmRequest, text: string): LlmReply => ({
@@ -281,6 +284,10 @@ export async function createFakeLlm(options: { apiKey?: string | null } = {}): P
           json,
         };
         requests.push(request);
+        // The connection closed before the answer was written: the caller gave up on it.
+        res.on('close', () => {
+          if (!res.writableFinished) abandoned.push(request);
+        });
         const send = (reply: LlmReply): void => {
           const text = typeof reply.body === 'string' ? reply.body : JSON.stringify(reply.body);
           setTimeout(() => {
@@ -331,6 +338,7 @@ export async function createFakeLlm(options: { apiKey?: string | null } = {}): P
     host: `127.0.0.1:${port}`,
     apiKey,
     requests,
+    abandoned,
     enqueue: (...replies) => {
       queue.push(...replies);
     },

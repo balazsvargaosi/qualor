@@ -102,11 +102,29 @@ export class LlmError extends Error {
   }
 }
 
+/**
+ * A call its caller gave up before the provider answered: the call's signal aborted it
+ * (`ProviderHttpOptions.signal`), as the server stopping does to the calls of a review. It is no
+ * failure of the provider's, so it is no LlmError: it is not a timeout, it is not tried again, and
+ * the provider's circuit hears nothing of it.
+ */
+export class LlmCallAborted extends Error {
+  constructor() {
+    super('The call to the model provider was given up');
+    this.name = 'LlmCallAborted';
+  }
+}
+
 export interface ProviderHttpOptions {
   internalHosts: ReadonlySet<string>;
   /** Qualor's version, for `User-Agent`. */
   version: string;
   resolve?: Resolver;
+  /**
+   * Gives the call up when it aborts: the request is cut at once, as its timeout would cut it, and
+   * the call throws {@link LlmCallAborted}. One that aborted before sends nothing.
+   */
+  signal?: AbortSignal;
 }
 
 /**

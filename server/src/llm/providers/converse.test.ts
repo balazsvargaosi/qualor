@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   anthropicAnswer,
   anthropicToolUse,
@@ -12,6 +12,7 @@ import { parseInternalHosts } from '../../scm/url';
 import {
   callProvider,
   converse,
+  LlmCallAborted,
   LlmError,
   MAX_TOKEN_COUNT,
   type LlmConversation,
@@ -865,6 +866,54 @@ describe('converse: conversations with read-only tools (R5)', () => {
         message:
           'The model does not accept max_tokens; set the output limit field to max_completion_tokens in the AI assistant settings',
       });
+    });
+  });
+
+  describe('a call its caller gives up (the signal of the call)', () => {
+    it.each(KINDS)(
+      '%s: is cut at once while the provider answers, and is no failure of the provider’s',
+      async (kind) => {
+        let received!: () => void;
+        const asked = new Promise<void>((resolve) => {
+          received = resolve;
+        });
+        let release!: () => void;
+        const held = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        fake.enqueue(async () => {
+          received();
+          await held;
+          return { status: 200, body: openAiAnswer('{}') };
+        });
+        const controller = new AbortController();
+        try {
+          const call = converse({ ...configFor(kind), timeoutSeconds: 60 }, fake.apiKey, start, {
+            ...http,
+            signal: controller.signal,
+          }).catch((e: unknown) => e);
+          await asked;
+          const aborted = Date.now();
+          controller.abort();
+          const err = await call;
+          expect(Date.now() - aborted).toBeLessThan(2_000);
+          expect(err).toBeInstanceOf(LlmCallAborted);
+          expect(err).not.toBeInstanceOf(LlmError);
+          // The connection is closed: the provider sees its caller hang up.
+          await vi.waitFor(() => expect(fake.abandoned).toEqual([fake.requests[0]]));
+        } finally {
+          release();
+        }
+      },
+    );
+
+    it.each(KINDS)('%s: sends nothing once its signal is aborted', async (kind) => {
+      const err = await converse(configFor(kind), fake.apiKey, start, {
+        ...http,
+        signal: AbortSignal.abort(),
+      }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(LlmCallAborted);
+      expect(fake.requests).toHaveLength(0);
     });
   });
 

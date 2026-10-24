@@ -340,6 +340,7 @@ async function main(): Promise<void> {
   });
   // 6I-3 R21: AI reviews have their own worker, so a review never holds explain, triage or fix
   // behind it, nor an analysis or a decoration. It shares the `llm` worker's circuit.
+  const reviewShutdown = new AbortController();
   const reviewWorker = startWorker({
     db: database.db,
     handlers: reviewHandlers({
@@ -348,6 +349,7 @@ async function main(): Promise<void> {
       logger,
       llmCircuit: llmRuntime.circuit,
       scm: { secretKey: config.secretKey, internalHosts: config.scmInternalHosts },
+      shutdown: reviewShutdown.signal,
     }),
     concurrency: config.reviewWorkerConcurrency,
     leaseMs: REVIEW_LEASE_MS,
@@ -419,13 +421,18 @@ async function main(): Promise<void> {
     stopping = true;
     logger.info({ signal }, 'shutting down');
     try {
+      // A review runs for minutes, longer than a stop's grace period (60 s in Compose and Helm):
+      // the running ones end now, failed (the next push reviews again), and the worker takes no
+      // new one, before anything is waited for. The database stays up until the worker is done.
+      reviewShutdown.abort();
+      const reviewsStopped = reviewWorker.stop();
       updates?.stop();
       await app.close();
       await worker.stop();
       await webhookWorker.stop();
       await scmWorker.stop();
       await llmWorker.stop();
-      await reviewWorker.stop();
+      await reviewsStopped;
       await mailWorker.stop();
       await pluginWorker?.stop();
       await database.close();

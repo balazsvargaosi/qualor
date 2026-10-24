@@ -9,7 +9,9 @@ export const SSO_FETCH_MAX_BYTES = 512 * 1024;
 
 export class SsoFetchRefused extends Error {
   constructor(
-    readonly reason: 'not_allowed' | 'method' | 'status' | 'tls' | OutboundFailure,
+    /** outboundRequest is given no signal here (`abortable` answers for one): never `aborted`. */
+    readonly reason:
+      'not_allowed' | 'method' | 'status' | 'tls' | Exclude<OutboundFailure, 'aborted'>,
     /** For the log only: the system error code (`CERT_HAS_EXPIRED`), when there is one. */
     readonly code: string | null = null,
     /** For the log only: the HTTP status of a `status` refusal, when one arrived. */
@@ -142,7 +144,9 @@ export function createSsoFetch(policy: SsoFetchPolicy): SsoFetch {
     const result = await abortable(request, options.signal);
     if (result.kind === 'failed') {
       const tls = result.cause === 'connection' && isTlsErrorCode(result.code);
-      throw new SsoFetchRefused(tls ? 'tls' : result.cause, result.code);
+      // A request given up is one that ran out of time, as `abortable` says one is.
+      const cause = result.cause === 'aborted' ? 'timeout' : result.cause;
+      throw new SsoFetchRefused(tls ? 'tls' : cause, result.code);
     }
     // A Response carries only 200-599; anything else (a 1xx that ended the exchange, a 999) fails.
     if (result.status < 200 || result.status > 599) {

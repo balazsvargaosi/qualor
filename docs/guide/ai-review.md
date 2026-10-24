@@ -114,9 +114,10 @@ in the background. The summary comment says **AI review in progress…** until i
   to review in its changed files; one whose reviewed changes are the same as in the last review; and
   every one while the day's token budget is spent. The summary says which
   ([What the summary says](#what-the-summary-says)).
-- **A stop of the server loses a review in progress.** It is not resumed. When the server is up
-  again and the review's lease of 20 minutes has run out, the summary says that AI review failed
-  because of an error in Qualor, and the next push reviews again.
+- **A stop of the server ends a review in progress.** The review ends as failed at once, so the
+  stop does not wait for it, and it is not resumed: the summary says that AI review failed because
+  of an error in Qualor, and the next push reviews again. A review that has not started yet runs
+  once the server is up again.
 
 ### What the model is sent
 
