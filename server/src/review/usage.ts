@@ -32,6 +32,28 @@ import { storedPrompt, storedResult } from './usage-store';
 
 export const REVIEW_FEATURE = 'review';
 
+/**
+ * The least a review call waits for its answer, in seconds. A review runs in the background and its
+ * answers are long: one call of a reasoning model can take minutes, so the assistant's timeout
+ * (60 s by default, set for a person waiting on Explain, Triage or Fix) would cut it off.
+ */
+export const REVIEW_CALL_MIN_TIMEOUT_SECONDS = 300;
+
+/**
+ * The settings a review sends its calls with: the assistant's, with the provider's timeout raised
+ * to at least REVIEW_CALL_MIN_TIMEOUT_SECONDS (a longer one the admin set is kept).
+ */
+export function reviewCallSettings(settings: StoredLlmSettings): StoredLlmSettings {
+  const { provider } = settings;
+  if (provider === null || provider.timeoutSeconds >= REVIEW_CALL_MIN_TIMEOUT_SECONDS) {
+    return settings;
+  }
+  return {
+    ...settings,
+    provider: { ...provider, timeoutSeconds: REVIEW_CALL_MIN_TIMEOUT_SECONDS },
+  };
+}
+
 /** The largest value of the `redactions` column. */
 const MAX_REDACTIONS = 2_147_483_647;
 

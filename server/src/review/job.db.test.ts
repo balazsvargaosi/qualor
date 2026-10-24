@@ -4,7 +4,7 @@ import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFakeGitHub, type FakeGitHub } from '../../test/fake-github';
 import { createFakeGitLab, type FakeGitLab, type FakeMergeRequest } from '../../test/fake-gitlab';
-import { createFakeLlm, type FakeLlm } from '../../test/fake-llm';
+import { createFakeLlm, type FakeLlm, type LlmResponder } from '../../test/fake-llm';
 import { mappedGitHubProject, pullRequestReport } from '../../test/github';
 import { createIngestHarness, type IngestHarness, type IngestProject } from '../../test/ingest';
 import { configuredProvider } from '../../test/llm';
@@ -316,6 +316,31 @@ describe('the ai-review job (6I-3, R15)', () => {
     for (const text of [CART_LINES[2]!, FINDING.title, FINDING.body]) {
       expect(log).not.toContain(text);
     }
+  });
+
+  it('a review call waits past the assistant’s timeout', async () => {
+    await reviewOn();
+    // The assistant gives up after 5 s (the least it can be set to); the reviewer's call takes the
+    // model 5.5 s.
+    await h.ctx.db.execute(
+      sql`UPDATE instance_settings
+             SET value = jsonb_set(value, '{provider,timeoutSeconds}', '5')
+           WHERE key = 'llm'`,
+    );
+    const slow =
+      (script: ReviewScript): LlmResponder =>
+      async (request) => ({ ...(await reviewResponder(script)(request)), delayMs: 5_500 });
+    const mr = mergeRequest();
+    const analysisId = await analysisOf(mr);
+    await snapshotOf(analysisId, mr);
+    llm.enqueue(slow(FOUND), reviewResponder(FOUND));
+    expect(await runReviews()).toBe(1);
+    expect(await runOf(analysisId)).toMatchObject({
+      status: 'done',
+      reason: null,
+      modelCalls: 2,
+      findingsNew: 1,
+    });
   });
 
   it('a rejected snapshot ends the run as snapshot_rejected', async () => {

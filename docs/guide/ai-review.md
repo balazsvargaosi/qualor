@@ -368,10 +368,12 @@ Each new scan of a merge request is reviewed again, on its latest commit.
   not tell.
 - **Small local models give weak reviews.** They miss problems, report others that are not there,
   and more often fail to answer in the form the review needs. Use a strong model for code.
-- **Allow time.** The provider timeout in the AI assistant settings (60 seconds by default, 5 to
-  600) applies to every call of a review, and its answers are long: a reviewer may write up to
-  12 288 tokens in one answer and the judge up to 16 384. A review of a big merge request may need a
-  higher timeout, and so may a slow local model.
+- **Allow time.** A review's answers are long: a reviewer may write up to 12 288 tokens in one
+  answer and the judge up to 16 384, and a reasoning model can take minutes for one. So each call of
+  a review waits at least 5 minutes for its answer, or longer when the timeout in the AI assistant
+  settings is set higher (up to 600 seconds). That timeout, 60 seconds by default, still applies to
+  Explain, Suggest triage and Suggest a fix. A review usually takes a few minutes, and a big merge
+  request can take 15 or more. The summary says the review is in progress until it ends.
 - **The review writes in English**, whatever language your code and comments are in.
 
 ## What the scanner uploads
@@ -688,7 +690,7 @@ each call, with its status and, for a call that failed, its error code:
 
 | Error code in the log | What to do |
 |---|---|
-| `PROVIDER_TIMEOUT` | The model did not answer within the provider timeout. A review's answers are long, and a big merge request or a local model may need more time: raise the timeout in **Settings → AI assistant**, up to 600 seconds |
+| `PROVIDER_TIMEOUT` | The model did not answer within the call's timeout: 5 minutes for a review call, or the AI assistant's timeout when it is set higher. A slow local model may need more time: raise the timeout in **Settings → AI assistant**, up to 600 seconds |
 | `PROVIDER_RATE_LIMITED` | The provider's own limit. Qualor waited as the provider asked and tried twice. Review again later, or lower the budgets |
 | `PROVIDER_REFUSED_KEY` | Set a valid API key, and check the key header (`api-key` for Azure) |
 | `PROVIDER_REJECTED_REQUEST` | The provider refused the request: check the base URL, the model's name and the output limit field ([AI assistant: Troubleshooting](./ai-assistant.md#troubleshooting)) |

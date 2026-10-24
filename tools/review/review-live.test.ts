@@ -117,7 +117,8 @@ describe('providerOf', () => {
       jsonMode: 'none',
       maxTokensField: 'max_tokens',
       temperature: null,
-      timeoutSeconds: 60,
+      // What a review call waits at least on the server (review/usage.ts).
+      timeoutSeconds: 300,
     });
     expect(of('https://api.anthropic.com', 'anthropic').config).toMatchObject({
       kind: 'anthropic',

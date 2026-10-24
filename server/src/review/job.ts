@@ -63,7 +63,13 @@ import { openSnapshotReader, type SnapshotChange, type SnapshotReader } from './
 import { prepareReviewOutcome, ReviewNotStoringError, storeReviewOutcome } from './store';
 import { converseOverTools, newToolPolicy, type RoleCall } from './tool-conversation';
 import type { ToolPolicy } from './tools';
-import { RedactionTally, remainingReviewTokens, reviewSender, reviewUsageToday } from './usage';
+import {
+  RedactionTally,
+  remainingReviewTokens,
+  reviewCallSettings,
+  reviewSender,
+  reviewUsageToday,
+} from './usage';
 
 /*
  * The `ai-review` job (6I-3, R15, R21): one review run, from waiting for its snapshot to the
@@ -629,7 +635,7 @@ class ReviewJob {
       db: this.deps.db,
       runtime: { circuit: this.deps.llmCircuit },
       config: this.deps.config,
-      settings: running.settings,
+      settings: reviewCallSettings(running.settings),
       run: running.run,
       promptVersion: REVIEW_PROMPT_VERSION,
       redactions: tally,

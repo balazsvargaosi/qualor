@@ -105,7 +105,7 @@ instance:
 | JSON mode | on by default. Turn it off for a server that refuses `response_format` |
 | Output limit field | `max_completion_tokens` for OpenAI and Azure OpenAI, whose current models refuse `max_tokens`; `max_tokens` for vLLM, Ollama and most other servers. The page picks it from the base URL's host until you choose one |
 | Temperature | optional; not sent when empty |
-| Timeout (seconds) | 5–600, default 60, for the whole request |
+| Timeout (seconds) | 5–600, default 60, for the whole request. An AI review call waits at least 300 |
 
 Press **Test**. It sends a fixed prompt that holds no repository data to the saved provider, and
 shows the model's name and the latency, or what went wrong. When that passes, it makes a second

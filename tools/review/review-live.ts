@@ -12,6 +12,7 @@ import {
 import { llmBaseUrlProblem } from '../../server/src/llm/url';
 import { scrubTurn } from '../../server/src/review/key-scrub';
 import { converseOverTools } from '../../server/src/review/tool-conversation';
+import { REVIEW_CALL_MIN_TIMEOUT_SECONDS } from '../../server/src/review/usage';
 import { normalBaseUrl, parseInternalHosts } from '../../server/src/scm/url';
 import { hostOf, isNonPublicAddress } from '../../server/src/webhooks/url';
 import {
@@ -39,8 +40,8 @@ import {
  * Checked against the fake provider by review-live.test.ts.
  */
 
-/** A call's timeout: the default of the AI settings (routes/llm-settings.ts). */
-const CALL_TIMEOUT_SECONDS = 60;
+/** A call's timeout: what a review call waits at least on the server, with the default settings. */
+const CALL_TIMEOUT_SECONDS = REVIEW_CALL_MIN_TIMEOUT_SECONDS;
 /** What the server accepts as an API key: printable ASCII without spaces (llm.md §3.2). */
 const API_KEY = /^[\x21-\x7e]{1,4096}$/;
 /** The settings' bound for a price, USD for a million tokens (pricingSchema). */
