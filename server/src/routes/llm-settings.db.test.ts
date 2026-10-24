@@ -442,7 +442,8 @@ describe('/system/llm (llm.md §3, §16)', () => {
         },
         { role: 'user', content: 'ping' },
       ],
-      max_tokens: 20,
+      // Room for a reasoning model's reasoning before the answer.
+      max_tokens: 256,
       response_format: { type: 'json_object' },
     });
     expect(sent.headers.authorization).toBe(`Bearer ${fake.apiKey}`);

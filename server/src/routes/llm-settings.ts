@@ -228,20 +228,24 @@ function missingV1Hint(provider: StoredProvider, status: number | null): string 
     : ' (the base URL has no version path: most OpenAI-compatible servers need /v1 at its end)';
 }
 
+/**
+ * The output limit of both calls of the Test. It leaves room for what a model writes before its
+ * answer: a reasoning model's reasoning tokens count against it (with JSON mode, OpenAI refuses a
+ * request whose limit the reasoning used up), and many models write a sentence before a tool call.
+ */
+const TEST_MAX_OUTPUT_TOKENS = 256;
+
 /** llm.md §16: the Test button's prompt holds no repository data. */
 const TEST_CALL = {
   system: 'Answer with the JSON object {"ok": true} and nothing else.',
   user: 'ping',
-  maxOutputTokens: 20,
+  maxOutputTokens: TEST_MAX_OUTPUT_TOKENS,
 };
 
 /**
  * The tool-calling check that follows a passing Test, because only the review calls tools: a fixed
- * prompt holding no repository data and one read-only tool. Its output limit leaves room for the
- * sentence many models write before a call (the plain test's 20 tokens would cut most of them off,
- * and the check would say nothing).
+ * prompt holding no repository data and one read-only tool.
  */
-const TOOL_CHECK_MAX_OUTPUT_TOKENS = 256;
 const ECHO_TOOL: LlmToolSpec = {
   name: 'echo',
   description: 'Returns the text it is given.',
@@ -251,7 +255,7 @@ const TOOL_CHECK: LlmConversation = {
   system: 'This is a connection check. Call the echo tool with the text ok.',
   messages: [{ role: 'user', text: 'Call the echo tool with the text ok.' }],
   tools: [ECHO_TOOL],
-  maxOutputTokens: TOOL_CHECK_MAX_OUTPUT_TOKENS,
+  maxOutputTokens: TEST_MAX_OUTPUT_TOKENS,
 };
 
 /**
