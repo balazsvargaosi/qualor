@@ -1182,6 +1182,42 @@ describe('/system/llm (llm.md §3, §16)', () => {
       expect(json).toMatchObject({ ok: true, toolCalling: 'supported' });
     });
 
+    it('lists the models in the order of the tiers, whichever answers first', async () => {
+      await put(body({ provider: provider(tiers) }));
+      let toolChecks = 0;
+      let released: () => void = () => undefined;
+      const othersAnswered = new Promise<void>((resolve) => {
+        released = resolve;
+      });
+      // The standard model's plain call is answered only once the other two models have reached
+      // their tool checks, so it finishes last. If they never do, the timeout lets the assertions
+      // below report it.
+      const giveUp = setTimeout(() => released(), 3_000);
+      const provides = serving();
+      const standardLast: LlmResponder = async (request) => {
+        if (asksForTool(request)) {
+          toolChecks += 1;
+          if (toolChecks === 2) released();
+        } else if (modelOf(request) === 'fake-model') {
+          await othersAnswered;
+        }
+        return provides(request);
+      };
+      enqueue(6, standardLast);
+      const res = await check();
+      clearTimeout(giveUp);
+      expect(res.statusCode, res.body).toBe(200);
+      // The standard model did finish last: its tool check is the last request.
+      expect(fake.requests.filter(asksForTool).map(modelOf).at(-1)).toBe('fake-model');
+      // Yet its line is first, as the tiers list it, and its fields are the answer's own.
+      expect(res.json()).toMatchObject({ ok: true, model: 'reported-fake-model' });
+      expect(res.json().models).toEqual([
+        line('standard', 'fake-model'),
+        line('strong', 'fake-strong'),
+        line('fast', 'fake-fast'),
+      ]);
+    });
+
     it('never reports a model name that holds the key, for the line of that model only', async () => {
       await put(body({ provider: provider(tiers) }));
       const provides = serving();
