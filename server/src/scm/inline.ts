@@ -2,7 +2,7 @@ import type { Quality, Severity } from '@qualor/shared';
 import { and, eq, inArray } from 'drizzle-orm';
 import type { Db, Executor } from '../db/client';
 import { issues, rules } from '../db/schema';
-import { aiThreadBody } from '../review/render';
+import { aiThreadNote, type AiThreadNote } from '../review/render';
 import { AI_THREAD_SEVERITIES } from '../review/rules';
 import { suggestionApplies, type ReviewSuggestion } from '../review/suggestion';
 import { AI_ENGINE } from '../rules/server-engines';
@@ -97,11 +97,6 @@ export interface InlineReconciled extends InlineResult {
    * the discussions were cut by the page bound: a thread of any of them may exist unseen.
    */
   aiNotPosted: DesiredAiIssue[];
-}
-
-/** The added lines of a unified diff (`+` lines of its hunks), by line number in the new file. */
-export function addedLines(diff: string): Set<number> {
-  return new Set(addedLineTexts(diff).keys());
 }
 
 /**
@@ -228,6 +223,41 @@ export async function liveSuggestion(
 }
 
 /**
+ * The first note of an AI finding's thread on GitLab or GitHub, with `suggestion` when it still
+ * applies to the diff (`liveSuggestion`), and whether the note kept it. A low finding is posted for
+ * its suggestion only: one whose note has none (none applies, or the note left it out) is counted in
+ * the summary instead, as one that never had a suggestion is.
+ */
+export function aiFindingNote(
+  provider: 'gitlab' | 'github',
+  issue: DesiredAiIssue,
+  suggestion: ReviewSuggestion | null,
+  issueUrl: string | null,
+): AiThreadNote {
+  return aiThreadNote({
+    provider,
+    issueId: issue.id,
+    severity: issue.severity,
+    category: issue.category,
+    confidence: issue.confidence,
+    ruleKey: issue.ruleKey,
+    title: issue.title,
+    body: issue.body,
+    assumption: issue.assumption,
+    verification: issue.verification,
+    suggestion,
+    issueUrl,
+  });
+}
+
+/**
+ * Whether an AI finding with this first note gets a thread (R18): one of the severities that get a
+ * thread for themselves, or any other with the suggestion its note offers.
+ */
+export const postsAiThread = (issue: DesiredAiIssue, note: AiThreadNote): boolean =>
+  AI_THREAD_SEVERITIES.has(issue.severity) || note.suggestion !== null;
+
+/**
  * scm.md §5.4: reconciles Qualor's inline discussions with the branch's open new issues and the
  * findings of its AI review. For the threads of this project's issues (the analyzers' only when
  * `analyzers`, the AI review's always):
@@ -352,34 +382,19 @@ export async function reconcileInline(ctx: InlineContext): Promise<InlineReconci
   }
   for (const issue of toCreate) {
     const place = byPath.get(issue.path);
-    const onDiff = place !== undefined && place.added.has(issue.anchorLine);
-    const suggestion =
-      place !== undefined && onDiff && ai !== null
-        ? await liveSuggestion(ctx.db, ctx.branchId, ai.head, issue, place.added)
-        : null;
-    // Without a suggestion, a low finding is counted in the summary, as one that never had one is.
-    if (suggestion === null && !AI_THREAD_SEVERITIES.has(issue.severity)) continue;
-    if (place === undefined || !onDiff) {
+    // No place on the diff: listed in the summary (a low one never is: `result` keeps only the
+    // severities that get a thread for themselves). The findings to create are the review's (`ai`).
+    if (ai === null || place === undefined || !place.added.has(issue.anchorLine)) {
       notPosted.add(issue);
       continue;
     }
+    const suggestion = await liveSuggestion(ctx.db, ctx.branchId, ai.head, issue, place.added);
+    const note = aiFindingNote('gitlab', issue, suggestion, ctx.issueUrl(issue.id));
+    if (!postsAiThread(issue, note)) continue;
     const created = await ctx.client.createDiscussion(
       ctx.ref,
       ctx.iid,
-      aiThreadBody({
-        provider: 'gitlab',
-        issueId: issue.id,
-        severity: issue.severity,
-        category: issue.category,
-        confidence: issue.confidence,
-        ruleKey: issue.ruleKey,
-        title: issue.title,
-        body: issue.body,
-        assumption: issue.assumption,
-        verification: issue.verification,
-        suggestion,
-        issueUrl: ctx.issueUrl(issue.id),
-      }),
+      note.body,
       position(place.diff, issue.anchorLine),
     );
     if (created === 'position_rejected') notPosted.add(issue);

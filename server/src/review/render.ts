@@ -25,7 +25,7 @@ import { ANSWER_LIMITS, type ReviewNote } from './schemas';
  * walkthrough, then the tail of the findings not on changed lines, then cuts the verdict; and shows
  * nothing when even that does not fit.
  *
- * The first note of a finding's thread (aiThreadBody) is made of the same pieces, and of the one
+ * The first note of a finding's thread (aiThreadNote) is made of the same pieces, and of the one
  * text no model word goes through `safeProse` in: the lines of its one-click suggestion, code that a
  * person applies, which the storing of the finding checked and which are checked again here.
  */
@@ -516,15 +516,26 @@ function suggestionBlock(input: AiThreadInput): string[] | null {
   return [fence, ...lines, '```'];
 }
 
+/** The first note of an AI finding's thread, and the suggestion its block offers. */
+export interface AiThreadNote {
+  body: string;
+  /**
+   * The input's suggestion when the note holds its block; null when it has none: there was none,
+   * or the note left it out, as one not safe to post or one that would make the note too long. A
+   * low finding is posted for its suggestion only, so one whose note has none is not posted.
+   */
+  suggestion: AiThreadInput['suggestion'];
+}
+
 /**
  * The first note of an AI finding's thread, on GitLab or GitHub: the issue marker (the thread is
  * reconciled through it as an analyzer's is), the fixed header (severity, category, how sure the
  * review is, and the rule's key in a code span), the title in bold and the body, what the finding
  * assumes and whether it needs validation, its one-click suggestion, and Qualor's link. Every word
  * of the model is written through `safeProse`. At most AI_THREAD_MAX_BYTES: the suggestion is left
- * out first, then the body is shortened.
+ * out first, then the body is shortened. Says whether it kept the suggestion.
  */
-export function aiThreadBody(input: AiThreadInput): string {
+export function aiThreadNote(input: AiThreadInput): AiThreadNote {
   const severity = aiSeverityOf(input.severity);
   const category = Object.hasOwn(CATEGORY_LABEL, input.category)
     ? CATEGORY_LABEL[input.category]
@@ -562,12 +573,24 @@ export function aiThreadBody(input: AiThreadInput): string {
   const block = suggestionBlock(input);
   if (block !== null) {
     const whole = note(block, THREAD_BODY_CHARS[0]);
-    if (Buffer.byteLength(whole, 'utf8') <= AI_THREAD_MAX_BYTES) return whole;
+    if (Buffer.byteLength(whole, 'utf8') <= AI_THREAD_MAX_BYTES) {
+      return { body: whole, suggestion: input.suggestion };
+    }
   }
   for (const chars of THREAD_BODY_CHARS) {
     const shorter = note(null, chars);
-    if (Buffer.byteLength(shorter, 'utf8') <= AI_THREAD_MAX_BYTES) return shorter;
+    if (Buffer.byteLength(shorter, 'utf8') <= AI_THREAD_MAX_BYTES) {
+      return { body: shorter, suggestion: null };
+    }
   }
   // Only a link longer than the bound gets here: the note is cut at whole lines.
-  return linesWithinBytes([...head, ...notes, ...tail], AI_THREAD_MAX_BYTES);
+  return {
+    body: linesWithinBytes([...head, ...notes, ...tail], AI_THREAD_MAX_BYTES),
+    suggestion: null,
+  };
+}
+
+/** The text of the first note of an AI finding's thread (`aiThreadNote`). */
+export function aiThreadBody(input: AiThreadInput): string {
+  return aiThreadNote(input).body;
 }

@@ -12,6 +12,7 @@ import {
   AI_THREAD_MAX_BYTES,
   aiSummarySection,
   aiThreadBody,
+  aiThreadNote,
   withMergeRequestHead,
   withUnplacedFindings,
   type AiThreadInput,
@@ -521,6 +522,27 @@ describe('the first note of an AI review thread', () => {
     // Without the long link the whole body fits.
     const whole = aiThreadBody(input({ body: words }));
     expect(spansOf(whole.split('\n').find((line) => line.startsWith('` @ `')) ?? '')).toBe(600);
+  });
+
+  it('says which suggestion its block offers: the one it was given, or none once it left it out', () => {
+    expect(aiThreadNote(input({ suggestion: LOOP }))).toEqual({
+      body: aiThreadBody(input({ suggestion: LOOP })),
+      suggestion: LOOP,
+    });
+    expect(aiThreadNote(input()).suggestion).toBeNull();
+    // Left out: one that is not safe to post, and one that would make the note too long.
+    const unsafe = { startLine: 3, endLine: 3, lines: ['/merge'] };
+    const long = {
+      startLine: 1,
+      endLine: 15,
+      lines: Array.from({ length: 30 }, (_, i) => `// ${'word '.repeat(74)}${i}`),
+    };
+    for (const suggestion of [unsafe, long]) {
+      const note = aiThreadNote(input({ suggestion }));
+      expect(note.suggestion).toBeNull();
+      expect(note.body).not.toContain('```suggestion');
+      expect(note.body).toBe(aiThreadBody(input({ suggestion })));
+    }
   });
 
   it('is checked by a body check that refuses markup where it does not belong', () => {

@@ -12,7 +12,7 @@ import {
 } from '../../test/scm';
 import { MAX_GITLAB_REQUESTS } from './gitlab/client';
 import {
-  addedLines,
+  addedLineTexts,
   MAX_AI_THREADS,
   MAX_DIFF_PAGES,
   MAX_DISCUSSION_PAGES,
@@ -36,13 +36,12 @@ const DIFFS = [
 ];
 const HUMAN = 5;
 
-describe('addedLines', () => {
+describe('addedLineTexts', () => {
   it('numbers the added lines of every hunk in the new file', () => {
-    expect([...addedLines(DIFFS[0]!.diff)]).toEqual([3, 4, 5]);
-    expect([...addedLines('@@ -1 +1,2 @@\n-a\n+b\n+c\n@@ -9,2 +10,2 @@\n x\n+y\n')]).toEqual([
-      1, 2, 11,
-    ]);
-    expect(addedLines('Binary files differ').size).toBe(0);
+    const numbers = (diff: string) => [...addedLineTexts(diff).keys()];
+    expect(numbers(DIFFS[0]!.diff)).toEqual([3, 4, 5]);
+    expect(numbers('@@ -1 +1,2 @@\n-a\n+b\n+c\n@@ -9,2 +10,2 @@\n x\n+y\n')).toEqual([1, 2, 11]);
+    expect(numbers('Binary files differ')).toEqual([]);
   });
 });
 

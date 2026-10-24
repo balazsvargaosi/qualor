@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addedLines, addedLineTexts } from './inline';
+import { addedLineTexts } from './inline';
 
 describe('addedLineTexts (llm.md §8.3)', () => {
   it('maps each added line of the new file to its text', () => {
@@ -31,7 +31,6 @@ describe('addedLineTexts (llm.md §8.3)', () => {
         [22, ''],
       ]),
     );
-    expect([...addedLines(diff)]).toEqual([2, 21, 22]);
   });
 
   it('reads nothing before the first hunk header', () => {

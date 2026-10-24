@@ -2,16 +2,17 @@ import type { Quality, Severity } from '@qualor/shared';
 import { and, eq, inArray } from 'drizzle-orm';
 import type { Db } from '../../db/client';
 import { issues, rules } from '../../db/schema';
-import { aiThreadBody } from '../../review/render';
 import { AI_THREAD_SEVERITIES } from '../../review/rules';
 import { AI_ENGINE } from '../../rules/server-engines';
 import { desiredInlineIssues, type DesiredAiIssue } from '../decoration-data';
 import {
   addedLineTexts,
+  aiFindingNote,
   aiThreads,
   liveSuggestion,
   MAX_AI_THREADS,
   MAX_INLINE_THREADS,
+  postsAiThread,
   type InlineResult,
 } from '../inline';
 import { markerOf } from '../markdown';
@@ -310,9 +311,6 @@ async function planCreations(
   return { creations, unplaced };
 }
 
-/** The opening line of the suggestion block GitHub applies (`aiThreadBody` writes it for GitHub). */
-const SUGGESTION_FENCE = '```suggestion';
-
 /**
  * The new threads of the AI review's findings, and the findings that get none. The findings are
  * those of the branch's newest finished review that have no thread, the most severe first; they get
@@ -334,31 +332,16 @@ async function planAiCreations(
     const place = added.get(issue.path);
     if (place === undefined || !place.has(issue.anchorLine)) continue;
     const suggestion = await liveSuggestion(ctx.db, ctx.branchId, ai.head, issue, place);
-    // Without a suggestion, a low finding is counted in the summary, as one that never had one is.
-    if (suggestion === null && !AI_THREAD_SEVERITIES.has(issue.severity)) continue;
-    const body = aiThreadBody({
-      provider: 'github',
-      issueId: issue.id,
-      severity: issue.severity,
-      category: issue.category,
-      confidence: issue.confidence,
-      ruleKey: issue.ruleKey,
-      title: issue.title,
-      body: issue.body,
-      assumption: issue.assumption,
-      verification: issue.verification,
-      suggestion,
-      issueUrl: ctx.issueUrl(issue.id),
-    });
-    // The note leaves a suggestion out when it is none to offer or the note would be too long: the
-    // comment is then on its anchor alone, with no range to show.
-    const block =
-      suggestion !== null && body.split('\n').includes(SUGGESTION_FENCE) ? suggestion : null;
+    const note = aiFindingNote('github', issue, suggestion, ctx.issueUrl(issue.id));
+    if (!postsAiThread(issue, note)) continue;
+    // A note that left the suggestion out (none to offer, or the note would be too long) is on its
+    // anchor alone, with no range to show.
+    const block = note.suggestion;
     creations.push({
       path: issue.path,
       line: block?.endLine ?? issue.anchorLine,
       ...(block !== null && block.endLine > block.startLine ? { startLine: block.startLine } : {}),
-      body,
+      body: note.body,
       finding: issue,
     });
   }

@@ -547,6 +547,41 @@ describe('GitHub decoration: AI review threads (6I-3, R16, R18)', () => {
     expect(body).not.toContain('Not on changed lines');
   });
 
+  it('a low finding whose suggestion the note leaves out gets no thread, a medium one gets it without', async () => {
+    const s = await setup('gh-ai/low-dropped');
+    const { repo, branchId } = s;
+    // Thirty lines of comment words over two lines: a suggestion that applies to the live diff and
+    // passes every check, but would make the note longer than a comment's first note may be.
+    const long = (line: number) => ({
+      startLine: line,
+      endLine: line + 1,
+      lines: Array.from({ length: 30 }, (_, i) => `// ${'word '.repeat(74)}${i}`),
+    });
+    const lowLong = await aiFinding(branchId, { line: 9, severity: 'low', suggestion: long(9) });
+    // One the note would not write either: a line of it is a quick action.
+    const lowUnsafe = await aiFinding(branchId, {
+      line: 12,
+      severity: 'low',
+      suggestion: { startLine: 12, endLine: 12, lines: ['/merge'] },
+    });
+    const medium = await aiFinding(branchId, { line: 14, suggestion: long(14) });
+    await runDecorations(h, githubDeps(h));
+    const threads = threadsOf(repo.id);
+    expect(threads.has(lowLong) || threads.has(lowUnsafe)).toBe(false);
+    expect([...threads.keys()]).toEqual([medium]);
+    // On its anchor alone: without the block there is no range for GitHub to apply.
+    const [review] = reviewsOf(repo.name);
+    expect(review?.comments).toHaveLength(1);
+    expect(review?.comments[0]).toMatchObject({ path: PATH, line: 14 });
+    expect(review?.comments[0]).not.toHaveProperty('start_line');
+    expect(review?.comments[0]?.body).toContain('Why line 14 is wrong, and how to fix it.');
+    expect(review?.comments[0]?.body).not.toContain('```suggestion');
+    // The low ones are counted, as low findings without a suggestion are, and never listed.
+    const summary = summaryOf(repo.id);
+    expect(summary).toContain('**Findings:** 0 high · 1 medium · 2 low');
+    expect(summary).not.toContain('Not on changed lines');
+  });
+
   it('a suggestion whose lines changed in the live diff is left out, and the comment spans no range', async () => {
     // GitHub's patch of the head has line 5 otherwise than the snapshot the review read.
     const live = LINES.map((line, i) => (i === 4 ? 'export const line5 = 500;' : line));

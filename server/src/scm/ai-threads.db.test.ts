@@ -473,6 +473,37 @@ describe('GitLab decoration: AI review threads (6I-3, R16, R18)', () => {
     expect(body).not.toContain('Not on changed lines');
   });
 
+  it('a low finding whose suggestion the note leaves out gets no thread, a medium one gets it without', async () => {
+    const { gitlabId, branchId } = await setup('ai/low-dropped');
+    // Thirty lines of comment words over line 9: a suggestion that applies to the live diff and
+    // passes every check, but would make the note longer than a thread's first note may be.
+    const long = (line: number) => ({
+      startLine: line,
+      endLine: line,
+      lines: Array.from({ length: 30 }, (_, i) => `// ${'word '.repeat(74)}${i}`),
+    });
+    const lowLong = await aiFinding(branchId, { line: 9, severity: 'low', suggestion: long(9) });
+    // One the note would not write either: a line of it is a quick action.
+    const lowUnsafe = await aiFinding(branchId, {
+      line: 12,
+      severity: 'low',
+      suggestion: { startLine: 12, endLine: 12, lines: ['/merge'] },
+    });
+    const medium = await aiFinding(branchId, { line: 14, suggestion: long(14) });
+    await runDecorations(h, decorationDeps(h));
+    const threads = threadsOf(gitlabId);
+    expect(threads.has(lowLong) || threads.has(lowUnsafe)).toBe(false);
+    expect([...threads.keys()]).toEqual([medium]);
+    const body = threads.get(medium)?.notes[0]?.body ?? '';
+    expect(body).toContain('Why line 14 is wrong, and how to fix it.');
+    expect(body).not.toContain('```suggestion');
+    expect(lineOf(threads.get(medium)!)).toBe(14);
+    // The low ones are counted, as low findings without a suggestion are, and never listed.
+    const summary = summaryOf(gitlabId);
+    expect(summary).toContain('**Findings:** 0 high · 1 medium · 2 low');
+    expect(summary).not.toContain('Not on changed lines');
+  });
+
   it('the 21st AI finding gets no thread', async () => {
     const { gitlabId, branchId } = await setup('ai/cap', {
       // Two analyzer findings: the analyzers' threads have a cap of their own.
