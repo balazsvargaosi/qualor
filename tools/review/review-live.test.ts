@@ -109,9 +109,9 @@ describe('providerOf', () => {
     providerOf({ url, model: 'm', kind });
 
   it('settles a call as the AI settings would store it', () => {
-    expect(of('http://ollama:11434/v1/').config).toEqual({
+    expect(of('http://localhost:11434/v1/').config).toEqual({
       kind: 'openai',
-      baseUrl: 'http://ollama:11434/v1',
+      baseUrl: 'http://localhost:11434/v1',
       model: 'm',
       auth: 'bearer',
       jsonMode: 'none',
@@ -151,6 +151,31 @@ describe('providerOf', () => {
   ])('refuses the URL %s', (url, problem) => {
     expect(() => of(url)).toThrow(problem);
     expect(() => of(url)).toThrow('QUALOR_LIVE_REVIEW_URL');
+  });
+
+  it.each([
+    'http://api.openai.com/v1',
+    'http://API.OpenAI.com:8080/v1',
+    'http://8.8.8.8/v1',
+    // A name could be anywhere: only localhost, or an address written out, is known to be near.
+    'http://ollama:11434/v1',
+  ])('refuses %s: over http the key would cross the network in clear', (url) => {
+    expect(() => of(url)).toThrow(/use https/);
+    expect(() => of(url)).toThrow('QUALOR_LIVE_REVIEW_URL');
+  });
+
+  it.each([
+    'http://localhost:11434/v1',
+    'http://models.localhost:8080/v1',
+    'http://127.0.0.1:8080/v1',
+    'http://[::1]:8080/v1',
+    'http://10.0.0.5:8080/v1',
+    'http://192.168.1.20/v1',
+    'http://[fd00::5]:8000/v1',
+    'https://api.openai.com/v1',
+    'https://gateway.corp.example/v1',
+  ])('allows %s', (url) => {
+    expect(() => of(url)).not.toThrow();
   });
 });
 

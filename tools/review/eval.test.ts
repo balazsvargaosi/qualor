@@ -783,6 +783,37 @@ describe('runEval scores', () => {
     expect(report.total.applying).toBe(3);
   });
 
+  it('scores what the job posts: a suggestion more than 3 lines from its finding does not apply, and one kept moves its thread', async () => {
+    // Lines 10 and 14 are the merge request's, and each case seeds a problem on line 10.
+    const far = synthetic({ id: 'far', expected: [problem(10)] });
+    const moved = synthetic({ id: 'moved', expected: [problem(10)] });
+    const rewrite = (line: number) => ({
+      startLine: line,
+      endLine: line,
+      lines: [`const line${line} = ${line * 10};`],
+    });
+    const { deps } = scripted({
+      said: (c) =>
+        c.id === 'far'
+          ? // A suggestion for line 14 that passes the checks, but 4 lines from its finding: the
+            // job drops it.
+            [{ category: 'logic', path: SOURCE, line: 10, endLine: 10, suggestion: rewrite(14) }]
+          : // On lines 11 to 14, whose only added line is 14, with a suggestion for line 10 that the
+            // job keeps: the thread sits on its first line, 10.
+            [{ category: 'logic', path: SOURCE, line: 11, endLine: 14, suggestion: rewrite(10) }],
+    });
+
+    const report = await runEval([far, moved], deps);
+
+    expect(report.total).toMatchObject({
+      problems: 2,
+      found: 2,
+      anchored: 2,
+      suggestions: 2,
+      applying: 1,
+    });
+  });
+
   it('counts a review that failed as one that found nothing, and says why', async () => {
     const seeded = synthetic({ id: 'down', expected: [problem(10)] });
     const clean = synthetic({ id: 'clean' });
@@ -810,11 +841,19 @@ describe('runEval scores', () => {
   it('counts the tokens of every call, and prices them only when it is given prices', async () => {
     const cases = ['one', 'two'].map((id) => synthetic({ id, expected: [problem(10)] }));
     const free = scripted({ said: seededIn, tokens: [2_000, 500] });
-    const without = await runEval(cases, free.deps);
+    const told: { input: number; output: number }[] = [];
+    const without = await runEval(cases, {
+      ...free.deps,
+      progress: (_done, _total, tokens) => told.push(tokens),
+    });
     const calls = free.roles.length;
     expect(calls).toBeGreaterThanOrEqual(4);
     expect(without.tokens).toEqual({ input: 2_000 * calls, output: 500 * calls });
     expect(without.costUsd).toBeNull();
+    // After each review the progress is told what was spent so far: the last time, all of it.
+    expect(told).toHaveLength(2);
+    expect(told[0]?.input).toBeLessThan(told[1]?.input ?? 0);
+    expect(told.at(-1)).toEqual(without.tokens);
 
     const priced = scripted({ said: seededIn, tokens: [2_000, 500] });
     const report = await runEval(cases, {

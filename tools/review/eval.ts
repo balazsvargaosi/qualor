@@ -4,9 +4,10 @@ import { fileURLToPath } from 'node:url';
 import { MAX_SNAPSHOT_PATCH_BYTES } from '@qualor/shared';
 import { diffHeaderLine, DiffSplitter } from '../../cli/src/git/diff';
 import { AI_CATEGORIES, type AiCategory } from '../../server/src/db/schema';
-import { buildReviewContext, type ReviewableChange } from '../../server/src/review/context';
+import { buildReviewContext, SCOPE_MARGIN } from '../../server/src/review/context';
 import { planFindings, type PlannedFinding } from '../../server/src/review/findings';
-import { MaskedFiles, type MaskBudget } from '../../server/src/review/masked-files';
+import { renderFinding } from '../../server/src/review/findings-render';
+import { MaskedFiles } from '../../server/src/review/masked-files';
 import { Masker } from '../../server/src/review/masker';
 import { parsePatch } from '../../server/src/review/patch';
 import {
@@ -21,7 +22,7 @@ import {
   type SnapshotChange,
   type SnapshotReader,
 } from '../../server/src/review/snapshot-reader';
-import { checkReviewSuggestion } from '../../server/src/review/suggestion';
+import { maskedHead, type ReviewPrepareDeps } from '../../server/src/review/store';
 import { newToolPolicy } from '../../server/src/review/tool-conversation';
 import type { ToolPolicy } from '../../server/src/review/tools';
 
@@ -35,8 +36,8 @@ import type { ToolPolicy } from '../../server/src/review/tools';
  * A review of a case is the server's own, minus the database: the case becomes a snapshot in memory,
  * the context is built from it (masked as the job masks it), the pipeline runs with the reviewer
  * the caller supplies (a script in the tests; the provider through pnpm review:live), and the
- * findings are placed as the job places them (planFindings). The scores are counts, never texts: a
- * report holds no line of a fixture and nothing a model said.
+ * findings are placed and made as the job stores and posts them (planFindings, renderFinding). The
+ * scores are counts, never texts: a report holds no line of a fixture and nothing a model said.
  */
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -357,8 +358,8 @@ export interface EvalDeps {
   prices?: { inputUsdPerMTok: number; outputUsdPerMTok: number } | null;
   /** The clock, in milliseconds. */
   now?: () => number;
-  /** Told after each review: how many are done, of how many. */
-  progress?: (done: number, total: number) => void;
+  /** Told after each review: how many are done, of how many, and the tokens spent so far. */
+  progress?: (done: number, total: number, tokens: { input: number; output: number }) => void;
 }
 
 /** A finding the review would store, as the evaluation reads it. */
@@ -367,10 +368,17 @@ interface Found {
   path: string;
   line: number;
   endLine: number;
-  /** The added line its thread sits on; null when none is near. */
+  /**
+   * The line its thread sits on, as the job stores it: the first line of the suggestion it keeps,
+   * else the added line nearest; null when none is near.
+   */
   anchorLine: number | null;
+  /** The model wrote a suggestion for it. */
   suggested: boolean;
-  /** Its suggestion passes the review's checks against the masked head file. */
+  /**
+   * The job keeps that suggestion, and posts it: it is within SCOPE_MARGIN lines of the finding and
+   * passes the review's checks against the masked head file.
+   */
   applies: boolean;
 }
 
@@ -391,33 +399,23 @@ const metaOf = (c: EvalCase) => ({
   partial: false,
 });
 
-/** The masked text of a head file, as the job reads it when the context did not keep it. */
-async function maskedText(files: MaskedFiles, filePath: string, budget: MaskBudget) {
-  const file = await files.file(filePath, budget);
-  return file.kind === 'text' ? file.text : null;
-}
-
-async function foundOf(
-  planned: PlannedFinding,
-  files: MaskedFiles,
-  budget: MaskBudget,
-): Promise<Found> {
-  const { finding, change, anchorLine } = planned;
-  const suggestion = finding.suggestion;
-  let applies = false;
-  if (suggestion !== null && change !== undefined) {
-    const head: ReviewableChange['text'] =
-      change.text ?? (await maskedText(files, finding.path, budget));
-    applies = checkReviewSuggestion(suggestion, { ...change, text: head }).ok;
-  }
+/**
+ * What the job stores of a planned finding, and so posts: the values `renderFinding` makes of it
+ * with the masked head file, read as the store reads it (`maskedHead`: a file that cannot be masked
+ * is no text, never a failed review). Its anchor and its suggestion are those values'.
+ */
+async function foundOf(planned: PlannedFinding, deps: ReviewPrepareDeps): Promise<Found> {
+  const { finding, change } = planned;
+  const head = await maskedHead(finding.path, change, deps);
+  const stored = renderFinding(planned, finding.category, head);
   return {
     category: finding.category,
     path: finding.path,
     line: finding.line,
     endLine: finding.endLine,
-    anchorLine,
-    suggested: suggestion !== null,
-    applies,
+    anchorLine: stored.anchorLine,
+    suggested: finding.suggestion !== null,
+    applies: stored.suggestion !== null,
   };
 }
 
@@ -426,7 +424,7 @@ const NO_FINDINGS = { analyzer: () => Promise.resolve([]), prior: [] };
 /**
  * One review of a case, as the job makes one without a database: the snapshot in memory, its files
  * masked by a masker of the review's own, the context, the pipeline, and the findings it would
- * store (planFindings).
+ * store (planFindings), as it would store them (`foundOf`).
  */
 async function reviewCase(c: EvalCase, deps: EvalDeps): Promise<Review> {
   const reader = memorySnapshotReader({
@@ -472,7 +470,7 @@ async function reviewCase(c: EvalCase, deps: EvalDeps): Promise<Review> {
     }
     const found: Found[] = [];
     for (const planned of planFindings(context, outcome).creates) {
-      found.push(await foundOf(planned, files, policy.budget));
+      found.push(await foundOf(planned, { files, masker, budget: policy.budget }));
     }
     return { kind: 'reviewed', found, ...spent };
   } finally {
@@ -495,9 +493,12 @@ export interface Tally {
   rightCategory: number;
   /** ...of those found, with a finding whose thread sits on their lines (widened by 3). */
   anchored: number;
-  /** Suggestions the review made, in findings it would store. */
+  /** Suggestions the model made, in findings the review would store. */
   suggestions: number;
-  /** ...of them, the ones that pass the review's checks. */
+  /**
+   * ...of them, the ones the review keeps and posts: within SCOPE_MARGIN lines of their finding,
+   * and passing its checks.
+   */
   applying: number;
   /** Reviews of clean cases. */
   cleanReviews: number;
@@ -622,7 +623,7 @@ export async function runEval(cases: readonly EvalCase[], deps: EvalDeps): Promi
       addTally(report.total, score);
       addTally((report.languages[c.language] ??= emptyTally()), score);
       done += 1;
-      deps.progress?.(done, report.reviews);
+      deps.progress?.(done, report.reviews, { ...report.tokens });
     }
   }
   report.latencyMs = spread(latencies);
@@ -697,7 +698,7 @@ export function formatReport(report: EvalReport): string {
     `recall: seeded problems with a finding on their lines, or within ${TOLERANCE} lines of them`,
     'category: of those, the problems with a finding of their category',
     `anchors: of those, the problems with a finding whose thread sits on their lines, or within ${TOLERANCE} lines`,
-    'suggestions: suggestions that pass the review checks, of all those made',
+    `suggestions: suggestions the review posts (within ${SCOPE_MARGIN} lines of their finding, passing its checks), of all those made`,
     'false findings: reviews of a clean case that raised a finding',
   ];
   return lines.join('\n');

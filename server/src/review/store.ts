@@ -114,9 +114,10 @@ const closedBy: Readonly<Record<CloseReason, (sha: string) => string>> = {
  * The masked text of the head file at `path`, or null when there is none to be had: the one the
  * context was cut from, or the one the review's files keep; else the file is masked now, through the
  * review's masker and charged to its budget, if it has time and bytes left. A failure to mask is no
- * text, not a failed review: a finding without a snippet is still a finding.
+ * text, not a failed review: a finding without a snippet is still a finding. The evaluation set
+ * (tools/review) reads a finding's file the same way.
  */
-async function maskedHead(
+export async function maskedHead(
   path: string,
   change: ReviewableChange | undefined,
   deps: ReviewPrepareDeps,

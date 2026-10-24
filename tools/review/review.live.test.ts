@@ -13,12 +13,18 @@ describe.skipIf(!liveEnabled(process.env))(
   'live: the AI review of the evaluation set against a real provider',
   () => {
     it('reviews the cases and prints aggregates only', async () => {
-      const { report, text } = await runLive(readLiveEnv(process.env), (done, total) => {
-        process.stdout.write(`reviewed ${done} of ${total}\n`);
+      const { report, text } = await runLive(readLiveEnv(process.env), (done, total, tokens) => {
+        const spent = (tokens.input + tokens.output).toLocaleString('en-US');
+        process.stdout.write(`reviewed ${done} of ${total}, ${spent} tokens so far\n`);
       });
       // runLive has already refused a text that holds the key; the report holds no model text.
       process.stdout.write(`\n${text}\n`);
       expect(report.reviews).toBeGreaterThan(0);
+      // Reviews that all failed (a key refused, a provider down) give no score: the run fails.
+      const failed = Object.values(report.failed).reduce((sum, n) => sum + n, 0);
+      expect(failed, 'every review failed: see the provider failures above').toBeLessThan(
+        report.reviews,
+      );
     });
   },
 );

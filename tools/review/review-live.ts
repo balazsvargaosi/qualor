@@ -1,3 +1,4 @@
+import { isIP } from 'node:net';
 import {
   converse,
   LlmError,
@@ -12,7 +13,16 @@ import { llmBaseUrlProblem } from '../../server/src/llm/url';
 import { scrubTurn } from '../../server/src/review/key-scrub';
 import { converseOverTools } from '../../server/src/review/tool-conversation';
 import { normalBaseUrl, parseInternalHosts } from '../../server/src/scm/url';
-import { EVAL_DIR, formatReport, loadCases, runEval, type EvalCase, type EvalReport } from './eval';
+import { hostOf, isNonPublicAddress } from '../../server/src/webhooks/url';
+import {
+  EVAL_DIR,
+  formatReport,
+  loadCases,
+  runEval,
+  type EvalCase,
+  type EvalDeps,
+  type EvalReport,
+} from './eval';
 
 /*
  * Plan 6I-3 Task 14 (spec §12): the evaluation of the AI review against a real provider, run only
@@ -24,7 +34,9 @@ import { EVAL_DIR, formatReport, loadCases, runEval, type EvalCase, type EvalRep
  * The provider is whatever the person sets in the environment. The host they type is the one they
  * mean to call, so it is allowed whatever its address is (a local model, a gateway on the company
  * network); the server's other rules for a base URL apply (no credentials, no query, never a
- * link-local or cloud metadata address). Checked against the fake provider by review-live.test.ts.
+ * link-local or cloud metadata address). Plain http only to this machine or an address of its
+ * network written out, so that a mistyped `http` never sends the key across the internet in clear.
+ * Checked against the fake provider by review-live.test.ts.
  */
 
 /** A call's timeout: the default of the AI settings (routes/llm-settings.ts). */
@@ -132,8 +144,20 @@ function outputLimitField(url: string): ProviderConfig['maxTokensField'] {
 }
 
 /**
+ * Whether the URL's host is this machine or on its network, as far as the URL itself says:
+ * `localhost` (or a name under it), or a loopback or private address written out. A name could be
+ * anywhere, so it is not.
+ */
+function nearby(url: URL): boolean {
+  const host = hostOf(url);
+  if (host === 'localhost' || host.endsWith('.localhost')) return true;
+  return isIP(host) !== 0 && isNonPublicAddress(host);
+}
+
+/**
  * What the provider calls need: the settings of a call, as the AI settings would store them, and
- * the one host the calls may go to whatever its address. Throws for a URL the server would refuse.
+ * the one host the calls may go to whatever its address. Throws for a URL the server would refuse,
+ * and for plain http to a host that is not nearby: the key would cross the network in clear.
  */
 export function providerOf(o: Pick<LiveOptions, 'url' | 'model' | 'kind'>): {
   config: ProviderConfig;
@@ -148,6 +172,11 @@ export function providerOf(o: Pick<LiveOptions, 'url' | 'model' | 'kind'>): {
   const internalHosts = parseInternalHosts(url.host);
   const problem = llmBaseUrlProblem(o.url, internalHosts);
   if (problem !== null) throw new Error(`QUALOR_LIVE_REVIEW_URL: ${problem}`);
+  if (url.protocol === 'http:' && !nearby(url)) {
+    throw new Error(
+      'QUALOR_LIVE_REVIEW_URL: use https; http only for localhost or a loopback or private address, so that the key never crosses the network in clear',
+    );
+  }
   const baseUrl = normalBaseUrl(o.url);
   return {
     config: {
@@ -189,8 +218,8 @@ export interface LiveResult {
  */
 export async function runLive(
   o: LiveOptions,
-  /** Told after each review: how many are done, of how many. */
-  progress?: (done: number, total: number) => void,
+  /** Told after each review: how many are done, of how many, and the tokens spent so far. */
+  progress?: EvalDeps['progress'],
 ): Promise<LiveResult> {
   const { config, http } = providerOf(o);
   const cases = chosen(loadCases(EVAL_DIR), o.cases);
