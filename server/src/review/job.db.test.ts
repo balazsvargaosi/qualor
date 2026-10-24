@@ -1,6 +1,6 @@
 import { gzipSync } from 'node:zlib';
 import { encodeSnapshotLine, type SnapshotLine } from '@qualor/shared';
-import { and, eq, inArray, or, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, or, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFakeGitHub, type FakeGitHub } from '../../test/fake-github';
 import { createFakeGitLab, type FakeGitLab, type FakeMergeRequest } from '../../test/fake-gitlab';
@@ -36,6 +36,7 @@ import {
   rules,
 } from '../db/schema';
 import { createLlmRuntime } from '../llm/job';
+import type { StoredPricing, StoredProvider } from '../llm/settings';
 import { runUntilIdle, startWorker } from '../queue/worker';
 import { markerOf } from '../scm/markdown';
 import { enqueueLatestDecoration, SCM_QUEUE } from '../scm/queue';
@@ -55,6 +56,18 @@ const GITHUB_REPOSITORY = 9_710;
 const HEAD = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
 const PRICING = { inputUsdPerMTok: 3, outputUsdPerMTok: 15, strong: null, fast: null };
+/** The three models of a tiered provider: the standard one is the fake's `fake-model`. */
+const TIERS = { strongModel: 'strong-model', fastModel: 'fast-model' };
+/** A dear strong model, and a cheap fast one beside the standard model of PRICING. */
+const TIER_PRICING = {
+  ...PRICING,
+  strong: { inputUsdPerMTok: 15, outputUsdPerMTok: 75 },
+  fast: { inputUsdPerMTok: 1, outputUsdPerMTok: 5 },
+};
+/** What each call of `reviewResponder` costs at a model's prices: its 1 000 tokens in and 100 out. */
+const callCost = (prices: { inputUsdPerMTok: number; outputUsdPerMTok: number }): number =>
+  REVIEW_CALL_USAGE.input * prices.inputUsdPerMTok +
+  REVIEW_CALL_USAGE.output * prices.outputUsdPerMTok;
 const revision = (n: number) => String(n % 10).repeat(40);
 
 const CART_LINES = [
@@ -87,6 +100,38 @@ const FINDING = {
   title: 'The loop skips the last item',
   body: 'The loop stops one item early, so the last item is never added to the sum.',
 };
+/** A merge request that adds a file of 320 lines: a full review, with every specialist. */
+const BIG_LINES = Array.from({ length: 320 }, (_, i) => `export const value${i + 1} = ${i + 1};`);
+const BIG: SnapshotLine[] = [
+  {
+    type: 'change',
+    path: 'src/big.ts',
+    oldPath: null,
+    status: 'added',
+    patch: `@@ -0,0 +1,${BIG_LINES.length} @@\n${BIG_LINES.map((line) => `+${line}`).join('\n')}\n`,
+    since: null,
+  },
+  { type: 'file', path: 'src/big.ts', text: `${BIG_LINES.join('\n')}\n` },
+];
+/** The judge keeps a serious security finding of it, which the verification then checks. */
+const BIG_FINDING = {
+  category: 'security',
+  severity: 'major',
+  confidence: 'high',
+  path: 'src/big.ts',
+  line: 3,
+  endLine: 3,
+  title: 'A secret is built into the code',
+  body: 'The constant is a fixed value that should come from the configuration.',
+};
+const BIG_FOUND: ReviewScript = {
+  judge: JSON.stringify({
+    findings: [{ ...BIG_FINDING, sources: [] }],
+    dropped: [],
+    prior: [],
+    summary: { verdict: 'One security problem.', walkthrough: ['Adds constants.'] },
+  }),
+};
 const FOUND: ReviewScript = {
   quality: JSON.stringify({ findings: [FINDING] }),
   judge: JSON.stringify({
@@ -114,14 +159,26 @@ describe('the ai-review job (6I-3, R15)', () => {
     error: (...args: unknown[]) => void logged.push(['error', ...args]),
   };
 
-  const reviewOn = (o: { budgets?: Partial<ReviewBudgets>; pricing?: typeof PRICING } = {}) =>
+  const reviewOn = (
+    o: {
+      budgets?: Partial<ReviewBudgets>;
+      pricing?: StoredPricing;
+      /** The strong and the fast model of the provider; without them it has the standard model alone. */
+      tiers?: Pick<StoredProvider, 'strongModel' | 'fastModel'>;
+    } = {},
+  ) =>
     switchReviewOn(h.ctx.db, {
       secretKey: h.ctx.config.secretKey,
       fake: llm,
       organizationId: h.organizationId,
       userId: h.ctx.adminId,
       ...(o.budgets === undefined ? {} : { budgets: o.budgets }),
-      over: { pricing: o.pricing ?? null },
+      over: {
+        pricing: o.pricing ?? null,
+        ...(o.tiers === undefined
+          ? {}
+          : { provider: { ...configuredProvider(h.ctx.config.secretKey, llm), ...o.tiers } }),
+      },
     });
   /** The organisation switches AI review off; everything else stays as it is. */
   const reviewOff = () =>
@@ -195,6 +252,33 @@ describe('the ai-review job (6I-3, R15)', () => {
   /** Forgets the decorations ingestion queued, so that only the job's are left to see. */
   const forgetDecorations = () => h.ctx.db.delete(jobs).where(eq(jobs.queue, SCM_QUEUE));
   const reviewCalls = () => llm.requests.filter((request) => reviewRoleOf(request) !== null);
+  /** The rows of the review's provider calls, oldest first. */
+  const reviewRows = () =>
+    h.ctx.db
+      .select()
+      .from(llmRequests)
+      .where(eq(llmRequests.feature, 'review'))
+      .orderBy(asc(llmRequests.createdAt), asc(llmRequests.id));
+  /**
+   * Reviews a new merge request of `lines`, with `script` answering each of `calls` conversations
+   * the review makes. Gives the run, the role and the model of every call the provider received,
+   * and the rows the calls wrote, all in the order of the calls.
+   */
+  const reviewWith = async (lines: SnapshotLine[], script: ReviewScript, calls: number) => {
+    const mr = mergeRequest();
+    const analysisId = await analysisOf(mr);
+    await snapshotOf(analysisId, mr, lines);
+    const before = { calls: reviewCalls().length, rows: (await reviewRows()).length };
+    llm.enqueue(...Array.from({ length: calls }, () => reviewResponder(script)));
+    expect(await runReviews()).toBe(1);
+    return {
+      run: await runOf(analysisId),
+      sent: reviewCalls()
+        .slice(before.calls)
+        .map((request) => [reviewRoleOf(request), (request.json as { model: string }).model]),
+      rows: (await reviewRows()).slice(before.rows),
+    };
+  };
   const aiIssuesOf = async (branchId: string) =>
     h.ctx.db
       .select({ issue: issues, finding: reviewFindings, ruleKey: rules.key })
@@ -1028,6 +1112,128 @@ describe('the ai-review job (6I-3, R15)', () => {
     });
     expect(reviewCalls().slice(calls).map(reviewRoleOf)).toEqual(['quality']);
     expect(await aiIssuesOf(run.branchId)).toEqual([]);
+  });
+
+  describe('model tiers', () => {
+    const SPECIALISTS = ['security', 'quality', 'tests', 'performance'];
+
+    it('the judge and the verification run on the strong model', async () => {
+      await reviewOn({ pricing: TIER_PRICING, tiers: TIERS });
+      const { run, sent } = await reviewWith(BIG, BIG_FOUND, 6);
+
+      expect(run).toMatchObject({ status: 'done', tier: 'full', modelCalls: 6 });
+      expect(sent).toEqual([
+        ...SPECIALISTS.map((role) => [role, 'fake-model']),
+        ['judge', 'strong-model'],
+        ['verify', 'strong-model'],
+      ]);
+    });
+
+    it("a trivial review's specialist runs on the fast model", async () => {
+      await reviewOn({ pricing: TIER_PRICING, tiers: TIERS });
+      const { run, sent } = await reviewWith(CHANGE, FOUND, 2);
+
+      expect(run).toMatchObject({ status: 'done', tier: 'trivial', modelCalls: 2 });
+      expect(sent).toEqual([
+        ['quality', 'fast-model'],
+        ['judge', 'strong-model'],
+      ]);
+    });
+
+    it("every llm_requests row names the model it called, and its cost uses that model's prices", async () => {
+      await reviewOn({ pricing: TIER_PRICING, tiers: TIERS });
+      const strong = callCost(TIER_PRICING.strong);
+      const standard = callCost(TIER_PRICING);
+      const fast = callCost(TIER_PRICING.fast);
+      // Three prices, three costs: the model of each call is the one its row and its cost follow.
+      expect(new Set([strong, standard, fast]).size).toBe(3);
+
+      const full = await reviewWith(BIG, BIG_FOUND, 6);
+      expect(full.rows.map((row) => row.model)).toEqual(full.sent.map(([, model]) => model));
+      expect(full.rows.map((row) => row.costMicroUsd)).toEqual([
+        standard,
+        standard,
+        standard,
+        standard,
+        strong,
+        strong,
+      ]);
+      // The run's cost is the sum of its calls', each at its own model's prices, and it names the
+      // standard model, as it always did.
+      expect(full.run).toMatchObject({
+        model: 'fake-model',
+        modelCalls: 6,
+        costMicroUsd: 4 * standard + 2 * strong,
+      });
+
+      const trivial = await reviewWith(CHANGE, FOUND, 2);
+      expect(trivial.rows.map((row) => row.model)).toEqual(['fast-model', 'strong-model']);
+      expect(trivial.rows.map((row) => row.costMicroUsd)).toEqual([fast, strong]);
+      expect(trivial.run).toMatchObject({ model: 'fake-model', costMicroUsd: fast + strong });
+    });
+
+    it("the day's cost budget converts at the dearest price in use", async () => {
+      // $2 are left of the review's cost budget today, whatever the other tests spent.
+      const used = await reviewUsageToday(h.ctx.db, h.organizationId);
+      const budgets = { costPerDayUsd: (used.costMicroUsd + 2_000_000) / 1_000_000 };
+
+      // The strong model's output costs $300 for a million tokens: $2 buy 6 666 tokens, which is
+      // too few for the smallest review, though the standard model's $15 would buy 133 333.
+      await reviewOn({
+        budgets,
+        pricing: { ...TIER_PRICING, strong: { inputUsdPerMTok: 60, outputUsdPerMTok: 300 } },
+        tiers: TIERS,
+      });
+      const calls = reviewCalls().length;
+      const mr = mergeRequest();
+      const analysisId = await analysisOf(mr);
+      await snapshotOf(analysisId, mr);
+      expect(await runReviews()).toBe(1);
+      expect(await runOf(analysisId)).toMatchObject({
+        status: 'skipped',
+        reason: 'budget_spent',
+        detail: null,
+      });
+      expect(reviewCalls()).toHaveLength(calls);
+
+      // The same budget with the standard model's prices alone is enough for the same change.
+      await reviewOn({ budgets, pricing: PRICING });
+      const { run } = await reviewWith(CHANGE, FOUND, 2);
+      expect(run).toMatchObject({ status: 'done', modelCalls: 2 });
+    });
+
+    it('with no tier models every call uses the standard model, as before', async () => {
+      await reviewOn({ pricing: PRICING });
+      const standard = callCost(PRICING);
+
+      const full = await reviewWith(BIG, BIG_FOUND, 6);
+      expect(full.sent).toEqual([...SPECIALISTS, 'judge', 'verify'].map((r) => [r, 'fake-model']));
+      expect(full.rows.map((row) => row.model)).toEqual(Array(6).fill('fake-model'));
+      expect(full.rows.map((row) => row.costMicroUsd)).toEqual(Array(6).fill(standard));
+      expect(full.run).toMatchObject({ model: 'fake-model', costMicroUsd: 6 * standard });
+
+      const trivial = await reviewWith(CHANGE, FOUND, 2);
+      expect(trivial.sent).toEqual([
+        ['quality', 'fake-model'],
+        ['judge', 'fake-model'],
+      ]);
+      expect(trivial.run).toMatchObject({ model: 'fake-model', costMicroUsd: 2 * standard });
+    });
+
+    it('tier models set to the standard model change nothing either', async () => {
+      await reviewOn({
+        pricing: PRICING,
+        tiers: { strongModel: 'fake-model', fastModel: 'fake-model' },
+      });
+      const { run, sent, rows } = await reviewWith(CHANGE, FOUND, 2);
+
+      expect(sent).toEqual([
+        ['quality', 'fake-model'],
+        ['judge', 'fake-model'],
+      ]);
+      expect(rows.map((row) => row.model)).toEqual(['fake-model', 'fake-model']);
+      expect(run).toMatchObject({ status: 'done', costMicroUsd: 2 * callCost(PRICING) });
+    });
   });
 
   it('a server stop ends a running review at once', async () => {

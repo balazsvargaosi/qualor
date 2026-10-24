@@ -1,4 +1,6 @@
+import type { ReviewTier } from '../db/schema';
 import { ownModel, type StoredProvider } from '../llm/settings';
+import type { ReviewRole, Specialist } from './prompts';
 
 /**
  * The model tiers of AI review (`ModelTier`, not "tier", which is the size of a review): the
@@ -45,4 +47,36 @@ export function sameModels(a: readonly string[], b: readonly string[]): boolean 
 /** Every model of the provider once, sorted: what a consent and its notice name. */
 export function distinctModels(provider: TierModels): string[] {
   return modelSet(tierModels(provider).map((entry) => entry.model));
+}
+
+/**
+ * Every conversation AI review has with the provider: the roles of a review, and the answer to a
+ * person's reply in a merge request. The review pipeline plans the roles of a review only.
+ */
+export type ConversationRole = ReviewRole | 'reply';
+
+/**
+ * The tier of the model each role runs on. The judge and the verification decide what is kept and
+ * what is raised, so they get the strong model; the specialists and the reply, the standard one.
+ */
+export const ROLE_MODEL_TIER: Readonly<Record<ConversationRole, ModelTier>> = Object.freeze({
+  judge: 'strong',
+  verify: 'strong',
+  security: 'standard',
+  quality: 'standard',
+  tests: 'standard',
+  performance: 'standard',
+  reply: 'standard',
+});
+
+const isSpecialist = (role: ConversationRole): role is Specialist =>
+  role !== 'judge' && role !== 'verify' && role !== 'reply';
+
+/**
+ * The tier of one call: its role's, except for the specialist of a trivial review (the smallest
+ * `sizeTier`), which runs on the fast model: a change of a few lines needs no more. `sizeTier` is
+ * the review's size, not a model tier, and null for a call that is part of no review.
+ */
+export function tierOfCall(role: ConversationRole, sizeTier: ReviewTier | null): ModelTier {
+  return sizeTier === 'trivial' && isSpecialist(role) ? 'fast' : ROLE_MODEL_TIER[role];
 }

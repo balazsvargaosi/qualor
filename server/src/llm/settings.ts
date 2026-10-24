@@ -245,7 +245,7 @@ export function providerConfig(stored: StoredProvider): ProviderConfig {
  */
 export function pricingFor(
   pricing: StoredPricing,
-  provider: StoredProvider,
+  provider: Pick<StoredProvider, 'model' | 'strongModel' | 'fastModel'>,
   tier: ModelTier,
 ): PricePair | null {
   if (pricing === null) return null;
@@ -253,6 +253,32 @@ export function pricingFor(
     return { inputUsdPerMTok: pricing.inputUsdPerMTok, outputUsdPerMTok: pricing.outputUsdPerMTok };
   }
   return pricing[tier];
+}
+
+/** Every tier a call may run on (review/model-tiers.ts lists them too, and imports this module). */
+const PRICED_TIERS: readonly ModelTier[] = ['standard', 'strong', 'fast'];
+
+/**
+ * The dearest prices a call of the provider may be costed at: the highest input price and the
+ * highest output price among the tiers' pairs (`pricingFor`), each from whichever tier has it. A
+ * cost that is left to spend is turned into tokens at this price, since the cost of a call is not
+ * known before it is made and any tier's may be the next. Every tier counts, though two may name
+ * the same model: a call is costed at the pair of its tier. A tier with no pair is left out, and
+ * with no pair at all, or no prices, there is none.
+ */
+export function dearestPrice(
+  pricing: StoredPricing,
+  provider: Pick<StoredProvider, 'model' | 'strongModel' | 'fastModel'>,
+): PricePair | null {
+  const pairs = PRICED_TIERS.flatMap((tier) => {
+    const pair = pricingFor(pricing, provider, tier);
+    return pair === null ? [] : [pair];
+  });
+  if (pairs.length === 0) return null;
+  return {
+    inputUsdPerMTok: Math.max(...pairs.map((pair) => pair.inputUsdPerMTok)),
+    outputUsdPerMTok: Math.max(...pairs.map((pair) => pair.outputUsdPerMTok)),
+  };
 }
 
 /** llm.md §3.3: an organisation absent from the map is disabled. */

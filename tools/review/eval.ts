@@ -4,11 +4,13 @@ import { fileURLToPath } from 'node:url';
 import { MAX_SNAPSHOT_PATCH_BYTES } from '@qualor/shared';
 import { diffHeaderLine, DiffSplitter } from '../../cli/src/git/diff';
 import { AI_CATEGORIES, type AiCategory } from '../../server/src/db/schema';
+import type { PricePair } from '../../server/src/llm/settings';
 import { buildReviewContext, SCOPE_MARGIN } from '../../server/src/review/context';
 import { planFindings, type PlannedFinding } from '../../server/src/review/findings';
 import { renderFinding } from '../../server/src/review/findings-render';
 import { MaskedFiles } from '../../server/src/review/masked-files';
 import { Masker } from '../../server/src/review/masker';
+import type { ModelTier } from '../../server/src/review/model-tiers';
 import { parsePatch } from '../../server/src/review/patch';
 import {
   reviewLimits,
@@ -346,16 +348,23 @@ export interface CaseRun {
   readonly policy: ToolPolicy;
 }
 
+/** The prices of the calls that go to the model of a tier; null: that model has none. */
+export type PricesOf = (tier: ModelTier) => PricePair | null;
+
 export interface EvalDeps {
   /**
-   * The pipeline's dependencies for one case: `converse` is one conversation of a role. The
-   * evaluation counts the tokens of every conversation it returns.
+   * The pipeline's dependencies for one case: `converse` is one conversation of a role, on the
+   * model of the tier it is asked for. The evaluation counts the tokens of every conversation it
+   * returns, and costs them at the prices of that tier's model.
    */
   pipelineFor(run: CaseRun): PipelineDeps;
   /** Times each case is reviewed; 1 when left out. */
   runs?: number;
-  /** USD for a million tokens; the report has a cost only with prices. */
-  prices?: { inputUsdPerMTok: number; outputUsdPerMTok: number } | null;
+  /**
+   * USD for a million tokens: one pair for every call, or the pair of the model of each tier when
+   * the tiers have models of their own. The report has a cost only when every call has prices.
+   */
+  prices?: PricePair | PricesOf | null;
   /** The clock, in milliseconds. */
   now?: () => number;
   /** Told after each review: how many are done, of how many, and the tokens spent so far. */
@@ -382,9 +391,35 @@ interface Found {
   applies: boolean;
 }
 
+/** What the conversations of one review spent; the cost is null without prices for every call. */
+interface Spent {
+  input: number;
+  output: number;
+  costUsd: number | null;
+}
+
 type Review =
-  | { kind: 'reviewed'; found: Found[]; input: number; output: number }
-  | { kind: 'failed'; reason: string; input: number; output: number };
+  ({ kind: 'reviewed'; found: Found[] } & Spent) | ({ kind: 'failed'; reason: string } & Spent);
+
+/** The tier's prices of every call, or null when there are none: no call has a cost then. */
+function pricesOf(prices: EvalDeps['prices']): PricesOf | null {
+  if (prices === undefined || prices === null) return null;
+  return typeof prices === 'function' ? prices : () => prices;
+}
+
+/** The cost so far with one more call; unknown once a call has no prices. */
+function withCall(
+  costUsd: number | null,
+  prices: PricePair | null,
+  tokens: { inputTokens: number; outputTokens: number },
+): number | null {
+  if (costUsd === null || prices === null) return null;
+  return (
+    costUsd +
+    (tokens.inputTokens * prices.inputUsdPerMTok + tokens.outputTokens * prices.outputUsdPerMTok) /
+      1_000_000
+  );
+}
 
 /** The merge request's meta: the case's words, and no earlier review. */
 const metaOf = (c: EvalCase) => ({
@@ -426,7 +461,7 @@ const NO_FINDINGS = { analyzer: () => Promise.resolve([]), prior: [] };
  * masked by a masker of the review's own, the context, the pipeline, and the findings it would
  * store (planFindings), as it would store them (`foundOf`).
  */
-async function reviewCase(c: EvalCase, deps: EvalDeps): Promise<Review> {
+async function reviewCase(c: EvalCase, deps: EvalDeps, priceOf: PricesOf | null): Promise<Review> {
   const reader = memorySnapshotReader({
     meta: metaOf(c),
     changes: c.changes,
@@ -449,16 +484,17 @@ async function reviewCase(c: EvalCase, deps: EvalDeps): Promise<Review> {
       },
     });
     const pipeline = deps.pipelineFor({ evalCase: c, reader, policy });
-    const spent = { input: 0, output: 0 };
+    const spent: Spent = { input: 0, output: 0, costUsd: priceOf === null ? null : 0 };
     const outcome = await runReviewPipeline(
       context,
       REVIEW_TOKENS,
       {
         providerKey: pipeline.providerKey,
-        converse: async (...args) => {
-          const result = await pipeline.converse(...args);
+        converse: async (role, user, nonce, tokenBudget, accept, modelTier) => {
+          const result = await pipeline.converse(role, user, nonce, tokenBudget, accept, modelTier);
           spent.input += result.inputTokens;
           spent.output += result.outputTokens;
+          spent.costUsd = withCall(spent.costUsd, priceOf?.(modelTier) ?? null, result);
           return result;
         },
       },
@@ -595,6 +631,7 @@ function spread(values: readonly number[]): EvalReport['latencyMs'] {
 export async function runEval(cases: readonly EvalCase[], deps: EvalDeps): Promise<EvalReport> {
   const runs = deps.runs ?? 1;
   const now = deps.now ?? (() => performance.now());
+  const priceOf = pricesOf(deps.prices);
   const report: EvalReport = {
     cases: cases.length,
     clean: cases.filter((c) => c.clean).length,
@@ -608,14 +645,16 @@ export async function runEval(cases: readonly EvalCase[], deps: EvalDeps): Promi
     latencyMs: null,
   };
   const latencies: number[] = [];
+  let costUsd: number | null = priceOf === null ? null : 0;
   let done = 0;
   for (let run = 0; run < runs; run += 1) {
     for (const c of cases) {
       const started = now();
-      const review = await reviewCase(c, deps);
+      const review = await reviewCase(c, deps, priceOf);
       latencies.push(now() - started);
       report.tokens.input += review.input;
       report.tokens.output += review.output;
+      costUsd = costUsd === null || review.costUsd === null ? null : costUsd + review.costUsd;
       if (review.kind === 'failed') {
         report.failed[review.reason] = (report.failed[review.reason] ?? 0) + 1;
       }
@@ -627,12 +666,7 @@ export async function runEval(cases: readonly EvalCase[], deps: EvalDeps): Promi
     }
   }
   report.latencyMs = spread(latencies);
-  if (deps.prices !== undefined && deps.prices !== null) {
-    report.costUsd =
-      (report.tokens.input * deps.prices.inputUsdPerMTok +
-        report.tokens.output * deps.prices.outputUsdPerMTok) /
-      1_000_000;
-  }
+  report.costUsd = costUsd;
   return report;
 }
 

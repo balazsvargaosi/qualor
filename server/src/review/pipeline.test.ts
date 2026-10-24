@@ -10,6 +10,7 @@ import {
 } from './context';
 import type { ConversationResult } from './conversation';
 import { envelope, newNonce } from './envelope';
+import type { ModelTier } from './model-tiers';
 import {
   CHARS_PER_TOKEN,
   planReview,
@@ -84,6 +85,8 @@ interface Call {
   accept: (text: string) => boolean;
   /** What the check said of each answer a scripted model gave (see `texts`). */
   accepted: boolean[];
+  /** The tier of the model the pipeline asked the conversation to run on. */
+  modelTier: ModelTier;
 }
 /**
  * A model that answers these texts in turn, each for `tokens`: the conversation asks again once
@@ -141,7 +144,7 @@ function scripted(
   );
   const deps: PipelineDeps = {
     providerKey,
-    converse: (role, user, nonce, tokenBudget, accept) => {
+    converse: (role, user, nonce, tokenBudget, accept, modelTier) => {
       const call: Call = {
         role,
         user,
@@ -150,6 +153,7 @@ function scripted(
         data: opened(user, nonce),
         accept,
         accepted: [],
+        modelTier,
       };
       calls.push(call);
       const reply = left.get(role)?.shift();
@@ -659,6 +663,84 @@ describe('runReviewPipeline', () => {
       findings: [outcomeFinding({ category: 'security', severity: 'critical', title: 'S' })],
       notes: ['reviewer_unreadable'],
     });
+  });
+
+  it('the judge and the verification run on the strong tier, the specialists on the standard one', async () => {
+    const { deps, calls } = scripted({
+      security: [answer({ findings: [] })],
+      quality: [answer({ findings: [] })],
+      tests: [answer({ findings: [] })],
+      performance: [answer({ findings: [] })],
+      judge: [
+        answer(
+          judgeSays({
+            findings: [judgedAs({ category: 'security', severity: 'critical', title: 'S' })],
+          }),
+        ),
+      ],
+      verify: [answer({ verdict: 'confirmed', reason: 'The input reaches it.' })],
+    });
+    await review(contextOf([change('src/cart.ts', 301)]), 100_000, deps);
+
+    expect(calls.map((c) => [c.role, c.modelTier])).toEqual([
+      ['security', 'standard'],
+      ['quality', 'standard'],
+      ['tests', 'standard'],
+      ['performance', 'standard'],
+      ['judge', 'strong'],
+      ['verify', 'strong'],
+    ]);
+  });
+
+  it('a lite review’s specialists run on the standard tier', async () => {
+    const { deps, calls } = scripted({
+      quality: [answer({ findings: [] })],
+      tests: [answer({ findings: [] })],
+      judge: [answer(judgeSays())],
+    });
+    await review(contextOf([change('src/cart.ts', 50)]), 100_000, deps);
+
+    expect(calls.map((c) => [c.role, c.modelTier])).toEqual([
+      ['quality', 'standard'],
+      ['tests', 'standard'],
+      ['judge', 'strong'],
+    ]);
+  });
+
+  it('a trivial review’s specialist runs on the fast tier, its judge and verification on the strong one', async () => {
+    const { deps, calls } = scripted({
+      quality: [answer({ findings: [] })],
+      judge: [
+        answer(
+          judgeSays({
+            findings: [judgedAs({ category: 'security', severity: 'major', title: 'S' })],
+          }),
+        ),
+      ],
+      verify: [answer({ verdict: 'confirmed', reason: 'The input reaches it.' })],
+    });
+    await review(contextOf([change('src/cart.ts', 10)]), 100_000, deps);
+
+    expect(calls.map((c) => [c.role, c.modelTier])).toEqual([
+      ['quality', 'fast'],
+      ['judge', 'strong'],
+      ['verify', 'strong'],
+    ]);
+  });
+
+  it('every specialist of a trivial review runs on the fast tier, the security reviewer a sensitive path adds too', async () => {
+    const { deps, calls } = scripted({
+      security: [answer({ findings: [] })],
+      quality: [answer({ findings: [] })],
+      judge: [answer(judgeSays())],
+    });
+    await review(contextOf([change('src/auth/login.ts', 2)]), 100_000, deps);
+
+    expect(calls.map((c) => [c.role, c.modelTier])).toEqual([
+      ['security', 'fast'],
+      ['quality', 'fast'],
+      ['judge', 'strong'],
+    ]);
   });
 
   it('low-confidence judged findings are dropped', async () => {

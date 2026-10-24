@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
+import type { ReviewTier } from '../db/schema';
 import type { StoredProvider } from '../llm/settings';
-import { distinctModels, modelFor, tierModels } from './model-tiers';
+import {
+  distinctModels,
+  modelFor,
+  ROLE_MODEL_TIER,
+  tierModels,
+  tierOfCall,
+  type ConversationRole,
+} from './model-tiers';
 
 const PROVIDER: StoredProvider = {
   kind: 'openai',
@@ -94,5 +102,45 @@ describe('the models of the provider’s tiers', () => {
       expect(distinctModels(withTiers('sonnet', 'sonnet'))).toEqual(['sonnet']);
       expect(distinctModels(withTiers('haiku', 'haiku'))).toEqual(['haiku', 'sonnet']);
     });
+  });
+});
+
+describe('the tier of each call', () => {
+  const SPECIALISTS = ['security', 'quality', 'tests', 'performance'] as const;
+  const ROLES: readonly ConversationRole[] = [...SPECIALISTS, 'judge', 'verify', 'reply'];
+  const SIZES: readonly (ReviewTier | null)[] = ['trivial', 'lite', 'full', null];
+
+  it('the judge and the verification run on the strong tier; the specialists and the reply on the standard one', () => {
+    expect(ROLE_MODEL_TIER).toEqual({
+      judge: 'strong',
+      verify: 'strong',
+      security: 'standard',
+      quality: 'standard',
+      tests: 'standard',
+      performance: 'standard',
+      reply: 'standard',
+    });
+  });
+
+  it('a trivial review’s specialist runs on the fast tier', () => {
+    for (const role of SPECIALISTS) expect(tierOfCall(role, 'trivial'), role).toBe('fast');
+  });
+
+  it('a trivial review’s judge and verification stay on the strong tier, and a reply on the standard one', () => {
+    expect(tierOfCall('judge', 'trivial')).toBe('strong');
+    expect(tierOfCall('verify', 'trivial')).toBe('strong');
+    expect(tierOfCall('reply', 'trivial')).toBe('standard');
+  });
+
+  it('every other call runs on the tier of its role: a lite or full review, or a call with no review size', () => {
+    for (const role of ROLES) {
+      for (const size of SIZES.filter((size) => size !== 'trivial')) {
+        expect(tierOfCall(role, size), `${role} in a ${size ?? 'sizeless'} call`).toBe(
+          ROLE_MODEL_TIER[role],
+        );
+      }
+    }
+    // A reply has no review: it is never a specialist, whatever size is given.
+    for (const size of SIZES) expect(tierOfCall('reply', size)).toBe('standard');
   });
 });

@@ -31,13 +31,19 @@ import {
 import { createLlmRuntime, type LlmRuntime } from '../llm/job';
 import type { LlmConversation, LlmMessage, LlmTurn, ProviderKind } from '../llm/providers';
 import { todayUsage } from '../llm/service';
-import { DEFAULT_LLM_SETTINGS, type StoredLlmSettings } from '../llm/settings';
+import {
+  DEFAULT_LLM_SETTINGS,
+  dearestPrice,
+  pricingFor,
+  type StoredLlmSettings,
+} from '../llm/settings';
 import type { WorkerLogger } from '../queue/worker';
 import { SCM_CIRCUIT_FAILURES } from '../scm/runtime';
 import { parseInternalHosts } from '../scm/url';
 import { CircuitOpenError, runConversation, type ConversationInput } from './conversation';
 import { newNonce } from './envelope';
 import { Masker } from './masker';
+import { modelFor, type ModelTier } from './model-tiers';
 import {
   defaultReview,
   DEFAULT_REVIEW_BUDGETS,
@@ -185,6 +191,18 @@ describe('the review’s own usage (6I-3)', () => {
     provider: configuredProvider(config.secretKey, fake, kind),
     ...over,
   });
+  /**
+   * What a conversation of a tier is sent with, as the job makes it: the tier's model and its
+   * prices. The standard tier unless a tier is given.
+   */
+  const callOf = (settings: StoredLlmSettings, tier: ModelTier = 'standard') => {
+    const { provider } = settings;
+    if (provider === null) return { model: '', pricing: null };
+    return {
+      model: modelFor(provider, tier),
+      pricing: pricingFor(settings.pricing, provider, tier),
+    };
+  };
 
   beforeAll(async () => {
     t = await createTestDatabase();
@@ -221,7 +239,7 @@ describe('the review’s own usage (6I-3)', () => {
       kind: Kind,
       replies: LlmReply[],
       settings: StoredLlmSettings,
-      over: { redactions?: number; runId?: string; user?: string } = {},
+      over: { redactions?: number; runId?: string; user?: string; tier?: ModelTier } = {},
     ) {
       const tally = new RedactionTally();
       tally.add(over.redactions ?? 0);
@@ -230,6 +248,7 @@ describe('the review’s own usage (6I-3)', () => {
         runtime,
         config,
         settings,
+        ...callOf(settings, over.tier),
         run: { id: over.runId ?? randomUUID(), projectId: projectA1 },
         promptVersion: PROMPT_VERSION,
         redactions: tally,
@@ -357,11 +376,13 @@ const port = 8080;
         // What the context masked in the first message, and what each tool masks in its result.
         tally.add(2);
         const masked: number[] = [];
+        const settings = settingsFor('openai');
         const sender = reviewSender({
           db: t.db,
           runtime,
           config,
-          settings: settingsFor('openai'),
+          settings,
+          ...callOf(settings),
           run: { id: randomUUID(), projectId: projectA1 },
           promptVersion: PROMPT_VERSION,
           redactions: tally,
@@ -499,6 +520,39 @@ const port = 8080;
         costMicroUsd: null,
       });
     });
+
+    it.each(KINDS)(
+      "every llm_requests row names the model it called, and its cost uses that model's prices (%s)",
+      async (kind) => {
+        const settings = settingsFor(kind, {
+          provider: {
+            ...configuredProvider(config.secretKey, fake, kind),
+            strongModel: 'big-model',
+            fastModel: 'small-model',
+          },
+          pricing: {
+            ...PRICING,
+            strong: { inputUsdPerMTok: 15, outputUsdPerMTok: 75 },
+            fast: { inputUsdPerMTok: 1, outputUsdPerMTok: 5 },
+          },
+        });
+        for (const tier of ['strong', 'standard', 'fast'] as const) {
+          await converseThrough(kind, [textTurn(kind, 'done', [1_000, 100])], settings, { tier });
+        }
+
+        // Each call went to the model of its tier, and its row says so.
+        const sentTo = fake.requests.map((request) => (request.json as { model: string }).model);
+        expect(sentTo).toEqual(['big-model', 'fake-model', 'small-model']);
+        const stored = await rows();
+        expect(stored.map((row) => row.model)).toEqual(sentTo);
+        // 1 000 input and 100 output tokens, at the prices of the call's model, in micro-USD.
+        expect(stored.map((row) => row.costMicroUsd)).toEqual([
+          1_000 * 15 + 100 * 75,
+          1_000 * 3 + 100 * 15,
+          1_000 * 1 + 100 * 5,
+        ]);
+      },
+    );
 
     it('stores the prompt and the result only when the administrator keeps prompts', async () => {
       await converseThrough('openai', [textTurn('openai', 'done', [10, 5])], settingsFor('openai'));
@@ -700,16 +754,19 @@ const port = 8080;
         tools: TOOLS,
         maxOutputTokens: 50,
       });
-    const senderFor = (kind: Kind, over: Partial<Parameters<typeof reviewSender>[0]> = {}) =>
-      reviewSender({
+    const senderFor = (kind: Kind, over: Partial<Parameters<typeof reviewSender>[0]> = {}) => {
+      const settings = over.settings ?? settingsFor(kind);
+      return reviewSender({
         db: t.db,
         runtime,
         config,
-        settings: settingsFor(kind),
+        settings,
+        ...callOf(settings),
         run: { id: randomUUID(), projectId: projectA2 },
         promptVersion: PROMPT_VERSION,
         ...over,
       });
+    };
     /** `times` calls the provider answers with `status`, each recorded. */
     const failing = async (
       sender: ReturnType<typeof reviewSender>,
@@ -726,6 +783,27 @@ const port = 8080;
       fake.say('done');
       await converse1(senderFor('openai'));
       expect(first(await rows())).toMatchObject({ organizationId: orgA, projectId: projectA2 });
+    });
+
+    it('sends the model it is given and costs at the prices it is given, whatever the settings hold', async () => {
+      // The settings hold the standard model and its prices; these calls are of other models.
+      const settings = settingsFor('openai', { pricing: PRICING });
+      fake.enqueue(
+        textTurn('openai', 'done', [1_000, 100]),
+        textTurn('openai', 'done', [1_000, 100]),
+      );
+      const prices = { inputUsdPerMTok: 2, outputUsdPerMTok: 8 };
+      await converse1(senderFor('openai', { settings, model: 'given-model', pricing: prices }));
+      // No prices for this call: the settings' are another model's, and make no cost of it.
+      await converse1(senderFor('openai', { settings, model: 'unpriced-model', pricing: null }));
+
+      expect(fake.requests.map((request) => (request.json as { model: string }).model)).toEqual([
+        'given-model',
+        'unpriced-model',
+      ]);
+      const [priced, unpriced] = await rows();
+      expect(priced).toMatchObject({ model: 'given-model', costMicroUsd: 1_000 * 2 + 100 * 8 });
+      expect(unpriced).toMatchObject({ model: 'unpriced-model', costMicroUsd: null });
     });
 
     it('takes no slot of the organisation’s llm requests, and is not held behind one', async () => {
@@ -1187,8 +1265,6 @@ const port = 8080;
           remainingReviewTokens(priced, day(0, 0, 4_000_000), {
             inputUsdPerMTok: 20,
             outputUsdPerMTok: 5,
-            strong: null,
-            fast: null,
           }),
         ).toBe(50_000);
       });
@@ -1200,6 +1276,38 @@ const port = 8080;
         expect(remainingReviewTokens(priced, day(900_000, 0, 2_000_000), PRICING)).toBe(100_000);
       });
 
+      it("the day's cost budget converts at the dearest price in use", () => {
+        const settings = settingsFor('openai', {
+          provider: {
+            ...configuredProvider(config.secretKey, fake),
+            strongModel: 'big-model',
+            fastModel: 'small-model',
+          },
+          pricing: {
+            ...PRICING,
+            strong: { inputUsdPerMTok: 60, outputUsdPerMTok: 300 },
+            fast: { inputUsdPerMTok: 1, outputUsdPerMTok: 5 },
+          },
+        });
+        const { provider, pricing } = settings;
+        const dearest = dearestPrice(pricing, provider!);
+        // $3 left. The standard model alone, 15 micro-USD a token, would buy 200 000 tokens; the
+        // strong model's 300 buys 10 000, and the cost of a call is not known before it is made.
+        expect(remainingReviewTokens(priced, day(0, 0, 2_000_000), dearest)).toBe(10_000);
+        expect(
+          remainingReviewTokens(
+            priced,
+            day(0, 0, 2_000_000),
+            pricingFor(pricing, provider!, 'standard'),
+          ),
+        ).toBe(200_000);
+        // The dearest input price may be another tier's than the dearest output price.
+        const inputDear = { ...pricing!, strong: { inputUsdPerMTok: 500, outputUsdPerMTok: 5 } };
+        expect(
+          remainingReviewTokens(priced, day(0, 0, 2_000_000), dearestPrice(inputDear, provider!)),
+        ).toBe(6_000);
+      });
+
       it('leaves the cost out when the review has no cost budget, or the prices are free or unset', () => {
         // The explain, triage and fix budget has no say here: only the review's own `costPerDayUsd`.
         expect(remainingReviewTokens(budgets, day(0, 0, 99_000_000), PRICING)).toBe(300_000);
@@ -1207,8 +1315,6 @@ const port = 8080;
           remainingReviewTokens(priced, day(0, 0, 4_000_000), {
             inputUsdPerMTok: 0,
             outputUsdPerMTok: 0,
-            strong: null,
-            fast: null,
           }),
         ).toBe(300_000);
         expect(remainingReviewTokens(priced, day(0, 0, 4_000_000), null)).toBe(300_000);

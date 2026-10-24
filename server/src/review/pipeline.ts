@@ -11,6 +11,7 @@ import {
 import type { ConversationResult } from './conversation';
 import { envelope, newNonce } from './envelope';
 import { scrubKeyDeep } from './key-scrub';
+import { tierOfCall, type ModelTier } from './model-tiers';
 import {
   judgeData,
   listedDataChars,
@@ -58,6 +59,10 @@ export { REVIEW_NOTES, type ReviewFinding, type ReviewNote } from './schemas';
  * `tokenLimitReached`. Only a judge cannot be done without. What a first message holds is sized to
  * a third of its conversation's tokens (`reviewLimits`, and the judge's data): every call sends it
  * again, and a third leaves room for a turn of tools, what the tools answer, and the wrap-up.
+ *
+ * Each conversation runs on the model of a tier (model-tiers.ts): the judge and the verification on
+ * the strong one, the specialists on the standard one, and the specialist of a trivial review on
+ * the fast one.
  *
  * Nothing here calls a provider: `deps.converse` does, with the role's system prompt, the tools and
  * the first message it is given.
@@ -153,7 +158,8 @@ export interface PipelineDeps {
    * One conversation of a role over the tools. `user` is the envelope built with `nonce`; the
    * job's implementation runs `runConversation` with that nonce for the tool results, with
    * `tokenBudget` (more than 0) and REVIEW_OUTPUT_TOKENS of the role, and with `accept` as its
-   * check of an answer.
+   * check of an answer. Every call of the conversation goes to the model of `modelTier`, which the
+   * pipeline picks for the role and the size of the review (`tierOfCall`).
    */
   converse(
     role: ReviewRole,
@@ -161,6 +167,7 @@ export interface PipelineDeps {
     nonce: string,
     tokenBudget: number,
     accept: (text: string) => boolean,
+    modelTier: ModelTier,
   ): Promise<ConversationResult>;
   /** The provider's API key, taken out of every answer before it is used; null when there is none. */
   providerKey: string | null;
@@ -295,7 +302,11 @@ class Review {
   tokenLimitReached = false;
   readonly notes: ReviewNote[] = [];
 
-  constructor(private readonly deps: PipelineDeps) {}
+  constructor(
+    private readonly deps: PipelineDeps,
+    /** The size of the review, which decides the model tier of its specialists (`tierOfCall`). */
+    private readonly sizeTier: ReviewTier,
+  ) {}
 
   note(note: ReviewNote): void {
     if (!this.notes.includes(note)) this.notes.push(note);
@@ -331,7 +342,14 @@ class Review {
       return value !== undefined;
     };
     const nonce = newNonce();
-    const result = await this.deps.converse(role, envelope(data, nonce), nonce, tokens, accept);
+    const result = await this.deps.converse(
+      role,
+      envelope(data, nonce),
+      nonce,
+      tokens,
+      accept,
+      tierOfCall(role, this.sizeTier),
+    );
     share.left -= result.inputTokens + result.outputTokens;
     if (result.kind === 'stopped') return { kind: 'stopped' };
     if (result.kind === 'failed') {
@@ -411,7 +429,7 @@ export async function runReviewPipeline(
   onPhase: (phase: ReviewPhase) => Promise<void>,
 ): Promise<PipelineOutcome> {
   const plan = planReview(context.reviewed);
-  const review = new Review(deps);
+  const review = new Review(deps, plan.tier);
   const judgeTokens = shareOf(budget, STAGE_SHARES.judge);
   // Without a judge nothing can be kept: a budget too small for its share is not spent at all.
   if (judgeTokens <= 0) return NOT_JUDGED;

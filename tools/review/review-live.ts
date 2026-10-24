@@ -9,8 +9,15 @@ import {
   type ProviderHttpOptions,
   type ProviderKind,
 } from '../../server/src/llm/providers';
+import {
+  ownModel,
+  pricingFor,
+  type PricePair,
+  type StoredPricing,
+} from '../../server/src/llm/settings';
 import { llmBaseUrlProblem } from '../../server/src/llm/url';
 import { scrubTurn } from '../../server/src/review/key-scrub';
+import { modelFor, type ModelTier } from '../../server/src/review/model-tiers';
 import { converseOverTools } from '../../server/src/review/tool-conversation';
 import { REVIEW_CALL_MIN_TIMEOUT_SECONDS } from '../../server/src/review/usage';
 import { normalBaseUrl, parseInternalHosts } from '../../server/src/scm/url';
@@ -31,6 +38,11 @@ import {
  * of fixtures/review-eval, the synthetic evaluation set and nothing else, with the server's own
  * review: the same prompts, tools, loop and checks, over the provider the person names. It prints
  * aggregates only (formatReport): never a prompt, an answer, a line of a fixture or the key.
+ *
+ * The review has the three model tiers of the server's own: `QUALOR_LIVE_REVIEW_STRONG_MODEL` and
+ * `QUALOR_LIVE_REVIEW_FAST_MODEL` name the models of the strong and the fast tier, and a tier left
+ * empty uses the model, as in the AI settings. Each call goes to the model of its tier, and its cost
+ * is figured at that model's prices.
  *
  * The provider is whatever the person sets in the environment. The host they type is the one they
  * mean to call, so it is allowed whatever its address is (a local model, a gateway on the company
@@ -53,6 +65,7 @@ type Env = Readonly<Record<string, string | undefined>>;
 export interface LiveOptions {
   /** The provider's base URL. */
   url: string;
+  /** The standard model, which a tier without a model of its own uses too. */
   model: string;
   kind: ProviderKind;
   /** The key the provider is called with; never printed. */
@@ -61,8 +74,18 @@ export interface LiveOptions {
   runs: number;
   /** The cases to review, by name; null: all of them. */
   cases: string[] | null;
-  /** USD for a million tokens; null: no cost is reported. */
-  prices: { inputUsdPerMTok: number; outputUsdPerMTok: number } | null;
+  /** The model of the strong tier (the judge and the verification); null: the tier uses `model`. */
+  strongModel: string | null;
+  /** The model of the fast tier (the specialist of a trivial review); null: the tier uses `model`. */
+  fastModel: string | null;
+  /** USD for a million tokens, of `model`; null: no cost is reported. */
+  prices: PricePair | null;
+  /**
+   * The prices of the strong and of the fast model, needed for a cost when the tier has a model of
+   * its own: a tier that has one and no prices has no cost at all, never the prices of `model`.
+   */
+  strongPrices: PricePair | null;
+  fastPrices: PricePair | null;
 }
 
 /** The project `review-live` exists (vitest.config.ts) only with both variables set. */
@@ -78,6 +101,21 @@ function price(env: Env, name: string): number | null {
     throw new Error(`${name} must be a number of USD for a million tokens, from 0 to ${MAX_PRICE}`);
   }
   return value;
+}
+
+/** The prices of a model from `<prefix>_IN` and `<prefix>_OUT`: a cost needs both. */
+function pricePair(env: Env, prefix: string): PricePair | null {
+  const input = price(env, `${prefix}_IN`);
+  const output = price(env, `${prefix}_OUT`);
+  return input === null || output === null
+    ? null
+    : { inputUsdPerMTok: input, outputUsdPerMTok: output };
+}
+
+/** The model of a tier from its variable; null when it is not set or is empty. */
+function tierModel(env: Env, name: string): string | null {
+  const value = env[name] ?? '';
+  return value === '' ? null : value;
 }
 
 export function readLiveEnv(env: Env): LiveOptions {
@@ -110,8 +148,6 @@ export function readLiveEnv(env: Env): LiveOptions {
     .split(',')
     .map((name) => name.trim())
     .filter((name) => name !== '');
-  const input = price(env, 'QUALOR_LIVE_REVIEW_PRICE_IN');
-  const output = price(env, 'QUALOR_LIVE_REVIEW_PRICE_OUT');
   return {
     url,
     model,
@@ -119,11 +155,11 @@ export function readLiveEnv(env: Env): LiveOptions {
     apiKey: key === '' ? null : key,
     runs,
     cases: names.length === 0 ? null : names,
-    // A cost needs both prices.
-    prices:
-      input === null || output === null
-        ? null
-        : { inputUsdPerMTok: input, outputUsdPerMTok: output },
+    strongModel: tierModel(env, 'QUALOR_LIVE_REVIEW_STRONG_MODEL'),
+    fastModel: tierModel(env, 'QUALOR_LIVE_REVIEW_FAST_MODEL'),
+    prices: pricePair(env, 'QUALOR_LIVE_REVIEW_PRICE'),
+    strongPrices: pricePair(env, 'QUALOR_LIVE_REVIEW_STRONG_PRICE'),
+    fastPrices: pricePair(env, 'QUALOR_LIVE_REVIEW_FAST_PRICE'),
   };
 }
 
@@ -224,33 +260,58 @@ export async function runLive(
 ): Promise<LiveResult> {
   const { config, http } = providerOf(o);
   const cases = chosen(loadCases(EVAL_DIR), o.cases);
+  const models = { model: o.model, strongModel: o.strongModel, fastModel: o.fastModel };
+  /** The prices as the AI settings would hold them: of the model, and of each tier that has its own. */
+  const pricing: StoredPricing =
+    o.prices === null ? null : { ...o.prices, strong: o.strongPrices, fast: o.fastPrices };
   /** How the provider's calls failed, by the fixed word of the failure. */
   const failures: Record<string, number> = {};
-  const send = async (conversation: LlmConversation): Promise<LlmTurn> => {
-    try {
-      // What the model said is used without the provider's key, as the job's sender returns it.
-      return scrubTurn(await converse(config, o.apiKey, conversation, http), o.apiKey);
-    } catch (err) {
-      if (err instanceof LlmError) failures[err.failure] = (failures[err.failure] ?? 0) + 1;
-      throw err;
-    }
+  /** The call to the model of `tier`. */
+  const sendTo =
+    (tier: ModelTier) =>
+    async (conversation: LlmConversation): Promise<LlmTurn> => {
+      try {
+        // What the model said is used without the provider's key, as the job's sender returns it.
+        return scrubTurn(
+          await converse(
+            { ...config, model: modelFor(models, tier) },
+            o.apiKey,
+            conversation,
+            http,
+          ),
+          o.apiKey,
+        );
+      } catch (err) {
+        if (err instanceof LlmError) failures[err.failure] = (failures[err.failure] ?? 0) + 1;
+        throw err;
+      }
+    };
+  const senders: Record<ModelTier, (conversation: LlmConversation) => Promise<LlmTurn>> = {
+    strong: sendTo('strong'),
+    standard: sendTo('standard'),
+    fast: sendTo('fast'),
   };
   const report = await runEval(cases, {
     runs: o.runs,
-    prices: o.prices,
+    prices: (tier) => pricingFor(pricing, models, tier),
     progress,
     pipelineFor: ({ reader, policy }) => ({
       providerKey: o.apiKey,
-      converse: (role, user, nonce, tokenBudget, accept) =>
+      converse: (role, user, nonce, tokenBudget, accept, modelTier) =>
         converseOverTools(
           { role, user, nonce, tokenBudget, accept },
-          { reader, policy, send, shouldStop: () => Promise.resolve(false) },
+          { reader, policy, send: senders[modelTier], shouldStop: () => Promise.resolve(false) },
         ),
     }),
   });
   const failed = Object.entries(failures).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  // With a model of its own for a tier, every tier's model is named: the one it runs on.
+  const tiers =
+    ownModel(models, 'strong') === null && ownModel(models, 'fast') === null
+      ? ''
+      : `, strong ${modelFor(models, 'strong')}, fast ${modelFor(models, 'fast')}`;
   const text = [
-    `model: ${o.model} (${o.kind})`,
+    `model: ${o.model} (${o.kind})${tiers}`,
     formatReport(report),
     ...(failed.length === 0
       ? []

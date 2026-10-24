@@ -3,6 +3,7 @@ import { encryptionKey, encryptSecret } from '../crypto/secrets';
 import { defaultReview } from '../review/settings';
 import {
   DEFAULT_LLM_SETTINGS,
+  dearestPrice,
   excludedPathMatcher,
   LLM_API_KEY_AAD,
   organizationSettings,
@@ -262,5 +263,78 @@ describe('pricingFor', () => {
     expect(pricingFor(unpriced, withModels('big', 'small'), 'strong')).toBeNull();
     expect(pricingFor(unpriced, withModels('big', 'small'), 'fast')).toBeNull();
     expect(pricingFor(unpriced, withModels('big', 'small'), 'standard')).toEqual(standard);
+  });
+});
+
+describe('dearestPrice', () => {
+  const standard = { inputUsdPerMTok: 3, outputUsdPerMTok: 15 };
+  const strong = { inputUsdPerMTok: 15, outputUsdPerMTok: 75 };
+  const fast = { inputUsdPerMTok: 1, outputUsdPerMTok: 5 };
+  const pricing = { ...standard, strong, fast };
+  const withModels = (strongModel: string | null, fastModel: string | null): StoredProvider => ({
+    ...provider,
+    strongModel,
+    fastModel,
+    apiKeyEnc: null,
+  });
+
+  it('is the standard pair while no tier has a model of its own', () => {
+    // The tier prices are beside the pair, but no call is costed at them.
+    expect(dearestPrice(pricing, withModels(null, null))).toEqual(standard);
+    expect(dearestPrice(pricing, withModels('m', 'm'))).toEqual(standard);
+  });
+
+  it('takes the dearest input price and the dearest output price among the tiers in use', () => {
+    expect(dearestPrice(pricing, withModels('big', 'small'))).toEqual(strong);
+    expect(dearestPrice(pricing, withModels('big', null))).toEqual(strong);
+    // A tier that is dearer than the standard model on one side only.
+    const mixed = {
+      ...standard,
+      strong: { inputUsdPerMTok: 20, outputUsdPerMTok: 10 },
+      fast: { inputUsdPerMTok: 1, outputUsdPerMTok: 40 },
+    };
+    expect(dearestPrice(mixed, withModels('big', 'small'))).toEqual({
+      inputUsdPerMTok: 20,
+      outputUsdPerMTok: 40,
+    });
+  });
+
+  it('counts the standard model even when every other tier is cheaper', () => {
+    const cheaper = { ...standard, strong: fast, fast };
+    expect(dearestPrice(cheaper, withModels('big', 'small'))).toEqual(standard);
+  });
+
+  it('leaves out the price of a tier that has no model of its own', () => {
+    // The fast tier uses the standard model, and the fast pair is never read.
+    expect(
+      dearestPrice(
+        { ...pricing, fast: { ...fast, outputUsdPerMTok: 900 } },
+        withModels('big', null),
+      ),
+    ).toEqual(strong);
+  });
+
+  it('counts the price of each tier that names a model, though two tiers name the same model', () => {
+    // A call is costed at the pair of its tier, so the dearer of two pairs for one model counts.
+    const same = { ...standard, strong: fast, fast: strong };
+    expect(dearestPrice(same, withModels('both', 'both'))).toEqual(strong);
+  });
+
+  it('is null without prices', () => {
+    expect(dearestPrice(null, withModels('big', 'small'))).toBeNull();
+    expect(dearestPrice(null, withModels(null, null))).toBeNull();
+  });
+
+  it('skips a model of its own that has no prices, and answers the pairs that are known', () => {
+    // The API refuses to store this; the known pairs still bound the cost.
+    const unpriced = { ...standard, strong: null, fast };
+    expect(dearestPrice(unpriced, withModels('big', 'small'))).toEqual(standard);
+  });
+
+  it('answers a pair alone, never the tier prices beside it', () => {
+    expect(Object.keys(dearestPrice(pricing, withModels('big', 'small'))!)).toEqual([
+      'inputUsdPerMTok',
+      'outputUsdPerMTok',
+    ]);
   });
 });

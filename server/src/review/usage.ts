@@ -15,7 +15,12 @@ import {
   type ProviderKind,
 } from '../llm/providers';
 import { UTC_DAY_START } from '../llm/service';
-import { providerApiKey, providerConfig, type StoredLlmSettings } from '../llm/settings';
+import {
+  providerApiKey,
+  providerConfig,
+  type PricePair,
+  type StoredLlmSettings,
+} from '../llm/settings';
 import type { WorkerLogger } from '../queue/worker';
 import { CircuitOpenError } from './conversation';
 import { scrubTurn } from './key-scrub';
@@ -188,11 +193,12 @@ export async function reviewUsageToday(
 /**
  * The tokens one review may use now: the smallest of what one review may use, what the
  * organisation has left of its day, what its project has left of the day when the project has a
- * budget, and, when the review has a cost budget (`costPerDayUsd`) and prices are set, what the
- * cost left buys at the dearer of the two prices (the cost of a call is not known before it is
- * made, so the dearer is the price that cannot overspend). A cost budget at or past its limit
- * leaves nothing. `usage` is the day so far, as `reviewUsageToday` counts it for the organisation
- * and for the project.
+ * budget, and, when the review has a cost budget (`costPerDayUsd`) and there are prices, what the
+ * cost left buys at the dearer of the two of `dearest`. That is the `dearestPrice` of the provider:
+ * the cost of a call is not known before it is made and any model's may be the next, so the price
+ * that cannot overspend is the dearest of them all. A cost budget at or past its limit leaves
+ * nothing. `usage` is the day so far, as `reviewUsageToday` counts it for the organisation and for
+ * the project.
  */
 export function remainingReviewTokens(
   budgets: ReviewBudgets,
@@ -200,7 +206,7 @@ export function remainingReviewTokens(
     organization: { tokens: number; costMicroUsd: number };
     project: { tokens: number } | null;
   },
-  pricing: StoredLlmSettings['pricing'],
+  dearest: PricePair | null,
 ): number {
   const left = [budgets.maxTokensPerReview, budgets.tokensPerDay - usage.organization.tokens];
   if (usage.project !== null && budgets.perProjectTokensPerDay !== null) {
@@ -211,9 +217,9 @@ export function remainingReviewTokens(
       Math.round(budgets.costPerDayUsd * 1_000_000) - usage.organization.costMicroUsd;
     if (costLeft <= 0) return 0;
     // A price is in dollars for a million tokens, which is micro-USD for a token.
-    const dearest =
-      pricing === null ? 0 : Math.max(pricing.inputUsdPerMTok, pricing.outputUsdPerMTok);
-    if (dearest > 0) left.push(Math.floor(costLeft / dearest));
+    const perToken =
+      dearest === null ? 0 : Math.max(dearest.inputUsdPerMTok, dearest.outputUsdPerMTok);
+    if (perToken > 0) left.push(Math.floor(costLeft / perToken));
   }
   return Math.max(0, Math.min(...left));
 }
@@ -247,8 +253,15 @@ export interface ReviewSenderDeps {
   /** The circuit is the `llm` worker's: both stop calling a provider that is failing. */
   runtime: Pick<LlmRuntime, 'circuit'>;
   config: Pick<Config, 'secretKey' | 'llmInternalHosts'>;
-  /** The settings the run started with: its provider, key, prices and `storePrompts`. */
+  /** The settings the run started with: its provider, key and `storePrompts`. */
   settings: StoredLlmSettings;
+  /**
+   * The model every call of the conversation is sent to, and its row names: the model of the tier
+   * the conversation runs on (`modelFor`), which is not always the provider's standard model.
+   */
+  model: string;
+  /** That model's prices, which cost each call; null: no costs (`pricingFor`). */
+  pricing: PricePair | null;
   run: Pick<ReviewRunRow, 'id' | 'projectId'>;
   /** The version of the prompts the conversation was made from, kept on every row. */
   promptVersion: string;
@@ -300,7 +313,7 @@ export function reviewSender(
 ): (conversation: LlmConversation) => Promise<LlmTurn> {
   const provider = deps.settings.provider;
   if (provider === null) throw new Error('AI review needs a model provider');
-  const config = providerConfig(provider);
+  const config = { ...providerConfig(provider), model: deps.model };
   const providerHost = new URL(provider.baseUrl).host;
   const circuitKey = provider.baseUrl;
   const http = {
@@ -332,7 +345,7 @@ export function reviewSender(
       runId: deps.run.id,
       provider: provider.kind,
       providerHost,
-      model: provider.model,
+      model: deps.model,
       promptVersion: deps.promptVersion,
       inputSha256: sent.inputSha256,
       inputBytes: sent.inputBytes,
@@ -407,7 +420,7 @@ export function reviewSender(
       errorCode: null,
       inputTokens: turn.usage.inputTokens,
       outputTokens: turn.usage.outputTokens,
-      costMicroUsd: costOf(deps.settings.pricing, turn.usage),
+      costMicroUsd: costOf(deps.pricing, turn.usage),
       turn,
       providerStatus: null,
     });

@@ -5,7 +5,7 @@ import {
   type FakeLlm,
   type LlmResponder,
 } from '../../server/test/fake-llm';
-import { reviewResponder } from '../../server/test/review';
+import { reviewResponder, reviewRoleOf } from '../../server/test/review';
 import { liveEnabled, providerOf, readLiveEnv, runLive, type LiveOptions } from './review-live';
 
 /**
@@ -35,7 +35,11 @@ describe('liveEnabled and readLiveEnv', () => {
       apiKey: null,
       runs: 1,
       cases: null,
+      strongModel: null,
+      fastModel: null,
       prices: null,
+      strongPrices: null,
+      fastPrices: null,
     });
   });
 
@@ -47,8 +51,14 @@ describe('liveEnabled and readLiveEnv', () => {
         QUALOR_LIVE_REVIEW_API_KEY: KEY,
         QUALOR_LIVE_REVIEW_RUNS: '5',
         QUALOR_LIVE_REVIEW_CASES: ' ts-off-by-one, go-map-race ,,',
+        QUALOR_LIVE_REVIEW_STRONG_MODEL: 'big',
+        QUALOR_LIVE_REVIEW_FAST_MODEL: 'small',
         QUALOR_LIVE_REVIEW_PRICE_IN: '3',
         QUALOR_LIVE_REVIEW_PRICE_OUT: '15.5',
+        QUALOR_LIVE_REVIEW_STRONG_PRICE_IN: '15',
+        QUALOR_LIVE_REVIEW_STRONG_PRICE_OUT: '75',
+        QUALOR_LIVE_REVIEW_FAST_PRICE_IN: '0.25',
+        QUALOR_LIVE_REVIEW_FAST_PRICE_OUT: '1.25',
       }),
     ).toEqual({
       url: 'https://llm.invalid',
@@ -57,7 +67,20 @@ describe('liveEnabled and readLiveEnv', () => {
       apiKey: KEY,
       runs: 5,
       cases: ['ts-off-by-one', 'go-map-race'],
+      strongModel: 'big',
+      fastModel: 'small',
       prices: { inputUsdPerMTok: 3, outputUsdPerMTok: 15.5 },
+      strongPrices: { inputUsdPerMTok: 15, outputUsdPerMTok: 75 },
+      fastPrices: { inputUsdPerMTok: 0.25, outputUsdPerMTok: 1.25 },
+    });
+  });
+
+  it('reads no tier model from an empty or missing variable: the tier uses the model', () => {
+    for (const empty of [{}, { QUALOR_LIVE_REVIEW_STRONG_MODEL: '' }]) {
+      expect(readLiveEnv({ ...base, ...empty })).toMatchObject({ strongModel: null });
+    }
+    expect(readLiveEnv({ ...base, QUALOR_LIVE_REVIEW_FAST_MODEL: '' })).toMatchObject({
+      fastModel: null,
     });
   });
 
@@ -70,6 +93,19 @@ describe('liveEnabled and readLiveEnv', () => {
     ).toEqual({ inputUsdPerMTok: 0, outputUsdPerMTok: 0 });
   });
 
+  it('reads the prices of a tier only with both of them', () => {
+    for (const tier of ['STRONG', 'FAST']) {
+      const only = (side: 'IN' | 'OUT') => ({ [`QUALOR_LIVE_REVIEW_${tier}_PRICE_${side}`]: '5' });
+      const key = tier === 'STRONG' ? 'strongPrices' : 'fastPrices';
+      expect(readLiveEnv({ ...base, ...only('IN') })[key], tier).toBeNull();
+      expect(readLiveEnv({ ...base, ...only('OUT') })[key], tier).toBeNull();
+      expect(readLiveEnv({ ...base, ...only('IN'), ...only('OUT') })[key], tier).toEqual({
+        inputUsdPerMTok: 5,
+        outputUsdPerMTok: 5,
+      });
+    }
+  });
+
   it.each([
     ['QUALOR_LIVE_REVIEW_KIND', 'gemini'],
     ['QUALOR_LIVE_REVIEW_RUNS', '0'],
@@ -79,6 +115,10 @@ describe('liveEnabled and readLiveEnv', () => {
     ['QUALOR_LIVE_REVIEW_PRICE_IN', '-1'],
     ['QUALOR_LIVE_REVIEW_PRICE_IN', 'free'],
     ['QUALOR_LIVE_REVIEW_PRICE_OUT', '10001'],
+    ['QUALOR_LIVE_REVIEW_STRONG_PRICE_IN', '-1'],
+    ['QUALOR_LIVE_REVIEW_STRONG_PRICE_OUT', 'dear'],
+    ['QUALOR_LIVE_REVIEW_FAST_PRICE_IN', '10001'],
+    ['QUALOR_LIVE_REVIEW_FAST_PRICE_OUT', '-0.5'],
     ['QUALOR_LIVE_REVIEW_API_KEY', 'a key with spaces'],
   ])('refuses %s=%s, naming the variable', (name, value) => {
     expect(() => readLiveEnv({ ...base, [name]: value })).toThrow(name);
@@ -223,7 +263,11 @@ describe('runLive against the fake LLM', () => {
     apiKey: fake.apiKey,
     runs: 1,
     cases: ['ts-off-by-one'],
+    strongModel: null,
+    fastModel: null,
     prices: null,
+    strongPrices: null,
+    fastPrices: null,
     ...over,
   });
 
@@ -329,6 +373,155 @@ describe('runLive against the fake LLM', () => {
       9,
     );
     expect(text).toMatch(/cost: \$\d/);
+  });
+
+  describe('with models for the tiers', () => {
+    /** The role and the model of each call the provider received. */
+    const sent = () =>
+      fake.requests.map((request) => [
+        reviewRoleOf(request),
+        (request.json as { model: string }).model,
+      ]);
+    const TIERS = { strongModel: 'strong-model', fastModel: 'fast-model' };
+    /** One answer for each call the review may make: no findings. */
+    const enqueueEmpty = () => {
+      fake.enqueue(...Array.from({ length: 12 }, () => reviewResponder()));
+    };
+
+    it('sends the judge to the strong model and the specialists of a lite review to the standard one', async () => {
+      enqueueEmpty();
+
+      await runLive(options({ ...TIERS, cases: ['ts-off-by-one'] }));
+
+      expect(sent()).toEqual([
+        ['quality', 'fake-model'],
+        ['tests', 'fake-model'],
+        ['judge', 'strong-model'],
+      ]);
+    });
+
+    it('sends the specialist of a trivial review to the fast model', async () => {
+      enqueueEmpty();
+
+      await runLive(options({ ...TIERS, cases: ['java-optional-get'] }));
+
+      expect(sent()).toEqual([
+        ['quality', 'fast-model'],
+        ['judge', 'strong-model'],
+      ]);
+    });
+
+    it('sends every call to the model when no tier has a model of its own', async () => {
+      enqueueEmpty();
+
+      await runLive(options({ cases: ['ts-off-by-one', 'java-optional-get'] }));
+
+      expect(sent().map(([, model]) => model)).toEqual(Array(5).fill('fake-model'));
+    });
+
+    it('sends a call to the model of its tier through an Anthropic provider too', async () => {
+      enqueueEmpty();
+
+      await runLive(
+        options({
+          ...TIERS,
+          kind: 'anthropic',
+          url: fake.anthropicBaseUrl,
+          cases: ['java-optional-get'],
+        }),
+      );
+
+      expect(fake.requests.map((request) => request.path)).toEqual([
+        '/v1/messages',
+        '/v1/messages',
+      ]);
+      expect(sent()).toEqual([
+        ['quality', 'fast-model'],
+        ['judge', 'strong-model'],
+      ]);
+    });
+
+    it('prices each call at the prices of its model', async () => {
+      const prices = {
+        prices: { inputUsdPerMTok: 3, outputUsdPerMTok: 15 },
+        strongPrices: { inputUsdPerMTok: 15, outputUsdPerMTok: 75 },
+        fastPrices: { inputUsdPerMTok: 1, outputUsdPerMTok: 5 },
+      };
+      // Every call spends 1 000 tokens in and 100 out. A trivial review: a fast call and a strong one.
+      enqueueEmpty();
+      const trivial = await runLive(options({ ...TIERS, ...prices, cases: ['java-optional-get'] }));
+      expect(trivial.report.costUsd).toBeCloseTo(
+        (1_000 * 1 + 100 * 5 + 1_000 * 15 + 100 * 75) / 1e6,
+        9,
+      );
+      // A lite review: two standard calls and a strong one.
+      enqueueEmpty();
+      const lite = await runLive(options({ ...TIERS, ...prices, cases: ['ts-off-by-one'] }));
+      expect(lite.report.costUsd).toBeCloseTo(
+        (2 * (1_000 * 3 + 100 * 15) + (1_000 * 15 + 100 * 75)) / 1e6,
+        9,
+      );
+      expect(lite.text).toMatch(/cost: \$0\.0315/);
+    });
+
+    it('prices a tier that has no model of its own at the standard prices, and its pair is not read', async () => {
+      enqueueEmpty();
+
+      const { report } = await runLive(
+        options({
+          strongModel: 'strong-model',
+          prices: { inputUsdPerMTok: 3, outputUsdPerMTok: 15 },
+          strongPrices: { inputUsdPerMTok: 15, outputUsdPerMTok: 75 },
+          // The fast tier uses the model: this pair is another model's, and no call is costed at it.
+          fastPrices: { inputUsdPerMTok: 900, outputUsdPerMTok: 900 },
+          cases: ['java-optional-get'],
+        }),
+      );
+
+      expect(report.costUsd).toBeCloseTo((1_000 * 3 + 100 * 15 + (1_000 * 15 + 100 * 75)) / 1e6, 9);
+    });
+
+    it('has no cost when a model of its own has no prices, rather than the standard prices for it', async () => {
+      enqueueEmpty();
+
+      const { report, text } = await runLive(
+        options({
+          ...TIERS,
+          prices: { inputUsdPerMTok: 3, outputUsdPerMTok: 15 },
+          cases: ['java-optional-get'],
+        }),
+      );
+
+      expect(report.costUsd).toBeNull();
+      expect(text).not.toContain('cost:');
+    });
+
+    it('names each tier’s model on the model line, and only the model when no tier has one', async () => {
+      enqueueEmpty();
+      const tiered = await runLive(options({ ...TIERS, cases: ['java-optional-get'] }));
+      expect(tiered.text).toContain(
+        'model: fake-model (openai), strong strong-model, fast fast-model',
+      );
+
+      // A tier without a model of its own is named with the model it runs on.
+      enqueueEmpty();
+      const some = await runLive(
+        options({ fastModel: 'fast-model', cases: ['java-optional-get'] }),
+      );
+      expect(some.text).toContain('model: fake-model (openai), strong fake-model, fast fast-model');
+
+      enqueueEmpty();
+      const plain = await runLive(options({ cases: ['java-optional-get'] }));
+      expect(plain.text).toContain('model: fake-model (openai)\n');
+      expect(plain.text).not.toContain('strong');
+    });
+
+    it('refuses to return a text that holds the key in a tier model', async () => {
+      enqueueEmpty();
+      await expect(
+        runLive(options({ strongModel: fake.apiKey, cases: ['java-optional-get'] })),
+      ).rejects.toThrow(/would hold the API key/);
+    });
   });
 
   it('counts a review the provider refuses as failed, and says how the calls failed', async () => {

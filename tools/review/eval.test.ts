@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { AiCategory } from '../../server/src/db/schema';
 import type { ConversationResult } from '../../server/src/review/conversation';
+import type { ModelTier } from '../../server/src/review/model-tiers';
 import type { PipelineDeps } from '../../server/src/review/pipeline';
 import type { SnapshotReader } from '../../server/src/review/snapshot-reader';
 import {
@@ -71,13 +72,16 @@ interface Script {
 /**
  * A reviewer made of a script: the specialists find nothing, the judge reports what `said` names
  * for the case, and a verification confirms. The conversation never calls a tool or a provider.
- * `roles` lists the roles that were asked, in order, across the cases.
+ * `roles` lists the roles that were asked, in order, across the cases, and `tiers` the model tier
+ * each was asked to run on.
  */
-function scripted(script: Script): { deps: EvalDeps; roles: string[] } {
+function scripted(script: Script): { deps: EvalDeps; roles: string[]; tiers: ModelTier[] } {
   const roles: string[] = [];
+  const tiers: ModelTier[] = [];
   const pipelineFor: EvalDeps['pipelineFor'] = ({ evalCase }) => {
-    const converse: PipelineDeps['converse'] = (role) => {
+    const converse: PipelineDeps['converse'] = (role, _user, _nonce, _budget, _accept, tier) => {
       roles.push(role);
+      tiers.push(tier);
       if (role === 'judge') {
         if (script.judge !== undefined) return Promise.resolve(script.judge(evalCase));
         const findings = script.said(evalCase).map((said) => ({
@@ -104,7 +108,7 @@ function scripted(script: Script): { deps: EvalDeps; roles: string[] } {
     };
     return { converse, providerKey: null };
   };
-  return { deps: { pipelineFor }, roles };
+  return { deps: { pipelineFor }, roles, tiers };
 }
 
 /** What the oracle says of a case: the problems it seeds. */
@@ -861,6 +865,63 @@ describe('runEval scores', () => {
       prices: { inputUsdPerMTok: 3, outputUsdPerMTok: 15 },
     });
     expect(report.costUsd).toBeCloseTo((2_000 * calls * 3 + 500 * calls * 15) / 1_000_000, 9);
+  });
+
+  describe('the cost with the prices of each model tier', () => {
+    const PRICES: Record<ModelTier, { inputUsdPerMTok: number; outputUsdPerMTok: number }> = {
+      standard: { inputUsdPerMTok: 3, outputUsdPerMTok: 15 },
+      strong: { inputUsdPerMTok: 15, outputUsdPerMTok: 75 },
+      fast: { inputUsdPerMTok: 1, outputUsdPerMTok: 5 },
+    };
+    const cases = ['one', 'two'].map((id) => synthetic({ id, expected: [problem(10)] }));
+    const costAt = (
+      tiers: readonly ModelTier[],
+      priceOf: (tier: ModelTier) => typeof PRICES.fast,
+    ) =>
+      tiers.reduce(
+        (sum, tier) =>
+          sum +
+          (2_000 * priceOf(tier).inputUsdPerMTok + 500 * priceOf(tier).outputUsdPerMTok) / 1e6,
+        0,
+      );
+
+    it('costs each call at the prices of its tier', async () => {
+      const { deps, tiers } = scripted({ said: seededIn, tokens: [2_000, 500] });
+
+      const report = await runEval(cases, { ...deps, prices: (tier) => PRICES[tier] });
+
+      // The calls ran on more than one tier, so no single pair could have costed them.
+      expect(new Set(tiers).size).toBeGreaterThan(1);
+      expect(report.costUsd).toBeCloseTo(
+        costAt(tiers, (tier) => PRICES[tier]),
+        9,
+      );
+      // The tokens are those of every call, whichever its tier.
+      expect(report.tokens).toEqual({ input: 2_000 * tiers.length, output: 500 * tiers.length });
+    });
+
+    it('costs every call at the one price pair it is given, whichever its tier', async () => {
+      const { deps, tiers } = scripted({ said: seededIn, tokens: [2_000, 500] });
+
+      const report = await runEval(cases, { ...deps, prices: PRICES.standard });
+
+      expect(report.costUsd).toBeCloseTo(
+        costAt(tiers, () => PRICES.standard),
+        9,
+      );
+    });
+
+    it('has no cost when a tier that was asked for has no prices', async () => {
+      const { deps, tiers } = scripted({ said: seededIn, tokens: [2_000, 500] });
+
+      const report = await runEval(cases, {
+        ...deps,
+        prices: (tier) => (tier === 'strong' ? null : PRICES[tier]),
+      });
+
+      expect(tiers).toContain('strong');
+      expect(report.costUsd).toBeNull();
+    });
   });
 
   it('measures the time of each review, and reports its min, median and max', async () => {

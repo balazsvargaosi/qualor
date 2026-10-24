@@ -16,10 +16,14 @@ import {
 import { costOf, type LlmRuntime } from '../llm/job';
 import { LlmError, type LlmConversation, type LlmTurn } from '../llm/providers';
 import {
+  dearestPrice,
   excludedPathMatcher,
+  pricingFor,
   providerApiKey,
   readLlmSettings,
+  type PricePair,
   type StoredLlmSettings,
+  type StoredProvider,
 } from '../llm/settings';
 import type { JobHandlers, WorkerLogger } from '../queue/worker';
 import type { DecorationDeps } from '../scm/decorate';
@@ -38,7 +42,7 @@ import type { ConversationResult } from './conversation';
 import { deleteBranchSnapshots } from './lifecycle';
 import { MaskedFiles } from './masked-files';
 import { Masker } from './masker';
-import { sameModels } from './model-tiers';
+import { modelFor, sameModels, type ModelTier } from './model-tiers';
 import { reviewFits, reviewLimits, runReviewPipeline, type PipelineOutcome } from './pipeline';
 import { REVIEW_PROMPT_VERSION } from './prompts';
 import { ensureAiRules } from './rules';
@@ -469,13 +473,15 @@ class ReviewJob {
       const { context } = built;
 
       const key = providerApiKey(settings, this.deps.config.secretKey);
-      if (!key.ok || settings.provider === null) {
+      const { provider } = settings;
+      if (!key.ok || provider === null) {
         // The key no longer decrypts (QUALOR_SECRET_KEY changed): no call could be made.
         return await this.endRunning(run, { status: 'failed', reason: 'provider_error' });
       }
+      // The run names the standard model: each call's row names the model it was sent to.
       this.provider = {
-        host: new URL(settings.provider.baseUrl).host,
-        model: settings.provider.model,
+        host: new URL(provider.baseUrl).host,
+        model: provider.model,
         pricing: settings.pricing,
       };
       const shouldStop = this.stopCheck(running, controller);
@@ -483,10 +489,11 @@ class ReviewJob {
         context,
         budget,
         {
-          converse: (role, user, nonce, tokenBudget, accept) =>
+          converse: (role, user, nonce, tokenBudget, accept, modelTier) =>
             this.converse(
-              { running, reader, policy, context, shouldStop },
+              { running, provider, reader, policy, context, shouldStop },
               { role, user, nonce, tokenBudget, accept },
+              modelTier,
             ),
           providerKey: key.key,
         },
@@ -563,7 +570,7 @@ class ReviewJob {
     return remainingReviewTokens(
       effectiveReviewBudgets(settings, organizationId),
       { organization, project },
-      settings.pricing,
+      settings.provider === null ? null : dearestPrice(settings.pricing, settings.provider),
     );
   }
 
@@ -624,19 +631,23 @@ class ReviewJob {
    * One conversation of the pipeline: its own redaction tally (the context's replacements go with
    * the first message of a reviewer or the judge, each tool answer's with the call after it), the
    * role's output limit, and every call through the sender that records it, which a stop of the
-   * server cuts short.
+   * server cuts short. Every call goes to the model of the conversation's tier, and its row and its
+   * cost are that model's.
    */
   private async converse(
     ctx: {
       running: Running;
+      provider: StoredProvider;
       reader: SnapshotReader;
       policy: ToolPolicy;
       context: ReviewContext;
       shouldStop: () => Promise<boolean>;
     },
     call: RoleCall,
+    modelTier: ModelTier,
   ): Promise<ConversationResult> {
-    const { running, reader, policy, context, shouldStop } = ctx;
+    const { running, provider, reader, policy, context, shouldStop } = ctx;
+    const pricing = pricingFor(running.settings.pricing, provider, modelTier);
     const tally = new RedactionTally();
     if (call.role !== 'verify') tally.add(context.redactions);
     const sender = reviewSender({
@@ -644,6 +655,8 @@ class ReviewJob {
       runtime: { circuit: this.deps.llmCircuit },
       config: this.deps.config,
       settings: reviewCallSettings(running.settings),
+      model: modelFor(provider, modelTier),
+      pricing,
       run: running.run,
       promptVersion: REVIEW_PROMPT_VERSION,
       redactions: tally,
@@ -653,7 +666,7 @@ class ReviewJob {
     const result = await converseOverTools(call, {
       reader,
       policy,
-      send: (conversation) => this.counted(sender, conversation),
+      send: (conversation) => this.counted(sender, pricing, conversation),
       shouldStop,
       onToolRedactions: (count) => tally.add(count),
     });
@@ -665,19 +678,21 @@ class ReviewJob {
   }
 
   /**
-   * One call through the sender, counted: a call the provider answered, with its estimated cost,
-   * and one that failed (the sender recorded it; the key was read before the review began, so
-   * every failure it throws as the provider's is a call that was made). A call the stopping server
-   * gave up is not counted: the provider answered nothing, and the sender recorded nothing.
+   * One call through the sender, counted: a call the provider answered, with its estimated cost at
+   * the `pricing` of the model it went to, and one that failed (the sender recorded it; the key was
+   * read before the review began, so every failure it throws as the provider's is a call that was
+   * made). A call the stopping server gave up is not counted: the provider answered nothing, and the
+   * sender recorded nothing.
    */
   private async counted(
     sender: (conversation: LlmConversation) => Promise<LlmTurn>,
+    pricing: PricePair | null,
     conversation: LlmConversation,
   ): Promise<LlmTurn> {
     try {
       const turn = await sender(conversation);
       this.calls += 1;
-      this.cost += costOf(this.provider?.pricing ?? null, turn.usage) ?? 0;
+      this.cost += costOf(pricing, turn.usage) ?? 0;
       return turn;
     } catch (err) {
       if (err instanceof LlmError) this.calls += 1;
