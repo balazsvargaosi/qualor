@@ -99,10 +99,15 @@ server, or pin a full version to control every update.
 
 Why it looks like this:
 
-- It checks out the **pull request's head**, not GitHub's merge commit, so Qualor's review comments
-  land on the pull request's own lines. After a checkout of the merge commit (what `actions/checkout`
-  does by default) there are no inline comments, and the summary says so.
-- `fetch-depth: 0` gives the full history, from which new code is computed.
+- It checks out the **pull request's head**, not GitHub's merge commit, so the review comments on the
+  analyzers' issues land on the pull request's own lines. After a checkout of the merge commit (what
+  `actions/checkout` does by default) there are no review comments for the analyzers' issues, and the
+  summary says so. The comments of [AI review](./ai-review.md) are still posted: its snapshot is built
+  from the pull request's head commit, which the scanner fetches from `origin` by its id when the
+  checkout lacks it ([What your CI needs](./ai-review.md#what-your-ci-needs)).
+- `fetch-depth: 0` gives the full history, from which new code is computed. AI review needs it too:
+  its snapshot holds the pull request's changes against the point where the branch left the target
+  branch.
 - `persist-credentials: false` keeps the job's GitHub token out of `.git/config`, where the analysed
   code could read it.
 - Pull requests **from forks are skipped**. GitHub gives them no secrets. Never switch to
@@ -237,11 +242,23 @@ server, and a private CA needs `NODE_EXTRA_CA_CERTS`.
 - Marking an issue **false positive** or **won't fix** in Qualor re-evaluates the gate at once, with
   no new scan. The check run is updated in place, and the issue's conversation is resolved (unless
   someone else replied in it).
+- **AI review**, when an organisation admin switched it on for the project
+  ([AI review](./ai-review.md)). The summary comment gains an **AI review** section, and each finding
+  of high or medium severity gets a review comment on its line, **up to 20 per pull request, beside
+  the 50 above**, in the same review as the analyzers' comments. A finding whose fix is a replacement
+  of lines the pull request added comes with a suggested change, which a person applies with
+  **Commit suggestion**. Qualor resolves, reopens and leaves these conversations as it does the
+  others. The App needs no extra permission.
 
 The check run is written first, so it never waits for the comments. GitHub asks integrations to
 make at most one write a second, and Qualor keeps to that: an analysis's new comments take one
 write, but each conversation it resolves or reopens takes one more, so when many issues are fixed
 at once their conversations can take a minute or more to follow.
+
+One run of Qualor's comments makes at most 350 requests to GitHub. It posts its new comments (up to
+50 for the analyzers' issues and 20 for AI review's findings, the most severe first) as one review,
+and resolves or reopens at most 100 conversations. The check run and the summary are always written.
+Whatever is left waits for the next analysis.
 
 ## 4. Block merges on the gate
 
@@ -249,9 +266,9 @@ Add a branch protection rule (or a ruleset) on the default branch that requires 
 **`qualor`** (the workflow job), or **`qualor/<project key>`** (the App's check run), or both.
 
 If the rule also requires conversations to be resolved before merging, Qualor's open comments block
-the merge, also those on issues that pass the gate (low and info ones, say). Qualor resolves a
-comment when its issue is fixed or marked in Qualor (unless someone else replied in it), and a
-person can resolve it too.
+the merge, also those on issues that pass the gate (low and info ones, say) and the open comments of
+[AI review](./ai-review.md). Qualor resolves a comment when its issue is fixed or marked in Qualor
+(unless someone else replied in it), and a person can resolve it too.
 
 ## Troubleshooting
 
@@ -261,7 +278,9 @@ person can resolve it too.
 | Exit 5 | the `QUALOR_TOKEN` secret is wrong or revoked |
 | Gate `error`, new code unavailable | `fetch-depth: 0` is missing |
 | No check run | no App connection or mapping, the App is not installed on the repository, or it lacks a permission |
-| No review comment on an issue | the workflow checked out GitHub's merge commit (the summary says "The analyzers’ issues are not commented inline"; use the `ref:` of [the workflow](#2-the-workflow)), the issue is not on a line the pull request added, or it is past the 50 per pull request. The summary counts the ones it could not place |
+| No review comment on an issue | the workflow checked out GitHub's merge commit (the summary says "The analyzers’ issues are not commented inline"; use the `ref:` of [the workflow](#2-the-workflow)), the issue is not on a line the pull request added, or it is past the 50 per pull request (the findings of AI review have 20 more, see the next row). The summary counts the ones it could not place. After a merge-commit checkout only the analyzers' comments are missing: AI review's comments are still posted |
+| No **AI review** section in the summary | AI review is not switched on for the project ([Why AI review is off for a project](./ai-review.md#why-ai-review-is-off-for-a-project)), or the workflow did not run for a pull request |
+| No comment on an AI finding | the section says what became of the review ([What the summary says](./ai-review.md#what-the-summary-says)). A finding of low severity without a suggested change gets none, nor one past the 20 per pull request, nor one the review made for a commit the pull request has since moved past. The summary counts them, and lists those it can |
 | A conversation stays open after the issue is fixed or marked | someone else replied in it. Qualor leaves such a conversation for people to resolve |
 | The summary says "Inline comments could not be updated this time." | GitHub failed or refused a request for the review comments: an outage or a rate limit (Qualor tries again on its own), or a missing permission (it tries again at the next analysis). The server log's `GitHub decoration retried` or `GitHub decoration stopped` line says why |
 | `The GitHub repository was not found` after a rename | update the mapping to the new `owner/repo` |

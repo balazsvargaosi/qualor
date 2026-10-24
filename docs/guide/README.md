@@ -42,9 +42,10 @@ release: **Docs** in the top bar, at `/docs` on your server, for signed-in users
     profiles and issue statuses.
 11. [AI assistant](./ai-assistant.md): explain issues, suggest triage and fixes with your own
     model; off by default. Enterprise adds automatic fix suggestions for merge requests.
-12. [AI review](./ai-review.md): switching on AI review of merge requests, the warning you
-    confirm, the repository snapshot the scanner uploads, how it is masked and kept, and the
-    budgets.
+12. [AI review](./ai-review.md): a model reviews merge requests on GitLab and GitHub, with comments
+    and suggested changes; switching it on, how a review works, re-reviews, the repository
+    snapshot the scanner uploads and how long it is kept, the budgets, and what to do when a
+    review does not run.
 13. [Email](./email.md): the SMTP server, the test message and the alerts for administrators.
 14. [CLI reference](./cli.md): commands, options and exit codes.
 15. [Migrating from SonarQube](./migrate-from-sonarqube.md): `qualor import sonarqube`.

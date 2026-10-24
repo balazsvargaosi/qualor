@@ -131,7 +131,9 @@ qualor:
 - `entrypoint: ['']` is needed because the image's entrypoint is `qualor`, and GitLab needs a shell.
 - `GIT_DEPTH: 0` gives the job the full history. With a shallow clone, the CLI tries to fetch the
   baseline. If that fails, new-code conditions end in `error`, and Qualor fails the gate rather than
-  guessing.
+  guessing. [AI review](./ai-review.md#what-your-ci-needs) needs the full history too: the snapshot
+  of a merge request is built from its last commit and the point where its branch left the target
+  branch.
 - Use **merge request pipelines** (`merge_request_event`). Only in them does the CLI know the target
   branch, and the analysis becomes a merge request analysis.
 
@@ -187,10 +189,29 @@ If GitLab's certificate comes from a private CA, give the server that CA with `N
 - Marking an issue **false positive** or **won't fix** in Qualor re-evaluates the gate right away, with
   no new scan. If that was the only new issue, the status turns green and the thread is resolved
   (unless a person replied in it).
+- **AI review**, when an organisation admin switched it on for the project
+  ([AI review](./ai-review.md)). The summary comment gains an **AI review** section, and each finding
+  of high or medium severity gets a discussion on its line, **up to 20 per merge request, beside the
+  50 above**. A finding whose fix is a replacement of lines the merge request added comes with a
+  GitLab suggestion (`suggestion:-0+N`: the line of the discussion and the N lines below it), which a
+  person applies with **Apply suggestion**. Qualor resolves, reopens and leaves these discussions as
+  it does the others. The token needs no extra scope.
+
+In a **merged-results or merge-train pipeline**, the job analyses the merge commit, whose line
+numbers are not the merge request's. The analyzers' discussions are then not created, and the
+summary says so. AI review's discussions are still posted: its snapshot is built from the merge
+request's own last commit, and a discussion is created only while the merge request is still at the
+commit the review read.
+
+One run of Qualor's comments makes at most 400 requests to GitLab. It creates discussions for at most
+50 of the analyzers' issues and 20 of AI review's findings, the most severe first, and resolves or
+reopens at most 200 discussions. The summary and the commit status are always written. Whatever is
+left waits for the branch's next analysis.
 
 Everything a comment quotes from the code is put in code spans. No snippet, no rule text and no link
 that the report controls reaches GitLab, except a rule's documentation link on its key, and only
-when it is a plain `https://` address.
+when it is a plain `https://` address. The words of AI review's discussions are model text: Qualor
+puts every word that could link, mention or reference something in code spans too.
 
 ## 4. Block merges on the gate
 
@@ -201,6 +222,11 @@ Either:
 - keep the pipeline green (`allow-failure: true` during a soft rollout) and rely on the commit status
   as information.
 
+If you also turn on **All threads must be resolved**, Qualor's open discussions block the merge,
+also those on issues that pass the gate and the open discussions of [AI review](./ai-review.md).
+Qualor resolves a discussion when its issue is fixed or marked in Qualor (unless a person replied in
+it), and a person can resolve it too.
+
 ## Troubleshooting
 
 | Symptom | Cause |
@@ -209,6 +235,9 @@ Either:
 | `new code unavailable`, gate `error` | shallow clone: set `GIT_DEPTH: 0` |
 | The analysis appears as a branch, not a merge request | the job ran in a branch pipeline. Use `merge_request_event` rules |
 | No comments | no connection or mapping, `QUALOR_SCM_INTERNAL_HOSTS` missing, or the token lacks the `api` scope. **Check** on **Settings → Repositories** says which |
+| No discussions from the analyzers in a merge request, and the summary says "The analyzers’ issues are not commented inline" | the pipeline was a merged-results or merge-train pipeline. The analyzers' discussions need a pipeline of the merge request's own commits; AI review's discussions are not affected |
+| No **AI review** section in the summary | AI review is not switched on for the project ([Why AI review is off for a project](./ai-review.md#why-ai-review-is-off-for-a-project)), or the pipeline was not a merge request pipeline |
+| No discussion on an AI finding | the section says what became of the review ([What the summary says](./ai-review.md#what-the-summary-says)). A finding of low severity without a suggested change gets none, nor one past the 20, nor one the review made for a commit the merge request has since moved past |
 | Comments on merge requests, but no commit status on the default branch | the token's role is below Maintainer, and the branch is protected. Give the token the Maintainer role |
 | `@0.11` component not found on self-managed GitLab | the copy is not a CI/CD catalog project with a release. Use `@0.11.0`, or see the steps above |
 | Comments but no links | `QUALOR_PUBLIC_URL` is not set on the server |

@@ -19,6 +19,7 @@ works in air-gapped networks.
 | SCIM 2.0 provisioning | no | no | yes, feature `scim` ([SCIM](./sso-and-scim.md#scim-with-entra-id-and-okta)) |
 | Compliance reports (OWASP Top 10, CWE Top 25, OWASP ASVS, PCI DSS 6.2.4) as JSON, CSV and PDF | no | no | yes, feature `compliance-export` ([Compliance reports](./compliance-reports.md)) |
 | Portfolio reports: the quality of every project and organisation, with 12-week or 12-month trends and the projects that need attention, as CSV and PDF | no | no | yes, feature `portfolio` ([Portfolio reports](./portfolio.md)) |
+| AI review of merge requests: comments and suggested changes on GitLab and GitHub, on your own model | yes ([AI review](./ai-review.md)) | yes | yes |
 | Automatic fix suggestions: fixes for the new findings of merge requests, posted without a click | no | no | yes, feature `llm.auto-fix` ([Automatic fix suggestions](./ai-assistant.md#automatic-fix-suggestions-enterprise)) |
 | The support bundle: one zip with versions, configuration without secrets, health and recent failures, for support | no | yes, feature `support-bundle` ([The support bundle](./support-bundle.md)) | yes |
 | Dependency licences: the inventory of every project's dependencies and their licences, on the **Dependencies** tab | yes ([Dependency licences](./dependency-licenses.md)) | yes | yes |

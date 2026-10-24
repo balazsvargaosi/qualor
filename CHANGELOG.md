@@ -14,14 +14,41 @@ All notable changes to Qualor are listed here, newest first. The format follows
   when the instance admin changes the provider, reviews stop until the warning is confirmed again.
   Instance admins can cap the tokens per organisation and day in **Settings → AI assistant**. For
   the merge requests of the chosen projects, the scanner uploads a copy of the repository with its
-  secrets masked, and the server keeps it for 14 days at most. The server gets
-  `QUALOR_REVIEW_SNAPSHOT_MAX_COMPRESSED_BYTES` and `QUALOR_REVIEW_SNAPSHOT_MAX_DECOMPRESSED_BYTES`.
-  See [the guide](docs/guide/ai-review.md). The API gains `GET` and
-  `PUT /api/v0/organizations/{id}/ai/review`, `GET /api/v0/projects/review-context` and
-  `POST /api/v0/analyses/{id}/review-snapshot`, and project objects gain `aiReview`.
+  secrets masked. The server deletes the copy when the merge request is merged or closed (within an
+  hour), at once when AI review stops covering the project (switched off, the project left out or
+  unmapped, the provider removed or changed), when a newer analysis replaces it, and after 14 days
+  at most. The server gets `QUALOR_REVIEW_SNAPSHOT_MAX_COMPRESSED_BYTES` and
+  `QUALOR_REVIEW_SNAPSHOT_MAX_DECOMPRESSED_BYTES`. See [the guide](docs/guide/ai-review.md). The API
+  gains `GET` and `PUT /api/v0/organizations/{id}/ai/review`, `GET /api/v0/projects/review-context`
+  and `POST /api/v0/analyses/{id}/review-snapshot`, and project objects gain `aiReview`.
+- AI review of merge requests on GitLab and GitHub, in every edition and off by default. After a
+  merge request scan, the server reviews the change on the model of the AI assistant: reviewers for
+  quality, tests, security and performance, a judge that drops the weak findings, and a second
+  check of serious security findings. It adds an **AI review** section to the summary comment and a
+  thread on each finding of high or medium severity (up to 20 per merge request, beside the
+  analyzers' 50), with a GitLab suggestion or a GitHub suggested change where the fix replaces lines
+  the merge request added. A later push is reviewed again: only its new changes raise new findings,
+  fixed findings are closed and their threads resolved, and a dismissed finding is never raised
+  again. The findings are issues of the engine `ai`, marked **AI** in the issue list and on the file
+  page, with an **AI review** card on the issue, and `qualor_issues` and `qualor_issue` of the MCP
+  server show them as such. They never count in the quality gate or the measures, and a review that
+  fails never fails the analysis. With branch protection that requires resolved conversations, its
+  open threads block the merge like the analyzers'. The review needs a model that can call tools:
+  **Settings → AI assistant → Test** now checks it. The budgets of **Settings → AI review** are
+  enforced, and the page shows today's use. The server gets `QUALOR_REVIEW_WORKER_CONCURRENCY`
+  (reviews run at once, 2 by default, each with a masking worker of up to 512 MiB of heap). The API
+  gains `aiReview` on `GET /api/v0/issues/{id}`, `usage` on `GET` and
+  `PUT /api/v0/organizations/{id}/ai/review`, `toolCalling` on `POST /api/v0/system/llm/test`, and
+  `engine` on the issues of `GET /api/v0/branches/{id}/file`. See
+  [the guide](docs/guide/ai-review.md).
 
 ### Changed
 
+- **Breaking:** `ai` is now a reserved engine id: it is the engine of the findings of AI review. A
+  `qualor.yml` `sarif:` entry with `engine: ai` is a configuration error (exit 2): rename it. A
+  SARIF file whose tool is named `ai` is reported as `ext-ai`. A report that names `ai` as an
+  external engine, as an older scanner would write it, is refused with `REPORT_INVALID`: update the
+  scanner.
 - No community limit on AI fix suggestions; your own budget applies. The 25 a day that every
   organisation was held to is gone, and the fix budget in **Settings → AI assistant** (25 by
   default, up to 100 000) is the only limit. A licence key that lists `llm.fix-quota` stays valid

@@ -2,9 +2,8 @@
 
 Qualor can ask a language model about one issue at a time. It is optional, **off by default**, and
 uses a model you choose, with your own key: a hosted provider or a local model on your own network.
-The settings of [AI review](./ai-review.md), which will let a model review whole merge requests,
-are described on their own page. AI review uses the provider configured here and has its own
-switch, warning and budgets.
+[AI review](./ai-review.md), which lets a model review whole merge requests, is described on its
+own page. It uses the provider configured here and has its own switch, warning and budgets.
 
 ## What it does
 
@@ -46,10 +45,18 @@ it.
 
 Nothing is sent to any model until an instance admin has configured a provider **and** enabled
 the organisation **and** the feature, **and** a person clicks. No scan, merge request comment or
-background job ever calls a model by itself, and the scanner (the CLI) never contacts a model: only
-the server does. The one exception is the Enterprise feature
-[automatic fix suggestions](#automatic-fix-suggestions-enterprise), which an organisation admin
-must switch on first.
+background job calls a model by itself, and the scanner (the CLI) never contacts a model: only the
+server does. There are two exceptions, and an organisation admin must switch each one on first:
+
+- the Enterprise feature [automatic fix suggestions](#automatic-fix-suggestions-enterprise);
+- [AI review](./ai-review.md), which is in every edition. It calls the model without anyone's click,
+  for each merge request of the projects the admin chose, and **repository files may be sent for
+  it**: the merge request's diff and any file the model chooses to read, from a copy of the
+  repository that the scanner uploaded to your server. Secrets in it are masked, credentials files
+  are not in the copy, and files on **Never send these paths** are never shown to the model. What
+  it sends is listed in [What the model is sent](./ai-review.md#what-the-model-is-sent).
+
+What follows is what the single-issue actions send.
 
 For the one issue a person asks about, the server sends:
 
@@ -99,7 +106,10 @@ instance:
 | Timeout (seconds) | 5–600, default 60, for the whole request |
 
 Press **Test**. It sends a fixed prompt that holds no repository data to the saved provider, and
-shows the model's name and the latency, or what went wrong.
+shows the model's name and the latency, or what went wrong. When that passes, it makes a second
+call, also with fixed text, to check tool calling, which [AI review](./ai-review.md#models-that-work)
+needs. The page then adds `Tool calling (needed by AI review): supported` or `not supported`, and
+nothing when the check could not tell.
 
 - For Azure OpenAI, use the v1 API's base URL. The older per-deployment URLs
   (`/openai/deployments/<name>/…?api-version=`) are not supported.
@@ -280,7 +290,7 @@ The top of the page shows today's use of the organisation chosen in the header a
 budgets, one meter per budget, and says when a budget is reached for the day.
 
 The field **AI review: most tokens per organisation per day** under them is not a budget of this
-assistant. It caps what an organisation admin may give [AI review](./ai-review.md#budgets-and-the-instance-ceiling),
+assistant. It caps what an organisation admin may give [AI review](./ai-review.md#budgets-and-todays-usage),
 which has budgets of its own. Leave it empty for no cap.
 
 Posting a suggestion to a merge request does not count again. The budgets are yours to set, and no
@@ -322,6 +332,10 @@ it to:
   suggesting that fix again.
 - Each finished request also writes one log line with the same details, never the content or the
   key. When the provider answered with an error, the line has its HTTP status (`providerStatus`).
+- The calls of an [AI review](./ai-review.md#how-long-copies-live) are recorded the same way, with
+  the feature `review` and no issue or person. With **Store the prompts sent** on, their prompts are
+  kept too, for the days set there, and the model's answers stay with the record. The prompts hold
+  the code the model was shown.
 
 Today's use and budgets for an organisation are at `GET /api/v0/organizations/{id}/ai`.
 
