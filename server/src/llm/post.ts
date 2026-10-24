@@ -30,6 +30,7 @@ import { GITLAB_MR_IID, type GitLabClient } from '../scm/gitlab/client';
 import { addedLineTexts, MAX_DIFF_PAGES, MAX_DISCUSSION_PAGES } from '../scm/inline';
 import { ScmError } from '../scm/provider';
 import { decorationRetryDelaySeconds, inSeconds, MAX_DECORATION_ATTEMPTS } from '../scm/queue';
+import { retryable } from '../scm/runtime';
 import { communityLimits } from '../limits';
 import { effectiveAutoFix } from './auto-fix-settings';
 import { aiResultSchema } from './dto';
@@ -507,8 +508,6 @@ async function record(db: Db, requestId: string, outcome: Outcome): Promise<void
     .where(and(eq(llmRequests.id, requestId), sql`${llmRequests.post} ->> 'status' = 'queued'`));
 }
 
-const retryable = (error: ScmError) => error.kind === 'transient' || error.kind === 'rate_limited';
-
 function reasonOf(error: ScmError): PostFailureReason {
   if (retryable(error)) return 'unreachable';
   if (error.kind === 'bad_answer' || error.kind === 'budget') return 'not_understood';
@@ -586,9 +585,7 @@ async function runPost(deps: DecorationDeps, payload: AiFixPayload): Promise<voi
           throw err;
         }
         error = err;
-        if (retryable(err)) circuit.failure(connection.id);
-        else if (err.status !== null) circuit.success(connection.id);
-        else circuit.release(connection.id);
+        circuit.reportError(connection.id, err);
         outcome = failed(reasonOf(err));
       }
     }

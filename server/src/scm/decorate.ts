@@ -39,7 +39,7 @@ import {
   type DecorationPayload,
 } from './queue';
 import { commitStatusFor, statusName, summaryBody, type SummaryInput } from './render';
-import type { ScmRuntime } from './runtime';
+import { retryable, type ScmRuntime } from './runtime';
 
 /** A job whose organisation's slots are taken runs again this much later, without an attempt. */
 export const BUSY_DEFER_SECONDS = 2;
@@ -73,8 +73,6 @@ export type DecorationOutcome =
       error: ScmError;
       /** Retried with backoff (a transient failure, a rate limit or an open circuit). */
       retry: boolean;
-      /** Counts towards the connection's circuit (not a refusal by the open circuit itself). */
-      countsForCircuit: boolean;
     };
 
 /**
@@ -290,8 +288,6 @@ async function removeForeignSummaries(
   }
 }
 
-const retryable = (error: ScmError) => error.kind === 'transient' || error.kind === 'rate_limited';
-
 /**
  * The error a job ends with when its parts failed: an exhausted budget stops the job (§4.3);
  * otherwise a retryable failure wins, so a part that can still succeed is tried again (a run
@@ -323,7 +319,6 @@ export async function decorateAnalysis(
     branchId: branch.id,
     error,
     retry: circuit || retryable(error),
-    countsForCircuit: !circuit && retryable(error),
   });
   const { circuit } = deps.runtime;
   if (!circuit.tryPass(connection.id)) {
@@ -362,11 +357,8 @@ function settleCircuit(
     runtime.health.record(connectionId, outcome.kind === 'done' ? null : outcome.error.message);
   }
   if (outcome?.kind === 'done') runtime.circuit.success(connectionId);
-  else if (outcome?.kind === 'failed' && outcome.countsForCircuit) {
-    runtime.circuit.failure(connectionId);
-  } else if (outcome?.kind === 'failed' && outcome.error.status !== null) {
-    runtime.circuit.success(connectionId);
-  } else runtime.circuit.release(connectionId);
+  else if (outcome?.kind === 'failed') runtime.circuit.reportError(connectionId, outcome.error);
+  else runtime.circuit.release(connectionId);
 }
 
 async function decorateThroughCircuit(

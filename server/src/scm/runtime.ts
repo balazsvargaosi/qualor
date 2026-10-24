@@ -1,4 +1,5 @@
 import { InstallationTokenCache, MutationPacer } from './github/app-auth';
+import type { ScmError } from './provider';
 
 /** scm.md §4.2: consecutive failed jobs of a connection that open its circuit ... */
 export const SCM_CIRCUIT_FAILURES = 5;
@@ -6,6 +7,13 @@ export const SCM_CIRCUIT_FAILURES = 5;
 export const SCM_CIRCUIT_OPEN_MS = 10 * 60_000;
 /** scm.md §4.2: decoration jobs of one organisation in flight at once, per process. */
 export const MAX_DECORATIONS_PER_ORGANIZATION = 2;
+
+/**
+ * A failure that says the provider is down or limiting: the job is tried again later, and the
+ * failure counts against the connection's circuit ({@link CircuitBreaker.reportError}).
+ */
+export const retryable = (error: ScmError): boolean =>
+  error.kind === 'transient' || error.kind === 'rate_limited';
 
 /**
  * A circuit breaker per connection, in the worker's memory (scm.md §4.2): after
@@ -65,6 +73,18 @@ export class CircuitBreaker {
   release(key: string): void {
     const entry = this.state.get(key);
     if (entry) entry.probing = false;
+  }
+
+  /**
+   * A job that passed ended with a request that failed, `error`: a transient failure or a rate
+   * limit counts ({@link failure}); any other failure that came with an HTTP status was an answer,
+   * so the provider is up and the count starts again ({@link success}); one that came before any
+   * request, with no status, hands the probe on ({@link release}).
+   */
+  reportError(key: string, error: ScmError): void {
+    if (retryable(error)) this.failure(key);
+    else if (error.status !== null) this.success(key);
+    else this.release(key);
   }
 
   /** Where the circuit stands, for the support bundle (4E-3b §1); it changes nothing. */

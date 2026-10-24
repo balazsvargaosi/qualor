@@ -28,81 +28,91 @@ const GITLAB_STATES: Readonly<Record<string, MergeRequestState['state']>> = {
   closed: 'closed',
 };
 
-async function gitlabState(
+/**
+ * What it takes to ask a provider about one merge request: sends the requests, and answers the
+ * state, or null when the provider names a state Qualor does not know. Throws {@link ScmError} when
+ * a request fails.
+ */
+type Ask = () => Promise<MergeRequestState | null>;
+
+/**
+ * The GitLab question, or null when there is nothing to ask: the id is no merge request's, or the
+ * connection cannot be used (a token that no longer decrypts, an address the rules no longer
+ * allow). Nothing is sent before the question is asked.
+ */
+function gitlabAsk(
   connection: ScmConnectionRow,
   ref: string,
   iid: string,
   scm: ScmDeps,
-): Promise<MergeRequestState | null> {
+): Ask | null {
   if (!GITLAB_MR_IID.test(iid)) return null;
   const found = gitlabClientFor(connection, scm);
   if ('problem' in found) return null;
-  const mr = await found.client.mergeRequest(ref, iid);
-  const state = GITLAB_STATES[mr.state];
-  if (state === undefined) return null;
-  // A GitLab before 14 says a draft by `work_in_progress` only.
-  const draft = mr.draft || mr.work_in_progress;
-  return { state, draft, headSha: mr.diff_refs?.head_sha ?? mr.sha };
+  return async () => {
+    const mr = await found.client.mergeRequest(ref, iid);
+    const state = GITLAB_STATES[mr.state];
+    if (state === undefined) return null;
+    // A GitLab before 14 says a draft by `work_in_progress` only.
+    const draft = mr.draft || mr.work_in_progress;
+    return { state, draft, headSha: mr.diff_refs?.head_sha ?? mr.sha };
+  };
 }
 
-/** GitHub says `closed` for a pull request that was merged too: its `merged` flag tells them apart. */
-async function githubState(
+/**
+ * The GitHub question, or null when there is nothing to ask (as {@link gitlabAsk}). GitHub says
+ * `closed` for a pull request that was merged too: its `merged` flag tells them apart.
+ */
+function githubAsk(
   connection: ScmConnectionRow,
   ref: string,
   number: string,
   scm: ScmDeps,
   runtime: ScmRuntime | undefined,
-): Promise<MergeRequestState | null> {
+): Ask | null {
   const repository = parseRepoRef(ref);
   if (repository === null || !GITHUB_PR_NUMBER.test(number)) return null;
   const found = githubClientFor(connection, scm, runtime);
   if ('problem' in found) return null;
-  await found.client.useRepository(repository);
-  const pull = await found.client.pullRequest(number);
-  const state =
-    pull.state === 'open'
-      ? 'open'
-      : pull.state === 'closed'
-        ? pull.merged
-          ? 'merged'
-          : 'closed'
-        : null;
-  if (state === null) return null;
-  return { state, draft: pull.draft, headSha: pull.head.sha };
+  return async () => {
+    await found.client.useRepository(repository);
+    const pull = await found.client.pullRequest(number);
+    const state =
+      pull.state === 'open'
+        ? 'open'
+        : pull.state === 'closed'
+          ? pull.merged
+            ? 'merged'
+            : 'closed'
+          : null;
+    if (state === null) return null;
+    return { state, draft: pull.draft, headSha: pull.head.sha };
+  };
 }
 
-/** A failure that says the provider is down or limiting, which counts against its circuit. */
-const retryable = (error: ScmError) => error.kind === 'transient' || error.kind === 'rate_limited';
-
 /**
- * `read` made as the `scm` worker's jobs make theirs (scm.md §4.2): it takes a slot of the project's
- * organisation and passes the connection's circuit, and waits for neither, so a read that cannot
- * start answers null at once. The circuit hears what came of it as a decoration reports it: a
- * transient failure counts, any other answer (a refusal too) means the provider is up, and a read
- * that asked nothing hands the probe on.
+ * `ask` made as the `scm` worker's jobs make theirs (scm.md §4.2): it takes a slot of the
+ * project's organisation and passes the connection's circuit, and waits for neither, so a read that
+ * cannot start answers null at once. The circuit hears what came of it as it does from a
+ * decoration: a request that came back, whatever it says, is an answer (the provider is up), and one
+ * that failed is reported by its error ({@link CircuitBreaker.reportError}).
  */
 async function throughRuntime(
   runtime: ScmRuntime,
   organizationId: string,
   connectionId: string,
-  read: () => Promise<MergeRequestState | null>,
+  ask: Ask,
 ): Promise<MergeRequestState | null> {
   const { circuit, slots } = runtime;
   if (!slots.tryTake(organizationId)) return null;
   try {
     if (!circuit.tryPass(connectionId)) return null;
     try {
-      const state = await read();
-      if (state === null) circuit.release(connectionId);
-      else circuit.success(connectionId);
+      const state = await ask();
+      circuit.success(connectionId);
       return state;
     } catch (err) {
-      if (!(err instanceof ScmError)) {
-        circuit.release(connectionId);
-        throw err;
-      }
-      if (retryable(err)) circuit.failure(connectionId);
-      else if (err.status !== null) circuit.success(connectionId);
+      if (err instanceof ScmError) circuit.reportError(connectionId, err);
       else circuit.release(connectionId);
       throw err;
     }
@@ -139,16 +149,16 @@ export async function readMergeRequestState(
     .where(eq(projects.id, projectId));
   if (!found || found.ref === null) return null;
   const { connection, organizationId } = found;
-  const ref = found.ref;
   const { runtime, scm } = deps;
-  const read = () =>
+  const ask =
     connection.provider === 'github'
-      ? githubState(connection, ref, mergeRequestId, scm, runtime)
-      : gitlabState(connection, ref, mergeRequestId, scm);
+      ? githubAsk(connection, found.ref, mergeRequestId, scm, runtime)
+      : gitlabAsk(connection, found.ref, mergeRequestId, scm);
+  if (ask === null) return null;
   try {
     return runtime === undefined
-      ? await read()
-      : await throughRuntime(runtime, organizationId, connection.id, read);
+      ? await ask()
+      : await throughRuntime(runtime, organizationId, connection.id, ask);
   } catch (err) {
     if (err instanceof ScmError) return null;
     throw err;

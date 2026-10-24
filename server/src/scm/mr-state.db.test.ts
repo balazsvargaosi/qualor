@@ -193,6 +193,32 @@ describe('readMergeRequestState (6I-3)', () => {
       expect(await through(runtime, githubProject, '1')).toMatchObject({ state: 'open' });
     });
 
+    it('takes a state it does not know as an answer, and an id it never sends as none', async () => {
+      const runtime = createScmRuntime();
+      const failures = () => runtime.circuit.inspect(gitlabConnection).failures;
+      gitlab.addMergeRequest(GITLAB_PROJECT, {
+        iid: 8,
+        title: 'A change',
+        state: 'weird' as never,
+        sourceBranch: 'feature/x',
+        targetBranch: 'main',
+        headSha: HEAD,
+        baseSha: BASE,
+        startSha: BASE,
+        diffs: [],
+      });
+      // The provider answers with a state Qualor has no word for: the request succeeded, so the
+      // circuit hears the provider is up and its count of failures starts again.
+      runtime.circuit.failure(gitlabConnection);
+      runtime.circuit.failure(gitlabConnection);
+      expect(await through(runtime, gitlabProject, '8')).toBeNull();
+      expect(failures()).toBe(0);
+      // An id that is no merge request's is never sent: the circuit hears nothing.
+      runtime.circuit.failure(gitlabConnection);
+      expect(await through(runtime, gitlabProject, 'feature/x')).toBeNull();
+      expect(failures()).toBe(1);
+    });
+
     it("shares the worker's installation tokens with the decorations", async () => {
       const minted = () => github.requests.filter((r) => r.path.endsWith('/access_tokens')).length;
       const runtime = createScmRuntime();

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { CircuitBreaker, ConnectionHealth } from './runtime';
+import { ScmError } from './provider';
+import { CircuitBreaker, ConnectionHealth, retryable } from './runtime';
 
 describe('the circuit breaker of a connection (scm.md §4.2)', () => {
   it('opens after the threshold, then lets one probe through; the others wait for its answer', () => {
@@ -44,6 +45,43 @@ describe('the circuit breaker of a connection (scm.md §4.2)', () => {
     expect(circuit.tryPass('b')).toBe(true);
     circuit.release('b');
     expect(circuit.tryPass('b')).toBe(true);
+  });
+});
+
+describe('what a failed job tells the circuit of its connection (scm.md §4.2)', () => {
+  it('retries only what says the provider is down or limiting', () => {
+    expect(retryable(new ScmError('transient', 'down'))).toBe(true);
+    expect(retryable(new ScmError('rate_limited', 'slow', { status: 429 }))).toBe(true);
+    for (const kind of ['auth', 'not_found', 'refused', 'bad_answer', 'budget'] as const) {
+      expect(retryable(new ScmError(kind, 'no')), kind).toBe(false);
+    }
+  });
+
+  it('counts a transient failure or a rate limit against the connection, with a status or without', () => {
+    const circuit = new CircuitBreaker(() => 0, 2, 1_000);
+    circuit.reportError('k', new ScmError('transient', 'down'));
+    expect(circuit.inspect('k')).toMatchObject({ state: 'closed', failures: 1 });
+    circuit.reportError('k', new ScmError('rate_limited', 'slow', { status: 429 }));
+    expect(circuit.inspect('k')).toMatchObject({ state: 'open', failures: 2 });
+  });
+
+  it('takes any other failure that came with a status as an answer: the provider is up', () => {
+    const circuit = new CircuitBreaker(() => 0, 2, 1_000);
+    circuit.failure('k');
+    circuit.reportError('k', new ScmError('auth', 'refused the token', { status: 401 }));
+    expect(circuit.inspect('k')).toEqual({ state: 'closed', failures: 0, openedAt: null });
+  });
+
+  it('hands the probe on when the failure came before any request', () => {
+    let now = 0;
+    const circuit = new CircuitBreaker(() => now, 1, 1_000);
+    circuit.failure('k');
+    now = 1_001;
+    expect(circuit.tryPass('k')).toBe(true); // the probe
+    expect(circuit.tryPass('k')).toBe(false);
+    circuit.reportError('k', new ScmError('refused', 'the address is not allowed'));
+    expect(circuit.tryPass('k')).toBe(true); // the next job is the probe; nothing was counted
+    expect(circuit.inspect('k').failures).toBe(1);
   });
 });
 

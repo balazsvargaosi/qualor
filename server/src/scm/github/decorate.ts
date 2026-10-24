@@ -22,6 +22,7 @@ import { markerOf } from '../markdown';
 import { ScmError } from '../provider';
 import type { DecorationPayload } from '../queue';
 import { statusName, summaryBody, type SummaryInput } from '../render';
+import { retryable } from '../runtime';
 import {
   GITHUB_PR_NUMBER,
   GITHUB_TEXT,
@@ -104,7 +105,6 @@ interface PullRequestPart {
 }
 const NO_PULL_REQUEST: PullRequestPart = { pull: null, inline: NO_INLINE, planned: null };
 
-const retryable = (e: ScmError) => e.kind === 'transient' || e.kind === 'rate_limited';
 /** More requests now would only be refused too (the retry waits for GitHub's Retry-After). */
 const stopsTheJob = (e: ScmError) => e.kind === 'budget' || e.kind === 'rate_limited';
 
