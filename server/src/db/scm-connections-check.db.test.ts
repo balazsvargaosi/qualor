@@ -2,8 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestDatabase, expectPgError, type TestDatabase } from '../../test/db';
 
-/** github.md §2.5: GitLab rows keep both GitHub columns NULL; GitHub rows have a digits App id. */
-describe('scm_connections_github_app_check (migration 0003)', () => {
+/**
+ * github.md §2.5: GitLab rows keep the App id NULL, and since migration 0017 may hold a webhook
+ * secret (the GitLab note webhook); GitHub rows have a digits App id.
+ */
+describe('scm_connections_github_app_check (migrations 0003 and 0017)', () => {
   let t: TestDatabase;
   let org: string;
   const envelope = JSON.stringify({ v: 1, iv: 'aXY=', ct: 'Y3Q=', tag: 'dGFn' });
@@ -31,13 +34,25 @@ describe('scm_connections_github_app_check (migration 0003)', () => {
     expect(rows[0]?.n).toBe(3);
   });
 
-  it('refuses a GitLab row with an App id or a webhook secret', async () => {
+  it('accepts a GitLab row with a webhook secret', async () => {
+    await insert('gitlab', null, envelope);
+    const { rows } = await t.pool.query(
+      `SELECT count(*)::int AS n FROM scm_connections
+        WHERE provider = 'gitlab' AND webhook_secret_enc IS NOT NULL`,
+    );
+    expect(rows[0]?.n).toBe(1);
+  });
+
+  it('refuses a GitLab row with an App id, with or without a webhook secret', async () => {
     await expectPgError(insert('gitlab', '1', null), '23514');
-    await expectPgError(insert('gitlab', null, envelope), '23514');
+    await expectPgError(insert('gitlab', '1', envelope), '23514');
+    await expectPgError(insert('gitlab', '', null), '23514');
   });
 
   it('refuses a GitHub row without an App id, or with one that is not digits', async () => {
     await expectPgError(insert('github', null, null), '23514');
+    // A webhook secret does not stand in for the App id.
+    await expectPgError(insert('github', null, envelope), '23514');
     await expectPgError(insert('github', '12a', null), '23514');
     await expectPgError(insert('github', '1'.repeat(21), null), '23514');
   });

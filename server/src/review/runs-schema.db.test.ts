@@ -651,7 +651,7 @@ describe('review_runs and review_findings (6I-3, migration 0016_review_runs)', (
     }
     const stored = first(await t.db.insert(llmRequests).values(request('review')).returning());
     // The column's TypeScript type says so too.
-    const feature: LlmFeature | 'review' = stored.feature;
+    const feature: LlmFeature | 'review' | 'review-reply' = stored.feature;
     expect(feature).toBe('review');
     expect(stored).toMatchObject({ issueId: null, userId: null, status: 'queued' });
     for (const other of ['poem', 'Review', 'reviews', '']) {

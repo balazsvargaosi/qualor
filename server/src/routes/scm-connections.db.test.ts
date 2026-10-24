@@ -746,7 +746,7 @@ describe('GitHub App connections (github.md §2.2, §2.5, D1)', () => {
     }
   });
 
-  it('keeps a GitLab row’s GitHub columns NULL', async () => {
+  it('a GitLab connection takes none of the GitHub App fields', async () => {
     const created = await h.ctx.app.inject({
       method: 'POST',
       url: '/api/v0/scm-connections',
@@ -760,6 +760,8 @@ describe('GitHub App connections (github.md §2.2, §2.5, D1)', () => {
     });
     const row = await rowOf(created.json().id as string);
     expect([row.appId, row.webhookSecretEnc, created.json().github]).toEqual([null, null, null]);
+    // The API refuses all of them. Only the App id is the CHECK's rule too: it lets a GitLab row
+    // hold a webhook secret (migration 0017).
     expect(
       errorPaths((await patch(row.id, { appId: '1', webhookSecret: WEBHOOK_SECRET })).body),
     ).toEqual(['body.appId', 'body.webhookSecret']);

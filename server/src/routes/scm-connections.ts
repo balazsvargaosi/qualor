@@ -327,7 +327,8 @@ export const scmConnectionRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = a
         'org.scm.manage',
       );
       const url = checkedBaseUrl(body.baseUrl, body.provider);
-      // The CHECK of migration 0003 backs these rules; the API refuses first, with field errors.
+      // The CHECK of migrations 0003 and 0017 backs the App id rules; the API refuses first, with
+      // field errors, and alone refuses a webhook secret on a GitLab connection.
       const values: typeof scmConnections.$inferInsert =
         body.provider === 'github'
           ? {

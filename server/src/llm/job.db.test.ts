@@ -5,12 +5,13 @@ import { createIngestHarness, type IngestHarness } from '../../test/ingest';
 import { configuredProvider, configureLlm, llmJobDeps, runLlmJobs } from '../../test/llm';
 import { engine, file, finding, reportWith } from '../../test/reports';
 import { issues, jobs, llmRequests } from '../db/schema';
-import { claimJob, reapExpiredLeases } from '../queue/queue';
+import { claimJob, enqueue, reapExpiredLeases } from '../queue/queue';
 import { parseInternalHosts } from '../scm/url';
 import {
   createLlmRuntime,
   jsonbTextBytes,
   LLM_RESULT_MAX_BYTES,
+  type LlmJobPayload,
   reconcileStuckLlmRequests,
 } from './job';
 import { LLM_QUEUE } from './service';
@@ -22,6 +23,7 @@ const LINES = ['const a = 1;', `const t = "${token}";`, 'if (a == 1) {}', 'expor
 describe('the llm worker (llm.md §9, §10, §14)', () => {
   let fake: FakeLlm;
   let h: IngestHarness;
+  let projectId: string;
   let issueId: string;
   const ask = async (feature: string, payload: object = {}) => {
     const res = await h.ctx.app.inject({
@@ -48,6 +50,7 @@ describe('the llm worker (llm.md §9, §10, §14)', () => {
     fake = await createFakeLlm();
     h = await createIngestHarness({ config: { llmInternalHosts: parseInternalHosts(fake.host) } });
     const p = await h.project('acme/ai-job');
+    projectId = p.id;
     await p.ingestOk(
       reportWith({
         projectKey: 'acme/ai-job',
@@ -558,4 +561,44 @@ describe('the llm worker (llm.md §9, §10, §14)', () => {
     expect(await row(id)).toMatchObject({ status: 'failed', errorCode: 'REQUEST_ABANDONED' });
     expect(fake.requests).toHaveLength(0);
   });
+
+  it.each(['review', 'review-reply'] as const)(
+    'leaves the record of a %s call alone, even when its id is in the queue (6I-3, 6I-4)',
+    async (feature) => {
+      // A record of a provider call of a review is no explain, triage or fix request: this queue
+      // never sends it, whatever it is asked.
+      const [call] = await h.ctx.db
+        .insert(llmRequests)
+        .values({
+          organizationId: h.organizationId,
+          projectId,
+          issueId,
+          feature,
+          cacheKey: 'a'.repeat(64),
+          provider: 'openai',
+          providerHost: fake.host,
+          model: 'fake-model',
+          promptVersion: `${feature}.v1`,
+          status: 'queued',
+          inputSha256: 'b'.repeat(64),
+          inputBytes: 10,
+          fields: ['review'],
+        })
+        .returning();
+      const payload = {
+        requestId: call!.id,
+        attempt: 0,
+        baseUrl: 'c'.repeat(64),
+      } satisfies LlmJobPayload;
+      await enqueue(h.ctx.db, { queue: LLM_QUEUE, payload, maxAttempts: 1 });
+      await runLlmJobs(h, llmJobDeps(h));
+      expect((await llmJobs()).map((j) => j.status)).toEqual(['succeeded']);
+      expect(await row(call!.id)).toMatchObject({
+        status: 'queued',
+        attempts: 0,
+        finishedAt: null,
+      });
+      expect(fake.requests).toHaveLength(0);
+    },
+  );
 });

@@ -83,8 +83,11 @@ const isFixProblem = (value: string | undefined): value is FixProblem =>
  * PROVIDER_BAD_ANSWER, never as raw text. A stored result that no longer parses reads as none.
  */
 export function aiRequestDto(row: LlmRequestRow): AiRequestDto {
-  // The record of a review call (6I-3) is not an AI request: `aiRequestFor` never returns one.
-  if (row.feature === 'review') throw new Error('The record of a review call is not an AI request');
+  // The record of a review call or of an answer to a reply (6I-3, 6I-4) is not an AI request:
+  // `aiRequestFor` never returns one.
+  if (row.feature === 'review' || row.feature === 'review-reply') {
+    throw new Error('The record of a review call is not an AI request');
+  }
   const [code, detail] = (row.errorCode ?? '').split(':');
   const parsedResult = aiResultSchema.safeParse(row.result);
   return {

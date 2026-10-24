@@ -175,11 +175,13 @@ export function costOf(
 }
 
 /**
- * A request of one of the three single-shot features, which is all this queue holds: a `review`
- * row is the record of a provider call of a review run (6I-3), finished when it is written.
+ * A request of one of the three single-shot features, which is all this queue holds: a `review` or
+ * `review-reply` row is the record of a provider call of a review run, or of an answer to a reply
+ * (6I-3, 6I-4), finished when it is written.
  */
 type SingleShotRow = LlmRequestRow & { feature: LlmFeature };
-const isSingleShot = (row: LlmRequestRow): row is SingleShotRow => row.feature !== 'review';
+const isSingleShot = (row: LlmRequestRow): row is SingleShotRow =>
+  row.feature !== 'review' && row.feature !== 'review-reply';
 
 type Outcome =
   | {

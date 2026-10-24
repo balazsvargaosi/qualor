@@ -534,29 +534,31 @@ describe('AI requests (llm.md §5, §10, §12, §16)', () => {
     expect(Number(second.headers['retry-after'])).toBeGreaterThan(0);
   });
 
-  it('does not count the calls of an AI review against the explain, triage and fix budgets', async () => {
-    // Budgets a single token or cent would exceed, and a review that spent far more than both.
+  it('does not count the calls of an AI review or of its replies against the explain, triage and fix budgets', async () => {
+    // Budgets a single token or cent would exceed, and a review and a reply that spent far more than both.
     await configure({
       budgets: { ...DEFAULT_LLM_SETTINGS.budgets, tokensPerDay: 100, costPerDayUsd: 0.01 },
       pricing: { inputUsdPerMTok: 3, outputUsdPerMTok: 15 },
     });
-    await h.ctx.db.insert(llmRequests).values({
-      organizationId: h.organizationId,
-      projectId: p.id,
-      feature: 'review',
-      cacheKey: 'a'.repeat(64),
-      provider: 'openai',
-      providerHost: fake.host,
-      model: 'fake-model',
-      promptVersion: 'review-1',
-      status: 'succeeded',
-      inputSha256: 'a'.repeat(64),
-      inputBytes: 1_000,
-      fields: ['review'],
-      inputTokens: 900_000,
-      outputTokens: 100_000,
-      costMicroUsd: 4_200_000,
-    });
+    for (const feature of ['review', 'review-reply'] as const) {
+      await h.ctx.db.insert(llmRequests).values({
+        organizationId: h.organizationId,
+        projectId: p.id,
+        feature,
+        cacheKey: 'a'.repeat(64),
+        provider: 'openai',
+        providerHost: fake.host,
+        model: 'fake-model',
+        promptVersion: `${feature}-1`,
+        status: 'succeeded',
+        inputSha256: 'a'.repeat(64),
+        inputBytes: 1_000,
+        fields: ['review'],
+        inputTokens: 900_000,
+        outputTokens: 100_000,
+        costMicroUsd: 4_200_000,
+      });
+    }
     const usage = (await get(`/api/v0/organizations/${h.organizationId}/ai`)).json().usage;
     expect(usage).toEqual({ explain: 0, triage: 0, fix: 0, tokens: 0, costUsd: 0 });
     for (const feature of ['explain', 'triage', 'fix']) {
@@ -695,36 +697,39 @@ describe('AI requests (llm.md §5, §10, §12, §16)', () => {
     expect(off).toMatchObject({ enabled: false, features: { explain: false } });
   });
 
-  it('does not serve the record of a review call as an AI request (6I-3): 404, like a missing one', async () => {
-    const [call] = await h.ctx.db
-      .insert(llmRequests)
-      .values({
-        organizationId: h.organizationId,
-        projectId: p.id,
-        feature: 'review',
-        cacheKey: 'a'.repeat(64),
-        provider: 'openai',
-        providerHost: fake.host,
-        model: 'fake-model',
-        promptVersion: 'review.v1',
-        status: 'succeeded',
-        inputSha256: 'b'.repeat(64),
-        inputBytes: 10,
-        fields: ['review'],
-      })
-      .returning();
-    const missing = await get('/api/v0/ai-requests/01900000-0000-7000-8000-000000000000');
-    expect(missing.statusCode).toBe(404);
-    const read = await get(`/api/v0/ai-requests/${call!.id}`);
-    expect([read.statusCode, read.json().title]).toEqual([404, missing.json().title]);
-    const post = await h.ctx.app.inject({
-      method: 'POST',
-      url: `/api/v0/ai-requests/${call!.id}/post`,
-      headers: h.orgAdmin.headers,
-      payload: {},
-    });
-    expect([post.statusCode, post.json().title]).toEqual([404, missing.json().title]);
-  });
+  it.each(['review', 'review-reply'] as const)(
+    'does not serve the record of a %s call as an AI request (6I-3, 6I-4): 404, like a missing one',
+    async (feature) => {
+      const [call] = await h.ctx.db
+        .insert(llmRequests)
+        .values({
+          organizationId: h.organizationId,
+          projectId: p.id,
+          feature,
+          cacheKey: 'a'.repeat(64),
+          provider: 'openai',
+          providerHost: fake.host,
+          model: 'fake-model',
+          promptVersion: `${feature}.v1`,
+          status: 'succeeded',
+          inputSha256: 'b'.repeat(64),
+          inputBytes: 10,
+          fields: ['review'],
+        })
+        .returning();
+      const missing = await get('/api/v0/ai-requests/01900000-0000-7000-8000-000000000000');
+      expect(missing.statusCode).toBe(404);
+      const read = await get(`/api/v0/ai-requests/${call!.id}`);
+      expect([read.statusCode, read.json().title]).toEqual([404, missing.json().title]);
+      const post = await h.ctx.app.inject({
+        method: 'POST',
+        url: `/api/v0/ai-requests/${call!.id}/post`,
+        headers: h.orgAdmin.headers,
+        payload: {},
+      });
+      expect([post.statusCode, post.json().title]).toEqual([404, missing.json().title]);
+    },
+  );
 
   it('writes neither the snippet nor the key to the log', async () => {
     await configure({ storePrompts: true });

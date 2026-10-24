@@ -45,8 +45,8 @@ describe('runMigrations / pendingMigrations', () => {
     // 2026-10-15), 0013_oauth (phase 6N, OAuth clients, requests, grants and tokens),
     // 0014_chat_webhooks (phase 6G, Slack and Teams webhooks), 0015_review_snapshots (phase 6I-2,
     // the repository snapshots of the AI review), 0016_review_runs (phase 6I-3, the review runs
-    // and the AI findings).
-    expect(await pendingMigrations(t.db, MIGRATIONS_DIR)).toBe(17);
+    // and the AI findings), 0017_review_replies (phase 6I-4, the replies ledger).
+    expect(await pendingMigrations(t.db, MIGRATIONS_DIR)).toBe(18);
     expect(await readinessCheck(t.db, MIGRATIONS_DIR)()).toBe(false);
     await runMigrations(t.pool, MIGRATIONS_DIR);
     expect(await pendingMigrations(t.db, MIGRATIONS_DIR)).toBe(0);
@@ -311,6 +311,7 @@ describe('runMigrations / pendingMigrations', () => {
       'oauth_tokens', // 0013_oauth
       'project_watches',
       'review_findings', // 0016_review_runs
+      'review_replies', // 0017_review_replies
       'review_runs', // 0016_review_runs
       'review_snapshot_files', // 0015_review_snapshots
       'review_snapshots', // 0015_review_snapshots
@@ -373,6 +374,108 @@ describe('runMigrations / pendingMigrations', () => {
     }
     // The widened check lists review, and still refuses any other value.
     await insertRequest('review');
+    await expect(insertRequest('poem')).rejects.toMatchObject({
+      code: '23514',
+      constraint: 'llm_requests_feature_check',
+    });
+  });
+
+  it('adds the replies ledger to a database that holds connections, runs and AI requests, and keeps every row (0017, phase 6I-4)', async () => {
+    const db = await createTestDatabase({ migrated: false });
+    t = db;
+    const upTo16 = migrationsUpTo(17); // 0000_extensions … 0016_review_runs
+    try {
+      await runMigrations(db.pool, upTo16.dir);
+    } finally {
+      upTo16.remove();
+    }
+    // 0017 and every later migration.
+    expect(await pendingMigrations(db.db, MIGRATIONS_DIR)).toBe(journalLength() - 17);
+    const org = randomUUID();
+    const project = randomUUID();
+    const branch = randomUUID();
+    const analysis = randomUUID();
+    const envelope = JSON.stringify({ v: 1, iv: 'aXY=', ct: 'Y3Q=', tag: 'dGFn' });
+    await db.pool.query(`INSERT INTO organizations (id, key, name) VALUES ($1, 'mig-6i4', 'Mig')`, [
+      org,
+    ]);
+    await db.pool.query(
+      `INSERT INTO projects (id, organization_id, key, name) VALUES ($1, $2, 'mig/6i4', 'P')`,
+      [project, org],
+    );
+    await db.pool.query(
+      `INSERT INTO branches (id, project_id, kind, name) VALUES ($1, $2, 'merge_request', '7')`,
+      [branch, project],
+    );
+    await db.pool.query(`INSERT INTO analyses (id, project_id) VALUES ($1, $2)`, [
+      analysis,
+      project,
+    ]);
+    await db.pool.query(
+      `INSERT INTO review_runs (id, project_id, branch_id, analysis_id, deadline_at)
+       VALUES ($1, $2, $3, $4, now())`,
+      [randomUUID(), project, branch, analysis],
+    );
+    await db.pool.query(
+      `INSERT INTO scm_connections (id, organization_id, provider, base_url, token_enc, app_id, webhook_secret_enc)
+       VALUES ($1, $2, 'gitlab', 'https://gitlab.example.com', $3, NULL, NULL),
+              ($4, $2, 'github', 'https://api.github.com', $3, '12345', $3)`,
+      [randomUUID(), org, envelope, randomUUID()],
+    );
+    const insertRequest = (feature: string) =>
+      db.pool.query(
+        `INSERT INTO llm_requests (id, organization_id, project_id, feature, cache_key, provider,
+           provider_host, model, prompt_version, input_sha256, input_bytes, fields)
+         VALUES ($1, $2, $3, $4, $5, 'openai', 'api.example.com', 'm', $6, $7, 10, '{rule}')`,
+        [randomUUID(), org, project, feature, 'a'.repeat(64), `${feature}.v1`, 'b'.repeat(64)],
+      );
+    await insertRequest('review');
+    const rowsOf = async (table: string) =>
+      (
+        await db.pool.query<{ row: Record<string, unknown> }>(
+          `SELECT to_jsonb(x) AS row FROM ${table} x ORDER BY x.id`,
+        )
+      ).rows.map((r) => r.row);
+    const before = {
+      connections: await rowsOf('scm_connections'),
+      runs: await rowsOf('review_runs'),
+      requests: await rowsOf('llm_requests'),
+    };
+    expect(before.connections).toHaveLength(2);
+    expect(before.runs).toHaveLength(1);
+    expect(before.requests).toHaveLength(1);
+
+    await runMigrations(db.pool, MIGRATIONS_DIR);
+    expect(await pendingMigrations(db.db, MIGRATIONS_DIR)).toBe(0);
+    // Dropping and adding two checks changed no row, and the runs only gained their empty column.
+    expect(await rowsOf('scm_connections')).toEqual(before.connections);
+    expect(await rowsOf('llm_requests')).toEqual(before.requests);
+    expect(await rowsOf('review_runs')).toEqual(
+      before.runs.map((run) => ({ ...run, requested_by: null })),
+    );
+    const { rows: ledger } = await db.pool.query('SELECT count(*)::int AS n FROM review_replies');
+    expect(ledger).toEqual([{ n: 0 }]);
+
+    // The relaxed check lets a GitLab connection hold a webhook secret and still refuses an App id
+    // on it, and a GitHub connection without one.
+    const insertConnection = (provider: string, appId: string | null, secret: string | null) =>
+      db.pool.query(
+        `INSERT INTO scm_connections (id, organization_id, provider, base_url, token_enc, app_id, webhook_secret_enc)
+         VALUES ($1, $2, $3, 'https://x.example', $4, $5, $6)`,
+        [randomUUID(), org, provider, envelope, appId, secret],
+      );
+    await insertConnection('gitlab', null, envelope);
+    for (const [provider, appId] of [
+      ['gitlab', '1'],
+      ['github', null],
+    ] as const) {
+      await expect(insertConnection(provider, appId, envelope)).rejects.toMatchObject({
+        code: '23514',
+        constraint: 'scm_connections_github_app_check',
+      });
+    }
+    // The widened check lists review-reply, and still refuses any other value.
+    await insertRequest('review-reply');
     await expect(insertRequest('poem')).rejects.toMatchObject({
       code: '23514',
       constraint: 'llm_requests_feature_check',

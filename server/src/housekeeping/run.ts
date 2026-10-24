@@ -66,6 +66,8 @@ const REPORT_BATCH = 500;
 const SNAPSHOT_BATCH = 50;
 /** 6I-2: a rejected review snapshot is kept this long (its reason says why it was refused). */
 export const REJECTED_SNAPSHOT_DAYS = 1;
+/** 6I-4: a finished row of the replies ledger (a note Qualor answered, skipped or failed) is kept this long. */
+const REVIEW_REPLY_DAYS = 90;
 
 /** E1 spec: a message still pending this long lost its job: it is failed and its body dropped. */
 export const MAIL_GIVE_UP_DAYS = 2;
@@ -120,6 +122,8 @@ export interface HousekeepingResult {
   reviewSnapshots: number;
   /** Review snapshots of projects AI review no longer covers (6I-3), as the purge after a settings write. */
   reviewSnapshotsInactive: number;
+  /** Finished rows of the replies ledger past REVIEW_REPLY_DAYS (6I-4). */
+  reviewReplies: number;
   /** Expired OAuth authorization requests, expired OAuth tokens, and clients nothing uses any more. */
   oauthRequests: number;
   oauthTokens: number;
@@ -237,6 +241,8 @@ export async function cleanOAuth(
  *   AI settings write, unmapping and connection deletion deletes at once (6I-3, R17): this run
  *   catches what that missed (a snapshot uploaded while the settings changed, a row a job held at
  *   that moment), skipping rows a job holds;
+ * - a row of the replies ledger (6I-4) 90 days after it ended `done`, `skipped` or `failed`: one
+ *   still queued or running is never deleted by its age, skipping a row a job holds at that moment;
  * - expired OAuth requests and tokens, and clients without a live grant (cleanOAuth).
  */
 export async function runHousekeeping(
@@ -400,6 +406,17 @@ export async function runHousekeeping(
          FOR UPDATE SKIP LOCKED)`,
   );
   const reviewSnapshotsInactive = await purgeInactiveSnapshots(db, null);
+  const reviewReplies = await deleteInBatches(
+    db,
+    BATCH,
+    (limit) => sql`
+      DELETE FROM review_replies WHERE id IN (
+        SELECT id FROM review_replies
+         WHERE status IN ('done', 'skipped', 'failed')
+           AND finished_at < now() - make_interval(days => ${REVIEW_REPLY_DAYS})
+         LIMIT ${limit}
+         FOR UPDATE SKIP LOCKED)`,
+  );
   const auditEvents = await pruneAuditStep(db, logger);
   const ssoStates = await pruneSsoStates(db);
   const accountTokens = await pruneAccountTokens(db);
@@ -422,6 +439,7 @@ export async function runHousekeeping(
     abandonedMailMessages,
     reviewSnapshots,
     reviewSnapshotsInactive,
+    reviewReplies,
     oauthRequests: oauth.requests,
     oauthTokens: oauth.tokens,
     oauthClients: oauth.clients,

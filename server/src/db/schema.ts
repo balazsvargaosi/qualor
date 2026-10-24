@@ -156,8 +156,9 @@ export const scmConnections = pgTable(
     /** github.md §2.5 (D1, migration 0003): the GitHub App id, plain text; NULL for GitLab. */
     appId: text('app_id'),
     /**
-     * github.md §2.5: the GitHub webhook secret, AES-256-GCM with AAD
-     * `scm_connections.webhook_secret_enc`; NULL when unset, and always for GitLab.
+     * The secret an SCM webhook is checked against (github.md §2.5), AES-256-GCM with AAD
+     * `scm_connections.webhook_secret_enc`; NULL when unset. Either provider may hold one: GitHub's
+     * for its App's webhook, and since migration 0017 GitLab's for the note webhook.
      */
     webhookSecretEnc: jsonb('webhook_secret_enc').$type<EncryptedValue>(),
     createdAt: createdAt(),
@@ -168,7 +169,7 @@ export const scmConnections = pgTable(
     // A NULL app_id would make the regex test NULL, which a CHECK lets through: hence IS NOT NULL.
     check(
       'scm_connections_github_app_check',
-      sql`(provider = 'gitlab' AND app_id IS NULL AND webhook_secret_enc IS NULL) OR (provider = 'github' AND app_id IS NOT NULL AND app_id ~ '^[0-9]{1,20}$')`,
+      sql`(provider = 'gitlab' AND app_id IS NULL) OR (provider = 'github' AND app_id IS NOT NULL AND app_id ~ '^[0-9]{1,20}$')`,
     ),
   ],
 );
@@ -878,9 +879,10 @@ export const llmRequests = pgTable(
     // Closed issues are pruned (§7); the audit row stays.
     issueId: uuid('issue_id').references(() => issues.id, { onDelete: 'set null' }),
     userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
-    // The three single-shot features, and `review` (6I-3, migration 0016_review_runs): the
-    // provider calls of an AI review run.
-    feature: text('feature').notNull().$type<LlmFeature | 'review'>(),
+    // The three single-shot features, `review` (6I-3, migration 0016_review_runs): the provider
+    // calls of an AI review run, and `review-reply` (6I-4, migration 0017_review_replies): those of
+    // an answer to a reply in a merge request.
+    feature: text('feature').notNull().$type<LlmFeature | 'review' | 'review-reply'>(),
     cacheKey: char('cache_key', { length: 64 }).notNull(),
     provider: text('provider').notNull(),
     providerHost: text('provider_host').notNull(),
@@ -919,7 +921,10 @@ export const llmRequests = pgTable(
     index('llm_requests_user_idx')
       .on(t.userId)
       .where(sql`user_id IS NOT NULL`),
-    check('llm_requests_feature_check', sql`feature IN ('explain','triage','fix','review')`),
+    check(
+      'llm_requests_feature_check',
+      sql`feature IN ('explain','triage','fix','review','review-reply')`,
+    ),
     check('llm_requests_status_check', sql`status IN ('queued','running','succeeded','failed')`),
     check('llm_requests_result_check', sql`result IS NULL OR status = 'succeeded'`),
     check('llm_requests_result_size', sql`result IS NULL OR octet_length(result::text) <= 16384`),
@@ -1741,6 +1746,11 @@ export const reviewRuns = pgTable(
     reason: text('reason').$type<ReviewSkipReason | ReviewFailureReason>(),
     /** At most 200 characters: a code such as `SNAPSHOT_INVALID`, never content. */
     detail: text('detail'),
+    /**
+     * The SCM user name (at most 255 characters) of the person whose `qualor review` note asked for
+     * this run, null for a run that began with its analysis. A requested run is reviewed as a draft too.
+     */
+    requestedBy: text('requested_by'),
     /** The merge request's head commit the review is of, and the last reviewed commit before it. */
     headSha: text('head_sha'),
     sinceSha: text('since_sha'),
@@ -1804,6 +1814,7 @@ export const reviewRuns = pgTable(
       sql`CASE status WHEN 'skipped' THEN reason IS NOT NULL AND reason IN ('no_snapshot','snapshot_rejected','draft','closed','inactive','empty_diff','unchanged','budget_spent') WHEN 'failed' THEN reason IS NOT NULL AND reason IN ('provider_error','provider_no_tools','bad_answer','internal') ELSE reason IS NULL END`,
     ),
     check('review_runs_detail_length', sql`char_length(detail) <= 200`),
+    check('review_runs_requested_by_length', sql`char_length(requested_by) <= 255`),
     check('review_runs_head_sha_format', sql`head_sha ~ '^[0-9a-f]{40}([0-9a-f]{24})?$'`),
     check('review_runs_since_sha_format', sql`since_sha ~ '^[0-9a-f]{40}([0-9a-f]{24})?$'`),
     check('review_runs_diff_digest_format', sql`diff_digest ~ '^[0-9a-f]{64}$'`),
@@ -1871,3 +1882,138 @@ export const reviewFindings = pgTable(
   ],
 );
 export type ReviewFindingRow = typeof reviewFindings.$inferSelect;
+
+// ─── AI review replies and commands (Phase 6I-4, migration 0017_review_replies) ─
+
+/** What Qualor handles a note as: a reply in one of its threads, or a command such as `qualor review`. */
+export const REPLY_KINDS = ['reply', 'command'] as const;
+export type ReplyKind = (typeof REPLY_KINDS)[number];
+
+/** The commands a note can give; `command` is set exactly when the kind is `command`. */
+export const REPLY_COMMANDS = ['review', 'fix', 'stop'] as const;
+export type ReplyCommand = (typeof REPLY_COMMANDS)[number];
+
+export const REPLY_STATUSES = ['queued', 'running', 'done', 'skipped', 'failed'] as const;
+export type ReplyStatus = (typeof REPLY_STATUSES)[number];
+
+/**
+ * What the model decided about the issue of a thread: `keep` leaves it as it is, the other two are
+ * the statuses a reply may give it.
+ */
+export const REPLY_VERDICTS = ['keep', 'wont_fix', 'false_positive'] as const;
+export type ReplyVerdict = (typeof REPLY_VERDICTS)[number];
+
+/** How a handled note came out: the first five for a reply, the others for a command. */
+export const REPLY_OUTCOMES = [
+  'answered',
+  'acknowledged',
+  'explained',
+  'wont_fix',
+  'false_positive',
+  'review_requested',
+  'in_progress',
+  'already_reviewed',
+  'not_available',
+  'review_off',
+] as const;
+export type ReplyOutcome = (typeof REPLY_OUTCOMES)[number];
+
+/** Why a note was not answered: the first four are reasons to skip it, the others how it failed. */
+export const REPLY_REASONS = [
+  'budget_spent',
+  'inactive',
+  'closed',
+  'thread_gone',
+  'provider_error',
+  'provider_no_tools',
+  'bad_answer',
+  'internal',
+] as const;
+export type ReplyReason = (typeof REPLY_REASONS)[number];
+
+/**
+ * What Qualor does with people's notes in a merge request: one row for each note it handles, a
+ * reply in one of its threads or a command. A note is one row for its project and provider, which
+ * is what makes it answered once, whichever of decoration and a webhook finds it first. The
+ * model's decision is stored before anything is posted, and the id of the answer note once it is,
+ * so that a retry resumes after the last step done and never asks the model twice.
+ */
+export const reviewReplies = pgTable(
+  'review_replies',
+  {
+    id: id(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'cascade' }),
+    provider: text('provider').notNull().$type<'gitlab' | 'github'>(),
+    /** The SCM's id of the note (GitLab) or comment (GitHub), which it counts upwards. */
+    noteId: bigint('note_id', { mode: 'number' }).notNull(),
+    /**
+     * The thread the note is in: GitLab's discussion id (hexadecimal), or the id of the first
+     * comment of a GitHub thread (digits). Null for a note outside any thread: GitHub's top-level
+     * comment.
+     */
+    threadId: text('thread_id'),
+    /** The issue the thread is about; null for a command, and once the issue is deleted. */
+    issueId: uuid('issue_id').references(() => issues.id, { onDelete: 'set null' }),
+    kind: text('kind').notNull().$type<ReplyKind>(),
+    /** Set exactly when `kind` is `command`. */
+    command: text('command').$type<ReplyCommand>(),
+    /** The SCM user name of the person who wrote the note: at most 255 characters. */
+    author: text('author').notNull(),
+    status: text('status').notNull().default('queued').$type<ReplyStatus>(),
+    /** How the note came out, once handled. */
+    outcome: text('outcome').$type<ReplyOutcome>(),
+    /** Why a note was skipped or failed. */
+    reason: text('reason').$type<ReplyReason>(),
+    /** The model's decision, with its `answer` (at most 1 200 characters; may be empty). */
+    verdict: text('verdict').$type<ReplyVerdict>(),
+    answer: text('answer'),
+    /** The id of the note Qualor posted as its answer. */
+    answerNoteId: bigint('answer_note_id', { mode: 'number' }),
+    /** The model that decided, and what its calls spent: no model where no call was made. */
+    model: text('model'),
+    inputTokens: integer('input_tokens').notNull().default(0),
+    outputTokens: integer('output_tokens').notNull().default(0),
+    /** Estimated, as in `llm_requests`: null when no prices are set. */
+    costMicroUsd: bigint('cost_micro_usd', { mode: 'number' }),
+    createdAt: createdAt(),
+    startedAt: at('started_at'),
+    finishedAt: at('finished_at'),
+  },
+  (t) => [
+    // Also the project FK's index.
+    unique('review_replies_note_unique').on(t.projectId, t.provider, t.noteId),
+    // A thread's notes by id, for the newest note the ledger holds of each; also the branch FK's index.
+    index('review_replies_thread_idx').on(t.branchId, t.threadId, t.noteId),
+    // The issue FK's index (§2).
+    index('review_replies_issue_idx')
+      .on(t.issueId)
+      .where(sql`issue_id IS NOT NULL`),
+    check('review_replies_provider_check', sql`provider IN ('gitlab','github')`),
+    check('review_replies_kind_check', sql`kind IN ('reply','command')`),
+    check('review_replies_command_check', sql`command IN ('review','fix','stop')`),
+    // `kind` is never NULL and neither is `IS NOT NULL`: a NULL result would pass a CHECK.
+    check('review_replies_command_by_kind', sql`(kind = 'command') = (command IS NOT NULL)`),
+    check('review_replies_author_length', sql`char_length(author) <= 255`),
+    check(
+      'review_replies_status_check',
+      sql`status IN ('queued','running','done','skipped','failed')`,
+    ),
+    check(
+      'review_replies_outcome_check',
+      sql`outcome IN ('answered','acknowledged','explained','wont_fix','false_positive','review_requested','in_progress','already_reviewed','not_available','review_off')`,
+    ),
+    check(
+      'review_replies_reason_check',
+      sql`reason IN ('budget_spent','inactive','closed','thread_gone','provider_error','provider_no_tools','bad_answer','internal')`,
+    ),
+    check('review_replies_verdict_check', sql`verdict IN ('keep','wont_fix','false_positive')`),
+    check('review_replies_answer_length', sql`char_length(answer) <= 1200`),
+    // A GitLab discussion id is hexadecimal, a GitHub comment id is digits.
+    check('review_replies_thread_id_format', sql`thread_id ~ '^[0-9a-f]{1,64}$|^[0-9]{1,20}$'`),
+  ],
+);

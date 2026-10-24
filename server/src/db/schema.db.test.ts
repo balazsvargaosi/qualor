@@ -50,6 +50,7 @@ const TABLES = [
   'quality_gates',
   'quality_profiles',
   'review_findings',
+  'review_replies',
   'review_runs',
   'review_snapshot_files',
   'review_snapshots',

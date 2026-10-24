@@ -12,6 +12,7 @@ import {
   llmRequests,
   mailMessages,
   projects,
+  reviewReplies,
   reviewSnapshotFiles,
   reviewSnapshots,
   scmConnections,
@@ -751,6 +752,65 @@ describe('daily housekeeping (data-model.md §7)', () => {
       await h.ctx.db.delete(instanceSettings).where(eq(instanceSettings.key, 'retention'));
       await h.ctx.db.delete(reviewSnapshots);
       await undoReview();
+    }
+  });
+
+  it('finished replies older than 90 days are deleted, newer ones kept (6I-4)', async () => {
+    const [mergeRequest] = await h.ctx.db
+      .insert(branches)
+      .values({ projectId: p.id, kind: 'merge_request', name: '41' })
+      .returning({ id: branches.id });
+    let noteId = 0;
+    /** A ledger row in `status`, finished `finishedAgo` days ago (never when null), created long ago. */
+    const reply = async (
+      status: 'queued' | 'running' | 'done' | 'skipped' | 'failed',
+      finishedAgo: number | null,
+    ) => {
+      noteId += 1;
+      const [row] = await h.ctx.db
+        .insert(reviewReplies)
+        .values({
+          projectId: p.id,
+          branchId: mergeRequest!.id,
+          provider: 'gitlab',
+          noteId,
+          threadId: 'a1b2c3',
+          kind: 'reply',
+          author: 'jane',
+          status,
+        })
+        .returning({ id: reviewReplies.id });
+      await h.ctx.db.execute(sql`
+        UPDATE review_replies
+           SET created_at = ${ago(200)},
+               finished_at = ${finishedAgo === null ? sql`NULL` : ago(finishedAgo)}
+         WHERE id = ${row!.id}`);
+      return row!.id;
+    };
+    try {
+      const expired = [
+        await reply('done', 91),
+        await reply('skipped', 91),
+        await reply('failed', 120),
+      ];
+      const kept = [
+        await reply('done', 89),
+        await reply('failed', 1),
+        // Never deleted by age: what is still to do, or being done, however old its row.
+        await reply('queued', null),
+        await reply('running', null),
+      ];
+      expect((await runHousekeeping(h.ctx.db)).reviewReplies).toBe(3);
+      const left = (await h.ctx.db.select({ id: reviewReplies.id }).from(reviewReplies)).map(
+        (r) => r.id,
+      );
+      expect(left.sort()).toEqual(kept.sort());
+      for (const id of expired) expect(left).not.toContain(id);
+      // Nothing more to delete the next day.
+      expect((await runHousekeeping(h.ctx.db)).reviewReplies).toBe(0);
+    } finally {
+      await h.ctx.db.delete(reviewReplies);
+      await h.ctx.db.delete(branches).where(eq(branches.id, mergeRequest!.id));
     }
   });
 
