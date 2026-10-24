@@ -689,7 +689,8 @@ class ReviewJob {
    * The pipeline's outcome. A review is stored once the run is `storing`, which a guarded update
    * makes it, and only a run still running and not storing passes: from then on no newer analysis
    * supersedes it. The values are made before the transaction (masking takes time), which only
-   * writes; the store refuses a run no longer storing, under its lock.
+   * writes; the store refuses a run no longer storing, under its lock, and one whose snapshot was
+   * deleted since the last stop check, which then ends `skipped: closed` with nothing stored.
    */
   private async finish(
     running: Running,
@@ -737,6 +738,23 @@ class ReviewJob {
       });
     } catch (err) {
       if (!(err instanceof ReviewNotStoringError)) throw err;
+      const [now] = await db
+        .select({
+          status: reviewRuns.status,
+          phase: reviewRuns.phase,
+          snapshotId: reviewRuns.snapshotId,
+        })
+        .from(reviewRuns)
+        .where(eq(reviewRuns.id, run.id));
+      if (now?.status === 'running' && now.phase === 'storing' && now.snapshotId === null) {
+        // Its snapshot was deleted after the last stop check (the merge request was merged or
+        // closed): what the review read is gone, and the run ends as the stop check ends it.
+        return this.endRunning(run, {
+          status: 'skipped',
+          reason: 'closed',
+          detail: 'snapshot_deleted',
+        });
+      }
       // Ended meanwhile by a job tried again after this one's lease expired: that one decorated.
       await this.writeSpend();
       return;

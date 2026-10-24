@@ -1,4 +1,4 @@
-import { and, asc, count, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, count, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import type { Tx } from '../db/client';
 import { uuidv7 } from '../db/ids';
 import {
@@ -89,7 +89,10 @@ export interface StoreCounts {
   dropped: number;
 }
 
-/** The run is not storing its results: it was stored already, or it ended another way. */
+/**
+ * The run is not storing its results: it was stored already, it ended another way, or its snapshot
+ * was deleted.
+ */
 export class ReviewNotStoringError extends Error {
   override name = 'ReviewNotStoringError';
   constructor(runId: string) {
@@ -201,8 +204,11 @@ const findingRow = (rows: RenderedFinding, runId: string, headSha: string) => ({
 });
 
 /**
- * Takes the run's row, if it is storing its results; the transaction keeps it to the end, so that no
- * other store of the run can start before this one has ended it.
+ * Takes the run's row, if it is storing its results and still has its snapshot; the transaction
+ * keeps it to the end, so that no other store of the run can start before this one has ended it. A
+ * snapshot deleted since the run's last stop check (its merge request was merged or closed) leaves
+ * the run's reference null: what the review read is gone, and nothing of it is stored. A deletion
+ * that comes once the row is taken waits for the store to end.
  */
 async function lockRun(tx: Tx, runId: string): Promise<void> {
   const locked = await tx
@@ -213,6 +219,7 @@ async function lockRun(tx: Tx, runId: string): Promise<void> {
         eq(reviewRuns.id, runId),
         eq(reviewRuns.status, 'running'),
         eq(reviewRuns.phase, 'storing'),
+        isNotNull(reviewRuns.snapshotId),
       ),
     )
     .for('no key update');
@@ -251,7 +258,8 @@ async function lockOpen(
  * as closed ones with a changelog entry, and the run as `done` with its counts and its summary.
  * `ruleIds` are the ids of the eight AI rules by category: call `ensureAiRules` on the pool before
  * the transaction opens, so that the store never waits on another store's open transaction. It
- * throws {@link ReviewNotStoringError}, writing nothing, when the run is not storing.
+ * throws {@link ReviewNotStoringError}, writing nothing, when the run is not storing or its snapshot
+ * is gone.
  *
  * A finding is written with the head its anchor and its suggestion were made for. An earlier finding
  * that is only kept or closed keeps the head of its last placement: the review marks that it looked

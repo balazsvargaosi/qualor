@@ -669,6 +669,34 @@ describe('the ai-review job (6I-3, R15)', () => {
     await expectStoppedForSnapshot(analysisId, 2);
   });
 
+  it('a snapshot deleted after the last stop check is found by the store, which stores nothing', async () => {
+    const mr = mergeRequest();
+    const analysisId = await analysisOf(mr);
+    await snapshotOf(analysisId, mr);
+    await forgetDecorations();
+    // The copy goes as the run turns to storing: after its last stop check, while its outcome is
+    // prepared, before the store's transaction (the merge request merged in that second).
+    await h.ctx.db.execute(sql`
+      CREATE FUNCTION review_test_delete_when_storing() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.phase = 'storing' AND OLD.phase IS DISTINCT FROM 'storing' THEN
+          DELETE FROM review_snapshots WHERE id = NEW.snapshot_id;
+        END IF;
+        RETURN NEW;
+      END $$`);
+    await h.ctx.db.execute(sql`
+      CREATE TRIGGER review_test_delete_when_storing AFTER UPDATE OF phase ON review_runs
+         FOR EACH ROW EXECUTE FUNCTION review_test_delete_when_storing()`);
+    try {
+      llm.enqueue(reviewResponder(FOUND), reviewResponder(FOUND));
+      expect(await runReviews()).toBe(1);
+    } finally {
+      await h.ctx.db.execute(sql`DROP TRIGGER review_test_delete_when_storing ON review_runs`);
+      await h.ctx.db.execute(sql`DROP FUNCTION review_test_delete_when_storing()`);
+    }
+    await expectStoppedForSnapshot(analysisId, 2);
+  });
+
   it('a waiting run whose analysis is no longer the newest is superseded', async () => {
     const mr = mergeRequest();
     const older = await analysisOf(mr, 1);

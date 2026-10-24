@@ -14,6 +14,7 @@ import {
   projects,
   reviewFindings,
   reviewRuns,
+  reviewSnapshots,
   rules,
   type AiCategory,
   type ReviewRunRow,
@@ -147,7 +148,10 @@ describe('storeReviewOutcome (6I-3)', () => {
     await t.close();
   });
 
-  /** A merge request branch, its analysis and a run that is storing its results. */
+  /**
+   * A merge request branch, its analysis and a run that is storing its results, with the snapshot
+   * it read (a row of it: the store reads no file of it).
+   */
   async function newRun(over: Partial<typeof reviewRuns.$inferInsert> = {}) {
     counter += 1;
     const branchId = first(
@@ -159,6 +163,19 @@ describe('storeReviewOutcome (6I-3)', () => {
     const analysisId = first(
       await t.db.insert(analyses).values({ projectId, branchId }).returning(),
     ).id;
+    const snapshotId = first(
+      await t.db
+        .insert(reviewSnapshots)
+        .values({
+          analysisId,
+          projectId,
+          branchId,
+          status: 'ready',
+          compressedBytes: 0,
+          headSha: HEAD,
+        })
+        .returning(),
+    ).id;
     const run = first(
       await t.db
         .insert(reviewRuns)
@@ -166,6 +183,7 @@ describe('storeReviewOutcome (6I-3)', () => {
           projectId,
           branchId,
           analysisId,
+          snapshotId,
           status: 'running',
           phase: 'storing',
           headSha: HEAD,
@@ -175,7 +193,7 @@ describe('storeReviewOutcome (6I-3)', () => {
         })
         .returning(),
     );
-    return { branchId, analysisId, run };
+    return { branchId, analysisId, snapshotId, run };
   }
 
   /** An issue of the AI review and its finding row, as an earlier review left them. */
@@ -738,6 +756,24 @@ describe('storeReviewOutcome (6I-3)', () => {
       expect(await aiIssues(branchId)).toEqual([]);
       expect(await runRow(run.id)).toMatchObject(over);
     }
+  });
+
+  it('stores nothing for a run whose snapshot was deleted since its last stop check', async () => {
+    const { branchId, snapshotId, run } = await newRun();
+    const context = await contextOf(branchId, [change('src/cart.ts')]);
+    // Its merge request was merged or closed, which deleted the copy the review read.
+    await t.db.delete(reviewSnapshots).where(eq(reviewSnapshots.id, snapshotId));
+    const before = await everything(branchId);
+    await expect(
+      store(run, context, outcomeOf({ findings: [judged({ line: 12 })] })),
+    ).rejects.toBeInstanceOf(ReviewNotStoringError);
+    expect(await everything(branchId)).toEqual(before);
+    // The caller ends it: the store leaves it storing, without its snapshot.
+    expect(await runRow(run.id)).toMatchObject({
+      status: 'running',
+      phase: 'storing',
+      snapshotId: null,
+    });
   });
 
   it('keeps what a person did while the review ran: a dismissed or resolved issue is not touched', async () => {
