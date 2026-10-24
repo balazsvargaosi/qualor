@@ -76,7 +76,10 @@ export interface LiveOptions {
   cases: string[] | null;
   /** The model of the strong tier (the judge and the verification); null: the tier uses `model`. */
   strongModel: string | null;
-  /** The model of the fast tier (the specialist of a trivial review); null: the tier uses `model`. */
+  /**
+   * The model of the fast tier (the quality reviewer of a trivial review); null: the tier uses
+   * `model`.
+   */
   fastModel: string | null;
   /** USD for a million tokens, of `model`; null: no cost is reported. */
   prices: PricePair | null;

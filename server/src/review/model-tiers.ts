@@ -1,6 +1,6 @@
 import type { ReviewTier } from '../db/schema';
-import { ownModel, type StoredProvider } from '../llm/settings';
-import type { ReviewRole, Specialist } from './prompts';
+import { MODEL_TIERS, ownModel, type StoredProvider } from '../llm/settings';
+import type { ReviewRole } from './prompts';
 
 /**
  * The model tiers of AI review (`ModelTier`, not "tier", which is the size of a review): the
@@ -13,9 +13,6 @@ export type ModelTier = 'strong' | 'standard' | 'fast';
 /** The fields of the stored provider that name the models. */
 type TierModels = Pick<StoredProvider, 'model' | 'strongModel' | 'fastModel'>;
 
-/** The tiers in the order their models are listed: the standard model comes first. */
-const TIERS: readonly ModelTier[] = ['standard', 'strong', 'fast'];
-
 /** The model of the tier: its own, or the standard model when it has none. */
 export function modelFor(provider: TierModels, tier: ModelTier): string {
   return ownModel(provider, tier) ?? provider.model;
@@ -27,7 +24,7 @@ export function modelFor(provider: TierModels, tier: ModelTier): string {
  */
 export function tierModels(provider: TierModels): { tier: ModelTier; model: string }[] {
   const listed: { tier: ModelTier; model: string }[] = [];
-  for (const tier of TIERS) {
+  for (const tier of MODEL_TIERS) {
     const model = modelFor(provider, tier);
     if (!listed.some((entry) => entry.model === model)) listed.push({ tier, model });
   }
@@ -57,7 +54,8 @@ export type ConversationRole = ReviewRole | 'reply';
 
 /**
  * The tier of the model each role runs on. The judge and the verification decide what is kept and
- * what is raised, so they get the strong model; the specialists and the reply, the standard one.
+ * what is raised, so they get the strong model; the specialists and the reply, the standard one
+ * (`tierOfCall` has one exception).
  */
 export const ROLE_MODEL_TIER: Readonly<Record<ConversationRole, ModelTier>> = Object.freeze({
   judge: 'strong',
@@ -69,14 +67,13 @@ export const ROLE_MODEL_TIER: Readonly<Record<ConversationRole, ModelTier>> = Ob
   reply: 'standard',
 });
 
-const isSpecialist = (role: ConversationRole): role is Specialist =>
-  role !== 'judge' && role !== 'verify' && role !== 'reply';
-
 /**
- * The tier of one call: its role's, except for the specialist of a trivial review (the smallest
- * `sizeTier`), which runs on the fast model: a change of a few lines needs no more. `sizeTier` is
- * the review's size, not a model tier, and null for a call that is part of no review.
+ * The tier of one call: its role's, except for the quality reviewer of a trivial review (the
+ * smallest `sizeTier`), which runs on the fast model: a change of a few lines needs no more. The
+ * security reviewer, which a sensitive path adds at any size, stays on the standard model: its
+ * recall matters more than its cost. `sizeTier` is the review's size, not a model tier, and null
+ * for a call that is part of no review.
  */
 export function tierOfCall(role: ConversationRole, sizeTier: ReviewTier | null): ModelTier {
-  return sizeTier === 'trivial' && isSpecialist(role) ? 'fast' : ROLE_MODEL_TIER[role];
+  return role === 'quality' && sizeTier === 'trivial' ? 'fast' : ROLE_MODEL_TIER[role];
 }

@@ -16,7 +16,6 @@ import {
 import { costOf, type LlmRuntime } from '../llm/job';
 import { LlmError, type LlmConversation, type LlmTurn } from '../llm/providers';
 import {
-  dearestPrice,
   excludedPathMatcher,
   pricingFor,
   providerApiKey,
@@ -237,7 +236,12 @@ class ReviewJob {
   private inputTokens = 0;
   private outputTokens = 0;
   private cost = 0;
-  /** Where the calls go and what they cost: set once the review reaches the provider. */
+  /**
+   * What the run names of its provider, set once the review reaches it: the host, and the standard
+   * model, which is all the run records of its models (each call's row names the model it went to).
+   * `pricing` only tells a run that has a cost from one that has none; each call is costed at the
+   * prices of its own model (`converse`).
+   */
   private provider: { host: string; model: string; pricing: StoredLlmSettings['pricing'] } | null =
     null;
   private stop: StopReason | null = null;
@@ -473,15 +477,14 @@ class ReviewJob {
       const { context } = built;
 
       const key = providerApiKey(settings, this.deps.config.secretKey);
-      const { provider } = settings;
-      if (!key.ok || provider === null) {
+      const { provider: storedProvider } = settings;
+      if (!key.ok || storedProvider === null) {
         // The key no longer decrypts (QUALOR_SECRET_KEY changed): no call could be made.
         return await this.endRunning(run, { status: 'failed', reason: 'provider_error' });
       }
-      // The run names the standard model: each call's row names the model it was sent to.
       this.provider = {
-        host: new URL(provider.baseUrl).host,
-        model: provider.model,
+        host: new URL(storedProvider.baseUrl).host,
+        model: storedProvider.model,
         pricing: settings.pricing,
       };
       const shouldStop = this.stopCheck(running, controller);
@@ -491,7 +494,7 @@ class ReviewJob {
         {
           converse: (role, user, nonce, tokenBudget, accept, modelTier) =>
             this.converse(
-              { running, provider, reader, policy, context, shouldStop },
+              { running, storedProvider, reader, policy, context, shouldStop },
               { role, user, nonce, tokenBudget, accept },
               modelTier,
             ),
@@ -570,7 +573,8 @@ class ReviewJob {
     return remainingReviewTokens(
       effectiveReviewBudgets(settings, organizationId),
       { organization, project },
-      settings.provider === null ? null : dearestPrice(settings.pricing, settings.provider),
+      settings.pricing,
+      settings.provider,
     );
   }
 
@@ -637,7 +641,8 @@ class ReviewJob {
   private async converse(
     ctx: {
       running: Running;
-      provider: StoredProvider;
+      /** The provider as the settings store it, with its tier models: not `running.provider`. */
+      storedProvider: StoredProvider;
       reader: SnapshotReader;
       policy: ToolPolicy;
       context: ReviewContext;
@@ -646,8 +651,8 @@ class ReviewJob {
     call: RoleCall,
     modelTier: ModelTier,
   ): Promise<ConversationResult> {
-    const { running, provider, reader, policy, context, shouldStop } = ctx;
-    const pricing = pricingFor(running.settings.pricing, provider, modelTier);
+    const { running, storedProvider, reader, policy, context, shouldStop } = ctx;
+    const pricing = pricingFor(running.settings.pricing, storedProvider, modelTier);
     const tally = new RedactionTally();
     if (call.role !== 'verify') tally.add(context.redactions);
     const sender = reviewSender({
@@ -655,7 +660,7 @@ class ReviewJob {
       runtime: { circuit: this.deps.llmCircuit },
       config: this.deps.config,
       settings: reviewCallSettings(running.settings),
-      model: modelFor(provider, modelTier),
+      model: modelFor(storedProvider, modelTier),
       pricing,
       run: running.run,
       promptVersion: REVIEW_PROMPT_VERSION,

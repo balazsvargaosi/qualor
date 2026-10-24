@@ -122,17 +122,22 @@ describe('the tier of each call', () => {
     });
   });
 
-  it('a trivial review’s specialist runs on the fast tier', () => {
-    for (const role of SPECIALISTS) expect(tierOfCall(role, 'trivial'), role).toBe('fast');
+  it('the quality reviewer of a trivial review runs on the fast tier', () => {
+    expect(tierOfCall('quality', 'trivial')).toBe('fast');
   });
 
-  it('a trivial review’s judge and verification stay on the strong tier, and a reply on the standard one', () => {
+  it('every other call of a trivial review stays on the tier of its role', () => {
+    // The security reviewer a sensitive path adds at any size keeps the standard model: its
+    // recall matters more than its cost.
+    expect(tierOfCall('security', 'trivial')).toBe('standard');
+    expect(tierOfCall('tests', 'trivial')).toBe('standard');
+    expect(tierOfCall('performance', 'trivial')).toBe('standard');
     expect(tierOfCall('judge', 'trivial')).toBe('strong');
     expect(tierOfCall('verify', 'trivial')).toBe('strong');
     expect(tierOfCall('reply', 'trivial')).toBe('standard');
   });
 
-  it('every other call runs on the tier of its role: a lite or full review, or a call with no review size', () => {
+  it('every call of a review that is not trivial, or of no review, runs on the tier of its role', () => {
     for (const role of ROLES) {
       for (const size of SIZES.filter((size) => size !== 'trivial')) {
         expect(tierOfCall(role, size), `${role} in a ${size ?? 'sizeless'} call`).toBe(
@@ -140,7 +145,7 @@ describe('the tier of each call', () => {
         );
       }
     }
-    // A reply has no review: it is never a specialist, whatever size is given.
+    // A reply is part of no review: it stays on the standard tier, whatever size is given.
     for (const size of SIZES) expect(tierOfCall('reply', size)).toBe('standard');
   });
 });

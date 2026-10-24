@@ -116,8 +116,8 @@ export const storedProviderSchema = z
     model: z.string().regex(MODEL_PATTERN),
     /**
      * The model of the review's strong tier (the judge and the verification), and of its fast tier
-     * (the specialist of a trivial review). Null: the tier uses `model`. A row stored before the
-     * tiers reads with null.
+     * (the quality reviewer of a trivial review). Null: the tier uses `model`. A row stored before
+     * the tiers reads with null.
      */
     strongModel: z.string().regex(MODEL_PATTERN).nullable().default(null),
     fastModel: z.string().regex(MODEL_PATTERN).nullable().default(null),
@@ -133,6 +133,9 @@ export const storedProviderSchema = z
     path: ['temperature'],
   });
 export type StoredProvider = z.infer<typeof storedProviderSchema>;
+
+/** The model tiers in the order their models are listed: the standard model comes first. */
+export const MODEL_TIERS: readonly ModelTier[] = ['standard', 'strong', 'fast'];
 
 /**
  * The model a tier has of its own: the strong or fast model when it is set and is not the
@@ -255,9 +258,6 @@ export function pricingFor(
   return pricing[tier];
 }
 
-/** Every tier a call may run on (review/model-tiers.ts lists them too, and imports this module). */
-const PRICED_TIERS: readonly ModelTier[] = ['standard', 'strong', 'fast'];
-
 /**
  * The dearest prices a call of the provider may be costed at: the highest input price and the
  * highest output price among the tiers' pairs (`pricingFor`), each from whichever tier has it. A
@@ -270,7 +270,7 @@ export function dearestPrice(
   pricing: StoredPricing,
   provider: Pick<StoredProvider, 'model' | 'strongModel' | 'fastModel'>,
 ): PricePair | null {
-  const pairs = PRICED_TIERS.flatMap((tier) => {
+  const pairs = MODEL_TIERS.flatMap((tier) => {
     const pair = pricingFor(pricing, provider, tier);
     return pair === null ? [] : [pair];
   });

@@ -100,6 +100,26 @@ const FINDING = {
   title: 'The loop skips the last item',
   body: 'The loop stops one item early, so the last item is never added to the sum.',
 };
+/**
+ * A merge request that adds a few lines on a path that looks security-sensitive: a trivial review,
+ * which a security reviewer joins at any size.
+ */
+const LOGIN_LINES = [
+  'export function isGuest(name: string): boolean {',
+  "  return name === '';",
+  '}',
+];
+const LOGIN: SnapshotLine[] = [
+  {
+    type: 'change',
+    path: 'src/auth/login.ts',
+    oldPath: null,
+    status: 'added',
+    patch: `@@ -0,0 +1,${LOGIN_LINES.length} @@\n${LOGIN_LINES.map((line) => `+${line}`).join('\n')}\n`,
+    since: null,
+  },
+  { type: 'file', path: 'src/auth/login.ts', text: `${LOGIN_LINES.join('\n')}\n` },
+];
 /** A merge request that adds a file of 320 lines: a full review, with every specialist. */
 const BIG_LINES = Array.from({ length: 320 }, (_, i) => `export const value${i + 1} = ${i + 1};`);
 const BIG: SnapshotLine[] = [
@@ -252,6 +272,10 @@ describe('the ai-review job (6I-3, R15)', () => {
   /** Forgets the decorations ingestion queued, so that only the job's are left to see. */
   const forgetDecorations = () => h.ctx.db.delete(jobs).where(eq(jobs.queue, SCM_QUEUE));
   const reviewCalls = () => llm.requests.filter((request) => reviewRoleOf(request) !== null);
+  /** A responder that answers as `script` does after 5.5 s: past the least the assistant waits. */
+  const slow =
+    (script: ReviewScript): LlmResponder =>
+    async (request) => ({ ...(await reviewResponder(script)(request)), delayMs: 5_500 });
   /** The rows of the review's provider calls, oldest first. */
   const reviewRows = () =>
     h.ctx.db
@@ -411,9 +435,6 @@ describe('the ai-review job (6I-3, R15)', () => {
              SET value = jsonb_set(value, '{provider,timeoutSeconds}', '5')
            WHERE key = 'llm'`,
     );
-    const slow =
-      (script: ReviewScript): LlmResponder =>
-      async (request) => ({ ...(await reviewResponder(script)(request)), delayMs: 5_500 });
     const mr = mergeRequest();
     const analysisId = await analysisOf(mr);
     await snapshotOf(analysisId, mr);
@@ -1218,6 +1239,75 @@ describe('the ai-review job (6I-3, R15)', () => {
         ['judge', 'fake-model'],
       ]);
       expect(trivial.run).toMatchObject({ model: 'fake-model', costMicroUsd: 2 * standard });
+    });
+
+    it('a trivial review of a sensitive path runs quality on the fast model and security on the standard one', async () => {
+      await reviewOn({ pricing: TIER_PRICING, tiers: TIERS });
+      const { run, sent, rows } = await reviewWith(LOGIN, {}, 3);
+
+      expect(run).toMatchObject({
+        status: 'done',
+        tier: 'trivial',
+        reviewers: ['security', 'quality'],
+        modelCalls: 3,
+      });
+      expect(sent).toEqual([
+        ['security', 'fake-model'],
+        ['quality', 'fast-model'],
+        ['judge', 'strong-model'],
+      ]);
+      expect(rows.map((row) => [row.model, row.costMicroUsd])).toEqual([
+        ['fake-model', callCost(TIER_PRICING)],
+        ['fast-model', callCost(TIER_PRICING.fast)],
+        ['strong-model', callCost(TIER_PRICING.strong)],
+      ]);
+    });
+
+    it('a call of the strong model waits past the assistant’s timeout too', async () => {
+      await reviewOn({ pricing: TIER_PRICING, tiers: TIERS });
+      // The assistant gives up after 5 s (the least it can be set to); the judge's call, on the
+      // strong model, takes 5.5 s.
+      await h.ctx.db.execute(
+        sql`UPDATE instance_settings
+               SET value = jsonb_set(value, '{provider,timeoutSeconds}', '5')
+             WHERE key = 'llm'`,
+      );
+      const mr = mergeRequest();
+      const analysisId = await analysisOf(mr);
+      await snapshotOf(analysisId, mr);
+      const calls = reviewCalls().length;
+      llm.enqueue(reviewResponder(FOUND), slow(FOUND));
+
+      expect(await runReviews()).toBe(1);
+      expect(await runOf(analysisId)).toMatchObject({
+        status: 'done',
+        reason: null,
+        modelCalls: 2,
+        findingsNew: 1,
+      });
+      expect(
+        reviewCalls()
+          .slice(calls)
+          .map((request) => [reviewRoleOf(request), (request.json as { model: string }).model]),
+      ).toEqual([
+        ['quality', 'fast-model'],
+        ['judge', 'strong-model'],
+      ]);
+    });
+
+    it('a model of its own with no prices gives its call a null cost and adds nothing to the run’s cost', async () => {
+      // The settings API refuses this state, but a row can hold it: the strong model has no prices,
+      // and its call is not costed at the standard model's, which are another model's.
+      await reviewOn({ pricing: { ...TIER_PRICING, strong: null }, tiers: TIERS });
+      const fast = callCost(TIER_PRICING.fast);
+
+      const { run, rows } = await reviewWith(CHANGE, FOUND, 2);
+
+      expect(rows.map((row) => [row.model, row.costMicroUsd])).toEqual([
+        ['fast-model', fast],
+        ['strong-model', null],
+      ]);
+      expect(run).toMatchObject({ status: 'done', modelCalls: 2, costMicroUsd: fast });
     });
 
     it('tier models set to the standard model change nothing either', async () => {

@@ -31,12 +31,7 @@ import {
 import { createLlmRuntime, type LlmRuntime } from '../llm/job';
 import type { LlmConversation, LlmMessage, LlmTurn, ProviderKind } from '../llm/providers';
 import { todayUsage } from '../llm/service';
-import {
-  DEFAULT_LLM_SETTINGS,
-  dearestPrice,
-  pricingFor,
-  type StoredLlmSettings,
-} from '../llm/settings';
+import { DEFAULT_LLM_SETTINGS, pricingFor, type StoredLlmSettings } from '../llm/settings';
 import type { WorkerLogger } from '../queue/worker';
 import { SCM_CIRCUIT_FAILURES } from '../scm/runtime';
 import { parseInternalHosts } from '../scm/url';
@@ -75,6 +70,8 @@ const PROMPT_VERSION = 'review-1';
 // Characters of two, three and four bytes: a size in bytes is not a size in characters.
 const USER_TEXT = 'The change under review: café € 😀';
 const PRICING = { inputUsdPerMTok: 3, outputUsdPerMTok: 15, strong: null, fast: null };
+/** A provider with no tier models: all its calls go to its model, at the standard prices. */
+const SINGLE_MODEL = { model: 'fake-model', strongModel: null, fastModel: null };
 /** A fake password and the line that sets it, built at run time so no scanner takes it for real. */
 const PASSWORD_VALUE = ['"hunter2', '-very-secret"'].join('');
 const PASSWORD_LINE = `const password = ${PASSWORD_VALUE};`;
@@ -1182,7 +1179,9 @@ const port = 8080;
         tokensPerDay: 300_000,
         maxTokensPerReview: 50_000,
       };
-      expect(remainingReviewTokens(budgets, { organization: usage, project: null }, null)).toBe(0);
+      expect(
+        remainingReviewTokens(budgets, { organization: usage, project: null }, null, null),
+      ).toBe(0);
     });
 
     it('does not guess a cost: the cost of the day is that of the calls whose cost is known', async () => {
@@ -1215,27 +1214,29 @@ const port = 8080;
 
     it('takes the smallest of the review ceiling, the org and the project remainder', () => {
       // The ceiling of one review.
-      expect(remainingReviewTokens(budgets, day(0), null)).toBe(300_000);
+      expect(remainingReviewTokens(budgets, day(0), null, null)).toBe(300_000);
       // The organisation's day: 1 000 000 − 900 000.
-      expect(remainingReviewTokens(budgets, day(900_000), null)).toBe(100_000);
+      expect(remainingReviewTokens(budgets, day(900_000), null, null)).toBe(100_000);
       // The project's day: 400 000 − 250 000.
-      expect(remainingReviewTokens(budgets, day(500_000, 250_000), null)).toBe(150_000);
+      expect(remainingReviewTokens(budgets, day(500_000, 250_000), null, null)).toBe(150_000);
       // The organisation's day is the smaller of the two.
-      expect(remainingReviewTokens(budgets, day(950_000, 250_000), null)).toBe(50_000);
+      expect(remainingReviewTokens(budgets, day(950_000, 250_000), null, null)).toBe(50_000);
     });
 
     it('leaves a project without a budget out of it', () => {
       const noProjectBudget = { ...budgets, perProjectTokensPerDay: null };
-      expect(remainingReviewTokens(noProjectBudget, day(0, 9_999_999), null)).toBe(300_000);
-      expect(remainingReviewTokens(budgets, day(0, null), null)).toBe(300_000);
+      expect(remainingReviewTokens(noProjectBudget, day(0, 9_999_999), null, null)).toBe(300_000);
+      expect(remainingReviewTokens(budgets, day(0, null), null, null)).toBe(300_000);
     });
 
     it('never goes below 0', () => {
-      expect(remainingReviewTokens(budgets, day(1_000_000), null)).toBe(0);
-      expect(remainingReviewTokens(budgets, day(1_200_000), null)).toBe(0);
-      expect(remainingReviewTokens(budgets, day(0, 400_000), null)).toBe(0);
-      expect(remainingReviewTokens(budgets, day(0, 500_000), null)).toBe(0);
-      expect(remainingReviewTokens({ ...budgets, tokensPerDay: 0 }, day(0, null), null)).toBe(0);
+      expect(remainingReviewTokens(budgets, day(1_000_000), null, null)).toBe(0);
+      expect(remainingReviewTokens(budgets, day(1_200_000), null, null)).toBe(0);
+      expect(remainingReviewTokens(budgets, day(0, 400_000), null, null)).toBe(0);
+      expect(remainingReviewTokens(budgets, day(0, 500_000), null, null)).toBe(0);
+      expect(remainingReviewTokens({ ...budgets, tokensPerDay: 0 }, day(0, null), null, null)).toBe(
+        0,
+      );
     });
 
     describe('with a cost budget of the review', () => {
@@ -1244,80 +1245,94 @@ const port = 8080;
 
       it('a cost budget at or past its limit leaves 0', () => {
         // A micro-USD left buys no whole token at 15 micro-USD a token.
-        expect(remainingReviewTokens(priced, day(0, 0, 5_000_000 - 1), PRICING)).toBe(0);
-        expect(remainingReviewTokens(priced, day(0, 0, 5_000_000), PRICING)).toBe(0);
-        expect(remainingReviewTokens(priced, day(0, 0, 5_000_001), PRICING)).toBe(0);
-        // Without prices nothing turns the cost into tokens, but a limit that is reached is reached.
-        expect(remainingReviewTokens(priced, day(0, 0, 5_000_000), null)).toBe(0);
-        // A limit of 0 is spent before anything is.
-        expect(remainingReviewTokens({ ...budgets, costPerDayUsd: 0 }, day(0, 0, 0), PRICING)).toBe(
+        expect(remainingReviewTokens(priced, day(0, 0, 5_000_000 - 1), PRICING, SINGLE_MODEL)).toBe(
           0,
         );
+        expect(remainingReviewTokens(priced, day(0, 0, 5_000_000), PRICING, SINGLE_MODEL)).toBe(0);
+        expect(remainingReviewTokens(priced, day(0, 0, 5_000_001), PRICING, SINGLE_MODEL)).toBe(0);
+        // Without prices nothing turns the cost into tokens, but a limit that is reached is reached.
+        expect(remainingReviewTokens(priced, day(0, 0, 5_000_000), null, SINGLE_MODEL)).toBe(0);
+        expect(remainingReviewTokens(priced, day(0, 0, 5_000_000), PRICING, null)).toBe(0);
+        // A limit of 0 is spent before anything is.
+        expect(
+          remainingReviewTokens(
+            { ...budgets, costPerDayUsd: 0 },
+            day(0, 0, 0),
+            PRICING,
+            SINGLE_MODEL,
+          ),
+        ).toBe(0);
       });
 
       it('turns the cost that is left into tokens at the dearer of the two prices', () => {
         // $3 left at the output price of 15 micro-USD a token (the dearer): 200 000 tokens.
-        expect(remainingReviewTokens(priced, day(0, 0, 2_000_000), PRICING)).toBe(200_000);
+        expect(remainingReviewTokens(priced, day(0, 0, 2_000_000), PRICING, SINGLE_MODEL)).toBe(
+          200_000,
+        );
         // 500 000 / 15 is 33 333.3, and a token not bought is not counted.
-        expect(remainingReviewTokens(priced, day(0, 0, 4_500_000), PRICING)).toBe(33_333);
+        expect(remainingReviewTokens(priced, day(0, 0, 4_500_000), PRICING, SINGLE_MODEL)).toBe(
+          33_333,
+        );
         // Here the input price is the dearer: 1 000 000 / 20.
         expect(
-          remainingReviewTokens(priced, day(0, 0, 4_000_000), {
-            inputUsdPerMTok: 20,
-            outputUsdPerMTok: 5,
-          }),
+          remainingReviewTokens(
+            priced,
+            day(0, 0, 4_000_000),
+            { ...PRICING, inputUsdPerMTok: 20, outputUsdPerMTok: 5 },
+            SINGLE_MODEL,
+          ),
         ).toBe(50_000);
       });
 
       it('is the smallest of what the tokens and the cost leave', () => {
         // The cost leaves 200 000 tokens, the review ceiling 300 000, the organisation's day 1 000 000.
-        expect(remainingReviewTokens(priced, day(0, 0, 2_000_000), PRICING)).toBe(200_000);
+        expect(remainingReviewTokens(priced, day(0, 0, 2_000_000), PRICING, SINGLE_MODEL)).toBe(
+          200_000,
+        );
         // The organisation's day leaves 100 000, the cost 200 000.
-        expect(remainingReviewTokens(priced, day(900_000, 0, 2_000_000), PRICING)).toBe(100_000);
+        expect(
+          remainingReviewTokens(priced, day(900_000, 0, 2_000_000), PRICING, SINGLE_MODEL),
+        ).toBe(100_000);
       });
 
       it("the day's cost budget converts at the dearest price in use", () => {
-        const settings = settingsFor('openai', {
-          provider: {
-            ...configuredProvider(config.secretKey, fake),
-            strongModel: 'big-model',
-            fastModel: 'small-model',
-          },
-          pricing: {
-            ...PRICING,
-            strong: { inputUsdPerMTok: 60, outputUsdPerMTok: 300 },
-            fast: { inputUsdPerMTok: 1, outputUsdPerMTok: 5 },
-          },
-        });
-        const { provider, pricing } = settings;
-        const dearest = dearestPrice(pricing, provider!);
+        const tiers = { model: 'fake-model', strongModel: 'big-model', fastModel: 'small-model' };
+        const pricing = {
+          ...PRICING,
+          strong: { inputUsdPerMTok: 60, outputUsdPerMTok: 300 },
+          fast: { inputUsdPerMTok: 1, outputUsdPerMTok: 5 },
+        };
         // $3 left. The standard model alone, 15 micro-USD a token, would buy 200 000 tokens; the
         // strong model's 300 buys 10 000, and the cost of a call is not known before it is made.
-        expect(remainingReviewTokens(priced, day(0, 0, 2_000_000), dearest)).toBe(10_000);
-        expect(
-          remainingReviewTokens(
-            priced,
-            day(0, 0, 2_000_000),
-            pricingFor(pricing, provider!, 'standard'),
-          ),
-        ).toBe(200_000);
+        expect(remainingReviewTokens(priced, day(0, 0, 2_000_000), pricing, tiers)).toBe(10_000);
+        // The strong and fast prices count only for models that are set: with the standard model
+        // alone, nothing is costed at them.
+        expect(remainingReviewTokens(priced, day(0, 0, 2_000_000), pricing, SINGLE_MODEL)).toBe(
+          200_000,
+        );
         // The dearest input price may be another tier's than the dearest output price.
-        const inputDear = { ...pricing!, strong: { inputUsdPerMTok: 500, outputUsdPerMTok: 5 } };
-        expect(
-          remainingReviewTokens(priced, day(0, 0, 2_000_000), dearestPrice(inputDear, provider!)),
-        ).toBe(6_000);
+        const inputDear = { ...pricing, strong: { inputUsdPerMTok: 500, outputUsdPerMTok: 5 } };
+        expect(remainingReviewTokens(priced, day(0, 0, 2_000_000), inputDear, tiers)).toBe(6_000);
       });
 
       it('leaves the cost out when the review has no cost budget, or the prices are free or unset', () => {
         // The explain, triage and fix budget has no say here: only the review's own `costPerDayUsd`.
-        expect(remainingReviewTokens(budgets, day(0, 0, 99_000_000), PRICING)).toBe(300_000);
+        expect(remainingReviewTokens(budgets, day(0, 0, 99_000_000), PRICING, SINGLE_MODEL)).toBe(
+          300_000,
+        );
         expect(
-          remainingReviewTokens(priced, day(0, 0, 4_000_000), {
-            inputUsdPerMTok: 0,
-            outputUsdPerMTok: 0,
-          }),
+          remainingReviewTokens(
+            priced,
+            day(0, 0, 4_000_000),
+            { ...PRICING, inputUsdPerMTok: 0, outputUsdPerMTok: 0 },
+            SINGLE_MODEL,
+          ),
         ).toBe(300_000);
-        expect(remainingReviewTokens(priced, day(0, 0, 4_000_000), null)).toBe(300_000);
+        expect(remainingReviewTokens(priced, day(0, 0, 4_000_000), null, SINGLE_MODEL)).toBe(
+          300_000,
+        );
+        // Without a provider no call is priced either.
+        expect(remainingReviewTokens(priced, day(0, 0, 4_000_000), PRICING, null)).toBe(300_000);
       });
     });
 
@@ -1345,13 +1360,20 @@ const port = 8080;
       // The ceiling leaves 150 000 of the day; the 2 000 000 of the organisation's own budget would
       // have left more than the 300 000 of one review.
       expect(
-        remainingReviewTokens(effective, { organization, project: null }, settings.pricing),
+        remainingReviewTokens(
+          effective,
+          { organization, project: null },
+          settings.pricing,
+          settings.provider,
+        ),
       ).toBe(150_000);
       const uncapped = effectiveReviewBudgets(
         withOrganizationReview(DEFAULT_LLM_SETTINGS, orgA, own),
         orgA,
       );
-      expect(remainingReviewTokens(uncapped, { organization, project: null }, null)).toBe(300_000);
+      expect(remainingReviewTokens(uncapped, { organization, project: null }, null, null)).toBe(
+        300_000,
+      );
     });
   });
 });

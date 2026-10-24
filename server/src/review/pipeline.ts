@@ -61,8 +61,8 @@ export { REVIEW_NOTES, type ReviewFinding, type ReviewNote } from './schemas';
  * again, and a third leaves room for a turn of tools, what the tools answer, and the wrap-up.
  *
  * Each conversation runs on the model of a tier (model-tiers.ts): the judge and the verification on
- * the strong one, the specialists on the standard one, and the specialist of a trivial review on
- * the fast one.
+ * the strong one, the specialists on the standard one, and the quality reviewer of a trivial review
+ * on the fast one.
  *
  * Nothing here calls a provider: `deps.converse` does, with the role's system prompt, the tools and
  * the first message it is given.

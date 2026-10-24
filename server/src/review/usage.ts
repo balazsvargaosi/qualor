@@ -16,10 +16,13 @@ import {
 } from '../llm/providers';
 import { UTC_DAY_START } from '../llm/service';
 import {
+  dearestPrice,
   providerApiKey,
   providerConfig,
   type PricePair,
   type StoredLlmSettings,
+  type StoredPricing,
+  type StoredProvider,
 } from '../llm/settings';
 import type { WorkerLogger } from '../queue/worker';
 import { CircuitOpenError } from './conversation';
@@ -194,11 +197,11 @@ export async function reviewUsageToday(
  * The tokens one review may use now: the smallest of what one review may use, what the
  * organisation has left of its day, what its project has left of the day when the project has a
  * budget, and, when the review has a cost budget (`costPerDayUsd`) and there are prices, what the
- * cost left buys at the dearer of the two of `dearest`. That is the `dearestPrice` of the provider:
- * the cost of a call is not known before it is made and any model's may be the next, so the price
- * that cannot overspend is the dearest of them all. A cost budget at or past its limit leaves
- * nothing. `usage` is the day so far, as `reviewUsageToday` counts it for the organisation and for
- * the project.
+ * cost left buys at the `dearestPrice` of the provider's models: the cost of a call is not known
+ * before it is made and any model's may be the next, so the price that cannot overspend is the
+ * dearest of them all, the dearer of its input and its output. Without a provider, as without
+ * prices, nothing is priced. A cost budget at or past its limit leaves nothing. `usage` is the day
+ * so far, as `reviewUsageToday` counts it for the organisation and for the project.
  */
 export function remainingReviewTokens(
   budgets: ReviewBudgets,
@@ -206,7 +209,8 @@ export function remainingReviewTokens(
     organization: { tokens: number; costMicroUsd: number };
     project: { tokens: number } | null;
   },
-  dearest: PricePair | null,
+  pricing: StoredPricing,
+  provider: Pick<StoredProvider, 'model' | 'strongModel' | 'fastModel'> | null,
 ): number {
   const left = [budgets.maxTokensPerReview, budgets.tokensPerDay - usage.organization.tokens];
   if (usage.project !== null && budgets.perProjectTokensPerDay !== null) {
@@ -216,6 +220,7 @@ export function remainingReviewTokens(
     const costLeft =
       Math.round(budgets.costPerDayUsd * 1_000_000) - usage.organization.costMicroUsd;
     if (costLeft <= 0) return 0;
+    const dearest = provider === null ? null : dearestPrice(pricing, provider);
     // A price is in dollars for a million tokens, which is micro-USD for a token.
     const perToken =
       dearest === null ? 0 : Math.max(dearest.inputUsdPerMTok, dearest.outputUsdPerMTok);

@@ -707,7 +707,7 @@ describe('runReviewPipeline', () => {
     ]);
   });
 
-  it('a trivial review’s specialist runs on the fast tier, its judge and verification on the strong one', async () => {
+  it('a trivial review’s quality reviewer runs on the fast tier, its judge and verification on the strong one', async () => {
     const { deps, calls } = scripted({
       quality: [answer({ findings: [] })],
       judge: [
@@ -728,7 +728,7 @@ describe('runReviewPipeline', () => {
     ]);
   });
 
-  it('every specialist of a trivial review runs on the fast tier, the security reviewer a sensitive path adds too', async () => {
+  it('the security reviewer a sensitive path adds to a trivial review stays on the standard tier', async () => {
     const { deps, calls } = scripted({
       security: [answer({ findings: [] })],
       quality: [answer({ findings: [] })],
@@ -737,7 +737,7 @@ describe('runReviewPipeline', () => {
     await review(contextOf([change('src/auth/login.ts', 2)]), 100_000, deps);
 
     expect(calls.map((c) => [c.role, c.modelTier])).toEqual([
-      ['security', 'fast'],
+      ['security', 'standard'],
       ['quality', 'fast'],
       ['judge', 'strong'],
     ]);
