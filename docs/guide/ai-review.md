@@ -589,7 +589,10 @@ each, 35 % for the judge and 10 % for the second check of security findings. A s
 its share answers with what it has, and the summary says "The review reached its token limit, so it
 may have missed problems." The limit is a ceiling Qualor works to, not a count to the token: it
 stops asking the model when it expects the next answer not to fit, but it cannot know how long an
-answer will be, so a review can end somewhat over it.
+answer will be, so a review can end somewhat over it. The day's budget is checked as each review
+starts, so reviews that start together, one on each worker slot (`QUALOR_REVIEW_WORKER_CONCURRENCY`
+on each replica of the server), can each spend what was left: the day can end over its budget by up
+to about (slots − 1) × Tokens per review.
 
 **Big merge requests.** The reviewers get the changed code in their first message and read more with
 their tools. At the default of 300 000 tokens per review, a merge request of about 80 changed files
@@ -599,7 +602,10 @@ reviewer no room. Short paths let more files fit, and many analyzer findings on 
 fewer. The summary then says "AI review did not run because this merge request is too large for the
 Tokens per review budget; raise it in the AI review settings." For big merge requests, raise
 **Tokens per review** in **Settings → AI review** (to 600 000, say), and check that the day's budget
-can pay for it.
+can pay for it. Mind the model's context window too, the most it reads in one call: the higher
+Tokens per review, the longer one call of a review can grow, and raised far, a call can pass the
+window. The provider then refuses the call, and the review fails with a provider error
+(`PROVIDER_REJECTED_REQUEST`). Keep **Tokens per review** within what the model takes.
 
 **How tokens are counted.** Tokens are the counts the provider reports. For a call that reports no
 input count, Qualor counts a quarter of the bytes it sent, both in a review's ceiling and in today's
@@ -609,6 +615,10 @@ for is not counted.
 
 ## What your CI needs
 
+- **A scanner of the server's release.** A scanner from a release before AI review sends no
+  snapshot, and its log says nothing about one. Pin the CI component
+  ([GitLab](./gitlab.md#with-the-cicd-component-recommended)), the action
+  ([GitHub](./github.md#2-the-workflow)) or the scanner image to the server's release.
 - **Merge request pipelines.** On GitLab, run the job in merge request pipelines
   (`merge_request_event`, [GitLab](./gitlab.md#2-the-ci-job)). On GitHub, run the workflow on
   `pull_request` ([GitHub](./github.md#2-the-workflow)). The scanner reads the merge request's last
@@ -650,7 +660,7 @@ and what to do about each:
 | The summary says | What it means, and what to do |
 |---|---|
 | AI review in progress… | The review waits for the snapshot (up to 15 minutes) or is running. The summary is updated when it ends |
-| AI review did not run: no repository snapshot came for this commit. See the CI job’s log and the guide’s `fetch-depth` note. | The scanner sent no snapshot, or it took more than 15 minutes to arrive. Read the `AI review:` lines in the CI job's log ([the scan log](#the-scan-log)). A shallow clone, a pipeline that is not a merge request pipeline and a secret scan that did not finish are the usual causes ([What your CI needs](#what-your-ci-needs)). A snapshot that arrives later starts the review again |
+| AI review did not run: no repository snapshot came for this commit. See the CI job’s log and the guide’s `fetch-depth` note. | The scanner sent no snapshot, or it took more than 15 minutes to arrive. Read the `AI review:` lines in the CI job's log ([the scan log](#the-scan-log)). A shallow clone, a pipeline that is not a merge request pipeline and a secret scan that did not finish are the usual causes ([What your CI needs](#what-your-ci-needs)). A log with no `AI review:` line at all comes from a scanner of a release before AI review (pin the CI component, the action or the scanner image to the server's release), or from a CI other than GitLab CI and GitHub Actions. A snapshot that arrives later starts the review again |
 | AI review did not run: the server refused the repository snapshot of this commit. (`Reason: SNAPSHOT_INVALID`) | The server could not use the upload, or it was of another merge request. The server log names the reason. Run the job again to upload a new snapshot, and report it if it repeats |
 | AI review is skipped while this merge request is a draft; the next pipeline after it is ready reviews it. | Mark the merge request ready, then run the pipeline again |
 | AI review did not run because this merge request is merged or closed. | Nothing to do |
