@@ -11,8 +11,10 @@ import {
   jobs,
   llmRequests,
   mailMessages,
+  projects,
   reviewSnapshotFiles,
   reviewSnapshots,
+  scmConnections,
   sessions,
   webhookDeliveries,
   webhookSubscriptions,
@@ -21,9 +23,17 @@ import { accountTokenKey, issueAccountToken } from '../auth/account-tokens';
 import { appendEvents, type AuditActorContext } from '../audit/recorder';
 import { AUDIT_CHAIN_KEY, AUDIT_SETTINGS_KEY } from '../audit/settings';
 import { verifyAuditChain } from '../audit/verify';
+import { encryptionKey, encryptSecret } from '../crypto/secrets';
 import { uuidv7 } from '../db/ids';
-import { DEFAULT_LLM_SETTINGS, LLM_SETTINGS_KEY } from '../llm/settings';
+import {
+  DEFAULT_AUTO_FIX,
+  DEFAULT_LLM_SETTINGS,
+  LLM_SETTINGS_KEY,
+  writeLlmSettings,
+} from '../llm/settings';
 import { runUntilIdle } from '../queue/worker';
+import { SCM_TOKEN_AAD } from '../scm/connections';
+import { defaultReview, reviewProvider } from '../review/settings';
 import { WEBHOOK_QUEUE } from '../webhooks/deliveries';
 import {
   ensureHousekeepingScheduled,
@@ -622,7 +632,76 @@ describe('daily housekeeping (data-model.md §7)', () => {
     }
   });
 
+  /**
+   * AI review on for `p`: a provider, its organisation enabled with a consent for it, and the
+   * project mapped to an SCM connection. The purge of the snapshots of projects without AI review
+   * (6I-3) leaves the snapshots of such a project to the retention rules. Returns what undoes it.
+   */
+  const reviewedProject = async (): Promise<() => Promise<void>> => {
+    const settings = {
+      ...DEFAULT_LLM_SETTINGS,
+      provider: {
+        kind: 'openai' as const,
+        baseUrl: 'https://llm.example/v1',
+        model: 'fake-model',
+        auth: 'bearer' as const,
+        jsonMode: 'json_object' as const,
+        maxTokensField: 'max_tokens' as const,
+        temperature: null,
+        timeoutSeconds: 5,
+        apiKeyEnc: null,
+      },
+    };
+    const provider = reviewProvider(settings)!;
+    await writeLlmSettings(h.ctx.db, {
+      ...settings,
+      organizations: {
+        [h.organizationId]: {
+          enabled: true,
+          features: { explain: true, triage: true, fix: true },
+          excludedProjectIds: [],
+          autoFix: { ...DEFAULT_AUTO_FIX },
+          autoFixDisabledProjectIds: [],
+          review: {
+            ...defaultReview(),
+            enabled: true,
+            scope: 'all',
+            consent: {
+              providerUrl: provider.url,
+              providerHost: provider.host,
+              model: provider.model,
+              userId: h.ctx.adminId,
+              at: new Date().toISOString(),
+            },
+          },
+        },
+      },
+    });
+    const [connection] = await h.ctx.db
+      .insert(scmConnections)
+      .values({
+        organizationId: h.organizationId,
+        provider: 'gitlab',
+        baseUrl: 'https://gitlab.example.com',
+        tokenEnc: encryptSecret(encryptionKey(h.ctx.config.secretKey), 'x', SCM_TOKEN_AAD),
+      })
+      .returning({ id: scmConnections.id });
+    await h.ctx.db
+      .update(projects)
+      .set({ scmConnectionId: connection!.id, scmProjectRef: '7' })
+      .where(eq(projects.id, p.id));
+    return async () => {
+      await h.ctx.db
+        .update(projects)
+        .set({ scmConnectionId: null, scmProjectRef: null })
+        .where(eq(projects.id, p.id));
+      await h.ctx.db.delete(scmConnections).where(eq(scmConnections.id, connection!.id));
+      await h.ctx.db.delete(instanceSettings).where(eq(instanceSettings.key, LLM_SETTINGS_KEY));
+    };
+  };
+
   it('deletes review snapshots past reviewSnapshotsDays and rejected ones after a day (6I-2)', async () => {
+    const undoReview = await reviewedProject();
     const snapshot = async (status: 'uploaded' | 'ready' | 'rejected', createdAgo: SQL) => {
       const [analysis] = await h.ctx.db.insert(analyses).values({ projectId: p.id }).returning();
       const [row] = await h.ctx.db
@@ -671,6 +750,7 @@ describe('daily housekeeping (data-model.md §7)', () => {
     } finally {
       await h.ctx.db.delete(instanceSettings).where(eq(instanceSettings.key, 'retention'));
       await h.ctx.db.delete(reviewSnapshots);
+      await undoReview();
     }
   });
 

@@ -81,4 +81,10 @@ export const LOCKS = {
   licensePolicy: 7_310_024,
   /** `pg_advisory_xact_lock(key)`: the weekly digest's schedule, one writer at a time (6G R14). */
   chatDigest: 7_310_025,
+  /**
+   * The first key of `pg_advisory_xact_lock(key, hashtext(branchId))`: the hourly state check of a
+   * merge request that holds review snapshots is queued one at a time, so a branch has at most one
+   * waiting (6I-3, R16). Taken last, with nothing awaited while it is held.
+   */
+  reviewMrCheck: 7_310_026,
 } as const;

@@ -41,6 +41,7 @@ import {
   type StoredProvider,
 } from '../llm/settings';
 import { llmBaseUrlProblem } from '../llm/url';
+import { queueSnapshotPurge } from '../review/jobs';
 import { isDefaultReview } from '../review/settings';
 import { normalBaseUrl } from '../scm/url';
 
@@ -115,6 +116,18 @@ function isDisabledDefault(o: OrgBody): boolean {
   );
 }
 
+/**
+ * The budgets in the body. The instance ceiling on AI review may be left out, which keeps the
+ * stored one (null removes it): a form that does not know it never undoes the administrator's
+ * choice. Unlike the budgets the settings are stored with, it has no default.
+ */
+const budgetsBody = budgetsSchema.extend({
+  reviewTokensPerOrganizationPerDay: budgetsSchema.shape.reviewTokensPerOrganizationPerDay
+    .removeDefault()
+    .optional()
+    .meta({ description: 'Absent keeps the stored ceiling, null removes it' }),
+});
+
 const settingsBody = z.strictObject({
   provider: providerBody.nullable(),
   organizations: z
@@ -126,7 +139,7 @@ const settingsBody = z.strictObject({
       `At most ${MAX_LLM_ORGANIZATIONS} organisations`,
     ),
   excludePaths: z.array(globSchema).max(100),
-  budgets: budgetsSchema,
+  budgets: budgetsBody,
   pricing: pricingSchema,
   storePrompts: z.boolean(),
   promptRetentionDays: z.number().int().min(1).max(90),
@@ -593,7 +606,13 @@ export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
           provider,
           organizations: withoutDeletedProjects(organizations, listed),
           excludePaths: body.excludePaths,
-          budgets: body.budgets,
+          budgets: {
+            ...body.budgets,
+            reviewTokensPerOrganizationPerDay:
+              body.budgets.reviewTokensPerOrganizationPerDay === undefined
+                ? current.budgets.reviewTokensPerOrganizationPerDay
+                : body.budgets.reviewTokensPerOrganizationPerDay,
+          },
           pricing: body.pricing,
           storePrompts: body.storePrompts,
           promptRetentionDays: body.promptRetentionDays,
@@ -617,6 +636,10 @@ export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
             },
           },
         ]);
+        // Any of the settings can change which projects AI review covers (the provider, an
+        // organisation's switches and exclusions): the snapshots of those it no longer covers are
+        // deleted by a job, after this commit.
+        await queueSnapshotPurge(tx, null);
         return { current, next };
       });
       const keySent = body.provider !== null && body.provider.apiKey !== undefined;

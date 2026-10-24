@@ -41,6 +41,7 @@ import { notFound, ProblemError } from '../http/problem';
 import { isZlibError } from '../ingest/upload';
 import { enqueue } from '../queue/queue';
 import { readScmContext } from '../scm/context';
+import { scheduleMergeRequestCheck } from './lifecycle';
 import { wakeReviewRun } from './runs';
 
 /*
@@ -50,7 +51,8 @@ import { wakeReviewRun } from './runs';
  * whole (`rejected`, with the reason). The job waits for the analysis to be ingested first (6I-3,
  * R22: the analysis' merge request is known only then). A merge request keeps the snapshot of its
  * newest analysis only (`linkSnapshot`); housekeeping deletes the rest (housekeeping/run.ts). A
- * snapshot that is linked, or refused, wakes its analysis' review run (6I-3, R15).
+ * snapshot that is linked, or refused, wakes its analysis' review run (6I-3, R15), and one that is
+ * linked has its merge request's state checked every hour from then on (lifecycle.ts, R16).
  */
 
 /** The queue of the job that unpacks an upload (main.ts: the analysis worker runs it). */
@@ -744,13 +746,17 @@ export async function unpackDueNow(tx: Executor, analysisId: string): Promise<vo
 /**
  * The analysis is the newest of the merge request `branchId`: its snapshot, once unpacked, is
  * linked to the branch, and every other snapshot of the branch is deleted (linked to it, or of one
- * of its analyses): the copy of an older head is never used again.
+ * of its analyses): the copy of an older head is never used again. A snapshot that is linked
+ * schedules the check of the merge request's state (one is queued per merge request), so that the
+ * copy is deleted when the merge request is merged or closed (R16).
  */
 async function keepOnly(db: Executor, analysisId: string, branchId: string): Promise<void> {
-  await db
+  const linked = await db
     .update(reviewSnapshots)
     .set({ branchId })
-    .where(and(eq(reviewSnapshots.analysisId, analysisId), eq(reviewSnapshots.status, 'ready')));
+    .where(and(eq(reviewSnapshots.analysisId, analysisId), eq(reviewSnapshots.status, 'ready')))
+    .returning({ id: reviewSnapshots.id });
+  if (linked.length > 0) await scheduleMergeRequestCheck(db, branchId);
   await db
     .delete(reviewSnapshots)
     .where(

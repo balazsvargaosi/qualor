@@ -19993,7 +19993,7 @@
                         "maximum": 10000
                       },
                       "reviewTokensPerOrganizationPerDay": {
-                        "default": null,
+                        "description": "Absent keeps the stored ceiling, null removes it",
                         "anyOf": [
                           {
                             "type": "integer",

@@ -10,6 +10,7 @@ import { LOCKS } from '../db/locks';
 import { oauthClients, oauthRequests, oauthTokens } from '../db/schema';
 import { ANALYSIS_QUEUE } from '../ingest/service';
 import { readLlmSettings } from '../llm/settings';
+import { purgeInactiveSnapshots } from '../review/lifecycle';
 import { STALLED_DELIVERY_MINUTES, WEBHOOK_QUEUE } from '../webhooks/deliveries';
 import type { JobHandlers } from '../queue/worker';
 import { instanceSetting } from '../settings';
@@ -117,6 +118,8 @@ export interface HousekeepingResult {
   abandonedMailMessages: number;
   /** Review snapshots past `reviewSnapshotsDays`, and rejected ones after a day (6I-2). */
   reviewSnapshots: number;
+  /** Review snapshots of projects AI review no longer covers (6I-3), as the purge after a settings write. */
+  reviewSnapshotsInactive: number;
   /** Expired OAuth authorization requests, expired OAuth tokens, and clients nothing uses any more. */
   oauthRequests: number;
   oauthTokens: number;
@@ -230,6 +233,9 @@ export async function cleanOAuth(
  * - expired account links (mail E2), skipping a row a request is taking at that moment;
  * - a review snapshot after `reviewSnapshotsDays` (spec §5), a rejected one after a day, whatever
  *   its status (its unpack job then finds it gone), skipping one a job holds at that moment;
+ * - the review snapshots of projects AI review no longer covers, which the purge queued after every
+ *   AI settings write deletes at once (6I-3, R17): this run catches what that missed (a project
+ *   unmapped since, a snapshot uploaded while the settings changed), skipping rows a job holds;
  * - expired OAuth requests and tokens, and clients without a live grant (cleanOAuth).
  */
 export async function runHousekeeping(
@@ -392,6 +398,7 @@ export async function runHousekeeping(
          LIMIT ${limit}
          FOR UPDATE SKIP LOCKED)`,
   );
+  const reviewSnapshotsInactive = await purgeInactiveSnapshots(db, null);
   const auditEvents = await pruneAuditStep(db, logger);
   const ssoStates = await pruneSsoStates(db);
   const accountTokens = await pruneAccountTokens(db);
@@ -413,6 +420,7 @@ export async function runHousekeeping(
     mailMessages,
     abandonedMailMessages,
     reviewSnapshots,
+    reviewSnapshotsInactive,
     oauthRequests: oauth.requests,
     oauthTokens: oauth.tokens,
     oauthClients: oauth.clients,

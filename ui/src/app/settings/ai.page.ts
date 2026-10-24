@@ -676,8 +676,8 @@ export class AiSettingsPage {
       costPerDayUsd:
         costRaw === '' ? null : decimalNumber(errors, 'budget-cost', costRaw, 0, 1_000_000),
       perUserPerHour: budget('budget-user', 'perUserPerHour', 1, 10_000),
-      // Always sent, null for no ceiling: the server clears a ceiling the body leaves out (6I-2
-      // Task 4, D8), so a save of anything else on this page must carry it back.
+      // Always sent, null for no ceiling: a save writes what the page shows. (A body that left it
+      // out would keep the stored ceiling; only null removes it.)
       reviewTokensPerOrganizationPerDay:
         ceilingRaw === ''
           ? null

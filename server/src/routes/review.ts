@@ -32,6 +32,7 @@ import {
 } from '../llm/settings';
 import { PROJECT_KEY_PATTERN } from '../patterns';
 import { projectForUpload } from '../projects/access';
+import { queueSnapshotPurge } from '../review/jobs';
 import {
   acknowledgesProvider,
   consentCurrent,
@@ -363,6 +364,9 @@ export const reviewRoutes: FastifyPluginAsyncZod<{
         }
         const saved = withOrganizationReview(settings, organizationId, next);
         await writeLlmSettings(tx, saved);
+        // Projects may have left the review (switched off, out of the selection): a job deletes
+        // their snapshots once this write is committed, never in this transaction.
+        await queueSnapshotPurge(tx, organizationId);
         // The audit event names a change a person can see: the ids of deleted projects, which a
         // save drops, are not one (nor is the same save again).
         if (!sameReview(stored, next) && deps.audit.active()) {

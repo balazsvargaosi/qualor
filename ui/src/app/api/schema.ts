@@ -9867,7 +9867,7 @@ export interface paths {
                             tokensPerDay: number;
                             costPerDayUsd: number | null;
                             perUserPerHour: number;
-                            /** @default null */
+                            /** @description Absent keeps the stored ceiling, null removes it */
                             reviewTokensPerOrganizationPerDay?: number | null;
                         };
                         pricing: {

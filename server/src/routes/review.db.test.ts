@@ -1181,7 +1181,7 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
       });
     });
 
-    it('sets and reads the instance ceiling, and a body without it clears it', async () => {
+    it('sets and reads the instance ceiling, keeps it when a body leaves it out, and clears it with null', async () => {
       const body = await settingsBody();
       expect(body.budgets.reviewTokensPerOrganizationPerDay).toBeNull();
       body.budgets = { ...body.budgets, reviewTokensPerOrganizationPerDay: 750_000 };
@@ -1193,9 +1193,15 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
       });
       const without = { ...body.budgets };
       delete without.reviewTokensPerOrganizationPerDay;
+      const kept = await call('PUT', '/system/llm', admin.headers, { ...body, budgets: without });
+      expect(kept.statusCode, kept.body).toBe(200);
+      expect(kept.json().budgets.reviewTokensPerOrganizationPerDay).toBe(750_000);
+      expect((await getReview()).json()).toMatchObject({
+        instanceCeiling: { tokensPerDay: 750_000 },
+      });
       const cleared = await call('PUT', '/system/llm', admin.headers, {
         ...body,
-        budgets: without,
+        budgets: { ...body.budgets, reviewTokensPerOrganizationPerDay: null },
       });
       expect(cleared.statusCode, cleared.body).toBe(200);
       expect(cleared.json().budgets.reviewTokensPerOrganizationPerDay).toBeNull();

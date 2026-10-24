@@ -3,7 +3,7 @@ import type { Db } from '../db/client';
 import type { Limits } from '../limits';
 import { AI_FIX_QUEUE, postFixHandler } from '../llm/post';
 import type { JobHandlers } from '../queue/worker';
-import { deleteBranchSnapshots } from '../review/lifecycle';
+import { deleteBranchSnapshots, mergeRequestStateHandlers } from '../review/lifecycle';
 import { withMergeRequestHead, withUnplacedFindings } from '../review/render';
 import { gitlabClientFor, type ScmDeps } from './connections';
 import {
@@ -445,8 +445,10 @@ async function decorateGitLab(
 }
 
 /**
- * The `scm` worker's handlers (main.ts): the `scm` queue's decorations (scm.md §4.2–§4.3), and the
- * posts of AI fix suggestions (llm.md §8.2) with the same runtime (circuit, slots, GitHub pacing).
+ * The `scm` worker's handlers (main.ts): the `scm` queue's decorations (scm.md §4.2–§4.3), the
+ * posts of AI fix suggestions (llm.md §8.2), and the hourly checks of the merge requests that hold
+ * AI review snapshots (review/lifecycle.ts), all with the same runtime (circuit, slots, GitHub
+ * pacing).
  */
 export function scmHandlers(deps: DecorationDeps): JobHandlers {
   return {
@@ -507,5 +509,6 @@ export function scmHandlers(deps: DecorationDeps): JobHandlers {
       }
     },
     [AI_FIX_QUEUE]: postFixHandler(deps),
+    ...mergeRequestStateHandlers(deps),
   };
 }

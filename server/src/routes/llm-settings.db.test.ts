@@ -248,6 +248,59 @@ describe('/system/llm (llm.md §3, §16)', () => {
     expect((await fix(25)).statusCode).toBe(200);
   });
 
+  it('PUT /system/llm without the ceiling keeps it and with null clears it', async () => {
+    const stored = async () =>
+      (await get()).json().budgets.reviewTokensPerOrganizationPerDay as number | null;
+    const withCeiling = (ceiling: number | null) =>
+      body({ budgets: { ...body().budgets, reviewTokensPerOrganizationPerDay: ceiling } });
+    expect(await stored()).toBeNull();
+
+    const set = await put(withCeiling(750_000));
+    expect(set.statusCode, set.body).toBe(200);
+    expect(set.json().budgets.reviewTokensPerOrganizationPerDay).toBe(750_000);
+
+    // A body that leaves it out (a form that does not know it) keeps the stored one, and applies
+    // what else it says.
+    const kept = await put(body({ budgets: { ...body().budgets, fixPerDay: 40 } }));
+    expect(kept.statusCode, kept.body).toBe(200);
+    expect(kept.json().budgets).toMatchObject({
+      fixPerDay: 40,
+      reviewTokensPerOrganizationPerDay: 750_000,
+    });
+    expect(await stored()).toBe(750_000);
+    // A save that changes no budget does not say the ceiling it kept changed.
+    const lastChange = () => ctx.logs.filter((l) => l.includes('LLM settings changed')).at(-1);
+    expect(lastChange()).toContain('"budgets"');
+    const unchanged = await put(body({ budgets: { ...body().budgets, fixPerDay: 40 } }));
+    expect(unchanged.statusCode, unchanged.body).toBe(200);
+    expect(lastChange()).not.toContain('"budgets"');
+
+    // A value changes it, and null clears it; left out again, it stays cleared.
+    expect((await put(withCeiling(1_000))).json().budgets.reviewTokensPerOrganizationPerDay).toBe(
+      1_000,
+    );
+    const cleared = await put(withCeiling(null));
+    expect(cleared.statusCode, cleared.body).toBe(200);
+    expect(cleared.json().budgets.reviewTokensPerOrganizationPerDay).toBeNull();
+    expect(await stored()).toBeNull();
+    expect((await put(body())).statusCode).toBe(200);
+    expect(await stored()).toBeNull();
+
+    // The bounds hold, and a refused save changes nothing.
+    const unknown = await put(body({ budgets: { ...body().budgets, ceiling: 1 } }));
+    expect(unknown.statusCode).toBe(422);
+    await put(withCeiling(5));
+    for (const bad of [-1, 1.5, 1_000_000_001, '5']) {
+      const refused = await put(withCeiling(bad as number));
+      expect(refused.statusCode, String(bad)).toBe(422);
+      expect(refused.json().errors.map((e: { path: string }) => e.path)).toContain(
+        'body.budgets.reviewTokensPerOrganizationPerDay',
+      );
+    }
+    expect(await stored()).toBe(5);
+    expect((await put(withCeiling(null))).statusCode).toBe(200);
+  });
+
   it('accepts an Anthropic temperature of 0 to 1 and OpenAI up to 2', async () => {
     const anthropic = await put(
       body({

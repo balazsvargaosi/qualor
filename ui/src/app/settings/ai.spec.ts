@@ -261,7 +261,7 @@ describe('AiSettingsPage (llm.md §3, §18)', () => {
     );
   });
 
-  describe('the AI review ceiling (6I-2 Task 9; Task 4 D8)', () => {
+  describe('the AI review ceiling (6I-2 Task 9)', () => {
     const WITH_CEILING = {
       ...CONFIGURED,
       budgets: { ...CONFIGURED.budgets, reviewTokensPerOrganizationPerDay: 750_000 },
@@ -291,7 +291,7 @@ describe('AiSettingsPage (llm.md §3, §18)', () => {
       expect(root.querySelector<HTMLInputElement>('#ai-budget-review')!.value).toBe('');
     });
 
-    it('sends the stored ceiling back with every save: an omitted ceiling would clear it', async () => {
+    it('sends the stored ceiling back with every save', async () => {
       const server = setup(WITH_CEILING);
       server.on('PUT', '/api/v0/system/llm', echo);
       const { fixture, root } = await render();

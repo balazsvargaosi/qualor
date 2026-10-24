@@ -5,6 +5,12 @@ import { mappedGitHubProject } from '../../test/github';
 import { createIngestHarness, type IngestHarness } from '../../test/ingest';
 import { decorationDeps, mappedProject, PUBLIC_URL } from '../../test/scm';
 import { readMergeRequestState } from './mr-state';
+import {
+  createScmRuntime,
+  MAX_DECORATIONS_PER_ORGANIZATION,
+  SCM_CIRCUIT_FAILURES,
+  type ScmRuntime,
+} from './runtime';
 import { parseInternalHosts } from './url';
 
 const HEAD = 'a'.repeat(40);
@@ -17,6 +23,7 @@ describe('readMergeRequestState (6I-3)', () => {
   let github: FakeGitHub;
   let h: IngestHarness;
   let gitlabProject: string;
+  let gitlabConnection: string;
   let githubProject: string;
   let unmapped: string;
 
@@ -66,7 +73,9 @@ describe('readMergeRequestState (6I-3)', () => {
       state: 'opened',
       legacyDraft: false,
     });
-    gitlabProject = (await mappedProject(h, gitlab, 'mrs/gitlab', GITLAB_PROJECT)).id;
+    const mapped = await mappedProject(h, gitlab, 'mrs/gitlab', GITLAB_PROJECT);
+    gitlabProject = mapped.id;
+    gitlabConnection = mapped.connectionId;
 
     github.addRepository({ id: REPOSITORY, owner: 'acme', name: 'prs', installationId: 701 });
     const pull = { title: 'A change', headSha: HEAD, baseSha: BASE, files: [] };
@@ -125,6 +134,76 @@ describe('readMergeRequestState (6I-3)', () => {
       state: 'open',
       draft: false,
       headSha: HEAD,
+    });
+  });
+
+  describe("through the scm worker's runtime (the hourly check of 6I-3)", () => {
+    const through = (runtime: ScmRuntime, projectId: string, mergeRequestId: string) =>
+      readMergeRequestState(
+        { db: h.ctx.db, scm: decorationDeps(h).scm, runtime },
+        projectId,
+        mergeRequestId,
+      );
+    /** The requests the fake GitLab got for merge request `iid`. */
+    const asked = (iid: number) =>
+      gitlab.requests.filter((r) => r.path.endsWith(`/merge_requests/${iid}`)).length;
+    const takeSlots = (runtime: ScmRuntime) => {
+      for (let i = 0; i < MAX_DECORATIONS_PER_ORGANIZATION; i += 1) {
+        expect(runtime.slots.tryTake(h.organizationId)).toBe(true);
+      }
+    };
+
+    it("takes a slot of the project's organisation and gives it back, and finds none: no answer, no request", async () => {
+      const runtime = createScmRuntime();
+      takeSlots(runtime);
+      const before = asked(1);
+      expect(await through(runtime, gitlabProject, '1')).toBeNull();
+      expect(asked(1)).toBe(before);
+      for (let i = 0; i < MAX_DECORATIONS_PER_ORGANIZATION; i += 1) {
+        runtime.slots.release(h.organizationId);
+      }
+      expect(await through(runtime, gitlabProject, '1')).toMatchObject({ state: 'open' });
+      // The slot is free again after an answer, and after a failure.
+      gitlab.inject('GET', /\/merge_requests\/1$/, { status: 500 });
+      expect(await through(runtime, gitlabProject, '1')).toBeNull();
+      takeSlots(runtime);
+    });
+
+    it('stops asking a provider that keeps failing, and does not count its refusals', async () => {
+      const runtime = createScmRuntime();
+      // A merge request the provider does not know is an answer: the provider is up.
+      for (let i = 0; i < 2 * SCM_CIRCUIT_FAILURES; i += 1) {
+        expect(await through(runtime, gitlabProject, '99')).toBeNull();
+      }
+      expect(await through(runtime, gitlabProject, '1')).toMatchObject({ state: 'open' });
+      // Consecutive server errors open the connection's circuit, which then answers without asking.
+      gitlab.inject(
+        'GET',
+        /\/merge_requests\/1$/,
+        ...Array.from({ length: SCM_CIRCUIT_FAILURES }, () => ({ status: 500 })),
+      );
+      for (let i = 0; i < SCM_CIRCUIT_FAILURES; i += 1) {
+        expect(await through(runtime, gitlabProject, '1')).toBeNull();
+      }
+      const before = asked(1);
+      expect(await through(runtime, gitlabProject, '1')).toBeNull();
+      expect(asked(1)).toBe(before);
+      expect(runtime.circuit.inspect(gitlabConnection).state).toBe('open');
+      // The circuit belongs to the connection: another one is asked as usual.
+      expect(await through(runtime, githubProject, '1')).toMatchObject({ state: 'open' });
+    });
+
+    it("shares the worker's installation tokens with the decorations", async () => {
+      const minted = () => github.requests.filter((r) => r.path.endsWith('/access_tokens')).length;
+      const runtime = createScmRuntime();
+      const start = minted();
+      expect(await through(runtime, githubProject, '1')).toMatchObject({ state: 'open' });
+      expect(await through(runtime, githubProject, '2')).toMatchObject({ state: 'merged' });
+      expect(minted() - start).toBe(1);
+      // Without a runtime every read gets a token of its own, as the review job's does.
+      await stateOf(githubProject, '1');
+      await stateOf(githubProject, '2');
+      expect(minted() - start).toBe(3);
     });
   });
 });
