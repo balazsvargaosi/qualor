@@ -33,6 +33,11 @@ import { fileURLToPath } from 'node:url';
  * with `event: COMMENT`; a review without an event would stay pending, which Qualor never makes
  * and the fake does not model (a 422 too). A review's body is no review comment.
  *
+ * A review comment over several lines (`start_line` and `line`, both on the RIGHT side with
+ * `start_side: 'RIGHT'`) is placed only when the patch shows each of its lines, in a review or
+ * posted alone, and keeps its range (`start_line`, `original_start_line`, `start_side`) in the
+ * listing, as GitHub lists it; a comment on one line lists them as `null`.
+ *
  * Review comment ids are past 2^31, as github.com's are (from 3 000 000 001), and each comment has
  * a node id of its own (`PRRC_` and its id in base 62, {@link reviewCommentNodeId}), which REST
  * lists as `node_id` and GraphQL as the comment's `id`. GraphQL offers neither `databaseId`

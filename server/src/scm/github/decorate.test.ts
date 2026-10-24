@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_INLINE_THREADS } from '../inline';
+import { MAX_AI_THREADS, MAX_INLINE_THREADS } from '../inline';
 import { MAX_GITHUB_REQUESTS, MAX_THREAD_PAGES } from './client';
 import { MAX_COMMENT_PAGES, MAX_FILE_PAGES, REQUESTS_OUTSIDE_THREADS } from './decorate';
 import { MAX_CREATION_REQUESTS, MAX_GITHUB_THREAD_UPDATES } from './threads';
 
 describe('the request budget (github.md §5.3, ruling R7)', () => {
-  it('is 320 requests a job', () => {
-    expect(MAX_GITHUB_REQUESTS).toBe(320);
+  it('is 350 requests a job', () => {
+    expect(MAX_GITHUB_REQUESTS).toBe(350);
   });
 
-  it('leaves room for every request of a job that reads and writes as much as it may', () => {
+  it('the GitHub request bounds sum to 322', () => {
     // The App, the installation, its token, the repository and the pull request.
     const setup = 5;
     // The check run's listing and its one write, written before the threads with the counts the
@@ -19,8 +19,9 @@ describe('the request budget (github.md §5.3, ruling R7)', () => {
     const summary = 1;
     // A 401 on an installation token: the new token, and the request made again.
     const tokenRefresh = 2;
-    // The new threads: one review holds them all; after a 422 each is posted alone.
-    const creations = 1 + MAX_INLINE_THREADS;
+    // The new threads, the analyzers' and the AI review's beside them: one review holds them all;
+    // after a 422 each is posted alone.
+    const creations = 1 + MAX_INLINE_THREADS + MAX_AI_THREADS;
     const sum =
       setup +
       MAX_FILE_PAGES +
@@ -38,12 +39,16 @@ describe('the request budget (github.md §5.3, ruling R7)', () => {
       MAX_COMMENT_PAGES,
       MAX_THREAD_PAGES,
       MAX_INLINE_THREADS,
+      MAX_AI_THREADS,
       MAX_GITHUB_THREAD_UPDATES,
-    ]).toEqual([30, 50, 10, 50, 100]);
+    ]).toEqual([30, 50, 10, 50, 20, 100]);
     expect(MAX_CREATION_REQUESTS).toBe(creations);
+    expect([REQUESTS_OUTSIDE_THREADS, MAX_CREATION_REQUESTS, MAX_GITHUB_THREAD_UPDATES]).toEqual([
+      151, 71, 100,
+    ]);
     expect(REQUESTS_OUTSIDE_THREADS + MAX_CREATION_REQUESTS + MAX_GITHUB_THREAD_UPDATES).toBe(sum);
-    expect(sum).toBe(302);
+    expect(sum).toBe(322);
     // Below the budget, so the check run and the summary are written whatever else the job did.
-    expect(sum).toBeLessThan(MAX_GITHUB_REQUESTS);
+    expect(sum).toBeLessThanOrEqual(MAX_GITHUB_REQUESTS);
   });
 });

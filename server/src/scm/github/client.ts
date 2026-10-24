@@ -22,10 +22,11 @@ export const GITHUB_PAGE_SIZE = 100;
 /**
  * Requests one job (one client) may make (ruling R7). The most a decoration asks for besides its
  * thread work is `REQUESTS_OUTSIDE_THREADS` (decorate.ts); with the creations (one review, and
- * each comment alone after a 422) and the updates of threads the sum is 302, a token refreshed
- * after a 401 included, so the check run and the summary are always written.
+ * each comment alone after a 422, the analyzers' and the AI review's) and the updates of threads
+ * the sum is 322, a token refreshed after a 401 included, so the check run and the summary are
+ * always written.
  */
-export const MAX_GITHUB_REQUESTS = 320;
+export const MAX_GITHUB_REQUESTS = 350;
 /** Ruling T6: pages of 100 review threads one job reads at most. */
 export const MAX_THREAD_PAGES = 10;
 /** GraphQL's `Int` is a signed 32-bit integer: the largest pull request number a query can carry. */
@@ -334,6 +335,19 @@ const MAX_LINK_HEADER_CHARS = 4_096;
 
 /** A line number of a file, as a review comment's `line` or `start_line` takes it. */
 const lineNumber = (n: number) => Number.isSafeInteger(n) && n > 0;
+
+/**
+ * The lines of a review comment on the RIGHT side as GitHub takes them: its `line`, which is the
+ * last line of a comment over several, and for those `start_line` too. A range of one line is that
+ * line: GitHub refuses a `start_line` equal to `line`. Null when they are no lines of a file.
+ */
+function commentLines(c: { line: number; startLine?: number }): Record<string, unknown> | null {
+  if (!lineNumber(c.line)) return null;
+  const { line, startLine } = c;
+  if (startLine === undefined || startLine === line) return { line, side: 'RIGHT' };
+  if (!lineNumber(startLine) || startLine > line) return null;
+  return { line, side: 'RIGHT', start_line: startLine, start_side: 'RIGHT' };
+}
 
 /** github.md §5.3: a 422 on a review comment or review is a position GitHub will not place. */
 function positionRefused(err: unknown): boolean {
@@ -856,17 +870,8 @@ export class GitHubClient {
     number: string,
     input: { body: string; commitId: string; path: string; line: number; startLine?: number },
   ): Promise<GitHubReviewComment | 'position_rejected'> {
-    if (
-      !lineNumber(input.line) ||
-      (input.startLine !== undefined &&
-        (!lineNumber(input.startLine) || input.startLine > input.line))
-    ) {
-      throw this.invalid(GITHUB_TEXT.line);
-    }
-    const range =
-      input.startLine !== undefined && input.startLine !== input.line
-        ? { start_line: input.startLine, start_side: 'RIGHT' }
-        : {};
+    const lines = commentLines(input);
+    if (lines === null) throw this.invalid(GITHUB_TEXT.line);
     try {
       const { json } = await this.repoCall(
         'POST',
@@ -875,9 +880,7 @@ export class GitHubClient {
           body: input.body,
           commit_id: this.sha(input.commitId),
           path: input.path,
-          side: 'RIGHT',
-          line: input.line,
-          ...range,
+          ...lines,
         },
       );
       return this.parse(reviewComment, json);
@@ -889,22 +892,23 @@ export class GitHubClient {
 
   /**
    * github.md §6.4: one pull request review (`event: COMMENT`) at `commitId` that holds a review
-   * comment on the RIGHT side of `line` of `path` for each of `comments`, each the first of a
-   * thread: one request, one notification and one timeline entry for them all. `body` is the
-   * review's own text, which GitHub requires with `COMMENT`; it is no review comment.
-   * `position_rejected` on a 422: GitHub will not place a position of the batch (or refused the
-   * request as spam), and made none of the comments.
+   * comment on the RIGHT side of `line` of `path` (the lines `startLine..line` when it has a
+   * `startLine`) for each of `comments`, each the first of a thread: one request, one notification
+   * and one timeline entry for them all. `body` is the review's own text, which GitHub requires
+   * with `COMMENT`; it is no review comment. `position_rejected` on a 422: GitHub will not place a
+   * position of the batch (or refused the request as spam), and made none of the comments.
    */
   async createReview(
     number: string,
     input: {
       body: string;
       commitId: string;
-      comments: readonly { path: string; line: number; body: string }[];
+      comments: readonly { path: string; line: number; startLine?: number; body: string }[];
     },
   ): Promise<GitHubReview | 'position_rejected'> {
     if (input.comments.length === 0) throw new Error('a review of no comments');
-    if (!input.comments.every((c) => lineNumber(c.line))) throw this.invalid(GITHUB_TEXT.line);
+    const lines = input.comments.map(commentLines);
+    if (lines.includes(null)) throw this.invalid(GITHUB_TEXT.line);
     try {
       const { json } = await this.repoCall(
         'POST',
@@ -913,12 +917,7 @@ export class GitHubClient {
           commit_id: this.sha(input.commitId),
           event: 'COMMENT',
           body: input.body,
-          comments: input.comments.map((c) => ({
-            path: c.path,
-            line: c.line,
-            side: 'RIGHT',
-            body: c.body,
-          })),
+          comments: input.comments.map((c, i) => ({ path: c.path, ...lines[i], body: c.body })),
         },
       );
       return this.parse(review, json);

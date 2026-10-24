@@ -293,13 +293,13 @@ describe('GitHub REST client (github.md §4–§6)', () => {
     expect(() => clientFor({}, String(Number.MAX_SAFE_INTEGER))).not.toThrow();
   });
 
-  it('stops at its request budget, 320 a job by default', async () => {
+  it('stops at its request budget, 350 a job by default', async () => {
     const client = clientFor({ maxRequests: 2 });
     await client.app();
     await client.app();
     const err = await failure(client.app());
     expect([err.kind, err.message]).toEqual(['budget', GITHUB_TEXT.budget]);
-    expect(GITHUB_TEXT.budget).toBe('More than 320 GitHub requests in one job');
+    expect(GITHUB_TEXT.budget).toBe('More than 350 GitHub requests in one job');
   });
 
   it('spaces its mutations at least a second apart', async () => {
@@ -424,6 +424,111 @@ describe('GitHub REST client (github.md §4–§6)', () => {
       }),
     );
     expect([bad.kind, bad.reason]).toEqual(['refused', 'invalid_input']);
+    expect(fake.requests).toHaveLength(0);
+  });
+
+  it('posts a comment over several lines with start_line and start_side, in a review and alone', async () => {
+    fake.addPull(424242, {
+      number: 8,
+      title: 'Several lines',
+      state: 'open',
+      headSha: SHA,
+      baseSha: 'b'.repeat(40),
+      files: [{ filename: 'm.ts', patch: '@@ -0,0 +1,4 @@\n+a\n+b\n+c\n+d' }],
+    });
+    const client = clientFor();
+    await client.useRepository(REPO);
+    const made = fake.reviewComments.length;
+    fake.clearRequests();
+    const review = await client.createReview('8', {
+      commitId: SHA,
+      body: 'Qualor: 3 new issues on changed lines.',
+      comments: [
+        { path: 'm.ts', line: 3, startLine: 2, body: 'two lines' },
+        // A range of one line is one line: GitHub refuses a start_line equal to line.
+        { path: 'm.ts', line: 4, startLine: 4, body: 'one line' },
+        { path: 'm.ts', line: 1, body: 'plain' },
+      ],
+    });
+    expect(review).toMatchObject({ state: 'COMMENTED' });
+    expect(JSON.parse(fake.requests[0]?.body ?? '{}')).toMatchObject({
+      comments: [
+        {
+          path: 'm.ts',
+          line: 3,
+          side: 'RIGHT',
+          start_line: 2,
+          start_side: 'RIGHT',
+          body: 'two lines',
+        },
+        { path: 'm.ts', line: 4, side: 'RIGHT', body: 'one line' },
+        { path: 'm.ts', line: 1, side: 'RIGHT', body: 'plain' },
+      ],
+    });
+    const sent = (JSON.parse(fake.requests[0]?.body ?? '{}') as { comments: object[] }).comments;
+    expect(Object.keys(sent[1] ?? {}).sort()).toEqual(['body', 'line', 'path', 'side']);
+    // The fake keeps the range of a comment of a review, as GitHub lists it.
+    expect(fake.reviewComments.slice(made).map((c) => [c.line, c.startLine])).toEqual([
+      [3, 2],
+      [4, null],
+      [1, null],
+    ]);
+    const listed = await client.reviewComments('8', 30);
+    expect(listed.items.map((c) => [c['start_line'], c['start_side'], c['line']])).toEqual([
+      [2, 'RIGHT', 3],
+      [null, null, 4],
+      [null, null, 1],
+    ]);
+
+    // A comment posted alone keeps its range: GitHub refuses one that reaches a line off the diff.
+    fake.clearRequests();
+    const alone = await client.createReviewComment('8', {
+      commitId: SHA,
+      path: 'm.ts',
+      line: 4,
+      startLine: 3,
+      body: 'lines three and four',
+    });
+    expect(alone).toMatchObject({ body: 'lines three and four' });
+    expect(JSON.parse(fake.requests[0]?.body ?? '{}')).toMatchObject({
+      line: 4,
+      side: 'RIGHT',
+      start_line: 3,
+      start_side: 'RIGHT',
+    });
+    expect(
+      await client.createReviewComment('8', {
+        commitId: SHA,
+        path: 'm.ts',
+        line: 6,
+        startLine: 4,
+        body: 'reaches off the diff',
+      }),
+    ).toBe('position_rejected');
+    expect(
+      await client.createReview('8', {
+        commitId: SHA,
+        body: 'x',
+        comments: [{ path: 'm.ts', line: 6, startLine: 4, body: 'reaches off the diff' }],
+      }),
+    ).toBe('position_rejected');
+
+    // Nothing reaches GitHub with a range that is none.
+    fake.clearRequests();
+    for (const [line, startLine] of [
+      [2, 3],
+      [3, 0],
+      [3, 1.5],
+    ] as const) {
+      const bad = await failure(
+        client.createReview('8', {
+          commitId: SHA,
+          body: 'x',
+          comments: [{ path: 'm.ts', line, startLine, body: 'x' }],
+        }),
+      );
+      expect([bad.kind, bad.reason]).toEqual(['refused', 'invalid_input']);
+    }
     expect(fake.requests).toHaveLength(0);
   });
 

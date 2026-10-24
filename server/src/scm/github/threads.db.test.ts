@@ -180,6 +180,7 @@ describe('GitHub review threads (github.md §6.4)', () => {
           branchId: scenario.branchId,
           headSha: HEAD,
           files: files.items,
+          analyzers: true,
           botLogin,
           issueUrl: (issueId) => issueUrl(PUBLIC_URL, project.id, issueId),
           ...overrides,
@@ -187,7 +188,13 @@ describe('GitHub review threads (github.md §6.4)', () => {
       },
       reconcile: async (overrides = {}) => {
         const ctx = await scenario.context(overrides);
-        return applyReviewThreads(ctx, await planReviewThreads(ctx));
+        // The AI review's findings are the subject of ai-threads.db.test.ts: these seed none.
+        const { commented, unplaced, aiNotPosted } = await applyReviewThreads(
+          ctx,
+          await planReviewThreads(ctx),
+        );
+        expect(aiNotPosted).toEqual([]);
+        return { commented, unplaced };
       },
     };
     return scenario;
@@ -972,9 +979,14 @@ describe('GitHub review threads (github.md §6.4)', () => {
       // What the counts are once the plan is applied: the check run's first text.
       commented: 2,
       unplaced: 0,
+      aiNotPosted: [],
     });
     expect(resolvedByLine(s.repo.id)).toEqual({ 3: false, 4: false });
-    expect(await applyReviewThreads(ctx, plan)).toEqual({ commented: 2, unplaced: 0 });
+    expect(await applyReviewThreads(ctx, plan)).toEqual({
+      commented: 2,
+      unplaced: 0,
+      aiNotPosted: [],
+    });
     expect(githubWrites(fake.requests)).toEqual([
       'POST /api/graphql QualorResolveThread',
       `POST /repos/acme/${s.repo.name}/pulls/7/reviews`,

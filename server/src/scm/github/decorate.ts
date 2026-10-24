@@ -1,12 +1,20 @@
-import { withMergeRequestHead, type ReviewSummaryState } from '../../review/render';
+import { deleteBranchSnapshots } from '../../review/lifecycle';
+import {
+  withMergeRequestHead,
+  withUnplacedFindings,
+  type ReviewSummaryState,
+} from '../../review/render';
 import type { DecorationDeps, DecorationOutcome } from '../decorate';
 import {
   branchUrl,
   comparable,
   issueUrl,
   loadReviewSummary,
+  newestReviewedHead,
   recordMergeRequest,
   summaryData,
+  unplacedFinding,
+  type DesiredAiIssue,
   type Loaded,
   type SummaryData,
 } from '../decoration-data';
@@ -78,13 +86,20 @@ interface PlannedThreads {
   plan: ThreadPlan;
 }
 
+/** What the summary says of the threads: the analyzers' counts, and the AI findings without one. */
+interface Threads {
+  inline: Inline;
+  /** The AI findings that got no thread this time; the summary lists them (R18). */
+  aiNotPosted: readonly DesiredAiIssue[];
+}
+
 /** What the pull request part found before anything is written (github.md §5.2 step 4). */
 interface PullRequestPart {
   /** Null when the analysis is not the pull request's latest, or it could not be read. */
   pull: GitHubPullRequest | null;
   /** What the check run says first: the plan's counts, or why there are none. */
   inline: Inline;
-  /** The threads' plan, when ruling T3 allows one and it could be made. */
+  /** The threads' plan, when ruling T3 or the AI review allows one and it could be made. */
   planned: PlannedThreads | null;
 }
 const NO_PULL_REQUEST: PullRequestPart = { pull: null, inline: NO_INLINE, planned: null };
@@ -125,7 +140,10 @@ async function attempt<T>(failures: Failures, part: () => Promise<T>): Promise<T
   }
 }
 
-/** Ruling T3: why an open pull request's threads are left as they are, or null. */
+/**
+ * Ruling T3: why an open pull request's analyzer threads are left as they are, or null. The AI
+ * review's threads are not: their lines are those of the head the review read.
+ */
 function threadsSkipped(
   payload: DecorationPayload,
   pull: GitHubPullRequest,
@@ -136,9 +154,10 @@ function threadsSkipped(
 }
 
 /**
- * github.md §6.4: the plan of Qualor's threads on an open pull request whose head is the analysed
- * revision, checked out by the workflow: the pull request's files (a file the page bound cuts
- * places no issue: its issues count as not placed) and what the threads need. Reads only.
+ * github.md §6.4: the plan of Qualor's threads on an open pull request: the pull request's files
+ * (a file the page bound cuts places no issue: its issues count as not placed) and what the threads
+ * need. The analyzers' threads are in it when `analyzers`, that is when the pull request's head is
+ * the analysed revision, checked out by the workflow. Reads only.
  */
 async function planThreads(
   deps: DecorationDeps,
@@ -146,6 +165,7 @@ async function planThreads(
   loaded: Loaded,
   pull: GitHubPullRequest,
   botLogin: string,
+  analyzers: boolean,
 ): Promise<PlannedThreads> {
   const number = loaded.branch.name;
   const files = await client.pullRequestFiles(number, MAX_FILE_PAGES);
@@ -157,6 +177,7 @@ async function planThreads(
     branchId: loaded.branch.id,
     headSha: pull.head.sha,
     files: files.items,
+    analyzers,
     botLogin,
     issueUrl: (issueId) => issueUrl(deps.publicUrl, loaded.project.id, issueId),
     ...(deps.maxThreadUpdates === undefined ? {} : { maxThreadUpdates: deps.maxThreadUpdates }),
@@ -166,8 +187,11 @@ async function planThreads(
 
 /**
  * github.md §5.2 step 4: the pull request, its title and link recorded on the branch, and for an
- * open one the plan of its threads (§6.4) when ruling T3 allows it. Nothing is written to GitHub.
- * A failure goes to `failures`: a pull request that cannot be read is left as it is, with nothing
+ * open one the plan of its threads (§6.4). Nothing is written to GitHub. The analyzers' threads
+ * are planned when ruling T3 allows it; the AI review's, whenever the branch has a finished review,
+ * so a decoration of a project without one reads no more than before. A pull request that is
+ * closed, merged ones included, loses the copies of its repository the AI review kept (R16). A
+ * failure goes to `failures`: a pull request that cannot be read is left as it is, with nothing
  * said about inline comments; a plan that cannot be made leaves `pull` as it is, so the summary
  * comment is still written, and says the inline comments could not be updated.
  */
@@ -192,23 +216,38 @@ async function readPullRequest(
     failures.add(err);
     return NO_PULL_REQUEST;
   }
-  if (pull.state !== 'open') return { pull, inline: NO_INLINE, planned: null };
+  if (pull.state !== 'open') {
+    if (pull.state === 'closed') await deleteBranchSnapshots(deps.db, loaded.branch.id);
+    return { pull, inline: NO_INLINE, planned: null };
+  }
   const skipped = threadsSkipped(payload, pull, loaded.revision);
-  if (skipped !== null) return { pull, inline: { ...NO_INLINE, skipped }, planned: null };
+  const inline: Inline = { ...NO_INLINE, skipped };
+  if (skipped !== null && (await newestReviewedHead(deps.db, loaded.branch.id)) === null) {
+    return { pull, inline, planned: null };
+  }
   try {
-    const planned = await planThreads(deps, client, loaded, pull, botLogin);
+    const planned = await planThreads(deps, client, loaded, pull, botLogin, skipped === null);
     const { commented, unplaced } = planned.plan;
-    return { pull, inline: { commented, unplaced, skipped: null }, planned };
+    return { pull, inline: { commented, unplaced, skipped }, planned };
   } catch (err) {
     failures.add(err);
     return { pull, inline: NOT_UPDATED, planned: null };
   }
 }
 
-/** The threads' plan applied (§6.4); a failure goes to `failures`, and its counts are unknown. */
-async function applyThreads(planned: PlannedThreads, failures: Failures): Promise<Inline> {
+/**
+ * The threads' plan applied (§6.4); a failure goes to `failures`, and its counts are unknown. The
+ * analyzers' threads were skipped for the reason `skipped`, if any: the summary keeps saying so.
+ */
+async function applyThreads(
+  planned: PlannedThreads,
+  skipped: Inline['skipped'],
+  failures: Failures,
+): Promise<Threads> {
   const applied = await attempt(failures, () => applyReviewThreads(planned.ctx, planned.plan));
-  return applied === null ? NOT_UPDATED : { ...applied, skipped: null };
+  if (applied === null) return { inline: NOT_UPDATED, aiNotPosted: [] };
+  const { commented, unplaced, aiNotPosted } = applied;
+  return { inline: { commented, unplaced, skipped }, aiNotPosted };
 }
 
 /** github.md §6.1: the check run of this analysis, its summary the summary comment's `body`. */
@@ -291,8 +330,9 @@ async function reconcileComment(
 }
 
 /**
- * The summary comment's body (github.md §6.2) with `inline` as its sentence on inline comments and
- * `review` as the state of the AI review (the pull request's head as it is now, when it is known).
+ * The summary comment's body (github.md §6.2) with `threads.inline` as its sentence on inline
+ * comments and `review` as the state of the AI review (the pull request's head as it is now, when
+ * it is known), which lists the findings in `threads.aiNotPosted` with the ones on no changed line.
  */
 function summaryFor(
   deps: DecorationDeps,
@@ -300,7 +340,7 @@ function summaryFor(
   data: SummaryData,
   review: ReviewSummaryState | null,
   pull: GitHubPullRequest | null,
-  inline: Inline,
+  threads: Threads,
 ): string {
   return summaryBody({
     projectId: loaded.project.id,
@@ -309,12 +349,17 @@ function summaryFor(
     newIssues: data.newIssues,
     topIssues: data.top,
     topIssuesTotal: data.total,
-    inline,
+    inline: threads.inline,
     branchUrl: branchUrl(deps.publicUrl, loaded),
     mergeRequestHead: pull !== null && pull.head.sha !== loaded.revision ? pull.head.sha : null,
     vocabulary: 'github',
     smallChangesetLines: data.smallChangesetLines,
-    review: withMergeRequestHead(review, pull?.head.sha ?? null),
+    review: withUnplacedFindings(
+      withMergeRequestHead(review, pull?.head.sha ?? null),
+      threads.aiNotPosted.map((issue) =>
+        unplacedFinding(issue, issueUrl(deps.publicUrl, loaded.project.id, issue.id)),
+      ),
+    ),
   });
 }
 
@@ -335,15 +380,22 @@ async function writeDecoration(
 ): Promise<ScmError | null> {
   const data = await summaryData(deps.db, loaded, deps.publicUrl);
   const review = await loadReviewSummary(deps.db, loaded.analysis.id, deps.publicUrl);
-  const planned = summaryFor(deps, loaded, data, review, part.pull, part.inline);
+  const expected: Threads = {
+    inline: part.inline,
+    aiNotPosted: part.planned?.plan.aiNotPosted ?? [],
+  };
+  const planned = summaryFor(deps, loaded, data, review, part.pull, expected);
   const name = statusName(loaded.project.key);
   const runId = await attempt(failures, () =>
     reconcileCheckRun(client, name, loaded.revision, checkRunFields(deps, loaded, planned)),
   );
   if (failures.stop !== null) return failures.stop;
-  const inline = part.planned === null ? part.inline : await applyThreads(part.planned, failures);
+  const threads =
+    part.planned === null
+      ? expected
+      : await applyThreads(part.planned, part.inline.skipped, failures);
   if (failures.stop !== null) return failures.stop;
-  const body = summaryFor(deps, loaded, data, review, part.pull, inline);
+  const body = summaryFor(deps, loaded, data, review, part.pull, threads);
   if (part.pull?.state === 'open') {
     await attempt(failures, () =>
       reconcileComment(deps, client, loaded, loaded.branch.name, body, slug),

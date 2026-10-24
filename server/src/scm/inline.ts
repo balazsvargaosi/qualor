@@ -1,6 +1,6 @@
 import type { Quality, Severity } from '@qualor/shared';
 import { and, eq, inArray } from 'drizzle-orm';
-import type { Db } from '../db/client';
+import type { Db, Executor } from '../db/client';
 import { issues, rules } from '../db/schema';
 import { aiThreadBody } from '../review/render';
 import { AI_THREAD_SEVERITIES } from '../review/rules';
@@ -177,7 +177,7 @@ async function setResolved(ctx: InlineContext, id: string, resolved: boolean): P
   }
 }
 
-interface AiThreads {
+export interface AiThreads {
   /** The head commit of the branch's newest finished review: the line numbers are its. */
   head: string;
   /** Its findings that have no thread, in their order. */
@@ -189,19 +189,20 @@ interface AiThreads {
 /**
  * The findings of the branch's newest finished AI review that have no thread (null without such a
  * review), and the ones a thread is created for now: the {@link MAX_AI_THREADS} most severe, only
- * while the merge request is at the head that review read. A merge request that moved on gets none:
- * their lines are the numbers of the reviewed head.
+ * while the merge (pull) request is at the head that review read (`liveHead`, as the provider says
+ * it is now). One that moved on gets none: their lines are the numbers of the reviewed head.
  */
-async function aiThreads(
-  ctx: InlineContext,
-  threads: ReadonlyMap<string, OwnThread>,
+export async function aiThreads(
+  db: Executor,
+  branchId: string,
+  liveHead: string | null,
+  hasThread: (issueId: string) => boolean,
 ): Promise<AiThreads | null> {
-  const head = await newestReviewedHead(ctx.db, ctx.branchId);
+  const head = await newestReviewedHead(db, branchId);
   if (head === null) return null;
-  const desired = await desiredAiIssues(ctx.db, ctx.branchId, head, AI_FINDINGS_READ);
-  const waiting = desired.filter((issue) => !threads.has(issue.id));
-  const live = ctx.mr.diff_refs?.head_sha ?? null;
-  if (live === null || live.toLowerCase() !== head.toLowerCase()) {
+  const desired = await desiredAiIssues(db, branchId, head, AI_FINDINGS_READ);
+  const waiting = desired.filter((issue) => !hasThread(issue.id));
+  if (liveHead === null || liveHead.toLowerCase() !== head.toLowerCase()) {
     return { head, waiting, create: [] };
   }
   const top = new Set(desired.slice(0, MAX_AI_THREADS));
@@ -209,26 +210,20 @@ async function aiThreads(
 }
 
 /**
- * The finding's suggestion when it still applies to GitLab's diff (`added`, of its file): its block
- * starts on the line the thread sits on, and it replaces added lines whose text is the one the
- * review read. Else null, and the thread is posted without it.
+ * The finding's suggestion when it still applies to the provider's diff (`added`, of its file): it
+ * starts on the finding's anchor, and it replaces added lines whose text is the one the review
+ * read in its snapshot of `head`. Else null, and the thread is posted without it.
  */
-async function liveSuggestion(
-  ctx: InlineContext,
+export async function liveSuggestion(
+  db: Executor,
+  branchId: string,
   head: string,
   issue: DesiredAiIssue,
   added: ReadonlyMap<number, string>,
 ): Promise<ReviewSuggestion | null> {
   const s = issue.suggestion;
   if (s === null || s.startLine !== issue.anchorLine) return null;
-  const reviewed = await reviewedLines(
-    ctx.db,
-    ctx.branchId,
-    head,
-    issue.path,
-    s.startLine,
-    s.endLine,
-  );
+  const reviewed = await reviewedLines(db, branchId, head, issue.path, s.startLine, s.endLine);
   return suggestionApplies(s, added, reviewed) ? s : null;
 }
 
@@ -295,7 +290,9 @@ export async function reconcileInline(ctx: InlineContext): Promise<InlineReconci
         (issue) => !threads.has(issue.id),
       )
     : [];
-  const ai = await aiThreads(ctx, threads);
+  const ai = await aiThreads(ctx.db, ctx.branchId, ctx.mr.diff_refs?.head_sha ?? null, (id) =>
+    threads.has(id),
+  );
   const toCreate = new Set(ai?.create ?? []);
   const notPosted = new Set((ai?.waiting ?? []).filter((issue) => !toCreate.has(issue)));
   // A low finding is posted for its suggestion only: one that is not is counted, never listed.
@@ -358,7 +355,7 @@ export async function reconcileInline(ctx: InlineContext): Promise<InlineReconci
     const onDiff = place !== undefined && place.added.has(issue.anchorLine);
     const suggestion =
       place !== undefined && onDiff && ai !== null
-        ? await liveSuggestion(ctx, ai.head, issue, place.added)
+        ? await liveSuggestion(ctx.db, ctx.branchId, ai.head, issue, place.added)
         : null;
     // Without a suggestion, a low finding is counted in the summary, as one that never had one is.
     if (suggestion === null && !AI_THREAD_SEVERITIES.has(issue.severity)) continue;
