@@ -537,8 +537,8 @@ describe('/system/llm (llm.md §3, §16)', () => {
           { role: 'system', content: expect.stringContaining('echo') },
           { role: 'user', content: expect.stringContaining('echo') },
         ],
-        // The plain test's output limit, and the tools in place of its JSON mode.
-        max_tokens: 20,
+        // Room for a sentence before the call, and the tools in place of the JSON mode.
+        max_tokens: 256,
         tools: [
           {
             type: 'function',
@@ -564,7 +564,7 @@ describe('/system/llm (llm.md §3, §16)', () => {
         expect(fake.requests.map((r) => r.path)).toEqual(['/v1/messages', '/v1/messages']);
         expect(fake.requests[1]!.json).toEqual({
           model: 'claude-x',
-          max_tokens: 20,
+          max_tokens: 256,
           system: expect.stringContaining('echo'),
           messages: [{ role: 'user', content: [{ type: 'text', text: expect.any(String) }] }],
           tools: [{ name: 'echo', description: expect.any(String), input_schema: ECHO_PARAMETERS }],

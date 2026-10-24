@@ -237,8 +237,11 @@ const TEST_CALL = {
 
 /**
  * The tool-calling check that follows a passing Test, because only the review calls tools: a fixed
- * prompt holding no repository data, one read-only tool and the plain test's output limit.
+ * prompt holding no repository data and one read-only tool. Its output limit leaves room for the
+ * sentence many models write before a call (the plain test's 20 tokens would cut most of them off,
+ * and the check would say nothing).
  */
+const TOOL_CHECK_MAX_OUTPUT_TOKENS = 256;
 const ECHO_TOOL: LlmToolSpec = {
   name: 'echo',
   description: 'Returns the text it is given.',
@@ -248,7 +251,7 @@ const TOOL_CHECK: LlmConversation = {
   system: 'This is a connection check. Call the echo tool with the text ok.',
   messages: [{ role: 'user', text: 'Call the echo tool with the text ok.' }],
   tools: [ECHO_TOOL],
-  maxOutputTokens: TEST_CALL.maxOutputTokens,
+  maxOutputTokens: TOOL_CHECK_MAX_OUTPUT_TOKENS,
 };
 
 /**
