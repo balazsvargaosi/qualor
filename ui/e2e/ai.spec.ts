@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test';
+import { setTierModels } from './ai-provider';
 import { expect, expectAccessible, test } from './fixtures';
 import { MERGE_REQUEST, PAYMENTS } from './seed-data';
 
@@ -85,57 +86,65 @@ test.describe('AI assistant (llm.md §18)', () => {
     for (const body of bodies) expect(body).not.toContain(FAKE_LLM_KEY);
   });
 
-  test('an admin sets three models and sees a line per model after Test', async ({ page }) => {
-    const strong = page.getByLabel('Strong model', { exact: true });
-    const fast = page.getByLabel('Fast model', { exact: true });
-    const strongPrice = page.getByLabel(
-      'Strong model: input price (US dollars per million tokens)',
-    );
-    const fastPrice = page.getByLabel('Fast model: output price (US dollars per million tokens)');
-    await page.goto('/settings/ai');
-    await expect(page.getByRole('heading', { name: 'AI assistant', level: 2 })).toBeVisible();
-    // The seed's provider has the one model: the tiers are empty, and no price is asked for them.
-    await expect(page.getByLabel('Model', { exact: true })).toHaveValue('fake-model');
-    await expect(strong).toHaveValue('');
-    await expect(fast).toHaveValue('');
-    await expect(strongPrice).toHaveCount(0);
-    await expect(fastPrice).toHaveCount(0);
+  test.describe('with a model for each tier', () => {
+    // A failure midway, a timeout too, must never leave the models in the shared e2e database:
+    // the seed's one model is put back through the API whatever the test did.
+    test.afterEach(async ({ page }) => {
+      await setTierModels(page.request, { strongModel: null, fastModel: null });
+    });
 
-    await strong.fill('fake-strong');
-    await fast.fill('fake-fast');
-    // A tier with a model of its own is priced of its own.
-    await expect(strongPrice).toBeVisible();
-    await expect(fastPrice).toBeVisible();
-    await expectAccessible(page);
-    await page.getByRole('button', { name: 'Save' }).click();
-    await expect(page.getByRole('status')).toHaveText('The AI assistant settings were saved.');
-    await page.reload();
-    await expect(strong).toHaveValue('fake-strong');
-    await expect(fast).toHaveValue('fake-fast');
+    test('an admin sets three models and sees a line per model after Test', async ({ page }) => {
+      const strong = page.getByLabel('Strong model', { exact: true });
+      const fast = page.getByLabel('Fast model', { exact: true });
+      const strongPrice = page.getByLabel(
+        'Strong model: input price (US dollars per million tokens)',
+      );
+      const fastPrice = page.getByLabel('Fast model: output price (US dollars per million tokens)');
+      await page.goto('/settings/ai');
+      await expect(page.getByRole('heading', { name: 'AI assistant', level: 2 })).toBeVisible();
+      // The seed's provider has the one model: the tiers are empty, and no price is asked for them.
+      await expect(page.getByLabel('Model', { exact: true })).toHaveValue('fake-model');
+      await expect(strong).toHaveValue('');
+      await expect(fast).toHaveValue('');
+      await expect(strongPrice).toHaveCount(0);
+      await expect(fastPrice).toHaveCount(0);
 
-    await page.getByRole('button', { name: 'Test' }).click();
-    // The fake model answers all three, and calls the echo tool of each tool-calling check.
-    await expect(page.locator('#ai-test-models li')).toHaveText(
-      [
-        /^fake-model: connected in \d+ ms · tool calling supported$/,
-        /^fake-strong: connected in \d+ ms · tool calling supported$/,
-        /^fake-fast: connected in \d+ ms · tool calling supported$/,
-      ],
-      ANSWER,
-    );
-    // A line for each model takes the place of the single connection and its tool calling line.
-    await expect(page.getByRole('status')).not.toContainText('Connected to');
-    await expect(page.locator('#ai-test-tools')).toHaveCount(0);
-    await expectAccessible(page);
+      await strong.fill('fake-strong');
+      await fast.fill('fake-fast');
+      // A tier with a model of its own is priced of its own.
+      await expect(strongPrice).toBeVisible();
+      await expect(fastPrice).toBeVisible();
+      await expectAccessible(page);
+      await page.getByRole('button', { name: 'Save' }).click();
+      await expect(page.getByRole('status')).toHaveText('The AI assistant settings were saved.');
+      await page.reload();
+      await expect(strong).toHaveValue('fake-strong');
+      await expect(fast).toHaveValue('fake-fast');
 
-    // Leave the shared e2e database as the seed made it: the one model.
-    await strong.fill('');
-    await fast.fill('');
-    await page.getByRole('button', { name: 'Save' }).click();
-    await expect(page.getByRole('status')).toHaveText('The AI assistant settings were saved.');
-    await page.reload();
-    await expect(strong).toHaveValue('');
-    await expect(fast).toHaveValue('');
+      await page.getByRole('button', { name: 'Test' }).click();
+      // The fake model answers all three, and calls the echo tool of each tool-calling check.
+      await expect(page.locator('#ai-test-models li')).toHaveText(
+        [
+          /^fake-model: connected in \d+ ms · tool calling supported$/,
+          /^fake-strong: connected in \d+ ms · tool calling supported$/,
+          /^fake-fast: connected in \d+ ms · tool calling supported$/,
+        ],
+        ANSWER,
+      );
+      // A line for each model takes the place of the single connection and its tool calling line.
+      await expect(page.getByRole('status')).not.toContainText('Connected to');
+      await expect(page.locator('#ai-test-tools')).toHaveCount(0);
+      await expectAccessible(page);
+
+      // Leave the shared e2e database as the seed made it: the one model.
+      await strong.fill('');
+      await fast.fill('');
+      await page.getByRole('button', { name: 'Save' }).click();
+      await expect(page.getByRole('status')).toHaveText('The AI assistant settings were saved.');
+      await page.reload();
+      await expect(strong).toHaveValue('');
+      await expect(fast).toHaveValue('');
+    });
   });
 
   test('explain, triage and a fix preview, posted to the merge request after a confirmation', async ({

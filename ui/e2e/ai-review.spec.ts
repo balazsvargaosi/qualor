@@ -1,4 +1,5 @@
-import type { APIRequestContext, Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { setTierModels } from './ai-provider';
 import { expect, expectAccessible, test } from './fixtures';
 import { OLGA, PAYMENTS, SHOP, STORAGE_STATE, VERA } from './seed-data';
 
@@ -16,52 +17,6 @@ async function signIn(page: Page, user: { username: string; password: string }):
   await page.getByLabel('Password').fill(user.password);
   await page.getByRole('button', { name: 'Sign in' }).click();
   await expect(page).toHaveURL(/\/projects$/);
-}
-
-/** The models of the instance's AI provider, as the AI assistant settings hold them. */
-interface TierModels {
-  strongModel: string | null;
-  fastModel: string | null;
-}
-
-/**
- * The instance admin's save of the AI assistant settings with the models of the strong and the
- * fast tier set (or none), everything else as it is stored. The key is left out, so the stored one
- * stays. It is the API, as the AI assistant page itself would send it.
- */
-async function setTierModels(admin: APIRequestContext, models: TierModels): Promise<void> {
-  const me = (await (await admin.get('/api/v0/auth/me')).json()) as { csrfToken: string };
-  const stored = (await (await admin.get('/api/v0/system/llm')).json()) as {
-    provider: {
-      kind: string;
-      baseUrl: string;
-      model: string;
-      auth: string;
-      jsonMode: string;
-      maxTokensField: string;
-      temperature: number | null;
-      timeoutSeconds: number;
-    };
-  };
-  const { provider } = stored;
-  const saved = await admin.put('/api/v0/system/llm', {
-    headers: { 'x-qualor-csrf': me.csrfToken },
-    data: {
-      ...stored,
-      provider: {
-        kind: provider.kind,
-        baseUrl: provider.baseUrl,
-        model: provider.model,
-        ...models,
-        auth: provider.auth,
-        jsonMode: provider.jsonMode,
-        maxTokensField: provider.maxTokensField,
-        temperature: provider.temperature,
-        timeoutSeconds: provider.timeoutSeconds,
-      },
-    },
-  });
-  expect(saved.status(), await saved.text()).toBe(200);
 }
 
 /** Payments API's or Web Shop's settings, through the project's own tabs. */
@@ -264,8 +219,8 @@ test.describe('as people other than the instance admin', () => {
     });
     // The instance admin gives the strong and the fast tier a model each (the seed has one model).
     const admin = await playwright.request.newContext({ baseURL, storageState: STORAGE_STATE });
-    await setTierModels(admin, { strongModel: 'fake-strong', fastModel: 'fake-fast' });
     try {
+      await setTierModels(admin, { strongModel: 'fake-strong', fastModel: 'fake-fast' });
       await signIn(page, OLGA);
       await page.goto('/settings/ai-review');
       await expect(page.getByRole('heading', { name: 'AI review', level: 2 })).toBeVisible();
@@ -313,9 +268,12 @@ test.describe('as people other than the instance admin', () => {
       await expect(page.getByRole('status')).toHaveText('The AI review settings were saved.');
       expect(puts).toHaveLength(2);
     } finally {
-      // The shared e2e database as the seed made it: the one model.
-      await setTierModels(admin, { strongModel: null, fastModel: null });
-      await admin.dispose();
+      // The shared e2e database as the seed made it, whatever happened: the one model.
+      try {
+        await setTierModels(admin, { strongModel: null, fastModel: null });
+      } finally {
+        await admin.dispose();
+      }
     }
   });
 

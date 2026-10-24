@@ -1280,6 +1280,7 @@
     "ai.settings.test": " Test ",
     "ai.settings.testHint": " Test sends a fixed prompt holding no repository data to the saved provider. ",
     "ai.settings.saved": "The AI assistant settings were saved.",
+    "ai.test.modelsFailed": "The test failed for {$failed} of {$total} models.",
     "ai.settings.testOk": "Connected to {$model} in {$latency} ms.",
     "ai.settings.badKind": "Choose OpenAI-compatible or Anthropic.",
     "ai.settings.badUrl": "Use the provider's http(s) address, such as https://api.openai.com/v1. An internal host must be listed, with its port, by the operator in QUALOR_LLM_INTERNAL_HOSTS.",

@@ -1314,6 +1314,59 @@ describe('AiSettingsPage: the models of the tiers (6I-4)', () => {
       expect(sent(server)).toMatchObject({ pricing: null });
     });
 
+    it('shows no price of a tier and sends none while the kind is None: the assistant switches off', async () => {
+      const server = setup(THREE_MODELS);
+      server.on('PUT', '/api/v0/system/llm', { body: { ...THREE_MODELS, provider: null } });
+      const { fixture, root } = await render();
+      expect(priceIds(root)).toHaveLength(6);
+      type(root, '#ai-kind', '');
+      await settle(fixture);
+      // Without a provider no tier has a model, so none has prices of its own.
+      expect(priceIds(root)).toEqual(['ai-price-input', 'ai-price-output']);
+      submit(root);
+      await settle(fixture);
+      expect(sent(server)?.provider).toBeNull();
+      expect(sent(server)?.pricing).toEqual({ ...PRICES, strong: null, fast: null });
+      // Saved: no field refused, no alert.
+      expect(root.querySelector('[aria-invalid="true"]')).toBeNull();
+      expect(root.querySelector('.field-error')).toBeNull();
+      expect(root.querySelector('[role="alert"]')).toBeNull();
+      expect(root.querySelector('[role="status"]')?.textContent).toContain(
+        'The AI assistant settings were saved.',
+      );
+    });
+
+    it('shows no price of a tier before a kind is chosen, whatever models are typed', async () => {
+      setup(EMPTY);
+      const { fixture, root } = await render();
+      type(root, '#ai-model', 'qwen2.5-coder');
+      type(root, '#ai-strong-model', 'qwen3-max');
+      type(root, '#ai-fast-model', 'qwen2.5-small');
+      await settle(fixture);
+      expect(priceIds(root)).toEqual(['ai-price-input', 'ai-price-output']);
+      type(root, '#ai-kind', 'openai');
+      await settle(fixture);
+      expect(priceIds(root)).toHaveLength(6);
+    });
+
+    it('brings the prices of a tier back, as they were typed, when a kind is chosen again', async () => {
+      setup(THREE_MODELS);
+      const { fixture, root } = await render();
+      type(root, '#ai-kind', '');
+      await settle(fixture);
+      expect(priceIds(root)).toHaveLength(2);
+      type(root, '#ai-kind', 'anthropic');
+      await settle(fixture);
+      expect(priceIds(root).map((id) => [id, field(root, id).value])).toEqual([
+        ['ai-price-input', '0.3'],
+        ['ai-price-output', '1.2'],
+        ['ai-price-strong-input', '2'],
+        ['ai-price-strong-output', '8'],
+        ['ai-price-fast-input', '0.1'],
+        ['ai-price-fast-output', '0.4'],
+      ]);
+    });
+
     it.each([
       ['strong', "Give the strong model's prices too"],
       ['fast', "Give the fast model's prices too"],
@@ -1466,6 +1519,8 @@ describe('AiSettingsPage: the models of the tiers (6I-4)', () => {
       expect(root.querySelector('[role="status"] > .alert')).toBeNull();
       expect(root.textContent).not.toContain('Connected to');
       expect(root.querySelector('.alert-error')).toBeNull();
+      // A tool check that did not pass, or could not tell, is not a failed Test: nothing is alerted.
+      expect(root.querySelector('[role="alert"]')).toBeNull();
     });
 
     it('shows a model that failed as its problem in the page’s words, beside the lines of the others', async () => {
@@ -1503,6 +1558,13 @@ describe('AiSettingsPage: the models of the tiers (6I-4)', () => {
         },
       ]);
       expect(root.textContent).not.toContain('server text');
+      // One alert outside the list says how many failed; the lines stay in the live region.
+      const alerts = root.querySelectorAll('[role="alert"]');
+      expect(alerts).toHaveLength(1);
+      expect(alerts[0]?.textContent?.trim()).toBe('The test failed for 1 of 3 models.');
+      expect(alerts[0]?.classList).toContain('alert-error');
+      expect(alerts[0]?.closest('[role="status"]')).toBeNull();
+      expect(root.querySelector('[role="status"] #ai-test-models')).not.toBeNull();
     });
 
     it('tells a refused key apart by the provider status on the line of the model', async () => {
@@ -1547,6 +1609,34 @@ describe('AiSettingsPage: the models of the tiers (6I-4)', () => {
       expect(lines(root)[0]?.text).toBe(
         'qwen2.5-coder: The stored API key can no longer be read; set it again.',
       );
+      expect(root.querySelector('[role="alert"]')?.textContent?.trim()).toBe(
+        'The test failed for 3 of 3 models.',
+      );
+    });
+
+    it('forgets the summary of a failed Test with the lines when the page does anything else', async () => {
+      const server = setup(THREE_MODELS);
+      server.on('POST', '/api/v0/system/llm/test', {
+        body: answer(
+          line('standard', 'qwen2.5-coder'),
+          line('strong', 'qwen3-max', {
+            ok: false,
+            reportedModel: null,
+            toolCalling: 'not_checked',
+            problem: { code: 'PROVIDER_TIMEOUT', message: 'server text', providerStatus: null },
+          }),
+        ),
+      });
+      server.on('PUT', '/api/v0/system/llm', { body: THREE_MODELS });
+      const { fixture, root } = await render();
+      await pressTest(fixture, root);
+      expect(root.querySelector('[role="alert"]')?.textContent?.trim()).toBe(
+        'The test failed for 1 of 2 models.',
+      );
+      submit(root);
+      await settle(fixture);
+      expect(root.querySelector('[role="alert"]')).toBeNull();
+      expect(root.querySelector('#ai-test-models')).toBeNull();
     });
 
     it('shows a Test of one model as it did before the tiers: no list', async () => {

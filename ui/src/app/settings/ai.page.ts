@@ -253,10 +253,11 @@ export class AiSettingsPage {
   protected readonly provider = computed(() => this.settings()?.provider ?? null);
   /**
    * A tier's model as typed, when it has one of its own: only such a tier has prices of its own, so
-   * only its price fields are shown.
+   * only its price fields are shown. With the kind None there is no provider and so no model of a
+   * tier: no price of a tier is shown or sent, which the server would refuse.
    */
-  protected readonly strongOwn = computed(() => ownModel(this.model(), this.strongModel()));
-  protected readonly fastOwn = computed(() => ownModel(this.model(), this.fastModel()));
+  protected readonly strongOwn = computed(() => this.ownModelOf(this.strongModel()));
+  protected readonly fastOwn = computed(() => this.ownModelOf(this.fastModel()));
   protected readonly enabledCount = computed(
     () => Object.values(this.settings()?.organizations ?? {}).filter((o) => o.enabled).length,
   );
@@ -284,6 +285,11 @@ export class AiSettingsPage {
     });
     // Nothing typed into the key field outlives the page.
     inject(DestroyRef).onDestroy(() => this.emptyKey());
+  }
+
+  /** The tier's model as the server counts it, none while the kind is None. */
+  private ownModelOf(tier: string): string | null {
+    return this.kind() === '' ? null : ownModel(this.model(), tier);
   }
 
   protected set(field: Field, target: { set(value: string): void }, event: Event): void {
@@ -525,7 +531,16 @@ export class AiSettingsPage {
     await this.run(async () => {
       const result = await ok(this.api.client.POST('/api/v0/system/llm/test'));
       if (result.models.length > 1) {
-        this.testLines.set(result.models.map(testLine));
+        const lines = result.models.map(testLine);
+        this.testLines.set(lines);
+        // The list is in the polite live region: a failure is also said in an alert, as one is for a
+        // single model.
+        const failed = lines.filter((line) => line.tone === 'error').length;
+        if (failed > 0) {
+          this.error.set(
+            $localize`:@@ai.test.modelsFailed:The test failed for ${failed}:failed: of ${lines.length}:total: models.`,
+          );
+        }
       } else if (result.problem) {
         this.error.set(llmProblemText(result.problem.code, result.problem.providerStatus));
       } else {
