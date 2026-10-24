@@ -241,7 +241,8 @@ function dataRoom(shape: ContextShape, budget: number): number {
  * Whether a review of `budget` tokens can run on a change of this shape: its smallest share has
  * room for its first message, before the instructions files' floors, as `reviewLimits` counts it.
  * When it has none, `reviewLimits` still gives the instructions their floors, and the review would
- * send a first message larger than a third of its share: the job skips it instead (`budget_spent`).
+ * send a first message larger than a third of its share: the job skips it instead (`budget_spent`,
+ * detail `too_large`: the merge request is too large for the budget, not the day's budget spent).
  */
 export function reviewFits(shape: ContextShape, budget: number): boolean {
   return dataRoom(shape, budget) > 0;

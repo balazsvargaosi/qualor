@@ -145,6 +145,12 @@ const SKIPPED: Record<ReviewSkipReason, (words: Words) => string> = {
     'AI review did not repeat: the changes it reviews are the same as in its last review, whose findings stay open.',
   budget_spent: () => 'AI review did not run because its token budget for today is spent.',
 };
+/**
+ * A spent budget that is not the day's: the merge request is too large for what one review may
+ * use (`budget_spent`, detail `too_large`). The detail picks the sentence, so it is not repeated.
+ */
+const TOO_LARGE = (words: Words): string =>
+  `AI review did not run because this ${words.request} is too large for the Tokens per review budget; raise it in the AI review settings.`;
 const SKIPPED_OTHER = 'AI review did not run.';
 const REASON = 'Reason:';
 /** A code of Qualor's own that a skip carries (`SNAPSHOT_INVALID`, `consent_outdated`): never content. */
@@ -225,6 +231,7 @@ function skippedText(
   state: Extract<ReviewSummaryState, { kind: 'skipped' }>,
   words: Words,
 ): string {
+  if (state.reason === 'budget_spent' && state.detail === 'too_large') return TOO_LARGE(words);
   const sentence = Object.hasOwn(SKIPPED, state.reason)
     ? SKIPPED[state.reason](words)
     : SKIPPED_OTHER;

@@ -81,7 +81,8 @@ import { RedactionTally, remainingReviewTokens, reviewSender, reviewUsageToday }
  *    goes on;
  * 7–9. nothing reviewable changed (`empty_diff`), the same diff as the last review that was done
  *    (`unchanged`), no tokens left today or too few for the smallest share of the review
- *    (`budget_spent`): decided before anything is masked or sent;
+ *    (`budget_spent`; detail `too_large` when even Tokens per review is too few for a merge request
+ *    this large): decided before anything is masked or sent;
  * 10. the pipeline (pipeline.ts), its calls recorded as the review's own (usage.ts), stopping at
  *    the next call to the provider when the run is superseded, review is switched off or its
  *    snapshot is deleted (the merge request was merged or closed: `skipped: closed`); then the
@@ -137,9 +138,15 @@ type StopReason =
   | { kind: 'snapshot_deleted' }
   | { kind: 'shutdown' };
 
-/** What the context's limits throw, before anything is masked: the review is skipped. */
+/**
+ * What the context's limits throw, before anything is masked: the review is skipped. A budget that
+ * is spent for the day has no detail; one the merge request is too large for is `too_large`.
+ */
 class SkipReview extends Error {
-  constructor(readonly reason: 'empty_diff' | 'unchanged' | 'budget_spent') {
+  constructor(
+    readonly reason: 'empty_diff' | 'unchanged' | 'budget_spent',
+    readonly detail: 'too_large' | null = null,
+  ) {
     super(reason);
     this.name = 'SkipReview';
   }
@@ -148,7 +155,12 @@ class SkipReview extends Error {
 /** The review's context, or why there is none to review (with the digest, when it was made). */
 type ContextOutcome =
   | { kind: 'built'; context: ReviewContext }
-  | { kind: 'skipped'; reason: SkipReview['reason']; digest: string | null };
+  | {
+      kind: 'skipped';
+      reason: SkipReview['reason'];
+      detail: SkipReview['detail'];
+      digest: string | null;
+    };
 
 /** The run's own state while the job works on it, once it is running. */
 interface Running {
@@ -425,9 +437,10 @@ class ReviewJob {
       const files = new MaskedFiles(reader, { masker });
       const policy = newToolPolicy({ excludePaths: settings.excludePaths, masked: files, masker });
       const budget = await this.tokensLeft(running);
+      const perReview = effectiveReviewBudgets(settings, running.organizationId).maxTokensPerReview;
       let built: ContextOutcome;
       try {
-        built = await this.contextOf(running, { files, masker, policy, budget });
+        built = await this.contextOf(running, { files, masker, policy, budget, perReview });
       } finally {
         // The patches were read for the context and the digest: nothing else reads them.
         release();
@@ -435,7 +448,7 @@ class ReviewJob {
       if (built.kind === 'skipped') {
         return await this.endRunning(
           run,
-          { status: 'skipped', reason: built.reason },
+          { status: 'skipped', reason: built.reason, detail: built.detail },
           { diffDigest: built.digest },
         );
       }
@@ -475,11 +488,20 @@ class ReviewJob {
    * Steps 7 to 9 and the review's context. They are decided when the context asks for its limits,
    * once it knows the reviewed changes and before it masks anything: none (`empty_diff`), the same
    * diff as the branch's last review that was done (`unchanged`), or a budget too small for the
-   * smallest share of the review (`budget_spent`). The digest is written on the run either way.
+   * smallest share of the review (`budget_spent`). A merge request too large for what one review may
+   * use (`perReview`, Tokens per review) has the detail `too_large`, and the summary names that
+   * budget; one that only what is left of the day is too little for has none, as the day is what
+   * stops it. The digest is written on the run either way.
    */
   private async contextOf(
     running: Running,
-    o: { files: MaskedFiles; masker: Masker; policy: ToolPolicy; budget: number },
+    o: {
+      files: MaskedFiles;
+      masker: Masker;
+      policy: ToolPolicy;
+      budget: number;
+      perReview: number;
+    },
   ): Promise<ContextOutcome> {
     const { db } = this.deps;
     const { run, settings } = running;
@@ -491,7 +513,10 @@ class ReviewJob {
       if (shape.reviewed.length === 0) throw new SkipReview('empty_diff');
       seen.digest = diffDigest(changes, shape.reviewed);
       if (seen.digest === previous) throw new SkipReview('unchanged');
-      if (budget <= 0 || !reviewFits(shape, budget)) throw new SkipReview('budget_spent');
+      if (budget <= 0) throw new SkipReview('budget_spent');
+      if (!reviewFits(shape, budget)) {
+        throw new SkipReview('budget_spent', reviewFits(shape, o.perReview) ? null : 'too_large');
+      }
       return reviewLimits(shape, budget);
     };
     let context: ReviewContext;
@@ -507,7 +532,7 @@ class ReviewJob {
       );
     } catch (err) {
       if (!(err instanceof SkipReview)) throw err;
-      return { kind: 'skipped', reason: err.reason, digest: seen.digest };
+      return { kind: 'skipped', reason: err.reason, detail: err.detail, digest: seen.digest };
     }
     await db.update(reviewRuns).set({ diffDigest: seen.digest }).where(eq(reviewRuns.id, run.id));
     return { kind: 'built', context };

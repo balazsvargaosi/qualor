@@ -129,6 +129,22 @@ describe('the AI review section', () => {
     );
   });
 
+  it('says that a merge request is too large for the per-review budget, apart from the day’s budget', () => {
+    const tooLarge = { kind: 'skipped', reason: 'budget_spent', detail: 'too_large' } as const;
+    expect(section(tooLarge)).toEqual([
+      '#### AI review',
+      '',
+      'AI review did not run because this merge request is too large for the Tokens per review budget; raise it in the AI review settings.',
+    ]);
+    expect(section(tooLarge, 'github')[2]).toBe(
+      'AI review did not run because this pull request is too large for the Tokens per review budget; raise it in the AI review settings.',
+    );
+    // The day's budget keeps its own sentence.
+    expect(section({ kind: 'skipped', reason: 'budget_spent', detail: null })[2]).toBe(
+      'AI review did not run because its token budget for today is spent.',
+    );
+  });
+
   it('names the code a skip or a refusal carries, in a code span, and nothing else', () => {
     expect(
       section({ kind: 'skipped', reason: 'snapshot_rejected', detail: 'SNAPSHOT_INVALID' })[2],
@@ -879,6 +895,7 @@ describe('model text in the section is inert', () => {
       { kind: 'pending' },
       { kind: 'skipped', reason: 'no_snapshot', detail: null },
       { kind: 'skipped', reason: 'snapshot_rejected', detail: 'SNAPSHOT_INVALID' },
+      { kind: 'skipped', reason: 'budget_spent', detail: 'too_large' },
       { kind: 'failed', reason: 'bad_answer' },
     ] as const) {
       for (const line of section(state)) {

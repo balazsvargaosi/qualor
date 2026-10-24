@@ -21,6 +21,7 @@ import {
   mappedProject,
   mergeRequestReport,
   PUBLIC_URL,
+  runDecorations,
   silentLogger,
 } from '../../test/scm';
 import { first } from '../db/rows';
@@ -36,6 +37,7 @@ import {
 } from '../db/schema';
 import { createLlmRuntime } from '../llm/job';
 import { runUntilIdle, startWorker } from '../queue/worker';
+import { markerOf } from '../scm/markdown';
 import { enqueueLatestDecoration, SCM_QUEUE } from '../scm/queue';
 import { parseInternalHosts } from '../scm/url';
 import { REVIEW_LEASE_MS, reviewHandlers, type ReviewJobDeps } from './job';
@@ -477,16 +479,49 @@ describe('the ai-review job (6I-3, R15)', () => {
     const calls = reviewCalls().length;
     expect(await runReviews()).toBe(1);
     const spent = await runOf(analysisId);
-    expect(spent).toMatchObject({ status: 'skipped', reason: 'budget_spent' });
+    expect(spent).toMatchObject({ status: 'skipped', reason: 'budget_spent', detail: null });
     expect(spent.diffDigest).toMatch(/^[0-9a-f]{64}$/);
-    // A review whose smallest share cannot hold even its first message is not started either.
-    await reviewOn({ budgets: { maxTokensPerReview: 1_000 } });
-    const small = mergeRequest();
-    const tiny = await analysisOf(small);
-    await snapshotOf(tiny, small);
+    // What is left of the day is too little for this change, which Tokens per review would hold:
+    // the day's budget is what stops it, not the size of the change.
+    await reviewOn({ budgets: { tokensPerDay: used.tokens + 1_000 } });
+    const nearly = mergeRequest();
+    const late = await analysisOf(nearly);
+    await snapshotOf(late, nearly);
     expect(await runReviews()).toBe(1);
-    expect(await runOf(tiny)).toMatchObject({ status: 'skipped', reason: 'budget_spent' });
+    expect(await runOf(late)).toMatchObject({
+      status: 'skipped',
+      reason: 'budget_spent',
+      detail: null,
+    });
     expect(reviewCalls()).toHaveLength(calls);
+  });
+
+  it('a merge request too large for Tokens per review is skipped as too large, and the summary says so', async () => {
+    // The day has tokens left, but a review of 1 000 has no room for the first message of a
+    // reviewer, even of this small change: it is not started.
+    await reviewOn({ budgets: { maxTokensPerReview: 1_000 } });
+    const mr = mergeRequest();
+    const analysisId = await analysisOf(mr);
+    await snapshotOf(analysisId, mr);
+    await forgetDecorations();
+    const calls = reviewCalls().length;
+    expect(await runReviews()).toBe(1);
+    const run = await runOf(analysisId);
+    expect(run).toMatchObject({ status: 'skipped', reason: 'budget_spent', detail: 'too_large' });
+    expect(run.diffDigest).toMatch(/^[0-9a-f]{64}$/);
+    expect(reviewCalls()).toHaveLength(calls);
+    // The summary names the budget to raise, not the day's.
+    expect(await decorationsOf(analysisId)).toHaveLength(1);
+    await runDecorations(h, decorationDeps(h));
+    const summary =
+      gitlab
+        .discussions(GITLAB_PROJECT, mr)
+        .flatMap((d) => d.notes)
+        .find((n) => markerOf(n.body)?.kind === 'summary')?.body ?? '';
+    expect(summary).toContain(
+      'AI review did not run because this merge request is too large for the Tokens per review budget; raise it in the AI review settings.',
+    );
+    expect(summary).not.toContain('token budget for today');
   });
 
   it('a run superseded between two model calls stores nothing', async () => {
