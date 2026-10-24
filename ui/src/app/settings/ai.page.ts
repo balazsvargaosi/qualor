@@ -23,7 +23,7 @@ import { label } from '../i18n/labels';
 import { OrgContext } from '../org/org-context';
 import { inputValue, isChecked } from '../shared/forms';
 import { SystemInfo } from '../shell/system-info';
-import { llmProblemText } from './ai-text';
+import { llmProblemText, type TestLine, testLine } from './ai-text';
 import {
   AUTO_FIX_FEATURE,
   AUTO_FIX_SEVERITIES,
@@ -69,6 +69,8 @@ const FIELDS = [
   'kind',
   'url',
   'model',
+  'strong-model',
+  'fast-model',
   'key',
   'timeout',
   'temperature',
@@ -82,6 +84,10 @@ const FIELDS = [
   'budget-review',
   'price-input',
   'price-output',
+  'price-strong-input',
+  'price-strong-output',
+  'price-fast-input',
+  'price-fast-output',
   'retention',
 ] as const;
 type Field = (typeof FIELDS)[number];
@@ -91,6 +97,8 @@ const SERVER_PATHS: [string, Field][] = [
   ['body.provider.kind', 'kind'],
   ['body.provider.baseUrl', 'url'],
   ['body.provider.model', 'model'],
+  ['body.provider.strongModel', 'strong-model'],
+  ['body.provider.fastModel', 'fast-model'],
   ['body.provider.apiKey', 'key'],
   ['body.provider.timeoutSeconds', 'timeout'],
   ['body.provider.temperature', 'temperature'],
@@ -104,6 +112,12 @@ const SERVER_PATHS: [string, Field][] = [
   ['body.budgets.reviewTokensPerOrganizationPerDay', 'budget-review'],
   ['body.pricing.inputUsdPerMTok', 'price-input'],
   ['body.pricing.outputUsdPerMTok', 'price-output'],
+  ['body.pricing.strong.inputUsdPerMTok', 'price-strong-input'],
+  ['body.pricing.strong.outputUsdPerMTok', 'price-strong-output'],
+  ['body.pricing.strong', 'price-strong-input'],
+  ['body.pricing.fast.inputUsdPerMTok', 'price-fast-input'],
+  ['body.pricing.fast.outputUsdPerMTok', 'price-fast-output'],
+  ['body.pricing.fast', 'price-fast-input'],
   ['body.pricing', 'price-input'],
   ['body.promptRetentionDays', 'retention'],
 ];
@@ -113,6 +127,8 @@ const AUTO_FIX_PATH = /^body\.organizations\.([^.]+)\.autoFix(?:\.(\w+))?$/;
 
 /** llm.md §3.2: at most 100 excluded path globs. */
 const MAX_EXCLUDE_PATHS = 100;
+/** A model's name as the provider spells it (the server's `MODEL_PATTERN`). */
+const MODEL_NAME = /^[A-Za-z0-9._:/@+-]{1,200}$/;
 /** The organisations an instance admin sees (ruling R11), read page by page up to this bound. */
 const ORG_PAGES = 10;
 /** The projects offered for exclusion (all of the instance's), read page by page up to this bound. */
@@ -120,14 +136,15 @@ const PROJECT_PAGES = 20;
 
 /**
  * The AI assistant (llm.md §3, §18), for instance admins: the one provider of the instance (its
- * kind, address, model and options, and an API key that is write-only: read from its field once
- * at a submission, emptied at once whatever happens next, never kept in the page's state, never
- * shown), each organisation's enablement and features and its automatic fix suggestions (4E-3a
- * §4: the Enterprise note in place of them without `llm.auto-fix`), the excluded paths, the
- * budgets (the fix budget has no edition ceiling, 6I D10; the ceiling on AI review's tokens per
- * organisation and day, which every save sends back because the server clears one that is left
- * out, 6I-2), prices, prompt storage, and a Test of the saved provider. Refusals and test
- * problems are shown in the page's own words (plan 1F ruling Y3).
+ * kind, address, model, the optional models of AI review's strong and fast tiers, and options, and
+ * an API key that is write-only: read from its field once at a submission, emptied at once whatever
+ * happens next, never kept in the page's state, never shown), each organisation's enablement and
+ * features and its automatic fix suggestions (4E-3a §4: the Enterprise note in place of them
+ * without `llm.auto-fix`), the excluded paths, the budgets (the fix budget has no edition ceiling,
+ * 6I D10; the ceiling on AI review's tokens per organisation and day, which every save sends back
+ * because the server clears one that is left out, 6I-2), prices (the model's, and a pair for each
+ * tier that has a model of its own), prompt storage, and a Test of the saved provider's models.
+ * Refusals and test problems are shown in the page's own words (plan 1F ruling Y3).
  *
  * Step 8 of the redesign (spec §7.8): today's use of the current organisation against its budgets
  * as meters (`GET /organizations/{id}/ai`; a failed read leaves an alert in its panel), then the
@@ -181,6 +198,8 @@ export class AiSettingsPage {
   protected readonly kind = signal<Kind>('');
   protected readonly url = signal('');
   protected readonly model = signal('');
+  protected readonly strongModel = signal('');
+  protected readonly fastModel = signal('');
   protected readonly auth = signal<'bearer' | 'api-key'>('bearer');
   protected readonly jsonMode = signal<'json_object' | 'none'>('json_object');
   protected readonly maxTokensField = signal<'max_tokens' | 'max_completion_tokens'>('max_tokens');
@@ -194,6 +213,10 @@ export class AiSettingsPage {
   protected readonly budgets = signal<Record<string, string>>({});
   protected readonly priceInput = signal('');
   protected readonly priceOutput = signal('');
+  protected readonly priceStrongInput = signal('');
+  protected readonly priceStrongOutput = signal('');
+  protected readonly priceFastInput = signal('');
+  protected readonly priceFastOutput = signal('');
   protected readonly storePrompts = signal(false);
   protected readonly retention = signal('7');
 
@@ -218,11 +241,22 @@ export class AiSettingsPage {
    * known (no Test yet, a Test that failed, or a check that could not tell).
    */
   protected readonly toolCalling = signal<'supported' | 'not_supported' | null>(null);
+  /**
+   * What the last Test found out about each model, one line per model, when the provider has more
+   * than one; empty otherwise (a single model is shown as the connection and its tool calling).
+   */
+  protected readonly testLines = signal<TestLine[]>([]);
   protected readonly error = signal<string | null>(null);
   protected readonly busy = signal(false);
 
   protected readonly maxTemperature = computed(() => (this.kind() === 'anthropic' ? 1 : 2));
   protected readonly provider = computed(() => this.settings()?.provider ?? null);
+  /**
+   * A tier's model as typed, when it has one of its own: only such a tier has prices of its own, so
+   * only its price fields are shown.
+   */
+  protected readonly strongOwn = computed(() => ownModel(this.model(), this.strongModel()));
+  protected readonly fastOwn = computed(() => ownModel(this.model(), this.fastModel()));
   protected readonly enabledCount = computed(
     () => Object.values(this.settings()?.organizations ?? {}).filter((o) => o.enabled).length,
   );
@@ -481,13 +515,18 @@ export class AiSettingsPage {
     );
   }
 
-  /** llm.md §16: sends a fixed prompt holding no repository data to the saved provider. */
+  /**
+   * llm.md §16: sends a fixed prompt holding no repository data to the saved provider's models.
+   * With one model the page shows its connection and its tool calling, a failed Test as an error
+   * (role="alert") and a successful one as a status; with several, a line for each.
+   */
   protected async test(): Promise<void> {
     if (this.busy()) return;
     await this.run(async () => {
       const result = await ok(this.api.client.POST('/api/v0/system/llm/test'));
-      // A failed Test is an error (role="alert"), a successful one a status.
-      if (result.problem) {
+      if (result.models.length > 1) {
+        this.testLines.set(result.models.map(testLine));
+      } else if (result.problem) {
         this.error.set(llmProblemText(result.problem.code, result.problem.providerStatus));
       } else {
         this.announcement.set(
@@ -555,6 +594,8 @@ export class AiSettingsPage {
     this.kind.set(p?.kind ?? '');
     this.url.set(p?.baseUrl ?? '');
     this.model.set(p?.model ?? '');
+    this.strongModel.set(p?.strongModel ?? '');
+    this.fastModel.set(p?.fastModel ?? '');
     this.auth.set(p?.auth ?? 'bearer');
     this.jsonMode.set(p?.jsonMode ?? 'json_object');
     this.maxTokensField.set(p?.maxTokensField ?? 'max_tokens');
@@ -595,8 +636,13 @@ export class AiSettingsPage {
           ? ''
           : String(b.reviewTokensPerOrganizationPerDay),
     });
-    this.priceInput.set(settings.pricing ? String(settings.pricing.inputUsdPerMTok) : '');
-    this.priceOutput.set(settings.pricing ? String(settings.pricing.outputUsdPerMTok) : '');
+    const pricing = settings.pricing;
+    this.priceInput.set(pricing ? String(pricing.inputUsdPerMTok) : '');
+    this.priceOutput.set(pricing ? String(pricing.outputUsdPerMTok) : '');
+    this.priceStrongInput.set(pricing?.strong ? String(pricing.strong.inputUsdPerMTok) : '');
+    this.priceStrongOutput.set(pricing?.strong ? String(pricing.strong.outputUsdPerMTok) : '');
+    this.priceFastInput.set(pricing?.fast ? String(pricing.fast.inputUsdPerMTok) : '');
+    this.priceFastOutput.set(pricing?.fast ? String(pricing.fast.outputUsdPerMTok) : '');
     this.storePrompts.set(settings.storePrompts);
     this.retention.set(String(settings.promptRetentionDays));
     this.errors.set({});
@@ -647,8 +693,13 @@ export class AiSettingsPage {
     }
     const baseUrl = this.url().trim();
     const model = this.model().trim();
+    const strongModel = this.strongModel().trim();
+    const fastModel = this.fastModel().trim();
     if (baseUrl === '') refuse(errors, 'url');
-    if (!/^[A-Za-z0-9._:/@+-]{1,200}$/.test(model)) refuse(errors, 'model');
+    if (!MODEL_NAME.test(model)) refuse(errors, 'model');
+    // A tier's model is optional: empty is sent as null, and the tier uses the model above.
+    if (strongModel !== '' && !MODEL_NAME.test(strongModel)) refuse(errors, 'strong-model');
+    if (fastModel !== '' && !MODEL_NAME.test(fastModel)) refuse(errors, 'fast-model');
     if (apiKey !== '' && this.removeKey()) errors.key = keyAndRemove();
     else if (apiKey !== '' && !/^[\x21-\x7e]{1,4096}$/.test(apiKey)) errors.key = keyFormat();
     const temperature =
@@ -659,6 +710,8 @@ export class AiSettingsPage {
       kind,
       baseUrl,
       model,
+      strongModel: strongModel === '' ? null : strongModel,
+      fastModel: fastModel === '' ? null : fastModel,
       ...(kind === 'openai'
         ? { auth: this.auth(), jsonMode: this.jsonMode(), maxTokensField: this.maxTokensField() }
         : {}),
@@ -691,14 +744,29 @@ export class AiSettingsPage {
     };
   }
 
-  /** The prices part of the body: null when neither is given, with `errors` filled for a refusal. */
+  /**
+   * The prices part of the body: null when none is given, with `errors` filled for a refusal. Once
+   * a price is given the server needs the standard model's pair and the pair of each tier that has
+   * a model of its own, so a pair left out is refused; a tier without a model of its own sends none.
+   */
   private pricingBody(errors: Partial<Record<Field, string>>): SettingsBody['pricing'] {
-    const inputPrice = this.priceInput().trim();
-    const outputPrice = this.priceOutput().trim();
-    if (inputPrice === '' && outputPrice === '') return null;
+    const standard = { input: this.priceInput(), output: this.priceOutput() };
+    const strong =
+      this.strongOwn() === null
+        ? null
+        : { input: this.priceStrongInput(), output: this.priceStrongOutput() };
+    const fast =
+      this.fastOwn() === null
+        ? null
+        : { input: this.priceFastInput(), output: this.priceFastOutput() };
+    const typed = [standard, strong, fast].some(
+      (pair) => pair !== null && (pair.input.trim() !== '' || pair.output.trim() !== ''),
+    );
+    if (!typed) return null;
     return {
-      inputUsdPerMTok: decimalNumber(errors, 'price-input', inputPrice, 0, 10_000),
-      outputUsdPerMTok: decimalNumber(errors, 'price-output', outputPrice, 0, 10_000),
+      ...pricePair(errors, ['price-input', 'price-output'], standard),
+      strong: strong && pricePair(errors, ['price-strong-input', 'price-strong-output'], strong),
+      fast: fast && pricePair(errors, ['price-fast-input', 'price-fast-output'], fast),
     };
   }
 
@@ -759,6 +827,7 @@ export class AiSettingsPage {
     this.error.set(null);
     this.announcement.set(null);
     this.toolCalling.set(null);
+    this.testLines.set([]);
     try {
       await action();
     } catch (err) {
@@ -788,6 +857,8 @@ function refusal(field: Field): string {
     case 'url':
       return $localize`:@@ai.settings.badUrl:Use the provider's http(s) address, such as https://api.openai.com/v1. An internal host must be listed, with its port, by the operator in QUALOR_LLM_INTERNAL_HOSTS.`;
     case 'model':
+    case 'strong-model':
+    case 'fast-model':
       return $localize`:@@ai.settings.badModel:Use the model's name as the provider spells it: letters, digits and . _ : / @ + - only.`;
     case 'key':
       return $localize`:@@ai.settings.keyForNewUrl:Enter the API key again for a new address, or check Remove the key. The key is 1 to 4096 printable characters without spaces.`;
@@ -811,6 +882,12 @@ function refusal(field: Field): string {
     case 'price-input':
     case 'price-output':
       return $localize`:@@ai.settings.badPrice:Give both prices, in US dollars per million tokens (0 to 10000), or neither.`;
+    case 'price-strong-input':
+    case 'price-strong-output':
+      return $localize`:@@ai.settings.badStrongPrice:Give the strong model's prices too, in US dollars per million tokens (0 to 10000).`;
+    case 'price-fast-input':
+    case 'price-fast-output':
+      return $localize`:@@ai.settings.badFastPrice:Give the fast model's prices too, in US dollars per million tokens (0 to 10000).`;
     case 'retention':
       return $localize`:@@ai.settings.badRetention:Use a whole number of days from 1 to 90.`;
   }
@@ -847,6 +924,27 @@ function decimalNumber(
   const value = raw.trim();
   const n = value === '' ? Number.NaN : Number(value);
   return Number.isFinite(n) && n >= min && n <= max ? n : refuse(errors, field);
+}
+
+/**
+ * The tier's model as the server counts it: its own when it is set and is not the standard model,
+ * else none. A tier without one runs on the standard model, at its prices.
+ */
+function ownModel(standard: string, tier: string): string | null {
+  const model = tier.trim();
+  return model === '' || model === standard.trim() ? null : model;
+}
+
+/** A pair of prices as typed, each from 0 to 10 000, else refused on its own field. */
+function pricePair(
+  errors: Partial<Record<Field, string>>,
+  fields: readonly [Field, Field],
+  typed: { input: string; output: string },
+): { inputUsdPerMTok: number; outputUsdPerMTok: number } {
+  return {
+    inputUsdPerMTok: decimalNumber(errors, fields[0], typed.input, 0, 10_000),
+    outputUsdPerMTok: decimalNumber(errors, fields[1], typed.output, 0, 10_000),
+  };
 }
 
 /** The key part of the provider: the key typed, its removal, or else the stored key kept. */

@@ -1,6 +1,6 @@
-import type { Page } from '@playwright/test';
+import type { APIRequestContext, Page } from '@playwright/test';
 import { expect, expectAccessible, test } from './fixtures';
-import { OLGA, PAYMENTS, SHOP, VERA } from './seed-data';
+import { OLGA, PAYMENTS, SHOP, STORAGE_STATE, VERA } from './seed-data';
 
 /**
  * AI review (6I-2 Task 9) on the community e2e server: Settings → AI review for an organisation
@@ -16,6 +16,52 @@ async function signIn(page: Page, user: { username: string; password: string }):
   await page.getByLabel('Password').fill(user.password);
   await page.getByRole('button', { name: 'Sign in' }).click();
   await expect(page).toHaveURL(/\/projects$/);
+}
+
+/** The models of the instance's AI provider, as the AI assistant settings hold them. */
+interface TierModels {
+  strongModel: string | null;
+  fastModel: string | null;
+}
+
+/**
+ * The instance admin's save of the AI assistant settings with the models of the strong and the
+ * fast tier set (or none), everything else as it is stored. The key is left out, so the stored one
+ * stays. It is the API, as the AI assistant page itself would send it.
+ */
+async function setTierModels(admin: APIRequestContext, models: TierModels): Promise<void> {
+  const me = (await (await admin.get('/api/v0/auth/me')).json()) as { csrfToken: string };
+  const stored = (await (await admin.get('/api/v0/system/llm')).json()) as {
+    provider: {
+      kind: string;
+      baseUrl: string;
+      model: string;
+      auth: string;
+      jsonMode: string;
+      maxTokensField: string;
+      temperature: number | null;
+      timeoutSeconds: number;
+    };
+  };
+  const { provider } = stored;
+  const saved = await admin.put('/api/v0/system/llm', {
+    headers: { 'x-qualor-csrf': me.csrfToken },
+    data: {
+      ...stored,
+      provider: {
+        kind: provider.kind,
+        baseUrl: provider.baseUrl,
+        model: provider.model,
+        ...models,
+        auth: provider.auth,
+        jsonMode: provider.jsonMode,
+        maxTokensField: provider.maxTokensField,
+        temperature: provider.temperature,
+        timeoutSeconds: provider.timeoutSeconds,
+      },
+    },
+  });
+  expect(saved.status(), await saved.text()).toBe(200);
 }
 
 /** Payments API's or Web Shop's settings, through the project's own tabs. */
@@ -203,6 +249,74 @@ test.describe('as people other than the instance admin', () => {
       await expect(page).toHaveURL(/\/settings\/ai-review$/);
       await expect(page.getByRole('heading', { name: 'AI review', level: 2 })).toBeVisible();
     });
+  });
+
+  test('switching review on with three models names all three in the warning and sends them', async ({
+    page,
+    playwright,
+    baseURL,
+  }) => {
+    const puts: string[] = [];
+    page.on('request', (request) => {
+      if (request.method() === 'PUT' && request.url().includes('/ai/review')) {
+        puts.push(request.postData() ?? '');
+      }
+    });
+    // The instance admin gives the strong and the fast tier a model each (the seed has one model).
+    const admin = await playwright.request.newContext({ baseURL, storageState: STORAGE_STATE });
+    await setTierModels(admin, { strongModel: 'fake-strong', fastModel: 'fake-fast' });
+    try {
+      await signIn(page, OLGA);
+      await page.goto('/settings/ai-review');
+      await expect(page.getByRole('heading', { name: 'AI review', level: 2 })).toBeVisible();
+      // The three models, sorted, as the notice names them.
+      await expect(page.locator('#ai-review-provider')).toHaveText(
+        /^\s*Models fake-fast, fake-model, fake-strong at 127\.0\.0\.1:\d+\s*$/,
+      );
+
+      const dialog = page.getByRole('dialog', { name: 'Switch on AI review' });
+      await page.getByRole('checkbox', { name: 'Review merge requests with AI' }).check();
+      await expect(dialog).toBeVisible();
+      await expect(dialog.locator('#ai-review-notice')).toContainText(
+        /to 127\.0\.0\.1:\d+ \(fake-fast, fake-model, fake-strong\)\./,
+      );
+      await expectAccessible(page);
+      await dialog
+        .getByRole('button', { name: /^Switch on and send code to 127\.0\.0\.1:\d+$/ })
+        .click();
+      await expect(dialog).toBeHidden();
+      await expect(page.getByRole('status')).toHaveText('The AI review settings were saved.');
+      // The acknowledgement names the standard model and the whole set the dialog showed.
+      expect(puts).toHaveLength(1);
+      const sent = JSON.parse(puts[0]!) as {
+        enabled: boolean;
+        acknowledgeDataSharing: { host: string; model: string; models: string[] };
+      };
+      expect(sent.enabled).toBe(true);
+      expect(sent.acknowledgeDataSharing.host).toMatch(/^127\.0\.0\.1:\d+$/);
+      expect(sent.acknowledgeDataSharing.model).toBe('fake-model');
+      expect(sent.acknowledgeDataSharing.models).toEqual([
+        'fake-fast',
+        'fake-model',
+        'fake-strong',
+      ]);
+      // The consent names all three: nothing to confirm again, also after a reload.
+      await page.reload();
+      await expect(
+        page.getByRole('checkbox', { name: 'Review merge requests with AI' }),
+      ).toBeChecked();
+      await expect(page.locator('#ai-review-outdated')).toHaveCount(0);
+
+      // Leave review off, as the test before this one did.
+      await page.getByRole('checkbox', { name: 'Review merge requests with AI' }).uncheck();
+      await page.getByRole('button', { name: 'Save' }).click();
+      await expect(page.getByRole('status')).toHaveText('The AI review settings were saved.');
+      expect(puts).toHaveLength(2);
+    } finally {
+      // The shared e2e database as the seed made it: the one model.
+      await setTierModels(admin, { strongModel: null, fastModel: null });
+      await admin.dispose();
+    }
   });
 
   test('a member sees no AI review entry, and the address says it is for organisation admins', async ({

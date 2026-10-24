@@ -59,12 +59,13 @@ interface Consent extends AiReviewProvider {
  *
  * Switching it on sends repository code to the instance's AI provider, so the switch opens a
  * dialog with the server's notice, word for word, and the `PUT` that follows acknowledges the
- * provider the dialog showed: `acknowledgeDataSharing: { host, model }`. A provider switched
- * meanwhile is a 409 AI_REVIEW_PROVIDER_CHANGED; an acknowledgement the server wanted and did not
+ * provider the dialog showed: `acknowledgeDataSharing: { host, model, models }`, every model the
+ * provider names (the notice names them all). A provider switched meanwhile, a model of a tier
+ * included, is a 409 AI_REVIEW_PROVIDER_CHANGED; an acknowledgement the server wanted and did not
  * get is a 409 AI_REVIEW_CONSENT_REQUIRED. Both read the settings again, keep the form and open
  * the dialog again with the provider now. A review switched on whose consent names another
  * provider shows a warning with a button for the same dialog. The consent's base URL is never
- * shown: only the host and the model are.
+ * shown: only the host and the models are.
  *
  * Without a provider, or with the organisation not enabled for the AI assistant, the page names
  * the reason and the form is disabled.
@@ -109,6 +110,11 @@ export class AiReviewPage {
     ),
   );
 
+  /** The models the provider line lists when the provider names more than one; else null. */
+  protected readonly providerModels = computed(() => {
+    const models = this.current()?.provider?.models ?? [];
+    return models.length > 1 ? models.join(', ') : null;
+  });
   /** The form is disabled while the review cannot be switched on (no provider, org not enabled). */
   protected readonly locked = computed(() => this.current()?.available !== true);
   protected readonly unavailable = computed(() => {
@@ -266,7 +272,7 @@ export class AiReviewPage {
     // Cleared first: the dialog's close event then finds nothing to cancel.
     this.consent.set(null);
     this.closeDialog();
-    await this.put({ host: asked.host, model: asked.model });
+    await this.put({ host: asked.host, model: asked.model, models: asked.models });
   }
 
   /** Cancel, Escape or the dialog closing otherwise: nothing is sent and the box is as it was. */
@@ -303,6 +309,7 @@ export class AiReviewPage {
     this.consent.set({
       host: settings.provider.host,
       model: settings.provider.model,
+      models: settings.provider.models,
       notice: settings.notice,
       changed,
     });
@@ -358,7 +365,13 @@ export class AiReviewPage {
       projectIds: [...this.selected()],
       budgets: parsed.budgets,
       ...(acknowledged
-        ? { acknowledgeDataSharing: { host: acknowledged.host, model: acknowledged.model } }
+        ? {
+            acknowledgeDataSharing: {
+              host: acknowledged.host,
+              model: acknowledged.model,
+              models: acknowledged.models,
+            },
+          }
         : {}),
     };
   }

@@ -12,10 +12,10 @@ export type AiReviewBody = RequestBody<'/api/v0/organizations/{id}/ai/review', '
 export type AiReviewBudgets = AiReviewBody['budgets'];
 export type AiReviewScope = AiReviewBody['scope'];
 /**
- * The provider the notice names, as the acknowledgement repeats it (R10): its host and its model.
- * The answer lists the models of the provider's tiers too (`models`), which the page does not use.
+ * The provider the notice names, as the acknowledgement repeats it (R10): its host, its standard
+ * model and every model it names (once each, sorted, the standard model among them).
  */
-export type AiReviewProvider = Pick<NonNullable<OrgAiReview['provider']>, 'host' | 'model'>;
+export type AiReviewProvider = NonNullable<OrgAiReview['provider']>;
 
 /** The bounds the server stores for the budgets (6I-2 Task 4, D6). */
 export const MAX_REVIEW_TOKENS_PER_DAY = 1_000_000_000;

@@ -30,8 +30,14 @@ const PROJECTS = [
 ];
 
 /** The provider the fake names by default, and the second one an instance admin switches to. */
-const A = { host: 'llm.example.com', model: 'gpt-review' };
-const B = { host: 'llm2.example.com:8443', model: 'gpt-next' };
+const A = { host: 'llm.example.com', model: 'gpt-review', models: ['gpt-review'] };
+const B = { host: 'llm2.example.com:8443', model: 'gpt-next', models: ['gpt-next'] };
+/** A provider with a model for each tier: the three models sorted, the standard one among them. */
+const THREE = {
+  host: 'llm.example.com',
+  model: 'gpt-review',
+  models: ['gpt-fast', 'gpt-review', 'gpt-strong'],
+};
 /** The notice for A, word for word (spec §5, D4) with the 14 days of the default retention. */
 const NOTICE_A =
   "AI review sends the merge request's diff and any repository file the model chooses to read to llm.example.com (gpt-review). The scanner uploads a copy of the repository to this Qualor server for each merge request; Qualor keeps it until the merge request is closed (at most 14 days). Secrets the analyzers found are masked; credentials files are never sent.";
@@ -355,6 +361,101 @@ describe('AiReviewPage (6I-2 Task 9)', () => {
       expect(field(root, 'ai-review-enabled').checked).toBe(false);
       expect(field(root, 'ai-review-tokens').getAttribute('aria-invalid')).toBe('true');
       expect(server.requestsTo('PUT', ROUTE)).toHaveLength(0);
+    });
+  });
+
+  describe('a provider with a model for each tier', () => {
+    const NOTICE_THREE =
+      "AI review sends the merge request's diff and any repository file the model chooses to read to llm.example.com (gpt-fast, gpt-review, gpt-strong). The scanner uploads a copy of the repository to this Qualor server for each merge request; Qualor keeps it until the merge request is closed (at most 14 days). Secrets the analyzers found are masked; credentials files are never sent.";
+
+    it('lists every model on the provider line', async () => {
+      setup('orgAdmin', { provider: THREE });
+      const { root } = await render();
+      expect(field(root, 'ai-review-provider').textContent?.trim()).toBe(
+        'Models gpt-fast, gpt-review, gpt-strong at llm.example.com',
+      );
+    });
+
+    it('shows the notice that names all three, and acknowledges all three on Confirm', async () => {
+      const { server, fake } = setup('orgAdmin', { provider: THREE });
+      const { fixture, root } = await render();
+      await switchOn(fixture, root);
+      expect(field(root, 'ai-review-notice').textContent).toBe(NOTICE_THREE);
+      await click(fixture, button(dialog(root), CONFIRM_A));
+      expect(server.requestsTo('PUT', ROUTE).map((r) => r.body)).toEqual([
+        {
+          enabled: true,
+          scope: 'selected',
+          projectIds: [],
+          budgets: DEFAULT_BUDGETS,
+          acknowledgeDataSharing: THREE,
+        },
+      ]);
+      expect(dialog(root).open).toBe(false);
+      expect(root.querySelector('[role="status"]')?.textContent).toContain(
+        'The AI review settings were saved.',
+      );
+      expect(fake.consentCurrent(fake.of(ORG_ID))).toBe(true);
+      expect(root.querySelector('.alert-warn')).toBeNull();
+    });
+
+    it('reads the settings again and asks with the new set when a tier changed under the dialog (409 AI_REVIEW_PROVIDER_CHANGED)', async () => {
+      const { server, fake } = setup('orgAdmin', { provider: THREE });
+      const { fixture, root } = await render();
+      await switchOn(fixture, root);
+      // The instance administrator takes the fast model away while the dialog is open.
+      const two = { ...THREE, models: ['gpt-review', 'gpt-strong'] };
+      fake.changeProvider(two);
+      await click(fixture, button(dialog(root), CONFIRM_A));
+      expect(server.requestsTo('PUT', ROUTE)[0]?.body).toMatchObject({
+        acknowledgeDataSharing: THREE,
+      });
+      // Nothing was stored; the dialog shows the notice and the provider line of the two models.
+      expect(fake.of(ORG_ID).enabled).toBe(false);
+      expect(server.requestsTo('GET', ROUTE)).toHaveLength(2);
+      expect(dialog(root).open).toBe(true);
+      expect(field(root, 'ai-review-notice').textContent).toContain('(gpt-review, gpt-strong)');
+      expect(dialog(root).textContent).toContain('The AI provider changed');
+      expect(field(root, 'ai-review-provider').textContent?.trim()).toBe(
+        'Models gpt-review, gpt-strong at llm.example.com',
+      );
+      await click(fixture, button(dialog(root), CONFIRM_A));
+      expect(server.requestsTo('PUT', ROUTE)[1]?.body).toMatchObject({
+        enabled: true,
+        acknowledgeDataSharing: two,
+      });
+      expect(fake.consentCurrent(fake.of(ORG_ID))).toBe(true);
+    });
+
+    it('warns that the consent is outdated when a tier changed since, and confirms the whole set again', async () => {
+      // Acknowledged for one model, and the instance administrator has since added two.
+      const { server, fake } = setup('orgAdmin', {
+        provider: THREE,
+        organizations: { [ORG_ID]: { enabled: true, consentFor: A } },
+      });
+      const { fixture, root } = await render();
+      const warning = root.querySelector<HTMLElement>('.alert-warn')!;
+      expect(warning.textContent).toContain(
+        'The AI provider changed; confirm again to keep reviewing.',
+      );
+      await click(fixture, button(warning, 'Confirm again'));
+      expect(field(root, 'ai-review-notice').textContent).toBe(NOTICE_THREE);
+      await click(fixture, button(dialog(root), CONFIRM_A));
+      expect(server.requestsTo('PUT', ROUTE)[0]?.body).toMatchObject({
+        enabled: true,
+        acknowledgeDataSharing: THREE,
+      });
+      expect(fake.consentCurrent(fake.of(ORG_ID))).toBe(true);
+      expect(root.querySelector('.alert-warn')).toBeNull();
+    });
+
+    it('shows no warning while the consent names the same three models', async () => {
+      setup('orgAdmin', {
+        provider: THREE,
+        organizations: { [ORG_ID]: { enabled: true, consentFor: THREE } },
+      });
+      const { root } = await render();
+      expect(root.querySelector('.alert-warn')).toBeNull();
     });
   });
 

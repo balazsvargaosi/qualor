@@ -571,13 +571,19 @@ export interface FakeStoredReview {
   scope: AiReviewScope;
   projectIds: string[];
   budgets: AiReviewBudgets;
-  /** Who acknowledged the notice, for which provider; null before any. */
-  consent: NonNullable<OrgAiReview['consent']> | null;
+  /**
+   * Who acknowledged the notice, for which provider, and the models it named; null before any. The
+   * answers show the consent without its models, as the server's do.
+   */
+  consent: (NonNullable<OrgAiReview['consent']> & { models: string[] }) | null;
 }
 
 /** The starting state of a {@link FakeAiReview}: a provider and an enabled organisation, by default. */
 export interface FakeAiReviewOptions {
-  /** The provider the notice names (the host with its port, and the model); null: none configured. */
+  /**
+   * The provider the notice names: the host with its port, the model and every model it names
+   * (once each, sorted, the model among them); null: none configured.
+   */
   provider?: AiReviewProvider | null;
   /** The organisation is enabled for the AI assistant by the instance administrator. */
   organizationEnabled?: boolean;
@@ -594,10 +600,29 @@ export interface FakeAiReviewOptions {
   >;
 }
 
+/** A list of models as a set, as the server compares them: each once, sorted. */
+const modelSet = (models: readonly string[]): string[] => [...new Set(models)].sort();
+
+function sameModels(a: readonly string[], b: readonly string[]): boolean {
+  const left = modelSet(a);
+  const right = modelSet(b);
+  return left.length === right.length && left.every((model, i) => model === right[i]);
+}
+
+/** The stored consent as the answers show it: the host, the model, the user and the time. */
+function consentAnswer(consent: NonNullable<FakeStoredReview['consent']>) {
+  return {
+    providerHost: consent.providerHost,
+    model: consent.model,
+    userId: consent.userId,
+    at: consent.at,
+  };
+}
+
 /** llm.md §3.3 / spec §5: the warning, word for word, as the server sends it. */
 function fakeNotice(provider: AiReviewProvider, days: number): string {
   return (
-    `AI review sends the merge request's diff and any repository file the model chooses to read to ${provider.host} (${provider.model}). ` +
+    `AI review sends the merge request's diff and any repository file the model chooses to read to ${provider.host} (${provider.models.join(', ')}). ` +
     `The scanner uploads a copy of the repository to this Qualor server for each merge request; ` +
     `Qualor keeps it until the merge request is closed (at most ${days} days). ` +
     `Secrets the analyzers found are masked; credentials files are never sent.`
@@ -609,12 +634,14 @@ function fakeNotice(provider: AiReviewProvider, days: number): string {
  * settings, with the server's consent rules (R10 amended): switching on from off, or while the
  * consent does not name the provider now, needs `acknowledgeDataSharing`; without a provider or
  * an enabled organisation that is 409 AI_DISABLED, without the acknowledgement 409
- * AI_REVIEW_CONSENT_REQUIRED, and with a host or model other than the provider now 409
- * AI_REVIEW_PROVIDER_CHANGED (nothing stored). `changeProvider` plays the instance administrator
- * switching the provider; `foreignProjects` are ids that belong to another organisation (422
+ * AI_REVIEW_CONSENT_REQUIRED, and with a host, a model or a set of models other than the provider
+ * now 409 AI_REVIEW_PROVIDER_CHANGED (nothing stored): the acknowledgement names the models it was
+ * shown, or its model alone without them, and a consent names the set it was given for.
+ * `changeProvider` plays the instance administrator switching the provider, a tier's model
+ * included; `foreignProjects` are ids that belong to another organisation (422
  * PROJECT_NOT_IN_ORGANIZATION). The consent answers its host and model, the user and the time,
- * and no base URL, as the server's answers do. A test answers a route itself with `server.on`,
- * which wins.
+ * and no base URL or list of models, as the server's answers do. A test answers a route itself
+ * with `server.on`, which wins.
  */
 export class FakeAiReview {
   provider: AiReviewProvider | null;
@@ -636,7 +663,7 @@ export class FakeAiReview {
   private constructor(server: FakeServer, options: FakeAiReviewOptions) {
     this.provider =
       options.provider === undefined
-        ? { host: 'llm.example.com', model: 'gpt-review' }
+        ? { host: 'llm.example.com', model: 'gpt-review', models: ['gpt-review'] }
         : options.provider;
     this.organizationEnabled = options.organizationEnabled ?? true;
     this.ceiling = options.ceiling ?? null;
@@ -667,7 +694,7 @@ export class FakeAiReview {
 
   /** The instance administrator changes the provider (its host or model), or removes it. */
   changeProvider(next: AiReviewProvider | null): void {
-    this.provider = next === null ? null : { ...next };
+    this.provider = next === null ? null : { ...next, models: [...next.models] };
   }
 
   /** Whether the stored consent names the provider configured now (its host and model). */
@@ -676,7 +703,8 @@ export class FakeAiReview {
       this.provider !== null &&
       stored.consent !== null &&
       stored.consent.providerHost === this.provider.host &&
-      stored.consent.model === this.provider.model
+      stored.consent.model === this.provider.model &&
+      sameModels(stored.consent.models, this.provider.models)
     );
   }
 
@@ -691,13 +719,14 @@ export class FakeAiReview {
     return {
       available: unavailableReason === null,
       unavailableReason,
-      provider: this.provider === null ? null : { ...this.provider, models: [this.provider.model] },
+      provider:
+        this.provider === null ? null : { ...this.provider, models: [...this.provider.models] },
       notice: this.provider === null ? null : fakeNotice(this.provider, this.retentionDays),
       enabled: stored.enabled,
       scope: stored.scope,
       projectIds: [...stored.projectIds],
       budgets: { ...stored.budgets },
-      consent: stored.consent === null ? null : { ...stored.consent },
+      consent: stored.consent === null ? null : consentAnswer(stored.consent),
       consentCurrent: this.consentCurrent(stored),
       instanceCeiling: { tokensPerDay: this.ceiling },
       usage: { ...this.usage },
@@ -709,6 +738,7 @@ export class FakeAiReview {
     return {
       providerHost: provider.host,
       model: provider.model,
+      models: modelSet(provider.models),
       userId: '0190a6c2-0000-7000-8000-00000000000a',
       at: '2026-10-20T09:30:00.000Z',
     };
@@ -736,7 +766,8 @@ export class FakeAiReview {
       }
       if (
         acknowledged.host.toLowerCase() !== this.provider.host.toLowerCase() ||
-        acknowledged.model !== this.provider.model
+        acknowledged.model !== this.provider.model ||
+        !sameModels(acknowledged.models ?? [acknowledged.model], this.provider.models)
       ) {
         return { status: 409, body: problem(409, 'AI_REVIEW_PROVIDER_CHANGED') };
       }

@@ -55,6 +55,13 @@
         </p>
       }
     }
+    @if (testLines().length > 0) {
+      <ul id="ai-test-models" class="ai-test-models">
+        @for (line of testLines(); track line.model) {
+          <li [class]="'alert alert-' + line.tone">{{ line.text }}</li>
+        }
+      </ul>
+    }
   </div>
   @if (error(); as message) {
     <p class="alert alert-error" role="alert">{{ message }}</p>
@@ -250,6 +257,62 @@
             />
             @if (fieldError('model'); as message) {
               <span id="ai-model-error" class="field-error" role="alert">{{ message }}</span>
+            }
+          </div>
+        </div>
+        <div class="setting-row">
+          <div class="setting-text">
+            <label for="ai-strong-model" i18n="@@ai.settings.strongModel">Strong model</label>
+            <p id="ai-strong-model-hint" i18n="@@ai.settings.strongModelHint">
+              Used for the judge and the security checks. Empty: the model above.
+            </p>
+          </div>
+          <div class="setting-field">
+            <input
+              id="ai-strong-model"
+              type="text"
+              maxlength="200"
+              autocomplete="off"
+              spellcheck="false"
+              [value]="strongModel()"
+              [attr.aria-invalid]="fieldError('strong-model') ? true : null"
+              [attr.aria-describedby]="
+                fieldError('strong-model')
+                  ? 'ai-strong-model-error ai-strong-model-hint'
+                  : 'ai-strong-model-hint'
+              "
+              (input)="set('strong-model', strongModel, $event)"
+            />
+            @if (fieldError('strong-model'); as message) {
+              <span id="ai-strong-model-error" class="field-error" role="alert">{{ message }}</span>
+            }
+          </div>
+        </div>
+        <div class="setting-row">
+          <div class="setting-text">
+            <label for="ai-fast-model" i18n="@@ai.settings.fastModel">Fast model</label>
+            <p id="ai-fast-model-hint" i18n="@@ai.settings.fastModelHint">
+              Used for small reviews. Empty: the model above.
+            </p>
+          </div>
+          <div class="setting-field">
+            <input
+              id="ai-fast-model"
+              type="text"
+              maxlength="200"
+              autocomplete="off"
+              spellcheck="false"
+              [value]="fastModel()"
+              [attr.aria-invalid]="fieldError('fast-model') ? true : null"
+              [attr.aria-describedby]="
+                fieldError('fast-model')
+                  ? 'ai-fast-model-error ai-fast-model-hint'
+                  : 'ai-fast-model-hint'
+              "
+              (input)="set('fast-model', fastModel, $event)"
+            />
+            @if (fieldError('fast-model'); as message) {
+              <span id="ai-fast-model-error" class="field-error" role="alert">{{ message }}</span>
             }
           </div>
         </div>
@@ -899,6 +962,126 @@
             }
           </div>
         </div>
+        @if (strongOwn()) {
+          <div class="setting-row">
+            <div class="setting-text">
+              <label for="ai-price-strong-input" i18n="@@ai.settings.priceStrongInput"
+                >Strong model: input price (US dollars per million tokens)</label
+              >
+            </div>
+            <div class="setting-field">
+              <input
+                id="ai-price-strong-input"
+                class="short"
+                type="number"
+                min="0"
+                max="10000"
+                step="0.01"
+                inputmode="decimal"
+                [value]="priceStrongInput()"
+                [attr.aria-invalid]="fieldError('price-strong-input') ? true : null"
+                [attr.aria-describedby]="
+                  fieldError('price-strong-input') ? 'ai-price-strong-input-error' : null
+                "
+                (input)="set('price-strong-input', priceStrongInput, $event)"
+              />
+              @if (fieldError('price-strong-input'); as message) {
+                <span id="ai-price-strong-input-error" class="field-error" role="alert">{{
+                  message
+                }}</span>
+              }
+            </div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-text">
+              <label for="ai-price-strong-output" i18n="@@ai.settings.priceStrongOutput"
+                >Strong model: output price (US dollars per million tokens)</label
+              >
+            </div>
+            <div class="setting-field">
+              <input
+                id="ai-price-strong-output"
+                class="short"
+                type="number"
+                min="0"
+                max="10000"
+                step="0.01"
+                inputmode="decimal"
+                [value]="priceStrongOutput()"
+                [attr.aria-invalid]="fieldError('price-strong-output') ? true : null"
+                [attr.aria-describedby]="
+                  fieldError('price-strong-output') ? 'ai-price-strong-output-error' : null
+                "
+                (input)="set('price-strong-output', priceStrongOutput, $event)"
+              />
+              @if (fieldError('price-strong-output'); as message) {
+                <span id="ai-price-strong-output-error" class="field-error" role="alert">{{
+                  message
+                }}</span>
+              }
+            </div>
+          </div>
+        }
+        @if (fastOwn()) {
+          <div class="setting-row">
+            <div class="setting-text">
+              <label for="ai-price-fast-input" i18n="@@ai.settings.priceFastInput"
+                >Fast model: input price (US dollars per million tokens)</label
+              >
+            </div>
+            <div class="setting-field">
+              <input
+                id="ai-price-fast-input"
+                class="short"
+                type="number"
+                min="0"
+                max="10000"
+                step="0.01"
+                inputmode="decimal"
+                [value]="priceFastInput()"
+                [attr.aria-invalid]="fieldError('price-fast-input') ? true : null"
+                [attr.aria-describedby]="
+                  fieldError('price-fast-input') ? 'ai-price-fast-input-error' : null
+                "
+                (input)="set('price-fast-input', priceFastInput, $event)"
+              />
+              @if (fieldError('price-fast-input'); as message) {
+                <span id="ai-price-fast-input-error" class="field-error" role="alert">{{
+                  message
+                }}</span>
+              }
+            </div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-text">
+              <label for="ai-price-fast-output" i18n="@@ai.settings.priceFastOutput"
+                >Fast model: output price (US dollars per million tokens)</label
+              >
+            </div>
+            <div class="setting-field">
+              <input
+                id="ai-price-fast-output"
+                class="short"
+                type="number"
+                min="0"
+                max="10000"
+                step="0.01"
+                inputmode="decimal"
+                [value]="priceFastOutput()"
+                [attr.aria-invalid]="fieldError('price-fast-output') ? true : null"
+                [attr.aria-describedby]="
+                  fieldError('price-fast-output') ? 'ai-price-fast-output-error' : null
+                "
+                (input)="set('price-fast-output', priceFastOutput, $event)"
+              />
+              @if (fieldError('price-fast-output'); as message) {
+                <span id="ai-price-fast-output-error" class="field-error" role="alert">{{
+                  message
+                }}</span>
+              }
+            </div>
+          </div>
+        }
       </section>
 
       <section class="card panel" aria-labelledby="ai-audit-heading">

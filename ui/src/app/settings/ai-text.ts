@@ -4,6 +4,8 @@ type TestAnswer =
   paths['/api/v0/system/llm/test']['post']['responses'][200]['content']['application/json'];
 /** llm.md §14's codes, from the Test answer's schema (Task 8), so this file needs no DM-1 route. */
 export type LlmErrorCode = NonNullable<TestAnswer['problem']>['code'];
+/** What a Test found out about one model of the provider. */
+type TestModel = TestAnswer['models'][number];
 
 /**
  * llm.md §14 in the UI's own words (plan 1F ruling Y3: the server's English text is never shown).
@@ -48,5 +50,49 @@ export function llmProblemText(code: LlmErrorCode, providerStatus: number | null
       return $localize`:@@ai.problem.changed:Something changed since you asked; ask again.`;
     case 'REQUEST_ABANDONED':
       return $localize`:@@ai.problem.abandoned:The request was interrupted; ask again.`;
+  }
+}
+
+/** One model's line after a Test of several models: the model, how it fared, and the words for it. */
+export interface TestLine {
+  model: string;
+  tone: 'success' | 'warn' | 'error';
+  text: string;
+}
+
+/**
+ * A Test's finding about one model as a line that starts with the model, so that it says whom it is
+ * about: its connection and whether it calls tools (which AI review needs), or why the call failed.
+ * A tool check that could not tell leaves the connection alone.
+ */
+export function testLine(found: TestModel): TestLine {
+  const { model, latencyMs } = found;
+  if (found.problem) {
+    const problem = llmProblemText(found.problem.code, found.problem.providerStatus);
+    return {
+      model,
+      tone: 'error',
+      text: $localize`:@@ai.test.modelProblem:${model}:model:: ${problem}:problem:`,
+    };
+  }
+  switch (found.toolCalling) {
+    case 'supported':
+      return {
+        model,
+        tone: 'success',
+        text: $localize`:@@ai.test.modelSupported:${model}:model:: connected in ${latencyMs}:latency: ms · tool calling supported`,
+      };
+    case 'not_supported':
+      return {
+        model,
+        tone: 'warn',
+        text: $localize`:@@ai.test.modelNotSupported:${model}:model:: connected in ${latencyMs}:latency: ms · tool calling not supported`,
+      };
+    case 'not_checked':
+      return {
+        model,
+        tone: 'success',
+        text: $localize`:@@ai.test.modelConnected:${model}:model:: connected in ${latencyMs}:latency: ms`,
+      };
   }
 }

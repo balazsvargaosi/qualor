@@ -61,9 +61,15 @@
             </p>
           </div>
           <div class="setting-field">
-            <p id="ai-review-provider" i18n="@@aiReview.provider">
-              Model {{ provider.model }} at {{ provider.host }}
-            </p>
+            @if (providerModels(); as models) {
+              <p id="ai-review-provider" i18n="@@aiReview.providerModels">
+                Models {{ models }} at {{ provider.host }}
+              </p>
+            } @else {
+              <p id="ai-review-provider" i18n="@@aiReview.provider">
+                Model {{ provider.model }} at {{ provider.host }}
+              </p>
+            }
           </div>
         </div>
       }

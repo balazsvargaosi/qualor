@@ -52,8 +52,11 @@ describe('FakeUserDirectory', () => {
 describe('FakeAiReview', () => {
   const ORG = '0190a6c2-0000-7000-8000-000000000001';
   const URL = `http://localhost/api/v0/organizations/${ORG}/ai/review`;
+  /** The default provider as an acknowledgement names it without its models: host and model. */
   const A = { host: 'llm.example.com', model: 'gpt-review' };
-  const B = { host: 'llm2.example.com', model: 'gpt-next' };
+  const B = { host: 'llm2.example.com', model: 'gpt-next', models: ['gpt-next'] };
+  /** A provider with a model for each tier: the three sorted, the standard model among them. */
+  const THREE = { ...A, models: ['gpt-fast', 'gpt-review', 'gpt-strong'] };
   const BUDGETS = {
     tokensPerDay: 1,
     costPerDayUsd: null,
@@ -61,7 +64,11 @@ describe('FakeAiReview', () => {
     maxTokensPerReview: 1,
   };
 
-  async function put(server: FakeServer, enabled: boolean, ack?: { host: string; model: string }) {
+  async function put(
+    server: FakeServer,
+    enabled: boolean,
+    ack?: { host: string; model: string; models?: string[] },
+  ) {
     const res = await server.fetch(URL, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
@@ -117,6 +124,55 @@ describe('FakeAiReview', () => {
     expect(outdated).toMatchObject({ enabled: true, consentCurrent: false, provider: B });
     expect((await put(server, true)).body['code']).toBe('AI_REVIEW_CONSENT_REQUIRED');
     expect((await put(server, true, B)).body).toMatchObject({ consentCurrent: true });
+  });
+
+  describe('with a model for each tier', () => {
+    it('names every model in the provider and in the notice', async () => {
+      const server = new FakeServer();
+      FakeAiReview.install(server, { provider: THREE });
+      const body = (await (await server.fetch(URL)).json()) as Record<string, unknown>;
+      expect(body['provider']).toEqual(THREE);
+      expect(body['notice']).toContain('to llm.example.com (gpt-fast, gpt-review, gpt-strong).');
+    });
+
+    it('needs the acknowledgement to name the whole set: the model alone is another provider', async () => {
+      const server = new FakeServer();
+      const fake = FakeAiReview.install(server, { provider: THREE });
+      expect((await put(server, true, A)).body['code']).toBe('AI_REVIEW_PROVIDER_CHANGED');
+      const partial = await put(server, true, { ...A, models: ['gpt-review', 'gpt-strong'] });
+      expect(partial.body['code']).toBe('AI_REVIEW_PROVIDER_CHANGED');
+      expect(fake.of(ORG).enabled).toBe(false);
+      // The set is the one that counts: in any order, each model once or more.
+      const saved = await put(server, true, {
+        ...A,
+        models: ['gpt-strong', 'gpt-fast', 'gpt-review', 'gpt-fast'],
+      });
+      expect(saved.status).toBe(200);
+      expect(saved.body).toMatchObject({ enabled: true, consentCurrent: true });
+    });
+
+    it('makes the consent outdated when a tier changes, and answers it without its models', async () => {
+      const server = new FakeServer();
+      const fake = FakeAiReview.install(server);
+      const given = await put(server, true, A);
+      expect(given.body['consent']).toEqual({
+        providerHost: 'llm.example.com',
+        model: 'gpt-review',
+        userId: expect.any(String),
+        at: expect.any(String),
+      });
+      // The instance administrator gives the strong tier a model of its own.
+      fake.changeProvider({ ...A, models: ['gpt-review', 'gpt-strong'] });
+      const outdated = (await (await server.fetch(URL)).json()) as Record<string, unknown>;
+      expect(outdated).toMatchObject({ enabled: true, consentCurrent: false });
+      expect((await put(server, true)).body['code']).toBe('AI_REVIEW_CONSENT_REQUIRED');
+      // The consent that names the new set covers it, and the old provider no longer does.
+      const again = await put(server, true, { ...A, models: ['gpt-review', 'gpt-strong'] });
+      expect(again.body).toMatchObject({ consentCurrent: true });
+      fake.changeProvider({ ...A, models: ['gpt-review'] });
+      const back = (await (await server.fetch(URL)).json()) as Record<string, unknown>;
+      expect(back).toMatchObject({ consentCurrent: false });
+    });
   });
 
   it('refuses to switch on without a provider or an enabled organisation (AI_DISABLED)', async () => {
