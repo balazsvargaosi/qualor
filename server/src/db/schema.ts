@@ -1933,10 +1933,12 @@ export type ReplyReason = (typeof REPLY_REASONS)[number];
 
 /**
  * What Qualor does with people's notes in a merge request: one row for each note it handles, a
- * reply in one of its threads or a command. A note is one row for its project and provider, which
- * is what makes it answered once, whichever of decoration and a webhook finds it first. The
- * model's decision is stored before anything is posted, and the id of the answer note once it is,
- * so that a retry resumes after the last step done and never asks the model twice.
+ * reply in one of its threads or a command. A note is one row for its project, provider and kind
+ * (on GitHub a reply is a review comment and a command an issue comment, two id spaces that can
+ * share a number), which is what makes it answered once, whichever of decoration and a webhook
+ * finds it first. The model's decision is stored before anything is posted, and the id of the
+ * answer note once it is, so that a retry resumes after the last step done and never asks the
+ * model twice.
  */
 export const reviewReplies = pgTable(
   'review_replies',
@@ -1982,11 +1984,12 @@ export const reviewReplies = pgTable(
     costMicroUsd: bigint('cost_micro_usd', { mode: 'number' }),
     createdAt: createdAt(),
     startedAt: at('started_at'),
+    /** Set exactly when the status is `done`, `skipped` or `failed`. */
     finishedAt: at('finished_at'),
   },
   (t) => [
     // Also the project FK's index.
-    unique('review_replies_note_unique').on(t.projectId, t.provider, t.noteId),
+    unique('review_replies_note_unique').on(t.projectId, t.provider, t.kind, t.noteId),
     // A thread's notes by id, for the newest note the ledger holds of each; also the branch FK's index.
     index('review_replies_thread_idx').on(t.branchId, t.threadId, t.noteId),
     // The issue FK's index (§2).
@@ -2002,6 +2005,11 @@ export const reviewReplies = pgTable(
     check(
       'review_replies_status_check',
       sql`status IN ('queued','running','done','skipped','failed')`,
+    ),
+    // A row has ended exactly when it has its finish time. Both sides are never NULL.
+    check(
+      'review_replies_finished_by_status',
+      sql`(status IN ('done','skipped','failed')) = (finished_at IS NOT NULL)`,
     ),
     check(
       'review_replies_outcome_check',

@@ -761,7 +761,7 @@ describe('daily housekeeping (data-model.md §7)', () => {
       .values({ projectId: p.id, kind: 'merge_request', name: '41' })
       .returning({ id: branches.id });
     let noteId = 0;
-    /** A ledger row in `status`, finished `finishedAgo` days ago (never when null), created long ago. */
+    /** A ledger row in `status`, created long ago; finished `finishedAgo` days ago, or not at all (null). */
     const reply = async (
       status: 'queued' | 'running' | 'done' | 'skipped' | 'failed',
       finishedAgo: number | null,
@@ -778,13 +778,10 @@ describe('daily housekeeping (data-model.md §7)', () => {
           kind: 'reply',
           author: 'jane',
           status,
+          createdAt: ago(200),
+          finishedAt: finishedAgo === null ? null : ago(finishedAgo),
         })
         .returning({ id: reviewReplies.id });
-      await h.ctx.db.execute(sql`
-        UPDATE review_replies
-           SET created_at = ${ago(200)},
-               finished_at = ${finishedAgo === null ? sql`NULL` : ago(finishedAgo)}
-         WHERE id = ${row!.id}`);
       return row!.id;
     };
     try {

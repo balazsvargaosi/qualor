@@ -1,5 +1,5 @@
 {
-  "id": "e7fa1607-6b45-45bf-b3dd-fc050f08350e",
+  "id": "fbe5d45f-f9d4-42bc-9337-5950ca18402e",
   "prevId": "4641ba25-02a5-46d8-9318-8562c1025711",
   "version": "7",
   "dialect": "postgresql",
@@ -5519,7 +5519,7 @@
         "review_replies_note_unique": {
           "name": "review_replies_note_unique",
           "nullsNotDistinct": false,
-          "columns": ["project_id", "provider", "note_id"]
+          "columns": ["project_id", "provider", "kind", "note_id"]
         }
       },
       "policies": {},
@@ -5547,6 +5547,10 @@
         "review_replies_status_check": {
           "name": "review_replies_status_check",
           "value": "status IN ('queued','running','done','skipped','failed')"
+        },
+        "review_replies_finished_by_status": {
+          "name": "review_replies_finished_by_status",
+          "value": "(status IN ('done','skipped','failed')) = (finished_at IS NOT NULL)"
         },
         "review_replies_outcome_check": {
           "name": "review_replies_outcome_check",

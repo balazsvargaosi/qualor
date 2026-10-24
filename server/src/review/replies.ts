@@ -11,11 +11,11 @@ export type { ReplyOutcome, ReplyReason } from '../db/schema';
 
 /*
  * The ledger of the notes Qualor answers in a merge request (6I-4): replies in its threads and
- * commands. A note is a row once (the project, the provider and the note's id), so whichever of
- * decoration and a webhook finds it first queues its answer, and the other finds it there. The job
- * that answers writes each step on the row as it is done, so a retry resumes after the last one:
- * the model's decision first, then the id of the note posted, then the end. Every write here is
- * made once: a row that has its decision, its answer note or its end keeps them.
+ * commands. A note is a row once (the project, the provider, the kind and the note's id), so
+ * whichever of decoration and a webhook finds it first queues its answer, and the other finds it
+ * there. The job that answers writes each step on the row as it is done, so a retry resumes after
+ * the last one: the model's decision first, then the id of the note posted, then the end. Every
+ * write here is made once: a row that has its decision, its answer note or its end keeps them.
  */
 
 /** The most tokens (input and output, over all its calls) the conversation of one reply may use. */
@@ -34,7 +34,12 @@ export async function insertReplies(db: Executor, rows: NewReply[]): Promise<str
     .insert(reviewReplies)
     .values(rows)
     .onConflictDoNothing({
-      target: [reviewReplies.projectId, reviewReplies.provider, reviewReplies.noteId],
+      target: [
+        reviewReplies.projectId,
+        reviewReplies.provider,
+        reviewReplies.kind,
+        reviewReplies.noteId,
+      ],
     })
     .returning({ id: reviewReplies.id });
   return inserted.map((row) => row.id);
@@ -82,7 +87,11 @@ export interface ReplyDecision {
   costMicroUsd: number | null;
 }
 
-/** Stores the decision of a row that has none yet: a row decided once is never decided again. */
+/**
+ * Stores the decision of a row that has none yet: a row decided once is never decided again. Only
+ * the decision's own columns are written, whatever else the object carries: it is made of what
+ * the model said.
+ */
 export async function recordDecision(
   db: Executor,
   id: string,
@@ -90,7 +99,14 @@ export async function recordDecision(
 ): Promise<void> {
   await db
     .update(reviewReplies)
-    .set(decision)
+    .set({
+      verdict: decision.verdict,
+      answer: decision.answer,
+      model: decision.model,
+      inputTokens: decision.inputTokens,
+      outputTokens: decision.outputTokens,
+      costMicroUsd: decision.costMicroUsd,
+    })
     .where(and(eq(reviewReplies.id, id), isNull(reviewReplies.verdict)));
 }
 

@@ -12,6 +12,7 @@ import {
   recordAnswerNote,
   recordDecision,
   REPLY_TOKEN_BUDGET,
+  type ReplyDecision,
   type ReplyRow,
 } from './replies';
 
@@ -79,11 +80,9 @@ describe('the replies ledger (6I-4)', () => {
     expect(ids[0]).toMatch(UUID);
 
     // The note again, however it is written this time: nothing new, and the first row stands.
-    expect(
-      await insertReplies(t.db, [
-        { ...note, author: 'mallory', threadId: '1234', kind: 'command', command: 'stop' },
-      ]),
-    ).toEqual([]);
+    expect(await insertReplies(t.db, [{ ...note, author: 'mallory', threadId: '1234' }])).toEqual(
+      [],
+    );
     expect(await rowsOfNote(500)).toEqual([await stored(ids[0]!)]);
     expect(await stored(ids[0]!)).toMatchObject({
       author: 'jane',
@@ -127,12 +126,41 @@ describe('the replies ledger (6I-4)', () => {
     expect(await insertReplies(t.db, [])).toEqual([]);
   });
 
-  it('a note is the project and provider’s, not the branch’s', async () => {
+  it('a note is the project’s, the provider’s and the kind’s, not the branch’s', async () => {
     const note = reply({ noteId: 600 });
     expect(await insertReplies(t.db, [note])).toHaveLength(1);
     // The same note on another branch is the same note; on the other provider, another one.
     expect(await insertReplies(t.db, [{ ...note, branchId: otherBranchId }])).toEqual([]);
     expect(await insertReplies(t.db, [{ ...note, provider: 'github' }])).toHaveLength(1);
+  });
+
+  it('a reply and a command with the same note id are two notes', async () => {
+    // On GitHub a reply is a review comment and a command an issue comment: two id spaces that can
+    // share a number.
+    const asReply = reply({ provider: 'github', noteId: 700, threadId: '699' });
+    const asCommand = reply({
+      provider: 'github',
+      noteId: 700,
+      threadId: null,
+      kind: 'command',
+      command: 'review',
+    });
+    expect(await insertReplies(t.db, [asReply, asCommand])).toHaveLength(2);
+    expect((await rowsOfNote(700)).map((row) => row.kind).sort()).toEqual(['command', 'reply']);
+    // Each of them once: a second reply of that number is still ignored, and so is a second command.
+    expect(await insertReplies(t.db, [asReply, asCommand])).toEqual([]);
+    expect(await insertReplies(t.db, [{ ...asReply, author: 'mallory' }])).toEqual([]);
+    expect(await insertReplies(t.db, [{ ...asCommand, command: 'stop' }])).toEqual([]);
+    // Either one first.
+    const commandFirst = reply({
+      provider: 'github',
+      noteId: 701,
+      threadId: null,
+      kind: 'command',
+      command: 'fix',
+    });
+    expect(await insertReplies(t.db, [commandFirst])).toHaveLength(1);
+    expect(await insertReplies(t.db, [reply({ provider: 'github', noteId: 701 })])).toHaveLength(1);
   });
 
   it('claim takes a queued row once', async () => {
@@ -252,6 +280,34 @@ describe('the replies ledger (6I-4)', () => {
     const github = await insertOne({ provider: 'github', threadId: '2999999999' });
     await recordAnswerNote(t.db, github, 3_000_000_123);
     expect((await stored(github)).answerNoteId).toBe(3_000_000_123);
+  });
+
+  it('a decision writes its own columns and nothing else', async () => {
+    const decision: ReplyDecision = {
+      verdict: 'false_positive',
+      answer: 'It does not hold.',
+      model: 'model-1',
+      inputTokens: 900,
+      outputTokens: 60,
+      costMicroUsd: 250,
+    };
+    // An object that carries more than a decision does, as one made from the model's answer by a
+    // spread could: whatever else is in it changes no other column of the row.
+    const extras = [
+      { status: 'running' },
+      { status: 'done' },
+      { outcome: 'answered', answerNoteId: 99, author: 'mallory', finishedAt: new Date() },
+    ];
+    for (const extra of extras) {
+      const id = await insertOne();
+      const before = await stored(id);
+      const carrying = { ...decision, ...extra };
+      await recordDecision(t.db, id, carrying);
+      expect(await stored(id), JSON.stringify(Object.keys(extra))).toEqual({
+        ...before,
+        ...decision,
+      });
+    }
   });
 
   it('endReply ends a row once and sets finished_at', async () => {

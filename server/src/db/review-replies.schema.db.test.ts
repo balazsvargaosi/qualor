@@ -32,6 +32,9 @@ import {
 /** PostgreSQL's not_null_violation. */
 const PG_NOT_NULL_VIOLATION = '23502';
 const DEADLINE = new Date('2026-10-24T09:15:00Z');
+const FINISHED_AT = new Date('2026-10-24T08:00:41Z');
+/** The statuses a row has only once it has ended, and so only with its finish time. */
+const ENDED: readonly string[] = ['done', 'skipped', 'failed'];
 
 type ReplyInsert = typeof reviewReplies.$inferInsert;
 type RunInsert = typeof reviewRuns.$inferInsert;
@@ -200,7 +203,7 @@ describe('review_replies and the columns beside it (6I-4, migration 0017_review_
       outputTokens: 800,
       costMicroUsd: 12_500,
       startedAt: new Date('2026-10-24T08:00:05Z'),
-      finishedAt: new Date('2026-10-24T08:00:41Z'),
+      finishedAt: FINISHED_AT,
     });
     expect(stored).toMatchObject({
       provider: 'github',
@@ -220,25 +223,29 @@ describe('review_replies and the columns beside it (6I-4, migration 0017_review_
       costMicroUsd: 12_500,
     });
     expect(stored.startedAt).toEqual(new Date('2026-10-24T08:00:05Z'));
-    expect(stored.finishedAt).toEqual(new Date('2026-10-24T08:00:41Z'));
+    expect(stored.finishedAt).toEqual(FINISHED_AT);
   });
 
-  it('keeps one row per note of a project and provider', async () => {
+  it('keeps one row per note of a project, provider and kind', async () => {
     await reply({ noteId: 77 });
     const unique = { code: PG_UNIQUE_VIOLATION, constraint: 'review_replies_note_unique' };
     expect(await tryReply({ noteId: 77 })).toEqual(unique);
-    // Whatever else the second row says, it is the same note, and a note is the project's: another
-    // branch of the project does not make it another one.
-    expect(
-      await tryReply({ noteId: 77, kind: 'command', command: 'review', threadId: null }),
-    ).toEqual(unique);
+    // Whatever else the second row says, a reply of that number is the same note, and a note is the
+    // project's: another branch of the project does not make it another one.
+    expect(await tryReply({ noteId: 77, author: 'mallory', threadId: null })).toEqual(unique);
     expect(await tryReply({ noteId: 77, branchId: await newBranch('10') })).toEqual(unique);
-    // The same number is another note on the other provider, and in another project.
+    // The same number is another note on the other provider, in another project, and as a
+    // command: on GitHub a reply is a review comment and a command an issue comment, two id spaces
+    // that can share a number.
     expect(await tryReply({ noteId: 77, provider: 'github' })).toBeNull();
     const other = await newProject('replies/other');
     expect(
       await tryReply({ noteId: 77, projectId: other, branchId: await newBranch('7', other) }),
     ).toBeNull();
+    const asCommand: Partial<ReplyInsert> = { noteId: 77, kind: 'command', threadId: null };
+    expect(await tryReply({ ...asCommand, command: 'review' })).toBeNull();
+    // A command of that number is one note too.
+    expect(await tryReply({ ...asCommand, command: 'stop' })).toEqual(unique);
   });
 
   it('a command has a command, a reply has none', async () => {
@@ -268,9 +275,10 @@ describe('review_replies and the columns beside it (6I-4, migration 0017_review_
     ] as const;
     for (const [name, constraint, values] of lists) {
       for (const value of values) {
-        // A command is only a command with its command: its own `kind` takes one along.
-        const over: Partial<ReplyInsert> =
-          name === 'kind' && value === 'command' ? { command: 'stop' } : {};
+        // A command is only a command with its command, and a row has ended only with its time.
+        const over: Partial<ReplyInsert> = {};
+        if (name === 'kind' && value === 'command') over.command = 'stop';
+        if (name === 'status' && ENDED.includes(value)) over.finishedAt = FINISHED_AT;
         expect(await tryReply({ ...column(name, value), ...over }), `${name} ${value}`).toBeNull();
       }
       for (const value of ['Done', 'done ', 'unknown', 'queued,running', '']) {
@@ -281,6 +289,32 @@ describe('review_replies and the columns beside it (6I-4, migration 0017_review_
     }
     // None of outcome, reason and verdict is required.
     expect(await tryReply({ outcome: null, reason: null, verdict: null })).toBeNull();
+  });
+
+  it('a row has a finish time exactly when it has ended', async () => {
+    const finishedByStatus = checkViolation('review_replies_finished_by_status');
+    for (const status of REPLY_STATUSES) {
+      const ended = ENDED.includes(status);
+      expect(await tryReply({ status, finishedAt: null }), `${status} without a time`).toEqual(
+        ended ? finishedByStatus : null,
+      );
+      expect(await tryReply({ status, finishedAt: FINISHED_AT }), `${status} with a time`).toEqual(
+        ended ? null : finishedByStatus,
+      );
+    }
+    // An update is held to it as an insert is: a row cannot end without its time, nor get a time
+    // while it is still to do.
+    const queued = await reply();
+    for (const set of [{ status: 'done' as const }, { finishedAt: FINISHED_AT }]) {
+      expect(
+        await refusal(t.db.update(reviewReplies).set(set).where(eq(reviewReplies.id, queued.id))),
+        JSON.stringify(set),
+      ).toEqual(finishedByStatus);
+    }
+    await t.db
+      .update(reviewReplies)
+      .set({ status: 'done', finishedAt: FINISHED_AT })
+      .where(eq(reviewReplies.id, queued.id));
   });
 
   it('a provider is gitlab or github', async () => {
@@ -401,7 +435,12 @@ describe('review_replies and the columns beside it (6I-4, migration 0017_review_
   it('deleting the issue keeps the reply, with issue_id null', async () => {
     const doomed = await newIssue();
     const kept = await newIssue();
-    const ofDoomed = await reply({ issueId: doomed, status: 'done', outcome: 'answered' });
+    const ofDoomed = await reply({
+      issueId: doomed,
+      status: 'done',
+      outcome: 'answered',
+      finishedAt: FINISHED_AT,
+    });
     const ofKept = await reply({ issueId: kept });
     await t.db.delete(issues).where(eq(issues.id, doomed));
     const rows = await t.db
@@ -429,7 +468,9 @@ describe('review_replies and the columns beside it (6I-4, migration 0017_review_
     expect(definitions['review_replies_issue_idx']).toBe(
       'btree (issue_id) WHERE (issue_id IS NOT NULL)',
     );
-    expect(definitions['review_replies_note_unique']).toBe('btree (project_id, provider, note_id)');
+    expect(definitions['review_replies_note_unique']).toBe(
+      'btree (project_id, provider, kind, note_id)',
+    );
   });
 
   it('llm_requests accepts feature review-reply and still refuses another value', async () => {

@@ -3,6 +3,7 @@ import {
   buildPrompt,
   checkFix,
   llmIneligibility,
+  LLM_FEATURES,
   type LlmFeature,
   MAX_OUTPUT_TOKENS,
   parseAnswer,
@@ -175,13 +176,13 @@ export function costOf(
 }
 
 /**
- * A request of one of the three single-shot features, which is all this queue holds: a `review` or
- * `review-reply` row is the record of a provider call of a review run, or of an answer to a reply
- * (6I-3, 6I-4), finished when it is written.
+ * A request of one of the three single-shot features, which is all this queue holds. A row of any
+ * other feature is never run here: a `review` or `review-reply` row is the record of a provider
+ * call of a review run or of an answer to a reply (6I-3, 6I-4), finished when it is written.
  */
 type SingleShotRow = LlmRequestRow & { feature: LlmFeature };
 const isSingleShot = (row: LlmRequestRow): row is SingleShotRow =>
-  row.feature !== 'review' && row.feature !== 'review-reply';
+  (LLM_FEATURES as readonly string[]).includes(row.feature);
 
 type Outcome =
   | {
