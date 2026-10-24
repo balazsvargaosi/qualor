@@ -208,6 +208,42 @@ describe('the review answer schemas', () => {
     expect(passes(verifyAnswerSchema, { verdict: 'confirmed' })).toBe(false);
   });
 
+  it('cleans the words of a finding as the assistant’s answers are cleaned, and leaves its code alone', () => {
+    // Bidirectional controls, zero-width and other invisible characters, a line separator and a
+    // control, in the texts of a finding a person reads, and an invisible one in a line of code.
+    const code = 'for (let i = 0;​ i < n; i += 1) {';
+    const parsed = specialistAnswerSchema.parse({
+      findings: [
+        finding({
+          title: 'The loop‮stops one item ea​rly\n/close',
+          body: 'The bound is `i < n -​ 1`,‮so the last item is never added. Use `i < n`.\u0007',
+          assumption: 'It⁦runs once﻿.',
+          suggestion: { startLine: 12, endLine: 12, lines: [code] },
+        }),
+      ],
+    });
+    const [only] = parsed.findings;
+    if (only === undefined) throw new Error('no finding');
+    expect(reviewFindingOf(only)).toMatchObject({
+      // One line: the rest of a title is not kept.
+      title: 'The loop stops one item early',
+      body: 'The bound is `i < n - 1`, so the last item is never added. Use `i < n`.',
+      assumption: 'It runs once.',
+      suggestion: { startLine: 12, endLine: 12, lines: [code] },
+    });
+    // A text that is nothing but such characters is blank: refused, or no assumption at all.
+    const blank = '​⁠‮ ﻿';
+    expect(passes(specialistAnswerSchema, { findings: [finding({ title: blank })] })).toBe(false);
+    expect(passes(specialistAnswerSchema, { findings: [finding({ body: blank })] })).toBe(false);
+    const quiet = specialistAnswerSchema.parse({ findings: [finding({ assumption: blank })] });
+    expect(reviewFindingOf(quiet.findings[0]!).assumption).toBeNull();
+    // The judge's findings are read the same way.
+    const judgedParse = judgeAnswerSchema.parse(
+      judgeAnswer({ findings: [judged({ title: 'A‮bug', body: 'Re​al.' })] }),
+    );
+    expect(judgedParse.findings[0]).toMatchObject({ title: 'A bug', body: 'Real.' });
+  });
+
   it('an optional part may be left out or null, and reads as null', () => {
     for (const over of [
       { endLine: undefined, assumption: undefined, suggestion: undefined },

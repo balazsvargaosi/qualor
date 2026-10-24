@@ -142,7 +142,8 @@ function usableSuggestion(
  *
  * A finding with a suggestion that passes is anchored at the suggestion's first line, where GitLab's
  * suggestion block starts; one without is anchored where the plan put it. Texts are cut to their
- * columns.
+ * columns: the model's words were cleaned as its answer was read (schemas.ts), and what a column
+ * cannot hold is replaced here all the same.
  */
 export function renderFinding(
   planned: PlannedFinding,

@@ -914,6 +914,33 @@ describe('runReviewPipeline', () => {
     });
   });
 
+  it('cleans the words of every finding as the answer is read, and leaves its code alone', async () => {
+    const code = 'const total =​ a + b + c;';
+    const dirty = {
+      title: 'The total‮skips the la​st item',
+      body: 'The loop bound is⁦one short. Use `i < n`.﻿',
+      assumption: 'It⁩runs once.',
+      suggestion: { startLine: 3, endLine: 3, lines: [code] },
+    };
+    const clean = {
+      title: 'The total skips the last item',
+      body: 'The loop bound is one short. Use `i < n`.',
+      assumption: 'It runs once.',
+      suggestion: { startLine: 3, endLine: 3, lines: [code] },
+    };
+    const { deps, calls } = scripted({
+      quality: [answer({ findings: [found(dirty)] })],
+      judge: [answer(judgeSays({ findings: [judgedAs(dirty)] }))],
+    });
+    const { outcome } = await review(contextOf([change('src/cart.ts', 2)]), 100_000, deps);
+    // The judge is shown the specialist's finding cleaned, and the outcome holds its own so: what
+    // the findings are matched by (the words of the title) is what a person reads.
+    expect(calls.find((c) => c.role === 'judge')?.data.specialistFindings).toEqual([
+      { id: 's1', reviewer: 'quality', ...found(clean) },
+    ]);
+    expect(outcome).toMatchObject({ findings: [outcomeFinding(clean)] });
+  });
+
   it('the judge keeps only the sources, prior findings and verdicts it was given', async () => {
     const context = contextOf([change('src/cart.ts', 2)], {
       prior: [prior('issue-1', 'open'), prior('issue-2', 'wont_fix')],

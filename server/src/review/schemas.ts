@@ -1,4 +1,4 @@
-import { cutAtGrapheme } from '@qualor/shared';
+import { cutAtGrapheme, safeMultilineText } from '@qualor/shared';
 import { z } from 'zod';
 import { AI_CATEGORIES, type AiCategory } from '../db/schema';
 
@@ -8,7 +8,8 @@ import { AI_CATEGORIES, type AiCategory } from '../db/schema';
  * the whole answer with them (only the reason for dropping a finding, which is never shown, is cut
  * instead). The pipeline reads every answer with `parseModelJson`, takes the provider's key out of
  * what it read, and only then checks it here; an answer that does not pass is not used (fail
- * closed). The bounds are the ones the prompts give the model.
+ * closed). The bounds are the ones the prompts give the model. The texts of a finding that people
+ * read are cleaned here as they are read (`readable`), its code is not.
  */
 
 export const FINDING_SEVERITIES = ['critical', 'major', 'minor'] as const;
@@ -51,14 +52,32 @@ const L = ANSWER_LIMITS;
 
 /** A line of a file: a whole number from 1. */
 const lineNumber = z.number().int().min(1);
+const notBlank = (value: string): boolean => value.trim() !== '';
 /** Text of at most `max` characters that is not blank. */
-const text = (max: number) =>
+const text = (max: number) => z.string().max(max).refine(notBlank, 'blank');
+const id = z.string().min(1).max(L.idChars);
+/**
+ * A text of a finding that people read (its title, body and assumption): at most `max` characters,
+ * cleaned as the AI assistant's answers are (`safeMultilineText`, llm.md §9.4). Every control,
+ * bidirectional control and line separator becomes a space, invisible characters go, a lone
+ * surrogate becomes U+FFFD, and at most `lines` lines are kept. It is cleaned as the answer is
+ * read, so that the words matched to earlier findings (the fingerprint of a title) are the ones
+ * stored, shown and posted; a text that is blank once cleaned is blank. The provider's key was
+ * taken out before, matching across the characters removed here (key-scrub.ts), so removing them
+ * cannot put a key together again.
+ */
+const readable = (max: number, lines?: number) =>
   z
     .string()
     .max(max)
-    .refine((value) => value.trim() !== '', 'blank');
-const id = z.string().min(1).max(L.idChars);
+    .transform((value) => safeMultilineText(value.trim(), max, lines));
 
+/**
+ * A suggestion's lines are code, and are not cleaned: a character taken out of a line of code
+ * changes the code (a bidirectional mark in a string literal, say). A suggestion that holds any
+ * control, bidirectional or invisible character is refused whole when the finding is stored
+ * (checkReviewSuggestion), so no such line reaches a person.
+ */
 const suggestionSchema = z
   .strictObject({
     startLine: lineNumber,
@@ -75,9 +94,10 @@ const findingFields = {
   path: text(L.pathChars),
   line: lineNumber,
   endLine: lineNumber.nullish(),
-  title: text(L.titleChars),
-  body: text(L.bodyChars),
-  assumption: z.string().max(L.assumptionChars).nullish(),
+  /** One line, as the prompts ask and as a thread and the summary show it. */
+  title: readable(L.titleChars, 1).refine(notBlank, 'blank'),
+  body: readable(L.bodyChars).refine(notBlank, 'blank'),
+  assumption: readable(L.assumptionChars).nullish(),
   suggestion: suggestionSchema.nullish(),
 };
 const endsAfterItStarts = {
