@@ -14,6 +14,7 @@ import {
   type FakeLlm,
   type LlmResponder,
   openAiAnswer,
+  openAiToolCalls,
   type RecordedLlmRequest,
 } from '../../test/fake-llm';
 import { BUSINESS_FEATURES, ENTERPRISE_FEATURES, signTest, testPayload } from '../../test/license';
@@ -25,6 +26,7 @@ import { mailPayloadAad } from '../../src/mail/outbox';
 import { buildServer } from '../bundle';
 import {
   seedAi,
+  seedAiFinding,
   seedDemo,
   seedEnterprise,
   seedGitHubApp,
@@ -119,10 +121,25 @@ function modelText(request: RecordedLlmRequest): string {
   return cannedModelText(request);
 }
 
-/** Answers every request with {@link modelText}: a responder that queues itself again. */
+/** Whether the request offers the model the `echo` tool, as the provider test's tool check does. */
+function offersEcho(request: RecordedLlmRequest): boolean {
+  const tools = (request.json as { tools?: { function?: { name?: unknown } }[] } | null)?.tools;
+  return Array.isArray(tools) && tools.some((tool) => tool.function?.name === 'echo');
+}
+
+/**
+ * Answers every request with {@link modelText}, except the tool check of the provider test, which
+ * this model passes by calling the tool: a responder that queues itself again.
+ */
 function answerAlways(fake: FakeLlm): void {
   const respond: LlmResponder = (request) => {
     fake.enqueue(respond);
+    if (offersEcho(request)) {
+      return {
+        status: 200,
+        body: openAiToolCalls([{ id: 'call_1', name: 'echo', arguments: { text: 'ok' } }]),
+      };
+    }
     return { status: 200, body: openAiAnswer(modelText(request)) };
   };
   fake.enqueue(respond);
@@ -283,6 +300,8 @@ async function main(): Promise<void> {
   } finally {
     await stop(seeding);
   }
+  // What a finished AI review leaves on merge request !42, which no review of the e2e server could.
+  await seedAiFinding(databaseUrl(adminUrl, name));
   // A GitHub App stored under another server key: the served server can no longer read its key
   // and webhook secret, and the GitHub tab says so (github.md §2.2).
   const rotated = start({

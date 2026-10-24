@@ -65,6 +65,7 @@ function detail(overrides: Partial<IssueDetail> = {}): IssueDetail {
     firstSeenAnalysisId: null,
     lastSeenAnalysisId: null,
     resolvedBy: null,
+    aiReview: null,
     ...overrides,
   };
 }
@@ -121,6 +122,20 @@ describe('IssuePage', () => {
       d.nextElementSibling?.textContent?.trim(),
     ]);
     expect(details).toContainEqual(['Confidence', 'Possible']);
+  });
+
+  it('does not explain Possible with the taint engine’s words for a finding of the AI review', async () => {
+    server.on('GET', `/api/v0/issues/${ID}`, {
+      body: detail({
+        confidence: 'medium',
+        rule: { ...detail().rule, key: 'ai:logic', name: 'AI review: logic error', engine: 'ai' },
+      }),
+    });
+    const { root } = await render();
+    const tags = [...root.querySelectorAll('.issue-tags .badge')].map((b) => b.textContent?.trim());
+    expect(tags).toContain('Possible');
+    // That note is about stored data and lookups by a key: it says nothing of a model's doubt.
+    expect(root.querySelector('.issue-header')?.textContent).not.toContain('stored data');
   });
 
   it('shows a high confidence in the details only, and nothing for a finding without one', async () => {
@@ -317,6 +332,112 @@ describe('IssuePage', () => {
       const link = root.querySelector<HTMLAnchorElement>('.code-head a')!;
       expect(link.textContent?.trim()).toBe('src/a.ts');
       expect(link.getAttribute('href')).toContain('#L3');
+    });
+  });
+
+  describe('the AI review of a finding', () => {
+    type Review = NonNullable<IssueDetail['aiReview']>;
+    const REVIEW: Review = {
+      category: 'logic',
+      body: 'The loop stops <b>one element early</b>.\nThe last item is never summed.',
+      assumption: 'The list is never empty.',
+      verification: 'needs_validation',
+      suggestion: { startLine: 12, endLine: 13, lines: ['for (const x of xs) {', '  total += x;'] },
+      reviewedCommit: 'c0ffee0123456789abcdef0123456789abcdef01',
+    };
+    async function renderReview(review: Partial<Review> | null) {
+      server.on('GET', `/api/v0/issues/${ID}`, {
+        body: detail({
+          rule: {
+            ...detail().rule,
+            key: 'ai:logic',
+            name: 'AI review: logic error',
+            engine: 'ai',
+          },
+          aiReview: review === null ? null : { ...REVIEW, ...review },
+        }),
+      });
+      return render();
+    }
+    const cardOf = (root: HTMLElement) =>
+      root.querySelector<HTMLElement>('[aria-labelledby="ai-review-heading"]');
+    const flat = (el: Element | null | undefined) => el?.textContent?.replace(/\s+/g, ' ').trim();
+
+    it('shows the finding as text with what it assumes, the second check, the suggestion, the commit and the notice', async () => {
+      const { root } = await renderReview({});
+      const card = cardOf(root)!;
+      expect(card.querySelector('h3')?.textContent?.trim()).toBe('AI review');
+      // The model's words are text: no markup of theirs is ever built, and the line break stays.
+      const body = card.querySelector('.ai-review-body')!;
+      expect(body.textContent).toBe(REVIEW.body);
+      expect(card.querySelector('b')).toBeNull();
+      expect(flat(card.querySelector('.ai-review-assumption'))).toBe(
+        'Assumes: The list is never empty.',
+      );
+      expect(flat(card.querySelector('.ai-review-verification'))).toBe(
+        'A second check could not confirm it: check it yourself.',
+      );
+      expect(flat(card.querySelector('.ai-review-suggestion h4'))).toBe(
+        'Suggested change (lines 12–13)',
+      );
+      const lines = [...card.querySelectorAll('.ai-review-suggestion pre .snippet-line')];
+      expect(lines.map((l) => l.querySelector('.ln')?.textContent?.trim())).toEqual(['12', '13']);
+      expect(lines.map((l) => l.textContent)).toEqual([
+        '12for (const x of xs) {',
+        '13  total += x;',
+      ]);
+      expect(flat(card.querySelector('.ai-review-commit'))).toBe('Reviewed commit c0ffee012345');
+      expect(flat(card.querySelector('.ai-review-notice'))).toBe(
+        'Found by AI review. It may be wrong, and it never counts in the quality gate.',
+      );
+    });
+
+    it('says when a second check confirmed the finding', async () => {
+      const { root } = await renderReview({ verification: 'confirmed' });
+      expect(flat(cardOf(root)!.querySelector('.ai-review-verification'))).toBe(
+        'A second check confirmed it.',
+      );
+    });
+
+    it('names a one-line suggestion by its line', async () => {
+      const { root } = await renderReview({
+        suggestion: { startLine: 12, endLine: 12, lines: ['total += x;'] },
+      });
+      expect(flat(cardOf(root)!.querySelector('.ai-review-suggestion h4'))).toBe(
+        'Suggested change (line 12)',
+      );
+    });
+
+    it('says a suggestion without lines deletes the ones it names', async () => {
+      const { root } = await renderReview({
+        suggestion: { startLine: 12, endLine: 13, lines: [] },
+      });
+      const suggestion = cardOf(root)!.querySelector('.ai-review-suggestion')!;
+      expect(flat(suggestion.querySelector('h4'))).toBe('Suggested change (lines 12–13)');
+      expect(suggestion.querySelector('pre')).toBeNull();
+      expect(flat(suggestion)).toContain('The suggestion deletes these lines.');
+    });
+
+    it('leaves out what the review did not say', async () => {
+      const { root } = await renderReview({
+        assumption: null,
+        verification: null,
+        suggestion: null,
+      });
+      const card = cardOf(root)!;
+      expect(card.querySelector('.ai-review-assumption')).toBeNull();
+      expect(card.querySelector('.ai-review-verification')).toBeNull();
+      expect(card.querySelector('.ai-review-suggestion')).toBeNull();
+      // The finding, the commit and the notice are always there.
+      expect(card.querySelector('.ai-review-body')?.textContent).toBe(REVIEW.body);
+      expect(card.querySelector('.ai-review-commit')).not.toBeNull();
+      expect(card.querySelector('.ai-review-notice')).not.toBeNull();
+    });
+
+    it('shows no card for an issue the analyzers reported', async () => {
+      const { root } = await renderReview(null);
+      expect(cardOf(root)).toBeNull();
+      expect(root.querySelector('.ai-review-notice')).toBeNull();
     });
   });
 

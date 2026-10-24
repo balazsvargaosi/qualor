@@ -213,6 +213,11 @@ export class AiSettingsPage {
 
   protected readonly errors = signal<Partial<Record<Field, string>>>({});
   protected readonly announcement = signal<string | null>(null);
+  /**
+   * What the last Test found out about tool calling, which AI review needs; null while it is not
+   * known (no Test yet, a Test that failed, or a check that could not tell).
+   */
+  protected readonly toolCalling = signal<'supported' | 'not_supported' | null>(null);
   protected readonly error = signal<string | null>(null);
   protected readonly busy = signal(false);
 
@@ -488,6 +493,7 @@ export class AiSettingsPage {
         this.announcement.set(
           $localize`:@@ai.settings.testOk:Connected to ${result.model ?? this.provider()?.model ?? ''}:model: in ${result.latencyMs}:latency: ms.`,
         );
+        this.toolCalling.set(result.toolCalling === 'not_checked' ? null : result.toolCalling);
       }
     });
   }
@@ -752,6 +758,7 @@ export class AiSettingsPage {
     this.busy.set(true);
     this.error.set(null);
     this.announcement.set(null);
+    this.toolCalling.set(null);
     try {
       await action();
     } catch (err) {

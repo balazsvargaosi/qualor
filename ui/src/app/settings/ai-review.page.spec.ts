@@ -672,6 +672,79 @@ describe('AiReviewPage (6I-2 Task 9)', () => {
     });
   });
 
+  describe('today’s use', () => {
+    const usageText = (root: HTMLElement) =>
+      root.querySelector('#ai-review-usage')?.textContent?.replace(/\s+/g, ' ').trim();
+    /** An organisation with review on, its own tokens per day given. */
+    const reviewing = (tokensPerDay = 500_000) => ({
+      [ORG_ID]: {
+        enabled: true,
+        budgets: { ...DEFAULT_BUDGETS, tokensPerDay },
+        consentFor: A,
+      },
+    });
+
+    it('shows the tokens and the reviews of the day against the budget', async () => {
+      setup('orgAdmin', {
+        usage: { tokensToday: 123_456, costTodayUsd: null, reviewsToday: 7 },
+        organizations: reviewing(),
+      });
+      const { root } = await render();
+      expect(usageText(root)).toBe('Today: 123,456 of 500,000 tokens · 7 reviews');
+    });
+
+    it.each([
+      [300_000, 'Today: 1,000 of 300,000 tokens · 2 reviews'],
+      [900_000, 'Today: 1,000 of 500,000 tokens · 2 reviews'],
+      [null, 'Today: 1,000 of 500,000 tokens · 2 reviews'],
+    ])(
+      'counts against the smaller of the budget and the instance ceiling (%s)',
+      async (ceiling, text) => {
+        setup('orgAdmin', {
+          usage: { tokensToday: 1_000, costTodayUsd: null, reviewsToday: 2 },
+          ceiling,
+          organizations: reviewing(),
+        });
+        expect(usageText((await render()).root)).toBe(text);
+      },
+    );
+
+    it('adds the cost in dollars when the instance sets prices', async () => {
+      setup('orgAdmin', {
+        usage: { tokensToday: 20_000, costTodayUsd: 1.5, reviewsToday: 3 },
+        organizations: reviewing(),
+      });
+      const { root } = await render();
+      expect(usageText(root)).toBe('Today: 20,000 of 500,000 tokens · 3 reviews · $1.50');
+    });
+
+    it.each([
+      [1, 'Today: 900 of 500,000 tokens · 1 review'],
+      [0, 'Today: 900 of 500,000 tokens · 0 reviews'],
+    ])('counts %s review(s) in the right number', async (reviewsToday, text) => {
+      setup('orgAdmin', {
+        usage: { tokensToday: 900, costTodayUsd: null, reviewsToday },
+        organizations: reviewing(),
+      });
+      expect(usageText((await render()).root)).toBe(text);
+    });
+
+    it('does not follow a budget that was typed and not saved, and reads the saved answer', async () => {
+      const { fake } = setup('orgAdmin', {
+        usage: { tokensToday: 100, costTodayUsd: null, reviewsToday: 1 },
+        organizations: reviewing(),
+      });
+      const { fixture, root } = await render();
+      type(root, 'ai-review-tokens', '250000');
+      await settle(fixture);
+      expect(usageText(root)).toBe('Today: 100 of 500,000 tokens · 1 review');
+      // Saving answers with the day as it is then, and with the budget just saved.
+      fake.usage = { tokensToday: 4_000, costTodayUsd: null, reviewsToday: 2 };
+      await save(fixture, root);
+      expect(usageText(root)).toBe('Today: 4,000 of 250,000 tokens · 2 reviews');
+    });
+  });
+
   describe('data it must never show', () => {
     it('never shows the provider as a URL: the answers name its host and model only', async () => {
       setup('orgAdmin', { organizations: { [ORG_ID]: { enabled: true, consentFor: A } } });

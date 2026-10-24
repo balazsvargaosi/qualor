@@ -27,7 +27,8 @@
             <span class="badge badge-tag" i18n="@@issues.possible">Possible</span>
           }
         </p>
-        @if (i.confidence === 'medium') {
+        <!-- This explains the taint engine's "possible" only: the AI review's card has its notice. -->
+        @if (i.confidence === 'medium' && i.rule.engine !== 'ai') {
           <p class="muted" i18n="@@issue.possible.note">
             Possible: the path the analysis followed to this issue goes through stored data, a
             lookup by a key or a call it could not narrow down. Check that the data really gets
@@ -63,6 +64,62 @@
             class="snippet"
             tabindex="0"
           ><code>@for (line of s.lines; track $index) {<span class="snippet-line" [class.hit]="s.startLine + $index === i.startLine" [class.related]="relatedMarks().has(s.startLine + $index)"><span class="ln">{{ s.startLine + $index }}</span>@if (relatedMarks().get(s.startLine + $index); as marks) {<span class="step-marks" aria-hidden="true">@for (n of marks; track n) {<span class="step-mark">{{ n }}</span>}</span>}{{ line }}</span>}</code></pre>
+        </section>
+      }
+
+      @if (i.aiReview; as review) {
+        <section class="card stack ai-review-card" aria-labelledby="ai-review-heading">
+          <h3 id="ai-review-heading" i18n="@@issue.aiReview.title">AI review</h3>
+          <!-- The review's words are model text: interpolated as text, never built as markup. -->
+          <p class="ai-review-body prose-text">{{ review.body }}</p>
+          @if (review.assumption; as assumption) {
+            <p class="ai-review-assumption prose-text" i18n="@@issue.aiReview.assumes">
+              Assumes: {{ assumption }}
+            </p>
+          }
+          @if (review.verification === 'confirmed') {
+            <p class="ai-review-verification" i18n="@@issue.aiReview.confirmed">
+              A second check confirmed it.
+            </p>
+          } @else if (review.verification === 'needs_validation') {
+            <p class="ai-review-verification" i18n="@@issue.aiReview.needsValidation">
+              A second check could not confirm it: check it yourself.
+            </p>
+          }
+          @if (review.suggestion; as suggestion) {
+            <div class="ai-review-suggestion stack">
+              <h4 id="ai-review-suggestion-heading">
+                @if (suggestion.startLine === suggestion.endLine) {
+                  <ng-container i18n="@@issue.aiReview.suggestionLine"
+                    >Suggested change (line {{ suggestion.startLine }})</ng-container
+                  >
+                } @else {
+                  <ng-container i18n="@@issue.aiReview.suggestionLines"
+                    >Suggested change (lines {{ suggestion.startLine }}–{{
+                      suggestion.endLine
+                    }})</ng-container
+                  >
+                }
+              </h4>
+              @if (suggestion.lines.length > 0) {
+                <pre
+                  class="snippet"
+                  tabindex="0"
+                  aria-labelledby="ai-review-suggestion-heading"
+                ><code>@for (line of suggestion.lines; track $index) {<span class="snippet-line"><span class="ln">{{ suggestion.startLine + $index }}</span>{{ line }}</span>}</code></pre>
+              } @else {
+                <p class="muted" i18n="@@issue.aiReview.deletes">
+                  The suggestion deletes these lines.
+                </p>
+              }
+            </div>
+          }
+          <p class="ai-review-commit muted" i18n="@@issue.aiReview.commit">
+            Reviewed commit <code>{{ review.reviewedCommit.slice(0, 12) }}</code>
+          </p>
+          <p class="ai-review-notice muted" i18n="@@issue.aiReview.notice">
+            Found by AI review. It may be wrong, and it never counts in the quality gate.
+          </p>
         </section>
       }
 

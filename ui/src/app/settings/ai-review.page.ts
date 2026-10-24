@@ -79,6 +79,7 @@ export class AiReviewPage {
   private readonly injector = inject(Injector);
   private readonly document = inject(DOCUMENT);
   private readonly locale = inject(LOCALE_ID);
+  private readonly numbers = new Intl.NumberFormat(this.locale);
   protected readonly org = inject(OrgContext);
 
   protected readonly allowed = computed(
@@ -129,9 +130,32 @@ export class AiReviewPage {
   /** The instance's ceiling on the organisation's tokens per day, in the page's figures. */
   protected readonly ceiling = computed(() => {
     const tokens = this.current()?.instanceCeiling.tokensPerDay;
-    return tokens === undefined || tokens === null
-      ? null
-      : new Intl.NumberFormat(this.locale).format(tokens);
+    return tokens === undefined || tokens === null ? null : this.numbers.format(tokens);
+  });
+  /**
+   * What the organisation's reviews have used today, against the tokens the day allows them: the
+   * organisation's own budget, or the instance ceiling when that is smaller. Both are those of the
+   * last answer, not of what is typed in the form. The cost follows when the instance sets prices.
+   */
+  protected readonly usageText = computed(() => {
+    const settings = this.current();
+    if (settings === null) return null;
+    const { tokensToday, costTodayUsd, reviewsToday } = settings.usage;
+    const ceiling = settings.instanceCeiling.tokensPerDay;
+    const allowed =
+      ceiling === null
+        ? settings.budgets.tokensPerDay
+        : Math.min(settings.budgets.tokensPerDay, ceiling);
+    const reviews =
+      reviewsToday === 1
+        ? $localize`:@@aiReview.usageReviewsOne:1 review`
+        : $localize`:@@aiReview.usageReviews:${this.numbers.format(reviewsToday)}:count: reviews`;
+    const line = $localize`:@@aiReview.usage:Today: ${this.numbers.format(tokensToday)}:tokens: of ${this.numbers.format(allowed)}:budget: tokens · ${reviews}:reviews:`;
+    if (costTodayUsd === null) return line;
+    const cost = new Intl.NumberFormat(this.locale, { style: 'currency', currency: 'USD' }).format(
+      costTodayUsd,
+    );
+    return $localize`:@@aiReview.usageCost:${line}:usage: · ${cost}:cost:`;
   });
 
   private readonly heading = viewChild.required<ElementRef<HTMLElement>>('heading');

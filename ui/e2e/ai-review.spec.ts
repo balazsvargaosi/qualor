@@ -155,6 +155,10 @@ test.describe('as people other than the instance admin', () => {
       await expect(page.getByLabel('Tokens per project and day')).toHaveValue('250000');
       await expect(page.getByLabel('Tokens per review')).toHaveValue('120000');
       await expect(page.locator('#ai-review-outdated')).toHaveCount(0);
+      // No review ran on this server: the day's use is nothing, against the budget just saved.
+      await expect(page.locator('#ai-review-usage')).toHaveText(
+        'Today: 0 of 500,000 tokens · 0 reviews',
+      );
       await expectAccessible(page);
     });
 

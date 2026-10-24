@@ -161,6 +161,9 @@
                         [routerLink]="['/projects', projectId(), 'issues', i.id]"
                         >{{ i.message }}</a
                       >
+                      @if (i.engine === 'ai') {
+                        <span class="badge badge-accent" i18n="@@issues.aiBadge">AI</span>
+                      }
                       @if (i.confidence === 'medium') {
                         <span class="badge badge-tag" i18n="@@file.issues.possible">Possible</span>
                       }

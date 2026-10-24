@@ -4904,6 +4904,7 @@ export interface paths {
                                 /** Format: uuid */
                                 id: string;
                                 ruleKey: string;
+                                engine: string;
                                 message: string;
                                 severity: string;
                                 quality: string;
@@ -6289,6 +6290,19 @@ export interface paths {
                                 id: string;
                                 username: string;
                             } | null;
+                            aiReview: {
+                                /** @enum {string} */
+                                category: "logic" | "error-handling" | "compatibility" | "concurrency" | "security" | "performance" | "tests" | "docs";
+                                body: string;
+                                assumption: string | null;
+                                verification: ("confirmed" | "needs_validation") | null;
+                                suggestion: {
+                                    startLine: number;
+                                    endLine: number;
+                                    lines: string[];
+                                } | null;
+                                reviewedCommit: string;
+                            } | null;
                         };
                     };
                 };
@@ -6424,6 +6438,19 @@ export interface paths {
                                 /** Format: uuid */
                                 id: string;
                                 username: string;
+                            } | null;
+                            aiReview: {
+                                /** @enum {string} */
+                                category: "logic" | "error-handling" | "compatibility" | "concurrency" | "security" | "performance" | "tests" | "docs";
+                                body: string;
+                                assumption: string | null;
+                                verification: ("confirmed" | "needs_validation") | null;
+                                suggestion: {
+                                    startLine: number;
+                                    endLine: number;
+                                    lines: string[];
+                                } | null;
+                                reviewedCommit: string;
                             } | null;
                         };
                     };
@@ -6596,6 +6623,19 @@ export interface paths {
                                 /** Format: uuid */
                                 id: string;
                                 username: string;
+                            } | null;
+                            aiReview: {
+                                /** @enum {string} */
+                                category: "logic" | "error-handling" | "compatibility" | "concurrency" | "security" | "performance" | "tests" | "docs";
+                                body: string;
+                                assumption: string | null;
+                                verification: ("confirmed" | "needs_validation") | null;
+                                suggestion: {
+                                    startLine: number;
+                                    endLine: number;
+                                    lines: string[];
+                                } | null;
+                                reviewedCommit: string;
                             } | null;
                         };
                     };
@@ -10003,7 +10043,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Send a fixed prompt holding no repository data to the saved provider (instance admins); no audit row, no quota */
+        /** Send a fixed prompt holding no repository data to the saved provider, and when it answers, a second one that asks the model to call a tool (instance admins); no audit row, no quota */
         post: {
             parameters: {
                 query?: never;
@@ -10023,6 +10063,8 @@ export interface paths {
                             ok: boolean;
                             model: string | null;
                             latencyMs: number;
+                            /** @enum {string} */
+                            toolCalling: "supported" | "not_supported" | "not_checked";
                             problem: {
                                 /** @enum {string} */
                                 code: "PROVIDER_TIMEOUT" | "PROVIDER_UNAVAILABLE" | "PROVIDER_RATE_LIMITED" | "PROVIDER_REFUSED_KEY" | "PROVIDER_REJECTED_REQUEST" | "PROVIDER_BAD_ANSWER" | "URL_NOT_ALLOWED" | "KEY_UNDECRYPTABLE" | "MALFORMED_OUTPUT" | "OUTPUT_TRUNCATED" | "MODEL_REFUSED" | "OUTPUT_REFUSED" | "AI_DISABLED" | "SETTINGS_CHANGED" | "ISSUE_CHANGED" | "ISSUE_GONE" | "REQUEST_ABANDONED";
@@ -12518,6 +12560,11 @@ export interface paths {
                             instanceCeiling: {
                                 tokensPerDay: number | null;
                             };
+                            usage: {
+                                tokensToday: number;
+                                costTodayUsd: number | null;
+                                reviewsToday: number;
+                            };
                         };
                     };
                 };
@@ -12626,6 +12673,11 @@ export interface paths {
                             consentCurrent: boolean;
                             instanceCeiling: {
                                 tokensPerDay: number | null;
+                            };
+                            usage: {
+                                tokensToday: number;
+                                costTodayUsd: number | null;
+                                reviewsToday: number;
                             };
                         };
                     };

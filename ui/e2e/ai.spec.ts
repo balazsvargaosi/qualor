@@ -71,8 +71,12 @@ test.describe('AI assistant (llm.md §18)', () => {
     expect(stored).not.toContain(FAKE_LLM_KEY);
 
     await page.getByRole('button', { name: 'Test' }).click();
+    // The fake model calls the echo tool of the tool-calling check, which AI review needs.
     await expect(page.getByRole('status')).toContainText(
-      /^Connected to fake-openai-model in \d+ ms\.$/,
+      /^Connected to fake-openai-model in \d+ ms\.\s*Tool calling \(needed by AI review\): supported\s*$/,
+    );
+    await expect(page.locator('#ai-test-tools')).toHaveText(
+      'Tool calling (needed by AI review): supported',
     );
     await expectAccessible(page);
     // No answer of the settings API (the save's included) carried the key.

@@ -26,6 +26,18 @@ export const XSS_RULE_TEXT = '<script>alert("rule")</script>';
  * src/payments/gateway.ts:88–92 and src/payments/gateway.ts:140.
  */
 export const RELATED_ISSUE_MESSAGE = 'Detected eval() with a non-literal argument.';
+/**
+ * The finding of the AI review on merge request !42 of Payments API (seed.ts `seedAiFinding`): an
+ * issue of the `ai` engine whose body carries markup that must stay text, with a one-line
+ * suggestion.
+ */
+export const AI_FINDING = {
+  message: 'Loose equality lets a value of another type pass for the euro.',
+  bodyMarkup: '<img src=x onerror="alert(1)">',
+  assumption: 'order.currency is always a string.',
+  suggestedLine: '  if (order.currency === "EUR") {',
+  reviewedCommit: 'dddddddddddd',
+};
 /** Payments API's own webhook and second analysis token (seed.ts). */
 export const PROJECT_WEBHOOK_URL = 'https://hooks.example.com/payments';
 

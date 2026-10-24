@@ -278,6 +278,9 @@
                         >{{ issue.path }}{{ issue.startLine ? ':' + issue.startLine : '' }}</code
                       >
                     }
+                    @if (issue.rule.engine === 'ai') {
+                      <span class="badge badge-accent" i18n="@@issues.aiBadge">AI</span>
+                    }
                     @if (issue.inNewCode) {
                       <span class="badge badge-accent" i18n="@@issues.new">New code</span>
                     }

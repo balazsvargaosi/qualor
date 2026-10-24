@@ -186,6 +186,9 @@
           They cover the reviews of all the organisation's projects.
         </span>
       </div>
+      @if (usageText(); as usage) {
+        <p id="ai-review-usage" class="ai-review-usage">{{ usage }}</p>
+      }
       <div class="setting-row">
         <div class="setting-text">
           <label for="ai-review-tokens" i18n="@@aiReview.budgetTokens">Tokens per day</label>

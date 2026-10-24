@@ -2,7 +2,11 @@ import { generateKeyPairSync } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { gzipSync } from 'node:zlib';
 import { type DependencyEntry, hex32, type Report } from '@qualor/shared';
+import { and, eq, sql } from 'drizzle-orm';
 import pg from 'pg';
+import { createDatabase } from '../../src/db/client';
+import { branches, issues, projects, reviewFindings } from '../../src/db/schema';
+import { ensureAiRules } from '../../src/review/rules';
 
 /**
  * Demo data for the UI end-to-end tests and screenshots (plan 1F), created only through the
@@ -1122,5 +1126,93 @@ export async function seedSsoIdentity(databaseUrl: string, seed: SsoSeed): Promi
     );
   } finally {
     await client.end();
+  }
+}
+
+/**
+ * The AI finding of merge request !42 of Payments API (ui/e2e/seed-data.ts AI_FINDING): a finding of
+ * the review's `logic` category on the line the merge request changed (the fake GitLab's diff),
+ * with a suggestion, and a body that carries markup, which the UI must show as text.
+ */
+const AI_FINDING = {
+  message: 'Loose equality lets a value of another type pass for the euro.',
+  body: 'The currency is compared with ==, so a value that only converts to "EUR" takes the euro branch. Strict equality, <img src=x onerror="alert(1)"> as in the rest of the file, avoids that.',
+  assumption: 'order.currency is always a string.',
+  path: 'src/refunds/limits.ts',
+  line: 12,
+  snippet: {
+    startLine: 11,
+    lines: [
+      '  const limit = eval(order.policy);',
+      '  if (order.currency == "EUR") {',
+      '    return Math.min(amount, limit);',
+    ],
+  },
+  suggestion: { startLine: 12, endLine: 12, lines: ['  if (order.currency === "EUR") {'] },
+  /** The head commit of the merge request's analysis. */
+  headSha: 'd'.repeat(40),
+};
+
+/**
+ * The one step the API cannot take: a finding of the AI review on merge request !42 of Payments
+ * API, as a finished review leaves it (an issue of the `ai` engine with its finding row, in new
+ * code). A review needs a worker, a repository snapshot and a model's answer, none of which the e2e
+ * server has; the tests only need what a review leaves behind.
+ */
+export async function seedAiFinding(databaseUrl: string): Promise<void> {
+  const database = createDatabase(databaseUrl, { max: 1 });
+  try {
+    const { db } = database;
+    const ruleId = (await ensureAiRules(db)).get('logic');
+    const [branch] = await db
+      .select({ id: branches.id, projectId: branches.projectId })
+      .from(branches)
+      .innerJoin(projects, eq(projects.id, branches.projectId))
+      .where(
+        and(
+          eq(projects.key, 'acme/payments-api'),
+          eq(branches.kind, 'merge_request'),
+          eq(branches.name, '42'),
+        ),
+      );
+    if (!ruleId || !branch)
+      throw new Error('no AI rule or no merge request !42 to put a finding on');
+    await db.transaction(async (tx) => {
+      const [issue] = await tx
+        .insert(issues)
+        .values({
+          projectId: branch.projectId,
+          branchId: branch.id,
+          ruleId,
+          fingerprint: hex32('e2e-ai-finding'),
+          lineHash: hex32('e2e-ai-line'),
+          contextHash: hex32('e2e-ai-context'),
+          path: AI_FINDING.path,
+          startLine: AI_FINDING.line,
+          endLine: AI_FINDING.line,
+          message: AI_FINDING.message,
+          severity: 'medium',
+          quality: 'reliability',
+          kind: 'issue',
+          status: 'open',
+          inNewCode: true,
+          snippet: AI_FINDING.snippet,
+          confidence: 'high',
+          firstSeenAt: sql`now()`,
+        })
+        .returning({ id: issues.id });
+      if (!issue) throw new Error('the AI finding was not stored');
+      await tx.insert(reviewFindings).values({
+        issueId: issue.id,
+        category: 'logic',
+        body: AI_FINDING.body,
+        assumption: AI_FINDING.assumption,
+        suggestion: AI_FINDING.suggestion,
+        anchorLine: AI_FINDING.line,
+        reviewedHeadSha: AI_FINDING.headSha,
+      });
+    });
+  } finally {
+    await database.close();
   }
 }

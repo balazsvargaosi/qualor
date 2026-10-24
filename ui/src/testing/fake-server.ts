@@ -585,6 +585,8 @@ export interface FakeAiReviewOptions {
   ceiling?: number | null;
   /** The days a snapshot is kept, which the notice names. */
   retentionDays?: number;
+  /** What the organisation's reviews have used today (UTC); nothing by default. */
+  usage?: OrgAiReview['usage'];
   /** Stored blocks by organisation id; `consentFor` records an acknowledgement of that provider. */
   organizations?: Record<
     string,
@@ -619,6 +621,8 @@ export class FakeAiReview {
   organizationEnabled: boolean;
   ceiling: number | null;
   retentionDays: number;
+  /** What the organisation's reviews have used today; every answer shows it. */
+  usage: OrgAiReview['usage'];
   /** Stored blocks by organisation id; one not listed reads as the default. */
   readonly organizations: Record<string, FakeStoredReview> = {};
   /** Project ids of another organisation: a save that lists one is refused. */
@@ -637,6 +641,7 @@ export class FakeAiReview {
     this.organizationEnabled = options.organizationEnabled ?? true;
     this.ceiling = options.ceiling ?? null;
     this.retentionDays = options.retentionDays ?? 14;
+    this.usage = options.usage ?? { tokensToday: 0, costTodayUsd: null, reviewsToday: 0 };
     for (const [id, given] of Object.entries(options.organizations ?? {})) {
       const { consentFor, ...rest } = given;
       this.organizations[id] = { ...this.of(id), ...rest, consent: this.consentOf(consentFor) };
@@ -695,6 +700,7 @@ export class FakeAiReview {
       consent: stored.consent === null ? null : { ...stored.consent },
       consentCurrent: this.consentCurrent(stored),
       instanceCeiling: { tokensPerDay: this.ceiling },
+      usage: { ...this.usage },
     };
   }
 

@@ -204,3 +204,16 @@ q-ai-panel:empty {
 .snippet-line.related:not(.hit) {
   background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
+
+/*
+ * The AI review's card: the finding, what it assumes, its suggested change and where it came from.
+ * The card is a grid, so its gap spaces the parts and their own margins would only add to it.
+ */
+.card.ai-review-card > *,
+.ai-review-suggestion > * {
+  margin: 0;
+}
+.ai-review-suggestion h4 {
+  font-size: 14px;
+  font-weight: 650;
+}

@@ -157,6 +157,57 @@ describe('IssuesPage', () => {
     expect(tags).toEqual([['Possible'], [], []]);
   });
 
+  it('marks a finding of the AI review AI, beside Possible when its confidence is medium, and no other', async () => {
+    const ai = (id: string, overrides: Partial<Issue> = {}) =>
+      issue(id, {
+        rule: { key: 'ai:logic', name: 'AI review: logic error', engine: 'ai' },
+        inNewCode: true,
+        ...overrides,
+      });
+    server.on('GET', '/api/v0/issues', {
+      body: {
+        items: [
+          ai('i1'),
+          ai('i2', { confidence: 'medium' }),
+          // A rule of another engine that merely looks like one of the review's keeps no mark.
+          issue('i3', { rule: { key: 'ai:logic', name: 'Look-alike', engine: 'eslint' } }),
+          issue('i4', { confidence: 'medium' }),
+        ],
+        nextCursor: null,
+        facets: {},
+      },
+    });
+    const { root } = await render();
+    const rows = [...root.querySelectorAll('tbody tr')];
+    const tags = rows.map((r) =>
+      [...r.querySelectorAll('.issue-meta .badge')].map((b) => b.textContent?.trim()),
+    );
+    expect(tags).toEqual([['AI', 'New code'], ['AI', 'New code', 'Possible'], [], ['Possible']]);
+  });
+
+  it('offers the AI review as an analyzer to filter by, with its count', async () => {
+    server.on('GET', '/api/v0/issues', {
+      body: {
+        items: [issue('i1')],
+        nextCursor: null,
+        facets: {
+          engine: [
+            { value: 'eslint', count: 3 },
+            { value: 'ai', count: 2 },
+          ],
+        },
+      },
+    });
+    const { fixture, root } = await render();
+    expect(facetText(root, 'engine')).toEqual(['eslint 3', 'AI review 2']);
+    const choose = [...facet(root, 'engine')][1]!.querySelector('input')!;
+    choose.click();
+    await settle(fixture);
+    expect(TestBed.inject(Router).url).toBe('/?engine=ai');
+    const queries = server.requestsTo('GET', '/api/v0/issues');
+    expect(queries.at(-1)?.query.getAll('engine')).toEqual(['ai']);
+  });
+
   it('writes rule values as code, and gives a colour only to severities', async () => {
     const { root } = await render();
     const rule = [...facet(root, 'rule')][0]!.querySelector('.facet-name')!;

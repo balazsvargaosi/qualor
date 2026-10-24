@@ -24,6 +24,7 @@ type Issue = FileDetail['issues'][number];
 const issue = (id: string, startLine: number | null, over: Partial<Issue> = {}): Issue => ({
   id,
   ruleKey: 'ts:no-eval',
+  engine: 'eslint',
   message: `Message ${id}`,
   severity: 'high',
   quality: 'security',
@@ -251,6 +252,33 @@ describe('FilePage (spec §4.3)', () => {
       ['Message i3', 'Possible'],
       ['Message i4', undefined],
       ['Message i5', undefined],
+    ]);
+  });
+
+  it('marks a finding of the AI review AI next to its message, and no other', async () => {
+    setup({
+      ...DETAIL,
+      issues: [
+        issue('i3', 3, { ruleKey: 'ai:logic', engine: 'ai' }),
+        // A medium-confidence finding of the review wears both tags.
+        issue('i4', 4, { ruleKey: 'ai:docs', engine: 'ai', confidence: 'medium' }),
+        // The engine decides, not the key.
+        issue('i5', 5, { ruleKey: 'ai:logic', engine: 'eslint' }),
+        issue('i6', 6),
+      ],
+    });
+    const { root } = await render();
+    const rows = [...root.querySelectorAll('.issues-table tbody tr')];
+    expect(
+      rows.map((r) => [
+        flat(r.querySelector('a.issue-link')),
+        [...(r.querySelectorAll('td')[2]?.querySelectorAll('.badge') ?? [])].map(flat),
+      ]),
+    ).toEqual([
+      ['Message i3', ['AI']],
+      ['Message i4', ['AI', 'Possible']],
+      ['Message i5', []],
+      ['Message i6', []],
     ]);
   });
 

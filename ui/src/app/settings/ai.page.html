@@ -44,6 +44,17 @@
     @if (announcement(); as message) {
       <p class="alert alert-success">{{ message }}</p>
     }
+    @if (toolCalling(); as tools) {
+      @if (tools === 'supported') {
+        <p id="ai-test-tools" class="alert alert-success" i18n="@@ai.settings.toolsSupported">
+          Tool calling (needed by AI review): supported
+        </p>
+      } @else {
+        <p id="ai-test-tools" class="alert alert-warn" i18n="@@ai.settings.toolsNotSupported">
+          Tool calling (needed by AI review): not supported
+        </p>
+      }
+    }
   </div>
   @if (error(); as message) {
     <p class="alert alert-error" role="alert">{{ message }}</p>

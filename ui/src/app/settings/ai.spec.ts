@@ -384,6 +384,7 @@ describe('AiSettingsPage (llm.md §3, §18)', () => {
         ok: false,
         model: null,
         latencyMs: 12,
+        toolCalling: 'not_checked',
         problem: { code: 'PROVIDER_REJECTED_REQUEST', message: 'server text', providerStatus: 404 },
       },
     });
@@ -412,6 +413,7 @@ describe('AiSettingsPage (llm.md §3, §18)', () => {
         ok: false,
         model: null,
         latencyMs: 12,
+        toolCalling: 'not_checked',
         problem: { code: 'PROVIDER_REFUSED_KEY', message: 'server text', providerStatus: status },
       },
     });
@@ -421,10 +423,104 @@ describe('AiSettingsPage (llm.md §3, §18)', () => {
     expect(root.querySelector('.alert-error[role="alert"]')?.textContent).toContain(text);
   });
 
+  describe('tool calling, which AI review needs', () => {
+    const pressTest = async (
+      fixture: { whenStable(): Promise<unknown> },
+      root: HTMLElement,
+    ): Promise<void> => {
+      [...root.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Test')!.click();
+      await settle(fixture);
+    };
+
+    it.each([
+      ['supported', 'Tool calling (needed by AI review): supported', 'alert-success'],
+      ['not_supported', 'Tool calling (needed by AI review): not supported', 'alert-warn'],
+    ] as const)('names it after a Test that passed (%s)', async (toolCalling, text, tone) => {
+      const server = setup(CONFIGURED);
+      server.on('POST', '/api/v0/system/llm/test', {
+        body: { ok: true, model: 'qwen2.5-coder', latencyMs: 12, toolCalling, problem: null },
+      });
+      const { fixture, root } = await render();
+      await pressTest(fixture, root);
+      const status = root.querySelector('[role="status"]')!;
+      // Beside the connection, in the same live region.
+      expect(status.querySelector('.alert-success')?.textContent).toContain(
+        'Connected to qwen2.5-coder in 12 ms.',
+      );
+      const line = status.querySelector('#ai-test-tools')!;
+      expect(line.textContent?.trim()).toBe(text);
+      expect(line.classList).toContain(tone);
+      expect(root.querySelector('.alert-error')).toBeNull();
+    });
+
+    it('says nothing of it when the check could not tell', async () => {
+      const server = setup(CONFIGURED);
+      server.on('POST', '/api/v0/system/llm/test', {
+        body: {
+          ok: true,
+          model: 'qwen2.5-coder',
+          latencyMs: 12,
+          toolCalling: 'not_checked',
+          problem: null,
+        },
+      });
+      const { fixture, root } = await render();
+      await pressTest(fixture, root);
+      expect(root.querySelector('[role="status"] .alert-success')?.textContent).toContain(
+        'Connected to qwen2.5-coder in 12 ms.',
+      );
+      expect(root.querySelector('#ai-test-tools')).toBeNull();
+      expect(root.textContent).not.toContain('Tool calling');
+    });
+
+    it('says nothing of it when the Test failed', async () => {
+      const server = setup(CONFIGURED);
+      server.on('POST', '/api/v0/system/llm/test', {
+        body: {
+          ok: false,
+          model: null,
+          latencyMs: 12,
+          toolCalling: 'not_checked',
+          problem: { code: 'PROVIDER_REFUSED_KEY', message: 'server text', providerStatus: 401 },
+        },
+      });
+      const { fixture, root } = await render();
+      await pressTest(fixture, root);
+      expect(root.querySelector('.alert-error[role="alert"]')).not.toBeNull();
+      expect(root.querySelector('#ai-test-tools')).toBeNull();
+    });
+
+    it('forgets the line when the page does anything else', async () => {
+      const server = setup(CONFIGURED);
+      server.on('POST', '/api/v0/system/llm/test', {
+        body: {
+          ok: true,
+          model: 'qwen2.5-coder',
+          latencyMs: 12,
+          toolCalling: 'supported',
+          problem: null,
+        },
+      });
+      server.on('PUT', '/api/v0/system/llm', { body: CONFIGURED });
+      const { fixture, root } = await render();
+      await pressTest(fixture, root);
+      expect(root.querySelector('#ai-test-tools')).not.toBeNull();
+      submit(root);
+      await settle(fixture);
+      expect(root.querySelector('#ai-test-tools')).toBeNull();
+    });
+  });
+
   it('shows a successful Test in the status region', async () => {
     const server = setup(CONFIGURED);
     server.on('POST', '/api/v0/system/llm/test', {
-      body: { ok: true, model: 'qwen2.5-coder', latencyMs: 12, problem: null },
+      body: {
+        ok: true,
+        model: 'qwen2.5-coder',
+        latencyMs: 12,
+        toolCalling: 'not_checked',
+        problem: null,
+      },
     });
     const { fixture, root } = await render();
     [...root.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Test')!.click();
