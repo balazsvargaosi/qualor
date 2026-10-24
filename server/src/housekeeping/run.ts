@@ -234,8 +234,9 @@ export async function cleanOAuth(
  * - a review snapshot after `reviewSnapshotsDays` (spec §5), a rejected one after a day, whatever
  *   its status (its unpack job then finds it gone), skipping one a job holds at that moment;
  * - the review snapshots of projects AI review no longer covers, which the purge queued after every
- *   AI settings write deletes at once (6I-3, R17): this run catches what that missed (a project
- *   unmapped since, a snapshot uploaded while the settings changed), skipping rows a job holds;
+ *   AI settings write, unmapping and connection deletion deletes at once (6I-3, R17): this run
+ *   catches what that missed (a snapshot uploaded while the settings changed, a row a job held at
+ *   that moment), skipping rows a job holds;
  * - expired OAuth requests and tokens, and clients without a live grant (cleanOAuth).
  */
 export async function runHousekeeping(

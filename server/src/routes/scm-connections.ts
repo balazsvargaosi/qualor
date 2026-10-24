@@ -34,6 +34,7 @@ import {
 } from '../http/problem';
 import { idParams, iso, noContent, noNul, timestamp } from '../http/schemas';
 import { SCM_PROJECT_REF_PATTERN } from '../patterns';
+import { queueSnapshotPurge } from '../review/jobs';
 import {
   forgetForeignMergeRequestUrls,
   MAX_SCM_CONNECTIONS_PER_ORGANIZATION,
@@ -552,6 +553,9 @@ export const scmConnectionRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = a
             provider: deleted.provider,
             baseUrl: deleted.baseUrl,
           });
+          // Its projects lose their mapping (ON DELETE SET NULL), and AI review needs a mapped
+          // project: a job deletes the copies of their merge requests once this commits.
+          await queueSnapshotPurge(tx, deleted.organizationId);
         }
       });
       return reply.code(204).send();

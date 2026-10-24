@@ -19,7 +19,8 @@ import { reviewActive } from './settings';
  * in the hourly check below, which covers a merge request nobody pushes to or decorates any more.
  * It goes too when the project is no longer reviewed (switched off, left out of the selection,
  * excluded from the AI assistant, unmapped, no provider, a consent that is out of date): the
- * purge, queued after every settings write and run daily by housekeeping.
+ * purge, queued after every settings write, after a project is unmapped or its connection deleted,
+ * and run daily by housekeeping.
  */
 
 /** The queue of the hourly check of a merge request that holds snapshots (the `scm` worker's). */

@@ -84,7 +84,10 @@ export const LOCKS = {
   /**
    * The first key of `pg_advisory_xact_lock(key, hashtext(branchId))`: the hourly state check of a
    * merge request that holds review snapshots is queued one at a time, so a branch has at most one
-   * waiting (6I-3, R16). Taken last, with nothing awaited while it is held.
+   * waiting (6I-3, R16). A snapshot's link takes it after the branch row and the snapshot rows it
+   * writes, and holds it while it deletes the branch's older snapshots and wakes the review run
+   * (snapshot-store.ts): after the branch and snapshot rows, before the run rows. Only the check's
+   * own reschedule takes it with nothing else held.
    */
   reviewMrCheck: 7_310_026,
 } as const;

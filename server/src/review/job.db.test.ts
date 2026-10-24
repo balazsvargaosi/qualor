@@ -39,6 +39,7 @@ import { runUntilIdle } from '../queue/worker';
 import { enqueueLatestDecoration, SCM_QUEUE } from '../scm/queue';
 import { parseInternalHosts } from '../scm/url';
 import { reviewHandlers, type ReviewJobDeps } from './job';
+import { mergeRequestStateHandlers, REVIEW_MR_STATE_QUEUE } from './lifecycle';
 import { AI_REVIEW_QUEUE } from './runs';
 import type { ReviewBudgets } from './settings';
 import { storeSnapshotUpload, unpackSnapshot } from './snapshot-store';
@@ -542,6 +543,94 @@ describe('the ai-review job (6I-3, R15)', () => {
     expect(await aiIssuesOf(run.branchId)).toEqual([]);
     // Its end is decorated: the summary says the review did not run to the end.
     expect(await decorationsOf(analysisId)).toHaveLength(1);
+  });
+
+  /**
+   * The merge request is merged, and the hourly check of its snapshot, come due, deletes the copy
+   * (what a decoration or another review would do on seeing the merge as well).
+   */
+  const mergeAndCheck = async (mr: number, branchId: string) => {
+    gitlab.updateMergeRequest(GITLAB_PROJECT, mr, { state: 'merged' });
+    await h.ctx.db
+      .update(jobs)
+      .set({ runAt: sql`now()` })
+      .where(
+        and(
+          eq(jobs.queue, REVIEW_MR_STATE_QUEUE),
+          eq(jobs.status, 'queued'),
+          sql`${jobs.payload} ->> 'branchId' = ${branchId}`,
+        ),
+      );
+    await runUntilIdle(h.ctx.db, mergeRequestStateHandlers(decorationDeps(h)), silentLogger);
+    expect(await snapshotsOfBranch(branchId)).toEqual([]);
+  };
+  /** A run that stopped for its deleted snapshot stored nothing, and says so. */
+  const expectStoppedForSnapshot = async (
+    analysisId: string,
+    modelCalls: number,
+  ): Promise<void> => {
+    const run = await runOf(analysisId);
+    expect(run).toMatchObject({
+      status: 'skipped',
+      reason: 'closed',
+      detail: 'snapshot_deleted',
+      snapshotId: null,
+      modelCalls,
+      findingsNew: 0,
+      finishedAt: expect.any(Date),
+    });
+    expect(await aiIssuesOf(run.branchId)).toEqual([]);
+    expect(
+      await h.ctx.db
+        .select({ issueId: reviewFindings.issueId })
+        .from(reviewFindings)
+        .where(eq(reviewFindings.runId, run.id)),
+    ).toEqual([]);
+    // Its end is decorated like any other, so that the summary leaves "in progress".
+    expect(await decorationsOf(analysisId)).toHaveLength(1);
+  };
+
+  it('a merge request merged during its review stops the run and stores nothing', async () => {
+    const mr = mergeRequest();
+    const analysisId = await analysisOf(mr);
+    await snapshotOf(analysisId, mr);
+    const { branchId } = await runOf(analysisId);
+    await forgetDecorations();
+    const calls = reviewCalls().length;
+    // The quality reviewer answers once the copy it reads has been deleted.
+    llm.enqueue(
+      reviewResponder({
+        quality: async () => {
+          await mergeAndCheck(mr, branchId);
+          return JSON.stringify({ findings: [FINDING] });
+        },
+      }),
+    );
+    expect(await runReviews()).toBe(1);
+    // It stopped before the judge was asked, and stored nothing of what the reviewer said.
+    expect(reviewCalls().slice(calls).map(reviewRoleOf)).toEqual(['quality']);
+    await expectStoppedForSnapshot(analysisId, 1);
+  });
+
+  it('a merge request merged while the judge answers is found before anything is stored', async () => {
+    const mr = mergeRequest();
+    const analysisId = await analysisOf(mr);
+    await snapshotOf(analysisId, mr);
+    const { branchId } = await runOf(analysisId);
+    await forgetDecorations();
+    // The last call answers after the merge: the check that comes after it, before the store.
+    llm.enqueue(
+      reviewResponder(FOUND),
+      reviewResponder({
+        ...FOUND,
+        judge: async () => {
+          await mergeAndCheck(mr, branchId);
+          return FOUND.judge as string;
+        },
+      }),
+    );
+    expect(await runReviews()).toBe(1);
+    await expectStoppedForSnapshot(analysisId, 2);
   });
 
   it('a waiting run whose analysis is no longer the newest is superseded', async () => {

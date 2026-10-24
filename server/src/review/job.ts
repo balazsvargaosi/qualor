@@ -89,7 +89,8 @@ import { RedactionTally, remainingReviewTokens, reviewSender, reviewUsageToday }
  *    (`unchanged`), no tokens left today or too few for the smallest share of the review
  *    (`budget_spent`): decided before anything is masked or sent;
  * 10. the pipeline (pipeline.ts), its calls recorded as the review's own (usage.ts), stopping at
- *    the next call to the provider when the run is superseded or review is switched off; then the
+ *    the next call to the provider when the run is superseded, review is switched off or its
+ *    snapshot is deleted (the merge request was merged or closed: `skipped: closed`); then the
  *    findings are stored (store.ts), or the run fails with the pipeline's reason.
  *
  * Every end but `superseded` queues the decoration of the analysis in the same transaction
@@ -125,7 +126,8 @@ export interface ReviewJobDeps {
 const payloadSchema = z.object({ runId: z.uuid() });
 
 /** Why the pipeline was told to stop. */
-type StopReason = { kind: 'superseded' } | { kind: 'inactive'; detail: string };
+type StopReason =
+  { kind: 'superseded' } | { kind: 'inactive'; detail: string } | { kind: 'snapshot_deleted' };
 
 /** What the context's limits throw, before anything is masked: the review is skipped. */
 class SkipReview extends Error {
@@ -517,9 +519,12 @@ class ReviewJob {
   }
 
   /**
-   * Asked before every call to the provider: the run was superseded (or its analysis is no longer
-   * the newest), or review is no longer on for the project, or the provider is no longer the one
-   * the run started with (R10). The masker's signal is aborted with it.
+   * Asked before every call to the provider, and once more after the last: the run was superseded
+   * (or its analysis is no longer the newest), or review is no longer on for the project, or the
+   * provider is no longer the one the run started with (R10), or the run's snapshot is gone (the
+   * merge request was merged or closed, which deletes its snapshots, R16; the run's reference to
+   * it is then null). What the run reads of a snapshot that is gone is nothing, and an outcome
+   * built on that is not stored. The masker's signal is aborted with the stop.
    */
   private stopCheck(running: Running, controller: AbortController): () => Promise<boolean> {
     const { db } = this.deps;
@@ -527,7 +532,11 @@ class ReviewJob {
     return async () => {
       if (this.stop !== null) return true;
       const [now] = await db
-        .select({ status: reviewRuns.status, newest: branches.lastAnalysisId })
+        .select({
+          status: reviewRuns.status,
+          snapshotId: reviewRuns.snapshotId,
+          newest: branches.lastAnalysisId,
+        })
         .from(reviewRuns)
         .innerJoin(branches, eq(branches.id, reviewRuns.branchId))
         .where(eq(reviewRuns.id, run.id));
@@ -548,6 +557,8 @@ class ReviewJob {
           this.stop = { kind: 'inactive', detail: active?.reason ?? 'project_deleted' };
         } else if (!sameProvider(reviewProvider(settings), provider)) {
           this.stop = { kind: 'inactive', detail: 'provider_changed' };
+        } else if (now.snapshotId === null) {
+          this.stop = { kind: 'snapshot_deleted' };
         }
       }
       if (this.stop !== null) controller.abort();
@@ -712,13 +723,23 @@ class ReviewJob {
     );
   }
 
-  /** The pipeline stopped: the run was superseded, or review was switched off meanwhile. */
+  /**
+   * The pipeline stopped: the run was superseded, review was switched off meanwhile, or its
+   * snapshot was deleted.
+   */
   private async stopped(run: ReviewRunRow): Promise<void> {
     if (this.stop?.kind === 'inactive') {
       return this.endRunning(run, {
         status: 'skipped',
         reason: 'inactive',
         detail: this.stop.detail,
+      });
+    }
+    if (this.stop?.kind === 'snapshot_deleted') {
+      return this.endRunning(run, {
+        status: 'skipped',
+        reason: 'closed',
+        detail: 'snapshot_deleted',
       });
     }
     // Superseded by a newer analysis (already ended), or its analysis is no longer the newest.

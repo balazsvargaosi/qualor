@@ -418,9 +418,17 @@ describe('the purge of the snapshots of projects without AI review (6I-3, R17)',
   let a3: IngestProject;
   /** In `orgB`, selected and mapped. */
   let b1: IngestProject;
+  /** The SCM connections of `orgA` (a1 and a2 are mapped to it) and `orgB` (b1 is). */
+  let connectionA: string;
+  let connectionB: string;
   let seq = 0;
 
-  const call = (method: 'GET' | 'POST' | 'PUT', url: string, session: Session, payload?: object) =>
+  const call = (
+    method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+    url: string,
+    session: Session,
+    payload?: object,
+  ) =>
     h.ctx.app.inject({
       method,
       url: `/api/v0${url}`,
@@ -515,6 +523,24 @@ describe('the purge of the snapshots of projects without AI review (6I-3, R17)',
     change(body);
     return body;
   };
+  /** A GitLab connection of the organisation, as the API would have stored it. */
+  const connect = async (organizationId: string): Promise<string> =>
+    first(
+      await h.ctx.db
+        .insert(scmConnections)
+        .values({
+          organizationId,
+          provider: 'gitlab',
+          baseUrl: 'https://gitlab.example.com',
+          tokenEnc: encryptSecret(encryptionKey(h.ctx.config.secretKey), 'x', SCM_TOKEN_AAD),
+        })
+        .returning({ id: scmConnections.id }),
+    ).id;
+  const mapTo = (project: IngestProject, connectionId: string | null) =>
+    h.ctx.db
+      .update(projects)
+      .set({ scmConnectionId: connectionId })
+      .where(eq(projects.id, project.id));
   /** `n` snapshots of a project without files or an upload: rows for the counts of a purge. */
   const bulkSnapshots = async (project: IngestProject, n: number): Promise<string[]> => {
     const made = await h.ctx.db
@@ -555,20 +581,8 @@ describe('the purge of the snapshots of projects without AI review (6I-3, R17)',
     a3 = await h.project('purge/a3');
     b1 = await h.project('purge/b1', { organizationId: orgB, session: admin });
     // a1 and a2 are mapped to an SCM connection of their organisation, b1 to one of its own.
-    const connect = async (organizationId: string) =>
-      first(
-        await h.ctx.db
-          .insert(scmConnections)
-          .values({
-            organizationId,
-            provider: 'gitlab',
-            baseUrl: 'https://gitlab.example.com',
-            tokenEnc: encryptSecret(encryptionKey(h.ctx.config.secretKey), 'x', SCM_TOKEN_AAD),
-          })
-          .returning({ id: scmConnections.id }),
-      ).id;
-    const connectionA = await connect(orgA);
-    const connectionB = await connect(orgB);
+    connectionA = await connect(orgA);
+    connectionB = await connect(orgB);
     for (const [project, connection] of [
       [a1, connectionA],
       [a2, connectionA],
@@ -652,6 +666,64 @@ describe('the purge of the snapshots of projects without AI review (6I-3, R17)',
     await runSnapshotJobs();
     // a2 is excluded now, and a3 was never mapped; a1 and b1 stay.
     expect(await counts()).toEqual([1, 0, 0, 1]);
+  });
+
+  it('unmapping a project purges its snapshots, and a PATCH that leaves the mapping alone queues nothing', async () => {
+    await seedAll();
+    await h.ctx.db.delete(jobs).where(eq(jobs.queue, REVIEW_SNAPSHOT_QUEUE));
+    const patch = (project: IngestProject, payload: object) =>
+      call('PATCH', `/projects/${project.id}`, h.orgAdmin, payload);
+    const other = await connect(orgA);
+    try {
+      // Still mapped, or never mapped: AI review covers the same projects as before.
+      for (const [project, payload] of [
+        [a1, { name: 'Renamed' }],
+        [a1, { scmProjectRef: '77' }],
+        [a1, { scmConnectionId: other }],
+        [a3, { scmConnectionId: null }],
+      ] as const) {
+        const res = await patch(project, payload);
+        expect(res.statusCode, JSON.stringify(payload) + res.body).toBe(200);
+      }
+      expect(await purgeJobs()).toEqual([]);
+
+      // The mapping goes: the route queues the purge of the organisation and deletes nothing.
+      const res = await patch(a1, { scmConnectionId: null });
+      expect(res.statusCode, res.body).toBe(200);
+      expect(await counts()).toEqual([1, 1, 1, 1]);
+      expect(await purgeJobs()).toEqual([
+        { payload: { purgeOrganizationId: orgA }, key: 'review-snapshot:purge' },
+      ]);
+      await runSnapshotJobs();
+      // a1 is unmapped now, and a3 never was; a2 and the other organisation's b1 are reviewed.
+      expect(await counts()).toEqual([0, 1, 0, 1]);
+    } finally {
+      await mapTo(a1, connectionA);
+    }
+  });
+
+  it('deleting an SCM connection purges the snapshots of the projects it unmapped', async () => {
+    // a2 is mapped to a connection of its own, which the organisation admin deletes.
+    const own = await connect(orgA);
+    await mapTo(a2, own);
+    try {
+      await seedAll();
+      await h.ctx.db.delete(jobs).where(eq(jobs.queue, REVIEW_SNAPSHOT_QUEUE));
+      const res = await call('DELETE', `/scm-connections/${own}`, h.orgAdmin);
+      expect(res.statusCode, res.body).toBe(204);
+      expect(await counts()).toEqual([1, 1, 1, 1]);
+      expect(await purgeJobs()).toEqual([
+        { payload: { purgeOrganizationId: orgA }, key: 'review-snapshot:purge' },
+      ]);
+      await runSnapshotJobs();
+      // a2 lost its mapping with the connection, and a3 never had one; a1 and b1 are reviewed.
+      expect(await counts()).toEqual([1, 0, 0, 1]);
+      // A connection that is gone cannot be deleted twice: the second answer queues nothing.
+      expect((await call('DELETE', `/scm-connections/${own}`, h.orgAdmin)).statusCode).toBe(404);
+      expect(await purgeJobs()).toEqual([]);
+    } finally {
+      await mapTo(a2, connectionA);
+    }
   });
 
   it('removing the provider purges every organisation', async () => {
