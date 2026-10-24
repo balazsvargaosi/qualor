@@ -51,7 +51,8 @@ function gitlabAsk(
   if ('problem' in found) return null;
   return async () => {
     const mr = await found.client.mergeRequest(ref, iid);
-    const state = GITLAB_STATES[mr.state];
+    // Its own keys only: a state such as `constructor` is one Qualor does not know, never "not open".
+    const state = Object.hasOwn(GITLAB_STATES, mr.state) ? GITLAB_STATES[mr.state] : undefined;
     if (state === undefined) return null;
     // A GitLab before 14 says a draft by `work_in_progress` only.
     const draft = mr.draft || mr.work_in_progress;

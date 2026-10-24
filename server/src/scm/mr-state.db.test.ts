@@ -117,6 +117,30 @@ describe('readMergeRequestState (6I-3)', () => {
     });
   });
 
+  it('a GitLab state named like a property of every object is one it does not know, never closed', async () => {
+    // Read as "not open", such a state would delete the merge request's snapshots; unknown, the
+    // hourly check only comes again.
+    for (const [iid, state] of [
+      [21, 'constructor'],
+      [22, 'toString'],
+      [23, '__proto__'],
+      [24, 'hasOwnProperty'],
+    ] as const) {
+      gitlab.addMergeRequest(GITLAB_PROJECT, {
+        iid,
+        title: 'A change',
+        state: state as never,
+        sourceBranch: 'feature/x',
+        targetBranch: 'main',
+        headSha: HEAD,
+        baseSha: BASE,
+        startSha: BASE,
+        diffs: [],
+      });
+      expect(await stateOf(gitlabProject, String(iid)), state).toBeNull();
+    }
+  });
+
   it('an SCM error answers null', async () => {
     // A merge request the provider does not know, an answer that is an error, a project that is
     // not mapped, a repository the App is not installed on, and an id that is no merge request's.
