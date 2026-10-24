@@ -1,0 +1,13 @@
+{
+  "language": "python",
+  "title": "Add with_tag for the import script",
+  "description": "The import script tags products. with_tag returns a copy of a product with one more tag; without tags it starts a new list.",
+  "clean": false,
+  "expected": [
+    {
+      "category": "logic",
+      "path": "shop/products.py",
+      "lines": [5, 6]
+    }
+  ]
+}

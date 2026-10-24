@@ -1,0 +1,13 @@
+{
+  "language": "python",
+  "title": "Send the stock levels to the warehouse after an import",
+  "description": "After an import, sync_stock sends every changed item to the warehouse. One failing item must not stop the others.",
+  "clean": false,
+  "expected": [
+    {
+      "category": "error-handling",
+      "path": "shop/importer.py",
+      "lines": [12, 13]
+    }
+  ]
+}

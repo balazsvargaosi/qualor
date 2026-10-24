@@ -1,0 +1,13 @@
+{
+  "language": "typescript",
+  "title": "Answer with a result when placing an order fails",
+  "description": "placeOrder used to throw when the stock or the store failed. It now logs the failure and answers with a result the caller can show.",
+  "clean": false,
+  "expected": [
+    {
+      "category": "error-handling",
+      "path": "src/orders.ts",
+      "lines": [8, 8]
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+diff --git a/src/auth/signin.ts b/src/auth/signin.ts
+--- a/src/auth/signin.ts
++++ b/src/auth/signin.ts
+@@ -1,6 +1,11 @@
+-import { findById } from './users';
++import { findByEmail, findById } from './users';
+ 
+ export async function sessionUser(userId: number): Promise<string> {
+   const user = await findById(userId);
+   return user === null ? 'anonymous' : user.email;
+ }
++
++/** The sign-in page asks whether an address is registered before it shows the password field. */
++export async function isRegistered(email: string): Promise<boolean> {
++  return (await findByEmail(email.trim())) !== null;
++}
+diff --git a/src/auth/users.ts b/src/auth/users.ts
+--- a/src/auth/users.ts
++++ b/src/auth/users.ts
+@@ -10,3 +10,8 @@
+   const rows = await db.query('SELECT id, email, role FROM users WHERE id = $1', [id]);
+   return (rows[0] as unknown as User | undefined) ?? null;
+ }
++
++export async function findByEmail(email: string): Promise<User | null> {
++  const rows = await db.query("SELECT id, email, role FROM users WHERE email = '" + email + "'");
++  return (rows[0] as unknown as User | undefined) ?? null;
++}

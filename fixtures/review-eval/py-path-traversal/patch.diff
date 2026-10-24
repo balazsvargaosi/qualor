@@ -1,0 +1,28 @@
+diff --git a/app/files.py b/app/files.py
+new file mode 100644
+--- /dev/null
++++ b/app/files.py
+@@ -0,0 +1,9 @@
++import os
++
++UPLOAD_DIR = "/srv/shop/uploads"
++
++
++def read_upload(name):
++    path = os.path.join(UPLOAD_DIR, name)
++    with open(path, "rb") as handle:
++        return handle.read()
+diff --git a/app/web.py b/app/web.py
+--- a/app/web.py
++++ b/app/web.py
+@@ -1,2 +1,10 @@
++from app.files import read_upload
++
++
+ def health(request):
+     return {"status": 200, "body": b"ok"}
++
++
++def download(request):
++    name = request.args.get("name", "")
++    return {"status": 200, "body": read_upload(name)}

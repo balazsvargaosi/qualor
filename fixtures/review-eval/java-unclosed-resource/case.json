@@ -1,0 +1,13 @@
+{
+  "language": "java",
+  "title": "Read the price list from a file",
+  "description": "Adds PriceList.load, which reads the price list file into a map of SKU to price in cents, and Catalog.fromFile to build a catalog from it.",
+  "clean": false,
+  "expected": [
+    {
+      "category": "error-handling",
+      "path": "src/main/java/dev/example/shop/PriceList.java",
+      "lines": [14, 14]
+    }
+  ]
+}

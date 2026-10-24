@@ -1,0 +1,13 @@
+{
+  "language": "typescript",
+  "title": "Ask whether an e-mail address is registered",
+  "description": "The sign-in page shows the password field only for registered addresses. Adds findByEmail and isRegistered for it.",
+  "clean": false,
+  "expected": [
+    {
+      "category": "security",
+      "path": "src/auth/users.ts",
+      "lines": [15, 15]
+    }
+  ]
+}

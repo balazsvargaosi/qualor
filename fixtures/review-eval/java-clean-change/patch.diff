@@ -1,0 +1,76 @@
+diff --git a/src/main/java/dev/example/shop/EmailAddress.java b/src/main/java/dev/example/shop/EmailAddress.java
+new file mode 100644
+--- /dev/null
++++ b/src/main/java/dev/example/shop/EmailAddress.java
+@@ -0,0 +1,15 @@
++package dev.example.shop;
++
++import java.util.Locale;
++
++public final class EmailAddress {
++    private EmailAddress() {}
++
++    /** The address without surrounding blanks and in lower case; null stays null. */
++    public static String normalise(String address) {
++        if (address == null) {
++            return null;
++        }
++        return address.trim().toLowerCase(Locale.ROOT);
++    }
++}
+diff --git a/src/main/java/dev/example/shop/UserDirectory.java b/src/main/java/dev/example/shop/UserDirectory.java
+--- a/src/main/java/dev/example/shop/UserDirectory.java
++++ b/src/main/java/dev/example/shop/UserDirectory.java
+@@ -8,10 +8,10 @@
+     private final Map<String, User> byEmail = new HashMap<>();
+ 
+     public void add(User user) {
+-        byEmail.put(user.email(), user);
++        byEmail.put(EmailAddress.normalise(user.email()), user);
+     }
+ 
+     public Optional<User> find(String email) {
+-        return Optional.ofNullable(byEmail.get(email));
++        return Optional.ofNullable(byEmail.get(EmailAddress.normalise(email)));
+     }
+ }
+diff --git a/src/test/java/dev/example/shop/UserDirectoryTest.java b/src/test/java/dev/example/shop/UserDirectoryTest.java
+new file mode 100644
+--- /dev/null
++++ b/src/test/java/dev/example/shop/UserDirectoryTest.java
+@@ -0,0 +1,35 @@
++package dev.example.shop;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import org.junit.jupiter.api.Test;
++
++class UserDirectoryTest {
++    private final UserDirectory directory = new UserDirectory();
++
++    @Test
++    void findsAUserWhateverTheCaseOfTheAddress() {
++        User ann = new User("Ann", "Ann@Example.com");
++        directory.add(ann);
++
++        assertEquals(ann, directory.find("ann@example.com").orElseThrow());
++        assertEquals(ann, directory.find("ANN@EXAMPLE.COM").orElseThrow());
++    }
++
++    @Test
++    void ignoresBlanksAroundTheAddress() {
++        User ann = new User("Ann", "ann@example.com");
++        directory.add(ann);
++
++        assertEquals(ann, directory.find("  ann@example.com ").orElseThrow());
++    }
++
++    @Test
++    void findsNobodyForAnAddressThatIsNotThere() {
++        directory.add(new User("Ann", "ann@example.com"));
++
++        assertTrue(directory.find("bob@example.com").isEmpty());
++        assertTrue(directory.find(null).isEmpty());
++    }
++}

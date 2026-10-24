@@ -1,0 +1,13 @@
+{
+  "language": "go",
+  "title": "Save the report snapshot to disk",
+  "description": "Adds SaveSnapshot, which writes the report to snapshot.json so that the next run can compare against it, and calls it from the command.",
+  "clean": false,
+  "expected": [
+    {
+      "category": "error-handling",
+      "path": "report/snapshot.go",
+      "lines": [11, 12]
+    }
+  ]
+}

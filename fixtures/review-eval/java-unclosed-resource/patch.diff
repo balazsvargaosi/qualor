@@ -1,0 +1,49 @@
+diff --git a/src/main/java/dev/example/shop/Catalog.java b/src/main/java/dev/example/shop/Catalog.java
+--- a/src/main/java/dev/example/shop/Catalog.java
++++ b/src/main/java/dev/example/shop/Catalog.java
+@@ -1,5 +1,6 @@
+ package dev.example.shop;
+ 
++import java.io.IOException;
+ import java.util.Map;
+ 
+ public final class Catalog {
+@@ -9,6 +10,10 @@
+         this.prices = prices;
+     }
+ 
++    public static Catalog fromFile(String path) throws IOException {
++        return new Catalog(PriceList.load(path));
++    }
++
+     public int priceOf(String sku) {
+         Integer price = prices.get(sku);
+         if (price == null) {
+diff --git a/src/main/java/dev/example/shop/PriceList.java b/src/main/java/dev/example/shop/PriceList.java
+new file mode 100644
+--- /dev/null
++++ b/src/main/java/dev/example/shop/PriceList.java
+@@ -0,0 +1,23 @@
++package dev.example.shop;
++
++import java.io.BufferedReader;
++import java.io.FileReader;
++import java.io.IOException;
++import java.util.HashMap;
++import java.util.Map;
++
++/** Reads the price list: one "sku;price in cents" pair on each line. */
++public final class PriceList {
++    private PriceList() {}
++
++    public static Map<String, Integer> load(String path) throws IOException {
++        BufferedReader reader = new BufferedReader(new FileReader(path));
++        Map<String, Integer> prices = new HashMap<>();
++        String line;
++        while ((line = reader.readLine()) != null) {
++            String[] parts = line.split(";");
++            prices.put(parts[0], Integer.parseInt(parts[1]));
++        }
++        return prices;
++    }
++}

@@ -24,6 +24,16 @@ const liveLlm =
   (process.env.QUALOR_LIVE_LLM_URL ?? '') !== '' &&
   (process.env.QUALOR_LIVE_LLM_MODEL ?? '') !== '';
 
+/**
+ * Plan 6I-3 Task 14 (spec §12): the opt-in evaluation of the AI review against a real provider,
+ * which scores the evaluation set (fixtures/review-eval) and costs real tokens. Never part of
+ * `pnpm test` or CI (the unit project excludes `*.live.test.ts`): it exists only when both
+ * variables are set by hand, and runs through `pnpm review:live`.
+ */
+const liveReview =
+  (process.env.QUALOR_LIVE_REVIEW_URL ?? '') !== '' &&
+  (process.env.QUALOR_LIVE_REVIEW_MODEL ?? '') !== '';
+
 /** 6G: the opt-in check against a real Slack and/or Teams channel (`pnpm chat:live`). */
 const liveChat =
   (process.env.QUALOR_SLACK_WEBHOOK_URL ?? '') !== '' ||
@@ -145,6 +155,19 @@ export default defineConfig({
                 include: ['tools/llm/ollama.live.test.ts'],
                 // Up to 10 runs × 3 features × the fixture's cases, a slow CPU model each.
                 testTimeout: 3_600_000,
+              },
+            },
+          ]
+        : []),
+      ...(liveReview
+        ? [
+            {
+              test: {
+                name: 'review-live',
+                include: ['tools/review/review.live.test.ts'],
+                // Up to 5 runs of every case: about five calls and their tool turns each, with a
+                // slow model.
+                testTimeout: 7_200_000,
               },
             },
           ]

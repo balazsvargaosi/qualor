@@ -1,0 +1,7 @@
+{
+  "language": "java",
+  "title": "Normalise e-mail addresses in the user directory",
+  "description": "Ann@Example.com and ann@example.com were two users. Adds EmailAddress.normalise and uses it when users are added and found. The tests go through the directory.",
+  "clean": true,
+  "expected": []
+}

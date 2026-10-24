@@ -36,6 +36,13 @@ import { checkLlmFixture } from './llm-check';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const fixturesDir = path.join(root, 'fixtures');
 
+/**
+ * Directories of fixtures/ that are no scan fixture and have no expected.json: the evaluation set
+ * of the AI review (plan 6I-3, tools/review), which only `pnpm review:live` reads. They are named,
+ * never "any directory without an expected.json": a scan fixture that lost its file still fails.
+ */
+export const NOT_SCAN_FIXTURES: ReadonlySet<string> = new Set(['review-eval']);
+
 export type ProblemKind = Mismatch['kind'] | 'static' | 'scan';
 export interface Problem {
   kind: ProblemKind;
@@ -728,7 +735,7 @@ export function runFixtures(
   o: { has?: (tool: string) => boolean; requireAnalyzers?: boolean; qualorRulesPublished?: boolean } = {},
 ): FixtureOutcome[] {
   return readdirSync(dir, { withFileTypes: true })
-    .filter((d) => d.isDirectory())
+    .filter((d) => d.isDirectory() && !NOT_SCAN_FIXTURES.has(d.name))
     .map((d) => {
       const fixtureDir = path.join(dir, d.name);
       const staticProblem = (detail: string): FixtureOutcome => ({

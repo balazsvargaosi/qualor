@@ -1,0 +1,21 @@
+diff --git a/src/orders.ts b/src/orders.ts
+--- a/src/orders.ts
++++ b/src/orders.ts
+@@ -1,6 +1,14 @@
+ import { orders, reserveStock, type Order } from './store';
+ 
+-export async function placeOrder(order: Order): Promise<void> {
+-  await reserveStock(order.lines);
+-  await orders.save(order);
++export type PlaceResult = { ok: true } | { ok: false; reason: string };
++
++export async function placeOrder(order: Order): Promise<PlaceResult> {
++  try {
++    await reserveStock(order.lines);
++    orders.save(order);
++    return { ok: true };
++  } catch (err) {
++    console.error('placing the order failed', err);
++    return { ok: false, reason: 'order_failed' };
++  }
+ }

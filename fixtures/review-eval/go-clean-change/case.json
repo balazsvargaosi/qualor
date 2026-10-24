@@ -1,0 +1,7 @@
+{
+  "language": "go",
+  "title": "Add a generic Chunk helper",
+  "description": "Rows are sent in batches in several places, each with a loop of its own. Adds a generic Chunk helper, with tests, for them to share.",
+  "clean": true,
+  "expected": []
+}

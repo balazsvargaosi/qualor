@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LIVE_FILE = 'cli/test/sonar-live.live.test.ts';
 const LLM_LIVE_FILE = 'tools/llm/ollama.live.test.ts';
+const REVIEW_LIVE_FILE = 'tools/review/review.live.test.ts';
 /** Every variable of every live check, stubbed empty unless a case sets it. */
 const VARS = [
   'QUALOR_LIVE_SONAR_URL',
@@ -18,6 +19,8 @@ const VARS = [
   'QUALOR_LIVE_SONAR_ORG',
   'QUALOR_LIVE_LLM_URL',
   'QUALOR_LIVE_LLM_MODEL',
+  'QUALOR_LIVE_REVIEW_URL',
+  'QUALOR_LIVE_REVIEW_MODEL',
   'QUALOR_RELEASE_TOOLS',
 ];
 
@@ -140,6 +143,57 @@ describe('the live LLM check is never collected by pnpm test or CI', () => {
     for (const file of ci) {
       const text = readFileSync(file, 'utf8');
       expect(text, file).not.toMatch(/QUALOR_LIVE_LLM|llm-live|llm:live/);
+    }
+  });
+});
+
+/**
+ * Plan 6I-3 Task 14 (spec §12): the live evaluation of the AI review sends the evaluation set to a
+ * real provider, which costs money, so `pnpm test` and CI must never collect it either. Its project
+ * exists only with both `QUALOR_LIVE_REVIEW_URL` and `QUALOR_LIVE_REVIEW_MODEL`, and only
+ * `pnpm review:live` names it.
+ */
+describe('the live AI review evaluation is never collected by pnpm test or CI', () => {
+  it('the review-live project exists only with both variables and no CI file mentions it', async () => {
+    const names = (ps: Project[]) => ps.map((p) => p.test.name);
+    const url = { QUALOR_LIVE_REVIEW_URL: 'https://llm.invalid/v1' };
+    const model = { QUALOR_LIVE_REVIEW_MODEL: 'm' };
+    expect(names(await projects({}))).not.toContain('review-live');
+    expect(names(await projects(url))).not.toContain('review-live');
+    expect(names(await projects(model))).not.toContain('review-live');
+    const on = await projects({ ...url, ...model });
+    expect(on.find((p) => p.test.name === 'review-live')?.test.include).toEqual([REVIEW_LIVE_FILE]);
+    // Setting its variables adds no other live project.
+    expect(names(on)).not.toContain('llm-live');
+    expect(names(on)).not.toContain('sonar-live');
+
+    // The unit project, whose pattern matches every *.test.ts, leaves the file out, and no other
+    // project's pattern reaches tools/review.
+    expect(REVIEW_LIVE_FILE.endsWith('.live.test.ts')).toBe(true);
+    for (const p of await projects({})) {
+      const include = p.test.include ?? [];
+      if (include.includes('**/*.test.ts')) expect(p.test.exclude).toContain('**/*.live.test.ts');
+      else for (const pattern of include) expect(pattern).not.toMatch(/^(\*\*|tools)\//);
+    }
+
+    // Only the script that names the project runs it, and no CI file names the project, the
+    // script or a variable.
+    const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')) as {
+      scripts: Record<string, string>;
+    };
+    expect(pkg.scripts['review:live']).toBe('vitest run --project review-live');
+    for (const [name, script] of Object.entries(pkg.scripts)) {
+      if (name !== 'review:live') expect(script, name).not.toMatch(/review-live|review:live/);
+    }
+    const ci = [
+      path.join(root, '.gitlab-ci.yml'),
+      ...readdirSync(path.join(root, '.github', 'workflows')).map((f) =>
+        path.join(root, '.github', 'workflows', f),
+      ),
+    ];
+    for (const file of ci) {
+      const text = readFileSync(file, 'utf8');
+      expect(text, file).not.toMatch(/QUALOR_LIVE_REVIEW|review-live|review:live/);
     }
   });
 });

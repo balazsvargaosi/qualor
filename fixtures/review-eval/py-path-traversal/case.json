@@ -1,0 +1,13 @@
+{
+  "language": "python",
+  "title": "Serve uploaded files by name",
+  "description": "Adds a download handler for the files users uploaded, which are all stored in one directory. It takes the name of the file from the request.",
+  "clean": false,
+  "expected": [
+    {
+      "category": "security",
+      "path": "app/files.py",
+      "lines": [7, 8]
+    }
+  ]
+}

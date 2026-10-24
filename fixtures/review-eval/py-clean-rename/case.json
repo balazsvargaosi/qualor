@@ -1,0 +1,7 @@
+{
+  "language": "python",
+  "title": "Rename calc_total to order_total",
+  "description": "calc_total is the order's total, not a helper that calculates something. Renames it to order_total and updates its callers and tests. Nothing else changes.",
+  "clean": true,
+  "expected": []
+}

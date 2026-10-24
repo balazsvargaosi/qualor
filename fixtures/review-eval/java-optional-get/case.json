@@ -1,0 +1,13 @@
+{
+  "language": "java",
+  "title": "Add displayName to UserService",
+  "description": "Invoices print the name of the user that placed the order. Adds displayName(userId) to UserService for the invoice writer.",
+  "clean": false,
+  "expected": [
+    {
+      "category": "logic",
+      "path": "src/main/java/dev/example/shop/UserService.java",
+      "lines": [18, 18]
+    }
+  ]
+}

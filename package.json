@@ -57,6 +57,7 @@
     "gitlab:real": "tsx tools/gitlab/real.ts",
     "sonar:live": "vitest run --project sonar-live",
     "llm:live": "vitest run --project llm-live",
+    "review:live": "vitest run --project review-live",
     "chat:live": "vitest run --project chat-live",
     "sso:keycloak": "vitest run --project keycloak",
     "bench": "pnpm --filter @qualor/cli bench",

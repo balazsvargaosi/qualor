@@ -1,0 +1,13 @@
+{
+  "language": "typescript",
+  "title": "Add cartTotal for the checkout summary",
+  "description": "The checkout summary needs the total of a cart. Adds cartTotal, which sums the line totals, and shows it in summarise.",
+  "clean": false,
+  "expected": [
+    {
+      "category": "logic",
+      "path": "src/cart.ts",
+      "lines": [13, 14]
+    }
+  ]
+}

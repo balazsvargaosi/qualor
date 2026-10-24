@@ -1,0 +1,27 @@
+diff --git a/shop/products.py b/shop/products.py
+--- a/shop/products.py
++++ b/shop/products.py
+@@ -1,2 +1,7 @@
+ def make_product(name, price_cents):
+     return {"name": name, "price_cents": price_cents}
++
++
++def with_tag(product, tag, tags=[]):
++    tags.append(tag)
++    return {**product, "tags": tags}
+diff --git a/tests/test_products.py b/tests/test_products.py
+--- a/tests/test_products.py
++++ b/tests/test_products.py
+@@ -1,6 +1,11 @@
+-from shop.products import make_product
++from shop.products import make_product, with_tag
+ 
+ 
+ def test_make_product_keeps_name_and_price():
+     product = make_product("mug", 899)
+     assert product == {"name": "mug", "price_cents": 899}
++
++
++def test_with_tag_adds_the_tag():
++    product = make_product("mug", 899)
++    assert with_tag(product, "sale")["tags"] == ["sale"]

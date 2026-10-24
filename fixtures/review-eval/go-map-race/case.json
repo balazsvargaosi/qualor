@@ -1,0 +1,13 @@
+{
+  "language": "go",
+  "title": "Count the words of the documents in parallel",
+  "description": "Counting is slow on large corpora. CountWords now counts each document in a goroutine of its own.",
+  "clean": false,
+  "expected": [
+    {
+      "category": "concurrency",
+      "path": "words/count.go",
+      "lines": [17, 17]
+    }
+  ]
+}

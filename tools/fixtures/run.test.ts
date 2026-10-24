@@ -13,6 +13,7 @@ import {
   findTool,
   FINDSECBUGS_PLUGIN,
   isDotnetFixture,
+  NOT_SCAN_FIXTURES,
   parsePending,
   prepareCopy,
   QUALOR_RULES_PACK,
@@ -339,6 +340,33 @@ describe('runFixtures', () => {
     mkdirSync(path.join(root, 'nofile'));
     expect(runFixtures(root, noScan)).toEqual([
       { name: 'nofile', problems: [{ kind: 'static', detail: 'expected.json missing' }] },
+    ]);
+  });
+
+  it('skips the evaluation set of the AI review, which holds no scan fixture', () => {
+    const root = makeTempDir();
+    mkdirSync(path.join(root, 'review-eval', 'a-case', 'head'), { recursive: true });
+    mkdirSync(path.join(root, 'good'));
+    writeFileSync(path.join(root, 'good', 'expected.json'), JSON.stringify(minimalExpected));
+
+    const outcomes = runFixtures(root, noScan);
+
+    expect(outcomes.map((o) => o.name)).toEqual(['good']);
+    // A name, not a rule: no other directory is left out.
+    expect([...NOT_SCAN_FIXTURES]).toEqual(['review-eval']);
+  });
+
+  it('still reports any other directory without an expected.json, the evaluation set beside it', () => {
+    const root = makeTempDir();
+    mkdirSync(path.join(root, 'review-eval'));
+    mkdirSync(path.join(root, 'review-eval-copy'));
+    mkdirSync(path.join(root, 'a-scan-fixture'));
+
+    const outcomes = runFixtures(root, noScan).sort((a, b) => a.name.localeCompare(b.name));
+
+    expect(outcomes).toEqual([
+      { name: 'a-scan-fixture', problems: [{ kind: 'static', detail: 'expected.json missing' }] },
+      { name: 'review-eval-copy', problems: [{ kind: 'static', detail: 'expected.json missing' }] },
     ]);
   });
 

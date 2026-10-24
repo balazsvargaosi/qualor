@@ -1,0 +1,39 @@
+diff --git a/cmd/main.go b/cmd/main.go
+--- a/cmd/main.go
++++ b/cmd/main.go
+@@ -2,6 +2,7 @@
+ 
+ import (
+ 	"fmt"
++	"os"
+ 
+ 	"example.test/shop/report"
+ )
+@@ -9,4 +10,8 @@
+ func main() {
+ 	snap := report.Build(map[string][]string{"api": {"a", "b"}, "web": {"c"}})
+ 	fmt.Println("findings:", snap.Total)
++	if err := report.SaveSnapshot(os.TempDir(), snap); err != nil {
++		fmt.Println("could not save the snapshot:", err)
++		os.Exit(1)
++	}
+ }
+diff --git a/report/snapshot.go b/report/snapshot.go
+new file mode 100644
+--- /dev/null
++++ b/report/snapshot.go
+@@ -0,0 +1,14 @@
++package report
++
++import (
++	"encoding/json"
++	"os"
++	"path/filepath"
++)
++
++// SaveSnapshot writes the snapshot to <dir>/snapshot.json.
++func SaveSnapshot(dir string, snap Snapshot) error {
++	data, _ := json.Marshal(snap)
++	os.WriteFile(filepath.Join(dir, "snapshot.json"), data, 0o644)
++	return nil
++}

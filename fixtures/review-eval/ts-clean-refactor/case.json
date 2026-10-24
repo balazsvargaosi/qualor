@@ -1,0 +1,7 @@
+{
+  "language": "typescript",
+  "title": "Share the price formatting between the receipt and the invoice",
+  "description": "Both formatted cents as euros on their own. Moves it into formatCents, with a test, and uses it in both. The output does not change.",
+  "clean": true,
+  "expected": []
+}

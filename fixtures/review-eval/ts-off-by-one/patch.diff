@@ -1,0 +1,31 @@
+diff --git a/src/cart.ts b/src/cart.ts
+--- a/src/cart.ts
++++ b/src/cart.ts
+@@ -7,3 +7,11 @@
+ export function lineTotal(item: CartItem): number {
+   return item.priceCents * item.quantity;
+ }
++
++export function cartTotal(items: CartItem[]): number {
++  let total = 0;
++  for (let i = 0; i <= items.length; i++) {
++    total += lineTotal(items[i]);
++  }
++  return total;
++}
+diff --git a/src/summary.ts b/src/summary.ts
+--- a/src/summary.ts
++++ b/src/summary.ts
+@@ -1,9 +1,10 @@
+-import type { CartItem } from './cart';
++import { cartTotal, type CartItem } from './cart';
+ 
+ export interface Summary {
+   itemCount: number;
++  totalCents: number;
+ }
+ 
+ export function summarise(items: CartItem[]): Summary {
+-  return { itemCount: items.length };
++  return { itemCount: items.length, totalCents: cartTotal(items) };
+ }
