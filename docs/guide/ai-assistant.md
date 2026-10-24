@@ -72,9 +72,11 @@ tokens, API keys, JSON Web Tokens, passwords in URLs, `Authorization` headers, a
 to names such as `password`, `secret`, `token` or `api_key` (in code, `.env` and YAML files,
 properties, Dockerfiles, connection strings and XML).
 
-**Never sent at all:**
+**Never sent by these actions:**
 
-- issues of secret-detection rules (Gitleaks, and rules about credentials in code);
+- issues of secret-detection rules (Gitleaks, and rules about credentials in code). An AI review is
+  shown their rule, place and masked message, so that it does not report them again
+  ([What the model is sent](./ai-review.md#what-the-model-is-sent));
 - issues in files that look like credentials: `.env` files, keys and certificates (`*.pem`, `*.key`,
   `*.p12`, `*.pfx`, `*.jks`, `*.ppk`), `id_rsa` and similar, `credentials*`, `.npmrc`, `.pypirc`,
   `.netrc`, `.git-credentials`, `.pgpass`, `.htpasswd`, Docker and Kubernetes configs, Terraform
@@ -357,7 +359,7 @@ Today's use and budgets for an organisation are at `GET /api/v0/organizations/{i
 | "The model declined to answer" | the provider's content filter or the model refused |
 | "The suggested fix was not safe to show" | the fix broke a safety rule (outside the shown lines, a secret, control characters, or a GitLab quick action). Ask again or fix it by hand |
 | "The AI assistant is not enabled for this organisation" | an instance admin enables the organisation and the feature |
-| "Findings of secret rules are never sent" / "Issues in credential files are never sent" | by design. Handle these issues without the assistant |
+| "Findings of secret rules are never sent" / "Issues in credential files are never sent" | by design: Explain, Triage and Fix never send them. Handle these issues without the assistant |
 | "An administrator excluded this issue's path or project" | by design; an instance admin can change the exclusions |
 | "Something changed since you asked; ask again" | the settings or the issue changed (a new analysis) while the request waited |
 | "The request was interrupted; ask again" | the server restarted, or the request failed unexpectedly, while it ran |

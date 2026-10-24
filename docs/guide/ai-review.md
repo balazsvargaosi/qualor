@@ -109,7 +109,7 @@ in the background. The summary comment says **AI review in progress…** until i
   and a snapshot that arrives later starts it again, as long as no newer push has been analysed
   since.
 - **A newer push replaces a review in progress.** The old review stops asking the model and stores
-  nothing. The new push is reviewed instead.
+  nothing, unless it is already storing its findings. The new push is reviewed instead.
 - **Some merge requests are not reviewed:** a draft; one that is merged or closed; one with nothing
   to review in its changed files; one whose reviewed changes are the same as in the last review; one
   too large for **Tokens per review**; and every one while the day's token budget is spent. The
@@ -125,7 +125,9 @@ in the background. The summary comment says **AI review in progress…** until i
 - the changed files, with the code around the changes, and the rest of the repository as far as the
   model chooses to read it;
 - your rules files `AGENTS.md`, `CLAUDE.md` and `REVIEW.md`, when the repository has them;
-- what the analyzers already reported on the changed files: rule, severity, message and place;
+- what the analyzers already reported on the changed files: rule, severity, message and place. The
+  findings of the secret-detection rules are among them, as rule, place and masked message, so that
+  the review does not report them again;
 - the findings of earlier reviews of this merge request.
 
 Secrets are masked in all of it, also in the files the model reads later. Credentials files are not
@@ -156,9 +158,10 @@ files the review covers.
 | up to 300 lines in at most 20 files | quality and tests |
 | anything larger | security, quality, tests and performance |
 
-A changed file whose path looks security-sensitive (it has `auth`, `login`, `session`, `password`,
-`secret`, `crypt` or `token` in it, and a few more such words) adds the security reviewer at any
-size.
+A changed file whose path looks security-sensitive adds the security reviewer at any size: one with
+`auth`, `login`, `session`, `password`, `secret` or `crypt` anywhere in it, and a few more such
+words, or with `token`, `sso`, `acl`, `jwt`, `csrf` or `rbac` as a word of its own, which no lower
+case letter follows: `token.ts`, `tokens/` and `csrfToken.ts` count, and `tokenizer/` does not.
 
 | Reviewer | Looks for |
 |---|---|
@@ -329,7 +332,7 @@ change them.
 - In [MCP](./mcp.md), `qualor_issues` marks findings `AI`, and `qualor_issue` gives the review's
   text, its assumption, the suggested change and the commit it read.
 
-Qualor does not answer replies to its threads yet: a reply from a person only keeps Qualor from
+Qualor does not answer replies to its threads: a reply from a person only keeps Qualor from
 resolving the thread. Resolving a thread on GitLab or GitHub hides it there and does not dismiss the
 finding: mark the issue in Qualor to do that.
 
@@ -341,8 +344,9 @@ Each new scan of a merge request is reviewed again, on its latest commit.
   reviewed commit, and a re-review raises new findings only on those lines (and within three of
   them). When the last reviewed commit is no longer part of the branch, as after a rebase, the whole
   merge request counts as changed.
-- **Earlier findings are checked wherever they are.** The judge looks at every open finding of the
-  earlier reviews and says whether the problem is still in the code.
+- **Earlier findings are checked wherever they are.** The judge is shown up to 50 findings of the
+  earlier reviews, the open ones first, and says of each open one whether its problem is still in
+  the code. One it is not shown stays as it is.
 - **Fixed findings are closed.** A finding whose problem is gone is closed, and its thread is
   resolved unless a person replied in it. A finding in a file the merge request deleted is closed
   too. One that is still there, or that the review could not tell, stays open.
@@ -655,7 +659,7 @@ and what to do about each:
 | AI review did not repeat: the changes it reviews are the same as in its last review, whose findings stay open. | Not an error. The push changed nothing the review reads |
 | AI review did not run because its token budget for today is spent. | Wait for UTC midnight, or raise the budgets ([Budgets and today's usage](#budgets-and-todays-usage)). It also appears when what is left of the day is too little for a merge request of this size |
 | AI review did not run because this merge request is too large for the Tokens per review budget; raise it in the AI review settings. | The list of its changes alone leaves a reviewer no room: at the default 300 000 tokens, from about 100 changed files. Raise **Tokens per review** in **Settings → AI review** ([Budgets and today's usage](#budgets-and-todays-usage)) |
-| AI review failed: the model provider returned an error or could not be reached. The next push reviews again. | A call was refused, timed out, was rate limited or got no answer. Qualor tries a rate-limited call again twice and one that timed out once. It also fails when the stored API key can no longer be read (`QUALOR_SECRET_KEY` changed). The server log's `AI review call finished` lines give each call's error code and the provider's HTTP status: [the table below](#when-the-model-provider-fails) says what to do. Run **Test** in **Settings → AI assistant** to check the provider |
+| AI review failed: the model provider returned an error or could not be reached. The next push reviews again. | A call was refused, timed out, was rate limited or got no answer. Qualor tries a rate-limited call again twice and one that timed out once. The server log's `AI review call finished` lines give each call's error code and the provider's HTTP status: [the table below](#when-the-model-provider-fails) says what to do. Run **Test** in **Settings → AI assistant** to check the provider. With no such line for the review in the log, no call was made: the stored API key could no longer be read (`QUALOR_SECRET_KEY` changed; set the API key again in **Settings → AI assistant**), or calls to the provider were paused after repeated failures (`PROVIDER_UNAVAILABLE` below) |
 | AI review failed: the model provider does not support the tool calls the review needs. The next push reviews again. | Use a model and a server that can call tools. **Test** in **Settings → AI assistant** shows `Tool calling (needed by AI review): not supported` for this one ([Models that work](#models-that-work)) |
 | AI review failed: the model’s answers could not be read. The next push reviews again. | The judge did not answer in the form the review needs, even when asked again. Small models do this more often: try a stronger one |
 | AI review failed because of an error in Qualor. The next push reviews again. | An unexpected error, or a stop of the server during the review (a review is not resumed). If it keeps happening with the server running, report it with the server log's `AI review run failed` line |
@@ -678,6 +682,8 @@ each call, with its status and, for a call that failed, its error code:
 | `PROVIDER_RATE_LIMITED` | The provider's own limit. Qualor waited as the provider asked and tried twice. Review again later, or lower the budgets |
 | `PROVIDER_REFUSED_KEY` | Set a valid API key, and check the key header (`api-key` for Azure) |
 | `PROVIDER_REJECTED_REQUEST` | The provider refused the request: check the base URL, the model's name and the output limit field ([AI assistant: Troubleshooting](./ai-assistant.md#troubleshooting)) |
+| `PROVIDER_BAD_ANSWER` | The provider answered, but not in a form Qualor could read: the address is not a chat completions or Anthropic Messages API, or the answer was over 1 MiB. Check the base URL ([AI assistant: Troubleshooting](./ai-assistant.md#troubleshooting)) |
+| `URL_NOT_ALLOWED` | The provider's address is no longer allowed: the operator lists its host, with its port, in `QUALOR_LLM_INTERNAL_HOSTS`, or the instance admin uses an `https` address that resolves to public addresses ([AI assistant: Troubleshooting](./ai-assistant.md#troubleshooting)) |
 | `PROVIDER_UNAVAILABLE` | The provider could not be reached or answered with a server error. Check the base URL and the network. After five failures in a row Qualor pauses calls to that address for 10 minutes, and a review that starts then fails at once, with no call in the log |
 
 ### The scan log
