@@ -645,6 +645,8 @@ describe('daily housekeeping (data-model.md §7)', () => {
         kind: 'openai' as const,
         baseUrl: 'https://llm.example/v1',
         model: 'fake-model',
+        strongModel: null,
+        fastModel: null,
         auth: 'bearer' as const,
         jsonMode: 'json_object' as const,
         maxTokensField: 'max_tokens' as const,

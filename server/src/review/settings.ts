@@ -1,6 +1,12 @@
 import { organizationSettings, type StoredLlmSettings } from '../llm/settings';
 import { normalBaseUrl } from '../scm/url';
-import { sameReviewBudgets, type ReviewBudgets, type ReviewSettings } from './schema';
+import { distinctModels, modelSet, sameModels } from './model-tiers';
+import {
+  sameReviewBudgets,
+  type ReviewBudgets,
+  type ReviewConsent,
+  type ReviewSettings,
+} from './schema';
 
 export {
   DEFAULT_REVIEW,
@@ -8,6 +14,7 @@ export {
   defaultReview,
   isDefaultReview,
   MAX_REVIEW_PROJECT_IDS,
+  MODEL_NAME_PATTERN,
   REVIEW_SCOPES,
   reviewBudgetsSchema,
   reviewConsentSchema,
@@ -39,7 +46,10 @@ export interface ReviewProvider {
   url: string;
   /** The host of the address (`URL.host`: with its port when it is not the scheme's default). */
   host: string;
+  /** The standard model. */
   model: string;
+  /** Every model of the provider, once each and sorted: the standard model and those of the tiers. */
+  models: string[];
 }
 
 /**
@@ -51,24 +61,39 @@ export function reviewProvider(settings: StoredLlmSettings): ReviewProvider | nu
   if (settings.provider === null) return null;
   try {
     const url = normalBaseUrl(settings.provider.baseUrl);
-    return { url, host: new URL(url).host, model: settings.provider.model };
+    return {
+      url,
+      host: new URL(url).host,
+      model: settings.provider.model,
+      models: distinctModels(settings.provider),
+    };
   } catch {
     return null;
   }
 }
 
 /**
- * Whether an acknowledgement names the provider configured now: the host (a host has no case) and
- * the model the notice showed. The admin acknowledges what was shown; if the instance admin has
- * changed the provider since, the acknowledgement does not cover the new one (R10).
+ * The models a consent names: its list, as a set, or its `model` alone for a consent stored
+ * before the tiers, which has no list.
+ */
+export function consentModels(consent: Pick<ReviewConsent, 'model' | 'models'>): string[] {
+  return modelSet(consent.models ?? [consent.model]);
+}
+
+/**
+ * Whether an acknowledgement names the provider configured now: the host (a host has no case), the
+ * model the notice showed and the set of models it named (without a list, the model alone). The
+ * admin acknowledges what was shown; if the instance admin has changed the provider since, the
+ * acknowledgement does not cover the new one (R10).
  */
 export function acknowledgesProvider(
   provider: ReviewProvider,
-  acknowledged: { host: string; model: string },
+  acknowledged: { host: string; model: string; models?: readonly string[] | undefined },
 ): boolean {
   return (
     acknowledged.host.toLowerCase() === provider.host.toLowerCase() &&
-    acknowledged.model === provider.model
+    acknowledged.model === provider.model &&
+    sameModels(acknowledged.models ?? [acknowledged.model], provider.models)
   );
 }
 
@@ -115,6 +140,7 @@ export function sameReview(a: ReviewSettings, b: ReviewSettings): boolean {
       : x.providerUrl === y.providerUrl &&
         x.providerHost === y.providerHost &&
         x.model === y.model &&
+        sameModels(consentModels(x), consentModels(y)) &&
         x.userId === y.userId &&
         x.at === y.at;
   return (
@@ -129,8 +155,9 @@ export function sameReview(a: ReviewSettings, b: ReviewSettings): boolean {
 
 /**
  * R10: whether the consent names the provider that is configured now, by its normalised base URL,
- * its host and its model. A consent given for another address (the path too), host or model, none,
- * or no provider at all, is not current.
+ * its host, its model and the set of its models (a tier changed since makes it outdated). A
+ * consent given for another address (the path too), host, model or set of models, none, or no
+ * provider at all, is not current.
  */
 export function consentCurrent(settings: StoredLlmSettings, review: ReviewSettings): boolean {
   const provider = reviewProvider(settings);
@@ -140,7 +167,8 @@ export function consentCurrent(settings: StoredLlmSettings, review: ReviewSettin
     consent !== null &&
     consent.providerUrl === provider.url &&
     consent.providerHost === provider.host &&
-    consent.model === provider.model
+    consent.model === provider.model &&
+    sameModels(consentModels(consent), provider.models)
   );
 }
 
@@ -226,12 +254,13 @@ export function effectiveReviewBudgets(
 
 /**
  * The warning (spec §5, D4) shown to whoever switches AI review on, and repeated in the API's
- * answers. `host` and `model` are the configured provider's, `days` the days a snapshot is kept
+ * answers. `host` and `models` are the configured provider's (every model it names: they are
+ * written in the order given, separated by commas), `days` the days a snapshot is kept
  * (`reviewSnapshotsDays`). The text is fixed: the guide says the same.
  */
-export function dataSharingNotice(host: string, model: string, days: number): string {
+export function dataSharingNotice(host: string, models: readonly string[], days: number): string {
   return (
-    `AI review sends the merge request's diff and any repository file the model chooses to read to ${host} (${model}). ` +
+    `AI review sends the merge request's diff and any repository file the model chooses to read to ${host} (${models.join(', ')}). ` +
     `The scanner uploads a copy of the repository to this Qualor server for each merge request; ` +
     `Qualor keeps it until the merge request is closed (at most ${days} days). ` +
     `Secrets the analyzers found are masked; credentials files are never sent.`

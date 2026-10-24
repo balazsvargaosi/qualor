@@ -38,6 +38,7 @@ import type { ConversationResult } from './conversation';
 import { deleteBranchSnapshots } from './lifecycle';
 import { MaskedFiles } from './masked-files';
 import { Masker } from './masker';
+import { sameModels } from './model-tiers';
 import { reviewFits, reviewLimits, runReviewPipeline, type PipelineOutcome } from './pipeline';
 import { REVIEW_PROMPT_VERSION } from './prompts';
 import { ensureAiRules } from './rules';
@@ -182,9 +183,16 @@ interface Running {
 type Decision =
   { kind: 'started'; running: Running } | { kind: 'ended'; end: RunEnd } | { kind: 'none' };
 
-/** Whether two providers are the same address, host and model (R10). */
-const sameProvider = (a: ReviewProvider | null, b: ReviewProvider): boolean =>
-  a !== null && a.url === b.url && a.host === b.host && a.model === b.model;
+/**
+ * Whether two providers are the same address, host, model and set of models: a tier moved to
+ * another model changes where the review's calls go.
+ */
+export const sameProvider = (a: ReviewProvider | null, b: ReviewProvider): boolean =>
+  a !== null &&
+  a.url === b.url &&
+  a.host === b.host &&
+  a.model === b.model &&
+  sameModels(a.models, b.models);
 
 /**
  * The reader with its changes read once: buildReviewContext and the digest both need them, and a

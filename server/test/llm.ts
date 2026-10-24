@@ -29,6 +29,8 @@ export function configuredProvider(
     kind,
     baseUrl: kind === 'openai' ? fake.openAiBaseUrl : fake.anthropicBaseUrl,
     model: 'fake-model',
+    strongModel: null,
+    fastModel: null,
     auth: 'bearer',
     jsonMode: 'json_object',
     maxTokensField: 'max_tokens',

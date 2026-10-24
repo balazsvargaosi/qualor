@@ -265,6 +265,7 @@ export async function switchReviewOn(
             providerUrl: provider.url,
             providerHost: provider.host,
             model: provider.model,
+            models: provider.models,
             userId: o.userId,
             at: new Date().toISOString(),
           },

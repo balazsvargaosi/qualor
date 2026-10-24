@@ -50,6 +50,8 @@ const PROVIDER: StoredProvider = {
   kind: 'openai',
   baseUrl: 'https://llm.example/v1',
   model: 'fake-model',
+  strongModel: null,
+  fastModel: null,
   auth: 'bearer',
   jsonMode: 'json_object',
   maxTokensField: 'max_tokens',
@@ -127,6 +129,13 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
     );
   /** What the notice names while the provider is the one of `configure()`: its host and model. */
   const SHOWN = { host: 'llm.example', model: 'fake-model' };
+  /** The models of a provider with a strong and a fast model of its own, sorted. */
+  const TIER_MODELS = ['fake-fast', 'fake-model', 'fake-strong'];
+  const TIERED: StoredProvider = {
+    ...PROVIDER,
+    strongModel: 'fake-strong',
+    fastModel: 'fake-fast',
+  };
   /** The body of a switch-on that selects `project`, acknowledging the provider of `configure()`. */
   const onBody = (over: Record<string, unknown> = {}) => ({
     enabled: true,
@@ -137,7 +146,7 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
     ...over,
   });
   /** The acknowledgement the settings page sends: the provider the GET answer shows now (R10). */
-  const shownProvider = async (): Promise<{ host: string; model: string }> =>
+  const shownProvider = async (): Promise<{ host: string; model: string; models: string[] }> =>
     (await getReview()).json().provider;
   const events = (action: string): Promise<Event[]> =>
     ctx.db
@@ -258,8 +267,8 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
         expect(res.json()).toEqual({
           available: true,
           unavailableReason: null,
-          provider: { host: 'llm.example', model: 'fake-model' },
-          notice: dataSharingNotice('llm.example', 'fake-model', 14),
+          provider: { host: 'llm.example', model: 'fake-model', models: ['fake-model'] },
+          notice: dataSharingNotice('llm.example', ['fake-model'], 14),
           enabled: false,
           scope: 'selected',
           projectIds: [],
@@ -312,8 +321,8 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
       expect((await getReview()).json()).toMatchObject({
         available: false,
         unavailableReason: 'organization_disabled',
-        provider: { host: 'llm.example', model: 'fake-model' },
-        notice: dataSharingNotice('llm.example', 'fake-model', 14),
+        provider: { host: 'llm.example', model: 'fake-model', models: ['fake-model'] },
+        notice: dataSharingNotice('llm.example', ['fake-model'], 14),
       });
       // An organisation absent from the map is disabled too.
       await writeLlmSettings(ctx.db, { ...DEFAULT_LLM_SETTINGS, provider: PROVIDER });
@@ -332,8 +341,32 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
       await configure({}, { ...PROVIDER, baseUrl: 'https://llm.example:8443/v1' });
       expect((await getReview()).json()).toMatchObject({
         provider: { host: 'llm.example:8443', model: 'fake-model' },
-        notice: dataSharingNotice('llm.example:8443', 'fake-model', 14),
+        notice: dataSharingNotice('llm.example:8443', ['fake-model'], 14),
       });
+    });
+
+    it('names every model of the provider, and the notice names them all', async () => {
+      await configure({}, TIERED);
+      const res = await getReview();
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json().provider).toEqual({
+        host: 'llm.example',
+        model: 'fake-model',
+        models: TIER_MODELS,
+      });
+      expect(res.json().notice).toBe(dataSharingNotice('llm.example', TIER_MODELS, 14));
+      expect(res.json().notice).toContain(
+        'to llm.example (fake-fast, fake-model, fake-strong). The scanner uploads',
+      );
+      // A switch-on answers the same.
+      const on = await putReview(onBody({ acknowledgeDataSharing: await shownProvider() }));
+      expect(on.json().provider.models).toEqual(TIER_MODELS);
+      expect(on.json().notice).toBe(res.json().notice);
+      // A tier model that is the standard model, or a model named twice, is named once.
+      await configure({}, { ...PROVIDER, strongModel: 'fake-model', fastModel: 'fake-model' });
+      expect((await getReview()).json().provider.models).toEqual(['fake-model']);
+      await configure({}, { ...TIERED, fastModel: 'fake-strong' });
+      expect((await getReview()).json().provider.models).toEqual(['fake-model', 'fake-strong']);
     });
 
     it('shows the instance ceiling next to the organisation’s own budget', async () => {
@@ -351,7 +384,7 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
           .insert(instanceSettings)
           .values({ key: 'retention', value: { reviewSnapshotsDays: 30 } });
         const res = await getReview();
-        expect(res.json().notice).toBe(dataSharingNotice('llm.example', 'fake-model', 30));
+        expect(res.json().notice).toBe(dataSharingNotice('llm.example', ['fake-model'], 30));
         expect(res.json().notice).toContain('(at most 30 days)');
         // A switch-on answers the same notice.
         expect((await putReview(onBody())).json().notice).toContain('(at most 30 days)');
@@ -449,7 +482,7 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
         // With prices set, the cost is the micro-dollars of the calls, in dollars.
         await writeLlmSettings(ctx.db, {
           ...(await readLlmSettings(ctx.db)),
-          pricing: { inputUsdPerMTok: 3, outputUsdPerMTok: 15 },
+          pricing: { inputUsdPerMTok: 3, outputUsdPerMTok: 15, strong: null, fast: null },
         });
         const priced = { tokensToday: 1_800, costTodayUsd: 0.0054, reviewsToday: 3 };
         expect((await getReview()).json().usage).toEqual(priced);
@@ -507,7 +540,7 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
         projectIds: [project.id],
         consentCurrent: true,
         consent: { providerHost: 'llm.example', model: 'fake-model', userId: orgAdminId },
-        notice: dataSharingNotice('llm.example', 'fake-model', 14),
+        notice: dataSharingNotice('llm.example', ['fake-model'], 14),
       });
       const at = Date.parse(answer.consent.at);
       expect(at).toBeGreaterThanOrEqual(before);
@@ -521,7 +554,12 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
         scope: 'selected',
         projectIds: [project.id],
         budgets: DEFAULT_REVIEW.budgets,
-        consent: { providerUrl: 'https://llm.example/v1', ...answer.consent },
+        // The consent on record names the models it covers; the answer does not show them.
+        consent: {
+          providerUrl: 'https://llm.example/v1',
+          ...answer.consent,
+          models: ['fake-model'],
+        },
       });
       // Nothing else of the settings changed.
       expect(stored.provider).toEqual(PROVIDER);
@@ -670,7 +708,7 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
         model: 'fake-model',
         userId: orgAdminId,
       });
-      expect(read.notice).toBe(dataSharingNotice('llm.example', 'other-model', 14));
+      expect(read.notice).toBe(dataSharingNotice('llm.example', ['other-model'], 14));
       const context = await contextOf(project.key, bearer(projectToken));
       expect(context.statusCode, context.body).toBe(200);
       expect(context.json()).toMatchObject({ review: false, reason: 'consent_outdated' });
@@ -773,7 +811,7 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
     it('the provider changed between the GET and the PUT: the acknowledgement of the old provider stores nothing (R10)', async () => {
       // The admin's GET shows host A and its notice.
       const shown = await shownProvider();
-      expect(shown).toEqual({ host: 'llm.example', model: 'fake-model' });
+      expect(shown).toEqual({ host: 'llm.example', model: 'fake-model', models: ['fake-model'] });
       const before = (await events('organization.ai_review_changed')).length;
       // The instance admin switches to host B before the admin's PUT arrives.
       const switched = await changeProvider({
@@ -793,7 +831,11 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
       });
       // Acknowledging host B, which the GET now shows, is accepted.
       const nowShown = await shownProvider();
-      expect(nowShown).toEqual({ host: 'llm.elsewhere.example', model: 'fake-model' });
+      expect(nowShown).toEqual({
+        host: 'llm.elsewhere.example',
+        model: 'fake-model',
+        models: ['fake-model'],
+      });
       const accepted = await putReview(onBody({ acknowledgeDataSharing: nowShown }));
       expect(accepted.statusCode, accepted.body).toBe(200);
       expect(accepted.json()).toMatchObject({
@@ -823,12 +865,169 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
       expect(accepted.json().consent).toMatchObject({ model: 'another-model' });
     });
 
+    it('acknowledging needs the same set of models (409 AI_REVIEW_PROVIDER_CHANGED otherwise)', async () => {
+      await configure({}, TIERED);
+      const before = (await events('organization.ai_review_changed')).length;
+      const refused = async (acknowledgeDataSharing: object) => {
+        const res = await putReview(onBody({ acknowledgeDataSharing }));
+        expect(res.statusCode, res.body).toBe(409);
+        expect(res.json()).toMatchObject({ code: 'AI_REVIEW_PROVIDER_CHANGED' });
+        expect(await storedReview()).toEqual(DEFAULT_REVIEW);
+      };
+      // The model alone (an acknowledgement as it was before the tiers), a subset, another model
+      // in place of one, and a model twice in place of another.
+      await refused(SHOWN);
+      await refused({ ...SHOWN, models: ['fake-model'] });
+      await refused({ ...SHOWN, models: ['fake-model', 'fake-fast'] });
+      await refused({ ...SHOWN, models: ['fake-fast', 'fake-model', 'fake-other'] });
+      await refused({ ...SHOWN, models: ['fake-fast', 'fake-fast', 'fake-model'] });
+      await refused({ host: 'llm.example', model: 'fake-strong', models: TIER_MODELS });
+      expect(await events('organization.ai_review_changed')).toHaveLength(before);
+      // The same set is accepted, in any order, and the consent on record names it, sorted.
+      const accepted = await putReview(
+        onBody({
+          acknowledgeDataSharing: { ...SHOWN, models: ['fake-strong', 'fake-model', 'fake-fast'] },
+        }),
+      );
+      expect(accepted.statusCode, accepted.body).toBe(200);
+      expect(accepted.json()).toMatchObject({ enabled: true, consentCurrent: true });
+      expect((await storedReview()).consent).toMatchObject({
+        providerUrl: 'https://llm.example/v1',
+        providerHost: 'llm.example',
+        model: 'fake-model',
+        models: TIER_MODELS,
+      });
+      expect(await events('organization.ai_review_changed')).toHaveLength(before + 1);
+    });
+
+    it('an acknowledgement of the model alone still works while no tier has a model of its own', async () => {
+      const res = await putReview(onBody());
+      expect(res.statusCode, res.body).toBe(200);
+      expect((await storedReview()).consent).toMatchObject({
+        model: 'fake-model',
+        models: ['fake-model'],
+      });
+      // So does the list the answer shows, and a list that names the same model twice.
+      await putReview(onBody({ enabled: false }));
+      for (const acknowledgeDataSharing of [
+        await shownProvider(),
+        { ...SHOWN, models: ['fake-model', 'fake-model'] },
+      ]) {
+        const again = await putReview(onBody({ acknowledgeDataSharing }));
+        expect(again.statusCode, again.body).toBe(200);
+        expect((await storedReview()).consent).toMatchObject({ models: ['fake-model'] });
+        await putReview(onBody({ enabled: false }));
+      }
+      // A tier set to the standard model adds no model to name.
+      await configure({}, { ...PROVIDER, strongModel: 'fake-model' });
+      expect((await putReview(onBody())).statusCode).toBe(200);
+    });
+
+    it('changing the fast model makes the consent outdated', async () => {
+      expect((await putReview(onBody())).statusCode).toBe(200);
+      expect((await contextOf(project.key, bearer(projectToken))).json()).toMatchObject({
+        review: true,
+        reason: null,
+      });
+      const changed = await changeProvider({ fastModel: 'fake-fast' });
+      expect(changed.statusCode, changed.body).toBe(200);
+      const read = (await getReview()).json();
+      expect(read).toMatchObject({
+        enabled: true,
+        consentCurrent: false,
+        provider: { host: 'llm.example', model: 'fake-model', models: ['fake-fast', 'fake-model'] },
+        // The record of what was acknowledged stays as it was given.
+        consent: { providerHost: 'llm.example', model: 'fake-model', userId: orgAdminId },
+      });
+      expect(read.notice).toBe(dataSharingNotice('llm.example', ['fake-fast', 'fake-model'], 14));
+      expect((await storedReview()).consent).toMatchObject({ models: ['fake-model'] });
+      const context = await contextOf(project.key, bearer(projectToken));
+      expect(context.json()).toMatchObject({ review: false, reason: 'consent_outdated' });
+      // The acknowledgement the page held names fewer models than the provider has now.
+      const stale = await putReview(onBody({ acknowledgeDataSharing: SHOWN }));
+      expect(stale.statusCode, stale.body).toBe(409);
+      expect(stale.json()).toMatchObject({ code: 'AI_REVIEW_PROVIDER_CHANGED' });
+      // Confirming what the GET shows renews it.
+      const confirmed = await putReview(onBody({ acknowledgeDataSharing: read.provider }));
+      expect(confirmed.statusCode, confirmed.body).toBe(200);
+      expect(confirmed.json()).toMatchObject({ consentCurrent: true });
+      expect((await storedReview()).consent).toMatchObject({ models: ['fake-fast', 'fake-model'] });
+      expect((await contextOf(project.key, bearer(projectToken))).json()).toMatchObject({
+        review: true,
+        reason: null,
+      });
+      // Taking the fast model away outdates it again: the consent names two models, the provider one.
+      expect((await changeProvider({})).statusCode).toBe(200);
+      expect((await getReview()).json()).toMatchObject({ enabled: true, consentCurrent: false });
+      expect((await contextOf(project.key, bearer(projectToken))).json()).toMatchObject({
+        review: false,
+        reason: 'consent_outdated',
+      });
+    });
+
+    it('changing the strong model makes the consent outdated too', async () => {
+      expect((await changeProvider({ strongModel: 'fake-strong' })).statusCode).toBe(200);
+      expect(
+        (await putReview(onBody({ acknowledgeDataSharing: await shownProvider() }))).statusCode,
+      ).toBe(200);
+      expect((await getReview()).json()).toMatchObject({ consentCurrent: true });
+      for (const over of [{ strongModel: 'fake-stronger' }, { strongModel: null }]) {
+        expect((await changeProvider(over)).statusCode).toBe(200);
+        expect((await getReview()).json(), JSON.stringify(over)).toMatchObject({
+          consentCurrent: false,
+        });
+        expect((await contextOf(project.key, bearer(projectToken))).json()).toMatchObject({
+          review: false,
+          reason: 'consent_outdated',
+        });
+        // Back to the model the consent names: it covers it again.
+        expect((await changeProvider({ strongModel: 'fake-strong' })).statusCode).toBe(200);
+        expect((await getReview()).json()).toMatchObject({ consentCurrent: true });
+      }
+    });
+
+    it('a consent stored without models reads as the standard model alone', async () => {
+      expect((await putReview(onBody())).statusCode).toBe(200);
+      // As an earlier version wrote it: the consent lists no models.
+      const [row] = await ctx.db
+        .select()
+        .from(instanceSettings)
+        .where(eq(instanceSettings.key, 'llm'));
+      const value = JSON.parse(JSON.stringify(row!.value)) as {
+        organizations: Record<string, { review: { consent: Record<string, unknown> } }>;
+      };
+      const consent = value.organizations[org]!.review.consent;
+      expect(consent.models).toEqual(['fake-model']);
+      delete consent.models;
+      await ctx.db.update(instanceSettings).set({ value }).where(eq(instanceSettings.key, 'llm'));
+      expect((await getReview()).json()).toMatchObject({
+        enabled: true,
+        consent: { providerHost: 'llm.example', model: 'fake-model' },
+        consentCurrent: true,
+      });
+      expect((await contextOf(project.key, bearer(projectToken))).json()).toMatchObject({
+        review: true,
+        reason: null,
+      });
+      // It names no model for a tier that has one of its own.
+      expect((await changeProvider({ strongModel: 'fake-strong' })).statusCode).toBe(200);
+      expect((await getReview()).json()).toMatchObject({ consentCurrent: false });
+      expect((await contextOf(project.key, bearer(projectToken))).json()).toMatchObject({
+        review: false,
+        reason: 'consent_outdated',
+      });
+    });
+
     it('confirming again after a provider change is refused when the provider changed once more', async () => {
       const firstConsent = (await putReview(onBody())).json().consent;
       expect((await changeProvider({ model: 'second-model' })).statusCode).toBe(200);
       // The admin's GET shows the second model (consentCurrent is false) ...
       const shown = await shownProvider();
-      expect(shown).toEqual({ host: 'llm.example', model: 'second-model' });
+      expect(shown).toEqual({
+        host: 'llm.example',
+        model: 'second-model',
+        models: ['second-model'],
+      });
       // ... and the instance admin changes it again before the PUT.
       expect((await changeProvider({ model: 'third-model' })).statusCode).toBe(200);
       const refused = await putReview(onBody({ acknowledgeDataSharing: shown }));
@@ -865,6 +1064,7 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
       expect((await getReview()).json().provider).toEqual({
         host: 'llm.example',
         model: 'fake-model',
+        models: ['fake-model'],
       });
       const res = await putReview(onBody());
       expect(res.statusCode, res.body).toBe(200);
@@ -1032,6 +1232,31 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
         'acknowledgement with a host that is not text',
         { acknowledgeDataSharing: { host: 1, model: 'fake-model' } },
         'body.acknowledgeDataSharing.host',
+      ],
+      [
+        'acknowledgement with no models listed',
+        { acknowledgeDataSharing: { ...SHOWN, models: [] } },
+        'body.acknowledgeDataSharing.models',
+      ],
+      [
+        'acknowledgement with four models',
+        { acknowledgeDataSharing: { ...SHOWN, models: ['a', 'b', 'c', 'd'] } },
+        'body.acknowledgeDataSharing.models',
+      ],
+      [
+        'acknowledgement with models that are not a list',
+        { acknowledgeDataSharing: { ...SHOWN, models: 'fake-model' } },
+        'body.acknowledgeDataSharing.models',
+      ],
+      [
+        'acknowledgement with a model that is not text',
+        { acknowledgeDataSharing: { ...SHOWN, models: [1] } },
+        'body.acknowledgeDataSharing.models.0',
+      ],
+      [
+        'acknowledgement with an empty model',
+        { acknowledgeDataSharing: { ...SHOWN, models: [''] } },
+        'body.acknowledgeDataSharing.models.0',
       ],
     ])('answers 422 for %s', async (_name, over, path) => {
       const res = await putReview(onBody(over));

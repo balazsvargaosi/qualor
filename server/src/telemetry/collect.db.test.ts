@@ -102,6 +102,8 @@ describe('telemetry payload (telemetry.md)', () => {
       kind: 'openai' as const,
       baseUrl: 'https://llm.example.test/v1',
       model: 'gpt-test',
+      strongModel: 'gpt-test-strong',
+      fastModel: 'gpt-test-fast',
       auth: 'bearer' as const,
       jsonMode: 'json_object' as const,
       maxTokensField: 'max_tokens' as const,

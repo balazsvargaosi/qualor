@@ -6,6 +6,8 @@ const provider = (timeoutSeconds: number): StoredProvider => ({
   kind: 'openai',
   baseUrl: 'https://llm.example.test/v1',
   model: 'some-model',
+  strongModel: null,
+  fastModel: null,
   auth: 'bearer',
   jsonMode: 'json_object',
   maxTokensField: 'max_completion_tokens',

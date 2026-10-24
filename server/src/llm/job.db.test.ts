@@ -386,7 +386,7 @@ describe('the llm worker (llm.md §9, §10, §14)', () => {
 
   it('computes the cost from the admin’s prices', async () => {
     await configure({
-      pricing: { inputUsdPerMTok: 3, outputUsdPerMTok: 15 },
+      pricing: { inputUsdPerMTok: 3, outputUsdPerMTok: 15, strong: null, fast: null },
     });
     const { id } = await ask('explain', { refresh: true });
     await runLlmJobs(h, llmJobDeps(h));
@@ -395,7 +395,9 @@ describe('the llm worker (llm.md §9, §10, §14)', () => {
   });
 
   it('records the tokens and the cost of an answer that failed validation (they were spent)', async () => {
-    await configure({ pricing: { inputUsdPerMTok: 3, outputUsdPerMTok: 15 } });
+    await configure({
+      pricing: { inputUsdPerMTok: 3, outputUsdPerMTok: 15, strong: null, fast: null },
+    });
     fake.enqueue({ status: 200, body: openAiAnswer('Sure! {}') });
     const { id } = await ask('explain');
     await runLlmJobs(h, llmJobDeps(h));
@@ -409,7 +411,9 @@ describe('the llm worker (llm.md §9, §10, §14)', () => {
   });
 
   it('stores an out-of-range token count as unknown, and then no cost', async () => {
-    await configure({ pricing: { inputUsdPerMTok: 3, outputUsdPerMTok: 15 } });
+    await configure({
+      pricing: { inputUsdPerMTok: 3, outputUsdPerMTok: 15, strong: null, fast: null },
+    });
     fake.enqueue({
       status: 200,
       body: {

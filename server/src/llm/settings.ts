@@ -6,6 +6,7 @@ import { decryptSecret, encryptionKey } from '../crypto/secrets';
 import type { Executor } from '../db/client';
 import { uuidList } from '../db/bulk';
 import { instanceSettings, projects } from '../db/schema';
+import type { ModelTier } from '../review/model-tiers';
 import { defaultReview, reviewSettingsSchema } from '../review/schema';
 import { instanceSetting } from '../settings';
 import { PROVIDER_KINDS, type ProviderConfig } from './providers';
@@ -111,7 +112,15 @@ export const storedProviderSchema = z
   .strictObject({
     kind: z.enum(PROVIDER_KINDS),
     baseUrl: z.string().min(1).max(2_048),
+    /** The standard model: explain, triage and fix use it, and so does a tier without a model of its own. */
     model: z.string().regex(MODEL_PATTERN),
+    /**
+     * The model of the review's strong tier (the judge and the verification), and of its fast tier
+     * (the specialist of a trivial review). Null: the tier uses `model`. A row stored before the
+     * tiers reads with null.
+     */
+    strongModel: z.string().regex(MODEL_PATTERN).nullable().default(null),
+    fastModel: z.string().regex(MODEL_PATTERN).nullable().default(null),
     auth: z.enum(['bearer', 'api-key']),
     jsonMode: z.enum(['json_object', 'none']),
     maxTokensField: z.enum(['max_tokens', 'max_completion_tokens']),
@@ -125,6 +134,20 @@ export const storedProviderSchema = z
   });
 export type StoredProvider = z.infer<typeof storedProviderSchema>;
 
+/**
+ * The model a tier has of its own: the strong or fast model when it is set and is not the
+ * standard model. Null for the standard tier, and for a tier that uses the standard model, whether
+ * it is empty or set to it: such a tier has the standard model's prices too.
+ */
+export function ownModel(
+  provider: Pick<StoredProvider, 'model' | 'strongModel' | 'fastModel'>,
+  tier: ModelTier,
+): string | null {
+  const model =
+    tier === 'strong' ? provider.strongModel : tier === 'fast' ? provider.fastModel : null;
+  return model === null || model === provider.model ? null : model;
+}
+
 /** An `excludePaths` entry: a picomatch glob relative to the repository root. */
 export const globSchema = z
   .string()
@@ -135,12 +158,24 @@ export const globSchema = z
     'A glob relative to the repository root',
   );
 
-export const pricingSchema = z
-  .strictObject({
-    inputUsdPerMTok: z.number().min(0).max(10_000),
-    outputUsdPerMTok: z.number().min(0).max(10_000),
+/** A model's prices: US dollars for a million tokens of input and of output. */
+export const pricePairSchema = z.strictObject({
+  inputUsdPerMTok: z.number().min(0).max(10_000),
+  outputUsdPerMTok: z.number().min(0).max(10_000),
+});
+export type PricePair = z.infer<typeof pricePairSchema>;
+
+/**
+ * The instance's prices: the standard model's, and, with their own models, the strong and the fast
+ * model's. Null: no prices, so no costs. A row stored before the tiers reads with none for them.
+ */
+export const pricingSchema = pricePairSchema
+  .extend({
+    strong: pricePairSchema.nullable().default(null),
+    fast: pricePairSchema.nullable().default(null),
   })
   .nullable();
+export type StoredPricing = z.infer<typeof pricingSchema>;
 
 export const storedLlmSettingsSchema = z.strictObject({
   v: z.literal(1),
@@ -200,6 +235,24 @@ export function providerConfig(stored: StoredProvider): ProviderConfig {
     temperature: stored.temperature,
     timeoutSeconds: stored.timeoutSeconds,
   };
+}
+
+/**
+ * The prices a call of the tier is costed at: the standard pair for the standard tier and for
+ * a tier that uses the standard model, a tier's own pair for a tier with a model of its own. Null
+ * without prices, and for a model of its own that has none (a row the API does not store): never
+ * the standard pair, which is another model's price.
+ */
+export function pricingFor(
+  pricing: StoredPricing,
+  provider: StoredProvider,
+  tier: ModelTier,
+): PricePair | null {
+  if (pricing === null) return null;
+  if (tier === 'standard' || ownModel(provider, tier) === null) {
+    return { inputUsdPerMTok: pricing.inputUsdPerMTok, outputUsdPerMTok: pricing.outputUsdPerMTok };
+  }
+  return pricing[tier];
 }
 
 /** llm.md §3.3: an organisation absent from the map is disabled. */

@@ -691,7 +691,7 @@ export class FakeAiReview {
     return {
       available: unavailableReason === null,
       unavailableReason,
-      provider: this.provider === null ? null : { ...this.provider },
+      provider: this.provider === null ? null : { ...this.provider, models: [this.provider.model] },
       notice: this.provider === null ? null : fakeNotice(this.provider, this.retentionDays),
       enabled: stored.enabled,
       scope: stored.scope,

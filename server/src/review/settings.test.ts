@@ -3,6 +3,7 @@ import {
   DEFAULT_BUDGETS,
   DEFAULT_LLM_SETTINGS,
   MAX_ORGANIZATION_PROJECT_IDS,
+  MODEL_PATTERN,
   storedLlmSettingsSchema,
   type OrgLlmSettings,
   type StoredLlmSettings,
@@ -11,11 +12,13 @@ import {
 import {
   acknowledgesProvider,
   consentCurrent,
+  consentModels,
   dataSharingNotice,
   DEFAULT_REVIEW,
   effectiveReviewBudgets,
   isDefaultReview,
   MAX_REVIEW_PROJECT_IDS,
+  MODEL_NAME_PATTERN,
   organizationReviewInactive,
   projectAiReview,
   REVIEW_INACTIVE_REASONS,
@@ -41,6 +44,8 @@ const PROVIDER: StoredProvider = {
   kind: 'openai',
   baseUrl: 'https://api.openai.com/v1',
   model: 'gpt-x',
+  strongModel: null,
+  fastModel: null,
   auth: 'bearer',
   jsonMode: 'json_object',
   maxTokensField: 'max_tokens',
@@ -49,6 +54,7 @@ const PROVIDER: StoredProvider = {
   apiKeyEnc: null,
 };
 
+/** A consent as it was stored before the tiers: it names one model and no list of models. */
 const CONSENT = {
   providerUrl: 'https://api.openai.com/v1',
   providerHost: 'api.openai.com',
@@ -173,6 +179,11 @@ describe('the review settings (6I-2, llm.md §3.3)', () => {
     );
   });
 
+  it('names a model as the provider settings do', () => {
+    expect(MODEL_NAME_PATTERN.source).toBe(MODEL_PATTERN.source);
+    expect(MODEL_NAME_PATTERN.flags).toBe(MODEL_PATTERN.flags);
+  });
+
   it.each<[string, unknown]>([
     ['an unknown scope', { ...ON, scope: 'some' }],
     ['an unknown field', { ...ON, extra: 1 }],
@@ -201,7 +212,13 @@ describe('the review settings (6I-2, llm.md §3.3)', () => {
     expect(reviewBudgetsSchema.safeParse({ ...DEFAULT_REVIEW.budgets, extra: 1 }).success).toBe(
       false,
     );
+    // A consent stored before the tiers names no list of models, and still parses.
     expect(reviewConsentSchema.safeParse(CONSENT).success).toBe(true);
+    for (const models of [['gpt-x'], ['gpt-x', 'gpt-x-big', 'gpt-x-mini']]) {
+      expect(reviewConsentSchema.safeParse({ ...CONSENT, models }).success, models.join()).toBe(
+        true,
+      );
+    }
   });
 
   it.each<[string, unknown]>([
@@ -214,6 +231,10 @@ describe('the review settings (6I-2, llm.md §3.3)', () => {
     ['one with a base URL that is empty', { ...CONSENT, providerUrl: '' }],
     ['one with a field of its own', { ...CONSENT, extra: 1 }],
     ['one that is not an object', 'yes'],
+    ['one that lists no model', { ...CONSENT, models: [] }],
+    ['one that lists four models', { ...CONSENT, models: ['a', 'b', 'c', 'd'] }],
+    ['one that lists a model that is not a model name', { ...CONSENT, models: ['bad model'] }],
+    ['one whose models are not a list', { ...CONSENT, models: 'gpt-x' }],
   ])('reads %s as no consent, and keeps the rest of the block (fail closed)', (_name, consent) => {
     expect(reviewConsentSchema.safeParse(consent).success).toBe(false);
     expect(reviewSettingsSchema.parse({ ...ON, consent })).toEqual({ ...ON, consent: null });
@@ -282,18 +303,127 @@ describe('the provider, its consent and the data-sharing notice (R10)', () => {
       url: 'https://api.openai.com/v1',
       host: 'api.openai.com',
       model: 'gpt-x',
+      models: ['gpt-x'],
     });
     const local = { ...PROVIDER, baseUrl: 'https://llm.example:8443/v1/' };
     expect(reviewProvider(settingsWith({}, {}, local))).toEqual({
       url: 'https://llm.example:8443/v1',
       host: 'llm.example:8443',
       model: 'gpt-x',
+      models: ['gpt-x'],
     });
     expect(reviewProvider(settingsWith({}, {}, null))).toBeNull();
   });
 
+  it('names every model of the provider, once and sorted, the standard model among them', () => {
+    const tiers: StoredProvider = {
+      ...PROVIDER,
+      strongModel: 'gpt-x-big',
+      fastModel: 'gpt-x-mini',
+    };
+    expect(reviewProvider(settingsWith({}, {}, tiers))).toMatchObject({
+      model: 'gpt-x',
+      models: ['gpt-x', 'gpt-x-big', 'gpt-x-mini'],
+    });
+    // A tier set to the standard model names nothing more.
+    const same: StoredProvider = { ...PROVIDER, strongModel: 'gpt-x', fastModel: 'gpt-x' };
+    expect(reviewProvider(settingsWith({}, {}, same))!.models).toEqual(['gpt-x']);
+    // Sorted, not in the order of the tiers.
+    const first: StoredProvider = { ...PROVIDER, strongModel: 'a-model', fastModel: 'z-model' };
+    expect(reviewProvider(settingsWith({}, {}, first))!.models).toEqual([
+      'a-model',
+      'gpt-x',
+      'z-model',
+    ]);
+  });
+
   it('is current while the consent names the configured address, host and model', () => {
     expect(consentCurrent(settingsWith(), ON)).toBe(true);
+  });
+
+  describe('the models of a consent', () => {
+    const TIERS: StoredProvider = { ...PROVIDER, fastModel: 'gpt-x-mini' };
+    const consentOf = (models: string[]): ReviewSettings => ({
+      ...ON,
+      consent: { ...CONSENT, models },
+    });
+
+    it('a consent stored without models reads as the standard model alone', () => {
+      expect(consentModels(CONSENT)).toEqual(['gpt-x']);
+      expect(consentModels({ ...CONSENT, model: 'other' })).toEqual(['other']);
+      // So it still covers a provider that has no model of its own for a tier ...
+      expect(consentCurrent(settingsWith(), ON)).toBe(true);
+      // ... and covers none that has.
+      expect(consentCurrent(settingsWith({}, {}, TIERS), ON)).toBe(false);
+      expect(reviewActive(settingsWith({}, {}, TIERS), mapped)).toEqual({
+        active: false,
+        reason: 'consent_outdated',
+      });
+    });
+
+    it('reads the models of a consent as a set: sorted, each once', () => {
+      expect(consentModels({ ...CONSENT, models: ['b', 'a', 'b'] })).toEqual(['a', 'b']);
+    });
+
+    it('is current while the consent names the models the provider has now', () => {
+      expect(consentCurrent(settingsWith({}, {}, TIERS), consentOf(['gpt-x', 'gpt-x-mini']))).toBe(
+        true,
+      );
+      // The order and repeats of the list do not matter.
+      expect(
+        consentCurrent(settingsWith({}, {}, TIERS), consentOf(['gpt-x-mini', 'gpt-x', 'gpt-x'])),
+      ).toBe(true);
+      // A tier set to the standard model adds none.
+      const same: StoredProvider = { ...PROVIDER, strongModel: 'gpt-x' };
+      expect(consentCurrent(settingsWith({}, {}, same), consentOf(['gpt-x']))).toBe(true);
+      expect(consentCurrent(settingsWith(), consentOf(['gpt-x']))).toBe(true);
+    });
+
+    it('changing the fast model makes the consent outdated', () => {
+      const consent = consentOf(['gpt-x', 'gpt-x-mini']);
+      expect(consentCurrent(settingsWith({}, {}, TIERS), consent)).toBe(true);
+      const other: StoredProvider = { ...TIERS, fastModel: 'gpt-x-nano' };
+      expect(consentCurrent(settingsWith({}, {}, other), consent)).toBe(false);
+      expect(reviewActive(settingsWith({ consent: consent.consent }, {}, other), mapped)).toEqual({
+        active: false,
+        reason: 'consent_outdated',
+      });
+    });
+
+    it('changing the strong model, adding or removing a tier model makes it outdated too', () => {
+      const both: StoredProvider = {
+        ...PROVIDER,
+        strongModel: 'gpt-x-big',
+        fastModel: 'gpt-x-mini',
+      };
+      const consent = consentOf(['gpt-x', 'gpt-x-big', 'gpt-x-mini']);
+      expect(consentCurrent(settingsWith({}, {}, both), consent)).toBe(true);
+      for (const over of [
+        { strongModel: 'gpt-x-huge' },
+        { strongModel: null },
+        { fastModel: null },
+        { model: 'gpt-y' },
+      ]) {
+        const changed = { ...both, ...over };
+        expect(consentCurrent(settingsWith({}, {}, changed), consent), JSON.stringify(over)).toBe(
+          false,
+        );
+      }
+      // A consent for one model does not cover a provider that gained one.
+      expect(consentCurrent(settingsWith({}, {}, TIERS), consentOf(['gpt-x']))).toBe(false);
+      // Nor one for two a provider that lost one.
+      expect(consentCurrent(settingsWith(), consentOf(['gpt-x', 'gpt-x-mini']))).toBe(false);
+    });
+
+    it('a swap of two models between the tiers makes it outdated, though no model is new', () => {
+      const consent = consentOf(['gpt-x', 'gpt-x-mini']);
+      const swapped: StoredProvider = { ...PROVIDER, model: 'gpt-x-mini', strongModel: 'gpt-x' };
+      expect(reviewProvider(settingsWith({}, {}, swapped))!.models).toEqual([
+        'gpt-x',
+        'gpt-x-mini',
+      ]);
+      expect(consentCurrent(settingsWith({}, {}, swapped), consent)).toBe(false);
+    });
   });
 
   it.each<[string, Partial<StoredProvider>]>([
@@ -334,6 +464,7 @@ describe('the provider, its consent and the data-sharing notice (R10)', () => {
       url: 'https://api.openai.com/v1',
       host: 'api.openai.com',
       model: 'gpt-x',
+      models: ['gpt-x'],
     });
     expect(consentCurrent(settingsWith({}, {}, spelled), ON)).toBe(true);
   });
@@ -358,6 +489,7 @@ describe('the provider, its consent and the data-sharing notice (R10)', () => {
       url: 'https://llm.example:8443/v1',
       host: 'llm.example:8443',
       model: 'Gpt-X',
+      models: ['Gpt-X'],
     };
 
     it('is true for the host and the model the notice named', () => {
@@ -384,16 +516,83 @@ describe('the provider, its consent and the data-sharing notice (R10)', () => {
     ])('is false for %s', (_name, acknowledged) => {
       expect(acknowledgesProvider(provider, acknowledged)).toBe(false);
     });
+
+    it('takes an acknowledgement without models as naming the model alone', () => {
+      const old = { host: 'llm.example:8443', model: 'Gpt-X' };
+      expect(acknowledgesProvider(provider, old)).toBe(true);
+      expect(acknowledgesProvider(provider, { ...old, models: ['Gpt-X'] })).toBe(true);
+      // The models it lists are the ones that count, not the model beside them.
+      expect(acknowledgesProvider(provider, { ...old, models: ['Gpt-Y'] })).toBe(false);
+      expect(acknowledgesProvider(provider, { ...old, models: ['Gpt-X', 'Gpt-Y'] })).toBe(false);
+      expect(acknowledgesProvider(provider, { ...old, models: [] })).toBe(false);
+    });
+
+    describe('with models of its own for the tiers', () => {
+      const tiered = { ...provider, models: ['Gpt-X', 'Gpt-X-big', 'Gpt-X-mini'] };
+      const shown = { host: 'llm.example:8443', model: 'Gpt-X' };
+
+      it('is true for the same set of models, in any order and each listed once', () => {
+        for (const models of [
+          ['Gpt-X', 'Gpt-X-big', 'Gpt-X-mini'],
+          ['Gpt-X-mini', 'Gpt-X', 'Gpt-X-big'],
+          ['Gpt-X-big', 'Gpt-X-big', 'Gpt-X-mini', 'Gpt-X'],
+        ]) {
+          expect(acknowledgesProvider(tiered, { ...shown, models }), models.join()).toBe(true);
+        }
+      });
+
+      it.each<[string, string[] | undefined]>([
+        ['no models (an acknowledgement of the model alone)', undefined],
+        ['the standard model alone', ['Gpt-X']],
+        ['a subset', ['Gpt-X', 'Gpt-X-mini']],
+        ['a model more', ['Gpt-X', 'Gpt-X-big', 'Gpt-X-mini', 'Gpt-X-huge']],
+        ['another model in place of one', ['Gpt-X', 'Gpt-X-big', 'Gpt-X-nano']],
+        ['the models in another case', ['gpt-x', 'gpt-x-big', 'gpt-x-mini']],
+        ['an empty list', []],
+      ])('is false for %s', (_name, models) => {
+        const acknowledged = models === undefined ? shown : { ...shown, models };
+        expect(acknowledgesProvider(tiered, acknowledged)).toBe(false);
+      });
+
+      it('still needs the host and the model to be those of the provider', () => {
+        const models = tiered.models;
+        expect(
+          acknowledgesProvider(tiered, { host: 'other.example', model: 'Gpt-X', models }),
+        ).toBe(false);
+        expect(
+          acknowledgesProvider(tiered, { host: 'llm.example:8443', model: 'Gpt-X-big', models }),
+        ).toBe(false);
+      });
+    });
   });
 
   it('writes the notice exactly', () => {
-    expect(dataSharingNotice('api.openai.com', 'gpt-x', 14)).toBe(
+    expect(dataSharingNotice('api.openai.com', ['gpt-x'], 14)).toBe(
       "AI review sends the merge request's diff and any repository file the model chooses to read to api.openai.com (gpt-x). The scanner uploads a copy of the repository to this Qualor server for each merge request; Qualor keeps it until the merge request is closed (at most 14 days). Secrets the analyzers found are masked; credentials files are never sent.",
     );
-    expect(dataSharingNotice('llm.example:8443', 'm/1', 3)).toContain(
+    expect(dataSharingNotice('llm.example:8443', ['m/1'], 3)).toContain(
       'to llm.example:8443 (m/1). ',
     );
-    expect(dataSharingNotice('llm.example:8443', 'm/1', 3)).toContain('(at most 3 days)');
+    expect(dataSharingNotice('llm.example:8443', ['m/1'], 3)).toContain('(at most 3 days)');
+  });
+
+  it('the notice names every distinct model', () => {
+    expect(dataSharingNotice('api.openai.com', ['gpt-x', 'gpt-x-big', 'gpt-x-mini'], 14)).toBe(
+      "AI review sends the merge request's diff and any repository file the model chooses to read to api.openai.com (gpt-x, gpt-x-big, gpt-x-mini). The scanner uploads a copy of the repository to this Qualor server for each merge request; Qualor keeps it until the merge request is closed (at most 14 days). Secrets the analyzers found are masked; credentials files are never sent.",
+    );
+    expect(dataSharingNotice('llm.example:8443', ['a/1', 'b/2'], 3)).toContain(
+      'to llm.example:8443 (a/1, b/2). ',
+    );
+    // The notice of the provider, as the answers write it.
+    const tiers: StoredProvider = {
+      ...PROVIDER,
+      strongModel: 'gpt-x-big',
+      fastModel: 'gpt-x-mini',
+    };
+    const provider = reviewProvider(settingsWith({}, {}, tiers))!;
+    expect(dataSharingNotice(provider.host, provider.models, 14)).toContain(
+      'to api.openai.com (gpt-x, gpt-x-big, gpt-x-mini). ',
+    );
   });
 });
 
@@ -617,6 +816,7 @@ describe('sameReview and isDefaultReview', () => {
     ],
     ['the consent’s host', { consent: { ...CONSENT, providerHost: 'other.example' } }],
     ['the consent’s model', { consent: { ...CONSENT, model: 'other' } }],
+    ['the consent’s models', { consent: { ...CONSENT, models: ['gpt-x', 'gpt-x-mini'] } }],
     ['the consent’s user', { consent: { ...CONSENT, userId: OTHER_PROJECT } }],
     ['the consent’s time', { consent: { ...CONSENT, at: '2027-01-02T00:00:00.000Z' } }],
     ['the daily tokens', { budgets: { ...ON.budgets, tokensPerDay: 1 } }],
@@ -626,6 +826,16 @@ describe('sameReview and isDefaultReview', () => {
   ])('differs in %s', (_name, over) => {
     expect(sameReview(ON, { ...ON, ...over })).toBe(false);
     expect(sameReview({ ...ON, ...over }, ON)).toBe(false);
+  });
+
+  it('reads a consent without models as one that names the model alone', () => {
+    const named = { ...ON, consent: { ...CONSENT, models: ['gpt-x'] } };
+    expect(sameReview(ON, named)).toBe(true);
+    expect(sameReview(named, ON)).toBe(true);
+    // The models are a set: order and repeats do not matter.
+    const two = { ...ON, consent: { ...CONSENT, models: ['gpt-x', 'gpt-x-mini'] } };
+    const reordered = { ...ON, consent: { ...CONSENT, models: ['gpt-x-mini', 'gpt-x', 'gpt-x'] } };
+    expect(sameReview(two, reordered)).toBe(true);
   });
 
   it('compares the project lists in order, and a consent with none', () => {

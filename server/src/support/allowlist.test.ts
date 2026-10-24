@@ -6,6 +6,7 @@ import {
   autoFixSettingsSchema,
   budgetsSchema,
   orgLlmSettingsSchema,
+  pricePairSchema,
   pricingSchema,
 } from '../llm/settings';
 import {
@@ -96,7 +97,7 @@ describe('the configuration allowlist (4E-3b §2)', () => {
 describe('the settings allowlist (4E-3b §2)', () => {
   const envelope = { v: 1, iv: 'aXY=', ct: 'Y3Q=', tag: 'dGFn' };
 
-  it('keeps the llm provider kind, model and base URL host, never the API key', () => {
+  it('keeps the llm provider kind, models and base URL host, never the API key', () => {
     const out = allowlistedSetting(
       'llm',
       {
@@ -105,6 +106,8 @@ describe('the settings allowlist (4E-3b §2)', () => {
           kind: 'openai',
           baseUrl: 'https://key:inurl@llm.example:8443/v1?api_key=abc',
           model: 'gpt-x',
+          strongModel: 'gpt-x-big',
+          fastModel: null,
           auth: 'bearer',
           jsonMode: 'json_object',
           maxTokensField: 'max_tokens',
@@ -123,7 +126,12 @@ describe('the settings allowlist (4E-3b §2)', () => {
         },
         excludePaths: ['vendor/**'],
         budgets: { explainPerDay: 1 },
-        pricing: null,
+        pricing: {
+          inputUsdPerMTok: 3,
+          outputUsdPerMTok: 15,
+          strong: { inputUsdPerMTok: 15, outputUsdPerMTok: 75 },
+          fast: null,
+        },
         storePrompts: false,
         promptRetentionDays: 7,
       },
@@ -135,6 +143,8 @@ describe('the settings allowlist (4E-3b §2)', () => {
         kind: 'openai',
         baseUrl: 'https://llm.example:8443',
         model: 'gpt-x',
+        strongModel: 'gpt-x-big',
+        fastModel: null,
         auth: 'bearer',
         jsonMode: 'json_object',
         maxTokensField: 'max_tokens',
@@ -153,7 +163,12 @@ describe('the settings allowlist (4E-3b §2)', () => {
       },
       excludePaths: ['vendor/**'],
       budgets: { explainPerDay: 1 },
-      pricing: null,
+      pricing: {
+        inputUsdPerMTok: 3,
+        outputUsdPerMTok: 15,
+        strong: { inputUsdPerMTok: 15, outputUsdPerMTok: 75 },
+        fast: null,
+      },
       storePrompts: false,
       promptRetentionDays: 7,
     });
@@ -220,6 +235,8 @@ describe('the settings allowlist copies whole subtrees only of known shape (Ruli
     'llm:v',
     'llm:provider.kind',
     'llm:provider.model',
+    'llm:provider.strongModel',
+    'llm:provider.fastModel',
     'llm:provider.auth',
     'llm:provider.jsonMode',
     'llm:provider.maxTokensField',
@@ -260,7 +277,7 @@ describe('the settings allowlist copies whole subtrees only of known shape (Ruli
       current: Object.keys(budgetsSchema.shape),
     },
     'llm:pricing': {
-      classified: ['inputUsdPerMTok', 'outputUsdPerMTok'],
+      classified: ['fast', 'inputUsdPerMTok', 'outputUsdPerMTok', 'strong'],
       current: Object.keys(pricingSchema.unwrap().shape),
     },
     'retention:*': {
@@ -289,5 +306,13 @@ describe('the settings allowlist copies whole subtrees only of known shape (Ruli
 
   it.each(Object.entries(SUBTREES))('pins the keys of %s to the schema', (_, subtree) => {
     expect([...subtree.current].sort()).toEqual(subtree.classified);
+  });
+
+  it('pins the keys of the price pair that every tier of the pricing subtree holds', () => {
+    // The tiers' prices travel with `llm:pricing`: a new key of the pair is classified here too.
+    expect(Object.keys(pricePairSchema.shape).sort()).toEqual([
+      'inputUsdPerMTok',
+      'outputUsdPerMTok',
+    ]);
   });
 });

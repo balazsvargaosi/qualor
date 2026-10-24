@@ -75,6 +75,8 @@ export const SUPPORT_SETTINGS_ALLOWLIST: Readonly<
     'provider.kind': 'value',
     'provider.baseUrl': 'url',
     'provider.model': 'value',
+    'provider.strongModel': 'value',
+    'provider.fastModel': 'value',
     'provider.auth': 'value',
     'provider.jsonMode': 'value',
     'provider.maxTokensField': 'value',

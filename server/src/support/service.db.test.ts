@@ -164,6 +164,8 @@ describe('ctx.support (4E-3b §2, §4)', () => {
         kind: 'openai',
         baseUrl: 'https://llm.example/v1',
         model: 'gpt-test',
+        strongModel: 'gpt-test-strong',
+        fastModel: 'gpt-test-fast',
         auth: 'bearer',
         jsonMode: 'json_object',
         maxTokensField: 'max_tokens',
@@ -311,6 +313,8 @@ describe('ctx.support (4E-3b §2, §4)', () => {
       kind: 'openai',
       baseUrl: 'https://llm.example',
       model: 'gpt-test',
+      strongModel: 'gpt-test-strong',
+      fastModel: 'gpt-test-fast',
       apiKeyEnc: '[set]',
     });
     expect(settings.instanceSettings.license).toEqual({

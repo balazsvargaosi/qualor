@@ -54,7 +54,7 @@ const GITHUB_REPOSITORY = 9_710;
 /** The head and base of `storeTestSnapshot`'s header. */
 const HEAD = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
-const PRICING = { inputUsdPerMTok: 3, outputUsdPerMTok: 15 };
+const PRICING = { inputUsdPerMTok: 3, outputUsdPerMTok: 15, strong: null, fast: null };
 const revision = (n: number) => String(n % 10).repeat(40);
 
 const CART_LINES = [
@@ -986,6 +986,48 @@ describe('the ai-review job (6I-3, R15)', () => {
     expect(reviewCalls().slice(calls).map(reviewRoleOf)).toEqual(['quality']);
     expect(await aiIssuesOf(run.branchId)).toEqual([]);
     expect(await decorationsOf(analysisId)).toHaveLength(1);
+  });
+
+  it.each([
+    ['strong', { strongModel: 'other-strong-model' }],
+    ['fast', { fastModel: 'other-fast-model' }],
+  ])('a changed %s model during the run stops it before its next call', async (_tier, tier) => {
+    const mr = mergeRequest();
+    const analysisId = await analysisOf(mr);
+    await snapshotOf(analysisId, mr);
+    await forgetDecorations();
+    // The instance moves a tier to another model, with a consent that names the new set of models:
+    // review is still on, but not with the provider the run started with.
+    llm.enqueue(
+      reviewResponder({
+        quality: async () => {
+          await switchReviewOn(h.ctx.db, {
+            secretKey: h.ctx.config.secretKey,
+            fake: llm,
+            organizationId: h.organizationId,
+            userId: h.ctx.adminId,
+            over: {
+              pricing: null,
+              provider: { ...configuredProvider(h.ctx.config.secretKey, llm), ...tier },
+            },
+          });
+          return JSON.stringify({ findings: [FINDING] });
+        },
+      }),
+    );
+    const calls = reviewCalls().length;
+    expect(await runReviews()).toBe(1);
+    const run = await runOf(analysisId);
+    expect(run).toMatchObject({
+      status: 'skipped',
+      reason: 'inactive',
+      detail: 'provider_changed',
+      modelCalls: 1,
+      model: 'fake-model',
+      findingsNew: 0,
+    });
+    expect(reviewCalls().slice(calls).map(reviewRoleOf)).toEqual(['quality']);
+    expect(await aiIssuesOf(run.branchId)).toEqual([]);
   });
 
   it('a server stop ends a running review at once', async () => {

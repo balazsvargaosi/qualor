@@ -75,9 +75,11 @@ export const projectAiReviewSchema = z.object({
  * The consent as the organisation's answers show it: who acknowledged the notice, for which host
  * and model, and when. Not the provider's base URL: a gateway's path can hold a tenant or account
  * id, which organisation admins otherwise never see (`GET /organizations/{id}/ai` shows the host
- * only). The stored consent keeps the URL, and `consentCurrent` still compares it.
+ * only), and not its list of models (the answer's `provider` has them, and `consentCurrent` says
+ * whether the consent covers them). The stored consent keeps both, and `consentCurrent` still
+ * compares them.
  */
-const consentAnswerSchema = reviewConsentSchema.omit({ providerUrl: true });
+const consentAnswerSchema = reviewConsentSchema.omit({ providerUrl: true, models: true });
 type ConsentAnswer = z.infer<typeof consentAnswerSchema>;
 
 /**
@@ -109,8 +111,13 @@ export const organizationReviewSchema = z.object({
   /** AI review can be switched on: a provider is configured and the organisation is enabled. */
   available: z.boolean(),
   unavailableReason: z.enum(['no_provider', 'organization_disabled']).nullable(),
-  /** The configured provider as the notice names it (its host includes the port); null without one. */
-  provider: z.object({ host: z.string(), model: z.string() }).nullable(),
+  /**
+   * The configured provider as the notice names it (its host includes the port); null without one.
+   * `models` are every model it names, once each and sorted, the standard `model` among them.
+   */
+  provider: z
+    .object({ host: z.string(), model: z.string(), models: z.array(z.string()) })
+    .nullable(),
   /** The data-sharing warning to show to whoever switches review on, word for word; null without a provider. */
   notice: z.string().nullable(),
   enabled: z.boolean(),
@@ -122,8 +129,8 @@ export const organizationReviewSchema = z.object({
   /** Who acknowledged the notice, for which provider host and model, and when; null before any. */
   consent: consentAnswerSchema.nullable(),
   /**
-   * The consent names the configured provider (its base URL, host and model); false after any of
-   * them changed (R10).
+   * The consent names the configured provider (its base URL, host, model and models); false after
+   * any of them changed (R10).
    */
   consentCurrent: z.boolean(),
   instanceCeiling: z.object({
@@ -138,11 +145,18 @@ type OrganizationReview = z.infer<typeof organizationReviewSchema>;
 /**
  * R10 (amended): the acknowledgement names the provider the admin was shown, the `provider` of the
  * GET answer, not just "yes": a provider switched between the GET and the PUT must not get a
- * consent nobody saw.
+ * consent nobody saw. It names the models the notice named too. A provider's models are at
+ * most three.
  */
 const acknowledgementSchema = z.strictObject({
   host: z.string().min(1).max(300),
   model: z.string().min(1).max(200),
+  models: z
+    .array(z.string().min(1).max(200))
+    .min(1)
+    .max(3)
+    .optional()
+    .meta({ description: 'Absent: the model alone' }),
 });
 
 const reviewBody = z.strictObject({
@@ -152,7 +166,7 @@ const reviewBody = z.strictObject({
   budgets: reviewBudgetsSchema,
   acknowledgeDataSharing: acknowledgementSchema.optional().meta({
     description:
-      'The provider the notice named: the `provider` of the GET answer. Needed to switch review on from off, and while consentCurrent is false; ignored otherwise. Absent: 409 AI_REVIEW_CONSENT_REQUIRED. A host or model other than the provider configured now: 409 AI_REVIEW_PROVIDER_CHANGED (nothing is stored)',
+      'The provider the notice named: the `provider` of the GET answer. Needed to switch review on from off, and while consentCurrent is false; ignored otherwise. Absent: 409 AI_REVIEW_CONSENT_REQUIRED. A host, model or set of models other than the provider configured now: 409 AI_REVIEW_PROVIDER_CHANGED (nothing is stored)',
   }),
 });
 
@@ -223,9 +237,12 @@ function organizationReview(
   return {
     available: unavailableReason === null,
     unavailableReason,
-    provider: provider === null ? null : { host: provider.host, model: provider.model },
+    provider:
+      provider === null
+        ? null
+        : { host: provider.host, model: provider.model, models: provider.models },
     notice:
-      provider === null ? null : dataSharingNotice(provider.host, provider.model, retentionDays),
+      provider === null ? null : dataSharingNotice(provider.host, provider.models, retentionDays),
     enabled: review.enabled,
     scope: review.scope,
     projectIds: [...projectIds],
@@ -295,7 +312,7 @@ export const reviewRoutes: FastifyPluginAsyncZod<{
           problems: [409],
           problemDescriptions: {
             403: 'FORBIDDEN or INSUFFICIENT_SCOPE',
-            409: 'AI_DISABLED (switching it on needs a provider and the organisation enabled for the AI assistant), AI_REVIEW_CONSENT_REQUIRED (switching it on, from off or while consentCurrent is false, needs acknowledgeDataSharing), or AI_REVIEW_PROVIDER_CHANGED (the acknowledgement names another host or model than the provider configured now; nothing is stored)',
+            409: 'AI_DISABLED (switching it on needs a provider and the organisation enabled for the AI assistant), AI_REVIEW_CONSENT_REQUIRED (switching it on, from off or while consentCurrent is false, needs acknowledgeDataSharing), or AI_REVIEW_PROVIDER_CHANGED (the acknowledgement names another host, model or set of models than the provider configured now; nothing is stored)',
             422: 'VALIDATION_FAILED, or PROJECT_NOT_IN_ORGANIZATION (a project id belongs to another organisation; errors[] names it)',
           },
         },
@@ -303,7 +320,7 @@ export const reviewRoutes: FastifyPluginAsyncZod<{
       schema: {
         tags: ['ai'],
         summary:
-          "Set the organisation's AI review (org.ai.manage). Switching it on needs acknowledgeDataSharing, the provider the notice named, which records the provider's base URL, host and model, the user and the time; a change of any of them makes the consent outdated until it is given again",
+          "Set the organisation's AI review (org.ai.manage). Switching it on needs acknowledgeDataSharing, the provider the notice named, which records the provider's base URL, host, model and models, the user and the time; a change of any of them makes the consent outdated until it is given again",
         params: idParams,
         body: reviewBody,
         response: { 200: organizationReviewSchema },
@@ -377,6 +394,7 @@ export const reviewRoutes: FastifyPluginAsyncZod<{
             providerUrl: provider.url,
             providerHost: provider.host,
             model: provider.model,
+            models: provider.models,
             userId: principal.user.id,
             at: new Date().toISOString(),
           };

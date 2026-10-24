@@ -68,7 +68,7 @@ const TOOLS = [
 const PROMPT_VERSION = 'review-1';
 // Characters of two, three and four bytes: a size in bytes is not a size in characters.
 const USER_TEXT = 'The change under review: café € 😀';
-const PRICING = { inputUsdPerMTok: 3, outputUsdPerMTok: 15 };
+const PRICING = { inputUsdPerMTok: 3, outputUsdPerMTok: 15, strong: null, fast: null };
 /** A fake password and the line that sets it, built at run time so no scanner takes it for real. */
 const PASSWORD_VALUE = ['"hunter2', '-very-secret"'].join('');
 const PASSWORD_LINE = `const password = ${PASSWORD_VALUE};`;
@@ -1187,6 +1187,8 @@ const port = 8080;
           remainingReviewTokens(priced, day(0, 0, 4_000_000), {
             inputUsdPerMTok: 20,
             outputUsdPerMTok: 5,
+            strong: null,
+            fast: null,
           }),
         ).toBe(50_000);
       });
@@ -1205,6 +1207,8 @@ const port = 8080;
           remainingReviewTokens(priced, day(0, 0, 4_000_000), {
             inputUsdPerMTok: 0,
             outputUsdPerMTok: 0,
+            strong: null,
+            fast: null,
           }),
         ).toBe(300_000);
         expect(remainingReviewTokens(priced, day(0, 0, 4_000_000), null)).toBe(300_000);

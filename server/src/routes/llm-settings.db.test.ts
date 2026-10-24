@@ -1,5 +1,5 @@
 import { count, eq } from 'drizzle-orm';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   addMember,
   ADMIN_PASSWORD,
@@ -24,7 +24,7 @@ import {
 } from '../../test/fake-llm';
 import { encryptionKey, encryptSecret } from '../crypto/secrets';
 import { auditEvents, instanceSettings, llmRequests } from '../db/schema';
-import { DEFAULT_LLM_SETTINGS, writeLlmSettings } from '../llm/settings';
+import { DEFAULT_LLM_SETTINGS, readLlmSettings, writeLlmSettings } from '../llm/settings';
 import { parseInternalHosts } from '../scm/url';
 
 /** The call the model makes to the echo tool of the tool-calling check. */
@@ -331,6 +331,281 @@ describe('/system/llm (llm.md §3, §16)', () => {
     );
     expect(anthropic.statusCode, anthropic.body).toBe(200);
     expect((await put(body({ provider: provider({ temperature: 2 }) }))).statusCode).toBe(200);
+  });
+
+  describe('the models of the tiers', () => {
+    const STANDARD = { inputUsdPerMTok: 3, outputUsdPerMTok: 15 };
+    const STRONG = { inputUsdPerMTok: 15, outputUsdPerMTok: 75 };
+    const FAST = { inputUsdPerMTok: 1, outputUsdPerMTok: 5 };
+    const tiers = { strongModel: 'fake-strong', fastModel: 'fake-fast' };
+    const errorsOf = (res: { json: () => unknown }) =>
+      (res.json() as { errors: { path: string; message: string }[] }).errors;
+    /** The log line of the latest save: the names of the fields it changed. */
+    const loggedChange = () =>
+      ctx.logs.filter((l) => l.includes('LLM settings changed')).at(-1) ?? '';
+
+    afterEach(async () => {
+      await put(body());
+    });
+
+    it('PUT /system/llm stores the strong and fast models and answers them', async () => {
+      const res = await put(body({ provider: provider(tiers) }));
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json().provider).toMatchObject({ model: 'fake-model', ...tiers });
+      expect((await get()).json().provider).toMatchObject({ model: 'fake-model', ...tiers });
+      expect((await readLlmSettings(ctx.db)).provider).toMatchObject({
+        model: 'fake-model',
+        ...tiers,
+      });
+      // Each is optional. A save replaces the provider whole: one left out is none, and so is null.
+      const strongOnly = await put(body({ provider: provider({ strongModel: 'fake-strong' }) }));
+      expect(strongOnly.json().provider).toMatchObject({
+        strongModel: 'fake-strong',
+        fastModel: null,
+      });
+      const fastOnly = await put(
+        body({ provider: provider({ strongModel: null, fastModel: 'fake-fast' }) }),
+      );
+      expect(fastOnly.json().provider).toMatchObject({ strongModel: null, fastModel: 'fake-fast' });
+      const none = await put(body());
+      expect(none.json().provider).toMatchObject({ strongModel: null, fastModel: null });
+      expect((await readLlmSettings(ctx.db)).provider).toMatchObject({
+        strongModel: null,
+        fastModel: null,
+      });
+    });
+
+    it('stores a tier model that is the standard model as it was given', async () => {
+      const res = await put(body({ provider: provider({ strongModel: 'fake-model' }) }));
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json().provider).toMatchObject({
+        model: 'fake-model',
+        strongModel: 'fake-model',
+        fastModel: null,
+      });
+    });
+
+    it.each([
+      ['strongModel', 'empty', ''],
+      ['strongModel', 'not a model name', 'bad model'],
+      ['strongModel', 'over 200 characters', 'm'.repeat(201)],
+      ['fastModel', 'empty', ''],
+      ['fastModel', 'not a model name', 'bad model'],
+      ['fastModel', 'over 200 characters', 'm'.repeat(201)],
+      ['fastModel', 'not text', 7],
+    ])('refuses a %s that is %s', async (field, _what, value) => {
+      const res = await put(body({ provider: provider({ [field]: value }) }));
+      expect(res.statusCode, res.body).toBe(422);
+      expect(errorsOf(res).map((e) => e.path)).toContain(`body.provider.${field}`);
+      expect(res.body).not.toContain(fake.apiKey);
+    });
+
+    it('names a change of a tier model in the log line', async () => {
+      await put(body());
+      const fast = await put(body({ provider: provider({ fastModel: 'fake-fast' }) }));
+      expect(fast.statusCode, fast.body).toBe(200);
+      expect(loggedChange()).toContain('"provider.fastModel"');
+      expect(loggedChange()).not.toContain('"provider.strongModel"');
+      expect(loggedChange()).not.toContain('"provider.model"');
+      const strong = await put(body({ provider: provider(tiers) }));
+      expect(strong.statusCode, strong.body).toBe(200);
+      expect(loggedChange()).toContain('"provider.strongModel"');
+      expect(loggedChange()).not.toContain('"provider.fastModel"');
+      // The same save again changes nothing (but for the key it sends again), and clearing a model
+      // changes the provider.
+      expect((await put(body({ provider: provider(tiers) }))).statusCode).toBe(200);
+      expect(loggedChange()).toContain('"fields":["provider.apiKey"]');
+      const cleared = await put(body({ provider: provider({ strongModel: 'fake-strong' }) }));
+      expect(cleared.statusCode, cleared.body).toBe(200);
+      expect(loggedChange()).toContain('"provider.fastModel"');
+    });
+
+    it('a tier model with pricing but without its prices is a 422 at pricing.strong', async () => {
+      const strong = await put(
+        body({ provider: provider({ strongModel: 'fake-strong' }), pricing: STANDARD }),
+      );
+      expect(strong.statusCode, strong.body).toBe(422);
+      expect(errorsOf(strong)).toEqual([
+        { path: 'body.pricing.strong', message: "Give the strong model's prices too" },
+      ]);
+      const fast = await put(
+        body({ provider: provider({ fastModel: 'fake-fast' }), pricing: STANDARD }),
+      );
+      expect(fast.statusCode, fast.body).toBe(422);
+      expect(errorsOf(fast)).toEqual([
+        { path: 'body.pricing.fast', message: "Give the fast model's prices too" },
+      ]);
+      const both = await put(body({ provider: provider(tiers), pricing: STANDARD }));
+      expect(both.statusCode, both.body).toBe(422);
+      expect(errorsOf(both)).toEqual([
+        { path: 'body.pricing.strong', message: "Give the strong model's prices too" },
+        { path: 'body.pricing.fast', message: "Give the fast model's prices too" },
+      ]);
+      // A refused save changes nothing.
+      expect((await get()).json()).toMatchObject({
+        provider: { strongModel: null, fastModel: null },
+        pricing: null,
+      });
+      // With its prices, a tier model is saved: each tier needs its own pair.
+      const strongPriced = await put(
+        body({
+          provider: provider(tiers),
+          pricing: { ...STANDARD, strong: STRONG },
+        }),
+      );
+      expect(strongPriced.statusCode).toBe(422);
+      expect(errorsOf(strongPriced).map((e) => e.path)).toEqual(['body.pricing.fast']);
+      const saved = await put(
+        body({ provider: provider(tiers), pricing: { ...STANDARD, strong: STRONG, fast: FAST } }),
+      );
+      expect(saved.statusCode, saved.body).toBe(200);
+    });
+
+    it('needs no prices of a tier model while the instance sets no prices', async () => {
+      const res = await put(body({ provider: provider(tiers), pricing: null }));
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json()).toMatchObject({ provider: tiers, pricing: null });
+    });
+
+    it('a tier model that is the standard model has no prices of its own to give', async () => {
+      const res = await put(
+        body({ provider: provider({ strongModel: 'fake-model' }), pricing: STANDARD }),
+      );
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json().pricing).toEqual({ ...STANDARD, strong: null, fast: null });
+    });
+
+    it('a price pair for a tier without a model of its own is a 422', async () => {
+      const strong = await put(body({ pricing: { ...STANDARD, strong: STRONG } }));
+      expect(strong.statusCode, strong.body).toBe(422);
+      expect(errorsOf(strong)).toEqual([
+        { path: 'body.pricing.strong', message: 'Set the strong model first' },
+      ]);
+      const fast = await put(body({ pricing: { ...STANDARD, fast: FAST } }));
+      expect(errorsOf(fast)).toEqual([
+        { path: 'body.pricing.fast', message: 'Set the fast model first' },
+      ]);
+      // A tier model that is the standard model is no model of its own.
+      const same = await put(
+        body({
+          provider: provider({ strongModel: 'fake-model' }),
+          pricing: { ...STANDARD, strong: STRONG },
+        }),
+      );
+      expect(same.statusCode, same.body).toBe(422);
+      expect(errorsOf(same)).toEqual([
+        { path: 'body.pricing.strong', message: 'Set the strong model first' },
+      ]);
+      // Without a provider no tier has a model.
+      const removed = await put(
+        body({ provider: null, pricing: { ...STANDARD, strong: STRONG, fast: FAST } }),
+      );
+      expect(errorsOf(removed).map((e) => e.message)).toEqual([
+        'Set the strong model first',
+        'Set the fast model first',
+      ]);
+      // Only the tier without a model is refused.
+      const mixed = await put(
+        body({
+          provider: provider({ strongModel: 'fake-strong' }),
+          pricing: { ...STANDARD, strong: STRONG, fast: FAST },
+        }),
+      );
+      expect(errorsOf(mixed)).toEqual([
+        { path: 'body.pricing.fast', message: 'Set the fast model first' },
+      ]);
+    });
+
+    it.each([
+      ['a negative price', { inputUsdPerMTok: -1, outputUsdPerMTok: 5 }, 'inputUsdPerMTok'],
+      ['a price over 10 000', { inputUsdPerMTok: 1, outputUsdPerMTok: 10_001 }, 'outputUsdPerMTok'],
+      ['no output price', { inputUsdPerMTok: 1 }, 'outputUsdPerMTok'],
+      ['a field of its own', { inputUsdPerMTok: 1, outputUsdPerMTok: 5, extra: 1 }, ''],
+    ])('refuses a tier price with %s', async (_name, pair, field) => {
+      const path = field === '' ? 'body.pricing.strong' : `body.pricing.strong.${field}`;
+      const res = await put(
+        body({ provider: provider(tiers), pricing: { ...STANDARD, strong: pair, fast: FAST } }),
+      );
+      expect(res.statusCode, res.body).toBe(422);
+      expect(errorsOf(res).map((e) => e.path)).toContain(path);
+    });
+
+    it('stores the tier prices and answers them; a pair left out is none', async () => {
+      const pricing = { ...STANDARD, strong: STRONG, fast: FAST };
+      const set = await put(body({ provider: provider(tiers), pricing }));
+      expect(set.statusCode, set.body).toBe(200);
+      expect(set.json().pricing).toEqual(pricing);
+      expect((await get()).json().pricing).toEqual(pricing);
+      expect((await readLlmSettings(ctx.db)).pricing).toEqual(pricing);
+      // A save replaces the prices whole: a pair left out is none.
+      const left = await put(
+        body({
+          provider: provider({ strongModel: 'fake-strong' }),
+          pricing: { ...STANDARD, strong: STRONG },
+        }),
+      );
+      expect(left.json().pricing).toEqual({ ...STANDARD, strong: STRONG, fast: null });
+      const plain = await put(body({ pricing: STANDARD }));
+      expect(plain.json().pricing).toEqual({ ...STANDARD, strong: null, fast: null });
+      // A null pair is the same as none.
+      const nulls = await put(body({ pricing: { ...STANDARD, strong: null, fast: null } }));
+      expect(nulls.json().pricing).toEqual({ ...STANDARD, strong: null, fast: null });
+    });
+
+    it('names a change of a tier price as a change of the pricing', async () => {
+      const pricing = { ...STANDARD, strong: STRONG, fast: FAST };
+      await put(body({ provider: provider(tiers), pricing }));
+      const dearer = { ...pricing, strong: { ...STRONG, outputUsdPerMTok: 80 } };
+      expect((await put(body({ provider: provider(tiers), pricing: dearer }))).statusCode).toBe(
+        200,
+      );
+      expect(loggedChange()).toContain('"pricing"');
+      expect((await put(body({ provider: provider(tiers), pricing: dearer }))).statusCode).toBe(
+        200,
+      );
+      expect(loggedChange()).toContain('"fields":["provider.apiKey"]');
+    });
+
+    it('an instance whose settings were stored before the tiers keeps its provider and prices', async () => {
+      await put(body({ pricing: STANDARD }));
+      // The row as it was written before the tiers: no tier model, and no tier prices.
+      const [row] = await ctx.db
+        .select()
+        .from(instanceSettings)
+        .where(eq(instanceSettings.key, 'llm'));
+      const old = JSON.parse(JSON.stringify(row!.value)) as {
+        provider: Record<string, unknown>;
+        pricing: Record<string, unknown>;
+      };
+      delete old.provider.strongModel;
+      delete old.provider.fastModel;
+      delete old.pricing.strong;
+      delete old.pricing.fast;
+      expect(Object.keys(old.provider)).not.toContain('fastModel');
+      await ctx.db
+        .update(instanceSettings)
+        .set({ value: old })
+        .where(eq(instanceSettings.key, 'llm'));
+
+      const read = await get();
+      expect(read.statusCode, read.body).toBe(200);
+      // The provider is still configured: the row parsed.
+      expect(read.json().provider).toMatchObject({
+        model: 'fake-model',
+        strongModel: null,
+        fastModel: null,
+        apiKeySet: true,
+      });
+      expect(read.json().pricing).toEqual({ ...STANDARD, strong: null, fast: null });
+      // And it still saves, with the tiers set.
+      const saved = await put(
+        body({
+          provider: provider(tiers),
+          pricing: { ...STANDARD, strong: STRONG, fast: FAST },
+        }),
+      );
+      expect(saved.statusCode, saved.body).toBe(200);
+    });
   });
 
   it('refuses excluded projects of another organisation, and keeps its own', async () => {
@@ -763,6 +1038,8 @@ describe('/system/llm (llm.md §3, §16)', () => {
         kind: 'openai',
         baseUrl: fake.openAiBaseUrl,
         model: 'fake-model',
+        strongModel: null,
+        fastModel: null,
         auth: 'bearer',
         jsonMode: 'json_object',
         maxTokensField: 'max_tokens',

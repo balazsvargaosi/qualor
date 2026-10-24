@@ -534,6 +534,36 @@ describe('recorded events, part A (rbac-audit.md §8)', () => {
     expect(await latest('ai.settings_updated')).toMatchObject({
       details: { changed: ['provider'], apiKey: 'removed' },
     });
+
+    // The models of the review's tiers are the provider's too, though a call does not receive
+    // them: changing one alone changes the provider, and the same save again changes nothing.
+    expect((await put(body({ ...provider, apiKey }))).statusCode).toBe(200);
+    const withStrong = { ...provider, strongModel: 'm-big' };
+    expect((await put(body(withStrong))).statusCode).toBe(200);
+    expect(await latest('ai.settings_updated')).toMatchObject({
+      details: { changed: ['provider'], apiKey: 'kept' },
+    });
+    expect((await put(body(withStrong))).statusCode).toBe(200);
+    expect(await latest('ai.settings_updated')).toMatchObject({ details: { changed: [] } });
+    expect((await put(body({ ...withStrong, fastModel: 'm-small' }))).statusCode).toBe(200);
+    expect(await latest('ai.settings_updated')).toMatchObject({
+      details: { changed: ['provider'] },
+    });
+    // So are the prices of a tier.
+    const standard = { inputUsdPerMTok: 3, outputUsdPerMTok: 15 };
+    const tiers = { ...withStrong, fastModel: 'm-small' };
+    const priced = (strongOutput: number) => ({
+      pricing: {
+        ...standard,
+        strong: { inputUsdPerMTok: 15, outputUsdPerMTok: strongOutput },
+        fast: { inputUsdPerMTok: 1, outputUsdPerMTok: 5 },
+      },
+    });
+    expect((await put(body(tiers, priced(75)))).statusCode).toBe(200);
+    expect((await put(body(tiers, priced(80)))).statusCode).toBe(200);
+    expect(await latest('ai.settings_updated')).toMatchObject({
+      details: { changed: ['pricing'] },
+    });
   });
 
   describe('project grants (rbac-audit.md §8, §16)', () => {

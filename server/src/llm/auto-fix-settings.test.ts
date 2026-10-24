@@ -24,6 +24,8 @@ const provider = {
   kind: 'openai' as const,
   baseUrl: 'https://api.example.com/v1',
   model: 'm',
+  strongModel: null,
+  fastModel: null,
   auth: 'bearer' as const,
   jsonMode: 'json_object' as const,
   maxTokensField: 'max_tokens' as const,

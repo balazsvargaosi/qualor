@@ -9764,6 +9764,8 @@ export interface paths {
                                 kind: "openai" | "anthropic";
                                 baseUrl: string;
                                 model: string;
+                                strongModel: string | null;
+                                fastModel: string | null;
                                 /** @enum {string} */
                                 auth: "bearer" | "api-key";
                                 /** @enum {string} */
@@ -9815,6 +9817,16 @@ export interface paths {
                             pricing: {
                                 inputUsdPerMTok: number;
                                 outputUsdPerMTok: number;
+                                /** @default null */
+                                strong: {
+                                    inputUsdPerMTok: number;
+                                    outputUsdPerMTok: number;
+                                } | null;
+                                /** @default null */
+                                fast: {
+                                    inputUsdPerMTok: number;
+                                    outputUsdPerMTok: number;
+                                } | null;
                             } | null;
                             storePrompts: boolean;
                             promptRetentionDays: number;
@@ -9856,7 +9868,18 @@ export interface paths {
                             /** @enum {string} */
                             kind: "openai" | "anthropic";
                             baseUrl: string;
+                            /** @description The standard model: explain, triage and fix use it, and so does a step of an AI review whose tier has no model of its own */
                             model: string;
+                            /**
+                             * @description The model of AI review's strong tier (the judge and the verification of findings). Null or absent: the standard model
+                             * @default null
+                             */
+                            strongModel?: string | null;
+                            /**
+                             * @description The model of AI review's fast tier (the reviewer of a small merge request). Null or absent: the standard model
+                             * @default null
+                             */
+                            fastModel?: string | null;
                             /**
                              * @default bearer
                              * @enum {string}
@@ -9913,6 +9936,16 @@ export interface paths {
                         pricing: {
                             inputUsdPerMTok: number;
                             outputUsdPerMTok: number;
+                            /** @default null */
+                            strong?: {
+                                inputUsdPerMTok: number;
+                                outputUsdPerMTok: number;
+                            } | null;
+                            /** @default null */
+                            fast?: {
+                                inputUsdPerMTok: number;
+                                outputUsdPerMTok: number;
+                            } | null;
                         } | null;
                         storePrompts: boolean;
                         promptRetentionDays: number;
@@ -9932,6 +9965,8 @@ export interface paths {
                                 kind: "openai" | "anthropic";
                                 baseUrl: string;
                                 model: string;
+                                strongModel: string | null;
+                                fastModel: string | null;
                                 /** @enum {string} */
                                 auth: "bearer" | "api-key";
                                 /** @enum {string} */
@@ -9983,6 +10018,16 @@ export interface paths {
                             pricing: {
                                 inputUsdPerMTok: number;
                                 outputUsdPerMTok: number;
+                                /** @default null */
+                                strong: {
+                                    inputUsdPerMTok: number;
+                                    outputUsdPerMTok: number;
+                                } | null;
+                                /** @default null */
+                                fast: {
+                                    inputUsdPerMTok: number;
+                                    outputUsdPerMTok: number;
+                                } | null;
                             } | null;
                             storePrompts: boolean;
                             promptRetentionDays: number;
@@ -12536,6 +12581,7 @@ export interface paths {
                             provider: {
                                 host: string;
                                 model: string;
+                                models: string[];
                             } | null;
                             notice: string | null;
                             enabled: boolean;
@@ -12606,7 +12652,7 @@ export interface paths {
                 };
             };
         };
-        /** Set the organisation's AI review (org.ai.manage). Switching it on needs acknowledgeDataSharing, the provider the notice named, which records the provider's base URL, host and model, the user and the time; a change of any of them makes the consent outdated until it is given again */
+        /** Set the organisation's AI review (org.ai.manage). Switching it on needs acknowledgeDataSharing, the provider the notice named, which records the provider's base URL, host, model and models, the user and the time; a change of any of them makes the consent outdated until it is given again */
         put: {
             parameters: {
                 query?: never;
@@ -12629,10 +12675,12 @@ export interface paths {
                             perProjectTokensPerDay: number | null;
                             maxTokensPerReview: number;
                         };
-                        /** @description The provider the notice named: the `provider` of the GET answer. Needed to switch review on from off, and while consentCurrent is false; ignored otherwise. Absent: 409 AI_REVIEW_CONSENT_REQUIRED. A host or model other than the provider configured now: 409 AI_REVIEW_PROVIDER_CHANGED (nothing is stored) */
+                        /** @description The provider the notice named: the `provider` of the GET answer. Needed to switch review on from off, and while consentCurrent is false; ignored otherwise. Absent: 409 AI_REVIEW_CONSENT_REQUIRED. A host, model or set of models other than the provider configured now: 409 AI_REVIEW_PROVIDER_CHANGED (nothing is stored) */
                         acknowledgeDataSharing?: {
                             host: string;
                             model: string;
+                            /** @description Absent: the model alone */
+                            models?: string[];
                         };
                     };
                 };
@@ -12650,6 +12698,7 @@ export interface paths {
                             provider: {
                                 host: string;
                                 model: string;
+                                models: string[];
                             } | null;
                             notice: string | null;
                             enabled: boolean;
@@ -12709,7 +12758,7 @@ export interface paths {
                         "application/problem+json": components["schemas"]["Problem"];
                     };
                 };
-                /** @description AI_DISABLED (switching it on needs a provider and the organisation enabled for the AI assistant), AI_REVIEW_CONSENT_REQUIRED (switching it on, from off or while consentCurrent is false, needs acknowledgeDataSharing), or AI_REVIEW_PROVIDER_CHANGED (the acknowledgement names another host or model than the provider configured now; nothing is stored); AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed while no audit event is stored; an administrator must restore it (a retry does not help) */
+                /** @description AI_DISABLED (switching it on needs a provider and the organisation enabled for the AI assistant), AI_REVIEW_CONSENT_REQUIRED (switching it on, from off or while consentCurrent is false, needs acknowledgeDataSharing), or AI_REVIEW_PROVIDER_CHANGED (the acknowledgement names another host, model or set of models than the provider configured now; nothing is stored); AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed while no audit event is stored; an administrator must restore it (a retry does not help) */
                 409: {
                     headers: {
                         [name: string]: unknown;

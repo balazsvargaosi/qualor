@@ -39,6 +39,7 @@ import {
   MODEL_PATTERN,
   organizationSettings,
   orgLlmSettingsSchema,
+  ownModel,
   pricingSchema,
   projectOwners,
   providerApiKey,
@@ -64,10 +65,25 @@ const TESTS_PER_MINUTE = 10;
  */
 const API_KEY_PATTERN = /^[\x21-\x7e]{1,4096}$/;
 
+const modelField = z
+  .string()
+  .regex(MODEL_PATTERN, 'Letters, digits and . _ : / @ + - only, at most 200');
+
 const providerBody = z.strictObject({
   kind: z.enum(PROVIDER_KINDS),
   baseUrl: noNul(z.string().min(1).max(2_048)),
-  model: z.string().regex(MODEL_PATTERN, 'Letters, digits and . _ : / @ + - only, at most 200'),
+  model: modelField.meta({
+    description:
+      'The standard model: explain, triage and fix use it, and so does a step of an AI review whose tier has no model of its own',
+  }),
+  strongModel: modelField.nullable().default(null).meta({
+    description:
+      "The model of AI review's strong tier (the judge and the verification of findings). Null or absent: the standard model",
+  }),
+  fastModel: modelField.nullable().default(null).meta({
+    description:
+      "The model of AI review's fast tier (the reviewer of a small merge request). Null or absent: the standard model",
+  }),
   auth: z.enum(['bearer', 'api-key']).default('bearer'),
   jsonMode: z.enum(['json_object', 'none']).default('json_object'),
   maxTokensField: z.enum(['max_tokens', 'max_completion_tokens']).default('max_tokens'),
@@ -161,7 +177,12 @@ const settingsDto = z.object({
     .object({
       kind: z.enum(PROVIDER_KINDS),
       baseUrl: z.string(),
+      /** The standard model. */
       model: z.string(),
+      /** The model of AI review's strong tier; null: the standard model. */
+      strongModel: z.string().nullable(),
+      /** The model of AI review's fast tier; null: the standard model. */
+      fastModel: z.string().nullable(),
       auth: z.enum(['bearer', 'api-key']),
       jsonMode: z.enum(['json_object', 'none']),
       maxTokensField: z.enum(['max_tokens', 'max_completion_tokens']),
@@ -420,6 +441,8 @@ function dto(s: StoredLlmSettings, secretKey: string): z.infer<typeof settingsDt
   return {
     provider: s.provider && {
       ...providerConfig(s.provider),
+      strongModel: s.provider.strongModel,
+      fastModel: s.provider.fastModel,
       apiKeySet: s.provider.apiKeyEnc !== null,
       apiKeyReadable: providerApiKey(s, secretKey).ok,
     },
@@ -448,6 +471,16 @@ function nextKey(
   return incoming.apiKey === null ? null : encryptSecret(key, incoming.apiKey, LLM_API_KEY_AAD);
 }
 
+/**
+ * The provider as a write is compared: what a call receives, and the models of the tiers, which a
+ * call does not.
+ */
+const comparedProvider = (p: StoredProvider) => ({
+  ...providerConfig(p),
+  strongModel: p.strongModel,
+  fastModel: p.fastModel,
+});
+
 /** The names of the fields a write changed (never a value), for the audit log line. */
 function changedFields(
   current: StoredLlmSettings,
@@ -459,8 +492,8 @@ function changedFields(
   if (current.provider === null || next.provider === null) {
     if (current.provider !== next.provider) fields.push('provider');
   } else {
-    const before = providerConfig(current.provider);
-    const after = providerConfig(next.provider);
+    const before = comparedProvider(current.provider);
+    const after = comparedProvider(next.provider);
     for (const k of Object.keys(after) as (keyof typeof after)[]) {
       if (differs(before[k], after[k])) fields.push(`provider.${k}`);
     }
@@ -500,7 +533,7 @@ function settingsFieldsChanged(
 
 /** The top-level settings keys whose JSON differs (the provider without its key envelope). */
 function changedTopLevelKeys(current: StoredLlmSettings, next: StoredLlmSettings): string[] {
-  const provider = (s: StoredLlmSettings) => (s.provider ? providerConfig(s.provider) : null);
+  const provider = (s: StoredLlmSettings) => (s.provider ? comparedProvider(s.provider) : null);
   // Keys sorted at every level: a row read back from jsonb has another key order than a body.
   const sorted = (_key: string, value: unknown): unknown =>
     value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -511,6 +544,26 @@ function changedTopLevelKeys(current: StoredLlmSettings, next: StoredLlmSettings
   const fields: string[] = [];
   if (differs(provider(current), provider(next))) fields.push('provider');
   return [...fields, ...settingsFieldsChanged(current, next, differs)];
+}
+
+/**
+ * The prices of the tiers. With prices set, a tier with a model of its own is costed at that
+ * model's price and so needs its pair; a pair for a tier without a model of its own prices nothing.
+ */
+function tierPriceProblems(
+  provider: SettingsBody['provider'],
+  pricing: NonNullable<SettingsBody['pricing']>,
+): FieldError[] {
+  const errors: FieldError[] = [];
+  for (const tier of ['strong', 'fast'] as const) {
+    const hasModel = provider !== null && ownModel(provider, tier) !== null;
+    if (hasModel && pricing[tier] === null) {
+      errors.push({ path: `body.pricing.${tier}`, message: `Give the ${tier} model's prices too` });
+    } else if (!hasModel && pricing[tier] !== null) {
+      errors.push({ path: `body.pricing.${tier}`, message: `Set the ${tier} model first` });
+    }
+  }
+  return errors;
 }
 
 /** The projects an organisation's lists name that belong to another organisation (`owners`). */
@@ -562,6 +615,7 @@ export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
         errors.push({ path: 'body.provider.temperature', message: ANTHROPIC_TEMPERATURE_TEXT });
       }
     }
+    if (body.pricing !== null) errors.push(...tierPriceProblems(body.provider, body.pricing));
     for (const [id, o] of Object.entries(body.organizations)) {
       if (!known.has(id)) {
         errors.push({ path: `body.organizations.${id}`, message: 'No such organisation' });

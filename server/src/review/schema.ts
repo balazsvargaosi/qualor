@@ -41,16 +41,25 @@ export const DEFAULT_REVIEW_BUDGETS: Readonly<ReviewBudgets> = Object.freeze({
 });
 
 /**
+ * A model name, as the provider settings store one (`MODEL_PATTERN` of llm/settings.ts, which a
+ * test keeps equal).
+ */
+export const MODEL_NAME_PATTERN = /^[A-Za-z0-9._:/@+-]{1,200}$/;
+
+/**
  * R10: who acknowledged the data-sharing notice, for which provider. The provider is named by its
  * normalised base URL (scheme, host, port and path, as `/system/llm` stores it: a gateway may put
  * the tenant in the path), its host (with its port, as `URL.host` gives it: the one the notice
- * names) and its model. When any of them changes, the consent no longer covers the provider
- * (`consentCurrent` is false) until it is given again.
+ * names) and its models: `model` is the standard model, and `models` every model the notice
+ * named, sorted and each once. A consent stored before the tiers has no `models` and names its
+ * `model` alone (`consentModels`). When any of them changes, the consent no longer covers the
+ * provider (`consentCurrent` is false) until it is given again.
  */
 export const reviewConsentSchema = z.strictObject({
   providerUrl: z.string().min(1).max(2_048),
   providerHost: z.string().min(1).max(300),
   model: z.string().min(1).max(200),
+  models: z.array(z.string().regex(MODEL_NAME_PATTERN)).min(1).max(3).optional(),
   userId: z.uuid(),
   at: z.iso.datetime(),
 });

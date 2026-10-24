@@ -19744,6 +19744,18 @@
                             "model": {
                               "type": "string"
                             },
+                            "strongModel": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "fastModel": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
                             "auth": {
                               "type": "string",
                               "enum": [
@@ -19787,6 +19799,8 @@
                             "kind",
                             "baseUrl",
                             "model",
+                            "strongModel",
+                            "fastModel",
                             "auth",
                             "jsonMode",
                             "maxTokensField",
@@ -19982,11 +19996,69 @@
                               "type": "number",
                               "minimum": 0,
                               "maximum": 10000
+                            },
+                            "strong": {
+                              "default": null,
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "inputUsdPerMTok": {
+                                      "type": "number",
+                                      "minimum": 0,
+                                      "maximum": 10000
+                                    },
+                                    "outputUsdPerMTok": {
+                                      "type": "number",
+                                      "minimum": 0,
+                                      "maximum": 10000
+                                    }
+                                  },
+                                  "required": [
+                                    "inputUsdPerMTok",
+                                    "outputUsdPerMTok"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "fast": {
+                              "default": null,
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "inputUsdPerMTok": {
+                                      "type": "number",
+                                      "minimum": 0,
+                                      "maximum": 10000
+                                    },
+                                    "outputUsdPerMTok": {
+                                      "type": "number",
+                                      "minimum": 0,
+                                      "maximum": 10000
+                                    }
+                                  },
+                                  "required": [
+                                    "inputUsdPerMTok",
+                                    "outputUsdPerMTok"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
                             }
                           },
                           "required": [
                             "inputUsdPerMTok",
-                            "outputUsdPerMTok"
+                            "outputUsdPerMTok",
+                            "strong",
+                            "fast"
                           ],
                           "additionalProperties": false
                         },
@@ -20071,7 +20143,34 @@
                           },
                           "model": {
                             "type": "string",
-                            "pattern": "^[A-Za-z0-9._:/@+-]{1,200}$"
+                            "pattern": "^[A-Za-z0-9._:/@+-]{1,200}$",
+                            "description": "The standard model: explain, triage and fix use it, and so does a step of an AI review whose tier has no model of its own"
+                          },
+                          "strongModel": {
+                            "default": null,
+                            "description": "The model of AI review's strong tier (the judge and the verification of findings). Null or absent: the standard model",
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "pattern": "^[A-Za-z0-9._:/@+-]{1,200}$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "fastModel": {
+                            "default": null,
+                            "description": "The model of AI review's fast tier (the reviewer of a small merge request). Null or absent: the standard model",
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "pattern": "^[A-Za-z0-9._:/@+-]{1,200}$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
                           },
                           "auth": {
                             "default": "bearer",
@@ -20319,6 +20418,62 @@
                             "type": "number",
                             "minimum": 0,
                             "maximum": 10000
+                          },
+                          "strong": {
+                            "default": null,
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "inputUsdPerMTok": {
+                                    "type": "number",
+                                    "minimum": 0,
+                                    "maximum": 10000
+                                  },
+                                  "outputUsdPerMTok": {
+                                    "type": "number",
+                                    "minimum": 0,
+                                    "maximum": 10000
+                                  }
+                                },
+                                "required": [
+                                  "inputUsdPerMTok",
+                                  "outputUsdPerMTok"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "fast": {
+                            "default": null,
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "inputUsdPerMTok": {
+                                    "type": "number",
+                                    "minimum": 0,
+                                    "maximum": 10000
+                                  },
+                                  "outputUsdPerMTok": {
+                                    "type": "number",
+                                    "minimum": 0,
+                                    "maximum": 10000
+                                  }
+                                },
+                                "required": [
+                                  "inputUsdPerMTok",
+                                  "outputUsdPerMTok"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
                           }
                         },
                         "required": [
@@ -20381,6 +20536,18 @@
                             "model": {
                               "type": "string"
                             },
+                            "strongModel": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "fastModel": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
                             "auth": {
                               "type": "string",
                               "enum": [
@@ -20424,6 +20591,8 @@
                             "kind",
                             "baseUrl",
                             "model",
+                            "strongModel",
+                            "fastModel",
                             "auth",
                             "jsonMode",
                             "maxTokensField",
@@ -20619,11 +20788,69 @@
                               "type": "number",
                               "minimum": 0,
                               "maximum": 10000
+                            },
+                            "strong": {
+                              "default": null,
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "inputUsdPerMTok": {
+                                      "type": "number",
+                                      "minimum": 0,
+                                      "maximum": 10000
+                                    },
+                                    "outputUsdPerMTok": {
+                                      "type": "number",
+                                      "minimum": 0,
+                                      "maximum": 10000
+                                    }
+                                  },
+                                  "required": [
+                                    "inputUsdPerMTok",
+                                    "outputUsdPerMTok"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "fast": {
+                              "default": null,
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "inputUsdPerMTok": {
+                                      "type": "number",
+                                      "minimum": 0,
+                                      "maximum": 10000
+                                    },
+                                    "outputUsdPerMTok": {
+                                      "type": "number",
+                                      "minimum": 0,
+                                      "maximum": 10000
+                                    }
+                                  },
+                                  "required": [
+                                    "inputUsdPerMTok",
+                                    "outputUsdPerMTok"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
                             }
                           },
                           "required": [
                             "inputUsdPerMTok",
-                            "outputUsdPerMTok"
+                            "outputUsdPerMTok",
+                            "strong",
+                            "fast"
                           ],
                           "additionalProperties": false
                         },
@@ -26732,11 +26959,18 @@
                             },
                             "model": {
                               "type": "string"
+                            },
+                            "models": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
                             }
                           },
                           "required": [
                             "host",
-                            "model"
+                            "model",
+                            "models"
                           ],
                           "additionalProperties": false
                         },
@@ -26968,7 +27202,7 @@
         }
       },
       "put": {
-        "summary": "Set the organisation's AI review (org.ai.manage). Switching it on needs acknowledgeDataSharing, the provider the notice named, which records the provider's base URL, host and model, the user and the time; a change of any of them makes the consent outdated until it is given again",
+        "summary": "Set the organisation's AI review (org.ai.manage). Switching it on needs acknowledgeDataSharing, the provider the notice named, which records the provider's base URL, host, model and models, the user and the time; a change of any of them makes the consent outdated until it is given again",
         "tags": [
           "ai"
         ],
@@ -27045,7 +27279,7 @@
                     "additionalProperties": false
                   },
                   "acknowledgeDataSharing": {
-                    "description": "The provider the notice named: the `provider` of the GET answer. Needed to switch review on from off, and while consentCurrent is false; ignored otherwise. Absent: 409 AI_REVIEW_CONSENT_REQUIRED. A host or model other than the provider configured now: 409 AI_REVIEW_PROVIDER_CHANGED (nothing is stored)",
+                    "description": "The provider the notice named: the `provider` of the GET answer. Needed to switch review on from off, and while consentCurrent is false; ignored otherwise. Absent: 409 AI_REVIEW_CONSENT_REQUIRED. A host, model or set of models other than the provider configured now: 409 AI_REVIEW_PROVIDER_CHANGED (nothing is stored)",
                     "type": "object",
                     "properties": {
                       "host": {
@@ -27057,6 +27291,17 @@
                         "type": "string",
                         "minLength": 1,
                         "maxLength": 200
+                      },
+                      "models": {
+                        "description": "Absent: the model alone",
+                        "minItems": 1,
+                        "maxItems": 3,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 200
+                        }
                       }
                     },
                     "required": [
@@ -27124,11 +27369,18 @@
                             },
                             "model": {
                               "type": "string"
+                            },
+                            "models": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
                             }
                           },
                           "required": [
                             "host",
-                            "model"
+                            "model",
+                            "models"
                           ],
                           "additionalProperties": false
                         },
@@ -27348,7 +27600,7 @@
             }
           },
           "409": {
-            "description": "AI_DISABLED (switching it on needs a provider and the organisation enabled for the AI assistant), AI_REVIEW_CONSENT_REQUIRED (switching it on, from off or while consentCurrent is false, needs acknowledgeDataSharing), or AI_REVIEW_PROVIDER_CHANGED (the acknowledgement names another host or model than the provider configured now; nothing is stored); AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed while no audit event is stored; an administrator must restore it (a retry does not help)",
+            "description": "AI_DISABLED (switching it on needs a provider and the organisation enabled for the AI assistant), AI_REVIEW_CONSENT_REQUIRED (switching it on, from off or while consentCurrent is false, needs acknowledgeDataSharing), or AI_REVIEW_PROVIDER_CHANGED (the acknowledgement names another host, model or set of models than the provider configured now; nothing is stored); AUDIT_CHAIN_ANCHOR_MALFORMED: the audit-chain instance setting is malformed while no audit event is stored; an administrator must restore it (a retry does not help)",
             "content": {
               "application/problem+json": {
                 "schema": {

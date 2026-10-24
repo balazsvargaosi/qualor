@@ -29,6 +29,8 @@ const PROVIDER: StoredProvider = {
   kind: 'openai',
   baseUrl: 'https://llm.example/v1',
   model: 'fake-model',
+  strongModel: null,
+  fastModel: null,
   auth: 'bearer',
   jsonMode: 'json_object',
   maxTokensField: 'max_tokens',
