@@ -2,6 +2,7 @@ import type { IncomingHttpHeaders } from 'node:http';
 import { outboundRequest } from '../../http/outbound';
 import { isInternalHostAllowed, scmRefusedAddress } from '../../scm/url';
 import { llmBaseUrlProblem } from '../url';
+import { outputLimitRefused } from './output-room';
 import {
   LLM_MAX_ANSWER_BYTES,
   LlmCallAborted,
@@ -40,10 +41,12 @@ export function retryAfterSeconds(
  * One JSON POST to `<baseUrl><path>` through the outbound core (llm.md §4: the base URL checked
  * first, every resolved address checked and pinned, no proxy, no redirect followed, at most 1 MiB
  * read, the whole exchange within `timeoutSeconds`): the parsed JSON of a 2xx, else an LlmError.
- * An error body is read only to classify (llm.md §14): `outputLimitField`, the output limit field
- * the request carried, is matched against the error's `param`; nothing of the body is shown or
- * logged. A call that `http.signal` gives up is cut where it is, as the timeout cuts it, and throws
- * LlmCallAborted: no LlmError, since the provider neither failed nor was slow.
+ * An error body is read only to classify (llm.md §14): a 400 that says the output limit is more
+ * than the model takes is flagged (`refusedOutputLimit`), for the call to be asked again with less;
+ * `outputLimitField`, the output limit field the request carried, is matched against the error's
+ * `param`; nothing of the body is shown or logged. A call that `http.signal` gives up is cut where
+ * it is, as the timeout cuts it, and throws LlmCallAborted: no LlmError, since the provider neither
+ * failed nor was slow.
  */
 export async function postJson(
   config: ProviderConfig,
@@ -135,6 +138,11 @@ export async function postJson(
     ) {
       throw new LlmError('workspace_required', WORKSPACE_REQUIRED_TEXT, status);
     }
+    // Before the refusal of the field: OpenAI names the parameter of a limit that is too large
+    // too, and it is the value that is refused then, not the field.
+    if (status === 400 && outputLimitRefused(errorOf(result.body).message)) {
+      throw new LlmError('rejected', refusedText(status), status, null, false, true);
+    }
     if (outputLimitField !== undefined && refusedParam(result.body) === outputLimitField) {
       const other = outputLimitField === 'max_tokens' ? 'max_completion_tokens' : 'max_tokens';
       throw new LlmError(
@@ -152,17 +160,18 @@ export async function postJson(
         true,
       );
     }
-    throw new LlmError(
-      'rejected',
-      `The provider refused the request (HTTP ${status}); check the base URL and model`,
-      status,
-    );
+    throw new LlmError('rejected', refusedText(status), status);
   }
   try {
     return JSON.parse(result.body.toString('utf8')) as unknown;
   } catch {
     throw new LlmError('bad_answer', NOT_UNDERSTOOD, status);
   }
+}
+
+/** What a request that the provider refused is told, whatever it was refused for. */
+function refusedText(status: number): string {
+  return `The provider refused the request (HTTP ${status}); check the base URL and model`;
 }
 
 /** Whether the request body offers the model tools (the key both wires use for them). */
@@ -202,21 +211,18 @@ const asRecord = (value: unknown): Record<string, unknown> | null =>
     : null;
 
 /**
- * Whether an error body says that the model or its server cannot call tools or functions: it is
- * about tools (the parameter it refuses is one of the tool parameters, or its message names tools
- * or functions) and it says they are not supported (a phrase of that, or the code
- * `unsupported_parameter`). A refusal of a schema is not it, and neither is a request that is too
- * long, although OpenAI's message for that counts the tokens "in the functions".
- * The error is at `error` (OpenAI, Anthropic, Ollama's OpenAI endpoint), is `error` itself when
- * that is a string (Ollama's own API), or is at the top of the body (vLLM). Only this yes or no is
- * used: nothing of the text is shown, stored or logged.
+ * What an error body holds, as the providers shape it: the object with the detail (its `param` and
+ * `code`), and its message ('' when there is none). The error is at `error` (OpenAI, Anthropic,
+ * Ollama's OpenAI endpoint), is `error` itself when that is a string (Ollama's own API), or is at
+ * the top of the body (vLLM). A body that is not JSON holds nothing. Callers use only a yes or no
+ * of it: nothing of the text is shown, stored or logged.
  */
-function refusesTools(body: Buffer): boolean {
+function errorOf(body: Buffer): { detail: Record<string, unknown> | null; message: string } {
   let parsed: unknown;
   try {
     parsed = JSON.parse(body.toString('utf8'));
   } catch {
-    return false;
+    return { detail: null, message: '' };
   }
   const top = asRecord(parsed);
   const detail = asRecord(top?.error) ?? top;
@@ -226,6 +232,19 @@ function refusesTools(body: Buffer): boolean {
       : typeof top?.error === 'string'
         ? top.error
         : '';
+  return { detail, message };
+}
+
+/**
+ * Whether an error body says that the model or its server cannot call tools or functions: it is
+ * about tools (the parameter it refuses is one of the tool parameters, or its message names tools
+ * or functions) and it says they are not supported (a phrase of that, or the code
+ * `unsupported_parameter`). A refusal of a schema is not it, and neither is a request that is too
+ * long, although OpenAI's message for that counts the tokens "in the functions". Only this yes or
+ * no is used.
+ */
+function refusesTools(body: Buffer): boolean {
+  const { detail, message } = errorOf(body);
   const code = detail?.code;
   if (SCHEMA.test(message)) return false;
   const param = detail?.param;

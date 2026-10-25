@@ -99,9 +99,11 @@ export interface ConversationInput {
     maxOutputTokens: number;
     /**
      * The room, in tokens, the model is given beyond `maxOutputTokens` to think before it answers
-     * (none when absent). It raises only the limit every call asks for: the loop estimates with
-     * `maxOutputTokens` alone and counts what each call really used, so a call that thinks may
-     * go past the budget by its own thinking, which `maxOutputTokens` plus this bounds.
+     * (none when absent). Every call carries it apart from `maxOutputTokens`, and the provider layer
+     * asks for the two together, and for `maxOutputTokens` alone from a model that refuses that
+     * much. It raises only the limit every call asks for: the loop estimates with `maxOutputTokens`
+     * alone and counts what each call really used, so a call that thinks may go past the budget by
+     * its own thinking, which `maxOutputTokens` plus this bounds.
      */
     reasoningAllowance?: number;
   };
@@ -451,7 +453,8 @@ export async function runConversation(input: ConversationInput): Promise<Convers
     system: input.system,
     messages: [...messages],
     tools: input.tools,
-    maxOutputTokens: limits.maxOutputTokens + (limits.reasoningAllowance ?? 0),
+    maxOutputTokens: limits.maxOutputTokens,
+    ...(limits.reasoningAllowance ? { reasoningAllowance: limits.reasoningAllowance } : {}),
   });
   let turns = 0;
   let toolCalls = 0;

@@ -300,18 +300,20 @@ function missingV1Hint(provider: StoredProvider, status: number | null): string 
  */
 const TEST_MAX_OUTPUT_TOKENS = 256;
 /**
- * What both calls of the Test ask for: those, and the room of the one-shot allowance for a model
- * that thinks before it answers. Its thinking counts against the limit (with JSON mode, OpenAI
- * refuses a request whose limit the reasoning used up), so a model that thinks by default would
- * otherwise be cut off before its answer and fail a Test it passes in use.
+ * Both calls of the Test ask for those tokens and the room of the one-shot allowance besides, for a
+ * model that thinks before it answers. Its thinking counts against the limit (with JSON mode,
+ * OpenAI refuses a request whose limit the reasoning used up), so a model that thinks by default
+ * would otherwise be cut off before its answer and fail a Test it passes in use. A model that
+ * takes no limit that large is asked again without the room, as in use.
  */
-const TEST_ASKED_TOKENS = TEST_MAX_OUTPUT_TOKENS + REASONING_ALLOWANCE_TOKENS.singleShot;
+const TEST_ROOM_TOKENS = REASONING_ALLOWANCE_TOKENS.singleShot;
 
 /** llm.md §16: the Test button's prompt holds no repository data. */
 const TEST_CALL = {
   system: 'Answer with the JSON object {"ok": true} and nothing else.',
   user: 'ping',
-  maxOutputTokens: TEST_ASKED_TOKENS,
+  maxOutputTokens: TEST_MAX_OUTPUT_TOKENS,
+  reasoningAllowance: TEST_ROOM_TOKENS,
 };
 
 /**
@@ -327,7 +329,8 @@ const TOOL_CHECK: LlmConversation = {
   system: 'This is a connection check. Call the echo tool with the text ok.',
   messages: [{ role: 'user', text: 'Call the echo tool with the text ok.' }],
   tools: [ECHO_TOOL],
-  maxOutputTokens: TEST_ASKED_TOKENS,
+  maxOutputTokens: TEST_MAX_OUTPUT_TOKENS,
+  reasoningAllowance: TEST_ROOM_TOKENS,
 };
 
 /**

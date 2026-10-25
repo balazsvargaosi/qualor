@@ -103,7 +103,8 @@ export function newToolPolicy(o: {
  * run over the reader under its policy (none without a reader), the loop's caps, and the role's
  * output limit: its answer's tokens (REVIEW_OUTPUT_TOKENS), which the loop estimates with, and the
  * room for the model to think before it answers (REASONING_ALLOWANCE_TOKENS), which only raises
- * what each call asks for. The pipeline's contract for `converse` (pipeline.ts).
+ * what each call asks for, and which a model that refuses that much is asked without. The
+ * pipeline's contract for `converse` (pipeline.ts).
  */
 export function converseOverTools(call: RoleCall, io: ConversationIo): Promise<ConversationResult> {
   return runConversation({

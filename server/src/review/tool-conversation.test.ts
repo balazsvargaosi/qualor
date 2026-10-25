@@ -164,8 +164,8 @@ describe('the room a call leaves for the model to think', () => {
       },
       shouldStop: () => Promise.resolve(false),
     });
-    // The call asked for the verification's 2 048 and 16 000 more, and is charged the 2 048.
-    expect(sent[0]!.maxOutputTokens).toBe(18_048);
+    // The call asks for the verification's 2 048 and 16 000 more, apart, and is charged the 2 048.
+    expect(sent[0]).toMatchObject({ maxOutputTokens: 2_048, reasoningAllowance: 16_000 });
     expect(result).toMatchObject({ kind: 'answer', outputTokens: REVIEW_OUTPUT_TOKENS.verify });
   });
 });
@@ -195,8 +195,9 @@ describe('converseOverTools', () => {
       expect(sent[0]).toMatchObject({
         system: SYSTEM_PROMPTS[role],
         tools: REVIEW_TOOLS,
-        // The role's answer, and room for the model to think before it.
-        maxOutputTokens: REVIEW_OUTPUT_TOKENS[role] + REASONING_ALLOWANCE_TOKENS.conversation,
+        // The role's answer, and room for the model to think before it, apart.
+        maxOutputTokens: REVIEW_OUTPUT_TOKENS[role],
+        reasoningAllowance: REASONING_ALLOWANCE_TOKENS.conversation,
         messages: [{ role: 'user', text: `data of ${role}` }],
       });
     }
@@ -337,7 +338,8 @@ describe('converseOverTools', () => {
     expect(sent[0]).toMatchObject({
       system: SYSTEM_PROMPTS.reply,
       tools: REVIEW_TOOLS,
-      maxOutputTokens: REVIEW_OUTPUT_TOKENS.reply + REASONING_ALLOWANCE_TOKENS.conversation,
+      maxOutputTokens: REVIEW_OUTPUT_TOKENS.reply,
+      reasoningAllowance: REASONING_ALLOWANCE_TOKENS.conversation,
       messages: [{ role: 'user', text: 'The thread' }],
     });
   });

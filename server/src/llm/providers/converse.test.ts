@@ -7,6 +7,7 @@ import {
   openAiAnswer,
   openAiToolCalls,
   type FakeLlm,
+  type RecordedLlmRequest,
 } from '../../../test/fake-llm';
 import { parseInternalHosts } from '../../scm/url';
 import {
@@ -785,6 +786,220 @@ describe('converse: conversations with read-only tools (R5)', () => {
       expect((await converse(openai, fake.apiKey, start, http)).usage).toEqual(unknown);
       expect((await converse(anthropic, fake.apiKey, start, http)).usage).toEqual(unknown);
       expect((await converse(anthropic, fake.apiKey, start, http)).usage).toEqual(unknown);
+    });
+  });
+
+  describe('a model that refuses the room to think', () => {
+    // A call carries the room apart from the answer's tokens, and the adapter asks for both. A model
+    // that refuses a limit that large is asked again, in the same call, for the answer's tokens
+    // alone, and the process does not ask it for the room again.
+    const ASKED = { maxOutputTokens: 1_200, reasoningAllowance: 4_000 };
+    const call = { system: 'S', user: 'U', ...ASKED };
+    const conversation: LlmConversation = { ...start, ...ASKED };
+    let models = 0;
+    /** A model of its own for each test: what a process learns of one it keeps. */
+    const own = (config: ProviderConfig): ProviderConfig => ({
+      ...config,
+      model: `refusing-model-${(models += 1)}`,
+    });
+    /** The limit a request asked for, in the field of its wire. */
+    const limitOf = (request: RecordedLlmRequest): unknown => {
+      const json = request.json as { max_tokens?: unknown; max_completion_tokens?: unknown };
+      return json.max_tokens ?? json.max_completion_tokens;
+    };
+    const limits = () => fake.requests.map(limitOf);
+    /** What a request says besides its limit. */
+    const withoutLimit = (request: RecordedLlmRequest) =>
+      Object.fromEntries(
+        Object.entries(request.json as Record<string, unknown>).filter(
+          ([field]) => field !== 'max_tokens' && field !== 'max_completion_tokens',
+        ),
+      );
+    const answer = (kind: (typeof KINDS)[number]) => ({
+      status: 200,
+      body: kind === 'anthropic' ? anthropicAnswer('{"ok":true}') : openAiAnswer('{"ok":true}'),
+    });
+    const GENERIC = 'The provider refused the request (HTTP 400); check the base URL and model';
+    const REFUSALS: [string, (typeof KINDS)[number], unknown][] = [
+      [
+        'Anthropic',
+        'anthropic',
+        {
+          type: 'error',
+          error: {
+            type: 'invalid_request_error',
+            message:
+              'max_tokens: 20384 > 8192, which is the maximum allowed number of output tokens for claude-3-5-sonnet-20241022',
+          },
+        },
+      ],
+      [
+        'OpenAI',
+        'openai',
+        {
+          error: {
+            message:
+              'max_tokens is too large: 20000. This model supports at most 16384 completion tokens, whereas you provided 20000.',
+            type: 'invalid_request_error',
+            param: 'max_tokens',
+            code: null,
+          },
+        },
+      ],
+      [
+        'vLLM',
+        'openai',
+        {
+          object: 'error',
+          message:
+            "This model's maximum context length is 8192 tokens. However, you requested 9000 tokens (4000 in the messages, 5000 in the completion). Please reduce the length of the messages or completion.",
+          type: 'BadRequestError',
+          param: null,
+          code: 400,
+        },
+      ],
+    ];
+
+    it.each(REFUSALS)(
+      '%s: a call is asked again, once, for the answer alone, and the next call of that model asks for it at once',
+      async (_who, kind, body) => {
+        const config = own(configFor(kind));
+        fake.enqueue({ status: 400, body }, answer(kind));
+        expect((await callProvider(config, fake.apiKey, call, http)).finishReason).toBe('stop');
+        expect(limits()).toEqual([5_200, 1_200]);
+        // Else the same request.
+        expect(withoutLimit(fake.requests[1]!)).toEqual(withoutLimit(fake.requests[0]!));
+        fake.enqueue(answer(kind));
+        await callProvider(config, fake.apiKey, call, http);
+        expect(limits()).toEqual([5_200, 1_200, 1_200]);
+      },
+    );
+
+    it.each(REFUSALS)(
+      '%s: a conversation too, with its tools, and the other turns of it go without the room',
+      async (_who, kind, body) => {
+        const config = own(configFor(kind));
+        fake.enqueue({ status: 400, body }, answer(kind), answer(kind));
+        const turn = await converse(config, fake.apiKey, conversation, http);
+        expect(turn.finishReason).toBe('stop');
+        expect(limits()).toEqual([5_200, 1_200]);
+        expect(withoutLimit(fake.requests[1]!)).toEqual(withoutLimit(fake.requests[0]!));
+        await converse(config, fake.apiKey, conversation, http);
+        expect(limits()).toEqual([5_200, 1_200, 1_200]);
+      },
+    );
+
+    it('does not pass on what it learned to another model', async () => {
+      const learned = own(anthropic);
+      fake.enqueue({ status: 400, body: REFUSALS[0]![2] }, answer('anthropic'));
+      await callProvider(learned, fake.apiKey, call, http);
+      fake.enqueue(answer('anthropic'));
+      await callProvider(own(anthropic), fake.apiKey, call, http);
+      expect(limits()).toEqual([5_200, 1_200, 5_200]);
+    });
+
+    it('asks in the field of the settings, again', async () => {
+      const config = own({ ...openai, maxTokensField: 'max_completion_tokens' });
+      fake.enqueue({ status: 400, body: REFUSALS[1]![2] }, answer('openai'));
+      await callProvider(config, fake.apiKey, call, http);
+      expect(
+        fake.requests.map((r) => (r.json as Record<string, unknown>).max_completion_tokens),
+      ).toEqual([5_200, 1_200]);
+      for (const request of fake.requests) expect(request.json).not.toHaveProperty('max_tokens');
+    });
+
+    it.each(KINDS)(
+      '%s: asks again only after a 400 that refuses the limit, and for the room alone',
+      async (kind) => {
+        const unrelated = [
+          'max_tokens: must be at least 1',
+          "This model's maximum context length is 8192 tokens. However, your messages resulted in 9000 tokens. Please reduce the length of the messages.",
+          'tools.0.input_schema: JSON schema is invalid',
+        ];
+        for (const message of unrelated) {
+          fake.requests.length = 0;
+          fake.enqueue({
+            status: 400,
+            body:
+              kind === 'anthropic'
+                ? { type: 'error', error: { type: 'invalid_request_error', message } }
+                : { error: { message, type: 'invalid_request_error', param: null, code: null } },
+          });
+          const err = await callProvider(own(configFor(kind)), fake.apiKey, call, http).catch(
+            (e: unknown) => e,
+          );
+          expect(err, message).toMatchObject({
+            failure: 'rejected',
+            status: 400,
+            refusedOutputLimit: false,
+            message: GENERIC,
+          });
+          expect(limits(), message).toEqual([5_200]);
+        }
+      },
+    );
+
+    it('asks again after a 400 only: the same words with another status are another refusal', async () => {
+      const words = REFUSALS[0]![2];
+      fake.enqueue({ status: 422, body: words });
+      const err = await callProvider(own(anthropic), fake.apiKey, call, http).catch(
+        (e: unknown) => e,
+      );
+      expect(err).toMatchObject({ failure: 'rejected', status: 422, refusedOutputLimit: false });
+      expect(limits()).toEqual([5_200]);
+    });
+
+    it('lets the error of the second call stand, and learns nothing from it: a prompt that is too long alone', async () => {
+      const config = own(openai);
+      const tooLong = (completion: number) => ({
+        object: 'error',
+        message: `This model's maximum context length is 8192 tokens. However, you requested ${8_500 + completion} tokens (8500 in the messages, ${completion} in the completion). Please reduce the length of the messages or completion.`,
+        type: 'BadRequestError',
+        param: null,
+        code: 400,
+      });
+      fake.enqueue(
+        { status: 400, body: tooLong(5_200) },
+        { status: 400, body: tooLong(1_200) },
+        { status: 400, body: tooLong(5_200) },
+        { status: 400, body: tooLong(1_200) },
+      );
+      for (let i = 0; i < 2; i += 1) {
+        const err = await callProvider(config, fake.apiKey, call, http).catch((e: unknown) => e);
+        expect(err).toMatchObject({ failure: 'rejected', status: 400, message: GENERIC });
+      }
+      // The second call asked for the room again, as the first had: nothing was remembered.
+      expect(limits()).toEqual([5_200, 1_200, 5_200, 1_200]);
+    });
+
+    it('lets the error of the second call stand when it is another one', async () => {
+      fake.enqueue(
+        { status: 400, body: REFUSALS[0]![2] },
+        { status: 401, body: llmShape('openai-error') },
+      );
+      const err = await callProvider(own(anthropic), fake.apiKey, call, http).catch(
+        (e: unknown) => e,
+      );
+      expect(err).toMatchObject({ failure: 'refused_key', status: 401 });
+      expect(limits()).toEqual([5_200, 1_200]);
+    });
+
+    it('has no room to drop when it asks for none: the refusal stands, and is not mistaken for a refusal of the field', async () => {
+      fake.enqueue({ status: 400, body: REFUSALS[1]![2] });
+      const refused = await callProvider(
+        own(openai),
+        fake.apiKey,
+        { system: 'S', user: 'U', maxOutputTokens: 20_000 },
+        http,
+      ).catch((e: unknown) => e);
+      // The body names the parameter max_tokens, and the field is not what it refuses.
+      expect(refused).toMatchObject({
+        failure: 'rejected',
+        status: 400,
+        refusedOutputLimit: true,
+        message: GENERIC,
+      });
+      expect(limits()).toEqual([20_000]);
     });
   });
 

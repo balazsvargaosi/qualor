@@ -8,9 +8,10 @@ export type LlmErrorCode = NonNullable<TestAnswer['problem']>['code'];
 type TestModel = TestAnswer['models'][number];
 
 /**
- * llm.md §14 in the UI's own words (plan 1F ruling Y3: the server's English text is never shown).
- * `providerStatus`, the provider's HTTP status when the Test answer gives one, tells a wrong key
- * (401) from a key that may not do this (403).
+ * llm.md §14 in the UI's own words (plan 1F ruling Y3: the server's English text is never shown),
+ * for any page but the AI settings: what it says of a field of the settings points at the page
+ * (`settingsProblemText` is for the page itself). `providerStatus`, the provider's HTTP status
+ * when the Test answer gives one, tells a wrong key (401) from a key that may not do this (403).
  */
 export function llmProblemText(code: LlmErrorCode, providerStatus: number | null = null): string {
   switch (code) {
@@ -28,7 +29,7 @@ export function llmProblemText(code: LlmErrorCode, providerStatus: number | null
         ? $localize`:@@ai.problem.key:The provider refused the API key.`
         : $localize`:@@ai.problem.keyStatus:The provider refused the API key (HTTP ${providerStatus}:status:).`;
     case 'PROVIDER_WORKSPACE_REQUIRED':
-      return $localize`:@@ai.problem.workspaceRequired:This key is not scoped to a workspace: give its workspace ID below.`;
+      return $localize`:@@ai.problem.workspaceRequiredInSettings:This key is not scoped to a workspace: give its workspace ID in the AI assistant settings.`;
     case 'PROVIDER_REJECTED_REQUEST':
       return $localize`:@@ai.problem.rejected:The provider refused the request; check the base URL and the model.`;
     case 'PROVIDER_BAD_ANSWER':
@@ -55,6 +56,19 @@ export function llmProblemText(code: LlmErrorCode, providerStatus: number | null
   }
 }
 
+/**
+ * `llmProblemText` for the AI settings page, where the field a problem is about is on the page, below
+ * the message: a key that is not scoped to a workspace is told where the workspace ID goes.
+ */
+export function settingsProblemText(
+  code: LlmErrorCode,
+  providerStatus: number | null = null,
+): string {
+  return code === 'PROVIDER_WORKSPACE_REQUIRED'
+    ? $localize`:@@ai.problem.workspaceRequired:This key is not scoped to a workspace: give its workspace ID below.`
+    : llmProblemText(code, providerStatus);
+}
+
 /** One model's line after a Test of several models: the model, how it fared, and the words for it. */
 export interface TestLine {
   model: string;
@@ -70,7 +84,7 @@ export interface TestLine {
 export function testLine(found: TestModel): TestLine {
   const { model, latencyMs } = found;
   if (found.problem) {
-    const problem = llmProblemText(found.problem.code, found.problem.providerStatus);
+    const problem = settingsProblemText(found.problem.code, found.problem.providerStatus);
     return {
       model,
       tone: 'error',

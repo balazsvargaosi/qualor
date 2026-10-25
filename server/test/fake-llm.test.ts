@@ -293,6 +293,67 @@ describe('fake LLM', () => {
     }
   });
 
+  it('refuses a limit above the output cap of a model, in the words of each API, when it is given caps', async () => {
+    const capped = await createFakeLlm({ outputCaps: { 'small-model': 4_096 } });
+    try {
+      const messages = [{ role: 'user', content: 'hi' }];
+      const anthropic = (model: string, tokens: number) =>
+        fetch(`${capped.url}/v1/messages`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-api-key': capped.apiKey,
+            'anthropic-version': '2023-06-01',
+          },
+          body: JSON.stringify({ model, max_tokens: tokens, messages }),
+        });
+      const openAi = (model: string, field: string, tokens: number) =>
+        fetch(`${capped.url}/v1/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            authorization: `Bearer ${capped.apiKey}`,
+          },
+          body: JSON.stringify({ model, [field]: tokens, messages }),
+        });
+      // At the cap, under it, and a model that has none: answered.
+      expect((await anthropic('small-model', 4_096)).status).toBe(200);
+      expect((await openAi('small-model', 'max_tokens', 1)).status).toBe(200);
+      expect((await anthropic('other-model', 100_000)).status).toBe(200);
+      expect((await openAi('other-model', 'max_tokens', 100_000)).status).toBe(200);
+      // Over it, in the words each API has for it; the refusal is no scripted reply, so it takes none.
+      capped.enqueue({ status: 200, body: { queued: true } });
+      const a = await anthropic('small-model', 5_200);
+      expect(a.status).toBe(400);
+      expect(await a.json()).toEqual({
+        type: 'error',
+        error: {
+          type: 'invalid_request_error',
+          message:
+            'max_tokens: 5200 > 4096, which is the maximum allowed number of output tokens for small-model',
+        },
+      });
+      const o = await openAi('small-model', 'max_tokens', 5_200);
+      expect(o.status).toBe(400);
+      expect(await o.json()).toEqual({
+        error: {
+          message:
+            'max_tokens is too large: 5200. This model supports at most 4096 completion tokens, whereas you provided 5200.',
+          type: 'invalid_request_error',
+          param: 'max_tokens',
+          code: null,
+        },
+      });
+      const c = await openAi('small-model', 'max_completion_tokens', 5_200);
+      expect(c.status).toBe(400);
+      expect(JSON.stringify(await c.json())).toContain('max_completion_tokens is too large: 5200.');
+      // The scripted reply is still there for the first request that is not refused.
+      expect(await (await anthropic('small-model', 10)).json()).toEqual({ queued: true });
+    } finally {
+      await capped.close();
+    }
+  });
+
   it('is an organisation-wide key when it is given a workspace: Anthropic calls name it or are refused', async () => {
     const scoped = await createFakeLlm({ workspaceId: 'wrkspc_Fake01' });
     try {

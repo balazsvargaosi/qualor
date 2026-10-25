@@ -231,7 +231,8 @@ export async function runLiveCheck(
               system: prompt.system,
               user: prompt.user,
               // As the llm job asks: the answer's tokens, and room for a model that thinks first.
-              maxOutputTokens: MAX_OUTPUT_TOKENS[feature] + REASONING_ALLOWANCE_TOKENS.singleShot,
+              maxOutputTokens: MAX_OUTPUT_TOKENS[feature],
+              reasoningAllowance: REASONING_ALLOWANCE_TOKENS.singleShot,
             },
             http,
           );

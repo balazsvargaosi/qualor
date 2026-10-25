@@ -212,7 +212,8 @@ describe('the answer to a reply', () => {
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({
       system: SYSTEM_PROMPTS.reply,
-      maxOutputTokens: REVIEW_OUTPUT_TOKENS.reply + REASONING_ALLOWANCE_TOKENS.conversation,
+      maxOutputTokens: REVIEW_OUTPUT_TOKENS.reply,
+      reasoningAllowance: REASONING_ALLOWANCE_TOKENS.conversation,
       tools: REVIEW_TOOLS,
     });
     expect(sent[0]?.system).toBe(replySystemPrompt({ verdicts: ALL, tools: true }));

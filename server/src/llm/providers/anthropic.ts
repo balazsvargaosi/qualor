@@ -1,6 +1,7 @@
 import type { FinishReason } from '@qualor/shared';
 import { z } from 'zod';
 import { NOT_UNDERSTOOD, postJson } from './http';
+import { askWithRoom } from './output-room';
 import {
   LlmError,
   tokenCount,
@@ -115,7 +116,9 @@ async function send(
 /**
  * llm.md §2.3: POST <baseUrl>/v1/messages with `x-api-key` and `anthropic-version`. No streaming,
  * tools, metadata, thinking or sampling parameter: the current models refuse a temperature, a
- * `top_p` and a `top_k`, think as their default says, and count that thinking in `max_tokens`.
+ * `top_p` and a `top_k`, think as their default says, and count that thinking in `max_tokens`, so
+ * `max_tokens` is the answer's tokens and the reasoning allowance together, and the answer's alone
+ * from a model that refuses that much (`askWithRoom`).
  */
 export async function anthropicMessages(
   config: ProviderConfig,
@@ -123,13 +126,15 @@ export async function anthropicMessages(
   call: LlmCall,
   http: ProviderHttpOptions,
 ): Promise<LlmAnswer> {
-  const body: Record<string, unknown> = {
-    model: config.model,
-    max_tokens: call.maxOutputTokens,
-    system: call.system,
-    messages: [{ role: 'user', content: call.user }],
-  };
-  return (await send(config, apiKey, body, http)).answer;
+  return await askWithRoom(config, call, async (maxTokens) => {
+    const body: Record<string, unknown> = {
+      model: config.model,
+      max_tokens: maxTokens,
+      system: call.system,
+      messages: [{ role: 'user', content: call.user }],
+    };
+    return (await send(config, apiKey, body, http)).answer;
+  });
 }
 
 /** A message as the Messages API takes it. */
@@ -228,20 +233,24 @@ export async function anthropicConverse(
   conversation: LlmConversation,
   http: ProviderHttpOptions,
 ): Promise<LlmTurn> {
-  const body: Record<string, unknown> = {
-    model: config.model,
-    max_tokens: conversation.maxOutputTokens,
-    system: conversation.system,
-    messages: wireMessages(conversation.messages),
-  };
-  if (conversation.tools.length > 0) {
-    body.tools = conversation.tools.map((tool) => ({
-      name: tool.name,
-      description: tool.description,
-      input_schema: tool.parameters,
-    }));
-    body.tool_choice = { type: 'auto' };
-  }
-  const { answer, toolUse, replay } = await send(config, apiKey, body, http);
-  return { ...answer, toolCalls: toolUse.map(toolCall), ...(replay ? { replay } : {}) };
+  const messages = wireMessages(conversation.messages);
+  const tools = conversation.tools.map((tool) => ({
+    name: tool.name,
+    description: tool.description,
+    input_schema: tool.parameters,
+  }));
+  return await askWithRoom(config, conversation, async (maxTokens) => {
+    const body: Record<string, unknown> = {
+      model: config.model,
+      max_tokens: maxTokens,
+      system: conversation.system,
+      messages,
+    };
+    if (tools.length > 0) {
+      body.tools = tools;
+      body.tool_choice = { type: 'auto' };
+    }
+    const { answer, toolUse, replay } = await send(config, apiKey, body, http);
+    return { ...answer, toolCalls: toolUse.map(toolCall), ...(replay ? { replay } : {}) };
+  });
 }

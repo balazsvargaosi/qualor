@@ -267,6 +267,45 @@ function blankTextProblem(json: unknown): string | null {
   return null;
 }
 
+/**
+ * The 400 of a request whose output limit is above the cap of its model, in the words of its API
+ * (Anthropic's, and OpenAI's for the field it asked in), or null when there is no cap for the model
+ * or the limit is within it.
+ */
+function outputCapProblem(
+  caps: Record<string, number> | undefined,
+  anthropic: boolean,
+  json: unknown,
+): unknown {
+  if (caps === undefined || typeof json !== 'object' || json === null) return null;
+  const request = json as Record<string, unknown>;
+  const model = request.model;
+  if (typeof model !== 'string' || !Object.hasOwn(caps, model)) return null;
+  const cap = caps[model]!;
+  const field = anthropic
+    ? 'max_tokens'
+    : ['max_tokens', 'max_completion_tokens'].find((name) => typeof request[name] === 'number');
+  const asked = field === undefined ? undefined : request[field];
+  if (field === undefined || typeof asked !== 'number' || asked <= cap) return null;
+  if (anthropic) {
+    return {
+      type: 'error',
+      error: {
+        type: 'invalid_request_error',
+        message: `max_tokens: ${asked} > ${cap}, which is the maximum allowed number of output tokens for ${model}`,
+      },
+    };
+  }
+  return {
+    error: {
+      message: `${field} is too large: ${asked}. This model supports at most ${cap} completion tokens, whereas you provided ${asked}.`,
+      type: 'invalid_request_error',
+      param: field,
+      code: null,
+    },
+  };
+}
+
 export interface FakeLlm {
   /** `http://127.0.0.1:<port>` */
   url: string;
@@ -298,10 +337,17 @@ export interface FakeLlm {
  * workspace in `anthropic-workspace-id`, or it is refused with a 400 saying the key is not scoped
  * to a workspace (a request naming another one, with a 403). With `refuseBlankText` an Anthropic
  * request is refused with a 400, as the real API does, when a text block is empty or only
- * whitespace, or a message has no content.
+ * whitespace, or a message has no content. With `outputCaps` (a model's name, and the most output
+ * tokens it takes) a request whose limit is above the cap of its model is refused with a 400, in the
+ * words of its API, and takes no scripted reply.
  */
 export async function createFakeLlm(
-  options: { apiKey?: string | null; workspaceId?: string; refuseBlankText?: boolean } = {},
+  options: {
+    apiKey?: string | null;
+    workspaceId?: string;
+    refuseBlankText?: boolean;
+    outputCaps?: Record<string, number>;
+  } = {},
 ): Promise<FakeLlm> {
   const apiKey =
     options.apiKey === null
@@ -397,6 +443,8 @@ export async function createFakeLlm(
             });
           }
         }
+        const capped = outputCapProblem(options.outputCaps, anthropic, json);
+        if (capped !== null) return send({ status: 400, body: capped });
         const next = queue.shift();
         try {
           if (next === undefined) return send(shaped(request, cannedModelText(request)));

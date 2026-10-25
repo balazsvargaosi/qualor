@@ -91,7 +91,8 @@ describe('/system/llm (llm.md §3, §16)', () => {
     ctx.app.inject({ method: 'POST', url: '/api/v0/system/llm/test', headers: session.headers });
 
   beforeAll(async () => {
-    fake = await createFakeLlm();
+    // A model of its own that takes at most 4 096 output tokens, as a Claude 3-era model does.
+    fake = await createFakeLlm({ outputCaps: { 'capped-model': 4_096 } });
     ctx = await createTestContext({
       config: { llmInternalHosts: parseInternalHosts(fake.host) },
     });
@@ -1038,6 +1039,39 @@ describe('/system/llm (llm.md §3, §16)', () => {
         await useProvider('openai');
       }
     });
+
+    it.each(['openai', 'anthropic'] as const)(
+      'passes a model that takes at most 4 096 output tokens: the Test asks again without the room, and the tool check goes without it (%s)',
+      async (kind) => {
+        try {
+          await put(
+            body({
+              provider:
+                kind === 'openai'
+                  ? provider({ model: 'capped-model' })
+                  : provider({
+                      kind: 'anthropic',
+                      baseUrl: fake.anthropicBaseUrl,
+                      model: 'capped-model',
+                    }),
+            }),
+          );
+          fake.enqueue(plainOk(kind), toolAnswer(kind));
+          const res = await check();
+          expect(res.json()).toMatchObject({ ok: true, problem: null, toolCalling: 'supported' });
+          // The plain call asked for 256 and the room, was refused and asked again; the check
+          // then knew the model.
+          expect(fake.requests.map((r) => (r.json as { max_tokens: number }).max_tokens)).toEqual([
+            256 + 4_000,
+            256,
+            256,
+          ]);
+          expect(res.body).not.toMatch(/maximum allowed number|supports at most/);
+        } finally {
+          await useProvider('openai');
+        }
+      },
+    );
 
     it.each(['openai', 'anthropic'] as const)(
       'asks for room to think in both calls of the Test: 256 tokens and the 4 000 of the allowance (%s)',

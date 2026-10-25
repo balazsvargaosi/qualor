@@ -1887,8 +1887,11 @@ describe('runConversation with a scripted provider', () => {
         const s = scripted(turn('done', { usage: unknown }));
         s.input.limits = { ...LIMITS, reasoningAllowance: 16_000 };
         const result = await runConversation(s.input);
-        // The call asked for the cap and the room; the guess is the cap alone.
-        expect(s.seen[0]!.maxOutputTokens).toBe(LIMITS.maxOutputTokens + 16_000);
+        // The call carries the cap and the room apart; the guess is the cap alone.
+        expect(s.seen[0]).toMatchObject({
+          maxOutputTokens: LIMITS.maxOutputTokens,
+          reasoningAllowance: 16_000,
+        });
         expect(result.outputTokens).toBe(LIMITS.maxOutputTokens);
       });
 

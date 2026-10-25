@@ -50,7 +50,8 @@ describe('the llm worker (llm.md §9, §10, §14)', () => {
     });
 
   beforeAll(async () => {
-    fake = await createFakeLlm();
+    // A model of its own that takes at most 4 096 output tokens, as a Claude 3-era model does.
+    fake = await createFakeLlm({ outputCaps: { 'capped-model': 4_096 } });
     h = await createIngestHarness({ config: { llmInternalHosts: parseInternalHosts(fake.host) } });
     const p = await h.project('acme/ai-job');
     projectId = p.id;
@@ -135,6 +136,42 @@ describe('the llm worker (llm.md §9, §10, §14)', () => {
         expect((fake.requests[0]!.json as { max_tokens: number }).max_tokens, feature).toBe(tokens);
       }
       expect(MAX_OUTPUT_TOKENS).toEqual({ explain: 1_200, triage: 800, fix: 1_500 });
+    },
+  );
+
+  it.each(['openai', 'anthropic'] as const)(
+    'works against a model that takes at most 4 096 output tokens: the call is asked again without the room, as one row (%s)',
+    async (kind) => {
+      const capped = {
+        ...configuredProvider(h.ctx.config.secretKey, fake, kind),
+        model: 'capped-model',
+      };
+      await configure({ provider: capped });
+      const limits = () => fake.requests.map((r) => (r.json as { max_tokens: number }).max_tokens);
+      const first = await ask('explain');
+      await runLlmJobs(h, llmJobDeps(h));
+      expect(await row(first.id)).toMatchObject({
+        status: 'succeeded',
+        attempts: 1,
+        errorCode: null,
+      });
+      // One call of the queue and one row; the provider saw the room refused, then the answer alone.
+      expect(limits()).toEqual([1_200 + 4_000, 1_200]);
+      expect(await h.ctx.db.select().from(llmRequests)).toHaveLength(1);
+      // The model is known now: the next requests ask for the answer alone at once.
+      const triage = await ask('triage');
+      await runLlmJobs(h, llmJobDeps(h));
+      expect(await row(triage.id)).toMatchObject({ status: 'succeeded', attempts: 1 });
+      const fix = await ask('fix');
+      await runLlmJobs(h, llmJobDeps(h));
+      expect(await row(fix.id)).toMatchObject({ status: 'succeeded', attempts: 1 });
+      expect(limits()).toEqual([5_200, 1_200, 800, 1_500]);
+      expect(await h.ctx.db.select().from(llmRequests)).toHaveLength(3);
+      // Nothing of what the provider said of the limit is kept, shown or logged.
+      expect(JSON.stringify(await h.ctx.db.select().from(llmRequests))).not.toMatch(
+        /maximum allowed number|supports at most/,
+      );
+      expect(logs()).not.toMatch(/maximum allowed number|supports at most/);
     },
   );
 

@@ -135,6 +135,22 @@ describe('MCP AI tools (ruling R1)', () => {
     expect(r.text).toContain('The model did not answer in time');
   });
 
+  it('returns the failure of a request refused for a key that is not scoped to a workspace, in words that point at the settings', async () => {
+    const first = await ask('qualor_explain', {});
+    const requestId = first.structured?.requestId as string;
+    await h.ctx.db
+      .update(llmRequests)
+      .set({ status: 'failed', errorCode: 'PROVIDER_WORKSPACE_REQUIRED' })
+      .where(eq(llmRequests.id, requestId));
+    const r = await ask('qualor_explain', { requestId });
+    expect(r.isError).toBe(false);
+    expect(r.structured).toMatchObject({ status: 'failed', requestId });
+    expect(r.text).toContain('PROVIDER_WORKSPACE_REQUIRED');
+    expect(r.text).toContain(
+      'This key is not scoped to a workspace: give its workspace ID in the AI assistant settings.',
+    );
+  });
+
   it('refuses a requestId of another issue or of the other feature', async () => {
     const explain = await ask('qualor_explain', {});
     const requestId = explain.structured?.requestId as string;

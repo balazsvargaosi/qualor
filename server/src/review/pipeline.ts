@@ -85,7 +85,8 @@ export const MAX_VERIFICATIONS = 5;
  * The tokens each role may write in one answer: the cap of the answer itself, which is read up to
  * `ANSWER_CHARS_PER_TOKEN` characters for each of them. A reply's is a verdict and at most 1 200
  * characters of words. A conversation asks the provider for these and, beyond them, the room for the
- * model to think before it answers (`converseOverTools`).
+ * model to think before it answers (`converseOverTools`); a model that takes no limit that large is
+ * asked for these alone.
  */
 export const REVIEW_OUTPUT_TOKENS: Readonly<Record<ConversationRole, number>> = Object.freeze({
   quality: 12_288,

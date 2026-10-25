@@ -318,6 +318,28 @@ describe('AiPanel (llm.md §18)', () => {
     expect(server.requests.filter((r) => r.method === 'POST')).toHaveLength(0);
   });
 
+  it('names a key that is not scoped to a workspace in words that point at the settings', async () => {
+    const server = setup();
+    server.on('GET', '/api/v0/issues/i1/ai', {
+      body: {
+        explain: request({
+          status: 'failed',
+          error: { code: 'PROVIDER_WORKSPACE_REQUIRED', detail: null },
+        }),
+        triage: null,
+        fix: null,
+      },
+    });
+    const { root } = await render();
+    const text = root.querySelector('[role="alert"]')?.textContent ?? '';
+    expect(text).toContain(
+      'This key is not scoped to a workspace: give its workspace ID in the AI assistant settings.',
+    );
+    // The field is on the settings page: nothing here is below the message.
+    expect(text).not.toContain('below');
+    expect(server.requests.filter((r) => r.method === 'POST')).toHaveLength(0);
+  });
+
   it('names a GitHub pull request as one', async () => {
     const server = setup();
     server.on('GET', '/api/v0/issues/i1/ai', { body: { explain: null, triage: null, fix: FIX } });

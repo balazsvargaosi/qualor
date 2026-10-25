@@ -1,6 +1,7 @@
 import type { FinishReason } from '@qualor/shared';
 import { z } from 'zod';
 import { NOT_UNDERSTOOD, postJson } from './http';
+import { askWithRoom } from './output-room';
 import {
   LlmError,
   tokenCount,
@@ -110,7 +111,9 @@ async function chat(
 
 /**
  * llm.md §2.2: POST <baseUrl>/chat/completions, the key as `Authorization: Bearer` or (Azure,
- * `api-key`, none without a key. No streaming, tools or vendor metadata fields.
+ * `api-key`, none without a key. No streaming, tools or vendor metadata fields. The output limit
+ * (in the field of the settings) is the answer's tokens and the reasoning allowance together, and
+ * the answer's alone from a model that refuses that much (`askWithRoom`).
  */
 export async function openAiChat(
   config: ProviderConfig,
@@ -118,17 +121,19 @@ export async function openAiChat(
   call: LlmCall,
   http: ProviderHttpOptions,
 ): Promise<LlmAnswer> {
-  const body: Record<string, unknown> = {
-    model: config.model,
-    messages: [
-      { role: 'system', content: call.system },
-      { role: 'user', content: call.user },
-    ],
-    [config.maxTokensField]: call.maxOutputTokens,
-  };
-  if (config.jsonMode === 'json_object') body.response_format = { type: 'json_object' };
-  if (config.temperature !== null) body.temperature = config.temperature;
-  return (await chat(config, apiKey, body, http)).answer;
+  return await askWithRoom(config, call, async (maxTokens) => {
+    const body: Record<string, unknown> = {
+      model: config.model,
+      messages: [
+        { role: 'system', content: call.system },
+        { role: 'user', content: call.user },
+      ],
+      [config.maxTokensField]: maxTokens,
+    };
+    if (config.jsonMode === 'json_object') body.response_format = { type: 'json_object' };
+    if (config.temperature !== null) body.temperature = config.temperature;
+    return (await chat(config, apiKey, body, http)).answer;
+  });
 }
 
 /** A conversation message as OpenAI's chat completions take it (R5). */
@@ -193,24 +198,28 @@ export async function openAiConverse(
   conversation: LlmConversation,
   http: ProviderHttpOptions,
 ): Promise<LlmTurn> {
-  const body: Record<string, unknown> = {
-    model: config.model,
-    messages: [
-      { role: 'system', content: conversation.system },
-      ...conversation.messages.map(wireMessage),
-    ],
-    [config.maxTokensField]: conversation.maxOutputTokens,
-  };
-  if (conversation.tools.length > 0) {
-    body.tools = conversation.tools.map((tool) => ({
-      type: 'function',
-      function: { name: tool.name, description: tool.description, parameters: tool.parameters },
-    }));
-    body.tool_choice = 'auto';
-  } else if (config.jsonMode === 'json_object') {
-    body.response_format = { type: 'json_object' };
-  }
-  if (config.temperature !== null) body.temperature = config.temperature;
-  const { answer, toolCalls } = await chat(config, apiKey, body, http);
-  return { ...answer, toolCalls: toolCalls.map(toolCall) };
+  const messages = [
+    { role: 'system', content: conversation.system },
+    ...conversation.messages.map(wireMessage),
+  ];
+  const tools = conversation.tools.map((tool) => ({
+    type: 'function',
+    function: { name: tool.name, description: tool.description, parameters: tool.parameters },
+  }));
+  return await askWithRoom(config, conversation, async (maxTokens) => {
+    const body: Record<string, unknown> = {
+      model: config.model,
+      messages,
+      [config.maxTokensField]: maxTokens,
+    };
+    if (tools.length > 0) {
+      body.tools = tools;
+      body.tool_choice = 'auto';
+    } else if (config.jsonMode === 'json_object') {
+      body.response_format = { type: 'json_object' };
+    }
+    if (config.temperature !== null) body.temperature = config.temperature;
+    const { answer, toolCalls } = await chat(config, apiKey, body, http);
+    return { ...answer, toolCalls: toolCalls.map(toolCall) };
+  });
 }

@@ -23,7 +23,7 @@ import { label } from '../i18n/labels';
 import { OrgContext } from '../org/org-context';
 import { inputValue, isChecked } from '../shared/forms';
 import { SystemInfo } from '../shell/system-info';
-import { llmProblemText, type TestLine, testLine } from './ai-text';
+import { settingsProblemText, type TestLine, testLine } from './ai-text';
 import {
   AUTO_FIX_FEATURE,
   AUTO_FIX_SEVERITIES,
@@ -548,7 +548,7 @@ export class AiSettingsPage {
           );
         }
       } else if (result.problem) {
-        this.error.set(llmProblemText(result.problem.code, result.problem.providerStatus));
+        this.error.set(settingsProblemText(result.problem.code, result.problem.providerStatus));
       } else {
         this.announcement.set(
           $localize`:@@ai.settings.testOk:Connected to ${result.model ?? this.provider()?.model ?? ''}:model: in ${result.latencyMs}:latency: ms.`,

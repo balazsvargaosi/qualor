@@ -22,11 +22,17 @@ export interface ProviderConfig {
   timeoutSeconds: number;
 }
 
-/** llm.md §2.1 */
+/**
+ * llm.md §2.1. `maxOutputTokens` is the tokens the answer itself may take; `reasoningAllowance`
+ * is the room asked for besides, for a model that thinks before it answers
+ * (REASONING_ALLOWANCE_TOKENS). The adapter asks for both together, and for the first alone from a
+ * model that refuses a limit that large.
+ */
 export interface LlmCall {
   system: string;
   user: string;
   maxOutputTokens: number;
+  reasoningAllowance?: number;
 }
 
 /** llm.md §2.1 */
@@ -88,12 +94,16 @@ export type LlmMessage =
     }
   | { role: 'tool'; callId: string; name: string; text: string };
 
-/** R5: the whole conversation so far, sent again on every turn. */
+/**
+ * R5: the whole conversation so far, sent again on every turn. The limits are those of an
+ * {@link LlmCall}: the answer's tokens, and the room asked for besides.
+ */
 export interface LlmConversation {
   system: string;
   messages: readonly LlmMessage[];
   tools: readonly LlmToolSpec[];
   maxOutputTokens: number;
+  reasoningAllowance?: number;
 }
 
 /**
@@ -113,7 +123,9 @@ export interface LlmTurn extends LlmAnswer {
  * call (the conversations) is given 16 000, and the short answers of explain, triage and fix
  * (`singleShot`) 4 000, and so does the provider test, on its own small limit. A model that does
  * not reason spends none of it, and every budget counts the tokens a call used, so the room costs
- * nothing.
+ * nothing. A call carries it apart from the answer's own limit (`reasoningAllowance`), as a model
+ * with a smaller output limit than the two together refuses the call, and is asked again without
+ * it (see `askWithRoom`).
  */
 export const REASONING_ALLOWANCE_TOKENS = { conversation: 16_000, singleShot: 4_000 } as const;
 
@@ -140,9 +152,10 @@ export type LlmFailure = (typeof LLM_FAILURES)[number];
 
 /**
  * A provider call that did not answer usably. `message` is a fixed text, never the provider's
- * body, a header or the API key. `refusedTools` is a yes or no read from the provider's error
- * body: the request carried tools and was refused in words that name tools or functions (the model
- * or its server cannot call tools).
+ * body, a header or the API key. `refusedTools` and `refusedOutputLimit` are each a yes or no read
+ * from the provider's error body: the request carried tools and was refused in words that name
+ * tools or functions (the model or its server cannot call tools), and the request was refused (a
+ * 400) because its output limit is more than the model takes.
  */
 export class LlmError extends Error {
   constructor(
@@ -151,6 +164,7 @@ export class LlmError extends Error {
     readonly status: number | null = null,
     readonly retryAfterSeconds: number | null = null,
     readonly refusedTools = false,
+    readonly refusedOutputLimit = false,
   ) {
     super(message);
     this.name = 'LlmError';

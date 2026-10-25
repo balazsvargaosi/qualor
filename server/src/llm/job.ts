@@ -512,8 +512,10 @@ async function sendClaimed(
       {
         system: prompt.system,
         user: prompt.user,
-        // The answer's tokens, and room for a model that thinks before it answers.
-        maxOutputTokens: MAX_OUTPUT_TOKENS[row.feature] + REASONING_ALLOWANCE_TOKENS.singleShot,
+        // The answer's tokens, and room for a model that thinks before it answers, which a model
+        // that takes no such limit is asked without.
+        maxOutputTokens: MAX_OUTPUT_TOKENS[row.feature],
+        reasoningAllowance: REASONING_ALLOWANCE_TOKENS.singleShot,
       },
       {
         internalHosts: deps.internalHosts,

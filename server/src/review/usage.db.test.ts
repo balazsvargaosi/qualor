@@ -836,6 +836,47 @@ const port = 8080;
       }
     };
 
+    it('records one row for a call that was asked again without the room, with the tokens of its answer', async () => {
+      const settings = settingsFor('anthropic', { storePrompts: true });
+      const sender = senderFor('anthropic', { settings, model: 'refuses-the-room' });
+      fake.enqueue(
+        {
+          status: 400,
+          body: {
+            type: 'error',
+            error: {
+              type: 'invalid_request_error',
+              message:
+                'max_tokens: 20384 > 8192, which is the maximum allowed number of output tokens for claude-3-5-sonnet-20241022',
+            },
+          },
+        },
+        textTurn('anthropic', 'done', [20, 5]),
+      );
+      const turn = await sender({
+        system: 'S',
+        messages: [{ role: 'user', text: 'U' }],
+        tools: TOOLS,
+        maxOutputTokens: 1_200,
+        reasoningAllowance: 4_000,
+      });
+      expect(turn.text).toBe('done');
+      expect(fake.requests.map((r) => (r.json as { max_tokens: number }).max_tokens)).toEqual([
+        5_200, 1_200,
+      ]);
+      // One call of the sender's: one row, of the call that answered; the refusal leaves none.
+      const stored = await rows();
+      expect(stored).toHaveLength(1);
+      expect(stored[0]).toMatchObject({
+        status: 'succeeded',
+        errorCode: null,
+        model: 'refuses-the-room',
+        inputTokens: 20,
+        outputTokens: 5,
+      });
+      expect(JSON.stringify(stored)).not.toMatch(/maximum allowed number/);
+    });
+
     it('writes the organisation of the run’s project on the row', async () => {
       fake.say('done');
       await converse1(senderFor('openai'));
