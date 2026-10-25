@@ -17,21 +17,18 @@ import { transitionAsSystem } from '../issues/transitions';
 import { readLlmSettings, type StoredLlmSettings } from '../llm/settings';
 import type { JobHandlers } from '../queue/worker';
 import { AI_ENGINE } from '../rules/server-engines';
-import { gitlabClientFor, type ScmConnectionRow } from '../scm/connections';
+import { gitlabClientFor } from '../scm/connections';
 import { GITHUB_PR_NUMBER } from '../scm/github/client';
 import { githubClientFor } from '../scm/github/connections';
 import { parseRepoRef } from '../scm/github/url';
 import { GITLAB_MR_IID } from '../scm/gitlab/client';
-import { readMergeRequestState } from '../scm/mr-state';
 import { ScmError } from '../scm/provider';
 import type { IssueStatus } from '../tracking/plan';
-import { handleCommand, NothingToReview, type CommandDecision } from './commands';
 import type { ReviewJobDeps } from './job';
 import { ofBranch } from './lifecycle';
-import { commandNote, replyNote } from './render';
+import { replyNote } from './render';
 import {
   claimReply,
-  endReply,
   recordAnswerNote,
   recordDecision,
   recordStatusChange,
@@ -39,28 +36,20 @@ import {
   type ReplyEnd,
   type ReplyRow,
 } from './replies';
+import { answerCommand } from './reply-commands';
 import { decideReply, replyTokensLeft, type ReplyDeps, type ReplyIssue } from './reply-engine';
-import {
-  AI_REPLY_QUEUE,
-  queueAfterCircuit,
-  queueAfterStop,
-  REPLY_CIRCUIT_WAIT_SECONDS,
-  replyPayload,
-  withLiveJob,
-} from './reply-queue';
+import { AI_REPLY_QUEUE, queueAfterStop, replyPayload, withLiveJob } from './reply-queue';
 import {
   GONE,
-  githubCommandSide,
   githubSide,
-  gitlabCommandSide,
   gitlabSide,
   orGone,
-  type CommandSide,
   type ReadThread,
   type ReplyInThread,
   type ThreadNote,
   type ThreadSide,
 } from './reply-sides';
+import { CLOSED, JobSteps, THREAD_GONE, WAITING, type Target } from './reply-steps';
 import { errorClass } from './run-ends';
 import { reviewActive } from './settings';
 import { openSnapshotReader, type SnapshotReader } from './snapshot-reader';
@@ -99,18 +88,7 @@ import { openSnapshotReader, type SnapshotReader } from './snapshot-reader';
  * monorepo's thread of another project's issue never is): otherwise the row ends `failed: internal`.
  *
  * A command row (`qualor review`, `qualor fix`, `qualor stop`) is taken in the same way and makes
- * no model call, and asks no budget. The merge request is read, and one that is merged or closed
- * ends the row `skipped: closed`, with no run made and no answer; the command's own note is read
- * too (a GitLab command's discussion, a GitHub command's comment), and one that is gone ends it
- * `skipped: thread_gone`. For a `qualor review` with no decision yet, one more request asks the
- * provider whether the author of that note has the rights a reply needs to change a status (a
- * review costs tokens). Then `handleCommand` (commands.ts) decides, in one transaction that also
- * makes or restarts the run, and stores the fixed text of the answer on the row, so that a retry
- * never decides twice nor asks for the rights again. The answer is posted once, beside the
- * command's note (a note of Qualor's whose first line names the row is the answer a post stored
- * though its outcome was lost), and the row ends `done` with the decision's outcome: a refusal is
- * `not_available`. AI review being off does not skip a command: it is answered so. A branch with no
- * newest analysis ends the row `failed: internal`, with no answer.
+ * no model call, and asks no budget: reply-commands.ts answers it.
  *
  * The job's own requests pass the connection's circuit as the `scm` worker's jobs do (scm.md
  * §4.2), in two goes, so that no probe of it waits on the model: the merge request, the thread and
@@ -144,24 +122,6 @@ interface PendingRound {
 type Seen = { thread: ReadThread; posted: number | null } & (
   { decided: Decided } | { round: PendingRound }
 );
-
-/** What a go through the circuit answers when the circuit did not let it through: the row waits. */
-const WAITING = Symbol('waiting');
-
-/** What the first go answers for a merge request that is merged or closed. */
-const CLOSED = Symbol('closed');
-
-/** The merge request of a row, its project and the connection the project is mapped to now. */
-interface Target {
-  branch: { id: string; name: string; lastAnalysisId: string | null };
-  project: {
-    id: string;
-    organizationId: string;
-    scmConnectionId: string | null;
-    scmProjectRef: string | null;
-  };
-  connection: ScmConnectionRow | null;
-}
 
 async function targetOf(db: Db, row: ReplyRow): Promise<Target | null> {
   const [found] = await db
@@ -307,18 +267,19 @@ async function snapshotOf(db: Db, branch: Target['branch']): Promise<SnapshotRea
 const statusComment = (verdict: 'wont_fix' | 'false_positive', author: string): string =>
   `${verdict === 'wont_fix' ? "Won't fix" : 'False positive'} after \`${author}\` replied in the merge request.`;
 
-const THREAD_GONE: ReplyEnd = { status: 'skipped', reason: 'thread_gone' };
 const SUPERSEDED: ReplyEnd = { status: 'skipped', reason: 'superseded', dropDecision: true };
 
-class ReplyJob {
+class ReplyJob extends JobSteps {
   constructor(
-    private readonly deps: ReviewJobDeps,
+    deps: ReviewJobDeps,
     private readonly replyId: string,
     /** Whether an earlier try of this job ran: one that took the row and left it running. */
     private readonly retry: boolean,
     /** Whether this is the job's last try (its attempts are spent with it). */
     private readonly lastTry: boolean,
-  ) {}
+  ) {
+    super(deps);
+  }
 
   async run(): Promise<void> {
     try {
@@ -361,7 +322,7 @@ class ReplyJob {
     if (taken.kind === 'command') {
       return target === null
         ? this.failInternal(taken, 'the row has no merge request')
-        : this.answerCommand(taken, target);
+        : answerCommand(this.deps, taken, target);
     }
     if (taken.threadId === null || taken.issueId === null || target === null) {
       return this.failInternal(taken, 'the row has no thread, no issue or no merge request');
@@ -569,145 +530,6 @@ class ReplyJob {
   }
 
   /**
-   * Whether the merge request is merged or closed, read as the review job reads it, through no
-   * organisation slot: a state that cannot be read lets the job go on.
-   */
-  private async closed(row: Pick<ReplyRow, 'projectId'>, target: Target): Promise<boolean> {
-    const { db, scm } = this.deps;
-    const state = await readMergeRequestState({ db, scm }, row.projectId, target.branch.name);
-    return state !== null && state.state !== 'open';
-  }
-
-  /**
-   * A command row, in the steps the header gives. The merge request and the command's discussion
-   * are read in a go through the circuit, then the decision is made (no request), and the post is
-   * another go: a row that waits for the circuit before its decision has made no run. It resumes
-   * after the last step the row records: a decision on it is posted, never made again, and an
-   * answer note on it ends the row.
-   */
-  private async answerCommand(row: ReplyRow, target: Target): Promise<void> {
-    const side = this.commandSideOf(row, target);
-    if (side === 'gone') return this.end(row, THREAD_GONE);
-    if (side === 'unusable') {
-      return this.failInternal(row, 'the SCM connection of the project cannot be used');
-    }
-    const seen = await this.throughCircuit(row, side, () => this.readCommand(row, target, side));
-    if (seen === WAITING) return;
-    if (seen === CLOSED) return this.end(row, { status: 'skipped', reason: 'closed' });
-    if (seen === null) return this.end(row, THREAD_GONE);
-    const decision = await this.decideCommand(row, target, seen.mayReview);
-    if (decision === null) return;
-    const posted = row.answerNoteId ?? seen.answered;
-    await this.throughCircuit(row, side, () => this.postCommandAnswer(row, side, posted, decision));
-  }
-
-  /**
-   * What the first go reads for a command: CLOSED when the merge request is merged or closed; null
-   * when the command's discussion is gone; else what the provider holds of the answer, and, for a
-   * `qualor review` that has no decision yet, whether its author has the rights it needs (one
-   * request). A decision on the row has them in it, and `qualor fix` and `qualor stop` are
-   * answered for everyone.
-   */
-  private async readCommand(
-    row: ReplyRow,
-    target: Target,
-    side: CommandSide,
-  ): Promise<{ answered: number | null; mayReview: boolean } | typeof CLOSED | null> {
-    if (await this.closed(row, target)) return CLOSED;
-    const found = await orGone(() => side.read());
-    if (found === GONE || found === null) return null;
-    const asks = row.command === 'review' && row.answer === null;
-    return { ...found, mayReview: asks && (await side.mayReview()) };
-  }
-
-  /**
-   * What the command comes to (commands.ts), stored on the row; null when the row ended instead: a
-   * branch with no newest analysis has nothing to review.
-   */
-  private async decideCommand(
-    row: ReplyRow,
-    target: Target,
-    authorMayReview: boolean,
-  ): Promise<CommandDecision | null> {
-    const { db, logger } = this.deps;
-    try {
-      return await handleCommand(db, row, {
-        settings: await readLlmSettings(db),
-        project: target.project,
-        branch: target.branch,
-        logger,
-        authorMayReview,
-      });
-    } catch (err) {
-      if (!(err instanceof NothingToReview)) throw err;
-      await this.failInternal(row, 'the merge request has no analysis to review');
-      return null;
-    }
-  }
-
-  /**
-   * The answer to a command posted once, beside the command's note: not when `posted` says it is
-   * (the row's answer note, or the one found in the first go). The row then ends `done`, with the
-   * decision's outcome.
-   */
-  private async postCommandAnswer(
-    row: ReplyRow,
-    side: CommandSide,
-    posted: number | null,
-    decision: CommandDecision,
-  ): Promise<void> {
-    let noteId = posted;
-    if (noteId === null) {
-      const note = await orGone(() => side.post(commandNote(row.id, decision.text)));
-      if (note === GONE) return this.end(row, THREAD_GONE);
-      noteId = note;
-    }
-    if (row.answerNoteId === null) await recordAnswerNote(this.deps.db, row.id, noteId);
-    return this.end(row, { status: 'done', outcome: decision.outcome });
-  }
-
-  /**
-   * `step`, a go of the job's own requests, through the connection's circuit as the `scm` worker's
-   * jobs pass it (scm.md §4.2). A circuit that is open, or half-open with another job's probe in
-   * flight, does not let it through: the row goes back to the queue for when the circuit reopens,
-   * or {@link REPLY_CIRCUIT_WAIT_SECONDS} on when that is not known, no try of the job is spent, and
-   * the answer is WAITING. The circuit hears what came of a go it let through: a request that came
-   * back, whatever it says, is an answer (the provider is up), and one that failed is reported by
-   * its error ({@link CircuitBreaker.reportError}); an error of Qualor's own hands a probe on.
-   */
-  private async throughCircuit<T>(
-    row: ReplyRow,
-    side: Pick<ThreadSide, 'connectionId'>,
-    step: () => Promise<T>,
-  ): Promise<T | typeof WAITING> {
-    const { circuit } = this.deps.scmRuntime;
-    const { connectionId } = side;
-    if (!circuit.tryPass(connectionId)) {
-      const until = circuit.openUntil(connectionId);
-      const waitSeconds =
-        until === null
-          ? REPLY_CIRCUIT_WAIT_SECONDS
-          : Math.max(1, Math.ceil((until - Date.now()) / 1000));
-      if (await queueAfterCircuit(this.deps.db, row, waitSeconds)) {
-        this.deps.logger.info(
-          { replyId: row.id, connectionId, retryInSeconds: waitSeconds },
-          'AI reply waits for the circuit of its SCM connection',
-        );
-      }
-      return WAITING;
-    }
-    try {
-      const done = await step();
-      circuit.success(connectionId);
-      return done;
-    } catch (err) {
-      if (err instanceof ScmError) circuit.reportError(connectionId, err);
-      else circuit.release(connectionId);
-      throw err;
-    }
-  }
-
-  /**
    * The thread's side on the provider the project is mapped to now: `gone` when that is no longer
    * the row's provider, `unusable` when its client cannot be made (a key that no longer decrypts,
    * an address the rules no longer allow) or the ids are none of the provider's.
@@ -727,43 +549,6 @@ class ReplyJob {
     const found = gitlabClientFor(connection, this.deps.scm);
     if ('problem' in found || !GITLAB_MR_IID.test(branch.name)) return 'unusable';
     return gitlabSide(connection.id, found.client, project.scmProjectRef, branch.name, row);
-  }
-
-  /**
-   * Where the answer to a command goes, on the provider the project is mapped to now: `gone` and
-   * `unusable` as for {@link sideOf}. A GitLab command has the discussion its note opened.
-   */
-  private commandSideOf(row: ReplyRow, target: Target): CommandSide | 'gone' | 'unusable' {
-    const { connection, project, branch } = target;
-    if (connection === null || connection.provider !== row.provider) return 'gone';
-    if (project.scmProjectRef === null) return 'unusable';
-    if (connection.provider === 'github') {
-      const repo = parseRepoRef(project.scmProjectRef);
-      const found = githubClientFor(connection, this.deps.scm, this.deps.scmRuntime);
-      if (repo === null || 'problem' in found || !GITHUB_PR_NUMBER.test(branch.name)) {
-        return 'unusable';
-      }
-      return githubCommandSide(
-        connection.id,
-        found.client,
-        repo,
-        branch.name,
-        row,
-        this.deps.logger,
-      );
-    }
-    const found = gitlabClientFor(connection, this.deps.scm);
-    if ('problem' in found || !GITLAB_MR_IID.test(branch.name) || row.threadId === null) {
-      return 'unusable';
-    }
-    return gitlabCommandSide(
-      connection.id,
-      found.client,
-      project.scmProjectRef,
-      branch.name,
-      row,
-      row.threadId,
-    );
   }
 
   /**
@@ -795,26 +580,6 @@ class ReplyJob {
       signal: this.deps.shutdown,
       logger: this.deps.logger,
     };
-  }
-
-  /** Ends the row, and says so once: its id and how it ended. */
-  private async end(row: Pick<ReplyRow, 'id'>, end: ReplyEnd): Promise<void> {
-    await endReply(this.deps.db, row.id, end);
-    this.deps.logger.info(
-      {
-        replyId: row.id,
-        status: end.status,
-        outcome: end.outcome ?? null,
-        reason: end.reason ?? null,
-      },
-      'AI reply ended',
-    );
-  }
-
-  /** Ends the row `failed: internal`, with why, in Qualor's words. */
-  private async failInternal(row: Pick<ReplyRow, 'id'>, why: string): Promise<void> {
-    this.deps.logger.warn({ replyId: row.id }, `AI reply not answered: ${why}`);
-    await this.end(row, { status: 'failed', reason: 'internal' });
   }
 }
 

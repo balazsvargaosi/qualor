@@ -2,7 +2,7 @@ import type { ReplyCommand } from '../db/schema';
 import type { GitHubComment, GitHubReviewComment, GitHubReviewThread } from '../scm/github/client';
 import { discussionResolved, type GitLabDiscussion } from '../scm/gitlab/client';
 import { markerOf } from '../scm/markdown';
-import { parseCommand } from './commands';
+import { parseCommand } from './command-parse';
 
 /*
  * Which of the people's notes in a merge request Qualor answers (6I-4): the new replies in its own

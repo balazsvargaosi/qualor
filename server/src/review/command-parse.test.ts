@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseCommand } from './commands';
+import { parseCommand } from './command-parse';
 
 describe('parseCommand', () => {
   it('qualor review, QUALOR REVIEW and "  qualor review please" are commands', () => {

@@ -1,14 +1,6 @@
 import { eq } from 'drizzle-orm';
 import type { Db, Tx } from '../db/client';
-import {
-  analyses,
-  branches,
-  REPLY_COMMANDS,
-  reviewReplies,
-  reviewRuns,
-  reviewSnapshots,
-  type ReplyCommand,
-} from '../db/schema';
+import { analyses, branches, reviewReplies, reviewRuns, reviewSnapshots } from '../db/schema';
 import type { StoredLlmSettings } from '../llm/settings';
 import type { WorkerLogger } from '../queue/worker';
 import { codeSpan } from '../scm/markdown';
@@ -19,34 +11,13 @@ import { reviewActive } from './settings';
 
 /*
  * What a person asks of Qualor in a note of a merge request: `qualor review`, `qualor fix` or
- * `qualor stop`. `parseCommand` reads the note; `handleCommand` decides what a command row of the
- * replies ledger comes to, for the answer job (reply-job.ts). A command makes no model call, and
- * every answer is Qualor's fixed text, with a commit in a code span: no word of the person who
- * wrote the note is in it. `qualor review` costs a review, so only someone with the rights a reply
- * needs to change a finding's status may ask for one; `qualor fix` and `qualor stop` are answered
- * for everyone, as they do nothing yet.
+ * `qualor stop`, which `parseCommand` reads (command-parse.ts). `handleCommand` decides what a
+ * command row of the replies ledger comes to, for the answer job (reply-commands.ts). A command
+ * makes no model call, and every answer is Qualor's fixed text, with a commit in a code span: no
+ * word of the person who wrote the note is in it. `qualor review` costs a review, so only someone
+ * with the rights a reply needs to change a finding's status may ask for one; `qualor fix` and
+ * `qualor stop` are answered for everyone, as they do nothing yet.
  */
-
-/**
- * `qualor` and a command word, in any case, as the first two words of a line, and the command word
- * ended by the end of the line or by white space. Anchored and without nested repetition, so a
- * long line is matched in one pass.
- */
-const COMMAND = new RegExp(`^\\s*qualor\\s+(${REPLY_COMMANDS.join('|')})(?:\\s|$)`, 'i');
-
-/**
- * The command a note's body gives, or null. Only the first line counts: `qualor` and a command
- * word, apart by white space, must be its first two words (white space may come before them), and
- * the command word must end the line or be followed by white space. So `qualor reviewer`,
- * `qualor review.`, `@qualor review` and `please qualor review` are no commands, and nor is a body
- * that starts with a line break.
- */
-export function parseCommand(body: string): ReplyCommand | null {
-  const lineEnd = body.search(/[\r\n]/);
-  const firstLine = lineEnd === -1 ? body : body.slice(0, lineEnd);
-  const word = COMMAND.exec(firstLine)?.[1]?.toLowerCase();
-  return REPLY_COMMANDS.find((command) => command === word) ?? null;
-}
 
 /** How a command came out, and the fixed text of Qualor's answer. */
 export interface CommandDecision {
