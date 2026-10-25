@@ -352,6 +352,11 @@ export function replyMarker(replyId: string): string {
   return `<!-- qualor:reply ${uuid(replyId)} -->`;
 }
 
+/** A note body's first line, without the carriage return of a CRLF end: where a marker is. */
+export function firstLineOf(body: string): string {
+  return (body.split('\n', 1)[0] ?? '').replace(/\r$/, '');
+}
+
 /**
  * What a note body's first line marks, or null. Only the first line counts: a marker quoted in a
  * reply or inside a value (always on a later line) is ignored. The caller also checks the author.
@@ -359,7 +364,7 @@ export function replyMarker(replyId: string): string {
 export function markerOf(
   body: string,
 ): { kind: 'summary'; projectId: string } | { kind: 'issue'; issueId: string } | null {
-  const firstLine = (body.split('\n', 1)[0] ?? '').replace(/\r$/, '');
+  const firstLine = firstLineOf(body);
   const summary = SUMMARY_MARKER.exec(firstLine);
   if (summary?.[1]) return { kind: 'summary', projectId: summary[1] };
   const issue = ISSUE_MARKER.exec(firstLine);
