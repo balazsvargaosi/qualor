@@ -1656,6 +1656,7 @@
     "gitlab.urlChangedSecretRemoved": "The connection now points at {$url}, and its webhook secret was removed: replies and commands are answered at the next analysis.",
     "gitlab.urlChanged": "The connection now points at {$url}.",
     "gitlab.tokenReplacedSecretRemoved": "The token of {$url} was replaced, and its webhook secret was removed: replies and commands are answered at the next analysis.",
+    "gitlab.tokenAndSecretReplaced": "The token and the webhook secret of {$url} were replaced.",
     "gitlab.tokenReplaced": "The token of {$url} was replaced.",
     "gitlab.secretSet": "The webhook secret was set.",
     "gitlab.secretRemoved": "The webhook secret was removed: replies and commands are answered at the next analysis.",

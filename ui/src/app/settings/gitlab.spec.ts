@@ -556,6 +556,12 @@ describe('GitLabPage (scm.md §2)', () => {
       await settle(fixture);
       // Same address: the secret travels with the token, no address.
       expect(patches(server)[0]?.body).toEqual({ token: 'glpat-new', webhookSecret: SECRET });
+      // The page says that both were replaced, and shows neither.
+      expect(root.querySelector('[role="status"]')?.textContent).toContain(
+        'The token and the webhook secret of https://gitlab.example.com were replaced.',
+      );
+      expect(root.textContent).not.toContain(SECRET);
+      expect(root.textContent).not.toContain('glpat-new');
       root.querySelector<HTMLInputElement>('#token-c1')!.value = 'glpat-newer';
       root.querySelector<HTMLInputElement>('#drop-secret-c1')!.checked = true;
       form.dispatchEvent(new Event('submit'));
@@ -564,6 +570,22 @@ describe('GitLabPage (scm.md §2)', () => {
       expect(root.querySelector('[role="status"]')?.textContent).toContain(
         'The token of https://gitlab.example.com was replaced, and its webhook secret was removed: replies and commands are answered at the next analysis.',
       );
+    });
+
+    it('says that only the token was replaced when the stored secret is left as it is', async () => {
+      const server = setup();
+      withSecret(server);
+      patched(server);
+      const { fixture, root } = await render();
+      const token = root.querySelector<HTMLInputElement>('#token-c1')!;
+      token.value = 'glpat-new';
+      token.closest('form')!.dispatchEvent(new Event('submit'));
+      await settle(fixture);
+      // No secret travels: the stored one stays, and the page does not say it was replaced.
+      expect(patches(server)[0]?.body).toEqual({ token: 'glpat-new' });
+      const status = root.querySelector('[role="status"]')?.textContent;
+      expect(status).toContain('The token of https://gitlab.example.com was replaced.');
+      expect(status).not.toContain('webhook secret');
     });
 
     it('maps the server’s demand for the secret again to its field', async () => {

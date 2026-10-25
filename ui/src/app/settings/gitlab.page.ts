@@ -24,11 +24,9 @@ import { Icon } from '../shared/icon';
 import { KeysetList } from '../shared/keyset';
 import { CopyValue } from './copy-value';
 import { gitlabTestText } from './gitlab-text';
+import { WEBHOOK_SECRET } from './webhook-secret';
 
 export type Connection = ItemOf<'/api/v0/scm-connections'>;
-
-/** The webhook secret, 16–256 printable ASCII characters without spaces, as the server checks it. */
-const WEBHOOK_SECRET = /^[\x21-\x7e]{16,256}$/;
 
 /**
  * A base URL as the server stores it (scm.md §2.1: normalised, without a trailing slash), so that
@@ -295,7 +293,9 @@ export class GitLabPage {
               : $localize`:@@gitlab.urlChanged:The connection now points at ${updated.baseUrl}:url:.`
             : drop
               ? $localize`:@@gitlab.tokenReplacedSecretRemoved:The token of ${updated.baseUrl}:url: was replaced, and its webhook secret was removed: replies and commands are answered at the next analysis.`
-              : $localize`:@@gitlab.tokenReplaced:The token of ${updated.baseUrl}:url: was replaced.`,
+              : secret !== ''
+                ? $localize`:@@gitlab.tokenAndSecretReplaced:The token and the webhook secret of ${updated.baseUrl}:url: were replaced.`
+                : $localize`:@@gitlab.tokenReplaced:The token of ${updated.baseUrl}:url: was replaced.`,
         );
       },
       (err) => {

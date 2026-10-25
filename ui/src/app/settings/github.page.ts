@@ -23,13 +23,12 @@ import { Icon } from '../shared/icon';
 import { KeysetList } from '../shared/keyset';
 import { githubTestText } from './github-text';
 import type { Connection } from './gitlab.page';
+import { WEBHOOK_SECRET } from './webhook-secret';
 
 /** github.md §2.2: the private key's size limit, checked before a file is read. */
 const KEY_MAX_BYTES = 16 * 1024;
 /** github.md §2.2: the App id as GitHub shows it (no zero, no leading zeros, a safe integer). */
 const APP_ID = /^[1-9][0-9]{0,15}$/;
-/** github.md §2.2: the webhook secret, 16–256 printable ASCII characters without spaces. */
-const WEBHOOK_SECRET = /^[\x21-\x7e]{16,256}$/;
 
 /** A base URL as the server stores it (normalised, without a trailing slash); null when not a URL. */
 function normalBaseUrl(raw: string): string | null {
