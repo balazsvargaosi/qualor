@@ -304,23 +304,30 @@ describe('converseOverTools', () => {
     }
   });
 
-  it('tells the caller each tool call it runs, and none it refuses to run', async () => {
-    const reader = memorySnapshot({ files: { 'a.ts': 'const a = 1;\n' } });
+  it('tells the caller the files a tool call showed lines of, and nothing of a call that showed none', async () => {
+    const reader = memorySnapshot({
+      files: { 'a.ts': 'const a = 1;\n', 'b.ts': 'const b = 2;\n' },
+    });
     const policy = newToolPolicy({
       excludePaths: [],
       masked: new MaskedFiles(reader, { masker }),
       masker,
     });
-    const told: LlmToolCall[] = [];
+    const told: (readonly string[])[] = [];
     const calls: LlmToolCall[] = [
       { id: 'c1', name: 'read_file', arguments: { path: 'a.ts' } },
       { id: 'c2', name: 'grep', arguments: { pattern: 'const' } },
-      // Not an object: the arguments are refused before the call is run.
+      // None of these shows a line of a file: arguments that cannot be used (the call is not run),
+      // a path that is not there, a search with no match, a listing.
       { id: 'c3', name: 'read_file', arguments: 'a.ts' },
-      ...Array.from({ length: CONVERSATION_LIMITS.maxCallsPerTurn }, (_, i) => ({
-        id: `list-${i}`,
-        name: 'list_files',
-        arguments: {},
+      { id: 'c4', name: 'read_file', arguments: { path: 'missing.ts' } },
+      { id: 'c5', name: 'grep', arguments: { pattern: 'nothing like this' } },
+      { id: 'c6', name: 'list_files', arguments: {} },
+      // The loop runs eight calls of a turn: the third of these is told there were too many.
+      ...Array.from({ length: 3 }, (_, i) => ({
+        id: `read-${i}`,
+        name: 'read_file',
+        arguments: { path: 'b.ts' },
       })),
     ];
     const replies = [
@@ -332,15 +339,41 @@ describe('converseOverTools', () => {
       policy,
       send: () => Promise.resolve(replies.shift() ?? turn({ text: 'unexpected' })),
       shouldStop: () => Promise.resolve(false),
-      onToolCall: (call) => told.push(call),
+      onToolRead: (paths) => told.push(paths),
     });
-    // Of the first eight calls of the turn, the one with unusable arguments is not run; the calls
-    // after the eighth are told there were too many.
-    expect(told.map((call) => call.id)).toEqual([
-      'c1',
-      'c2',
-      ...Array.from({ length: CONVERSATION_LIMITS.maxCallsPerTurn - 3 }, (_, i) => `list-${i}`),
-    ]);
+    expect(CONVERSATION_LIMITS.maxCallsPerTurn).toBe(8);
+    expect(told).toEqual([['a.ts'], ['a.ts', 'b.ts'], ['b.ts'], ['b.ts']]);
+  });
+
+  it('asks again with the text a rejection brings, and with the loop’s own when it brings none', async () => {
+    const reader = memorySnapshot();
+    const policy = newToolPolicy({
+      excludePaths: [],
+      masked: new MaskedFiles(reader, { masker }),
+      masker,
+    });
+    const WHY = 'That is not the JSON asked for: answer again with the key ok.';
+    for (const [rejection, retry] of [
+      [WHY, WHY],
+      [false, CONVERSATION_TEXTS.retry],
+    ] as const) {
+      const sent: LlmConversation[] = [];
+      const replies = [turn({ text: 'not json' }), turn({ text: '{"ok":true}' })];
+      const result = await converseOverTools(
+        callOf('reply', { accept: (text) => (text.startsWith('{') ? true : rejection) }),
+        {
+          reader,
+          policy,
+          send: (conversation) => {
+            sent.push(conversation);
+            return Promise.resolve(replies.shift() ?? turn({ text: 'unexpected' }));
+          },
+          shouldStop: () => Promise.resolve(false),
+        },
+      );
+      expect(result).toMatchObject({ kind: 'answer', text: '{"ok":true}', turns: 2 });
+      expect(sent[1]?.messages.at(-1)).toEqual({ role: 'user', text: retry });
+    }
   });
 
   it('stops where the caller says so', async () => {

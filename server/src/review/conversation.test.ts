@@ -910,6 +910,58 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
     });
 
     it.each(KINDS)(
+      'a rejection that brings a text asks again with that text, not the loop’s (%s)',
+      async (kind) => {
+        const WHY = 'That is no JSON: answer again with a key named findings.';
+        fake.enqueue(
+          textTurn(kind, 'Here is my review.', [100, 10]),
+          textTurn(kind, '{"findings":[]}', [150, 20]),
+        );
+        const { result } = await run(kind, {
+          accept: (text) => (isJson(text) ? true : WHY),
+        });
+        expect(result).toEqual({
+          kind: 'answer',
+          text: '{"findings":[]}',
+          inputTokens: 250,
+          outputTokens: 30,
+          turns: 2,
+          toolCalls: 0,
+          budgetReached: false,
+        });
+        const second = fake.requests[1]!;
+        // The answer stays in the history, and the one user turn after it is the text given.
+        expect(WIRES[kind].assistantTexts(second)).toEqual(['Here is my review.']);
+        expect(WIRES[kind].lastUser(second)).toBe(WHY);
+      },
+    );
+
+    it.each(KINDS)(
+      'a rejection that brings a blank text asks with the loop’s own, and a second one is a bad answer (%s)',
+      async (kind) => {
+        fake.enqueue(textTurn(kind, 'First.', [100, 10]), textTurn(kind, '{"findings":[]}'));
+        const blank = await run(kind, { accept: (text) => (isJson(text) ? true : '  ') });
+        expect(blank.result).toMatchObject({ kind: 'answer', turns: 2 });
+        expect(WIRES[kind].lastUser(fake.requests[1]!)).toBe(RETRY);
+
+        // The question is asked once, whatever it says: a second answer that is rejected ends it.
+        fake.requests.length = 0;
+        fake.enqueue(textTurn(kind, 'First.', [100, 10]), textTurn(kind, 'Second.', [150, 10]));
+        const twice = await run(kind, { accept: () => 'Not that: answer again.' });
+        expect(twice.result).toEqual({
+          kind: 'failed',
+          reason: 'bad_answer',
+          inputTokens: 250,
+          outputTokens: 20,
+          turns: 2,
+          toolCalls: 0,
+        });
+        expect(fake.requests).toHaveLength(2);
+        expect(WIRES[kind].lastUser(fake.requests[1]!)).toBe('Not that: answer again.');
+      },
+    );
+
+    it.each(KINDS)(
       'the turn that asks again may go past the token budget, as the wrap-up may (%s)',
       async (kind) => {
         fake.enqueue(

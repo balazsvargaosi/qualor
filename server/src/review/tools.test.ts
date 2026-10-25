@@ -173,6 +173,7 @@ describe('reading files', () => {
     expect(await run(reader, 'read_file', { path: 'src/bundle.js' })).toEqual({
       text: `1│ ${REDACTED}`,
       redactions: 1,
+      read: ['src/bundle.js'],
     });
   });
 
@@ -1472,6 +1473,117 @@ describe('masking that takes too long', () => {
     expect(await answer(reader, 'list_files', {}, policy)).toBe(
       ['a/', 'b/', 'c/', 'd/'].join('\n'),
     );
+  });
+});
+
+describe('what a call reports it showed of the files', () => {
+  const reader = memorySnapshot({
+    files: {
+      'src/a.ts': 'const needle = 1;\nconst two = 2;\n',
+      'src/b.ts': 'const needle = 2;\nneedle again\n',
+      'src/empty.ts': '',
+      'src/secret.ts': `const key = '${AWS_KEY}';\n`,
+      'src/bundle.js': 'z'.repeat(70_000),
+      'vendor/x.js': 'needle\n',
+      'bin/blob': { kind: 'omitted', reason: 'binary' },
+    },
+  });
+  /** The files a call says it showed lines of: undefined when it says nothing, as a call that showed none does. */
+  const shownBy = async (
+    name: string,
+    args: unknown,
+    policy?: ToolPolicy,
+  ): Promise<readonly string[] | undefined> => (await run(reader, name, args, policy)).read;
+
+  it('read_file reports the file it showed lines of, whatever the lines are', async () => {
+    expect(await shownBy('read_file', { path: 'src/a.ts' })).toEqual(['src/a.ts']);
+    expect(await shownBy('read_file', { path: 'src/a.ts', from: 2, to: 2 })).toEqual(['src/a.ts']);
+    // A line that was masked is a line of the file, and so is one too long to scan.
+    expect(await shownBy('read_file', { path: 'src/secret.ts' })).toEqual(['src/secret.ts']);
+    expect(await shownBy('read_file', { path: 'src/bundle.js' })).toEqual(['src/bundle.js']);
+  });
+
+  it('read_file reports nothing when it showed no line of a file', async () => {
+    const answered: [string, unknown][] = [
+      ['an empty file', { path: 'src/empty.ts' }],
+      ['a range past the end', { path: 'src/a.ts', from: 3 }],
+      ['a path that is not there', { path: 'src/missing.ts' }],
+      ['a directory', { path: 'src' }],
+      ['a file the snapshot omitted', { path: 'bin/blob' }],
+      ['a path that is none', { path: '../src/a.ts' }],
+      ['a range that is none', { path: 'src/a.ts', from: 0 }],
+      ['no arguments', {}],
+    ];
+    for (const [name, args] of answered) {
+      expect(await shownBy('read_file', args), name).toBeUndefined();
+    }
+    // The administrator excluded it.
+    const excluded = newPolicy({ excludePaths: ['src/**'] });
+    expect(await shownBy('read_file', { path: 'src/a.ts' }, excluded)).toBeUndefined();
+    // The review used its calls up.
+    const used = newPolicy({ budget: { calls: 0, greps: 1, maskedBytes: 1_000_000 } });
+    expect(await shownBy('read_file', { path: 'src/a.ts' }, used)).toBeUndefined();
+    // Its masker has no time left to mask the file.
+    const spent = new Masker({ budgetMs: 0 });
+    try {
+      expect(
+        await shownBy('read_file', { path: 'src/a.ts' }, newPolicy({ masker: spent })),
+      ).toBeUndefined();
+    } finally {
+      await spent.close();
+    }
+  });
+
+  it('grep reports the files it showed a match of, each once, in the order of the hits', async () => {
+    expect(await shownBy('grep', { pattern: 'needle' })).toEqual([
+      'src/a.ts',
+      'src/b.ts',
+      'vendor/x.js',
+    ]);
+    expect(await shownBy('grep', { pattern: 'needle', path_glob: 'src/b.*' })).toEqual([
+      'src/b.ts',
+    ]);
+    // A line that was masked is still a line that matches.
+    expect(await shownBy('grep', { pattern: 'const key' })).toEqual(['src/secret.ts']);
+  });
+
+  it('grep reports only what it showed: no search with no match, no file it left out', async () => {
+    expect(await shownBy('grep', { pattern: 'nothing like this anywhere' })).toBeUndefined();
+    // A needle inside what a mask hides finds nothing.
+    expect(await shownBy('grep', { pattern: AWS_KEY })).toBeUndefined();
+    // The excluded files are not searched.
+    const policy = () => newPolicy({ excludePaths: ['vendor/**'] });
+    expect(await shownBy('grep', { pattern: 'needle' }, policy())).toEqual([
+      'src/a.ts',
+      'src/b.ts',
+    ]);
+    expect(
+      await shownBy('grep', { pattern: 'needle', path_glob: 'vendor/**' }, policy()),
+    ).toBeUndefined();
+    const refused: [string, unknown, ToolPolicy?][] = [
+      ['a pattern that is none', { pattern: 'n' }],
+      ['an argument that is none', { pattern: 'needle', where: 'src' }],
+      ['a glob that is none', { pattern: 'needle', path_glob: '../src/**' }],
+      [
+        'a search budget used up',
+        { pattern: 'needle' },
+        newPolicy({ budget: { calls: 5, greps: 0, maskedBytes: 1_000_000 } }),
+      ],
+      [
+        'a call budget used up',
+        { pattern: 'needle' },
+        newPolicy({ budget: { calls: 0, greps: 5, maskedBytes: 1_000_000 } }),
+      ],
+    ];
+    for (const [name, args, over] of refused) {
+      expect(await shownBy('grep', args, over), name).toBeUndefined();
+    }
+  });
+
+  it('list_files and a tool that is not there report nothing: a name is no line of a file', async () => {
+    expect(await shownBy('list_files', { dir: 'src' })).toBeUndefined();
+    expect(await shownBy('list_files', {})).toBeUndefined();
+    expect(await shownBy('write_file', { path: 'src/a.ts' })).toBeUndefined();
   });
 });
 

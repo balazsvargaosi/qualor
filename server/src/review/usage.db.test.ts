@@ -1565,6 +1565,7 @@ const port = 8080;
       },
       firstNote: '**AI review** · major · The total skips the last item',
       notes: [{ author: 'alice', body: 'The loop runs to n, so it is fine.' }],
+      mayChangeStatus: true,
       snapshot: memorySnapshot({ files: { 'src/cart.ts': 'for (i = 0; i < n; i += 1) {}\n' } }),
       ...over,
     });

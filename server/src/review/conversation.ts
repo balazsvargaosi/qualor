@@ -52,7 +52,7 @@ export const CONVERSATION_TEXTS = {
   wrapUp: 'Token budget reached: answer now, with what you have, in the required JSON.',
   shorter:
     'Your answer was cut off because it was too long: answer again, shorter, in the required JSON.',
-  /** After an answer the caller did not accept (`accept`). */
+  /** After an answer the caller did not accept (`accept`), when it gave no text of its own. */
   retry: 'Your answer did not match the required JSON; answer again with JSON only.',
   tooManyCalls: 'too many calls in one turn; this one was not run',
   badArguments: 'the arguments were not valid JSON; call again',
@@ -98,10 +98,14 @@ export interface ConversationInput {
   /** Asked before every call to the provider, a retry included. */
   shouldStop: () => Promise<boolean>;
   /**
-   * Whether an answer is one the caller can use (its JSON reads as the caller's schema). One that
-   * is not is asked for once more, in the same conversation; without a check every answer is used.
+   * Whether an answer is one the caller can use (its JSON reads as the caller's schema): `true`
+   * takes it. One that is not is asked for once more, in the same conversation; without a check
+   * every answer is used. A caller that says no with `false` gets the loop's own words (`retry`
+   * of CONVERSATION_TEXTS); one that says no with a text gets that text sent in their place, which
+   * can say what was wrong. It is fixed text: never a word of the answer that was refused. A blank
+   * text is no text.
    */
-  accept?: (text: string) => boolean;
+  accept?: (text: string) => boolean | string;
   /**
    * How a retry waits, in milliseconds.
    * @internal Tests only: nothing else sets it.
@@ -391,9 +395,9 @@ function wrapUpDue(
  * - an answer cut off at the output limit is asked for again, shorter, once; a refusal, a blank
  *   answer and a call id used twice in a turn end the conversation as a bad answer;
  * - an answer the caller does not accept (`accept`) is asked for again once: the answer stays in
- *   the history and a user message says what was wrong with it. From then on calls are not run, and
- *   that turn may go past the budget, as the wrap-up's may; a second answer it does not accept
- *   ends the conversation as a bad answer.
+ *   the history and a user message says what was wrong with it (the caller's text, or the loop's
+ *   own). From then on calls are not run, and that turn may go past the budget, as the wrap-up's
+ *   may; a second answer it does not accept ends the conversation as a bad answer.
  *
  * Every end reports what was spent (`ConversationCounts`), the tokens of a call the provider did
  * not count being guessed. The token budget must be more than 0 (see `limits.tokenBudget`).
@@ -463,12 +467,14 @@ export async function runConversation(input: ConversationInput): Promise<Convers
     }
 
     if (turn.text.trim() === '') return ended(failed('bad_answer'));
-    if (input.accept !== undefined && !input.accept(turn.text)) {
+    const accepted = input.accept?.(turn.text) ?? true;
+    if (accepted !== true) {
       if (askedAgain) return ended(failed('bad_answer'));
       askedAgain = true;
       // The calls of this turn, if any, were not run: the answer goes back as text alone.
       messages.push({ role: 'assistant', text: turn.text, toolCalls: [] });
-      messages.push({ role: 'user', text: CONVERSATION_TEXTS.retry });
+      const said = typeof accepted === 'string' && accepted.trim() !== '';
+      messages.push({ role: 'user', text: said ? accepted : CONVERSATION_TEXTS.retry });
       continue;
     }
     return {

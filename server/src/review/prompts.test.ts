@@ -11,12 +11,14 @@ import {
   REPLY_LIMITS,
   REPLY_PROMPT_VERSION,
   replyData,
+  replyRetryText,
   replySystemPrompt,
   REVIEW_PROMPT_VERSION,
   specialistData,
   SYSTEM_PROMPTS,
   verifyData,
   type LabelledFinding,
+  type ReplyRefusal,
   type ReplyShown,
   type ReviewRole,
 } from './prompts';
@@ -61,17 +63,32 @@ const PROMPT_HASHES: Record<string, Record<string, string>> = {
     'loop.tooManyCalls': '23833c21f587117534ed60d7532211b3a4ed637a43049715e5eb909f4682dcca',
     'loop.badArguments': '849a9e7482301279245ba0e9a762cddc975972e74c6446623be53e82184d85e3',
   },
-  // The reply's prompts: one text for each set of verdicts a thread allows, and for the code being
-  // there or not. The loop's own texts reach its conversation as they reach a review's.
+  // The reply's texts: a prompt for each kind of thread (what it allows, whether its people may
+  // change the status, whether the code is there) and what its gate says when it refuses an answer,
+  // for each set of verdicts where it can. The loop's own texts reach its conversation as they reach
+  // a review's.
   'reply-1': {
     'an open AI finding, with the code':
-      '072be4dc6ef4f345582575a98b4eea6f3de0093ee6b6a565a803d3e13f691096',
+      '0fb4449cb7e5c61785e1a11399e08e4b1b22103cd64ad4dab6154e74bc45cf02',
     'an open AI finding, without the code':
       'c6c1b004c7dff278ab2662c6e7c9044ed552af21fd7a27bb7488f5becaa348d3',
+    'an open AI finding the people may not change, with the code':
+      '895f1bd7a911f0f5408a6e9a66d2fb4f74d0bdc4f5ead18ec3c05101f5905501',
+    'an open AI finding the people may not change, without the code':
+      '67488f9fa6e2486b1f9a749f236c974072754d23e9063e657e060b18191ce991',
     'a thread that only explains, with the code':
       'bb1c44e72d7a731e57e7c7103ebd0aa9a6305f66489ec839d6c74649dbb08652',
     'a thread that only explains, without the code':
       'cb7480f0d1fce4889b0c0a0d80ac1860d51392cf6d81477534a88c74ba0deaec',
+    'retry.verdict (keep)': 'bbd3687fca286a9b710980ebee1b2f2a5aa1991f049e44d618770023f3043d51',
+    'retry.verdict (keep, wont_fix)':
+      '2b2b450f0dc4c03a7115cfd8a2748801fcc8f8af761b38648451547fce4a202f',
+    'retry.wont_fix (keep, wont_fix)':
+      'e970000c0588170fcaab9508f072947d966e07cbac3996f2e671eb8d4182ec69',
+    'retry.wont_fix (keep, wont_fix, false_positive)':
+      'c5cce08a79fc354f214f75d1d3e705378b910c6cdcf96a84399f579e53b0db20',
+    'retry.false_positive (keep, wont_fix, false_positive)':
+      '9ee2efae535548c5922c53e27deb9d948efeb52e70a4e5405e96e76001ebb229',
     'loop.wrapUp': 'cc5c64c44240094b389da80979aa2ad0821c0e38bb88a763d0a481acb9cd2340',
     'loop.shorter': '572e61f09a58f0033bb47d4170be06b712ef434b1a6f75cab203c4c1b1079b3d',
     'loop.retry': 'dba9e7ae6537460f5c68547c0a31f236e268b118a0f89e6282d8667c8d925a5c',
@@ -622,14 +639,34 @@ describe('the review prompts', () => {
 
 const ALL_VERDICTS: readonly ReplyVerdict[] = ['keep', 'wont_fix', 'false_positive'];
 
+interface ReplyVariant {
+  name: string;
+  verdicts: readonly ReplyVerdict[];
+  tools: boolean;
+  membersOnly?: boolean;
+}
+
 /**
- * The four conversations a reply can be: what its thread allows (an open AI finding, or one that
- * is not or that an analyzer reported, which Qualor only explains), and whether the merge request
- * has a snapshot for the tools to read. A verdict that needs the code is never named without it.
+ * The six conversations a reply can be: what its thread allows (an open AI finding, which the
+ * people who replied may change or may not, or a finding that is not open or that an analyzer
+ * reported, which Qualor only explains), and whether the merge request has a snapshot for the
+ * tools to read. A verdict that needs the code is never named without it.
  */
-const REPLY_VARIANTS: { name: string; verdicts: readonly ReplyVerdict[]; tools: boolean }[] = [
+const REPLY_VARIANTS: ReplyVariant[] = [
   { name: 'an open AI finding, with the code', verdicts: ALL_VERDICTS, tools: true },
   { name: 'an open AI finding, without the code', verdicts: ['keep', 'wont_fix'], tools: false },
+  {
+    name: 'an open AI finding the people may not change, with the code',
+    verdicts: ['keep'],
+    tools: true,
+    membersOnly: true,
+  },
+  {
+    name: 'an open AI finding the people may not change, without the code',
+    verdicts: ['keep'],
+    tools: false,
+    membersOnly: true,
+  },
   { name: 'a thread that only explains, with the code', verdicts: ['keep'], tools: true },
   { name: 'a thread that only explains, without the code', verdicts: ['keep'], tools: false },
 ];
@@ -662,12 +699,25 @@ const REPLY_RULES = [
   'no headings, lists, tables, links, images, html or mentions',
   'never repeat a secret, a password, a token or a key',
 ];
+/**
+ * What a reply's gate tells the model when it refuses an answer, by the set of verdicts that can
+ * be given where it can happen: a verdict not in the set can be refused wherever the set is
+ * smaller than all three; a wont_fix wherever it is in the set; a false_positive only where all
+ * three are.
+ */
+const REPLY_REFUSALS: [ReplyRefusal, readonly ReplyVerdict[]][] = [
+  ['verdict', ['keep']],
+  ['verdict', ['keep', 'wont_fix']],
+  ['wont_fix', ['keep', 'wont_fix']],
+  ['wont_fix', ALL_VERDICTS],
+  ['false_positive', ALL_VERDICTS],
+];
 
 describe('the reply prompt', () => {
   it.each(REPLY_VARIANTS)(
     'starts with its role line, holds no placeholder and stays under 10 000 characters: $name',
-    ({ verdicts, tools }) => {
-      const prompt = replySystemPrompt({ verdicts, tools });
+    (variant) => {
+      const prompt = replySystemPrompt(variant);
       // The line the test responders key on.
       expect(prompt.split('\n')[0]).toBe('Qualor review: reply');
       expect(prompt.length).toBeLessThan(10_000);
@@ -683,8 +733,9 @@ describe('the reply prompt', () => {
 
   it.each(REPLY_VARIANTS)(
     'names exactly the verdicts its thread allows, and what each one needs: $name',
-    ({ verdicts, tools }) => {
-      const prompt = replySystemPrompt({ verdicts, tools });
+    (variant) => {
+      const { verdicts, membersOnly } = variant;
+      const prompt = replySystemPrompt(variant);
       const lower = prompt.toLowerCase();
       for (const verdict of ALL_VERDICTS) {
         if (verdicts.includes(verdict)) expect(prompt, verdict).toContain(`"${verdict}"`);
@@ -701,12 +752,18 @@ describe('the reply prompt', () => {
       // allow it says nothing of it.
       expect(lower.includes('a decision of priority')).toBe(verdicts.includes('wont_fix'));
       expect(prompt.includes('needs the intent "priority"')).toBe(verdicts.includes('wont_fix'));
-      expect(lower.includes('read the code with the tools')).toBe(
+      expect(lower.includes("read the finding's own file with the tools")).toBe(
         verdicts.includes('false_positive'),
       );
       expect(prompt.includes('the intent "factual"')).toBe(verdicts.includes('false_positive'));
-      // A thread that allows "keep" alone is one Qualor only explains in.
-      expect(lower.includes('qualor only answers here')).toBe(verdicts.length === 1);
+      // A thread that allows "keep" alone is one Qualor only answers in. When it is an open finding
+      // of the AI review that the people who replied may not change, the prompt says that, and
+      // that a member of the project can make the change.
+      expect(lower.includes('qualor only answers here')).toBe(
+        verdicts.length === 1 && membersOnly !== true,
+      );
+      expect(lower.includes('cannot change the status of this finding')).toBe(membersOnly === true);
+      expect(lower.includes('a member of the project can make')).toBe(membersOnly === true);
     },
   );
 
@@ -717,17 +774,33 @@ describe('the reply prompt', () => {
     expect(() => replySystemPrompt({ verdicts: [], tools: true })).toThrow(/keep/);
   });
 
+  it('refuses to tell people they cannot change a status to a thread that allows them to', () => {
+    expect(() =>
+      replySystemPrompt({ verdicts: ALL_VERDICTS, tools: true, membersOnly: true }),
+    ).toThrow(/membersOnly/);
+    expect(() =>
+      replySystemPrompt({ verdicts: ['keep', 'wont_fix'], tools: false, membersOnly: true }),
+    ).toThrow(/membersOnly/);
+    expect(() =>
+      replySystemPrompt({ verdicts: ['keep'], tools: true, membersOnly: false }),
+    ).not.toThrow();
+  });
+
   it.each(REPLY_VARIANTS)(
     'gives the tools only to a conversation that has them: $name',
-    ({ verdicts, tools }) => {
-      const prompt = replySystemPrompt({ verdicts, tools });
+    (variant) => {
+      const prompt = replySystemPrompt(variant);
       const lower = prompt.toLowerCase();
-      for (const tool of REVIEW_TOOLS) expect(prompt.includes(tool.name), tool.name).toBe(tools);
-      expect(lower.includes('you have no tools')).toBe(!tools);
+      for (const tool of REVIEW_TOOLS) {
+        expect(prompt.includes(tool.name), tool.name).toBe(variant.tools);
+      }
+      expect(lower.includes('you have no tools')).toBe(!variant.tools);
       expect(lower.includes('read before you claim anything about code you have not seen')).toBe(
-        tools,
+        variant.tools,
       );
-      expect(lower.includes('token budget is reached or the tool budget used up')).toBe(tools);
+      expect(lower.includes('token budget is reached or the tool budget used up')).toBe(
+        variant.tools,
+      );
     },
   );
 
@@ -743,16 +816,20 @@ describe('the reply prompt', () => {
     expect(prompt).toContain(`at most ${ANSWER_LIMITS.replyChars} characters`);
   });
 
-  it.each(REPLY_VARIANTS)('states its rules: $name', ({ verdicts, tools }) => {
-    const lower = replySystemPrompt({ verdicts, tools }).toLowerCase();
+  it.each(REPLY_VARIANTS)('states its rules: $name', (variant) => {
+    const lower = replySystemPrompt(variant).toLowerCase();
     for (const rule of REPLY_RULES) expect(lower, rule).toContain(rule);
   });
 
   it('pins every text the model is given to the prompt version', () => {
     const texts: [string, string][] = [
-      ...REPLY_VARIANTS.map(({ name, verdicts, tools }): [string, string] => [
-        name,
-        replySystemPrompt({ verdicts, tools }),
+      ...REPLY_VARIANTS.map((variant): [string, string] => [
+        variant.name,
+        replySystemPrompt(variant),
+      ]),
+      ...REPLY_REFUSALS.map(([refusal, offered]): [string, string] => [
+        `retry.${refusal} (${offered.join(', ')})`,
+        replyRetryText(refusal, offered),
       ]),
       ...Object.entries(CONVERSATION_TEXTS).map(([name, text]): [string, string] => [
         `loop.${name}`,
@@ -763,6 +840,29 @@ describe('the reply prompt', () => {
     expect(hashes).toEqual(PROMPT_HASHES[REPLY_PROMPT_VERSION]);
     // A prompt version of its own: the review's texts and the reply's change apart.
     expect(REPLY_PROMPT_VERSION).not.toBe(REVIEW_PROMPT_VERSION);
+  });
+});
+
+describe('the retry texts of a reply', () => {
+  it('say what was wrong and name the verdicts that can be given, in fixed words', () => {
+    expect(replyRetryText('verdict', ['keep'])).toBe(
+      'That verdict is not allowed in this thread. Answer again with the same JSON, with a verdict of: keep.',
+    );
+    expect(replyRetryText('wont_fix', ['keep', 'wont_fix'])).toBe(
+      'wont_fix needs intent priority: a decision of priority that a person stated. Answer again with the same JSON, with a verdict of: keep, wont_fix.',
+    );
+    expect(replyRetryText('false_positive', ALL_VERDICTS)).toBe(
+      "false_positive needs intent factual, and the finding's file read with read_file or grep. Answer again with the same JSON, with a verdict of: keep, wont_fix, false_positive.",
+    );
+  });
+
+  it('are made of nothing but the words above and the names of verdicts', () => {
+    for (const [refusal, offered] of REPLY_REFUSALS) {
+      const text = replyRetryText(refusal, offered);
+      expect(text, refusal).toMatch(/^[A-Za-z0-9_ ,.:']+$/);
+      expect(text.length, refusal).toBeLessThan(300);
+      expect(text, refusal).not.toMatch(/QUALOR-DATA/i);
+    }
   });
 });
 

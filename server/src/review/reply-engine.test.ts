@@ -2,17 +2,17 @@ import { REDACTED } from '@qualor/shared';
 import { afterAll, describe, expect, it } from 'vitest';
 import { memorySnapshot } from '../../test/review';
 import { LlmError, type LlmConversation, type LlmToolCall, type LlmTurn } from '../llm/providers';
-import { CONVERSATION_TEXTS } from './conversation';
+import { CONVERSATION_LIMITS, CONVERSATION_TEXTS } from './conversation';
 import { Masker } from './masker';
 import { REVIEW_OUTPUT_TOKENS } from './pipeline';
-import { REPLY_LIMITS, replySystemPrompt, SYSTEM_PROMPTS } from './prompts';
+import { REPLY_LIMITS, replyRetryText, replySystemPrompt, SYSTEM_PROMPTS } from './prompts';
 import { REPLY_TOKEN_BUDGET } from './replies';
 import {
   allowedVerdicts,
   MASK_INPUT_CHARS,
   runReplyConversation,
+  type DecidedReply,
   type ReplyConversationIo,
-  type ReplyDecision,
   type ReplyInput,
   type ReplyIssue,
 } from './reply-engine';
@@ -97,6 +97,7 @@ const inputOf = (over: Partial<ReplyInput> = {}): ReplyInput => ({
   issue: aiIssue(),
   firstNote: '**AI review** · major · The total skips the last item',
   notes: [{ author: 'alice', body: 'We accept this for this release.' }],
+  mayChangeStatus: true,
   snapshot: snapshot(),
   ...over,
 });
@@ -128,7 +129,7 @@ async function converse(
 }
 
 /** The decision of a reply that was answered, whatever it spent. */
-const decided = (decision: ReplyDecision) => {
+const decided = (decision: DecidedReply) => {
   if (!('verdict' in decision)) throw new Error(`no decision: ${JSON.stringify(decision)}`);
   return decision;
 };
@@ -156,13 +157,21 @@ function dataOf(conversation: LlmConversation | undefined) {
 // ─── What a thread allows ────────────────────────────────────────────────────
 
 describe('allowedVerdicts', () => {
-  it('is every verdict for an open AI finding, and keep alone for any other', () => {
-    expect(allowedVerdicts(aiIssue())).toEqual(ALL);
+  it('is every verdict for an open AI finding the people may change, and keep alone for any other', () => {
+    expect(allowedVerdicts(aiIssue(), true)).toEqual(ALL);
     // An analyzer's finding is explained, never closed; so is a finding that is no longer open.
-    expect(allowedVerdicts(analyzerIssue())).toEqual(['keep']);
+    expect(allowedVerdicts(analyzerIssue(), true)).toEqual(['keep']);
     for (const status of ['resolved', 'wont_fix', 'false_positive', 'closed'] as const) {
-      expect(allowedVerdicts(aiIssue({ status })), status).toEqual(['keep']);
-      expect(allowedVerdicts(analyzerIssue({ status })), status).toEqual(['keep']);
+      expect(allowedVerdicts(aiIssue({ status }), true), status).toEqual(['keep']);
+      expect(allowedVerdicts(analyzerIssue({ status }), true), status).toEqual(['keep']);
+    }
+  });
+
+  it('is keep alone when the people who replied may not change the status, whatever the finding', () => {
+    expect(allowedVerdicts(aiIssue(), false)).toEqual(['keep']);
+    expect(allowedVerdicts(analyzerIssue(), false)).toEqual(['keep']);
+    for (const status of ['resolved', 'wont_fix', 'false_positive', 'closed'] as const) {
+      expect(allowedVerdicts(aiIssue({ status }), false), status).toEqual(['keep']);
     }
   });
 });
@@ -230,7 +239,7 @@ describe('the answer to a reply', () => {
     expect(unread.sent).toHaveLength(2);
     expect(unread.sent[1]?.messages.at(-1)).toEqual({
       role: 'user',
-      text: CONVERSATION_TEXTS.retry,
+      text: replyRetryText('false_positive', ALL),
     });
     // One that insists is a bad answer: nothing is closed on the model's word alone.
     const insists = await converse([
@@ -275,6 +284,135 @@ describe('the answer to a reply', () => {
       says('other', 'keep'),
     ]);
     expect(decided(tooMany.decision)).toMatchObject({ verdict: 'keep', readCode: false });
+  });
+
+  describe('false_positive needs the finding’s own file to have been read', () => {
+    const FILES = { 'src/cart.ts': CART, 'src/other.ts': 'const other = 1;\n' };
+    const withFiles = (files: Record<string, string> = FILES): ReplyInput =>
+      inputOf({ snapshot: memorySnapshot({ files }) });
+    const call = (name: string, args: Record<string, unknown>): LlmTurn =>
+      calls({ id: 'c1', name, arguments: args });
+    /** A turn of as many listings as the loop runs of a turn, and then the calls given. */
+    const fullTurn = (...last: LlmToolCall[]): LlmTurn =>
+      calls(
+        ...Array.from({ length: CONVERSATION_LIMITS.maxCallsPerTurn }, (_, i) => ({
+          id: `l${i}`,
+          name: 'list_files',
+          arguments: {},
+        })),
+        ...last,
+      );
+
+    interface Case {
+      name: string;
+      /** What the model does before it answers. */
+      turns: LlmTurn[];
+      io?: Partial<ReplyConversationIo>;
+      input?: ReplyInput;
+    }
+    /** Calls that read nothing of the finding's file, however they look. */
+    const NOT_READ: Case[] = [
+      { name: 'a read of a path that is not there', turns: [reads('src/missing.ts')] },
+      {
+        name: 'a read of an excluded path',
+        turns: [reads()],
+        io: { excludePaths: ['src/cart.ts'] },
+      },
+      { name: 'a grep with no match', turns: [greps('no such text anywhere')] },
+      { name: 'a read of another file only', turns: [reads('src/other.ts')] },
+      { name: 'a grep that matches in another file only', turns: [greps('const other')] },
+      {
+        name: 'a read from past the end of the file',
+        turns: [call('read_file', { path: 'src/cart.ts', from: 99 })],
+      },
+      {
+        name: 'a read with arguments that do not match',
+        turns: [call('read_file', { path: 'src/cart.ts', from: 0 })],
+      },
+      { name: 'a read of a path that is none', turns: [reads('../src/cart.ts')] },
+      {
+        name: 'a read past the calls a turn may make',
+        turns: [fullTurn({ id: 'r', name: 'read_file', arguments: { path: 'src/cart.ts' } })],
+      },
+      {
+        // Fifteen turns of eight calls use the 120 calls of a review up.
+        name: 'a read after the tool budget is used up',
+        turns: [...Array.from({ length: 15 }, () => fullTurn()), reads()],
+      },
+      {
+        name: 'a read of a finding that has no file',
+        turns: [reads()],
+        input: inputOf({ issue: aiIssue({ path: null }) }),
+      },
+    ];
+    /** Calls that showed lines of the finding's file. */
+    const READ: Case[] = [
+      { name: 'a read of the finding’s file', turns: [reads()] },
+      {
+        name: 'a read of some lines of it',
+        turns: [call('read_file', { path: 'src/cart.ts', from: 2, to: 3 })],
+      },
+      { name: 'a grep that matches in it', turns: [greps('total')] },
+      { name: 'a grep that matches in it and in another file', turns: [greps('const')] },
+      { name: 'a read of another file, and then of it', turns: [reads('src/other.ts'), reads()] },
+      {
+        name: 'a read of it in which a secret was masked',
+        turns: [reads()],
+        input: withFiles({ 'src/cart.ts': `const key = '${AWS_KEY}';\n${CART}` }),
+      },
+      {
+        name: 'a read of it that is nothing but a masked line',
+        turns: [reads()],
+        input: withFiles({ 'src/cart.ts': 'z'.repeat(70_000) }),
+      },
+    ];
+
+    it.each(NOT_READ)('is refused after $name, and the retry says what was wrong', async (c) => {
+      const answers = [says('factual', 'false_positive'), says('factual', 'false_positive')];
+      const refused = await converse([...c.turns, ...answers], c.input ?? withFiles(), c.io);
+      expect(refused.decision).toEqual({ failed: 'bad_answer' });
+      expect(refused.sent.at(-1)?.messages.at(-1)).toEqual({
+        role: 'user',
+        text: replyRetryText('false_positive', ALL),
+      });
+      // A model that gives it up is kept, and nothing was read.
+      const kept = await converse(
+        [...c.turns, says('factual', 'false_positive'), says('other', 'keep', 'It stays.')],
+        c.input ?? withFiles(),
+        c.io,
+      );
+      expect(decided(kept.decision)).toMatchObject({ verdict: 'keep', readCode: false });
+    });
+
+    it.each(READ)('is allowed after $name', async (c) => {
+      const read = await converse(
+        [...c.turns, says('factual', 'false_positive', 'It holds.')],
+        c.input ?? withFiles(),
+        c.io,
+      );
+      expect(decided(read.decision)).toMatchObject({
+        verdict: 'false_positive',
+        answer: 'It holds.',
+        readCode: true,
+      });
+    });
+
+    it('is refused after a read the masker had no time for', async () => {
+      const spent = new Masker({ budgetMs: 0 });
+      try {
+        const refused = await converse(
+          [reads(), says('factual', 'false_positive'), says('factual', 'false_positive')],
+          withFiles(),
+          { masker: spent },
+        );
+        expect(refused.decision).toEqual({ failed: 'bad_answer' });
+        // The file was not shown: the answer says the review has no time left to mask.
+        const answered = refused.sent[1]?.messages.find((message) => message.role === 'tool');
+        expect(answered?.text).toContain('tool budget used up');
+      } finally {
+        await spent.close();
+      }
+    });
   });
 
   it('keep needs no reading, and says whether the code was read', async () => {
@@ -398,6 +536,130 @@ describe('the answer to a reply', () => {
       );
       expect(gave.decision, status).toEqual({ failed: 'bad_answer' });
     }
+  });
+
+  describe('who may change a status', () => {
+    it('an open AI issue whose round may not change its status offers keep alone, and its prompt says why', async () => {
+      for (const tools of [true, false]) {
+        const input = inputOf({ mayChangeStatus: false, snapshot: tools ? snapshot() : null });
+        const asked = await converse(
+          [says('question', 'keep', 'A member of the project can change that.')],
+          input,
+        );
+        expect(decided(asked.decision), String(tools)).toMatchObject({ verdict: 'keep' });
+        expect(asked.sent[0]?.system).toBe(
+          replySystemPrompt({ verdicts: ['keep'], tools, membersOnly: true }),
+        );
+        expect(asked.sent[0]?.system).toContain('cannot change the status of this finding');
+        expect(asked.sent[0]?.system).not.toMatch(/wont_fix|false_positive/);
+      }
+    });
+
+    it('a wont_fix answer there is refused, then ends as a bad answer', async () => {
+      const input = inputOf({ mayChangeStatus: false });
+      const insists = await converse(
+        [says('priority', 'wont_fix', 'Marked.'), says('priority', 'wont_fix', 'Marked.')],
+        input,
+      );
+      expect(insists.decision).toEqual({ failed: 'bad_answer' });
+      expect(insists.sent[1]?.messages.at(-1)).toEqual({
+        role: 'user',
+        text: replyRetryText('verdict', ['keep']),
+      });
+      // Reading the file is no leave to change the status either.
+      const read = await converse(
+        [reads(), says('factual', 'false_positive'), says('factual', 'false_positive')],
+        input,
+      );
+      expect(read.decision).toEqual({ failed: 'bad_answer' });
+      // A model that gives in is kept.
+      const kept = await converse(
+        [
+          says('priority', 'wont_fix'),
+          says('other', 'keep', 'A member of the project can change it.'),
+        ],
+        input,
+      );
+      expect(decided(kept.decision)).toMatchObject({ verdict: 'keep' });
+    });
+
+    it('is the conversation it was for a round that may change the status', async () => {
+      const asked = await converse(
+        [says('priority', 'wont_fix')],
+        inputOf({ mayChangeStatus: true }),
+      );
+      expect(decided(asked.decision).verdict).toBe('wont_fix');
+      expect(asked.sent[0]?.system).toBe(SYSTEM_PROMPTS.reply);
+    });
+  });
+
+  describe('a refusal of the gate tells the model what was wrong', () => {
+    /** Words of the model's refused answer: never repeated in what it is told. */
+    const MARKER = 'zeta-marker-7';
+    /** The text of the last message of the last request: what the model was told to answer again. */
+    const retryOf = (sent: LlmConversation[]): string | undefined => {
+      const last = sent.at(-1)?.messages.at(-1);
+      return last?.role === 'user' ? last.text : undefined;
+    };
+
+    it('says the verdict is not allowed, and names the ones that are', async () => {
+      const analyzer = await converse(
+        [says('priority', 'wont_fix', MARKER), says('other', 'keep')],
+        inputOf({ issue: analyzerIssue() }),
+      );
+      expect(retryOf(analyzer.sent)).toBe(
+        'That verdict is not allowed in this thread. Answer again with the same JSON, with a verdict of: keep.',
+      );
+      // Without a snapshot false_positive is not there to give, and wont_fix is.
+      const withoutCode = await converse(
+        [says('factual', 'false_positive', MARKER), says('other', 'keep')],
+        inputOf({ snapshot: null }),
+      );
+      expect(retryOf(withoutCode.sent)).toBe(replyRetryText('verdict', ['keep', 'wont_fix']));
+    });
+
+    it('says that wont_fix needs the intent priority', async () => {
+      const asked = await converse([says('question', 'wont_fix', MARKER), says('other', 'keep')]);
+      expect(retryOf(asked.sent)).toBe(
+        'wont_fix needs intent priority: a decision of priority that a person stated. Answer again with the same JSON, with a verdict of: keep, wont_fix, false_positive.',
+      );
+    });
+
+    it('says that false_positive needs the intent factual and the finding’s file read', async () => {
+      const unread = await converse([
+        says('factual', 'false_positive', MARKER),
+        says('other', 'keep'),
+      ]);
+      expect(retryOf(unread.sent)).toBe(
+        "false_positive needs intent factual, and the finding's file read with read_file or grep. Answer again with the same JSON, with a verdict of: keep, wont_fix, false_positive.",
+      );
+      // One text for both: the model knows which of the two it did.
+      const wrongIntent = await converse([
+        reads(),
+        says('priority', 'false_positive', MARKER),
+        says('other', 'keep'),
+      ]);
+      expect(retryOf(wrongIntent.sent)).toBe(retryOf(unread.sent));
+    });
+
+    it('puts nothing the model wrote in the text, and keeps the refused answer in the history', async () => {
+      const asked = await converse([says('question', 'wont_fix', MARKER), says('other', 'keep')]);
+      expect(retryOf(asked.sent)).not.toContain(MARKER);
+      const history = asked.sent[1]?.messages ?? [];
+      const refused = history.at(-2);
+      expect(refused?.role).toBe('assistant');
+      expect(refused?.role === 'assistant' ? refused.text : '').toContain(MARKER);
+    });
+
+    it('leaves an answer that is not the JSON asked for to the loop’s own text', async () => {
+      const prose = await converse([
+        turn({ text: 'Marked as a false positive.' }),
+        says('other', 'keep'),
+      ]);
+      expect(retryOf(prose.sent)).toBe(CONVERSATION_TEXTS.retry);
+      const intent = await converse([says('complaint', 'keep'), says('other', 'keep')]);
+      expect(retryOf(intent.sent)).toBe(CONVERSATION_TEXTS.retry);
+    });
   });
 
   describe('a verdict the thread does not allow is a bad answer', () => {

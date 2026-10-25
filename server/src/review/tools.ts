@@ -167,6 +167,14 @@ interface ToolAnswer {
   text: string;
   /** Secrets masked in it. */
   redactions: number;
+  /**
+   * The files the answer shows lines of, when it shows any: what the call really read, which its
+   * text says nothing certain of. A `read_file` that showed a line of its file, and a `grep` for
+   * each file it showed a matching line of. A line that was masked is a line. A refusal, a path that
+   * is not there, an empty file or a range past its end, a search with no match, and a listing show
+   * none, and leave it out.
+   */
+  read?: readonly string[];
 }
 
 const INVALID_PATH = 'invalid path';
@@ -363,13 +371,21 @@ function shownLine(line: string, max: number): string {
 
 /**
  * Lines `from` to `to` (1-based, inclusive) of a masked file, numbered, within the caps of one
- * call. The lines are the file's, masked as a whole: nothing is masked here. The character
- * cap counts everything shown of a line: the number and the `│ ` before it, and its line end.
+ * call, and how many lines of the file that shows (none for an empty file or a range past its end,
+ * which are answered in words). The lines are the file's, masked as a whole: nothing is masked here.
+ * The character cap counts everything shown of a line: the number and the `│ ` before it, and its
+ * line end.
  */
-function numberedLines(file: MaskedText, from: number, to: number | null): string {
+function numberedLines(
+  file: MaskedText,
+  from: number,
+  to: number | null,
+): { text: string; shown: number } {
   const total = file.lineCount;
-  if (total === 0) return 'the file is empty';
-  if (from > total) return `the file has ${total} lines; from is past its end`;
+  if (total === 0) return { text: 'the file is empty', shown: 0 };
+  if (from > total) {
+    return { text: `the file has ${total} lines; from is past its end`, shown: 0 };
+  }
   const asked = Math.min(to ?? total, total);
   let last = Math.min(asked, from + TOOL_LIMITS.readLines - 1);
   // The widest the numbers of this answer can be: they are as wide as the last, which is not
@@ -394,7 +410,7 @@ function numberedLines(file: MaskedText, from: number, to: number | null): strin
   if (last < asked) {
     numbered.push(`… lines ${from}–${last} of ${total}; ask for more with from/to`);
   }
-  return numbered.join('\n');
+  return { text: numbered.join('\n'), shown: last - from + 1 };
 }
 
 async function readFile(
@@ -419,12 +435,15 @@ async function readFile(
       return fixed(BUDGET_USED_UP);
     case 'timeout':
       return fixed(NOT_MASKED_IN_TIME);
-    case 'text':
+    case 'text': {
+      const lines = numberedLines(file.text, from ?? 1, to ?? null);
       // Whatever the answer, the call that masked the file reports what was masked in it.
       return {
-        text: numberedLines(file.text, from ?? 1, to ?? null),
+        text: lines.text,
         redactions: file.redactions,
+        ...(lines.shown > 0 ? { read: [path] } : {}),
       };
+    }
   }
 }
 
@@ -523,7 +542,9 @@ async function grep(
   // Only the lines the model can see are counted: a search the reader cut short says nothing.
   if (lines.length === 0) lines.push(NO_MATCHES);
   else if (found.over) lines.push(MORE_MATCHES);
-  return redactedAnswer(lines.join('\n'), counted);
+  // The files of the lines shown, each once, in the order of the hits.
+  const read = [...new Set(found.items.map((hit) => hit.path))];
+  return { ...redactedAnswer(lines.join('\n'), counted), ...(read.length > 0 ? { read } : {}) };
 }
 
 async function listFiles(

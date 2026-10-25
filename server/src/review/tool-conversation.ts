@@ -1,4 +1,3 @@
-import type { LlmToolCall } from '../llm/providers';
 import {
   CONVERSATION_LIMITS,
   runConversation,
@@ -35,8 +34,11 @@ export interface RoleCall {
   /** The nonce of that envelope, which the tools' answers are put in too. */
   nonce: string;
   tokenBudget: number;
-  /** The caller's check of an answer. */
-  accept: (text: string) => boolean;
+  /**
+   * The caller's check of an answer (`ConversationInput.accept`): `true` takes it; `false`, or a
+   * text, asks once more, with the loop's own words or with that text.
+   */
+  accept: (text: string) => boolean | string;
 }
 
 /** The reader a conversation's tools read, with the policy they run under. */
@@ -47,10 +49,10 @@ interface ToolsIo {
   /** Told the secrets masked in each tool answer. */
   onToolRedactions?: (count: number) => void;
   /**
-   * Told each call that is run, as the model made it: not one that is refused for its arguments or
-   * for coming past the calls a turn may make.
+   * Told the files a tool answer showed lines of (`ToolAnswer.read`), for each call that showed
+   * any: what the model really read, as the tool did it, never as its text says.
    */
-  onToolCall?: (call: LlmToolCall) => void;
+  onToolRead?: (paths: readonly string[]) => void;
 }
 
 /**
@@ -101,9 +103,9 @@ export function converseOverTools(call: RoleCall, io: ConversationIo): Promise<C
     runTool: async (toolCall) => {
       // Nothing is run for a model that asks for a tool it was not given: it is told so.
       if (io.reader === null) return NO_TOOLS_ANSWER;
-      io.onToolCall?.(toolCall);
       const answer = await runReviewTool(io.reader, toolCall, io.policy);
       io.onToolRedactions?.(answer.redactions);
+      if (answer.read !== undefined) io.onToolRead?.(answer.read);
       return answer.text;
     },
     limits: {

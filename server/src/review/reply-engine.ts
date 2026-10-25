@@ -23,9 +23,11 @@ import {
   REPLY_LIMITS,
   REPLY_PROMPT_VERSION,
   replyData,
+  replyRetryText,
   replySystemPrompt,
   type ReplyData,
   type ReplyIssue,
+  type ReplyRefusal,
 } from './prompts';
 import { REPLY_TOKEN_BUDGET } from './replies';
 import { replyAnswerSchema, type ReplyAnswer } from './schemas';
@@ -54,10 +56,12 @@ export type { ReplyIssue } from './prompts';
  * AI review holds model text: all of it is masked, cut and put in the data envelope (envelope.ts)
  * with the finding's words. Nothing in it can widen what the thread allows. The model is told which
  * verdicts the thread allows, but the code decides: an answer outside them, or a verdict its intent
- * or the conversation does not bear out, is asked for again once, in the same conversation, and
- * then given up (`bad_answer`), so that a reply that tries to steer the model can change at most
- * the status of its own thread's finding, and only as a person's decision of priority, or a claim
- * the code was read to confirm, allows.
+ * or the conversation does not bear out, is asked for again once, in the same conversation, with a
+ * fixed text that says what was wrong, and then given up (`bad_answer`). So a reply that tries to
+ * steer the model can change at most the status of its own thread's finding; only when the people
+ * who replied may change a status (the rights the caller read, `mayChangeStatus`, never what the
+ * model makes of their words); and only as a person's decision of priority, or a claim that the
+ * finding's own file was really read to confirm, allows.
  *
  * `decideReply` is what the job calls: it takes the day's budget, the model of the reply's tier and
  * the provider's calls, each recorded as a `review-reply` row. `runReplyConversation` is the
@@ -75,11 +79,12 @@ export interface ReplyUsage {
 
 /**
  * What a conversation came to: a verdict with the words to post (empty when there is nothing to
- * say), and whether the model read the code (ran a `read_file` or a `grep`); or why it decided
- * nothing; or that it was stopped (the server is stopping, or the caller asked it to), which is no
- * failure of the answer.
+ * say), and whether the model read the finding's own file (a `read_file` that showed lines of it,
+ * or a `grep` that matched in it); or why it decided nothing; or that it was stopped (the server is
+ * stopping, or the caller asked it to), which is no failure of the answer. The decision the ledger
+ * stores (replies.ts) is another type.
  */
-export type ReplyDecision =
+export type DecidedReply =
   | { verdict: ReplyVerdict; answer: string; readCode: boolean; usage: ReplyUsage }
   | { failed: 'bad_answer' | 'provider_error' | 'provider_no_tools' | 'budget_spent' }
   | { stopped: true };
@@ -90,44 +95,54 @@ export interface ReplyInput {
   firstNote: string;
   /** The people's notes of the round, oldest first. */
   notes: readonly { author: string; body: string }[];
+  /**
+   * Whether every person whose note is in the round may change the issue's status: the SCM rights
+   * the caller read (GitLab: access level Developer or more on the project; GitHub: author
+   * association OWNER, MEMBER or COLLABORATOR). A status change is a triage decision, and on a
+   * public repository anyone can reply: the intent the model reads out of a note is no authorisation.
+   */
+  mayChangeStatus: boolean;
   /** The snapshot the tools read; null when there is none, and the model is then given no tools. */
   snapshot: SnapshotReader | null;
 }
 
+/** An open finding of the AI review: the one kind of thread a person's reply may change. */
+const changeable = (issue: Pick<ReplyIssue, 'engine' | 'status'>): boolean =>
+  issue.engine === AI_ENGINE && issue.status === 'open';
+
 /**
- * The verdicts a thread allows: every one for an open finding of the AI review, which Qualor may
- * close after a person's reply; `keep` alone for any other, a finding an analyzer reported or one
- * that is no longer open, which Qualor only explains.
+ * The verdicts a thread allows: every one for an open finding of the AI review whose people may
+ * change its status (`mayChangeStatus`), which Qualor may then close after a person's reply; `keep`
+ * alone for any other, a finding an analyzer reported, one that is no longer open, or one whose
+ * people may not change it, which Qualor only answers.
  */
 export function allowedVerdicts(
   issue: Pick<ReplyIssue, 'engine' | 'status'>,
+  mayChangeStatus: boolean,
 ): readonly ReplyVerdict[] {
-  return issue.engine === AI_ENGINE && issue.status === 'open' ? REPLY_VERDICTS : ['keep'];
+  return changeable(issue) && mayChangeStatus ? REPLY_VERDICTS : ['keep'];
 }
 
 /**
- * Whether the thread bears an answer out: its verdict is one of those offered, a `wont_fix` is a
- * decision of priority, and a `false_positive` is a claim of fact that the conversation read the
- * code for. `keep` is what any intent leads to.
+ * What is wrong with an answer the thread does not bear out, or null when it does: its verdict is
+ * not one of those offered, a `wont_fix` is no decision of priority, or a `false_positive` is no
+ * claim of fact (or the finding's own file was not read for it). `keep` is what any intent leads to.
  */
-function borneOut(
+function refusalOf(
   answer: ReplyAnswer,
   offered: readonly ReplyVerdict[],
   readCode: boolean,
-): boolean {
-  if (!offered.includes(answer.verdict)) return false;
+): ReplyRefusal | null {
+  if (!offered.includes(answer.verdict)) return 'verdict';
   switch (answer.verdict) {
     case 'wont_fix':
-      return answer.intent === 'priority';
+      return answer.intent === 'priority' ? null : 'wont_fix';
     case 'false_positive':
-      return answer.intent === 'factual' && readCode;
+      return answer.intent === 'factual' && readCode ? null : 'false_positive';
     case 'keep':
-      return true;
+      return null;
   }
 }
-
-/** The tools whose calls read the code: a listing of names shows none. */
-const READING_TOOLS: ReadonlySet<string> = new Set(['read_file', 'grep']);
 
 /**
  * A text is masked up to this many characters: what is shown of any of them is cut shorter still
@@ -214,23 +229,37 @@ async function shownData(input: ReplyInput, io: ReplyConversationIo): Promise<Re
 }
 
 /** The conversation and its checks; `runReplyConversation` turns a stop into its result. */
-async function decide(input: ReplyInput, io: ReplyConversationIo): Promise<ReplyDecision> {
+async function decide(input: ReplyInput, io: ReplyConversationIo): Promise<DecidedReply> {
   const { issue, snapshot } = input;
   // What the model may choose: what the thread allows, and of that only what it has the means for.
-  const offered = allowedVerdicts(issue).filter(
+  const offered = allowedVerdicts(issue, input.mayChangeStatus).filter(
     (verdict) => verdict !== 'false_positive' || snapshot !== null,
   );
+  // An open finding of the AI review whose people may not change its status: the prompt says why.
+  const membersOnly = changeable(issue) && !input.mayChangeStatus;
   const nonce = newNonce();
   const user = envelope(await shownData(input, io), nonce);
 
-  /** Whether the model has run a call that reads the code. */
+  /**
+   * Whether the model has read the finding's own file: a `read_file` that showed lines of it, or a
+   * `grep` that showed a match in it, as the tools did it. Nothing else is a reading: not a
+   * refusal, not a path that is not there, not a search with no match, not another file.
+   */
   let readCode = false;
-  /** The answer a text is, if it is one and the thread bears it out. */
-  const answerOf = (text: string): ReplyAnswer | undefined => {
+  /**
+   * What a text is: the answer, when it is one the thread bears out; or what to say to ask again,
+   * which is a fixed text for an answer the gate refuses, and false for one that is not the JSON
+   * asked for (the loop's own words then).
+   */
+  const judge = (text: string): { answer: ReplyAnswer } | { retry: string | false } => {
     const parsed = parseModelJson(text, ANSWER_CHARS_PER_TOKEN * REVIEW_OUTPUT_TOKENS.reply);
-    if (parsed === undefined) return undefined;
+    if (parsed === undefined) return { retry: false };
     const checked = replyAnswerSchema.safeParse(scrubKeyDeep(parsed, io.providerKey));
-    return checked.success && borneOut(checked.data, offered, readCode) ? checked.data : undefined;
+    if (!checked.success) return { retry: false };
+    const refusal = refusalOf(checked.data, offered, readCode);
+    return refusal === null
+      ? { answer: checked.data }
+      : { retry: replyRetryText(refusal, offered) };
   };
   let cost = 0;
   const send: ConversationInput['send'] = async (conversation) => {
@@ -242,11 +271,14 @@ async function decide(input: ReplyInput, io: ReplyConversationIo): Promise<Reply
   const result = await converseOverTools(
     {
       role: 'reply',
-      system: replySystemPrompt({ verdicts: offered, tools: snapshot !== null }),
+      system: replySystemPrompt({ verdicts: offered, tools: snapshot !== null, membersOnly }),
       user,
       nonce,
       tokenBudget: io.tokenBudget,
-      accept: (text) => answerOf(text) !== undefined,
+      accept: (text) => {
+        const judged = judge(text);
+        return 'answer' in judged ? true : judged.retry;
+      },
     },
     snapshot === null
       ? { reader: null, send, shouldStop: io.shouldStop }
@@ -260,19 +292,19 @@ async function decide(input: ReplyInput, io: ReplyConversationIo): Promise<Reply
           send,
           shouldStop: io.shouldStop,
           onToolRedactions: (count) => io.redactions?.add(count),
-          onToolCall: (call) => {
-            if (READING_TOOLS.has(call.name)) readCode = true;
+          onToolRead: (paths) => {
+            if (issue.path !== null && paths.includes(issue.path)) readCode = true;
           },
         },
   );
   if (result.kind === 'stopped') return { stopped: true };
   if (result.kind === 'failed') return { failed: result.reason };
   // Checked again: a conversation that gave an answer back is not believed without it.
-  const answer = answerOf(result.text);
-  if (answer === undefined) return { failed: 'bad_answer' };
+  const judged = judge(result.text);
+  if (!('answer' in judged)) return { failed: 'bad_answer' };
   return {
-    verdict: answer.verdict,
-    answer: answer.answer,
+    verdict: judged.answer.verdict,
+    answer: judged.answer.answer,
     readCode,
     usage: {
       model: io.model,
@@ -288,9 +320,10 @@ async function decide(input: ReplyInput, io: ReplyConversationIo): Promise<Reply
  * verdicts the thread allows, without `false_positive` when there is no snapshot, and is given the
  * review's tools over the snapshot when there is one, with a tool budget of its own. Its last
  * message has to be the JSON of `replyAnswerSchema`, the provider's key taken out, and the thread
- * has to bear it out (`borneOut`); one that does not is asked for again once, and then the
- * conversation fails as a `bad_answer`. What it spent is reported, with the model it went to, when
- * it answers; the cost is that of the calls the provider counted, at `io.pricing`.
+ * has to bear it out (`refusalOf`); one that does not is asked for again once, with a fixed text
+ * that says what was wrong, and then the conversation fails as a `bad_answer`. What it spent is
+ * reported, with the model it went to, when it answers; the cost is that of the calls the provider
+ * counted, at `io.pricing`.
  *
  * A stop is `stopped`: the caller asks to stop, or a masking or a reading is given up while it
  * does, which is no error of the answer. Any other error is thrown.
@@ -298,7 +331,7 @@ async function decide(input: ReplyInput, io: ReplyConversationIo): Promise<Reply
 export async function runReplyConversation(
   input: ReplyInput,
   io: ReplyConversationIo,
-): Promise<ReplyDecision> {
+): Promise<DecidedReply> {
   if (!(io.tokenBudget > 0)) return { failed: 'budget_spent' };
   try {
     return await decide(input, io);
@@ -362,7 +395,7 @@ async function tokensLeft(deps: ReplyDeps, provider: StoredProvider): Promise<nu
  * caller, is `stopped`. Nothing is posted and no ledger row is written: the caller does that with
  * what comes back.
  */
-export async function decideReply(input: ReplyInput, deps: ReplyDeps): Promise<ReplyDecision> {
+export async function decideReply(input: ReplyInput, deps: ReplyDeps): Promise<DecidedReply> {
   const { settings } = deps;
   const provider = settings.provider;
   const key = providerApiKey(settings, deps.config.secretKey);
