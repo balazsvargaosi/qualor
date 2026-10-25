@@ -93,10 +93,10 @@ export interface FakeNote {
   resolvedBy?: number | null;
   position: Record<string, unknown> | null;
   /**
-   * When the note was made, as ISO 8601 (GitLab's `created_at`): the fake's clock when it made
-   * it. A note built by hand without it is dated as the recorded shape is.
+   * When the note was made, as ISO 8601 (GitLab's `created_at`): the fake's clock when it made it.
+   * A note built by hand says when, so that no test depends on a date it never chose.
    */
-  createdAt?: string;
+  createdAt: string;
 }
 
 export interface FakeDiscussion {
@@ -269,15 +269,14 @@ export async function createFakeGitLab(
   };
   const noteJson = (note: FakeNote) => {
     const shape = note.position ? diffNoteShape : noteShape;
-    // A note not edited since it was made: `updated_at` is `created_at`, as GitLab has it.
-    const createdAt = note.createdAt ?? shape['created_at'];
     return {
       ...shape,
       id: note.id,
       body: note.body,
       author: author(note.authorId),
-      created_at: createdAt,
-      updated_at: createdAt,
+      created_at: note.createdAt,
+      // A note not edited since it was made: `updated_at` is `created_at`, as GitLab has it.
+      updated_at: note.createdAt,
       resolvable: note.resolvable,
       ...(note.resolvable
         ? {

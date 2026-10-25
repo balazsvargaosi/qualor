@@ -101,9 +101,10 @@ export interface FakeComment {
   user: { login: string; id: number; type: 'Bot' | 'User' };
   /**
    * When the comment was made, as GitHub writes it (ISO 8601, UTC, to the second): the fake's
-   * clock when it made it. A comment built by hand without it is dated as the recorded shape is.
+   * clock when it made it. A comment built by hand says when, so that no test depends on a date it
+   * never chose.
    */
-  createdAt?: string;
+  createdAt: string;
 }
 /** A pull request review comment: a comment on RIGHT-side lines of one file's diff. */
 export interface FakeReviewComment {
@@ -121,7 +122,7 @@ export interface FakeReviewComment {
   /** The thread's first comment, for a reply (REST's `in_reply_to_id`); null for a first comment. */
   inReplyToId: number | null;
   /** As {@link FakeComment.createdAt}. */
-  createdAt?: string;
+  createdAt: string;
 }
 /** A review thread: a first review comment and the replies to it (GraphQL's `PullRequestReviewThread`). */
 export interface FakeReviewThread {
@@ -566,26 +567,21 @@ export async function createFakeGitHub(
     app: { id: run.appId, slug, name: 'Qualor' },
   });
 
-  const commentJson = (c: FakeComment) => {
-    const shape = githubShape('issue_comment');
+  const commentJson = (c: FakeComment) => ({
+    ...githubShape('issue_comment'),
+    id: c.id,
+    body: c.body,
+    user: c.user,
+    created_at: c.createdAt,
     // A comment not edited since it was made: `updated_at` is `created_at`, as GitHub has it.
-    const createdAt = c.createdAt ?? shape['created_at'];
-    return {
-      ...shape,
-      id: c.id,
-      body: c.body,
-      user: c.user,
-      created_at: createdAt,
-      updated_at: createdAt,
-      performed_via_github_app: c.user.type === 'Bot' ? { id: appId, slug } : null,
-    };
-  };
+    updated_at: c.createdAt,
+    performed_via_github_app: c.user.type === 'Bot' ? { id: appId, slug } : null,
+  });
 
   const reviewCommentJson = (repo: FakeRepository) => (c: FakeReviewComment) => {
     const shape = githubShape(
       c.inReplyToId === null ? 'pull_request_review_comment' : 'pull_request_review_comment_reply',
     );
-    const createdAt = c.createdAt ?? shape['created_at'];
     return {
       ...shape,
       id: c.id,
@@ -601,8 +597,8 @@ export async function createFakeGitHub(
       start_side: c.startLine === null ? null : 'RIGHT',
       side: c.side,
       user: c.user,
-      created_at: createdAt,
-      updated_at: createdAt,
+      created_at: c.createdAt,
+      updated_at: c.createdAt,
       html_url: `${webBase()}/${repo.owner}/${repo.name}/pull/${c.pull}#discussion_r${c.id}`,
       performed_via_github_app: c.user.type === 'Bot' ? { id: appId, slug } : null,
       // GitHub names the thread's first comment on a reply, and has no such field on a first one.

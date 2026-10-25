@@ -1,6 +1,6 @@
 import type { Report } from '@qualor/shared';
 import { and, eq, inArray, sql } from 'drizzle-orm';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   createFakeGitHub,
   githubWrites,
@@ -8,6 +8,7 @@ import {
   type FakeGitHub,
   type FakeReviewComment,
 } from '../../../test/fake-github';
+import { createFakeLlm, type FakeLlm } from '../../../test/fake-llm';
 import {
   githubConnection,
   githubDeps,
@@ -17,6 +18,7 @@ import {
 } from '../../../test/github';
 import { createIngestHarness, type IngestHarness } from '../../../test/ingest';
 import { checkAiThreadLines, FORBIDDEN_ANYWHERE } from '../../../test/markdown-check';
+import { answerJob, queuedAnswers, reviewOff, reviewOn, reviewScope } from '../../../test/replies';
 import { engine, file, finding } from '../../../test/reports';
 import { seedAiIssue, storeTestSnapshot } from '../../../test/review';
 import { PUBLIC_URL, runDecorations } from '../../../test/scm';
@@ -949,5 +951,252 @@ describe('GitHub decoration: AI review threads (6I-3, R16, R18)', () => {
       expect(checkAiThreadLines(comment.body), comment.body).toBe(true);
       for (const line of comment.body.split('\n')) expect(line, line).not.toMatch(/^\s*\//);
     }
+  });
+
+  describe('answers to the people’s notes (6I-4)', () => {
+    let llm: FakeLlm;
+    const DAY = 86_400_000;
+    const daysAgo = (days: number) => new Date(Date.now() - days * DAY);
+
+    /** What a person says: a comment by the person the tests call octocat. */
+    const whoSaid = (body: string) => ({ body, login: 'octocat' });
+    /** The note made `days` days ago. */
+    const backdated = <T extends { createdAt?: string }>(note: T, days: number): T =>
+      Object.assign(note, { createdAt: daysAgo(days).toISOString() });
+    const requestsOf = () => fake.requests.map((r) => `${r.method} ${r.path}`);
+    /** The ledger's rows of the branch as [kind, note id]. */
+    const queuedNotes = async (branchId: string) =>
+      (await queuedAnswers(h.ctx.db, branchId)).rows.map((row) => [row.kind, row.noteId]);
+    /** A pull request with analyzer threads on lines 3 and 4, by line. */
+    const twoThreads = async (key: string) => {
+      const s = await setup(key, {
+        review: false,
+        findings: [finding({ path: PATH, line: 3 }), finding({ path: PATH, line: 4 })],
+      });
+      await runDecorations(h, githubDeps(h));
+      return { s, comments: new Map([...threadsOf(s.repo.id).values()].map((c) => [c.line, c])) };
+    };
+    type Threads = Awaited<ReturnType<typeof twoThreads>>;
+    const replyAt = (t: Threads, line: number, days: number) =>
+      backdated(
+        fake.replyToReviewComment(t.s.repo.id, 7, t.comments.get(line)!.id, whoSaid('Is it?')),
+        days,
+      );
+    const commandAt = (t: Threads, days: number) =>
+      backdated(fake.addComment(t.s.repo.id, 7, whoSaid('qualor review')), days);
+
+    beforeAll(async () => {
+      llm = await createFakeLlm();
+    });
+    afterAll(async () => {
+      await llm.close();
+    });
+    // AI review is off for every other test of this file, and for the next of these.
+    afterEach(() => reviewOff(h));
+
+    it('decoration queues one answer job for a reply in an AI thread, and none on the next decoration', async () => {
+      const s = await setup('gh-replies/ai');
+      await reviewOn(h, llm);
+      const discussed = await aiFinding(s.branchId, { line: 9 });
+      const quiet = await aiFinding(s.branchId, { line: 12 });
+      await runDecorations(h, githubDeps(h));
+      const threads = threadsOf(s.repo.id);
+      expect([...threads.keys()].sort()).toEqual([discussed, quiet].sort());
+      // Nobody has replied yet: nothing is queued.
+      expect(await queuedAnswers(h.ctx.db, s.branchId)).toEqual({ rows: [], jobs: [] });
+
+      const comment = threads.get(discussed)!;
+      const reply = fake.replyToReviewComment(s.repo.id, 7, comment.id, whoSaid('Is it?'));
+      // Comments of an App, Qualor's own among them, are no person's reply.
+      fake.replyToReviewComment(s.repo.id, 7, comment.id, {
+        body: 'A comment of another App.',
+        login: 'other-app[bot]',
+        type: 'Bot',
+      });
+      fake.replyToReviewComment(s.repo.id, 7, comment.id, {
+        body: 'A comment of Qualor’s own.',
+        login: `${fake.slug}[bot]`,
+        type: 'Bot',
+      });
+      await decorateAgain(s);
+      const queued = await queuedAnswers(h.ctx.db, s.branchId);
+      expect(queued.rows).toMatchObject([
+        {
+          projectId: s.project.id,
+          branchId: s.branchId,
+          provider: 'github',
+          kind: 'reply',
+          noteId: reply.id,
+          // A GitHub thread is its first comment's id.
+          threadId: String(comment.id),
+          issueId: discussed,
+          command: null,
+          author: 'octocat',
+          status: 'queued',
+        },
+      ]);
+      expect(queued.jobs).toEqual([answerJob(s.branchId, queued.rows[0]!.id)]);
+
+      // The next decoration finds the same reply, and queues nothing.
+      await decorateAgain(s);
+      expect(await queuedAnswers(h.ctx.db, s.branchId)).toEqual(queued);
+      // A person replies again, in this thread and in the other: a round each.
+      const second = fake.replyToReviewComment(s.repo.id, 7, comment.id, whoSaid('Still?'));
+      const other = fake.replyToReviewComment(
+        s.repo.id,
+        7,
+        threads.get(quiet)!.id,
+        whoSaid('And here?'),
+      );
+      await decorateAgain(s);
+      const next = await queuedAnswers(h.ctx.db, s.branchId);
+      expect(next.rows.map((row) => [row.noteId, row.threadId])).toEqual([
+        [reply.id, String(comment.id)],
+        [second.id, String(comment.id)],
+        [other.id, String(threads.get(quiet)!.id)],
+      ]);
+      expect(next.jobs).toEqual(next.rows.map((row) => answerJob(s.branchId, row.id)));
+    });
+
+    it('a reply in an analyzer thread is queued too', async () => {
+      const s = await setup('gh-replies/analyzer', {
+        findings: [finding({ path: PATH, line: 3 })],
+        review: false,
+      });
+      await runDecorations(h, githubDeps(h));
+      await reviewOn(h, llm);
+      const [issueId, comment] = [...threadsOf(s.repo.id)][0]!;
+      const reply = fake.replyToReviewComment(s.repo.id, 7, comment.id, whoSaid('Intended.'));
+      await decorateAgain(s);
+      const queued = await queuedAnswers(h.ctx.db, s.branchId);
+      expect(queued.rows).toMatchObject([
+        {
+          provider: 'github',
+          kind: 'reply',
+          noteId: reply.id,
+          threadId: String(comment.id),
+          issueId,
+        },
+      ]);
+      expect(queued.jobs).toEqual([answerJob(s.branchId, queued.rows[0]!.id)]);
+      // A person resolves the thread, and writes in it once more: the thread is theirs now.
+      fake.resolveThreadAs(threadOf(comment).id, 'octocat');
+      fake.replyToReviewComment(s.repo.id, 7, comment.id, whoSaid('Hm.'));
+      await decorateAgain(s);
+      expect(await queuedNotes(s.branchId)).toEqual([['reply', reply.id]]);
+    });
+
+    it('nothing is queued when AI review is off for the project', async () => {
+      const s = await setup('gh-replies/off', { findings: [finding({ path: PATH, line: 3 })] });
+      await runDecorations(h, githubDeps(h));
+      const [, comment] = [...threadsOf(s.repo.id)][0]!;
+      fake.replyToReviewComment(s.repo.id, 7, comment.id, whoSaid('Intended.'));
+      fake.addComment(s.repo.id, 7, whoSaid('qualor review'));
+      const nothing = { rows: [], jobs: [] };
+
+      // AI review was never switched on.
+      await decorateAgain(s);
+      expect(await queuedAnswers(h.ctx.db, s.branchId)).toEqual(nothing);
+      // It is on for the organisation, which has not selected this project.
+      await reviewOn(h, llm);
+      await reviewScope(h, 'selected');
+      await decorateAgain(s);
+      expect(await queuedAnswers(h.ctx.db, s.branchId)).toEqual(nothing);
+      // The control: with the project in its scope, the same two notes are queued.
+      await reviewScope(h, 'all');
+      await decorateAgain(s);
+      expect(
+        (await queuedAnswers(h.ctx.db, s.branchId)).rows.map((row) => row.kind).sort(),
+      ).toEqual(['command', 'reply']);
+    });
+
+    it('a command note is queued once', async () => {
+      const s = await setup('gh-replies/command', { review: false });
+      await runDecorations(h, githubDeps(h));
+      await reviewOn(h, llm);
+      const command = fake.addComment(s.repo.id, 7, whoSaid('Qualor review'));
+      // Comments that give no command: words before it, Qualor's own App, another App, a longer word.
+      fake.addComment(s.repo.id, 7, whoSaid('please qualor review'));
+      fake.addComment(s.repo.id, 7, {
+        body: 'qualor review',
+        login: `${fake.slug}[bot]`,
+        type: 'Bot',
+      });
+      fake.addComment(s.repo.id, 7, {
+        body: 'qualor review',
+        login: 'other-app[bot]',
+        type: 'Bot',
+      });
+      fake.addComment(s.repo.id, 7, whoSaid('qualor reviewer'));
+      await decorateAgain(s);
+      const queued = await queuedAnswers(h.ctx.db, s.branchId);
+      expect(queued.rows).toMatchObject([
+        {
+          provider: 'github',
+          kind: 'command',
+          command: 'review',
+          noteId: command.id,
+          // A comment on the pull request's page is in no thread: the answer is a comment too.
+          threadId: null,
+          issueId: null,
+          author: 'octocat',
+          status: 'queued',
+        },
+      ]);
+      expect(queued.jobs).toEqual([answerJob(s.branchId, queued.rows[0]!.id)]);
+      // The next decoration sees the same comment and queues nothing.
+      await decorateAgain(s);
+      expect(await queuedAnswers(h.ctx.db, s.branchId)).toEqual(queued);
+    });
+
+    it('decoration makes no request it did not make before', async () => {
+      const s = await setup('gh-replies/requests', {
+        findings: [finding({ path: PATH, line: 3 })],
+      });
+      await aiFinding(s.branchId, { line: 9 });
+      await runDecorations(h, githubDeps(h));
+      // Settled: a second decoration of the same state writes nothing.
+      await decorateAgain(s);
+      for (const comment of threadsOf(s.repo.id).values()) {
+        fake.replyToReviewComment(s.repo.id, 7, comment.id, whoSaid('Intended.'));
+      }
+      fake.addComment(s.repo.id, 7, whoSaid('qualor review'));
+
+      fake.clearRequests();
+      await decorateAgain(s);
+      const before = requestsOf();
+      expect(before.length).toBeGreaterThan(0);
+      expect(writes()).toEqual([]);
+      expect(await queuedAnswers(h.ctx.db, s.branchId)).toEqual({ rows: [], jobs: [] });
+
+      // The same decoration with AI review on queues the two replies and the command, and asks GitHub
+      // for nothing more: the notes it answers are the listings it reads anyway.
+      await reviewOn(h, llm);
+      fake.clearRequests();
+      await decorateAgain(s);
+      expect(requestsOf()).toEqual(before);
+      expect((await queuedAnswers(h.ctx.db, s.branchId)).rows).toHaveLength(3);
+    });
+
+    it('ignores a note from before the consent, and one from more than 30 days ago', async () => {
+      // The consent was given 60 days ago: only the 30 days count.
+      const old = await twoThreads('gh-replies/old');
+      await reviewOn(h, llm, daysAgo(60));
+      replyAt(old, 3, 40);
+      commandAt(old, 40);
+      const recent = replyAt(old, 4, 20);
+      await decorateAgain(old.s);
+      expect(await queuedNotes(old.s.branchId)).toEqual([['reply', recent.id]]);
+
+      // The consent was given 10 days ago: what was written before it is never answered.
+      await reviewOff(h);
+      const switched = await twoThreads('gh-replies/switch-on');
+      await reviewOn(h, llm, daysAgo(10));
+      replyAt(switched, 3, 20);
+      commandAt(switched, 20);
+      const after = replyAt(switched, 4, 5);
+      await decorateAgain(switched.s);
+      expect(await queuedNotes(switched.s.branchId)).toEqual([['reply', after.id]]);
+    });
   });
 });

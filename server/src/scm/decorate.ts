@@ -4,6 +4,7 @@ import type { Limits } from '../limits';
 import { AI_FIX_QUEUE, postFixHandler } from '../llm/post';
 import type { JobHandlers } from '../queue/worker';
 import { deleteBranchSnapshots, mergeRequestStateHandlers } from '../review/lifecycle';
+import { replyWindow } from '../review/replies';
 import { withMergeRequestHead, withUnplacedFindings } from '../review/render';
 import { gitlabClientFor, type ScmDeps } from './connections';
 import {
@@ -200,6 +201,8 @@ async function decorateMergeRequest(
       : head !== revision
         ? 'stale'
         : null;
+  // Where the people's notes are looked for, when AI review answers them (6I-4).
+  const replies = await replyWindow(deps.db, loaded.project, loaded.branch.id);
   // §5.4: the analyzers' threads only when the report's line numbers are the merge request's
   // (merged results win over stale: a merge commit is never the head). The AI review's follow the
   // head it read, also in a merged-results pipeline.
@@ -214,6 +217,7 @@ async function decorateMergeRequest(
     discussions: listed.items,
     discussionsComplete: listed.complete,
     botId: me.id,
+    replies,
     issueUrl: (issueId) => issueUrl(deps.publicUrl, loaded.project.id, issueId),
     analyzers: skipped === null,
     ...(deps.maxThreadUpdates === undefined ? {} : { maxThreadUpdates: deps.maxThreadUpdates }),

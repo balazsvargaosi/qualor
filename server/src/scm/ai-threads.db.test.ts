@@ -1,8 +1,10 @@
 import type { Report } from '@qualor/shared';
 import { and, eq, inArray, sql } from 'drizzle-orm';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createFakeGitLab, type FakeGitLab } from '../../test/fake-gitlab';
+import { createFakeLlm, type FakeLlm } from '../../test/fake-llm';
 import { createIngestHarness, type IngestHarness } from '../../test/ingest';
+import { answerJob, queuedAnswers, reviewOff, reviewOn } from '../../test/replies';
 import { file, finding } from '../../test/reports';
 import { seedAiIssue, storeTestSnapshot } from '../../test/review';
 import {
@@ -676,5 +678,76 @@ describe('GitLab decoration: AI review threads (6I-3, R16, R18)', () => {
       await decorateAgain(analysisId, branchId);
       expect([state, await snapshotsOf(branchId)]).toEqual([state, []]);
     }
+  });
+
+  describe('answers to replies in AI threads (6I-4)', () => {
+    let llm: FakeLlm;
+
+    beforeAll(async () => {
+      llm = await createFakeLlm();
+    });
+    afterAll(async () => {
+      await llm.close();
+    });
+    // AI review is off for every other test of this file, and for the next of these.
+    afterEach(() => reviewOff(h));
+
+    it('decoration queues one answer job for a reply in an AI thread, and none on the next decoration', async () => {
+      const { gitlabId, analysisId, branchId, project } = await setup('ai/reply');
+      // After the ingestion, which makes a review run of its own while AI review is on: the tests
+      // of this file seed the run of a review that is done.
+      await reviewOn(h, llm);
+      const quiet = await aiFinding(branchId, { line: 5 });
+      const discussed = await aiFinding(branchId, { line: 12 });
+      await runDecorations(h, decorationDeps(h));
+      const threads = threadsOf(gitlabId);
+      expect([...threads.keys()].sort()).toEqual([quiet, discussed].sort());
+      // Nobody has replied yet: nothing is queued.
+      expect(await queuedAnswers(h.ctx.db, branchId)).toEqual({ rows: [], jobs: [] });
+
+      const thread = threads.get(discussed)!;
+      const reply = fake.reply(gitlabId, 12, thread.id, { body: 'Is it?', authorId: HUMAN });
+      await decorateAgain(analysisId, branchId);
+      const queued = await queuedAnswers(h.ctx.db, branchId);
+      expect(queued.rows).toMatchObject([
+        {
+          projectId: project.id,
+          branchId,
+          provider: 'gitlab',
+          kind: 'reply',
+          noteId: reply.id,
+          threadId: thread.id,
+          issueId: discussed,
+          command: null,
+          author: 'user5',
+          status: 'queued',
+        },
+      ]);
+      expect(queued.jobs).toEqual([answerJob(branchId, queued.rows[0]!.id)]);
+
+      // The next decoration finds the same reply, and queues nothing.
+      await decorateAgain(analysisId, branchId);
+      expect(await queuedAnswers(h.ctx.db, branchId)).toEqual(queued);
+
+      // A person writes again in the thread, and in the other one: a round each. The finding of the
+      // second has been closed since (its thread is still there to be answered in).
+      await h.ctx.db
+        .update(issues)
+        .set({ status: 'closed', closedAt: sql`now()` })
+        .where(eq(issues.id, quiet));
+      const second = fake.reply(gitlabId, 12, thread.id, { body: 'Still?', authorId: HUMAN });
+      const closed = fake.reply(gitlabId, 12, threads.get(quiet)!.id, {
+        body: 'Fixed, thanks.',
+        authorId: HUMAN,
+      });
+      await decorateAgain(analysisId, branchId);
+      const next = await queuedAnswers(h.ctx.db, branchId);
+      expect(next.rows.map((row) => [row.noteId, row.issueId])).toEqual([
+        [reply.id, discussed],
+        [second.id, discussed],
+        [closed.id, quiet],
+      ]);
+      expect(next.jobs).toEqual(next.rows.map((row) => answerJob(branchId, row.id)));
+    });
   });
 });

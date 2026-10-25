@@ -39,6 +39,8 @@ const BASE = 'b'.repeat(40);
 /** src/a.ts: lines 1–2 are context, lines 3–5 are added. */
 const PATCH = '@@ -1,2 +1,5 @@\n a\n b\n+c\n+d\n+e';
 const GRAPHQL = /^\/api\/graphql$/;
+/** When a comment made by hand was made: no test here is about dates. */
+const MADE = '2026-09-26T10:00:00Z';
 
 /** The patch of a new file of `count` lines: every one is an added line. */
 function newFile(count: number): string {
@@ -182,6 +184,7 @@ describe('GitHub review threads (github.md §6.4)', () => {
           files: files.items,
           analyzers: true,
           botLogin,
+          replies: null,
           issueUrl: (issueId) => issueUrl(PUBLIC_URL, project.id, issueId),
           ...overrides,
         };
@@ -277,6 +280,7 @@ describe('GitHub review threads (github.md §6.4)', () => {
       commitId: HEAD,
       user: { login: who.login, id: who.type === 'Bot' ? 41898283 : 5, type: who.type },
       inReplyToId: null,
+      createdAt: MADE,
     };
     const thread: FakeReviewThread = {
       id: `PRRT_foreign${id}`,
@@ -316,6 +320,7 @@ describe('GitHub review threads (github.md §6.4)', () => {
       commitId: HEAD,
       user: { login: botLogin, id: 41898282, type: 'Bot' },
       inReplyToId: null,
+      createdAt: MADE,
     });
     fake.reviewThreads.push({
       id: `PRRT_app${id}`,
@@ -992,5 +997,97 @@ describe('GitHub review threads (github.md §6.4)', () => {
       `POST /repos/acme/${s.repo.name}/pulls/7/reviews`,
     ]);
     expect(resolvedByLine(s.repo.id)).toEqual({ 3: false, 4: true, 5: false });
+  });
+
+  describe('the people’s replies it finds for Qualor to answer (6I-4)', () => {
+    /** Where the plan looks for new replies: nothing is in the ledger, and an hour back counts. */
+    const window = (over: Partial<NonNullable<ReviewThreadContext['replies']>> = {}) => ({
+      largestNoteIds: new Map<string, number>(),
+      since: new Date(Date.now() - 3_600_000),
+      ...over,
+    });
+    const person = { body: 'This is intended.', login: 'octocat' };
+    const roundsOf = async (s: Scenario, replies: ReviewThreadContext['replies']) =>
+      (await planReviewThreads(await s.context({ replies }))).rounds;
+    const round = (first: FakeReviewComment, issueId: string | undefined, notes: number[]) => ({
+      threadId: String(first.id),
+      issueId,
+      noteIds: notes,
+      newest: notes.at(-1),
+      author: 'octocat',
+    });
+
+    it('plans a round for the new replies in the threads of its project’s issues, read from the listings', async () => {
+      const s = await setup('threads/rounds');
+      await s.ingest([3, 4]);
+      await s.reconcile();
+      const ids = await issueIdsByLine(s.project.id);
+      const first = commentOf(threadAt(s.repo.id, 3));
+      const one = fake.replyToReviewComment(s.repo.id, 7, first.id, person);
+      const two = fake.replyToReviewComment(s.repo.id, 7, first.id, person);
+      fake.clearRequests();
+      // Both replies are one round, keyed by the newest, for the issue of the thread.
+      expect(await roundsOf(s, window())).toEqual([round(first, ids[3], [one.id, two.id])]);
+      // The plan reads what it always reads: the comments and the threads, nothing more.
+      expect(requests()).toEqual([
+        `GET /repos/acme/${s.repo.name}/pulls/7/comments?per_page=100&page=1`,
+        'POST /api/graphql',
+      ]);
+      // Without a window AI review is not active for the project, and Qualor answers none.
+      expect(await roundsOf(s, null)).toEqual([]);
+      // The ledger holds the first reply: only the second is new. It holds both: nothing is.
+      const held = (note: number) =>
+        window({ largestNoteIds: new Map([[String(first.id), note]]) });
+      expect(await roundsOf(s, held(one.id))).toEqual([round(first, ids[3], [two.id])]);
+      expect(await roundsOf(s, held(two.id))).toEqual([]);
+      // Nothing written before `since` is new.
+      expect(await roundsOf(s, window({ since: new Date(Date.now() + 60_000) }))).toEqual([]);
+    });
+
+    it('plans the rounds it saw when the threads, or the comments, run past the page bound', async () => {
+      // The thread listing is cut: line 3's thread is on its first page, line 4's is not, so its
+      // reply waits for a later job, and the reply in line 3's thread is a round now.
+      const cutThreads = await setup('threads/rounds-cut-threads');
+      await cutThreads.ingest([3, 4]);
+      await cutThreads.reconcile();
+      const [on3, on4] = [3, 4].map((line) => commentOf(threadAt(cutThreads.repo.id, line)));
+      const seen = fake.replyToReviewComment(cutThreads.repo.id, 7, on3!.id, person);
+      fake.replyToReviewComment(cutThreads.repo.id, 7, on4!.id, person);
+      olderConversations(cutThreads.repo.id, 99);
+      const ctx = await cutThreads.context({ replies: window(), maxThreadPages: 1 });
+      const plan = await planReviewThreads(ctx);
+      expect(plan.creations).toEqual([]);
+      expect(plan.rounds.map((r) => r.noteIds)).toEqual([[seen.id]]);
+
+      // The comment listing is cut: the reply is on its first page, and a later comment is not.
+      const cutComments = await setup('threads/rounds-cut-comments');
+      await cutComments.ingest([3, 4]);
+      await cutComments.reconcile();
+      const first = commentOf(threadAt(cutComments.repo.id, 3));
+      const reply = fake.replyToReviewComment(cutComments.repo.id, 7, first.id, person);
+      olderConversations(cutComments.repo.id, 97);
+      foreignThread(cutComments.repo.id, 5, 'A comment on the second page.');
+      const cut = await planReviewThreads(
+        await cutComments.context({ replies: window(), maxCommentPages: 1 }),
+      );
+      expect(cut.creations).toEqual([]);
+      expect(cut.rounds.map((r) => r.noteIds)).toEqual([[reply.id]]);
+    });
+
+    it('plans no round for a thread of an issue its project does not have', async () => {
+      const a = await setup('threads/rounds-mono-a');
+      const b = await setup('threads/rounds-mono-b', { repo: a.repo });
+      await a.ingest([3]);
+      await b.ingest([4]);
+      await a.reconcile();
+      await b.reconcile();
+      const onA = commentOf(threadAt(a.repo.id, 3));
+      const onB = commentOf(threadAt(a.repo.id, 4));
+      const forA = fake.replyToReviewComment(a.repo.id, 7, onA.id, person);
+      const forB = fake.replyToReviewComment(a.repo.id, 7, onB.id, person);
+      // Each project finds the reply in the thread of its own issue, and no other.
+      expect((await roundsOf(a, window())).map((r) => r.noteIds)).toEqual([[forA.id]]);
+      expect((await roundsOf(b, window())).map((r) => r.noteIds)).toEqual([[forB.id]]);
+    });
   });
 });

@@ -1,4 +1,6 @@
 import { deleteBranchSnapshots } from '../../review/lifecycle';
+import { queueReplies, replyWindow, type ReplyWindow } from '../../review/replies';
+import { githubCommands } from '../../review/reply-detect';
 import {
   withMergeRequestHead,
   withUnplacedFindings,
@@ -30,6 +32,7 @@ import {
   type CheckRunUpdate,
   type GitHubCheckRun,
   type GitHubClient,
+  type GitHubComment,
   type GitHubPullRequest,
 } from './client';
 import { githubClientFor } from './connections';
@@ -102,8 +105,18 @@ interface PullRequestPart {
   inline: Inline;
   /** The threads' plan, when ruling T3 or the AI review allows one and it could be made. */
   planned: PlannedThreads | null;
+  /**
+   * Where to look for the people's notes Qualor answers (6I-4), for an open pull request; null
+   * otherwise, and when AI review is not active for the project.
+   */
+  replies: ReplyWindow | null;
 }
-const NO_PULL_REQUEST: PullRequestPart = { pull: null, inline: NO_INLINE, planned: null };
+const NO_PULL_REQUEST: PullRequestPart = {
+  pull: null,
+  inline: NO_INLINE,
+  planned: null,
+  replies: null,
+};
 
 /** More requests now would only be refused too (the retry waits for GitHub's Retry-After). */
 const stopsTheJob = (e: ScmError) => e.kind === 'budget' || e.kind === 'rate_limited';
@@ -166,6 +179,7 @@ async function planThreads(
   pull: GitHubPullRequest,
   botLogin: string,
   analyzers: boolean,
+  replies: ReplyWindow | null,
 ): Promise<PlannedThreads> {
   const number = loaded.branch.name;
   const files = await client.pullRequestFiles(number, MAX_FILE_PAGES);
@@ -179,6 +193,7 @@ async function planThreads(
     files: files.items,
     analyzers,
     botLogin,
+    replies,
     issueUrl: (issueId) => issueUrl(deps.publicUrl, loaded.project.id, issueId),
     ...(deps.maxThreadUpdates === undefined ? {} : { maxThreadUpdates: deps.maxThreadUpdates }),
   };
@@ -187,13 +202,15 @@ async function planThreads(
 
 /**
  * github.md §5.2 step 4: the pull request, its title and link recorded on the branch, and for an
- * open one the plan of its threads (§6.4). Nothing is written to GitHub. The analyzers' threads
- * are planned when ruling T3 allows it; the AI review's, whenever the branch has a finished review,
- * so a decoration of a project without one reads no more than before. A pull request that is
- * closed, merged ones included, loses the copies of its repository the AI review kept (R16). A
- * failure goes to `failures`: a pull request that cannot be read is left as it is, with nothing
- * said about inline comments; a plan that cannot be made leaves `pull` as it is, so the summary
- * comment is still written, and says the inline comments could not be updated.
+ * open one the plan of its threads (§6.4) and where its people's notes are looked for (6I-4).
+ * Nothing is written to GitHub. The analyzers' threads are planned when ruling T3 allows it; the
+ * AI review's, whenever the branch has a finished review, so a decoration of a project without one
+ * reads no more than before: where no plan is made no reply is found either, and it waits for a
+ * decoration that makes one. A pull request that is closed, merged ones included, loses the copies
+ * of its repository the AI review kept (R16). A failure goes to `failures`: a pull request that cannot be
+ * read is left as it is, with nothing said about inline comments; a plan that cannot be made leaves
+ * `pull` as it is, so the summary comment is still written, and says the inline comments could not
+ * be updated.
  */
 async function readPullRequest(
   deps: DecorationDeps,
@@ -218,20 +235,29 @@ async function readPullRequest(
   }
   if (pull.state !== 'open') {
     if (pull.state === 'closed') await deleteBranchSnapshots(deps.db, loaded.branch.id);
-    return { pull, inline: NO_INLINE, planned: null };
+    return { pull, inline: NO_INLINE, planned: null, replies: null };
   }
+  const replies = await replyWindow(deps.db, loaded.project, loaded.branch.id);
   const skipped = threadsSkipped(payload, pull, loaded.revision);
   const inline: Inline = { ...NO_INLINE, skipped };
   if (skipped !== null && (await newestReviewedHead(deps.db, loaded.branch.id)) === null) {
-    return { pull, inline, planned: null };
+    return { pull, inline, planned: null, replies };
   }
   try {
-    const planned = await planThreads(deps, client, loaded, pull, botLogin, skipped === null);
+    const planned = await planThreads(
+      deps,
+      client,
+      loaded,
+      pull,
+      botLogin,
+      skipped === null,
+      replies,
+    );
     const { commented, unplaced } = planned.plan;
-    return { pull, inline: { commented, unplaced, skipped }, planned };
+    return { pull, inline: { commented, unplaced, skipped }, planned, replies };
   } catch (err) {
     failures.add(err);
-    return { pull, inline: NOT_UPDATED, planned: null };
+    return { pull, inline: NOT_UPDATED, planned: null, replies };
   }
 }
 
@@ -300,7 +326,11 @@ async function reconcileCheckRun(
   return current.run.id;
 }
 
-/** github.md §6.2–§6.3: the summary comment, recognised by the App's bot login and the marker. */
+/**
+ * github.md §6.2–§6.3: the summary comment, recognised by the App's bot login and the marker.
+ * Answers the comments it listed, which hold the commands people gave (6I-4): the ones it saw when
+ * the page bound cut the listing.
+ */
 async function reconcileComment(
   deps: DecorationDeps,
   client: GitHubClient,
@@ -308,7 +338,7 @@ async function reconcileComment(
   number: string,
   body: string,
   slug: string,
-): Promise<void> {
+): Promise<readonly GitHubComment[]> {
   const listed = await client.issueComments(number, MAX_COMMENT_PAGES);
   const login = `${slug}[bot]`;
   const own = listed.items.find((c) => {
@@ -327,6 +357,29 @@ async function reconcileComment(
       'GitHub pull request has too many comments to find the Qualor summary; not posting one',
     );
   }
+  return listed.items;
+}
+
+/**
+ * Queues the answers to what people wrote in the pull request (6I-4): the new replies in Qualor's
+ * threads that the plan found, and the commands among the comments the summary's listing read
+ * (`comments`, none when it could not be read). Reads nothing from GitHub. Without a window AI
+ * review is not active for the project and Qualor answers none.
+ */
+async function queueAnswers(
+  deps: DecorationDeps,
+  loaded: Loaded,
+  part: PullRequestPart,
+  comments: readonly GitHubComment[],
+  slug: string,
+): Promise<void> {
+  if (part.replies === null) return;
+  const options = { qualor: { githubLogin: `${slug}[bot]` }, ...part.replies };
+  await queueReplies(
+    deps.db,
+    { projectId: loaded.project.id, branchId: loaded.branch.id, provider: 'github' },
+    { rounds: part.planned?.plan.rounds ?? [], commands: githubCommands(comments, options) },
+  );
 }
 
 /**
@@ -366,9 +419,10 @@ function summaryFor(
 /**
  * github.md §5.2 steps 5–7, in this order: the check run, saying what the plan will do (as
  * GitLab's commit status comes first); the threads; the summary comment, saying what came of
- * them; and the check run once more only when that differs from what it said (a position GitHub
- * refused, a thread gone, a failure). A stop ends the job at once once the check run is written.
- * Returns the error the job fails with, or null.
+ * them; the check run once more only when that differs from what it said (a position GitHub
+ * refused, a thread gone, a failure); and last the answers to the people's notes (6I-4), which the
+ * plan and the comments the summary read hold. A stop ends the job at once once the check run is
+ * written. Returns the error the job fails with, or null.
  */
 async function writeDecoration(
   deps: DecorationDeps,
@@ -396,15 +450,19 @@ async function writeDecoration(
       : await applyThreads(part.planned, part.inline.skipped, failures);
   if (failures.stop !== null) return failures.stop;
   const body = summaryFor(deps, loaded, data, review, part.pull, threads);
+  let comments: readonly GitHubComment[] = [];
   if (part.pull?.state === 'open') {
-    await attempt(failures, () =>
-      reconcileComment(deps, client, loaded, loaded.branch.name, body, slug),
-    );
+    comments =
+      (await attempt(failures, () =>
+        reconcileComment(deps, client, loaded, loaded.branch.name, body, slug),
+      )) ?? [];
   }
   const changed = checkRunSummary(body) !== checkRunSummary(planned);
   if (runId !== null && changed && failures.stop === null) {
     await attempt(failures, () => client.updateCheckRun(runId, checkRunFields(deps, loaded, body)));
   }
+  // Last: what GitHub shows is written before the database takes more work.
+  await queueAnswers(deps, loaded, part, comments, slug);
   return failures.decisive();
 }
 

@@ -1,6 +1,9 @@
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestDatabase, type TestDatabase } from '../../test/db';
+import { answerJob, queuedAnswers } from '../../test/replies';
+import { seedAiIssue } from '../../test/review';
+import { uuidv7 } from '../db/ids';
 import { first } from '../db/rows';
 import { branches, organizations, projects, reviewReplies } from '../db/schema';
 import {
@@ -8,16 +11,28 @@ import {
   endReply,
   insertReplies,
   largestNoteIds,
+  MAX_QUEUED_COMMANDS,
+  MAX_QUEUED_ROUNDS,
   type NewReply,
+  queueCommands,
+  queueReplies,
+  queueRounds,
   recordAnswerNote,
   recordDecision,
+  repliesSince,
   REPLY_TOKEN_BUDGET,
+  type ReplyContext,
   type ReplyDecision,
+  type ReplyEnd,
   type ReplyRow,
+  requeueBudgetSkips,
+  utcDayStart,
 } from './replies';
+import type { CommandNote, Round } from './reply-detect';
 
 const UUID = /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
 const THREAD = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
+const OTHER_THREAD = '0123456789abcdef0123456789abcdef01234567';
 
 describe('the replies ledger (6I-4)', () => {
   let t: TestDatabase;
@@ -347,5 +362,385 @@ describe('the replies ledger (6I-4)', () => {
 
   it('keeps the budget of one reply at 60 000 tokens', () => {
     expect(REPLY_TOKEN_BUDGET).toBe(60_000);
+  });
+
+  describe('queueing the answers (decoration, 6I-4)', () => {
+    let issueId: string;
+
+    const contextOf = (branch: string, provider: ReplyContext['provider'] = 'gitlab') => ({
+      projectId,
+      branchId: branch,
+      provider,
+    });
+    /** The round of a thread whose newest note is `newest`. */
+    const round = (newest: number, over: Partial<Round> = {}): Round => ({
+      threadId: THREAD,
+      issueId,
+      noteIds: [newest],
+      newest,
+      author: 'jane',
+      ...over,
+    });
+    const command = (noteId: number, over: Partial<CommandNote> = {}): CommandNote => ({
+      noteId,
+      threadId: THREAD,
+      command: 'review',
+      author: 'jane',
+      ...over,
+    });
+    /**
+     * A row the answer job skipped for the day's budget (or ended as `end` says), at `finishedAt`,
+     * in the thread `threadId`.
+     */
+    const skippedForBudget = async (
+      branch: string,
+      noteId: number,
+      finishedAt: Date,
+      over: { end?: ReplyEnd; threadId?: string } = {},
+    ): Promise<string> => {
+      const { end = { status: 'skipped', reason: 'budget_spent' }, threadId = THREAD } = over;
+      const id = await insertOne({ branchId: branch, noteId, threadId });
+      await claimReply(t.db, id);
+      await endReply(t.db, id, end);
+      await t.db
+        .update(reviewReplies)
+        .set({ finishedAt, startedAt: new Date(finishedAt.getTime() - 60_000) })
+        .where(eq(reviewReplies.id, id));
+      return id;
+    };
+
+    beforeAll(async () => {
+      issueId = await seedAiIssue(t.db, {
+        branchId,
+        category: 'logic',
+        path: 'src/a.ts',
+        line: 3,
+      });
+    });
+
+    it('queues a row and one answer job for each new round, and none for a round it holds', async () => {
+      const branch = await newBranch('queue-rounds');
+      const rounds = [
+        // Two notes of one thread are one round: the newest note's row.
+        round(10_021, { noteIds: [10_011, 10_021], author: 'jane' }),
+        round(10_030, { threadId: OTHER_THREAD, author: 'omar' }),
+      ];
+      expect(await queueRounds(t.db, contextOf(branch), rounds)).toBe(2);
+      const queued = await queuedAnswers(t.db, branch);
+      expect(queued.rows).toMatchObject([
+        {
+          projectId,
+          branchId: branch,
+          provider: 'gitlab',
+          kind: 'reply',
+          noteId: 10_021,
+          threadId: THREAD,
+          issueId,
+          command: null,
+          author: 'jane',
+          status: 'queued',
+        },
+        { noteId: 10_030, threadId: OTHER_THREAD, issueId, author: 'omar', status: 'queued' },
+      ]);
+      expect(queued.jobs).toEqual(queued.rows.map((row) => answerJob(branch, row.id)));
+
+      // The same rounds again: the ledger holds them, so no row and no job is made.
+      expect(await queueRounds(t.db, contextOf(branch), rounds)).toBe(0);
+      expect(await queuedAnswers(t.db, branch)).toEqual(queued);
+      // A newer round of a thread it holds is new.
+      expect(await queueRounds(t.db, contextOf(branch), [round(10_040)])).toBe(1);
+      expect((await queuedAnswers(t.db, branch)).jobs).toHaveLength(3);
+    });
+
+    it('queues the rounds of a GitHub pull request by the id of the first comment of each thread', async () => {
+      const branch = await newBranch('queue-github-rounds');
+      const github = round(3_000_000_010, { threadId: '3000000001', author: 'octocat' });
+      expect(await queueRounds(t.db, contextOf(branch, 'github'), [github])).toBe(1);
+      const { rows } = await queuedAnswers(t.db, branch);
+      expect(rows).toMatchObject([
+        { provider: 'github', kind: 'reply', noteId: 3_000_000_010, threadId: '3000000001' },
+      ]);
+      // Rows of GitHub and of GitLab are apart: the same number on the other provider is another note.
+      expect(
+        await queueRounds(t.db, contextOf(await newBranch('queue-gitlab-rounds')), [
+          round(3_000_000_010),
+        ]),
+      ).toBe(1);
+    });
+
+    it(`queues at most ${MAX_QUEUED_ROUNDS} rounds, the oldest note first, and the next ones later`, async () => {
+      expect(MAX_QUEUED_ROUNDS).toBe(50);
+      const branch = await newBranch('rounds-cap');
+      const notes = Array.from({ length: MAX_QUEUED_ROUNDS + 1 }, (_, i) => 20_000 + i);
+      // Handed over the newest first: the cap and the order are the queue's, not the caller's.
+      const rounds = notes.map((note) => round(note, { threadId: `a${note}` })).reverse();
+      expect(await queueRounds(t.db, contextOf(branch), rounds)).toBe(MAX_QUEUED_ROUNDS);
+      const queued = await queuedAnswers(t.db, branch);
+      expect(queued.rows.map((row) => row.noteId)).toEqual(notes.slice(0, MAX_QUEUED_ROUNDS));
+      // The jobs are in the order of the notes: the oldest reply is answered first.
+      expect(queued.jobs).toEqual(queued.rows.map((row) => answerJob(branch, row.id)));
+      // The next decoration finds the round the cap left (the ledger holds the others).
+      const left = round(notes[MAX_QUEUED_ROUNDS]!, { threadId: `a${notes[MAX_QUEUED_ROUNDS]}` });
+      expect(await queueRounds(t.db, contextOf(branch), [left])).toBe(1);
+      expect(await queueRounds(t.db, contextOf(branch), [left])).toBe(0);
+    });
+
+    it('leaves out a round whose thread the ledger cannot hold, and cuts a long author name', async () => {
+      const branch = await newBranch('rounds-unfit');
+      const rounds = [
+        // A thread id is a GitLab discussion's lower-case hexadecimal id or a GitHub comment's digits.
+        round(30_001, { threadId: 'not-a-thread' }),
+        round(30_002, { threadId: 'ABCDEF' }),
+        round(30_003, { threadId: 'a'.repeat(65) }),
+        round(30_004, { threadId: '' }),
+        round(30_005, { author: 'x'.repeat(300) }),
+      ];
+      expect(await queueRounds(t.db, contextOf(branch), rounds)).toBe(1);
+      const { rows } = await queuedAnswers(t.db, branch);
+      expect(rows.map((row) => row.noteId)).toEqual([30_005]);
+      expect(rows[0]?.author).toBe('x'.repeat(255));
+      // The cap counts the rounds that fit: those it left out take none of its places.
+      const many = Array.from({ length: MAX_QUEUED_ROUNDS }, (_, i) => round(31_000 + i));
+      const unfit = Array.from({ length: 5 }, (_, i) => round(30_900 + i, { threadId: 'no' }));
+      expect(await queueRounds(t.db, contextOf(branch), [...unfit, ...many])).toBe(
+        MAX_QUEUED_ROUNDS,
+      );
+    });
+
+    it('queues a row and one answer job for each new command, with the discussion it was written in', async () => {
+      const gitlab = await newBranch('queue-gitlab-commands');
+      expect(
+        await queueCommands(t.db, contextOf(gitlab), [
+          command(50_001, { command: 'review', author: 'jane' }),
+          command(50_002, { threadId: OTHER_THREAD, command: 'stop', author: 'omar' }),
+        ]),
+      ).toBe(2);
+      const queued = await queuedAnswers(t.db, gitlab);
+      expect(queued.rows).toMatchObject([
+        {
+          provider: 'gitlab',
+          kind: 'command',
+          command: 'review',
+          noteId: 50_001,
+          threadId: THREAD,
+          issueId: null,
+          author: 'jane',
+          status: 'queued',
+        },
+        {
+          kind: 'command',
+          command: 'stop',
+          noteId: 50_002,
+          threadId: OTHER_THREAD,
+          author: 'omar',
+        },
+      ]);
+      expect(queued.jobs).toEqual(queued.rows.map((row) => answerJob(gitlab, row.id)));
+      // Again: nothing new.
+      expect(await queueCommands(t.db, contextOf(gitlab), [command(50_001), command(50_002)])).toBe(
+        0,
+      );
+      expect(await queuedAnswers(t.db, gitlab)).toEqual(queued);
+
+      // A comment on a GitHub pull request's page is in no thread, and the id of a command and of
+      // a reply of that number are two notes.
+      const github = await newBranch('queue-github-commands');
+      const page = command(50_003, { threadId: null, command: 'fix', author: 'octocat' });
+      expect(await queueCommands(t.db, contextOf(github, 'github'), [page])).toBe(1);
+      expect((await queuedAnswers(t.db, github)).rows).toMatchObject([
+        { provider: 'github', kind: 'command', command: 'fix', noteId: 50_003, threadId: null },
+      ]);
+      expect(
+        await queueRounds(t.db, contextOf(github, 'github'), [
+          round(50_003, { threadId: '50000' }),
+        ]),
+      ).toBe(1);
+    });
+
+    it(`queues at most ${MAX_QUEUED_COMMANDS} commands, the oldest note first, and the next ones later`, async () => {
+      expect(MAX_QUEUED_COMMANDS).toBe(20);
+      const branch = await newBranch('commands-cap');
+      const notes = Array.from({ length: MAX_QUEUED_COMMANDS + 1 }, (_, i) => 60_000 + i);
+      const commands = notes.map((note) => command(note)).reverse();
+      expect(await queueCommands(t.db, contextOf(branch), commands)).toBe(MAX_QUEUED_COMMANDS);
+      const queued = await queuedAnswers(t.db, branch);
+      expect(queued.rows.map((row) => row.noteId)).toEqual(notes.slice(0, MAX_QUEUED_COMMANDS));
+      expect(queued.jobs).toEqual(queued.rows.map((row) => answerJob(branch, row.id)));
+      expect(
+        await queueCommands(t.db, contextOf(branch), [command(notes[MAX_QUEUED_COMMANDS]!)]),
+      ).toBe(1);
+    });
+
+    it('writes its rows and jobs in the transaction it is given', async () => {
+      const branch = await newBranch('queue-rollback');
+      await expect(
+        t.db.transaction(async (tx) => {
+          expect(await queueRounds(tx, contextOf(branch), [round(70_001)])).toBe(1);
+          expect(await queueCommands(tx, contextOf(branch), [command(70_002)])).toBe(1);
+          throw new Error('rolled back');
+        }),
+      ).rejects.toThrow('rolled back');
+      expect(await queuedAnswers(t.db, branch)).toEqual({ rows: [], jobs: [] });
+    });
+
+    it('queues each note once when two transactions find the same notes at the same time', async () => {
+      const branch = await newBranch('queue-race');
+      const notes = Array.from({ length: 30 }, (_, i) => 96_000 + i);
+      const rounds = notes.map((note) => round(note, { threadId: `b${note}` }));
+      const commands = notes.slice(0, 10).map((note) => command(note + 1_000));
+      // A decoration and a webhook's scan, the second with the notes the other way round.
+      const both = await Promise.all([
+        queueReplies(t.db, contextOf(branch), { rounds, commands }),
+        queueReplies(t.db, contextOf(branch), {
+          rounds: rounds.toReversed(),
+          commands: commands.toReversed(),
+        }),
+      ]);
+      expect(both[0]! + both[1]!).toBe(40);
+      const queued = await queuedAnswers(t.db, branch);
+      expect(queued.rows).toHaveLength(40);
+      // One job for each row, and none twice.
+      expect(queued.jobs).toHaveLength(40);
+      expect(new Set(queued.jobs.map((job) => JSON.stringify(job.payload))).size).toBe(40);
+      expect(queued.jobs.map((job) => (job.payload as { replyId: string }).replyId).sort()).toEqual(
+        queued.rows.map((row) => row.id).sort(),
+      );
+    });
+
+    it('queues the replies skipped for the day’s budget again once their day is over', async () => {
+      const branch = await newBranch('requeue');
+      const day = new Date('2026-10-20T00:00:00.000Z');
+      const yesterday = await skippedForBudget(
+        branch,
+        80_001,
+        new Date('2026-10-19T23:59:59.999Z'),
+      );
+      // The newer note's row is made first, in the thread that comes first: neither the order the
+      // rows were made in nor the order of their threads is the order of the notes.
+      const today = await skippedForBudget(branch, 80_003, new Date('2026-10-20T12:00:00.000Z'), {
+        threadId: 'aaaa',
+      });
+      const startOfDay = await skippedForBudget(branch, 80_002, day, { threadId: 'bbbb' });
+      // What no new day gives another try: another reason to skip, a failure, an answered note,
+      // and a skip of another merge request.
+      const earlier = new Date('2026-10-19T10:00:00.000Z');
+      const inactive = await skippedForBudget(branch, 80_004, earlier, {
+        end: { status: 'skipped', reason: 'inactive' },
+      });
+      const failed = await skippedForBudget(branch, 80_005, earlier, {
+        end: { status: 'failed', reason: 'provider_error' },
+      });
+      const answered = await skippedForBudget(branch, 80_006, earlier, {
+        end: { status: 'done', outcome: 'answered' },
+      });
+      const elsewhere = await skippedForBudget(
+        await newBranch('requeue-elsewhere'),
+        80_007,
+        earlier,
+      );
+      const ids = [yesterday, startOfDay, today, inactive, failed, answered, elsewhere];
+      const before = await Promise.all(ids.map(stored));
+
+      // Only a skip that ended before the day began: the row is queued again, with nothing else changed.
+      expect(await requeueBudgetSkips(t.db, branch, day)).toEqual([yesterday]);
+      const after = await Promise.all(ids.map(stored));
+      expect(after[0]).toEqual({
+        ...before[0],
+        status: 'queued',
+        outcome: null,
+        reason: null,
+        finishedAt: null,
+      });
+      expect(after[0]?.startedAt).toEqual(before[0]?.startedAt);
+      expect(after.slice(1)).toEqual(before.slice(1));
+      // Once: the row is queued now, and a second look finds nothing to offer.
+      expect(await requeueBudgetSkips(t.db, branch, day)).toEqual([]);
+      // It is a queued row like any other: the job takes it.
+      expect(await claimReply(t.db, yesterday)).toMatchObject({ id: yesterday, status: 'running' });
+
+      // The next day's start is past the others' skips: they are offered, the oldest note first.
+      const next = new Date('2026-10-21T00:00:00.000Z');
+      expect(await requeueBudgetSkips(t.db, branch, next)).toEqual([startOfDay, today]);
+    });
+
+    it('queues the rounds, the commands and the skipped replies in one transaction, the skipped first', async () => {
+      const branch = await newBranch('queue-replies');
+      const now = new Date('2026-10-24T10:00:00.000Z');
+      const skipped = await skippedForBudget(branch, 90_001, new Date('2026-10-23T09:00:00.000Z'));
+      const found = { rounds: [round(90_010)], commands: [command(90_020)] };
+      expect(await queueReplies(t.db, contextOf(branch), found, now)).toBe(3);
+      const queued = await queuedAnswers(t.db, branch);
+      expect(queued.rows.map((row) => [row.noteId, row.kind, row.status])).toEqual([
+        [90_001, 'reply', 'queued'],
+        [90_010, 'reply', 'queued'],
+        [90_020, 'command', 'queued'],
+      ]);
+      // The re-offered row's job first, then the round's, then the command's.
+      expect(queued.jobs).toEqual(
+        [skipped, queued.rows[1]!.id, queued.rows[2]!.id].map((id) => answerJob(branch, id)),
+      );
+      // A decoration with nothing new has nothing to queue.
+      expect(await queueReplies(t.db, contextOf(branch), { rounds: [], commands: [] }, now)).toBe(
+        0,
+      );
+      // And one with nothing new still gives a skip of an earlier day its second try.
+      const later = await skippedForBudget(branch, 90_002, new Date('2026-10-22T09:00:00.000Z'));
+      expect(await queueReplies(t.db, contextOf(branch), { rounds: [], commands: [] }, now)).toBe(
+        1,
+      );
+      expect((await queuedAnswers(t.db, branch)).jobs.at(-1)).toEqual(answerJob(branch, later));
+    });
+
+    it('queues nothing of a decoration whose write fails: the skipped replies stay skipped', async () => {
+      const branch = await newBranch('queue-replies-rollback');
+      const now = new Date('2026-10-24T10:00:00.000Z');
+      const skipped = await skippedForBudget(branch, 91_001, new Date('2026-10-23T09:00:00.000Z'));
+      // A round for an issue the database does not have: its row cannot be written.
+      const stray = round(91_010, { issueId: uuidv7() });
+      await expect(
+        queueReplies(
+          t.db,
+          contextOf(branch),
+          { rounds: [stray], commands: [command(91_020)] },
+          now,
+        ),
+      ).rejects.toThrow();
+      expect((await stored(skipped)).status).toBe('skipped');
+      expect(await queuedAnswers(t.db, branch)).toMatchObject({
+        rows: [{ id: skipped, status: 'skipped' }],
+        jobs: [],
+      });
+    });
+
+    it('counts a note from the later of the consent and 30 days before now', () => {
+      const now = new Date('2026-10-25T12:00:00.000Z');
+      // A recent consent bounds it, a consent from long ago leaves the 30 days, and so does a consent
+      // exactly 30 days old.
+      expect(repliesSince('2026-10-20T08:00:00.000Z', now)).toEqual(
+        new Date('2026-10-20T08:00:00.000Z'),
+      );
+      expect(repliesSince('2026-08-01T08:00:00.000Z', now)).toEqual(
+        new Date('2026-09-25T12:00:00.000Z'),
+      );
+      expect(repliesSince('2026-09-25T12:00:00.000Z', now)).toEqual(
+        new Date('2026-09-25T12:00:00.000Z'),
+      );
+      // The consent's own time zone does not matter.
+      expect(repliesSince('2026-10-20T11:00:00.000+03:00', now)).toEqual(
+        new Date('2026-10-20T08:00:00.000Z'),
+      );
+    });
+
+    it('starts the UTC day at midnight', () => {
+      expect(utcDayStart(new Date('2026-10-25T23:59:59.999Z'))).toEqual(
+        new Date('2026-10-25T00:00:00.000Z'),
+      );
+      expect(utcDayStart(new Date('2026-10-26T00:00:00.000Z'))).toEqual(
+        new Date('2026-10-26T00:00:00.000Z'),
+      );
+      expect(utcDayStart(new Date('2026-10-26T02:30:00.000+03:00'))).toEqual(
+        new Date('2026-10-25T00:00:00.000Z'),
+      );
+    });
   });
 });

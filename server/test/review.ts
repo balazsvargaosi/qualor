@@ -236,6 +236,8 @@ export async function switchReviewOn(
     organizationId: string;
     /** Who gave the consent. */
     userId: string;
+    /** When the consent was given: now unless given. */
+    consentAt?: Date;
     budgets?: Partial<ReviewBudgets>;
     over?: Partial<StoredLlmSettings>;
   },
@@ -267,7 +269,7 @@ export async function switchReviewOn(
             model: provider.model,
             models: provider.models,
             userId: o.userId,
-            at: new Date().toISOString(),
+            at: (o.consentAt ?? new Date()).toISOString(),
           },
         },
       },

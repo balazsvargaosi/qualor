@@ -2,6 +2,8 @@ import type { Quality, Severity } from '@qualor/shared';
 import { and, eq, inArray } from 'drizzle-orm';
 import type { Db } from '../../db/client';
 import { issues, rules } from '../../db/schema';
+import type { ReplyWindow } from '../../review/replies';
+import { githubRounds, type Round } from '../../review/reply-detect';
 import { AI_THREAD_SEVERITIES } from '../../review/rules';
 import { AI_ENGINE } from '../../rules/server-engines';
 import { desiredInlineIssues, type DesiredAiIssue } from '../decoration-data';
@@ -92,6 +94,12 @@ export interface ThreadPlan {
    * bound: a thread of any of them may exist unseen.
    */
   aiNotPosted: readonly DesiredAiIssue[];
+  /**
+   * The people's new replies in Qualor's threads of this project's issues (6I-4), whose answers the
+   * decoration queues; empty without `ReviewThreadContext.replies`. Found in the listings the plan
+   * reads, cut by a page bound or not: a reply it saw is a reply. Nothing is written for them here.
+   */
+  rounds: readonly Round[];
 }
 
 /** What applying the plan came to: the counts it gives, and the AI findings still without a thread. */
@@ -124,6 +132,11 @@ export interface ReviewThreadContext {
    * and a resolution is Qualor's own only when GitHub names this login as its resolver (ruling R6).
    */
   botLogin: string;
+  /**
+   * Where to look for the people's replies Qualor answers (6I-4); null when AI review is not
+   * active for the project, which answers none.
+   */
+  replies: ReplyWindow | null;
   issueUrl: (issueId: string) => string | null;
   /** {@link MAX_GITHUB_THREAD_UPDATES} unless a test sets a smaller one. */
   maxThreadUpdates?: number;
@@ -211,6 +224,7 @@ async function threadIssues(ctx: ReviewThreadContext, ids: string[]) {
           .where(and(inArray(issues.id, ids), eq(issues.projectId, ctx.projectId)));
   return new Map(rows.map((row) => [row.id, row]));
 }
+type ThreadIssues = Awaited<ReturnType<typeof threadIssues>>;
 
 /**
  * What a thread of Qualor's needs: resolving (true), reopening (false), or nothing (null). Only a
@@ -236,8 +250,8 @@ function change(
 async function planUpdates(
   ctx: ReviewThreadContext,
   own: ReadonlyMap<string, OwnThread>,
+  known: ThreadIssues,
 ): Promise<{ updates: ThreadUpdate[]; commented: number }> {
-  const known = await threadIssues(ctx, [...own.keys()]);
   const maxUpdates = ctx.maxThreadUpdates ?? MAX_GITHUB_THREAD_UPDATES;
   const updates: ThreadUpdate[] = [];
   let commented = 0;
@@ -354,11 +368,28 @@ async function planAiCreations(
 }
 
 /**
+ * The people's new replies in the threads of this project's issues (`known`: a thread whose marker
+ * names any other issue is none of its answering), which Qualor answers (6I-4). None without a
+ * window: AI review is not active for the project.
+ */
+function plannedRounds(
+  ctx: ReviewThreadContext,
+  comments: readonly GitHubReviewComment[],
+  threads: readonly GitHubReviewThread[],
+  known: ThreadIssues,
+): Round[] {
+  if (ctx.replies === null) return [];
+  const options = { qualor: { githubLogin: ctx.botLogin }, ...ctx.replies };
+  return githubRounds(comments, threads, options).filter((round) => known.has(round.issueId));
+}
+
+/**
  * github.md §6.4 (the counterpart of scm.md §5.4's `reconcileInline`), its first half: reads the
  * pull request's review comments and threads and the issues, and works out what to change,
  * writing nothing, so the check run, written first (github.md §6.1), carries the counts. Called
- * for an open pull request. For the threads of this project's issues (the analyzers' only when
- * `analyzers`, the AI review's always):
+ * for an open pull request. The new replies of people in Qualor's threads are part of the plan
+ * (`rounds`), for the decoration to queue their answers. For the threads of this project's issues
+ * (the analyzers' only when `analyzers`, the AI review's always):
  * - an open issue whose thread Qualor resolved gets it reopened. A resolution is Qualor's when
  *   GitHub names the App's `<slug>[bot]` as its resolver (ruling R6); one a person or another App
  *   made, or one GitHub names nobody for, stays as it is, and the issue still counts (ruling G3);
@@ -379,10 +410,12 @@ export async function planReviewThreads(ctx: ReviewThreadContext): Promise<Threa
   );
   const listed = await ctx.client.reviewThreads(ctx.number, ctx.maxThreadPages ?? MAX_THREAD_PAGES);
   const own = ownThreads(comments.items, listed.items, ctx.botLogin);
-  const { updates, commented } = await planUpdates(ctx, own);
+  const known = await threadIssues(ctx, [...own.keys()]);
+  const { updates, commented } = await planUpdates(ctx, own, known);
+  const rounds = plannedRounds(ctx, comments.items, listed.items, known);
   // Beyond a page bound a thread may exist unseen: never create a second one (github.md §6.4).
   if (!comments.complete || !listed.complete) {
-    return { updates, creations: [], commented, unplaced: 0, aiNotPosted: [] };
+    return { updates, creations: [], rounds, commented, unplaced: 0, aiNotPosted: [] };
   }
   const added = addedLinesByPath(ctx.files);
   const analyzers = ctx.analyzers
@@ -392,6 +425,7 @@ export async function planReviewThreads(ctx: ReviewThreadContext): Promise<Threa
   return {
     updates,
     creations: [...analyzers.creations, ...ai.creations],
+    rounds,
     commented: commented + analyzers.creations.length,
     unplaced: analyzers.unplaced,
     aiNotPosted: ai.notPosted,
