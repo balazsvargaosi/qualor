@@ -1,0 +1,23 @@
+{
+  "permission": "write",
+  "role_name": "write",
+  "user": {
+    "login": "octocat",
+    "id": 5,
+    "node_id": "MDQ6VXNlcjU=",
+    "avatar_url": "https://github.com/images/error/octocat_happy.gif",
+    "gravatar_id": "",
+    "url": "https://api.github.com/users/octocat",
+    "html_url": "https://github.com/octocat",
+    "type": "User",
+    "site_admin": false,
+    "permissions": {
+      "admin": false,
+      "maintain": false,
+      "push": true,
+      "triage": true,
+      "pull": true
+    },
+    "role_name": "write"
+  }
+}

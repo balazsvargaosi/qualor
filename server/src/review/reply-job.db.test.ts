@@ -38,7 +38,6 @@ import {
   issues,
   jobs,
   llmRequests,
-  projects,
   reviewFindings,
   reviewReplies,
   reviewRuns,
@@ -72,36 +71,56 @@ const addedPatch = (lines: readonly string[]) =>
   `@@ -0,0 +1,${lines.length} @@\n${lines.map((line) => `+${line}`).join('\n')}`;
 
 /**
- * Who replies: three people with the rights to triage (`member` the least of them), someone who is
- * no member, and someone with less than the rights.
+ * Who replies: five people with the rights to triage (`member` the least of them), someone with no
+ * rights at all, and two with less than the rights.
  */
-type Person = 'member' | 'maintainer' | 'owner' | 'outsider' | 'reporter';
-/** GitLab's users: a Developer, a Maintainer and an Owner of every project, a non-member, a Reporter. */
+const INSIDERS = ['member', 'maintainer', 'owner', 'triager', 'customWriter'] as const;
+const OUTSIDERS = ['outsider', 'reporter', 'customReader'] as const;
+type Person = (typeof INSIDERS)[number] | (typeof OUTSIDERS)[number];
+/** GitLab's users of every project: each a member with the level `GITLAB_LEVELS` gives. */
 const GITLAB_USERS: Readonly<Record<Person, number>> = {
   member: 5,
   maintainer: 8,
   owner: 9,
+  triager: 10,
+  customWriter: 11,
   outsider: 6,
   reporter: 7,
+  customReader: 12,
 };
+/** Developer, Maintainer and Owner have the rights; no member, Reporter and Guest have not. */
 const GITLAB_LEVELS: Readonly<Record<Person, number | null>> = {
   member: 30,
   maintainer: 40,
   owner: 50,
+  triager: 30,
+  customWriter: 40,
   outsider: null,
   reporter: 20,
+  customReader: 10,
 };
 /**
- * GitHub's accounts: a collaborator of every repository (the fake's default association), a member
- * of its organisation, its owner, a contributor, and one GitHub names no association for.
+ * GitHub's accounts, with the permission each has on every repository: the roles write, maintain,
+ * admin and triage, and a custom role whose base permission is write, have the rights; no
+ * permission (GitHub's 404), the read role and a custom role on read have not.
  */
-const GITHUB_USERS: Readonly<Record<Person, { login: string; association?: string | null }>> = {
-  member: { login: 'octocat' },
-  maintainer: { login: 'mona', association: 'MEMBER' },
-  owner: { login: 'hubot', association: 'OWNER' },
-  outsider: { login: 'stranger', association: 'CONTRIBUTOR' },
-  reporter: { login: 'visitor', association: null },
+const GITHUB_USERS: Readonly<
+  Record<Person, { login: string; permission: { permission: string; roleName: string } | null }>
+> = {
+  member: { login: 'octocat', permission: { permission: 'write', roleName: 'write' } },
+  maintainer: { login: 'mona', permission: { permission: 'write', roleName: 'maintain' } },
+  owner: { login: 'hubot', permission: { permission: 'admin', roleName: 'admin' } },
+  triager: { login: 'triage-bob', permission: { permission: 'read', roleName: 'triage' } },
+  customWriter: {
+    login: 'lead-ann',
+    permission: { permission: 'write', roleName: 'security-lead' },
+  },
+  outsider: { login: 'stranger', permission: null },
+  reporter: { login: 'visitor', permission: { permission: 'read', roleName: 'read' } },
+  customReader: { login: 'auditor', permission: { permission: 'read', roleName: 'auditor' } },
 };
+/** A request that asks for someone's rights, on either provider. */
+const RIGHTS_LOOKUP = /\/members\/all\/|\/collaborators\/[^/]+\/permission/;
 
 /** What the model answers, as the reply's prompt asks for it. */
 const decision = (
@@ -131,6 +150,8 @@ interface Mr {
   threadOf(issueId: string): string;
   /** A person writes in the thread; answers the note's id. */
   reply(threadId: string, body: string, who?: Person): number;
+  /** The `n`th of the project's other people with the rights to triage writes in the thread. */
+  colleague(threadId: string, body: string, n: number): void;
   /** A person gives a command on the merge request (a note of its own). */
   command(body: string): void;
   /** Qualor's notes in the thread after its first one: its answers. */
@@ -275,6 +296,10 @@ describe('the answer job (6I-4)', () => {
         },
         reply: (threadId, body, who = 'member') =>
           gitlab.reply(gitlabId, 12, threadId, { body, authorId: GITLAB_USERS[who] }).id,
+        colleague: (threadId, body, n) => {
+          gitlab.setMember(gitlabId, 100 + n, 40);
+          gitlab.reply(gitlabId, 12, threadId, { body, authorId: 100 + n });
+        },
         command: (body) =>
           void gitlab.addNote(gitlabId, 12, { body, authorId: GITLAB_USERS.member }),
         answers: (threadId) =>
@@ -348,6 +373,9 @@ describe('the answer job (6I-4)', () => {
         baseSha: BASE,
         files: [{ filename: PATH, status: 'added', patch: addedPatch(LINES) }],
       });
+      for (const { login, permission } of Object.values(GITHUB_USERS)) {
+        github.setPermission(repo.id, login, permission);
+      }
       const project = await mappedGitHubProject(h, github, key, `acme/${repo.name}`, {
         connectionId: githubConnectionId,
       });
@@ -390,8 +418,14 @@ describe('the answer job (6I-4)', () => {
           return String(found.id);
         },
         reply: (threadId, body, who = 'member') =>
-          github.replyToReviewComment(repo.id, 7, Number(threadId), { body, ...GITHUB_USERS[who] })
-            .id,
+          github.replyToReviewComment(repo.id, 7, Number(threadId), {
+            body,
+            login: GITHUB_USERS[who].login,
+          }).id,
+        colleague: (threadId, body, n) => {
+          github.setPermission(repo.id, `dev-${n}`, { permission: 'write', roleName: 'write' });
+          github.replyToReviewComment(repo.id, 7, Number(threadId), { body, login: `dev-${n}` });
+        },
         command: (body) => void github.addComment(repo.id, 7, { body, login: 'octocat' }),
         answers: (threadId) =>
           github.reviewComments
@@ -961,11 +995,11 @@ describe('the answer job (6I-4)', () => {
         verdict: 'keep',
       });
       // No status can change in it: nobody's rights are asked for.
-      expect(d.requests().filter((r) => r.includes('/members/'))).toEqual([]);
+      expect(d.requests().filter((r) => RIGHTS_LOOKUP.test(r))).toEqual([]);
     });
 
     it("an outsider's won't-fix reply is answered and changes nothing", async () => {
-      for (const who of ['outsider', 'reporter'] as const) {
+      for (const who of OUTSIDERS) {
         const { mr, issueId, threadId, row } = await replied(`outsider-${who}`, { who });
         const calls = llm.requests.length;
         // The model says won't fix all the same: refused, it answers instead.
@@ -989,7 +1023,7 @@ describe('the answer job (6I-4)', () => {
     });
 
     it("an insider's won't-fix reply is applied", async () => {
-      for (const who of ['member', 'maintainer', 'owner'] as const) {
+      for (const who of INSIDERS) {
         const { mr, issueId, threadId, row } = await replied(`insider-${who}`, { who });
         llm.say(WONT_FIX);
         await answer();
@@ -997,6 +1031,74 @@ describe('the answer job (6I-4)', () => {
         expect(mr.resolved(threadId), who).toBe(true);
         expect(await rowById(row.id), who).toMatchObject({ status: 'done', outcome: 'wont_fix' });
       }
+    });
+
+    it('asks for the rights of each author once, and only in an open AI finding’s thread', async () => {
+      const d = driverOf();
+      const mr = await d.setup(`${slug}-rights`);
+      await reviewOn(h, llm);
+      const open = await aiFinding(mr.branchId, 9);
+      const closed = await aiFinding(mr.branchId, 12);
+      await mr.decorate();
+      await h.ctx.db
+        .update(issues)
+        .set({ status: 'closed', closedAt: sql`now()` })
+        .where(eq(issues.id, closed));
+      mr.reply(mr.threadOf(closed), 'Fixed now, right?');
+      mr.reply(mr.threadOf(open), 'We will not fix this now.', 'member');
+      mr.reply(mr.threadOf(open), 'Agreed.', 'reporter');
+      mr.reply(mr.threadOf(open), 'Really not now.', 'member');
+      await mr.decorate();
+      d.clearRequests();
+      llm.say(KEEP, KEEP);
+      expect(await answer()).toBe(2);
+      // The open finding's round: each of its two authors, once; the closed finding's: nobody.
+      const asked = d
+        .requests()
+        .filter((r) => RIGHTS_LOOKUP.test(r))
+        .map((r) => r.split('/').slice(-3).join('/'));
+      expect(asked).toEqual(
+        slug === 'gitlab'
+          ? [`members/all/${GITLAB_USERS.member}`, `members/all/${GITLAB_USERS.reporter}`]
+          : [
+              `collaborators/${GITHUB_USERS.member.login}/permission`,
+              `collaborators/${GITHUB_USERS.reporter.login}/permission`,
+            ],
+      );
+    });
+
+    it('asks for the rights of five authors of a round at most: a round of six changes no status', async () => {
+      /** A round of `authors` people with the rights, queued, and answered with what the model `says`. */
+      const roundOf = async (key: string, authors: number, says: string[]) => {
+        const d = driverOf();
+        const mr = await d.setup(`${slug}-${key}`);
+        await reviewOn(h, llm);
+        const issueId = await aiFinding(mr.branchId, 9);
+        await mr.decorate();
+        const threadId = mr.threadOf(issueId);
+        for (let n = 1; n <= authors; n += 1) mr.colleague(threadId, 'Not worth it now.', n);
+        await mr.decorate();
+        d.clearRequests();
+        const calls = llm.requests.length;
+        llm.say(...says);
+        await answer();
+        return {
+          lookups: d.requests().filter((r) => RIGHTS_LOOKUP.test(r)).length,
+          prompt: systemOf(callsSince(calls)[0]!),
+          status: (await issueById(issueId)).status,
+          calls: callsSince(calls).length,
+        };
+      };
+      // Five: each is asked for, and their won't fix is applied.
+      expect(await roundOf('five-authors', 5, [WONT_FIX])).toMatchObject({
+        lookups: 5,
+        status: 'wont_fix',
+        calls: 1,
+      });
+      // Six: nobody is asked for, and the model's won't fix is refused: it answers instead.
+      const six = await roundOf('six-authors', 6, [WONT_FIX, KEEP]);
+      expect(six).toMatchObject({ lookups: 0, status: 'open', calls: 2 });
+      expect(six.prompt).toContain(MEMBERS_ONLY);
     });
 
     it('a round with an insider and an outsider changes nothing', async () => {
@@ -1282,74 +1384,6 @@ describe('the answer job (6I-4)', () => {
       });
       expect((await issueById(issueId)).status).toBe('open');
       expect(mr.answers(threadId)).toEqual([]);
-    });
-  });
-
-  describe('on GitLab: who may change a status', () => {
-    it('asks for the rights of each author only in an open AI finding’s thread', async () => {
-      const mr = await gitlabDriver.setup('gitlab-rights');
-      await reviewOn(h, llm);
-      const open = await aiFinding(mr.branchId, 9);
-      const closed = await aiFinding(mr.branchId, 12);
-      await mr.decorate();
-      await h.ctx.db
-        .update(issues)
-        .set({ status: 'closed', closedAt: sql`now()` })
-        .where(inArray(issues.id, [closed]));
-      mr.reply(mr.threadOf(closed), 'Fixed now, right?');
-      mr.reply(mr.threadOf(open), 'We will not fix this now.', 'member');
-      mr.reply(mr.threadOf(open), 'Agreed.', 'reporter');
-      await mr.decorate();
-      gitlab.clearRequests();
-      llm.say(KEEP, KEEP);
-      expect(await answer()).toBe(2);
-      // The open finding's round: each of its two authors, once; the closed finding's: nobody.
-      expect(
-        gitlab.requests
-          .filter((r) => r.path.includes('/members/'))
-          .map((r) => r.path.split('/').slice(-3).join('/')),
-      ).toEqual([`members/all/${GITLAB_USERS.member}`, `members/all/${GITLAB_USERS.reporter}`]);
-    });
-
-    it('asks for the rights of five authors of a round at most: a round of more changes no status', async () => {
-      /** A round of `authors` Maintainers' notes, queued, and answered with what the model `says`. */
-      const roundOf = async (key: string, authors: readonly number[], says: string[]) => {
-        const mr = await gitlabDriver.setup(key);
-        await reviewOn(h, llm);
-        const issueId = await aiFinding(mr.branchId, 9);
-        await mr.decorate();
-        const threadId = mr.threadOf(issueId);
-        const [project] = await h.ctx.db
-          .select({ ref: projects.scmProjectRef })
-          .from(projects)
-          .where(eq(projects.id, mr.project.id));
-        const gitlabId = Number(project!.ref);
-        for (const authorId of authors) {
-          gitlab.setMember(gitlabId, authorId, 40);
-          gitlab.reply(gitlabId, 12, threadId, { body: 'Not worth it now.', authorId });
-        }
-        await mr.decorate();
-        gitlab.clearRequests();
-        const calls = llm.requests.length;
-        llm.say(...says);
-        await answer();
-        return {
-          lookups: gitlab.requests.filter((r) => r.path.includes('/members/')).length,
-          prompt: systemOf(callsSince(calls)[0]!),
-          status: (await issueById(issueId)).status,
-          calls: callsSince(calls).length,
-        };
-      };
-      // Five: each is asked for, and their won't fix is applied.
-      expect(await roundOf('gitlab-five-authors', [20, 21, 22, 23, 24], [WONT_FIX])).toMatchObject({
-        lookups: 5,
-        status: 'wont_fix',
-        calls: 1,
-      });
-      // Six: nobody is asked for, and the model's won't fix is refused: it answers instead.
-      const six = await roundOf('gitlab-six-authors', [30, 31, 32, 33, 34, 35], [WONT_FIX, KEEP]);
-      expect(six).toMatchObject({ lookups: 0, status: 'open', calls: 2 });
-      expect(six.prompt).toContain(MEMBERS_ONLY);
     });
   });
 

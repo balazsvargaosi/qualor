@@ -458,6 +458,41 @@ describe('GitLab client (scm.md §4.3) against the fake GitLab', () => {
     fake.setMember(7, 8, null);
   });
 
+  it('counts only the membership of an active user that is in force today', async () => {
+    // Midday of 2026-10-25, UTC.
+    const c = new GitLabClient(
+      { baseUrl: fake.url, token: fake.token, allowInternalHosts: true },
+      { timeoutMs: 1_000, now: () => Date.parse('2026-10-25T12:00:00.000Z') },
+    );
+    const levelOf = async (membership: Parameters<FakeGitLab['setMember']>[3]) => {
+      fake.setMember(7, 20, 40, membership);
+      return c.memberAccessLevel('7', 20);
+    };
+    // Active, with no end, or one after today: the level counts. An older GitLab may name no
+    // state of the membership.
+    expect(await levelOf({})).toBe(40);
+    expect(await levelOf({ membershipState: null })).toBe(40);
+    expect(await levelOf({ expiresAt: '2026-10-26' })).toBe(40);
+    // A blocked or deactivated user, an invitation not yet accepted, a membership that ends today
+    // or has ended: no access, as for no member.
+    expect(await levelOf({ state: 'blocked' })).toBeNull();
+    expect(await levelOf({ state: 'deactivated' })).toBeNull();
+    expect(await levelOf({ membershipState: 'awaiting' })).toBeNull();
+    expect(await levelOf({ membershipState: 'created' })).toBeNull();
+    expect(await levelOf({ expiresAt: '2026-10-25' })).toBeNull();
+    expect(await levelOf({ expiresAt: '2026-10-24' })).toBeNull();
+    // A day that is no day, or an answer without the user's state, is not understood.
+    for (const body of [
+      { ...gitlabShape('member'), expires_at: '2026-13-01' },
+      { ...gitlabShape('member'), expires_at: 'soon' },
+      Object.fromEntries(Object.entries(gitlabShape('member')).filter(([key]) => key !== 'state')),
+    ]) {
+      fake.inject('GET', /\/members\/all\/20$/, { status: 200, body });
+      expect((await failure(c.memberAccessLevel('7', 20))).kind).toBe('bad_answer');
+    }
+    fake.setMember(7, 20, null);
+  });
+
   it('checks the discussion id before putting it into a path', async () => {
     const c = client();
     const malformed = [

@@ -47,9 +47,11 @@ import { fileURLToPath } from 'node:url';
  * A reply to a review comment (`POST /pulls/{n}/comments/{id}/replies`) is taken for the first
  * comment of a thread only: GitHub documents no reply to a reply, and the fake answers one, like a
  * comment it has none of, with the 404 that endpoint lists. Every issue comment and review comment
- * carries `created_at` and `updated_at` read from the fake's clock (`now`) when it was made. A
- * person's review comment says its author is a `COLLABORATOR` of the repository (`author_association`)
- * unless a test gives another association, or none; a bot's says `NONE`, as the recorded shapes do.
+ * carries `created_at` and `updated_at` read from the fake's clock (`now`) when it was made.
+ *
+ * A user's permission on a repository (`GET /repos/{owner}/{repo}/collaborators/{user}/permission`,
+ * under the Metadata (read) permission) is what a test set with `setPermission`; anyone else has
+ * none, which GitHub answers with a 404.
  */
 
 const SHAPES = path.join(path.dirname(fileURLToPath(import.meta.url)), 'github-shapes');
@@ -125,11 +127,6 @@ export interface FakeReviewComment {
   inReplyToId: number | null;
   /** As {@link FakeComment.createdAt}. */
   createdAt: string;
-  /**
-   * GitHub's `author_association` of the comment's author with the repository. Unset, a person's
-   * comment is a `COLLABORATOR`'s and a bot's is `NONE`; null leaves the field out of the answer.
-   */
-  authorAssociation?: string | null;
 }
 /** A review thread: a first review comment and the replies to it (GraphQL's `PullRequestReviewThread`). */
 export interface FakeReviewThread {
@@ -244,21 +241,25 @@ export interface FakeGitHub {
   ): FakeCheckRun;
   /**
    * A reply to the thread's first review comment `commentId` (GitHub takes no reply to a reply),
-   * by `login`, with the author association `association` when given
-   * ({@link FakeReviewComment.authorAssociation}); the thread keeps its first comment and gains the
-   * reply.
+   * by `login`; the thread keeps its first comment and gains the reply.
    */
   replyToReviewComment(
     repoId: number,
     pull: number,
     commentId: number,
-    reply: {
-      body: string;
-      login: string;
-      type?: 'Bot' | 'User';
-      association?: string | null;
-    },
+    reply: { body: string; login: string; type?: 'Bot' | 'User' },
   ): FakeReviewComment;
+  /**
+   * The user's permission on the repository, as GitHub's permission endpoint answers it: its legacy
+   * `permission` (`admin`, `write`, `read` or `none`) and its `roleName` (`admin`, `maintain`,
+   * `write`, `triage`, `read` or a custom role's name). Null: none (a 404). Logins are compared
+   * without case, as GitHub's are.
+   */
+  setPermission(
+    repoId: number,
+    login: string,
+    permission: { permission: string; roleName: string } | null,
+  ): void;
   /** The thread is resolved by someone else: a person's `login`, or another App's `<slug>[bot]`. */
   resolveThreadAs(threadId: string, login: string): void;
   /** Every issued token stops working (an uninstall, a revocation). */
@@ -407,6 +408,10 @@ export async function createFakeGitHub(
   const publicKey = createPublicKey(key.privateKey);
   const repos = new Map<string, FakeRepository>();
   const pulls = new Map<string, FakePull>();
+  /** The users' permissions on repositories (`setPermission`), by repository id and login. */
+  const permissions = new Map<string, { permission: string; roleName: string }>();
+  const permissionKey = (repoId: number, login: string) => `${repoId}|${login.toLowerCase()}`;
+  const permissionShape = githubShape('collaborator_permission');
   const injections: { method: string; path: RegExp; answers: InjectedAnswer[] }[] = [];
   let nextId = 1;
   let nextThread = 1;
@@ -489,14 +494,17 @@ export async function createFakeGitHub(
       if (!first || !thread || first.inReplyToId !== null) {
         throw new Error(`no first review comment ${commentId} on pull request ${pull}`);
       }
-      const made = addReply(
+      return addReply(
         first,
         thread,
         { login: reply.login, id: reply.type === 'Bot' ? 41898282 : 5, type: reply.type ?? 'User' },
         reply.body,
       );
-      if (reply.association !== undefined) made.authorAssociation = reply.association;
-      return made;
+    },
+    setPermission: (repoId, login, permission) => {
+      const key = permissionKey(repoId, login);
+      if (permission === null) permissions.delete(key);
+      else permissions.set(key, permission);
     },
     resolveThreadAs: (threadId, login) => {
       const thread = fake.reviewThreads.find((t) => t.id === threadId);
@@ -602,18 +610,11 @@ export async function createFakeGitHub(
   });
 
   const reviewCommentJson = (repo: FakeRepository) => (c: FakeReviewComment) => {
-    const { author_association: unset, ...shape } = githubShape(
+    const shape = githubShape(
       c.inReplyToId === null ? 'pull_request_review_comment' : 'pull_request_review_comment_reply',
     );
-    const association =
-      c.authorAssociation === undefined
-        ? c.user.type === 'User'
-          ? 'COLLABORATOR'
-          : unset
-        : c.authorAssociation;
     return {
       ...shape,
-      ...(association === null ? {} : { author_association: association }),
       id: c.id,
       node_id: reviewCommentNodeId(c.id),
       body: c.body,
@@ -1088,6 +1089,20 @@ export async function createFakeGitHub(
         name: repo.name,
         full_name: `${repo.owner}/${repo.name}`,
         html_url: `${webBase()}/${repo.owner}/${repo.name}`,
+      });
+    }
+    const permissionOf = /^\/collaborators\/([^/]+)\/permission$/.exec(rest);
+    if (method === 'GET' && permissionOf) {
+      if (!need('metadata', 'read')) return forbidden();
+      const login = decodeURIComponent(permissionOf[1]!);
+      const found = permissions.get(permissionKey(repo.id, login));
+      if (found === undefined) return deny(res, 404, 'Not Found');
+      const user = permissionShape['user'] as Record<string, unknown>;
+      return send(res, 200, {
+        ...permissionShape,
+        permission: found.permission,
+        role_name: found.roleName,
+        user: { ...user, login, role_name: found.roleName },
       });
     }
     const listRuns = /^\/commits\/([0-9a-f]{40,64})\/check-runs$/.exec(rest);

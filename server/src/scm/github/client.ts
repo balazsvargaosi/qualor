@@ -162,9 +162,7 @@ export type GitHubComment = z.infer<typeof comment>;
  * A pull request review comment (llm.md §8.4): a comment on lines of the diff. `node_id` is the
  * comment's GraphQL id, which ties it to its thread (github.md §6.4); `in_reply_to_id` (the
  * thread's first comment) is a number on a reply only, and absent or null on a first comment
- * (ruling R6). `created_at` (ISO 8601) is what replies count by their age. `author_association`
- * says what the author is to the repository (`OWNER`, `MEMBER`, `COLLABORATOR`, `CONTRIBUTOR`, …),
- * which decides whether their reply may change a finding's status (6I-4); GitHub always sends it.
+ * (ruling R6). `created_at` (ISO 8601) is what replies count by their age.
  */
 const reviewComment = z.looseObject({
   id: z.number().int(),
@@ -175,11 +173,22 @@ const reviewComment = z.looseObject({
   in_reply_to_id: z.number().int().nullish(),
   path: z.string().optional(),
   created_at: z.string(),
-  author_association: z.string().max(64).optional(),
 });
 export type GitHubReviewComment = z.infer<typeof reviewComment>;
 /** A pull request review (github.md §6.4): only that GitHub made one is read. */
 const review = z.looseObject({ id: z.number().int(), state: z.string() });
+/**
+ * A user's permission on a repository: the legacy `permission` (`admin`, `write`, `read`, `none`)
+ * and the role it comes from (`role_name`: `admin`, `maintain`, `write`, `triage`, `read`, or a
+ * custom role's name).
+ */
+const collaboratorPermission = z.looseObject({
+  permission: z.string().max(255),
+  role_name: z.string().max(255),
+});
+/** A GitHub login: 1–39 letters and digits, single hyphens between them. A bot's `<slug>[bot]` is none. */
+const GITHUB_LOGIN = /^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/;
+const MAX_LOGIN_CHARS = 39;
 export type GitHubReview = z.infer<typeof review>;
 const errorBody = z.looseObject({ message: z.unknown().optional() });
 
@@ -243,6 +252,7 @@ export const GITHUB_SHAPES = {
   review,
   reviewThreads: z.looseObject({ data: reviewThreadsData }),
   resolveThread: z.looseObject({ data: resolveThreadData }),
+  collaboratorPermission,
 } as const;
 
 /** A pull request's review thread as Qualor reads it (ruling R6). */
@@ -918,6 +928,30 @@ export class GitHubClient {
       { body },
     );
     return this.parse(reviewComment, json);
+  }
+
+  /**
+   * The permission the GitHub user `login` has on the repository
+   * (`GET …/collaborators/:login/permission`, under the Metadata (read) permission an installation
+   * token always has): its legacy `permission` and its `roleName`. What a person may decide through
+   * a reply in Qualor's threads (6I-4) is read from it. Null when GitHub answers 404, and, with no
+   * request, for a login GitHub could not have (a bot's `<slug>[bot]` among them): no rights.
+   */
+  async repositoryPermission(
+    login: string,
+  ): Promise<{ permission: string; roleName: string } | null> {
+    if (login.length > MAX_LOGIN_CHARS || !GITHUB_LOGIN.test(login)) return null;
+    try {
+      const { json } = await this.repoCall(
+        'GET',
+        `${this.repoPath()}/collaborators/${encodeURIComponent(login)}/permission`,
+      );
+      const found = this.parse(collaboratorPermission, json);
+      return { permission: found.permission, roleName: found.role_name };
+    } catch (err) {
+      if (err instanceof ScmError && err.status === 404) return null;
+      throw err;
+    }
   }
 
   /**

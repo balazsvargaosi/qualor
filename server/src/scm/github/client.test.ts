@@ -813,41 +813,65 @@ describe('GitHub REST client (github.md §4–§6)', () => {
       expect(pacer.waits).toHaveLength(2);
     });
 
-    it('reads the author association of a review comment, and none where GitHub names none', async () => {
-      const { number, first } = await threadOn();
+    it("reads a user's permission on the repository, and none for a 404 or a login GitHub could not have", async () => {
       const client = clientFor();
       await client.useRepository(REPO);
-      const member = fake.replyToReviewComment(424242, Number(number), first.id, {
-        body: 'Ours.',
-        login: 'octocat',
+      fake.setPermission(424242, 'octocat', { permission: 'write', roleName: 'write' });
+      fake.setPermission(424242, 'mona', { permission: 'read', roleName: 'triage' });
+      fake.clearRequests();
+      expect(await client.repositoryPermission('octocat')).toEqual({
+        permission: 'write',
+        roleName: 'write',
       });
-      const outsider = fake.replyToReviewComment(424242, Number(number), first.id, {
-        body: 'Mine.',
-        login: 'stranger',
-        association: 'CONTRIBUTOR',
+      // GitHub compares logins without case.
+      expect(await client.repositoryPermission('Mona')).toEqual({
+        permission: 'read',
+        roleName: 'triage',
       });
-      const unnamed = fake.replyToReviewComment(424242, Number(number), first.id, {
-        body: 'Hm.',
-        login: 'visitor',
-        association: null,
-      });
-      const listed = await client.reviewComments(number, 5);
-      expect(listed.items.map((c) => [c.id, c.author_association])).toEqual([
-        // The App's own comment, as the recorded shape has it.
-        [first.id, 'NONE'],
-        [member.id, 'COLLABORATOR'],
-        [outsider.id, 'CONTRIBUTOR'],
-        [unnamed.id, undefined],
+      // GitHub's 404: no permission at all.
+      expect(await client.repositoryPermission('stranger')).toBeNull();
+      expect(fake.requests.map((r) => `${r.method} ${r.path}`)).toEqual([
+        'GET /repos/acme/api/collaborators/octocat/permission',
+        'GET /repos/acme/api/collaborators/Mona/permission',
+        'GET /repos/acme/api/collaborators/stranger/permission',
       ]);
-      // A value longer than any GitHub sends is not understood.
-      fake.inject('GET', new RegExp(`/pulls/${number}/comments$`), {
-        status: 200,
-        body: [
-          { ...githubShape('pull_request_review_comment'), author_association: 'X'.repeat(65) },
-        ],
-      });
-      const err = await failure(client.reviewComments(number, 1));
-      expect([err.kind, err.message]).toEqual(['bad_answer', GITHUB_TEXT.badAnswer]);
+      // A login GitHub could not have, a bot's among them, has no rights, and is never sent.
+      fake.clearRequests();
+      for (const login of [
+        '',
+        `${fake.slug}[bot]`,
+        'a'.repeat(40),
+        '-octocat',
+        'octocat-',
+        'octo--cat',
+        'octo cat',
+        'octo/cat',
+        '..',
+        'ü',
+      ]) {
+        expect(await client.repositoryPermission(login), login).toBeNull();
+      }
+      expect(fake.requests).toEqual([]);
+      // The longest login GitHub allows is asked for.
+      expect(await client.repositoryPermission(`a${'-b'.repeat(19)}`)).toBeNull();
+      expect(fake.requests).toHaveLength(1);
+      // An answer without the role is not understood, and any other error is no answer either.
+      fake.inject(
+        'GET',
+        /\/collaborators\/octocat\/permission$/,
+        { status: 200, body: { permission: 'write' } },
+        { status: 502, body: { message: 'Bad Gateway' } },
+      );
+      expect((await failure(client.repositoryPermission('octocat'))).kind).toBe('bad_answer');
+      expect((await failure(client.repositoryPermission('octocat'))).kind).toBe('transient');
+      // Each lookup is a request of the job's budget: the installation, its token and the
+      // repository take three.
+      const small = clientFor({ maxRequests: 4 });
+      await small.useRepository(REPO);
+      expect(await small.repositoryPermission('octocat')).toMatchObject({ roleName: 'write' });
+      expect((await failure(small.repositoryPermission('octocat'))).kind).toBe('budget');
+      fake.setPermission(424242, 'octocat', null);
+      fake.setPermission(424242, 'mona', null);
     });
 
     it('created_at is read from review comments and issue comments', async () => {
@@ -1549,6 +1573,7 @@ describe('recorded shapes', () => {
       review: 'pull_request_review',
       reviewThreads: 'graphql_review_threads',
       resolveThread: 'graphql_resolve_thread',
+      collaboratorPermission: 'collaborator_permission',
     }),
   )('%s parses', (key, file) => {
     expect(

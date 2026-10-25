@@ -80,10 +80,29 @@ import { openSnapshotReader, type SnapshotReader } from './snapshot-reader';
 
 /** GitLab's Developer role: the least access level whose reply may change a finding's status. */
 const GITLAB_DEVELOPER = 30;
-/** The most authors of a round whose GitLab access is asked for: a round of more changes no status. */
+/**
+ * The most authors of a round whose rights are asked for, each once: a round of more changes no
+ * status.
+ */
 const MAX_AUTHORS_LOOKED_UP = 5;
-/** What GitHub calls the authors whose reply may change a finding's status (`author_association`). */
-const GITHUB_TRIAGERS: ReadonlySet<string> = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+/** GitHub's roles of a repository whose people may change a finding's status through a reply. */
+const GITHUB_TRIAGE_ROLES: ReadonlySet<string> = new Set(['admin', 'maintain', 'write', 'triage']);
+/** GitHub's other built-in roles, which may not. */
+const GITHUB_OTHER_ROLES: ReadonlySet<string> = new Set(['read', 'none']);
+/** The base permissions of a custom role (any other role name) that may. */
+const GITHUB_TRIAGE_PERMISSIONS: ReadonlySet<string> = new Set(['admin', 'write']);
+
+/**
+ * Whether a person with this permission on the repository may change a finding's status through a
+ * reply: a role of admin, maintain, write or triage, or a custom role whose base permission is
+ * admin or write. Nobody else may: the read role, none, or no permission at all (null).
+ */
+function githubMayTriage(found: { permission: string; roleName: string } | null): boolean {
+  if (found === null) return false;
+  if (GITHUB_TRIAGE_ROLES.has(found.roleName)) return true;
+  if (GITHUB_OTHER_ROLES.has(found.roleName)) return false;
+  return GITHUB_TRIAGE_PERMISSIONS.has(found.permission);
+}
 
 /** A row of a reply: in a thread, about an issue. */
 type ReplyInThread = ReplyRow & { threadId: string; issueId: string };
@@ -201,8 +220,8 @@ function githubSide(
   row: ReplyInThread,
 ): ThreadSide {
   const firstId = Number(row.threadId);
-  /** The author association of each person's comment the last read found (null: GitHub named none). */
-  const associationOf = new Map<number, string | null>();
+  /** The login of each person's comment the last read found. */
+  const loginOf = new Map<number, string>();
   /** The thread's GraphQL node id, which it is resolved by. */
   let threadNode: string | null = null;
   return {
@@ -224,29 +243,27 @@ function githubSide(
       threadNode = thread.id;
       const replies = comments.items.filter((c) => c.in_reply_to_id === firstId);
       const people = replies.flatMap((c) =>
-        c.user?.type === 'User'
-          ? [
-              {
-                id: c.id,
-                author: c.user.login,
-                body: c.body,
-                association: c.author_association ?? null,
-              },
-            ]
-          : [],
+        c.user?.type === 'User' ? [{ id: c.id, author: c.user.login, body: c.body }] : [],
       );
-      for (const note of people) associationOf.set(note.id, note.association);
+      for (const note of people) loginOf.set(note.id, note.author);
       const marker = replyMarker(row.id);
       const answer = replies.find((c) => byApp(c.user) && firstLineOf(c.body) === marker);
       return {
         firstNote: first.body,
-        notes: people.map(({ id, author, body }) => ({ id, author, body })),
+        notes: people,
         answered: answer?.id ?? null,
         resolved: thread.isResolved,
       };
     },
-    mayChangeStatus: (noteIds) =>
-      Promise.resolve(noteIds.every((id) => GITHUB_TRIAGERS.has(associationOf.get(id) ?? ''))),
+    async mayChangeStatus(noteIds) {
+      const logins = [...new Set(noteIds.map((id) => loginOf.get(id)))];
+      if (logins.length > MAX_AUTHORS_LOOKED_UP) return false;
+      for (const login of logins) {
+        if (login === undefined) return false;
+        if (!githubMayTriage(await client.repositoryPermission(login))) return false;
+      }
+      return true;
+    },
     post: async (body) => (await client.replyToReviewComment(number, firstId, body)).id,
     resolve: async () =>
       threadNode !== null && (await client.setThreadResolved(threadNode, true)) === 'done',

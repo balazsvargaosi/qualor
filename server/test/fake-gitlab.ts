@@ -47,7 +47,8 @@ import { fileURLToPath } from 'node:url';
  * - `commit_statuses.json`: `GET /projects/:id/repository/commits/:sha/statuses`
  *   (doc/api/commits.md, "List the statuses of a commit"; the same entity as the POST answer).
  * - `member.json`: `GET /projects/:id/members/all/:user_id` (doc/api/members.md, "Get a member of a
- *   group or project, including inherited and invited members"); a user who is no member is 404.
+ *   group or project, including inherited and invited members"); a user who is no member is 404,
+ *   and a test sets the user's state, the membership's state and its expiry.
  *   Added in 6I-4 and not yet compared with a real answer by the opt-in checks.
  * Error answers (`{ message }` / `{ error }` bodies, the 400 "Cannot transition status via …" and
  * the 400 on a diff position without a line code) follow the texts GitLab's API returns for them.
@@ -154,8 +155,22 @@ interface FakeProject {
   discussions: Map<number, FakeDiscussion[]>;
   /** Pipeline id -> its ref. */
   pipelines: Map<number, string>;
-  /** User id -> the access level of a member, inherited or not; anyone else is no member. */
-  members: Map<number, number>;
+  /** User id -> the membership of a member, inherited or not; anyone else is no member. */
+  members: Map<number, FakeMembership>;
+}
+
+/** A user's membership of a project, as `GET …/members/all/:user_id` answers it. */
+export interface FakeMembership {
+  accessLevel: number;
+  /** The user's own state: `active` unless a test says otherwise (`blocked`, `deactivated`, …). */
+  state?: string;
+  /**
+   * The membership's state: `active` unless a test says otherwise (`awaiting`, an invitation not yet
+   * accepted); null leaves the field out of the answer, as an older GitLab does.
+   */
+  membershipState?: string | null;
+  /** The last day of the membership (`YYYY-MM-DD`); null or unset: none. */
+  expiresAt?: string | null;
 }
 
 export interface FakeGitLab {
@@ -174,10 +189,15 @@ export interface FakeGitLab {
   addPipeline(projectId: number, pipelineId: number, ref?: string): void;
   /**
    * Makes the user a member of the project with `accessLevel` (10 Guest, 20 Reporter, 30 Developer,
-   * 40 Maintainer, 50 Owner), as `GET …/members/all/:user_id` answers it; null: no member (404).
-   * Nobody is a member until a test says so.
+   * 40 Maintainer, 50 Owner), as `GET …/members/all/:user_id` answers it, with what `membership`
+   * says of it besides; null: no member (404). Nobody is a member until a test says so.
    */
-  setMember(projectId: number, userId: number, accessLevel: number | null): void;
+  setMember(
+    projectId: number,
+    userId: number,
+    accessLevel: number | null,
+    membership?: Omit<FakeMembership, 'accessLevel'>,
+  ): void;
   /** Adds a note by another user (or the bot), as a discussion of its own. */
   addNote(projectId: number, iid: number, note: { body: string; authorId: number }): FakeDiscussion;
   discussions(projectId: number, iid: number): FakeDiscussion[];
@@ -463,13 +483,19 @@ export async function createFakeGitLab(
       /^\d+$/.test(rest[2] ?? '')
     ) {
       const userId = Number(rest[2]);
-      const level = project.members.get(userId);
-      if (level === undefined) return send(res, 404, { message: '404 Not found' });
+      const found = project.members.get(userId);
+      if (found === undefined) return send(res, 404, { message: '404 Not found' });
+      const { membership_state: stateOfMembership, ...shape } = memberShape;
+      const membershipState =
+        found.membershipState === undefined ? stateOfMembership : found.membershipState;
       return send(res, 200, {
-        ...(memberShape as Record<string, unknown>),
+        ...shape,
         id: userId,
         username: author(userId).username,
-        access_level: level,
+        state: found.state ?? 'active',
+        access_level: found.accessLevel,
+        expires_at: found.expiresAt ?? null,
+        ...(membershipState === null ? {} : { membership_state: membershipState }),
       });
     }
     if (req.method === 'POST' && rest[0] === 'statuses' && rest.length === 2) {
@@ -707,10 +733,10 @@ export async function createFakeGitLab(
     addPipeline(projectId, pipelineId, ref = 'main') {
       projectOf(projectId).pipelines.set(pipelineId, ref);
     },
-    setMember(projectId, userId, accessLevel) {
+    setMember(projectId, userId, accessLevel, membership = {}) {
       const { members } = projectOf(projectId);
       if (accessLevel === null) members.delete(userId);
-      else members.set(userId, accessLevel);
+      else members.set(userId, { ...membership, accessLevel });
     },
     addNote(projectId, iid, { body, authorId }) {
       const project = projectOf(projectId);

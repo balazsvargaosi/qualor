@@ -155,8 +155,16 @@ export function discussionResolved(d: GitLabDiscussion): boolean {
   return resolvable.length > 0 && resolvable.every((n) => n.resolved === true);
 }
 
-/** A member of a project, as `GET …/members/all/:user_id` answers: its level is what is read. */
-const member = z.looseObject({ access_level: z.number().int() });
+/**
+ * A member of a project, as `GET …/members/all/:user_id` answers: its level, the user's state, the
+ * membership's own state (an older GitLab names none) and its last day.
+ */
+const member = z.looseObject({
+  access_level: z.number().int(),
+  state: z.string(),
+  membership_state: z.string().optional(),
+  expires_at: z.iso.date().nullable(),
+});
 
 const commitStatus = z.looseObject({
   id: z.number().int(),
@@ -243,6 +251,8 @@ export interface GitLabClientOptions {
   connectTimeoutMs?: number;
   resolve?: Resolver;
   maxRequests?: number;
+  /** The clock a membership's last day is compared with; `Date.now` unless a test sets one. */
+  now?: () => number;
 }
 
 /** Seconds from `Retry-After` (seconds or an HTTP date), else `RateLimit-Reset` (epoch seconds). */
@@ -578,8 +588,10 @@ export class GitLabClient {
   /**
    * The access level the GitLab user `userId` has in the project (10 Guest, 20 Reporter, 30
    * Developer, 40 Maintainer, 50 Owner), a membership it inherits from a group included
-   * (`GET …/members/all/:user_id`); null when the user is no member, GitLab's 404. What a person
-   * may decide through a reply in Qualor's threads (6I-4) is read from it.
+   * (`GET …/members/all/:user_id`); null when the user has none in force: no member (GitLab's
+   * 404), a user who is not active (blocked, deactivated), a membership that is not active (an
+   * invitation awaiting its answer), or one whose last day is today or past (UTC). What a person may
+   * decide through a reply in Qualor's threads (6I-4) is read from it.
    */
   async memberAccessLevel(ref: string, userId: number): Promise<number | null> {
     if (!Number.isSafeInteger(userId) || userId < 1) {
@@ -587,13 +599,20 @@ export class GitLabClient {
         reason: 'invalid_input',
       });
     }
+    let found: z.infer<typeof member>;
     try {
       const { json } = await this.call('GET', `${this.projectPath(ref)}/members/all/${userId}`);
-      return this.parse(member, json).access_level;
+      found = this.parse(member, json);
     } catch (err) {
       if (err instanceof GitLabError && err.status === 404) return null;
       throw err;
     }
+    const today = new Date((this.options.now ?? Date.now)()).toISOString().slice(0, 10);
+    const inForce =
+      found.state === 'active' &&
+      (found.membership_state === undefined || found.membership_state === 'active') &&
+      (found.expires_at === null || found.expires_at > today);
+    return inForce ? found.access_level : null;
   }
 
   async resolveDiscussion(
