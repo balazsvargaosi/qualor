@@ -69,7 +69,7 @@ const PROMPT_HASHES: Record<string, Record<string, string>> = {
   // a review's.
   'reply-1': {
     'an open AI finding, with the code':
-      '0fb4449cb7e5c61785e1a11399e08e4b1b22103cd64ad4dab6154e74bc45cf02',
+      '5a96ce15c216ed8e5b0af19b5e6deff5ac70960d0c23693c24a06243d0fd065c',
     'an open AI finding, without the code':
       'c6c1b004c7dff278ab2662c6e7c9044ed552af21fd7a27bb7488f5becaa348d3',
     'an open AI finding the people may not change, with the code':
@@ -88,7 +88,7 @@ const PROMPT_HASHES: Record<string, Record<string, string>> = {
     'retry.wont_fix (keep, wont_fix, false_positive)':
       'c5cce08a79fc354f214f75d1d3e705378b910c6cdcf96a84399f579e53b0db20',
     'retry.false_positive (keep, wont_fix, false_positive)':
-      '9ee2efae535548c5922c53e27deb9d948efeb52e70a4e5405e96e76001ebb229',
+      '006151f1a15e3bd0b65983a8cac27854b4a0e21d89e245b01ada96c936cb80a0',
     'loop.wrapUp': 'cc5c64c44240094b389da80979aa2ad0821c0e38bb88a763d0a481acb9cd2340',
     'loop.shorter': '572e61f09a58f0033bb47d4170be06b712ef434b1a6f75cab203c4c1b1079b3d',
     'loop.retry': 'dba9e7ae6537460f5c68547c0a31f236e268b118a0f89e6282d8667c8d925a5c',
@@ -752,7 +752,10 @@ describe('the reply prompt', () => {
       // allow it says nothing of it.
       expect(lower.includes('a decision of priority')).toBe(verdicts.includes('wont_fix'));
       expect(prompt.includes('needs the intent "priority"')).toBe(verdicts.includes('wont_fix'));
-      expect(lower.includes("read the finding's own file with the tools")).toBe(
+      expect(lower.includes('read the code of the finding with the tools')).toBe(
+        verdicts.includes('false_positive'),
+      );
+      expect(lower.includes('a read_file that showed its line')).toBe(
         verdicts.includes('false_positive'),
       );
       expect(prompt.includes('the intent "factual"')).toBe(verdicts.includes('false_positive'));
@@ -852,7 +855,7 @@ describe('the retry texts of a reply', () => {
       'wont_fix needs intent priority: a decision of priority that a person stated. Answer again with the same JSON, with a verdict of: keep, wont_fix.',
     );
     expect(replyRetryText('false_positive', ALL_VERDICTS)).toBe(
-      "false_positive needs intent factual, and the finding's file read with read_file or grep. Answer again with the same JSON, with a verdict of: keep, wont_fix, false_positive.",
+      "false_positive needs intent factual, and the finding's own lines read with read_file or grep. Answer again with the same JSON, with a verdict of: keep, wont_fix, false_positive.",
     );
   });
 
@@ -874,6 +877,7 @@ describe('the reply data', () => {
       message: 'The total skips the last item',
       path: 'src/cart.ts',
       line: 3,
+      endLine: 4,
       status: 'open',
       aiBody: 'The loop bound is one short. Use `i < n`.',
       suggestion: { startLine: 3, endLine: 3, lines: ['const total = a + b + c;'] },
@@ -893,6 +897,8 @@ describe('the reply data', () => {
     const data = replyData(shown());
     expect(Object.keys(data)).toEqual(['issue', 'qualorNote', 'notes']);
     expect(Object.keys(data.issue)).toEqual(REPLY_ISSUE_KEYS);
+    // The end line of the finding is for the gate, which checks what was read: it is not sent.
+    expect(data.issue).not.toHaveProperty('endLine');
     expect(data).toEqual({
       issue: {
         engine: 'ai',
@@ -921,6 +927,7 @@ describe('the reply data', () => {
           message: 'eval of «redacted»',
           path: 'src/cart.ts',
           line: null,
+          endLine: null,
           status: 'open',
           aiBody: null,
           suggestion: null,

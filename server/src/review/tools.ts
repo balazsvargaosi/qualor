@@ -162,19 +162,27 @@ export interface ToolPolicy {
   masker?: Masker;
 }
 
+/** Lines `from` to `to` (1-based, inclusive) of the file `path`, as an answer shows them. */
+export interface ShownLines {
+  path: string;
+  from: number;
+  to: number;
+}
+
 interface ToolAnswer {
   /** What the model is told. */
   text: string;
   /** Secrets masked in it. */
   redactions: number;
   /**
-   * The files the answer shows lines of, when it shows any: what the call really read, which its
-   * text says nothing certain of. A `read_file` that showed a line of its file, and a `grep` for
-   * each file it showed a matching line of. A line that was masked is a line. A refusal, a path that
-   * is not there, an empty file or a range past its end, a search with no match, and a listing show
-   * none, and leave it out.
+   * The lines of files the answer shows, when it shows any: what the call really read, which its
+   * text says nothing certain of. A `read_file` shows the lines its answer numbers, a range of its
+   * own (the caps of a call cut what was asked for, and a range past the end of the file ends
+   * where the file does); a `grep` shows each matching line it lists, one range for each. A line
+   * that was masked is a line. A refusal, a path that is not there, an empty file or a range past
+   * its end, a search with no match, and a listing show none, and leave it out.
    */
-  read?: readonly string[];
+  read?: readonly ShownLines[];
 }
 
 const INVALID_PATH = 'invalid path';
@@ -371,20 +379,20 @@ function shownLine(line: string, max: number): string {
 
 /**
  * Lines `from` to `to` (1-based, inclusive) of a masked file, numbered, within the caps of one
- * call, and how many lines of the file that shows (none for an empty file or a range past its end,
- * which are answered in words). The lines are the file's, masked as a whole: nothing is masked here.
- * The character cap counts everything shown of a line: the number and the `│ ` before it, and its
- * line end.
+ * call, and which lines of the file that shows: `from` to the last one the caps left (null for an
+ * empty file or a range past its end, which are answered in words). The lines are the file's,
+ * masked as a whole: nothing is masked here. The character cap counts everything shown of a line:
+ * the number and the `│ ` before it, and its line end.
  */
 function numberedLines(
   file: MaskedText,
   from: number,
   to: number | null,
-): { text: string; shown: number } {
+): { text: string; shown: { from: number; to: number } | null } {
   const total = file.lineCount;
-  if (total === 0) return { text: 'the file is empty', shown: 0 };
+  if (total === 0) return { text: 'the file is empty', shown: null };
   if (from > total) {
-    return { text: `the file has ${total} lines; from is past its end`, shown: 0 };
+    return { text: `the file has ${total} lines; from is past its end`, shown: null };
   }
   const asked = Math.min(to ?? total, total);
   let last = Math.min(asked, from + TOOL_LIMITS.readLines - 1);
@@ -410,7 +418,7 @@ function numberedLines(
   if (last < asked) {
     numbered.push(`… lines ${from}–${last} of ${total}; ask for more with from/to`);
   }
-  return { text: numbered.join('\n'), shown: last - from + 1 };
+  return { text: numbered.join('\n'), shown: { from, to: last } };
 }
 
 async function readFile(
@@ -441,7 +449,7 @@ async function readFile(
       return {
         text: lines.text,
         redactions: file.redactions,
-        ...(lines.shown > 0 ? { read: [path] } : {}),
+        ...(lines.shown === null ? {} : { read: [{ path, ...lines.shown }] }),
       };
     }
   }
@@ -542,8 +550,8 @@ async function grep(
   // Only the lines the model can see are counted: a search the reader cut short says nothing.
   if (lines.length === 0) lines.push(NO_MATCHES);
   else if (found.over) lines.push(MORE_MATCHES);
-  // The files of the lines shown, each once, in the order of the hits.
-  const read = [...new Set(found.items.map((hit) => hit.path))];
+  // The lines shown, one range each, in the order of the hits.
+  const read = found.items.map((hit) => ({ path: hit.path, from: hit.line, to: hit.line }));
   return { ...redactedAnswer(lines.join('\n'), counted), ...(read.length > 0 ? { read } : {}) };
 }
 

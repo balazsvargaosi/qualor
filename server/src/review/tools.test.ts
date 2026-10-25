@@ -6,7 +6,13 @@ import { MaskedFiles } from './masked-files';
 import { Masker } from './masker';
 import { compilePathGlob, likePrefix, MAX_GLOB_WILDCARDS } from './path-glob';
 import type { SnapshotReader } from './snapshot-reader';
-import { REVIEW_TOOLS, runReviewTool, TOOL_LIMITS, type ToolPolicy } from './tools';
+import {
+  REVIEW_TOOLS,
+  runReviewTool,
+  TOOL_LIMITS,
+  type ShownLines,
+  type ToolPolicy,
+} from './tools';
 
 const BUDGET_USED_UP = 'tool budget used up; answer now with what you have';
 const ABSENT = "no such file in this merge request's snapshot";
@@ -173,7 +179,7 @@ describe('reading files', () => {
     expect(await run(reader, 'read_file', { path: 'src/bundle.js' })).toEqual({
       text: `1│ ${REDACTED}`,
       redactions: 1,
-      read: ['src/bundle.js'],
+      read: [{ path: 'src/bundle.js', from: 1, to: 1 }],
     });
   });
 
@@ -1481,26 +1487,71 @@ describe('what a call reports it showed of the files', () => {
     files: {
       'src/a.ts': 'const needle = 1;\nconst two = 2;\n',
       'src/b.ts': 'const needle = 2;\nneedle again\n',
+      'src/big.ts': numberedFile(1000),
       'src/empty.ts': '',
+      'src/long.ts': `const wide = '${'x'.repeat(500)}';\n`,
+      'src/many.ts': Array.from({ length: 60 }, (_, i) => `const hit = ${i + 1};\n`).join(''),
+      'src/minified.js': 'y'.repeat(50_000),
       'src/secret.ts': `const key = '${AWS_KEY}';\n`,
       'src/bundle.js': 'z'.repeat(70_000),
+      'src/wide.ts': `${'x'.repeat(500)}\n`.repeat(100),
       'vendor/x.js': 'needle\n',
       'bin/blob': { kind: 'omitted', reason: 'binary' },
     },
   });
-  /** The files a call says it showed lines of: undefined when it says nothing, as a call that showed none does. */
+  /** Lines `from` to `to` of a file, as a call reports them (`to` is `from` for one line). */
+  const range = (path: string, from: number, to = from): ShownLines => ({ path, from, to });
+  /** What a call says it showed: undefined when it says nothing, as a call that showed none does. */
   const shownBy = async (
     name: string,
     args: unknown,
     policy?: ToolPolicy,
-  ): Promise<readonly string[] | undefined> => (await run(reader, name, args, policy)).read;
+  ): Promise<readonly ShownLines[] | undefined> => (await run(reader, name, args, policy)).read;
 
-  it('read_file reports the file it showed lines of, whatever the lines are', async () => {
-    expect(await shownBy('read_file', { path: 'src/a.ts' })).toEqual(['src/a.ts']);
-    expect(await shownBy('read_file', { path: 'src/a.ts', from: 2, to: 2 })).toEqual(['src/a.ts']);
+  it('read_file reports the lines it showed of its file', async () => {
+    expect(await shownBy('read_file', { path: 'src/a.ts' })).toEqual([range('src/a.ts', 1, 2)]);
+    expect(await shownBy('read_file', { path: 'src/a.ts', from: 2, to: 2 })).toEqual([
+      range('src/a.ts', 2),
+    ]);
+    expect(await shownBy('read_file', { path: 'src/a.ts', from: 2 })).toEqual([
+      range('src/a.ts', 2),
+    ]);
+    expect(await shownBy('read_file', { path: 'src/a.ts', to: 1 })).toEqual([range('src/a.ts', 1)]);
+    // A range that goes past the end of the file ends where the file does.
+    expect(await shownBy('read_file', { path: 'src/a.ts', from: 2, to: 99 })).toEqual([
+      range('src/a.ts', 2),
+    ]);
     // A line that was masked is a line of the file, and so is one too long to scan.
-    expect(await shownBy('read_file', { path: 'src/secret.ts' })).toEqual(['src/secret.ts']);
-    expect(await shownBy('read_file', { path: 'src/bundle.js' })).toEqual(['src/bundle.js']);
+    expect(await shownBy('read_file', { path: 'src/secret.ts' })).toEqual([
+      range('src/secret.ts', 1),
+    ]);
+    expect(await shownBy('read_file', { path: 'src/bundle.js' })).toEqual([
+      range('src/bundle.js', 1),
+    ]);
+  });
+
+  it('read_file reports the range its caps left, not the one asked for', async () => {
+    // 400 lines a call; `from` alone takes the next 400; the end of the file ends the range.
+    const big = (args: object) => shownBy('read_file', { path: 'src/big.ts', ...args });
+    expect(await big({})).toEqual([range('src/big.ts', 1, 400)]);
+    expect(await big({ from: 1, to: 900 })).toEqual([range('src/big.ts', 1, 400)]);
+    expect(await big({ from: 401 })).toEqual([range('src/big.ts', 401, 800)]);
+    expect(await big({ from: 999, to: 5000 })).toEqual([range('src/big.ts', 999, 1000)]);
+    expect(await big({ from: 10, to: 11 })).toEqual([range('src/big.ts', 10, 11)]);
+    // 40 000 characters a call: 79 lines of 500 characters, from the first line or from the tenth.
+    expect(await shownBy('read_file', { path: 'src/wide.ts' })).toEqual([
+      range('src/wide.ts', 1, 79),
+    ]);
+    expect(await shownBy('read_file', { path: 'src/wide.ts', from: 10 })).toEqual([
+      range('src/wide.ts', 10, 88),
+    ]);
+    // One line over the cap by itself is cut, and shown.
+    expect(await shownBy('read_file', { path: 'src/minified.js' })).toEqual([
+      range('src/minified.js', 1),
+    ]);
+    // What the answer says it showed is what is reported.
+    const text = await answer(reader, 'read_file', { path: 'src/wide.ts', from: 10 });
+    expect(text.split('\n').at(-1)).toBe('… lines 10–88 of 100; ask for more with from/to');
   });
 
   it('read_file reports nothing when it showed no line of a file', async () => {
@@ -1512,6 +1563,7 @@ describe('what a call reports it showed of the files', () => {
       ['a file the snapshot omitted', { path: 'bin/blob' }],
       ['a path that is none', { path: '../src/a.ts' }],
       ['a range that is none', { path: 'src/a.ts', from: 0 }],
+      ['a range that ends before it starts', { path: 'src/a.ts', from: 2, to: 1 }],
       ['no arguments', {}],
     ];
     for (const [name, args] of answered) {
@@ -1534,28 +1586,38 @@ describe('what a call reports it showed of the files', () => {
     }
   });
 
-  it('grep reports the files it showed a match of, each once, in the order of the hits', async () => {
+  it('grep reports the matching lines it showed, file by file, in the order of the hits', async () => {
     expect(await shownBy('grep', { pattern: 'needle' })).toEqual([
-      'src/a.ts',
-      'src/b.ts',
-      'vendor/x.js',
+      range('src/a.ts', 1),
+      range('src/b.ts', 1),
+      range('src/b.ts', 2),
+      range('vendor/x.js', 1),
     ]);
     expect(await shownBy('grep', { pattern: 'needle', path_glob: 'src/b.*' })).toEqual([
-      'src/b.ts',
+      range('src/b.ts', 1),
+      range('src/b.ts', 2),
     ]);
-    // A line that was masked is still a line that matches.
-    expect(await shownBy('grep', { pattern: 'const key' })).toEqual(['src/secret.ts']);
+    expect(await shownBy('grep', { pattern: 'two' })).toEqual([range('src/a.ts', 2)]);
+    // A line that was masked is still a line that matches, and so is one cut to be shown.
+    expect(await shownBy('grep', { pattern: 'const key' })).toEqual([range('src/secret.ts', 1)]);
+    expect(await shownBy('grep', { pattern: 'const wide' })).toEqual([range('src/long.ts', 1)]);
   });
 
-  it('grep reports only what it showed: no search with no match, no file it left out', async () => {
+  it('grep reports only the lines it showed: not past its hits, not a file it left out', async () => {
+    // 60 lines match and 50 are shown, with a line that says there are more.
+    expect(await shownBy('grep', { pattern: 'const hit' })).toEqual(
+      Array.from({ length: TOOL_LIMITS.grepHits }, (_, i) => range('src/many.ts', i + 1)),
+    );
+    expect(await answer(reader, 'grep', { pattern: 'const hit' })).toContain(MORE_MATCHES);
     expect(await shownBy('grep', { pattern: 'nothing like this anywhere' })).toBeUndefined();
     // A needle inside what a mask hides finds nothing.
     expect(await shownBy('grep', { pattern: AWS_KEY })).toBeUndefined();
     // The excluded files are not searched.
     const policy = () => newPolicy({ excludePaths: ['vendor/**'] });
     expect(await shownBy('grep', { pattern: 'needle' }, policy())).toEqual([
-      'src/a.ts',
-      'src/b.ts',
+      range('src/a.ts', 1),
+      range('src/b.ts', 1),
+      range('src/b.ts', 2),
     ]);
     expect(
       await shownBy('grep', { pattern: 'needle', path_glob: 'vendor/**' }, policy()),

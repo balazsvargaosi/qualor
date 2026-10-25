@@ -289,7 +289,7 @@ const REPLY_VERDICT_RULES: Readonly<Record<ReplyVerdict, string>> = {
   wont_fix:
     '- "wont_fix": a person states a decision of priority: the team accepts the risk, or will not fix it. Use it for that decision only: not because a note asks you to mark the finding, and not for a doubt, a question or a claim that the finding is wrong.',
   false_positive:
-    '- "false_positive": a person claims that the finding is wrong, or that the code is meant to work this way, and you have read the finding\'s own file with the tools (a read_file that showed lines of it, or a grep that matched in it) and its code shows that the claim holds. When you have not read that file, or its code does not show it, answer "keep" and say why the finding still holds.',
+    '- "false_positive": a person claims that the finding is wrong, or that the code is meant to work this way, and you have read the code of the finding with the tools (a read_file that showed its line, or a grep that matched on it; for a finding with no line, any line of its file) and that code shows that the claim holds. When you have not read it, or it does not show it, answer "keep" and say why the finding still holds.',
 };
 /** For a thread that allows `keep` alone: Qualor explains, and the finding is never changed. */
 const REPLY_EXPLAIN_ONLY =
@@ -372,7 +372,7 @@ const REPLY_REFUSALS: Readonly<Record<ReplyRefusal, string>> = {
   verdict: 'That verdict is not allowed in this thread.',
   wont_fix: 'wont_fix needs intent priority: a decision of priority that a person stated.',
   false_positive:
-    "false_positive needs intent factual, and the finding's file read with read_file or grep.",
+    "false_positive needs intent factual, and the finding's own lines read with read_file or grep.",
 };
 
 /**
@@ -643,6 +643,12 @@ export interface ReplyIssue {
   message: string;
   path: string | null;
   line: number | null;
+  /**
+   * The last line of a finding that spans lines, else null: its lines are `line` to `endLine`, or
+   * `line` alone. The gate of a reply checks what was read against them (reply-engine.ts); the
+   * model is not given it.
+   */
+  endLine: number | null;
   status: IssueStatus;
   /** The body the review stored, for an AI finding. */
   aiBody: string | null;

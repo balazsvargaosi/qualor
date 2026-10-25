@@ -73,6 +73,7 @@ const aiIssue = (over: Partial<ReplyIssue> = {}): ReplyIssue => ({
   message: 'The total skips the last item',
   path: 'src/cart.ts',
   line: 3,
+  endLine: null,
   status: 'open',
   aiBody: 'The loop bound is one short. Use `i < n`.',
   suggestion: { startLine: 3, endLine: 3, lines: ['for (let i = 0; i < n; i += 1) {'] },
@@ -84,6 +85,7 @@ const analyzerIssue = (over: Partial<ReplyIssue> = {}): ReplyIssue => ({
   message: 'eval of user input',
   path: 'src/cart.ts',
   line: 3,
+  endLine: null,
   status: 'open',
   aiBody: null,
   suggestion: null,
@@ -286,8 +288,11 @@ describe('the answer to a reply', () => {
     expect(decided(tooMany.decision)).toMatchObject({ verdict: 'keep', readCode: false });
   });
 
-  describe('false_positive needs the finding’s own file to have been read', () => {
-    const FILES = { 'src/cart.ts': CART, 'src/other.ts': 'const other = 1;\n' };
+  describe('false_positive needs the finding’s own lines to have been read', () => {
+    const FILES = {
+      'src/cart.ts': CART,
+      'src/other.ts': 'const other = 1;\nconst items = [];\n',
+    };
     const withFiles = (files: Record<string, string> = FILES): ReplyInput =>
       inputOf({ snapshot: memorySnapshot({ files }) });
     const call = (name: string, args: Record<string, unknown>): LlmTurn =>
@@ -310,7 +315,7 @@ describe('the answer to a reply', () => {
       io?: Partial<ReplyConversationIo>;
       input?: ReplyInput;
     }
-    /** Calls that read nothing of the finding's file, however they look. */
+    /** Calls that read nothing of the finding's lines, however they look. */
     const NOT_READ: Case[] = [
       { name: 'a read of a path that is not there', turns: [reads('src/missing.ts')] },
       {
@@ -321,6 +326,14 @@ describe('the answer to a reply', () => {
       { name: 'a grep with no match', turns: [greps('no such text anywhere')] },
       { name: 'a read of another file only', turns: [reads('src/other.ts')] },
       { name: 'a grep that matches in another file only', turns: [greps('const other')] },
+      {
+        name: 'a grep that matches in the file, but not on the finding’s line',
+        turns: [greps('const n')],
+      },
+      {
+        name: 'a grep that matches in the file and in another, but not on the finding’s line',
+        turns: [greps('const')],
+      },
       {
         name: 'a read from past the end of the file',
         turns: [call('read_file', { path: 'src/cart.ts', from: 99 })],
@@ -345,15 +358,15 @@ describe('the answer to a reply', () => {
         input: inputOf({ issue: aiIssue({ path: null }) }),
       },
     ];
-    /** Calls that showed lines of the finding's file. */
+    /** Calls that showed a line of the finding (the third line of its file). */
     const READ: Case[] = [
       { name: 'a read of the finding’s file', turns: [reads()] },
       {
         name: 'a read of some lines of it',
         turns: [call('read_file', { path: 'src/cart.ts', from: 2, to: 3 })],
       },
-      { name: 'a grep that matches in it', turns: [greps('total')] },
-      { name: 'a grep that matches in it and in another file', turns: [greps('const')] },
+      { name: 'a grep that matches on its line', turns: [greps('total')] },
+      { name: 'a grep that matches on its line and in another file', turns: [greps('items')] },
       { name: 'a read of another file, and then of it', turns: [reads('src/other.ts'), reads()] },
       {
         name: 'a read of it in which a secret was masked',
@@ -361,13 +374,16 @@ describe('the answer to a reply', () => {
         input: withFiles({ 'src/cart.ts': `const key = '${AWS_KEY}';\n${CART}` }),
       },
       {
-        name: 'a read of it that is nothing but a masked line',
+        name: 'a read of its line when that is nothing but a masked line',
         turns: [reads()],
-        input: withFiles({ 'src/cart.ts': 'z'.repeat(70_000) }),
+        input: inputOf({
+          issue: aiIssue({ line: 1 }),
+          snapshot: memorySnapshot({ files: { 'src/cart.ts': 'z'.repeat(70_000) } }),
+        }),
       },
     ];
 
-    it.each(NOT_READ)('is refused after $name, and the retry says what was wrong', async (c) => {
+    const refuses = async (c: Case) => {
       const answers = [says('factual', 'false_positive'), says('factual', 'false_positive')];
       const refused = await converse([...c.turns, ...answers], c.input ?? withFiles(), c.io);
       expect(refused.decision).toEqual({ failed: 'bad_answer' });
@@ -375,16 +391,15 @@ describe('the answer to a reply', () => {
         role: 'user',
         text: replyRetryText('false_positive', ALL),
       });
-      // A model that gives it up is kept, and nothing was read.
+      // A model that gives it up is kept, and nothing of the finding was read.
       const kept = await converse(
         [...c.turns, says('factual', 'false_positive'), says('other', 'keep', 'It stays.')],
         c.input ?? withFiles(),
         c.io,
       );
       expect(decided(kept.decision)).toMatchObject({ verdict: 'keep', readCode: false });
-    });
-
-    it.each(READ)('is allowed after $name', async (c) => {
+    };
+    const allows = async (c: Case) => {
       const read = await converse(
         [...c.turns, says('factual', 'false_positive', 'It holds.')],
         c.input ?? withFiles(),
@@ -395,7 +410,10 @@ describe('the answer to a reply', () => {
         answer: 'It holds.',
         readCode: true,
       });
-    });
+    };
+
+    it.each(NOT_READ)('is refused after $name, and the retry says what was wrong', refuses);
+    it.each(READ)('is allowed after $name', allows);
 
     it('is refused after a read the masker had no time for', async () => {
       const spent = new Masker({ budgetMs: 0 });
@@ -413,6 +431,183 @@ describe('the answer to a reply', () => {
         await spent.close();
       }
     });
+
+    describe('on a finding that is in a long file', () => {
+      /** A hundred lines `const v1 = 1;` … `const v100 = 100;`, and as many named `w` in another file. */
+      const numbered = (name: string): string =>
+        Array.from({ length: 100 }, (_, i) => `const ${name}${i + 1} = ${i + 1};\n`).join('');
+      const LONG = { 'src/long.ts': numbered('v'), 'src/other.ts': numbered('w') };
+      /** The finding is on lines 40 to 42 of the first file, unless it is given others. */
+      const finding = (over: Partial<ReplyIssue> = {}): ReplyInput =>
+        inputOf({
+          issue: aiIssue({ path: 'src/long.ts', line: 40, endLine: 42, ...over }),
+          snapshot: memorySnapshot({ files: LONG }),
+        });
+      /** A reading of lines `from` to `to` of a file of the snapshot. */
+      const lines = (from: number, to: number, path = 'src/long.ts'): LlmTurn =>
+        call('read_file', { path, from, to });
+      const given = (over: Partial<ReplyIssue>) => ({ input: finding(over) });
+
+      /** Calls that showed no line of the finding's lines, though they read its file. */
+      const NOT_ON_ITS_LINES: Case[] = [
+        { name: 'a read of lines far before it', turns: [lines(1, 10)], input: finding() },
+        { name: 'a read of lines far after it', turns: [lines(90, 100)], input: finding() },
+        {
+          name: 'a read that ends on the line before it',
+          turns: [lines(30, 39)],
+          input: finding(),
+        },
+        {
+          name: 'a read that starts on the line after it',
+          turns: [lines(43, 50)],
+          input: finding(),
+        },
+        {
+          name: 'a read of the lines before it and of the lines after it',
+          turns: [lines(1, 39), lines(43, 100)],
+          input: finding(),
+        },
+        {
+          name: 'a read of its line numbers in another file',
+          turns: [lines(40, 42, 'src/other.ts')],
+          input: finding(),
+        },
+        {
+          name: 'a grep that matches on the line before it',
+          turns: [greps('const v39 = 39;')],
+          input: finding(),
+        },
+        {
+          name: 'a grep that matches on the line after it',
+          turns: [greps('const v43 = 43;')],
+          input: finding(),
+        },
+        {
+          name: 'a grep that matches in its file, far from it',
+          turns: [greps('const v90 = 90;')],
+          input: finding(),
+        },
+        {
+          name: 'a grep that matches on its line numbers in another file',
+          turns: [greps('const w41 = 41;')],
+          input: finding(),
+        },
+        {
+          name: 'a read of the lines after a finding that has no end',
+          turns: [lines(41, 50)],
+          ...given({ endLine: null }),
+        },
+        {
+          name: 'a read of the lines before a finding that has no end',
+          turns: [lines(30, 39)],
+          ...given({ endLine: null }),
+        },
+        {
+          name: 'a grep on the line after a finding that has no end',
+          turns: [greps('const v41 = 41;')],
+          ...given({ endLine: null }),
+        },
+        {
+          // Its lines are its line alone, not the lines up to an end that is before it.
+          name: 'a read of the end of a finding that is before its line',
+          turns: [lines(38, 38)],
+          ...given({ endLine: 38 }),
+        },
+        {
+          name: 'a read of the lines of a finding whose line is past the end of its file',
+          turns: [lines(1, 100)],
+          ...given({ line: 101, endLine: 103 }),
+        },
+        {
+          name: 'a read of its file when the finding has no file',
+          turns: [lines(40, 42)],
+          ...given({ path: null }),
+        },
+      ];
+      /** Calls that showed a line of the finding's lines, or of its file when it has no line. */
+      const ON_ITS_LINES: Case[] = [
+        { name: 'a read of its first line', turns: [lines(40, 40)], input: finding() },
+        { name: 'a read of its middle line', turns: [lines(41, 41)], input: finding() },
+        { name: 'a read of its last line', turns: [lines(42, 42)], input: finding() },
+        { name: 'a read that ends on its first line', turns: [lines(30, 40)], input: finding() },
+        { name: 'a read that starts on its last line', turns: [lines(42, 50)], input: finding() },
+        { name: 'a read of the lines around it', turns: [lines(35, 45)], input: finding() },
+        {
+          name: 'a read of the whole file',
+          turns: [call('read_file', { path: 'src/long.ts' })],
+          input: finding(),
+        },
+        {
+          name: 'a read of lines far from it, and then of its line',
+          turns: [lines(1, 10), lines(41, 41)],
+          input: finding(),
+        },
+        {
+          name: 'a grep that matches on its first line',
+          turns: [greps('const v40 = 40;')],
+          input: finding(),
+        },
+        {
+          name: 'a grep that matches on its last line',
+          turns: [greps('const v42 = 42;')],
+          input: finding(),
+        },
+        {
+          name: 'a grep that matches on its lines and on others',
+          turns: [greps('const v4')],
+          input: finding(),
+        },
+        {
+          name: 'a read of the line of a finding that has no end',
+          turns: [lines(40, 40)],
+          ...given({ endLine: null }),
+        },
+        {
+          name: 'a grep on the line of a finding that has no end',
+          turns: [greps('const v40 = 40;')],
+          ...given({ endLine: null }),
+        },
+        {
+          name: 'a read of the line of a finding whose end is before it',
+          turns: [lines(40, 40)],
+          ...given({ endLine: 38 }),
+        },
+        {
+          name: 'a read of some lines of the file of a finding that has no line',
+          turns: [lines(5, 6)],
+          ...given({ line: null, endLine: null }),
+        },
+        {
+          name: 'a grep that matches anywhere in the file of a finding that has no line',
+          turns: [greps('const v77 = 77;')],
+          ...given({ line: null, endLine: null }),
+        },
+      ];
+      /** Calls that showed nothing of the file of a finding that has no line. */
+      const NOT_IN_ITS_FILE: Case[] = [
+        {
+          name: 'a read of another file when the finding has no line',
+          turns: [lines(1, 100, 'src/other.ts')],
+          ...given({ line: null, endLine: null }),
+        },
+        {
+          name: 'a grep with no match when the finding has no line',
+          turns: [greps('no such text anywhere')],
+          ...given({ line: null, endLine: null }),
+        },
+        {
+          name: 'a read past the end of the file of a finding that has no line',
+          turns: [lines(101, 110)],
+          ...given({ line: null, endLine: null }),
+        },
+      ];
+
+      it.each([...NOT_ON_ITS_LINES, ...NOT_IN_ITS_FILE])(
+        'is refused after $name, and the retry says what was wrong',
+        refuses,
+      );
+      it.each(ON_ITS_LINES)('is allowed after $name', allows);
+    });
   });
 
   it('keep needs no reading, and says whether the code was read', async () => {
@@ -424,8 +619,12 @@ describe('the answer to a reply', () => {
       answer: 'It skips the last item because of `n - 1`.',
       readCode: false,
     });
-    const checked = await converse([greps('n - 1'), says('question', 'keep', 'Confirmed.')]);
+    // A search that matches on the finding's line is a reading of it (the line is the third).
+    const checked = await converse([greps('total'), says('question', 'keep', 'Confirmed.')]);
     expect(decided(checked.decision)).toMatchObject({ verdict: 'keep', readCode: true });
+    // One that matches elsewhere in its file is not.
+    const elsewhere = await converse([greps('n - 1'), says('question', 'keep', 'Confirmed.')]);
+    expect(decided(elsewhere.decision)).toMatchObject({ verdict: 'keep', readCode: false });
     // A thanks needs no answer: an empty one is as good.
     const thanks = await converse([says('other', 'keep', '')]);
     expect(decided(thanks.decision)).toMatchObject({ verdict: 'keep', answer: '' });
@@ -625,14 +824,21 @@ describe('the answer to a reply', () => {
       );
     });
 
-    it('says that false_positive needs the intent factual and the finding’s file read', async () => {
+    it('says that false_positive needs the intent factual and the finding’s own lines read', async () => {
       const unread = await converse([
         says('factual', 'false_positive', MARKER),
         says('other', 'keep'),
       ]);
       expect(retryOf(unread.sent)).toBe(
-        "false_positive needs intent factual, and the finding's file read with read_file or grep. Answer again with the same JSON, with a verdict of: keep, wont_fix, false_positive.",
+        "false_positive needs intent factual, and the finding's own lines read with read_file or grep. Answer again with the same JSON, with a verdict of: keep, wont_fix, false_positive.",
       );
+      // The same when the model read the file, but not the lines of the finding.
+      const elsewhere = await converse([
+        calls({ id: 'c1', name: 'read_file', arguments: { path: 'src/cart.ts', from: 1, to: 2 } }),
+        says('factual', 'false_positive', MARKER),
+        says('other', 'keep'),
+      ]);
+      expect(retryOf(elsewhere.sent)).toBe(retryOf(unread.sent));
       // One text for both: the model knows which of the two it did.
       const wrongIntent = await converse([
         reads(),

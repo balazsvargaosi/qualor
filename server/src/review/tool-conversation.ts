@@ -10,7 +10,13 @@ import type { ConversationRole } from './model-tiers';
 import { REVIEW_OUTPUT_TOKENS } from './pipeline';
 import { SYSTEM_PROMPTS } from './prompts';
 import type { SnapshotReader } from './snapshot-reader';
-import { REVIEW_TOOLS, runReviewTool, TOOL_LIMITS, type ToolPolicy } from './tools';
+import {
+  REVIEW_TOOLS,
+  runReviewTool,
+  TOOL_LIMITS,
+  type ShownLines,
+  type ToolPolicy,
+} from './tools';
 
 /*
  * The parts of a review's conversations that are the same wherever the review runs: the `ai-review`
@@ -49,10 +55,10 @@ interface ToolsIo {
   /** Told the secrets masked in each tool answer. */
   onToolRedactions?: (count: number) => void;
   /**
-   * Told the files a tool answer showed lines of (`ToolAnswer.read`), for each call that showed
+   * Told the lines of files a tool answer showed (`ToolAnswer.read`), for each call that showed
    * any: what the model really read, as the tool did it, never as its text says.
    */
-  onToolRead?: (paths: readonly string[]) => void;
+  onToolRead?: (shown: readonly ShownLines[]) => void;
 }
 
 /**

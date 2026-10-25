@@ -9,7 +9,7 @@ import { Masker } from './masker';
 import { REVIEW_OUTPUT_TOKENS } from './pipeline';
 import { SYSTEM_PROMPTS } from './prompts';
 import { converseOverTools, newToolPolicy, type RoleCall } from './tool-conversation';
-import { REVIEW_TOOLS, TOOL_LIMITS } from './tools';
+import { REVIEW_TOOLS, TOOL_LIMITS, type ShownLines } from './tools';
 
 /** The masker of the tests: one worker for all of them, stopped when they are done. */
 const masker = new Masker();
@@ -304,16 +304,16 @@ describe('converseOverTools', () => {
     }
   });
 
-  it('tells the caller the files a tool call showed lines of, and nothing of a call that showed none', async () => {
+  it('tells the caller the lines a tool call showed, and nothing of a call that showed none', async () => {
     const reader = memorySnapshot({
-      files: { 'a.ts': 'const a = 1;\n', 'b.ts': 'const b = 2;\n' },
+      files: { 'a.ts': 'const a = 1;\n', 'b.ts': 'const b = 2;\nconst c = 3;\n' },
     });
     const policy = newToolPolicy({
       excludePaths: [],
       masked: new MaskedFiles(reader, { masker }),
       masker,
     });
-    const told: (readonly string[])[] = [];
+    const told: (readonly ShownLines[])[] = [];
     const calls: LlmToolCall[] = [
       { id: 'c1', name: 'read_file', arguments: { path: 'a.ts' } },
       { id: 'c2', name: 'grep', arguments: { pattern: 'const' } },
@@ -327,7 +327,7 @@ describe('converseOverTools', () => {
       ...Array.from({ length: 3 }, (_, i) => ({
         id: `read-${i}`,
         name: 'read_file',
-        arguments: { path: 'b.ts' },
+        arguments: { path: 'b.ts', from: 2 },
       })),
     ];
     const replies = [
@@ -339,10 +339,21 @@ describe('converseOverTools', () => {
       policy,
       send: () => Promise.resolve(replies.shift() ?? turn({ text: 'unexpected' })),
       shouldStop: () => Promise.resolve(false),
-      onToolRead: (paths) => told.push(paths),
+      onToolRead: (shown) => told.push(shown),
     });
     expect(CONVERSATION_LIMITS.maxCallsPerTurn).toBe(8);
-    expect(told).toEqual([['a.ts'], ['a.ts', 'b.ts'], ['b.ts'], ['b.ts']]);
+    // The lines each call showed, as the tool made them: a.ts, each line that matches, and the
+    // second line of b.ts (twice: the third of these calls was not run).
+    expect(told).toEqual([
+      [{ path: 'a.ts', from: 1, to: 1 }],
+      [
+        { path: 'a.ts', from: 1, to: 1 },
+        { path: 'b.ts', from: 1, to: 1 },
+        { path: 'b.ts', from: 2, to: 2 },
+      ],
+      [{ path: 'b.ts', from: 2, to: 2 }],
+      [{ path: 'b.ts', from: 2, to: 2 }],
+    ]);
   });
 
   it('asks again with the text a rejection brings, and with the loop’s own when it brings none', async () => {

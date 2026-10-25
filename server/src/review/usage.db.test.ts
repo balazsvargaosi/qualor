@@ -1558,7 +1558,9 @@ const port = 8080;
         ruleKey: 'ai:logic',
         message: 'The total skips the last item',
         path: 'src/cart.ts',
-        line: 3,
+        // The one line of the files these tests read.
+        line: 1,
+        endLine: null,
         status: 'open',
         aiBody: 'The loop bound is one short.',
         suggestion: null,

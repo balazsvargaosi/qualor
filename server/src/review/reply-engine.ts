@@ -34,6 +34,7 @@ import { replyAnswerSchema, type ReplyAnswer } from './schemas';
 import { effectiveReviewBudgets } from './settings';
 import type { SnapshotReader } from './snapshot-reader';
 import { converseOverTools, newToolPolicy } from './tool-conversation';
+import type { ShownLines } from './tools';
 import {
   RedactionTally,
   remainingReviewTokens,
@@ -61,7 +62,7 @@ export type { ReplyIssue } from './prompts';
  * steer the model can change at most the status of its own thread's finding; only when the people
  * who replied may change a status (the rights the caller read, `mayChangeStatus`, never what the
  * model makes of their words); and only as a person's decision of priority, or a claim that the
- * finding's own file was really read to confirm, allows.
+ * finding's own lines were really read to confirm, allows.
  *
  * `decideReply` is what the job calls: it takes the day's budget, the model of the reply's tier and
  * the provider's calls, each recorded as a `review-reply` row. `runReplyConversation` is the
@@ -79,10 +80,10 @@ export interface ReplyUsage {
 
 /**
  * What a conversation came to: a verdict with the words to post (empty when there is nothing to
- * say), and whether the model read the finding's own file (a `read_file` that showed lines of it,
- * or a `grep` that matched in it); or why it decided nothing; or that it was stopped (the server is
- * stopping, or the caller asked it to), which is no failure of the answer. The decision the ledger
- * stores (replies.ts) is another type.
+ * say), and whether the model read the finding's own lines (a `read_file` that showed a line of
+ * them, or a `grep` that matched on one); or why it decided nothing; or that it was stopped (the
+ * server is stopping, or the caller asked it to), which is no failure of the answer. The decision
+ * the ledger stores (replies.ts) is another type.
  */
 export type DecidedReply =
   | { verdict: ReplyVerdict; answer: string; readCode: boolean; usage: ReplyUsage }
@@ -126,7 +127,8 @@ export function allowedVerdicts(
 /**
  * What is wrong with an answer the thread does not bear out, or null when it does: its verdict is
  * not one of those offered, a `wont_fix` is no decision of priority, or a `false_positive` is no
- * claim of fact (or the finding's own file was not read for it). `keep` is what any intent leads to.
+ * claim of fact (or the finding's own lines were not read for it). `keep` is what any intent leads
+ * to.
  */
 function refusalOf(
   answer: ReplyAnswer,
@@ -142,6 +144,22 @@ function refusalOf(
     case 'keep':
       return null;
   }
+}
+
+/**
+ * Whether lines a tool showed are the finding's own: a line of its file within its lines (`line` to
+ * `endLine`, or `line` alone when it has no end), or any line of its file for a finding that has a
+ * file and no line. A finding with no file has none to show: no path of a tool's answer is null.
+ */
+function showsFinding(
+  issue: Pick<ReplyIssue, 'path' | 'line' | 'endLine'>,
+  shown: readonly ShownLines[],
+): boolean {
+  const { path, line } = issue;
+  if (line === null) return shown.some((lines) => lines.path === path);
+  // An end before the line makes no range: the finding is its line alone.
+  const last = Math.max(line, issue.endLine ?? line);
+  return shown.some((lines) => lines.path === path && lines.from <= last && lines.to >= line);
 }
 
 /**
@@ -241,9 +259,10 @@ async function decide(input: ReplyInput, io: ReplyConversationIo): Promise<Decid
   const user = envelope(await shownData(input, io), nonce);
 
   /**
-   * Whether the model has read the finding's own file: a `read_file` that showed lines of it, or a
-   * `grep` that showed a match in it, as the tools did it. Nothing else is a reading: not a
-   * refusal, not a path that is not there, not a search with no match, not another file.
+   * Whether the model has read the finding's own lines: a `read_file` that showed a line within
+   * them, or a `grep` that matched on one, as the tools did it (`showsFinding`). Nothing else is a
+   * reading: not a refusal, not a path that is not there, not a search with no match, not another
+   * file, not the lines of its file that are not the finding's.
    */
   let readCode = false;
   /**
@@ -292,8 +311,8 @@ async function decide(input: ReplyInput, io: ReplyConversationIo): Promise<Decid
           send,
           shouldStop: io.shouldStop,
           onToolRedactions: (count) => io.redactions?.add(count),
-          onToolRead: (paths) => {
-            if (issue.path !== null && paths.includes(issue.path)) readCode = true;
+          onToolRead: (shown) => {
+            if (showsFinding(issue, shown)) readCode = true;
           },
         },
   );
