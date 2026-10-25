@@ -64,14 +64,16 @@ const PROMPT_HASHES: Record<string, Record<string, string>> = {
     'loop.badArguments': '849a9e7482301279245ba0e9a762cddc975972e74c6446623be53e82184d85e3',
   },
   // The reply's texts: a prompt for each kind of thread (what it allows, whether its people may
-  // change the status, whether the code is there) and what its gate says when it refuses an answer,
-  // for each set of verdicts where it can. The loop's own texts reach its conversation as they reach
-  // a review's.
+  // change the status, whether the code is there, and whether the finding's lines are the same code
+  // at it) and what its gate says when it refuses an answer, for each set of verdicts that can still
+  // be given where it can. The loop's own texts reach its conversation as they reach a review's.
   'reply-1': {
     'an open AI finding, with the code':
       '5a96ce15c216ed8e5b0af19b5e6deff5ac70960d0c23693c24a06243d0fd065c',
     'an open AI finding, without the code':
       'c6c1b004c7dff278ab2662c6e7c9044ed552af21fd7a27bb7488f5becaa348d3',
+    'an open AI finding that is not the same code at the snapshot, with the code':
+      '5a68e92c3e4a105b8b462b1b3dc8f7340fb7db2fe312b5cc2d4af51905dc4098',
     'an open AI finding the people may not change, with the code':
       '895f1bd7a911f0f5408a6e9a66d2fb4f74d0bdc4f5ead18ec3c05101f5905501',
     'an open AI finding the people may not change, without the code':
@@ -89,6 +91,8 @@ const PROMPT_HASHES: Record<string, Record<string, string>> = {
       'c5cce08a79fc354f214f75d1d3e705378b910c6cdcf96a84399f579e53b0db20',
     'retry.false_positive (keep, wont_fix, false_positive)':
       '006151f1a15e3bd0b65983a8cac27854b4a0e21d89e245b01ada96c936cb80a0',
+    'retry.unread (keep, wont_fix)':
+      '6c32858b3ea5cd61b954db1343524ea53eabb07de4e26b5aa8afb2e9e60631a4',
     'loop.wrapUp': 'cc5c64c44240094b389da80979aa2ad0821c0e38bb88a763d0a481acb9cd2340',
     'loop.shorter': '572e61f09a58f0033bb47d4170be06b712ef434b1a6f75cab203c4c1b1079b3d',
     'loop.retry': 'dba9e7ae6537460f5c68547c0a31f236e268b118a0f89e6282d8667c8d925a5c',
@@ -647,14 +651,20 @@ interface ReplyVariant {
 }
 
 /**
- * The six conversations a reply can be: what its thread allows (an open AI finding, which the
+ * The seven conversations a reply can be: what its thread allows (an open AI finding, which the
  * people who replied may change or may not, or a finding that is not open or that an analyzer
- * reported, which Qualor only explains), and whether the merge request has a snapshot for the
- * tools to read. A verdict that needs the code is never named without it.
+ * reported, which Qualor only explains), whether the merge request has a snapshot for the tools to
+ * read, and, for an open AI finding they may change, whether its lines are the same code at that
+ * snapshot. A verdict that needs the code is never named without it.
  */
 const REPLY_VARIANTS: ReplyVariant[] = [
   { name: 'an open AI finding, with the code', verdicts: ALL_VERDICTS, tools: true },
   { name: 'an open AI finding, without the code', verdicts: ['keep', 'wont_fix'], tools: false },
+  {
+    name: 'an open AI finding that is not the same code at the snapshot, with the code',
+    verdicts: ['keep', 'wont_fix'],
+    tools: true,
+  },
   {
     name: 'an open AI finding the people may not change, with the code',
     verdicts: ['keep'],
@@ -701,9 +711,10 @@ const REPLY_RULES = [
 ];
 /**
  * What a reply's gate tells the model when it refuses an answer, by the set of verdicts that can
- * be given where it can happen: a verdict not in the set can be refused wherever the set is
- * smaller than all three; a wont_fix wherever it is in the set; a false_positive only where all
- * three are.
+ * still be given where it can happen: a verdict not in the set can be refused wherever the set is
+ * smaller than all three; a wont_fix wherever it is in the set; a false_positive with its intent
+ * wrong only where all three are, and one with nothing read (no tool runs again) where the set
+ * has left false_positive out.
  */
 const REPLY_REFUSALS: [ReplyRefusal, readonly ReplyVerdict[]][] = [
   ['verdict', ['keep']],
@@ -711,6 +722,7 @@ const REPLY_REFUSALS: [ReplyRefusal, readonly ReplyVerdict[]][] = [
   ['wont_fix', ['keep', 'wont_fix']],
   ['wont_fix', ALL_VERDICTS],
   ['false_positive', ALL_VERDICTS],
+  ['unread', ['keep', 'wont_fix']],
 ];
 
 describe('the reply prompt', () => {
@@ -857,6 +869,16 @@ describe('the retry texts of a reply', () => {
     expect(replyRetryText('false_positive', ALL_VERDICTS)).toBe(
       "false_positive needs intent factual, and the finding's own lines read with read_file or grep. Answer again with the same JSON, with a verdict of: keep, wont_fix, false_positive.",
     );
+    // The retry of a false_positive with nothing read: no tool runs in it, so it says so, and it
+    // names the verdicts that are left.
+    expect(replyRetryText('unread', ['keep', 'wont_fix'])).toBe(
+      "No tool runs any more in this conversation, and false_positive needs the finding's lines read. Answer again with the same JSON, with a verdict of: keep, wont_fix.",
+    );
+    // Whatever it is given, a text that says nothing can be read never offers the verdict that
+    // needs a reading.
+    expect(replyRetryText('unread', ALL_VERDICTS)).toBe(
+      replyRetryText('unread', ['keep', 'wont_fix']),
+    );
   });
 
   it('are made of nothing but the words above and the names of verdicts', () => {
@@ -878,6 +900,8 @@ describe('the reply data', () => {
       path: 'src/cart.ts',
       line: 3,
       endLine: 4,
+      reviewedHeadSha: 'a'.repeat(40),
+      lineHash: 'b'.repeat(32),
       status: 'open',
       aiBody: 'The loop bound is one short. Use `i < n`.',
       suggestion: { startLine: 3, endLine: 3, lines: ['const total = a + b + c;'] },
@@ -928,6 +952,8 @@ describe('the reply data', () => {
           path: 'src/cart.ts',
           line: null,
           endLine: null,
+          reviewedHeadSha: null,
+          lineHash: null,
           status: 'open',
           aiBody: null,
           suggestion: null,

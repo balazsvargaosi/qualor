@@ -44,6 +44,7 @@ import {
 import { newNonce } from './envelope';
 import { Masker } from './masker';
 import { modelFor, type ModelTier } from './model-tiers';
+import { CHARS_PER_TOKEN, REVIEW_OUTPUT_TOKENS } from './pipeline';
 import { REPLY_PROMPT_VERSION } from './prompts';
 import { REPLY_TOKEN_BUDGET } from './replies';
 import { decideReply, type ReplyDeps, type ReplyInput } from './reply-engine';
@@ -1561,6 +1562,9 @@ const port = 8080;
         // The one line of the files these tests read.
         line: 1,
         endLine: null,
+        // Reviewed at the head of the snapshot below (memorySnapshot's own): the same code.
+        reviewedHeadSha: 'a'.repeat(40),
+        lineHash: null,
         status: 'open',
         aiBody: 'The loop bound is one short.',
         suggestion: null,
@@ -1569,6 +1573,7 @@ const port = 8080;
       notes: [{ author: 'alice', body: 'The loop runs to n, so it is fine.' }],
       mayChangeStatus: true,
       snapshot: memorySnapshot({ files: { 'src/cart.ts': 'for (i = 0; i < n; i += 1) {}\n' } }),
+      snapshotHead: 'a'.repeat(40),
       ...over,
     });
     const depsOf = (settings: StoredLlmSettings, over: Partial<ReplyDeps> = {}): ReplyDeps => ({
@@ -1703,10 +1708,10 @@ const port = 8080;
     });
 
     it('a day without room skips the reply before any call, and what replies spend is what the day loses', async () => {
-      const settings = withBudgets(settingsFor('openai'), { tokensPerDay: 3_000 });
-      // A review spent most of the day: 800 tokens are left.
+      const settings = withBudgets(settingsFor('openai'), { tokensPerDay: 20_000 });
+      // A review spent some of the day: 17 800 tokens are left, more than a reply's first call needs.
       await insertRow({ inputTokens: 2_000, outputTokens: 200 });
-      fake.enqueue(textTurn('openai', KEEP, [700, 100]));
+      fake.enqueue(textTurn('openai', KEEP, [17_700, 100]));
       expect(await decideReply(inputOf({ snapshot: null }), depsOf(settings))).toMatchObject({
         verdict: 'keep',
       });
@@ -1720,9 +1725,51 @@ const port = 8080;
       expect(await rows()).toHaveLength(2);
     });
 
+    it('skips the reply when the day leaves less than its first call needs, and runs it with just enough', async () => {
+      // What the first call takes: its prompt and first message at the review's characters to a
+      // token, and the most its answer may write. A reply made on a roomy day shows what to count.
+      fake.say(KEEP);
+      await decideReply(inputOf({ snapshot: null }), depsOf(settingsFor('openai')));
+      const wire = JSON.parse(fake.requests[0]?.body ?? '{}') as {
+        messages: { content: string }[];
+      };
+      const chars =
+        (wire.messages[0]?.content.length ?? 0) + (wire.messages[1]?.content.length ?? 0);
+      const needed = Math.ceil(chars / CHARS_PER_TOKEN) + REVIEW_OUTPUT_TOKENS.reply;
+      expect(needed).toBeGreaterThan(REVIEW_OUTPUT_TOKENS.reply + 1_000);
+      await t.db.delete(llmRequests);
+      fake.requests.length = 0;
+
+      // One token short: no call, no row, whatever the model would have said.
+      const short = withBudgets(settingsFor('openai'), { tokensPerDay: needed - 1 });
+      expect(await decideReply(inputOf({ snapshot: null }), depsOf(short))).toEqual({
+        failed: 'budget_spent',
+      });
+      expect(fake.requests).toHaveLength(0);
+      expect(await rows()).toHaveLength(0);
+
+      // Just enough: it is made.
+      const enough = withBudgets(settingsFor('openai'), { tokensPerDay: needed });
+      fake.say(KEEP);
+      expect(await decideReply(inputOf({ snapshot: null }), depsOf(enough))).toMatchObject({
+        verdict: 'keep',
+      });
+      expect(fake.requests).toHaveLength(1);
+      expect(await rows()).toHaveLength(1);
+
+      // The project's day is a day too: the same floor under what it leaves.
+      await t.db.delete(llmRequests);
+      fake.requests.length = 0;
+      const project = withBudgets(settingsFor('openai'), { perProjectTokensPerDay: needed - 1 });
+      expect(await decideReply(inputOf({ snapshot: null }), depsOf(project))).toEqual({
+        failed: 'budget_spent',
+      });
+      expect(fake.requests).toHaveLength(0);
+    });
+
     it('draws on the project’s day as well as the organisation’s', async () => {
-      const settings = withBudgets(settingsFor('openai'), { perProjectTokensPerDay: 1_000 });
-      await insertRow({ inputTokens: 1_000, outputTokens: 0, projectId: projectA1 });
+      const settings = withBudgets(settingsFor('openai'), { perProjectTokensPerDay: 20_000 });
+      await insertRow({ inputTokens: 20_000, outputTokens: 0, projectId: projectA1 });
       expect(await decideReply(inputOf(), depsOf(settings))).toEqual({ failed: 'budget_spent' });
       expect(fake.requests).toHaveLength(0);
       // Another project of the organisation has its own day.

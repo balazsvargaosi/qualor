@@ -94,6 +94,17 @@ function workerEntry(): { url: URL; execArgv: string[] } {
 const messageOf = (error: unknown): string =>
   error instanceof Error ? error.message : typeof error === 'string' ? error : 'unknown error';
 
+/**
+ * What a masker rejects with once it is closed: no text is masked after it. A masker whose signal
+ * aborted rejects with the reason of the signal instead.
+ */
+export class MaskerClosed extends Error {
+  constructor() {
+    super('the masker is closed');
+    this.name = 'MaskerClosed';
+  }
+}
+
 export class Masker {
   private readonly timeoutMs: number;
   private readonly budgetMs: number;
@@ -159,12 +170,12 @@ export class Masker {
 
   /** Stops the worker and gives up the texts waiting: nothing is masked after this. */
   async close(): Promise<void> {
-    await this.stop(new Error('the masker is closed'));
+    await this.stop(new MaskerClosed());
   }
 
   private closedReason(): unknown {
     if (this.signal?.aborted === true) return this.signal.reason ?? new Error('aborted');
-    return new Error('the masker is closed');
+    return new MaskerClosed();
   }
 
   private async stop(reason: unknown): Promise<void> {

@@ -365,24 +365,35 @@ export function replySystemPrompt(thread: {
   ].join('\n\n');
 }
 
-/** What the gate of a reply refuses in an answer that is JSON of the right shape. */
-export type ReplyRefusal = 'verdict' | 'wont_fix' | 'false_positive';
+/**
+ * What the gate of a reply refuses in an answer that is JSON of the right shape: a verdict the
+ * thread does not offer; a wont_fix that is no decision of priority; a false_positive whose intent
+ * is not a claim of fact, after the finding's lines were read; or a false_positive with nothing of
+ * the finding read, which no tool can mend any more.
+ */
+export type ReplyRefusal = 'verdict' | 'wont_fix' | 'false_positive' | 'unread';
 
 const REPLY_REFUSALS: Readonly<Record<ReplyRefusal, string>> = {
   verdict: 'That verdict is not allowed in this thread.',
   wont_fix: 'wont_fix needs intent priority: a decision of priority that a person stated.',
   false_positive:
     "false_positive needs intent factual, and the finding's own lines read with read_file or grep.",
+  unread:
+    "No tool runs any more in this conversation, and false_positive needs the finding's lines read.",
 };
 
 /**
  * What the one retry of a reply's conversation says when the gate refuses an answer: what was wrong,
- * and the verdicts that can be given (`offered`). Fixed text, made of nothing but this module's own
- * words and the names of verdicts: no word of the answer that was refused is in it, since that is
- * what a reply steering the model would write.
+ * and the verdicts that can still be given (`possible`: no tool runs in the retry, so what was not
+ * read stays unread, and `false_positive` is not among them then). A refusal for nothing read says
+ * that no tool runs any more, and never names `false_positive` as a verdict to give, whatever it is
+ * passed. Fixed text, made of nothing but this module's own words and the names of verdicts: no word
+ * of the answer that was refused is in it, since that is what a reply steering the model would write.
  */
-export function replyRetryText(refusal: ReplyRefusal, offered: readonly ReplyVerdict[]): string {
-  return `${REPLY_REFUSALS[refusal]} Answer again with the same JSON, with a verdict of: ${offered.join(', ')}.`;
+export function replyRetryText(refusal: ReplyRefusal, possible: readonly ReplyVerdict[]): string {
+  const named =
+    refusal === 'unread' ? possible.filter((verdict) => verdict !== 'false_positive') : possible;
+  return `${REPLY_REFUSALS[refusal]} Answer again with the same JSON, with a verdict of: ${named.join(', ')}.`;
 }
 
 /**
@@ -649,6 +660,17 @@ export interface ReplyIssue {
    * model is not given it.
    */
   endLine: number | null;
+  /**
+   * The head commit the finding's row was written for (`review_findings.reviewed_head_sha`), whose
+   * lines `line` to `endLine` are; null for a finding of an analyzer. A finding a later review only
+   * kept has the lines of this older head. Not given to the model.
+   */
+  reviewedHeadSha: string | null;
+  /**
+   * The line hash the issue row holds for those lines, as the review made it from the masked file
+   * (findings-render.ts); null where there is none. Not given to the model.
+   */
+  lineHash: string | null;
   status: IssueStatus;
   /** The body the review stored, for an AI finding. */
   aiBody: string | null;

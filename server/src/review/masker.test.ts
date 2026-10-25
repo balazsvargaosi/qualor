@@ -2,7 +2,13 @@ import { redactLongText } from '@qualor/shared';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { budgetMs } from '../../test/perf';
 import { HOSTILE_TEXT as HOSTILE } from '../../test/review';
-import { MASK_BUDGET_MS, MASK_TIMEOUT_MS, Masker, type MaskerOptions } from './masker';
+import {
+  MASK_BUDGET_MS,
+  MASK_TIMEOUT_MS,
+  Masker,
+  MaskerClosed,
+  type MaskerOptions,
+} from './masker';
 
 const j = (...parts: string[]) => parts.join('');
 /** Fakes the shared patterns know, built at run time so no scanner takes them for real ones. */
@@ -315,6 +321,20 @@ describe('closing a masker', () => {
     await expect.poll(() => masker.workersRunning).toBe(0);
     // Closing twice is closing.
     await masker.close();
+  });
+
+  it('rejects with MaskerClosed once closed, and with the reason of its signal once that aborts', async () => {
+    const closed = maskerOf();
+    await closed.close();
+    await expect(closed.mask('const a = 1;\n')).rejects.toBeInstanceOf(MaskerClosed);
+    // A masker whose signal aborted gives the signal's reason, whatever it is: a stop is no closing.
+    const controller = new AbortController();
+    const aborted = maskerOf({ signal: controller.signal });
+    const reason = new Error('superseded');
+    controller.abort(reason);
+    const error = await aborted.mask('const b = 2;\n').catch((err: unknown) => err);
+    expect(error).toBe(reason);
+    expect(error).not.toBeInstanceOf(MaskerClosed);
   });
 });
 

@@ -9,7 +9,7 @@ import {
 import { describe, expect, it } from 'vitest';
 import type { ReviewableChange } from './context';
 import { fingerprintOf, placeFinding, reviewScope, type PlannedFinding } from './findings';
-import { renderFinding, reviewSummary, reviewSummarySchema } from './findings-render';
+import { lineHashOf, renderFinding, reviewSummary, reviewSummarySchema } from './findings-render';
 import { lineCountOf, MaskedText } from './masked-files';
 import type { JudgedFinding, PipelineOutcome } from './pipeline';
 
@@ -223,6 +223,8 @@ describe('renderFinding', () => {
       ]);
       expect(rendered.lineHash, where).toBe(lineHash(all, startLine, endLine));
       expect(rendered.contextHash, where).toBe(contextHash(all, startLine, endLine));
+      // The hash a later check makes of the same lines is the one the row holds.
+      expect(lineHashOf(head, startLine, endLine), where).toBe(rendered.lineHash);
     }
     // A long line is cut as a report's snippet cuts it.
     const cut = renderFinding(planned(judged({ line: 14, endLine: 14 })), 'logic', head);

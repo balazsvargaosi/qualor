@@ -4,6 +4,7 @@ import type { Executor } from '../db/client';
 import { REPLY_VERDICTS, type ReplyVerdict } from '../db/schema';
 import { costOf, type LlmRuntime } from '../llm/job';
 import {
+  excludedPathMatcher,
   pricingFor,
   providerApiKey,
   type PricePair,
@@ -14,11 +15,12 @@ import type { WorkerLogger } from '../queue/worker';
 import { AI_ENGINE } from '../rules/server-engines';
 import type { ConversationInput } from './conversation';
 import { envelope, newNonce } from './envelope';
+import { lineHashOf } from './findings-render';
 import { scrubKeyDeep } from './key-scrub';
-import { MaskedFiles } from './masked-files';
-import { Masker } from './masker';
+import { MaskedFiles, type MaskBudget } from './masked-files';
+import { Masker, MaskerClosed } from './masker';
 import { modelFor, tierOfCall } from './model-tiers';
-import { ANSWER_CHARS_PER_TOKEN, REVIEW_OUTPUT_TOKENS } from './pipeline';
+import { ANSWER_CHARS_PER_TOKEN, CHARS_PER_TOKEN, REVIEW_OUTPUT_TOKENS } from './pipeline';
 import {
   REPLY_LIMITS,
   REPLY_PROMPT_VERSION,
@@ -62,7 +64,9 @@ export type { ReplyIssue } from './prompts';
  * steer the model can change at most the status of its own thread's finding; only when the people
  * who replied may change a status (the rights the caller read, `mayChangeStatus`, never what the
  * model makes of their words); and only as a person's decision of priority, or a claim that the
- * finding's own lines were really read to confirm, allows.
+ * finding's own lines were really read to confirm, allows. A claim of fact is offered only for
+ * code that is the code the finding was made for: its lines are those of the head it was reviewed
+ * at, and the snapshot may be of a newer one (`sameCode`).
  *
  * `decideReply` is what the job calls: it takes the day's budget, the model of the reply's tier and
  * the provider's calls, each recorded as a `review-reply` row. `runReplyConversation` is the
@@ -105,6 +109,13 @@ export interface ReplyInput {
   mayChangeStatus: boolean;
   /** The snapshot the tools read; null when there is none, and the model is then given no tools. */
   snapshot: SnapshotReader | null;
+  /**
+   * The head commit of `snapshot` (what `snapshot.meta.headSha` says); null without a snapshot. The
+   * finding's lines are those of the head it was made for (`issue.reviewedHeadSha`): the same head
+   * has the same code, and the lines of any other are checked against `issue.lineHash` before a
+   * reply may call the finding wrong.
+   */
+  snapshotHead: string | null;
 }
 
 /** An open finding of the AI review: the one kind of thread a person's reply may change. */
@@ -126,9 +137,9 @@ export function allowedVerdicts(
 
 /**
  * What is wrong with an answer the thread does not bear out, or null when it does: its verdict is
- * not one of those offered, a `wont_fix` is no decision of priority, or a `false_positive` is no
- * claim of fact (or the finding's own lines were not read for it). `keep` is what any intent leads
- * to.
+ * not one of those offered, a `wont_fix` is no decision of priority, or a `false_positive` has the
+ * finding's own lines unread (which no tool can mend in the retry, whatever its intent: it comes
+ * first) or is no claim of fact. `keep` is what any intent leads to.
  */
 function refusalOf(
   answer: ReplyAnswer,
@@ -140,7 +151,8 @@ function refusalOf(
     case 'wont_fix':
       return answer.intent === 'priority' ? null : 'wont_fix';
     case 'false_positive':
-      return answer.intent === 'factual' && readCode ? null : 'false_positive';
+      if (!readCode) return 'unread';
+      return answer.intent === 'factual' ? null : 'false_positive';
     case 'keep':
       return null;
   }
@@ -163,12 +175,23 @@ function showsFinding(
 }
 
 /**
- * A text is masked up to this many characters: what is shown of any of them is cut shorter still
- * (REPLY_LIMITS), and a secret that straddles the cut is masked whole before it.
+ * A text is masked up to this many characters, and a longer one is cut there: what is shown of it
+ * is cut shorter still (REPLY_LIMITS). A secret the cut splits is not masked (the rule needs all of
+ * it), so what is left of one is not shown either (`CUT_TAIL_LINES`).
  */
 export const MASK_INPUT_CHARS = 20_000;
-/** What a text is shown as when it could not be masked in time. */
-const NOT_MASKED = '[not shown: it could not be masked in time]';
+/**
+ * The last lines of the masked start of a text that was cut, which are not shown. The redaction
+ * joins up to four lines to find a secret split over them, so what the cut leaves of a secret it
+ * splits is at most the last three lines of the start, and the empty line a cut at a line end leaves
+ * is one more: five are left out, with one to spare. Lines, not characters, bound it however long
+ * they are. Without this the cut could fall within what is shown: long secrets before it (a private
+ * key, a token) are masked to short lines, and the masked start of the text can shrink to less
+ * than a note shows.
+ */
+const CUT_TAIL_LINES = 5;
+/** What a text is shown as when it could not be masked, in time or safely. */
+const NOT_MASKED = '[not shown: it could not be masked]';
 
 /** What `runReplyConversation` is given besides the thread: where its calls go, and its limits. */
 export interface ReplyConversationIo {
@@ -183,7 +206,8 @@ export interface ReplyConversationIo {
   masker: Masker;
   /**
    * The most tokens, input and output of all its calls, the conversation keeps to (as far as it can
-   * tell ahead: conversation.ts). With 0 or less it does not start: `budget_spent`.
+   * tell ahead: conversation.ts). With 0 or less, or less than its first call needs
+   * (`firstCallTokens`), it does not start: `budget_spent`.
    */
   tokenBudget: number;
   /** The provider's API key, taken out of the answer; null when there is none. */
@@ -196,20 +220,31 @@ export interface ReplyConversationIo {
   pricing: PricePair | null;
   /** Told the secrets masked in what each call adds: the first message's, then the tools'. */
   redactions?: RedactionTally;
+  /**
+   * The signal whose abort stops the answer, which the masker and the sender were given: an error
+   * that is its reason is its stop (`isAbort`). Without one, a masker that was closed and an
+   * `AbortError` are the stop. (A call that the signal gave up is the loop's own stop.)
+   */
+  signal?: AbortSignal;
 }
 
 /**
- * A text of the thread made fit to send: masked, or the fixed note for one that could not be masked
- * in time (a hostile text), whose secrets are counted on `io.redactions`.
+ * A text of the thread made fit to send: masked (and, when it was cut at MASK_INPUT_CHARS, without
+ * the end of what was masked), or the fixed note for one that could not be masked, in time or
+ * safely (a hostile text). The secrets masked are counted on `io.redactions`.
  */
 async function maskedText(io: ReplyConversationIo, text: string): Promise<string> {
   if (text === '') return text;
-  const result = await io.masker.mask(
-    text.length > MASK_INPUT_CHARS ? text.slice(0, MASK_INPUT_CHARS) : text,
-  );
+  const cut = text.length > MASK_INPUT_CHARS;
+  const result = await io.masker.mask(cut ? text.slice(0, MASK_INPUT_CHARS) : text);
   if (result.kind !== 'masked') return NOT_MASKED;
   io.redactions?.add(result.count);
-  return result.text;
+  if (!cut) return result.text;
+  // The end of what was masked may hold what the cut left of a secret: it is left out, with a mark
+  // that the text goes on, and a text with nothing before it is not shown.
+  const lines = result.text.split('\n');
+  if (lines.length <= CUT_TAIL_LINES) return NOT_MASKED;
+  return `${lines.slice(0, -CUT_TAIL_LINES).join('\n')}…`;
 }
 
 /**
@@ -246,17 +281,78 @@ async function shownData(input: ReplyInput, io: ReplyConversationIo): Promise<Re
   });
 }
 
+/**
+ * Whether the finding's lines are the same code at the snapshot as at the head it was made for: the
+ * snapshot is of that head (compared without case), or the file at the snapshot, masked as the review
+ * masks it, gives the issue's line hash at its lines (`lineHashOf`, the review's own hashing). A file
+ * that is not there or cannot be masked, a finding with no line hash, no line or no path, a line
+ * past the end of the file and any other hash are not: the lines can only be trusted when they are
+ * shown to be the same. A path the tools never show is not read here either. The file is masked
+ * through `files`, which the tools read through next: once, under their budget, and the secrets
+ * masked in it are counted with the first call's.
+ */
+async function sameCode(
+  input: ReplyInput,
+  files: MaskedFiles,
+  budget: MaskBudget,
+  io: ReplyConversationIo,
+): Promise<boolean> {
+  const { issue, snapshotHead } = input;
+  const { path, line, lineHash } = issue;
+  if (issue.reviewedHeadSha !== null && snapshotHead !== null) {
+    if (issue.reviewedHeadSha.toLowerCase() === snapshotHead.toLowerCase()) return true;
+  }
+  if (path === null || line === null || line < 1 || lineHash === null) return false;
+  if (excludedPathMatcher(io.excludePaths)(path)) return false;
+  const file = await files.file(path, budget);
+  if (file.kind !== 'text') return false;
+  io.redactions?.add(file.redactions);
+  if (line > file.text.lineCount) return false;
+  return lineHashOf(file.text, line, Math.max(line, issue.endLine ?? line)) === lineHash;
+}
+
+/**
+ * The tokens the first call of a reply takes at the least, guessed before it is made: its system
+ * prompt and its first message at the review's characters to a token (CHARS_PER_TOKEN), and the most
+ * its answer may write. A budget below it cannot pay for one call, so the reply is not started, as a
+ * review is not started below its smallest share. What comes after the first call is paid from what
+ * the budget has left.
+ */
+const firstCallTokens = (system: string, user: string): number =>
+  Math.ceil((system.length + user.length) / CHARS_PER_TOKEN) + REVIEW_OUTPUT_TOKENS.reply;
+
 /** The conversation and its checks; `runReplyConversation` turns a stop into its result. */
 async function decide(input: ReplyInput, io: ReplyConversationIo): Promise<DecidedReply> {
   const { issue, snapshot } = input;
+  // The files of the snapshot as the model may see them, which the check of the finding's lines and
+  // the tools share, with the budget of the tools.
+  const files = snapshot === null ? null : new MaskedFiles(snapshot, { masker: io.masker });
+  const policy =
+    files === null
+      ? null
+      : newToolPolicy({ excludePaths: io.excludePaths, masked: files, masker: io.masker });
   // What the model may choose: what the thread allows, and of that only what it has the means for.
-  const offered = allowedVerdicts(issue, input.mayChangeStatus).filter(
+  let offered = allowedVerdicts(issue, input.mayChangeStatus).filter(
     (verdict) => verdict !== 'false_positive' || snapshot !== null,
   );
+  // A finding's lines are those of the head it was made for, and the snapshot may be of a newer one:
+  // a claim that the finding is wrong is offered only for code that is still its code. The tools
+  // stay, so the model can still read and explain.
+  if (
+    files !== null &&
+    policy !== null &&
+    offered.includes('false_positive') &&
+    !(await sameCode(input, files, policy.budget, io))
+  ) {
+    offered = offered.filter((verdict) => verdict !== 'false_positive');
+  }
   // An open finding of the AI review whose people may not change its status: the prompt says why.
   const membersOnly = changeable(issue) && !input.mayChangeStatus;
+  const system = replySystemPrompt({ verdicts: offered, tools: snapshot !== null, membersOnly });
   const nonce = newNonce();
   const user = envelope(await shownData(input, io), nonce);
+  // A budget that cannot pay for the first call does not start the reply: no call, no row.
+  if (io.tokenBudget < firstCallTokens(system, user)) return { failed: 'budget_spent' };
 
   /**
    * Whether the model has read the finding's own lines: a `read_file` that showed a line within
@@ -276,9 +372,11 @@ async function decide(input: ReplyInput, io: ReplyConversationIo): Promise<Decid
     const checked = replyAnswerSchema.safeParse(scrubKeyDeep(parsed, io.providerKey));
     if (!checked.success) return { retry: false };
     const refusal = refusalOf(checked.data, offered, readCode);
-    return refusal === null
-      ? { answer: checked.data }
-      : { retry: replyRetryText(refusal, offered) };
+    if (refusal === null) return { answer: checked.data };
+    // No tool runs after a refusal, so what was not read stays unread: the retry names the verdicts
+    // that can still be given, and false_positive is not one of them then.
+    const possible = readCode ? offered : offered.filter((verdict) => verdict !== 'false_positive');
+    return { retry: replyRetryText(refusal, possible) };
   };
   let cost = 0;
   const send: ConversationInput['send'] = async (conversation) => {
@@ -290,7 +388,7 @@ async function decide(input: ReplyInput, io: ReplyConversationIo): Promise<Decid
   const result = await converseOverTools(
     {
       role: 'reply',
-      system: replySystemPrompt({ verdicts: offered, tools: snapshot !== null, membersOnly }),
+      system,
       user,
       nonce,
       tokenBudget: io.tokenBudget,
@@ -299,15 +397,11 @@ async function decide(input: ReplyInput, io: ReplyConversationIo): Promise<Decid
         return 'answer' in judged ? true : judged.retry;
       },
     },
-    snapshot === null
+    snapshot === null || policy === null
       ? { reader: null, send, shouldStop: io.shouldStop }
       : {
           reader: snapshot,
-          policy: newToolPolicy({
-            excludePaths: io.excludePaths,
-            masked: new MaskedFiles(snapshot, { masker: io.masker }),
-            masker: io.masker,
-          }),
+          policy,
           send,
           shouldStop: io.shouldStop,
           onToolRedactions: (count) => io.redactions?.add(count),
@@ -335,6 +429,18 @@ async function decide(input: ReplyInput, io: ReplyConversationIo): Promise<Decid
 }
 
 /**
+ * Whether an error is the stop itself and not a failure: a masker that was closed, an `AbortError`,
+ * or the reason of the `signal` that aborted, which is what a masker given it rejects with. Anything
+ * else, an error of the database too, is a failure. (A call the signal gave up never gets here: the
+ * loop turns it into a stop itself, as `LlmCallAborted`.)
+ */
+function isAbort(err: unknown, signal: AbortSignal | undefined): boolean {
+  if (err instanceof MaskerClosed) return true;
+  if (err instanceof Error && err.name === 'AbortError') return true;
+  return signal?.aborted === true && err === signal.reason;
+}
+
+/**
  * Runs the conversation that answers the reply, and checks what it says. The model is told which
  * verdicts the thread allows, without `false_positive` when there is no snapshot, and is given the
  * review's tools over the snapshot when there is one, with a tool budget of its own. Its last
@@ -344,8 +450,9 @@ async function decide(input: ReplyInput, io: ReplyConversationIo): Promise<Decid
  * reported, with the model it went to, when it answers; the cost is that of the calls the provider
  * counted, at `io.pricing`.
  *
- * A stop is `stopped`: the caller asks to stop, or a masking or a reading is given up while it
- * does, which is no error of the answer. Any other error is thrown.
+ * A stop is `stopped`: the caller asks to stop, or an abort (`isAbort`) gives up a masking while it
+ * does, or a call is given up (the loop's stop), which is no error of the answer. Any other error is
+ * thrown, as it would be without a stop: a failed insert of a call's row is never taken for one.
  */
 export async function runReplyConversation(
   input: ReplyInput,
@@ -355,7 +462,7 @@ export async function runReplyConversation(
   try {
     return await decide(input, io);
   } catch (err) {
-    if (await io.shouldStop()) return { stopped: true };
+    if (isAbort(err, io.signal) && (await io.shouldStop())) return { stopped: true };
     throw err;
   }
 }
@@ -407,12 +514,12 @@ async function tokensLeft(deps: ReplyDeps, provider: StoredProvider): Promise<nu
 }
 
 /**
- * Decides the answer to a reply: it asks what the day has left for it (nothing: `budget_spent`,
- * with no call made), then runs `runReplyConversation` on the model of the `reply` tier at that
- * model's prices, with every call sent through the review's sender as a `review-reply` row, written
- * finished, with the review's 300 s floor on the wait for each. A stop of the server, or of the
- * caller, is `stopped`. Nothing is posted and no ledger row is written: the caller does that with
- * what comes back.
+ * Decides the answer to a reply: it asks what the day has left for it (nothing, or less than its
+ * first call needs: `budget_spent`, with no call made), then runs `runReplyConversation` on the
+ * model of the `reply` tier at that model's prices, with every call sent through the review's sender
+ * as a `review-reply` row, written finished, with the review's 300 s floor on the wait for each. A
+ * stop of the server, or of the caller, is `stopped`. Nothing is posted and no ledger row is
+ * written: the caller does that with what comes back.
  */
 export async function decideReply(input: ReplyInput, deps: ReplyDeps): Promise<DecidedReply> {
   const { settings } = deps;
@@ -451,6 +558,7 @@ export async function decideReply(input: ReplyInput, deps: ReplyDeps): Promise<D
       model,
       pricing,
       redactions,
+      signal: deps.signal,
     });
   } finally {
     await masker.close();

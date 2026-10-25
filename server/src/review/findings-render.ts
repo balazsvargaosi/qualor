@@ -100,20 +100,35 @@ function snippetOf(text: MaskedText, startLine: number, endLine: number) {
 }
 
 /**
- * The hashes of a finding's lines, as a report's are. They read the flagged lines (at most
- * MAX_HASHED_LINES) and CONTEXT_LINES either side, and only those are cut from the text.
+ * The lines a finding's hashes read, cut from the text: the flagged lines (at most
+ * MAX_HASHED_LINES) and CONTEXT_LINES either side, and where the flagged ones are in them (1-based).
+ * The finding starts on a line of the text, `1 <= startLine <= text.lineCount`.
  */
-function hashesOf(text: MaskedText, startLine: number, endLine: number) {
+function hashedWindow(text: MaskedText, startLine: number, endLine: number) {
   const flaggedEnd = Math.min(endLine, text.lineCount, startLine + MAX_HASHED_LINES - 1);
   const first = Math.max(1, startLine - CONTEXT_LINES);
   const last = Math.min(text.lineCount, flaggedEnd + CONTEXT_LINES);
   const window: string[] = [];
   for (let n = first; n <= last; n += 1) window.push(text.line(n - 1));
   const shift = first - 1;
-  return {
-    lineHash: lineHash(window, startLine - shift, flaggedEnd - shift),
-    contextHash: contextHash(window, startLine - shift, flaggedEnd - shift),
-  };
+  return { window, from: startLine - shift, to: flaggedEnd - shift };
+}
+
+/**
+ * The line hash of a finding's lines `startLine` to `endLine` of a masked file, as a report's is:
+ * what an issue row holds as its `lineHash`. Whoever asks whether code is the code a finding was
+ * made for hashes its lines with this. The finding starts on a line of the text (`startLine` from 1
+ * to `text.lineCount`), as `renderFinding` has it.
+ */
+export function lineHashOf(text: MaskedText, startLine: number, endLine: number): string {
+  const { window, from, to } = hashedWindow(text, startLine, endLine);
+  return lineHash(window, from, to);
+}
+
+/** The hashes of a finding's lines, as a report's are. */
+function hashesOf(text: MaskedText, startLine: number, endLine: number) {
+  const { window, from, to } = hashedWindow(text, startLine, endLine);
+  return { lineHash: lineHash(window, from, to), contextHash: contextHash(window, from, to) };
 }
 
 /**
