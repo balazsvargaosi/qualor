@@ -99,7 +99,6 @@ describe('/system/llm (llm.md §3, §16)', () => {
     fake = await createFakeLlm({
       outputCaps: { 'capped-model': 4_096 },
       toolsOnlyThroughResponses: ['sol-model'],
-      jsonNeedsWordInInput: true,
     });
     ctx = await createTestContext({
       config: { llmInternalHosts: parseInternalHosts(fake.host) },

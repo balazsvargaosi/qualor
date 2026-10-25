@@ -92,7 +92,9 @@ describe('the OpenAI Responses API wire', () => {
   describe('the request', () => {
     it('a one-shot call (explain, triage, fix and the Test) sends the instructions and one user item', async () => {
       fake.say('{"a":1}');
-      const answer = await callProvider(responses, fake.apiKey, call, http);
+      // As the real callers' users do, the message says JSON: nothing is added to it.
+      const asked = { ...call, user: 'Answer in JSON.' };
+      const answer = await callProvider(responses, fake.apiKey, asked, http);
       expect(answer).toEqual({
         text: '{"a":1}',
         finishReason: 'stop',
@@ -105,7 +107,7 @@ describe('the OpenAI Responses API wire', () => {
       expect(sent.json).toEqual({
         model: 'm-1',
         instructions: 'S',
-        input: [userItem('U')],
+        input: [userItem('Answer in JSON.')],
         max_output_tokens: 50,
         store: false,
         include: ['reasoning.encrypted_content'],
@@ -168,6 +170,142 @@ describe('the OpenAI Responses API wire', () => {
       for (const [n] of fake.requests.entries()) {
         expect(body(n), `request ${n}`).not.toHaveProperty('response_format');
       }
+    });
+
+    describe('JSON mode names JSON in the input', () => {
+      // The API refuses JSON mode when no input message says the word json: its instructions do not
+      // count. The fake refuses it as the API does, in the API's words.
+      const REMINDER = { type: 'input_text', text: 'Reply in JSON.' };
+      const noTools: LlmConversation = { ...start, tools: [] };
+      const withReminder = (text: string) => ({
+        role: 'user',
+        content: [{ type: 'input_text', text }, REMINDER],
+      });
+
+      it('a one-shot call whose user message does not say JSON gets one fixed part in it, and is taken', async () => {
+        fake.say('{"a":1}');
+        const answer = await callProvider(responses, fake.apiKey, call, http);
+        expect(answer.finishReason).toBe('stop');
+        expect(inputOf()).toEqual([withReminder('U')]);
+        expect(body()).toMatchObject({ text: { format: { type: 'json_object' } } });
+      });
+
+      it('a conversation without tools whose first message does not say it gets it too, and is taken', async () => {
+        fake.say('{"findings":[]}');
+        const turn = await converse(responses, fake.apiKey, noTools, http);
+        expect(turn).toMatchObject({ text: '{"findings":[]}', finishReason: 'stop' });
+        expect(inputOf()).toEqual([withReminder('Review this change')]);
+      });
+
+      it.each([
+        'Answer in JSON.',
+        'answer in json',
+        'Reply in Json',
+        'the diff of package.json',
+        'JSON',
+      ])('leaves a first message that says json as it is (%s)', async (text) => {
+        await callProvider(responses, fake.apiKey, { ...call, user: text }, http);
+        await converse(
+          responses,
+          fake.apiKey,
+          { ...noTools, messages: [{ role: 'user', text }] },
+          http,
+        );
+        for (const n of [0, 1]) expect(inputOf(n), `request ${n}`).toEqual([userItem(text)]);
+      });
+
+      it('says it once, in the first user message, and every request of a conversation carries that message as it was whatever a later one says', async () => {
+        // A conversation without tools that is asked again: the loop's own words for that say JSON.
+        const first: LlmMessage = { role: 'user', text: 'Review this change' };
+        const history: LlmMessage[] = [
+          first,
+          { role: 'assistant', text: 'Not what you asked.', toolCalls: [] },
+          {
+            role: 'user',
+            text: 'Your answer did not match the required JSON; answer again with JSON only.',
+          },
+          { role: 'assistant', text: 'Still not.', toolCalls: [] },
+          { role: 'user', text: 'Answer now, in the required JSON.' },
+        ];
+        for (const upTo of [1, 3, 5]) {
+          await converse(
+            responses,
+            fake.apiKey,
+            { ...noTools, messages: history.slice(0, upTo) },
+            http,
+          );
+        }
+        expect(fake.requests).toHaveLength(3);
+        for (const n of [0, 1, 2]) {
+          // The same first message, byte for byte, and the part nowhere else.
+          expect(JSON.stringify(inputOf(n)[0]), `request ${n}`).toBe(
+            JSON.stringify(withReminder('Review this change')),
+          );
+          expect(fake.requests[n]!.body.split('Reply in JSON.'), `request ${n}`).toHaveLength(2);
+        }
+        // So each request begins with all the earlier one held.
+        for (const n of [1, 2]) {
+          const before = inputOf(n - 1).map((item) => JSON.stringify(item));
+          expect(
+            inputOf(n)
+              .map((item) => JSON.stringify(item))
+              .slice(0, before.length),
+          ).toEqual(before);
+        }
+      });
+
+      it('adds it to the first user message only: a later one that does not say json goes as it is', async () => {
+        await converse(
+          responses,
+          fake.apiKey,
+          {
+            ...noTools,
+            messages: [
+              { role: 'user', text: 'Review this change' },
+              { role: 'assistant', text: 'Reviewed.', toolCalls: [] },
+              { role: 'user', text: 'Go on' },
+            ],
+          },
+          http,
+        );
+        expect(inputOf()).toEqual([
+          withReminder('Review this change'),
+          { role: 'assistant', content: [{ type: 'output_text', text: 'Reviewed.' }] },
+          userItem('Go on'),
+        ]);
+      });
+
+      it('names JSON only while JSON mode is asked for: not with tools, and not with the mode off', async () => {
+        await converse(responses, fake.apiKey, start, http);
+        await converse({ ...responses, jsonMode: 'none' }, fake.apiKey, noTools, http);
+        await callProvider({ ...responses, jsonMode: 'none' }, fake.apiKey, call, http);
+        expect(fake.requests).toHaveLength(3);
+        for (const n of [0, 1, 2]) {
+          expect(fake.requests[n]!.body, `request ${n}`).not.toContain('Reply in JSON.');
+          expect(body(n), `request ${n}`).not.toHaveProperty('text');
+        }
+      });
+
+      it('adds it in both asks of a call that is asked again without the room, and changes nothing else', async () => {
+        const capped = await createFakeLlm({ outputCaps: { 'capped-for-json': 4_096 } });
+        try {
+          const config = { ...responses, model: 'capped-for-json', baseUrl: capped.openAiBaseUrl };
+          const cappedHttp = { ...http, internalHosts: parseInternalHosts(capped.host) };
+          await callProvider(
+            config,
+            capped.apiKey,
+            { ...call, maxOutputTokens: 1_200, reasoningAllowance: 4_000 },
+            cappedHttp,
+          );
+          const [first, second] = capped.requests.map((r) => r.json as Record<string, unknown>);
+          expect(capped.requests).toHaveLength(2);
+          expect([first!.max_output_tokens, second!.max_output_tokens]).toEqual([5_200, 1_200]);
+          expect(first!.input).toEqual([withReminder('U')]);
+          expect(second!.input).toEqual(first!.input);
+        } finally {
+          await capped.close();
+        }
+      });
     });
 
     it('sends a conversation as items, oldest first, with the tools flattened and not strict', async () => {

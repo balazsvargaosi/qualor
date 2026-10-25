@@ -495,8 +495,9 @@ function responsesProblem(json: unknown): unknown {
 
 /**
  * The 400 of a Responses request that asks for JSON mode (`text.format` of type `json_object`) when
- * no text of its `input` says json, as the Responses API is reported to refuse it: its
- * `instructions` do not count. Null for a request that asks for no JSON mode, or whose input says it.
+ * no text of its `input` says json, as the Responses API refuses it: its `instructions` do not
+ * count (probed live on 2026-10-26 with the newest models). Null for a request that asks for no
+ * JSON mode, or whose input says it.
  */
 function jsonWordProblem(json: unknown): unknown {
   if (typeof json !== 'object' || json === null) return null;
@@ -580,8 +581,8 @@ export interface FakeLlm {
  * OpenAI uses for the models that take them only through the Responses API, and takes no scripted
  * reply. A Responses request is always refused with a 400 for what the real API refuses of it: a
  * limit below 16 tokens, an assistant message of `input_text`, and an output for a call that was not
- * made. With `jsonNeedsWordInInput` one that asks for JSON mode is refused when the word json is
- * nowhere in its `input` (its instructions do not count: the API is reported to look at the input only).
+ * made, and one that asks for JSON mode when the word json is nowhere in its `input` (its
+ * instructions do not count).
  */
 export async function createFakeLlm(
   options: {
@@ -590,7 +591,6 @@ export async function createFakeLlm(
     refuseBlankText?: boolean;
     outputCaps?: Record<string, number>;
     toolsOnlyThroughResponses?: readonly string[];
-    jsonNeedsWordInInput?: boolean;
   } = {},
 ): Promise<FakeLlm> {
   const apiKey =
@@ -702,8 +702,7 @@ export async function createFakeLlm(
         }
         const refused =
           wire === 'responses'
-            ? (responsesProblem(json) ??
-              (options.jsonNeedsWordInInput === true ? jsonWordProblem(json) : null))
+            ? (responsesProblem(json) ?? jsonWordProblem(json))
             : wire === 'chat'
               ? chatToolsProblem(options.toolsOnlyThroughResponses, json)
               : null;

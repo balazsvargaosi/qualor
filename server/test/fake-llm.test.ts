@@ -618,51 +618,61 @@ describe('fake LLM', () => {
   });
 
   describe('JSON mode of the Responses API', () => {
-    it('is refused when the word json is only in the instructions, if it is told to refuse so, and not otherwise', async () => {
-      const strict = await createFakeLlm({ jsonNeedsWordInInput: true });
-      try {
-        const send = (target: FakeLlm, over: Record<string, unknown>) =>
-          fetch(`${target.url}/v1/responses`, {
-            method: 'POST',
-            headers: {
-              'content-type': 'application/json',
-              authorization: `Bearer ${target.apiKey}`,
-            },
-            body: JSON.stringify({ model: 'm', instructions: 'Answer in JSON.', ...over }),
-          });
-        const json = { text: { format: { type: 'json_object' } } };
-        const said = (text: string) => [{ role: 'user', content: [{ type: 'input_text', text }] }];
-        const refused = await send(strict, { ...json, input: said('ping') });
-        expect(refused.status).toBe(400);
-        expect(await refused.json()).toEqual({
-          error: {
-            message:
-              "Response input messages must contain the word 'json' in some form to use 'text.format' of type 'json_object'.",
-            type: 'invalid_request_error',
-            param: 'input',
-            code: null,
-          },
-        });
-        // Any case, in a user message or in the result of a call, takes it.
-        expect((await send(strict, { ...json, input: said('Reply in Json.') })).status).toBe(200);
-        expect(
-          (
-            await send(strict, {
-              ...json,
-              input: [
-                ...said('ping'),
-                { type: 'function_call', call_id: 'c', name: 'x', arguments: '{}' },
-                { type: 'function_call_output', call_id: 'c', output: '{"JSON": true}' },
-              ],
-            })
-          ).status,
-        ).toBe(200);
-        // No JSON mode asked for: nothing to check. And a fake that was not told to refuse takes it.
-        expect((await send(strict, { input: said('ping') })).status).toBe(200);
-        expect((await send(fake, { ...json, input: said('ping') })).status).toBe(200);
-      } finally {
-        await strict.close();
-      }
+    it('is refused when the word json is only in the instructions, as the real API refuses it', async () => {
+      const send = (over: Record<string, unknown>) =>
+        post(
+          '/v1/responses',
+          { authorization: `Bearer ${fake.apiKey}` },
+          { model: 'm', instructions: 'Answer in JSON.', ...over },
+        );
+      const json = { text: { format: { type: 'json_object' } } };
+      const said = (text: string) => [{ role: 'user', content: [{ type: 'input_text', text }] }];
+      const refused = await send({ ...json, input: said('ping') });
+      expect(refused.status).toBe(400);
+      expect(await refused.json()).toEqual({
+        error: {
+          message:
+            "Response input messages must contain the word 'json' in some form to use 'text.format' of type 'json_object'.",
+          type: 'invalid_request_error',
+          param: 'input',
+          code: null,
+        },
+      });
+      // Any case, in a part of a user message or in the result of a call, takes it.
+      expect((await send({ ...json, input: said('Reply in Json.') })).status).toBe(200);
+      expect(
+        (
+          await send({
+            ...json,
+            input: [
+              {
+                role: 'user',
+                content: [
+                  { type: 'input_text', text: 'ping' },
+                  { type: 'input_text', text: 'in JSON' },
+                ],
+              },
+            ],
+          })
+        ).status,
+      ).toBe(200);
+      expect(
+        (
+          await send({
+            ...json,
+            input: [
+              ...said('ping'),
+              { type: 'function_call', call_id: 'c', name: 'x', arguments: '{}' },
+              { type: 'function_call_output', call_id: 'c', output: '{"JSON": true}' },
+            ],
+          })
+        ).status,
+      ).toBe(200);
+      // No JSON mode asked for: nothing to check.
+      expect((await send({ input: said('ping') })).status).toBe(200);
+      expect((await send({ input: said('ping'), text: { format: { type: 'text' } } })).status).toBe(
+        200,
+      );
     });
   });
 

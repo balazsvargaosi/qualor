@@ -1115,6 +1115,31 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
       expect(unwrap(String(second[3]!.output)).result).toBe(BAD_ARGUMENTS);
     });
 
+    it('a conversation without tools names JSON in its first message, and the retry that says JSON changes nothing before it', async () => {
+      // JSON mode is on and there are no tools (a reply on a branch with no snapshot): the API
+      // wants the word json in the input messages, and the first message does not say it.
+      fake.enqueue(answerOf([message('not json')]), answerOf([message('{"findings":[]}')]));
+      const { result } = await run('responses', {
+        tools: [],
+        accept: (text) => text.startsWith('{'),
+      });
+      expect(result).toMatchObject({ kind: 'answer', text: '{"findings":[]}', turns: 2 });
+      const [first, second] = fake.requests.map(inputOf);
+      expect(first).toEqual([
+        {
+          role: 'user',
+          content: [
+            { type: 'input_text', text: USER_TEXT },
+            { type: 'input_text', text: 'Reply in JSON.' },
+          ],
+        },
+      ]);
+      // The second request holds the first message as it was, then the answer and the retry words.
+      expect(JSON.stringify(second![0])).toBe(JSON.stringify(first![0]));
+      expect(second!.map(kindOf)).toEqual(['user', 'message', 'user']);
+      expect(fake.requests[1]!.body.split('Reply in JSON.')).toHaveLength(2);
+    });
+
     it('a refusal after reasoning ends the conversation as a bad answer with what it spent, and sends nothing more', async () => {
       const refusal = responsesAnswer('', {
         refusal: 'No.',

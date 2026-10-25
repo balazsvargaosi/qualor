@@ -23,6 +23,7 @@ import {
  * as it came, beside the calls it led to. What an answer holds is read into the shape of a chat
  * completion's first choice and then by the code of the Chat Completions wire (`readChoice`), so
  * that a turn of either wire is read the same way: its text, its calls, its finish reason, its usage.
+ * JSON mode has a condition of its own here: see `userItem`.
  */
 
 /** What an answer that failed is told, whatever the provider said of it: a fixed text. */
@@ -163,15 +164,39 @@ async function send(
   );
 }
 
-/** A user message as an input item. */
-const userItem = (text: string) => ({ role: 'user', content: [{ type: 'input_text', text }] });
+/**
+ * JSON mode, as on Chat Completions: the settings ask for it, and only while there are no tools (the
+ * caller then asks for its JSON in the prompt).
+ */
+const asksForJson = (config: ProviderConfig, tools: readonly unknown[]): boolean =>
+  tools.length === 0 && config.jsonMode === 'json_object';
+
+/** What JSON mode adds to the message that opens a conversation when it does not say json. */
+const JSON_REMINDER = 'Reply in JSON.';
+
+/**
+ * A user message as an input item. With JSON mode the API refuses a request unless an input
+ * message says the word json, and does not count the `instructions` (it answers a 400, "Response
+ * input messages must contain the word 'json'…"), so `named` gives a message that does not say it
+ * one fixed part more, `Reply in JSON.`. It is asked of the message that opens the conversation
+ * alone, which every request of the conversation carries as it was: every request then carries the
+ * same prefix, whatever a later message says (the words of a retry say JSON), and the word is in
+ * the input of each of them.
+ */
+const userItem = (text: string, named = false) => ({
+  role: 'user',
+  content: [
+    { type: 'input_text', text },
+    ...(named && !/json/i.test(text) ? [{ type: 'input_text', text: JSON_REMINDER }] : []),
+  ],
+});
 
 /**
  * The request: the model, the system prompt as `instructions`, the conversation as `input`, and
  * the limit as `max_output_tokens` whatever the settings' output limit field says. Always stateless
  * (`store: false`, with the encrypted reasoning asked for). The tools go as `tools` with
- * `tool_choice: "auto"`, and while they are sent there is no JSON mode: the caller asks for its
- * JSON in the prompt, as on Chat Completions, which a call without tools keeps. A temperature goes
+ * `tool_choice: "auto"`, and while they are sent there is no JSON mode, which a call without tools
+ * keeps (`asksForJson`; its input is made for it by the caller, see `userItem`). A temperature goes
  * only when the settings give one.
  */
 function requestBody(
@@ -192,9 +217,8 @@ function requestBody(
   if (tools.length > 0) {
     body.tools = tools;
     body.tool_choice = 'auto';
-  } else if (config.jsonMode === 'json_object') {
-    body.text = { format: { type: 'json_object' } };
   }
+  if (asksForJson(config, tools)) body.text = { format: { type: 'json_object' } };
   if (config.temperature !== null) body.temperature = config.temperature;
   return body;
 }
@@ -212,7 +236,7 @@ export async function openAiResponses(
   call: LlmCall,
   http: ProviderHttpOptions,
 ): Promise<LlmAnswer> {
-  const input = [userItem(call.user)];
+  const input = [userItem(call.user, asksForJson(config, []))];
   return await askWithRoom(config, call, async (maxTokens) => {
     const body = requestBody(config, call.system, input, [], maxTokens);
     return (await send(config, apiKey, body, http)).answer;
@@ -224,13 +248,15 @@ export async function openAiResponses(
  * OpenAI turn is its items exactly as they came, the reasoning among them; any other is its text,
  * when it has some, as an `output_text` message and then its calls as `function_call` items (the
  * API refuses a message with no text, so a turn with none sends none). The result of a call is a
- * `function_call_output`, which the API wants after the call and answers it by its `call_id`.
+ * `function_call_output`, which the API wants after the call and answers it by its `call_id`. With
+ * `jsonMode` the first user message names JSON (`userItem`).
  */
-function inputItems(messages: readonly LlmMessage[]): unknown[] {
-  return messages.flatMap((message): unknown[] => {
+function inputItems(messages: readonly LlmMessage[], jsonMode: boolean): unknown[] {
+  const opening = messages.findIndex((message) => message.role === 'user');
+  return messages.flatMap((message, at): unknown[] => {
     switch (message.role) {
       case 'user':
-        return [userItem(message.text)];
+        return [userItem(message.text, jsonMode && at === opening)];
       case 'tool':
         return [{ type: 'function_call_output', call_id: message.callId, output: message.text }];
       case 'assistant':
@@ -265,7 +291,6 @@ export async function openAiResponsesConverse(
   conversation: LlmConversation,
   http: ProviderHttpOptions,
 ): Promise<LlmTurn> {
-  const input = inputItems(conversation.messages);
   const tools = conversation.tools.map((tool) => ({
     type: 'function',
     name: tool.name,
@@ -273,6 +298,7 @@ export async function openAiResponsesConverse(
     parameters: tool.parameters,
     strict: false,
   }));
+  const input = inputItems(conversation.messages, asksForJson(config, tools));
   return await askWithRoom(config, conversation, async (maxTokens) => {
     const body = requestBody(config, conversation.system, input, tools, maxTokens);
     const { answer, toolCalls, output, calls } = await send(config, apiKey, body, http);

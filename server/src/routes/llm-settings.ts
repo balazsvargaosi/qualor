@@ -332,8 +332,8 @@ const TEST_ROOM_TOKENS = REASONING_ALLOWANCE_TOKENS.singleShot;
 
 /**
  * llm.md §16: the Test button's prompt holds no repository data. Its user message says JSON too:
- * the Responses API is reported to look for that word in its input messages only, with JSON mode
- * on, and not to count its instructions.
+ * the Responses API looks for that word in its input messages only, with JSON mode on, and does not
+ * count its instructions, so the adapter has nothing to add to it.
  */
 const TEST_CALL = {
   system: 'Answer with the JSON object {"ok": true} and nothing else.',

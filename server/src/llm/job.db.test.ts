@@ -53,7 +53,6 @@ describe('the llm worker (llm.md §9, §10, §14)', () => {
     // Models of their own that take at most 4 096 output tokens, as a Claude 3-era model does.
     fake = await createFakeLlm({
       outputCaps: { 'capped-model': 4_096, 'capped-responses-model': 4_096 },
-      jsonNeedsWordInInput: true,
     });
     h = await createIngestHarness({ config: { llmInternalHosts: parseInternalHosts(fake.host) } });
     const p = await h.project('acme/ai-job');
@@ -226,10 +225,13 @@ describe('the llm worker (llm.md §9, §10, §14)', () => {
         });
         expect(typeof json.instructions, feature).toBe('string');
         expect(json.input, feature).toHaveLength(1);
+        // Its closing sentence says JSON, which the API wants in the input: nothing is added.
+        expect(json.input[0]!.content, feature).toHaveLength(1);
         expect(json.input[0], feature).toMatchObject({
           role: 'user',
           content: [{ type: 'input_text', text: expect.stringContaining('QUALOR-DATA') }],
         });
+        expect(json.input[0]!.content[0]!.text, feature).toMatch(/JSON/);
         // The same data block, redacted, as on the other wires.
         expect(sent.body, feature).not.toContain(token);
         expect(sent.body, feature).toContain('«redacted»');
