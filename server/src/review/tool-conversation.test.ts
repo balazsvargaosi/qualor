@@ -407,4 +407,25 @@ describe('converseOverTools', () => {
     expect(result.kind).toBe('stopped');
     expect(sends).toBe(0);
   });
+
+  it('gives the loop its signal, which wakes the wait of a retry', async () => {
+    // The provider limits the call for a minute, and the server stops as it says so: the wait that
+    // follows is not sat out.
+    const controller = new AbortController();
+    let sends = 0;
+    const began = Date.now();
+    const result = await converseOverTools(callOf('judge'), {
+      reader: null,
+      send: () => {
+        sends += 1;
+        controller.abort();
+        return Promise.reject(new LlmError('rate_limited', 'The provider is limiting', 429, 60));
+      },
+      shouldStop: () => Promise.resolve(controller.signal.aborted),
+      signal: controller.signal,
+    });
+    expect(result.kind).toBe('stopped');
+    expect(sends).toBe(1);
+    expect(Date.now() - began).toBeLessThan(10_000);
+  });
 });

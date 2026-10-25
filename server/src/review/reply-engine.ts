@@ -221,9 +221,10 @@ export interface ReplyConversationIo {
   /** Told the secrets masked in what each call adds: the first message's, then the tools'. */
   redactions?: RedactionTally;
   /**
-   * The signal whose abort stops the answer, which the masker and the sender were given: an error
-   * that is its reason is its stop (`isAbort`). Without one, a masker that was closed and an
-   * `AbortError` are the stop. (A call that the signal gave up is the loop's own stop.)
+   * The signal whose abort stops the answer, which the masker and the sender were given and which
+   * ends the wait of a retry: an error that is its reason is its stop (`isAbort`). Without one, a
+   * masker that was closed and an `AbortError` are the stop. (A call that the signal gave up is the
+   * loop's own stop.)
    */
   signal?: AbortSignal;
 }
@@ -398,12 +399,13 @@ async function decide(input: ReplyInput, io: ReplyConversationIo): Promise<Decid
       },
     },
     snapshot === null || policy === null
-      ? { reader: null, send, shouldStop: io.shouldStop }
+      ? { reader: null, send, shouldStop: io.shouldStop, signal: io.signal }
       : {
           reader: snapshot,
           policy,
           send,
           shouldStop: io.shouldStop,
+          signal: io.signal,
           onToolRedactions: (count) => io.redactions?.add(count),
           onToolRead: (shown) => {
             if (showsFinding(issue, shown)) readCode = true;

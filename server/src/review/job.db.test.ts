@@ -27,6 +27,7 @@ import {
 import { first } from '../db/rows';
 import {
   analyses,
+  branches,
   issues,
   jobs,
   llmRequests,
@@ -998,6 +999,85 @@ describe('the ai-review job (6I-3, R15)', () => {
     await expectStoppedForSnapshot(analysisId, 2);
   });
 
+  it('a newer push while a run stores ends it superseded, with no decoration', async () => {
+    const mr = mergeRequest();
+    const analysisId = await analysisOf(mr);
+    await snapshotOf(analysisId, mr);
+    const { branchId } = await runOf(analysisId);
+    // The newer push's analysis, as ingestion leaves it: a succeeded one on the same branch.
+    const [newer] = await h.ctx.db
+      .insert(analyses)
+      .values({
+        projectId: p.id,
+        branchId,
+        status: 'succeeded',
+        revision: revision(2),
+        baselineRevision: BASE,
+        baselineStatus: 'ok',
+        analysisDate: new Date('2026-10-02T10:00:00Z'),
+        scannerVersion: '0.0.0',
+        finishedAt: new Date(),
+      })
+      .returning({ id: analyses.id });
+    await forgetDecorations();
+    // The push is ingested as the run turns to storing: after its last stop check, before its store.
+    // A run that stores is let finish (it is not superseded), so ingestion makes the newer analysis
+    // the branch's newest and deletes the snapshots of the older ones, as the run's store finds out.
+    await h.ctx.db.execute(sql`
+      CREATE FUNCTION review_test_push_when_storing() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.phase = 'storing' AND OLD.phase IS DISTINCT FROM 'storing' THEN
+          UPDATE branches
+             SET last_analysis_id = (SELECT id FROM analyses
+                                      WHERE branch_id = NEW.branch_id AND id <> NEW.analysis_id)
+           WHERE id = NEW.branch_id;
+          DELETE FROM review_snapshots WHERE id = NEW.snapshot_id;
+        END IF;
+        RETURN NEW;
+      END $$`);
+    await h.ctx.db.execute(sql`
+      CREATE TRIGGER review_test_push_when_storing AFTER UPDATE OF phase ON review_runs
+         FOR EACH ROW EXECUTE FUNCTION review_test_push_when_storing()`);
+    try {
+      llm.enqueue(reviewResponder(FOUND), reviewResponder(FOUND));
+      expect(await runReviews()).toBe(1);
+    } finally {
+      await h.ctx.db.execute(sql`DROP TRIGGER review_test_push_when_storing ON review_runs`);
+      await h.ctx.db.execute(sql`DROP FUNCTION review_test_push_when_storing()`);
+    }
+    const [branch] = await h.ctx.db
+      .select({ newest: branches.lastAnalysisId })
+      .from(branches)
+      .where(eq(branches.id, branchId));
+    expect(branch?.newest).toBe(newer!.id);
+    expect(await snapshotsOfBranch(branchId)).toEqual([]);
+    // Superseded, with what it spent, and nothing stored of what it read.
+    const run = await runOf(analysisId);
+    expect(run).toMatchObject({
+      status: 'superseded',
+      reason: null,
+      detail: null,
+      phase: null,
+      snapshotId: null,
+      modelCalls: 2,
+      findingsNew: 0,
+      finishedAt: expect.any(Date),
+    });
+    expect(await aiIssuesOf(branchId)).toEqual([]);
+    // As every superseded run it is not decorated: the newer analysis has the decoration of its own.
+    expect(await decorationsOf(analysisId)).toEqual([]);
+    expect(logged).toContainEqual([
+      'info',
+      { runId: run.id, status: 'superseded', reason: null },
+      'AI review run ended',
+    ]);
+    const [job] = await h.ctx.db
+      .select({ status: jobs.status })
+      .from(jobs)
+      .where(and(eq(jobs.queue, AI_REVIEW_QUEUE), sql`${jobs.payload} ->> 'runId' = ${run.id}`));
+    expect(job).toEqual({ status: 'succeeded' });
+  });
+
   it('a waiting run whose analysis is no longer the newest is superseded', async () => {
     const mr = mergeRequest();
     const older = await analysisOf(mr, 1);
@@ -1567,6 +1647,58 @@ describe('the ai-review job (6I-3, R15)', () => {
     // left that the day's budget would charge as a call that timed out.
     expect(circuit.inspect(llm.openAiBaseUrl)).toMatchObject({ state: 'closed', failures: 0 });
     expect(await rows()).toBe(rowsBefore);
+  });
+
+  it('a stop during a retry wait ends the run at once', async () => {
+    const mr = mergeRequest();
+    const analysisId = await analysisOf(mr);
+    await snapshotOf(analysisId, mr);
+    await forgetDecorations();
+    const calls = reviewCalls().length;
+    const rowsBefore = (await reviewRows()).length;
+    // The provider limits the quality reviewer's call and asks to wait two minutes: the review
+    // waits for a minute, the longest wait it makes, before it asks again.
+    llm.enqueue({
+      status: 429,
+      headers: { 'retry-after': '120' },
+      body: { error: { message: 'slow down' } },
+    });
+    const shutdown = new AbortController();
+    const worker = startWorker({
+      db: h.ctx.db,
+      handlers: reviewHandlers(jobDeps({ shutdown: shutdown.signal })),
+      concurrency: 1,
+      leaseMs: REVIEW_LEASE_MS,
+      pollIntervalMs: 20,
+      logger: silentLogger,
+    });
+    try {
+      // The limited call has been answered and recorded: the review is waiting to ask again.
+      await vi.waitFor(async () => expect(await reviewRows()).toHaveLength(rowsBefore + 1), {
+        timeout: 20_000,
+        interval: 25,
+      });
+      // As main.ts stops: the signal first, then the wait for the worker.
+      const stopping = Date.now();
+      shutdown.abort();
+      await worker.stop();
+      expect(Date.now() - stopping).toBeLessThan(2_000);
+    } finally {
+      shutdown.abort();
+      await worker.stop();
+    }
+    expect(await runOf(analysisId)).toMatchObject({
+      status: 'failed',
+      reason: 'internal',
+      phase: null,
+      modelCalls: 1,
+      findingsNew: 0,
+      finishedAt: expect.any(Date),
+    });
+    // The provider was not asked again, and the end is decorated at once, as for any stop.
+    expect(reviewCalls().slice(calls).map(reviewRoleOf)).toEqual(['quality']);
+    expect(await decorationsOf(analysisId)).toHaveLength(1);
+    expect(await aiIssuesOf((await runOf(analysisId)).branchId)).toEqual([]);
   });
 
   it('a server that is stopping starts no review: the run waits, and its job comes again', async () => {

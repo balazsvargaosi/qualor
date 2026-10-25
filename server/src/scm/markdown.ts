@@ -74,6 +74,12 @@ const PROSE_WORD =
 /** The mark a plain word may open with, and the ones it may end in. */
 const PROSE_OPENERS = '("“‘';
 const PROSE_CLOSERS = '.,;:!?)"”’…';
+/**
+ * The marks that join two code spans of one word and stay plain between them, one at a time:
+ * `try`/`catch`, (`a`,`b`). None of them can begin a link, a reference or a quick action there: a
+ * code span stands on each side, and the line starts before the first span.
+ */
+const PROSE_JOINS = '/,-+.:';
 /** The dashes of running text: plain by themselves, never stuck to a word. */
 const PROSE_DASHES: ReadonlySet<string> = new Set(['—', '–']);
 /** A list marker at the start of a line: `- `, `* ` or a number (at most the nine CommonMark reads) and a dot. */
@@ -146,20 +152,40 @@ function modelSpanAt(text: string, start: number): { content: string; end: numbe
   }
 }
 
+/**
+ * The code span the model wrote at `start` (a backtick) and the spans joined to it by one of
+ * {@link PROSE_JOINS} (`try`/`catch`): each through {@link codeSpan}, the joins plain between them,
+ * and where the last one ends. Null when there is no span at `start`.
+ */
+function spansJoinedAt(text: string, start: number): { out: string; end: number } | null {
+  const first = modelSpanAt(text, start);
+  if (first === null) return null;
+  let out = codeSpan(first.content, PROSE_SPAN_CHARS);
+  let end = first.end;
+  for (;;) {
+    const join = text.charAt(end);
+    const span =
+      PROSE_JOINS.includes(join) && text[end + 1] === '`' ? modelSpanAt(text, end + 1) : null;
+    if (span === null) return { out, end };
+    out += `${join}${codeSpan(span.content, PROSE_SPAN_CHARS)}`;
+    end = span.end;
+  }
+}
+
 /** The word of a line that begins at `at`, as prose writes it, and where the next one may begin. */
 function proseWordAt(text: string, at: number): { out: string; next: number } {
-  // The model's own span, with the mark that opens before it and the marks that end after it.
+  // The model's own span or spans, with the mark that opens before and the marks that end after.
   const opener =
     PROSE_OPENERS.includes(text.charAt(at)) && text[at + 1] === '`' ? text.charAt(at) : '';
   const start = at + opener.length;
-  const span = text[start] === '`' ? modelSpanAt(text, start) : null;
-  if (span !== null) {
-    let next = span.end;
+  const spans = text[start] === '`' ? spansJoinedAt(text, start) : null;
+  if (spans !== null) {
+    let next = spans.end;
     while (next < text.length && PROSE_CLOSERS.includes(text.charAt(next))) next += 1;
     // Anything else glued to it makes the whole of it one ordinary word, below.
     if (next >= text.length || text[next] === ' ') {
-      const closers = text.slice(span.end, next);
-      return { out: `${opener}${codeSpan(span.content, PROSE_SPAN_CHARS)}${closers}`, next };
+      const closers = text.slice(spans.end, next);
+      return { out: `${opener}${spans.out}${closers}`, next };
     }
   }
   const space = text.indexOf(' ', at);
@@ -202,7 +228,8 @@ function proseLine(line: string): string {
  * - a line that starts with `- `, `* ` or a number and a dot becomes `- ` or `<n>. ` and keeps its
  *   rest;
  * - the backtick spans the model wrote are written again through {@link codeSpan}, with the marks
- *   that open before and end after them;
+ *   that open before and end after them, and the one mark that joins two of them (`/`, `,`, `-`,
+ *   `+`, `.` or `:`) plain between them: `` `try`/`catch` `` is two code spans and a slash;
  * - every other word, as white space separates them, stays plain only when it is letters and
  *   decimal digits (apostrophes and hyphens inside, combining marks on the letters, a bracket or
  *   quote before, closing marks after) that no provider turns into a commit link, a tracker

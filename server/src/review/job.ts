@@ -704,6 +704,7 @@ class ReviewJob {
       policy,
       send: (conversation) => this.counted(sender, pricing, conversation),
       shouldStop,
+      signal: this.deps.shutdown,
       onToolRedactions: (count) => tally.add(count),
     });
     // Whichever way it ended, what it spent is the run's.
@@ -756,8 +757,9 @@ class ReviewJob {
    * makes it (`startStoring`), and only this job's run, still running and not storing, passes: from
    * then on no newer analysis supersedes it. The values are made before the transaction (masking
    * takes time), which only writes; the store refuses a run no longer storing, under its lock, and
-   * one whose snapshot was deleted since the last stop check, which then ends `skipped: closed`
-   * with nothing stored.
+   * one whose snapshot was deleted since the last stop check, which then ends with nothing stored:
+   * `superseded` when a newer push replaced the snapshot, `skipped: closed` when the merge request
+   * was merged or closed (`snapshotGone`).
    */
   private async finish(
     running: Running,
@@ -804,13 +806,9 @@ class ReviewJob {
         .from(reviewRuns)
         .where(eq(reviewRuns.id, run.id));
       if (now?.status === 'running' && now.phase === 'storing' && now.snapshotId === null) {
-        // Its snapshot was deleted after the last stop check (the merge request was merged or
-        // closed): what the review read is gone, and the run ends as the stop check ends it.
-        return this.endRunning(run, {
-          status: 'skipped',
-          reason: 'closed',
-          detail: 'snapshot_deleted',
-        });
+        // Its snapshot was deleted after the last stop check: what the review read is gone, and the
+        // run ends as the stop check ends it.
+        return this.snapshotGone(run);
       }
       // Ended meanwhile by a job tried again after this one's lease expired: that one decorated.
       await this.writeSpend(run);
@@ -838,15 +836,29 @@ class ReviewJob {
         detail: stop.detail,
       });
     }
-    if (stop?.kind === 'snapshot_deleted') {
-      return this.endRunning(run, {
-        status: 'skipped',
-        reason: 'closed',
-        detail: 'snapshot_deleted',
-      });
-    }
+    if (stop?.kind === 'snapshot_deleted') return this.snapshotGone(run);
     // Superseded by a newer analysis (already ended), or its analysis is no longer the newest.
     return this.endRunning(run, { status: 'superseded' });
+  }
+
+  /**
+   * The run's snapshot is gone, and nothing is stored of what the review read of it. Either a newer
+   * push replaced it, which deletes the snapshots of the branch's older analyses but lets a run that
+   * stores finish: the run's analysis is no longer the branch's newest, and the run ends superseded,
+   * as every run a newer push replaces. Or the merge request was merged or closed, which deletes
+   * them as well: its analysis is still the newest, and the run is skipped, closed.
+   */
+  private async snapshotGone(run: ReviewRunRow): Promise<void> {
+    const [branch] = await this.deps.db
+      .select({ newest: branches.lastAnalysisId })
+      .from(branches)
+      .where(eq(branches.id, run.branchId));
+    if (branch?.newest !== run.analysisId) return this.endRunning(run, { status: 'superseded' });
+    return this.endRunning(run, {
+      status: 'skipped',
+      reason: 'closed',
+      detail: 'snapshot_deleted',
+    });
   }
 
   /**

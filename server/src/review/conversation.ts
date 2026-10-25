@@ -107,10 +107,16 @@ export interface ConversationInput {
    */
   accept?: (text: string) => boolean | string;
   /**
-   * How a retry waits, in milliseconds.
+   * Wakes the wait of a retry when it aborts (the server is stopping): the wait ends at once, and
+   * the stop check that follows it ends the conversation. The calls themselves are given up through
+   * `send`'s own signal.
+   */
+  signal?: AbortSignal;
+  /**
+   * How a retry waits, in milliseconds, given `signal` to end the wait early.
    * @internal Tests only: nothing else sets it.
    */
-  sleep?: (ms: number) => Promise<void>;
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }
 
 /**
@@ -196,9 +202,20 @@ function usableArguments(raw: unknown): Record<string, unknown> | null {
 
 // ─── One call to the provider, and what a failure of it means ────────────────
 
-const sleepFor = (ms: number): Promise<void> =>
+/** Waits `ms`, or ends at once when `signal` aborts, or has aborted. */
+const sleepFor = (ms: number, signal?: AbortSignal): Promise<void> =>
   new Promise((resolve) => {
-    setTimeout(resolve, ms);
+    if (signal?.aborted === true) {
+      resolve();
+      return;
+    }
+    const wake = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', wake);
+      resolve();
+    };
+    const timer = setTimeout(wake, ms);
+    signal?.addEventListener('abort', wake, { once: true });
   });
 
 /**
@@ -287,7 +304,7 @@ async function nextTurn(
       if (err.failure === 'timeout' || err.failure === 'bad_answer') charge(guessedInput(sent));
       const wait = retryWait(err, retried);
       if (wait === null) return failed('provider_error');
-      await (input.sleep ?? sleepFor)(wait * 1_000);
+      await (input.sleep ?? sleepFor)(wait * 1_000, input.signal);
     }
   }
 }

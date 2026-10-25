@@ -330,10 +330,12 @@ The CLI never contacts a model.
 **What is sent** for the issue: the rule's key, name, description and CWE; the severity, quality
 and kind; the message; the path, lines and language; and the stored snippet (the flagged lines
 with 3 lines of context). The server redacts secrets again before sending, on top of the CLI's own
-redaction. **Never sent:** issues of secret-detection rules (Gitleaks, credential CWEs), issues in
-files that look like credentials (`.env*`, keys, keystores, `.npmrc`, `kubeconfig`, …), and
-excluded projects and paths. Answers are plain text labelled "AI-generated, may be wrong"; nothing
-the model writes is rendered as HTML or Markdown. See [docs/guide/ai-assistant.md](docs/guide/ai-assistant.md).
+redaction. **Never sent by these three actions:** issues of secret-detection rules (Gitleaks,
+credential CWEs), issues in files that look like credentials (`.env*`, keys, keystores, `.npmrc`,
+`kubeconfig`, …), and excluded projects and paths. An AI review is shown the rule, place and masked
+message of a secret issue, so that it does not report the secret again. Answers are plain text
+labelled "AI-generated, may be wrong"; nothing the model writes is rendered as HTML or Markdown.
+See [docs/guide/ai-assistant.md](docs/guide/ai-assistant.md).
 
 **Limits.** Daily budgets per organisation (explanations, triage, fix suggestions, tokens and an
 optional cost estimate) and a per-user hourly bound, all set by the instance admin; no edition caps

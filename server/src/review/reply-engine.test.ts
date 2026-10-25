@@ -1775,6 +1775,33 @@ describe('the answer to a reply', () => {
       await expect(failing.decision).rejects.toThrow(/masker is closed/);
     });
 
+    it('is stopped at once by the server stopping while a retry waits for the provider', async () => {
+      // The provider limits the call for a minute, and the server stops as it says so: the answer
+      // does not sit out the wait, and the conversation is made no more calls.
+      const controller = new AbortController();
+      let sends = 0;
+      const began = Date.now();
+      const decision = await runReplyConversation(
+        inputOf(),
+        ioOf(
+          () => {
+            sends += 1;
+            controller.abort();
+            return Promise.reject(
+              new LlmError('rate_limited', 'The provider is limiting', 429, 60),
+            );
+          },
+          {
+            signal: controller.signal,
+            shouldStop: () => Promise.resolve(controller.signal.aborted),
+          },
+        ),
+      );
+      expect(decision).toEqual({ stopped: true });
+      expect(sends).toBe(1);
+      expect(Date.now() - began).toBeLessThan(10_000);
+    });
+
     it('throws an error that is no abort, though the caller wants to stop', async () => {
       // A failure the stop did not cause, such as the insert of a call's row failing after the call
       // was made: the caller wants to stop by then (the merge request was closed), and the failure

@@ -1151,6 +1151,78 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
       expect(sleeps).toEqual([5_000]);
       expect(fake.requests).toHaveLength(1);
     });
+
+    it.each(KINDS)('a signal that aborts wakes the wait of a retry at once (%s)', async (kind) => {
+      fake.enqueue(
+        failure(kind, 429, { headers: { 'retry-after': '60' } }),
+        textTurn(kind, '{"findings":[]}'),
+      );
+      const controller = new AbortController();
+      const began = Date.now();
+      // The real wait, a minute long: the server stops while the loop sits in it.
+      const running = run(kind, {
+        sleep: undefined,
+        signal: controller.signal,
+        shouldStop: () => Promise.resolve(controller.signal.aborted),
+      });
+      await vi.waitFor(() => expect(fake.requests).toHaveLength(1), { timeout: 10_000 });
+      controller.abort();
+      const { result } = await running;
+      expect(result).toMatchObject({ kind: 'stopped' });
+      expect(fake.requests).toHaveLength(1);
+      expect(Date.now() - began).toBeLessThan(10_000);
+    });
+
+    it.each(KINDS)('a signal that has aborted already makes no wait at all (%s)', async (kind) => {
+      fake.enqueue(
+        failure(kind, 503),
+        failure(kind, 429, { headers: { 'retry-after': '60' } }),
+        textTurn(kind, '{"findings":[]}'),
+      );
+      const began = Date.now();
+      let asked = 0;
+      const { result } = await run(kind, {
+        sleep: undefined,
+        signal: AbortSignal.abort(),
+        // Not stopped before the first call: the abort is seen by the wait only.
+        shouldStop: () => Promise.resolve(++asked > 1),
+      });
+      expect(result).toMatchObject({ kind: 'stopped' });
+      expect(fake.requests).toHaveLength(1);
+      expect(Date.now() - began).toBeLessThan(2_000);
+    });
+
+    it.each(KINDS)(
+      'hands its signal to the wait it makes, whichever wait it is (%s)',
+      async (kind) => {
+        fake.enqueue(
+          failure(kind, 429, { headers: { 'retry-after': '3' } }),
+          failure(kind, 429, { headers: { 'retry-after': '4' } }),
+          textTurn(kind, '{"findings":[]}'),
+        );
+        const controller = new AbortController();
+        const given: (AbortSignal | undefined)[] = [];
+        const waits = (signals: (AbortSignal | undefined)[]): ConversationInput['sleep'] => {
+          return (_ms, signal) => {
+            signals.push(signal);
+            return Promise.resolve();
+          };
+        };
+        const withSignal = await run(kind, { signal: controller.signal, sleep: waits(given) });
+        expect(withSignal.result).toMatchObject({ kind: 'answer' });
+        expect(given).toEqual([controller.signal, controller.signal]);
+
+        fake.requests.length = 0;
+        fake.enqueue(
+          failure(kind, 429, { headers: { 'retry-after': '3' } }),
+          textTurn(kind, '{"findings":[]}'),
+        );
+        const without: (AbortSignal | undefined)[] = [];
+        const noSignal = await run(kind, { sleep: waits(without) });
+        expect(noSignal.result).toMatchObject({ kind: 'answer' });
+        expect(without).toEqual([undefined]);
+      },
+    );
   });
 });
 

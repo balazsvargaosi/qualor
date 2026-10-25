@@ -6,11 +6,13 @@
 import { AI_SECTION_MARKUP_LINES } from '../src/review/render';
 
 /**
- * CommonMark code spans of one line, removed: a backtick run opens a span that the next run of
- * the same length closes; an unmatched run is literal text. What is left is what GitLab renders
- * as Markdown.
+ * What is outside the CommonMark code spans of one line, as the pieces between them: one before
+ * the first span, one between each two and one after the last (a line without a span is one
+ * piece). A backtick run opens a span that the next run of the same length closes; an unmatched
+ * run is literal text.
  */
-export function outsideCodeSpans(line: string): string {
+function outsideSegments(line: string): string[] {
+  const segments: string[] = [];
   let out = '';
   let i = 0;
   while (i < line.length) {
@@ -39,11 +41,39 @@ export function outsideCodeSpans(line: string): string {
       out += fence;
       i += n;
     } else {
-      out += ' ';
+      segments.push(out);
+      out = '';
       i = close + n;
     }
   }
-  return out;
+  segments.push(out);
+  return segments;
+}
+
+/**
+ * CommonMark code spans of one line, removed: a backtick run opens a span that the next run of
+ * the same length closes; an unmatched run is literal text. What is left is what GitLab renders
+ * as Markdown.
+ */
+export function outsideCodeSpans(line: string): string {
+  return outsideSegments(line).join(' ');
+}
+
+/** The one mark `safeProse` leaves plain between two of the model's code spans: `try`/`catch`. */
+const SPAN_JOIN = /^[/,\-+.:]$/;
+
+/**
+ * {@link outsideCodeSpans} for a line of `safeProse`: a single join mark (`/`, `,`, `-`, `+`, `.`
+ * or `:`) that stands alone between two code spans of one word renders as the plain character
+ * between two `<code>` elements. It is taken out with the spans, and nothing else of the kind is:
+ * a mark with a space beside it, two marks together, or any other character between spans stays
+ * in what is left.
+ */
+export function outsideProseSpans(line: string): string {
+  const segments = outsideSegments(line);
+  return segments
+    .filter((segment, i) => i === 0 || i === segments.length - 1 || !SPAN_JOIN.test(segment))
+    .join(' ');
 }
 
 /** Characters Qualor's own fixed text may use outside code spans. */
@@ -63,7 +93,8 @@ export const FORBIDDEN_ANYWHERE =
  * What a model's prose may keep outside code spans (`safeProse`): letters with their combining
  * marks, decimal digits, spaces and the punctuation of ordinary sentences: the quotes and the
  * bracket a word may open with or end in, the ellipsis and the dashes. No character that GitLab or
- * GitHub gives a meaning to is among them.
+ * GitHub gives a meaning to is among them. (The mark that joins two spans of a word, as in
+ * `try`/`catch`, is taken out with the spans: {@link outsideProseSpans}.)
  */
 export const PROSE_TEXT = /^[\p{L}\p{M}\p{Nd} .,;:!?'’"“”‘()…—–-]*$/u;
 /** A list marker at the start of a line, as `safeProse` writes it. */
@@ -71,10 +102,10 @@ const LIST_MARKER = /^(?:- |\d+\. )/;
 
 /**
  * Whether one line of `safeProse`'s output is only ordinary words and their punctuation once its
- * code spans and the list marker at its start are taken out.
+ * code spans, the marks that join two of them and the list marker at its start are taken out.
  */
 export function checkProse(line: string): boolean {
-  return PROSE_TEXT.test(outsideCodeSpans(line).replace(LIST_MARKER, ''));
+  return PROSE_TEXT.test(outsideProseSpans(line).replace(LIST_MARKER, ''));
 }
 
 // ─── The AI review section (server/src/review/render.ts) ─────────────────────
@@ -99,7 +130,7 @@ const MARKUP_LINES: ReadonlySet<string> = new Set(AI_SECTION_MARKUP_LINES);
 function checkFindingLine(line: string): boolean {
   const start = FINDING_START.exec(line);
   if (start === null) return false;
-  const [place, ...parts] = outsideCodeSpans(line.slice(start[0].length)).split(' · ');
+  const [place, ...parts] = outsideProseSpans(line.slice(start[0].length)).split(' · ');
   if (place !== ' ') return false;
   const [first = '', second = ''] = parts;
   const isLink = (part: string): boolean => SECTION_LINK.test(part);

@@ -68,6 +68,8 @@ interface ToolsIo {
 export type ConversationIo = {
   send: ConversationInput['send'];
   shouldStop: ConversationInput['shouldStop'];
+  /** Wakes the wait of a retry when it aborts: the server is stopping (`ConversationInput.signal`). */
+  signal?: ConversationInput['signal'];
 } & (ToolsIo | { reader: null });
 
 /** What a call is answered when it is made though the model has no tools. */
@@ -122,6 +124,7 @@ export function converseOverTools(call: RoleCall, io: ConversationIo): Promise<C
     },
     send: io.send,
     shouldStop: io.shouldStop,
+    signal: io.signal,
     accept: call.accept,
   });
 }

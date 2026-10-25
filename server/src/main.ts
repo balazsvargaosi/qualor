@@ -315,7 +315,10 @@ async function main(): Promise<void> {
   const llmRuntime = createLlmRuntime();
   // llm.md §12.3: AI requests have their own worker, so a slow or absent model never delays
   // analyses, deliveries or decorations. It also runs the automatic fix suggestions of an analysed
-  // merge request (4E-3a §3), which queue requests and never call the model themselves.
+  // merge request (4E-3a §3), which queue requests and never call the model themselves. Its calls
+  // wait on the provider for up to the provider's timeout, 10 minutes at the most: a stop aborts
+  // them, and their requests go back to the queue for the next server.
+  const llmShutdown = new AbortController();
   const llmWorker = startWorker({
     db: database.db,
     handlers: {
@@ -328,6 +331,7 @@ async function main(): Promise<void> {
         version: VERSION,
         limits: () => edition.limits(),
         audit,
+        shutdown: llmShutdown.signal,
       }),
       ...autoFixHandlers({ db: database.db, limits: () => edition.limits(), audit, logger }),
     },
@@ -434,8 +438,11 @@ async function main(): Promise<void> {
     try {
       // A review runs for minutes, longer than a stop's grace period (60 s in Compose and Helm):
       // the running ones end now, failed (the next push reviews again), and the worker takes no
-      // new one, before anything is waited for. The database stays up until the worker is done.
+      // new one, before anything is waited for. The calls of AI requests are cut the same way, and
+      // their requests wait in the queue for the next server. The database stays up until the
+      // workers are done.
       reviewShutdown.abort();
+      llmShutdown.abort();
       const reviewsStopped = reviewWorker.stop();
       updates?.stop();
       await app.close();

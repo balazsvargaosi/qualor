@@ -1,15 +1,17 @@
 import { eq, sql } from 'drizzle-orm';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFakeLlm, openAiAnswer, type FakeLlm } from '../../test/fake-llm';
 import { createIngestHarness, type IngestHarness } from '../../test/ingest';
 import { configuredProvider, configureLlm, llmJobDeps, runLlmJobs } from '../../test/llm';
 import { engine, file, finding, reportWith } from '../../test/reports';
 import { issues, jobs, llmRequests } from '../db/schema';
 import { claimJob, enqueue, reapExpiredLeases } from '../queue/queue';
+import { SCM_CIRCUIT_FAILURES, SCM_CIRCUIT_OPEN_MS, type CircuitBreaker } from '../scm/runtime';
 import { parseInternalHosts } from '../scm/url';
 import {
   createLlmRuntime,
   jsonbTextBytes,
+  LLM_AFTER_STOP_SECONDS,
   LLM_RESULT_MAX_BYTES,
   type LlmJobPayload,
   reconcileStuckLlmRequests,
@@ -474,6 +476,192 @@ describe('the llm worker (llm.md §9, §10, §14)', () => {
     await runLlmJobs(h, llmJobDeps(h));
     expect(fake.requests).toHaveLength(before);
     expect((await row(current)).attempts).toBe(0);
+  });
+
+  /**
+   * A request's provider call is held in flight: `inFlight` settles when it arrives at the fake, and
+   * `release` lets the fake answer. `lose` first fails the row, as the sweep does to a job that lost
+   * its lease.
+   */
+  const holdNextCall = (lose?: () => Promise<void>) => {
+    let arrived!: () => void;
+    const inFlight = new Promise<void>((resolve) => {
+      arrived = resolve;
+    });
+    let free!: () => void;
+    const held = new Promise<void>((resolve) => {
+      free = resolve;
+    });
+    fake.enqueue(async () => {
+      await lose?.();
+      arrived();
+      await held;
+      return {
+        status: 200,
+        body: openAiAnswer(JSON.stringify({ summary: 's', explanation: 'e', howToFix: '' })),
+      };
+    });
+    return { inFlight, release: free };
+  };
+  /** A runtime whose provider circuit is open, or half-open: the next call is then its probe. */
+  const failing = (open: boolean) => {
+    let now = Date.now();
+    const runtime = createLlmRuntime(() => now);
+    for (let i = 0; i < SCM_CIRCUIT_FAILURES; i += 1) runtime.circuit.failure(fake.openAiBaseUrl);
+    if (!open) now += SCM_CIRCUIT_OPEN_MS + 1_000;
+    return runtime;
+  };
+  /**
+   * The circuit heard nothing of a call that was given up: it is half-open still (no answer would
+   * have closed it, no failure opened it again), and its probe is free for the next call.
+   */
+  const expectProbeHandedOn = (circuit: CircuitBreaker) => {
+    expect(circuit.inspect(fake.openAiBaseUrl)).toMatchObject({
+      state: 'half-open',
+      failures: SCM_CIRCUIT_FAILURES,
+    });
+    expect(circuit.tryPass(fake.openAiBaseUrl)).toBe(true);
+  };
+  /** The jobs still waiting to run, and how far ahead of the database's clock each one is. */
+  const waiting = async () => {
+    const queued = (await llmJobs()).filter((j) => j.status === 'queued');
+    return Promise.all(queued.map(async (j) => ({ job: j, wait: await dbWait(j.runAt) })));
+  };
+
+  it('a server stop cuts an explain call in flight', async () => {
+    const { id } = await ask('explain');
+    const { inFlight, release } = holdNextCall();
+    // The call is the probe of a half-open circuit.
+    const runtime = failing(false);
+    const shutdown = new AbortController();
+    const running = runLlmJobs(h, llmJobDeps(h, { runtime, shutdown: shutdown.signal }));
+    try {
+      await inFlight;
+      expect((await row(id)).status).toBe('running');
+      // As main.ts stops: the signal first, then the wait for the worker.
+      const stopping = Date.now();
+      shutdown.abort();
+      await running;
+      // Well before the provider's own timeout of 5 s.
+      expect(Date.now() - stopping).toBeLessThan(4_000);
+    } finally {
+      release();
+    }
+    // The call was cut, and the provider was not asked again.
+    expect(fake.requests).toHaveLength(1);
+    await vi.waitFor(() => expect(fake.abandoned).toContain(fake.requests[0]), { timeout: 5_000 });
+    // Nothing of it is recorded as an answer or as a failure, no attempt is spent, and the request
+    // waits for the next server a few seconds on.
+    expect(await row(id)).toMatchObject({
+      status: 'queued',
+      attempts: 0,
+      errorCode: null,
+      inputTokens: null,
+      outputTokens: null,
+      costMicroUsd: null,
+      result: null,
+      finishedAt: null,
+    });
+    const next = await waiting();
+    expect(next).toHaveLength(1);
+    expect(next[0]!.job.payload).toEqual({
+      requestId: id,
+      attempt: 0,
+      baseUrl: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect(next[0]!.wait).toBeGreaterThan(2_000);
+    expect(next[0]!.wait).toBeLessThanOrEqual(LLM_AFTER_STOP_SECONDS * 1_000 + 500);
+    // A call given up is no failure of the provider's and no answer of it: its circuit hears nothing.
+    expectProbeHandedOn(runtime.circuit);
+    expect(logs()).toContain('AI request left for the next server');
+    expect(logs()).not.toContain('AI request finished');
+    // The server that is up next answers it, as if nothing had happened.
+    await runLlmJobs(h, llmJobDeps(h));
+    expect(await row(id)).toMatchObject({ status: 'succeeded', attempts: 1 });
+  });
+
+  it('a job that starts after the stop sends nothing, and leaves its request for the next server', async () => {
+    const { id } = await ask('explain');
+    // The provider's circuit is open, and a request that finds it so fails at once. This one is not
+    // asked about the circuit: the server that answers it next has a circuit of its own.
+    const runtime = failing(true);
+    await runLlmJobs(h, llmJobDeps(h, { runtime, shutdown: AbortSignal.abort() }));
+    expect(fake.requests).toHaveLength(0);
+    expect(await row(id)).toMatchObject({ status: 'queued', attempts: 0, errorCode: null });
+    const next = await waiting();
+    expect(next).toHaveLength(1);
+    expect(next[0]!.job.payload).toMatchObject({ requestId: id, attempt: 0 });
+    expect(next[0]!.wait).toBeGreaterThan(2_000);
+    expect(next[0]!.wait).toBeLessThanOrEqual(LLM_AFTER_STOP_SECONDS * 1_000 + 500);
+    expect(runtime.circuit.inspect(fake.openAiBaseUrl)).toMatchObject({
+      state: 'open',
+      failures: SCM_CIRCUIT_FAILURES,
+    });
+    // The job that was started completed: only the one for the next server is left.
+    expect((await llmJobs()).map((j) => j.status).sort()).toEqual(['queued', 'succeeded']);
+    await runLlmJobs(h, llmJobDeps(h));
+    expect(await row(id)).toMatchObject({ status: 'succeeded', attempts: 1 });
+  });
+
+  it('a stop that cuts a retry spends no attempt of the three', async () => {
+    // The first attempt was limited by the provider and queued again.
+    fake.enqueue({
+      status: 429,
+      headers: { 'retry-after': '1' },
+      body: { error: { message: 'x' } },
+    });
+    const { id } = await ask('explain');
+    await runLlmJobs(h, llmJobDeps(h));
+    expect(await row(id)).toMatchObject({ status: 'queued', attempts: 1 });
+    // The second is cut by the stop.
+    const { inFlight, release } = holdNextCall();
+    const shutdown = new AbortController();
+    const running = runLlmJobs(h, llmJobDeps(h, { shutdown: shutdown.signal }));
+    try {
+      await inFlight;
+      expect((await row(id)).attempts).toBe(2);
+      shutdown.abort();
+      await running;
+    } finally {
+      release();
+    }
+    expect(await row(id)).toMatchObject({ status: 'queued', attempts: 1 });
+    const next = await waiting();
+    expect(next).toHaveLength(1);
+    expect(next[0]!.job.payload).toMatchObject({ requestId: id, attempt: 1 });
+    await runLlmJobs(h, llmJobDeps(h));
+    expect(await row(id)).toMatchObject({ status: 'succeeded', attempts: 2 });
+  });
+
+  it('a stop leaves a request alone whose job lost its lease meanwhile', async () => {
+    const abandon = async (id: string) => {
+      await h.ctx.db
+        .update(llmRequests)
+        .set({ status: 'failed', errorCode: 'REQUEST_ABANDONED', finishedAt: sql`now()` })
+        .where(eq(llmRequests.id, id));
+    };
+    let current = '';
+    const { inFlight, release } = holdNextCall(() => abandon(current));
+    current = (await ask('explain')).id;
+    const shutdown = new AbortController();
+    const running = runLlmJobs(h, llmJobDeps(h, { shutdown: shutdown.signal }));
+    try {
+      await inFlight;
+      shutdown.abort();
+      await running;
+    } finally {
+      release();
+    }
+    // The sweep's end stands, and no job is queued for a request that has ended.
+    expect(await row(current)).toMatchObject({ status: 'failed', errorCode: 'REQUEST_ABANDONED' });
+    expect(await waiting()).toEqual([]);
+  });
+
+  it('answers as before while the server is not stopping', async () => {
+    // A signal that never aborts changes nothing: the call is made with it, and answered.
+    const { id } = await ask('explain');
+    await runLlmJobs(h, llmJobDeps(h, { shutdown: new AbortController().signal }));
+    expect(await row(id)).toMatchObject({ status: 'succeeded', attempts: 1, inputTokens: 412 });
   });
 
   it('scrubs the key from the final strings, also when the answer spells it with JSON escapes', async () => {

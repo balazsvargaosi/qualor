@@ -24,7 +24,7 @@ import { effectiveAutoFix } from './auto-fix-settings';
 import { errorCodeOf, TRANSIENT_FAILURES, type LlmErrorCode } from './errors';
 import { baseUrlHash, buildIssueInput, cacheKeyOf, type BuiltInput } from './input';
 import { queueFixPost } from './post';
-import { callProvider, LlmError, type LlmAnswer } from './providers';
+import { callProvider, LlmCallAborted, LlmError, type LlmAnswer } from './providers';
 import { LLM_QUEUE } from './service';
 import {
   organizationSettings,
@@ -42,6 +42,12 @@ export const LLM_MAX_ATTEMPTS = 3;
 export const LLM_RETRY_SECONDS = [5, 30] as const;
 /** A job whose organisation already has a request in flight in this process waits this long. */
 export const LLM_BUSY_DEFER_SECONDS = 2;
+/**
+ * A request that a stopping server gave up is asked for again this long after, by the next server
+ * or another replica: not at once, so that a worker of the stopping server that is still polling
+ * does not take it straight back.
+ */
+export const LLM_AFTER_STOP_SECONDS = 5;
 /** llm.md §14, plan 3B ruling LL4: a provider's `Retry-After` is honoured within 1 s – 2 min. */
 const MIN_RETRY_AFTER = 1;
 const MAX_RETRY_AFTER = 120;
@@ -100,6 +106,13 @@ export interface LlmJobDeps {
   /** The recorder an automatic post records `ai.fix_posted` through (the system actor). */
   audit?: AuditRecorder;
   resolve?: Resolver;
+  /**
+   * Aborted when the server stops (main.ts), before it waits for its workers: a call in flight is
+   * cut at once, and its request goes back to the queue for the next server, answered then, as is
+   * the request of a job that starts after the stop, which makes no call. Without it nothing ends a
+   * call but its own timeout.
+   */
+  shutdown?: AbortSignal;
   /**
    * The prompt's nonce; default 16 random bytes in hex.
    * @internal Tests only: main.ts never sets it, and nothing else may.
@@ -467,6 +480,8 @@ async function sendClaimed(
   payload: LlmJobPayload,
   started: number,
 ): Promise<void> {
+  // A job that starts once the server is stopping makes no call: the next server answers.
+  if (deps.shutdown?.aborted === true) return await requeueAfterStop(deps, row, payload);
   const settings = await readLlmSettings(deps.db);
   const automatic = payload.auto === true && row.userId === null;
   const prepared = await prepare(deps, row, payload, settings, automatic);
@@ -497,10 +512,17 @@ async function sendClaimed(
         internalHosts: deps.internalHosts,
         version: deps.version,
         ...(deps.resolve ? { resolve: deps.resolve } : {}),
+        ...(deps.shutdown ? { signal: deps.shutdown } : {}),
       },
     );
     deps.runtime.circuit.success(circuitKey);
   } catch (err) {
+    if (err instanceof LlmCallAborted) {
+      // The stop cut the call: the provider neither answered nor failed, so its circuit only
+      // hands its probe on.
+      deps.runtime.circuit.release(circuitKey);
+      return await requeueAfterStop(deps, row, payload);
+    }
     if (!(err instanceof LlmError)) {
       deps.runtime.circuit.release(circuitKey);
       throw err;
@@ -561,6 +583,41 @@ async function runLlmJob(deps: LlmJobDeps, payload: LlmJobPayload): Promise<void
     await sendClaimed(deps, row, payload, started);
   } finally {
     deps.runtime.slots.release(row.organizationId);
+  }
+}
+
+/**
+ * The server is stopping and gives the request up (its call was cut, or its job did not start): the
+ * row goes back to queued as it was before this job claimed it, no attempt spent, with the same job
+ * a few seconds on, in one transaction, so that the next server or another replica answers it.
+ * Nothing is recorded of the call: no failure, no tokens, no cost. Only a row still running: a job
+ * that lost its lease (the sweep failed the row) neither requeues it nor enqueues anything.
+ */
+async function requeueAfterStop(
+  deps: LlmJobDeps,
+  row: LlmRequestRow,
+  payload: LlmJobPayload,
+): Promise<void> {
+  const requeued = await deps.db.transaction(async (tx) => {
+    const updated = await tx
+      .update(llmRequests)
+      .set({ status: 'queued', attempts: payload.attempt, updatedAt: sql`now()` })
+      .where(and(eq(llmRequests.id, row.id), eq(llmRequests.status, 'running')))
+      .returning({ id: llmRequests.id });
+    if (updated.length === 0) return false;
+    await enqueue(tx, {
+      queue: LLM_QUEUE,
+      payload,
+      runAt: inSeconds(LLM_AFTER_STOP_SECONDS),
+      maxAttempts: 1,
+    });
+    return true;
+  });
+  if (requeued) {
+    deps.logger?.info(
+      { requestId: row.id, attempt: payload.attempt },
+      'AI request left for the next server: the server is stopping',
+    );
   }
 }
 

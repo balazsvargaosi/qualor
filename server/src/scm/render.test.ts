@@ -8,6 +8,7 @@ import {
   FIXED_TEXT,
   FORBIDDEN_ANYWHERE,
   outsideCodeSpans,
+  outsideProseSpans,
   SUMMARY_FIXED_TEXT,
 } from '../../test/markdown-check';
 import { AI_SECTION_MAX_BYTES, aiSummarySection, type ReviewSummaryState } from '../review/render';
@@ -1116,7 +1117,9 @@ function expectInertProse(out: string, label: string): void {
     expect(line, where).not.toMatch(/^\s*\//);
     expect(checkProse(line), where).toBe(true);
     if (line !== '') expect(line, where).toMatch(PROSE_LINE_START);
-    const outside = outsideCodeSpans(line);
+    // The one mark that joins two spans of a word is left out with them: it stands between two
+    // `<code>` elements and is no text a provider reads for a link (see the marked check below).
+    const outside = outsideProseSpans(line);
     for (const [name, pattern] of REFERENCES)
       expect(outside, `${where}: ${name}`).not.toMatch(pattern);
   }
@@ -1197,6 +1200,72 @@ describe('safeProse: the model’s words made inert', () => {
     expect(prose('word`glued` and `a`b')).toBe('`` word`glued` `` and `` `a`b ``');
     expect(prose('`` ` ``')).toBe('`` ` ``');
     expect(prose('` `')).toBe('` `');
+  });
+
+  it('`try`/`catch` becomes two code spans with a plain slash', () => {
+    expect(prose('`try`/`catch`')).toBe('` try `/` catch `');
+    expect(prose('Use `try`/`catch` around it.')).toBe('Use ` try `/` catch ` around it.');
+    // A GitLab or GitHub page shows two code elements and a slash, nothing else.
+    expect(marked.parse(prose('`try`/`catch`'), { async: false, gfm: true })).toBe(
+      '<p><code>try</code>/<code>catch</code></p>\n',
+    );
+  });
+
+  it('joins spans by one of / , - + . : and as many spans as the word has, with its marks around', () => {
+    expect(prose('`a`/`b`/`c`')).toBe('` a `/` b `/` c `');
+    expect(prose('`a`,`b` `a`-`b` `a`+`b` `a`.`b` `a`:`b`')).toBe(
+      '` a `,` b ` ` a `-` b ` ` a `+` b ` ` a `.` b ` ` a `:` b `',
+    );
+    expect(prose('`a`/`b`-`c`+`d`')).toBe('` a `/` b `-` c `+` d `');
+    // The mark that opens before the first span and the ones that end after the last are the word's.
+    expect(prose('(`a`,`b`) and "`x`-`y`", then `p`:`q`; ok `r`/`s`.')).toBe(
+      '(` a `,` b `) and "` x `-` y `", then ` p `:` q `; ok ` r `/` s `.',
+    );
+    // A span may hold what a span holds, and a closer after a span is no join.
+    expect(prose('`two words`/`b` and `c`. `d`')).toBe('` two words `/` b ` and ` c `. ` d `');
+    expect(prose('`a` / `b`')).toBe('` a ` ` / ` ` b `');
+  });
+
+  it('keeps any other join of spans as one word in one code span, as before', () => {
+    // Two marks together, a sigil, a letter or a digit between spans.
+    for (const text of [
+      '`a`//`b`',
+      '`a`/,`b`',
+      '`a`:-`b`',
+      '`a`@`b`',
+      '`a`#`b`',
+      '`a`!`b`',
+      '`a`?`b`',
+      '`a`(`b`',
+      '`a`)`b`',
+      '`a`b`c`',
+      '`a`1`b`',
+      '`a`_`b`',
+    ]) {
+      expect(prose(text), text).toBe(`\`\` ${text} \`\``);
+    }
+    // A span joined to a plain word, or to an opener, or left open, is one word too.
+    for (const text of [
+      '`a`/b',
+      'a/`b`',
+      '`a`/(`b`)',
+      '`a`/`b',
+      '`a`/`b`x',
+      '`a`/`b`/c',
+      '/`a`/`b`',
+    ]) {
+      expect(prose(text), text).toBe(`\`\` ${text} \`\``);
+    }
+  });
+
+  it('writes a word of spans and marks the same again when it is given it again', () => {
+    for (const text of [
+      '`try`/`catch` and (`a`,`b`) with `x`-`y`.',
+      '`a`//`b` `a`@`b` `a`/`b`/c',
+      '`` a ` b ``/`c`',
+    ]) {
+      expect(prose(prose(text)), text).toBe(prose(text));
+    }
   });
 
   it('puts a word that a provider would link or reference in a code span, whatever it looks like', () => {
@@ -1493,6 +1562,19 @@ describe('safeProse: the model’s words made inert', () => {
     ['an escaped bracket', '\\[x\\] end\\'],
     ['a reference link definition', '[1]: http://evil.example'],
     ['a mention in a span', '`@all` and `#1`'],
+    ['spans joined by a slash', '`try`/`catch`'],
+    [
+      'spans joined by the marks that may join them',
+      '(`a`,`b`) "`a`-`b`". `a`+`b` `a`.`b` `a`:`b`; `a`/`b`/`c`',
+    ],
+    ['spans joined by two marks', '`a`//`b` `a`/,`b` `a`:-`b` `a`..`b`'],
+    [
+      'spans joined by a mark that is active',
+      '`a`@`b` `a`#`b` `a`!`b` `a`~`b` `a`%`b` `a`&`b` `a`$`b` `a`<`b` `a`>`b` `a`*`b` `a`_`b` `a`=`b` `a`|`b` `a`\\`b`',
+    ],
+    ['a span and a word joined by a slash', '`try`/catch try/`catch` `try`/@all'],
+    ['spans joined by a slash, and a quick action', '`a`/`b`\n/close\n`a`/`b` /merge'],
+    ['spans joined by a slash, and a forged marker', '`a`/`b`<!-- qualor:summary x -->`c`'],
     ['a bare backtick', '`'],
     ['backtick runs', '`'.repeat(500)],
     ['mixed backtick runs', 'a ` b `` c ``` d ```` e'],
@@ -1564,6 +1646,15 @@ describe('safeProse: the model’s words made inert', () => {
       '&amp;',
       'é',
       '界',
+      '`a`/`b`',
+      '(`a`,`b`).',
+      '`a`-`b`',
+      '`a`+`b`',
+      '`a`.`b`',
+      '`a`:`b`',
+      '`a`//`b`',
+      '`a`@`b`',
+      '/`b`',
     ];
     const next = seededRandom(20_261_024);
     for (let round = 0; round < 3_000; round += 1) {
