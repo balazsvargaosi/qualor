@@ -1932,6 +1932,13 @@ export const REPLY_REASONS = [
 export type ReplyReason = (typeof REPLY_REASONS)[number];
 
 /**
+ * The thread ids the replies ledger takes (its CHECK `review_replies_thread_id_format`, written
+ * from this pattern): a GitLab discussion's lower-case hexadecimal id, or the digits of a GitHub
+ * comment's id. The same shapes a reply can be posted to.
+ */
+export const THREAD_ID = /^[0-9a-f]{1,64}$|^[0-9]{1,20}$/;
+
+/**
  * What Qualor does with people's notes in a merge request: one row for each note it handles, a
  * reply in one of its threads or a command. A note is one row for its project, provider and kind
  * (on GitHub a reply is a review comment and a command an issue comment, two id spaces that can
@@ -2021,7 +2028,6 @@ export const reviewReplies = pgTable(
     ),
     check('review_replies_verdict_check', sql`verdict IN ('keep','wont_fix','false_positive')`),
     check('review_replies_answer_length', sql`char_length(answer) <= 1200`),
-    // A GitLab discussion id is hexadecimal, a GitHub comment id is digits.
-    check('review_replies_thread_id_format', sql`thread_id ~ '^[0-9a-f]{1,64}$|^[0-9]{1,20}$'`),
+    check('review_replies_thread_id_format', sql`thread_id ~ ${sql.raw(`'${THREAD_ID.source}'`)}`),
   ],
 );

@@ -1,6 +1,6 @@
 import { deleteBranchSnapshots } from '../../review/lifecycle';
-import { queueReplies, replyWindow, type ReplyWindow } from '../../review/replies';
 import { githubCommands } from '../../review/reply-detect';
+import { queueReplies, replyWindow, type ReplyWindow } from '../../review/reply-queue';
 import {
   withMergeRequestHead,
   withUnplacedFindings,

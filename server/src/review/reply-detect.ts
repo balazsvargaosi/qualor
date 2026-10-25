@@ -8,9 +8,9 @@ import { parseCommand } from './commands';
  * Which of the people's notes in a merge request Qualor answers (6I-4): the new replies in its own
  * threads, and the notes that give it a command. Decoration and the webhook's scan list the
  * discussions (GitLab), or the review comments, review threads and issue comments (GitHub), and
- * hand them here; what comes back is what the ledger (replies.ts) records. Plain functions over
- * what they are given: no database, no request and no clock (`since` says how far back a note
- * counts).
+ * hand them here; what comes back is what the queue (reply-queue.ts) records in the ledger
+ * (replies.ts). Plain functions over what they are given: no database, no request and no clock
+ * (`since` says how far back a note counts).
  *
  * A thread is Qualor's when its first note is Qualor's own, is no system note, and opens with an
  * issue marker. A reply is a later note that a person wrote (GitLab: anyone but Qualor's user, no

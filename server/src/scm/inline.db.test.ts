@@ -3,7 +3,14 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { createFakeGitLab, type FakeGitLab } from '../../test/fake-gitlab';
 import { createFakeLlm, type FakeLlm } from '../../test/fake-llm';
 import { createIngestHarness, type IngestHarness } from '../../test/ingest';
-import { answerJob, queuedAnswers, reviewOff, reviewOn, reviewScope } from '../../test/replies';
+import {
+  answerJob,
+  queuedAnswers,
+  refuseAnswerJobs,
+  reviewOff,
+  reviewOn,
+  reviewScope,
+} from '../../test/replies';
 import { engine, file, finding } from '../../test/reports';
 import {
   decorationDeps,
@@ -15,8 +22,8 @@ import {
 } from '../../test/scm';
 import { first } from '../db/rows';
 import { branches, issues, jobs, reviewReplies } from '../db/schema';
-import { endReply, insertReplies, MAX_QUEUED_ROUNDS } from '../review/replies';
-import { replyKey } from '../review/reply-job';
+import { endReply, insertReplies } from '../review/replies';
+import { MAX_QUEUED_COMMANDS, MAX_QUEUED_ROUNDS, replyKey } from '../review/reply-queue';
 import { MAX_GITLAB_REQUESTS } from './gitlab/client';
 import {
   addedLineTexts,
@@ -877,31 +884,69 @@ describe('GitLab inline discussions (scm.md §5.4)', () => {
     });
 
     it('queues the replies and commands it saw when the discussions run past the page bound', async () => {
-      const s = await started('replies/cut', [3, 4]);
+      // The first page of the cut listing shows Qualor's summary, or does not: with the summary out
+      // of sight no second one is posted, and what was seen is queued all the same.
+      for (const seesSummary of [true, false]) {
+        const s = await started(`replies/cut-${seesSummary}`, [3, 4]);
+        await reviewOn(h, llm);
+        const reply = fake.reply(s.gitlabId, 7, threadAt(s.gitlabId, 3).id, whoSaid('Is it?'));
+        const command = fake.addNote(s.gitlabId, 7, whoSaid('qualor review'));
+        // The listing is cut: its first page is the discussions as GitLab has them, and every page
+        // up to the bound has another after it.
+        const listing = await fetch(
+          `${fake.url}/api/v4/projects/${s.gitlabId}/merge_requests/7/discussions`,
+          { headers: { 'PRIVATE-TOKEN': fake.token } },
+        );
+        const page = (await listing.json()) as { notes: { body: string }[] }[];
+        fake.inject(
+          'GET',
+          new RegExp(`^/projects/${s.gitlabId}/merge_requests/7/discussions$`),
+          {
+            status: 200,
+            body: seesSummary
+              ? page
+              : page.filter((d) => markerOf(d.notes[0]?.body ?? '')?.kind !== 'summary'),
+            headers: { 'x-next-page': '2' },
+          },
+          ...Array.from({ length: MAX_DISCUSSION_PAGES - 1 }, (_, i) => ({
+            status: 200,
+            body: [],
+            headers: { 'x-next-page': String(i + 3) },
+          })),
+        );
+        fake.clearRequests();
+        await decorate(s);
+        expect(await queuedNotes(s.branchId), String(seesSummary)).toEqual([
+          ['reply', reply.id],
+          ['command', command.notes[0]!.id],
+        ]);
+        expect(
+          fake.requests.filter((r) => r.method === 'POST' && r.path.endsWith('/notes')),
+          String(seesSummary),
+        ).toEqual([]);
+        await reviewOff(h);
+      }
+    });
+
+    it('writes its threads and its summary before it queues, so a failed queue write does not cost them', async () => {
+      const s = await started('replies/queue-fails', [3]);
       await reviewOn(h, llm);
       const reply = fake.reply(s.gitlabId, 7, threadAt(s.gitlabId, 3).id, whoSaid('Is it?'));
-      const command = fake.addNote(s.gitlabId, 7, whoSaid('qualor review'));
-      // The listing is cut: its first page is the discussions as GitLab has them, and every page up
-      // to the bound has another after it.
-      const listing = await fetch(
-        `${fake.url}/api/v4/projects/${s.gitlabId}/merge_requests/7/discussions`,
-        { headers: { 'PRIVATE-TOKEN': fake.token } },
-      );
-      fake.inject(
-        'GET',
-        new RegExp(`^/projects/${s.gitlabId}/merge_requests/7/discussions$`),
-        { status: 200, body: await listing.json(), headers: { 'x-next-page': '2' } },
-        ...Array.from({ length: MAX_DISCUSSION_PAGES - 1 }, (_, i) => ({
-          status: 200,
-          body: [],
-          headers: { 'x-next-page': String(i + 3) },
-        })),
-      );
-      await decorate(s);
-      expect(await queuedNotes(s.branchId)).toEqual([
-        ['reply', reply.id],
-        ['command', command.notes[0]!.id],
-      ]);
+      // A new finding: the decoration has a thread to make and a summary to change, and a reply to
+      // queue, whose job the database refuses.
+      const allow = await refuseAnswerJobs(h.ctx.db, s.branchId);
+      try {
+        await s.ingest([3, 4]);
+        await runDecorations(h, decorationDeps(h));
+      } finally {
+        await allow();
+      }
+      expect(threads(s.gitlabId)).toHaveLength(2);
+      expect(summary(s.gitlabId)).toContain('2 new issues are commented inline.');
+      expect(await queuedAnswers(h.ctx.db, s.branchId)).toEqual({ rows: [], jobs: [] });
+      // The job is tried again, and queues the reply.
+      await runDecorations(h, decorationDeps(h));
+      expect(await queuedNotes(s.branchId)).toEqual([['reply', reply.id]]);
     });
 
     it('queues the notes of a merged-results pipeline too, whose analyzer threads are left alone', async () => {
@@ -917,6 +962,84 @@ describe('GitLab inline discussions (scm.md §5.4)', () => {
         ['reply', reply.id],
         ['command', command.notes[0]!.id],
       ]);
+    });
+
+    it(`queues ${MAX_QUEUED_COMMANDS} commands in a decoration, the next in the following one, and nothing after`, async () => {
+      const s = await started('replies/commands-cap', [3]);
+      await reviewOn(h, llm);
+      const notes = Array.from(
+        { length: MAX_QUEUED_COMMANDS + 1 },
+        () => fake.addNote(s.gitlabId, 7, whoSaid('qualor review')).notes[0]!.id,
+      );
+      const state = async () => {
+        const { rows, jobs: queued } = await queuedAnswers(h.ctx.db, s.branchId);
+        return { notes: rows.map((row) => row.noteId), jobs: queued.length };
+      };
+      // Every decoration finds all 21 commands: the 20 the ledger holds take no place of the cap.
+      await decorate(s);
+      expect(await state()).toEqual({
+        notes: notes.slice(0, MAX_QUEUED_COMMANDS),
+        jobs: MAX_QUEUED_COMMANDS,
+      });
+      await decorate(s);
+      expect(await state()).toEqual({ notes, jobs: MAX_QUEUED_COMMANDS + 1 });
+      await decorate(s);
+      expect(await state()).toEqual({ notes, jobs: MAX_QUEUED_COMMANDS + 1 });
+    });
+
+    it('offers a command skipped for the budget again on a later day, while 20 older commands are held', async () => {
+      const s = await started('replies/command-budget', [3]);
+      await reviewOn(h, llm);
+      const notes = Array.from(
+        { length: MAX_QUEUED_COMMANDS + 1 },
+        () => fake.addNote(s.gitlabId, 7, whoSaid('qualor review')).notes[0]!.id,
+      );
+      await decorate(s);
+      await decorate(s);
+      const { rows } = await queuedAnswers(h.ctx.db, s.branchId);
+      expect(rows.map((row) => row.noteId)).toEqual(notes);
+      const newest = rows.at(-1)!;
+
+      // The answer jobs ran, the newest skipped for the budget two days ago.
+      await h.ctx.db
+        .update(jobs)
+        .set({ status: 'succeeded' })
+        .where(eq(jobs.concurrencyKey, replyKey(s.branchId)));
+      await endReply(h.ctx.db, newest.id, { status: 'skipped', reason: 'budget_spent' });
+      await h.ctx.db
+        .update(reviewReplies)
+        .set({ finishedAt: daysAgo(2) })
+        .where(eq(reviewReplies.id, newest.id));
+      await decorate(s);
+      const queued = await queuedAnswers(h.ctx.db, s.branchId);
+      // The twenty held commands are as they were, and the skipped one is queued again with a job.
+      expect(queued.rows.map((row) => [row.noteId, row.status])).toEqual(
+        notes.map((note) => [note, 'queued']),
+      );
+      expect(queued.rows.at(-1)).toMatchObject({ id: newest.id, reason: null, finishedAt: null });
+      expect(queued.jobs.filter((job) => job.status === 'queued')).toEqual([
+        answerJob(s.branchId, newest.id),
+      ]);
+    });
+
+    it('two projects of one merge request queue each its own row for one command, once', async () => {
+      const a = await started('replies/mono-command-a', [3]);
+      const b = await started('replies/mono-command-b', [4], a.gitlabId);
+      await reviewOn(h, llm);
+      const command = fake.addNote(a.gitlabId, 7, whoSaid('qualor review'));
+      await decorate(a);
+      await decorate(b);
+      for (const project of [a, b]) {
+        expect(await queuedNotes(project.branchId)).toEqual([['command', command.notes[0]!.id]]);
+      }
+      // Decorating again queues nothing more, for either project.
+      await decorate(a);
+      await decorate(b);
+      for (const project of [a, b]) {
+        const queued = await queuedAnswers(h.ctx.db, project.branchId);
+        expect(queued.jobs).toEqual(queued.rows.map((row) => answerJob(project.branchId, row.id)));
+        expect(queued.rows).toHaveLength(1);
+      }
     });
   });
 });

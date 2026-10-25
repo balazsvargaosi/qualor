@@ -27,6 +27,7 @@ import {
   REPLY_VERDICTS,
   reviewReplies,
   reviewRuns,
+  THREAD_ID,
 } from './schema';
 
 /** PostgreSQL's not_null_violation. */
@@ -384,6 +385,14 @@ describe('review_replies and the columns beside it (6I-4, migration 0017_review_
       expect(await tryReply({ threadId }), JSON.stringify(threadId)).toEqual(
         checkViolation('review_replies_thread_id_format'),
       );
+    }
+    // The pattern the queue tests a thread id by is the one the CHECK is written from: they take
+    // and refuse the same ids.
+    for (const threadId of valid) {
+      if (threadId !== null) expect(THREAD_ID.test(threadId), threadId).toBe(true);
+    }
+    for (const threadId of invalid) {
+      expect(THREAD_ID.test(threadId), JSON.stringify(threadId)).toBe(false);
     }
   });
 

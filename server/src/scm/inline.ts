@@ -2,8 +2,6 @@ import type { Quality, Severity } from '@qualor/shared';
 import { and, eq, inArray } from 'drizzle-orm';
 import type { Db, Executor } from '../db/client';
 import { issues, rules } from '../db/schema';
-import { queueReplies, type ReplyWindow } from '../review/replies';
-import { gitlabCommands, gitlabRounds } from '../review/reply-detect';
 import { aiThreadNote, type AiThreadNote } from '../review/render';
 import { AI_THREAD_SEVERITIES } from '../review/rules';
 import { suggestionApplies, type ReviewSuggestion } from '../review/suggestion';
@@ -69,11 +67,6 @@ export interface InlineContext {
   /** False when the page bound cut the discussions: a thread may exist unseen (§4.3). */
   discussionsComplete: boolean;
   botId: number;
-  /**
-   * Where to look for the people's notes Qualor answers (6I-4); null when AI review is not active
-   * for the project, which answers none.
-   */
-  replies: ReplyWindow | null;
   issueUrl: (issueId: string) => string | null;
   /**
    * Whether the analyzers' threads are reconciled: only when the report's line numbers are the
@@ -267,27 +260,6 @@ export const postsAiThread = (issue: DesiredAiIssue, note: AiThreadNote): boolea
   AI_THREAD_SEVERITIES.has(issue.severity) || note.suggestion !== null;
 
 /**
- * Queues the answers to what people wrote in the merge request (6I-4): the new replies in the
- * threads of this project's issues (`issueIds`: a thread whose marker names any other issue is
- * none of its answering) and the commands among the discussions. The listing is what the
- * reconciliation holds already, cut by the page bound or not: a note it saw is a note, and the
- * threads it did not see wait for a later decoration. Nothing is read from GitLab.
- */
-async function queueAnswers(ctx: InlineContext, issueIds: ReadonlySet<string>): Promise<void> {
-  if (ctx.replies === null) return;
-  const options = { qualor: { gitlabUserId: ctx.botId }, ...ctx.replies };
-  await queueReplies(
-    ctx.db,
-    { projectId: ctx.projectId, branchId: ctx.branchId, provider: 'gitlab' },
-    ctx.replies,
-    {
-      rounds: gitlabRounds(ctx.discussions, options).filter((round) => issueIds.has(round.issueId)),
-      commands: gitlabCommands(ctx.discussions, options),
-    },
-  );
-}
-
-/**
  * scm.md §5.4: reconciles Qualor's inline discussions with the branch's open new issues and the
  * findings of its AI review. For the threads of this project's issues (the analyzers' only when
  * `analyzers`, the AI review's always):
@@ -301,8 +273,7 @@ async function queueAnswers(ctx: InlineContext, issueIds: ReadonlySet<string>): 
  * findings the newest finished review placed on the head the merge request is at: a thread on its
  * anchor, with its suggestion while that still applies to the diff. A low finding is commented for
  * its suggestion only. Threads are never deleted, and notes written by anyone else are never
- * touched. The answers to the people's notes in the discussions are queued first, whatever the
- * rest does (`queueAnswers`).
+ * touched.
  */
 export async function reconcileInline(ctx: InlineContext): Promise<InlineReconciled> {
   const threads = ownThreads(ctx.discussions, ctx.botId);
@@ -321,7 +292,6 @@ export async function reconcileInline(ctx: InlineContext): Promise<InlineReconci
           .from(issues)
           .innerJoin(rules, eq(rules.id, issues.ruleId))
           .where(and(inArray(issues.id, threadIssues), eq(issues.projectId, ctx.projectId)));
-  await queueAnswers(ctx, new Set(known.map((issue) => issue.id)));
   const maxUpdates = ctx.maxThreadUpdates ?? MAX_THREAD_UPDATES;
   let commented = 0;
   let updates = 0;

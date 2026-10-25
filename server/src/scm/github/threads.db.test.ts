@@ -1017,7 +1017,7 @@ describe('GitHub review threads (github.md §6.4)', () => {
       author: 'octocat',
     });
 
-    it('plans a round for the new replies in the threads of its project’s issues, read from the listings', async () => {
+    it('plans a round for the new replies in Qualor’s threads, read from the listings', async () => {
       const s = await setup('threads/rounds');
       await s.ingest([3, 4]);
       await s.reconcile();
@@ -1074,7 +1074,7 @@ describe('GitHub review threads (github.md §6.4)', () => {
       expect(cut.rounds.map((r) => r.noteIds)).toEqual([[reply.id]]);
     });
 
-    it('plans no round for a thread of an issue its project does not have', async () => {
+    it('plans the rounds of every thread of Qualor’s on the pull request: the queue keeps the project’s own', async () => {
       const a = await setup('threads/rounds-mono-a');
       const b = await setup('threads/rounds-mono-b', { repo: a.repo });
       await a.ingest([3]);
@@ -1085,9 +1085,18 @@ describe('GitHub review threads (github.md §6.4)', () => {
       const onB = commentOf(threadAt(a.repo.id, 4));
       const forA = fake.replyToReviewComment(a.repo.id, 7, onA.id, person);
       const forB = fake.replyToReviewComment(a.repo.id, 7, onB.id, person);
-      // Each project finds the reply in the thread of its own issue, and no other.
-      expect((await roundsOf(a, window())).map((r) => r.noteIds)).toEqual([[forA.id]]);
-      expect((await roundsOf(b, window())).map((r) => r.noteIds)).toEqual([[forB.id]]);
+      // Both projects' plans list both replies, each with the issue its thread is for.
+      const ids = {
+        ...(await issueIdsByLine(a.project.id)),
+        ...(await issueIdsByLine(b.project.id)),
+      };
+      for (const scenario of [a, b]) {
+        const rounds = await roundsOf(scenario, window());
+        expect(rounds.map((r) => [r.noteIds, r.issueId])).toEqual([
+          [[forA.id], ids[3]],
+          [[forB.id], ids[4]],
+        ]);
+      }
     });
   });
 });

@@ -2,8 +2,8 @@ import type { Quality, Severity } from '@qualor/shared';
 import { and, eq, inArray } from 'drizzle-orm';
 import type { Db } from '../../db/client';
 import { issues, rules } from '../../db/schema';
-import type { ReplyWindow } from '../../review/replies';
 import { githubRounds, type Round } from '../../review/reply-detect';
+import type { ReplyWindow } from '../../review/reply-queue';
 import { AI_THREAD_SEVERITIES } from '../../review/rules';
 import { AI_ENGINE } from '../../rules/server-engines';
 import { desiredInlineIssues, type DesiredAiIssue } from '../decoration-data';
@@ -95,9 +95,10 @@ export interface ThreadPlan {
    */
   aiNotPosted: readonly DesiredAiIssue[];
   /**
-   * The people's new replies in Qualor's threads of this project's issues (6I-4), whose answers the
-   * decoration queues; empty without `ReviewThreadContext.replies`. Found in the listings the plan
-   * reads, cut by a page bound or not: a reply it saw is a reply. Nothing is written for them here.
+   * The people's new replies in Qualor's threads (6I-4), whose answers the decoration queues;
+   * empty without `ReviewThreadContext.replies`. Found in the listings the plan reads, cut by a
+   * page bound or not: a reply it saw is a reply. A thread of another project's issue is among
+   * them: the queue keeps the project's own. Nothing is written for them here.
    */
   rounds: readonly Round[];
 }
@@ -224,7 +225,6 @@ async function threadIssues(ctx: ReviewThreadContext, ids: string[]) {
           .where(and(inArray(issues.id, ids), eq(issues.projectId, ctx.projectId)));
   return new Map(rows.map((row) => [row.id, row]));
 }
-type ThreadIssues = Awaited<ReturnType<typeof threadIssues>>;
 
 /**
  * What a thread of Qualor's needs: resolving (true), reopening (false), or nothing (null). Only a
@@ -250,8 +250,8 @@ function change(
 async function planUpdates(
   ctx: ReviewThreadContext,
   own: ReadonlyMap<string, OwnThread>,
-  known: ThreadIssues,
 ): Promise<{ updates: ThreadUpdate[]; commented: number }> {
+  const known = await threadIssues(ctx, [...own.keys()]);
   const maxUpdates = ctx.maxThreadUpdates ?? MAX_GITHUB_THREAD_UPDATES;
   const updates: ThreadUpdate[] = [];
   let commented = 0;
@@ -368,19 +368,17 @@ async function planAiCreations(
 }
 
 /**
- * The people's new replies in the threads of this project's issues (`known`: a thread whose marker
- * names any other issue is none of its answering), which Qualor answers (6I-4). None without a
+ * The people's new replies in Qualor's threads, which Qualor answers (6I-4). None without a
  * window: AI review is not active for the project.
  */
 function plannedRounds(
   ctx: ReviewThreadContext,
   comments: readonly GitHubReviewComment[],
   threads: readonly GitHubReviewThread[],
-  known: ThreadIssues,
 ): Round[] {
   if (ctx.replies === null) return [];
   const options = { qualor: { githubLogin: ctx.botLogin }, ...ctx.replies };
-  return githubRounds(comments, threads, options).filter((round) => known.has(round.issueId));
+  return githubRounds(comments, threads, options);
 }
 
 /**
@@ -410,9 +408,8 @@ export async function planReviewThreads(ctx: ReviewThreadContext): Promise<Threa
   );
   const listed = await ctx.client.reviewThreads(ctx.number, ctx.maxThreadPages ?? MAX_THREAD_PAGES);
   const own = ownThreads(comments.items, listed.items, ctx.botLogin);
-  const known = await threadIssues(ctx, [...own.keys()]);
-  const { updates, commented } = await planUpdates(ctx, own, known);
-  const rounds = plannedRounds(ctx, comments.items, listed.items, known);
+  const { updates, commented } = await planUpdates(ctx, own);
+  const rounds = plannedRounds(ctx, comments.items, listed.items);
   // Beyond a page bound a thread may exist unseen: never create a second one (github.md §6.4).
   if (!comments.complete || !listed.complete) {
     return { updates, creations: [], rounds, commented, unplaced: 0, aiNotPosted: [] };

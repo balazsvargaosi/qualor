@@ -3,6 +3,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   createFakeGitHub,
+  githubShape,
   githubWrites,
   type FakeFile,
   type FakeGitHub,
@@ -18,13 +19,21 @@ import {
 } from '../../../test/github';
 import { createIngestHarness, type IngestHarness } from '../../../test/ingest';
 import { checkAiThreadLines, FORBIDDEN_ANYWHERE } from '../../../test/markdown-check';
-import { answerJob, queuedAnswers, reviewOff, reviewOn, reviewScope } from '../../../test/replies';
+import {
+  answerJob,
+  queuedAnswers,
+  refuseAnswerJobs,
+  reviewOff,
+  reviewOn,
+  reviewScope,
+} from '../../../test/replies';
 import { engine, file, finding } from '../../../test/reports';
 import { seedAiIssue, storeTestSnapshot } from '../../../test/review';
 import { PUBLIC_URL, runDecorations } from '../../../test/scm';
 import {
   branches,
   issues,
+  jobs,
   reviewFindings,
   reviewReplies,
   reviewRuns,
@@ -32,8 +41,10 @@ import {
   type AiCategory,
 } from '../../db/schema';
 import { endReply } from '../../review/replies';
+import { MAX_QUEUED_COMMANDS, replyKey } from '../../review/reply-queue';
 import { markerOf } from '../markdown';
 import { enqueueDecoration } from '../queue';
+import { MAX_COMMENT_PAGES } from './decorate';
 
 /*
  * The AI review's threads on a GitHub pull request (6I-3): which findings get one and where, in
@@ -1234,6 +1245,188 @@ describe('GitHub decoration: AI review threads (6I-3, R16, R18)', () => {
       expect((await queuedAnswers(h.ctx.db, s.branchId)).rows).toMatchObject([
         { id: row!.id, status: 'queued', finishedAt: null },
       ]);
+    });
+
+    it(`queues ${MAX_QUEUED_COMMANDS} commands in a decoration, the next in the following one, and nothing after`, async () => {
+      const s = await setup('gh-replies/commands-cap', { review: false });
+      await runDecorations(h, githubDeps(h));
+      await reviewOn(h, llm);
+      const notes = Array.from(
+        { length: MAX_QUEUED_COMMANDS + 1 },
+        () => fake.addComment(s.repo.id, 7, whoSaid('qualor review')).id,
+      );
+      const state = async () => {
+        const { rows, jobs: queued } = await queuedAnswers(h.ctx.db, s.branchId);
+        return { notes: rows.map((row) => row.noteId), jobs: queued.length };
+      };
+      // Every decoration finds all 21 commands: the 20 the ledger holds take no place of the cap.
+      await decorateAgain(s);
+      expect(await state()).toEqual({
+        notes: notes.slice(0, MAX_QUEUED_COMMANDS),
+        jobs: MAX_QUEUED_COMMANDS,
+      });
+      await decorateAgain(s);
+      expect(await state()).toEqual({ notes, jobs: MAX_QUEUED_COMMANDS + 1 });
+      await decorateAgain(s);
+      expect(await state()).toEqual({ notes, jobs: MAX_QUEUED_COMMANDS + 1 });
+    });
+
+    it('offers a command skipped for the budget again on a later day, while 20 older commands are held', async () => {
+      const s = await setup('gh-replies/command-budget', { review: false });
+      await runDecorations(h, githubDeps(h));
+      await reviewOn(h, llm);
+      const notes = Array.from(
+        { length: MAX_QUEUED_COMMANDS + 1 },
+        () => fake.addComment(s.repo.id, 7, whoSaid('qualor review')).id,
+      );
+      await decorateAgain(s);
+      await decorateAgain(s);
+      const { rows } = await queuedAnswers(h.ctx.db, s.branchId);
+      expect(rows.map((row) => row.noteId)).toEqual(notes);
+      const newest = rows.at(-1)!;
+
+      // The answer jobs ran, the newest skipped for the budget two days ago.
+      await h.ctx.db
+        .update(jobs)
+        .set({ status: 'succeeded' })
+        .where(eq(jobs.concurrencyKey, replyKey(s.branchId)));
+      await endReply(h.ctx.db, newest.id, { status: 'skipped', reason: 'budget_spent' });
+      await h.ctx.db
+        .update(reviewReplies)
+        .set({ finishedAt: daysAgo(2) })
+        .where(eq(reviewReplies.id, newest.id));
+      await decorateAgain(s);
+      const queued = await queuedAnswers(h.ctx.db, s.branchId);
+      // The twenty held commands are as they were, and the skipped one is queued again with a job.
+      expect(queued.rows.map((row) => [row.noteId, row.status])).toEqual(
+        notes.map((note) => [note, 'queued']),
+      );
+      expect(queued.rows.at(-1)).toMatchObject({ id: newest.id, reason: null, finishedAt: null });
+      expect(queued.jobs.filter((job) => job.status === 'queued')).toEqual([
+        answerJob(s.branchId, newest.id),
+      ]);
+    });
+
+    it('two projects of one repository queue each its own rows for one command and the replies in its own threads, once', async () => {
+      const a = await setup('gh-replies/mono-a', {
+        findings: [finding({ path: PATH, line: 3 })],
+        review: false,
+      });
+      // A second Qualor project on the same repository and pull request, with a thread of its own.
+      const project = await mappedGitHubProject(
+        h,
+        fake,
+        'gh-replies/mono-b',
+        `acme/${a.repo.name}`,
+        { connectionId },
+      );
+      const analysisId = await project.ingestOk(
+        pullRequestReport(7, HEAD, {
+          projectKey: project.key,
+          analysisDate: new Date(Date.UTC(2026, 8, 1, 10) + 86_400_000 * day++).toISOString(),
+          engines: [engine('eslint')],
+          files: [file(PATH, { lines: LINES.length, newLines: [[1, LINES.length]] })],
+          findings: [finding({ path: PATH, line: 4 })],
+          github: a.github,
+        }),
+      );
+      const [branch] = await h.ctx.db
+        .select()
+        .from(branches)
+        .where(and(eq(branches.projectId, project.id), eq(branches.kind, 'merge_request')));
+      const b = { analysisId, branchId: branch!.id, github: a.github };
+      await runDecorations(h, githubDeps(h));
+      await reviewOn(h, llm);
+
+      // A person replies in the thread of each project's issue, and asks for a review once.
+      const onLine = new Map([...threadsOf(a.repo.id).values()].map((c) => [c.line, c]));
+      const forA = fake.replyToReviewComment(a.repo.id, 7, onLine.get(3)!.id, whoSaid('A?'));
+      const forB = fake.replyToReviewComment(a.repo.id, 7, onLine.get(4)!.id, whoSaid('B?'));
+      const asked = fake.addComment(a.repo.id, 7, whoSaid('qualor review'));
+      await decorateAgain(a);
+      await decorateAgain(b);
+      expect(await queuedNotes(a.branchId)).toEqual([
+        ['command', asked.id],
+        ['reply', forA.id],
+      ]);
+      expect(await queuedNotes(b.branchId)).toEqual([
+        ['command', asked.id],
+        ['reply', forB.id],
+      ]);
+      // Decorating again queues nothing more, for either project.
+      await decorateAgain(a);
+      await decorateAgain(b);
+      for (const { branchId } of [a, b]) {
+        const queued = await queuedAnswers(h.ctx.db, branchId);
+        // One job each (the reply's was queued first: its row has the larger id on GitHub).
+        expect(queued.jobs).toEqual(
+          queued.rows.toReversed().map((row) => answerJob(branchId, row.id)),
+        );
+        expect(queued.rows).toHaveLength(2);
+      }
+    });
+
+    it('writes its threads and its summary before it queues, so a failed queue write does not cost them', async () => {
+      const s = await setup('gh-replies/queue-fails', {
+        findings: [finding({ path: PATH, line: 3 })],
+        review: false,
+      });
+      await runDecorations(h, githubDeps(h));
+      await reviewOn(h, llm);
+      const [, comment] = [...threadsOf(s.repo.id)][0]!;
+      const reply = fake.replyToReviewComment(s.repo.id, 7, comment.id, whoSaid('Intended.'));
+      // A new finding: the decoration has a thread to make and a summary to change, and a reply to
+      // queue, whose job the database refuses.
+      const allow = await refuseAnswerJobs(h.ctx.db, s.branchId);
+      try {
+        await s.project.ingestOk(
+          pullRequestReport(7, HEAD, {
+            projectKey: s.project.key,
+            analysisDate: new Date(Date.UTC(2026, 8, 1, 10) + 86_400_000 * day++).toISOString(),
+            engines: [engine('eslint')],
+            files: [file(PATH, { lines: LINES.length, newLines: [[1, LINES.length]] })],
+            findings: [finding({ path: PATH, line: 3 }), finding({ path: PATH, line: 4 })],
+            github: s.github,
+          }),
+        );
+        await runDecorations(h, githubDeps(h));
+      } finally {
+        await allow();
+      }
+      expect(threadsOf(s.repo.id).size).toBe(2);
+      expect(summaryOf(s.repo.id)).toContain('2 new issues are commented inline.');
+      expect(await queuedAnswers(h.ctx.db, s.branchId)).toEqual({ rows: [], jobs: [] });
+      // The job is tried again, and queues the reply.
+      await runDecorations(h, githubDeps(h));
+      expect(await queuedNotes(s.branchId)).toEqual([['reply', reply.id]]);
+    });
+
+    it('queues the commands it saw when the comments run past the page bound', async () => {
+      const s = await setup('gh-replies/cut', { review: false });
+      await runDecorations(h, githubDeps(h));
+      await reviewOn(h, llm);
+      // The listing of the pull request's page is cut: its first page holds a command, and every
+      // page up to the bound has another after it.
+      const asked = {
+        ...githubShape('issue_comment'),
+        id: 7_001,
+        body: 'qualor review',
+        user: { login: 'octocat', id: 5, type: 'User' },
+        created_at: new Date().toISOString(),
+      };
+      const next = { link: '<https://x.example/?page=2>; rel="next"' };
+      fake.inject(
+        'GET',
+        new RegExp(`^/repos/acme/${s.repo.name}/issues/7/comments`),
+        { status: 200, body: [asked], headers: next },
+        ...Array.from({ length: MAX_COMMENT_PAGES - 1 }, () => ({
+          status: 200,
+          body: [],
+          headers: next,
+        })),
+      );
+      await decorateAgain(s);
+      expect(await queuedNotes(s.branchId)).toEqual([['command', 7_001]]);
     });
   });
 });

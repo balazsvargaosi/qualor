@@ -1,8 +1,8 @@
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import type { Db } from '../src/db/client';
 import { jobs, reviewReplies } from '../src/db/schema';
 import { DEFAULT_LLM_SETTINGS, readLlmSettings, writeLlmSettings } from '../src/llm/settings';
-import { AI_REPLY_QUEUE, replyKey } from '../src/review/reply-job';
+import { AI_REPLY_QUEUE, replyKey } from '../src/review/reply-queue';
 import type { FakeLlm } from './fake-llm';
 import type { IngestHarness } from './ingest';
 import { switchReviewOn } from './review';
@@ -83,5 +83,27 @@ export function answerJob(branchId: string, replyId: string) {
     key: replyKey(branchId),
     maxAttempts: 2,
     status: 'queued',
+  };
+}
+
+/**
+ * The database refuses every `ai-reply` job of the branch, as a failed write would, until the
+ * function this answers is called. Whatever is written in the same transaction as such a job
+ * goes with it.
+ */
+export async function refuseAnswerJobs(db: Db, branchId: string): Promise<() => Promise<void>> {
+  if (!/^[0-9a-f-]{36}$/.test(branchId)) throw new Error('not a branch id');
+  const name = `refuse_jobs_${branchId.replaceAll('-', '')}`;
+  await db.execute(
+    sql.raw(`CREATE FUNCTION ${name}() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'no job'; END $$`),
+  );
+  await db.execute(
+    sql.raw(`CREATE TRIGGER ${name} BEFORE INSERT ON jobs FOR EACH ROW
+      WHEN (NEW.concurrency_key = '${replyKey(branchId)}') EXECUTE FUNCTION ${name}()`),
+  );
+  return async () => {
+    await db.execute(sql.raw(`DROP TRIGGER ${name} ON jobs`));
+    await db.execute(sql.raw(`DROP FUNCTION ${name}()`));
   };
 }

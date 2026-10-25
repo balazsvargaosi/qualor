@@ -4,8 +4,9 @@ import type { Limits } from '../limits';
 import { AI_FIX_QUEUE, postFixHandler } from '../llm/post';
 import type { JobHandlers } from '../queue/worker';
 import { deleteBranchSnapshots, mergeRequestStateHandlers } from '../review/lifecycle';
-import { replyWindow } from '../review/replies';
 import { withMergeRequestHead, withUnplacedFindings } from '../review/render';
+import { gitlabCommands, gitlabRounds } from '../review/reply-detect';
+import { queueReplies, replyWindow } from '../review/reply-queue';
 import { gitlabClientFor, type ScmDeps } from './connections';
 import {
   branchUrl,
@@ -166,8 +167,8 @@ async function reconcileCommitStatus(
 
 /**
  * The merge request part of a decoration (scm.md §5.2–§5.5): inline discussions, then the
- * summary. A merge request that is merged or closed gets neither, and loses the copies of its
- * repository the AI review kept (R16).
+ * summary, then the answers to the people's notes (6I-4). A merge request that is merged or closed
+ * gets none of them, and loses the copies of its repository the AI review kept (R16).
  */
 async function decorateMergeRequest(
   deps: DecorationDeps,
@@ -201,8 +202,6 @@ async function decorateMergeRequest(
       : head !== revision
         ? 'stale'
         : null;
-  // Where the people's notes are looked for, when AI review answers them (6I-4).
-  const replies = await replyWindow(deps.db, loaded.project, loaded.branch.id);
   // §5.4: the analyzers' threads only when the report's line numbers are the merge request's
   // (merged results win over stale: a merge commit is never the head). The AI review's follow the
   // head it read, also in a merged-results pipeline.
@@ -217,7 +216,6 @@ async function decorateMergeRequest(
     discussions: listed.items,
     discussionsComplete: listed.complete,
     botId: me.id,
-    replies,
     issueUrl: (issueId) => issueUrl(deps.publicUrl, loaded.project.id, issueId),
     analyzers: skipped === null,
     ...(deps.maxThreadUpdates === undefined ? {} : { maxThreadUpdates: deps.maxThreadUpdates }),
@@ -263,9 +261,35 @@ async function decorateMergeRequest(
       { analysisId: loaded.analysis.id, connectionId: loaded.connection.id },
       'GitLab merge request has too many discussions to find the Qualor summary; not posting one',
     );
-    return;
   }
-  await removeForeignSummaries(client, ref, iid, foreign);
+  // A summary of another user goes once this token's own is in place.
+  if (own || listed.complete) await removeForeignSummaries(client, ref, iid, foreign);
+  // Last: what GitLab shows is written before the database takes more work.
+  await queueAnswers(deps, loaded, me.id, listed.items);
+}
+
+/**
+ * Queues the answers to what people wrote in the merge request (6I-4): the new replies in
+ * Qualor's threads and the commands among the discussions, as the listing the decoration read
+ * holds them, cut by the page bound or not: a note it saw is a note, and the threads it did not
+ * see wait for a later decoration. Nothing is read from GitLab. Without AI review active for the
+ * project Qualor answers none.
+ */
+async function queueAnswers(
+  deps: DecorationDeps,
+  loaded: Loaded,
+  botId: number,
+  discussions: readonly GitLabDiscussion[],
+): Promise<void> {
+  const replies = await replyWindow(deps.db, loaded.project, loaded.branch.id);
+  if (replies === null) return;
+  const options = { qualor: { gitlabUserId: botId }, ...replies };
+  await queueReplies(
+    deps.db,
+    { projectId: loaded.project.id, branchId: loaded.branch.id, provider: 'gitlab' },
+    replies,
+    { rounds: gitlabRounds(discussions, options), commands: gitlabCommands(discussions, options) },
+  );
 }
 
 /**
