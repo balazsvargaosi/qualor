@@ -24,7 +24,13 @@ import { effectiveAutoFix } from './auto-fix-settings';
 import { errorCodeOf, TRANSIENT_FAILURES, type LlmErrorCode } from './errors';
 import { baseUrlHash, buildIssueInput, cacheKeyOf, type BuiltInput } from './input';
 import { queueFixPost } from './post';
-import { callProvider, LlmCallAborted, LlmError, type LlmAnswer } from './providers';
+import {
+  callProvider,
+  LlmCallAborted,
+  LlmError,
+  REASONING_ALLOWANCE_TOKENS,
+  type LlmAnswer,
+} from './providers';
 import { LLM_QUEUE } from './service';
 import {
   organizationSettings,
@@ -506,7 +512,8 @@ async function sendClaimed(
       {
         system: prompt.system,
         user: prompt.user,
-        maxOutputTokens: MAX_OUTPUT_TOKENS[row.feature],
+        // The answer's tokens, and room for a model that thinks before it answers.
+        maxOutputTokens: MAX_OUTPUT_TOKENS[row.feature] + REASONING_ALLOWANCE_TOKENS.singleShot,
       },
       {
         internalHosts: deps.internalHosts,

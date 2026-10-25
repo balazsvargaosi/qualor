@@ -35,6 +35,7 @@ export function configuredProvider(
     jsonMode: 'json_object',
     maxTokensField: 'max_tokens',
     temperature: null,
+    workspaceId: null,
     timeoutSeconds: 5,
     apiKeyEnc:
       fake.apiKey === ''

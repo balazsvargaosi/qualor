@@ -13,6 +13,8 @@ import {
 export const NOT_UNDERSTOOD = "The provider's answer was not understood";
 const UNREACHABLE = 'The model provider could not be reached';
 const NOT_SENT = 'The request to the model provider could not be made; check the settings';
+const NO_WORKSPACE =
+  'This key is not scoped to a workspace: give its workspace ID in the AI assistant settings.';
 
 /**
  * llm.md §14: `Retry-After` (seconds or an HTTP date) first, else `retry-after-ms`, in whole
@@ -126,6 +128,14 @@ export async function postJson(
   }
   if (status >= 500) throw new LlmError('unavailable', UNREACHABLE, status, retryAfter);
   if (status < 200 || status >= 300) {
+    if (
+      status === 400 &&
+      config.kind === 'anthropic' &&
+      config.workspaceId === null &&
+      namesMissingWorkspace(result.body)
+    ) {
+      throw new LlmError('rejected', NO_WORKSPACE, status);
+    }
     if (outputLimitField !== undefined && refusedParam(result.body) === outputLimitField) {
       const other = outputLimitField === 'max_tokens' ? 'max_completion_tokens' : 'max_tokens';
       throw new LlmError(
@@ -225,6 +235,26 @@ function refusesTools(body: Buffer): boolean {
   const unsupported =
     NOT_SUPPORTED.test(message) || (typeof code === 'string' && code.startsWith('unsupported'));
   return aboutTools && unsupported;
+}
+
+/**
+ * Anthropic's words for an organisation-wide key that is sent without a workspace: that the key is
+ * not scoped to one, or the header that names it.
+ */
+const WORKSPACE_REQUIRED = /\bnot\s+scoped\s+to\s+a\s+workspace\b|\banthropic-workspace-id\b/i;
+
+/**
+ * Whether an Anthropic error body (`error.message`) says that the key is not scoped to a workspace.
+ * Only this yes or no is used: nothing of the text is shown, stored or logged.
+ */
+function namesMissingWorkspace(body: Buffer): boolean {
+  try {
+    const parsed = JSON.parse(body.toString('utf8')) as { error?: { message?: unknown } } | null;
+    const message = parsed?.error?.message;
+    return typeof message === 'string' && WORKSPACE_REQUIRED.test(message);
+  } catch {
+    return false;
+  }
 }
 
 /** The `error.param` of an OpenAI-style error body, when it is a string; null otherwise. */

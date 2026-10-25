@@ -1,7 +1,17 @@
 import { REDACTED } from '@qualor/shared';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { createFakeLlm, type FakeLlm } from '../../test/fake-llm';
 import { memorySnapshot } from '../../test/review';
-import { LlmError, type LlmConversation, type LlmToolCall, type LlmTurn } from '../llm/providers';
+import {
+  converse,
+  LlmError,
+  REASONING_ALLOWANCE_TOKENS,
+  type LlmConversation,
+  type LlmToolCall,
+  type LlmTurn,
+  type ProviderConfig,
+} from '../llm/providers';
+import { parseInternalHosts } from '../scm/url';
 import { CONVERSATION_LIMITS, CONVERSATION_TEXTS } from './conversation';
 import { newNonce } from './envelope';
 import { MaskedFiles } from './masked-files';
@@ -61,6 +71,100 @@ describe('newToolPolicy', () => {
   });
 });
 
+describe('the room a call leaves for the model to think', () => {
+  let fake: FakeLlm;
+  let http: { internalHosts: ReadonlySet<string>; version: string };
+  const config = (kind: ProviderConfig['kind'], over: Partial<ProviderConfig> = {}) =>
+    ({
+      kind,
+      baseUrl: kind === 'openai' ? fake.openAiBaseUrl : fake.anthropicBaseUrl,
+      model: 'm-1',
+      auth: 'bearer',
+      jsonMode: 'json_object',
+      maxTokensField: 'max_tokens',
+      temperature: null,
+      workspaceId: null,
+      timeoutSeconds: 5,
+      ...over,
+    }) satisfies ProviderConfig;
+  beforeEach(async () => {
+    fake = await createFakeLlm();
+    http = { internalHosts: parseInternalHosts(fake.host), version: '0.0.0' };
+  });
+  afterEach(async () => {
+    await fake.close();
+  });
+
+  it('is 16 000 tokens beyond the answer, and the answer caps stay as they were', () => {
+    expect(REASONING_ALLOWANCE_TOKENS).toEqual({ conversation: 16_000, singleShot: 4_000 });
+    expect(REVIEW_OUTPUT_TOKENS).toEqual({
+      quality: 12_288,
+      tests: 12_288,
+      security: 12_288,
+      performance: 12_288,
+      judge: 16_384,
+      verify: 2_048,
+      reply: 2_048,
+    });
+  });
+
+  it.each([
+    ['quality', 28_288],
+    ['tests', 28_288],
+    ['security', 28_288],
+    ['performance', 28_288],
+    ['judge', 32_384],
+    ['verify', 18_048],
+    ['reply', 18_048],
+  ] as const)(
+    'review and reply calls send the answer tokens plus the reasoning allowance as max_tokens: a %s call asks for %i',
+    async (role, tokens) => {
+      // The limit goes in the field each provider has for it: OpenAI's chat completions in the one
+      // the settings choose, Anthropic's messages in max_tokens.
+      const wires = [
+        [config('openai'), 'max_tokens'],
+        [config('openai', { maxTokensField: 'max_completion_tokens' }), 'max_completion_tokens'],
+        [config('anthropic'), 'max_tokens'],
+      ] as const;
+      for (const [wire, field] of wires) {
+        fake.requests.length = 0;
+        const result = await converseOverTools(callOf(role), {
+          reader: null,
+          send: (conversation) => converse(wire, fake.apiKey, conversation, http),
+          shouldStop: () => Promise.resolve(false),
+        });
+        expect(result.kind, `${wire.kind} ${field}`).toBe('answer');
+        expect(fake.requests).toHaveLength(1);
+        const sent = fake.requests[0]!.json as Record<string, unknown>;
+        expect(sent[field], `${wire.kind} ${field}`).toBe(tokens);
+        // And the other field is not there.
+        expect(sent).not.toHaveProperty(
+          field === 'max_tokens' ? 'max_completion_tokens' : 'max_tokens',
+        );
+      }
+    },
+  );
+
+  it('is what the loop assumes a call may write: a provider that counts nothing is charged it', async () => {
+    const reader = memorySnapshot();
+    const policy = newToolPolicy({
+      excludePaths: [],
+      masked: new MaskedFiles(reader, { masker }),
+      masker,
+    });
+    const result = await converseOverTools(callOf('verify'), {
+      reader,
+      policy,
+      send: () =>
+        Promise.resolve(
+          turn({ text: '{"ok":true}', usage: { inputTokens: null, outputTokens: null } }),
+        ),
+      shouldStop: () => Promise.resolve(false),
+    });
+    expect(result).toMatchObject({ kind: 'answer', outputTokens: 18_048 });
+  });
+});
+
 describe('converseOverTools', () => {
   it("sends the role's prompt and limit with the review tools, and returns the answer", async () => {
     const reader = memorySnapshot();
@@ -86,7 +190,8 @@ describe('converseOverTools', () => {
       expect(sent[0]).toMatchObject({
         system: SYSTEM_PROMPTS[role],
         tools: REVIEW_TOOLS,
-        maxOutputTokens: REVIEW_OUTPUT_TOKENS[role],
+        // The role's answer, and room for the model to think before it.
+        maxOutputTokens: REVIEW_OUTPUT_TOKENS[role] + REASONING_ALLOWANCE_TOKENS.conversation,
         messages: [{ role: 'user', text: `data of ${role}` }],
       });
     }
@@ -227,7 +332,7 @@ describe('converseOverTools', () => {
     expect(sent[0]).toMatchObject({
       system: SYSTEM_PROMPTS.reply,
       tools: REVIEW_TOOLS,
-      maxOutputTokens: REVIEW_OUTPUT_TOKENS.reply,
+      maxOutputTokens: REVIEW_OUTPUT_TOKENS.reply + REASONING_ALLOWANCE_TOKENS.conversation,
       messages: [{ role: 'user', text: 'The thread' }],
     });
   });

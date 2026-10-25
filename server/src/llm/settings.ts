@@ -104,34 +104,45 @@ export const MAX_LLM_ORGANIZATIONS = 1_000;
 
 export const MODEL_PATTERN = /^[A-Za-z0-9._:/@+-]{1,200}$/;
 
-/** llm.md §3.2: the Anthropic Messages API takes a temperature of 0–1, OpenAI's 0–2. */
-export const MAX_TEMPERATURE = { openai: 2, anthropic: 1 } as const;
-export const ANTHROPIC_TEMPERATURE_TEXT = 'Anthropic takes a temperature of 0 to 1';
+/**
+ * A workspace of an Anthropic organisation as the console names it: `wrkspc_` and up to 64 letters
+ * and digits. An organisation-wide key that is not scoped to a workspace sends it in the header
+ * `anthropic-workspace-id`.
+ */
+export const WORKSPACE_ID_PATTERN = /^wrkspc_[A-Za-z0-9]{1,64}$/;
 
-export const storedProviderSchema = z
-  .strictObject({
-    kind: z.enum(PROVIDER_KINDS),
-    baseUrl: z.string().min(1).max(2_048),
-    /** The standard model: explain, triage and fix use it, and so does a tier without a model of its own. */
-    model: z.string().regex(MODEL_PATTERN),
-    /**
-     * The model of the review's strong tier (the judge and the verification), and of its fast tier
-     * (the quality reviewer of a trivial review). Null: the tier uses `model`. A row stored before
-     * the tiers reads with null.
-     */
-    strongModel: z.string().regex(MODEL_PATTERN).nullable().default(null),
-    fastModel: z.string().regex(MODEL_PATTERN).nullable().default(null),
-    auth: z.enum(['bearer', 'api-key']),
-    jsonMode: z.enum(['json_object', 'none']),
-    maxTokensField: z.enum(['max_tokens', 'max_completion_tokens']),
-    temperature: z.number().min(0).max(2).nullable(),
-    timeoutSeconds: z.number().int().min(5).max(600),
-    apiKeyEnc: encrypted.nullable(),
-  })
-  .refine((p) => p.temperature === null || p.temperature <= MAX_TEMPERATURE[p.kind], {
-    message: ANTHROPIC_TEMPERATURE_TEXT,
-    path: ['temperature'],
-  });
+/** What a save of an Anthropic provider with a temperature is told: its current models take none. */
+export const ANTHROPIC_NO_TEMPERATURE_TEXT =
+  "Anthropic's current models take no temperature: leave it empty";
+
+export const storedProviderSchema = z.strictObject({
+  kind: z.enum(PROVIDER_KINDS),
+  baseUrl: z.string().min(1).max(2_048),
+  /** The standard model: explain, triage and fix use it, and so does a tier without a model of its own. */
+  model: z.string().regex(MODEL_PATTERN),
+  /**
+   * The model of the review's strong tier (the judge and the verification), and of its fast tier
+   * (the quality reviewer of a trivial review). Null: the tier uses `model`. A row stored before
+   * the tiers reads with null.
+   */
+  strongModel: z.string().regex(MODEL_PATTERN).nullable().default(null),
+  fastModel: z.string().regex(MODEL_PATTERN).nullable().default(null),
+  auth: z.enum(['bearer', 'api-key']),
+  jsonMode: z.enum(['json_object', 'none']),
+  maxTokensField: z.enum(['max_tokens', 'max_completion_tokens']),
+  /**
+   * OpenAI's. Anthropic's current models refuse a temperature, so a call to an Anthropic provider
+   * never carries one (`providerConfig`), and one that older settings hold is read and ignored.
+   */
+  temperature: z.number().min(0).max(2).nullable(),
+  /**
+   * Anthropic's: the workspace an organisation-wide key that is not scoped to one names in every
+   * request. Not a secret. A row stored before it reads with null.
+   */
+  workspaceId: z.string().regex(WORKSPACE_ID_PATTERN).nullable().default(null),
+  timeoutSeconds: z.number().int().min(5).max(600),
+  apiKeyEnc: encrypted.nullable(),
+});
 export type StoredProvider = z.infer<typeof storedProviderSchema>;
 
 /** The model tiers in the order their models are listed: the standard model comes first. */
@@ -226,7 +237,10 @@ export function providerApiKey(
   return key === null ? { ok: false } : { ok: true, key };
 }
 
-/** What a provider call needs, without the key's envelope. */
+/**
+ * What a provider call needs, without the key's envelope. An Anthropic provider has no
+ * temperature, whatever older settings hold: its current models refuse one.
+ */
 export function providerConfig(stored: StoredProvider): ProviderConfig {
   return {
     kind: stored.kind,
@@ -235,7 +249,8 @@ export function providerConfig(stored: StoredProvider): ProviderConfig {
     auth: stored.auth,
     jsonMode: stored.jsonMode,
     maxTokensField: stored.maxTokensField,
-    temperature: stored.temperature,
+    temperature: stored.kind === 'anthropic' ? null : stored.temperature,
+    workspaceId: stored.workspaceId,
     timeoutSeconds: stored.timeoutSeconds,
   };
 }

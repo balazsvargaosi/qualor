@@ -33,6 +33,7 @@ describe('liveEnabled and readLiveEnv', () => {
       model: 'm',
       kind: 'openai',
       apiKey: null,
+      workspaceId: null,
       runs: 1,
       cases: null,
       strongModel: null,
@@ -49,6 +50,7 @@ describe('liveEnabled and readLiveEnv', () => {
         ...base,
         QUALOR_LIVE_REVIEW_KIND: 'anthropic',
         QUALOR_LIVE_REVIEW_API_KEY: KEY,
+        QUALOR_LIVE_REVIEW_WORKSPACE_ID: 'wrkspc_01AbCdEf',
         QUALOR_LIVE_REVIEW_RUNS: '5',
         QUALOR_LIVE_REVIEW_CASES: ' ts-off-by-one, go-map-race ,,',
         QUALOR_LIVE_REVIEW_STRONG_MODEL: 'big',
@@ -65,6 +67,7 @@ describe('liveEnabled and readLiveEnv', () => {
       model: 'm',
       kind: 'anthropic',
       apiKey: KEY,
+      workspaceId: 'wrkspc_01AbCdEf',
       runs: 5,
       cases: ['ts-off-by-one', 'go-map-race'],
       strongModel: 'big',
@@ -82,6 +85,22 @@ describe('liveEnabled and readLiveEnv', () => {
     expect(readLiveEnv({ ...base, QUALOR_LIVE_REVIEW_FAST_MODEL: '' })).toMatchObject({
       fastModel: null,
     });
+  });
+
+  it('reads the workspace of an organisation-wide Anthropic key, and none for another kind or an empty variable', () => {
+    const named = { ...base, QUALOR_LIVE_REVIEW_WORKSPACE_ID: 'wrkspc_01AbCdEf' };
+    expect(readLiveEnv({ ...named, QUALOR_LIVE_REVIEW_KIND: 'anthropic' }).workspaceId).toBe(
+      'wrkspc_01AbCdEf',
+    );
+    // An OpenAI-compatible server has no workspace, as in the AI settings.
+    expect(readLiveEnv(named).workspaceId).toBeNull();
+    expect(
+      readLiveEnv({
+        ...base,
+        QUALOR_LIVE_REVIEW_KIND: 'anthropic',
+        QUALOR_LIVE_REVIEW_WORKSPACE_ID: '',
+      }).workspaceId,
+    ).toBeNull();
   });
 
   it('reports a cost only with both prices', () => {
@@ -120,6 +139,9 @@ describe('liveEnabled and readLiveEnv', () => {
     ['QUALOR_LIVE_REVIEW_FAST_PRICE_IN', '10001'],
     ['QUALOR_LIVE_REVIEW_FAST_PRICE_OUT', '-0.5'],
     ['QUALOR_LIVE_REVIEW_API_KEY', 'a key with spaces'],
+    ['QUALOR_LIVE_REVIEW_WORKSPACE_ID', 'workspace_01AbCd'],
+    ['QUALOR_LIVE_REVIEW_WORKSPACE_ID', 'wrkspc_'],
+    ['QUALOR_LIVE_REVIEW_WORKSPACE_ID', 'wrkspc_01 AbCd'],
   ])('refuses %s=%s, naming the variable', (name, value) => {
     expect(() => readLiveEnv({ ...base, [name]: value })).toThrow(name);
   });
@@ -145,8 +167,11 @@ describe('liveEnabled and readLiveEnv', () => {
 });
 
 describe('providerOf', () => {
-  const of = (url: string, kind: LiveOptions['kind'] = 'openai') =>
-    providerOf({ url, model: 'm', kind });
+  const of = (
+    url: string,
+    kind: LiveOptions['kind'] = 'openai',
+    workspaceId: string | null = null,
+  ) => providerOf({ url, model: 'm', kind, workspaceId });
 
   it('settles a call as the AI settings would store it', () => {
     expect(of('http://localhost:11434/v1/').config).toEqual({
@@ -157,12 +182,20 @@ describe('providerOf', () => {
       jsonMode: 'none',
       maxTokensField: 'max_tokens',
       temperature: null,
+      workspaceId: null,
       // What a review call waits at least on the server (review/usage.ts).
       timeoutSeconds: 300,
     });
     expect(of('https://api.anthropic.com', 'anthropic').config).toMatchObject({
       kind: 'anthropic',
       baseUrl: 'https://api.anthropic.com',
+    });
+  });
+
+  it('names the workspace of an Anthropic key in the settings of a call', () => {
+    expect(of('https://api.anthropic.com', 'anthropic', 'wrkspc_01AbCdEf').config).toMatchObject({
+      kind: 'anthropic',
+      workspaceId: 'wrkspc_01AbCdEf',
     });
   });
 
@@ -261,6 +294,7 @@ describe('runLive against the fake LLM', () => {
     model: 'fake-model',
     kind: 'openai',
     apiKey: fake.apiKey,
+    workspaceId: null,
     runs: 1,
     cases: ['ts-off-by-one'],
     strongModel: null,

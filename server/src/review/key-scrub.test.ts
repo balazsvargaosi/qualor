@@ -430,6 +430,24 @@ describe('scrubTurn', () => {
     expect((JSON.parse(scrubbed.text) as { summary: string }).summary).not.toContain(SLASH_KEY);
   });
 
+  it('leaves the replay of the turn alone: it is the provider’s own signed data, sent back as it came', () => {
+    // A key that turns up in a block (the model quoting what it was shown) is the provider's own
+    // text: the replay goes back to that provider, and an edit would void the thinking's signature.
+    const replay = {
+      kind: 'anthropic' as const,
+      items: [
+        { type: 'thinking', thinking: '', signature: `sig-${KEY}` },
+        { type: 'text', text: `the key is ${KEY}` },
+      ],
+    };
+    const before = JSON.stringify(replay);
+    const turn = turnOf({ text: `the key is ${KEY}`, replay });
+    const scrubbed = scrubTurn(turn, KEY);
+    expect(scrubbed.text).toBe(`the key is ${REDACTED}`);
+    expect(scrubbed.replay).toBe(replay);
+    expect(JSON.stringify(scrubbed.replay)).toBe(before);
+  });
+
   it('does not change the turn it is given', () => {
     const turn = turnOf({
       text: KEY,

@@ -6,6 +6,8 @@ import { testConfig } from '../../test/config';
 import { createTestDatabase, type TestDatabase } from '../../test/db';
 import {
   anthropicAnswer,
+  anthropicRedactedThinking,
+  anthropicThinking,
   anthropicToolUse,
   createFakeLlm,
   llmShape,
@@ -593,6 +595,50 @@ const port = 8080;
         (callTwo!.prompt as { messages: { role: string }[] }).messages.map((m) => m.role),
       ).toEqual(['user', 'assistant', 'tool']);
       expect(callTwo!.result).toMatchObject({ finishReason: 'stop', text: '{"findings":[]}' });
+    });
+
+    it('sends the thinking of a turn back unchanged, counts it in the input, and keeps it out of the stored prompt and result', async () => {
+      const thinking = [
+        anthropicThinking('SIGNATURE-ONE'),
+        anthropicRedactedThinking('ENCRYPTED-ONE'),
+      ];
+      const { result, sent } = await converseThrough(
+        'anthropic',
+        [
+          {
+            status: 200,
+            body: anthropicToolUse([{ id: 'c1', name: 'read_file', input: { path: 'a.ts' } }], {
+              thinking,
+              text: 'Reading.',
+              usage: { input_tokens: 10, output_tokens: 900 },
+            }),
+          },
+          textTurn('anthropic', '{"findings":[]}', [20, 5]),
+        ],
+        settingsFor('anthropic', { storePrompts: true }),
+      );
+      expect(result).toMatchObject({ kind: 'answer', turns: 2 });
+      // The provider gets the blocks back as it sent them, ahead of the text and the call.
+      const assistant = (fake.requests[1]!.json as { messages: { content: unknown[] }[] })
+        .messages[1]!;
+      expect(assistant.content.slice(0, 2)).toEqual(thinking);
+      // The row's input is what was sent, the replay with it.
+      const [callOne, callTwo] = await rows();
+      const body = JSON.stringify(sent[1]);
+      expect(body).toContain('SIGNATURE-ONE');
+      expect(callTwo).toMatchObject({
+        inputSha256: sha256(body),
+        inputBytes: Buffer.byteLength(body),
+      });
+      // But nothing of it is stored where a person reads it back.
+      for (const row of [callOne!, callTwo!]) {
+        const shown = JSON.stringify([row.prompt, row.result]);
+        expect(shown).not.toContain('SIGNATURE-ONE');
+        expect(shown).not.toContain('ENCRYPTED-ONE');
+        expect(shown).not.toContain('replay');
+      }
+      expect(callTwo!.prompt).not.toBeNull();
+      expect(callOne!.result).toMatchObject({ finishReason: 'tool', text: 'Reading.' });
     });
 
     it('stores the prompt of a call that failed, and no result', async () => {

@@ -2,9 +2,13 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildPrompt } from '@qualor/shared';
 import { sampleInput } from '../../packages/shared/test/llm';
 import {
+  anthropicAnswer,
+  anthropicRedactedThinking,
+  anthropicThinking,
   anthropicToolUse,
   cannedModelText,
   createFakeLlm,
+  llmShape,
   openAiToolCalls,
   type FakeLlm,
 } from './fake-llm';
@@ -196,6 +200,77 @@ describe('fake LLM', () => {
     expect((silent as { content: unknown[] }).content).toEqual([
       { type: 'tool_use', id: 'toolu_1', name: 'read_file', input: {} },
     ]);
+  });
+
+  it('builds the thinking blocks of a current model as the recorded shape has them, and puts them first', () => {
+    const shape = llmShape<{ content: Record<string, unknown>[] }>('anthropic-message-thinking');
+    const [thinking, redacted] = shape.content;
+    const blocks = [anthropicThinking('sig-1'), anthropicRedactedThinking('data-1')];
+    // The same keys as the documented blocks, in the same order, with the values given.
+    expect(Object.keys(blocks[0] as object)).toEqual(Object.keys(thinking!));
+    expect(Object.keys(blocks[1] as object)).toEqual(Object.keys(redacted!));
+    expect(blocks).toEqual([
+      { type: 'thinking', thinking: '', signature: 'sig-1' },
+      { type: 'redacted_thinking', data: 'data-1' },
+    ]);
+    // A summary in the text is for a request that asks for one; the signature is the same kind of value.
+    expect(anthropicThinking('sig-2', 'Weighing it.')).toEqual({
+      type: 'thinking',
+      thinking: 'Weighing it.',
+      signature: 'sig-2',
+    });
+
+    const answer = anthropicAnswer('Done.', { thinking: blocks }) as { content: unknown[] };
+    expect(answer.content).toEqual([...blocks, { type: 'text', text: 'Done.' }]);
+    const calls = anthropicToolUse([{ id: 'toolu_1', name: 'read_file', input: {} }], {
+      thinking: blocks,
+      text: 'Looking.',
+    }) as { content: unknown[]; stop_reason: string };
+    expect(calls.stop_reason).toBe('tool_use');
+    expect(calls.content).toEqual([
+      ...blocks,
+      { type: 'text', text: 'Looking.' },
+      { type: 'tool_use', id: 'toolu_1', name: 'read_file', input: {} },
+    ]);
+    // Nothing given, nothing added: the answers of the older shapes are as they were.
+    expect((anthropicAnswer('Done.') as { content: unknown[] }).content).toEqual([
+      { type: 'text', text: 'Done.' },
+    ]);
+  });
+
+  it('is an organisation-wide key when it is given a workspace: Anthropic calls name it or are refused', async () => {
+    const scoped = await createFakeLlm({ workspaceId: 'wrkspc_Fake01' });
+    try {
+      const send = (headers: Record<string, string>, path = '/v1/messages') =>
+        fetch(`${scoped.url}${path}`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-api-key': scoped.apiKey,
+            authorization: `Bearer ${scoped.apiKey}`,
+            'anthropic-version': '2023-06-01',
+            ...headers,
+          },
+          body: '{}',
+        });
+      const missing = await send({});
+      expect(missing.status).toBe(400);
+      expect(JSON.stringify(await missing.json())).toMatch(/not scoped to a workspace/);
+      // Another workspace is a key that may not do this: a 403, as for a model it may not use.
+      expect((await send({ 'anthropic-workspace-id': 'wrkspc_Other02' })).status).toBe(403);
+      expect((await send({ 'anthropic-workspace-id': 'wrkspc_Fake01' })).status).toBe(200);
+      // OpenAI's wire has no workspace.
+      expect((await send({}, '/v1/chat/completions')).status).toBe(200);
+    } finally {
+      await scoped.close();
+    }
+    // Without the option the fake is a key of one workspace: the header means nothing to it.
+    const plain = await post(
+      '/v1/messages',
+      { 'x-api-key': fake.apiKey, 'anthropic-version': '2023-06-01' },
+      {},
+    );
+    expect(plain.status).toBe(200);
   });
 
   it('says {"ok": true} to a request without a data block', () => {

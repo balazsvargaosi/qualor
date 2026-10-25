@@ -26,7 +26,12 @@ import {
 } from '../../test/fake-llm';
 import { encryptionKey, encryptSecret } from '../crypto/secrets';
 import { auditEvents, instanceSettings, llmRequests } from '../db/schema';
-import { DEFAULT_LLM_SETTINGS, readLlmSettings, writeLlmSettings } from '../llm/settings';
+import {
+  DEFAULT_LLM_SETTINGS,
+  LLM_API_KEY_AAD,
+  readLlmSettings,
+  writeLlmSettings,
+} from '../llm/settings';
 import { parseInternalHosts } from '../scm/url';
 
 /** The call the model makes to the echo tool of the tool-calling check. */
@@ -319,20 +324,199 @@ describe('/system/llm (llm.md §3, §16)', () => {
     expect((await put(withCeiling(null))).statusCode).toBe(200);
   });
 
-  it('accepts an Anthropic temperature of 0 to 1 and OpenAI up to 2', async () => {
-    const anthropic = await put(
-      body({
-        provider: {
-          kind: 'anthropic',
-          baseUrl: fake.anthropicBaseUrl,
-          model: 'm',
-          apiKey: fake.apiKey,
-          temperature: 1,
+  describe('the temperature', () => {
+    const anthropic = (over: Record<string, unknown> = {}) =>
+      provider({
+        kind: 'anthropic',
+        baseUrl: fake.anthropicBaseUrl,
+        model: 'claude-x',
+        ...over,
+      });
+    const errorsOf = (res: { json: () => unknown }) =>
+      (res.json() as { errors: { path: string; message: string }[] }).errors;
+
+    it('takes an Anthropic provider without one, absent or null, and OpenAI up to 2', async () => {
+      for (const over of [{}, { temperature: null }]) {
+        const res = await put(body({ provider: anthropic(over) }));
+        expect(res.statusCode, res.body).toBe(200);
+        expect(res.json().provider).toMatchObject({ kind: 'anthropic', temperature: null });
+      }
+      for (const temperature of [0, 1.5, 2]) {
+        const res = await put(body({ provider: provider({ temperature }) }));
+        expect(res.statusCode, res.body).toBe(200);
+        expect(res.json().provider.temperature).toBe(temperature);
+      }
+      const over = await put(body({ provider: provider({ temperature: 2.1 }) }));
+      expect(over.statusCode).toBe(422);
+      expect(errorsOf(over).map((e) => e.path)).toContain('body.provider.temperature');
+      await put(body());
+    });
+
+    describe('an Anthropic provider refuses a temperature at save, and a stored one is not sent', () => {
+      it('refuses one at its field, in the words of the rule, whatever it is', async () => {
+        for (const temperature of [0, 0.5, 1, 1.5, 2]) {
+          const res = await put(body({ provider: anthropic({ temperature }) }));
+          expect(res.statusCode, String(temperature)).toBe(422);
+          expect(errorsOf(res), String(temperature)).toEqual([
+            {
+              path: 'body.provider.temperature',
+              message: "Anthropic's current models take no temperature: leave it empty",
+            },
+          ]);
+        }
+        // A refused save changes nothing.
+        expect((await get()).json().provider.temperature).toBeNull();
+      });
+
+      it('shows one that older settings hold as empty, never sends it, and drops it at the next save', async () => {
+        const keyEnc = encryptSecret(
+          encryptionKey(ctx.config.secretKey),
+          fake.apiKey,
+          LLM_API_KEY_AAD,
+        );
+        const stored = await readLlmSettings(ctx.db);
+        await writeLlmSettings(ctx.db, {
+          ...stored,
+          provider: {
+            kind: 'anthropic',
+            baseUrl: fake.anthropicBaseUrl,
+            model: 'claude-x',
+            strongModel: null,
+            fastModel: null,
+            auth: 'bearer',
+            jsonMode: 'json_object',
+            maxTokensField: 'max_tokens',
+            temperature: 0.7,
+            workspaceId: null,
+            timeoutSeconds: 60,
+            apiKeyEnc: keyEnc,
+          },
+        });
+        try {
+          // The page shows the field empty: the provider has none.
+          const shown = await get();
+          expect(shown.json().provider).toMatchObject({ kind: 'anthropic', temperature: null });
+          // And no call carries it: the test is a call and a conversation.
+          const tester = await createUser(ctx, {
+            username: 'llm-old-temp',
+            isInstanceAdmin: true,
+          });
+          const res = await test(await login(ctx, tester.username, tester.password));
+          expect(res.json()).toMatchObject({ ok: true, problem: null });
+          expect(fake.requests.length).toBeGreaterThan(0);
+          for (const request of fake.requests) expect(request.body).not.toContain('temperature');
+          // The next save, with the field as the page shows it, takes it out of the settings.
+          const saved = await put(body({ provider: anthropic() }));
+          expect(saved.statusCode, saved.body).toBe(200);
+          expect((await readLlmSettings(ctx.db)).provider?.temperature).toBeNull();
+        } finally {
+          await put(body());
+        }
+      });
+    });
+  });
+
+  describe('the workspace of an Anthropic provider', () => {
+    const WORKSPACE = 'wrkspc_01AbCdEf';
+    const anthropic = (over: Record<string, unknown> = {}) =>
+      provider({ kind: 'anthropic', baseUrl: fake.anthropicBaseUrl, model: 'claude-x', ...over });
+    const errorsOf = (res: { json: () => unknown }) =>
+      (res.json() as { errors: { path: string; message: string }[] }).errors;
+    afterEach(async () => {
+      await put(body());
+    });
+
+    it('is stored as entered and shown as entered: it is not a secret', async () => {
+      const res = await put(body({ provider: anthropic({ workspaceId: WORKSPACE }) }));
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json().provider.workspaceId).toBe(WORKSPACE);
+      expect((await get()).json().provider.workspaceId).toBe(WORKSPACE);
+      expect((await readLlmSettings(ctx.db)).provider?.workspaceId).toBe(WORKSPACE);
+      // Left out, null, or the field emptied by a form: no workspace.
+      for (const over of [{}, { workspaceId: null }]) {
+        const none = await put(body({ provider: anthropic(over) }));
+        expect(none.statusCode, none.body).toBe(200);
+        expect(none.json().provider.workspaceId).toBeNull();
+      }
+    });
+
+    it('is no part of an OpenAI provider: whatever the form sent, it is stored as null', async () => {
+      const res = await put(body({ provider: provider({ workspaceId: WORKSPACE }) }));
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json().provider).toMatchObject({ kind: 'openai', workspaceId: null });
+      expect((await readLlmSettings(ctx.db)).provider?.workspaceId).toBeNull();
+    });
+
+    it.each([
+      ['empty', ''],
+      ['the prefix alone', 'wrkspc_'],
+      ['another prefix', 'workspace_01AbCd'],
+      ['a space in it', 'wrkspc_01 AbCd'],
+      ['over 64 characters after the prefix', `wrkspc_${'a'.repeat(65)}`],
+      ['not text', 7],
+    ])('refuses one that is %s, at its field', async (_what, workspaceId) => {
+      const res = await put(body({ provider: anthropic({ workspaceId }) }));
+      expect(res.statusCode, res.body).toBe(422);
+      expect(errorsOf(res).map((e) => e.path)).toEqual(['body.provider.workspaceId']);
+      expect(res.body).not.toContain(fake.apiKey);
+      expect((await get()).json().provider.workspaceId).toBeNull();
+    });
+
+    it('names a change of it in the log line, never its value', async () => {
+      await put(body({ provider: anthropic() }));
+      expect(
+        (await put(body({ provider: anthropic({ workspaceId: WORKSPACE }) }))).statusCode,
+      ).toBe(200);
+      const line = ctx.logs.filter((l) => l.includes('LLM settings changed')).at(-1)!;
+      expect(line).toContain('"provider.workspaceId"');
+      expect(line).not.toContain(WORKSPACE);
+    });
+
+    it('the Test names a key that is not scoped to a workspace, and sends the workspace in every request once it is given', async () => {
+      // The provider answers 400 in its own words (an organisation-wide key without a workspace).
+      await put(body({ provider: anthropic() }));
+      const tester = await createUser(ctx, { username: 'llm-workspace-1', isInstanceAdmin: true });
+      const session = await login(ctx, tester.username, tester.password);
+      fake.enqueue({
+        status: 400,
+        body: {
+          type: 'error',
+          error: {
+            type: 'invalid_request_error',
+            message:
+              'Fake error text: this API key is not scoped to a workspace; name one with the anthropic-workspace-id header.',
+          },
         },
-      }),
-    );
-    expect(anthropic.statusCode, anthropic.body).toBe(200);
-    expect((await put(body({ provider: provider({ temperature: 2 }) }))).statusCode).toBe(200);
+      });
+      const refused = await test(session);
+      expect(refused.statusCode, refused.body).toBe(200);
+      const hint =
+        'This key is not scoped to a workspace: give its workspace ID in the AI assistant settings.';
+      expect(refused.json()).toMatchObject({
+        ok: false,
+        problem: { code: 'PROVIDER_REJECTED_REQUEST', message: hint, providerStatus: 400 },
+        toolCalling: 'not_checked',
+        models: [{ tier: 'standard', ok: false, problem: { message: hint } }],
+      });
+      // Never the provider's words, its header or the key.
+      expect(refused.body).not.toContain('Fake error text');
+      expect(refused.body).not.toContain(fake.apiKey);
+      expect(fake.requests).toHaveLength(1);
+      expect(fake.requests[0]!.headers).not.toHaveProperty('anthropic-workspace-id');
+
+      // With the workspace given, the plain call and the tool-calling check both name it.
+      fake.requests.length = 0;
+      await put(body({ provider: anthropic({ workspaceId: WORKSPACE }) }));
+      const other = await createUser(ctx, { username: 'llm-workspace-2', isInstanceAdmin: true });
+      const named = await test(await login(ctx, other.username, other.password));
+      expect(named.json()).toMatchObject({ ok: true, problem: null });
+      expect(fake.requests).toHaveLength(2);
+      expect(fake.requests.map((r) => r.headers['anthropic-workspace-id'])).toEqual([
+        WORKSPACE,
+        WORKSPACE,
+      ]);
+      expect(named.body).not.toContain(fake.apiKey);
+    });
   });
 
   describe('the models of the tiers', () => {
@@ -846,6 +1030,8 @@ describe('/system/llm (llm.md §3, §16)', () => {
           system: expect.stringContaining('echo'),
           messages: [{ role: 'user', content: [{ type: 'text', text: expect.any(String) }] }],
           tools: [{ name: 'echo', description: expect.any(String), input_schema: ECHO_PARAMETERS }],
+          // Only auto: the current models refuse a forced choice.
+          tool_choice: { type: 'auto' },
         });
         expect(fake.requests[1]!.headers['x-api-key']).toBe(fake.apiKey);
       } finally {
@@ -1288,6 +1474,7 @@ describe('/system/llm (llm.md §3, §16)', () => {
           jsonMode: 'json_object',
           maxTokensField: 'max_tokens',
           temperature: null,
+          workspaceId: null,
           timeoutSeconds: 60,
           apiKeyEnc: encryptSecret(secret, fake.apiKey, 'scm_connections.token_enc'),
         },
@@ -1385,6 +1572,7 @@ describe('/system/llm (llm.md §3, §16)', () => {
         jsonMode: 'json_object',
         maxTokensField: 'max_tokens',
         temperature: null,
+        workspaceId: null,
         timeoutSeconds: 60,
         apiKeyEnc: encryptSecret(key, fake.apiKey, 'scm_connections.token_enc'),
       },

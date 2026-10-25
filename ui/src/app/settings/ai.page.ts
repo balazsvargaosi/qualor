@@ -72,6 +72,7 @@ const FIELDS = [
   'strong-model',
   'fast-model',
   'key',
+  'workspace-id',
   'timeout',
   'temperature',
   'exclude',
@@ -100,6 +101,7 @@ const SERVER_PATHS: [string, Field][] = [
   ['body.provider.strongModel', 'strong-model'],
   ['body.provider.fastModel', 'fast-model'],
   ['body.provider.apiKey', 'key'],
+  ['body.provider.workspaceId', 'workspace-id'],
   ['body.provider.timeoutSeconds', 'timeout'],
   ['body.provider.temperature', 'temperature'],
   ['body.excludePaths', 'exclude'],
@@ -129,6 +131,10 @@ const AUTO_FIX_PATH = /^body\.organizations\.([^.]+)\.autoFix(?:\.(\w+))?$/;
 const MAX_EXCLUDE_PATHS = 100;
 /** A model's name as the provider spells it (the server's `MODEL_PATTERN`). */
 const MODEL_NAME = /^[A-Za-z0-9._:/@+-]{1,200}$/;
+/** An Anthropic workspace as the console names it (the server's `WORKSPACE_ID_PATTERN`). */
+const WORKSPACE_ID = /^wrkspc_[A-Za-z0-9]{1,64}$/;
+/** The most a temperature may be: OpenAI-compatible providers only, Anthropic's models take none. */
+const MAX_TEMPERATURE = 2;
 /** The organisations an instance admin sees (ruling R11), read page by page up to this bound. */
 const ORG_PAGES = 10;
 /** The projects offered for exclusion (all of the instance's), read page by page up to this bound. */
@@ -205,6 +211,7 @@ export class AiSettingsPage {
   protected readonly maxTokensField = signal<'max_tokens' | 'max_completion_tokens'>('max_tokens');
   /** Set once the admin picks the output limit field; until then the base URL's host decides. */
   private maxTokensFieldChosen = false;
+  protected readonly workspaceId = signal('');
   protected readonly timeout = signal('60');
   protected readonly temperature = signal('');
   protected readonly removeKey = signal(false);
@@ -249,7 +256,6 @@ export class AiSettingsPage {
   protected readonly error = signal<string | null>(null);
   protected readonly busy = signal(false);
 
-  protected readonly maxTemperature = computed(() => (this.kind() === 'anthropic' ? 1 : 2));
   protected readonly provider = computed(() => this.settings()?.provider ?? null);
   /**
    * A tier's model as typed, when it has one of its own: only such a tier has prices of its own, so
@@ -615,6 +621,7 @@ export class AiSettingsPage {
     this.jsonMode.set(p?.jsonMode ?? 'json_object');
     this.maxTokensField.set(p?.maxTokensField ?? 'max_tokens');
     this.maxTokensFieldChosen = false;
+    this.workspaceId.set(p?.workspaceId ?? '');
     this.timeout.set(String(p?.timeoutSeconds ?? 60));
     this.temperature.set(p?.temperature === null || p === null ? '' : String(p.temperature));
     this.removeKey.set(false);
@@ -717,10 +724,15 @@ export class AiSettingsPage {
     if (fastModel !== '' && !MODEL_NAME.test(fastModel)) refuse(errors, 'fast-model');
     if (apiKey !== '' && this.removeKey()) errors.key = keyAndRemove();
     else if (apiKey !== '' && !/^[\x21-\x7e]{1,4096}$/.test(apiKey)) errors.key = keyFormat();
+    const workspaceId = this.workspaceId().trim();
+    if (kind === 'anthropic' && workspaceId !== '' && !WORKSPACE_ID.test(workspaceId)) {
+      refuse(errors, 'workspace-id');
+    }
+    // Anthropic's current models take no temperature: none is sent for them, whatever was typed.
     const temperature =
-      this.temperature().trim() === ''
+      kind === 'anthropic' || this.temperature().trim() === ''
         ? null
-        : decimalNumber(errors, 'temperature', this.temperature(), 0, this.maxTemperature());
+        : decimalNumber(errors, 'temperature', this.temperature(), 0, MAX_TEMPERATURE);
     return {
       kind,
       baseUrl,
@@ -729,7 +741,7 @@ export class AiSettingsPage {
       fastModel: fastModel === '' ? null : fastModel,
       ...(kind === 'openai'
         ? { auth: this.auth(), jsonMode: this.jsonMode(), maxTokensField: this.maxTokensField() }
-        : {}),
+        : { workspaceId: workspaceId === '' ? null : workspaceId }),
       temperature,
       timeoutSeconds: wholeNumber(errors, 'timeout', this.timeout(), 5, 600),
       ...keyChange(apiKey, this.removeKey()),
@@ -877,10 +889,12 @@ function refusal(field: Field): string {
       return $localize`:@@ai.settings.badModel:Use the model's name as the provider spells it: letters, digits and . _ : / @ + - only.`;
     case 'key':
       return $localize`:@@ai.settings.keyForNewUrl:Enter the API key again for a new address, or check Remove the key. The key is 1 to 4096 printable characters without spaces.`;
+    case 'workspace-id':
+      return $localize`:@@ai.settings.badWorkspaceId:Use the workspace ID as the console shows it: wrkspc_ and then letters and digits.`;
     case 'timeout':
       return $localize`:@@ai.settings.badTimeout:Use a whole number of seconds from 5 to 600.`;
     case 'temperature':
-      return $localize`:@@ai.settings.badTemperature:Use a number from 0 to 2 (Anthropic: 0 to 1), or leave it empty.`;
+      return $localize`:@@ai.settings.badTemperature:Use a number from 0 to 2, or leave it empty.`;
     case 'exclude':
       return $localize`:@@ai.settings.badExclude:Use at most 100 globs, one per line, relative to the repository root.`;
     case 'budget-explain':

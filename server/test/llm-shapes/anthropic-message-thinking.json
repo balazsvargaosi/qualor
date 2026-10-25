@@ -1,0 +1,21 @@
+{
+  "id": "msg_fake000000000000000001",
+  "type": "message",
+  "role": "assistant",
+  "model": "fake-anthropic-model",
+  "content": [
+    {
+      "type": "thinking",
+      "thinking": "",
+      "signature": "L3qQRhUVa2aOv8YgNzva+wGhnW6TghDQGScy3NP5JFQ7N9qE53V1zKt+cYAFAudS2la/tdcDheUuGqGfqqnrYN8gAgry/pPa3qdtTS1FeubgMpeyEYKR3dS+ebFaIf9v87edjLt9w61HfSc1QbPIzZ59vwF1opL9J39GYyRUuH//pfVpR1edMqRulR/s9rZxzIRQgjmAqQtB3LVjRHyJoGCjMdeQWvHCRb3vsKhJGt3FYX2D"
+    },
+    {
+      "type": "redacted_thinking",
+      "data": "j2cAek794oSijYyPHC6B2/n232li+GdpGJkuEOJPBCvn2mFR52ZPIYRXA2QULEMChpbn9V6X67kAyyd2m6xHbSK8TWiJiYywk2CDDJmWeAPlsTDjhQ1f5wAqYU91TF0lj73/fRLwlZYFuAVgGazib9ZnGDrbDpOt"
+    },
+    { "type": "text", "text": "{}" }
+  ],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": { "input_tokens": 431, "output_tokens": 1102 }
+}

@@ -107,6 +107,35 @@ describe('storedPrompt', () => {
     });
   });
 
+  it('keeps no replay: a stored prompt shows the text and the calls of a turn, never the provider’s own data', () => {
+    // The thinking of a current model is signed and encrypted by the provider: sent back to it, and
+    // kept nowhere else.
+    const replay = {
+      kind: 'anthropic' as const,
+      items: [
+        { type: 'thinking', thinking: '', signature: 'SIGNATURE-OF-THE-THINKING' },
+        { type: 'redacted_thinking', data: 'ENCRYPTED-THINKING-DATA' },
+        { type: 'text', text: 'Reading.' },
+      ],
+    };
+    const messages: LlmMessage[] = [
+      { role: 'user', text: 'The change' },
+      { role: 'assistant', text: 'Reading.', toolCalls: [call('c1')], replay },
+      { role: 'tool', callId: 'c1', name: 'read_file', text: 'file text' },
+    ];
+    const stored = promptOf(conversationOf(messages));
+    expect(stored.messages[1]).toEqual({
+      role: 'assistant',
+      text: 'Reading.',
+      callCount: 1,
+      calls: [{ id: 'c1', name: 'read_file', arguments: '{"path":"a.ts"}' }],
+    });
+    const text = JSON.stringify(stored);
+    for (const secret of ['SIGNATURE-OF-THE-THINKING', 'ENCRYPTED-THINKING-DATA', 'replay']) {
+      expect(text).not.toContain(secret);
+    }
+  });
+
   it('stores a conversation without messages as none', () => {
     expect(promptOf(conversationOf([]))).toEqual({
       runId: RUN,
@@ -273,6 +302,16 @@ describe('storedPrompt', () => {
 });
 
 describe('storedResult', () => {
+  it('keeps no replay of a turn, whatever it holds', () => {
+    const replay = {
+      kind: 'anthropic' as const,
+      items: [{ type: 'thinking', thinking: '', signature: 'SIGNATURE-OF-THE-THINKING' }],
+    };
+    const stored = resultOf(turnOf({ text: 'Done.', replay }));
+    expect(stored).toEqual({ finishReason: 'stop', text: 'Done.', callCount: 0, calls: [] });
+    expect(JSON.stringify(stored)).not.toContain('SIGNATURE-OF-THE-THINKING');
+  });
+
   it('keeps the finish reason, the text and the calls of a turn', () => {
     expect(
       resultOf(turnOf({ text: '{"findings":[]}', finishReason: 'tool', toolCalls: [call('c1')] })),

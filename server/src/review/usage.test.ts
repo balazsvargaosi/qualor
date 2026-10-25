@@ -12,6 +12,7 @@ const provider = (timeoutSeconds: number): StoredProvider => ({
   jsonMode: 'json_object',
   maxTokensField: 'max_completion_tokens',
   temperature: null,
+  workspaceId: null,
   timeoutSeconds,
   apiKeyEnc: null,
 });

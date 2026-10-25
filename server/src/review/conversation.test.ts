@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   anthropicAnswer,
+  anthropicRedactedThinking,
+  anthropicThinking,
   anthropicToolUse,
   createFakeLlm,
   llmShape,
@@ -20,6 +22,7 @@ import {
   type LlmToolCall,
   type LlmTurn,
   type ProviderConfig,
+  type ProviderReplay,
 } from '../llm/providers';
 import { parseInternalHosts } from '../scm/url';
 import {
@@ -273,6 +276,7 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
       jsonMode: 'json_object',
       maxTokensField: 'max_tokens',
       temperature: null,
+      workspaceId: null,
       timeoutSeconds: 5,
     } as const;
     configs = {
@@ -694,6 +698,162 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
       expect(result).toMatchObject({ kind: 'answer', budgetReached: true, turns: 3 });
       expect(rolesOf(fake.requests[2]!)).toEqual(['user', 'assistant', 'user']);
       expectAlternating();
+    });
+  });
+
+  describe('the thinking of the current Anthropic models', () => {
+    /** An answer of exactly this content; a turn that asks for tools ends with `tool_use`. */
+    const answerOf = (content: unknown[], stop: string): LlmReply => ({
+      status: 200,
+      body: { ...(anthropicAnswer('') as object), content, stop_reason: stop },
+    });
+    const toolUse = (id: string, input: unknown, name = 'read_file') => ({
+      type: 'tool_use',
+      id,
+      name,
+      input,
+    });
+    /** The model's four turns: three of tools, each with thinking of its own, and the answer. */
+    const CONTENTS = [
+      [
+        anthropicThinking('sig-1'),
+        anthropicRedactedThinking('data-1'),
+        { type: 'text', text: 'Reading.' },
+        toolUse('c1', { path: 'a.ts' }),
+      ],
+      [
+        anthropicThinking('sig-2', 'A summary.'),
+        toolUse('c2', { pattern: 'x' }, 'grep'),
+        toolUse('c3', { path: 'b.ts' }),
+      ],
+      [anthropicRedactedThinking('data-3'), toolUse('c4', { path: 'c.ts' })],
+      [anthropicThinking('sig-4'), { type: 'text', text: '{"findings":[]}' }],
+    ];
+    const enqueueAll = () =>
+      fake.enqueue(
+        ...CONTENTS.map((content, i) => answerOf(content, i < 3 ? 'tool_use' : 'end_turn')),
+      );
+    const messagesOf = (request: RecordedLlmRequest) =>
+      (request.json as AnthropicWire).messages.map((message) => ({
+        role: message.role,
+        json: JSON.stringify(message.content),
+      }));
+
+    it('thinking and redacted_thinking blocks come back verbatim, in order, on every later turn', async () => {
+      enqueueAll();
+      const { result } = await run('anthropic');
+      expect(result).toMatchObject({ kind: 'answer', text: '{"findings":[]}', turns: 4 });
+      expect(fake.requests).toHaveLength(4);
+      for (const [n, request] of fake.requests.entries()) {
+        // Byte for byte the content of the earlier turns of the model, each turn once, in order.
+        const assistants = messagesOf(request)
+          .filter((message) => message.role === 'assistant')
+          .map((message) => message.json);
+        expect(assistants, `request ${n}`).toEqual(
+          CONTENTS.slice(0, n).map((content) => JSON.stringify(content)),
+        );
+      }
+    });
+
+    it('three tool turns: the request bodies share an unchanged prefix, byte-identical up to the new turn', async () => {
+      enqueueAll();
+      await run('anthropic');
+      const bodies = fake.requests.map((request) => request.json as Record<string, unknown>);
+      const messages = fake.requests.map((request) => messagesOf(request).map((m) => m.json));
+      for (let n = 1; n < bodies.length; n += 1) {
+        const before = messages[n - 1]!;
+        // Everything the earlier request held is there again, as it was, and the new turn is added.
+        expect(messages[n]!.slice(0, before.length), `request ${n}`).toEqual(before);
+        expect(messages[n]!.length, `request ${n}`).toBeGreaterThan(before.length);
+        for (const field of ['model', 'max_tokens', 'system', 'tools', 'tool_choice']) {
+          expect(JSON.stringify(bodies[n]![field]), `${field} of request ${n}`).toBe(
+            JSON.stringify(bodies[0]![field]),
+          );
+        }
+      }
+      // The raw bodies too: what comes before the messages is the same text on every request.
+      const head = (raw: string) => raw.slice(0, raw.indexOf('"messages":['));
+      expect(new Set(fake.requests.map((request) => head(request.body))).size).toBe(1);
+    });
+
+    it('sends the results of a turn right after it, and no message between a turn and them', async () => {
+      enqueueAll();
+      await run('anthropic');
+      const last = (fake.requests[3]!.json as AnthropicWire).messages;
+      expect(last.map((message) => message.role)).toEqual([
+        'user',
+        'assistant',
+        'user',
+        'assistant',
+        'user',
+        'assistant',
+        'user',
+      ]);
+      expect(last[2]!.content.map((block) => block.tool_use_id)).toEqual(['c1']);
+      expect(last[4]!.content.map((block) => block.tool_use_id)).toEqual(['c2', 'c3']);
+      expect(last[6]!.content.map((block) => block.tool_use_id)).toEqual(['c4']);
+    });
+
+    it('sends the thinking of an answer that was cut off, and of one the caller did not accept, with the answer', async () => {
+      const cut = [anthropicThinking('sig-cut'), { type: 'text', text: '{"findings":[{"ti' }];
+      const bad = [anthropicRedactedThinking('data-bad'), { type: 'text', text: 'not json' }];
+      const good = [anthropicThinking('sig-good'), { type: 'text', text: '{"findings":[]}' }];
+      fake.enqueue(
+        answerOf(cut, 'max_tokens'),
+        answerOf(bad, 'end_turn'),
+        answerOf(good, 'end_turn'),
+      );
+      const { result } = await run('anthropic', {
+        accept: (text) => text.startsWith('{"findings":[]'),
+      });
+      expect(result).toMatchObject({ kind: 'answer', text: '{"findings":[]}', turns: 3 });
+      const last = messagesOf(fake.requests[2]!);
+      expect(last.map((message) => message.role)).toEqual([
+        'user',
+        'assistant',
+        'user',
+        'assistant',
+        'user',
+      ]);
+      expect(last[1]!.json).toBe(JSON.stringify(cut));
+      expect(last[3]!.json).toBe(JSON.stringify(bad));
+    });
+
+    it('a turn that only thought before it was cut off is not in the history: there is no message of its own to send', async () => {
+      fake.enqueue(
+        answerOf([anthropicThinking('sig-half')], 'max_tokens'),
+        answerOf(CONTENTS[3]!, 'end_turn'),
+      );
+      const { result } = await run('anthropic');
+      expect(result).toMatchObject({ kind: 'answer', turns: 2 });
+      expect(fake.requests[1]!.body).not.toContain('sig-half');
+      expect(messagesOf(fake.requests[1]!).map((message) => message.role)).toEqual(['user']);
+    });
+
+    it('a refusal after thinking ends the conversation as a bad answer with what it spent, and sends nothing more', async () => {
+      fake.enqueue(
+        answerOf(CONTENTS[0]!, 'tool_use'),
+        {
+          status: 200,
+          body: {
+            ...(anthropicAnswer('', {
+              usage: { input_tokens: 700, output_tokens: 900 },
+            }) as object),
+            content: [anthropicThinking('sig-refused'), { type: 'text', text: 'No.' }],
+            stop_reason: 'refusal',
+          },
+        },
+        answerOf(CONTENTS[3]!, 'end_turn'),
+      );
+      const { result } = await run('anthropic');
+      expect(result).toMatchObject({
+        kind: 'failed',
+        reason: 'bad_answer',
+        turns: 2,
+        inputTokens: 431 + 700,
+        outputTokens: 102 + 900,
+      });
+      expect(fake.requests).toHaveLength(2);
     });
   });
 
@@ -1365,6 +1525,153 @@ describe('runConversation with a scripted provider', () => {
       // 6 000 three-byte characters: 18 000 bytes.
       const { ran } = await withArguments({ path: '€'.repeat(6_000) });
       expect(ran).toEqual([]);
+    });
+  });
+
+  describe('the replay of a turn (the current Anthropic models)', () => {
+    /** What an adapter keeps of a turn: opaque to the loop, which never reads it. */
+    const replayOf = (label: string): ProviderReplay => ({
+      kind: 'anthropic',
+      items: [
+        { type: 'thinking', thinking: '', signature: `sig-${label}` },
+        { type: 'text', text: label },
+      ],
+    });
+    const assistants = (conversation: LlmConversation) =>
+      conversation.messages.filter((message) => message.role === 'assistant');
+
+    it('puts the replay of a turn, unchanged, on the assistant message it adds, and sends it again on every later turn', async () => {
+      const [one, two] = [replayOf('one'), replayOf('two')];
+      const s = scripted(
+        callTurn([call('c1')], { text: 'Reading.', replay: one }),
+        callTurn([call('c2'), call('c3')], { replay: two }),
+        turn('done'),
+      );
+      await runConversation(s.input);
+      expect(assistants(s.seen[0]!)).toEqual([]);
+      expect(assistants(s.seen[1]!)).toEqual([
+        { role: 'assistant', text: 'Reading.', toolCalls: [call('c1')], replay: one },
+      ]);
+      expect(
+        assistants(s.seen[2]!).map((message) => (message as { replay?: ProviderReplay }).replay),
+      ).toEqual([one, two]);
+      // The very value the provider gave: the loop reads nothing of it and changes nothing in it.
+      expect((assistants(s.seen[2]!)[0] as { replay?: ProviderReplay }).replay).toBe(one);
+      expect(JSON.stringify(one)).toBe(JSON.stringify(replayOf('one')));
+    });
+
+    it('never changes or reorders the messages before the new ones: the history only grows', async () => {
+      const s = scripted(
+        callTurn([call('c1')], { replay: replayOf('one') }),
+        callTurn([call('c2'), call('c3')], { replay: replayOf('two') }),
+        callTurn([call('c4')], { replay: replayOf('three') }),
+        turn('done'),
+      );
+      // The history as each call was given it, written down at once: a later change of a message
+      // that was sent would not reach these texts.
+      const snapshots: string[] = [];
+      const send = s.input.send;
+      s.input.send = (conversation) => {
+        snapshots.push(JSON.stringify(conversation.messages));
+        return send(conversation);
+      };
+      await runConversation(s.input);
+      expect(snapshots).toHaveLength(4);
+      for (let n = 1; n < snapshots.length; n += 1) {
+        // The earlier history as a list is the start of this one, up to its closing bracket.
+        expect(snapshots[n]!.startsWith(snapshots[n - 1]!.slice(0, -1)), `call ${n}`).toBe(true);
+        expect(snapshots[n]!.length).toBeGreaterThan(snapshots[n - 1]!.length);
+      }
+      expect(JSON.parse(snapshots[3]!)).toHaveLength(1 + 2 + 3 + 2);
+    });
+
+    it('keeps the replay of a cut-off answer, and of an answer the caller did not accept, on the answer it adds', async () => {
+      const [cut, bad] = [replayOf('cut'), replayOf('bad')];
+      const s = scripted(
+        turn('{"findings":[{"ti', { finishReason: 'length', replay: cut }),
+        turn('not json', { replay: bad }),
+        turn('{"findings":[]}'),
+      );
+      s.input.accept = (text) => text.startsWith('{"findings":[]');
+      await runConversation(s.input);
+      expect(s.seen[1]!.messages[1]).toEqual({
+        role: 'assistant',
+        text: '{"findings":[{"ti',
+        toolCalls: [],
+        replay: cut,
+      });
+      expect(s.seen[2]!.messages[1]).toMatchObject({ replay: cut });
+      expect(s.seen[2]!.messages[3]).toEqual({
+        role: 'assistant',
+        text: 'not json',
+        toolCalls: [],
+        replay: bad,
+      });
+    });
+
+    it('adds a turn that was cut off while it had no text to the history with nothing: its replay goes with it', async () => {
+      const s = scripted(
+        turn('', { finishReason: 'length', replay: replayOf('half') }),
+        turn('done'),
+      );
+      await runConversation(s.input);
+      expect(s.seen[1]!.messages.map((message) => message.role)).toEqual(['user', 'user']);
+      expect(JSON.stringify(s.seen[1])).not.toContain('sig-half');
+    });
+
+    it('sends a turn whose calls were not run as its text alone, without the replay that holds them', async () => {
+      // The wrap-up answers with a call and words that are not the answer: the call is not run, so
+      // its replay has a call with no result to send beside it.
+      const s = scripted(
+        callTurn([call('c1')], { replay: replayOf('one') }),
+        callTurn([call('c2')], { text: 'Enough.', replay: replayOf('late') }),
+        turn('{"findings":[]}'),
+      );
+      s.input.limits = { ...LIMITS, maxTurns: 1 };
+      s.input.accept = (text) => text.startsWith('{');
+      await runConversation(s.input);
+      const history = s.seen[2]!.messages;
+      expect(history.at(-2)).toEqual({ role: 'assistant', text: 'Enough.', toolCalls: [] });
+      expect(history.at(-2)).not.toHaveProperty('replay');
+      expect(JSON.stringify(history)).not.toContain('sig-late');
+      // The turn before it keeps its replay.
+      expect(history[1]).toMatchObject({ role: 'assistant', replay: replayOf('one') });
+    });
+
+    it('adds no replay to a message when its turn has none, whatever the turn was', async () => {
+      const s = scripted(
+        callTurn([call('c1')]),
+        turn('{"findings":[{"ti', { finishReason: 'length' }),
+        turn('not json'),
+        turn('{"findings":[]}'),
+      );
+      s.input.accept = (text) => text.startsWith('{"findings":[]');
+      await runConversation(s.input);
+      for (const message of s.seen[3]!.messages) expect(message).not.toHaveProperty('replay');
+    });
+
+    it('counts the replay with what was sent when the input of a call is guessed', async () => {
+      const unknown = { inputTokens: null, outputTokens: null };
+      const big: ProviderReplay = {
+        kind: 'anthropic',
+        items: [{ type: 'thinking', thinking: '', signature: 'x'.repeat(4_000) }],
+      };
+      const run = async (replay?: ProviderReplay) => {
+        const s = scripted(
+          callTurn([call('c1')], { usage: unknown, ...(replay ? { replay } : {}) }),
+          turn('done', { usage: unknown }),
+        );
+        return { result: await runConversation(s.input), seen: s.seen };
+      };
+      const without = await run();
+      const withReplay = await run(big);
+      // A quarter of the bytes of the JSON, the replay's 4 000 and more among them.
+      expect(withReplay.result.inputTokens - without.result.inputTokens).toBeGreaterThanOrEqual(
+        1_000,
+      );
+      expect(withReplay.result.inputTokens).toBe(
+        quarterOfBytes(withReplay.seen[0]!) + quarterOfBytes(withReplay.seen[1]!),
+      );
     });
   });
 

@@ -12,6 +12,7 @@ import {
 import {
   ownModel,
   pricingFor,
+  WORKSPACE_ID_PATTERN,
   type PricePair,
   type StoredPricing,
 } from '../../server/src/llm/settings';
@@ -42,7 +43,9 @@ import {
  * The review has the three model tiers of the server's own: `QUALOR_LIVE_REVIEW_STRONG_MODEL` and
  * `QUALOR_LIVE_REVIEW_FAST_MODEL` name the models of the strong and the fast tier, and a tier left
  * empty uses the model, as in the AI settings. Each call goes to the model of its tier, and its cost
- * is figured at that model's prices.
+ * is figured at that model's prices. An organisation-wide Anthropic key that is not scoped to a
+ * workspace needs `QUALOR_LIVE_REVIEW_WORKSPACE_ID` (`wrkspc_…`), which every call sends as the
+ * AI settings' Workspace ID does.
  *
  * The provider is whatever the person sets in the environment. The host they type is the one they
  * mean to call, so it is allowed whatever its address is (a local model, a gateway on the company
@@ -70,6 +73,11 @@ export interface LiveOptions {
   kind: ProviderKind;
   /** The key the provider is called with; never printed. */
   apiKey: string | null;
+  /**
+   * The workspace an organisation-wide Anthropic key that is not scoped to one names in every
+   * request (`anthropic-workspace-id`); null: none. An OpenAI-compatible server has none.
+   */
+  workspaceId: string | null;
   /** Times each case is reviewed. */
   runs: number;
   /** The cases to review, by name; null: all of them. */
@@ -142,6 +150,12 @@ export function readLiveEnv(env: Env): LiveOptions {
       'QUALOR_LIVE_REVIEW_API_KEY must be 1 to 4096 printable ASCII characters without spaces',
     );
   }
+  const workspace = env.QUALOR_LIVE_REVIEW_WORKSPACE_ID ?? '';
+  if (workspace !== '' && !WORKSPACE_ID_PATTERN.test(workspace)) {
+    throw new Error(
+      'QUALOR_LIVE_REVIEW_WORKSPACE_ID must be wrkspc_ and then 1 to 64 letters or digits',
+    );
+  }
   const rawRuns = env.QUALOR_LIVE_REVIEW_RUNS ?? '';
   const runs = rawRuns === '' ? 1 : Number(rawRuns);
   if (!Number.isInteger(runs) || runs < 1 || runs > MAX_RUNS) {
@@ -156,6 +170,7 @@ export function readLiveEnv(env: Env): LiveOptions {
     model,
     kind: known,
     apiKey: key === '' ? null : key,
+    workspaceId: known === 'anthropic' && workspace !== '' ? workspace : null,
     runs,
     cases: names.length === 0 ? null : names,
     strongModel: tierModel(env, 'QUALOR_LIVE_REVIEW_STRONG_MODEL'),
@@ -199,7 +214,7 @@ function nearby(url: URL): boolean {
  * the one host the calls may go to whatever its address. Throws for a URL the server would refuse,
  * and for plain http to a host that is not nearby: the key would cross the network in clear.
  */
-export function providerOf(o: Pick<LiveOptions, 'url' | 'model' | 'kind'>): {
+export function providerOf(o: Pick<LiveOptions, 'url' | 'model' | 'kind' | 'workspaceId'>): {
   config: ProviderConfig;
   http: ProviderHttpOptions;
 } {
@@ -228,6 +243,7 @@ export function providerOf(o: Pick<LiveOptions, 'url' | 'model' | 'kind'>): {
       jsonMode: 'none',
       maxTokensField: outputLimitField(baseUrl),
       temperature: null,
+      workspaceId: o.workspaceId,
       timeoutSeconds: CALL_TIMEOUT_SECONDS,
     },
     http: { internalHosts, version: 'review-live' },

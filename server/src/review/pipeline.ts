@@ -82,9 +82,10 @@ export const STAGE_SHARES = { specialists: 55, judge: 35, verification: 10 } as 
 export const MAX_VERIFICATIONS = 5;
 
 /**
- * The tokens each role may write in one answer (the conversation's `maxOutputTokens`). Its answer is
- * read up to `ANSWER_CHARS_PER_TOKEN` characters for each of them. A reply's is a verdict and at most
- * 1 200 characters of words.
+ * The tokens each role may write in one answer: the cap of the answer itself, which is read up to
+ * `ANSWER_CHARS_PER_TOKEN` characters for each of them. A reply's is a verdict and at most 1 200
+ * characters of words. A conversation asks the provider for these and, beyond them, the room for the
+ * model to think before it answers (`converseOverTools`).
  */
 export const REVIEW_OUTPUT_TOKENS: Readonly<Record<ConversationRole, number>> = Object.freeze({
   quality: 12_288,

@@ -1,3 +1,4 @@
+import { MAX_OUTPUT_TOKENS } from '@qualor/shared';
 import { eq, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFakeLlm, openAiAnswer, type FakeLlm } from '../../test/fake-llm';
@@ -119,6 +120,23 @@ describe('the llm worker (llm.md §9, §10, §14)', () => {
     });
     expect(fake.requests[0]!.path).toBe('/v1/messages');
   });
+
+  it.each(['openai', 'anthropic'] as const)(
+    'asks for the tokens of its answer and 4 000 more to think, and the answer caps stay (%s)',
+    async (kind) => {
+      await configure({ kind });
+      // The answer caps: 1 200 to explain, 800 to triage, 1 500 to fix.
+      const asked = { explain: 5_200, triage: 4_800, fix: 5_500 };
+      for (const [feature, tokens] of Object.entries(asked)) {
+        fake.requests.length = 0;
+        await ask(feature);
+        await runLlmJobs(h, llmJobDeps(h));
+        expect(fake.requests, feature).toHaveLength(1);
+        expect((fake.requests[0]!.json as { max_tokens: number }).max_tokens, feature).toBe(tokens);
+      }
+      expect(MAX_OUTPUT_TOKENS).toEqual({ explain: 1_200, triage: 800, fix: 1_500 });
+    },
+  );
 
   it('draws a fresh random nonce for every request', async () => {
     await ask('explain');

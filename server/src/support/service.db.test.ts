@@ -170,6 +170,7 @@ describe('ctx.support (4E-3b §2, §4)', () => {
         jsonMode: 'json_object',
         maxTokensField: 'max_tokens',
         temperature: null,
+        workspaceId: null,
         timeoutSeconds: 60,
         apiKeyEnc: encryptSecret(key, LLM_KEY, LLM_API_KEY_AAD),
       },

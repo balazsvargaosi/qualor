@@ -374,6 +374,38 @@
             }
           </div>
         </div>
+        @if (kind() === 'anthropic') {
+          <div class="setting-row">
+            <div class="setting-text">
+              <label for="ai-workspace-id" i18n="@@ai.settings.workspaceId">Workspace ID</label>
+              <p id="ai-workspace-id-hint" i18n="@@ai.settings.workspaceIdHint">
+                For an organisation-wide key that is not scoped to a workspace (wrkspc_…).
+              </p>
+            </div>
+            <div class="setting-field">
+              <input
+                id="ai-workspace-id"
+                type="text"
+                maxlength="71"
+                autocomplete="off"
+                spellcheck="false"
+                [value]="workspaceId()"
+                [attr.aria-invalid]="fieldError('workspace-id') ? true : null"
+                [attr.aria-describedby]="
+                  fieldError('workspace-id')
+                    ? 'ai-workspace-id-error ai-workspace-id-hint'
+                    : 'ai-workspace-id-hint'
+                "
+                (input)="set('workspace-id', workspaceId, $event)"
+              />
+              @if (fieldError('workspace-id'); as message) {
+                <span id="ai-workspace-id-error" class="field-error" role="alert">{{
+                  message
+                }}</span>
+              }
+            </div>
+          </div>
+        }
         @if (kind() !== 'anthropic') {
           <div class="setting-row">
             <div class="setting-text">
@@ -483,6 +515,11 @@
             <label for="ai-temperature" i18n="@@ai.settings.temperature"
               >Temperature (optional)</label
             >
+            @if (kind() === 'anthropic') {
+              <p id="ai-temperature-hint" i18n="@@ai.settings.temperatureAnthropic">
+                Anthropic's current models take no temperature: leave it empty.
+              </p>
+            }
           </div>
           <div class="setting-field">
             <input
@@ -490,12 +527,19 @@
               class="short"
               type="number"
               min="0"
-              [max]="maxTemperature()"
+              max="2"
               step="0.1"
               inputmode="decimal"
-              [value]="temperature()"
+              [disabled]="kind() === 'anthropic'"
+              [value]="kind() === 'anthropic' ? '' : temperature()"
               [attr.aria-invalid]="fieldError('temperature') ? true : null"
-              [attr.aria-describedby]="fieldError('temperature') ? 'ai-temperature-error' : null"
+              [attr.aria-describedby]="
+                kind() === 'anthropic'
+                  ? 'ai-temperature-hint'
+                  : fieldError('temperature')
+                    ? 'ai-temperature-error'
+                    : null
+              "
               (input)="set('temperature', temperature, $event)"
             />
             @if (fieldError('temperature'); as message) {

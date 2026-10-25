@@ -1,3 +1,4 @@
+import { REASONING_ALLOWANCE_TOKENS } from '../llm/providers';
 import {
   CONVERSATION_LIMITS,
   runConversation,
@@ -100,7 +101,9 @@ export function newToolPolicy(o: {
 /**
  * One conversation of a role over the read-only tools: the role's system prompt, the three tools
  * run over the reader under its policy (none without a reader), the loop's caps, and the role's
- * output limit. The pipeline's contract for `converse` (pipeline.ts).
+ * output limit: its answer's tokens (REVIEW_OUTPUT_TOKENS) and the room for the model to think
+ * before it answers (REASONING_ALLOWANCE_TOKENS), which the loop takes as the most a call may write.
+ * The pipeline's contract for `converse` (pipeline.ts).
  */
 export function converseOverTools(call: RoleCall, io: ConversationIo): Promise<ConversationResult> {
   return runConversation({
@@ -120,7 +123,7 @@ export function converseOverTools(call: RoleCall, io: ConversationIo): Promise<C
       maxTurns: CONVERSATION_LIMITS.maxTurns,
       maxCallsPerTurn: CONVERSATION_LIMITS.maxCallsPerTurn,
       tokenBudget: call.tokenBudget,
-      maxOutputTokens: REVIEW_OUTPUT_TOKENS[call.role],
+      maxOutputTokens: REVIEW_OUTPUT_TOKENS[call.role] + REASONING_ALLOWANCE_TOKENS.conversation,
     },
     send: io.send,
     shouldStop: io.shouldStop,

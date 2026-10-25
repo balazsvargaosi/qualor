@@ -651,6 +651,7 @@ describe('daily housekeeping (data-model.md §7)', () => {
         jsonMode: 'json_object' as const,
         maxTokensField: 'max_tokens' as const,
         temperature: null,
+        workspaceId: null,
         timeoutSeconds: 5,
         apiKeyEnc: null,
       },

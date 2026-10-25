@@ -71,6 +71,7 @@ describe('converse: conversations with read-only tools (R5)', () => {
       jsonMode: 'json_object',
       maxTokensField: 'max_tokens',
       temperature: null,
+      workspaceId: null,
       timeoutSeconds: 5,
     } as const;
     openai = { kind: 'openai', baseUrl: fake.openAiBaseUrl, ...base };
@@ -215,6 +216,44 @@ describe('converse: conversations with read-only tools (R5)', () => {
     ]);
   });
 
+  it('openai: builds an assistant turn from its text and calls, and ignores a replay (that of another kind), and has none of its own', async () => {
+    await converse(
+      openai,
+      fake.apiKey,
+      {
+        ...start,
+        messages: [
+          { role: 'user', text: 'Review this change' },
+          {
+            role: 'assistant',
+            text: 'Reading.',
+            toolCalls: [{ id: 'call_1', name: 'read_file', arguments: { path: 'a.ts' } }],
+            replay: {
+              kind: 'anthropic',
+              items: [{ type: 'thinking', thinking: '', signature: 'SIGNATURE' }],
+            },
+          },
+          { role: 'tool', callId: 'call_1', name: 'read_file', text: 'A' },
+        ],
+      },
+      http,
+    );
+    expect((sent() as { messages: unknown[] }).messages[2]).toEqual({
+      role: 'assistant',
+      content: 'Reading.',
+      tool_calls: [
+        {
+          id: 'call_1',
+          type: 'function',
+          function: { name: 'read_file', arguments: '{"path":"a.ts"}' },
+        },
+      ],
+    });
+    expect(fake.requests[0]!.body).not.toContain('SIGNATURE');
+    fake.say('{"findings":[]}');
+    expect(await converse(openai, fake.apiKey, start, http)).not.toHaveProperty('replay');
+  });
+
   it('openai: tool calls come back with parsed arguments; unparseable arguments stay a string', async () => {
     fake.enqueue({
       status: 200,
@@ -270,6 +309,15 @@ describe('converse: conversations with read-only tools (R5)', () => {
       ],
       usage: { inputTokens: 431, outputTokens: 102 },
       model: 'fake-anthropic-model',
+      // The content as it came, to send the turn back as the model made it.
+      replay: {
+        kind: 'anthropic',
+        items: [
+          { type: 'text', text: 'Checking two things.' },
+          { type: 'tool_use', id: 'toolu_1', name: 'read_file', input: { path: 'src/a.ts' } },
+          { type: 'tool_use', id: 'toolu_2', name: 'list_files', input: { dir: 'src' } },
+        ],
+      },
     });
 
     fake.say('{"findings":[]}');
@@ -280,7 +328,7 @@ describe('converse: conversations with read-only tools (R5)', () => {
         ...start,
         messages: [
           { role: 'user', text: 'Review this change' },
-          { role: 'assistant', text: turn.text, toolCalls: turn.toolCalls },
+          { role: 'assistant', text: turn.text, toolCalls: turn.toolCalls, replay: turn.replay },
           { role: 'tool', callId: 'toolu_1', name: 'read_file', text: 'const a = 1;' },
           { role: 'tool', callId: 'toolu_2', name: 'list_files', text: 'a.ts\nb.ts' },
         ],
@@ -325,6 +373,8 @@ describe('converse: conversations with read-only tools (R5)', () => {
           input_schema: listFiles.parameters,
         },
       ],
+      // Only auto: the current models refuse a forced choice.
+      tool_choice: { type: 'auto' },
     });
   });
 
@@ -551,6 +601,10 @@ describe('converse: conversations with read-only tools (R5)', () => {
           ? { inputTokens: 412, outputTokens: 96 }
           : { inputTokens: 431, outputTokens: 102 },
       model: kind === 'openai' ? 'fake-openai-model' : 'fake-anthropic-model',
+      // Only the Anthropic adapter keeps what it needs to send a turn back as it came.
+      ...(kind === 'anthropic'
+        ? { replay: { kind: 'anthropic', items: [{ type: 'text', text: '{"findings":[]}' }] } }
+        : {}),
     });
   });
 
@@ -797,9 +851,9 @@ describe('converse: conversations with read-only tools (R5)', () => {
       expect(request.json).not.toHaveProperty('max_tokens');
     });
 
-    it('anthropic: sends the temperature when configured', async () => {
+    it('anthropic: sends no temperature, whatever the config holds', async () => {
       await converse({ ...anthropic, temperature: 0.5 }, fake.apiKey, start, http);
-      expect(sent()).toMatchObject({ temperature: 0.5 });
+      expect(sent()).not.toHaveProperty('temperature');
     });
 
     it.each(KINDS)('%s: sends no key header without a key', async (kind) => {

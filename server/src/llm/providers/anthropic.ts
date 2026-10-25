@@ -12,6 +12,7 @@ import {
   type LlmTurn,
   type ProviderConfig,
   type ProviderHttpOptions,
+  type ProviderReplay,
 } from './types';
 
 export const ANTHROPIC_VERSION = '2023-06-01';
@@ -46,27 +47,56 @@ function finish(reason: string | null | undefined): FinishReason {
   return 'other';
 }
 
-function authHeaders(apiKey: string | null): Record<string, string> {
+/**
+ * `x-api-key` (none without a key) and `anthropic-version`, and `anthropic-workspace-id` when the
+ * provider names a workspace: an organisation-wide key that is not scoped to one needs it.
+ */
+function headers(config: ProviderConfig, apiKey: string | null): Record<string, string> {
   const result: Record<string, string> = { 'anthropic-version': ANTHROPIC_VERSION };
   if (apiKey !== null) result['x-api-key'] = apiKey;
+  if (config.workspaceId !== null) result['anthropic-workspace-id'] = config.workspaceId;
   return result;
 }
 
+/** Whether the blocks can be written out again: an input nested deeper than JSON.stringify follows cannot. */
+function writable(blocks: readonly unknown[]): boolean {
+  try {
+    JSON.stringify(blocks);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
- * POST <baseUrl>/v1/messages and read the answer: the text blocks joined, and the provider's own
- * `tool_use` blocks, which only a conversation reads further.
+ * POST <baseUrl>/v1/messages and read the answer: the text blocks joined, the provider's own
+ * `tool_use` blocks, which only a conversation reads further, and the whole `content` exactly as
+ * it came, as the replay that sends the turn back. A refusal (an answer of HTTP 200 whose stop
+ * reason says so) has none of it: what its content holds, an apology or half an answer or a call
+ * that cannot be read, is not the turn's.
  */
 async function send(
   config: ProviderConfig,
   apiKey: string | null,
   body: Record<string, unknown>,
   http: ProviderHttpOptions,
-): Promise<{ answer: LlmAnswer; toolUse: readonly unknown[] }> {
-  const parsed = answerSchema.safeParse(
-    await postJson(config, '/v1/messages', authHeaders(apiKey), body, http),
-  );
+): Promise<{ answer: LlmAnswer; toolUse: readonly unknown[]; replay?: ProviderReplay }> {
+  const raw = await postJson(config, '/v1/messages', headers(config, apiKey), body, http);
+  const parsed = answerSchema.safeParse(raw);
   if (!parsed.success) throw new LlmError('bad_answer', NOT_UNDERSTOOD);
+  const usage = {
+    inputTokens: tokenCount(parsed.data.usage?.input_tokens),
+    outputTokens: tokenCount(parsed.data.usage?.output_tokens),
+  };
+  const model = parsed.data.model ?? null;
+  if (parsed.data.stop_reason === 'refusal') {
+    return { answer: { text: '', finishReason: 'refusal', usage, model }, toolUse: [] };
+  }
   const toolUse = parsed.data.content.filter((b) => b.type === 'tool_use');
+  // The blocks as the provider sent them (the schema checked that `content` is a list), not the
+  // copies the schema made: the thinking in them is signed, and goes back unchanged. A call that
+  // cannot be written out again leaves the turn without a replay, as no history may hold it.
+  const items = (raw as { content: readonly unknown[] }).content;
   return {
     answer: {
       text: parsed.data.content
@@ -74,19 +104,18 @@ async function send(
         .map((b) => b.text ?? '')
         .join(''),
       finishReason: toolUse.length > 0 ? 'tool' : finish(parsed.data.stop_reason),
-      usage: {
-        inputTokens: tokenCount(parsed.data.usage?.input_tokens),
-        outputTokens: tokenCount(parsed.data.usage?.output_tokens),
-      },
-      model: parsed.data.model ?? null,
+      usage,
+      model,
     },
     toolUse,
+    ...(writable(toolUse) ? { replay: { kind: 'anthropic' as const, items } } : {}),
   };
 }
 
 /**
  * llm.md §2.3: POST <baseUrl>/v1/messages with `x-api-key` and `anthropic-version`. No streaming,
- * tools, metadata or thinking.
+ * tools, metadata, thinking or sampling parameter: the current models refuse a temperature, a
+ * `top_p` and a `top_k`, think as their default says, and count that thinking in `max_tokens`.
  */
 export async function anthropicMessages(
   config: ProviderConfig,
@@ -100,7 +129,6 @@ export async function anthropicMessages(
     system: call.system,
     messages: [{ role: 'user', content: call.user }],
   };
-  if (config.temperature !== null) body.temperature = config.temperature;
   return (await send(config, apiKey, body, http)).answer;
 }
 
@@ -111,8 +139,10 @@ interface WireMessage {
 }
 
 /**
- * The conversation's messages as the Messages API takes them (R5). An assistant turn is its text
- * block (when it has text: the API refuses a text block that is empty or only whitespace) then a
+ * The conversation's messages as the Messages API takes them (R5). An assistant turn that carries
+ * the replay of an Anthropic turn is that turn's content as it came: its thinking is signed, and
+ * must return unchanged, in order, in a history that only grows. Without one, it is its text block
+ * (when it has text: the API refuses a text block that is empty or only whitespace) then a
  * `tool_use` block per call. The `tool` messages answering one turn's calls (a run of them)
  * become one `user` message of `tool_result` blocks, in order: the API wants every result of a
  * turn together, straight after the turn. A `user` message that comes straight after a user
@@ -142,16 +172,19 @@ function wireMessages(messages: readonly LlmMessage[]): WireMessage[] {
     } else {
       wire.push({
         role: 'assistant',
-        content: [
-          ...(message.text.trim() === '' ? [] : [{ type: 'text', text: message.text }]),
-          ...message.toolCalls.map((call) => ({
-            type: 'tool_use',
-            id: call.id,
-            name: call.name,
-            // The API wants an object; a call that had none is sent with `{}`.
-            input: call.arguments ?? {},
-          })),
-        ],
+        content:
+          message.replay?.kind === 'anthropic'
+            ? [...message.replay.items]
+            : [
+                ...(message.text.trim() === '' ? [] : [{ type: 'text', text: message.text }]),
+                ...message.toolCalls.map((call) => ({
+                  type: 'tool_use',
+                  id: call.id,
+                  name: call.name,
+                  // The API wants an object; a call that had none is sent with `{}`.
+                  input: call.arguments ?? {},
+                })),
+              ],
       });
     }
   }
@@ -171,9 +204,10 @@ function toolCall(raw: unknown): LlmToolCall {
 
 /**
  * R5: POST <baseUrl>/v1/messages with the whole conversation: `system`, the messages, and the
- * tools as `tools` (`input_schema` is the parameters; sent only when there are tools). The
- * request, the limits and the failures are those of `anthropicMessages`; the `tool_use` blocks of
- * the answer are the turn's calls, in order.
+ * tools as `tools` (`input_schema` is the parameters) with `tool_choice` auto, both sent only when
+ * there are tools. Only auto: the current models refuse a forced choice (`any`, `tool`) with a 400.
+ * The request, the limits and the failures are those of `anthropicMessages`; the `tool_use` blocks
+ * of the answer are the turn's calls, in order, and its content is the turn's replay.
  */
 export async function anthropicConverse(
   config: ProviderConfig,
@@ -193,8 +227,8 @@ export async function anthropicConverse(
       description: tool.description,
       input_schema: tool.parameters,
     }));
+    body.tool_choice = { type: 'auto' };
   }
-  if (config.temperature !== null) body.temperature = config.temperature;
-  const { answer, toolUse } = await send(config, apiKey, body, http);
-  return { ...answer, toolCalls: toolUse.map(toolCall) };
+  const { answer, toolUse, replay } = await send(config, apiKey, body, http);
+  return { ...answer, toolCalls: toolUse.map(toolCall), ...(replay ? { replay } : {}) };
 }

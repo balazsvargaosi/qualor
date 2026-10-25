@@ -40,6 +40,7 @@ describe('callProvider (llm.md §2, §4, §14)', () => {
       jsonMode: 'json_object',
       maxTokensField: 'max_tokens',
       temperature: null,
+      workspaceId: null,
       timeoutSeconds: 5,
     } as const;
     openai = { kind: 'openai', baseUrl: fake.openAiBaseUrl, ...base };
@@ -421,9 +422,11 @@ describe('callProvider (llm.md §2, §4, §14)', () => {
     });
   });
 
-  it('sends the Anthropic temperature when configured', async () => {
+  it('sends no temperature to Anthropic, whatever the config holds, and the configured one to OpenAI', async () => {
     await callProvider({ ...anthropic, temperature: 0.5 }, fake.apiKey, call, http);
-    expect(fake.requests[0]!.json).toMatchObject({ temperature: 0.5 });
+    await callProvider({ ...openai, temperature: 0.5 }, fake.apiKey, call, http);
+    expect(fake.requests[0]!.json).not.toHaveProperty('temperature');
+    expect(fake.requests[1]!.json).toMatchObject({ temperature: 0.5 });
   });
 
   it('sends no key header to Anthropic without a key, and the fake refuses one it does not expect', async () => {

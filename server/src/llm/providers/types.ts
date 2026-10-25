@@ -4,7 +4,12 @@ import type { Resolver } from '../../http/outbound';
 export const PROVIDER_KINDS = ['openai', 'anthropic'] as const;
 export type ProviderKind = (typeof PROVIDER_KINDS)[number];
 
-/** llm.md §3.2: the provider settings a call needs; the API key is passed on its own. */
+/**
+ * llm.md §3.2: the provider settings a call needs; the API key is passed on its own. `temperature`
+ * is the OpenAI adapter's (Anthropic's current models refuse sampling parameters, so its adapter
+ * never sends one); `workspaceId` is Anthropic's, for an organisation-wide key that is not scoped to
+ * a workspace, and the OpenAI adapter never sends it.
+ */
 export interface ProviderConfig {
   kind: ProviderKind;
   baseUrl: string;
@@ -13,6 +18,7 @@ export interface ProviderConfig {
   jsonMode: 'json_object' | 'none';
   maxTokensField: 'max_tokens' | 'max_completion_tokens';
   temperature: number | null;
+  workspaceId: string | null;
   timeoutSeconds: number;
 }
 
@@ -52,10 +58,34 @@ export interface LlmToolCall {
   arguments: unknown;
 }
 
-/** R5: one message of a conversation; `tool` answers the call `callId` of an `assistant` message. */
+/**
+ * What the adapter of a provider keeps of a turn so that the turn goes back to that provider as the
+ * model made it: the current Anthropic models bind their thinking blocks to the conversation, so the
+ * blocks must return unchanged, in order, in a history that only grows. `items` is the provider's
+ * own data and is opaque to everything but the adapter that made it: the loop passes it on, never
+ * reads it, and it is never logged, stored, shown, scrubbed or masked (it is encrypted by the
+ * provider, and holds no thinking text with the default display). It is part of the answer, so it
+ * counts against the answer's size and the conversation's.
+ */
+export interface ProviderReplay {
+  kind: ProviderKind;
+  items: readonly unknown[];
+}
+
+/**
+ * R5: one message of a conversation; `tool` answers the call `callId` of an `assistant` message. An
+ * `assistant` message that carries the `replay` of its turn is sent as that replay, the adapter of
+ * its kind ignoring the text and the calls; one without it, or with the replay of another kind, is
+ * built from them.
+ */
 export type LlmMessage =
   | { role: 'user'; text: string }
-  | { role: 'assistant'; text: string; toolCalls: readonly LlmToolCall[] }
+  | {
+      role: 'assistant';
+      text: string;
+      toolCalls: readonly LlmToolCall[];
+      replay?: ProviderReplay;
+    }
   | { role: 'tool'; callId: string; name: string; text: string };
 
 /** R5: the whole conversation so far, sent again on every turn. */
@@ -66,10 +96,25 @@ export interface LlmConversation {
   maxOutputTokens: number;
 }
 
-/** R5: the model's next turn: its text, and the calls it wants answered (none: it is done). */
+/**
+ * R5: the model's next turn: its text, and the calls it wants answered (none: it is done). `replay`
+ * is what its adapter keeps to send the turn back as it came: the loop puts it on the assistant
+ * message it appends, unchanged.
+ */
 export interface LlmTurn extends LlmAnswer {
   toolCalls: LlmToolCall[];
+  replay?: ProviderReplay;
 }
+
+/**
+ * Output tokens a call asks for beyond the answer it wants, for the models that reason before they
+ * answer: the current models of both providers count their reasoning against the output limit, so
+ * a limit sized for the answer alone can be used up before the answer begins. A review or reply
+ * call (the conversations) is given 16 000, and the short answers of explain, triage and fix
+ * (`singleShot`) 4 000. A model that does not reason spends none of it, and every budget counts the
+ * tokens a call used, so the room costs nothing. The provider test keeps its own small limit.
+ */
+export const REASONING_ALLOWANCE_TOKENS = { conversation: 16_000, singleShot: 4_000 } as const;
 
 /** llm.md §14: why a provider call gave no usable answer. */
 export const LLM_FAILURES = [

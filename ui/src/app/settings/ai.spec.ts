@@ -45,6 +45,7 @@ const CONFIGURED = {
     jsonMode: 'json_object',
     maxTokensField: 'max_tokens',
     temperature: null,
+    workspaceId: null,
     timeoutSeconds: 60,
     apiKeySet: true,
     apiKeyReadable: true,
@@ -1671,6 +1672,215 @@ describe('AiSettingsPage: the models of the tiers (6I-4)', () => {
       await pressTest(fixture, root);
       await pressTest(fixture, root);
       expect(root.querySelectorAll('#ai-test-models li')).toHaveLength(2);
+    });
+  });
+});
+
+describe('AiSettingsPage: the current Anthropic models (6I-4)', () => {
+  /** A provider of kind Anthropic, as the server shows it: its temperature is always null. */
+  const ANTHROPIC = {
+    ...CONFIGURED,
+    provider: {
+      ...CONFIGURED.provider,
+      kind: 'anthropic',
+      baseUrl: 'https://api.anthropic.com',
+      model: 'claude-sonnet-5-5',
+    },
+  };
+  const WORKSPACE = 'wrkspc_01AbCdEf';
+  const field = (root: HTMLElement, id: string) => root.querySelector<HTMLInputElement>(`#${id}`)!;
+  const rowOf = (root: HTMLElement, id: string) => field(root, id).closest('.setting-row');
+  type PutBody = { provider: Record<string, unknown> };
+  /** The body of the first save the page sent. */
+  const sent = (server: FakeServer) =>
+    server.requestsTo('PUT', '/api/v0/system/llm')[0]?.body as PutBody | undefined;
+  /** Chooses a kind on the page, as the admin does. */
+  const choose = async (
+    fixture: { whenStable(): Promise<unknown> },
+    root: HTMLElement,
+    kind: string,
+  ) => {
+    type(root, '#ai-kind', kind);
+    await settle(fixture);
+  };
+
+  describe('the workspace ID', () => {
+    it('is a field of an Anthropic provider only, right after the API key, with its hint', async () => {
+      setup();
+      const { fixture, root } = await render();
+      expect(root.querySelector('#ai-workspace-id')).toBeNull();
+      await choose(fixture, root, 'openai');
+      expect(root.querySelector('#ai-workspace-id')).toBeNull();
+      await choose(fixture, root, 'anthropic');
+      const input = field(root, 'ai-workspace-id');
+      expect(root.querySelector('label[for="ai-workspace-id"]')?.textContent?.trim()).toBe(
+        'Workspace ID',
+      );
+      expect(root.querySelector('#ai-workspace-id-hint')?.textContent?.trim()).toBe(
+        'For an organisation-wide key that is not scoped to a workspace (wrkspc_…).',
+      );
+      // Not a secret: a plain text field of at most the 71 characters of an ID, and optional.
+      expect([input.type, input.maxLength, input.value, input.required]).toEqual([
+        'text',
+        71,
+        '',
+        false,
+      ]);
+      expect(input.getAttribute('aria-describedby')).toBe('ai-workspace-id-hint');
+      expect(input.getAttribute('aria-invalid')).toBeNull();
+      expect(rowOf(root, 'ai-key')?.nextElementSibling).toBe(rowOf(root, 'ai-workspace-id'));
+      // And gone again with another kind.
+      await choose(fixture, root, 'openai');
+      expect(root.querySelector('#ai-workspace-id')).toBeNull();
+    });
+
+    it('shows the stored workspace ID as it was entered', async () => {
+      setup({ ...ANTHROPIC, provider: { ...ANTHROPIC.provider, workspaceId: WORKSPACE } });
+      const { root } = await render();
+      expect(field(root, 'ai-workspace-id').value).toBe(WORKSPACE);
+    });
+
+    it('sends it trimmed, and null when the field is empty', async () => {
+      const server = setup(ANTHROPIC);
+      server.on('PUT', '/api/v0/system/llm', { body: ANTHROPIC });
+      const { fixture, root } = await render();
+      submit(root);
+      await settle(fixture);
+      expect(sent(server)?.provider).toMatchObject({ kind: 'anthropic', workspaceId: null });
+
+      type(root, '#ai-workspace-id', `  ${WORKSPACE} `);
+      submit(root);
+      await settle(fixture);
+      expect(server.requestsTo('PUT', '/api/v0/system/llm')[1]?.body).toMatchObject({
+        provider: { kind: 'anthropic', workspaceId: WORKSPACE },
+      });
+    });
+
+    it('sends none for another kind, whatever was typed under Anthropic', async () => {
+      const server = setup(ANTHROPIC);
+      server.on('PUT', '/api/v0/system/llm', { body: CONFIGURED });
+      const { fixture, root } = await render();
+      type(root, '#ai-workspace-id', WORKSPACE);
+      await choose(fixture, root, 'openai');
+      submit(root);
+      await settle(fixture);
+      expect(sent(server)?.provider).toMatchObject({ kind: 'openai' });
+      expect(sent(server)?.provider).not.toHaveProperty('workspaceId');
+    });
+
+    it.each([
+      ['without the prefix', '01AbCdEf'],
+      ['the prefix alone', 'wrkspc_'],
+      ['another prefix', 'workspace_01AbCd'],
+      ['with a space in it', 'wrkspc_01 AbCd'],
+      ['with a dash in it', 'wrkspc_01-AbCd'],
+      ['over 64 characters after the prefix', `wrkspc_${'a'.repeat(65)}`],
+    ])(
+      'refuses one %s on its own field, in the page’s words, and sends nothing',
+      async (_what, value) => {
+        const server = setup(ANTHROPIC);
+        const { fixture, root } = await render();
+        type(root, '#ai-workspace-id', value);
+        submit(root);
+        await settle(fixture);
+        expect(server.requestsTo('PUT', '/api/v0/system/llm')).toHaveLength(0);
+        const input = field(root, 'ai-workspace-id');
+        expect(input.getAttribute('aria-invalid')).toBe('true');
+        expect(root.querySelector('#ai-workspace-id-error')?.textContent).toContain(
+          'Use the workspace ID as the console shows it: wrkspc_ and then letters and digits',
+        );
+        expect(input.getAttribute('aria-describedby')).toBe(
+          'ai-workspace-id-error ai-workspace-id-hint',
+        );
+        expect(document.activeElement).toBe(input);
+        // Typing again takes the refusal back.
+        type(root, '#ai-workspace-id', WORKSPACE);
+        await settle(fixture);
+        expect(root.querySelector('#ai-workspace-id-error')).toBeNull();
+        expect(input.getAttribute('aria-invalid')).toBeNull();
+      },
+    );
+
+    it('maps the server’s refusal at body.provider.workspaceId to its field, in the page’s words', async () => {
+      const server = setup(ANTHROPIC);
+      server.on('PUT', '/api/v0/system/llm', {
+        status: 422,
+        body: problem(422, 'VALIDATION_FAILED', [
+          { path: 'body.provider.workspaceId', message: 'server text' },
+        ]),
+      });
+      const { fixture, root } = await render();
+      submit(root);
+      await settle(fixture);
+      expect(field(root, 'ai-workspace-id').getAttribute('aria-invalid')).toBe('true');
+      expect(root.querySelector('#ai-workspace-id-error')?.textContent).toContain(
+        'Use the workspace ID as the console shows it',
+      );
+      expect(root.textContent).not.toContain('server text');
+      expect(root.querySelector('.alert-error')).toBeNull();
+    });
+  });
+
+  describe('the temperature', () => {
+    const HINT = "Anthropic's current models take no temperature: leave it empty.";
+
+    it('is shown empty for an Anthropic provider, with the hint, and cannot be typed', async () => {
+      setup(ANTHROPIC);
+      const { root } = await render();
+      const input = field(root, 'ai-temperature');
+      expect(input.value).toBe('');
+      expect(input.disabled).toBe(true);
+      expect(root.querySelector('#ai-temperature-hint')?.textContent?.trim()).toBe(HINT);
+      expect(input.getAttribute('aria-describedby')).toBe('ai-temperature-hint');
+    });
+
+    it('is a field of OpenAI-compatible providers up to 2, without the hint', async () => {
+      setup({ ...CONFIGURED, provider: { ...CONFIGURED.provider, temperature: 0.7 } });
+      const { root } = await render();
+      const input = field(root, 'ai-temperature');
+      expect([input.value, input.disabled, input.min, input.max]).toEqual(['0.7', false, '0', '2']);
+      expect(root.querySelector('#ai-temperature-hint')).toBeNull();
+    });
+
+    it('shows the hint and empties the field when the kind changes to Anthropic, and brings the value back with OpenAI', async () => {
+      setup({ ...CONFIGURED, provider: { ...CONFIGURED.provider, temperature: 0.7 } });
+      const { fixture, root } = await render();
+      await choose(fixture, root, 'anthropic');
+      expect(field(root, 'ai-temperature').value).toBe('');
+      expect(field(root, 'ai-temperature').disabled).toBe(true);
+      expect(root.querySelector('#ai-temperature-hint')?.textContent?.trim()).toBe(HINT);
+      await choose(fixture, root, 'openai');
+      expect(field(root, 'ai-temperature').value).toBe('0.7');
+      expect(root.querySelector('#ai-temperature-hint')).toBeNull();
+    });
+
+    it('sends none for an Anthropic provider, whatever was typed under another kind', async () => {
+      const server = setup(CONFIGURED);
+      server.on('PUT', '/api/v0/system/llm', { body: ANTHROPIC });
+      const { fixture, root } = await render();
+      type(root, '#ai-temperature', '0.5');
+      await choose(fixture, root, 'anthropic');
+      submit(root);
+      await settle(fixture);
+      expect(sent(server)?.provider).toMatchObject({ kind: 'anthropic', temperature: null });
+    });
+
+    it('sends the temperature of an OpenAI-compatible provider, and refuses one over 2 in the page’s words', async () => {
+      const server = setup(CONFIGURED);
+      server.on('PUT', '/api/v0/system/llm', { body: CONFIGURED });
+      const { fixture, root } = await render();
+      type(root, '#ai-temperature', '1.5');
+      submit(root);
+      await settle(fixture);
+      expect(sent(server)?.provider).toMatchObject({ kind: 'openai', temperature: 1.5 });
+
+      type(root, '#ai-temperature', '2.5');
+      submit(root);
+      await settle(fixture);
+      expect(server.requestsTo('PUT', '/api/v0/system/llm')).toHaveLength(1);
+      expect(root.querySelector('#ai-temperature-error')?.textContent?.trim()).toBe(
+        'Use a number from 0 to 2, or leave it empty.',
+      );
     });
   });
 });

@@ -9787,6 +9787,7 @@ export interface paths {
                                 /** @enum {string} */
                                 maxTokensField: "max_tokens" | "max_completion_tokens";
                                 temperature: number | null;
+                                workspaceId: string | null;
                                 timeoutSeconds: number;
                                 apiKeySet: boolean;
                                 apiKeyReadable: boolean;
@@ -9909,8 +9910,16 @@ export interface paths {
                              * @enum {string}
                              */
                             maxTokensField?: "max_tokens" | "max_completion_tokens";
-                            /** @default null */
+                            /**
+                             * @description OpenAI-compatible providers only (0 to 2). Anthropic's current models take none: one for an Anthropic provider is a 422
+                             * @default null
+                             */
                             temperature?: number | null;
+                            /**
+                             * @description Anthropic only: the workspace that an organisation-wide key, which is not scoped to one, names in every request (the header anthropic-workspace-id). Not a secret. Null or absent: none; stored as null for another kind
+                             * @default null
+                             */
+                            workspaceId?: string | null;
                             /** @default 60 */
                             timeoutSeconds?: number;
                             /** @description Write-only. A string sets the key, null removes it (a local model), absent keeps it; a new base URL needs it again */
@@ -9988,6 +9997,7 @@ export interface paths {
                                 /** @enum {string} */
                                 maxTokensField: "max_tokens" | "max_completion_tokens";
                                 temperature: number | null;
+                                workspaceId: string | null;
                                 timeoutSeconds: number;
                                 apiKeySet: boolean;
                                 apiKeyReadable: boolean;

@@ -61,7 +61,24 @@ export function openAiAnswer(
   return shape;
 }
 
-/** A Messages API answer (llm.md §2.3) with one text block saying `text`. */
+/**
+ * The `thinking` block of a current Claude model, as the recorded shape (`anthropic-message-thinking`)
+ * has it: `text` is empty, as it is while the request does not ask for a summary, and `signature`
+ * binds the block to the conversation.
+ */
+export function anthropicThinking(signature: string, text = ''): unknown {
+  return { type: 'thinking', thinking: text, signature };
+}
+
+/** The `redacted_thinking` block of a current Claude model: its encrypted thinking, as `data`. */
+export function anthropicRedactedThinking(data: string): unknown {
+  return { type: 'redacted_thinking', data };
+}
+
+/**
+ * A Messages API answer (llm.md §2.3) with one text block saying `text`, after the `thinking`
+ * blocks of `over.thinking` (a model that thinks puts them first).
+ */
 export function anthropicAnswer(
   text: string,
   over: {
@@ -69,6 +86,7 @@ export function anthropicAnswer(
     model?: string;
     usage?: { input_tokens: number; output_tokens: number } | null;
     toolUse?: boolean;
+    thinking?: readonly unknown[];
   } = {},
 ): unknown {
   const shape = llmShape<{
@@ -77,7 +95,7 @@ export function anthropicAnswer(
     usage?: unknown;
     model: string;
   }>('anthropic-message');
-  shape.content = [{ type: 'text', text }];
+  shape.content = [...(over.thinking ?? []), { type: 'text', text }];
   if (over.toolUse) shape.content.push({ type: 'tool_use', id: 'toolu_1', name: 'x', input: {} });
   shape.stop_reason = over.stopReason ?? 'end_turn';
   if (over.model) shape.model = over.model;
@@ -121,7 +139,8 @@ export function openAiToolCalls(
 
 /**
  * A Messages API answer (R5) with a `tool_use` block per call, after a text block when
- * `over.text` is given; `stop_reason` is `tool_use`.
+ * `over.text` is given, and after the `thinking` blocks of `over.thinking`; `stop_reason` is
+ * `tool_use`.
  */
 export function anthropicToolUse(
   calls: { id: string; name: string; input: unknown }[],
@@ -129,6 +148,7 @@ export function anthropicToolUse(
     text?: string;
     model?: string;
     usage?: { input_tokens: number; output_tokens: number } | null;
+    thinking?: readonly unknown[];
   } = {},
 ): unknown {
   const shape = anthropicAnswer('', {
@@ -137,6 +157,7 @@ export function anthropicToolUse(
     ...(over.usage !== undefined ? { usage: over.usage } : {}),
   }) as { content: unknown[] };
   shape.content = [
+    ...(over.thinking ?? []),
     ...(over.text === undefined ? [] : [{ type: 'text', text: over.text }]),
     ...calls.map((call) => ({
       type: 'tool_use',
@@ -245,8 +266,14 @@ export interface FakeLlm {
  * `Authorization: Bearer` or Azure's `api-key`) and `POST /v1/messages` (Anthropic, `x-api-key`
  * and `anthropic-version: 2023-06-01`). It records every request; scripted replies are served
  * first, else a canned answer for the request's data block. Nothing here ever calls a real model.
+ *
+ * With `workspaceId` its key is an organisation-wide one: an Anthropic request must name that
+ * workspace in `anthropic-workspace-id`, or it is refused with a 400 saying the key is not scoped
+ * to a workspace (a request naming another one, with a 403).
  */
-export async function createFakeLlm(options: { apiKey?: string | null } = {}): Promise<FakeLlm> {
+export async function createFakeLlm(
+  options: { apiKey?: string | null; workspaceId?: string } = {},
+): Promise<FakeLlm> {
   const apiKey =
     options.apiKey === null
       ? ''
@@ -314,6 +341,23 @@ export async function createFakeLlm(options: { apiKey?: string | null } = {}): P
         }
         if (anthropic && req.headers['anthropic-version'] !== '2023-06-01') {
           return send({ status: 400, body: error });
+        }
+        if (anthropic && options.workspaceId !== undefined) {
+          const named = req.headers['anthropic-workspace-id'];
+          if (named === undefined) {
+            return send({
+              status: 400,
+              body: {
+                type: 'error',
+                error: {
+                  type: 'invalid_request_error',
+                  message:
+                    'Fake error text: this API key is not scoped to a workspace; name one with the anthropic-workspace-id header.',
+                },
+              },
+            });
+          }
+          if (named !== options.workspaceId) return send({ status: 403, body: error });
         }
         const next = queue.shift();
         try {

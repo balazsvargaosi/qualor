@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { MAX_OUTPUT_TOKENS } from '@qualor/shared';
 import {
   createFakeLlm,
   openAiAnswer,
@@ -192,6 +193,16 @@ describe('runLiveCheck against the fake LLM', () => {
     });
 
     expect(fake.requests).toHaveLength(cases.length * 3 * runs);
+    // As the llm job asks of a provider: the answer's tokens and 4 000 more for the model to think.
+    const per = cases.length * runs;
+    const limits = fake.requests.map(
+      (request) => (request.json as { max_tokens: number }).max_tokens,
+    );
+    expect(limits.slice(0, per).every((n) => n === MAX_OUTPUT_TOKENS.explain + 4_000)).toBe(true);
+    expect(limits.slice(per, 2 * per).every((n) => n === MAX_OUTPUT_TOKENS.triage + 4_000)).toBe(
+      true,
+    );
+    expect(limits.slice(2 * per).every((n) => n === MAX_OUTPUT_TOKENS.fix + 4_000)).toBe(true);
     for (const request of fake.requests) {
       expect(request.path).toBe('/v1/chat/completions');
       for (const h of ['authorization', 'api-key', 'x-api-key'])

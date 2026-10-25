@@ -1,7 +1,13 @@
 import { lineHash, REDACTED, redactLongText, splitSourceLines } from '@qualor/shared';
 import { afterAll, describe, expect, it } from 'vitest';
 import { memorySnapshot } from '../../test/review';
-import { LlmError, type LlmConversation, type LlmToolCall, type LlmTurn } from '../llm/providers';
+import {
+  LlmError,
+  REASONING_ALLOWANCE_TOKENS,
+  type LlmConversation,
+  type LlmToolCall,
+  type LlmTurn,
+} from '../llm/providers';
 import { CONVERSATION_LIMITS, CONVERSATION_TEXTS } from './conversation';
 import { Masker } from './masker';
 import { CHARS_PER_TOKEN, REVIEW_OUTPUT_TOKENS } from './pipeline';
@@ -201,11 +207,12 @@ describe('the answer to a reply', () => {
       usage: { model: 'the-model', inputTokens: 100, outputTokens: 10, costMicroUsd: null },
     });
     // One call, with the prompt of a thread that allows every verdict, the output limit of a
-    // reply and the review's tools; the people's notes are in the first message.
+    // reply (its answer, and room to think before it) and the review's tools; the people's notes
+    // are in the first message.
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({
       system: SYSTEM_PROMPTS.reply,
-      maxOutputTokens: REVIEW_OUTPUT_TOKENS.reply,
+      maxOutputTokens: REVIEW_OUTPUT_TOKENS.reply + REASONING_ALLOWANCE_TOKENS.conversation,
       tools: REVIEW_TOOLS,
     });
     expect(sent[0]?.system).toBe(replySystemPrompt({ verdicts: ALL, tools: true }));
@@ -1592,7 +1599,8 @@ describe('the answer to a reply', () => {
     // Without prices there is no cost.
     const free = await converse(turns(), inputOf(), { pricing: null });
     expect(decided(free.decision).usage.costMicroUsd).toBeNull();
-    // A call the provider did not count is guessed for the budget, and has no cost.
+    // A call the provider did not count is guessed for the budget, at the most it may write (its
+    // answer and the room to think), and has no cost.
     const uncounted = await converse(
       [says('other', 'keep', '', { usage: { inputTokens: null, outputTokens: null } })],
       inputOf(),
@@ -1601,7 +1609,9 @@ describe('the answer to a reply', () => {
     const { usage } = decided(uncounted.decision);
     expect(usage.costMicroUsd).toBe(0);
     expect(usage.inputTokens).toBeGreaterThan(0);
-    expect(usage.outputTokens).toBe(REVIEW_OUTPUT_TOKENS.reply);
+    expect(usage.outputTokens).toBe(
+      REVIEW_OUTPUT_TOKENS.reply + REASONING_ALLOWANCE_TOKENS.conversation,
+    );
   });
 
   it('the conversation stops at REPLY_TOKEN_BUDGET', async () => {

@@ -26,7 +26,7 @@ import {
   type ProviderHttpOptions,
 } from '../llm/providers';
 import {
-  ANTHROPIC_TEMPERATURE_TEXT,
+  ANTHROPIC_NO_TEMPERATURE_TEXT,
   autoFixSettingsSchema,
   budgetsSchema,
   DEFAULT_AUTO_FIX,
@@ -35,7 +35,6 @@ import {
   LLM_API_KEY_AAD,
   MAX_LLM_ORGANIZATIONS,
   MAX_ORGANIZATION_PROJECT_IDS,
-  MAX_TEMPERATURE,
   MODEL_PATTERN,
   organizationSettings,
   orgLlmSettingsSchema,
@@ -45,6 +44,7 @@ import {
   providerApiKey,
   providerConfig,
   readLlmSettings,
+  WORKSPACE_ID_PATTERN,
   writeLlmSettings,
   type OrgLlmSettings,
   type StoredLlmSettings,
@@ -88,7 +88,19 @@ const providerBody = z.strictObject({
   auth: z.enum(['bearer', 'api-key']).default('bearer'),
   jsonMode: z.enum(['json_object', 'none']).default('json_object'),
   maxTokensField: z.enum(['max_tokens', 'max_completion_tokens']).default('max_tokens'),
-  temperature: z.number().min(0).max(2).nullable().default(null),
+  temperature: z.number().min(0).max(2).nullable().default(null).meta({
+    description:
+      "OpenAI-compatible providers only (0 to 2). Anthropic's current models take none: one for an Anthropic provider is a 422",
+  }),
+  workspaceId: z
+    .string()
+    .regex(WORKSPACE_ID_PATTERN, 'wrkspc_ and then 1 to 64 letters or digits')
+    .nullable()
+    .default(null)
+    .meta({
+      description:
+        'Anthropic only: the workspace that an organisation-wide key, which is not scoped to one, names in every request (the header anthropic-workspace-id). Not a secret. Null or absent: none; stored as null for another kind',
+    }),
   timeoutSeconds: z.number().int().min(5).max(600).default(60),
   apiKey: z
     .string()
@@ -187,7 +199,10 @@ const settingsDto = z.object({
       auth: z.enum(['bearer', 'api-key']),
       jsonMode: z.enum(['json_object', 'none']),
       maxTokensField: z.enum(['max_tokens', 'max_completion_tokens']),
+      /** Always null for an Anthropic provider, whatever older settings hold: it takes none. */
       temperature: z.number().nullable(),
+      /** The workspace an Anthropic provider's key is scoped to, as entered; not a secret. */
+      workspaceId: z.string().nullable(),
       timeoutSeconds: z.number().int(),
       /** A key is stored (never the key itself). */
       apiKeySet: z.boolean(),
@@ -704,9 +719,12 @@ export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
     if (body.provider) {
       const problem = llmBaseUrlProblem(body.provider.baseUrl, deps.config.llmInternalHosts);
       if (problem) errors.push({ path: 'body.provider.baseUrl', message: problem });
-      const temperature = body.provider.temperature;
-      if (temperature !== null && temperature > MAX_TEMPERATURE[body.provider.kind]) {
-        errors.push({ path: 'body.provider.temperature', message: ANTHROPIC_TEMPERATURE_TEXT });
+      // Anthropic's current models refuse a temperature (and every sampling parameter) with a 400.
+      if (body.provider.kind === 'anthropic' && body.provider.temperature !== null) {
+        errors.push({
+          path: 'body.provider.temperature',
+          message: ANTHROPIC_NO_TEMPERATURE_TEXT,
+        });
       }
     }
     if (body.pricing !== null) errors.push(...tierPriceProblems(body.provider, body.pricing));
@@ -787,7 +805,8 @@ export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
         if (body.provider) {
           const { apiKey, ...given } = body.provider;
           // llm.md §3.2: `auth`, `jsonMode` and `maxTokensField` are the `openai` adapter's; an
-          // Anthropic provider stores their defaults, whatever the form sent.
+          // Anthropic provider stores their defaults, whatever the form sent. The workspace is
+          // the Anthropic adapter's: an OpenAI provider stores none.
           const rest =
             given.kind === 'anthropic'
               ? {
@@ -796,7 +815,7 @@ export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
                   jsonMode: 'json_object' as const,
                   maxTokensField: 'max_tokens' as const,
                 }
-              : given;
+              : { ...given, workspaceId: null };
           const baseUrl = normalBaseUrl(rest.baseUrl);
           const apiKeyEnc = nextKey(current.provider, { baseUrl, apiKey }, key);
           if (apiKeyEnc === 'needs_key') {

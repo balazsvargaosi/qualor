@@ -7,6 +7,7 @@ import {
   type LlmToolCall,
   type LlmToolSpec,
   type LlmTurn,
+  type ProviderReplay,
 } from '../llm/providers';
 import { toolResultMessage } from './envelope';
 
@@ -18,6 +19,11 @@ import { toolResultMessage } from './envelope';
  * the wrap-up turn when the tokens or the turns are used up, the retries, and the stop check
  * before every call to the provider. It does not make a call itself (`send` does, and records
  * it), run a tool (`runTool`) or read an answer's JSON (the pipeline does).
+ *
+ * The history only grows. A turn joins it as the provider made it: the `replay` its adapter kept
+ * goes on the assistant message unchanged (the current Anthropic models sign their thinking, and a
+ * provider that does so checks it against the conversation), and no message that is in the history
+ * is ever changed or reordered. The loop never reads a replay.
  *
  * Nothing the model said is logged here, and nothing in the result of a conversation that did not
  * answer carries any of it.
@@ -311,16 +317,21 @@ async function nextTurn(
 
 // ─── The calls of a turn ─────────────────────────────────────────────────────
 
+/** The replay of a turn, as the field of the message that adds the turn to the history. */
+const replayField = (replay: ProviderReplay | undefined): { replay?: ProviderReplay } =>
+  replay === undefined ? {} : { replay };
+
 /**
  * Adds the model's turn to the history, with every call echoed (so that each has its answer), and
  * the answer to each: the first `maxCallsPerTurn` calls are run, in order, unless their arguments
  * are unusable, and the others are told there were too many. Every answer is put in the data
- * envelope. Returns how many calls were run.
+ * envelope. The turn's `replay` goes on its message unchanged. Returns how many calls were run.
  */
 async function answerCalls(
   input: ConversationInput,
   text: string,
   calls: readonly LlmToolCall[],
+  replay: ProviderReplay | undefined,
   messages: LlmMessage[],
 ): Promise<number> {
   const prepared = calls.map((call) => ({ call, args: usableArguments(call.arguments) }));
@@ -332,6 +343,7 @@ async function answerCalls(
       name: call.name,
       arguments: args ?? {},
     })),
+    ...replayField(replay),
   });
   let run = 0;
   for (const [index, { call, args }] of prepared.entries()) {
@@ -412,9 +424,10 @@ function wrapUpDue(
  * - an answer cut off at the output limit is asked for again, shorter, once; a refusal, a blank
  *   answer and a call id used twice in a turn end the conversation as a bad answer;
  * - an answer the caller does not accept (`accept`) is asked for again once: the answer stays in
- *   the history and a user message says what was wrong with it (the caller's text, or the loop's
- *   own). From then on calls are not run, and that turn may go past the budget, as the wrap-up's
- *   may; a second answer it does not accept ends the conversation as a bad answer.
+ *   the history (with its replay, unless it had calls, which were not run and go back as text
+ *   alone) and a user message says what was wrong with it (the caller's text, or the loop's own).
+ *   From then on calls are not run, and that turn may go past the budget, as the wrap-up's may; a
+ *   second answer it does not accept ends the conversation as a bad answer.
  *
  * Every end reports what was spent (`ConversationCounts`), the tokens of a call the provider did
  * not count being guessed. The token budget must be more than 0 (see `limits.tokenBudget`).
@@ -463,7 +476,7 @@ export async function runConversation(input: ConversationInput): Promise<Convers
       if (ids.size !== turn.toolCalls.length) return ended(failed('bad_answer'));
       // The model's turn joins the history first, then the answers to its calls.
       const answersFrom = messages.length + 1;
-      toolCalls += await answerCalls(input, turn.text, turn.toolCalls, messages);
+      toolCalls += await answerCalls(input, turn.text, turn.toolCalls, turn.replay, messages);
       const grown = guessedTokens(messages.slice(answersFrom));
       if (turns >= limits.maxTurns || wrapUpDue(limits, inputTokens + outputTokens, spent, grown)) {
         messages.push({ role: 'user', text: CONVERSATION_TEXTS.wrapUp });
@@ -475,9 +488,15 @@ export async function runConversation(input: ConversationInput): Promise<Convers
     if (turn.finishReason === 'length' && turn.toolCalls.length === 0) {
       if (askedForShorter) return ended(failed('bad_answer'));
       askedForShorter = true;
-      // The API refuses an assistant message with nothing in it.
+      // The API refuses an assistant message with nothing in it; a turn with no message goes
+      // without its replay too.
       if (turn.text.trim() !== '') {
-        messages.push({ role: 'assistant', text: turn.text, toolCalls: [] });
+        messages.push({
+          role: 'assistant',
+          text: turn.text,
+          toolCalls: [],
+          ...replayField(turn.replay),
+        });
       }
       messages.push({ role: 'user', text: CONVERSATION_TEXTS.shorter });
       continue;
@@ -488,8 +507,14 @@ export async function runConversation(input: ConversationInput): Promise<Convers
     if (accepted !== true) {
       if (askedAgain) return ended(failed('bad_answer'));
       askedAgain = true;
-      // The calls of this turn, if any, were not run: the answer goes back as text alone.
-      messages.push({ role: 'assistant', text: turn.text, toolCalls: [] });
+      // The calls of this turn, if any, were not run: the answer goes back as text alone, and so
+      // without its replay, which holds the calls and has no results to send beside them.
+      messages.push({
+        role: 'assistant',
+        text: turn.text,
+        toolCalls: [],
+        ...(turn.toolCalls.length === 0 ? replayField(turn.replay) : {}),
+      });
       const said = typeof accepted === 'string' && accepted.trim() !== '';
       messages.push({ role: 'user', text: said ? accepted : CONVERSATION_TEXTS.retry });
       continue;

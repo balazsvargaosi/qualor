@@ -29,6 +29,7 @@ const CALL = {
   jsonMode: 'json_object' as const,
   maxTokensField: 'max_tokens' as const,
   temperature: null,
+  workspaceId: null,
   timeoutSeconds: 60,
 };
 /** The provider as stored, without its key. */
@@ -160,17 +161,67 @@ describe('LLM settings (llm.md §3)', () => {
     expect(pricingSchema.safeParse({ ...standard, medium: standard }).success).toBe(false);
   });
 
-  it('refuses a stored Anthropic temperature above 1 (fails closed as not configured)', () => {
+  it('a stored Anthropic temperature is read and ignored: the settings still parse, and a call never receives it', () => {
+    // Older settings may hold one (0 to 1 was Anthropic's range); a row that did not parse would
+    // read as "no provider" for the whole instance.
     const anthropic = { ...provider, kind: 'anthropic' as const, apiKeyEnc: null };
-    const ok = { ...DEFAULT_LLM_SETTINGS, provider: { ...anthropic, temperature: 1 } };
-    expect(storedLlmSettingsSchema.safeParse(ok).success).toBe(true);
-    const hot = { ...DEFAULT_LLM_SETTINGS, provider: { ...anthropic, temperature: 1.5 } };
-    expect(storedLlmSettingsSchema.safeParse(hot).success).toBe(false);
-    const openai = {
-      ...DEFAULT_LLM_SETTINGS,
-      provider: { ...provider, temperature: 1.5, apiKeyEnc: null },
-    };
-    expect(storedLlmSettingsSchema.safeParse(openai).success).toBe(true);
+    for (const temperature of [0, 0.7, 1, 1.5, 2]) {
+      const row = { ...DEFAULT_LLM_SETTINGS, provider: { ...anthropic, temperature } };
+      const parsed = storedLlmSettingsSchema.parse(row);
+      expect(parsed.provider?.temperature, String(temperature)).toBe(temperature);
+      expect(providerConfig(parsed.provider!).temperature, String(temperature)).toBeNull();
+    }
+    // OpenAI's keeps its range of 0 to 2, and is what a call receives.
+    const openai = { ...provider, temperature: 1.5, apiKeyEnc: null };
+    expect(providerConfig(storedProviderSchema.parse(openai)).temperature).toBe(1.5);
+    for (const kind of ['openai', 'anthropic'] as const) {
+      for (const temperature of [-0.1, 2.1]) {
+        expect(storedProviderSchema.safeParse({ ...openai, kind, temperature }).success).toBe(
+          false,
+        );
+      }
+    }
+  });
+
+  describe('the workspace id of an Anthropic provider', () => {
+    const anthropic = { ...provider, kind: 'anthropic' as const, apiKeyEnc: null };
+
+    it('a stored provider without workspaceId reads as null (settings of an older version)', () => {
+      const old = Object.fromEntries(
+        Object.entries(anthropic).filter(([field]) => field !== 'workspaceId'),
+      );
+      expect(old).not.toHaveProperty('workspaceId');
+      const parsed = storedLlmSettingsSchema.parse({ ...DEFAULT_LLM_SETTINGS, provider: old });
+      expect(parsed.provider?.workspaceId).toBeNull();
+      expect(providerConfig(parsed.provider!).workspaceId).toBeNull();
+    });
+
+    it('is kept as entered, and a call receives it', () => {
+      const stored = storedProviderSchema.parse({ ...anthropic, workspaceId: 'wrkspc_01AbCdEf' });
+      expect(stored.workspaceId).toBe('wrkspc_01AbCdEf');
+      expect(providerConfig(stored)).toEqual({
+        ...CALL,
+        kind: 'anthropic',
+        workspaceId: 'wrkspc_01AbCdEf',
+      });
+      const longest = `wrkspc_${'a1'.repeat(32)}`;
+      expect(storedProviderSchema.parse({ ...anthropic, workspaceId: longest }).workspaceId).toBe(
+        longest,
+      );
+    });
+
+    it.each([
+      ['empty', ''],
+      ['the prefix alone', 'wrkspc_'],
+      ['without the prefix', '01AbCdEf'],
+      ['another prefix', 'workspace_01AbCdEf'],
+      ['a dash in it', 'wrkspc_01-AbCd'],
+      ['a space in it', 'wrkspc_01 AbCd'],
+      ['a line break after it', 'wrkspc_01AbCd\n'],
+      ['over 64 characters after the prefix', `wrkspc_${'a'.repeat(65)}`],
+    ])('refuses a stored one that is %s', (_name, workspaceId) => {
+      expect(storedProviderSchema.safeParse({ ...anthropic, workspaceId }).success).toBe(false);
+    });
   });
 
   it('reads an organisation absent from the map as disabled', () => {

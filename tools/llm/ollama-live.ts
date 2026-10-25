@@ -15,7 +15,12 @@ import {
 } from '@qualor/shared';
 import type { Resolver } from '../../server/src/http/outbound';
 import { llmBaseUrlProblem } from '../../server/src/llm/url';
-import { callProvider, LlmError, type ProviderConfig } from '../../server/src/llm/providers';
+import {
+  callProvider,
+  LlmError,
+  REASONING_ALLOWANCE_TOKENS,
+  type ProviderConfig,
+} from '../../server/src/llm/providers';
 import {
   isInternalHostAllowed,
   isLoopbackHost,
@@ -191,6 +196,7 @@ export async function runLiveCheck(
     jsonMode: o.jsonMode,
     maxTokensField: 'max_tokens',
     temperature: null,
+    workspaceId: null,
     timeoutSeconds: o.timeoutSeconds,
   };
   const http = {
@@ -224,7 +230,8 @@ export async function runLiveCheck(
             {
               system: prompt.system,
               user: prompt.user,
-              maxOutputTokens: MAX_OUTPUT_TOKENS[feature],
+              // As the llm job asks: the answer's tokens, and room for a model that thinks first.
+              maxOutputTokens: MAX_OUTPUT_TOKENS[feature] + REASONING_ALLOWANCE_TOKENS.singleShot,
             },
             http,
           );

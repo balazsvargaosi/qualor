@@ -19876,6 +19876,12 @@
                                 "null"
                               ]
                             },
+                            "workspaceId": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
                             "timeoutSeconds": {
                               "type": "integer",
                               "minimum": -9007199254740991,
@@ -19898,6 +19904,7 @@
                             "jsonMode",
                             "maxTokensField",
                             "temperature",
+                            "workspaceId",
                             "timeoutSeconds",
                             "apiKeySet",
                             "apiKeyReadable"
@@ -20291,11 +20298,25 @@
                           },
                           "temperature": {
                             "default": null,
+                            "description": "OpenAI-compatible providers only (0 to 2). Anthropic's current models take none: one for an Anthropic provider is a 422",
                             "anyOf": [
                               {
                                 "type": "number",
                                 "minimum": 0,
                                 "maximum": 2
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "workspaceId": {
+                            "default": null,
+                            "description": "Anthropic only: the workspace that an organisation-wide key, which is not scoped to one, names in every request (the header anthropic-workspace-id). Not a secret. Null or absent: none; stored as null for another kind",
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "pattern": "^wrkspc_[A-Za-z0-9]{1,64}$"
                               },
                               {
                                 "type": "null"
@@ -20668,6 +20689,12 @@
                                 "null"
                               ]
                             },
+                            "workspaceId": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
                             "timeoutSeconds": {
                               "type": "integer",
                               "minimum": -9007199254740991,
@@ -20690,6 +20717,7 @@
                             "jsonMode",
                             "maxTokensField",
                             "temperature",
+                            "workspaceId",
                             "timeoutSeconds",
                             "apiKeySet",
                             "apiKeyReadable"
