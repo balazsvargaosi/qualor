@@ -11,7 +11,7 @@ import {
 import type { ConversationResult } from './conversation';
 import { envelope, newNonce } from './envelope';
 import { scrubKeyDeep } from './key-scrub';
-import { tierOfCall, type ModelTier } from './model-tiers';
+import { tierOfCall, type ConversationRole, type ModelTier } from './model-tiers';
 import {
   judgeData,
   listedDataChars,
@@ -83,17 +83,19 @@ export const MAX_VERIFICATIONS = 5;
 
 /**
  * The tokens each role may write in one answer (the conversation's `maxOutputTokens`). Its answer is
- * read up to four characters for each of them.
+ * read up to `ANSWER_CHARS_PER_TOKEN` characters for each of them. A reply's is a verdict and at most
+ * 1 200 characters of words.
  */
-export const REVIEW_OUTPUT_TOKENS: Readonly<Record<ReviewRole, number>> = Object.freeze({
+export const REVIEW_OUTPUT_TOKENS: Readonly<Record<ConversationRole, number>> = Object.freeze({
   quality: 12_288,
   tests: 12_288,
   security: 12_288,
   performance: 12_288,
   judge: 16_384,
   verify: 2_048,
+  reply: 2_048,
 });
-const ANSWER_CHARS_PER_TOKEN = 4;
+export const ANSWER_CHARS_PER_TOKEN = 4;
 
 /**
  * The characters a token of code or JSON stands for, at the least: what a first message may hold is

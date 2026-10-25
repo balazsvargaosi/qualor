@@ -1,15 +1,16 @@
 import { cutAtGrapheme, safeMultilineText } from '@qualor/shared';
 import { z } from 'zod';
-import { AI_CATEGORIES, type AiCategory } from '../db/schema';
+import { AI_CATEGORIES, REPLY_VERDICTS, type AiCategory } from '../db/schema';
 
 /*
- * The answers of a review's model, as strict schemas (llm.md §9.3): an unknown key, a value of the
- * wrong kind, a line that is not a line of a file and a text over its bound are each refused, and
- * the whole answer with them (only the reason for dropping a finding, which is never shown, is cut
- * instead). The pipeline reads every answer with `parseModelJson`, takes the provider's key out of
- * what it read, and only then checks it here; an answer that does not pass is not used (fail
- * closed). The bounds are the ones the prompts give the model. The texts of a finding that people
- * read are cleaned here as they are read (`readable`), its code is not.
+ * The answers of a review's model, and of the model that answers a reply, as strict schemas (llm.md
+ * §9.3): an unknown key, a value of the wrong kind, a line that is not a line of a file and a text
+ * over its bound are each refused, and the whole answer with them (only the reason for dropping a
+ * finding, which is never shown, is cut instead). The pipeline reads every answer with
+ * `parseModelJson`, takes the provider's key out of what it read, and only then checks it here; an
+ * answer that does not pass is not used (fail closed). The bounds are the ones the prompts give the
+ * model. The texts of a finding that people read are cleaned here as they are read (`readable`),
+ * its code is not.
  */
 
 export const FINDING_SEVERITIES = ['critical', 'major', 'minor'] as const;
@@ -22,6 +23,10 @@ export type PriorStatus = (typeof PRIOR_VERDICTS)[number];
 /** What the independent verification says of a serious security finding. */
 export const VERIFY_VERDICTS = ['confirmed', 'needs_validation', 'rejected'] as const;
 export type VerifyVerdict = (typeof VERIFY_VERDICTS)[number];
+
+/** What the model says a person's last note in a thread is (6I-4): the verdict has to match it. */
+export const REPLY_INTENTS = ['priority', 'factual', 'question', 'other'] as const;
+export type ReplyIntent = (typeof REPLY_INTENTS)[number];
 
 /** The bounds of an answer, in characters (UTF-16 code units) and items. */
 export const ANSWER_LIMITS = {
@@ -47,6 +52,8 @@ export const ANSWER_LIMITS = {
   suggestionLines: 30,
   suggestionLineChars: 400,
   idChars: 64,
+  /** The words of an answer to a reply: the bound of the ledger's column too. */
+  replyChars: 1_200,
 } as const;
 const L = ANSWER_LIMITS;
 
@@ -150,9 +157,22 @@ export const verifyAnswerSchema = z.strictObject({
   reason: text(L.reasonChars),
 });
 
+/**
+ * The answer to a person's reply (6I-4, spec §9): what the person's last note is, what becomes of
+ * the finding, and the words Qualor posts, which may be empty (a thanks needs no answer). The words
+ * are cleaned as a finding's are. Which verdicts the thread allows, and whether the model read the
+ * code for the one it gave, are for the reply engine to check (reply-engine.ts), not for the schema.
+ */
+export const replyAnswerSchema = z.strictObject({
+  intent: z.enum(REPLY_INTENTS),
+  verdict: z.enum(REPLY_VERDICTS),
+  answer: readable(L.replyChars),
+});
+
 export type SpecialistAnswer = z.infer<typeof specialistAnswerSchema>;
 export type JudgeAnswer = z.infer<typeof judgeAnswerSchema>;
 export type VerifyAnswer = z.infer<typeof verifyAnswerSchema>;
+export type ReplyAnswer = z.infer<typeof replyAnswerSchema>;
 
 /** A finding as the pipeline hands it on: its optional parts filled in. */
 export interface ReviewFinding {

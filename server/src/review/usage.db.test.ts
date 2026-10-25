@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { REDACTED } from '@qualor/shared';
 import { asc, sql } from 'drizzle-orm';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { testConfig } from '../../test/config';
 import { createTestDatabase, type TestDatabase } from '../../test/db';
 import {
@@ -35,10 +35,18 @@ import { DEFAULT_LLM_SETTINGS, pricingFor, type StoredLlmSettings } from '../llm
 import type { WorkerLogger } from '../queue/worker';
 import { SCM_CIRCUIT_FAILURES } from '../scm/runtime';
 import { parseInternalHosts } from '../scm/url';
-import { CircuitOpenError, runConversation, type ConversationInput } from './conversation';
+import {
+  CircuitOpenError,
+  CONVERSATION_TEXTS,
+  runConversation,
+  type ConversationInput,
+} from './conversation';
 import { newNonce } from './envelope';
 import { Masker } from './masker';
 import { modelFor, type ModelTier } from './model-tiers';
+import { REPLY_PROMPT_VERSION } from './prompts';
+import { REPLY_TOKEN_BUDGET } from './replies';
+import { decideReply, type ReplyDeps, type ReplyInput } from './reply-engine';
 import {
   defaultReview,
   DEFAULT_REVIEW_BUDGETS,
@@ -51,6 +59,7 @@ import {
   RedactionTally,
   remainingReviewTokens,
   REVIEW_FEATURE,
+  REVIEW_REPLY_FEATURE,
   reviewSender,
   reviewUsageToday,
   type ReviewCallRecord,
@@ -246,7 +255,8 @@ describe('the review’s own usage (6I-3)', () => {
         config,
         settings,
         ...callOf(settings, over.tier),
-        run: { id: over.runId ?? randomUUID(), projectId: projectA1 },
+        feature: REVIEW_FEATURE,
+        source: { projectId: projectA1, promptKey: over.runId ?? randomUUID() },
         promptVersion: PROMPT_VERSION,
         redactions: tally,
       });
@@ -380,7 +390,8 @@ const port = 8080;
           config,
           settings,
           ...callOf(settings),
-          run: { id: randomUUID(), projectId: projectA1 },
+          feature: REVIEW_FEATURE,
+          source: { projectId: projectA1, promptKey: randomUUID() },
           promptVersion: PROMPT_VERSION,
           redactions: tally,
         });
@@ -725,7 +736,8 @@ const port = 8080;
       return {
         organizationId: orgA,
         projectId: projectA1,
-        runId: randomUUID(),
+        feature: REVIEW_FEATURE,
+        promptKey: randomUUID(),
         provider: 'openai' as ProviderKind,
         providerHost: 'api.example.com',
         model: 'm',
@@ -759,7 +771,8 @@ const port = 8080;
         config,
         settings,
         ...callOf(settings),
-        run: { id: randomUUID(), projectId: projectA2 },
+        feature: REVIEW_FEATURE,
+        source: { projectId: projectA2, promptKey: randomUUID() },
         promptVersion: PROMPT_VERSION,
         ...over,
       });
@@ -972,7 +985,7 @@ const port = 8080;
       tally.add(7);
       const sender = senderFor('openai', {
         logger,
-        run: { id: runId, projectId: projectA1 },
+        source: { projectId: projectA1, promptKey: runId },
         redactions: tally,
         settings: settingsFor('openai', { storePrompts: true }),
       });
@@ -1014,9 +1027,157 @@ const port = 8080;
       expect(logged).not.toContain('redactions');
       expect(first(await rows())).toMatchObject({ redactions: 7 });
     });
+
+    it('writes the rows of the calls of a reply with their own feature, and names the reply, not a run', async () => {
+      const lines: { data: Record<string, unknown>; message: string }[] = [];
+      const logger = {
+        info: (data: Record<string, unknown>, message: string) =>
+          void lines.push({ data, message }),
+        warn: () => undefined,
+        error: () => undefined,
+      } as unknown as WorkerLogger;
+      const replyId = randomUUID();
+      const tally = new RedactionTally();
+      tally.add(4);
+      const settings = settingsFor('openai', { storePrompts: true, pricing: PRICING });
+      const sender = senderFor('openai', {
+        settings,
+        feature: REVIEW_REPLY_FEATURE,
+        source: { projectId: projectA1, promptKey: replyId },
+        promptVersion: 'reply-1',
+        redactions: tally,
+        logger,
+      });
+      fake.say('An answer');
+      await converse1(sender);
+      fake.enqueue(failure('openai', 503));
+      await converse1(sender).catch(() => undefined);
+
+      const [done, refused] = await rows();
+      expect(done).toMatchObject({
+        organizationId: orgA,
+        projectId: projectA1,
+        issueId: null,
+        userId: null,
+        feature: 'review-reply',
+        fields: ['review-reply'],
+        promptVersion: 'reply-1',
+        status: 'succeeded',
+        redactions: 4,
+        // 412 × $3 + 96 × $15 per million tokens.
+        costMicroUsd: 412 * 3 + 96 * 15,
+        prompt: { replyId, system: 'S', omitted: 0, messages: [{ role: 'user', text: 'U' }] },
+      });
+      expect(done!.prompt).not.toHaveProperty('runId');
+      expect(done!.finishedAt).toBeInstanceOf(Date);
+      expect(refused).toMatchObject({ feature: 'review-reply', status: 'failed' });
+      expect(refused!.finishedAt).toBeInstanceOf(Date);
+      // The log line is the review's, with the reply in the place of the run.
+      expect(lines.map((line) => line.message)).toEqual([
+        'AI review reply call finished',
+        'AI review reply call finished',
+      ]);
+      expect(Object.keys(lines[0]!.data).sort()).toEqual([
+        'durationMs',
+        'errorCode',
+        'inputTokens',
+        'outputTokens',
+        'providerStatus',
+        'replyId',
+        'status',
+      ]);
+      expect(lines[0]!.data).toMatchObject({ replyId, status: 'succeeded' });
+      expect(await reviewUsageToday(t.db, orgA)).toMatchObject({ tokens: 508 });
+    });
+
+    it('writes the organisation of the project it is given, for a review or for a reply alike', async () => {
+      for (const feature of [REVIEW_FEATURE, REVIEW_REPLY_FEATURE] as const) {
+        await t.db.delete(llmRequests);
+        for (const [projectId, organizationId] of [
+          [projectA2, orgA],
+          [projectB, orgB],
+        ] as const) {
+          fake.say('done');
+          await converse1(
+            senderFor('openai', { feature, source: { projectId, promptKey: randomUUID() } }),
+          );
+          expect((await rows()).at(-1)).toMatchObject({ feature, projectId, organizationId });
+        }
+      }
+    });
   });
 
   describe('usage of the day', () => {
+    it('counts the rows of the answers to replies with the reviews’, and the reviews of the day stay the runs', async () => {
+      // A review's call, and replies' calls of the organisation's two projects.
+      await insertRow({ inputTokens: 5_000, outputTokens: 500, costMicroUsd: 7_000 });
+      await insertRow({
+        feature: REVIEW_REPLY_FEATURE,
+        inputTokens: 2_000,
+        outputTokens: 200,
+        costMicroUsd: 3_000,
+      });
+      await insertRow({
+        feature: REVIEW_REPLY_FEATURE,
+        projectId: projectA2,
+        inputTokens: 400,
+        outputTokens: 40,
+        costMicroUsd: 600,
+      });
+      // One whose provider did not count: a quarter of the bytes sent, as for a review's.
+      await insertRow({
+        feature: REVIEW_REPLY_FEATURE,
+        inputTokens: null,
+        outputTokens: null,
+        inputBytes: 4_000,
+      });
+      // Not the organisation's, not today's, and not a review's or a reply's.
+      await insertRow({
+        feature: REVIEW_REPLY_FEATURE,
+        organizationId: orgB,
+        projectId: projectB,
+        inputTokens: 9_999,
+        outputTokens: 1,
+      });
+      await insertRow({
+        feature: REVIEW_REPLY_FEATURE,
+        inputTokens: 80_000,
+        outputTokens: 8_000,
+        createdAt: new Date(Date.now() - 24 * 3_600_000 - 60_000),
+      });
+      await insertRow({
+        feature: 'explain',
+        inputTokens: 100,
+        outputTokens: 10,
+        costMicroUsd: 500,
+      });
+
+      expect(await reviewUsageToday(t.db, orgA)).toEqual({
+        tokens: 5_500 + 2_200 + 440 + 1_000,
+        costMicroUsd: 10_600,
+        reviews: 0,
+      });
+      expect(await reviewUsageToday(t.db, orgA, projectA1)).toMatchObject({
+        tokens: 5_500 + 2_200 + 1_000,
+        costMicroUsd: 10_000,
+      });
+      expect(await reviewUsageToday(t.db, orgA, projectA2)).toMatchObject({
+        tokens: 440,
+        costMicroUsd: 600,
+      });
+      expect(await reviewUsageToday(t.db, orgB)).toMatchObject({ tokens: 10_000 });
+      // Nothing of it is the explain, triage and fix day's, and a run is what counts a review.
+      expect(await todayUsage(t.db, orgA)).toEqual({
+        explain: 1,
+        triage: 0,
+        fix: 0,
+        tokens: 110,
+        costMicroUsd: 500,
+      });
+      await newRun(projectA1, 'done', new Date());
+      expect((await reviewUsageToday(t.db, orgA)).reviews).toBe(1);
+    });
+
     const DAY = 24 * 3_600_000;
     const yesterday = () => new Date(Date.now() - DAY - 60_000);
 
@@ -1374,6 +1535,309 @@ const port = 8080;
       expect(remainingReviewTokens(uncapped, { organization, project: null }, null, null)).toBe(
         300_000,
       );
+    });
+  });
+
+  describe('the calls of the answers to replies (6I-4)', () => {
+    /** The AWS documentation's example key: the redaction takes it out of a text. */
+    const AWS_KEY = 'AKIAIOSFODNN7EXAMPLE';
+    const DECISION = JSON.stringify({
+      intent: 'factual',
+      verdict: 'false_positive',
+      answer: 'The loop covers the last item.',
+    });
+    /** What the model says when it has no code to read: the thread stays as it is. */
+    const KEEP = JSON.stringify({
+      intent: 'question',
+      verdict: 'keep',
+      answer: 'The loop runs to n.',
+    });
+    const inputOf = (over: Partial<ReplyInput> = {}): ReplyInput => ({
+      issue: {
+        engine: 'ai',
+        ruleKey: 'ai:logic',
+        message: 'The total skips the last item',
+        path: 'src/cart.ts',
+        line: 3,
+        status: 'open',
+        aiBody: 'The loop bound is one short.',
+        suggestion: null,
+      },
+      firstNote: '**AI review** · major · The total skips the last item',
+      notes: [{ author: 'alice', body: 'The loop runs to n, so it is fine.' }],
+      snapshot: memorySnapshot({ files: { 'src/cart.ts': 'for (i = 0; i < n; i += 1) {}\n' } }),
+      ...over,
+    });
+    const depsOf = (settings: StoredLlmSettings, over: Partial<ReplyDeps> = {}): ReplyDeps => ({
+      db: t.db,
+      runtime,
+      config,
+      settings,
+      organizationId: orgA,
+      reply: { id: randomUUID(), projectId: projectA1 },
+      ...over,
+    });
+    /** The model reads a file; `tokens` are what the provider counts for the call. */
+    const readTurn = (tokens: [number, number], path = 'src/cart.ts'): LlmReply => ({
+      status: 200,
+      body: openAiToolCalls([{ id: 'c1', name: 'read_file', arguments: { path } }], {
+        usage: { prompt_tokens: tokens[0], completion_tokens: tokens[1] },
+      }),
+    });
+    /** The settings of an organisation whose review budgets are the defaults over `budgets`. */
+    const withBudgets = (
+      settings: StoredLlmSettings,
+      budgets: Partial<typeof DEFAULT_REVIEW_BUDGETS>,
+    ): StoredLlmSettings =>
+      withOrganizationReview(settings, orgA, {
+        ...defaultReview(),
+        enabled: true,
+        budgets: { ...DEFAULT_REVIEW_BUDGETS, ...budgets },
+      });
+    /** Whether a request to the provider was the wrap-up: the loop's message is the last one. */
+    const wrapUp = (index: number) =>
+      fake.requests[index]?.body.includes(CONVERSATION_TEXTS.wrapUp) ?? false;
+
+    it('every call is a review-reply row and counts in the review day', async () => {
+      // A provider with a model for each tier, each with its own prices: the reply uses the standard one.
+      const settings: StoredLlmSettings = {
+        ...settingsFor('openai', { storePrompts: true }),
+        provider: {
+          ...configuredProvider(config.secretKey, fake),
+          strongModel: 'strong-model',
+          fastModel: 'fast-model',
+        },
+        pricing: {
+          ...PRICING,
+          strong: { inputUsdPerMTok: 15, outputUsdPerMTok: 75 },
+          fast: { inputUsdPerMTok: 1, outputUsdPerMTok: 5 },
+        },
+      };
+      const lines: { data: Record<string, unknown>; message: string }[] = [];
+      const logger = {
+        info: (data: Record<string, unknown>, message: string) =>
+          void lines.push({ data, message }),
+        warn: () => undefined,
+        error: () => undefined,
+      } as unknown as WorkerLogger;
+      const deps = depsOf(settings, { logger });
+      fake.enqueue(readTurn([1_000, 100]), textTurn('openai', DECISION, [2_000, 200]));
+      const decision = await decideReply(
+        inputOf({
+          notes: [{ author: 'alice', body: `A fixture key, not a real one: ${AWS_KEY}.` }],
+          snapshot: memorySnapshot({ files: { 'src/cart.ts': `const key = '${AWS_KEY}';\n` } }),
+        }),
+        deps,
+      );
+      // 1 000 × $3 + 100 × $15 and 2 000 × $3 + 200 × $15 per million tokens, in micro-USD.
+      expect(decision).toEqual({
+        verdict: 'false_positive',
+        answer: 'The loop covers the last item.',
+        readCode: true,
+        usage: { model: 'fake-model', inputTokens: 3_000, outputTokens: 300, costMicroUsd: 13_500 },
+      });
+
+      const stored = await rows();
+      expect(stored).toHaveLength(2);
+      for (const row of stored) {
+        expect(row).toMatchObject({
+          organizationId: orgA,
+          projectId: projectA1,
+          issueId: null,
+          userId: null,
+          feature: 'review-reply',
+          provider: 'openai',
+          providerHost: fake.host,
+          model: 'fake-model',
+          promptVersion: REPLY_PROMPT_VERSION,
+          attempts: 1,
+          fields: ['review-reply'],
+          status: 'succeeded',
+          errorCode: null,
+        });
+        // Finished when written: never queued or running, which the `llm` sweep would fail.
+        expect(row.finishedAt).toBeInstanceOf(Date);
+      }
+      expect(stored.map((row) => [row.inputTokens, row.outputTokens, row.costMicroUsd])).toEqual([
+        [1_000, 100, 4_500],
+        [2_000, 200, 9_000],
+      ]);
+      // The key in the note is masked in the first message, the one in the file in what the tool
+      // answered: each on the row of the call that carried it.
+      expect(stored.map((row) => row.redactions)).toEqual([1, 1]);
+      // Every call went to the standard model, whatever the strong and the fast tier are.
+      expect(fake.requests.map((request) => (request.json as { model: string }).model)).toEqual([
+        'fake-model',
+        'fake-model',
+      ]);
+      expect(fake.requests.map((request) => request.body).join('')).not.toContain(AWS_KEY);
+      // The stored prompt and the log lines name the reply, not a run.
+      expect(stored[0]!.prompt).toMatchObject({ replyId: deps.reply.id, omitted: 0 });
+      expect(stored[0]!.prompt).not.toHaveProperty('runId');
+      expect(lines.map((line) => line.message)).toEqual([
+        'AI review reply call finished',
+        'AI review reply call finished',
+      ]);
+      expect(lines.map((line) => line.data.replyId)).toEqual([deps.reply.id, deps.reply.id]);
+
+      // The calls of the answer are the review day's: they take from its budgets, and from nobody
+      // else's. A reply is no review, so no review is counted.
+      expect(await reviewUsageToday(t.db, orgA)).toEqual({
+        tokens: 3_300,
+        costMicroUsd: 13_500,
+        reviews: 0,
+      });
+      expect(await reviewUsageToday(t.db, orgA, projectA1)).toMatchObject({ tokens: 3_300 });
+      expect(await reviewUsageToday(t.db, orgA, projectA2)).toMatchObject({ tokens: 0 });
+      expect(await reviewUsageToday(t.db, orgB)).toMatchObject({ tokens: 0 });
+      expect(await todayUsage(t.db, orgA)).toEqual({
+        explain: 0,
+        triage: 0,
+        fix: 0,
+        tokens: 0,
+        costMicroUsd: 0,
+      });
+    });
+
+    it('a day without room skips the reply before any call, and what replies spend is what the day loses', async () => {
+      const settings = withBudgets(settingsFor('openai'), { tokensPerDay: 3_000 });
+      // A review spent most of the day: 800 tokens are left.
+      await insertRow({ inputTokens: 2_000, outputTokens: 200 });
+      fake.enqueue(textTurn('openai', KEEP, [700, 100]));
+      expect(await decideReply(inputOf({ snapshot: null }), depsOf(settings))).toMatchObject({
+        verdict: 'keep',
+      });
+      expect(fake.requests).toHaveLength(1);
+      // Its call took the rest of the day: the next reply finds none, and makes no call.
+      fake.requests.length = 0;
+      expect(await decideReply(inputOf({ snapshot: null }), depsOf(settings))).toEqual({
+        failed: 'budget_spent',
+      });
+      expect(fake.requests).toHaveLength(0);
+      expect(await rows()).toHaveLength(2);
+    });
+
+    it('draws on the project’s day as well as the organisation’s', async () => {
+      const settings = withBudgets(settingsFor('openai'), { perProjectTokensPerDay: 1_000 });
+      await insertRow({ inputTokens: 1_000, outputTokens: 0, projectId: projectA1 });
+      expect(await decideReply(inputOf(), depsOf(settings))).toEqual({ failed: 'budget_spent' });
+      expect(fake.requests).toHaveLength(0);
+      // Another project of the organisation has its own day.
+      fake.say(KEEP);
+      expect(
+        await decideReply(
+          inputOf({ snapshot: null }),
+          depsOf(settings, { reply: { id: randomUUID(), projectId: projectA2 } }),
+        ),
+      ).toMatchObject({ verdict: 'keep' });
+    });
+
+    it('keeps to the least of REPLY_TOKEN_BUDGET and what the day leaves, not to a review’s ceiling', async () => {
+      /** One tool turn that uses 10 500 tokens, and the answer; whether the model was told to wrap up. */
+      const wrapsUp = async (settings: StoredLlmSettings): Promise<boolean> => {
+        await t.db.delete(llmRequests);
+        fake.requests.length = 0;
+        fake.enqueue(readTurn([10_000, 500]), textTurn('openai', DECISION, [10, 5]));
+        await decideReply(inputOf(), depsOf(settings));
+        expect(fake.requests).toHaveLength(2);
+        return wrapUp(1);
+      };
+      expect(REPLY_TOKEN_BUDGET).toBe(60_000);
+      // Of 60 000 tokens, 10 500 leave room for another turn and the wrap-up after it: the model
+      // goes on. A review's ceiling of 1 000 tokens is not a reply's.
+      expect(await wrapsUp(withBudgets(settingsFor('openai'), { maxTokensPerReview: 1_000 }))).toBe(
+        false,
+      );
+      // A day with 30 000 tokens left: it does not, and the next request is the wrap-up.
+      expect(await wrapsUp(withBudgets(settingsFor('openai'), { tokensPerDay: 30_000 }))).toBe(
+        true,
+      );
+    });
+
+    it('makes no call and writes no row when there is no provider to call', async () => {
+      const none = { ...settingsFor('openai'), provider: null };
+      expect(await decideReply(inputOf(), depsOf(none))).toEqual({ failed: 'provider_error' });
+      // A key that no longer decrypts (the secret key of the server changed).
+      const stale = depsOf(settingsFor('openai'), {
+        config: { ...config, secretKey: `${config.secretKey}-changed` },
+      });
+      expect(await decideReply(inputOf(), stale)).toEqual({ failed: 'provider_error' });
+      expect(fake.requests).toHaveLength(0);
+      expect(await rows()).toHaveLength(0);
+    });
+
+    it('a call the provider refuses is a provider error, and its row is a failed review-reply row', async () => {
+      fake.enqueue(failure('openai', 401));
+      expect(await decideReply(inputOf(), depsOf(settingsFor('openai')))).toEqual({
+        failed: 'provider_error',
+      });
+      expect(first(await rows())).toMatchObject({
+        feature: 'review-reply',
+        status: 'failed',
+        errorCode: 'PROVIDER_REFUSED_KEY',
+        inputTokens: null,
+        costMicroUsd: null,
+      });
+    });
+
+    it('gives the tools the paths the administrator excluded, and the answer never holds the provider’s key', async () => {
+      const settings = {
+        ...settingsFor('openai', { storePrompts: true }),
+        excludePaths: ['src/cart.ts'],
+      };
+      // The model reads the excluded file, and writes the provider's key in its answer.
+      const echo = JSON.stringify({
+        intent: 'question',
+        verdict: 'keep',
+        answer: `The key is ${fake.apiKey}.`,
+      });
+      fake.enqueue(readTurn([100, 10]), textTurn('openai', echo, [100, 10]));
+      const decision = await decideReply(inputOf(), depsOf(settings));
+      expect(decision).toMatchObject({ verdict: 'keep', answer: `The key is ${REDACTED}.` });
+      // The file is not shown, and the call that asked for it says why.
+      expect(fake.requests[1]?.body).toContain('excluded by the administrator');
+      expect(fake.requests[1]?.body).not.toContain('i += 1');
+      // The key the model echoed is in no row, the stored result included.
+      expect(JSON.stringify(await rows())).not.toContain(fake.apiKey);
+    });
+
+    it('is stopped by the server stopping, or by the caller, before a call is made', async () => {
+      const controller = new AbortController();
+      controller.abort();
+      expect(
+        await decideReply(inputOf(), depsOf(settingsFor('openai'), { signal: controller.signal })),
+      ).toEqual({ stopped: true });
+      expect(
+        await decideReply(
+          inputOf(),
+          depsOf(settingsFor('openai'), { shouldStop: () => Promise.resolve(true) }),
+        ),
+      ).toEqual({ stopped: true });
+      expect(fake.requests).toHaveLength(0);
+      expect(await rows()).toHaveLength(0);
+    });
+
+    it('gives up a call in flight when the server stops, and writes no row for it', async () => {
+      const controller = new AbortController();
+      fake.enqueue({ ...textTurn('openai', KEEP, [10, 5]), delayMs: 4_000 });
+      const deciding = decideReply(
+        inputOf({ snapshot: null }),
+        depsOf(settingsFor('openai'), { signal: controller.signal }),
+      );
+      await vi.waitFor(() => expect(fake.requests).toHaveLength(1));
+      controller.abort();
+      expect(await deciding).toEqual({ stopped: true });
+      // The call was cut at once: the provider saw it hang up, and nothing was charged for it.
+      await vi.waitFor(() => expect(fake.abandoned).toHaveLength(1));
+      expect(await rows()).toHaveLength(0);
+    });
+
+    it('lets a call wait for its answer for five minutes, not the assistant’s five seconds', async () => {
+      // The fake's provider times out after 5 s (configuredProvider): a reply is not a person waiting.
+      fake.enqueue({ ...textTurn('openai', KEEP, [10, 5]), delayMs: 5_500 });
+      expect(
+        await decideReply(inputOf({ snapshot: null }), depsOf(settingsFor('openai'))),
+      ).toMatchObject({ verdict: 'keep' });
     });
   });
 });

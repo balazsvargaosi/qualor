@@ -116,6 +116,40 @@ describe('storedPrompt', () => {
     });
   });
 
+  it('names the reply, and no run, when the conversation answers a reply', () => {
+    const messages: LlmMessage[] = [
+      { role: 'user', text: 'The thread' },
+      { role: 'assistant', text: 'Reading.', toolCalls: [call('c1')] },
+    ];
+    const stored = storedPrompt(RUN, conversationOf(messages), 'replyId');
+    expect(stored).toEqual({
+      replyId: RUN,
+      system: SYSTEM,
+      omitted: 0,
+      messages: [
+        { role: 'user', text: 'The thread' },
+        {
+          role: 'assistant',
+          text: 'Reading.',
+          callCount: 1,
+          calls: [{ id: 'c1', name: 'read_file', arguments: '{"path":"a.ts"}' }],
+        },
+      ],
+    });
+    // The same size rules hold: a long conversation is cut the same way, under the same name.
+    const long = storedPrompt(
+      RUN,
+      conversationOf([{ role: 'user', text: 'U'.repeat(200_000) }]),
+      'replyId',
+    ) as { replyId: string; omitted: number; messages: StoredMessage[] };
+    expect(long.replyId).toBe(RUN);
+    expect(long).not.toHaveProperty('runId');
+    expect(jsonbTextBytes(long)).toBeLessThanOrEqual(STORED_PROMPT_BYTES);
+    expect(long.messages).toHaveLength(1);
+    // Without a name it is the review's, as it was.
+    expect(storedPrompt(RUN, conversationOf([]))).toHaveProperty('runId', RUN);
+  });
+
   it('cuts the system prompt', () => {
     const { system } = promptOf(conversationOf([{ role: 'user', text: 'U' }], 'S'.repeat(5_000)));
     expect([...system]).toHaveLength(1_000);

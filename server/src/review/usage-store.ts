@@ -86,17 +86,22 @@ function storedMessage(message: LlmMessage, chars: number) {
 }
 
 /**
- * The prompt of a call as a person reads it back: the run, the system prompt (cut), and the newest
+ * The prompt of a call as a person reads it back: what the call belongs to (a review run's id, or
+ * with `name` `replyId` the id of the reply it answers), the system prompt (cut), and the newest
  * messages of the conversation that fit, oldest first, with how many came before them. The newest
  * are what the call added, which is what a person looks for; each text is cut, to fewer characters
  * until the newest message fits at all.
  */
-export function storedPrompt(runId: string, conversation: LlmConversation): unknown {
+export function storedPrompt(
+  id: string,
+  conversation: LlmConversation,
+  name: 'runId' | 'replyId' = 'runId',
+): unknown {
   const system = shown(conversation.system, STORED_SYSTEM_CHARS);
   const all = conversation.messages;
   for (const chars of TEXT_CAPS) {
     const kept: unknown[] = [];
-    let bytes = jsonbTextBytes({ runId, system, omitted: all.length, messages: [] });
+    let bytes = jsonbTextBytes({ [name]: id, system, omitted: all.length, messages: [] });
     for (const message of [...all].reverse()) {
       const stored = storedMessage(message, chars);
       // The separator between two elements of the list, counted for the first one too.
@@ -106,10 +111,10 @@ export function storedPrompt(runId: string, conversation: LlmConversation): unkn
       bytes += size;
     }
     if (kept.length > 0 || all.length === 0) {
-      return { runId, system, omitted: all.length - kept.length, messages: kept.reverse() };
+      return { [name]: id, system, omitted: all.length - kept.length, messages: kept.reverse() };
     }
   }
-  return { runId, system, omitted: all.length, messages: [] };
+  return { [name]: id, system, omitted: all.length, messages: [] };
 }
 
 /**

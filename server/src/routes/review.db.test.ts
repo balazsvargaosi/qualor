@@ -440,7 +440,8 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
         recordReviewCall(ctx.db, {
           organizationId,
           projectId,
-          runId,
+          feature: 'review',
+          promptKey: runId,
           provider: 'openai',
           providerHost: 'llm.example',
           model: 'fake-model',

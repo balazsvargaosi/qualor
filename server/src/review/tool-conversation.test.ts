@@ -1,7 +1,7 @@
 import { REDACTED } from '@qualor/shared';
 import { afterAll, describe, expect, it } from 'vitest';
 import { memorySnapshot } from '../../test/review';
-import type { LlmConversation, LlmTurn } from '../llm/providers';
+import { LlmError, type LlmConversation, type LlmToolCall, type LlmTurn } from '../llm/providers';
 import { CONVERSATION_LIMITS, CONVERSATION_TEXTS } from './conversation';
 import { newNonce } from './envelope';
 import { MaskedFiles } from './masked-files';
@@ -204,6 +204,143 @@ describe('converseOverTools', () => {
     });
     expect(result).toMatchObject({ kind: 'answer', budgetReached: true });
     expect(sent[1]?.messages.at(-1)).toEqual({ role: 'user', text: CONVERSATION_TEXTS.wrapUp });
+  });
+
+  it('serves the reply role with its own prompt and output limit over the review tools', async () => {
+    const reader = memorySnapshot();
+    const policy = newToolPolicy({
+      excludePaths: [],
+      masked: new MaskedFiles(reader, { masker }),
+      masker,
+    });
+    const sent: LlmConversation[] = [];
+    const result = await converseOverTools(callOf('reply', { user: 'The thread' }), {
+      reader,
+      policy,
+      send: (conversation) => {
+        sent.push(conversation);
+        return Promise.resolve(turn({ text: '{"ok":true}' }));
+      },
+      shouldStop: () => Promise.resolve(false),
+    });
+    expect(result).toMatchObject({ kind: 'answer', text: '{"ok":true}' });
+    expect(sent[0]).toMatchObject({
+      system: SYSTEM_PROMPTS.reply,
+      tools: REVIEW_TOOLS,
+      maxOutputTokens: REVIEW_OUTPUT_TOKENS.reply,
+      messages: [{ role: 'user', text: 'The thread' }],
+    });
+  });
+
+  it("sends the prompt a call is given instead of its role's", async () => {
+    const reader = memorySnapshot();
+    const policy = newToolPolicy({
+      excludePaths: [],
+      masked: new MaskedFiles(reader, { masker }),
+      masker,
+    });
+    const sent: LlmConversation[] = [];
+    const system = 'Qualor review: reply\nThis thread allows one verdict: "keep".';
+    await converseOverTools(callOf('reply', { system }), {
+      reader,
+      policy,
+      send: (conversation) => {
+        sent.push(conversation);
+        return Promise.resolve(turn({ text: '{"ok":true}' }));
+      },
+      shouldStop: () => Promise.resolve(false),
+    });
+    expect(sent[0]?.system).toBe(system);
+    expect(sent[0]?.system).not.toBe(SYSTEM_PROMPTS.reply);
+  });
+
+  it('gives the model no tools without a snapshot, and answers a call it makes anyway with a fixed text that reads nothing', async () => {
+    const nonce = newNonce();
+    const sent: LlmConversation[] = [];
+    const replies = [
+      turn({
+        finishReason: 'tool',
+        toolCalls: [{ id: 'call-1', name: 'read_file', arguments: { path: 'src/config.ts' } }],
+      }),
+      turn({ text: '{"ok":true}' }),
+    ];
+    const result = await converseOverTools(callOf('reply', { nonce }), {
+      reader: null,
+      send: (conversation) => {
+        sent.push(conversation);
+        return Promise.resolve(replies.shift() ?? turn({ text: 'unexpected' }));
+      },
+      shouldStop: () => Promise.resolve(false),
+    });
+    expect(result).toMatchObject({ kind: 'answer', text: '{"ok":true}' });
+    expect(sent).toHaveLength(2);
+    expect(sent.map((conversation) => conversation.tools)).toEqual([[], []]);
+    const answered = sent[1]?.messages.find((message) => message.role === 'tool');
+    expect(answered?.text).toContain('no tools are available');
+    // Still between the conversation's markers, like every tool answer.
+    expect(answered?.text).toContain(nonce);
+  });
+
+  it('does not read a refusal as a lack of tool calling when no tools were sent', async () => {
+    const refused = new LlmError('rejected', 'The provider refused the request', 400, null, true);
+    for (const tools of [true, false]) {
+      const reader = memorySnapshot();
+      const policy = newToolPolicy({
+        excludePaths: [],
+        masked: new MaskedFiles(reader, { masker }),
+        masker,
+      });
+      const send = () => Promise.reject(refused);
+      const result = await converseOverTools(
+        callOf('reply'),
+        tools
+          ? { reader, policy, send, shouldStop: () => Promise.resolve(false) }
+          : { reader: null, send, shouldStop: () => Promise.resolve(false) },
+      );
+      expect(result).toMatchObject({
+        kind: 'failed',
+        reason: tools ? 'provider_no_tools' : 'provider_error',
+      });
+    }
+  });
+
+  it('tells the caller each tool call it runs, and none it refuses to run', async () => {
+    const reader = memorySnapshot({ files: { 'a.ts': 'const a = 1;\n' } });
+    const policy = newToolPolicy({
+      excludePaths: [],
+      masked: new MaskedFiles(reader, { masker }),
+      masker,
+    });
+    const told: LlmToolCall[] = [];
+    const calls: LlmToolCall[] = [
+      { id: 'c1', name: 'read_file', arguments: { path: 'a.ts' } },
+      { id: 'c2', name: 'grep', arguments: { pattern: 'const' } },
+      // Not an object: the arguments are refused before the call is run.
+      { id: 'c3', name: 'read_file', arguments: 'a.ts' },
+      ...Array.from({ length: CONVERSATION_LIMITS.maxCallsPerTurn }, (_, i) => ({
+        id: `list-${i}`,
+        name: 'list_files',
+        arguments: {},
+      })),
+    ];
+    const replies = [
+      turn({ finishReason: 'tool', toolCalls: calls }),
+      turn({ text: '{"ok":true}' }),
+    ];
+    await converseOverTools(callOf('reply'), {
+      reader,
+      policy,
+      send: () => Promise.resolve(replies.shift() ?? turn({ text: 'unexpected' })),
+      shouldStop: () => Promise.resolve(false),
+      onToolCall: (call) => told.push(call),
+    });
+    // Of the first eight calls of the turn, the one with unusable arguments is not run; the calls
+    // after the eighth are told there were too many.
+    expect(told.map((call) => call.id)).toEqual([
+      'c1',
+      'c2',
+      ...Array.from({ length: CONVERSATION_LIMITS.maxCallsPerTurn - 3 }, (_, i) => `list-${i}`),
+    ]);
   });
 
   it('stops where the caller says so', async () => {

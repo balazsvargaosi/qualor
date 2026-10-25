@@ -3,7 +3,7 @@ import { eq, sql } from 'drizzle-orm';
 import type { Config } from '../config';
 import type { Executor } from '../db/client';
 import { first } from '../db/rows';
-import { llmRequests, projects, type ReviewRunRow } from '../db/schema';
+import { llmRequests, projects } from '../db/schema';
 import { VERSION } from '../index';
 import { errorCodeOf } from '../llm/errors';
 import { costOf, noteCallFailure, type LlmRuntime } from '../llm/job';
@@ -32,13 +32,29 @@ import { storedPrompt, storedResult } from './usage-store';
 
 /*
  * What an AI review spends. Every call a review makes to the provider is one finished
- * `llm_requests` row of its own feature: the explain, triage and fix budgets never count it
- * (`todayUsage`), and the review's budgets count nothing else. A row is written once the call has
- * returned or failed, never as `queued` or `running`: the sweep of the `llm` queue fails the rows
- * that no job of that queue will finish, and a review's calls have none.
+ * `llm_requests` row of its own feature: `review` for the calls of a review run, `review-reply` for
+ * those that answer a person's reply in a merge request (6I-4). The explain, triage and fix budgets
+ * never count them (`todayUsage`), and the review's budgets count nothing else, the two features
+ * together. A row is written once the call has returned or failed, never as `queued` or `running`:
+ * the sweep of the `llm` queue fails the rows that no job of that queue will finish, and these calls
+ * have none.
  */
 
 export const REVIEW_FEATURE = 'review';
+/** The feature of the calls that answer a person's reply. */
+export const REVIEW_REPLY_FEATURE = 'review-reply';
+/** The features a review's day is counted over. */
+const REVIEW_FEATURES = [REVIEW_FEATURE, REVIEW_REPLY_FEATURE] as const;
+export type ReviewFeature = (typeof REVIEW_FEATURES)[number];
+
+/**
+ * What a call belongs to, by feature: the name the stored prompt and the log line give its id (a
+ * review run's, or a reply's), and the log line.
+ */
+const OWNER: Readonly<Record<ReviewFeature, { name: 'runId' | 'replyId'; logLine: string }>> = {
+  review: { name: 'runId', logLine: 'AI review call finished' },
+  'review-reply': { name: 'replyId', logLine: 'AI review reply call finished' },
+};
 
 /**
  * The least a review call waits for its answer, in seconds. A review runs in the background and its
@@ -70,8 +86,13 @@ const MAX_REDACTIONS = 2_147_483_647;
 export interface ReviewCallRecord {
   organizationId: string;
   projectId: string;
-  /** The review run the call belongs to: the row has no column for it, so it goes in the stored prompt. */
-  runId: string;
+  /** What the call is for: a review run's, or the answer to a person's reply. */
+  feature: ReviewFeature;
+  /**
+   * What the call belongs to, the review run or the reply (its id): the row has no column for it,
+   * so it goes in the stored prompt.
+   */
+  promptKey: string;
   provider: ProviderKind;
   providerHost: string;
   model: string;
@@ -96,10 +117,10 @@ export interface ReviewCallRecord {
 }
 
 /**
- * Writes the row of one call to the provider, finished: `feature` is `review`, there is no issue
- * and no user. `cache_key` is the hash of the request body, as `input_sha256` is, and is never
- * looked up as a cache (the lookups ask for an issue). The prompt and the result are kept only
- * when the record brings them, and within the bounds of their columns.
+ * Writes the row of one call to the provider, finished, of the call's own feature (`review` or
+ * `review-reply`); there is no issue and no user. `cache_key` is the hash of the request body, as
+ * `input_sha256` is, and is never looked up as a cache (the lookups ask for an issue). The prompt and
+ * the result are kept only when the record brings them, and within the bounds of their columns.
  */
 export async function recordReviewCall(db: Executor, call: ReviewCallRecord): Promise<void> {
   await db.insert(llmRequests).values({
@@ -107,7 +128,7 @@ export async function recordReviewCall(db: Executor, call: ReviewCallRecord): Pr
     projectId: call.projectId,
     issueId: null,
     userId: null,
-    feature: REVIEW_FEATURE,
+    feature: call.feature,
     cacheKey: call.inputSha256,
     provider: call.provider,
     providerHost: call.providerHost,
@@ -118,13 +139,15 @@ export async function recordReviewCall(db: Executor, call: ReviewCallRecord): Pr
     attempts: 1,
     inputSha256: call.inputSha256,
     inputBytes: call.inputBytes,
-    fields: [REVIEW_FEATURE],
+    fields: [call.feature],
     redactions: Math.min(call.redactions, MAX_REDACTIONS),
     inputTokens: call.inputTokens,
     outputTokens: call.outputTokens,
     costMicroUsd: call.costMicroUsd,
     durationMs: call.durationMs,
-    prompt: call.stored ? storedPrompt(call.runId, call.stored.conversation) : null,
+    prompt: call.stored
+      ? storedPrompt(call.promptKey, call.stored.conversation, OWNER[call.feature].name)
+      : null,
     result:
       call.status === 'succeeded' && call.stored?.turn ? storedResult(call.stored.turn) : null,
     finishedAt: sql`now()`,
@@ -147,9 +170,10 @@ export interface ReviewUsage {
 
 /**
  * The AI reviews of the organisation (or of one of its projects) since the current UTC day began:
- * the tokens and the estimated cost of the `review` rows, and how many reviews ran. The rows of
- * explain, triage and fix are not counted. The number of reviews is that of the runs that started
- * today and did not end skipped: the rows are calls, and carry no run.
+ * the tokens and the estimated cost of the `review` and the `review-reply` rows, which draw on one
+ * day's budget, and how many reviews ran. The rows of explain, triage and fix are not counted. The
+ * number of reviews is that of the runs that started today and did not end skipped: the rows are
+ * calls, and carry no run, so the answers to replies add tokens and cost and no review.
  *
  * A provider that does not count its tokens must not spend without limit: the input of a row that
  * succeeded, timed out or was answered in a way that could not be read (a 2xx the provider most
@@ -164,6 +188,10 @@ export async function reviewUsageToday(
   organizationId: string,
   projectId?: string,
 ): Promise<ReviewUsage> {
+  const features = sql.join(
+    REVIEW_FEATURES.map((feature) => sql`${feature}`),
+    sql`, `,
+  );
   const spent = await db.execute<{ tokens: string; cost: string }>(sql`
     SELECT coalesce(sum(
              CASE WHEN status = 'succeeded'
@@ -173,7 +201,7 @@ export async function reviewUsageToday(
              + coalesce(output_tokens, 0)), 0)::bigint AS tokens,
            coalesce(sum(cost_micro_usd), 0)::bigint AS cost
       FROM llm_requests
-     WHERE feature = ${REVIEW_FEATURE}
+     WHERE feature IN (${features})
        AND organization_id = ${organizationId}
        ${projectId === undefined ? sql`` : sql`AND project_id = ${projectId}`}
        AND created_at >= ${UTC_DAY_START}`);
@@ -201,7 +229,8 @@ export async function reviewUsageToday(
  * before it is made and any model's may be the next, so the price that cannot overspend is the
  * dearest of them all, the dearer of its input and its output. Without a provider, as without
  * prices, nothing is priced. A cost budget at or past its limit leaves nothing. `usage` is the day
- * so far, as `reviewUsageToday` counts it for the organisation and for the project.
+ * so far, as `reviewUsageToday` counts it for the organisation and for the project. The answer to a
+ * reply asks it with its own ceiling in the place of `maxTokensPerReview`.
  */
 export function remainingReviewTokens(
   budgets: ReviewBudgets,
@@ -267,7 +296,13 @@ export interface ReviewSenderDeps {
   model: string;
   /** That model's prices, which cost each call; null: no costs (`pricingFor`). */
   pricing: PricePair | null;
-  run: Pick<ReviewRunRow, 'id' | 'projectId'>;
+  /** What the calls are for: a review run, or the answer to a person's reply. Every row has it. */
+  feature: ReviewFeature;
+  /**
+   * What the calls belong to: the project, whose organisation the rows are written for, and the id
+   * of the review run or of the reply, which the stored prompt and the log line name.
+   */
+  source: { projectId: string; promptKey: string };
   /** The version of the prompts the conversation was made from, kept on every row. */
   promptVersion: string;
   /** Secrets masked in what each call adds; without it, 0 on every row. */
@@ -303,15 +338,15 @@ interface Outcome {
 
 /**
  * The `send` of a conversation (conversation.ts): one call to the configured provider through
- * `converse`, recorded as a row whether it succeeds or fails. The provider's circuit is asked
- * first (open: `CircuitOpenError`, nothing sent and no row) and told how the call went. A review
- * takes no slot of the organisation's `llm` requests: it shares the circuit with that queue and
- * nothing else, so it never holds explain, triage or fix behind it, and they never hold it. The
- * provider's key is taken out of what the model said before it is returned or stored. A failure is
- * thrown after it is recorded; a key that cannot be read is thrown as the provider refusing it. A
- * call that `deps.signal` gives up is cut at once and thrown as `LlmCallAborted`, with no row: the
- * provider gave no answer and failed at nothing, so the call is charged to no budget and the
- * circuit only hands its probe on.
+ * `converse`, recorded as a row of `deps.feature` whether it succeeds or fails. The provider's
+ * circuit is asked first (open: `CircuitOpenError`, nothing sent and no row) and told how the call
+ * went. A review, or the answer to a reply, takes no slot of the organisation's `llm` requests: it
+ * shares the circuit with that queue and nothing else, so it never holds explain, triage or fix
+ * behind it, and they never hold it. The provider's key is taken out of what the model said before
+ * it is returned or stored. A failure is thrown after it is recorded; a key that cannot be read is
+ * thrown as the provider refusing it. A call that `deps.signal` gives up is cut at once and thrown
+ * as `LlmCallAborted`, with no row: the provider gave no answer and failed at nothing, so the call
+ * is charged to no budget and the circuit only hands its probe on.
  */
 export function reviewSender(
   deps: ReviewSenderDeps,
@@ -326,16 +361,17 @@ export function reviewSender(
     version: VERSION,
     ...(deps.signal === undefined ? {} : { signal: deps.signal }),
   };
+  const owner = OWNER[deps.feature];
   let organizationId: string | undefined;
 
-  /** The organisation of the run's project, read once. */
-  async function organizationOfRun(): Promise<string> {
+  /** The organisation of the project the calls are for, read once. */
+  async function organizationOfSource(): Promise<string> {
     if (organizationId === undefined) {
       const [project] = await deps.db
         .select({ organizationId: projects.organizationId })
         .from(projects)
-        .where(eq(projects.id, deps.run.projectId));
-      if (!project) throw new Error('The project of the review run is gone');
+        .where(eq(projects.id, deps.source.projectId));
+      if (!project) throw new Error('The project the calls are made for is gone');
       organizationId = project.organizationId;
     }
     return organizationId;
@@ -346,8 +382,9 @@ export function reviewSender(
     const durationMs = Math.max(0, Date.now() - sent.started);
     await recordReviewCall(deps.db, {
       organizationId: sent.organizationId,
-      projectId: deps.run.projectId,
-      runId: deps.run.id,
+      projectId: deps.source.projectId,
+      feature: deps.feature,
+      promptKey: deps.source.promptKey,
       provider: provider.kind,
       providerHost,
       model: deps.model,
@@ -367,7 +404,7 @@ export function reviewSender(
     });
     deps.logger?.info(
       {
-        runId: deps.run.id,
+        [owner.name]: deps.source.promptKey,
         status: outcome.status,
         errorCode: outcome.errorCode,
         providerStatus: outcome.providerStatus,
@@ -375,7 +412,7 @@ export function reviewSender(
         outputTokens: outcome.outputTokens,
         durationMs,
       },
-      'AI review call finished',
+      owner.logLine,
     );
   };
 
@@ -385,7 +422,7 @@ export function reviewSender(
       throw new LlmError('refused_key', 'The API key cannot be read; set it again in the settings');
     }
     const body = JSON.stringify(conversation);
-    const organization = await organizationOfRun();
+    const organization = await organizationOfSource();
     if (!deps.runtime.circuit.tryPass(circuitKey)) throw new CircuitOpenError();
     const sent: SentCall = {
       conversation,

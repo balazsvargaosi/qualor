@@ -514,6 +514,8 @@ describe('runReviewPipeline', () => {
       performance: 12_288,
       judge: 16_384,
       verify: 2_048,
+      // The answer to a person's reply: a verdict and at most 1 200 characters.
+      reply: 2_048,
     });
     const key = j('sk-test-', '0123456789abcdef');
     const { deps, calls } = scripted(

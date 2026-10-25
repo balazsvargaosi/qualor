@@ -3,6 +3,8 @@ import type { z } from 'zod';
 import {
   ANSWER_LIMITS,
   judgeAnswerSchema,
+  REPLY_INTENTS,
+  replyAnswerSchema,
   reviewFindingOf,
   specialistAnswerSchema,
   verifyAnswerSchema,
@@ -279,6 +281,72 @@ describe('the review answer schemas', () => {
   });
 });
 
+describe('the reply answer schema', () => {
+  const reply = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    intent: 'priority',
+    verdict: 'wont_fix',
+    answer: 'Understood: this stays as it is for this release.',
+    ...over,
+  });
+
+  it('takes exactly an intent, a verdict and an answer', () => {
+    expect(REPLY_INTENTS).toEqual(['priority', 'factual', 'question', 'other']);
+    expect(replyAnswerSchema.parse(reply())).toEqual(reply());
+    for (const intent of REPLY_INTENTS) {
+      for (const verdict of ['keep', 'wont_fix', 'false_positive']) {
+        expect(passes(replyAnswerSchema, reply({ intent, verdict })), `${intent} ${verdict}`).toBe(
+          true,
+        );
+      }
+    }
+    // Unknown keys, a missing key and a value of another kind are refused: the whole answer with them.
+    expect(passes(replyAnswerSchema, reply({ resolve: true }))).toBe(false);
+    for (const key of ['intent', 'verdict', 'answer']) {
+      const without = Object.fromEntries(Object.entries(reply()).filter(([name]) => name !== key));
+      expect(passes(replyAnswerSchema, without), key).toBe(false);
+    }
+    for (const over of [
+      { intent: 'complaint' },
+      { intent: 'Priority' },
+      { intent: null },
+      { verdict: 'resolved' },
+      { verdict: 'false-positive' },
+      { verdict: 'KEEP' },
+      { verdict: ['keep'] },
+      { answer: null },
+      { answer: ['Fine.'] },
+      { answer: 3 },
+    ]) {
+      expect(passes(replyAnswerSchema, reply(over)), JSON.stringify(over)).toBe(false);
+    }
+    expect(passes(replyAnswerSchema, [reply()])).toBe(false);
+    expect(passes(replyAnswerSchema, null)).toBe(false);
+  });
+
+  it('keeps an answer to at most 1 200 characters, and lets it be empty', () => {
+    expect(passes(replyAnswerSchema, reply({ answer: text(1_200) }))).toBe(true);
+    expect(passes(replyAnswerSchema, reply({ answer: text(1_201) }))).toBe(false);
+    // A thanks needs no answer: nothing is posted for an empty one with the verdict keep.
+    expect(replyAnswerSchema.parse(reply({ verdict: 'keep', answer: '' })).answer).toBe('');
+    expect(replyAnswerSchema.parse(reply({ verdict: 'keep', answer: '  \n ' })).answer).toBe('');
+  });
+
+  it('cleans the answer as the words of a finding are cleaned', () => {
+    // Bidirectional controls, zero-width and invisible characters, a line separator and a control.
+    const parsed = replyAnswerSchema.parse(
+      reply({
+        verdict: 'keep',
+        answer:
+          'The bound is `i < n -\u{200b} 1`,\u{202e}so it\u{2028}skips one\u0007item.\n\n\n\nUse `i < n`.',
+      }),
+    );
+    expect(parsed.answer).toBe('The bound is `i < n - 1`, so it skips one item.\n\nUse `i < n`.');
+    // A text that is nothing but such characters says nothing.
+    const blank = '\u{200b}\u{2060}\u{202e} \u{feff}';
+    expect(replyAnswerSchema.parse(reply({ verdict: 'keep', answer: blank })).answer).toBe('');
+  });
+});
+
 describe('ANSWER_LIMITS', () => {
   it('holds the values of the contract, which the prompts state and the storing of findings checks', () => {
     expect(ANSWER_LIMITS).toEqual({
@@ -300,6 +368,7 @@ describe('ANSWER_LIMITS', () => {
       suggestionLines: 30,
       suggestionLineChars: 400,
       idChars: 64,
+      replyChars: 1_200,
     });
   });
 });

@@ -70,6 +70,7 @@ import type { ToolPolicy } from './tools';
 import {
   RedactionTally,
   remainingReviewTokens,
+  REVIEW_FEATURE,
   reviewCallSettings,
   reviewSender,
   reviewUsageToday,
@@ -662,7 +663,8 @@ class ReviewJob {
       settings: reviewCallSettings(running.settings),
       model: modelFor(storedProvider, modelTier),
       pricing,
-      run: running.run,
+      feature: REVIEW_FEATURE,
+      source: { projectId: running.run.projectId, promptKey: running.run.id },
       promptVersion: REVIEW_PROMPT_VERSION,
       redactions: tally,
       logger: this.deps.logger,
