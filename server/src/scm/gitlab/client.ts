@@ -123,7 +123,9 @@ export type GitLabDiff = z.infer<typeof diff>;
 const note = z.looseObject({
   id: z.number().int(),
   body: z.string(),
-  author: z.looseObject({ id: z.number().int() }),
+  author: z.looseObject({ id: z.number().int(), username: z.string() }),
+  /** When GitLab made the note (ISO 8601): replies and commands count by their age. */
+  created_at: z.string(),
   system: z.boolean(),
   resolvable: z.boolean().optional(),
   resolved: z.boolean().optional(),
@@ -174,6 +176,8 @@ export const GITLAB_SHAPES = {
 
 /** scm.md §4.2–§4.3: a GitLab merge request IID, 1–10 digits (the only form sent in a path). */
 export const GITLAB_MR_IID = /^[0-9]{1,10}$/;
+/** A discussion id: GitLab makes them of 40 hex digits; 1–64 are the only forms sent in a path. */
+const DISCUSSION_ID = /^[0-9a-f]{1,64}$/;
 
 export type CommitState = 'pending' | 'running' | 'success' | 'failed' | 'canceled' | 'skipped';
 
@@ -527,6 +531,30 @@ export class GitLabClient {
       }
       throw err;
     }
+  }
+
+  /**
+   * A reply in an existing discussion (`POST …/discussions/:id/notes`): the new note, which GitLab
+   * adds to that discussion after its others. `not_found` when the merge request has no such
+   * discussion (deleted, or the id of another merge request's).
+   */
+  async replyToDiscussion(
+    ref: string,
+    iid: string,
+    discussionId: string,
+    body: string,
+  ): Promise<GitLabNote> {
+    if (!DISCUSSION_ID.test(discussionId)) {
+      throw new GitLabError('refused', 'The discussion id is not a GitLab discussion id', {
+        reason: 'invalid_input',
+      });
+    }
+    const { json } = await this.call(
+      'POST',
+      `${this.mergeRequestPath(ref, iid)}/discussions/${encodeURIComponent(discussionId)}/notes`,
+      { body },
+    );
+    return this.parse(note, json);
   }
 
   async resolveDiscussion(

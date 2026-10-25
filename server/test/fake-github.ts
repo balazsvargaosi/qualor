@@ -43,6 +43,11 @@ import { fileURLToPath } from 'node:url';
  * lists as `node_id` and GraphQL as the comment's `id`. GraphQL offers neither `databaseId`
  * (deprecated by GitHub: it cannot hold such ids) nor `fullDatabaseId` (an older GitHub Enterprise
  * Server has none): a query asking for either fails as a query of an unknown field does.
+ *
+ * A reply to a review comment (`POST /pulls/{n}/comments/{id}/replies`) is taken for the first
+ * comment of a thread only: GitHub documents no reply to a reply, and the fake answers one, like a
+ * comment it has none of, with the 404 that endpoint lists. Every issue comment and review comment
+ * carries `created_at` and `updated_at` read from the fake's clock (`now`) when it was made.
  */
 
 const SHAPES = path.join(path.dirname(fileURLToPath(import.meta.url)), 'github-shapes');
@@ -94,6 +99,11 @@ export interface FakeComment {
   issue: number;
   body: string;
   user: { login: string; id: number; type: 'Bot' | 'User' };
+  /**
+   * When the comment was made, as GitHub writes it (ISO 8601, UTC, to the second): the fake's
+   * clock when it made it. A comment built by hand without it is dated as the recorded shape is.
+   */
+  createdAt?: string;
 }
 /** A pull request review comment: a comment on RIGHT-side lines of one file's diff. */
 export interface FakeReviewComment {
@@ -110,6 +120,8 @@ export interface FakeReviewComment {
   user: { login: string; id: number; type: 'Bot' | 'User' };
   /** The thread's first comment, for a reply (REST's `in_reply_to_id`); null for a first comment. */
   inReplyToId: number | null;
+  /** As {@link FakeComment.createdAt}. */
+  createdAt?: string;
 }
 /** A review thread: a first review comment and the replies to it (GraphQL's `PullRequestReviewThread`). */
 export interface FakeReviewThread {
@@ -367,6 +379,8 @@ export async function createFakeGitHub(
   const appId = options.appId ?? 123456;
   const slug = options.slug ?? 'qualor-acme';
   const now = options.now ?? Date.now;
+  /** The fake's clock as GitHub writes it in `created_at`: ISO 8601 in UTC, to the second. */
+  const stamp = () => new Date(now()).toISOString().replace(/\.\d{3}Z$/, 'Z');
   const key = appKey();
   const publicKey = createPublicKey(key.privateKey);
   const repos = new Map<string, FakeRepository>();
@@ -375,6 +389,30 @@ export async function createFakeGitHub(
   let nextId = 1;
   let nextThread = 1;
   let nextReviewComment = FIRST_REVIEW_COMMENT_ID;
+
+  /**
+   * The reply `body` by `user` to `first`, the first comment of `thread`: the thread keeps its first
+   * comment and gains the reply. The reply is on the lines of the first comment, with a date and an
+   * id of its own.
+   */
+  const addReply = (
+    first: FakeReviewComment,
+    thread: FakeReviewThread,
+    user: FakeReviewComment['user'],
+    body: string,
+  ): FakeReviewComment => {
+    const reply: FakeReviewComment = {
+      ...first,
+      id: nextReviewComment++,
+      body,
+      user,
+      inReplyToId: first.id,
+      createdAt: stamp(),
+    };
+    fake.reviewComments.push(reply);
+    thread.commentIds.push(reply.id);
+    return reply;
+  };
 
   const fake: FakeGitHub = {
     url: '',
@@ -401,6 +439,7 @@ export async function createFakeGitHub(
         issue,
         body: c.body,
         user: { login: c.login, id: c.type === 'Bot' ? 41898282 : 5, type: c.type ?? 'User' },
+        createdAt: stamp(),
       };
       fake.comments.push(comment);
       return comment;
@@ -428,20 +467,12 @@ export async function createFakeGitHub(
       if (!first || !thread || first.inReplyToId !== null) {
         throw new Error(`no first review comment ${commentId} on pull request ${pull}`);
       }
-      const comment: FakeReviewComment = {
-        ...first,
-        id: nextReviewComment++,
-        body: reply.body,
-        user: {
-          login: reply.login,
-          id: reply.type === 'Bot' ? 41898282 : 5,
-          type: reply.type ?? 'User',
-        },
-        inReplyToId: commentId,
-      };
-      fake.reviewComments.push(comment);
-      thread.commentIds.push(comment.id);
-      return comment;
+      return addReply(
+        first,
+        thread,
+        { login: reply.login, id: reply.type === 'Bot' ? 41898282 : 5, type: reply.type ?? 'User' },
+        reply.body,
+      );
     },
     resolveThreadAs: (threadId, login) => {
       const thread = fake.reviewThreads.find((t) => t.id === threadId);
@@ -535,34 +566,49 @@ export async function createFakeGitHub(
     app: { id: run.appId, slug, name: 'Qualor' },
   });
 
-  const commentJson = (c: FakeComment) => ({
-    ...githubShape('issue_comment'),
-    id: c.id,
-    body: c.body,
-    user: c.user,
-    performed_via_github_app: c.user.type === 'Bot' ? { id: appId, slug } : null,
-  });
+  const commentJson = (c: FakeComment) => {
+    const shape = githubShape('issue_comment');
+    // A comment not edited since it was made: `updated_at` is `created_at`, as GitHub has it.
+    const createdAt = c.createdAt ?? shape['created_at'];
+    return {
+      ...shape,
+      id: c.id,
+      body: c.body,
+      user: c.user,
+      created_at: createdAt,
+      updated_at: createdAt,
+      performed_via_github_app: c.user.type === 'Bot' ? { id: appId, slug } : null,
+    };
+  };
 
-  const reviewCommentJson = (repo: FakeRepository) => (c: FakeReviewComment) => ({
-    ...githubShape('pull_request_review_comment'),
-    id: c.id,
-    node_id: reviewCommentNodeId(c.id),
-    body: c.body,
-    path: c.path,
-    commit_id: c.commitId,
-    original_commit_id: c.commitId,
-    line: c.line,
-    original_line: c.line,
-    start_line: c.startLine,
-    original_start_line: c.startLine,
-    start_side: c.startLine === null ? null : 'RIGHT',
-    side: c.side,
-    user: c.user,
-    html_url: `${webBase()}/${repo.owner}/${repo.name}/pull/${c.pull}#discussion_r${c.id}`,
-    performed_via_github_app: c.user.type === 'Bot' ? { id: appId, slug } : null,
-    // GitHub names the thread's first comment on a reply, and has no such field on a first one.
-    ...(c.inReplyToId === null ? {} : { in_reply_to_id: c.inReplyToId }),
-  });
+  const reviewCommentJson = (repo: FakeRepository) => (c: FakeReviewComment) => {
+    const shape = githubShape(
+      c.inReplyToId === null ? 'pull_request_review_comment' : 'pull_request_review_comment_reply',
+    );
+    const createdAt = c.createdAt ?? shape['created_at'];
+    return {
+      ...shape,
+      id: c.id,
+      node_id: reviewCommentNodeId(c.id),
+      body: c.body,
+      path: c.path,
+      commit_id: c.commitId,
+      original_commit_id: c.commitId,
+      line: c.line,
+      original_line: c.line,
+      start_line: c.startLine,
+      original_start_line: c.startLine,
+      start_side: c.startLine === null ? null : 'RIGHT',
+      side: c.side,
+      user: c.user,
+      created_at: createdAt,
+      updated_at: createdAt,
+      html_url: `${webBase()}/${repo.owner}/${repo.name}/pull/${c.pull}#discussion_r${c.id}`,
+      performed_via_github_app: c.user.type === 'Bot' ? { id: appId, slug } : null,
+      // GitHub names the thread's first comment on a reply, and has no such field on a first one.
+      ...(c.inReplyToId === null ? {} : { in_reply_to_id: c.inReplyToId }),
+    };
+  };
 
   /** GitHub requires `title` and `summary` in a check run's `output`, when it is sent. */
   const badCheckRunOutput = (output: CheckRunBody['output']): string | null => {
@@ -638,6 +684,7 @@ export async function createFakeGitHub(
       commitId: pull.headSha,
       user: { login: `${slug}[bot]`, id: 41898282, type: 'Bot' },
       inReplyToId: null,
+      createdAt: stamp(),
     };
     fake.reviewComments.push(created);
     fake.reviewThreads.push({
@@ -1133,6 +1180,24 @@ export async function createFakeGitHub(
         return deny(res, 422, 'Validation Failed');
       }
       return send(res, 201, reviewCommentJson(repo)(startThread(repo, pull, b)));
+    }
+    const reviewReplies = /^\/pulls\/(\d+)\/comments\/(\d+)\/replies$/.exec(rest);
+    if (reviewReplies && method === 'POST') {
+      if (!need('pull_requests', 'write')) return forbidden();
+      const first = fake.reviewComments.find(
+        (c) =>
+          c.id === Number(reviewReplies[2]) &&
+          c.repoId === repo.id &&
+          c.pull === Number(reviewReplies[1]),
+      );
+      const thread = fake.reviewThreads.find((t) => t.commentIds[0] === first?.id);
+      // A reply is no first comment: a thread takes no reply to it, as for a comment GitHub lacks.
+      if (!first || !thread || first.inReplyToId !== null) return deny(res, 404, 'Not Found');
+      const b = json() as { body?: unknown };
+      if (typeof b.body !== 'string' || b.body === '' || b.body.length > 65_536)
+        return deny(res, 422, 'Validation Failed');
+      const bot = { login: `${slug}[bot]`, id: 41898282, type: 'Bot' } as const;
+      return send(res, 201, reviewCommentJson(repo)(addReply(first, thread, bot, b.body)));
     }
     const pullReviews = /^\/pulls\/(\d+)\/reviews$/.exec(rest);
     if (pullReviews && method === 'POST') {

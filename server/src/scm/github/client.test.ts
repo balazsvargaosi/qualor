@@ -679,6 +679,248 @@ describe('GitHub REST client (github.md §4–§6)', () => {
     expect(everything).not.toMatch(/eyJ[A-Za-z0-9_-]+\./);
   });
 
+  describe('replies in a review thread', () => {
+    let nextPull = 300;
+    /** The clock as GitHub writes it in `created_at`: UTC, to the second. */
+    const stamp = (ms: number) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
+
+    /** A pull request of its own, with a review comment of the App: the first of a thread. */
+    const threadOn = async () => {
+      const number = nextPull++;
+      fake.addPull(424242, {
+        number,
+        title: `Replies ${number}`,
+        state: 'open',
+        headSha: SHA,
+        baseSha: 'b'.repeat(40),
+        files: [{ filename: 'f.ts', patch: '@@ -0,0 +1 @@\n+x' }],
+      });
+      const author = clientFor();
+      await author.useRepository(REPO);
+      const first = await author.createReviewComment(String(number), {
+        body: '<!-- qualor:issue 1 -->\nIssue one',
+        commitId: SHA,
+        path: 'f.ts',
+        line: 1,
+      });
+      if (first === 'position_rejected') throw new Error('the fake refused the position');
+      // Pacing waited before the request, so the clock now is the fake's time of the comment.
+      return { number: String(number), first, firstAt: stamp(clock) };
+    };
+
+    it("a reply to a review comment uses its first comment's id", async () => {
+      const { number, first } = await threadOn();
+      const client = clientFor();
+      await client.useRepository(REPO);
+      fake.clearRequests();
+      const reply = await client.replyToReviewComment(
+        number,
+        first.id,
+        'That guard is on purpose.',
+      );
+      expect(fake.requests.map((r) => `${r.method} ${r.path}`)).toEqual([
+        `POST /repos/acme/api/pulls/${number}/comments/${first.id}/replies`,
+      ]);
+      expect(JSON.parse(fake.requests[0]?.body ?? '{}')).toEqual({
+        body: 'That guard is on purpose.',
+      });
+      expect(reply).toMatchObject({
+        body: 'That guard is on purpose.',
+        in_reply_to_id: first.id,
+        path: 'f.ts',
+        user: { login: `${fake.slug}[bot]`, type: 'Bot' },
+      });
+      // The thread keeps its first comment and gains the reply, which starts no thread of its own.
+      expect(
+        fake.reviewThreads.filter((t) => t.pull === Number(number)).map((t) => t.commentIds),
+      ).toEqual([[first.id, reply.id]]);
+      const listed = await client.reviewComments(number, 5);
+      expect(listed.items.map((c) => [c.id, c.in_reply_to_id ?? null])).toEqual([
+        [first.id, null],
+        [reply.id, first.id],
+      ]);
+    });
+
+    it('refuses a comment id and a pull request id it would not put into a path, before any request', async () => {
+      const { number, first } = await threadOn();
+      const client = clientFor();
+      await client.useRepository(REPO);
+      fake.clearRequests();
+      for (const id of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53]) {
+        const err = await failure(client.replyToReviewComment(number, id, 'x'));
+        expect([err.kind, err.reason, err.message], String(id)).toEqual([
+          'refused',
+          'invalid_input',
+          GITHUB_TEXT.id,
+        ]);
+      }
+      for (const pull of ['', 'pr-7', '7/../x', '1e3', '12345678901']) {
+        const err = await failure(client.replyToReviewComment(pull, first.id, 'x'));
+        expect([err.reason, err.message], pull).toEqual(['invalid_input', GITHUB_TEXT.prNumber]);
+      }
+      expect(fake.requests).toHaveLength(0);
+    });
+
+    it('a 404 is not_found', async () => {
+      const { number, first } = await threadOn();
+      const other = await threadOn();
+      const client = clientFor();
+      await client.useRepository(REPO);
+      const reply = await client.replyToReviewComment(number, first.id, 'one reply');
+      fake.clearRequests();
+      const tries = [
+        ['a comment GitHub does not have', number, first.id + 1_000_000],
+        ['a reply: GitHub takes no reply to a reply', number, reply.id],
+        ['a comment of another pull request', number, other.first.id],
+        ['a pull request GitHub does not have', '99999', first.id],
+      ] as const;
+      for (const [label, pull, id] of tries) {
+        const err = await failure(client.replyToReviewComment(pull, id, 'x'));
+        expect([err.kind, err.status, err.message], label).toEqual([
+          'not_found',
+          404,
+          GITHUB_TEXT.notFound,
+        ]);
+      }
+      expect(fake.requests).toHaveLength(tries.length); // each tried once
+      expect(
+        fake.reviewComments.filter((c) => c.pull === Number(number) && c.inReplyToId !== null),
+      ).toHaveLength(1); // only the reply made before
+    });
+
+    it("both requests count against the client's budget", async () => {
+      const { number, first } = await threadOn();
+      const tokens = new InstallationTokenCache(() => clock);
+      await clientFor({ tokens }).useRepository(REPO); // a token, now cached
+      const probe = clientFor({ tokens });
+      await probe.useRepository(REPO);
+      const setup = probe.requests;
+      const pacer = new SpyPacer(
+        () => clock,
+        async (ms) => void (clock += ms),
+      );
+      const client = clientFor({ tokens, pacer, maxRequests: setup + 2 });
+      await client.useRepository(REPO);
+      fake.clearRequests();
+      await client.replyToReviewComment(number, first.id, 'one');
+      await client.replyToReviewComment(number, first.id, 'two');
+      expect(client.requests).toBe(setup + 2);
+      const refused = await failure(client.replyToReviewComment(number, first.id, 'three'));
+      expect([refused.kind, refused.message]).toEqual(['budget', GITHUB_TEXT.budget]);
+      expect(client.requests).toBe(setup + 2);
+      expect(fake.requests.map((r) => r.method)).toEqual(['POST', 'POST']);
+      // A reply is a mutation: it waits for its turn like every other.
+      expect(pacer.waits).toHaveLength(2);
+    });
+
+    it('created_at is read from review comments and issue comments', async () => {
+      const { number, first, firstAt } = await threadOn();
+      const client = clientFor();
+      await client.useRepository(REPO);
+      expect(first.created_at).toBe(firstAt);
+      // The fake's clock dates every comment it makes, and a reply has a date of its own.
+      clock += 60_000;
+      const asked = fake.addComment(424242, Number(number), {
+        body: 'qualor review',
+        login: 'octocat',
+      });
+      const askedAt = stamp(clock);
+      clock += 90_000;
+      const reply = fake.replyToReviewComment(424242, Number(number), first.id, {
+        body: 'Why?',
+        login: 'octocat',
+      });
+      const replyAt = stamp(clock);
+      expect(new Set([firstAt, askedAt, replyAt]).size).toBe(3);
+      const reviewComments = await client.reviewComments(number, 5);
+      expect(reviewComments.items.map((c) => [c.id, c.created_at])).toEqual([
+        [first.id, firstAt],
+        [reply.id, replyAt],
+      ]);
+      const issueComments = await client.issueComments(number, 5);
+      expect(issueComments.items.map((c) => [c.id, c.created_at])).toEqual([[asked.id, askedAt]]);
+      // GitHub dates every comment: one without a date is not understood.
+      const withoutDate = (shape: string) =>
+        Object.fromEntries(
+          Object.entries(githubShape(shape)).filter(([key]) => key !== 'created_at'),
+        );
+      fake.inject('GET', new RegExp(`/pulls/${number}/comments$`), {
+        status: 200,
+        body: [withoutDate('pull_request_review_comment')],
+      });
+      fake.inject('GET', new RegExp(`/issues/${number}/comments$`), {
+        status: 200,
+        body: [withoutDate('issue_comment')],
+      });
+      for (const read of [
+        () => client.reviewComments(number, 1),
+        () => client.issueComments(number, 1),
+      ]) {
+        const err = await failure(read());
+        expect([err.kind, err.message]).toEqual(['bad_answer', GITHUB_TEXT.badAnswer]);
+      }
+    });
+
+    it('is served by a fake that answers a reply as GitHub does, and takes its injected answers', async () => {
+      const { number, first } = await threadOn();
+      const client = clientFor();
+      await client.useRepository(REPO);
+      const [token] = [...fake.tokens.keys()].slice(-1);
+      const post = (
+        id: number,
+        body: string,
+        headers: Record<string, string> = { authorization: `Bearer ${token!}` },
+      ) =>
+        fetch(`${fake.url}/repos/acme/api/pulls/${number}/comments/${id}/replies`, {
+          method: 'POST',
+          headers: { 'user-agent': 'test', ...headers },
+          body,
+        });
+      const replies = () =>
+        fake.reviewComments.filter((c) => c.pull === Number(number) && c.inReplyToId !== null);
+      expect((await post(first.id, '{"body":"x"}', {})).status).toBe(401);
+      expect((await post(first.id, '{not json')).status).toBe(400);
+      const refused = [
+        '{}',
+        '{"body":""}',
+        '{"body":5}',
+        JSON.stringify({ body: 'x'.repeat(65_537) }),
+      ];
+      for (const body of refused) expect((await post(first.id, body)).status, body).toBe(422);
+      expect((await post(first.id + 1_000_000, '{"body":"x"}')).status).toBe(404);
+      // Writing needs the pull requests permission.
+      const grant = fake.tokens.get(token!)!;
+      grant.permissions = { metadata: 'read', checks: 'write', pull_requests: 'read' };
+      expect((await post(first.id, '{"body":"x"}')).status).toBe(403);
+      grant.permissions = { metadata: 'read', checks: 'write', pull_requests: 'write' };
+      expect(replies()).toHaveLength(0);
+      // The answer is the recorded reply: its fields, a review comment of the App naming the first.
+      const created = await post(first.id, '{"body":"x"}');
+      expect(created.status).toBe(201);
+      const answer = (await created.json()) as Record<string, unknown>;
+      expect(Object.keys(answer).sort()).toEqual(
+        Object.keys(githubShape('pull_request_review_comment_reply')).sort(),
+      );
+      expect(GITHUB_SHAPES.reviewCommentReply.safeParse(answer).success).toBe(true);
+      expect(answer).toMatchObject({
+        body: 'x',
+        in_reply_to_id: first.id,
+        user: { login: `${fake.slug}[bot]`, type: 'Bot' },
+      });
+      expect(replies()).toHaveLength(1);
+      // Through the client: a refused body is a 422, and the fake's injected answers reach the route.
+      const blank = await failure(client.replyToReviewComment(number, first.id, ''));
+      expect([blank.kind, blank.status]).toEqual(['refused', 422]);
+      fake.inject('POST', /\/comments\/\d+\/replies$/, {
+        status: 403,
+        body: { message: 'Resource not accessible by integration' },
+      });
+      const forbidden = await failure(client.replyToReviewComment(number, first.id, 'y'));
+      expect([forbidden.kind, forbidden.reason]).toEqual(['auth', 'permission_missing']);
+      expect(replies()).toHaveLength(1);
+    });
+  });
+
   describe('review threads over GraphQL (github.md §6.4, ruling R6)', () => {
     const GRAPHQL = /^\/api\/graphql$/;
     let nextPull = 100;
@@ -1266,6 +1508,7 @@ describe('recorded shapes', () => {
       issueComment: 'issue_comment',
       issueComments: 'issue_comments',
       reviewComment: 'pull_request_review_comment',
+      reviewCommentReply: 'pull_request_review_comment_reply',
       review: 'pull_request_review',
       reviewThreads: 'graphql_review_threads',
       resolveThread: 'graphql_resolve_thread',
@@ -1274,5 +1517,14 @@ describe('recorded shapes', () => {
     expect(
       GITHUB_SHAPES[key as keyof typeof GITHUB_SHAPES].safeParse(githubShape(file)).success,
     ).toBe(true);
+  });
+
+  it('records a reply as a review comment that names the first comment of its thread', () => {
+    const first = githubShape('pull_request_review_comment');
+    const reply = githubShape('pull_request_review_comment_reply');
+    expect(reply['in_reply_to_id']).toBe(first['id']);
+    expect(reply['id']).not.toBe(first['id']);
+    expect(reply['node_id']).not.toBe(first['node_id']);
+    expect(reply['path']).toBe(first['path']);
   });
 });

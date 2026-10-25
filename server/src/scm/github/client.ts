@@ -154,13 +154,15 @@ const comment = z.looseObject({
   id: z.number().int(),
   body: z.string().nullable(),
   user: z.looseObject({ login: z.string(), type: z.string() }).nullable(),
+  /** When GitHub made the comment (ISO 8601): commands count by their age. */
+  created_at: z.string(),
 });
 export type GitHubComment = z.infer<typeof comment>;
 /**
  * A pull request review comment (llm.md §8.4): a comment on lines of the diff. `node_id` is the
  * comment's GraphQL id, which ties it to its thread (github.md §6.4); `in_reply_to_id` (the
  * thread's first comment) is a number on a reply only, and absent or null on a first comment
- * (ruling R6).
+ * (ruling R6). `created_at` (ISO 8601) is what replies count by their age.
  */
 const reviewComment = z.looseObject({
   id: z.number().int(),
@@ -170,6 +172,7 @@ const reviewComment = z.looseObject({
   html_url: z.string().optional(),
   in_reply_to_id: z.number().int().nullish(),
   path: z.string().optional(),
+  created_at: z.string(),
 });
 export type GitHubReviewComment = z.infer<typeof reviewComment>;
 /** A pull request review (github.md §6.4): only that GitHub made one is read. */
@@ -231,6 +234,8 @@ export const GITHUB_SHAPES = {
   issueComment: comment,
   issueComments: z.array(comment),
   reviewComment,
+  /** What a reply answers with: a review comment, naming the first comment of its thread. */
+  reviewCommentReply: reviewComment,
   reviewComments: z.array(reviewComment),
   review,
   reviewThreads: z.looseObject({ data: reviewThreadsData }),
@@ -888,6 +893,28 @@ export class GitHubClient {
       if (positionRefused(err)) return 'position_rejected';
       throw err;
     }
+  }
+
+  /**
+   * A reply in the review thread whose first comment is `firstCommentId`: the new review comment,
+   * which names that comment in `in_reply_to_id`. GitHub takes a reply to a thread's first comment
+   * only, never to a reply; it answers a comment it has no such first comment for with 404, which
+   * is `not_found`.
+   */
+  async replyToReviewComment(
+    number: string,
+    firstCommentId: number,
+    body: string,
+  ): Promise<GitHubReviewComment> {
+    if (!Number.isSafeInteger(firstCommentId) || firstCommentId <= 0) {
+      throw this.invalid(GITHUB_TEXT.id);
+    }
+    const { json } = await this.repoCall(
+      'POST',
+      `${this.repoPath()}/pulls/${this.number(number)}/comments/${firstCommentId}/replies`,
+      { body },
+    );
+    return this.parse(reviewComment, json);
   }
 
   /**

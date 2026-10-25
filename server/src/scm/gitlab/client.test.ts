@@ -26,6 +26,15 @@ const SHAPES_DIR = path.resolve(
 );
 const HEAD = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
+/** A diff position on the added line of the merge request the fake serves (src/a.ts, line 2). */
+const POSITION = {
+  baseSha: BASE,
+  startSha: BASE,
+  headSha: HEAD,
+  oldPath: 'src/a.ts',
+  newPath: 'src/a.ts',
+  newLine: 2,
+};
 
 async function failure(promise: Promise<unknown>): Promise<GitLabError> {
   try {
@@ -39,6 +48,8 @@ async function failure(promise: Promise<unknown>): Promise<GitLabError> {
 
 describe('GitLab client (scm.md §4.3) against the fake GitLab', () => {
   let fake: FakeGitLab;
+  /** The fake's clock: what a note it makes gets as `created_at`. */
+  let clock = Date.now();
   const client = (
     overrides: { token?: string; allowInternalHosts?: boolean; maxRequests?: number } = {},
   ) =>
@@ -55,7 +66,7 @@ describe('GitLab client (scm.md §4.3) against the fake GitLab', () => {
     );
 
   beforeAll(async () => {
-    fake = await createFakeGitLab();
+    fake = await createFakeGitLab({ now: () => clock });
     fake.addProject({ id: 7, path: 'acme/payments/api' });
     fake.addPipeline(7, 99001);
     fake.addMergeRequest(7, {
@@ -308,6 +319,182 @@ describe('GitLab client (scm.md §4.3) against the fake GitLab', () => {
     expect(notes().some((n) => n.id === other.id)).toBe(false);
     expect((await failure(c.deleteNote('7', '12', other.id))).kind).toBe('not_found');
     expect((await failure(c.deleteNote('7', '12', 0))).reason).toBe('invalid_input');
+  });
+
+  it('a reply goes into the discussion and comes back as a note', async () => {
+    const c = client();
+    const thread = await c.createDiscussion('7', '12', 'inline issue', POSITION);
+    if (thread === 'position_rejected') throw new Error('expected a discussion');
+    fake.clearRequests();
+    const reply = await c.replyToDiscussion('7', '12', thread.id, 'That guard is on purpose.');
+    expect(reply).toMatchObject({
+      body: 'That guard is on purpose.',
+      system: false,
+      author: { id: fake.botUserId },
+      resolvable: true,
+      resolved: false,
+    });
+    // One POST into the discussion, carrying the text and nothing else.
+    expect(fake.requests.map((r) => `${r.method} ${r.path}`)).toEqual([
+      `POST /projects/7/merge_requests/12/discussions/${thread.id}/notes`,
+    ]);
+    expect(JSON.parse(fake.requests[0]?.body ?? '{}')).toEqual({
+      body: 'That guard is on purpose.',
+    });
+    // GitLab appends it to that discussion, after the note it answers, and starts none of its own.
+    const discussions = (await c.discussions('7', '12', 50)).items;
+    expect(discussions.filter((d) => d.id === thread.id)).toHaveLength(1);
+    expect(discussions.find((d) => d.id === thread.id)?.notes.map((n) => n.id)).toEqual([
+      thread.notes[0]?.id,
+      reply.id,
+    ]);
+    // A person's plain note is a discussion of its own, which a reply joins just the same.
+    const theirs = fake.addNote(7, 12, { body: 'qualor review', authorId: 5 });
+    const answer = await c.replyToDiscussion('7', '12', theirs.id, 'Reviewing this commit.');
+    expect(
+      fake
+        .discussions(7, 12)
+        .find((d) => d.id === theirs.id)
+        ?.notes.map((n) => n.id),
+    ).toEqual([theirs.notes[0]?.id, answer.id]);
+  });
+
+  it('a 404 is not_found', async () => {
+    const c = client();
+    // A discussion the merge request does not have (deleted, or another merge request's) ...
+    expect(await failure(c.replyToDiscussion('7', '12', 'f'.repeat(40), 'x'))).toMatchObject({
+      kind: 'not_found',
+      status: 404,
+    });
+    // ... and a merge request or a project the token cannot see, as for every request.
+    expect((await failure(c.replyToDiscussion('7', '99', 'f'.repeat(40), 'x'))).kind).toBe(
+      'not_found',
+    );
+    expect((await failure(c.replyToDiscussion('nope/nope', '12', 'f'.repeat(40), 'x'))).kind).toBe(
+      'not_found',
+    );
+    expect(fake.requests).toHaveLength(3); // each tried once
+  });
+
+  it("both requests count against the client's budget", async () => {
+    const theirs = fake.addNote(7, 12, { body: 'qualor review', authorId: 5 });
+    const small = client({ maxRequests: 2 });
+    await small.replyToDiscussion('7', '12', theirs.id, 'one');
+    await small.replyToDiscussion('7', '12', theirs.id, 'two');
+    expect(small.requests).toBe(2);
+    expect(await failure(small.replyToDiscussion('7', '12', theirs.id, 'three'))).toMatchObject({
+      kind: 'budget',
+    });
+    expect(small.requests).toBe(2);
+    expect(fake.requests).toHaveLength(2);
+    expect(
+      fake
+        .discussions(7, 12)
+        .find((d) => d.id === theirs.id)
+        ?.notes.map((n) => n.body),
+    ).toEqual(['qualor review', 'one', 'two']);
+  });
+
+  it("created_at and the author's username are read", async () => {
+    const c = client();
+    clock = Date.parse('2026-10-25T08:00:00.000Z');
+    const theirs = fake.addNote(7, 12, { body: 'a question', authorId: 5 });
+    clock += 90_000;
+    const reply = await c.replyToDiscussion('7', '12', theirs.id, 'an answer');
+    expect(reply).toMatchObject({
+      created_at: '2026-10-25T08:01:30.000Z',
+      author: { id: fake.botUserId, username: 'project_7_bot_4b1e2c' },
+    });
+    const listed = (await c.discussions('7', '12', 50)).items.find((d) => d.id === theirs.id);
+    expect(listed?.notes.map((n) => [n.author.username, n.created_at])).toEqual([
+      ['user5', '2026-10-25T08:00:00.000Z'],
+      ['project_7_bot_4b1e2c', '2026-10-25T08:01:30.000Z'],
+    ]);
+    // GitLab sends both on every note: a note without either is not understood.
+    const recorded = gitlabShape<Record<string, unknown>>('note');
+    const withoutDate = Object.fromEntries(
+      Object.entries(recorded).filter(([key]) => key !== 'created_at'),
+    );
+    for (const body of [withoutDate, { ...recorded, author: { id: fake.botUserId } }]) {
+      fake.inject('POST', /\/discussions\/[0-9a-f]+\/notes$/, { status: 201, body });
+      expect((await failure(c.replyToDiscussion('7', '12', theirs.id, 'x'))).kind).toBe(
+        'bad_answer',
+      );
+    }
+  });
+
+  it('checks the discussion id before putting it into a path', async () => {
+    const c = client();
+    const malformed = [
+      '',
+      'G'.repeat(40),
+      'ABCDEF',
+      '../notes',
+      'a/../../x',
+      'a?x=1',
+      '1 2',
+      '1\n',
+    ];
+    for (const id of [...malformed, 'a'.repeat(65)]) {
+      expect(await failure(c.replyToDiscussion('7', '12', id, 'x')), id).toMatchObject({
+        kind: 'refused',
+        reason: 'invalid_input',
+      });
+    }
+    // The merge request id is checked as everywhere.
+    expect((await failure(c.replyToDiscussion('7', '12/../x', 'a'.repeat(40), 'x'))).reason).toBe(
+      'invalid_input',
+    );
+    expect(fake.requests).toHaveLength(0);
+    // The shortest and the longest well-formed ids reach GitLab, which has no such discussion.
+    for (const id of ['a', 'a'.repeat(64)]) {
+      expect((await failure(c.replyToDiscussion('7', '12', id, 'x'))).kind, id).toBe('not_found');
+    }
+  });
+
+  it('is served by a fake that answers a reply as GitLab does, and takes its injected answers', async () => {
+    const c = client();
+    const thread = await c.createDiscussion('7', '12', 'inline', POSITION);
+    if (thread === 'position_rejected') throw new Error('expected a discussion');
+    const notesOf = () => fake.discussions(7, 12).find((d) => d.id === thread.id)?.notes ?? [];
+    const post = (body: string, token = fake.token, id = thread.id) =>
+      fetch(`${fake.url}/api/v4/projects/7/merge_requests/12/discussions/${id}/notes`, {
+        method: 'POST',
+        headers: { 'private-token': token, 'content-type': 'application/json' },
+        body,
+      });
+    expect((await post('{"body":"x"}', 'glpat-wrong')).status).toBe(401);
+    expect((await post('{not json')).status).toBe(400);
+    expect((await post('{}')).status).toBe(400);
+    expect((await post('{"body":""}')).status).toBe(400);
+    expect((await post('{"body":"x"}', fake.token, 'f'.repeat(40))).status).toBe(404);
+    expect(notesOf()).toHaveLength(1);
+    // The fake's injected answers reach the new route too, and are mapped as for any request.
+    fake.inject(
+      'POST',
+      /\/discussions\/[0-9a-f]+\/notes$/,
+      { status: 403 },
+      { status: 429, headers: { 'retry-after': '7' } },
+    );
+    expect(await failure(c.replyToDiscussion('7', '12', thread.id, 'x'))).toMatchObject({
+      kind: 'auth',
+      reason: 'permission_missing',
+      status: 403,
+      message: GITLAB_FORBIDDEN.request,
+    });
+    expect(await failure(c.replyToDiscussion('7', '12', thread.id, 'x'))).toMatchObject({
+      kind: 'rate_limited',
+      retryAfterSeconds: 7,
+    });
+    expect(notesOf()).toHaveLength(1);
+    // A reply in a resolved thread is created resolved, by its author, so the thread stays
+    // resolved (seen on GitLab CE 18.11.11, scm.md §11).
+    await c.resolveDiscussion('7', '12', thread.id, true);
+    expect(await c.replyToDiscussion('7', '12', thread.id, 'late')).toMatchObject({
+      resolved: true,
+      resolved_by: { id: fake.botUserId },
+    });
+    expect(notesOf().map((n) => n.body)).toEqual(['inline', 'late']);
   });
 
   it("reads the token's access level in the project, the higher of project and group", async () => {

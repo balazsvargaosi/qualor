@@ -16,7 +16,9 @@ import { fileURLToPath } from 'node:url';
  * a final state posted again is a new row, and the row it replaces is `retried`), edits only of
  * the token's own notes, deletes of other users' notes only for a Maintainer (the token's access
  * level, which `GET /projects/:id` reports in `permissions`), and pagination with `x-next-page`. A resolved note carries `resolved_by`
- * (the token's user, or whoever `resolveAs` names), as GitLab's discussions API returns it.
+ * (the token's user, or whoever `resolveAs` names), as GitLab's discussions API returns it. A reply
+ * (`POST …/discussions/:id/notes`) joins its discussion as the token's user, and every note carries
+ * `created_at` and `updated_at` read from the fake's clock (`now`) when it was made.
  *
  * Where each shape comes from. They were written from GitLab's REST v4 API documentation (the
  * example answers of the pages below, GitLab 18.x/19.x) with Qualor's example values, not captured
@@ -90,6 +92,11 @@ export interface FakeNote {
   /** Who resolved the note (GitLab's `resolved_by`); unset or null while it is open. */
   resolvedBy?: number | null;
   position: Record<string, unknown> | null;
+  /**
+   * When the note was made, as ISO 8601 (GitLab's `created_at`): the fake's clock when it made
+   * it. A note built by hand without it is dated as the recorded shape is.
+   */
+  createdAt?: string;
 }
 
 export interface FakeDiscussion {
@@ -217,10 +224,13 @@ function send(
 }
 
 export async function createFakeGitLab(
-  options: { token?: string; botUserId?: number } = {},
+  options: { token?: string; botUserId?: number; now?: () => number } = {},
 ): Promise<FakeGitLab> {
   const token = options.token ?? `glpat-${randomBytes(12).toString('hex')}`;
   const botUserId = options.botUserId ?? 42;
+  const now = options.now ?? Date.now;
+  /** The fake's clock as GitLab writes it in `created_at`: ISO 8601 in UTC, with milliseconds. */
+  const stamp = () => new Date(now()).toISOString();
   let accessLevel = 30;
   const projects = new Map<number, FakeProject>();
   const requests: RecordedRequest[] = [];
@@ -257,26 +267,54 @@ export async function createFakeGitLab(
     if (/^\d+$/.test(ref)) return projects.get(Number(ref));
     return [...projects.values()].find((p) => p.path === ref);
   };
-  const noteJson = (note: FakeNote) => ({
-    ...(note.position ? diffNoteShape : noteShape),
-    id: note.id,
-    body: note.body,
-    author: author(note.authorId),
-    resolvable: note.resolvable,
-    ...(note.resolvable
-      ? {
-          resolved: note.resolved,
-          resolved_by:
-            note.resolved && typeof note.resolvedBy === 'number' ? author(note.resolvedBy) : null,
-        }
-      : {}),
-    ...(note.position ? { position: note.position, type: 'DiffNote' } : { type: null }),
-  });
+  const noteJson = (note: FakeNote) => {
+    const shape = note.position ? diffNoteShape : noteShape;
+    // A note not edited since it was made: `updated_at` is `created_at`, as GitLab has it.
+    const createdAt = note.createdAt ?? shape['created_at'];
+    return {
+      ...shape,
+      id: note.id,
+      body: note.body,
+      author: author(note.authorId),
+      created_at: createdAt,
+      updated_at: createdAt,
+      resolvable: note.resolvable,
+      ...(note.resolvable
+        ? {
+            resolved: note.resolved,
+            resolved_by:
+              note.resolved && typeof note.resolvedBy === 'number' ? author(note.resolvedBy) : null,
+          }
+        : {}),
+      ...(note.position ? { position: note.position, type: 'DiffNote' } : { type: null }),
+    };
+  };
   const discussionJson = (d: FakeDiscussion) => ({
     id: d.id,
     individual_note: d.individualNote,
     notes: d.notes.map(noteJson),
   });
+  /** A reply by `authorId` in `discussion`, which keeps it after its other notes. */
+  const addReply = (discussion: FakeDiscussion, body: string, authorId: number): FakeNote => {
+    // GitLab: a reply in a resolvable (diff) thread is resolvable too. It is open in an open
+    // thread; in a resolved thread it is created resolved, by its own author, so the thread stays
+    // resolved (Notes::BuildService: `note.resolve_without_save(current_user) if
+    // discussion&.resolved?`; seen on GitLab CE 18.11.11, scm.md §11).
+    const resolvable = discussion.notes.some((n) => n.resolvable);
+    const threadResolved = resolvable && discussion.notes.every((n) => !n.resolvable || n.resolved);
+    const note: FakeNote = {
+      id: nextNoteId++,
+      body,
+      authorId,
+      resolvable,
+      resolved: threadResolved,
+      ...(threadResolved ? { resolvedBy: authorId } : {}),
+      position: null,
+      createdAt: stamp(),
+    };
+    discussion.notes.push(note);
+    return note;
+  };
   const mrJson = (project: FakeProject, mr: FakeMergeRequest) => {
     const json: Record<string, unknown> = {
       ...(mrShape as Record<string, unknown>),
@@ -497,6 +535,7 @@ export async function createFakeGitLab(
         resolvable: false,
         resolved: false,
         position: null,
+        createdAt: stamp(),
       };
       discussions.push({
         id: randomBytes(20).toString('hex'),
@@ -551,6 +590,7 @@ export async function createFakeGitLab(
         resolvable: true,
         resolved: false,
         position: { ...position, old_line: null, line_range: null },
+        createdAt: stamp(),
       };
       const discussion = {
         id: randomBytes(20).toString('hex'),
@@ -559,6 +599,19 @@ export async function createFakeGitLab(
       };
       discussions.push(discussion);
       return send(res, 201, discussionJson(discussion));
+    }
+    if (
+      req.method === 'POST' &&
+      tail[0] === 'discussions' &&
+      tail[2] === 'notes' &&
+      tail.length === 3
+    ) {
+      const discussion = discussions.find((d) => d.id === tail[1]);
+      if (!discussion) return send(res, 404, { message: '404 Discussion Not Found' });
+      if (typeof json['body'] !== 'string' || json['body'] === '') {
+        return send(res, 400, { message: { body: ["can't be blank"] } });
+      }
+      return send(res, 201, noteJson(addReply(discussion, json['body'], botUserId)));
     }
     if (req.method === 'PUT' && tail[0] === 'discussions' && tail.length === 2) {
       const discussion = discussions.find((d) => d.id === tail[1]);
@@ -633,7 +686,15 @@ export async function createFakeGitLab(
         id: randomBytes(20).toString('hex'),
         individualNote: true,
         notes: [
-          { id: nextNoteId++, body, authorId, resolvable: false, resolved: false, position: null },
+          {
+            id: nextNoteId++,
+            body,
+            authorId,
+            resolvable: false,
+            resolved: false,
+            position: null,
+            createdAt: stamp(),
+          },
         ],
       };
       list.push(discussion);
@@ -644,24 +705,7 @@ export async function createFakeGitLab(
         (d) => d.id === discussionId,
       );
       if (!discussion) throw new Error(`fake GitLab: no discussion ${discussionId}`);
-      // GitLab: a reply in a resolvable (diff) thread is resolvable too. It is open in an open
-      // thread; in a resolved thread it is created resolved, by its own author, so the thread stays
-      // resolved (Notes::BuildService: `note.resolve_without_save(current_user) if
-      // discussion&.resolved?`; seen on GitLab CE 18.11.11, scm.md §11).
-      const resolvable = discussion.notes.some((n) => n.resolvable);
-      const threadResolved =
-        resolvable && discussion.notes.every((n) => !n.resolvable || n.resolved);
-      const note: FakeNote = {
-        id: nextNoteId++,
-        body,
-        authorId,
-        resolvable,
-        resolved: threadResolved,
-        ...(threadResolved ? { resolvedBy: authorId } : {}),
-        position: null,
-      };
-      discussion.notes.push(note);
-      return note;
+      return addReply(discussion, body, authorId);
     },
     resolveAs(projectId, iid, discussionId, userId, resolved) {
       const discussion = (projectOf(projectId).discussions.get(iid) ?? []).find(
