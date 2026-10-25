@@ -536,7 +536,7 @@ function chatToolsProblem(models: readonly string[] | undefined, json: unknown):
   if (typeof model !== 'string' || !models.includes(model)) return null;
   if (!Array.isArray(tools) || tools.length === 0) return null;
   return openAiProblem(
-    `Function tools with reasoning_effort are not supported for ${model} in /v1/chat/completions. Please use /v1/responses or set reasoning_effort to 'none'.`,
+    `Function tools with reasoning_effort are not supported for ${model} in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'.`,
     null,
     null,
   );

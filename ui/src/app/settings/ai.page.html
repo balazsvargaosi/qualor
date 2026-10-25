@@ -410,32 +410,34 @@
           </div>
         }
         @if (kind() !== 'anthropic') {
-          <div class="setting-row">
-            <div class="setting-text">
-              <label for="ai-api" i18n="@@ai.settings.api">API</label>
-              <p id="ai-api-hint" i18n="@@ai.settings.apiHint">
-                The newest OpenAI models take tools only through the Responses API.
-              </p>
+          @if (kind() === 'openai') {
+            <div class="setting-row">
+              <div class="setting-text">
+                <label for="ai-api" i18n="@@ai.settings.api">API</label>
+                <p id="ai-api-hint" i18n="@@ai.settings.apiHint">
+                  The newest OpenAI models take tools only through the Responses API.
+                </p>
+              </div>
+              <div class="setting-field">
+                <select id="ai-api" aria-describedby="ai-api-hint" (change)="setApi($event)">
+                  <option
+                    value="chat_completions"
+                    [selected]="openAiApi() === 'chat_completions'"
+                    i18n="@@ai.settings.apiChatCompletions"
+                  >
+                    Chat Completions
+                  </option>
+                  <option
+                    value="responses"
+                    [selected]="openAiApi() === 'responses'"
+                    i18n="@@ai.settings.apiResponses"
+                  >
+                    Responses
+                  </option>
+                </select>
+              </div>
             </div>
-            <div class="setting-field">
-              <select id="ai-api" aria-describedby="ai-api-hint" (change)="setApi($event)">
-                <option
-                  value="chat_completions"
-                  [selected]="openAiApi() === 'chat_completions'"
-                  i18n="@@ai.settings.apiChatCompletions"
-                >
-                  Chat Completions
-                </option>
-                <option
-                  value="responses"
-                  [selected]="openAiApi() === 'responses'"
-                  i18n="@@ai.settings.apiResponses"
-                >
-                  Responses
-                </option>
-              </select>
-            </div>
-          </div>
+          }
           <div class="setting-row">
             <div class="setting-text">
               <label for="ai-auth" i18n="@@ai.settings.auth">Key header</label>
@@ -482,7 +484,7 @@
               </select>
             </div>
           </div>
-          @if (openAiApi() === 'chat_completions') {
+          @if (!responsesChosen()) {
             <div class="setting-row">
               <div class="setting-text">
                 <label for="ai-max-tokens-field" i18n="@@ai.settings.maxTokensField"

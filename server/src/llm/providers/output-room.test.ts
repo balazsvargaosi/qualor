@@ -188,9 +188,15 @@ describe('askWithRoom: one call, asked again without the room that a model refus
     ...over,
   });
   /** A refusal of a cap the model has of its own. */
-  const refused = () => new LlmError('rejected', 'refused', 400, null, false, true);
+  const refused = () =>
+    new LlmError('rejected', 'refused', { status: 400, refusedOutputLimit: true });
   /** A refusal of the context window, which the prompt shares with the limit. */
-  const refusedContext = () => new LlmError('rejected', 'refused', 400, null, false, true, true);
+  const refusedContext = () =>
+    new LlmError('rejected', 'refused', {
+      status: 400,
+      refusedOutputLimit: true,
+      refusedContext: true,
+    });
   /** An attempt that is refused above `most` tokens, and records what it was asked for. */
   const attempts = (most: number, asked: number[] = [], refusal = refused) => ({
     asked,
@@ -289,7 +295,7 @@ describe('askWithRoom: one call, asked again without the room that a model refus
     expect(first.asked).toEqual([5_200, 1_200]);
     // And a retry that fails otherwise: its own error, not the refusal.
     const calls: number[] = [];
-    const other = new LlmError('refused_key', 'key', 401);
+    const other = new LlmError('refused_key', 'key', { status: 401 });
     await expect(
       askWithRoom(pair, limits, (tokens) => {
         calls.push(tokens);
@@ -305,9 +311,9 @@ describe('askWithRoom: one call, asked again without the room that a model refus
   it('asks again only for a refusal of the limit', async () => {
     const pair = config();
     const unrelated = [
-      new LlmError('rejected', 'refused', 400),
-      new LlmError('refused_key', 'key', 401),
-      new LlmError('rate_limited', 'slow', 429),
+      new LlmError('rejected', 'refused', { status: 400 }),
+      new LlmError('refused_key', 'key', { status: 401 }),
+      new LlmError('rate_limited', 'slow', { status: 429 }),
       new Error('not a provider error'),
     ];
     for (const error of unrelated) {

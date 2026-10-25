@@ -1093,6 +1093,7 @@ describe('the OpenAI Responses API wire', () => {
         [404, {}, 'rejected', null],
         [500, {}, 'unavailable', null],
         [503, {}, 'unavailable', null],
+        [503, { 'retry-after': '3' }, 'unavailable', 3],
       ])('HTTP %i', async (status, headers, failure, retryAfter) => {
         fake.enqueue({ status, headers, body: llmShape('openai-error') });
         const err = await run().catch((e: unknown) => e);
@@ -1204,8 +1205,11 @@ describe('the OpenAI Responses API wire', () => {
   });
 
   describe('a model that takes function tools only through the Responses API', () => {
-    const WORDS =
-      "Function tools with reasoning_effort are not supported for gpt-6.1-sol in /v1/chat/completions. Please use /v1/responses or set reasoning_effort to 'none'.";
+    // What OpenAI answered on 2026-10-26 to a chat completion with function tools, the same from
+    // gpt-6-luna, gpt-5.6-terra and gpt-6.1-sol but for the model.
+    const real = (model: string) =>
+      `Function tools with reasoning_effort are not supported for ${model} in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'.`;
+    const WORDS = real('gpt-5.6-terra');
     const refuse = (message: string, status = 400) => ({
       status,
       body: { error: { message, type: 'invalid_request_error', param: null, code: null } },
@@ -1230,10 +1234,29 @@ describe('the OpenAI Responses API wire', () => {
     });
 
     it.each([
-      ['the words of the newest models', WORDS],
+      ['the words of gpt-5.6-terra', real('gpt-5.6-terra')],
+      ['the words of gpt-6-luna', real('gpt-6-luna')],
+      ['the words of gpt-6.1-sol', real('gpt-6.1-sol')],
       ['the path without its first slash', 'This model is served at v1/responses only'],
-      ['the other words alone', 'Function tools with reasoning are not supported here.'],
       ['any case', 'USE /V1/RESPONSES INSTEAD'],
+      // The other trigger alone: the words of the message that say tools do not go with reasoning,
+      // with no path to the Responses API in them.
+      [
+        'the real words without the path',
+        "Function tools with reasoning_effort are not supported for gpt-5.6-terra in /v1/chat/completions. To use function tools, set reasoning_effort to 'none'.",
+      ],
+      [
+        'the first sentence of the real words alone',
+        'Function tools with reasoning_effort are not supported for gpt-5.6-terra in /v1/chat/completions.',
+      ],
+      [
+        'those words in another case',
+        'FUNCTION TOOLS WITH REASONING_EFFORT are not supported here.',
+      ],
+      [
+        'the same words of a model that has no effort',
+        'Function tools with reasoning are not supported here.',
+      ],
     ])('is named by %s', async (_what, message) => {
       fake.enqueue(refuse(message));
       expect(await converse(chat, fake.apiKey, start, http).catch((e: unknown) => e)).toMatchObject(
@@ -1251,6 +1274,14 @@ describe('the OpenAI Responses API wire', () => {
         'Streaming responses are not supported with tools',
       ],
       ['a path that only starts like it', 'See /v1/responses_api_notes'],
+      [
+        'a refusal of function tools for another reason',
+        'Function tools with strict mode are not supported for this model.',
+      ],
+      [
+        'words that only start like the phrase',
+        'Function tools with reasoning_summary are not supported for this model.',
+      ],
     ])('is not named by %s', async (_what, message) => {
       fake.enqueue(refuse(message));
       expect(await converse(chat, fake.apiKey, start, http).catch((e: unknown) => e)).toMatchObject(

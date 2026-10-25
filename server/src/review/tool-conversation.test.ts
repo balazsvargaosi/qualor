@@ -395,7 +395,10 @@ describe('converseOverTools', () => {
   });
 
   it('does not read a refusal as a lack of tool calling when no tools were sent', async () => {
-    const refused = new LlmError('rejected', 'The provider refused the request', 400, null, true);
+    const refused = new LlmError('rejected', 'The provider refused the request', {
+      status: 400,
+      refusedTools: true,
+    });
     for (const tools of [true, false]) {
       const reader = memorySnapshot();
       const policy = newToolPolicy({
@@ -532,7 +535,12 @@ describe('converseOverTools', () => {
       send: () => {
         sends += 1;
         controller.abort();
-        return Promise.reject(new LlmError('rate_limited', 'The provider is limiting', 429, 60));
+        return Promise.reject(
+          new LlmError('rate_limited', 'The provider is limiting', {
+            status: 429,
+            retryAfterSeconds: 60,
+          }),
+        );
       },
       shouldStop: () => Promise.resolve(controller.signal.aborted),
       signal: controller.signal,

@@ -202,6 +202,7 @@ describe('callProvider (llm.md §2, §4, §14)', () => {
     [307, { location: '/v1/chat/completions' }, 'rejected', null],
     [500, {}, 'unavailable', null],
     [529, {}, 'unavailable', null],
+    [503, { 'retry-after': '3' }, 'unavailable', 3],
   ])('classifies HTTP %i', async (status, headers, failure, retryAfter) => {
     fake.enqueue({ status, headers, body: llmShape('openai-error') });
     const err = await callProvider(openai, fake.apiKey, call, http).catch((e: unknown) => e);

@@ -273,6 +273,14 @@ export class AiSettingsPage {
 
   protected readonly provider = computed(() => this.settings()?.provider ?? null);
   /**
+   * The Responses API is chosen for an OpenAI-compatible provider: its limit is always
+   * `max_output_tokens`, so the settings' output limit field is not shown. The choice is the OpenAI
+   * kind's alone.
+   */
+  protected readonly responsesChosen = computed(
+    () => this.kind() === 'openai' && this.openAiApi() === 'responses',
+  );
+  /**
    * A tier's model as typed, when it has one of its own: only such a tier has prices of its own, so
    * only its price fields are shown. With the kind None there is no provider and so no model of a
    * tier: no price of a tier is shown or sent, which the server would refuse.

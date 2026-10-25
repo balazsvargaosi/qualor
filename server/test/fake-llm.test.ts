@@ -698,7 +698,7 @@ describe('fake LLM', () => {
         const body = (await refused.json()) as { error: { message: string; type: string } };
         expect(body.error.type).toBe('invalid_request_error');
         expect(body.error.message).toBe(
-          "Function tools with reasoning_effort are not supported for sol-model in /v1/chat/completions. Please use /v1/responses or set reasoning_effort to 'none'.",
+          "Function tools with reasoning_effort are not supported for sol-model in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'.",
         );
         // No tools, or another model: answered, and the refusal took no scripted reply.
         expect(await (await chat('sol-model', {})).json()).toEqual({ queued: true });

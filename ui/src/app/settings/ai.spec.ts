@@ -2006,6 +2006,23 @@ describe('AiSettingsPage: the OpenAI Responses API (6I-4)', () => {
       expect(root.textContent).not.toContain('Chat Completions');
     });
 
+    it('is a setting of the OpenAI kind alone: not while no kind is chosen, nor for Anthropic', async () => {
+      setup();
+      const { fixture, root } = await render();
+      expect(field(root, 'ai-kind').value).toBe('');
+      expect(root.querySelector('#ai-api')).toBeNull();
+      for (const [kind, shown] of [
+        ['openai', true],
+        ['anthropic', false],
+        ['', false],
+        ['openai', true],
+      ] as const) {
+        type(root, '#ai-kind', kind);
+        await settle(fixture);
+        expect(root.querySelector('#ai-api') !== null, `kind ${kind || 'none'}`).toBe(shown);
+      }
+    });
+
     it('shows the stored API', async () => {
       setup(responses);
       const { root } = await render();
@@ -2070,6 +2087,18 @@ describe('AiSettingsPage: the OpenAI Responses API (6I-4)', () => {
       type(root, '#ai-api', 'chat_completions');
       await settle(fixture);
       expect(field(root, 'ai-max-tokens-field').value).toBe('max_tokens');
+    });
+
+    it('leaves the output limit field to a kind that the choice of API is not for: Responses chosen under OpenAI changes nothing once the kind is None', async () => {
+      setup(CONFIGURED);
+      const { fixture, root } = await render();
+      type(root, '#ai-api', 'responses');
+      await settle(fixture);
+      expect(root.querySelector('#ai-max-tokens-field')).toBeNull();
+      type(root, '#ai-kind', '');
+      await settle(fixture);
+      expect(root.querySelector('#ai-api')).toBeNull();
+      expect(root.querySelector('#ai-max-tokens-field')).not.toBeNull();
     });
 
     it('keeps the output limit field the admin set, and sends it, while another API is chosen', async () => {

@@ -113,26 +113,26 @@ export async function postJson(
   const { status } = result;
   const retryAfter = retryAfterSeconds(result.headers);
   if (status === 429) {
-    throw new LlmError(
-      'rate_limited',
-      'The model provider is rate limiting Qualor; try later',
+    throw new LlmError('rate_limited', 'The model provider is rate limiting Qualor; try later', {
       status,
-      retryAfter,
-    );
+      retryAfterSeconds: retryAfter,
+    });
   }
   // Both keep the code `refused_key`; the status (in the text, the Test answer and the log) tells
   // a wrong key (401) from a key that may not do this (403: the model, the workspace, billing).
   if (status === 401) {
-    throw new LlmError('refused_key', 'The provider refused the API key (HTTP 401)', status);
+    throw new LlmError('refused_key', 'The provider refused the API key (HTTP 401)', { status });
   }
   if (status === 403) {
     throw new LlmError(
       'refused_key',
       'The provider refused the request (HTTP 403): the key lacks access to this model, or the account has no credit',
-      status,
+      { status },
     );
   }
-  if (status >= 500) throw new LlmError('unavailable', UNREACHABLE, status, retryAfter);
+  if (status >= 500) {
+    throw new LlmError('unavailable', UNREACHABLE, { status, retryAfterSeconds: retryAfter });
+  }
   if (status < 200 || status >= 300) {
     // Read once, whatever it is checked for.
     const refused = errorOf(result.body);
@@ -142,28 +142,24 @@ export async function postJson(
       config.workspaceId === null &&
       namesMissingWorkspace(refused)
     ) {
-      throw new LlmError('workspace_required', WORKSPACE_REQUIRED_TEXT, status);
+      throw new LlmError('workspace_required', WORKSPACE_REQUIRED_TEXT, { status });
     }
     // Before the refusal of the field: OpenAI names the parameter of a limit that is too large
     // too, and it is the value that is refused then, not the field.
     const limit = status === 400 ? outputLimitRefusal(refused.message) : null;
     if (limit !== null) {
-      throw new LlmError(
-        'rejected',
-        refusedText(status),
+      throw new LlmError('rejected', refusedText(status), {
         status,
-        null,
-        false,
-        true,
-        limit === 'context',
-      );
+        refusedOutputLimit: true,
+        refusedContext: limit === 'context',
+      });
     }
     if (outputLimitField !== undefined && refusedParam(refused) === outputLimitField) {
       const other = outputLimitField === 'max_tokens' ? 'max_completion_tokens' : 'max_tokens';
       throw new LlmError(
         'rejected',
         `The model does not accept ${outputLimitField}; set the output limit field to ${other} in the AI assistant settings`,
-        status,
+        { status },
       );
     }
     // A model that takes tools only through the Responses API says so: the Test passes it on.
@@ -174,32 +170,25 @@ export async function postJson(
       carriesTools(body) &&
       namesResponsesApi(refused)
     ) {
-      throw new LlmError(
-        'rejected',
-        RESPONSES_REQUIRED_TEXT,
+      throw new LlmError('rejected', RESPONSES_REQUIRED_TEXT, {
         status,
-        null,
-        true,
-        false,
-        false,
-        true,
-      );
+        refusedTools: true,
+        needsResponses: true,
+      });
     }
     if (carriesTools(body) && refusesTools(refused)) {
       throw new LlmError(
         'rejected',
         `The provider refused the request (HTTP ${status}): the model or its server does not accept tools`,
-        status,
-        null,
-        true,
+        { status, refusedTools: true },
       );
     }
-    throw new LlmError('rejected', refusedText(status), status);
+    throw new LlmError('rejected', refusedText(status), { status });
   }
   try {
     return JSON.parse(result.body.toString('utf8')) as unknown;
   } catch {
-    throw new LlmError('bad_answer', NOT_UNDERSTOOD, status);
+    throw new LlmError('bad_answer', NOT_UNDERSTOOD, { status });
   }
 }
 
@@ -295,12 +284,16 @@ function refusesTools({ detail, message }: ErrorBody): boolean {
 }
 
 /**
- * What the newest OpenAI models say of function tools asked for through Chat Completions: that they
- * take them through the Responses API ("... use /v1/responses or set reasoning_effort to 'none'"),
- * and that tools do not go with reasoning ("Function tools with reasoning_effort are not
- * supported"). The path is matched whole: not `/v1/responses_api`, nor any word about responses.
+ * What the newest OpenAI models say of function tools asked for through Chat Completions, as
+ * gpt-6-luna, gpt-5.6-terra and gpt-6.1-sol answered on 2026-10-26, the same but for the model:
+ * "Function tools with reasoning_effort are not supported for gpt-5.6-terra in /v1/chat/completions.
+ * To use function tools, use /v1/responses or set reasoning_effort to 'none'." Either of its two
+ * halves is the mark of the message: that tools do not go with reasoning (`reasoning_effort` as it
+ * is worded now, or `reasoning`), or the path to the Responses API, matched whole (not
+ * `/v1/responses_api`, nor any word about responses).
  */
-const RESPONSES_API = /\bv1\/responses(?![\w-])|\bfunction\s+tools\s+with\s+reasoning\b/i;
+const RESPONSES_API =
+  /\bv1\/responses(?![\w-])|\bfunction\s+tools\s+with\s+reasoning(?:_effort)?\b/i;
 
 /**
  * Whether an error body says that the model takes its function tools only through the Responses

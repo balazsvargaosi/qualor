@@ -1739,15 +1739,14 @@ describe('the answer to a reply', () => {
 
   describe('when the provider does not answer', () => {
     it('is a provider error when a call fails for good, and no tools when it refuses them', async () => {
-      const refusedKey = await converse([new LlmError('refused_key', 'The key was refused', 401)]);
+      const refusedKey = await converse([
+        new LlmError('refused_key', 'The key was refused', { status: 401 }),
+      ]);
       expect(refusedKey.decision).toEqual({ failed: 'provider_error' });
-      const refusedTools = new LlmError(
-        'rejected',
-        'The provider refused the request',
-        400,
-        null,
-        true,
-      );
+      const refusedTools = new LlmError('rejected', 'The provider refused the request', {
+        status: 400,
+        refusedTools: true,
+      });
       const noTools = await converse([refusedTools]);
       expect(noTools.decision).toEqual({ failed: 'provider_no_tools' });
       // Not for a conversation that sent no tools: it did not refuse them.
@@ -1820,7 +1819,10 @@ describe('the answer to a reply', () => {
             sends += 1;
             controller.abort();
             return Promise.reject(
-              new LlmError('rate_limited', 'The provider is limiting', 429, 60),
+              new LlmError('rate_limited', 'The provider is limiting', {
+                status: 429,
+                retryAfterSeconds: 60,
+              }),
             );
           },
           {

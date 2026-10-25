@@ -2276,7 +2276,7 @@ describe('runConversation with a scripted provider', () => {
     const twoTurns = () => [callTurn([call('c1')]), callTurn([call('c2'), call('c3')])];
 
     it('a failure carries what was spent before it', async () => {
-      const s = scripted(...twoTurns(), new LlmError('rejected', 'refused', 400));
+      const s = scripted(...twoTurns(), new LlmError('rejected', 'refused', { status: 400 }));
       expect(await runConversation(s.input)).toEqual({
         kind: 'failed',
         reason: 'provider_error',
@@ -2331,7 +2331,9 @@ describe('runConversation with a scripted provider', () => {
       stopped.input.shouldStop = () => Promise.resolve(true);
       expect(await runConversation(stopped.input)).toEqual({ kind: 'stopped', ...none });
 
-      const refused = scripted(new LlmError('rejected', 'refused', 400, null, true));
+      const refused = scripted(
+        new LlmError('rejected', 'refused', { status: 400, refusedTools: true }),
+      );
       expect(await runConversation(refused.input)).toEqual({
         kind: 'failed',
         reason: 'provider_no_tools',
@@ -2358,11 +2360,9 @@ describe('runConversation with a scripted provider', () => {
 
   describe('the input of a call that was not answered', () => {
     const timeout = new LlmError('timeout', 'The model did not answer within 60 s');
-    const unreadable = new LlmError(
-      'bad_answer',
-      'The answer of the provider was not understood',
-      200,
-    );
+    const unreadable = new LlmError('bad_answer', 'The answer of the provider was not understood', {
+      status: 200,
+    });
 
     it('is charged for a call that timed out, and again for the retry that timed out', async () => {
       const s = scripted(timeout, timeout);
@@ -2422,9 +2422,12 @@ describe('runConversation with a scripted provider', () => {
         'an unreachable provider',
         new LlmError('unavailable', 'The model provider could not be reached'),
       ],
-      ['a rate limit', new LlmError('rate_limited', 'limited', 429, 1)],
-      ['a refusal of the key', new LlmError('refused_key', 'refused', 401)],
-      ['a refusal of the request', new LlmError('rejected', 'refused', 400)],
+      [
+        'a rate limit',
+        new LlmError('rate_limited', 'limited', { status: 429, retryAfterSeconds: 1 }),
+      ],
+      ['a refusal of the key', new LlmError('refused_key', 'refused', { status: 401 })],
+      ['a refusal of the request', new LlmError('rejected', 'refused', { status: 400 })],
       ['an address that is not allowed', new LlmError('url_not_allowed', 'not allowed')],
     ])('is not charged for %s', async (_name, error) => {
       // A rate limit is tried twice more and an unreachable provider once; the rest end it at once.
@@ -2510,7 +2513,10 @@ describe('runConversation with a scripted provider', () => {
     });
 
     it('a key that is not scoped to a workspace is not retried, and fails the conversation as a provider error', async () => {
-      const s = scripted(new LlmError('workspace_required', 'not scoped', 400), turn('done'));
+      const s = scripted(
+        new LlmError('workspace_required', 'not scoped', { status: 400 }),
+        turn('done'),
+      );
       expect(await runConversation(s.input)).toMatchObject({
         kind: 'failed',
         reason: 'provider_error',
@@ -2521,7 +2527,10 @@ describe('runConversation with a scripted provider', () => {
     });
 
     it('rate limits and timeouts have a retry each, in the same call', async () => {
-      const limited = new LlmError('rate_limited', 'limited', 429, 2);
+      const limited = new LlmError('rate_limited', 'limited', {
+        status: 429,
+        retryAfterSeconds: 2,
+      });
       const timeout = new LlmError('timeout', 'The model did not answer within 60 s');
       const s = scripted(limited, timeout, limited, turn('done'));
       expect(await runConversation(s.input)).toMatchObject({ kind: 'answer' });
@@ -2537,7 +2546,10 @@ describe('runConversation with a scripted provider', () => {
 
     it('answers provider_no_tools only for a refusal of 400, 404 or 422 that names tools', async () => {
       const refused = (status: number, names: boolean) =>
-        new LlmError('rejected', 'The provider refused the request', status, null, names);
+        new LlmError('rejected', 'The provider refused the request', {
+          status,
+          refusedTools: names,
+        });
       const reasonFor = async (error: LlmError, tools = TOOLS) => {
         const s = scripted(error);
         return runConversation({ ...s.input, tools });
@@ -2560,7 +2572,7 @@ describe('runConversation with a scripted provider', () => {
         reason: 'provider_error',
       });
       // Only a refusal: a bad answer that happens to say so is not one.
-      const badAnswer = new LlmError('bad_answer', 'x', 400, null, true);
+      const badAnswer = new LlmError('bad_answer', 'x', { status: 400, refusedTools: true });
       expect(await reasonFor(badAnswer)).toMatchObject({
         kind: 'failed',
         reason: 'provider_error',

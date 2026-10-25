@@ -173,29 +173,51 @@ export const LLM_FAILURES = [
 export type LlmFailure = (typeof LLM_FAILURES)[number];
 
 /**
+ * What an LlmError carries besides its failure and its message, each of it optional. `status` is
+ * the provider's HTTP status when it answered, and `retryAfterSeconds` what it asked to wait.
+ * `refusedTools`, `refusedOutputLimit`, `refusedContext` and `needsResponses` are each a yes or no
+ * read from the provider's error body: the request carried tools and was refused in words that
+ * name tools or functions (the model or its server cannot call tools); the request was refused (a
+ * 400) because its output limit is more than the model takes; and, always with that, the limit
+ * that was passed is the context window that the prompt shares with the output, so that what the
+ * model takes depends on how long the prompt is, and is no cap of the model's own; and, always
+ * with the first, a request to the Chat Completions API was refused in words that name the
+ * Responses API, which is where the model takes its tools.
+ */
+export interface LlmErrorOptions {
+  status?: number | null;
+  retryAfterSeconds?: number | null;
+  refusedTools?: boolean;
+  refusedOutputLimit?: boolean;
+  refusedContext?: boolean;
+  needsResponses?: boolean;
+}
+
+/**
  * A provider call that did not answer usably. `message` is a fixed text, never the provider's
- * body, a header or the API key. `refusedTools`, `refusedOutputLimit`, `refusedContext` and
- * `needsResponses` are each a yes or no read from the provider's error body: the request carried
- * tools and was refused in words that name tools or functions (the model or its server cannot call
- * tools); the request was refused (a 400) because its output limit is more than the model takes;
- * and, always with that, the limit that was passed is the context window that the prompt shares
- * with the output, so that what the model takes depends on how long the prompt is, and is no cap
- * of the model's own; and, always with the first, a request to the Chat Completions API was
- * refused in words that name the Responses API, which is where the model takes its tools.
+ * body, a header or the API key; what else it says is in `LlmErrorOptions`.
  */
 export class LlmError extends Error {
+  readonly status: number | null;
+  readonly retryAfterSeconds: number | null;
+  readonly refusedTools: boolean;
+  readonly refusedOutputLimit: boolean;
+  readonly refusedContext: boolean;
+  readonly needsResponses: boolean;
+
   constructor(
     readonly failure: LlmFailure,
     message: string,
-    readonly status: number | null = null,
-    readonly retryAfterSeconds: number | null = null,
-    readonly refusedTools = false,
-    readonly refusedOutputLimit = false,
-    readonly refusedContext = false,
-    readonly needsResponses = false,
+    options: LlmErrorOptions = {},
   ) {
     super(message);
     this.name = 'LlmError';
+    this.status = options.status ?? null;
+    this.retryAfterSeconds = options.retryAfterSeconds ?? null;
+    this.refusedTools = options.refusedTools ?? false;
+    this.refusedOutputLimit = options.refusedOutputLimit ?? false;
+    this.refusedContext = options.refusedContext ?? false;
+    this.needsResponses = options.needsResponses ?? false;
   }
 }
 
