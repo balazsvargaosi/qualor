@@ -86,6 +86,16 @@ export function answerJob(branchId: string, replyId: string) {
   };
 }
 
+/** The job that scans the branch's merge request for notes to answer, as a webhook queues it. */
+export function scanJob(branchId: string) {
+  return {
+    payload: { kind: 'scan', branchId },
+    key: replyKey(branchId),
+    maxAttempts: 2,
+    status: 'queued',
+  };
+}
+
 /**
  * The database refuses every `ai-reply` job of the branch, as a failed write would, until the
  * function this answers is called. Whatever is written in the same transaction as such a job

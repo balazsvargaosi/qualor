@@ -1,28 +1,19 @@
 import { and, desc, eq, gt, inArray, isNotNull, lt, max, or } from 'drizzle-orm';
 import { SYSTEM_ACTOR } from '../audit/recorder';
 import type { Db } from '../db/client';
-import { pgErrorCode } from '../db/errors';
 import {
-  branches,
   issues,
   projects,
   reviewFindings,
   reviewReplies,
   reviewSnapshots,
   rules,
-  scmConnections,
   type ReplyOutcome,
 } from '../db/schema';
 import { transitionAsSystem } from '../issues/transitions';
 import { readLlmSettings, type StoredLlmSettings } from '../llm/settings';
 import type { JobHandlers } from '../queue/worker';
 import { AI_ENGINE } from '../rules/server-engines';
-import { gitlabClientFor } from '../scm/connections';
-import { GITHUB_PR_NUMBER } from '../scm/github/client';
-import { githubClientFor } from '../scm/github/connections';
-import { parseRepoRef } from '../scm/github/url';
-import { GITLAB_MR_IID } from '../scm/gitlab/client';
-import { ScmError } from '../scm/provider';
 import type { IssueStatus } from '../tracking/plan';
 import type { ReviewJobDeps } from './job';
 import { ofBranch } from './lifecycle';
@@ -39,18 +30,19 @@ import {
 import { answerCommand } from './reply-commands';
 import { decideReply, replyTokensLeft, type ReplyDeps, type ReplyIssue } from './reply-engine';
 import { AI_REPLY_QUEUE, queueAfterStop, replyPayload, withLiveJob } from './reply-queue';
+import { scanMergeRequest } from './reply-scan';
 import {
   GONE,
   githubSide,
   gitlabSide,
   orGone,
+  providerClientOf,
   type ReadThread,
   type ReplyInThread,
   type ThreadNote,
   type ThreadSide,
 } from './reply-sides';
-import { CLOSED, JobSteps, THREAD_GONE, WAITING, type Target } from './reply-steps';
-import { errorClass } from './run-ends';
+import { CLOSED, JobSteps, targetOf, THREAD_GONE, WAITING, type Target } from './reply-steps';
 import { reviewActive } from './settings';
 import { openSnapshotReader, type SnapshotReader } from './snapshot-reader';
 
@@ -122,25 +114,6 @@ interface PendingRound {
 type Seen = { thread: ReadThread; posted: number | null } & (
   { decided: Decided } | { round: PendingRound }
 );
-
-async function targetOf(db: Db, row: ReplyRow): Promise<Target | null> {
-  const [found] = await db
-    .select({
-      branch: { id: branches.id, name: branches.name, lastAnalysisId: branches.lastAnalysisId },
-      project: {
-        id: projects.id,
-        organizationId: projects.organizationId,
-        scmConnectionId: projects.scmConnectionId,
-        scmProjectRef: projects.scmProjectRef,
-      },
-      connection: scmConnections,
-    })
-    .from(branches)
-    .innerJoin(projects, eq(projects.id, branches.projectId))
-    .leftJoin(scmConnections, eq(scmConnections.id, projects.scmConnectionId))
-    .where(and(eq(branches.id, row.branchId), eq(projects.id, row.projectId)));
-  return found ?? null;
-}
 
 /**
  * The row's issue as the reply conversation is told of it, when it is an issue of the row's
@@ -285,15 +258,7 @@ class ReplyJob extends JobSteps {
     try {
       await this.answer();
     } catch (err) {
-      const fields = {
-        replyId: this.replyId,
-        errorClass: errorClass(err),
-        code: pgErrorCode(err) ?? null,
-        // What the SCM said, never its message.
-        ...(err instanceof ScmError ? { errorKind: err.kind, httpStatus: err.status } : {}),
-      };
-      if (this.lastTry) this.deps.logger.error(fields, 'AI reply failed on its last try');
-      else this.deps.logger.warn(fields, 'AI reply not answered; its job is tried again');
+      this.logFailure('AI reply', { replyId: this.replyId }, err, this.lastTry);
       throw err;
     }
   }
@@ -318,7 +283,7 @@ class ReplyJob extends JobSteps {
     const { db } = this.deps;
     const taken = await this.take();
     if (taken === null) return;
-    const target = await targetOf(db, taken);
+    const target = await targetOf(db, taken.branchId, taken.projectId);
     if (taken.kind === 'command') {
       return target === null
         ? this.failInternal(taken, 'the row has no merge request')
@@ -535,27 +500,14 @@ class ReplyJob extends JobSteps {
    * an address the rules no longer allow) or the ids are none of the provider's.
    */
   private sideOf(row: ReplyInThread, target: Target): ThreadSide | 'gone' | 'unusable' {
-    const { connection, project, branch } = target;
+    const { connection } = target;
     if (connection === null || connection.provider !== row.provider) return 'gone';
-    if (project.scmProjectRef === null) return 'unusable';
-    if (connection.provider === 'github') {
-      const repo = parseRepoRef(project.scmProjectRef);
-      const found = githubClientFor(connection, this.deps.scm, this.deps.scmRuntime);
-      if (repo === null || 'problem' in found || !GITHUB_PR_NUMBER.test(branch.name)) {
-        return 'unusable';
-      }
-      return githubSide(connection.id, found.client, repo, branch.name, row, this.deps.logger);
-    }
-    const found = gitlabClientFor(connection, this.deps.scm);
-    if ('problem' in found || !GITLAB_MR_IID.test(branch.name)) return 'unusable';
-    return gitlabSide(
-      connection.id,
-      found.client,
-      project.scmProjectRef,
-      branch.name,
-      row,
-      this.deps.logger,
-    );
+    const found = providerClientOf(this.deps, target);
+    if (found === null) return 'unusable';
+    const { logger } = this.deps;
+    return found.provider === 'github'
+      ? githubSide(connection.id, found.client, found.repo, found.number, row, logger)
+      : gitlabSide(connection.id, found.client, found.ref, found.iid, row, logger);
   }
 
   /**
@@ -593,9 +545,10 @@ class ReplyJob extends JobSteps {
 /**
  * The `ai-reply` queue's handler (6I-4), run by the review worker before the reviews' (main.ts),
  * with the review worker's deps: an `answer` job answers its row (`ReplyJob`); a `scan` job is a
- * webhook's, which this server does not make yet, and completes. A payload that does not parse
- * never will: the job completes. An error fails the job into its second try (`AI_REPLY_MAX_ATTEMPTS`),
- * which resumes the row where the first left it.
+ * webhook's, and reads a merge request's notes for the ones nobody has queued yet
+ * (reply-scan.ts). A payload that does not parse never will: the job completes. An error fails the
+ * job into its second try (`AI_REPLY_MAX_ATTEMPTS`), which resumes the row where the first left it,
+ * or scans again.
  */
 export function replyHandlers(deps: ReviewJobDeps): JobHandlers {
   return {
@@ -609,7 +562,7 @@ export function replyHandlers(deps: ReviewJobDeps): JobHandlers {
         return;
       }
       if (parsed.data.kind === 'scan') {
-        deps.logger.debug?.({ jobId: job.id }, 'AI reply scan job completed: no scan is made');
+        await scanMergeRequest(deps, parsed.data.branchId, job.attempts >= job.maxAttempts);
         return;
       }
       await new ReplyJob(

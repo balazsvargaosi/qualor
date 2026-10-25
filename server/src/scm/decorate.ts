@@ -5,8 +5,7 @@ import { AI_FIX_QUEUE, postFixHandler } from '../llm/post';
 import type { JobHandlers } from '../queue/worker';
 import { deleteBranchSnapshots, mergeRequestStateHandlers } from '../review/lifecycle';
 import { withMergeRequestHead, withUnplacedFindings } from '../review/render';
-import { gitlabCommands, gitlabRounds } from '../review/reply-detect';
-import { queueReplies, replyWindow } from '../review/reply-queue';
+import { queueGitLabAnswers, replyWindow } from '../review/reply-queue';
 import { gitlabClientFor, type ScmDeps } from './connections';
 import {
   branchUrl,
@@ -264,31 +263,14 @@ async function decorateMergeRequest(
   }
   // A summary of another user goes once this token's own is in place.
   if (own || listed.complete) await removeForeignSummaries(client, ref, iid, foreign);
-  // Last: what GitLab shows is written before the database takes more work.
-  await queueAnswers(deps, loaded, me.id, listed.items);
-}
-
-/**
- * Queues the answers to what people wrote in the merge request (6I-4): the new replies in
- * Qualor's threads and the commands among the discussions, as the listing the decoration read
- * holds them, cut by the page bound or not: a note it saw is a note, and the threads it did not
- * see wait for a later decoration. Nothing is read from GitLab. Without AI review active for the
- * project Qualor answers none.
- */
-async function queueAnswers(
-  deps: DecorationDeps,
-  loaded: Loaded,
-  botId: number,
-  discussions: readonly GitLabDiscussion[],
-): Promise<void> {
-  const replies = await replyWindow(deps.db, loaded.project, loaded.branch.id);
-  if (replies === null) return;
-  const options = { qualor: { gitlabUserId: botId }, ...replies };
-  await queueReplies(
+  // Last: what GitLab shows is written before the database takes more work. Without AI review
+  // active for the project there is no window, and Qualor answers none (6I-4).
+  await queueGitLabAnswers(
     deps.db,
-    { projectId: loaded.project.id, branchId: loaded.branch.id, provider: 'gitlab' },
-    replies,
-    { rounds: gitlabRounds(discussions, options), commands: gitlabCommands(discussions, options) },
+    { projectId: loaded.project.id, branchId: loaded.branch.id },
+    await replyWindow(deps.db, loaded.project, loaded.branch.id),
+    me.id,
+    listed.items,
   );
 }
 

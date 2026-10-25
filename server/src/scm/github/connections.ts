@@ -119,4 +119,9 @@ export function githubWebhookUrl(publicUrl: string | null, connectionId: string)
   return publicUrl === null ? null : `${publicUrl}/api/v0/github/webhooks/${connectionId}`;
 }
 
+/** The URL of a GitLab project's webhook (6I-4), or null without `QUALOR_PUBLIC_URL`. */
+export function gitlabWebhookUrl(publicUrl: string | null, connectionId: string): string | null {
+  return publicUrl === null ? null : `${publicUrl}/api/v0/gitlab/webhooks/${connectionId}`;
+}
+
 export { TEST_PROBLEM_CODES };

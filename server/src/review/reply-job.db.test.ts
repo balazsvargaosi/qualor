@@ -18,7 +18,7 @@ import {
   pullRequestReport,
 } from '../../test/github';
 import { createIngestHarness, type IngestHarness, type IngestProject } from '../../test/ingest';
-import { reviewOff, reviewOn } from '../../test/replies';
+import { answerJob, queuedAnswers, reviewOff, reviewOn, reviewScope } from '../../test/replies';
 import { engine, file, finding } from '../../test/reports';
 import { reviewResponder, seedAiIssue, storeTestSnapshot, switchReviewOn } from '../../test/review';
 import {
@@ -30,6 +30,8 @@ import {
   silentLogger,
 } from '../../test/scm';
 import { createAuditRecorder } from '../audit/recorder';
+import { encryptionKey, encryptSecret } from '../crypto/secrets';
+import { uuidv7 } from '../db/ids';
 import { first } from '../db/rows';
 import {
   auditEvents,
@@ -43,10 +45,12 @@ import {
   reviewReplies,
   reviewRuns,
   reviewSnapshots,
+  scmConnections,
 } from '../db/schema';
 import { createLlmRuntime } from '../llm/job';
 import { enqueue } from '../queue/queue';
 import { runUntilIdle } from '../queue/worker';
+import { SCM_TOKEN_AAD } from '../scm/connections';
 import { codeSpan, firstLineOf, markerOf, replyMarker } from '../scm/markdown';
 import { enqueueDecoration, SCM_QUEUE } from '../scm/queue';
 import {
@@ -61,7 +65,13 @@ import { ofBranch } from './lifecycle';
 import { commandNote, replyNote } from './render';
 import type { ReplyRow } from './replies';
 import { replyHandlers } from './reply-job';
-import { AI_REPLY_QUEUE, reconcileStuckReplies, replyKey } from './reply-queue';
+import {
+  AI_REPLY_MAX_ATTEMPTS,
+  AI_REPLY_QUEUE,
+  queueScan,
+  reconcileStuckReplies,
+  replyKey,
+} from './reply-queue';
 import { AI_REVIEW_QUEUE } from './runs';
 
 /*
@@ -239,6 +249,8 @@ interface Mr {
   failNextMergeRequestRead(): void;
   /** The next read of the thread's notes fails as a provider that is down does (502). */
   failNextThreadRead(): void;
+  /** The provider has no such merge request when the next listing of its notes is asked for. */
+  goneOnNextListing(): void;
   /** The provider's name of a person, which the changelog quotes. */
   username(who: Person): string;
 }
@@ -486,6 +498,12 @@ describe('the answer job (6I-4)', () => {
             new RegExp(`^/projects/${gitlabId}/merge_requests/12/discussions$`),
             { status: 502 },
           ),
+        goneOnNextListing: () =>
+          gitlab.inject(
+            'GET',
+            new RegExp(`^/projects/${gitlabId}/merge_requests/12/discussions$`),
+            { status: 404, body: { message: '404 Not found' } },
+          ),
         username: (who) => `user${GITLAB_USERS[who]}`,
       };
     },
@@ -701,6 +719,11 @@ describe('the answer job (6I-4)', () => {
             status: 502,
             body: { message: 'Bad Gateway' },
           }),
+        goneOnNextListing: () =>
+          github.inject('GET', new RegExp(`^/repos/acme/${repo.name}/pulls/7/comments$`), {
+            status: 404,
+            body: { message: 'Not Found' },
+          }),
         username: (who) => GITHUB_USERS[who].login,
       };
     },
@@ -778,6 +801,38 @@ describe('the answer job (6I-4)', () => {
   /** Runs the `ai-reply` jobs that are due, as the review worker does. */
   const answer = (over: Partial<ReviewJobDeps> = {}) =>
     runUntilIdle(h.ctx.db, replyHandlers(jobDeps(over)), silentLogger);
+  /** Runs `during` while the connection's token cannot be decrypted (the server's key changed). */
+  const withUnreadableToken = async (connectionId: string, during: () => Promise<void>) => {
+    const [saved] = await h.ctx.db
+      .select({ tokenEnc: scmConnections.tokenEnc })
+      .from(scmConnections)
+      .where(eq(scmConnections.id, connectionId));
+    await h.ctx.db
+      .update(scmConnections)
+      .set({ tokenEnc: encryptSecret(encryptionKey('z'.repeat(32)), 'x', SCM_TOKEN_AAD) })
+      .where(eq(scmConnections.id, connectionId));
+    try {
+      await during();
+    } finally {
+      await h.ctx.db
+        .update(scmConnections)
+        .set({ tokenEnc: saved!.tokenEnc })
+        .where(eq(scmConnections.id, connectionId));
+    }
+  };
+  /**
+   * A scan job as the review worker hands it to its handler, run alone: what the scan queues stays
+   * queued. `attempts` is the try it is (the last one is the second).
+   */
+  const scan = (branchId: string, over: Partial<ReviewJobDeps> = {}, attempts = 1) =>
+    replyHandlers(jobDeps(over))[AI_REPLY_QUEUE]!({
+      id: uuidv7(),
+      queue: AI_REPLY_QUEUE,
+      concurrencyKey: replyKey(branchId),
+      payload: { kind: 'scan', branchId },
+      attempts,
+      maxAttempts: AI_REPLY_MAX_ATTEMPTS,
+    });
   /** The jobs that failed are due again at once: their retry. */
   const retryNow = () =>
     h.ctx.db
@@ -1479,6 +1534,36 @@ describe('the answer job (6I-4)', () => {
       expect((await issueById(foreign)).status).toBe('open');
     });
 
+    it('a row whose project is not its merge request’s has no merge request: it ends failed: internal, with nothing asked of the provider', async () => {
+      const { d, mr, row, threadId } = await replied('foreign-project');
+      const other = await driverOf().setup(`${slug}-foreign-project-other`);
+      await h.ctx.db
+        .update(reviewReplies)
+        .set({ projectId: other.project.id })
+        .where(eq(reviewReplies.id, row.id));
+      await reviewOn(h, llm);
+      d.clearRequests();
+      await answer();
+      expect(await rowById(row.id)).toMatchObject({ status: 'failed', reason: 'internal' });
+      expect(d.requests()).toEqual([]);
+      expect(mr.answers(threadId)).toEqual([]);
+    });
+
+    it('a connection that cannot be made ends the row failed: internal, with nothing asked of the provider or the model', async () => {
+      const { d, mr, row, threadId } = await replied('unusable');
+      d.clearRequests();
+      const calls = llm.requests.length;
+      await withUnreadableToken(mr.connectionId, async () => void (await answer()));
+      expect(await rowById(row.id)).toMatchObject({
+        status: 'failed',
+        reason: 'internal',
+        verdict: null,
+      });
+      expect(d.requests()).toEqual([]);
+      expect(callsSince(calls)).toEqual([]);
+      expect(mr.answers(threadId)).toEqual([]);
+    });
+
     it('an issue that is another project’s once the model has decided is not acted on: the row ends failed: internal', async () => {
       const { mr, issueId, threadId, row } = await replied('foreign-after-model');
       const other = await driverOf().setup(`${slug}-foreign-after-model-other`);
@@ -1611,6 +1696,35 @@ describe('the answer job (6I-4)', () => {
         });
         return { d, mr, sent, row };
       };
+
+      it('a command row whose project is not its merge request’s has no merge request: it ends failed: internal, with nothing asked, no run and no answer', async () => {
+        const { d, mr, row } = await commanded('foreign-project', { end: FAILED });
+        const before = await runOf(mr.analysisId);
+        const other = await driverOf().setup(`${slug}-command-foreign-project-other`);
+        await h.ctx.db
+          .update(reviewReplies)
+          .set({ projectId: other.project.id })
+          .where(eq(reviewReplies.id, row.id));
+        await reviewOn(h, llm);
+        d.clearRequests();
+        await answer();
+        expect(await rowById(row.id)).toMatchObject({ status: 'failed', reason: 'internal' });
+        expect(d.requests()).toEqual([]);
+        expect(mr.commandAnswers()).toEqual([]);
+        expect(await runOf(mr.analysisId)).toEqual(before);
+      });
+
+      it('a connection that cannot be made ends the command’s row failed: internal, with no run and no answer', async () => {
+        const { d, mr, sent, row } = await commanded('unusable', { end: FAILED });
+        const before = await runOf(mr.analysisId);
+        d.clearRequests();
+        await withUnreadableToken(mr.connectionId, async () => void (await answer()));
+        expect(await rowById(row.id)).toMatchObject({ status: 'failed', reason: 'internal' });
+        expect(d.requests()).toEqual([]);
+        expect(mr.commandAnswers()).toEqual([]);
+        expect(await runOf(mr.analysisId)).toEqual(before);
+        expect(sent.noteId).toBe(row.noteId);
+      });
 
       it('qualor review on a draft reviews it', async () => {
         const { mr, sent } = await commanded('draft', {
@@ -2265,6 +2379,354 @@ describe('the answer job (6I-4)', () => {
         expect(others).toEqual([]);
         expect(posted!.body).toContain('AI review in progress…');
         expect(posted!.id).not.toBe(lost!.id);
+      });
+    });
+
+    describe('the notes scan (a webhook’s job)', () => {
+      // A scan run alone leaves the answers it queued for the worker: each case starts with none.
+      beforeEach(async () => {
+        await h.ctx.db.delete(jobs).where(eq(jobs.queue, AI_REPLY_QUEUE));
+      });
+
+      /** A merge request with an open AI finding and Qualor's thread for it, and no reply yet. */
+      const threaded = async (key: string) => {
+        const d = driverOf();
+        const mr = await d.setup(`${slug}-scan-${key}`);
+        await reviewOn(h, llm);
+        const issueId = await aiFinding(mr.branchId, 9);
+        await mr.decorate();
+        return { d, mr, issueId, threadId: mr.threadOf(issueId) };
+      };
+      /** What the scan queued for the branch: its rows and their jobs. */
+      const queuedFor = (branchId: string) => queuedAnswers(h.ctx.db, branchId);
+      /** The requests of the provider that are no reads (a token and a GraphQL query are POSTs). */
+      const writesOf = (d: Driver) =>
+        d.requests().filter((r) => !r.startsWith('GET ') && !/access_tokens|graphql/.test(r));
+      /** GitHub's GraphQL requests whose text has `needle`: none on GitLab. */
+      const graphqlWith = (needle: string) =>
+        provider === 'GitHub' ? github.requests.filter((r) => r.body.includes(needle)) : [];
+      /** The branch's `ai-reply` jobs, with their tries. */
+      const scanJobs = (branchId: string) =>
+        h.ctx.db
+          .select()
+          .from(jobs)
+          .where(and(eq(jobs.queue, AI_REPLY_QUEUE), eq(jobs.concurrencyKey, replyKey(branchId))))
+          .orderBy(asc(jobs.id));
+      /** The paths of the requests the provider received, without their queries. */
+      const pathsOf = (d: Driver) =>
+        d.requests().map((r) => r.split('?')[0]!.replace(/\/projects\/\d+\//, '/projects/:id/'));
+      /** A logger that keeps what it is told at each level. */
+      const recording = () => {
+        const said = { info: [] as unknown[][], warn: [] as unknown[][], error: [] as unknown[][] };
+        const logger = {
+          info: (...args: unknown[]) => void said.info.push(args),
+          warn: (...args: unknown[]) => void said.warn.push(args),
+          error: (...args: unknown[]) => void said.error.push(args),
+        };
+        return { said, logger };
+      };
+
+      it('queues the reply and the command it finds as a decoration would, and writes nothing to the provider', async () => {
+        const { d, mr, issueId, threadId } = await threaded('found');
+        const noteId = mr.reply(threadId, 'We accept this for now.');
+        const sent = mr.command('qualor review');
+        d.clearRequests();
+        github.clearRequests();
+        await scan(mr.branchId);
+        const { rows, jobs: queued } = await queuedFor(mr.branchId);
+        const reply = rows.find((r) => r.kind === 'reply')!;
+        const command = rows.find((r) => r.kind === 'command')!;
+        expect(rows).toHaveLength(2);
+        expect(reply).toMatchObject({
+          noteId,
+          threadId,
+          issueId,
+          author: mr.username('member'),
+          status: 'queued',
+        });
+        expect(command).toMatchObject({
+          noteId: sent.noteId,
+          threadId: sent.threadId,
+          command: 'review',
+          author: mr.username('member'),
+          status: 'queued',
+        });
+        // The rounds' jobs come first and the commands' after, as a decoration queues them.
+        expect(queued).toEqual([
+          answerJob(mr.branchId, reply.id),
+          answerJob(mr.branchId, command.id),
+        ]);
+        // It only read, and made no model call.
+        expect(writesOf(d)).toEqual([]);
+        expect(graphqlWith('mutation')).toEqual([]);
+        const reads = pathsOf(d);
+        if (provider === 'GitLab') {
+          // The merge request's state, then who Qualor is, then the discussions: its own client's.
+          expect(reads).toEqual([
+            'GET /projects/:id/merge_requests/12',
+            'GET /user',
+            'GET /projects/:id/merge_requests/12/discussions',
+          ]);
+        } else {
+          for (const wanted of [/\/pulls\/7$/, /\/pulls\/7\/comments$/, /\/issues\/7\/comments$/]) {
+            expect(
+              reads.filter((r) => wanted.test(r)),
+              String(wanted),
+            ).toHaveLength(1);
+          }
+          expect(graphqlWith('reviewThreads')).toHaveLength(1);
+        }
+      });
+
+      it('through the queue the scan is done and its answers follow it; a second scan finds only Qualor’s own answers, which are no replies', async () => {
+        const { mr, threadId } = await threaded('chain');
+        mr.reply(threadId, 'Why is this a problem?');
+        mr.command('qualor review');
+        expect(await queueScan(h.ctx.db, mr.branchId)).toBe(true);
+        llm.say(KEEP);
+        expect(await answer()).toBe(3);
+        const kinds = (await queuedFor(mr.branchId)).jobs.map((job) => [
+          (job.payload as { kind: string }).kind,
+          job.status,
+        ]);
+        expect(kinds).toEqual([
+          ['scan', 'succeeded'],
+          ['answer', 'succeeded'],
+          ['answer', 'succeeded'],
+        ]);
+        expect(mr.answers(threadId)).toHaveLength(1);
+        expect(mr.commandAnswers()).toHaveLength(1);
+        // Scanned again, it finds the answers in the notes: nobody's replies, and nothing to queue.
+        const { rows } = await queuedFor(mr.branchId);
+        expect(await queueScan(h.ctx.db, mr.branchId)).toBe(true);
+        expect(await answer()).toBe(1);
+        expect((await queuedFor(mr.branchId)).rows).toEqual(rows);
+        expect(mr.answers(threadId)).toHaveLength(1);
+      });
+
+      it.each(['a decoration first', 'the scan first'])(
+        'the scan and a decoration of the same reply make one answer: %s',
+        async (order) => {
+          const { mr, threadId } = await threaded(`both-${order.replaceAll(' ', '-')}`);
+          const noteId = mr.reply(threadId, 'We will not fix this now.');
+          if (order === 'a decoration first') {
+            await mr.decorate();
+            await scan(mr.branchId);
+          } else {
+            await scan(mr.branchId);
+            await mr.decorate();
+          }
+          const { rows, jobs: queued } = await queuedFor(mr.branchId);
+          expect(rows).toMatchObject([{ kind: 'reply', noteId, status: 'queued' }]);
+          expect(queued).toEqual([answerJob(mr.branchId, rows[0]!.id)]);
+          const calls = llm.requests.length;
+          llm.say(KEEP);
+          expect(await answer()).toBe(1);
+          expect(callsSince(calls)).toHaveLength(1);
+          expect(mr.answers(threadId)).toHaveLength(1);
+        },
+      );
+
+      it('queues nothing for a closed merge request, and does not read its notes', async () => {
+        const { d, mr, threadId } = await threaded('closed');
+        mr.reply(threadId, 'Still not a problem.');
+        mr.command('qualor stop');
+        mr.close();
+        d.clearRequests();
+        github.clearRequests();
+        await scan(mr.branchId);
+        expect(await queuedFor(mr.branchId)).toMatchObject({ rows: [], jobs: [] });
+        // Its state was read; its notes were not.
+        const reads = pathsOf(d);
+        expect(reads.some((r) => /\/(merge_requests\/12|pulls\/7)$/.test(r))).toBe(true);
+        expect(reads.filter((r) => /discussions|\/comments$|\/user$/.test(r))).toEqual([]);
+        expect(graphqlWith('reviewThreads')).toEqual([]);
+      });
+
+      it('takes no organisation slot: with every slot taken by decorations, it still queues what it finds', async () => {
+        const { mr, threadId } = await threaded('no-slot');
+        mr.reply(threadId, 'We accept this for now.');
+        const runtime = githubDeps(h).runtime;
+        const [project] = await h.ctx.db
+          .select({ organizationId: projects.organizationId })
+          .from(projects)
+          .where(eq(projects.id, mr.project.id));
+        for (let n = 0; n < MAX_DECORATIONS_PER_ORGANIZATION; n += 1) {
+          expect(runtime.slots.tryTake(project!.organizationId)).toBe(true);
+        }
+        await scan(mr.branchId, { scmRuntime: runtime });
+        expect((await queuedFor(mr.branchId)).rows).toHaveLength(1);
+      });
+
+      it('queues nothing, and asks the provider nothing, while AI review is not active for the project', async () => {
+        const { d, mr, threadId } = await threaded('inactive');
+        mr.reply(threadId, 'Not a problem.');
+        for (const switchOff of [() => reviewOff(h), () => reviewScope(h, 'selected')]) {
+          await switchOff();
+          d.clearRequests();
+          await scan(mr.branchId);
+          expect(d.requests()).toEqual([]);
+          expect(await queuedFor(mr.branchId)).toMatchObject({ rows: [], jobs: [] });
+          await reviewOn(h, llm);
+        }
+        // Switched on again, the scan finds the reply.
+        await scan(mr.branchId);
+        expect((await queuedFor(mr.branchId)).rows).toHaveLength(1);
+      });
+
+      it('leaves a branch that is not a merge request’s, and one that is gone, alone', async () => {
+        const { d, mr, threadId } = await threaded('not-a-merge-request');
+        mr.reply(threadId, 'Not a problem.');
+        // A plain branch named like the merge request's number would find the merge request's notes.
+        const [plain] = await h.ctx.db
+          .insert(branches)
+          .values({
+            projectId: mr.project.id,
+            kind: 'branch',
+            name: provider === 'GitLab' ? '12' : '7',
+          })
+          .returning({ id: branches.id });
+        d.clearRequests();
+        await scan(plain!.id);
+        await scan(uuidv7());
+        expect(d.requests()).toEqual([]);
+        expect(await queuedFor(plain!.id)).toMatchObject({ rows: [], jobs: [] });
+        expect((await queuedFor(mr.branchId)).rows).toEqual([]);
+      });
+
+      it('warns, and queues nothing, when the connection cannot be made: its key no longer decrypts', async () => {
+        const { d, mr, threadId } = await threaded('unusable');
+        mr.reply(threadId, 'Not a problem.');
+        const { said, logger } = recording();
+        d.clearRequests();
+        await withUnreadableToken(mr.connectionId, async () => {
+          await scan(mr.branchId, { logger });
+        });
+        expect(d.requests()).toEqual([]);
+        expect((await queuedFor(mr.branchId)).rows).toEqual([]);
+        expect(said.warn.map(([fields]) => fields)).toEqual([{ branchId: mr.branchId }]);
+      });
+
+      it('ends quietly for a merge request the provider no longer has: one line at info with the branch, none of the provider’s words, and the circuit hears an answer', async () => {
+        const { mr, threadId } = await threaded('gone');
+        mr.reply(threadId, 'Fine.');
+        const runtime = githubDeps(h).runtime;
+        const { said, logger } = recording();
+        mr.goneOnNextListing();
+        await scan(mr.branchId, { logger, scmRuntime: runtime });
+        expect((await queuedFor(mr.branchId)).rows).toEqual([]);
+        expect(said.info.map(([fields]) => fields)).toEqual([{ branchId: mr.branchId }]);
+        expect(JSON.stringify(said)).not.toMatch(/not found|404|GitLab|GitHub/i);
+        expect(said.warn).toEqual([]);
+        expect(said.error).toEqual([]);
+        expect(runtime.circuit.inspect(mr.connectionId).failures).toBe(0);
+      });
+
+      it('a provider that fails fails the job into its second try, which scans again; its last try logs the codes and nothing the provider said', async () => {
+        const { mr, threadId } = await threaded('failing');
+        mr.reply(threadId, 'We accept this.');
+        const runtime = githubDeps(h).runtime;
+        const { said, logger } = recording();
+        expect(await queueScan(h.ctx.db, mr.branchId)).toBe(true);
+        mr.failNextThreadRead();
+        await answer({ scmRuntime: runtime, logger });
+        expect((await queuedFor(mr.branchId)).rows).toEqual([]);
+        // Queued for its second try; the circuit counts the failure; the line holds codes only.
+        expect((await scanJobs(mr.branchId)).map((j) => [j.status, j.attempts])).toEqual([
+          ['queued', 1],
+        ]);
+        expect(runtime.circuit.inspect(mr.connectionId).failures).toBe(1);
+        expect(said.warn).toEqual([
+          [
+            {
+              branchId: mr.branchId,
+              errorClass: expect.any(String),
+              code: null,
+              errorKind: 'transient',
+              httpStatus: 502,
+            },
+            expect.stringContaining('tried again'),
+          ],
+        ]);
+        expect(JSON.stringify(said)).not.toMatch(/Bad Gateway/);
+        // The second try scans again, queues the reply and answers it; the count starts again.
+        await retryNow();
+        llm.say(KEEP);
+        expect(await answer({ scmRuntime: runtime })).toBe(2);
+        expect(runtime.circuit.inspect(mr.connectionId).failures).toBe(0);
+        expect(mr.answers(threadId)).toHaveLength(1);
+
+        // The last try says so at error level, and fails the job all the same.
+        const last = await threaded('failing-last');
+        last.mr.failNextThreadRead();
+        await expect(scan(last.mr.branchId, { logger }, 2)).rejects.toThrow();
+        expect(said.error).toEqual([
+          [
+            {
+              branchId: last.mr.branchId,
+              errorClass: expect.any(String),
+              code: null,
+              errorKind: 'transient',
+              httpStatus: 502,
+            },
+            expect.stringContaining('last try'),
+          ],
+        ]);
+      });
+
+      it('waits while the connection’s circuit is open: queued again for when it opens, no try spent, and run once it has closed', async () => {
+        const { d, mr, threadId } = await threaded('circuit-open');
+        mr.reply(threadId, 'We accept this.');
+        const runtime = githubDeps(h).runtime;
+        for (let n = 0; n < SCM_CIRCUIT_FAILURES; n += 1) runtime.circuit.failure(mr.connectionId);
+        const opensIn = (runtime.circuit.openUntil(mr.connectionId) ?? 0) - Date.now();
+        await queueScan(h.ctx.db, mr.branchId);
+        d.clearRequests();
+        expect(await answer({ scmRuntime: runtime })).toBe(1);
+        // Nothing is asked of the provider, and nothing is queued for the notes.
+        expect(d.requests()).toEqual([]);
+        expect((await queuedFor(mr.branchId)).rows).toEqual([]);
+        // The job is done, no try spent; the next is due when the circuit opens again.
+        const queued = await scanJobs(mr.branchId);
+        expect(queued.map((j) => [j.status, j.attempts])).toEqual([
+          ['succeeded', 1],
+          ['queued', 0],
+        ]);
+        const waits = (queued[1]!.runAt.getTime() - queued[1]!.createdAt.getTime()) / 1000;
+        expect(Math.abs(waits - opensIn / 1000)).toBeLessThan(5);
+        // A webhook meanwhile adds none: the scan that waits reads the notes.
+        expect(await queueScan(h.ctx.db, mr.branchId)).toBe(false);
+        // Once the circuit has closed, the next job scans, and its answers follow.
+        runtime.circuit.success(mr.connectionId);
+        await retryNow();
+        llm.say(KEEP);
+        await answer({ scmRuntime: runtime });
+        expect(mr.answers(threadId)).toHaveLength(1);
+      });
+
+      it('waits a minute when the circuit is half-open and another job probes it', async () => {
+        const { d, mr, threadId } = await threaded('circuit-probe');
+        mr.reply(threadId, 'We accept this.');
+        let clock = Date.now();
+        // The circuit on a clock of the test's; the rest of the runtime as in the other tests.
+        const runtime = githubDeps(h).runtime;
+        runtime.circuit = new CircuitBreaker(() => clock);
+        for (let n = 0; n < SCM_CIRCUIT_FAILURES; n += 1) runtime.circuit.failure(mr.connectionId);
+        // The window is over, and another job took the probe.
+        clock += SCM_CIRCUIT_OPEN_MS + 1;
+        expect(runtime.circuit.tryPass(mr.connectionId)).toBe(true);
+        await queueScan(h.ctx.db, mr.branchId);
+        d.clearRequests();
+        await answer({ scmRuntime: runtime });
+        expect(d.requests()).toEqual([]);
+        const [, next] = await scanJobs(mr.branchId);
+        expect((next!.runAt.getTime() - next!.createdAt.getTime()) / 1000).toBe(60);
+        // The probe's answer closes the circuit, and the next job scans.
+        runtime.circuit.success(mr.connectionId);
+        await retryNow();
+        llm.say(KEEP);
+        await answer({ scmRuntime: runtime });
+        expect(mr.answers(threadId)).toHaveLength(1);
       });
     });
 
@@ -2954,13 +3416,13 @@ describe('the answer job (6I-4)', () => {
     });
   });
 
-  it('completes a scan job and a job whose payload does not parse, touching nothing', async () => {
+  it('completes a job whose payload does not parse, touching nothing', async () => {
     const mr = await gitlabDriver.setup('gitlab-other-jobs');
     await reviewOn(h, llm);
     const ids = [
       await enqueue(h.ctx.db, {
         queue: AI_REPLY_QUEUE,
-        payload: { kind: 'scan', branchId: mr.branchId },
+        payload: { kind: 'scan', branchId: 'not-a-branch' },
         concurrencyKey: replyKey(mr.branchId),
         maxAttempts: 2,
       }),

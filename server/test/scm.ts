@@ -12,6 +12,8 @@ import type { IngestHarness, IngestProject } from './ingest';
 import { reportWith, type ReportParts } from './reports';
 
 export const PUBLIC_URL = 'https://qualor.example.com';
+// Assembled at run time, so the repository's own Gitleaks check finds no fake secret here (.gitleaks.toml).
+export const GITLAB_WEBHOOK_SECRET = ['glhook-test-', '0123456789abcdef'].join('');
 /**
  * The fake GitLab listens on 127.0.0.1 on a port of its own, which the operator must list with
  * that port (scm.md §2.1: an entry without a port allows only the scheme's default port).
@@ -34,17 +36,19 @@ const sharedConnections = new Map<string, string>();
 /**
  * A Qualor project mapped to GitLab project `gitlabProjectId` of the fake, through the API: on the
  * organisation's shared connection to the fake (an organisation has at most 10), or on a new one
- * of its own with `ownConnection` (for a test that changes or deletes it).
+ * of its own with `ownConnection` (for a test that changes or deletes it) or with a
+ * `webhookSecret`, or on the connection `connectionId` names (another project of the same one).
  */
 export async function mappedProject(
   h: IngestHarness,
   fake: FakeGitLab,
   key: string,
   gitlabProjectId: number,
-  options: { ownConnection?: boolean } = {},
+  options: { ownConnection?: boolean; webhookSecret?: string; connectionId?: string } = {},
 ): Promise<IngestProject & { connectionId: string }> {
   const cacheKey = `${h.organizationId}|${fake.url}`;
-  let connectionId = options.ownConnection ? undefined : sharedConnections.get(cacheKey);
+  const own = options.ownConnection === true || options.webhookSecret !== undefined;
+  let connectionId = options.connectionId ?? (own ? undefined : sharedConnections.get(cacheKey));
   if (connectionId === undefined) {
     const created = await h.ctx.app.inject({
       method: 'POST',
@@ -55,11 +59,12 @@ export async function mappedProject(
         provider: 'gitlab',
         baseUrl: fake.url,
         token: fake.token,
+        ...(options.webhookSecret === undefined ? {} : { webhookSecret: options.webhookSecret }),
       },
     });
     if (created.statusCode !== 201) throw new Error(`connection: ${created.body}`);
     connectionId = (created.json() as { id: string }).id;
-    if (!options.ownConnection) sharedConnections.set(cacheKey, connectionId);
+    if (!own) sharedConnections.set(cacheKey, connectionId);
   }
   const project = await h.project(key);
   const mapped = await h.ctx.app.inject({

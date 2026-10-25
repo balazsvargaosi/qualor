@@ -1,9 +1,4 @@
 import { readLlmSettings } from '../llm/settings';
-import { gitlabClientFor } from '../scm/connections';
-import { GITHUB_PR_NUMBER } from '../scm/github/client';
-import { githubClientFor } from '../scm/github/connections';
-import { parseRepoRef } from '../scm/github/url';
-import { GITLAB_MR_IID } from '../scm/gitlab/client';
 import { handleCommand, NothingToReview, type CommandDecision } from './commands';
 import type { ReviewJobDeps } from './job';
 import { commandNote } from './render';
@@ -13,6 +8,7 @@ import {
   githubCommandSide,
   gitlabCommandSide,
   orGone,
+  providerClientOf,
   type CommandSide,
 } from './reply-sides';
 import { CLOSED, JobSteps, THREAD_GONE, WAITING, type Target } from './reply-steps';
@@ -140,36 +136,23 @@ class CommandFlow extends JobSteps {
    * GitLab command has the discussion its note opened.
    */
   private commandSideOf(row: ReplyRow, target: Target): CommandSide | 'gone' | 'unusable' {
-    const { connection, project, branch } = target;
+    const { connection } = target;
     if (connection === null || connection.provider !== row.provider) return 'gone';
-    if (project.scmProjectRef === null) return 'unusable';
-    if (connection.provider === 'github') {
-      const repo = parseRepoRef(project.scmProjectRef);
-      const found = githubClientFor(connection, this.deps.scm, this.deps.scmRuntime);
-      if (repo === null || 'problem' in found || !GITHUB_PR_NUMBER.test(branch.name)) {
-        return 'unusable';
-      }
-      return githubCommandSide(
-        connection.id,
-        found.client,
-        repo,
-        branch.name,
-        row,
-        this.deps.logger,
-      );
+    const found = providerClientOf(this.deps, target);
+    if (found === null) return 'unusable';
+    const { logger } = this.deps;
+    if (found.provider === 'github') {
+      return githubCommandSide(connection.id, found.client, found.repo, found.number, row, logger);
     }
-    const found = gitlabClientFor(connection, this.deps.scm);
-    if ('problem' in found || !GITLAB_MR_IID.test(branch.name) || row.threadId === null) {
-      return 'unusable';
-    }
+    if (row.threadId === null) return 'unusable';
     return gitlabCommandSide(
       connection.id,
       found.client,
-      project.scmProjectRef,
-      branch.name,
+      found.ref,
+      found.iid,
       row,
       row.threadId,
-      this.deps.logger,
+      logger,
     );
   }
 }

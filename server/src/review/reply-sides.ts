@@ -1,12 +1,29 @@
 import type { WorkerLogger } from '../queue/worker';
-import { MAX_THREAD_PAGES, type GitHubClient } from '../scm/github/client';
+import { gitlabClientFor, type ScmConnectionRow } from '../scm/connections';
+import {
+  GITHUB_PR_NUMBER,
+  MAX_THREAD_PAGES,
+  type GitHubClient,
+  type GitHubComment,
+} from '../scm/github/client';
+import { githubClientFor } from '../scm/github/connections';
 import { MAX_COMMENT_PAGES } from '../scm/github/threads';
-import type { GitHubRepoRef } from '../scm/github/url';
-import { discussionResolved, type GitLabClient } from '../scm/gitlab/client';
+import { parseRepoRef, type GitHubRepoRef } from '../scm/github/url';
+import {
+  discussionResolved,
+  GITLAB_MR_IID,
+  type GitLabClient,
+  type GitLabDiscussion,
+  type GitLabUser,
+  type Paged,
+} from '../scm/gitlab/client';
 import { MAX_DISCUSSION_PAGES } from '../scm/inline';
 import { firstLineOf, markerOf, replyMarker } from '../scm/markdown';
 import { ScmError } from '../scm/provider';
+import type { ReviewJobDeps } from './job';
 import type { ReplyRow } from './replies';
+import { githubRounds, type Round } from './reply-detect';
+import type { ReplyWindow } from './reply-queue';
 
 /*
  * The thread of a reply on its provider (6I-4), as the `ai-reply` job (reply-job.ts) reads it,
@@ -15,7 +32,10 @@ import type { ReplyRow } from './replies';
  * client and its request budget. Beside them, where the answer to a command goes: a reply in the
  * discussion the command's note opened on GitLab, a comment on the page of the pull request on
  * GitHub; and whether the command's author has the rights a review asks for, which are the rights a
- * reply needs to change a status, by the same functions.
+ * reply needs to change a status, by the same functions. And what a scan lists of a merge request's
+ * notes, to find the replies and commands nobody has queued yet. All three are made of the same
+ * parts: the client of the connection the project is mapped to (`providerClientOf`), Qualor's
+ * identity on the provider and the listings, each with the page bounds decoration reads by.
  */
 
 /**
@@ -90,6 +110,60 @@ async function githubPermissionOf(client: GitHubClient, login: string, unparsed:
     unparsed();
     return null;
   }
+}
+
+/** The client of a merge request's connection, with the ids of the merge request on its provider. */
+export type ProviderClient =
+  | { provider: 'gitlab'; client: GitLabClient; ref: string; iid: string }
+  | { provider: 'github'; client: GitHubClient; repo: GitHubRepoRef; number: string };
+
+/**
+ * The client for the merge request of `target`, with its own request budget (one client for each
+ * job), as the `scm` worker's jobs make theirs: the key decrypted and the address checked against
+ * the rules of now, a GitHub client sharing the worker's installation tokens and pacer. Null when
+ * there is none: the project is not mapped (the connection is null), the client cannot be made (a
+ * key that no longer decrypts, an address the rules no longer allow) or the ids are none of the
+ * provider's.
+ */
+export function providerClientOf(
+  deps: Pick<ReviewJobDeps, 'scm' | 'scmRuntime'>,
+  target: {
+    connection: ScmConnectionRow | null;
+    project: { scmProjectRef: string | null };
+    branch: { name: string };
+  },
+): ProviderClient | null {
+  const { connection, project, branch } = target;
+  if (connection === null || project.scmProjectRef === null) return null;
+  if (connection.provider === 'github') {
+    const repo = parseRepoRef(project.scmProjectRef);
+    const found = githubClientFor(connection, deps.scm, deps.scmRuntime);
+    if (repo === null || 'problem' in found || !GITHUB_PR_NUMBER.test(branch.name)) return null;
+    return { provider: 'github', client: found.client, repo, number: branch.name };
+  }
+  const found = gitlabClientFor(connection, deps.scm);
+  if ('problem' in found || !GITLAB_MR_IID.test(branch.name)) return null;
+  return { provider: 'gitlab', client: found.client, ref: project.scmProjectRef, iid: branch.name };
+}
+
+/** Who Qualor is on GitLab, and the merge request's discussions, each with all its notes. */
+async function gitlabListing(
+  client: GitLabClient,
+  ref: string,
+  iid: string,
+): Promise<{ me: GitLabUser; listed: Paged<GitLabDiscussion> }> {
+  const me = await client.currentUser();
+  return { me, listed: await client.discussions(ref, iid, MAX_DISCUSSION_PAGES) };
+}
+
+/**
+ * Qualor's login on GitHub, `<slug>[bot]` as the App names itself (github.md §6.3); the client is
+ * pointed at the repository.
+ */
+async function githubBotLogin(client: GitHubClient, repo: GitHubRepoRef): Promise<string> {
+  const app = await client.app();
+  await client.useRepository(repo);
+  return `${app.slug}[bot]`;
 }
 
 /** A row of a reply: in a thread, about an issue. */
@@ -170,8 +244,7 @@ export function gitlabSide(
   return {
     connectionId,
     async read() {
-      const me = await client.currentUser();
-      const listed = await client.discussions(ref, iid, MAX_DISCUSSION_PAGES);
+      const { me, listed } = await gitlabListing(client, ref, iid);
       // A discussion is listed with all its notes: one that is listed is whole.
       const discussion = listed.items.find((d) => d.id === row.threadId);
       const [first, ...later] = discussion?.notes ?? [];
@@ -240,9 +313,7 @@ export function githubSide(
   return {
     connectionId,
     async read() {
-      const app = await client.app();
-      await client.useRepository(repo);
-      const bot = `${app.slug}[bot]`;
+      const bot = await githubBotLogin(client, repo);
       const comments = await client.reviewComments(number, MAX_COMMENT_PAGES);
       // Beyond the page bound a reply, or the answer, may be unseen: the thread is not read whole.
       if (!comments.complete) return null;
@@ -333,8 +404,7 @@ export function gitlabCommandSide(
     connectionId,
     async read() {
       author = undefined;
-      const me = await client.currentUser();
-      const listed = await client.discussions(ref, iid, MAX_DISCUSSION_PAGES);
+      const { me, listed } = await gitlabListing(client, ref, iid);
       const discussion = listed.items.find((d) => d.id === threadId);
       if (discussion === undefined) return listed.complete ? null : { answered: null };
       const command = discussion.notes.find((note) => note.id === row.noteId);
@@ -379,9 +449,7 @@ export function githubCommandSide(
     connectionId,
     async read() {
       author = undefined;
-      const app = await client.app();
-      await client.useRepository(repo);
-      const bot = `${app.slug}[bot]`;
+      const bot = await githubBotLogin(client, repo);
       const comments = await client.issueComments(number, MAX_COMMENT_PAGES);
       const command = comments.items.find((c) => c.id === row.noteId);
       // A comment missing from a listing read whole was deleted; from one cut at its page bound it
@@ -408,5 +476,74 @@ export function githubCommandSide(
       return githubMayTriage(permission);
     },
     post: async (body) => (await client.createComment(number, body)).id,
+  };
+}
+
+/**
+ * What a scan lists of a merge request's notes: Qualor's identity there, and the notes, or for
+ * GitHub the new replies of its review threads, which are found where the review comments and the
+ * threads are listed (`githubRounds`), and the comments on the pull request's own page.
+ */
+export type Listing =
+  | { provider: 'gitlab'; botId: number; discussions: readonly GitLabDiscussion[] }
+  | {
+      provider: 'github';
+      login: string;
+      rounds: readonly Round[];
+      comments: readonly GitHubComment[];
+    };
+
+/** The merge request's notes on its provider, through the job's own client and its request budget. */
+export interface ScanSide {
+  /** The SCM connection the requests are made through, whose circuit they pass. */
+  connectionId: string;
+  /**
+   * Lists the notes as they are now, up to the page bounds a decoration reads by: what lies beyond
+   * a bound is left for a later pass. `window` is where a new reply of a thread counts from.
+   */
+  list(window: ReplyWindow): Promise<Listing>;
+}
+
+/** The notes of a GitLab merge request: who Qualor is, then its discussions with all their notes. */
+export function gitlabScanSide(
+  connectionId: string,
+  client: GitLabClient,
+  ref: string,
+  iid: string,
+): ScanSide {
+  return {
+    connectionId,
+    async list() {
+      const { me, listed } = await gitlabListing(client, ref, iid);
+      return { provider: 'gitlab', botId: me.id, discussions: listed.items };
+    },
+  };
+}
+
+/**
+ * The notes of a GitHub pull request: who Qualor is, its review comments and review threads (whose
+ * new replies are the rounds), and the comments on its page.
+ */
+export function githubScanSide(
+  connectionId: string,
+  client: GitHubClient,
+  repo: GitHubRepoRef,
+  number: string,
+): ScanSide {
+  return {
+    connectionId,
+    async list(window) {
+      const login = await githubBotLogin(client, repo);
+      const reviewComments = await client.reviewComments(number, MAX_COMMENT_PAGES);
+      const threads = await client.reviewThreads(number, MAX_THREAD_PAGES);
+      const comments = await client.issueComments(number, MAX_COMMENT_PAGES);
+      const options = { qualor: { githubLogin: login }, ...window };
+      return {
+        provider: 'github',
+        login,
+        rounds: githubRounds(reviewComments.items, threads.items, options),
+        comments: comments.items,
+      };
+    },
   };
 }

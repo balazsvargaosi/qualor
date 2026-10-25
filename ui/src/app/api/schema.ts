@@ -9295,6 +9295,11 @@ export interface paths {
                                     webhookSecretReadable: boolean;
                                     webhookUrl: string | null;
                                 } | null;
+                                gitlab: {
+                                    webhookSecretSet: boolean;
+                                    webhookSecretReadable: boolean;
+                                    webhookUrl: string | null;
+                                } | null;
                             }[];
                             nextCursor: string | null;
                         };
@@ -9339,7 +9344,7 @@ export interface paths {
             };
         };
         put?: never;
-        /** Connect an organisation to GitLab (token) or GitHub App (App id, private key, webhook secret) */
+        /** Connect an organisation to GitLab (token, optional webhook secret) or GitHub App (App id, private key, webhook secret) */
         post: {
             parameters: {
                 query?: never;
@@ -9360,8 +9365,7 @@ export interface paths {
                         appId?: unknown;
                         /** @description Not a field of a GitLab connection: sending it is a 422 */
                         privateKey?: unknown;
-                        /** @description Not a field of a GitLab connection: sending it is a 422 */
-                        webhookSecret?: unknown;
+                        webhookSecret?: string;
                     } | {
                         /** Format: uuid */
                         organizationId: string;
@@ -9396,6 +9400,11 @@ export interface paths {
                             github: {
                                 appId: string;
                                 keyReadable: boolean;
+                                webhookSecretSet: boolean;
+                                webhookSecretReadable: boolean;
+                                webhookUrl: string | null;
+                            } | null;
+                            gitlab: {
                                 webhookSecretSet: boolean;
                                 webhookSecretReadable: boolean;
                                 webhookUrl: string | null;
@@ -9534,7 +9543,7 @@ export interface paths {
         };
         options?: never;
         head?: never;
-        /** Change an SCM connection: GitLab (token) or GitHub App (App id, private key, webhook secret); each field on its own, a new base URL with the credentials again */
+        /** Change an SCM connection: GitLab (token, webhook secret) or GitHub App (App id, private key, webhook secret); each field on its own, a new base URL with the credentials again */
         patch: {
             parameters: {
                 query?: never;
@@ -9575,6 +9584,11 @@ export interface paths {
                             github: {
                                 appId: string;
                                 keyReadable: boolean;
+                                webhookSecretSet: boolean;
+                                webhookSecretReadable: boolean;
+                                webhookUrl: string | null;
+                            } | null;
+                            gitlab: {
                                 webhookSecretSet: boolean;
                                 webhookSecretReadable: boolean;
                                 webhookUrl: string | null;

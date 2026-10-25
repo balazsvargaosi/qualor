@@ -11,6 +11,7 @@ import { branchRoutes } from './branches';
 import { dependencyRoutes } from './dependencies';
 import { gateRoutes } from './gates';
 import { githubWebhookRoutes } from './github-webhooks';
+import { gitlabWebhookRoutes } from './gitlab-webhooks';
 import { issueRoutes } from './issues';
 import { issueStatusImportRoutes } from './issue-status-import';
 import { licenseRoutes } from './license';
@@ -73,6 +74,8 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   await app.register(autoFixRoutes, { prefix: '/api/v0', deps });
   await app.register(reviewRoutes, { prefix: '/api/v0', deps, uploadSlots });
   await app.register(licensePolicyRoutes, { prefix: '/api/v0', deps });
-  // Its own plugin: its raw-body JSON parser stays in its encapsulation context (github.md §9).
+  // Their own plugins: each one's raw-body JSON parser stays in its encapsulation context
+  // (github.md §9).
   await app.register(githubWebhookRoutes, { deps });
+  await app.register(gitlabWebhookRoutes, { deps });
 }

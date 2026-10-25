@@ -1,13 +1,13 @@
 import { eq, sql } from 'drizzle-orm';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { ADMIN_PASSWORD, addMember, createUser, login, type Session } from '../../test/app';
+import { waitForLockWaiters } from '../../test/db';
 import { createFakeGitHub, type FakeGitHub } from '../../test/fake-github';
 import { createFakeGitLab, type FakeGitLab } from '../../test/fake-gitlab';
 import { githubTestConfig, WEBHOOK_SECRET } from '../../test/github';
 import { createIngestHarness, type IngestHarness } from '../../test/ingest';
-import { PUBLIC_URL } from '../../test/scm';
+import { GITLAB_WEBHOOK_SECRET, PUBLIC_URL, scmTestConfig } from '../../test/scm';
 import { decryptSecret, encryptionKey, encryptSecret } from '../crypto/secrets';
-import type { Db } from '../db/client';
 import { branches, jobs, organizations, projects, scmConnections } from '../db/schema';
 import {
   MAX_SCM_CONNECTIONS_PER_ORGANIZATION,
@@ -22,19 +22,6 @@ import {
 } from '../scm/github/credentials';
 import { githubWebBase } from '../scm/github/url';
 import { GITLAB_FORBIDDEN } from '../scm/gitlab/client';
-
-/** Polls until `n` backends of this file's own database wait on a lock (never a fixed sleep). */
-async function waitForLockWaiters(db: Db, n: number, timeoutMs = 5_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const result = await db.execute(sql`
-      SELECT count(*)::int AS n FROM pg_stat_activity
-       WHERE wait_event_type = 'Lock' AND datname = current_database()`);
-    if (Number(result.rows[0]?.n) >= n) return;
-    if (Date.now() > deadline) throw new Error(`Timed out waiting for ${n} lock waiter(s)`);
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-}
 
 interface Connection {
   id: string;
@@ -100,6 +87,8 @@ describe('SCM connections API and project mapping (scm.md §2)', () => {
       baseUrl: fake.url,
       createdAt: expect.any(String),
       github: null,
+      // No webhook secret was given, and this server has no QUALOR_PUBLIC_URL to build its URL from.
+      gitlab: { webhookSecretSet: false, webhookSecretReadable: false, webhookUrl: null },
     });
     const [row] = await h.ctx.db
       .select()
@@ -114,6 +103,14 @@ describe('SCM connections API and project mapping (scm.md §2)', () => {
     expect(list.statusCode).toBe(200);
     expect(list.body).not.toContain(fake.token);
     expect(h.ctx.logs.join('\n')).not.toContain(fake.token);
+    await call('DELETE', `/scm-connections/${connection.id}`);
+  });
+
+  it('has no webhook URL to paste while the server has no QUALOR_PUBLIC_URL, whether a secret is set or not', async () => {
+    const connection = await create({ webhookSecret: GITLAB_WEBHOOK_SECRET });
+    expect(connection).toMatchObject({
+      gitlab: { webhookSecretSet: true, webhookSecretReadable: true, webhookUrl: null },
+    });
     await call('DELETE', `/scm-connections/${connection.id}`);
   });
 
@@ -726,6 +723,8 @@ describe('GitHub App connections (github.md §2.2, §2.5, D1)', () => {
       webhookSecretReadable: true,
       webhookUrl: `${PUBLIC_URL}/api/v0/github/webhooks/${id}`,
     });
+    // GitLab's fields are a GitLab connection's.
+    expect(created.json().gitlab).toBeNull();
     const row = await rowOf(id);
     expect(row.appId).toBe(String(fake.appId));
     expect(
@@ -760,11 +759,15 @@ describe('GitHub App connections (github.md §2.2, §2.5, D1)', () => {
     });
     const row = await rowOf(created.json().id as string);
     expect([row.appId, row.webhookSecretEnc, created.json().github]).toEqual([null, null, null]);
-    // The API refuses all of them. Only the App id is the CHECK's rule too: it lets a GitLab row
-    // hold a webhook secret (migration 0017).
+    // The API refuses the App's own fields; the webhook secret is GitLab's too (migration 0017
+    // lets a GitLab row hold one).
     expect(
-      errorPaths((await patch(row.id, { appId: '1', webhookSecret: WEBHOOK_SECRET })).body),
-    ).toEqual(['body.appId', 'body.webhookSecret']);
+      errorPaths(
+        (await patch(row.id, { appId: '1', privateKey: fake.privateKeyPem, webhookSecret: null }))
+          .body,
+      ),
+    ).toEqual(['body.appId', 'body.privateKey']);
+    expect((await patch(row.id, { webhookSecret: WEBHOOK_SECRET })).statusCode).toBe(200);
     const withAppId = await h.ctx.app.inject({
       method: 'POST',
       url: '/api/v0/scm-connections',
@@ -987,5 +990,277 @@ describe('GitHub App connections (github.md §2.2, §2.5, D1)', () => {
       sql`SELECT ${webBaseSql('c')} AS web FROM (SELECT 'github'::text AS provider, ${baseUrl}::text AS base_url) c`,
     );
     expect(result.rows[0]?.web).toBe(githubWebBase(baseUrl));
+  });
+});
+
+describe('GitLab connections: the webhook secret (6I-4)', () => {
+  let h: IngestHarness;
+  let fake: FakeGitLab;
+  const post = (payload: Record<string, unknown> = {}) =>
+    h.ctx.app.inject({
+      method: 'POST',
+      url: '/api/v0/scm-connections',
+      headers: h.orgAdmin.headers,
+      payload: {
+        organizationId: h.organizationId,
+        provider: 'gitlab',
+        baseUrl: fake.url,
+        token: fake.token,
+        ...payload,
+      },
+    });
+  const patch = (id: string, payload: Record<string, unknown>) =>
+    h.ctx.app.inject({
+      method: 'PATCH',
+      url: `/api/v0/scm-connections/${id}`,
+      headers: h.orgAdmin.headers,
+      payload,
+    });
+  const list = async () =>
+    (
+      await h.ctx.app.inject({
+        method: 'GET',
+        url: `/api/v0/scm-connections?organizationId=${h.organizationId}`,
+        headers: h.orgAdmin.headers,
+      })
+    ).json().items as { id: string; github: unknown; gitlab: Record<string, unknown> | null }[];
+  const rowOf = async (id: string) =>
+    (await h.ctx.db.select().from(scmConnections).where(eq(scmConnections.id, id)))[0]!;
+  const errorPaths = (body: string) =>
+    (JSON.parse(body) as { errors?: { path: string }[] }).errors?.map((e) => e.path).sort();
+  const serverKey = () => encryptionKey(h.ctx.config.secretKey);
+  const NEW_SECRET = ['glhook-test-', 'rotated-fedcba9876'].join('');
+  /** The webhook URL of a connection: the public address, then the route. */
+  const urlOf = (id: string) => `${PUBLIC_URL}/api/v0/gitlab/webhooks/${id}`;
+
+  beforeAll(async () => {
+    fake = await createFakeGitLab();
+    h = await createIngestHarness({ config: scmTestConfig(fake) });
+  });
+  afterAll(async () => {
+    await h.close();
+    await fake.close();
+  });
+  // An organisation has at most ten connections: each case starts with none.
+  afterEach(async () => {
+    await h.ctx.db.delete(scmConnections);
+  });
+
+  it('stores the secret in its own envelope, shows neither it nor the token, and gives the URL to paste', async () => {
+    const created = await post({ webhookSecret: GITLAB_WEBHOOK_SECRET });
+    expect(created.statusCode, created.body).toBe(201);
+    const id = created.json().id as string;
+    expect(created.json().github).toBeNull();
+    expect(created.json().gitlab).toEqual({
+      webhookSecretSet: true,
+      webhookSecretReadable: true,
+      webhookUrl: urlOf(id),
+    });
+    const row = await rowOf(id);
+    expect(decryptWebhookSecret(serverKey(), row.webhookSecretEnc)).toBe(GITLAB_WEBHOOK_SECRET);
+    // The token is the token's, the secret the secret's: neither envelope opens as the other.
+    expect(decryptSecret(serverKey(), row.tokenEnc, SCM_TOKEN_AAD)).toBe(fake.token);
+    expect(row.webhookSecretEnc).not.toEqual(row.tokenEnc);
+    expect(decryptSecret(serverKey(), row.tokenEnc, WEBHOOK_SECRET_AAD)).toBeNull();
+    expect(row.appId).toBeNull();
+    expect((await list()).find((c) => c.id === id)).toMatchObject({
+      github: null,
+      gitlab: { webhookSecretSet: true, webhookSecretReadable: true, webhookUrl: urlOf(id) },
+    });
+    for (const body of [
+      created.body,
+      JSON.stringify(await list()),
+      JSON.stringify(row.webhookSecretEnc),
+      h.ctx.logs.join('\n'),
+    ]) {
+      expect(body).not.toContain(GITLAB_WEBHOOK_SECRET);
+      expect(body).not.toContain(fake.token);
+    }
+  });
+
+  it('rotates and removes the secret, each on its own, leaving the token alone', async () => {
+    const id = (await post({ webhookSecret: GITLAB_WEBHOOK_SECRET })).json().id as string;
+    const before = await rowOf(id);
+    const rotated = await patch(id, { webhookSecret: NEW_SECRET });
+    expect(rotated.statusCode, rotated.body).toBe(200);
+    expect(rotated.json().gitlab).toEqual({
+      webhookSecretSet: true,
+      webhookSecretReadable: true,
+      webhookUrl: urlOf(id),
+    });
+    expect(decryptWebhookSecret(serverKey(), (await rowOf(id)).webhookSecretEnc)).toBe(NEW_SECRET);
+    expect((await rowOf(id)).tokenEnc).toEqual(before.tokenEnc);
+    expect(rotated.body).not.toContain(NEW_SECRET);
+    // A new token leaves the secret as it is.
+    expect((await patch(id, { token: 'glpat-another-token' })).statusCode).toBe(200);
+    expect(decryptWebhookSecret(serverKey(), (await rowOf(id)).webhookSecretEnc)).toBe(NEW_SECRET);
+    // null removes it: no secret, no URL to paste.
+    const removed = await patch(id, { webhookSecret: null });
+    expect(removed.statusCode, removed.body).toBe(200);
+    expect(removed.json().gitlab).toEqual({
+      webhookSecretSet: false,
+      webhookSecretReadable: false,
+      webhookUrl: null,
+    });
+    expect((await rowOf(id)).webhookSecretEnc).toBeNull();
+    // Removing what is not there is not an error.
+    expect((await patch(id, { webhookSecret: null })).statusCode).toBe(200);
+    // And one can be set on a connection made without.
+    const set = await patch(id, { webhookSecret: GITLAB_WEBHOOK_SECRET });
+    expect(set.json().gitlab).toMatchObject({ webhookSecretSet: true, webhookUrl: urlOf(id) });
+  });
+
+  it.each([
+    ['short', 'short'],
+    ['15 characters', 'x'.repeat(15)],
+    ['257 characters', 'x'.repeat(257)],
+    ['a space', 'secret with a space inside'],
+    ['a tab', 'secret\twith-a-tab-inside'],
+    ['a letter beyond ASCII', 'sëcret-with-umlaut-123'],
+    ['nothing', ''],
+  ])('refuses a secret of %s, on creation and on change, and stores nothing', async (_, secret) => {
+    const created = await post({ webhookSecret: secret });
+    expect([created.statusCode, errorPaths(created.body)]).toEqual([422, ['body.webhookSecret']]);
+    const id = (await post({ webhookSecret: GITLAB_WEBHOOK_SECRET })).json().id as string;
+    const before = await rowOf(id);
+    const changed = await patch(id, { webhookSecret: secret });
+    expect([changed.statusCode, errorPaths(changed.body)]).toEqual([422, ['body.webhookSecret']]);
+    expect(await rowOf(id)).toEqual(before);
+    expect(changed.body).not.toContain(GITLAB_WEBHOOK_SECRET);
+  });
+
+  it('still refuses the GitHub App’s own fields on a GitLab connection', async () => {
+    const withAppId = await post({ appId: '1', privateKey: fake.token });
+    expect([withAppId.statusCode, errorPaths(withAppId.body)]).toEqual([
+      422,
+      ['body.appId', 'body.privateKey'],
+    ]);
+    const id = (await post()).json().id as string;
+    const changed = await patch(id, { appId: '1', privateKey: fake.token });
+    expect([changed.statusCode, errorPaths(changed.body)]).toEqual([
+      422,
+      ['body.appId', 'body.privateKey'],
+    ]);
+  });
+
+  it('says that a stored secret no longer decrypts, and takes a new one', async () => {
+    const id = (await post({ webhookSecret: GITLAB_WEBHOOK_SECRET })).json().id as string;
+    await h.ctx.db
+      .update(scmConnections)
+      .set({
+        webhookSecretEnc: encryptSecret(encryptionKey('z'.repeat(32)), 'x', WEBHOOK_SECRET_AAD),
+      })
+      .where(eq(scmConnections.id, id));
+    // Set, and not readable: the URL is shown, as the GitHub App's is, and the page says so.
+    expect((await list()).find((c) => c.id === id)?.gitlab).toEqual({
+      webhookSecretSet: true,
+      webhookSecretReadable: false,
+      webhookUrl: urlOf(id),
+    });
+    expect((await patch(id, { webhookSecret: NEW_SECRET })).json().gitlab).toMatchObject({
+      webhookSecretSet: true,
+      webhookSecretReadable: true,
+    });
+  });
+
+  it('needs the secret again, or null to drop it, in the same request, to change the address', async () => {
+    const id = (await post({ webhookSecret: GITLAB_WEBHOOK_SECRET })).json().id as string;
+    const moved = await patch(id, { baseUrl: 'https://gitlab.example.com' });
+    expect([moved.statusCode, errorPaths(moved.body)]).toEqual([
+      422,
+      ['body.token', 'body.webhookSecret'],
+    ]);
+    const withToken = await patch(id, {
+      baseUrl: 'https://gitlab.example.com',
+      token: 'glpat-new',
+    });
+    expect([withToken.statusCode, errorPaths(withToken.body)]).toEqual([
+      422,
+      ['body.webhookSecret'],
+    ]);
+    expect((await rowOf(id)).baseUrl).toBe(fake.url);
+    // The secret given again moves it, with the secret as given.
+    const again = await patch(id, {
+      baseUrl: 'https://gitlab.example.com',
+      token: 'glpat-new',
+      webhookSecret: NEW_SECRET,
+    });
+    expect(again.statusCode, again.body).toBe(200);
+    expect(decryptWebhookSecret(serverKey(), (await rowOf(id)).webhookSecretEnc)).toBe(NEW_SECRET);
+    // null drops it, and moves it back.
+    const dropped = await patch(id, { baseUrl: fake.url, token: fake.token, webhookSecret: null });
+    expect(dropped.statusCode, dropped.body).toBe(200);
+    expect(dropped.json()).toMatchObject({
+      baseUrl: fake.url,
+      gitlab: { webhookSecretSet: false, webhookUrl: null },
+    });
+    expect((await rowOf(id)).webhookSecretEnc).toBeNull();
+    // The same address, however spelled, needs nothing again; neither does a connection with no secret.
+    const keeping = (await post({ webhookSecret: GITLAB_WEBHOOK_SECRET })).json().id as string;
+    expect((await patch(keeping, { baseUrl: `${fake.url}/` })).statusCode).toBe(200);
+    expect((await rowOf(keeping)).webhookSecretEnc).not.toBeNull();
+    const bare = (await post()).json().id as string;
+    expect(
+      (await patch(bare, { baseUrl: 'https://gitlab.example.com', token: 'glpat-new' })).statusCode,
+    ).toBe(200);
+  });
+
+  /**
+   * Holds the connection's row lock while `first` and then `second` send their PATCH, so both
+   * wait, in that order, on the write; then releases it.
+   */
+  const race = async (
+    id: string,
+    first: Record<string, unknown>,
+    second: Record<string, unknown>,
+  ) => {
+    let a: ReturnType<typeof patch> | undefined;
+    let b: ReturnType<typeof patch> | undefined;
+    await h.ctx.db.transaction(async (tx) => {
+      await tx
+        .select({ id: scmConnections.id })
+        .from(scmConnections)
+        .where(eq(scmConnections.id, id))
+        .for('update');
+      a = patch(id, first);
+      await waitForLockWaiters(h.ctx.db, 1);
+      b = patch(id, second);
+      await waitForLockWaiters(h.ctx.db, 2);
+    });
+    return [await a!, await b!] as const;
+  };
+  const ELSEWHERE = 'https://gitlab.qualor.invalid';
+
+  it('never moves the connection past a webhook secret set meanwhile', async () => {
+    const id = (await post()).json().id as string;
+    // Read without a secret, so the move needs none; a concurrent PATCH sets one first.
+    const [setSecret, move] = await race(
+      id,
+      { webhookSecret: GITLAB_WEBHOOK_SECRET },
+      { baseUrl: ELSEWHERE, token: 'glpat-elsewhere' },
+    );
+    expect(setSecret.statusCode, setSecret.body).toBe(200);
+    expect(move.statusCode, move.body).toBe(503);
+    expect(move.json()).toMatchObject({ code: 'CONCURRENCY_CONFLICT' });
+    const row = await rowOf(id);
+    expect(row.baseUrl).toBe(fake.url); // the secret was never carried to another address
+    expect(row.webhookSecretEnc).not.toBeNull();
+  });
+
+  it('tells a PATCH of the secret alone that lost a race to a move that the address changed', async () => {
+    const id = (await post()).json().id as string;
+    const [move, setSecret] = await race(
+      id,
+      { baseUrl: ELSEWHERE, token: 'glpat-elsewhere' },
+      { webhookSecret: GITLAB_WEBHOOK_SECRET },
+    );
+    expect(move.statusCode, move.body).toBe(200);
+    expect(setSecret.statusCode, setSecret.body).toBe(503);
+    expect(setSecret.json()).toMatchObject({ code: 'CONCURRENCY_CONFLICT' });
+    expect(setSecret.body).toContain('address');
+    // Not the 422 that asks the token again: it did not ask to move.
+    expect(setSecret.body).not.toContain('token');
+    const row = await rowOf(id);
+    expect([row.baseUrl, row.webhookSecretEnc]).toEqual([ELSEWHERE, null]);
   });
 });

@@ -21,6 +21,7 @@ const CONNECTION: Connection = {
   baseUrl: 'https://gitlab.example.com',
   createdAt: '2026-09-20T10:00:00.000Z',
   github: null,
+  gitlab: { webhookSecretSet: false, webhookSecretReadable: false, webhookUrl: null },
 };
 
 const GITHUB: Connection = {
@@ -36,6 +37,7 @@ const GITHUB: Connection = {
     webhookSecretReadable: false,
     webhookUrl: null,
   },
+  gitlab: null,
 };
 
 function project(id: string, overrides: Record<string, unknown> = {}) {

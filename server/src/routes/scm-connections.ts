@@ -52,7 +52,11 @@ import {
   PRIVATE_KEY_PROBLEM_TEXT,
   WEBHOOK_SECRET_PATTERN,
 } from '../scm/github/app-auth';
-import { githubWebhookUrl, testGitHubConnection } from '../scm/github/connections';
+import {
+  githubWebhookUrl,
+  gitlabWebhookUrl,
+  testGitHubConnection,
+} from '../scm/github/connections';
 import {
   decryptPrivateKey,
   decryptWebhookSecret,
@@ -72,6 +76,14 @@ const githubSchema = z.object({
   webhookUrl: z.string().nullable(),
 });
 
+const gitlabSchema = z.object({
+  webhookSecretSet: z.boolean(),
+  /** False when `webhook_secret_enc` no longer decrypts (QUALOR_SECRET_KEY changed). */
+  webhookSecretReadable: z.boolean(),
+  /** Null without `QUALOR_PUBLIC_URL` or without a webhook secret. */
+  webhookUrl: z.string().nullable(),
+});
+
 const connectionSchema = z.object({
   id: z.uuid(),
   organizationId: z.uuid(),
@@ -80,6 +92,8 @@ const connectionSchema = z.object({
   createdAt: timestamp,
   /** The GitHub App (github.md §2.2); null for GitLab. Never the key or the secret. */
   github: githubSchema.nullable(),
+  /** What GitLab's webhook needs (6I-4); null for GitHub. Never the secret. */
+  gitlab: gitlabSchema.nullable(),
 });
 
 const testResultSchema = z.object({
@@ -102,23 +116,30 @@ function connectionDto(
   publicUrl: string | null,
 ): z.infer<typeof connectionSchema> {
   const secretSet = row.webhookSecretEnc !== null;
+  const secretReadable = secretSet && decryptWebhookSecret(key, row.webhookSecretEnc) !== null;
+  const github = row.provider === 'github';
   return {
     id: row.id,
     organizationId: row.organizationId,
     provider: row.provider,
     baseUrl: row.baseUrl,
     createdAt: iso(row.createdAt),
-    github:
-      row.provider === 'github'
-        ? {
-            appId: row.appId ?? '',
-            keyReadable: decryptPrivateKey(key, row.tokenEnc) !== null,
-            webhookSecretSet: secretSet,
-            webhookSecretReadable:
-              secretSet && decryptWebhookSecret(key, row.webhookSecretEnc) !== null,
-            webhookUrl: secretSet ? githubWebhookUrl(publicUrl, row.id) : null,
-          }
-        : null,
+    github: github
+      ? {
+          appId: row.appId ?? '',
+          keyReadable: decryptPrivateKey(key, row.tokenEnc) !== null,
+          webhookSecretSet: secretSet,
+          webhookSecretReadable: secretReadable,
+          webhookUrl: secretSet ? githubWebhookUrl(publicUrl, row.id) : null,
+        }
+      : null,
+    gitlab: github
+      ? null
+      : {
+          webhookSecretSet: secretSet,
+          webhookSecretReadable: secretReadable,
+          webhookUrl: secretSet ? gitlabWebhookUrl(publicUrl, row.id) : null,
+        },
   };
 }
 
@@ -144,7 +165,10 @@ const appId = z
  * checked in the handler. Stored encrypted as its PKCS#8 export, never echoed or logged.
  */
 const privateKey = noNul(z.string().min(1).max(MAX_PRIVATE_KEY_BYTES));
-/** github.md §2.2: optional; the same value as in the App's webhook settings. */
+/**
+ * github.md §2.2: optional; the same value as in the App's webhook settings. On a GitLab
+ * connection (6I-4) the same rules: the secret token of the project's webhook.
+ */
 const webhookSecret = z.string().regex(WEBHOOK_SECRET_PATTERN, {
   message: 'Use 16-256 printable ASCII characters without spaces',
 });
@@ -293,7 +317,7 @@ export const scmConnectionRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = a
       schema: {
         tags: ['scm'],
         summary:
-          'Connect an organisation to GitLab (token) or GitHub App (App id, private key, webhook secret)',
+          'Connect an organisation to GitLab (token, optional webhook secret) or GitHub App (App id, private key, webhook secret)',
         body: z.discriminatedUnion('provider', [
           z.strictObject({
             organizationId: z.uuid(),
@@ -302,7 +326,7 @@ export const scmConnectionRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = a
             token,
             appId: notAField('GitLab'),
             privateKey: notAField('GitLab'),
-            webhookSecret: notAField('GitLab'),
+            webhookSecret: webhookSecret.optional(),
           }),
           z.strictObject({
             organizationId: z.uuid(),
@@ -327,8 +351,8 @@ export const scmConnectionRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = a
         'org.scm.manage',
       );
       const url = checkedBaseUrl(body.baseUrl, body.provider);
-      // The CHECK of migrations 0003 and 0017 backs the App id rules; the API refuses first, with
-      // field errors, and alone refuses a webhook secret on a GitLab connection.
+      // The CHECK of migrations 0003 and 0017 backs the App id rules (migration 0017 lets a GitLab
+      // connection hold a webhook secret); the API refuses first, with field errors.
       const values: typeof scmConnections.$inferInsert =
         body.provider === 'github'
           ? {
@@ -347,6 +371,10 @@ export const scmConnectionRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = a
               provider: 'gitlab',
               baseUrl: url,
               tokenEnc: encryptSecret(key, body.token, SCM_TOKEN_AAD),
+              webhookSecretEnc:
+                body.webhookSecret === undefined
+                  ? null
+                  : encryptWebhookSecret(key, body.webhookSecret),
             };
       const created = await deps.db.transaction(async (tx) => {
         // Serialises concurrent creations for the organisation, so the bound below holds.
@@ -390,7 +418,7 @@ export const scmConnectionRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = a
       schema: {
         tags: ['scm'],
         summary:
-          'Change an SCM connection: GitLab (token) or GitHub App (App id, private key, webhook secret); each field on its own, a new base URL with the credentials again',
+          'Change an SCM connection: GitLab (token, webhook secret) or GitHub App (App id, private key, webhook secret); each field on its own, a new base URL with the credentials again',
         params: idParams,
         body: z
           .strictObject({
@@ -409,9 +437,7 @@ export const scmConnectionRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = a
       const row = await connectionFor(accessOf(deps), principal, request.params.id);
       const body = request.body;
       const github = row.provider === 'github';
-      const foreign = github
-        ? (['token'] as const)
-        : (['appId', 'privateKey', 'webhookSecret'] as const);
+      const foreign = github ? (['token'] as const) : (['appId', 'privateKey'] as const);
       const wrong = foreign.filter((f) => body[f] !== undefined);
       if (wrong.length > 0) {
         throw validationFailed(
@@ -444,7 +470,7 @@ export const scmConnectionRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = a
         if (moves) {
           const missing: FieldError[] = [];
           if (!bringsCredential) missing.push(needsCredential);
-          if (github && row.webhookSecretEnc !== null && body.webhookSecret === undefined) {
+          if (row.webhookSecretEnc !== null && body.webhookSecret === undefined) {
             missing.push({
               path: 'body.webhookSecret',
               message:
@@ -477,7 +503,7 @@ export const scmConnectionRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = a
             and(
               eq(scmConnections.id, row.id),
               eq(scmConnections.baseUrl, row.baseUrl),
-              moves && github && body.webhookSecret === undefined
+              moves && body.webhookSecret === undefined
                 ? isNull(scmConnections.webhookSecretEnc)
                 : undefined,
             ),
@@ -490,9 +516,10 @@ export const scmConnectionRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = a
             .where(eq(scmConnections.id, row.id));
           if (!now) throw notFound('SCM connection');
           // The stored address is no longer the one this request named: a change of address.
-          // A GitHub change without the key (the App id or the secret alone) did not ask for a
-          // move, so it is told the address changed, not that a move needs the key.
-          if (!bringsCredential && github) {
+          // A change without the credential that names no address (the GitHub App id or either
+          // provider's secret alone) did not ask for a move, so it is told the address changed,
+          // not that a move needs the credential. A GitHub change is told so whatever it names.
+          if (!bringsCredential && (github || body.baseUrl === undefined)) {
             throw new ProblemError(
               503,
               'CONCURRENCY_CONFLICT',

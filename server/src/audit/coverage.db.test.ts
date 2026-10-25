@@ -354,7 +354,7 @@ describe('the audit catalogue end to end (rbac-audit.md §19 criteria 7–8)', (
           WHERE action = 'scm_connection.updated' ORDER BY seq`,
     );
     expect(rows.rows.map((r) => r.changed)).toEqual([
-      ['token'],
+      ['token', 'webhookSecret'],
       ['appId', 'privateKey', 'webhookSecret'],
     ]);
   });

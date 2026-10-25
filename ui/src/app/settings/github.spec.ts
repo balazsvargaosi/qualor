@@ -32,6 +32,7 @@ const GITHUB: Connection = {
     webhookSecretReadable: true,
     webhookUrl: 'https://q.example/api/v0/github/webhooks/g1',
   },
+  gitlab: null,
 };
 const GITLAB: Connection = {
   ...GITHUB,
@@ -39,6 +40,7 @@ const GITLAB: Connection = {
   provider: 'gitlab',
   baseUrl: 'https://gitlab.example.com',
   github: null,
+  gitlab: { webhookSecretSet: false, webhookSecretReadable: false, webhookUrl: null },
 };
 
 function setup(admin = true): FakeServer {

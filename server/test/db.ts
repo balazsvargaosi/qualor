@@ -1,7 +1,8 @@
 import { randomBytes } from 'node:crypto';
+import { sql } from 'drizzle-orm';
 import pg from 'pg';
 import { expect, inject } from 'vitest';
-import { createDatabase, type Database } from '../src/db/client';
+import { createDatabase, type Database, type Db } from '../src/db/client';
 import { pgErrorCode } from '../src/db/errors';
 import { databaseUrl, TEMPLATE_DATABASE } from './urls';
 
@@ -57,4 +58,20 @@ export async function sqlStateOf(action: PromiseLike<unknown>): Promise<string |
 
 export async function expectPgError(action: PromiseLike<unknown>, code: string): Promise<void> {
   expect(await sqlStateOf(action), `expected SQLSTATE ${code}`).toBe(code);
+}
+
+/**
+ * Polls until `n` backends of this test's own database wait on a lock (never a fixed sleep): a
+ * test that holds a row lock sends its requests, waits for them to queue behind it, and lets go.
+ */
+export async function waitForLockWaiters(db: Db, n: number, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const result = await db.execute(sql`
+      SELECT count(*)::int AS n FROM pg_stat_activity
+       WHERE wait_event_type = 'Lock' AND datname = current_database()`);
+    if (Number(result.rows[0]?.n) >= n) return;
+    if (Date.now() > deadline) throw new Error(`Timed out waiting for ${n} lock waiter(s)`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }

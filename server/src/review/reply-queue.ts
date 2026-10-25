@@ -2,11 +2,20 @@ import { and, asc, eq, gt, gte, inArray, lt, not, notExists, or, sql, type SQL }
 import { alias } from 'drizzle-orm/pg-core';
 import { z } from 'zod';
 import type { Db, Executor } from '../db/client';
-import { issues, jobs, reviewReplies, THREAD_ID, type ReplyKind } from '../db/schema';
+import { branches, issues, jobs, reviewReplies, THREAD_ID, type ReplyKind } from '../db/schema';
 import { readLlmSettings } from '../llm/settings';
 import { enqueue } from '../queue/queue';
+import type { GitHubComment } from '../scm/github/client';
+import type { GitLabDiscussion } from '../scm/gitlab/client';
 import { insertReplies, largestNoteIds } from './replies';
-import type { CommandNote, DetectOptions, Round } from './reply-detect';
+import {
+  githubCommands,
+  gitlabCommands,
+  gitlabRounds,
+  type CommandNote,
+  type DetectOptions,
+  type Round,
+} from './reply-detect';
 import { REVIEW_AFTER_STOP_SECONDS } from './runs';
 import { reviewActive, reviewSettingsOf } from './settings';
 
@@ -18,6 +27,10 @@ import { reviewActive, reviewSettingsOf } from './settings';
  * which the review worker runs beside the reviews (reply-job.ts). Nothing else writes these rows
  * and jobs (the job's own stop, and its wait for an SCM circuit, queue its row again here too), so
  * a row is queued exactly when its job is, and the sweep below ends a row its job left running.
+ *
+ * The other `ai-reply` job, a scan, is a webhook's: it names a merge request and reads its notes
+ * through the API (reply-scan.ts), never trusting what the webhook carried. `queueScan` queues it,
+ * one at a time for a merge request, and what a scan finds is queued as a decoration's notes are.
  *
  * A pass is bounded: at most 50 rounds and 20 commands, new ones and notes queued again together,
  * the oldest first, and the rest wait for the next pass. The caps count only what the ledger does
@@ -48,6 +61,48 @@ export const replyPayload = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('scan'), branchId: z.uuid() }),
 ]);
 export type ReplyPayload = z.infer<typeof replyPayload>;
+
+/**
+ * Queues a scan of the merge request's notes (a webhook's job, reply-scan.ts), unless one is queued
+ * already for the branch: that one has not read the notes yet, so it reads the new note too. A scan
+ * that is running does not count, since it may have listed the notes before this one was written,
+ * and neither do the branch's answer jobs. The check and the queueing are one step for the branch,
+ * which takes the branch's row first (as `FOR NO KEY UPDATE`, which conflicts with itself but
+ * leaves the foreign-key checks of ingestion and of the ledger's rows alone), so that two
+ * deliveries at once queue one scan: a burst of notes makes at most one scan waiting. The scan is
+ * due `runAt` (now when left out). Answers whether it queued one; a branch that is gone has none.
+ */
+export async function queueScan(db: Db, branchId: string, runAt?: SQL): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    const [branch] = await tx
+      .select({ id: branches.id })
+      .from(branches)
+      .where(eq(branches.id, branchId))
+      .for('no key update');
+    if (branch === undefined) return false;
+    const [waiting] = await tx
+      .select({ id: jobs.id })
+      .from(jobs)
+      .where(
+        and(
+          eq(jobs.queue, AI_REPLY_QUEUE),
+          eq(jobs.concurrencyKey, replyKey(branchId)),
+          eq(jobs.status, 'queued'),
+          sql`${jobs.payload} ->> 'kind' = 'scan'`,
+        ),
+      )
+      .limit(1);
+    if (waiting !== undefined) return false;
+    await enqueue(tx, {
+      queue: AI_REPLY_QUEUE,
+      payload: { kind: 'scan', branchId } satisfies ReplyPayload,
+      concurrencyKey: replyKey(branchId),
+      maxAttempts: AI_REPLY_MAX_ATTEMPTS,
+      ...(runAt === undefined ? {} : { runAt }),
+    });
+    return true;
+  });
+}
 
 /**
  * The most rounds one pass queues, new ones and replies queued again together. The oldest go first
@@ -202,6 +257,21 @@ export async function queueAfterCircuit(
   waitSeconds: number,
 ): Promise<boolean> {
   return queueAgain(db, reply, waitSeconds);
+}
+
+/**
+ * A scan whose job found its SCM connection's circuit closed to it before its own requests: the
+ * scan is queued again, due in `waitSeconds`, when the circuit lets a job through again. The job
+ * that gave it back ends, and no try of the new one is spent. A scan the branch has queued already
+ * is that one (`queueScan`): it runs sooner and waits for the circuit in its turn. Answers whether
+ * it queued one.
+ */
+export async function queueScanAfterCircuit(
+  db: Db,
+  branchId: string,
+  waitSeconds: number,
+): Promise<boolean> {
+  return queueScan(db, branchId, sql`now() + make_interval(secs => ${waitSeconds})`);
 }
 
 /**
@@ -484,5 +554,54 @@ export async function queueReplies(
     const answered = [...again, ...rounds, ...commands];
     await enqueueAnswers(tx, ctx.branchId, answered);
     return answered.length;
+  });
+}
+
+/** The merge request a pass queues the answers of, for the ledger's rows. */
+type AnswerIds = Pick<ReplyContext, 'projectId' | 'branchId'>;
+
+/**
+ * Queues the answers to what people wrote in a GitLab merge request (6I-4): the new replies in
+ * Qualor's threads and the commands among `discussions`, as the listing a decoration or a scan
+ * read holds them, cut by the page bound or not: a note it saw is a note, and the threads it did
+ * not see wait for a later pass. `botId` is Qualor's own GitLab user. Reads nothing from GitLab.
+ * Without a `window` AI review is not active for the project, and Qualor answers none. Answers how
+ * many jobs it queued.
+ */
+export async function queueGitLabAnswers(
+  db: Db,
+  ids: AnswerIds,
+  window: ReplyWindow | null,
+  botId: number,
+  discussions: readonly GitLabDiscussion[],
+): Promise<number> {
+  if (window === null) return 0;
+  const options = { qualor: { gitlabUserId: botId }, ...window };
+  return queueReplies(db, { ...ids, provider: 'gitlab' }, window, {
+    rounds: gitlabRounds(discussions, options),
+    commands: gitlabCommands(discussions, options),
+  });
+}
+
+/**
+ * Queues the answers to what people wrote in a GitHub pull request (6I-4): the new `rounds` of its
+ * review threads, found where the listing of the review comments and threads was read (the
+ * decoration's plan, or a scan: `githubRounds`), and the commands among `comments`, the comments
+ * on the pull request's own page. `login` is the App's `<slug>[bot]`. Reads nothing from GitHub.
+ * Without a `window` AI review is not active for the project, and Qualor answers none. Answers how
+ * many jobs it queued.
+ */
+export async function queueGitHubAnswers(
+  db: Db,
+  ids: AnswerIds,
+  window: ReplyWindow | null,
+  login: string,
+  found: { rounds: readonly Round[]; comments: readonly GitHubComment[] },
+): Promise<number> {
+  if (window === null) return 0;
+  const options = { qualor: { githubLogin: login }, ...window };
+  return queueReplies(db, { ...ids, provider: 'github' }, window, {
+    rounds: found.rounds,
+    commands: githubCommands(found.comments, options),
   });
 }

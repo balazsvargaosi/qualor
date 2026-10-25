@@ -49,6 +49,8 @@ const S = {
   gitlabToken: ['glpat', 'scenario', 'mapped', '9Z8Y'].join('-'),
   scmToken: ['glpat', 'scenario', 'created', '5G6H'].join('-'),
   scmTokenUpdated: ['glpat', 'scenario', 'updated', '7J8K'].join('-'),
+  gitlabWebhookSecret: ['gitlab', 'webhook', 'secret', 'CREATED83'].join('-'),
+  gitlabWebhookSecretUpdated: ['gitlab', 'webhook', 'secret', 'UPDATED94'].join('-'),
   githubWebhookSecret: ['github', 'webhook', 'secret', 'CREATED61'].join('-'),
   githubWebhookSecretUpdated: ['github', 'webhook', 'secret', 'UPDATED72'].join('-'),
   webhookPath: ['WHPATH', 'SECRET', '31'].join(''),
@@ -429,7 +431,7 @@ export async function runAuditScenario(
   // The default goes back to the built-in profile.
   await call('DELETE', `/quality-profiles/${profileCopy}`, 204);
 
-  // scm_connection.created, .updated (a new token), .deleted
+  // scm_connection.created, .updated (a new token and a new webhook secret), .deleted
   const scm = (
     (
       await call('POST', '/scm-connections', 201, {
@@ -437,10 +439,14 @@ export async function runAuditScenario(
         provider: 'gitlab',
         baseUrl: gitlab.url,
         token: S.scmToken,
+        webhookSecret: S.gitlabWebhookSecret,
       })
     ).json() as { id: string }
   ).id;
-  await call('PATCH', `/scm-connections/${scm}`, 200, { token: S.scmTokenUpdated });
+  await call('PATCH', `/scm-connections/${scm}`, 200, {
+    token: S.scmTokenUpdated,
+    webhookSecret: S.gitlabWebhookSecretUpdated,
+  });
   await call('DELETE', `/scm-connections/${scm}`, 204);
 
   // scm_connection.created, .updated (App id, private key and webhook secret), .deleted for a

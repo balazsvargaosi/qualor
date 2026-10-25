@@ -18920,6 +18920,36 @@
                                 "type": "null"
                               }
                             ]
+                          },
+                          "gitlab": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "webhookSecretSet": {
+                                    "type": "boolean"
+                                  },
+                                  "webhookSecretReadable": {
+                                    "type": "boolean"
+                                  },
+                                  "webhookUrl": {
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "webhookSecretSet",
+                                  "webhookSecretReadable",
+                                  "webhookUrl"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
                           }
                         },
                         "required": [
@@ -18928,7 +18958,8 @@
                           "provider",
                           "baseUrl",
                           "createdAt",
-                          "github"
+                          "github",
+                          "gitlab"
                         ],
                         "additionalProperties": false
                       }
@@ -18992,7 +19023,7 @@
         }
       },
       "post": {
-        "summary": "Connect an organisation to GitLab (token) or GitHub App (App id, private key, webhook secret)",
+        "summary": "Connect an organisation to GitLab (token, optional webhook secret) or GitHub App (App id, private key, webhook secret)",
         "tags": [
           "scm"
         ],
@@ -19034,8 +19065,8 @@
                         "description": "Not a field of a GitLab connection: sending it is a 422"
                       },
                       "webhookSecret": {
-                        "not": {},
-                        "description": "Not a field of a GitLab connection: sending it is a 422"
+                        "type": "string",
+                        "pattern": "^[\\x21-\\x7e]{16,256}$"
                       }
                     },
                     "required": [
@@ -19167,6 +19198,36 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "gitlab": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "webhookSecretSet": {
+                              "type": "boolean"
+                            },
+                            "webhookSecretReadable": {
+                              "type": "boolean"
+                            },
+                            "webhookUrl": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "webhookSecretSet",
+                            "webhookSecretReadable",
+                            "webhookUrl"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -19175,7 +19236,8 @@
                     "provider",
                     "baseUrl",
                     "createdAt",
-                    "github"
+                    "github",
+                    "gitlab"
                   ],
                   "additionalProperties": false
                 }
@@ -19237,7 +19299,7 @@
     },
     "/api/v0/scm-connections/{id}": {
       "patch": {
-        "summary": "Change an SCM connection: GitLab (token) or GitHub App (App id, private key, webhook secret); each field on its own, a new base URL with the credentials again",
+        "summary": "Change an SCM connection: GitLab (token, webhook secret) or GitHub App (App id, private key, webhook secret); each field on its own, a new base URL with the credentials again",
         "tags": [
           "scm"
         ],
@@ -19365,6 +19427,36 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "gitlab": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "webhookSecretSet": {
+                              "type": "boolean"
+                            },
+                            "webhookSecretReadable": {
+                              "type": "boolean"
+                            },
+                            "webhookUrl": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "webhookSecretSet",
+                            "webhookSecretReadable",
+                            "webhookUrl"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -19373,7 +19465,8 @@
                     "provider",
                     "baseUrl",
                     "createdAt",
-                    "github"
+                    "github",
+                    "gitlab"
                   ],
                   "additionalProperties": false
                 }

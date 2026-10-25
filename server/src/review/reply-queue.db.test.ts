@@ -1,11 +1,21 @@
-import { eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createTestDatabase, type TestDatabase } from '../../test/db';
-import { answerJob, queuedAnswers, refuseAnswerJobs } from '../../test/replies';
+import { createTestDatabase, type TestDatabase, waitForLockWaiters } from '../../test/db';
+import { answerJob, queuedAnswers, refuseAnswerJobs, scanJob } from '../../test/replies';
 import { seedAiIssue } from '../../test/review';
 import { uuidv7 } from '../db/ids';
 import { first } from '../db/rows';
-import { branches, organizations, projects, reviewReplies, type ReplyKind } from '../db/schema';
+import {
+  branches,
+  jobs,
+  organizations,
+  projects,
+  reviewReplies,
+  type ReplyKind,
+} from '../db/schema';
+import type { GitHubComment } from '../scm/github/client';
+import type { GitLabDiscussion } from '../scm/gitlab/client';
+import { issueMarker } from '../scm/markdown';
 import {
   claimReply,
   endReply,
@@ -20,7 +30,11 @@ import {
   AI_REPLY_QUEUE,
   MAX_QUEUED_COMMANDS,
   MAX_QUEUED_ROUNDS,
+  queueGitHubAnswers,
+  queueGitLabAnswers,
   queueReplies,
+  queueScan,
+  queueScanAfterCircuit,
   repliesSince,
   replyKey,
   replyPayload,
@@ -693,6 +707,231 @@ describe('the queue of the answers (6I-4)', () => {
     expect(await queuedAnswers(t.db, branch)).toMatchObject({
       rows: [{ id: skipped, status: 'skipped' }],
       jobs: [],
+    });
+  });
+
+  describe('a scan of the notes (a webhook’s job)', () => {
+    /** The `ai-reply` jobs of the branch: their kind and their state. */
+    const jobsOf = async (branch: string) =>
+      (await queuedAnswers(t.db, branch)).jobs.map((job) => [
+        (job.payload as { kind: string }).kind,
+        job.status,
+      ]);
+    const everyJobOf = (branch: string) =>
+      t.db
+        .select()
+        .from(jobs)
+        .where(and(eq(jobs.queue, AI_REPLY_QUEUE), eq(jobs.concurrencyKey, replyKey(branch))));
+
+    it('queues one scan for a merge request, with its key and its two tries, and no second while it waits', async () => {
+      const branch = await newBranch('scan-once');
+      expect(await queueScan(t.db, branch)).toBe(true);
+      expect((await queuedAnswers(t.db, branch)).jobs).toEqual([scanJob(branch)]);
+      expect(await queueScan(t.db, branch)).toBe(false);
+      expect(await queueScan(t.db, branch)).toBe(false);
+      expect(await jobsOf(branch)).toEqual([['scan', 'queued']]);
+      // Due now: a webhook's scan is not delayed (both times are the database's clock).
+      const [queued] = await everyJobOf(branch);
+      expect(queued!.runAt.getTime() - queued!.createdAt.getTime()).toBeLessThanOrEqual(1_000);
+    });
+
+    it('counts only a queued scan of the branch: not one that runs or ended, an answer job, or another branch’s scan', async () => {
+      const branch = await newBranch('scan-counts');
+      await queueScan(t.db, branch);
+      // The scan that runs may have listed the notes before the one this delivery is about.
+      await t.db
+        .update(jobs)
+        .set({ status: 'running' })
+        .where(eq(jobs.concurrencyKey, replyKey(branch)));
+      expect(await queueScan(t.db, branch)).toBe(true);
+      expect(await jobsOf(branch)).toEqual([
+        ['scan', 'running'],
+        ['scan', 'queued'],
+      ]);
+      // A scan that ended, whatever way, is none either.
+      await t.db
+        .update(jobs)
+        .set({ status: 'succeeded' })
+        .where(eq(jobs.concurrencyKey, replyKey(branch)));
+      expect(await queueScan(t.db, branch)).toBe(true);
+      await t.db
+        .update(jobs)
+        .set({ status: 'dead' })
+        .where(and(eq(jobs.concurrencyKey, replyKey(branch)), eq(jobs.status, 'queued')));
+      expect(await queueScan(t.db, branch)).toBe(true);
+      expect(await jobsOf(branch)).toEqual([
+        ['scan', 'succeeded'],
+        ['scan', 'succeeded'],
+        ['scan', 'dead'],
+        ['scan', 'queued'],
+      ]);
+
+      // An answer job waiting for the branch is not a scan: the notes it answers are queued already.
+      const answering = await newBranch('scan-after-answer');
+      expect(await pass(answering, { rounds: [round(60_001)] })).toBe(1);
+      expect(await queueScan(t.db, answering)).toBe(true);
+      expect(await jobsOf(answering)).toEqual([
+        ['answer', 'queued'],
+        ['scan', 'queued'],
+      ]);
+
+      // Another merge request has its own.
+      const other = await newBranch('scan-other');
+      expect(await queueScan(t.db, other)).toBe(true);
+      expect(await queueScan(t.db, branch)).toBe(false);
+    });
+
+    it('queues none for a branch that is gone, and writes nothing', async () => {
+      const gone = uuidv7();
+      expect(await queueScan(t.db, gone)).toBe(false);
+      expect(await everyJobOf(gone)).toEqual([]);
+    });
+
+    it('queues a scan due when it is told to, and again after the circuit, which is the queued one when there is one', async () => {
+      const branch = await newBranch('scan-circuit');
+      expect(await queueScanAfterCircuit(t.db, branch, 90)).toBe(true);
+      const [waiting] = await everyJobOf(branch);
+      expect(waiting).toMatchObject({ status: 'queued', attempts: 0, maxAttempts: 2 });
+      const wait = (waiting!.runAt.getTime() - waiting!.createdAt.getTime()) / 1000;
+      expect(Math.abs(wait - 90)).toBeLessThan(5);
+      // The scan that waits is the branch's queued one: neither a delivery nor a second wait adds one.
+      expect(await queueScan(t.db, branch)).toBe(false);
+      expect(await queueScanAfterCircuit(t.db, branch, 30)).toBe(false);
+      expect(await jobsOf(branch)).toEqual([['scan', 'queued']]);
+    });
+
+    it('queues one scan for two requests at once, whichever the branch’s row makes wait', async () => {
+      const branch = await newBranch('scan-concurrent');
+      const queued: Promise<boolean>[] = [];
+      await t.db.transaction(async (tx) => {
+        await tx
+          .select({ id: branches.id })
+          .from(branches)
+          .where(eq(branches.id, branch))
+          .for('update');
+        queued.push(queueScan(t.db, branch));
+        await waitForLockWaiters(t.db, 1);
+        queued.push(queueScan(t.db, branch));
+        await waitForLockWaiters(t.db, 2);
+      });
+      expect((await Promise.all(queued)).toSorted()).toEqual([false, true]);
+      expect(await jobsOf(branch)).toEqual([['scan', 'queued']]);
+    });
+  });
+
+  describe('the answers a decoration and a scan queue', () => {
+    /** Everything counts: no note is too old, and the ledger holds nothing yet. */
+    const window = () => ({ largestNoteIds: new Map<string, number>(), since: new Date(0) });
+    const ids = (branch: string) => ({ projectId, branchId: branch });
+    const person = { id: 7, username: 'ann' };
+    const bot = { id: 900, username: 'qualor-bot' };
+    const at = '2026-10-10T08:30:00.000Z';
+    /** A thread of Qualor's with a reply, and a command, whose notes are numbered from `base`. */
+    const discussions = (base = 0): GitLabDiscussion[] => [
+      {
+        id: THREAD,
+        individual_note: false,
+        notes: [
+          {
+            id: base + 10,
+            body: `${issueMarker(issueId)}\n**Medium** · a finding`,
+            author: bot,
+            created_at: at,
+            system: false,
+            resolvable: true,
+            resolved: false,
+          },
+          {
+            id: base + 11,
+            body: 'This is intended.',
+            author: person,
+            created_at: at,
+            system: false,
+            resolvable: true,
+            resolved: false,
+          },
+        ],
+      },
+      {
+        id: OTHER_THREAD,
+        individual_note: true,
+        notes: [
+          {
+            id: base + 20,
+            body: 'qualor review',
+            author: person,
+            created_at: at,
+            system: false,
+            resolvable: false,
+          },
+        ],
+      },
+    ];
+
+    it('queues a GitLab merge request’s new reply and command, and none without a window', async () => {
+      const branch = await newBranch('answers-gitlab');
+      expect(await queueGitLabAnswers(t.db, ids(branch), null, bot.id, discussions())).toBe(0);
+      expect((await queuedAnswers(t.db, branch)).rows).toEqual([]);
+      expect(await queueGitLabAnswers(t.db, ids(branch), window(), bot.id, discussions())).toBe(2);
+      expect((await queuedAnswers(t.db, branch)).rows).toMatchObject([
+        { provider: 'gitlab', kind: 'reply', noteId: 11, threadId: THREAD, issueId, author: 'ann' },
+        {
+          provider: 'gitlab',
+          kind: 'command',
+          command: 'review',
+          noteId: 20,
+          threadId: OTHER_THREAD,
+        },
+      ]);
+      // The same notes again are the ledger's: nothing more.
+      expect(await queueGitLabAnswers(t.db, ids(branch), window(), bot.id, discussions())).toBe(0);
+      // Under another user it finds no thread of Qualor's, so no reply, but the command is found.
+      const unknown = await newBranch('answers-gitlab-unknown');
+      expect(await queueGitLabAnswers(t.db, ids(unknown), window(), 12_345, discussions(100))).toBe(
+        1,
+      );
+    });
+
+    it('queues a GitHub pull request’s rounds as given and the commands among its page’s comments, and none without a window', async () => {
+      const branch = await newBranch('answers-github');
+      const comments: GitHubComment[] = [
+        {
+          id: 72_070,
+          body: 'qualor stop',
+          user: { login: 'octocat', type: 'User' },
+          created_at: at,
+        },
+        {
+          id: 72_071,
+          body: 'qualor stop',
+          user: { login: 'qualor-acme[bot]', type: 'Bot' },
+          created_at: at,
+        },
+        {
+          id: 72_072,
+          body: 'looks fine',
+          user: { login: 'octocat', type: 'User' },
+          created_at: at,
+        },
+      ];
+      const rounds = [round(72_010, { threadId: '72001', author: 'octocat' })];
+      const found = { rounds, comments };
+      expect(await queueGitHubAnswers(t.db, ids(branch), null, 'qualor-acme[bot]', found)).toBe(0);
+      expect((await queuedAnswers(t.db, branch)).rows).toEqual([]);
+      expect(await queueGitHubAnswers(t.db, ids(branch), window(), 'qualor-acme[bot]', found)).toBe(
+        2,
+      );
+      expect((await queuedAnswers(t.db, branch)).rows).toMatchObject([
+        { provider: 'github', kind: 'reply', noteId: 72_010, threadId: '72001' },
+        {
+          provider: 'github',
+          kind: 'command',
+          command: 'stop',
+          noteId: 72_070,
+          threadId: null,
+          author: 'octocat',
+        },
+      ]);
     });
   });
 

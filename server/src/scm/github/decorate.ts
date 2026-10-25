@@ -1,6 +1,5 @@
 import { deleteBranchSnapshots } from '../../review/lifecycle';
-import { githubCommands } from '../../review/reply-detect';
-import { queueReplies, replyWindow, type ReplyWindow } from '../../review/reply-queue';
+import { queueGitHubAnswers, replyWindow, type ReplyWindow } from '../../review/reply-queue';
 import {
   withMergeRequestHead,
   withUnplacedFindings,
@@ -361,29 +360,6 @@ async function reconcileComment(
 }
 
 /**
- * Queues the answers to what people wrote in the pull request (6I-4): the new replies in Qualor's
- * threads that the plan found, and the commands among the comments the summary's listing read
- * (`comments`, none when it could not be read). Reads nothing from GitHub. Without a window AI
- * review is not active for the project and Qualor answers none.
- */
-async function queueAnswers(
-  deps: DecorationDeps,
-  loaded: Loaded,
-  part: PullRequestPart,
-  comments: readonly GitHubComment[],
-  slug: string,
-): Promise<void> {
-  if (part.replies === null) return;
-  const options = { qualor: { githubLogin: `${slug}[bot]` }, ...part.replies };
-  await queueReplies(
-    deps.db,
-    { projectId: loaded.project.id, branchId: loaded.branch.id, provider: 'github' },
-    part.replies,
-    { rounds: part.planned?.plan.rounds ?? [], commands: githubCommands(comments, options) },
-  );
-}
-
-/**
  * The summary comment's body (github.md §6.2) with `threads.inline` as its sentence on inline
  * comments and `review` as the state of the AI review (the pull request's head as it is now, when
  * it is known), which lists the findings in `threads.aiNotPosted` with the ones on no changed line.
@@ -462,8 +438,17 @@ async function writeDecoration(
   if (runId !== null && changed && failures.stop === null) {
     await attempt(failures, () => client.updateCheckRun(runId, checkRunFields(deps, loaded, body)));
   }
-  // Last: what GitHub shows is written before the database takes more work.
-  await queueAnswers(deps, loaded, part, comments, slug);
+  // Last: what GitHub shows is written before the database takes more work. The replies are the
+  // ones the plan found in its listings, and the commands are among the comments the summary's
+  // listing read (none when it could not be read). Without a window AI review is not active for
+  // the project, and Qualor answers none (6I-4).
+  await queueGitHubAnswers(
+    deps.db,
+    { projectId: loaded.project.id, branchId: loaded.branch.id },
+    part.replies,
+    `${slug}[bot]`,
+    { rounds: part.planned?.plan.rounds ?? [], comments },
+  );
   return failures.decisive();
 }
 

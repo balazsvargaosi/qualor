@@ -11,41 +11,15 @@ import { verifyWebhookSignature } from '../scm/github/app-auth';
 import { decryptWebhookSecret } from '../scm/github/credentials';
 import { parseCheckRunExternalId } from '../scm/github/render';
 import { enqueueDecoration } from '../scm/queue';
+import {
+  DeliveryIds,
+  header,
+  jsonBufferParser,
+  UUID,
+  WEBHOOK_BODY_LIMIT,
+} from './inbound-webhooks';
 
-/** github.md §9: the events Qualor reads are a few KiB; GitHub caps payloads at 25 MB. */
-export const WEBHOOK_BODY_LIMIT = 1024 * 1024;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const EVENT = /^[a-z_]{1,64}$/;
-const DELIVERY_TTL_MS = 60 * 60_000;
-const MAX_DELIVERIES = 10_000;
-
-/** Delivery ids seen in the last hour by this process (github.md §9). */
-export class DeliveryIds {
-  readonly #seen = new Map<string, number>();
-
-  constructor(private readonly now: () => number = Date.now) {}
-
-  /** True the first time an id is seen within the hour. */
-  remember(id: string): boolean {
-    const t = this.now();
-    const key = id.toLowerCase();
-    const at = this.#seen.get(key);
-    if (at !== undefined && t - at < DELIVERY_TTL_MS) return false;
-    this.#seen.delete(key);
-    while (this.#seen.size >= MAX_DELIVERIES) {
-      const oldest = this.#seen.keys().next().value;
-      if (oldest === undefined) break;
-      this.#seen.delete(oldest);
-    }
-    this.#seen.set(key, t);
-    return true;
-  }
-
-  /** Forgets an id whose processing failed, so GitHub's redelivery of it is processed. */
-  forget(id: string): void {
-    this.#seen.delete(id.toLowerCase());
-  }
-}
 
 const checkRunEvent = z.looseObject({
   action: z.string().max(64),
@@ -55,9 +29,6 @@ const checkRunEvent = z.looseObject({
   }),
   repository: z.looseObject({ id: z.number().int() }),
 });
-
-const header = (value: string | string[] | undefined): string =>
-  typeof value === 'string' ? value : '';
 
 /** github.md §9: the App's webhook. Public; everything is decided by the signature. */
 export const githubWebhookRoutes: FastifyPluginAsync<{ deps: RouteDeps }> = async (
@@ -69,15 +40,8 @@ export const githubWebhookRoutes: FastifyPluginAsync<{ deps: RouteDeps }> = asyn
   const deliveries = new DeliveryIds();
   const missing = () => notFound('GitHub webhook');
 
-  // The raw bytes: the signature is over the body exactly as sent (github.md §9). Only JSON is
-  // parsed, as a Buffer: the inherited parsers (text/plain gives a string) are removed in this
-  // plugin's context, so any other type is a 415 before the handler runs.
-  app.removeAllContentTypeParsers();
-  app.addContentTypeParser(
-    'application/json',
-    { parseAs: 'buffer', bodyLimit: WEBHOOK_BODY_LIMIT },
-    (_request, body, done) => done(null, body),
-  );
+  // The raw bytes: the signature is over the body exactly as sent (github.md §9).
+  jsonBufferParser(app);
 
   app.post<{ Params: { connectionId: string } }>(
     '/api/v0/github/webhooks/:connectionId',
