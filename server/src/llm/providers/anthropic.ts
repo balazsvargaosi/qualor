@@ -139,11 +139,39 @@ interface WireMessage {
 }
 
 /**
- * The conversation's messages as the Messages API takes them (R5). An assistant turn that carries
- * the replay of an Anthropic turn is that turn's content as it came: its thinking is signed, and
- * must return unchanged, in order, in a history that only grows. Without one, it is its text block
- * (when it has text: the API refuses a text block that is empty or only whitespace) then a
- * `tool_use` block per call. The `tool` messages answering one turn's calls (a run of them)
+ * The text of an assistant message that would have nothing in it: the API refuses a message with
+ * no content, and a text block that is empty or only whitespace.
+ */
+const NO_TEXT = '(no text)';
+
+/**
+ * What an assistant message is as the Messages API takes it: the replay of an Anthropic turn as it
+ * came (its thinking is signed, and must return unchanged, in order, in a history that only
+ * grows), else its text block, when it has text, then a `tool_use` block per call. A message that
+ * would be empty is the fixed `NO_TEXT`: the loop sends none today (a turn with no text and no
+ * calls is not added to the history), and the API's refusal of one must never be what ends a
+ * conversation.
+ */
+function assistantContent(message: Extract<LlmMessage, { role: 'assistant' }>): unknown[] {
+  const content =
+    message.replay?.kind === 'anthropic'
+      ? [...message.replay.items]
+      : [
+          ...(message.text.trim() === '' ? [] : [{ type: 'text', text: message.text }]),
+          ...message.toolCalls.map((call) => ({
+            type: 'tool_use',
+            id: call.id,
+            name: call.name,
+            // The API wants an object; a call that had none is sent with `{}`.
+            input: call.arguments ?? {},
+          })),
+        ];
+  return content.length > 0 ? content : [{ type: 'text', text: NO_TEXT }];
+}
+
+/**
+ * The conversation's messages as the Messages API takes them (R5). An assistant turn is its
+ * `assistantContent`. The `tool` messages answering one turn's calls (a run of them)
  * become one `user` message of `tool_result` blocks, in order: the API wants every result of a
  * turn together, straight after the turn. A `user` message that comes straight after a user
  * message (the results of a turn, or the message before an assistant turn that had no text to
@@ -170,22 +198,7 @@ function wireMessages(messages: readonly LlmMessage[]): WireMessage[] {
       if (last?.role === 'user') last.content.push(block);
       else wire.push({ role: 'user', content: [block] });
     } else {
-      wire.push({
-        role: 'assistant',
-        content:
-          message.replay?.kind === 'anthropic'
-            ? [...message.replay.items]
-            : [
-                ...(message.text.trim() === '' ? [] : [{ type: 'text', text: message.text }]),
-                ...message.toolCalls.map((call) => ({
-                  type: 'tool_use',
-                  id: call.id,
-                  name: call.name,
-                  // The API wants an object; a call that had none is sent with `{}`.
-                  input: call.arguments ?? {},
-                })),
-              ],
-      });
+      wire.push({ role: 'assistant', content: assistantContent(message) });
     }
   }
   return wire;

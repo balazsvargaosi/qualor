@@ -6,6 +6,7 @@ import {
   LLM_MAX_ANSWER_BYTES,
   LlmCallAborted,
   LlmError,
+  WORKSPACE_REQUIRED_TEXT,
   type ProviderConfig,
   type ProviderHttpOptions,
 } from './types';
@@ -13,8 +14,6 @@ import {
 export const NOT_UNDERSTOOD = "The provider's answer was not understood";
 const UNREACHABLE = 'The model provider could not be reached';
 const NOT_SENT = 'The request to the model provider could not be made; check the settings';
-const NO_WORKSPACE =
-  'This key is not scoped to a workspace: give its workspace ID in the AI assistant settings.';
 
 /**
  * llm.md §14: `Retry-After` (seconds or an HTTP date) first, else `retry-after-ms`, in whole
@@ -134,7 +133,7 @@ export async function postJson(
       config.workspaceId === null &&
       namesMissingWorkspace(result.body)
     ) {
-      throw new LlmError('rejected', NO_WORKSPACE, status);
+      throw new LlmError('workspace_required', WORKSPACE_REQUIRED_TEXT, status);
     }
     if (outputLimitField !== undefined && refusedParam(result.body) === outputLimitField) {
       const other = outputLimitField === 'max_tokens' ? 'max_completion_tokens' : 'max_tokens';

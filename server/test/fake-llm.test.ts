@@ -238,6 +238,61 @@ describe('fake LLM', () => {
     ]);
   });
 
+  it('refuses what the real Messages API refuses, when it is asked to: a text block that is empty or only whitespace, and a message with no content', async () => {
+    const strict = await createFakeLlm({ refuseBlankText: true });
+    try {
+      const send = (target: FakeLlm, messages: unknown[]) =>
+        fetch(`${target.url}/v1/messages`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-api-key': target.apiKey,
+            'anthropic-version': '2023-06-01',
+          },
+          body: JSON.stringify({ model: 'm', max_tokens: 10, messages }),
+        });
+      const text = (value: string) => ({ type: 'text', text: value });
+      // What it takes: text, a message given as a string, and blocks of other kinds.
+      expect((await send(strict, [{ role: 'user', content: [text('hi')] }])).status).toBe(200);
+      expect((await send(strict, [{ role: 'user', content: 'hi' }])).status).toBe(200);
+      expect(
+        (
+          await send(strict, [
+            { role: 'user', content: [text('hi')] },
+            { role: 'assistant', content: [{ type: 'tool_use', id: 't', name: 'x', input: {} }] },
+            { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't', content: 'ok' }] },
+          ])
+        ).status,
+      ).toBe(200);
+      const bad: [string, unknown[], string][] = [
+        ['an empty text block', [{ role: 'user', content: [text('')] }], 'messages.0.content.0'],
+        [
+          'a text block of whitespace',
+          [{ role: 'user', content: [text('hi'), text(' \n\t')] }],
+          'messages.0.content.1',
+        ],
+        ['an empty string', [{ role: 'user', content: '' }], 'messages.0'],
+        [
+          'a message with no content',
+          [
+            { role: 'user', content: [text('hi')] },
+            { role: 'assistant', content: [] },
+          ],
+          'messages.1',
+        ],
+      ];
+      for (const [name, messages, place] of bad) {
+        const res = await send(strict, messages);
+        expect(res.status, name).toBe(400);
+        expect(JSON.stringify(await res.json()), name).toContain(place);
+      }
+      // Asked for nothing, it takes them, as it always did.
+      expect((await send(fake, [{ role: 'user', content: [text('')] }])).status).toBe(200);
+    } finally {
+      await strict.close();
+    }
+  });
+
   it('is an organisation-wide key when it is given a workspace: Anthropic calls name it or are refused', async () => {
     const scoped = await createFakeLlm({ workspaceId: 'wrkspc_Fake01' });
     try {

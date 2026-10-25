@@ -1170,6 +1170,7 @@
     "ai.problem.keyForbidden": "The provider refused the request (HTTP 403): the key lacks access to this model, or the account has no credit.",
     "ai.problem.key": "The provider refused the API key.",
     "ai.problem.keyStatus": "The provider refused the API key (HTTP {$status}).",
+    "ai.problem.workspaceRequired": "This key is not scoped to a workspace: give its workspace ID below.",
     "ai.problem.rejected": "The provider refused the request; check the base URL and the model.",
     "ai.problem.badAnswer": "The provider's answer was not understood.",
     "ai.problem.url": "The provider's address is not allowed; an internal host must be listed in QUALOR_LLM_INTERNAL_HOSTS.",

@@ -111,10 +111,19 @@ export interface LlmTurn extends LlmAnswer {
  * answer: the current models of both providers count their reasoning against the output limit, so
  * a limit sized for the answer alone can be used up before the answer begins. A review or reply
  * call (the conversations) is given 16 000, and the short answers of explain, triage and fix
- * (`singleShot`) 4 000. A model that does not reason spends none of it, and every budget counts the
- * tokens a call used, so the room costs nothing. The provider test keeps its own small limit.
+ * (`singleShot`) 4 000, and so does the provider test, on its own small limit. A model that does
+ * not reason spends none of it, and every budget counts the tokens a call used, so the room costs
+ * nothing.
  */
 export const REASONING_ALLOWANCE_TOKENS = { conversation: 16_000, singleShot: 4_000 } as const;
+
+/**
+ * What a key that is not scoped to a workspace is told: the provider refused a request (a 400)
+ * because an organisation-wide key needs the workspace it is for. A fixed text, never the
+ * provider's own words.
+ */
+export const WORKSPACE_REQUIRED_TEXT =
+  'This key is not scoped to a workspace: give its workspace ID in the AI assistant settings.';
 
 /** llm.md §14: why a provider call gave no usable answer. */
 export const LLM_FAILURES = [
@@ -122,6 +131,7 @@ export const LLM_FAILURES = [
   'unavailable',
   'rate_limited',
   'refused_key',
+  'workspace_required',
   'rejected',
   'bad_answer',
   'url_not_allowed',

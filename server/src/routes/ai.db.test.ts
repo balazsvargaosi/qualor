@@ -495,13 +495,19 @@ describe('AI requests (llm.md §5, §10, §12, §16)', () => {
       .update(llmRequests)
       .set({ status: 'failed', errorCode: 'PROVIDER_REFUSED_KEY' })
       .where(eq(llmRequests.id, first.id));
-    await h.ctx.db.insert(llmRequests).values(
-      Array.from({ length: 5 }, () => ({
+    await h.ctx.db.insert(llmRequests).values([
+      ...Array.from({ length: 3 }, () => ({
         ...copy,
         status: 'failed' as const,
         errorCode: 'PROVIDER_REFUSED_KEY',
       })),
-    );
+      // And a key that is not scoped to a workspace: the provider did no work for it either.
+      ...Array.from({ length: 2 }, () => ({
+        ...copy,
+        status: 'failed' as const,
+        errorCode: 'PROVIDER_WORKSPACE_REQUIRED',
+      })),
+    ]);
     const usage = async () =>
       (await get(`/api/v0/organizations/${h.organizationId}/ai`)).json().usage;
     expect(await usage()).toMatchObject({ explain: 0 });

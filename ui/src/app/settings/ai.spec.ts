@@ -1821,6 +1821,72 @@ describe('AiSettingsPage: the current Anthropic models (6I-4)', () => {
     });
   });
 
+  describe('the Test of a key that is not scoped to a workspace', () => {
+    const WORDS = 'This key is not scoped to a workspace: give its workspace ID below.';
+    const refused = {
+      code: 'PROVIDER_WORKSPACE_REQUIRED',
+      message: 'server text',
+      providerStatus: 400,
+    } as const;
+    const pressTest = async (fixture: { whenStable(): Promise<unknown> }, root: HTMLElement) => {
+      [...root.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Test')!.click();
+      await settle(fixture);
+    };
+
+    it('is named in the page’s own words, and nothing of the server’s is shown', async () => {
+      const server = setup(ANTHROPIC);
+      server.on('POST', '/api/v0/system/llm/test', {
+        body: testAnswer({
+          ok: false,
+          model: null,
+          latencyMs: 12,
+          toolCalling: 'not_checked',
+          problem: refused,
+        }),
+      });
+      const { fixture, root } = await render();
+      await pressTest(fixture, root);
+      expect(root.querySelector('.alert-error[role="alert"]')?.textContent).toContain(WORDS);
+      expect(root.textContent).not.toContain('server text');
+      // The field it points to is on the page, below this message.
+      const alert = root.querySelector('.alert-error[role="alert"]')!;
+      const field = root.querySelector('#ai-workspace-id')!;
+      expect(alert.compareDocumentPosition(field) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('is the line of each model the key was refused for, in the page’s words', async () => {
+      const server = setup({
+        ...ANTHROPIC,
+        provider: { ...ANTHROPIC.provider, strongModel: 'claude-opus-5-5' },
+      });
+      const line = (tier: 'standard' | 'strong', model: string) => ({
+        tier,
+        model,
+        ok: false,
+        reportedModel: null,
+        latencyMs: 12,
+        toolCalling: 'not_checked' as const,
+        problem: refused,
+      });
+      server.on('POST', '/api/v0/system/llm/test', {
+        body: {
+          ok: false,
+          model: null,
+          latencyMs: 12,
+          toolCalling: 'not_checked',
+          problem: refused,
+          models: [line('standard', 'claude-sonnet-5-5'), line('strong', 'claude-opus-5-5')],
+        } satisfies TestAnswer,
+      });
+      const { fixture, root } = await render();
+      await pressTest(fixture, root);
+      expect(
+        [...root.querySelectorAll('#ai-test-models li')].map((li) => li.textContent?.trim()),
+      ).toEqual([`claude-sonnet-5-5: ${WORDS}`, `claude-opus-5-5: ${WORDS}`]);
+      expect(root.textContent).not.toContain('server text');
+    });
+  });
+
   describe('the temperature', () => {
     const HINT = "Anthropic's current models take no temperature: leave it empty.";
 

@@ -268,7 +268,8 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
 
   // One fake per test: a reply a failing test left in the queue never reaches the next test.
   beforeEach(async () => {
-    fake = await createFakeLlm();
+    // As the real API does, it refuses a text block that is empty or only whitespace.
+    fake = await createFakeLlm({ refuseBlankText: true });
     http = { internalHosts: parseInternalHosts(fake.host), version: '0.0.0' };
     const base = {
       model: 'm-1',
@@ -491,6 +492,28 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
         const short = await run(kind, { limits: { ...LIMITS, tokenBudget: 10_000 } });
         expect(short.result).toMatchObject({ kind: 'answer', turns: 2, budgetReached: false });
         expect(WIRES[kind].lastUser(fake.requests[1]!)).not.toContain('Token budget');
+      },
+    );
+
+    it.each(KINDS)(
+      'the room to think raises the max_tokens sent and nothing the loop estimates (%s)',
+      async (kind) => {
+        // As above: 2 900 used, and another turn with the wrap-up after it make about 9 100 with
+        // the answer counted at 50 tokens. Counting the 20 000 of room too would make about 29 000
+        // and bring the wrap-up at once; the room is not counted, so the model goes on.
+        const limits = { ...LIMITS, tokenBudget: 10_000, reasoningAllowance: 20_000 };
+        fake.enqueue(
+          toolTurn(kind, [{ id: 'c1', args: { path: 'a.ts' } }], [2_800, 100]),
+          textTurn(kind, '{"findings":[]}', [10, 1]),
+        );
+        const { result } = await run(kind, { limits });
+        expect(result).toMatchObject({ kind: 'answer', turns: 2, budgetReached: false });
+        expect(WIRES[kind].lastUser(fake.requests[1]!)).not.toContain('Token budget');
+        // Every call asked for the answer's 50 tokens and the room.
+        expect(fake.requests).toHaveLength(2);
+        for (const request of fake.requests) {
+          expect(request.json).toMatchObject({ max_tokens: 20_050 });
+        }
       },
     );
 
@@ -817,6 +840,38 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
       ]);
       expect(last[1]!.json).toBe(JSON.stringify(cut));
       expect(last[3]!.json).toBe(JSON.stringify(bad));
+    });
+
+    it('sends a turn whose calls were not run as its text alone: no thinking, no call, and never a text that is blank', async () => {
+      // The wrap-up answers with thinking, words that are not the answer and a call, which is not run.
+      const late = [
+        anthropicThinking('sig-late'),
+        { type: 'text', text: 'Enough.' },
+        toolUse('c9', { path: 'z.ts' }),
+      ];
+      fake.enqueue(
+        answerOf(CONTENTS[0]!, 'tool_use'),
+        answerOf(late, 'tool_use'),
+        answerOf(CONTENTS[3]!, 'end_turn'),
+      );
+      const { result } = await run('anthropic', {
+        limits: { ...LIMITS, maxTurns: 1 },
+        accept: (text) => text.startsWith('{'),
+      });
+      expect(result).toMatchObject({ kind: 'answer', text: '{"findings":[]}', turns: 3 });
+      const history = messagesOf(fake.requests[2]!);
+      expect(history.map((message) => message.role)).toEqual([
+        'user',
+        'assistant',
+        'user',
+        'assistant',
+        'user',
+      ]);
+      // The turn before it keeps its thinking; this one is its text and nothing else.
+      expect(history[1]!.json).toBe(JSON.stringify(CONTENTS[0]));
+      expect(history[3]!.json).toBe(JSON.stringify([{ type: 'text', text: 'Enough.' }]));
+      expect(fake.requests[2]!.body).not.toContain('sig-late');
+      expect(fake.requests[2]!.body).not.toContain('"c9"');
     });
 
     it('a turn that only thought before it was cut off is not in the history: there is no message of its own to send', async () => {
@@ -1828,6 +1883,15 @@ describe('runConversation with a scripted provider', () => {
         expect(result.inputTokens).toBe(Math.ceil(Buffer.byteLength(json, 'utf8') / 4));
       });
 
+      it('is charged the answer cap for the output it did not count, whatever room it was given to think', async () => {
+        const s = scripted(turn('done', { usage: unknown }));
+        s.input.limits = { ...LIMITS, reasoningAllowance: 16_000 };
+        const result = await runConversation(s.input);
+        // The call asked for the cap and the room; the guess is the cap alone.
+        expect(s.seen[0]!.maxOutputTokens).toBe(LIMITS.maxOutputTokens + 16_000);
+        expect(result.outputTokens).toBe(LIMITS.maxOutputTokens);
+      });
+
       it('is charged only for the count it did not give', async () => {
         const s = scripted(
           callTurn([call('c1')], { usage: { inputTokens: 7, outputTokens: null } }),
@@ -2174,6 +2238,17 @@ describe('runConversation with a scripted provider', () => {
       const once = scripted(timeout, turn('done'));
       expect(await runConversation(once.input)).toMatchObject({ kind: 'answer' });
       expect(once.sleeps).toEqual([5_000]);
+    });
+
+    it('a key that is not scoped to a workspace is not retried, and fails the conversation as a provider error', async () => {
+      const s = scripted(new LlmError('workspace_required', 'not scoped', 400), turn('done'));
+      expect(await runConversation(s.input)).toMatchObject({
+        kind: 'failed',
+        reason: 'provider_error',
+        turns: 0,
+      });
+      expect(s.seen).toHaveLength(1);
+      expect(s.sleeps).toEqual([]);
     });
 
     it('rate limits and timeouts have a retry each, in the same call', async () => {

@@ -1599,8 +1599,8 @@ describe('the answer to a reply', () => {
     // Without prices there is no cost.
     const free = await converse(turns(), inputOf(), { pricing: null });
     expect(decided(free.decision).usage.costMicroUsd).toBeNull();
-    // A call the provider did not count is guessed for the budget, at the most it may write (its
-    // answer and the room to think), and has no cost.
+    // A call the provider did not count is guessed for the budget, at the answer cap (the room to
+    // think raises only what the call asks for), and has no cost.
     const uncounted = await converse(
       [says('other', 'keep', '', { usage: { inputTokens: null, outputTokens: null } })],
       inputOf(),
@@ -1609,9 +1609,7 @@ describe('the answer to a reply', () => {
     const { usage } = decided(uncounted.decision);
     expect(usage.costMicroUsd).toBe(0);
     expect(usage.inputTokens).toBeGreaterThan(0);
-    expect(usage.outputTokens).toBe(
-      REVIEW_OUTPUT_TOKENS.reply + REASONING_ALLOWANCE_TOKENS.conversation,
-    );
+    expect(usage.outputTokens).toBe(REVIEW_OUTPUT_TOKENS.reply);
   });
 
   it('the conversation stops at REPLY_TOKEN_BUDGET', async () => {

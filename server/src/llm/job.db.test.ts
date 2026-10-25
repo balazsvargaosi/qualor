@@ -277,6 +277,44 @@ describe('the llm worker (llm.md §9, §10, §14)', () => {
     });
   });
 
+  it('does not retry a key that is not scoped to a workspace, whose code is its own, and the provider does not count it against its circuit', async () => {
+    await configure({ kind: 'anthropic' });
+    const unscoped = {
+      status: 400,
+      body: {
+        type: 'error',
+        error: {
+          type: 'invalid_request_error',
+          message: 'Fake error text: this API key is not scoped to a workspace sk-provider-echo',
+        },
+      },
+    };
+    const deps = llmJobDeps(h);
+    // Past the five failures in a row that open the circuit, were these transient.
+    for (let i = 0; i < 6; i += 1) {
+      fake.enqueue(unscoped);
+      const { id } = await ask('explain');
+      await runLlmJobs(h, deps);
+      expect(await row(id), `request ${i}`).toMatchObject({
+        status: 'failed',
+        errorCode: 'PROVIDER_WORKSPACE_REQUIRED',
+        attempts: 1,
+      });
+    }
+    expect(logs()).not.toContain('sk-provider-echo');
+    expect(logs()).not.toContain(fake.apiKey);
+    const line = h.ctx.logs.filter((l) => l.includes('AI request finished')).at(-1)!;
+    expect(JSON.parse(line)).toMatchObject({
+      errorCode: 'PROVIDER_WORKSPACE_REQUIRED',
+      providerStatus: 400,
+    });
+    // The circuit stayed closed: the next request is sent, and the provider answers it.
+    const { id } = await ask('explain');
+    await runLlmJobs(h, deps);
+    expect(await row(id)).toMatchObject({ status: 'succeeded' });
+    expect(fake.requests).toHaveLength(7);
+  });
+
   /**
    * How far `runAt` is ahead of the database's clock, in ms. The retry is scheduled with the
    * database's `now()`, so the test reads the same clock: Date.now() may differ from Docker's clock

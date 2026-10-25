@@ -92,7 +92,18 @@ export interface ConversationInput {
      * no room for it. More than 0: a caller with nothing to spend does not start a conversation.
      */
     tokenBudget: number;
+    /**
+     * The tokens the answer of a call may hold: what the loop guesses a call wrote when the
+     * provider did not count it, and what it guesses the next call and the wrap-up after it write.
+     */
     maxOutputTokens: number;
+    /**
+     * The room, in tokens, the model is given beyond `maxOutputTokens` to think before it answers
+     * (none when absent). It raises only the limit every call asks for: the loop estimates with
+     * `maxOutputTokens` alone and counts what each call really used, so a call that thinks may
+     * go past the budget by its own thinking, which `maxOutputTokens` plus this bounds.
+     */
+    reasoningAllowance?: number;
   };
   /**
    * One call to the provider, recorded, through its circuit. It throws an `LlmError` for a call
@@ -440,7 +451,7 @@ export async function runConversation(input: ConversationInput): Promise<Convers
     system: input.system,
     messages: [...messages],
     tools: input.tools,
-    maxOutputTokens: limits.maxOutputTokens,
+    maxOutputTokens: limits.maxOutputTokens + (limits.reasoningAllowance ?? 0),
   });
   let turns = 0;
   let toolCalls = 0;

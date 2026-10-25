@@ -1347,6 +1347,7 @@ const port = 8080;
       // A call the provider refused, would not take or could not be reached for cost nothing.
       for (const errorCode of [
         'PROVIDER_REFUSED_KEY',
+        'PROVIDER_WORKSPACE_REQUIRED',
         'PROVIDER_RATE_LIMITED',
         'PROVIDER_UNAVAILABLE',
         'PROVIDER_REJECTED_REQUEST',
@@ -1366,7 +1367,7 @@ const port = 8080;
         1_000 + (101 + 7) + 500 + 1_500 + 60,
       );
       // The rows keep what the provider said: nothing.
-      expect((await rows()).filter((row) => row.inputTokens === null)).toHaveLength(8);
+      expect((await rows()).filter((row) => row.inputTokens === null)).toHaveLength(9);
     });
 
     it('lets a provider whose answers are never readable fill the day, one call to a review at a time', async () => {

@@ -1,4 +1,4 @@
-import type { LlmFailure } from './providers';
+import { WORKSPACE_REQUIRED_TEXT, type LlmFailure } from './providers';
 
 /** llm.md §14: the stored `error_code` values. */
 export const LLM_ERROR_CODES = [
@@ -6,6 +6,7 @@ export const LLM_ERROR_CODES = [
   'PROVIDER_UNAVAILABLE',
   'PROVIDER_RATE_LIMITED',
   'PROVIDER_REFUSED_KEY',
+  'PROVIDER_WORKSPACE_REQUIRED',
   'PROVIDER_REJECTED_REQUEST',
   'PROVIDER_BAD_ANSWER',
   'URL_NOT_ALLOWED',
@@ -32,6 +33,7 @@ const BY_FAILURE: Record<LlmFailure, LlmErrorCode> = {
   unavailable: 'PROVIDER_UNAVAILABLE',
   rate_limited: 'PROVIDER_RATE_LIMITED',
   refused_key: 'PROVIDER_REFUSED_KEY',
+  workspace_required: 'PROVIDER_WORKSPACE_REQUIRED',
   rejected: 'PROVIDER_REJECTED_REQUEST',
   bad_answer: 'PROVIDER_BAD_ANSWER',
   url_not_allowed: 'URL_NOT_ALLOWED',
@@ -50,6 +52,7 @@ export const ERROR_TEXTS: Record<LlmErrorCode, string> = {
   PROVIDER_UNAVAILABLE: 'The model provider could not be reached',
   PROVIDER_RATE_LIMITED: 'The model provider is rate limiting Qualor; try later',
   PROVIDER_REFUSED_KEY: 'The provider refused the API key',
+  PROVIDER_WORKSPACE_REQUIRED: WORKSPACE_REQUIRED_TEXT,
   PROVIDER_REJECTED_REQUEST: 'The provider refused the request; check the base URL and model',
   PROVIDER_BAD_ANSWER: "The provider's answer was not understood",
   URL_NOT_ALLOWED: 'The base URL is no longer allowed',

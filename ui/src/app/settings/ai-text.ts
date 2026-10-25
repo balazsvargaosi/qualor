@@ -27,6 +27,8 @@ export function llmProblemText(code: LlmErrorCode, providerStatus: number | null
       return providerStatus === null
         ? $localize`:@@ai.problem.key:The provider refused the API key.`
         : $localize`:@@ai.problem.keyStatus:The provider refused the API key (HTTP ${providerStatus}:status:).`;
+    case 'PROVIDER_WORKSPACE_REQUIRED':
+      return $localize`:@@ai.problem.workspaceRequired:This key is not scoped to a workspace: give its workspace ID below.`;
     case 'PROVIDER_REJECTED_REQUEST':
       return $localize`:@@ai.problem.rejected:The provider refused the request; check the base URL and the model.`;
     case 'PROVIDER_BAD_ANSWER':

@@ -10136,7 +10136,7 @@ export interface paths {
                             toolCalling: "supported" | "not_supported" | "not_checked";
                             problem: {
                                 /** @enum {string} */
-                                code: "PROVIDER_TIMEOUT" | "PROVIDER_UNAVAILABLE" | "PROVIDER_RATE_LIMITED" | "PROVIDER_REFUSED_KEY" | "PROVIDER_REJECTED_REQUEST" | "PROVIDER_BAD_ANSWER" | "URL_NOT_ALLOWED" | "KEY_UNDECRYPTABLE" | "MALFORMED_OUTPUT" | "OUTPUT_TRUNCATED" | "MODEL_REFUSED" | "OUTPUT_REFUSED" | "AI_DISABLED" | "SETTINGS_CHANGED" | "ISSUE_CHANGED" | "ISSUE_GONE" | "REQUEST_ABANDONED";
+                                code: "PROVIDER_TIMEOUT" | "PROVIDER_UNAVAILABLE" | "PROVIDER_RATE_LIMITED" | "PROVIDER_REFUSED_KEY" | "PROVIDER_WORKSPACE_REQUIRED" | "PROVIDER_REJECTED_REQUEST" | "PROVIDER_BAD_ANSWER" | "URL_NOT_ALLOWED" | "KEY_UNDECRYPTABLE" | "MALFORMED_OUTPUT" | "OUTPUT_TRUNCATED" | "MODEL_REFUSED" | "OUTPUT_REFUSED" | "AI_DISABLED" | "SETTINGS_CHANGED" | "ISSUE_CHANGED" | "ISSUE_GONE" | "REQUEST_ABANDONED";
                                 message: string;
                                 providerStatus: number | null;
                             } | null;
@@ -10152,7 +10152,7 @@ export interface paths {
                                 toolCalling: "supported" | "not_supported" | "not_checked";
                                 problem: {
                                     /** @enum {string} */
-                                    code: "PROVIDER_TIMEOUT" | "PROVIDER_UNAVAILABLE" | "PROVIDER_RATE_LIMITED" | "PROVIDER_REFUSED_KEY" | "PROVIDER_REJECTED_REQUEST" | "PROVIDER_BAD_ANSWER" | "URL_NOT_ALLOWED" | "KEY_UNDECRYPTABLE" | "MALFORMED_OUTPUT" | "OUTPUT_TRUNCATED" | "MODEL_REFUSED" | "OUTPUT_REFUSED" | "AI_DISABLED" | "SETTINGS_CHANGED" | "ISSUE_CHANGED" | "ISSUE_GONE" | "REQUEST_ABANDONED";
+                                    code: "PROVIDER_TIMEOUT" | "PROVIDER_UNAVAILABLE" | "PROVIDER_RATE_LIMITED" | "PROVIDER_REFUSED_KEY" | "PROVIDER_WORKSPACE_REQUIRED" | "PROVIDER_REJECTED_REQUEST" | "PROVIDER_BAD_ANSWER" | "URL_NOT_ALLOWED" | "KEY_UNDECRYPTABLE" | "MALFORMED_OUTPUT" | "OUTPUT_TRUNCATED" | "MODEL_REFUSED" | "OUTPUT_REFUSED" | "AI_DISABLED" | "SETTINGS_CHANGED" | "ISSUE_CHANGED" | "ISSUE_GONE" | "REQUEST_ABANDONED";
                                     message: string;
                                     providerStatus: number | null;
                                 } | null;
@@ -11514,7 +11514,7 @@ export interface paths {
                             finishedAt: string | null;
                             error: {
                                 /** @enum {string} */
-                                code: "PROVIDER_TIMEOUT" | "PROVIDER_UNAVAILABLE" | "PROVIDER_RATE_LIMITED" | "PROVIDER_REFUSED_KEY" | "PROVIDER_REJECTED_REQUEST" | "PROVIDER_BAD_ANSWER" | "URL_NOT_ALLOWED" | "KEY_UNDECRYPTABLE" | "MALFORMED_OUTPUT" | "OUTPUT_TRUNCATED" | "MODEL_REFUSED" | "OUTPUT_REFUSED" | "AI_DISABLED" | "SETTINGS_CHANGED" | "ISSUE_CHANGED" | "ISSUE_GONE" | "REQUEST_ABANDONED";
+                                code: "PROVIDER_TIMEOUT" | "PROVIDER_UNAVAILABLE" | "PROVIDER_RATE_LIMITED" | "PROVIDER_REFUSED_KEY" | "PROVIDER_WORKSPACE_REQUIRED" | "PROVIDER_REJECTED_REQUEST" | "PROVIDER_BAD_ANSWER" | "URL_NOT_ALLOWED" | "KEY_UNDECRYPTABLE" | "MALFORMED_OUTPUT" | "OUTPUT_TRUNCATED" | "MODEL_REFUSED" | "OUTPUT_REFUSED" | "AI_DISABLED" | "SETTINGS_CHANGED" | "ISSUE_CHANGED" | "ISSUE_GONE" | "REQUEST_ABANDONED";
                                 detail: ("range" | "source_line_unusable" | "size" | "unchanged" | "control_character" | "fence" | "redacted" | "secret" | "quick_action") | null;
                             } | null;
                             result: ({
@@ -11582,7 +11582,7 @@ export interface paths {
                             finishedAt: string | null;
                             error: {
                                 /** @enum {string} */
-                                code: "PROVIDER_TIMEOUT" | "PROVIDER_UNAVAILABLE" | "PROVIDER_RATE_LIMITED" | "PROVIDER_REFUSED_KEY" | "PROVIDER_REJECTED_REQUEST" | "PROVIDER_BAD_ANSWER" | "URL_NOT_ALLOWED" | "KEY_UNDECRYPTABLE" | "MALFORMED_OUTPUT" | "OUTPUT_TRUNCATED" | "MODEL_REFUSED" | "OUTPUT_REFUSED" | "AI_DISABLED" | "SETTINGS_CHANGED" | "ISSUE_CHANGED" | "ISSUE_GONE" | "REQUEST_ABANDONED";
+                                code: "PROVIDER_TIMEOUT" | "PROVIDER_UNAVAILABLE" | "PROVIDER_RATE_LIMITED" | "PROVIDER_REFUSED_KEY" | "PROVIDER_WORKSPACE_REQUIRED" | "PROVIDER_REJECTED_REQUEST" | "PROVIDER_BAD_ANSWER" | "URL_NOT_ALLOWED" | "KEY_UNDECRYPTABLE" | "MALFORMED_OUTPUT" | "OUTPUT_TRUNCATED" | "MODEL_REFUSED" | "OUTPUT_REFUSED" | "AI_DISABLED" | "SETTINGS_CHANGED" | "ISSUE_CHANGED" | "ISSUE_GONE" | "REQUEST_ABANDONED";
                                 detail: ("range" | "source_line_unusable" | "size" | "unchanged" | "control_character" | "fence" | "redacted" | "secret" | "quick_action") | null;
                             } | null;
                             result: ({
@@ -11731,7 +11731,7 @@ export interface paths {
                             finishedAt: string | null;
                             error: {
                                 /** @enum {string} */
-                                code: "PROVIDER_TIMEOUT" | "PROVIDER_UNAVAILABLE" | "PROVIDER_RATE_LIMITED" | "PROVIDER_REFUSED_KEY" | "PROVIDER_REJECTED_REQUEST" | "PROVIDER_BAD_ANSWER" | "URL_NOT_ALLOWED" | "KEY_UNDECRYPTABLE" | "MALFORMED_OUTPUT" | "OUTPUT_TRUNCATED" | "MODEL_REFUSED" | "OUTPUT_REFUSED" | "AI_DISABLED" | "SETTINGS_CHANGED" | "ISSUE_CHANGED" | "ISSUE_GONE" | "REQUEST_ABANDONED";
+                                code: "PROVIDER_TIMEOUT" | "PROVIDER_UNAVAILABLE" | "PROVIDER_RATE_LIMITED" | "PROVIDER_REFUSED_KEY" | "PROVIDER_WORKSPACE_REQUIRED" | "PROVIDER_REJECTED_REQUEST" | "PROVIDER_BAD_ANSWER" | "URL_NOT_ALLOWED" | "KEY_UNDECRYPTABLE" | "MALFORMED_OUTPUT" | "OUTPUT_TRUNCATED" | "MODEL_REFUSED" | "OUTPUT_REFUSED" | "AI_DISABLED" | "SETTINGS_CHANGED" | "ISSUE_CHANGED" | "ISSUE_GONE" | "REQUEST_ABANDONED";
                                 detail: ("range" | "source_line_unusable" | "size" | "unchanged" | "control_character" | "fence" | "redacted" | "secret" | "quick_action") | null;
                             } | null;
                             result: ({
@@ -11870,7 +11870,7 @@ export interface paths {
                             finishedAt: string | null;
                             error: {
                                 /** @enum {string} */
-                                code: "PROVIDER_TIMEOUT" | "PROVIDER_UNAVAILABLE" | "PROVIDER_RATE_LIMITED" | "PROVIDER_REFUSED_KEY" | "PROVIDER_REJECTED_REQUEST" | "PROVIDER_BAD_ANSWER" | "URL_NOT_ALLOWED" | "KEY_UNDECRYPTABLE" | "MALFORMED_OUTPUT" | "OUTPUT_TRUNCATED" | "MODEL_REFUSED" | "OUTPUT_REFUSED" | "AI_DISABLED" | "SETTINGS_CHANGED" | "ISSUE_CHANGED" | "ISSUE_GONE" | "REQUEST_ABANDONED";
+                                code: "PROVIDER_TIMEOUT" | "PROVIDER_UNAVAILABLE" | "PROVIDER_RATE_LIMITED" | "PROVIDER_REFUSED_KEY" | "PROVIDER_WORKSPACE_REQUIRED" | "PROVIDER_REJECTED_REQUEST" | "PROVIDER_BAD_ANSWER" | "URL_NOT_ALLOWED" | "KEY_UNDECRYPTABLE" | "MALFORMED_OUTPUT" | "OUTPUT_TRUNCATED" | "MODEL_REFUSED" | "OUTPUT_REFUSED" | "AI_DISABLED" | "SETTINGS_CHANGED" | "ISSUE_CHANGED" | "ISSUE_GONE" | "REQUEST_ABANDONED";
                                 detail: ("range" | "source_line_unusable" | "size" | "unchanged" | "control_character" | "fence" | "redacted" | "secret" | "quick_action") | null;
                             } | null;
                             result: ({
@@ -12020,7 +12020,7 @@ export interface paths {
                                 finishedAt: string | null;
                                 error: {
                                     /** @enum {string} */
-                                    code: "PROVIDER_TIMEOUT" | "PROVIDER_UNAVAILABLE" | "PROVIDER_RATE_LIMITED" | "PROVIDER_REFUSED_KEY" | "PROVIDER_REJECTED_REQUEST" | "PROVIDER_BAD_ANSWER" | "URL_NOT_ALLOWED" | "KEY_UNDECRYPTABLE" | "MALFORMED_OUTPUT" | "OUTPUT_TRUNCATED" | "MODEL_REFUSED" | "OUTPUT_REFUSED" | "AI_DISABLED" | "SETTINGS_CHANGED" | "ISSUE_CHANGED" | "ISSUE_GONE" | "REQUEST_ABANDONED";
+                                    code: "PROVIDER_TIMEOUT" | "PROVIDER_UNAVAILABLE" | "PROVIDER_RATE_LIMITED" | "PROVIDER_REFUSED_KEY" | "PROVIDER_WORKSPACE_REQUIRED" | "PROVIDER_REJECTED_REQUEST" | "PROVIDER_BAD_ANSWER" | "URL_NOT_ALLOWED" | "KEY_UNDECRYPTABLE" | "MALFORMED_OUTPUT" | "OUTPUT_TRUNCATED" | "MODEL_REFUSED" | "OUTPUT_REFUSED" | "AI_DISABLED" | "SETTINGS_CHANGED" | "ISSUE_CHANGED" | "ISSUE_GONE" | "REQUEST_ABANDONED";
                                     detail: ("range" | "source_line_unusable" | "size" | "unchanged" | "control_character" | "fence" | "redacted" | "secret" | "quick_action") | null;
                                 } | null;
                                 result: ({
@@ -12080,7 +12080,7 @@ export interface paths {
                                 finishedAt: string | null;
                                 error: {
                                     /** @enum {string} */
-                                    code: "PROVIDER_TIMEOUT" | "PROVIDER_UNAVAILABLE" | "PROVIDER_RATE_LIMITED" | "PROVIDER_REFUSED_KEY" | "PROVIDER_REJECTED_REQUEST" | "PROVIDER_BAD_ANSWER" | "URL_NOT_ALLOWED" | "KEY_UNDECRYPTABLE" | "MALFORMED_OUTPUT" | "OUTPUT_TRUNCATED" | "MODEL_REFUSED" | "OUTPUT_REFUSED" | "AI_DISABLED" | "SETTINGS_CHANGED" | "ISSUE_CHANGED" | "ISSUE_GONE" | "REQUEST_ABANDONED";
+                                    code: "PROVIDER_TIMEOUT" | "PROVIDER_UNAVAILABLE" | "PROVIDER_RATE_LIMITED" | "PROVIDER_REFUSED_KEY" | "PROVIDER_WORKSPACE_REQUIRED" | "PROVIDER_REJECTED_REQUEST" | "PROVIDER_BAD_ANSWER" | "URL_NOT_ALLOWED" | "KEY_UNDECRYPTABLE" | "MALFORMED_OUTPUT" | "OUTPUT_TRUNCATED" | "MODEL_REFUSED" | "OUTPUT_REFUSED" | "AI_DISABLED" | "SETTINGS_CHANGED" | "ISSUE_CHANGED" | "ISSUE_GONE" | "REQUEST_ABANDONED";
                                     detail: ("range" | "source_line_unusable" | "size" | "unchanged" | "control_character" | "fence" | "redacted" | "secret" | "quick_action") | null;
                                 } | null;
                                 result: ({
@@ -12140,7 +12140,7 @@ export interface paths {
                                 finishedAt: string | null;
                                 error: {
                                     /** @enum {string} */
-                                    code: "PROVIDER_TIMEOUT" | "PROVIDER_UNAVAILABLE" | "PROVIDER_RATE_LIMITED" | "PROVIDER_REFUSED_KEY" | "PROVIDER_REJECTED_REQUEST" | "PROVIDER_BAD_ANSWER" | "URL_NOT_ALLOWED" | "KEY_UNDECRYPTABLE" | "MALFORMED_OUTPUT" | "OUTPUT_TRUNCATED" | "MODEL_REFUSED" | "OUTPUT_REFUSED" | "AI_DISABLED" | "SETTINGS_CHANGED" | "ISSUE_CHANGED" | "ISSUE_GONE" | "REQUEST_ABANDONED";
+                                    code: "PROVIDER_TIMEOUT" | "PROVIDER_UNAVAILABLE" | "PROVIDER_RATE_LIMITED" | "PROVIDER_REFUSED_KEY" | "PROVIDER_WORKSPACE_REQUIRED" | "PROVIDER_REJECTED_REQUEST" | "PROVIDER_BAD_ANSWER" | "URL_NOT_ALLOWED" | "KEY_UNDECRYPTABLE" | "MALFORMED_OUTPUT" | "OUTPUT_TRUNCATED" | "MODEL_REFUSED" | "OUTPUT_REFUSED" | "AI_DISABLED" | "SETTINGS_CHANGED" | "ISSUE_CHANGED" | "ISSUE_GONE" | "REQUEST_ABANDONED";
                                     detail: ("range" | "source_line_unusable" | "size" | "unchanged" | "control_character" | "fence" | "redacted" | "secret" | "quick_action") | null;
                                 } | null;
                                 result: ({

@@ -145,23 +145,28 @@ describe('the room a call leaves for the model to think', () => {
     },
   );
 
-  it('is what the loop assumes a call may write: a provider that counts nothing is charged it', async () => {
+  it('raises only the max_tokens sent: the loop estimates with the answer cap, as it did, and a provider that counts nothing is charged the cap', async () => {
     const reader = memorySnapshot();
     const policy = newToolPolicy({
       excludePaths: [],
       masked: new MaskedFiles(reader, { masker }),
       masker,
     });
+    const sent: LlmConversation[] = [];
     const result = await converseOverTools(callOf('verify'), {
       reader,
       policy,
-      send: () =>
-        Promise.resolve(
+      send: (conversation) => {
+        sent.push(conversation);
+        return Promise.resolve(
           turn({ text: '{"ok":true}', usage: { inputTokens: null, outputTokens: null } }),
-        ),
+        );
+      },
       shouldStop: () => Promise.resolve(false),
     });
-    expect(result).toMatchObject({ kind: 'answer', outputTokens: 18_048 });
+    // The call asked for the verification's 2 048 and 16 000 more, and is charged the 2 048.
+    expect(sent[0]!.maxOutputTokens).toBe(18_048);
+    expect(result).toMatchObject({ kind: 'answer', outputTokens: REVIEW_OUTPUT_TOKENS.verify });
   });
 });
 

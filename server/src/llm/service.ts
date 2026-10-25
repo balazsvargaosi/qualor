@@ -119,13 +119,15 @@ export interface AiUsage {
 
 /**
  * Failed requests the organisation's daily counts leave out, when no token was used: the job's
- * own checks refused them before anything was sent, or the provider refused the key (401, 403)
- * before doing any work. Every other failure counts (a timeout or an unavailable provider may
- * still have used the provider; a refused request may follow from what was sent). The per-user
- * hourly bound counts every request, so leaving these out cannot be used to send more.
+ * own checks refused them before anything was sent, or the provider refused the key (401, 403) or
+ * said that it is not scoped to a workspace (400) before doing any work. Every other failure
+ * counts (a timeout or an unavailable provider may still have used the provider; a refused request
+ * may follow from what was sent). The per-user hourly bound counts every request, so leaving these
+ * out cannot be used to send more.
  */
 export const UNCOUNTED_FAILURES = [
   'PROVIDER_REFUSED_KEY',
+  'PROVIDER_WORKSPACE_REQUIRED',
   'URL_NOT_ALLOWED',
   'KEY_UNDECRYPTABLE',
   'AI_DISABLED',

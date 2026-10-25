@@ -494,7 +494,7 @@ describe('/system/llm (llm.md §3, §16)', () => {
         'This key is not scoped to a workspace: give its workspace ID in the AI assistant settings.';
       expect(refused.json()).toMatchObject({
         ok: false,
-        problem: { code: 'PROVIDER_REJECTED_REQUEST', message: hint, providerStatus: 400 },
+        problem: { code: 'PROVIDER_WORKSPACE_REQUIRED', message: hint, providerStatus: 400 },
         toolCalling: 'not_checked',
         models: [{ tier: 'standard', ok: false, problem: { message: hint } }],
       });
@@ -903,8 +903,8 @@ describe('/system/llm (llm.md §3, §16)', () => {
         },
         { role: 'user', content: 'ping' },
       ],
-      // Room for a reasoning model's reasoning before the answer.
-      max_tokens: 256,
+      // 256 tokens for the answer and the 4 000 of room for a model that thinks before it.
+      max_tokens: 4_256,
       response_format: { type: 'json_object' },
     });
     expect(sent.headers.authorization).toBe(`Bearer ${fake.apiKey}`);
@@ -999,8 +999,8 @@ describe('/system/llm (llm.md §3, §16)', () => {
           { role: 'system', content: expect.stringContaining('echo') },
           { role: 'user', content: expect.stringContaining('echo') },
         ],
-        // Room for a sentence before the call, and the tools in place of the JSON mode.
-        max_tokens: 256,
+        // Room for a sentence before the call and for thinking, and the tools in place of the JSON mode.
+        max_tokens: 4_256,
         tools: [
           {
             type: 'function',
@@ -1026,7 +1026,7 @@ describe('/system/llm (llm.md §3, §16)', () => {
         expect(fake.requests.map((r) => r.path)).toEqual(['/v1/messages', '/v1/messages']);
         expect(fake.requests[1]!.json).toEqual({
           model: 'claude-x',
-          max_tokens: 256,
+          max_tokens: 4_256,
           system: expect.stringContaining('echo'),
           messages: [{ role: 'user', content: [{ type: 'text', text: expect.any(String) }] }],
           tools: [{ name: 'echo', description: expect.any(String), input_schema: ECHO_PARAMETERS }],
@@ -1038,6 +1038,24 @@ describe('/system/llm (llm.md §3, §16)', () => {
         await useProvider('openai');
       }
     });
+
+    it.each(['openai', 'anthropic'] as const)(
+      'asks for room to think in both calls of the Test: 256 tokens and the 4 000 of the allowance (%s)',
+      async (kind) => {
+        await useProvider(kind);
+        try {
+          fake.enqueue(plainOk(kind), toolAnswer(kind));
+          const res = await check();
+          expect(res.json()).toMatchObject({ ok: true, problem: null, toolCalling: 'supported' });
+          expect(fake.requests).toHaveLength(2);
+          for (const request of fake.requests) {
+            expect((request.json as { max_tokens: number }).max_tokens).toBe(256 + 4_000);
+          }
+        } finally {
+          await useProvider('openai');
+        }
+      },
+    );
 
     it.each(['openai', 'anthropic'] as const)(
       'is not_supported when the model answers in text instead of calling the tool (%s)',

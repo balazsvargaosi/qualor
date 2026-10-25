@@ -240,6 +240,33 @@ export function cannedModelText(request: RecordedLlmRequest): string {
   });
 }
 
+/**
+ * Where a Messages request holds what the real API refuses: a text block that is empty or only
+ * whitespace (a message given as a string too), or a message with no content. Null when it holds
+ * neither.
+ */
+function blankTextProblem(json: unknown): string | null {
+  const messages = (json as { messages?: unknown } | null)?.messages;
+  if (!Array.isArray(messages)) return null;
+  for (const [i, message] of (messages as ({ content?: unknown } | null)[]).entries()) {
+    const content = message?.content;
+    if (typeof content === 'string') {
+      if (content.trim() === '') {
+        return `messages.${i}: text content blocks must contain non-whitespace text`;
+      }
+      continue;
+    }
+    if (!Array.isArray(content)) continue;
+    if (content.length === 0) return `messages.${i}: all messages must have non-empty content`;
+    for (const [j, block] of (content as ({ type?: unknown; text?: unknown } | null)[]).entries()) {
+      if (block?.type === 'text' && (typeof block.text !== 'string' || block.text.trim() === '')) {
+        return `messages.${i}.content.${j}.text: text content blocks must contain non-whitespace text`;
+      }
+    }
+  }
+  return null;
+}
+
 export interface FakeLlm {
   /** `http://127.0.0.1:<port>` */
   url: string;
@@ -269,10 +296,12 @@ export interface FakeLlm {
  *
  * With `workspaceId` its key is an organisation-wide one: an Anthropic request must name that
  * workspace in `anthropic-workspace-id`, or it is refused with a 400 saying the key is not scoped
- * to a workspace (a request naming another one, with a 403).
+ * to a workspace (a request naming another one, with a 403). With `refuseBlankText` an Anthropic
+ * request is refused with a 400, as the real API does, when a text block is empty or only
+ * whitespace, or a message has no content.
  */
 export async function createFakeLlm(
-  options: { apiKey?: string | null; workspaceId?: string } = {},
+  options: { apiKey?: string | null; workspaceId?: string; refuseBlankText?: boolean } = {},
 ): Promise<FakeLlm> {
   const apiKey =
     options.apiKey === null
@@ -358,6 +387,15 @@ export async function createFakeLlm(
             });
           }
           if (named !== options.workspaceId) return send({ status: 403, body: error });
+        }
+        if (anthropic && options.refuseBlankText === true) {
+          const blank = blankTextProblem(json);
+          if (blank !== null) {
+            return send({
+              status: 400,
+              body: { type: 'error', error: { type: 'invalid_request_error', message: blank } },
+            });
+          }
         }
         const next = queue.shift();
         try {

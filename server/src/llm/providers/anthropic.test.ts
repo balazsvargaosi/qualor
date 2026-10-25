@@ -17,6 +17,7 @@ import {
   type LlmConversation,
   type LlmMessage,
   type ProviderConfig,
+  type ProviderReplay,
 } from './index';
 
 /*
@@ -72,7 +73,8 @@ describe('the Anthropic adapter: the current models', () => {
   let openai: ProviderConfig;
   // One fake per test: a reply a failing test left in the queue never reaches the next test.
   beforeEach(async () => {
-    fake = await createFakeLlm();
+    // As the real API does, it refuses a text block that is empty or only whitespace.
+    fake = await createFakeLlm({ refuseBlankText: true });
     http = { internalHosts: parseInternalHosts(fake.host), version: '0.0.0' };
     const base = {
       model: 'claude-x',
@@ -192,7 +194,11 @@ describe('the Anthropic adapter: the current models', () => {
         const turn = await converse(orgConfig, org.apiKey, start, orgHttp).catch((e: unknown) => e);
         for (const err of [single, turn]) {
           expect(err).toBeInstanceOf(LlmError);
-          expect(err).toMatchObject({ failure: 'rejected', status: 400, message: NOT_SCOPED });
+          expect(err).toMatchObject({
+            failure: 'workspace_required',
+            status: 400,
+            message: NOT_SCOPED,
+          });
           expect((err as Error).message).not.toContain('Fake error text');
           expect(JSON.stringify(err)).not.toContain('anthropic-workspace-id');
         }
@@ -230,7 +236,10 @@ describe('the Anthropic adapter: the current models', () => {
         'api key NOT SCOPED TO A WORKSPACE: send one',
         'Specify the workspace with the anthropic-workspace-id header.',
       ])('is read from the words of the error: %s', async (message) => {
-        expect(await refusal(message)).toMatchObject({ failure: 'rejected', message: NOT_SCOPED });
+        expect(await refusal(message)).toMatchObject({
+          failure: 'workspace_required',
+          message: NOT_SCOPED,
+        });
       });
 
       it.each([
@@ -258,7 +267,7 @@ describe('the Anthropic adapter: the current models', () => {
 
       it('is no more than a yes or no: nothing of the body is kept', async () => {
         const err = await refusal('This API key is not scoped to a workspace. Key sk-leak-123.');
-        expect(err).toMatchObject({ message: NOT_SCOPED });
+        expect(err).toMatchObject({ failure: 'workspace_required', message: NOT_SCOPED });
         expect(JSON.stringify(err)).not.toContain('sk-leak-123');
       });
     });
@@ -369,6 +378,88 @@ describe('the Anthropic adapter: the current models', () => {
         { type: 'text', text: 'Reading.' },
         toolUseBlock('toolu_1', 'read_file', { path: 'a.ts' }),
       ]);
+    });
+
+    describe('a message without text', () => {
+      // The API refuses a text block that is empty or only whitespace, and a message with nothing
+      // in it: an assistant message that has no text, no calls and no replay is sent with a fixed
+      // placeholder as its text, never empty.
+      const NO_TEXT = '(no text)';
+      const assistant = (text: string, replay?: ProviderReplay): LlmMessage => ({
+        role: 'assistant',
+        text,
+        toolCalls: [],
+        ...(replay === undefined ? {} : { replay }),
+      });
+      const sentMessage = async (message: LlmMessage) => {
+        await converse(
+          anthropic,
+          fake.apiKey,
+          {
+            ...start,
+            messages: [
+              { role: 'user', text: 'Review this change' },
+              message,
+              { role: 'user', text: 'Answer again' },
+            ],
+          },
+          http,
+        );
+        return messagesOf(fake.requests.length - 1)[1]!;
+      };
+
+      it.each([
+        ['no text', ''],
+        ['a blank text', '   '],
+        ['a text of line breaks', '\n\n'],
+      ])(
+        'sends the placeholder for an assistant message with %s and no calls',
+        async (_what, text) => {
+          expect(await sentMessage(assistant(text))).toEqual({
+            role: 'assistant',
+            content: [{ type: 'text', text: NO_TEXT }],
+          });
+        },
+      );
+
+      it('sends the placeholder also when the replay is of another kind', async () => {
+        const other = { kind: 'openai' as const, items: [{ type: 'reasoning', id: 'rs_1' }] };
+        expect((await sentMessage(assistant('', other))).content).toEqual([
+          { type: 'text', text: NO_TEXT },
+        ]);
+      });
+
+      it('sends a text there is as it is, and no placeholder beside calls or a replay', async () => {
+        expect((await sentMessage(assistant('Enough.'))).content).toEqual([
+          { type: 'text', text: 'Enough.' },
+        ]);
+        // Calls and no text: the calls alone, as before.
+        const withCall: LlmMessage = {
+          role: 'assistant',
+          text: '  ',
+          toolCalls: [{ id: 'toolu_1', name: 'read_file', arguments: { path: 'a.ts' } }],
+        };
+        const callOnly = await converse(
+          anthropic,
+          fake.apiKey,
+          {
+            ...start,
+            messages: [
+              { role: 'user', text: 'Review this change' },
+              withCall,
+              { role: 'tool', callId: 'toolu_1', name: 'read_file', text: 'A' },
+            ],
+          },
+          http,
+        );
+        expect(callOnly.finishReason).toBe('stop');
+        expect(messagesOf(fake.requests.length - 1)[1]!.content).toEqual([
+          toolUseBlock('toolu_1', 'read_file', { path: 'a.ts' }),
+        ]);
+        // A replay goes as it came, whatever the message's own text says.
+        const replay = { kind: 'anthropic' as const, items: [anthropicThinking('sig-kept')] };
+        expect((await sentMessage(assistant('', replay))).content).toEqual(replay.items);
+      });
     });
 
     it('ignores a replay of the other kind: the message is built as it would be without one', async () => {
