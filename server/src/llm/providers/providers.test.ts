@@ -40,6 +40,7 @@ describe('callProvider (llm.md §2, §4, §14)', () => {
       jsonMode: 'json_object',
       maxTokensField: 'max_tokens',
       temperature: null,
+      api: 'chat_completions',
       workspaceId: null,
       timeoutSeconds: 5,
     } as const;

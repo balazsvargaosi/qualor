@@ -6,6 +6,8 @@ import {
   llmShape,
   openAiAnswer,
   openAiToolCalls,
+  responsesAnswer,
+  responsesToolCalls,
   type FakeLlm,
   type RecordedLlmRequest,
 } from '../../../test/fake-llm';
@@ -72,6 +74,7 @@ describe('converse: conversations with read-only tools (R5)', () => {
       jsonMode: 'json_object',
       maxTokensField: 'max_tokens',
       temperature: null,
+      api: 'chat_completions',
       workspaceId: null,
       timeoutSeconds: 5,
     } as const;
@@ -607,6 +610,113 @@ describe('converse: conversations with read-only tools (R5)', () => {
         ? { replay: { kind: 'anthropic', items: [{ type: 'text', text: '{"findings":[]}' }] } }
         : {}),
     });
+  });
+
+  it('a Responses conversation with text, two function calls and usage equals the Chat Completions one', async () => {
+    const calls = [
+      { id: 'call_1', name: 'read_file', arguments: { path: 'src/a.ts', from: 3 } },
+      // Arguments that are not JSON stay the model's own text, on either wire.
+      { id: 'call_2', name: 'list_files', arguments: '{"dir": "src"' },
+    ];
+    fake.enqueue(
+      {
+        status: 200,
+        body: openAiToolCalls(calls, {
+          text: 'Let me look.',
+          usage: { prompt_tokens: 120, completion_tokens: 34 },
+        }),
+      },
+      {
+        status: 200,
+        body: responsesToolCalls(calls, {
+          text: 'Let me look.',
+          usage: { input_tokens: 120, output_tokens: 34 },
+        }),
+      },
+    );
+    const chat = await converse(openai, fake.apiKey, start, http);
+    const responses = await converse({ ...openai, api: 'responses' }, fake.apiKey, start, http);
+    // One path from the answer on: the same turn, but for what only the Responses wire keeps to
+    // send it back as it came.
+    const { replay, ...turn } = responses;
+    expect(turn).toEqual(chat);
+    expect(turn).toEqual({
+      text: 'Let me look.',
+      finishReason: 'tool',
+      toolCalls: [
+        { id: 'call_1', name: 'read_file', arguments: { path: 'src/a.ts', from: 3 } },
+        { id: 'call_2', name: 'list_files', arguments: '{"dir": "src"' },
+      ],
+      usage: { inputTokens: 120, outputTokens: 34 },
+      model: 'fake-openai-model',
+    });
+    expect(chat).not.toHaveProperty('replay');
+    expect(replay).toMatchObject({ kind: 'openai' });
+    expect(replay?.items.map((item) => (item as { type: string }).type)).toEqual([
+      'message',
+      'function_call',
+      'function_call',
+    ]);
+  });
+
+  it.each([
+    ['a text that ends the turn', () => openAiAnswer('{"a":1}'), () => responsesAnswer('{"a":1}')],
+    [
+      'an answer cut off at its limit',
+      () => openAiAnswer('{"a', { finishReason: 'length' }),
+      () => responsesAnswer('{"a', { incomplete: 'max_output_tokens' }),
+    ],
+    [
+      'an answer that stopped for a reason it does not know',
+      () => openAiAnswer('Words', { finishReason: 'something_new' }),
+      () => responsesAnswer('Words', { incomplete: 'something_new' }),
+    ],
+    [
+      'a refusal',
+      () => {
+        const refused = openAiAnswer('x') as { choices: { message: Record<string, unknown> }[] };
+        refused.choices[0]!.message.content = null;
+        refused.choices[0]!.message.refusal = 'I cannot help with that.';
+        return refused;
+      },
+      () => responsesAnswer('', { refusal: 'I cannot help with that.' }),
+    ],
+    [
+      'a missing usage',
+      () => openAiAnswer('{}', { usage: null }),
+      () => responsesAnswer('{}', { usage: null }),
+    ],
+    [
+      'a usage that is not a count',
+      () => ({
+        ...(openAiAnswer('{}') as object),
+        usage: { prompt_tokens: -1, completion_tokens: 2.5 },
+      }),
+      () => ({
+        ...(responsesAnswer('{}') as object),
+        usage: { input_tokens: -1, output_tokens: 2.5 },
+      }),
+    ],
+  ])('reads %s as the Chat Completions wire does', async (_what, chatBody, responsesBody) => {
+    const responses: ProviderConfig = { ...openai, api: 'responses' };
+    // The replies are taken in the order of the calls: a call and a conversation, each on the
+    // Responses wire first.
+    fake.enqueue(
+      { status: 200, body: responsesBody() },
+      { status: 200, body: chatBody() },
+      { status: 200, body: responsesBody() },
+      { status: 200, body: chatBody() },
+    );
+    const call = { system: 'S', user: 'U', maxOutputTokens: 50 };
+    expect(await callProvider(responses, fake.apiKey, call, http)).toEqual(
+      await callProvider(openai, fake.apiKey, call, http),
+    );
+    const turn = await converse(responses, fake.apiKey, start, http);
+    // What only the Responses wire keeps to send the turn back (a refusal has none), apart, it is
+    // the same turn.
+    expect(turn.replay?.kind).toBe(turn.finishReason === 'refusal' ? undefined : 'openai');
+    delete turn.replay;
+    expect(turn).toEqual(await converse(openai, fake.apiKey, start, http));
   });
 
   it('openai: an empty tool_calls list is no tool call', async () => {

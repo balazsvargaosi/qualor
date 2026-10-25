@@ -7,6 +7,7 @@ import {
   LLM_MAX_ANSWER_BYTES,
   LlmCallAborted,
   LlmError,
+  RESPONSES_REQUIRED_TEXT,
   WORKSPACE_REQUIRED_TEXT,
   type ProviderConfig,
   type ProviderHttpOptions,
@@ -45,7 +46,9 @@ export function retryAfterSeconds(
  * is more than the model takes is flagged (`refusedOutputLimit`), for the call to be asked again
  * with less, and also `refusedContext` when the limit is the context window that the prompt
  * shares; `outputLimitField`, the output limit field the request carried, is matched against the
- * error's `param`; nothing of the body is shown or logged. A call that `http.signal` gives up is
+ * error's `param` (the Responses API has none to name: its field is fixed); a request to Chat
+ * Completions that carries tools and is refused in words that name the Responses API is flagged
+ * (`needsResponses`); nothing of the body is shown or logged. A call that `http.signal` gives up is
  * cut where it is, as the timeout cuts it, and throws LlmCallAborted: no LlmError, since the
  * provider neither failed nor was slow.
  */
@@ -163,6 +166,25 @@ export async function postJson(
         status,
       );
     }
+    // A model that takes tools only through the Responses API says so: the Test passes it on.
+    if (
+      status === 400 &&
+      config.kind === 'openai' &&
+      config.api === 'chat_completions' &&
+      carriesTools(body) &&
+      namesResponsesApi(refused)
+    ) {
+      throw new LlmError(
+        'rejected',
+        RESPONSES_REQUIRED_TEXT,
+        status,
+        null,
+        true,
+        false,
+        false,
+        true,
+      );
+    }
     if (carriesTools(body) && refusesTools(refused)) {
       throw new LlmError(
         'rejected',
@@ -186,7 +208,7 @@ function refusedText(status: number): string {
   return `The provider refused the request (HTTP ${status}); check the base URL and model`;
 }
 
-/** Whether the request body offers the model tools (the key both wires use for them). */
+/** Whether the request body offers the model tools (the key every wire uses for them). */
 function carriesTools(body: unknown): boolean {
   const tools = (body as { tools?: unknown } | null)?.tools;
   return Array.isArray(tools) && tools.length > 0;
@@ -270,6 +292,22 @@ function refusesTools({ detail, message }: ErrorBody): boolean {
   const unsupported =
     NOT_SUPPORTED.test(message) || (typeof code === 'string' && code.startsWith('unsupported'));
   return aboutTools && unsupported;
+}
+
+/**
+ * What the newest OpenAI models say of function tools asked for through Chat Completions: that they
+ * take them through the Responses API ("... use /v1/responses or set reasoning_effort to 'none'"),
+ * and that tools do not go with reasoning ("Function tools with reasoning_effort are not
+ * supported"). The path is matched whole: not `/v1/responses_api`, nor any word about responses.
+ */
+const RESPONSES_API = /\bv1\/responses(?![\w-])|\bfunction\s+tools\s+with\s+reasoning\b/i;
+
+/**
+ * Whether an error body says that the model takes its function tools only through the Responses
+ * API. Only this yes or no is used: nothing of the text is shown, stored or logged.
+ */
+function namesResponsesApi({ message }: ErrorBody): boolean {
+  return RESPONSES_API.test(message);
 }
 
 /**

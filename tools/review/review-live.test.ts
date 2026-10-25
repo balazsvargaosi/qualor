@@ -32,6 +32,7 @@ describe('liveEnabled and readLiveEnv', () => {
       url: 'https://llm.invalid',
       model: 'm',
       kind: 'openai',
+      api: 'chat_completions',
       apiKey: null,
       workspaceId: null,
       runs: 1,
@@ -49,6 +50,7 @@ describe('liveEnabled and readLiveEnv', () => {
       readLiveEnv({
         ...base,
         QUALOR_LIVE_REVIEW_KIND: 'anthropic',
+        QUALOR_LIVE_REVIEW_API: 'responses',
         QUALOR_LIVE_REVIEW_API_KEY: KEY,
         QUALOR_LIVE_REVIEW_WORKSPACE_ID: 'wrkspc_01AbCdEf',
         QUALOR_LIVE_REVIEW_RUNS: '5',
@@ -66,6 +68,8 @@ describe('liveEnabled and readLiveEnv', () => {
       url: 'https://llm.invalid',
       model: 'm',
       kind: 'anthropic',
+      // Anthropic has one API: the variable is for an OpenAI-compatible provider.
+      api: 'chat_completions',
       apiKey: KEY,
       workspaceId: 'wrkspc_01AbCdEf',
       runs: 5,
@@ -103,6 +107,15 @@ describe('liveEnabled and readLiveEnv', () => {
     ).toBeNull();
   });
 
+  it('reads the API an OpenAI-compatible provider is asked through: Chat Completions unless the Responses API is named', () => {
+    expect(readLiveEnv(base).api).toBe('chat_completions');
+    expect(readLiveEnv({ ...base, QUALOR_LIVE_REVIEW_API: '' }).api).toBe('chat_completions');
+    expect(readLiveEnv({ ...base, QUALOR_LIVE_REVIEW_API: 'chat_completions' }).api).toBe(
+      'chat_completions',
+    );
+    expect(readLiveEnv({ ...base, QUALOR_LIVE_REVIEW_API: 'responses' }).api).toBe('responses');
+  });
+
   it('reports a cost only with both prices', () => {
     expect(readLiveEnv({ ...base, QUALOR_LIVE_REVIEW_PRICE_IN: '3' }).prices).toBeNull();
     expect(readLiveEnv({ ...base, QUALOR_LIVE_REVIEW_PRICE_OUT: '15' }).prices).toBeNull();
@@ -127,6 +140,8 @@ describe('liveEnabled and readLiveEnv', () => {
 
   it.each([
     ['QUALOR_LIVE_REVIEW_KIND', 'gemini'],
+    ['QUALOR_LIVE_REVIEW_API', 'completions'],
+    ['QUALOR_LIVE_REVIEW_API', 'Responses'],
     ['QUALOR_LIVE_REVIEW_RUNS', '0'],
     ['QUALOR_LIVE_REVIEW_RUNS', '6'],
     ['QUALOR_LIVE_REVIEW_RUNS', '1.5'],
@@ -171,11 +186,13 @@ describe('providerOf', () => {
     url: string,
     kind: LiveOptions['kind'] = 'openai',
     workspaceId: string | null = null,
-  ) => providerOf({ url, model: 'm', kind, workspaceId });
+    api: LiveOptions['api'] = 'chat_completions',
+  ) => providerOf({ url, model: 'm', kind, api, workspaceId });
 
   it('settles a call as the AI settings would store it', () => {
     expect(of('http://localhost:11434/v1/').config).toEqual({
       kind: 'openai',
+      api: 'chat_completions',
       baseUrl: 'http://localhost:11434/v1',
       model: 'm',
       auth: 'bearer',
@@ -189,6 +206,13 @@ describe('providerOf', () => {
     expect(of('https://api.anthropic.com', 'anthropic').config).toMatchObject({
       kind: 'anthropic',
       baseUrl: 'https://api.anthropic.com',
+    });
+  });
+
+  it('names the API of an OpenAI-compatible provider in the settings of a call', () => {
+    expect(of('https://api.openai.com/v1', 'openai', null, 'responses').config).toMatchObject({
+      kind: 'openai',
+      api: 'responses',
     });
   });
 
@@ -293,6 +317,7 @@ describe('runLive against the fake LLM', () => {
     url: fake.openAiBaseUrl,
     model: 'fake-model',
     kind: 'openai',
+    api: 'chat_completions',
     apiKey: fake.apiKey,
     workspaceId: null,
     runs: 1,

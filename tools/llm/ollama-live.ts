@@ -196,6 +196,7 @@ export async function runLiveCheck(
     jsonMode: o.jsonMode,
     maxTokensField: 'max_tokens',
     temperature: null,
+    api: 'chat_completions',
     workspaceId: null,
     timeoutSeconds: o.timeoutSeconds,
   };

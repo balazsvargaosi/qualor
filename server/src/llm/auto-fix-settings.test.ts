@@ -30,6 +30,7 @@ const provider = {
   jsonMode: 'json_object' as const,
   maxTokensField: 'max_tokens' as const,
   temperature: null,
+  api: 'chat_completions' as const,
   workspaceId: null,
   timeoutSeconds: 60,
   apiKeyEnc: null,

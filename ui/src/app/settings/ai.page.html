@@ -53,6 +53,9 @@
         <p id="ai-test-tools" class="alert alert-warn" i18n="@@ai.settings.toolsNotSupported">
           Tool calling (needed by AI review): not supported
         </p>
+        @if (toolsHint() === 'USE_RESPONSES_API') {
+          <p id="ai-test-use-responses" class="alert alert-warn">{{ useResponsesHint }}</p>
+        }
       }
     }
     @if (testLines().length > 0) {
@@ -409,6 +412,32 @@
         @if (kind() !== 'anthropic') {
           <div class="setting-row">
             <div class="setting-text">
+              <label for="ai-api" i18n="@@ai.settings.api">API</label>
+              <p id="ai-api-hint" i18n="@@ai.settings.apiHint">
+                The newest OpenAI models take tools only through the Responses API.
+              </p>
+            </div>
+            <div class="setting-field">
+              <select id="ai-api" aria-describedby="ai-api-hint" (change)="setApi($event)">
+                <option
+                  value="chat_completions"
+                  [selected]="openAiApi() === 'chat_completions'"
+                  i18n="@@ai.settings.apiChatCompletions"
+                >
+                  Chat Completions
+                </option>
+                <option
+                  value="responses"
+                  [selected]="openAiApi() === 'responses'"
+                  i18n="@@ai.settings.apiResponses"
+                >
+                  Responses
+                </option>
+              </select>
+            </div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-text">
               <label for="ai-auth" i18n="@@ai.settings.auth">Key header</label>
             </div>
             <div class="setting-field">
@@ -453,39 +482,41 @@
               </select>
             </div>
           </div>
-          <div class="setting-row">
-            <div class="setting-text">
-              <label for="ai-max-tokens-field" i18n="@@ai.settings.maxTokensField"
-                >Output limit field</label
-              >
-              <p id="ai-max-tokens-field-hint" i18n="@@ai.settings.maxTokensFieldHint">
-                OpenAI's current models need max_completion_tokens and refuse max_tokens; vLLM,
-                Ollama and most other servers want max_tokens.
-              </p>
-            </div>
-            <div class="setting-field">
-              <select
-                id="ai-max-tokens-field"
-                aria-describedby="ai-max-tokens-field-hint"
-                (change)="setMaxTokensField($event)"
-              >
-                <option
-                  value="max_tokens"
-                  [selected]="maxTokensField() === 'max_tokens'"
-                  i18n="@@ai.settings.maxTokens"
+          @if (openAiApi() === 'chat_completions') {
+            <div class="setting-row">
+              <div class="setting-text">
+                <label for="ai-max-tokens-field" i18n="@@ai.settings.maxTokensField"
+                  >Output limit field</label
                 >
-                  max_tokens
-                </option>
-                <option
-                  value="max_completion_tokens"
-                  [selected]="maxTokensField() === 'max_completion_tokens'"
-                  i18n="@@ai.settings.maxCompletionTokens"
+                <p id="ai-max-tokens-field-hint" i18n="@@ai.settings.maxTokensFieldHint">
+                  OpenAI's current models need max_completion_tokens and refuse max_tokens; vLLM,
+                  Ollama and most other servers want max_tokens.
+                </p>
+              </div>
+              <div class="setting-field">
+                <select
+                  id="ai-max-tokens-field"
+                  aria-describedby="ai-max-tokens-field-hint"
+                  (change)="setMaxTokensField($event)"
                 >
-                  max_completion_tokens
-                </option>
-              </select>
+                  <option
+                    value="max_tokens"
+                    [selected]="maxTokensField() === 'max_tokens'"
+                    i18n="@@ai.settings.maxTokens"
+                  >
+                    max_tokens
+                  </option>
+                  <option
+                    value="max_completion_tokens"
+                    [selected]="maxTokensField() === 'max_completion_tokens'"
+                    i18n="@@ai.settings.maxCompletionTokens"
+                  >
+                    max_completion_tokens
+                  </option>
+                </select>
+              </div>
             </div>
-          </div>
+          }
         }
         <div class="setting-row">
           <div class="setting-text">

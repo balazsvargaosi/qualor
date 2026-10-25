@@ -2,6 +2,7 @@ import type { FinishReason } from '@qualor/shared';
 import { z } from 'zod';
 import { NOT_UNDERSTOOD, postJson } from './http';
 import { askWithRoom } from './output-room';
+import { replayOf } from './replay';
 import {
   LlmError,
   tokenCount,
@@ -13,7 +14,6 @@ import {
   type LlmTurn,
   type ProviderConfig,
   type ProviderHttpOptions,
-  type ProviderReplay,
 } from './types';
 
 export const ANTHROPIC_VERSION = '2023-06-01';
@@ -57,40 +57,6 @@ function headers(config: ProviderConfig, apiKey: string | null): Record<string, 
   if (apiKey !== null) result['x-api-key'] = apiKey;
   if (config.workspaceId !== null) result['anthropic-workspace-id'] = config.workspaceId;
   return result;
-}
-
-/**
- * A copy of blocks that can be written out again (what is nested deeper than JSON.stringify follows
- * cannot) and copied, or null when they cannot be. The copy is its own: the blocks are the
- * provider's, and what shares objects with them is not.
- */
-function copyOf(blocks: readonly unknown[]): unknown[] | null {
-  try {
-    JSON.stringify(blocks);
-    return structuredClone(blocks) as unknown[];
-  } catch {
-    return null;
-  }
-}
-
-/**
- * The replay of a turn: its whole content as the provider sent it, in a copy of its own. The
- * thinking in it is signed and goes back unchanged, and nothing done later to the turn's calls,
- * which share their input with the content, may change it. What cannot be written out again must
- * not be in a history that is sent again and again, whatever block it is in:
- * - a call whose input cannot leaves the turn without a replay, and the loop refuses those
- *   arguments and sends the turn from its text and its calls;
- * - any other block that cannot is a fault of the provider's, which no model sends, and its answer
- *   is not understood.
- */
-function replayOf(
-  content: readonly unknown[],
-  toolUse: readonly unknown[],
-): ProviderReplay | undefined {
-  const items = copyOf(content);
-  if (items !== null) return { kind: 'anthropic', items };
-  if (copyOf(toolUse) === null) return undefined;
-  throw new LlmError('bad_answer', NOT_UNDERSTOOD);
 }
 
 /**
@@ -282,7 +248,7 @@ export async function anthropicConverse(
     }
     const { answer, toolUse, content } = await send(config, apiKey, body, http);
     const toolCalls = toolUse.map(toolCall);
-    const replay = content === null ? undefined : replayOf(content, toolUse);
+    const replay = content === null ? undefined : replayOf('anthropic', content, toolUse);
     return { ...answer, toolCalls, ...(replay ? { replay } : {}) };
   });
 }

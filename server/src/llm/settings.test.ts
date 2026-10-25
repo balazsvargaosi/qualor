@@ -29,6 +29,7 @@ const CALL = {
   jsonMode: 'json_object' as const,
   maxTokensField: 'max_tokens' as const,
   temperature: null,
+  api: 'chat_completions' as const,
   workspaceId: null,
   timeoutSeconds: 60,
 };
@@ -181,6 +182,36 @@ describe('LLM settings (llm.md §3)', () => {
         );
       }
     }
+  });
+
+  describe('the API of an OpenAI provider', () => {
+    const openai = { ...provider, apiKeyEnc: null };
+
+    it('a stored provider without api reads as chat_completions (settings of an older version)', () => {
+      const old = Object.fromEntries(Object.entries(openai).filter(([field]) => field !== 'api'));
+      expect(old).not.toHaveProperty('api');
+      const parsed = storedLlmSettingsSchema.parse({ ...DEFAULT_LLM_SETTINGS, provider: old });
+      expect(parsed.provider?.api).toBe('chat_completions');
+      expect(providerConfig(parsed.provider!).api).toBe('chat_completions');
+    });
+
+    it('is kept as stored, and a call receives it', () => {
+      for (const api of ['chat_completions', 'responses'] as const) {
+        const stored = storedProviderSchema.parse({ ...openai, api });
+        expect(stored.api).toBe(api);
+        expect(providerConfig(stored)).toEqual({ ...CALL, api });
+      }
+    });
+
+    it.each([
+      ['empty', ''],
+      ['another API', 'completions'],
+      ['the name of the endpoint', '/responses'],
+      ['in another case', 'Responses'],
+      ['null', null],
+    ])('refuses a stored one that is %s', (_name, api) => {
+      expect(storedProviderSchema.safeParse({ ...openai, api }).success).toBe(false);
+    });
   });
 
   describe('the workspace id of an Anthropic provider', () => {

@@ -6,6 +6,8 @@ type TestAnswer =
 export type LlmErrorCode = NonNullable<TestAnswer['problem']>['code'];
 /** What a Test found out about one model of the provider. */
 type TestModel = TestAnswer['models'][number];
+/** What a Test suggests changing, from the Test answer's schema. */
+export type TestHintCode = NonNullable<TestAnswer['hint']>['code'];
 
 /**
  * llm.md §14 in the UI's own words (plan 1F ruling Y3: the server's English text is never shown),
@@ -69,6 +71,17 @@ export function settingsProblemText(
     : llmProblemText(code, providerStatus);
 }
 
+/**
+ * What a Test suggests (its `hint`), in the page's own words (the server's text is never shown):
+ * the AI settings page has the choice it names below the Test's result.
+ */
+export function testHintText(code: TestHintCode): string {
+  switch (code) {
+    case 'USE_RESPONSES_API':
+      return $localize`:@@ai.test.useResponses:This model takes tools only through the Responses API: choose Responses below.`;
+  }
+}
+
 /** One model's line after a Test of several models: the model, how it fared, and the words for it. */
 export interface TestLine {
   model: string;
@@ -99,6 +112,14 @@ export function testLine(found: TestModel): TestLine {
         text: $localize`:@@ai.test.modelSupported:${model}:model:: connected in ${latencyMs}:latency: ms · tool calling supported`,
       };
     case 'not_supported':
+      if (found.hint) {
+        const hint = testHintText(found.hint.code);
+        return {
+          model,
+          tone: 'warn',
+          text: $localize`:@@ai.test.modelNotSupportedHint:${model}:model:: connected in ${latencyMs}:latency: ms · tool calling not supported · ${hint}:hint:`,
+        };
+      }
       return {
         model,
         tone: 'warn',

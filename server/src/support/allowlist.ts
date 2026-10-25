@@ -73,6 +73,7 @@ export const SUPPORT_SETTINGS_ALLOWLIST: Readonly<
   llm: {
     v: 'value',
     'provider.kind': 'value',
+    'provider.api': 'value',
     'provider.baseUrl': 'url',
     'provider.model': 'value',
     'provider.strongModel': 'value',

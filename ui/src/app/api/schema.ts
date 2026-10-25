@@ -9776,6 +9776,8 @@ export interface paths {
                             provider: {
                                 /** @enum {string} */
                                 kind: "openai" | "anthropic";
+                                /** @enum {string} */
+                                api: "chat_completions" | "responses";
                                 baseUrl: string;
                                 model: string;
                                 strongModel: string | null;
@@ -9882,6 +9884,12 @@ export interface paths {
                         provider: {
                             /** @enum {string} */
                             kind: "openai" | "anthropic";
+                            /**
+                             * @description OpenAI-compatible providers only: `chat_completions` (the default; what vLLM, Ollama, LiteLLM and Azure deployments serve) or `responses`, OpenAI's Responses API, which its newest models need for function tools. Stored as `chat_completions` for another kind
+                             * @default chat_completions
+                             * @enum {string}
+                             */
+                            api?: "chat_completions" | "responses";
                             baseUrl: string;
                             /** @description The standard model: explain, triage and fix use it, and so does a step of an AI review whose tier has no model of its own */
                             model: string;
@@ -9986,6 +9994,8 @@ export interface paths {
                             provider: {
                                 /** @enum {string} */
                                 kind: "openai" | "anthropic";
+                                /** @enum {string} */
+                                api: "chat_completions" | "responses";
                                 baseUrl: string;
                                 model: string;
                                 strongModel: string | null;
@@ -10140,6 +10150,12 @@ export interface paths {
                                 message: string;
                                 providerStatus: number | null;
                             } | null;
+                            /** @description What to change, when the Test can tell: `USE_RESPONSES_API` says the model takes function tools only through the Responses API. Null: nothing to suggest */
+                            hint: {
+                                /** @enum {string} */
+                                code: "USE_RESPONSES_API";
+                                message: string;
+                            } | null;
                             /** @description Every model of the provider, once each: the standard model first (its line repeats the answer's own fields), then the strong and the fast model unless they name a model already listed. Each is checked on its own, so one that fails never fails another */
                             models: {
                                 /** @enum {string} */
@@ -10155,6 +10171,11 @@ export interface paths {
                                     code: "PROVIDER_TIMEOUT" | "PROVIDER_UNAVAILABLE" | "PROVIDER_RATE_LIMITED" | "PROVIDER_REFUSED_KEY" | "PROVIDER_WORKSPACE_REQUIRED" | "PROVIDER_REJECTED_REQUEST" | "PROVIDER_BAD_ANSWER" | "URL_NOT_ALLOWED" | "KEY_UNDECRYPTABLE" | "MALFORMED_OUTPUT" | "OUTPUT_TRUNCATED" | "MODEL_REFUSED" | "OUTPUT_REFUSED" | "AI_DISABLED" | "SETTINGS_CHANGED" | "ISSUE_CHANGED" | "ISSUE_GONE" | "REQUEST_ABANDONED";
                                     message: string;
                                     providerStatus: number | null;
+                                } | null;
+                                hint: {
+                                    /** @enum {string} */
+                                    code: "USE_RESPONSES_API";
+                                    message: string;
                                 } | null;
                             }[];
                         };

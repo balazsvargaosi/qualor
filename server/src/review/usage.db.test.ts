@@ -13,6 +13,9 @@ import {
   llmShape,
   openAiAnswer,
   openAiToolCalls,
+  responsesAnswer,
+  responsesReasoning,
+  responsesToolCalls,
   type FakeLlm,
   type LlmReply,
 } from '../../test/fake-llm';
@@ -635,6 +638,56 @@ const port = 8080;
         const shown = JSON.stringify([row.prompt, row.result]);
         expect(shown).not.toContain('SIGNATURE-ONE');
         expect(shown).not.toContain('ENCRYPTED-ONE');
+        expect(shown).not.toContain('replay');
+      }
+      expect(callTwo!.prompt).not.toBeNull();
+      expect(callOne!.result).toMatchObject({ finishReason: 'tool', text: 'Reading.' });
+    });
+
+    it('sends the reasoning of a Responses turn back unchanged, counts it in the input, and keeps it out of the stored prompt and result', async () => {
+      const reasoning = [responsesReasoning('ENCRYPTED-ONE'), responsesReasoning('ENCRYPTED-TWO')];
+      const answer = responsesToolCalls(
+        [{ id: 'c1', name: 'read_file', arguments: { path: 'a.ts' } }],
+        { reasoning, text: 'Reading.', usage: { input_tokens: 10, output_tokens: 900 } },
+      );
+      const provider = {
+        ...configuredProvider(config.secretKey, fake, 'openai'),
+        api: 'responses' as const,
+      };
+      const { result, sent } = await converseThrough(
+        'openai',
+        [
+          { status: 200, body: answer },
+          {
+            status: 200,
+            body: responsesAnswer('{"findings":[]}', {
+              usage: { input_tokens: 20, output_tokens: 5 },
+            }),
+          },
+        ],
+        settingsFor('openai', { storePrompts: true, provider }),
+      );
+      expect(result).toMatchObject({ kind: 'answer', turns: 2 });
+      expect(fake.requests.map((r) => r.path)).toEqual(['/v1/responses', '/v1/responses']);
+      // The provider gets the items back as it sent them, ahead of the result of the call.
+      const items = (answer as { output: unknown[] }).output;
+      const input = (fake.requests[1]!.json as { input: unknown[] }).input;
+      expect(input.slice(1, 1 + items.length)).toEqual(items);
+      expect(input.at(-1)).toMatchObject({ type: 'function_call_output', call_id: 'c1' });
+      // The row's input is what was sent, the replay with it.
+      const [callOne, callTwo] = await rows();
+      const body = JSON.stringify(sent[1]);
+      expect(body).toContain('ENCRYPTED-ONE');
+      expect(callTwo).toMatchObject({
+        provider: 'openai',
+        model: 'fake-model',
+        inputSha256: sha256(body),
+        inputBytes: Buffer.byteLength(body),
+      });
+      // But nothing of it is stored where a person reads it back.
+      for (const row of [callOne!, callTwo!]) {
+        const shown = JSON.stringify([row.prompt, row.result]);
+        expect(shown).not.toContain('ENCRYPTED');
         expect(shown).not.toContain('replay');
       }
       expect(callTwo!.prompt).not.toBeNull();

@@ -169,6 +169,113 @@ export function anthropicToolUse(
   return shape;
 }
 
+/**
+ * The `reasoning` item of a model that thinks, as the Responses API returns it with
+ * `include: ["reasoning.encrypted_content"]`: `encrypted_content` is the provider's own and opaque
+ * (it binds the item to its model), and the summary is empty, as none was asked for.
+ */
+export function responsesReasoning(
+  encrypted: string,
+  id = `rs_${encrypted.slice(0, 40)}`,
+): unknown {
+  return { id, type: 'reasoning', summary: [], encrypted_content: encrypted };
+}
+
+/**
+ * A Responses API answer (the second wire of the OpenAI provider) with one `message` item saying
+ * `text`, after the items of `over.reasoning` (a model that thinks puts them first). `over.incomplete`
+ * is the reason an answer was cut off (`max_output_tokens`): the status is then `incomplete` and so
+ * is its message; with no text no message is written, as when the cut came while it thought.
+ * `over.refusal` makes the message a refusal. `over.status` and `over.error` make the failure of an
+ * answer; `over.usage` null leaves the usage out.
+ */
+export function responsesAnswer(
+  text: string,
+  over: {
+    status?: string;
+    incomplete?: string;
+    error?: unknown;
+    refusal?: string;
+    model?: string;
+    usage?: { input_tokens: number; output_tokens: number } | null;
+    reasoning?: readonly unknown[];
+  } = {},
+): unknown {
+  const shape = llmShape<{
+    status: string;
+    incomplete_details: unknown;
+    error: unknown;
+    output: Record<string, unknown>[];
+    usage?: Record<string, unknown>;
+    model: string;
+  }>('openai-response');
+  const [message] = shape.output;
+  shape.status = over.status ?? (over.incomplete === undefined ? 'completed' : 'incomplete');
+  if (over.incomplete !== undefined) shape.incomplete_details = { reason: over.incomplete };
+  if (over.error !== undefined) shape.error = over.error;
+  const part =
+    over.refusal === undefined
+      ? { type: 'output_text', text, annotations: [], logprobs: [] }
+      : { type: 'refusal', refusal: over.refusal };
+  const written = text !== '' || over.refusal !== undefined;
+  shape.output = [
+    ...(over.reasoning ?? []),
+    ...(written
+      ? [
+          {
+            ...message,
+            status: over.incomplete === undefined ? 'completed' : 'incomplete',
+            content: [part],
+          },
+        ]
+      : []),
+  ] as Record<string, unknown>[];
+  if (over.model) shape.model = over.model;
+  if (over.usage === null) delete shape.usage;
+  else if (over.usage) {
+    shape.usage = {
+      ...shape.usage,
+      ...over.usage,
+      total_tokens: over.usage.input_tokens + over.usage.output_tokens,
+    };
+  }
+  return shape;
+}
+
+/**
+ * A Responses API answer (R5) with a `function_call` item per call, after the items of
+ * `over.reasoning` and a message when `over.text` is given: `call_id` is the call's id and
+ * `arguments` JSON text. A string `arguments` is the provider's own text and goes out as it is (so
+ * a test can send what is not JSON); any other value is JSON-encoded, as the API does.
+ */
+export function responsesToolCalls(
+  calls: { id: string; name: string; arguments: unknown }[],
+  over: {
+    text?: string;
+    model?: string;
+    usage?: { input_tokens: number; output_tokens: number } | null;
+    reasoning?: readonly unknown[];
+  } = {},
+): unknown {
+  const shape = responsesAnswer(over.text ?? '', {
+    ...(over.model !== undefined ? { model: over.model } : {}),
+    ...(over.usage !== undefined ? { usage: over.usage } : {}),
+    ...(over.reasoning !== undefined ? { reasoning: over.reasoning } : {}),
+  }) as { output: unknown[] };
+  shape.output.push(
+    ...calls.map((call) => ({
+      id: `fc_${call.id}`,
+      type: 'function_call',
+      status: 'completed',
+      call_id: call.id,
+      name: call.name,
+      arguments:
+        typeof call.arguments === 'string' ? call.arguments : JSON.stringify(call.arguments),
+    })),
+  );
+  return shape;
+}
+
 const DATA_BLOCK = /<<<QUALOR-DATA-([0-9a-f]{32})\n(.*)\nQUALOR-DATA-\1>>>/;
 
 interface DataObject {
@@ -176,13 +283,22 @@ interface DataObject {
   issue: { startLine: number | null; snippet: { startLine: number; lines: string[] } | null };
 }
 
+/**
+ * The text of the first user message of a request: the `messages` of a chat completion, or the
+ * `input` items of a Responses request (a string, or the text of its first part).
+ */
 function userText(json: unknown): string {
-  const messages = (json as { messages?: unknown } | null)?.messages;
+  const body = json as { messages?: unknown; input?: unknown } | null;
+  const messages = Array.isArray(body?.messages) ? body.messages : body?.input;
   if (!Array.isArray(messages)) return '';
   const user = (messages as { role?: unknown; content?: unknown }[]).find(
     (m) => typeof m === 'object' && m !== null && m.role === 'user',
   );
-  return typeof user?.content === 'string' ? user.content : '';
+  const content = user?.content;
+  if (typeof content === 'string') return content;
+  const first: unknown = Array.isArray(content) ? content[0] : undefined;
+  const text = (first as { text?: unknown } | null | undefined)?.text;
+  return typeof text === 'string' ? text : '';
 }
 
 /** A valid answer for the task of the request's data block (llm.md §6–§8); `{"ok": true}` without one. */
@@ -267,14 +383,18 @@ function blankTextProblem(json: unknown): string | null {
   return null;
 }
 
+/** The three wires of the fake: Messages, chat completions and Responses. */
+type Wire = 'anthropic' | 'chat' | 'responses';
+
 /**
  * The 400 of a request whose output limit is above the cap of its model, in the words of its API
- * (Anthropic's, and OpenAI's for the field it asked in), or null when there is no cap for the model
- * or the limit is within it.
+ * (Anthropic's; OpenAI's chat completions for the field it asked in; and the Responses API's, in the
+ * words of its own validator for a number above its maximum), or null when there is no cap for the
+ * model or the limit is within it.
  */
 function outputCapProblem(
   caps: Record<string, number> | undefined,
-  anthropic: boolean,
+  wire: Wire,
   json: unknown,
 ): unknown {
   if (caps === undefined || typeof json !== 'object' || json === null) return null;
@@ -282,17 +402,30 @@ function outputCapProblem(
   const model = request.model;
   if (typeof model !== 'string' || !Object.hasOwn(caps, model)) return null;
   const cap = caps[model]!;
-  const field = anthropic
-    ? 'max_tokens'
-    : ['max_tokens', 'max_completion_tokens'].find((name) => typeof request[name] === 'number');
+  const field =
+    wire === 'anthropic'
+      ? 'max_tokens'
+      : wire === 'responses'
+        ? 'max_output_tokens'
+        : ['max_tokens', 'max_completion_tokens'].find((name) => typeof request[name] === 'number');
   const asked = field === undefined ? undefined : request[field];
   if (field === undefined || typeof asked !== 'number' || asked <= cap) return null;
-  if (anthropic) {
+  if (wire === 'anthropic') {
     return {
       type: 'error',
       error: {
         type: 'invalid_request_error',
         message: `max_tokens: ${asked} > ${cap}, which is the maximum allowed number of output tokens for ${model}`,
+      },
+    };
+  }
+  if (wire === 'responses') {
+    return {
+      error: {
+        message: `Invalid 'max_output_tokens': integer above maximum value. Expected a value <= ${cap}, but got ${asked} instead.`,
+        type: 'invalid_request_error',
+        param: 'max_output_tokens',
+        code: 'integer_above_max_value',
       },
     };
   }
@@ -304,6 +437,108 @@ function outputCapProblem(
       code: null,
     },
   };
+}
+
+/** The 400 body of the OpenAI APIs: a message, the parameter it is about, and its code. */
+const openAiProblem = (message: string, param: string | null, code: string | null): unknown => ({
+  error: { message, type: 'invalid_request_error', param, code },
+});
+
+/**
+ * What the real Responses API refuses that a client can get wrong, as it words it, or null when the
+ * request holds none of it: a limit below 16 tokens; an assistant message whose parts are not
+ * `output_text` or `refusal` (`input_text` is the user's); and a `function_call_output` for a call that
+ * is not in the input.
+ */
+function responsesProblem(json: unknown): unknown {
+  if (typeof json !== 'object' || json === null) return null;
+  const request = json as { max_output_tokens?: unknown; input?: unknown };
+  const limit = request.max_output_tokens;
+  if (typeof limit === 'number' && limit < 16) {
+    return openAiProblem(
+      `Invalid 'max_output_tokens': integer below minimum value. Expected a value >= 16, but got ${limit} instead.`,
+      'max_output_tokens',
+      'integer_below_min_value',
+    );
+  }
+  if (!Array.isArray(request.input)) return null;
+  const items = request.input as ({
+    type?: unknown;
+    role?: unknown;
+    content?: unknown;
+    call_id?: unknown;
+  } | null)[];
+  const calls = new Set<unknown>();
+  for (const [i, item] of items.entries()) {
+    if (item?.type === 'function_call') calls.add(item.call_id);
+    if (item?.type === 'function_call_output' && !calls.has(item.call_id)) {
+      return openAiProblem(
+        `No tool call found for function call output with call_id ${String(item.call_id)}.`,
+        'input',
+        null,
+      );
+    }
+    if (item?.role === 'assistant' && Array.isArray(item.content)) {
+      for (const [j, part] of (item.content as ({ type?: unknown } | null)[]).entries()) {
+        if (part?.type !== 'output_text' && part?.type !== 'refusal') {
+          return openAiProblem(
+            `Invalid value: '${String(part?.type)}'. Supported values are: 'output_text' and 'refusal'.`,
+            `input[${i}].content[${j}]`,
+            'invalid_value',
+          );
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * The 400 of a Responses request that asks for JSON mode (`text.format` of type `json_object`) when
+ * no text of its `input` says json, as the Responses API is reported to refuse it: its
+ * `instructions` do not count. Null for a request that asks for no JSON mode, or whose input says it.
+ */
+function jsonWordProblem(json: unknown): unknown {
+  if (typeof json !== 'object' || json === null) return null;
+  const { text, input } = json as {
+    text?: { format?: { type?: unknown } };
+    input?: unknown;
+  };
+  if (text?.format?.type !== 'json_object') return null;
+  const words: string[] = [];
+  const items: unknown[] = Array.isArray(input) ? input : [];
+  for (const item of items as ({ content?: unknown; output?: unknown } | null)[]) {
+    if (typeof item?.output === 'string') words.push(item.output);
+    if (typeof item?.content === 'string') words.push(item.content);
+    if (Array.isArray(item?.content)) {
+      for (const part of item.content as ({ text?: unknown } | null)[]) {
+        if (typeof part?.text === 'string') words.push(part.text);
+      }
+    }
+  }
+  if (/json/i.test(words.join('\n'))) return null;
+  return openAiProblem(
+    "Response input messages must contain the word 'json' in some form to use 'text.format' of type 'json_object'.",
+    'input',
+    null,
+  );
+}
+
+/**
+ * The 400 of a chat completion that carries function tools for a model that takes them only through
+ * the Responses API (`models`), in the words OpenAI uses for it; null for another model, and for a
+ * request without tools.
+ */
+function chatToolsProblem(models: readonly string[] | undefined, json: unknown): unknown {
+  if (models === undefined || typeof json !== 'object' || json === null) return null;
+  const { model, tools } = json as { model?: unknown; tools?: unknown };
+  if (typeof model !== 'string' || !models.includes(model)) return null;
+  if (!Array.isArray(tools) || tools.length === 0) return null;
+  return openAiProblem(
+    `Function tools with reasoning_effort are not supported for ${model} in /v1/chat/completions. Please use /v1/responses or set reasoning_effort to 'none'.`,
+    null,
+    null,
+  );
 }
 
 export interface FakeLlm {
@@ -328,10 +563,11 @@ export interface FakeLlm {
 }
 
 /**
- * A local provider on 127.0.0.1 answering `POST /v1/chat/completions` (OpenAI-compatible, key as
- * `Authorization: Bearer` or Azure's `api-key`) and `POST /v1/messages` (Anthropic, `x-api-key`
- * and `anthropic-version: 2023-06-01`). It records every request; scripted replies are served
- * first, else a canned answer for the request's data block. Nothing here ever calls a real model.
+ * A local provider on 127.0.0.1 answering `POST /v1/chat/completions` and `POST /v1/responses`
+ * (OpenAI, key as `Authorization: Bearer` or Azure's `api-key`) and `POST /v1/messages`
+ * (Anthropic, `x-api-key` and `anthropic-version: 2023-06-01`). It records every request, bodies
+ * included; scripted replies are served first, else a canned answer for the request's data block.
+ * Nothing here ever calls a real model.
  *
  * With `workspaceId` its key is an organisation-wide one: an Anthropic request must name that
  * workspace in `anthropic-workspace-id`, or it is refused with a 400 saying the key is not scoped
@@ -339,7 +575,13 @@ export interface FakeLlm {
  * request is refused with a 400, as the real API does, when a text block is empty or only
  * whitespace, or a message has no content. With `outputCaps` (a model's name, and the most output
  * tokens it takes) a request whose limit is above the cap of its model is refused with a 400, in the
- * words of its API, and takes no scripted reply.
+ * words of its API, and takes no scripted reply. With `toolsOnlyThroughResponses` (model names) a
+ * chat completion that carries function tools for one of them is refused with a 400, in the words
+ * OpenAI uses for the models that take them only through the Responses API, and takes no scripted
+ * reply. A Responses request is always refused with a 400 for what the real API refuses of it: a
+ * limit below 16 tokens, an assistant message of `input_text`, and an output for a call that was not
+ * made. With `jsonNeedsWordInInput` one that asks for JSON mode is refused when the word json is
+ * nowhere in its `input` (its instructions do not count: the API is reported to look at the input only).
  */
 export async function createFakeLlm(
   options: {
@@ -347,6 +589,8 @@ export async function createFakeLlm(
     workspaceId?: string;
     refuseBlankText?: boolean;
     outputCaps?: Record<string, number>;
+    toolsOnlyThroughResponses?: readonly string[];
+    jsonNeedsWordInInput?: boolean;
   } = {},
 ): Promise<FakeLlm> {
   const apiKey =
@@ -359,7 +603,12 @@ export async function createFakeLlm(
 
   const shaped = (request: RecordedLlmRequest, text: string): LlmReply => ({
     status: 200,
-    body: request.path === '/v1/messages' ? anthropicAnswer(text) : openAiAnswer(text),
+    body:
+      request.path === '/v1/messages'
+        ? anthropicAnswer(text)
+        : request.path === '/v1/responses'
+          ? responsesAnswer(text)
+          : openAiAnswer(text),
   });
 
   const server = createServer((req, res) => {
@@ -399,9 +648,17 @@ export async function createFakeLlm(
           }, reply.delayMs ?? 0);
         };
         const anthropic = request.path === '/v1/messages';
+        const wire: Wire = anthropic
+          ? 'anthropic'
+          : request.path === '/v1/responses'
+            ? 'responses'
+            : 'chat';
         const error = llmShape(anthropic ? 'anthropic-error' : 'openai-error');
         if (size > MAX_BODY) return send({ status: 413, body: error });
-        if (request.method !== 'POST' || (!anthropic && request.path !== '/v1/chat/completions')) {
+        if (
+          request.method !== 'POST' ||
+          (wire === 'chat' && request.path !== '/v1/chat/completions')
+        ) {
           return send({ status: 404, body: error });
         }
         const key = anthropic
@@ -443,7 +700,15 @@ export async function createFakeLlm(
             });
           }
         }
-        const capped = outputCapProblem(options.outputCaps, anthropic, json);
+        const refused =
+          wire === 'responses'
+            ? (responsesProblem(json) ??
+              (options.jsonNeedsWordInInput === true ? jsonWordProblem(json) : null))
+            : wire === 'chat'
+              ? chatToolsProblem(options.toolsOnlyThroughResponses, json)
+              : null;
+        if (refused !== null) return send({ status: 400, body: refused });
+        const capped = outputCapProblem(options.outputCaps, wire, json);
         if (capped !== null) return send({ status: 400, body: capped });
         const next = queue.shift();
         try {

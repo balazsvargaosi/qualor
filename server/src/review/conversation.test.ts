@@ -8,6 +8,8 @@ import {
   llmShape,
   openAiAnswer,
   openAiToolCalls,
+  responsesAnswer,
+  responsesReasoning,
   type FakeLlm,
   type LlmReply,
   type LlmResponder,
@@ -35,6 +37,8 @@ import { newNonce } from './envelope';
 
 const KINDS = ['openai', 'anthropic'] as const;
 type Kind = (typeof KINDS)[number];
+/** The wires the loop is run over: the two kinds, and the Responses API of the OpenAI kind. */
+type Wire = Kind | 'responses';
 
 const NONCE = newNonce();
 const USER_TEXT = 'Review this change';
@@ -263,7 +267,7 @@ function nestedValue(depth: number): Record<string, unknown> {
 
 describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §9.1)', () => {
   let fake: FakeLlm;
-  let configs: Record<Kind, ProviderConfig>;
+  let configs: Record<Wire, ProviderConfig>;
   let http: { internalHosts: ReadonlySet<string>; version: string };
 
   // One fake per test: a reply a failing test left in the queue never reaches the next test.
@@ -277,12 +281,14 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
       jsonMode: 'json_object',
       maxTokensField: 'max_tokens',
       temperature: null,
+      api: 'chat_completions',
       workspaceId: null,
       timeoutSeconds: 5,
     } as const;
     configs = {
       openai: { kind: 'openai', baseUrl: fake.openAiBaseUrl, ...base },
       anthropic: { kind: 'anthropic', baseUrl: fake.anthropicBaseUrl, ...base },
+      responses: { kind: 'openai', baseUrl: fake.openAiBaseUrl, ...base, api: 'responses' },
     };
   });
   afterEach(async () => {
@@ -290,7 +296,7 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
   });
 
   /** The loop over the fake provider of `kind`, with the tools it runs and the waits it makes recorded. */
-  function start(kind: Kind, over: Partial<ConversationInput> = {}) {
+  function start(kind: Wire, over: Partial<ConversationInput> = {}) {
     const ran: LlmToolCall[] = [];
     const sleeps: number[] = [];
     const input: ConversationInput = {
@@ -314,7 +320,7 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
     return { input, ran, sleeps };
   }
 
-  const run = (kind: Kind, over: Partial<ConversationInput> = {}) => {
+  const run = (kind: Wire, over: Partial<ConversationInput> = {}) => {
     const started = start(kind, over);
     return runConversation(started.input).then((result) => ({ result, ...started }));
   };
@@ -909,6 +915,241 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
         outputTokens: 102 + 900,
       });
       expect(fake.requests).toHaveLength(2);
+    });
+  });
+
+  describe('the reasoning of the current OpenAI models (the Responses API)', () => {
+    type Item = Record<string, unknown>;
+    /** An answer of exactly these output items; `cut`: it ran out of tokens, as the answer says. */
+    const answerOf = (
+      output: Item[],
+      over: { cut?: boolean; tokens?: [number, number] } = {},
+    ): LlmReply => {
+      const [input, outputTokens] = over.tokens ?? [100, 10];
+      const body = responsesAnswer('x', {
+        ...(over.cut ? { incomplete: 'max_output_tokens' } : {}),
+        usage: { input_tokens: input, output_tokens: outputTokens },
+      }) as { output: unknown[] };
+      body.output = output;
+      return { status: 200, body };
+    };
+    const reasoning = (encrypted: string): Item => responsesReasoning(encrypted) as Item;
+    const message = (text: string): Item => ({
+      id: `msg_${text.length}`,
+      type: 'message',
+      status: 'completed',
+      role: 'assistant',
+      content: [{ type: 'output_text', text, annotations: [], logprobs: [] }],
+    });
+    const call = (id: string, args: unknown, name = 'read_file'): Item => ({
+      id: `fc_${id}`,
+      type: 'function_call',
+      status: 'completed',
+      call_id: id,
+      name,
+      arguments: JSON.stringify(args),
+    });
+    /** The model's four turns: three of tools, each with reasoning of its own, and the answer. */
+    const CONTENTS: Item[][] = [
+      [reasoning('enc-1'), message('Reading.'), call('c1', { path: 'a.ts' })],
+      [reasoning('enc-2'), call('c2', { pattern: 'x' }, 'grep'), call('c3', { path: 'b.ts' })],
+      [reasoning('enc-3'), reasoning('enc-3b'), call('c4', { path: 'c.ts' })],
+      [reasoning('enc-4'), message('{"findings":[]}')],
+    ];
+    const enqueueAll = () => fake.enqueue(...CONTENTS.map((content) => answerOf(content)));
+    const inputOf = (request: RecordedLlmRequest): Item[] =>
+      (request.json as { input: Item[] }).input;
+    /** What an input item is: its type, or its role for a message without one. */
+    const kindOf = (item: Item): string => String(item.type ?? item.role);
+    /** The items of the history that the model made: all but the user's messages and the results. */
+    const madeByModel = (request: RecordedLlmRequest): string[] =>
+      inputOf(request)
+        .filter((item) => item.role !== 'user' && item.type !== 'function_call_output')
+        .map((item) => JSON.stringify(item));
+
+    it('reasoning items come back verbatim, in order, on every later turn', async () => {
+      enqueueAll();
+      const { result } = await run('responses');
+      expect(result).toMatchObject({ kind: 'answer', text: '{"findings":[]}', turns: 4 });
+      expect(fake.requests).toHaveLength(4);
+      for (const [n, request] of fake.requests.entries()) {
+        // Byte for byte the output of the earlier turns of the model, each turn once, in order.
+        expect(madeByModel(request), `request ${n}`).toEqual(
+          CONTENTS.slice(0, n)
+            .flat()
+            .map((item) => JSON.stringify(item)),
+        );
+      }
+    });
+
+    it('three tool turns: the request bodies share an unchanged prefix, byte-identical up to the new turn', async () => {
+      enqueueAll();
+      await run('responses');
+      const bodies = fake.requests.map((request) => request.json as Record<string, unknown>);
+      const inputs = fake.requests.map((request) => inputOf(request).map((i) => JSON.stringify(i)));
+      for (let n = 1; n < bodies.length; n += 1) {
+        const before = inputs[n - 1]!;
+        // Everything the earlier request held is there again, as it was, and the new turn is added.
+        expect(inputs[n]!.slice(0, before.length), `request ${n}`).toEqual(before);
+        expect(inputs[n]!.length, `request ${n}`).toBeGreaterThan(before.length);
+        for (const field of [
+          'model',
+          'instructions',
+          'tools',
+          'tool_choice',
+          'max_output_tokens',
+          'store',
+          'include',
+        ]) {
+          expect(JSON.stringify(bodies[n]![field]), `${field} of request ${n}`).toBe(
+            JSON.stringify(bodies[0]![field]),
+          );
+        }
+      }
+      // The raw bodies too: what comes before the input is the same text on every request.
+      const head = (raw: string) => raw.slice(0, raw.indexOf('"input":['));
+      expect(new Set(fake.requests.map((request) => head(request.body))).size).toBe(1);
+    });
+
+    it('sends the results of a turn right after it, each by the id of its call', async () => {
+      enqueueAll();
+      await run('responses');
+      const last = inputOf(fake.requests[3]!);
+      expect(last.map(kindOf)).toEqual([
+        'user',
+        'reasoning',
+        'message',
+        'function_call',
+        'function_call_output',
+        'reasoning',
+        'function_call',
+        'function_call',
+        'function_call_output',
+        'function_call_output',
+        'reasoning',
+        'reasoning',
+        'function_call',
+        'function_call_output',
+      ]);
+      expect(
+        last.filter((item) => item.type === 'function_call_output').map((i) => i.call_id),
+      ).toEqual(['c1', 'c2', 'c3', 'c4']);
+    });
+
+    it('sends the output of an answer that was cut off, and of one the caller did not accept, with the answer', async () => {
+      const cut = [reasoning('enc-cut'), message('{"findings":[{"ti')];
+      cut[1]!.status = 'incomplete';
+      const bad = [reasoning('enc-bad'), message('not json')];
+      const good = [reasoning('enc-good'), message('{"findings":[]}')];
+      fake.enqueue(answerOf(cut, { cut: true }), answerOf(bad), answerOf(good));
+      const { result } = await run('responses', {
+        accept: (text) => text.startsWith('{"findings":[]'),
+      });
+      expect(result).toMatchObject({ kind: 'answer', text: '{"findings":[]}', turns: 3 });
+      const last = inputOf(fake.requests[2]!);
+      expect(last.map(kindOf)).toEqual([
+        'user',
+        'reasoning',
+        'message',
+        'user',
+        'reasoning',
+        'message',
+        'user',
+      ]);
+      expect(JSON.stringify(last.slice(1, 3))).toBe(JSON.stringify(cut));
+      expect(JSON.stringify(last.slice(4, 6))).toBe(JSON.stringify(bad));
+    });
+
+    it('sends a turn whose calls were not run as its text alone: no reasoning, no call, and never a text that is blank', async () => {
+      // The wrap-up answers with reasoning, words that are not the answer and a call, which is not run.
+      const late = [reasoning('enc-late'), message('Enough.'), call('c9', { path: 'z.ts' })];
+      fake.enqueue(answerOf(CONTENTS[0]!), answerOf(late), answerOf(CONTENTS[3]!));
+      const { result } = await run('responses', {
+        limits: { ...LIMITS, maxTurns: 1 },
+        accept: (text) => text.startsWith('{'),
+      });
+      expect(result).toMatchObject({ kind: 'answer', text: '{"findings":[]}', turns: 3 });
+      const history = inputOf(fake.requests[2]!);
+      // The turn before it keeps its reasoning; this one is its text and nothing else.
+      expect(history.map(kindOf)).toEqual([
+        'user',
+        'reasoning',
+        'message',
+        'function_call',
+        'function_call_output',
+        'user',
+        'assistant',
+        'user',
+      ]);
+      expect(JSON.stringify(history.slice(1, 4))).toBe(JSON.stringify(CONTENTS[0]));
+      expect(history[6]).toEqual({
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'Enough.' }],
+      });
+      expect(fake.requests[2]!.body).not.toContain('enc-late');
+      expect(fake.requests[2]!.body).not.toContain('"c9"');
+    });
+
+    it('a turn that only reasoned before it was cut off is not in the history: there is no message of its own to send', async () => {
+      fake.enqueue(answerOf([reasoning('enc-half')], { cut: true }), answerOf(CONTENTS[3]!));
+      const { result } = await run('responses');
+      expect(result).toMatchObject({ kind: 'answer', turns: 2 });
+      expect(fake.requests[1]!.body).not.toContain('enc-half');
+      expect(inputOf(fake.requests[1]!).map(kindOf)).toEqual(['user', 'user']);
+    });
+
+    it('a call whose arguments are not JSON is answered with the retry message, and goes back as the model made it', async () => {
+      // A call cut off in its arguments: the history says it as it was said, as a model that
+      // reasoned expects, and the result beside it tells the model what was wrong with it.
+      const truncated = { ...call('c1', {}), arguments: '{"path": "a.ts"', status: 'incomplete' };
+      fake.enqueue(
+        answerOf([reasoning('enc-1'), truncated], { cut: true }),
+        answerOf(CONTENTS[3]!),
+      );
+      const { result, ran } = await run('responses');
+      expect(result).toMatchObject({ kind: 'answer', turns: 2, toolCalls: 0 });
+      expect(ran).toEqual([]);
+      const second = inputOf(fake.requests[1]!);
+      expect(second[2]).toEqual(truncated);
+      expect(second[3]).toMatchObject({ type: 'function_call_output', call_id: 'c1' });
+      expect(unwrap(String(second[3]!.output)).result).toBe(BAD_ARGUMENTS);
+    });
+
+    it('a refusal after reasoning ends the conversation as a bad answer with what it spent, and sends nothing more', async () => {
+      const refusal = responsesAnswer('', {
+        refusal: 'No.',
+        reasoning: [responsesReasoning('enc-refused')],
+        usage: { input_tokens: 700, output_tokens: 900 },
+      });
+      fake.enqueue(
+        answerOf(CONTENTS[0]!, { tokens: [431, 102] }),
+        { status: 200, body: refusal },
+        answerOf(CONTENTS[3]!),
+      );
+      const { result } = await run('responses');
+      expect(result).toMatchObject({
+        kind: 'failed',
+        reason: 'bad_answer',
+        turns: 2,
+        inputTokens: 431 + 700,
+        outputTokens: 102 + 900,
+      });
+      expect(fake.requests).toHaveLength(2);
+    });
+
+    it('counts the reasoning it sends again in what it guesses a call cost, as the history is part of the input', async () => {
+      // A provider that counts nothing: the guess is of the JSON sent, the replay with it.
+      const uncounted = (output: Item[]): LlmReply => {
+        const reply = answerOf(output);
+        delete (reply.body as { usage?: unknown }).usage;
+        return reply;
+      };
+      const heavy = [reasoning('e'.repeat(40_000)), call('c1', { path: 'a.ts' })];
+      fake.enqueue(uncounted(heavy), uncounted(CONTENTS[3]!));
+      const { result } = await run('responses');
+      // 40 000 characters of reasoning are some 10 000 tokens the second call is charged for.
+      expect(result).toMatchObject({ kind: 'answer', turns: 2 });
+      expect((result as { inputTokens: number }).inputTokens).toBeGreaterThan(10_000);
     });
   });
 

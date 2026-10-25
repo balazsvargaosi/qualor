@@ -82,6 +82,7 @@ describe('the Anthropic adapter: the current models', () => {
       jsonMode: 'json_object',
       maxTokensField: 'max_tokens',
       temperature: null,
+      api: 'chat_completions',
       workspaceId: null,
       timeoutSeconds: 5,
     } as const;

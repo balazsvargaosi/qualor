@@ -23,7 +23,13 @@ import { label } from '../i18n/labels';
 import { OrgContext } from '../org/org-context';
 import { inputValue, isChecked } from '../shared/forms';
 import { SystemInfo } from '../shell/system-info';
-import { settingsProblemText, type TestLine, testLine } from './ai-text';
+import {
+  settingsProblemText,
+  testHintText,
+  type TestHintCode,
+  type TestLine,
+  testLine,
+} from './ai-text';
 import {
   AUTO_FIX_FEATURE,
   AUTO_FIX_SEVERITIES,
@@ -206,6 +212,8 @@ export class AiSettingsPage {
   protected readonly model = signal('');
   protected readonly strongModel = signal('');
   protected readonly fastModel = signal('');
+  /** The API an OpenAI-compatible provider is asked through (the server's `api`). */
+  protected readonly openAiApi = signal<'chat_completions' | 'responses'>('chat_completions');
   protected readonly auth = signal<'bearer' | 'api-key'>('bearer');
   protected readonly jsonMode = signal<'json_object' | 'none'>('json_object');
   protected readonly maxTokensField = signal<'max_tokens' | 'max_completion_tokens'>('max_tokens');
@@ -248,6 +256,13 @@ export class AiSettingsPage {
    * known (no Test yet, a Test that failed, or a check that could not tell).
    */
   protected readonly toolCalling = signal<'supported' | 'not_supported' | null>(null);
+  /**
+   * What the last Test suggests changing, when it can tell: the model takes tools only through the
+   * Responses API (asked through Chat Completions). Null: nothing to suggest. It is shown with the
+   * tool calling it explains, and a Test sets both.
+   */
+  protected readonly toolsHint = signal<TestHintCode | null>(null);
+  protected readonly useResponsesHint = testHintText('USE_RESPONSES_API');
   /**
    * What the last Test found out about each model, one line per model, when the provider has more
    * than one; empty otherwise (a single model is shown as the connection and its tool calling).
@@ -307,6 +322,10 @@ export class AiSettingsPage {
     const value = inputValue(event);
     this.kind.set(value === 'openai' || value === 'anthropic' ? value : '');
     this.clearError('kind');
+  }
+
+  protected setApi(event: Event): void {
+    this.openAiApi.set(inputValue(event) === 'responses' ? 'responses' : 'chat_completions');
   }
 
   protected setAuth(event: Event): void {
@@ -554,6 +573,7 @@ export class AiSettingsPage {
           $localize`:@@ai.settings.testOk:Connected to ${result.model ?? this.provider()?.model ?? ''}:model: in ${result.latencyMs}:latency: ms.`,
         );
         this.toolCalling.set(result.toolCalling === 'not_checked' ? null : result.toolCalling);
+        this.toolsHint.set(result.hint?.code ?? null);
       }
     });
   }
@@ -617,6 +637,7 @@ export class AiSettingsPage {
     this.model.set(p?.model ?? '');
     this.strongModel.set(p?.strongModel ?? '');
     this.fastModel.set(p?.fastModel ?? '');
+    this.openAiApi.set(p?.api ?? 'chat_completions');
     this.auth.set(p?.auth ?? 'bearer');
     this.jsonMode.set(p?.jsonMode ?? 'json_object');
     this.maxTokensField.set(p?.maxTokensField ?? 'max_tokens');
@@ -740,7 +761,12 @@ export class AiSettingsPage {
       strongModel: strongModel === '' ? null : strongModel,
       fastModel: fastModel === '' ? null : fastModel,
       ...(kind === 'openai'
-        ? { auth: this.auth(), jsonMode: this.jsonMode(), maxTokensField: this.maxTokensField() }
+        ? {
+            api: this.openAiApi(),
+            auth: this.auth(),
+            jsonMode: this.jsonMode(),
+            maxTokensField: this.maxTokensField(),
+          }
         : { workspaceId: workspaceId === '' ? null : workspaceId }),
       temperature,
       timeoutSeconds: wholeNumber(errors, 'timeout', this.timeout(), 5, 600),

@@ -19,6 +19,7 @@ export async function setTierModels(admin: APIRequestContext, models: TierModels
   const stored = (await (await admin.get('/api/v0/system/llm')).json()) as {
     provider: {
       kind: string;
+      api: string;
       baseUrl: string;
       model: string;
       auth: string;
@@ -35,6 +36,7 @@ export async function setTierModels(admin: APIRequestContext, models: TierModels
       ...stored,
       provider: {
         kind: provider.kind,
+        api: provider.api,
         baseUrl: provider.baseUrl,
         model: provider.model,
         ...models,

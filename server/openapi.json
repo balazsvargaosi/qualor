@@ -19831,6 +19831,13 @@
                                 "anthropic"
                               ]
                             },
+                            "api": {
+                              "type": "string",
+                              "enum": [
+                                "chat_completions",
+                                "responses"
+                              ]
+                            },
                             "baseUrl": {
                               "type": "string"
                             },
@@ -19896,6 +19903,7 @@
                           },
                           "required": [
                             "kind",
+                            "api",
                             "baseUrl",
                             "model",
                             "strongModel",
@@ -20234,6 +20242,15 @@
                             "enum": [
                               "openai",
                               "anthropic"
+                            ]
+                          },
+                          "api": {
+                            "default": "chat_completions",
+                            "description": "OpenAI-compatible providers only: `chat_completions` (the default; what vLLM, Ollama, LiteLLM and Azure deployments serve) or `responses`, OpenAI's Responses API, which its newest models need for function tools. Stored as `chat_completions` for another kind",
+                            "type": "string",
+                            "enum": [
+                              "chat_completions",
+                              "responses"
                             ]
                           },
                           "baseUrl": {
@@ -20644,6 +20661,13 @@
                                 "anthropic"
                               ]
                             },
+                            "api": {
+                              "type": "string",
+                              "enum": [
+                                "chat_completions",
+                                "responses"
+                              ]
+                            },
                             "baseUrl": {
                               "type": "string"
                             },
@@ -20709,6 +20733,7 @@
                           },
                           "required": [
                             "kind",
+                            "api",
                             "baseUrl",
                             "model",
                             "strongModel",
@@ -21138,6 +21163,33 @@
                         }
                       ]
                     },
+                    "hint": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "code": {
+                              "type": "string",
+                              "enum": [
+                                "USE_RESPONSES_API"
+                              ]
+                            },
+                            "message": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "code",
+                            "message"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "What to change, when the Test can tell: `USE_RESPONSES_API` says the model takes function tools only through the Responses API. Null: nothing to suggest"
+                    },
                     "models": {
                       "type": "array",
                       "items": {
@@ -21231,6 +21283,32 @@
                                 "type": "null"
                               }
                             ]
+                          },
+                          "hint": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "code": {
+                                    "type": "string",
+                                    "enum": [
+                                      "USE_RESPONSES_API"
+                                    ]
+                                  },
+                                  "message": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "code",
+                                  "message"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
                           }
                         },
                         "required": [
@@ -21240,7 +21318,8 @@
                           "reportedModel",
                           "latencyMs",
                           "toolCalling",
-                          "problem"
+                          "problem",
+                          "hint"
                         ],
                         "additionalProperties": false
                       },
@@ -21253,6 +21332,7 @@
                     "latencyMs",
                     "toolCalling",
                     "problem",
+                    "hint",
                     "models"
                   ],
                   "additionalProperties": false

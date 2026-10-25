@@ -19,6 +19,7 @@ import {
   callProvider,
   converse,
   LlmError,
+  PROVIDER_APIS,
   PROVIDER_KINDS,
   REASONING_ALLOWANCE_TOKENS,
   type LlmConversation,
@@ -73,6 +74,10 @@ const modelField = z
 
 const providerBody = z.strictObject({
   kind: z.enum(PROVIDER_KINDS),
+  api: z.enum(PROVIDER_APIS).default('chat_completions').meta({
+    description:
+      "OpenAI-compatible providers only: `chat_completions` (the default; what vLLM, Ollama, LiteLLM and Azure deployments serve) or `responses`, OpenAI's Responses API, which its newest models need for function tools. Stored as `chat_completions` for another kind",
+  }),
   baseUrl: noNul(z.string().min(1).max(2_048)),
   model: modelField.meta({
     description:
@@ -190,6 +195,8 @@ const settingsDto = z.object({
   provider: z
     .object({
       kind: z.enum(PROVIDER_KINDS),
+      /** The API of an OpenAI-compatible provider; always `chat_completions` for Anthropic. */
+      api: z.enum(PROVIDER_APIS),
       baseUrl: z.string(),
       /** The standard model. */
       model: z.string(),
@@ -236,8 +243,18 @@ const testProblem = z.object({
 });
 
 /**
+ * What the Test suggests changing, when it can tell: `USE_RESPONSES_API`, for a model that refused
+ * tools through Chat Completions in words that say it takes them only through the Responses API.
+ * The message is a fixed text, for API clients; the page words a hint itself.
+ */
+const TEST_HINT_CODES = ['USE_RESPONSES_API'] as const;
+const testHint = z.object({ code: z.enum(TEST_HINT_CODES), message: z.string() });
+type TestHint = z.infer<typeof testHint>;
+
+/**
  * The Test's answer: the standard model's own fields (`ok`, `model`, `latencyMs`, `toolCalling`,
- * `problem`, which the answer had before the tiers), and the same for every model of the provider.
+ * `problem`, which the answer had before the tiers, and `hint`), and the same for every model of the
+ * provider.
  */
 const testResult = z.object({
   ok: z.boolean(),
@@ -246,6 +263,10 @@ const testResult = z.object({
   latencyMs: z.number().int(),
   toolCalling: z.enum(TOOL_CALLING),
   problem: testProblem.nullable(),
+  hint: testHint.nullable().meta({
+    description:
+      'What to change, when the Test can tell: `USE_RESPONSES_API` says the model takes function tools only through the Responses API. Null: nothing to suggest',
+  }),
   models: z
     .array(
       z.object({
@@ -262,6 +283,7 @@ const testResult = z.object({
         latencyMs: z.number().int(),
         toolCalling: z.enum(TOOL_CALLING),
         problem: testProblem.nullable(),
+        hint: testHint.nullable(),
       }),
     )
     .meta({
@@ -308,10 +330,14 @@ const TEST_MAX_OUTPUT_TOKENS = 256;
  */
 const TEST_ROOM_TOKENS = REASONING_ALLOWANCE_TOKENS.singleShot;
 
-/** llm.md §16: the Test button's prompt holds no repository data. */
+/**
+ * llm.md §16: the Test button's prompt holds no repository data. Its user message says JSON too:
+ * the Responses API is reported to look for that word in its input messages only, with JSON mode
+ * on, and not to count its instructions.
+ */
 const TEST_CALL = {
   system: 'Answer with the JSON object {"ok": true} and nothing else.',
-  user: 'ping',
+  user: 'Reply in JSON.',
   maxOutputTokens: TEST_MAX_OUTPUT_TOKENS,
   reasoningAllowance: TEST_ROOM_TOKENS,
 };
@@ -333,28 +359,47 @@ const TOOL_CHECK: LlmConversation = {
   reasoningAllowance: TEST_ROOM_TOKENS,
 };
 
+/** What the tool-calling check found, and what it suggests changing (the `hint`). */
+interface ToolCheck {
+  toolCalling: ToolCalling;
+  hint: TestHint | null;
+}
+const UNCHECKED: ToolCheck = { toolCalling: 'not_checked', hint: null };
+
 /**
  * Asks the model to call the echo tool. `supported`: the turn asks for a call. `not_supported`:
  * it asks for none (the model answered in text, or the server dropped the tools), or the provider
- * refused the request in words that name tools. `not_checked`: the check failed in any other way,
- * which says nothing of tools (a timeout, an unreachable or rate-limiting provider, a refused key,
- * an address that is not allowed, an answer that cannot be read, a refusal that names no tools), or
- * the output limit cut the model off before it called the tool (a model that says what it will do
- * first may use the limit up before it does it).
+ * refused the request in words that name tools; when those words say that the model takes tools
+ * only through the Responses API (asked through Chat Completions), the hint says so. `not_checked`:
+ * the check failed in any other way, which says nothing of tools (a timeout, an unreachable or
+ * rate-limiting provider, a refused key, an address that is not allowed, an answer that cannot be
+ * read, a refusal that names no tools), or the output limit cut the model off before it called the
+ * tool (a model that says what it will do first may use the limit up before it does it).
  * Like the plain test it leaves no usage row and no audit row and takes no quota.
  */
 async function checkToolCalling(
   config: ProviderConfig,
   apiKey: string | null,
   http: ProviderHttpOptions,
-): Promise<ToolCalling> {
+): Promise<ToolCheck> {
   try {
     const turn = await converse(config, apiKey, TOOL_CHECK, http);
-    if (turn.toolCalls.length > 0) return 'supported';
-    return turn.finishReason === 'length' ? 'not_checked' : 'not_supported';
+    if (turn.toolCalls.length > 0) return { toolCalling: 'supported', hint: null };
+    return turn.finishReason === 'length'
+      ? UNCHECKED
+      : { toolCalling: 'not_supported', hint: null };
   } catch (err) {
     if (!(err instanceof LlmError)) throw err;
-    return refusedForTools(err, TOOL_CHECK.tools) ? 'not_supported' : 'not_checked';
+    // The error's own text is the fixed hint: never the provider's words.
+    if (err.needsResponses) {
+      return {
+        toolCalling: 'not_supported',
+        hint: { code: 'USE_RESPONSES_API', message: err.message },
+      };
+    }
+    return refusedForTools(err, TOOL_CHECK.tools)
+      ? { toolCalling: 'not_supported', hint: null }
+      : UNCHECKED;
   }
 }
 
@@ -370,7 +415,7 @@ const failedCheck = (
   ok: false,
   reportedModel: null,
   latencyMs,
-  toolCalling: 'not_checked',
+  ...UNCHECKED,
   problem: { code, message, providerStatus },
 });
 
@@ -410,7 +455,7 @@ async function checkModel(
       latencyMs,
       problem: code === null ? null : { code, message: ERROR_TEXTS[code], providerStatus: null },
       // Only a provider that answered the plain test is asked whether it calls tools.
-      toolCalling: code === null ? await checkToolCalling(config, apiKey.key, http) : 'not_checked',
+      ...(code === null ? await checkToolCalling(config, apiKey.key, http) : UNCHECKED),
     };
   } catch (err) {
     if (!(err instanceof LlmError)) throw err;
@@ -814,13 +859,14 @@ export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
         let provider: StoredProvider | null = null;
         if (body.provider) {
           const { apiKey, ...given } = body.provider;
-          // llm.md §3.2: `auth`, `jsonMode` and `maxTokensField` are the `openai` adapter's; an
+          // llm.md §3.2: `api`, `auth`, `jsonMode` and `maxTokensField` are the `openai` adapter's; an
           // Anthropic provider stores their defaults, whatever the form sent. The workspace is
           // the Anthropic adapter's: an OpenAI provider stores none.
           const rest =
             given.kind === 'anthropic'
               ? {
                   ...given,
+                  api: 'chat_completions' as const,
                   auth: 'bearer' as const,
                   jsonMode: 'json_object' as const,
                   maxTokensField: 'max_tokens' as const,
@@ -969,6 +1015,7 @@ export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
       latencyMs: standard.latencyMs,
       toolCalling: standard.toolCalling,
       problem: standard.problem,
+      hint: standard.hint,
       models: [standard, ...others],
     };
   }

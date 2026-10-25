@@ -56,7 +56,7 @@ function finish(reason: string | null | undefined): FinishReason {
 }
 
 /** `Authorization: Bearer` or (Azure) `api-key`; none without a key. */
-function authHeaders(config: ProviderConfig, apiKey: string | null): Record<string, string> {
+export function authHeaders(config: ProviderConfig, apiKey: string | null): Record<string, string> {
   const headers: Record<string, string> = {};
   if (apiKey !== null) {
     if (config.auth === 'api-key') headers['api-key'] = apiKey;
@@ -66,25 +66,12 @@ function authHeaders(config: ProviderConfig, apiKey: string | null): Record<stri
 }
 
 /**
- * POST <baseUrl>/chat/completions and read the first choice: the answer, and the provider's own
- * `tool_calls`, which only a conversation reads further.
+ * Reads the first choice of a chat completion: the answer, and the provider's own `tool_calls`,
+ * which only a conversation reads further. The Responses wire puts its answer in this shape too
+ * (`openai-responses.ts`), so that both wires read it, and its finish reason, the same way.
  */
-async function chat(
-  config: ProviderConfig,
-  apiKey: string | null,
-  body: Record<string, unknown>,
-  http: ProviderHttpOptions,
-): Promise<{ answer: LlmAnswer; toolCalls: readonly unknown[] }> {
-  const parsed = answerSchema.safeParse(
-    await postJson(
-      config,
-      '/chat/completions',
-      authHeaders(config, apiKey),
-      body,
-      http,
-      config.maxTokensField,
-    ),
-  );
+export function readChoice(raw: unknown): { answer: LlmAnswer; toolCalls: readonly unknown[] } {
+  const parsed = answerSchema.safeParse(raw);
   if (!parsed.success) throw new LlmError('bad_answer', NOT_UNDERSTOOD);
   const [choice] = parsed.data.choices;
   if (!choice) throw new LlmError('bad_answer', NOT_UNDERSTOOD);
@@ -107,6 +94,25 @@ async function chat(
     },
     toolCalls,
   };
+}
+
+/** POST <baseUrl>/chat/completions and read the first choice (`readChoice`). */
+async function chat(
+  config: ProviderConfig,
+  apiKey: string | null,
+  body: Record<string, unknown>,
+  http: ProviderHttpOptions,
+): Promise<{ answer: LlmAnswer; toolCalls: readonly unknown[] }> {
+  return readChoice(
+    await postJson(
+      config,
+      '/chat/completions',
+      authHeaders(config, apiKey),
+      body,
+      http,
+      config.maxTokensField,
+    ),
+  );
 }
 
 /**
@@ -175,7 +181,8 @@ function callArguments(raw: unknown): unknown {
   }
 }
 
-function toolCall(raw: unknown): LlmToolCall {
+/** A call of the first choice (`readChoice`) as a conversation takes it; one with no id or name is refused. */
+export function toolCall(raw: unknown): LlmToolCall {
   const parsed = toolCallSchema.safeParse(raw);
   if (!parsed.success) throw new LlmError('bad_answer', NOT_UNDERSTOOD);
   return {

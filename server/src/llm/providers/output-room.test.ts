@@ -18,6 +18,15 @@ const KNOWN: [string, string, 'cap' | 'context'][] = [
     'cap',
   ],
   [
+    // The Responses API documents no message for it: the words its validator uses for a number
+    // below the least ("Invalid 'max_output_tokens': integer below minimum value. Expected a value
+    // >= 16, but got 1 instead.") with the ones that Chat Completions has for a number above its
+    // maximum.
+    'OpenAI, for max_output_tokens, the limit of its Responses API',
+    "Invalid 'max_output_tokens': integer above maximum value. Expected a value <= 128000, but got 200000 instead.",
+    'cap',
+  ],
+  [
     'vLLM and the servers that word it as OpenAI does',
     "This model's maximum context length is 8192 tokens. However, you requested 9000 tokens (4000 in the messages, 5000 in the completion). Please reduce the length of the messages or completion.",
     'context',
@@ -47,6 +56,16 @@ describe('outputLimitRefusal: the words of a refusal of the output limit, and wh
       'the other field of the OpenAI API',
       'max_completion_tokens is too large: 20000. This model supports at most 16384 completion tokens, whereas you provided 20000.',
       'cap',
+    ],
+    [
+      'the words of Chat Completions for the field of the Responses API',
+      'max_output_tokens is too large: 20000. This model supports at most 16384 completion tokens, whereas you provided 20000.',
+      'cap',
+    ],
+    [
+      'the newer words of vLLM, for the field of the Responses API',
+      "'max_output_tokens' is too large: 5000. This model's maximum context length is 8192 tokens and your request has 4500 input tokens (5000 > 8192 - 4500).",
+      'context',
     ],
     [
       'the newer words of vLLM',
@@ -97,6 +116,14 @@ describe('outputLimitRefusal: the words of a refusal of the output limit, and wh
     [
       'a prompt and its tools that are too long, with no completion in them',
       "This model's maximum context length is 8192 tokens. However, your messages resulted in 9000 tokens (8000 in the messages, 1000 in the functions). Please reduce the length of the messages or functions.",
+    ],
+    [
+      'a limit below the least of the Responses API',
+      "Invalid 'max_output_tokens': integer below minimum value. Expected a value >= 16, but got 1 instead.",
+    ],
+    [
+      'an input over the context window of the Responses API',
+      'Your input exceeds the context window of this model. Please adjust your input and try again.',
     ],
     ['a refused tool', 'tools.0.input_schema: JSON schema is invalid'],
     ['an unrelated limit', 'The request is too large: 40000000 bytes. The most is 32 MB.'],
@@ -155,6 +182,7 @@ describe('askWithRoom: one call, asked again without the room that a model refus
     jsonMode: 'json_object',
     maxTokensField: 'max_tokens',
     temperature: null,
+    api: 'chat_completions',
     workspaceId: null,
     timeoutSeconds: 5,
     ...over,

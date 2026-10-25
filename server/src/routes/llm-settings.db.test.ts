@@ -19,6 +19,9 @@ import {
   createFakeLlm,
   openAiAnswer,
   openAiToolCalls,
+  responsesAnswer,
+  responsesReasoning,
+  responsesToolCalls,
   type FakeLlm,
   type LlmReply,
   type LlmResponder,
@@ -91,8 +94,13 @@ describe('/system/llm (llm.md §3, §16)', () => {
     ctx.app.inject({ method: 'POST', url: '/api/v0/system/llm/test', headers: session.headers });
 
   beforeAll(async () => {
-    // A model of its own that takes at most 4 096 output tokens, as a Claude 3-era model does.
-    fake = await createFakeLlm({ outputCaps: { 'capped-model': 4_096 } });
+    // A model of its own that takes at most 4 096 output tokens, as a Claude 3-era model does, and
+    // one that takes function tools only through the Responses API, as the newest OpenAI models do.
+    fake = await createFakeLlm({
+      outputCaps: { 'capped-model': 4_096 },
+      toolsOnlyThroughResponses: ['sol-model'],
+      jsonNeedsWordInInput: true,
+    });
     ctx = await createTestContext({
       config: { llmInternalHosts: parseInternalHosts(fake.host) },
     });
@@ -388,6 +396,7 @@ describe('/system/llm (llm.md §3, §16)', () => {
             jsonMode: 'json_object',
             maxTokensField: 'max_tokens',
             temperature: 0.7,
+            api: 'chat_completions',
             workspaceId: null,
             timeoutSeconds: 60,
             apiKeyEnc: keyEnc,
@@ -517,6 +526,230 @@ describe('/system/llm (llm.md §3, §16)', () => {
         WORKSPACE,
       ]);
       expect(named.body).not.toContain(fake.apiKey);
+    });
+  });
+
+  describe('the API of an OpenAI provider', () => {
+    const errorsOf = (res: { json: () => unknown }) =>
+      (res.json() as { errors: { path: string; message: string }[] }).errors;
+    const anthropic = (over: Record<string, unknown> = {}) =>
+      provider({ kind: 'anthropic', baseUrl: fake.anthropicBaseUrl, model: 'claude-x', ...over });
+    afterEach(async () => {
+      await put(body());
+    });
+
+    it('is stored as sent and shown as stored, and is Chat Completions when it is left out', async () => {
+      const res = await put(body({ provider: provider({ api: 'responses' }) }));
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json().provider).toMatchObject({ kind: 'openai', api: 'responses' });
+      expect((await get()).json().provider.api).toBe('responses');
+      expect((await readLlmSettings(ctx.db)).provider?.api).toBe('responses');
+      // Left out (a client that does not know it), and the choice made explicitly: today's wire.
+      for (const over of [{}, { api: 'chat_completions' }]) {
+        const back = await put(body({ provider: provider(over) }));
+        expect(back.statusCode, back.body).toBe(200);
+        expect(back.json().provider.api).toBe('chat_completions');
+      }
+      expect((await readLlmSettings(ctx.db)).provider?.api).toBe('chat_completions');
+    });
+
+    it('is no part of an Anthropic provider: whatever the form sent, it is stored as chat_completions', async () => {
+      const res = await put(body({ provider: anthropic({ api: 'responses' }) }));
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json().provider).toMatchObject({ kind: 'anthropic', api: 'chat_completions' });
+      expect((await readLlmSettings(ctx.db)).provider?.api).toBe('chat_completions');
+    });
+
+    it.each([
+      ['an API that does not exist', 'completions'],
+      ['the endpoint', '/v1/responses'],
+      ['another case', 'Responses'],
+      ['empty', ''],
+      ['null', null],
+      ['not text', 7],
+    ])('refuses %s, at its field', async (_what, api) => {
+      const res = await put(body({ provider: provider({ api }) }));
+      expect(res.statusCode, res.body).toBe(422);
+      expect(errorsOf(res).map((e) => e.path)).toEqual(['body.provider.api']);
+      expect((await get()).json().provider.api).toBe('chat_completions');
+    });
+
+    it('names a change of it in the log line', async () => {
+      await put(body());
+      expect((await put(body({ provider: provider({ api: 'responses' }) }))).statusCode).toBe(200);
+      const line = ctx.logs.filter((l) => l.includes('LLM settings changed')).at(-1)!;
+      expect(line).toContain('"provider.api"');
+      expect(line).not.toContain('"provider.model"');
+    });
+
+    describe('the Test', () => {
+      // The Test button is limited to ten presses a minute per admin: each case has an admin of its own.
+      let testers = 0;
+      let checker: Session;
+      beforeEach(async () => {
+        testers += 1;
+        const u = await createUser(ctx, {
+          username: `llm-api-check-${testers}`,
+          isInstanceAdmin: true,
+        });
+        checker = await login(ctx, u.username, u.password);
+      });
+      const check = () => test(checker);
+      const HINT = {
+        code: 'USE_RESPONSES_API',
+        message:
+          'This model takes tools only through the Responses API: choose Responses in the AI assistant settings.',
+      };
+      const line = (tier: string, model: string, over: Record<string, unknown> = {}) => ({
+        tier,
+        model,
+        ok: true,
+        latencyMs: expect.any(Number),
+        toolCalling: 'supported',
+        problem: null,
+        hint: null,
+        ...over,
+      });
+
+      it('asks through the API that is chosen: the plain call and the tool check both go to /responses', async () => {
+        await put(body({ provider: provider({ api: 'responses' }) }));
+        fake.enqueue(
+          { status: 200, body: responsesAnswer('{"ok": true}') },
+          {
+            status: 200,
+            body: responsesToolCalls([ECHO_CALL], { reasoning: [responsesReasoning('enc-test')] }),
+          },
+        );
+        const res = await check();
+        expect(res.statusCode, res.body).toBe(200);
+        expect(res.json()).toMatchObject({
+          ok: true,
+          model: 'fake-openai-model',
+          problem: null,
+          toolCalling: 'supported',
+          hint: null,
+        });
+        expect(fake.requests.map((r) => r.path)).toEqual(['/v1/responses', '/v1/responses']);
+        const [plain, tools] = fake.requests.map((r) => r.json);
+        // 256 tokens for the answer and the 4 000 of room, in the field of this API, and nothing
+        // kept at the provider.
+        expect(plain).toEqual({
+          model: 'fake-model',
+          instructions: 'Answer with the JSON object {"ok": true} and nothing else.',
+          input: [{ role: 'user', content: [{ type: 'input_text', text: 'Reply in JSON.' }] }],
+          max_output_tokens: 4_256,
+          store: false,
+          include: ['reasoning.encrypted_content'],
+          text: { format: { type: 'json_object' } },
+        });
+        expect(tools).toEqual({
+          model: 'fake-model',
+          instructions: expect.stringContaining('echo'),
+          input: [{ role: 'user', content: [{ type: 'input_text', text: expect.any(String) }] }],
+          max_output_tokens: 4_256,
+          store: false,
+          include: ['reasoning.encrypted_content'],
+          tools: [
+            {
+              type: 'function',
+              name: 'echo',
+              description: expect.any(String),
+              parameters: ECHO_PARAMETERS,
+              strict: false,
+            },
+          ],
+          tool_choice: 'auto',
+        });
+        expect(fake.requests[0]!.headers.authorization).toBe(`Bearer ${fake.apiKey}`);
+        expect(res.body).not.toContain(fake.apiKey);
+      });
+
+      it('the Test suggests the Responses API when Chat Completions refuses tools for the model', async () => {
+        await put(body({ provider: provider({ model: 'sol-model' }) }));
+        const res = await check();
+        expect(res.statusCode, res.body).toBe(200);
+        // The model answered the plain test, and refused the tools in words that name the Responses
+        // API: the Test says what to choose, in its own fixed words and not the provider's.
+        const needs = { toolCalling: 'not_supported', hint: HINT };
+        expect(res.json()).toMatchObject({
+          ok: true,
+          problem: null,
+          ...needs,
+          models: [line('standard', 'sol-model', needs)],
+        });
+        expect(fake.requests.map((r) => r.path)).toEqual([
+          '/v1/chat/completions',
+          '/v1/chat/completions',
+        ]);
+        expect(res.body).not.toMatch(/reasoning_effort|chat\/completions/);
+        expect(res.body).not.toContain(fake.apiKey);
+
+        // Once Responses is chosen, the same model passes: nothing to suggest.
+        await put(body({ provider: provider({ model: 'sol-model', api: 'responses' }) }));
+        fake.requests.length = 0;
+        fake.enqueue(
+          { status: 200, body: responsesAnswer('{"ok": true}') },
+          { status: 200, body: responsesToolCalls([ECHO_CALL]) },
+        );
+        const other = await createUser(ctx, { username: 'llm-api-sol', isInstanceAdmin: true });
+        const chosen = await test(await login(ctx, other.username, other.password));
+        expect(chosen.json()).toMatchObject({ ok: true, toolCalling: 'supported', hint: null });
+        expect(fake.requests.map((r) => r.path)).toEqual(['/v1/responses', '/v1/responses']);
+      });
+
+      it('says it on the line of the model that needs it, and the answer’s own fields are the standard model’s', async () => {
+        // The standard model answers both calls; the strong one is refused the tools, so that its
+        // tool check takes no reply: three of the four calls are served.
+        const provides: LlmResponder = (request) => ({
+          status: 200,
+          body:
+            (request.json as { tools?: unknown }).tools === undefined
+              ? openAiAnswer('{"ok": true}')
+              : openAiToolCalls([ECHO_CALL]),
+        });
+        fake.enqueue(provides, provides, provides);
+        await put(body({ provider: provider({ strongModel: 'sol-model' }) }));
+        const withStrong = (await check()).json();
+        expect(withStrong).toMatchObject({ ok: true, toolCalling: 'supported', hint: null });
+        expect(withStrong.models).toEqual([
+          expect.objectContaining(line('standard', 'fake-model')),
+          expect.objectContaining(
+            line('strong', 'sol-model', { toolCalling: 'not_supported', hint: HINT }),
+          ),
+        ]);
+        // As the standard model, it is the answer's own hint too.
+        const other = await createUser(ctx, { username: 'llm-api-sol-2', isInstanceAdmin: true });
+        fake.enqueue(provides, provides, provides);
+        await put(body({ provider: provider({ model: 'sol-model', fastModel: 'fake-model' }) }));
+        const standard = (await test(await login(ctx, other.username, other.password))).json();
+        expect(standard).toMatchObject({ toolCalling: 'not_supported', hint: HINT });
+        expect(standard.models.map((m: { hint: unknown }) => m.hint)).toEqual([HINT, null]);
+      });
+
+      it('has nothing to suggest for another refusal of tools, or when the model could not be reached', async () => {
+        const reply = (message: string) => ({
+          status: 400,
+          body: { error: { message, type: 'invalid_request_error', param: null, code: null } },
+        });
+        fake.enqueue(
+          { status: 200, body: openAiAnswer('{"ok": true}') },
+          reply('This model does not support tools'),
+        );
+        expect((await check()).json()).toMatchObject({
+          ok: true,
+          toolCalling: 'not_supported',
+          hint: null,
+        });
+        const other = await createUser(ctx, { username: 'llm-api-down', isInstanceAdmin: true });
+        fake.enqueue({ status: 401, body: { error: { message: 'bad key' } } });
+        expect((await test(await login(ctx, other.username, other.password))).json()).toMatchObject(
+          {
+            ok: false,
+            toolCalling: 'not_checked',
+            hint: null,
+          },
+        );
+      });
     });
   });
 
@@ -902,7 +1135,7 @@ describe('/system/llm (llm.md §3, §16)', () => {
           role: 'system',
           content: 'Answer with the JSON object {"ok": true} and nothing else.',
         },
-        { role: 'user', content: 'ping' },
+        { role: 'user', content: 'Reply in JSON.' },
       ],
       // 256 tokens for the answer and the 4 000 of room for a model that thinks before it.
       max_tokens: 4_256,
@@ -1261,6 +1494,7 @@ describe('/system/llm (llm.md §3, §16)', () => {
       latencyMs: expect.any(Number),
       toolCalling: 'supported',
       problem: null,
+      hint: null,
       ...over,
     });
     afterEach(async () => {
@@ -1526,6 +1760,7 @@ describe('/system/llm (llm.md §3, §16)', () => {
           jsonMode: 'json_object',
           maxTokensField: 'max_tokens',
           temperature: null,
+          api: 'chat_completions',
           workspaceId: null,
           timeoutSeconds: 60,
           apiKeyEnc: encryptSecret(secret, fake.apiKey, 'scm_connections.token_enc'),
@@ -1624,6 +1859,7 @@ describe('/system/llm (llm.md §3, §16)', () => {
         jsonMode: 'json_object',
         maxTokensField: 'max_tokens',
         temperature: null,
+        api: 'chat_completions',
         workspaceId: null,
         timeoutSeconds: 60,
         apiKeyEnc: encryptSecret(key, fake.apiKey, 'scm_connections.token_enc'),

@@ -2,9 +2,11 @@ import { isIP } from 'node:net';
 import {
   converse,
   LlmError,
+  PROVIDER_APIS,
   PROVIDER_KINDS,
   type LlmConversation,
   type LlmTurn,
+  type ProviderApi,
   type ProviderConfig,
   type ProviderHttpOptions,
   type ProviderKind,
@@ -45,7 +47,9 @@ import {
  * empty uses the model, as in the AI settings. Each call goes to the model of its tier, and its cost
  * is figured at that model's prices. An organisation-wide Anthropic key that is not scoped to a
  * workspace needs `QUALOR_LIVE_REVIEW_WORKSPACE_ID` (`wrkspc_…`), which every call sends as the
- * AI settings' Workspace ID does.
+ * AI settings' Workspace ID does. The newest OpenAI models take function tools only through the
+ * Responses API: `QUALOR_LIVE_REVIEW_API=responses` asks through it, as the AI settings' API does
+ * (`chat_completions`, the default, is what the OpenAI-compatible servers serve).
  *
  * The provider is whatever the person sets in the environment. The host they type is the one they
  * mean to call, so it is allowed whatever its address is (a local model, a gateway on the company
@@ -71,6 +75,11 @@ export interface LiveOptions {
   /** The standard model, which a tier without a model of its own uses too. */
   model: string;
   kind: ProviderKind;
+  /**
+   * The API an OpenAI-compatible provider is asked through (`QUALOR_LIVE_REVIEW_API`); Anthropic has
+   * one, and is always `chat_completions` here.
+   */
+  api: ProviderApi;
   /** The key the provider is called with; never printed. */
   apiKey: string | null;
   /**
@@ -150,6 +159,12 @@ export function readLiveEnv(env: Env): LiveOptions {
       'QUALOR_LIVE_REVIEW_API_KEY must be 1 to 4096 printable ASCII characters without spaces',
     );
   }
+  const rawApi = env.QUALOR_LIVE_REVIEW_API ?? '';
+  const api = rawApi === '' ? 'chat_completions' : rawApi;
+  const knownApi = PROVIDER_APIS.find((candidate) => candidate === api);
+  if (knownApi === undefined) {
+    throw new Error(`QUALOR_LIVE_REVIEW_API must be ${PROVIDER_APIS.join(' or ')}`);
+  }
   const workspace = env.QUALOR_LIVE_REVIEW_WORKSPACE_ID ?? '';
   if (workspace !== '' && !WORKSPACE_ID_PATTERN.test(workspace)) {
     throw new Error(
@@ -169,6 +184,7 @@ export function readLiveEnv(env: Env): LiveOptions {
     url,
     model,
     kind: known,
+    api: known === 'anthropic' ? 'chat_completions' : knownApi,
     apiKey: key === '' ? null : key,
     workspaceId: known === 'anthropic' && workspace !== '' ? workspace : null,
     runs,
@@ -214,7 +230,9 @@ function nearby(url: URL): boolean {
  * the one host the calls may go to whatever its address. Throws for a URL the server would refuse,
  * and for plain http to a host that is not nearby: the key would cross the network in clear.
  */
-export function providerOf(o: Pick<LiveOptions, 'url' | 'model' | 'kind' | 'workspaceId'>): {
+export function providerOf(
+  o: Pick<LiveOptions, 'url' | 'model' | 'kind' | 'api' | 'workspaceId'>,
+): {
   config: ProviderConfig;
   http: ProviderHttpOptions;
 } {
@@ -236,6 +254,7 @@ export function providerOf(o: Pick<LiveOptions, 'url' | 'model' | 'kind' | 'work
   return {
     config: {
       kind: o.kind,
+      api: o.api,
       baseUrl,
       model: o.model,
       auth: 'bearer',

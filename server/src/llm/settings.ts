@@ -9,7 +9,7 @@ import { instanceSettings, projects } from '../db/schema';
 import type { ModelTier } from '../review/model-tiers';
 import { defaultReview, reviewSettingsSchema } from '../review/schema';
 import { instanceSetting } from '../settings';
-import { PROVIDER_KINDS, type ProviderConfig } from './providers';
+import { PROVIDER_APIS, PROVIDER_KINDS, type ProviderConfig } from './providers';
 
 export const LLM_SETTINGS_KEY = 'llm';
 /** llm.md §3.2: the key's envelope decrypts only under this AAD. */
@@ -117,6 +117,12 @@ export const ANTHROPIC_NO_TEMPERATURE_TEXT =
 
 export const storedProviderSchema = z.strictObject({
   kind: z.enum(PROVIDER_KINDS),
+  /**
+   * The wire of an OpenAI provider: Chat Completions, which the OpenAI-compatible servers serve and
+   * which an older row reads as, or OpenAI's Responses API, which its newest models need for
+   * function tools. An Anthropic provider stores the default.
+   */
+  api: z.enum(PROVIDER_APIS).default('chat_completions'),
   baseUrl: z.string().min(1).max(2_048),
   /** The standard model: explain, triage and fix use it, and so does a tier without a model of its own. */
   model: z.string().regex(MODEL_PATTERN),
@@ -244,6 +250,7 @@ export function providerApiKey(
 export function providerConfig(stored: StoredProvider): ProviderConfig {
   return {
     kind: stored.kind,
+    api: stored.api,
     baseUrl: stored.baseUrl,
     model: stored.model,
     auth: stored.auth,

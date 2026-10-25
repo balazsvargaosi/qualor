@@ -37,6 +37,7 @@ const CONFIGURED = {
   ...EMPTY,
   provider: {
     kind: 'openai',
+    api: 'chat_completions',
     baseUrl: 'http://ollama:11434/v1',
     model: 'qwen2.5-coder',
     strongModel: null,
@@ -83,11 +84,15 @@ type TestAnswer = ResponseBody<'/api/v0/system/llm/test', 'post'>;
 
 /**
  * The answer of a Test of one model: the answer's own fields are the standard model's, and
- * `models` holds the one line that repeats them.
+ * `models` holds the one line that repeats them. It has no hint unless one is given.
  */
-function testAnswer(own: Omit<TestAnswer, 'models'>): TestAnswer {
+function testAnswer(
+  own: Omit<TestAnswer, 'models' | 'hint'> & { hint?: TestAnswer['hint'] },
+): TestAnswer {
+  const hint = own.hint ?? null;
   return {
     ...own,
+    hint,
     models: [
       {
         tier: 'standard',
@@ -97,6 +102,7 @@ function testAnswer(own: Omit<TestAnswer, 'models'>): TestAnswer {
         latencyMs: own.latencyMs,
         toolCalling: own.toolCalling,
         problem: own.problem,
+        hint,
       },
     ],
   };
@@ -1473,6 +1479,7 @@ describe('AiSettingsPage: the models of the tiers (6I-4)', () => {
       latencyMs: 12,
       toolCalling: 'supported',
       problem: null,
+      hint: null,
       ...over,
     });
     /** A Test answer of several models: its own fields are those of the first, the standard model. */
@@ -1485,6 +1492,7 @@ describe('AiSettingsPage: the models of the tiers (6I-4)', () => {
       latencyMs: standard.latencyMs,
       toolCalling: standard.toolCalling,
       problem: standard.problem,
+      hint: standard.hint,
       models: [standard, ...others],
     });
     const pressTest = async (fixture: { whenStable(): Promise<unknown> }, root: HTMLElement) => {
@@ -1867,6 +1875,7 @@ describe('AiSettingsPage: the current Anthropic models (6I-4)', () => {
         latencyMs: 12,
         toolCalling: 'not_checked' as const,
         problem: refused,
+        hint: null,
       });
       server.on('POST', '/api/v0/system/llm/test', {
         body: {
@@ -1875,6 +1884,7 @@ describe('AiSettingsPage: the current Anthropic models (6I-4)', () => {
           latencyMs: 12,
           toolCalling: 'not_checked',
           problem: refused,
+          hint: null,
           models: [line('standard', 'claude-sonnet-5-5'), line('strong', 'claude-opus-5-5')],
         } satisfies TestAnswer,
       });
@@ -1947,6 +1957,272 @@ describe('AiSettingsPage: the current Anthropic models (6I-4)', () => {
       expect(root.querySelector('#ai-temperature-error')?.textContent?.trim()).toBe(
         'Use a number from 0 to 2, or leave it empty.',
       );
+    });
+  });
+});
+
+describe('AiSettingsPage: the OpenAI Responses API (6I-4)', () => {
+  const HINT_TEXT =
+    'This model takes tools only through the Responses API: choose Responses below.';
+  const field = (root: HTMLElement, id: string) => root.querySelector<HTMLSelectElement>(`#${id}`)!;
+  type PutBody = { provider: Record<string, unknown> };
+  /** The body of the first save the page sent. */
+  const sent = (server: FakeServer) =>
+    server.requestsTo('PUT', '/api/v0/system/llm')[0]?.body as PutBody | undefined;
+  const responses = { ...CONFIGURED, provider: { ...CONFIGURED.provider, api: 'responses' } };
+  const pressTest = async (fixture: { whenStable(): Promise<unknown> }, root: HTMLElement) => {
+    [...root.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Test')!.click();
+    await settle(fixture);
+  };
+
+  describe('the API', () => {
+    it('is a select of an OpenAI-compatible provider, with its two APIs and its hint', async () => {
+      setup(CONFIGURED);
+      const { root } = await render();
+      const select = field(root, 'ai-api');
+      expect(root.querySelector('label[for="ai-api"]')?.textContent?.trim()).toBe('API');
+      expect(root.querySelector('#ai-api-hint')?.textContent?.trim()).toBe(
+        'The newest OpenAI models take tools only through the Responses API.',
+      );
+      expect(select.getAttribute('aria-describedby')).toBe('ai-api-hint');
+      expect([...select.options].map((o) => [o.value, o.textContent?.trim()])).toEqual([
+        ['chat_completions', 'Chat Completions'],
+        ['responses', 'Responses'],
+      ]);
+      // Today's wire, unless it was chosen.
+      expect(select.value).toBe('chat_completions');
+    });
+
+    it('is not a setting of an Anthropic provider, which has one API', async () => {
+      setup({ ...CONFIGURED, provider: { ...CONFIGURED.provider, kind: 'anthropic' } });
+      const { fixture, root } = await render();
+      expect(root.querySelector('#ai-api')).toBeNull();
+      type(root, '#ai-kind', 'openai');
+      await settle(fixture);
+      expect(root.querySelector('#ai-api')).not.toBeNull();
+      type(root, '#ai-kind', 'anthropic');
+      await settle(fixture);
+      expect(root.querySelector('#ai-api')).toBeNull();
+      expect(root.textContent).not.toContain('Chat Completions');
+    });
+
+    it('shows the stored API', async () => {
+      setup(responses);
+      const { root } = await render();
+      expect(field(root, 'ai-api').value).toBe('responses');
+    });
+
+    it('reads a provider saved before it as Chat Completions', async () => {
+      const old = Object.fromEntries(
+        Object.entries(CONFIGURED.provider).filter(([name]) => name !== 'api'),
+      );
+      expect(old).not.toHaveProperty('api');
+      setup({ ...CONFIGURED, provider: old });
+      const { root } = await render();
+      expect(field(root, 'ai-api').value).toBe('chat_completions');
+    });
+
+    it('sends the API that is chosen, for an OpenAI-compatible provider', async () => {
+      const server = setup(CONFIGURED);
+      server.on('PUT', '/api/v0/system/llm', { body: responses });
+      const { fixture, root } = await render();
+      submit(root);
+      await settle(fixture);
+      expect(sent(server)?.provider).toMatchObject({ kind: 'openai', api: 'chat_completions' });
+      type(root, '#ai-api', 'responses');
+      submit(root);
+      await settle(fixture);
+      expect(server.requestsTo('PUT', '/api/v0/system/llm')[1]?.body).toMatchObject({
+        provider: { kind: 'openai', api: 'responses' },
+      });
+      // And back.
+      type(root, '#ai-api', 'chat_completions');
+      submit(root);
+      await settle(fixture);
+      expect(server.requestsTo('PUT', '/api/v0/system/llm')[2]?.body).toMatchObject({
+        provider: { api: 'chat_completions' },
+      });
+    });
+
+    it('sends none for Anthropic, whatever was chosen under OpenAI', async () => {
+      const server = setup(responses);
+      server.on('PUT', '/api/v0/system/llm', { body: CONFIGURED });
+      const { fixture, root } = await render();
+      type(root, '#ai-kind', 'anthropic');
+      await settle(fixture);
+      submit(root);
+      await settle(fixture);
+      expect(sent(server)?.provider).toMatchObject({ kind: 'anthropic' });
+      expect(sent(server)?.provider).not.toHaveProperty('api');
+    });
+
+    it('takes the output limit field away while the Responses API is chosen: its limit is always max_output_tokens', async () => {
+      setup(CONFIGURED);
+      const { fixture, root } = await render();
+      expect(root.querySelector('#ai-max-tokens-field')).not.toBeNull();
+      type(root, '#ai-api', 'responses');
+      await settle(fixture);
+      expect(root.querySelector('#ai-max-tokens-field')).toBeNull();
+      expect(root.querySelector('#ai-max-tokens-field-hint')).toBeNull();
+      // The key header and the JSON mode are still the settings of this API.
+      expect(root.querySelector('#ai-auth')).not.toBeNull();
+      expect(root.querySelector('#ai-json')).not.toBeNull();
+      type(root, '#ai-api', 'chat_completions');
+      await settle(fixture);
+      expect(field(root, 'ai-max-tokens-field').value).toBe('max_tokens');
+    });
+
+    it('keeps the output limit field the admin set, and sends it, while another API is chosen', async () => {
+      const server = setup(CONFIGURED);
+      server.on('PUT', '/api/v0/system/llm', { body: CONFIGURED });
+      const { fixture, root } = await render();
+      type(root, '#ai-max-tokens-field', 'max_completion_tokens');
+      type(root, '#ai-api', 'responses');
+      await settle(fixture);
+      // The field comes back as it was left.
+      type(root, '#ai-api', 'chat_completions');
+      await settle(fixture);
+      expect(field(root, 'ai-max-tokens-field').value).toBe('max_completion_tokens');
+      type(root, '#ai-api', 'responses');
+      await settle(fixture);
+      submit(root);
+      await settle(fixture);
+      expect(sent(server)?.provider).toMatchObject({
+        api: 'responses',
+        maxTokensField: 'max_completion_tokens',
+      });
+    });
+  });
+
+  describe('the Test suggests the Responses API', () => {
+    const needsResponses = {
+      code: 'USE_RESPONSES_API',
+      message: 'server text',
+    } as const;
+
+    it('says so beside the tool calling of a model that refused tools through Chat Completions, in the page’s words', async () => {
+      const server = setup(CONFIGURED);
+      server.on('POST', '/api/v0/system/llm/test', {
+        body: testAnswer({
+          ok: true,
+          model: 'qwen2.5-coder',
+          latencyMs: 12,
+          toolCalling: 'not_supported',
+          problem: null,
+          hint: needsResponses,
+        }),
+      });
+      const { fixture, root } = await render();
+      await pressTest(fixture, root);
+      const status = root.querySelector('[role="status"]')!;
+      expect(status.querySelector('#ai-test-tools')?.textContent?.trim()).toBe(
+        'Tool calling (needed by AI review): not supported',
+      );
+      const hint = status.querySelector('#ai-test-use-responses')!;
+      expect(hint.textContent?.trim()).toBe(HINT_TEXT);
+      expect(hint.classList).toContain('alert-warn');
+      // The choice it names is on the page, below the message.
+      expect(
+        hint.compareDocumentPosition(field(root, 'ai-api')) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(root.textContent).not.toContain('server text');
+      expect(root.querySelector('.alert-error')).toBeNull();
+    });
+
+    it('says nothing of it for a model that passed, or that was refused for another reason', async () => {
+      const server = setup(CONFIGURED);
+      server.on('POST', '/api/v0/system/llm/test', {
+        body: testAnswer({
+          ok: true,
+          model: 'qwen2.5-coder',
+          latencyMs: 12,
+          toolCalling: 'not_supported',
+          problem: null,
+        }),
+      });
+      const { fixture, root } = await render();
+      await pressTest(fixture, root);
+      expect(root.querySelector('#ai-test-tools')).not.toBeNull();
+      expect(root.querySelector('#ai-test-use-responses')).toBeNull();
+      expect(root.textContent).not.toContain(HINT_TEXT);
+    });
+
+    it('forgets the hint when the page does anything else', async () => {
+      const server = setup(CONFIGURED);
+      server.on('POST', '/api/v0/system/llm/test', {
+        body: testAnswer({
+          ok: true,
+          model: 'qwen2.5-coder',
+          latencyMs: 12,
+          toolCalling: 'not_supported',
+          problem: null,
+          hint: needsResponses,
+        }),
+      });
+      server.on('PUT', '/api/v0/system/llm', { body: responses });
+      const { fixture, root } = await render();
+      await pressTest(fixture, root);
+      expect(root.querySelector('#ai-test-use-responses')).not.toBeNull();
+      type(root, '#ai-api', 'responses');
+      submit(root);
+      await settle(fixture);
+      expect(root.querySelector('#ai-test-use-responses')).toBeNull();
+      expect(root.querySelector('#ai-test-tools')).toBeNull();
+    });
+
+    it('is said on the line of the model that needs it, in a Test of several models', async () => {
+      const server = setup({
+        ...CONFIGURED,
+        provider: { ...CONFIGURED.provider, strongModel: 'qwen3-max' },
+      });
+      const line = (
+        tier: 'standard' | 'strong',
+        model: string,
+        over: Partial<TestAnswer['models'][number]> = {},
+      ): TestAnswer['models'][number] => ({
+        tier,
+        model,
+        ok: true,
+        reportedModel: `reported-${model}`,
+        latencyMs: 12,
+        toolCalling: 'supported',
+        problem: null,
+        hint: null,
+        ...over,
+      });
+      const standard = line('standard', 'qwen2.5-coder');
+      server.on('POST', '/api/v0/system/llm/test', {
+        body: {
+          ok: true,
+          model: standard.reportedModel,
+          latencyMs: 12,
+          toolCalling: 'supported',
+          problem: null,
+          hint: null,
+          models: [
+            standard,
+            line('strong', 'qwen3-max', { toolCalling: 'not_supported', hint: needsResponses }),
+          ],
+        } satisfies TestAnswer,
+      });
+      const { fixture, root } = await render();
+      await pressTest(fixture, root);
+      const lines = [...root.querySelectorAll('#ai-test-models li')].map((li) => ({
+        text: li.textContent?.trim(),
+        tone: ['alert-success', 'alert-warn', 'alert-error'].find((c) => li.classList.contains(c)),
+      }));
+      expect(lines).toEqual([
+        {
+          text: 'qwen2.5-coder: connected in 12 ms · tool calling supported',
+          tone: 'alert-success',
+        },
+        {
+          text: `qwen3-max: connected in 12 ms · tool calling not supported · ${HINT_TEXT}`,
+          tone: 'alert-warn',
+        },
+      ]);
+      expect(root.querySelector('#ai-test-use-responses')).toBeNull();
+      expect(root.textContent).not.toContain('server text');
     });
   });
 });

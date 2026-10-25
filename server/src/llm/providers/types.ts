@@ -5,13 +5,24 @@ export const PROVIDER_KINDS = ['openai', 'anthropic'] as const;
 export type ProviderKind = (typeof PROVIDER_KINDS)[number];
 
 /**
- * llm.md §3.2: the provider settings a call needs; the API key is passed on its own. `temperature`
- * is the OpenAI adapter's (Anthropic's current models refuse sampling parameters, so its adapter
- * never sends one); `workspaceId` is Anthropic's, for an organisation-wide key that is not scoped to
- * a workspace, and the OpenAI adapter never sends it.
+ * The two wires of the OpenAI provider. `chat_completions` is what the OpenAI-compatible servers
+ * (vLLM, Ollama, LiteLLM, Azure deployments) serve. `responses` is OpenAI's own newer API, and the
+ * only one that takes function tools together with reasoning from its newest models.
+ */
+export const PROVIDER_APIS = ['chat_completions', 'responses'] as const;
+export type ProviderApi = (typeof PROVIDER_APIS)[number];
+
+/**
+ * llm.md §3.2: the provider settings a call needs; the API key is passed on its own. `api` is the
+ * OpenAI adapter's (Anthropic has one wire), as are `auth`, `jsonMode` and `maxTokensField`; the
+ * Responses wire reads the first two, and its limit is always `max_output_tokens`. `temperature` is
+ * the OpenAI adapter's (Anthropic's current models refuse sampling parameters, so its adapter
+ * never sends one); `workspaceId` is Anthropic's, for an organisation-wide key that is not scoped
+ * to a workspace, and the OpenAI adapter never sends it.
  */
 export interface ProviderConfig {
   kind: ProviderKind;
+  api: ProviderApi;
   baseUrl: string;
   model: string;
   auth: 'bearer' | 'api-key';
@@ -66,12 +77,14 @@ export interface LlmToolCall {
 
 /**
  * What the adapter of a provider keeps of a turn so that the turn goes back to that provider as the
- * model made it: the current Anthropic models bind their thinking blocks to the conversation, so the
- * blocks must return unchanged, in order, in a history that only grows. `items` is the provider's
- * own data and is opaque to everything but the adapter that made it: the loop passes it on, never
- * reads it, and it is never logged, stored, shown, scrubbed or masked (it is encrypted by the
- * provider, and holds no thinking text with the default display). It is part of the answer, so it
- * counts against the answer's size and the conversation's.
+ * model made it: the current Anthropic models bind their thinking blocks to the conversation, and
+ * the current OpenAI models want their reasoning items beside the calls they made (the Responses
+ * API, which is stateless here), so the blocks or items must return unchanged, in order, in a
+ * history that only grows. `items` is the provider's own data and is opaque to everything but the
+ * adapter that made it: the loop passes it on, never reads it, and it is never logged, stored,
+ * shown, scrubbed or masked (the reasoning in it is encrypted by the provider, and holds no
+ * thinking text with the default display). It is part of the answer, so it counts against the
+ * answer's size and the conversation's. A turn of the Chat Completions API has none.
  */
 export interface ProviderReplay {
   kind: ProviderKind;
@@ -82,7 +95,8 @@ export interface ProviderReplay {
  * R5: one message of a conversation; `tool` answers the call `callId` of an `assistant` message. An
  * `assistant` message that carries the `replay` of its turn is sent as that replay, the adapter of
  * its kind ignoring the text and the calls; one without it, or with the replay of another kind, is
- * built from them.
+ * built from them. So is one that reaches the wire that keeps no replay (Chat Completions) with a
+ * replay of the Responses wire, as when the API of the settings changes while a conversation runs.
  */
 export type LlmMessage =
   | { role: 'user'; text: string }
@@ -137,6 +151,14 @@ export const REASONING_ALLOWANCE_TOKENS = { conversation: 16_000, singleShot: 4_
 export const WORKSPACE_REQUIRED_TEXT =
   'This key is not scoped to a workspace: give its workspace ID in the AI assistant settings.';
 
+/**
+ * What the Test is told of a model that takes function tools only through the Responses API, when
+ * it was asked for them through Chat Completions and said so (a 400 that names the Responses API).
+ * A fixed text, never the provider's own words.
+ */
+export const RESPONSES_REQUIRED_TEXT =
+  'This model takes tools only through the Responses API: choose Responses in the AI assistant settings.';
+
 /** llm.md §14: why a provider call gave no usable answer. */
 export const LLM_FAILURES = [
   'timeout',
@@ -152,12 +174,14 @@ export type LlmFailure = (typeof LLM_FAILURES)[number];
 
 /**
  * A provider call that did not answer usably. `message` is a fixed text, never the provider's
- * body, a header or the API key. `refusedTools`, `refusedOutputLimit` and `refusedContext` are each
- * a yes or no read from the provider's error body: the request carried tools and was refused in
- * words that name tools or functions (the model or its server cannot call tools); the request was
- * refused (a 400) because its output limit is more than the model takes; and, always with that,
- * the limit that was passed is the context window that the prompt shares with the output, so that
- * what the model takes depends on how long the prompt is, and is no cap of the model's own.
+ * body, a header or the API key. `refusedTools`, `refusedOutputLimit`, `refusedContext` and
+ * `needsResponses` are each a yes or no read from the provider's error body: the request carried
+ * tools and was refused in words that name tools or functions (the model or its server cannot call
+ * tools); the request was refused (a 400) because its output limit is more than the model takes;
+ * and, always with that, the limit that was passed is the context window that the prompt shares
+ * with the output, so that what the model takes depends on how long the prompt is, and is no cap
+ * of the model's own; and, always with the first, a request to the Chat Completions API was
+ * refused in words that name the Responses API, which is where the model takes its tools.
  */
 export class LlmError extends Error {
   constructor(
@@ -168,6 +192,7 @@ export class LlmError extends Error {
     readonly refusedTools = false,
     readonly refusedOutputLimit = false,
     readonly refusedContext = false,
+    readonly needsResponses = false,
   ) {
     super(message);
     this.name = 'LlmError';

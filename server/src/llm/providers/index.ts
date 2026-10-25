@@ -1,5 +1,6 @@
 import { anthropicConverse, anthropicMessages } from './anthropic';
 import { openAiChat, openAiConverse } from './openai';
+import { openAiResponses, openAiResponsesConverse } from './openai-responses';
 import type {
   LlmAnswer,
   LlmCall,
@@ -12,15 +13,19 @@ import type {
 export * from './types';
 export { retryAfterSeconds } from './http';
 
-/** llm.md §2.1: one call to the configured provider; an answer or an LlmError. */
+/**
+ * llm.md §2.1: one call to the configured provider; an answer or an LlmError. An OpenAI provider
+ * asks through the API its settings choose: Chat Completions, or the Responses API.
+ */
 export function callProvider(
   config: ProviderConfig,
   apiKey: string | null,
   call: LlmCall,
   http: ProviderHttpOptions,
 ): Promise<LlmAnswer> {
-  return config.kind === 'anthropic'
-    ? anthropicMessages(config, apiKey, call, http)
+  if (config.kind === 'anthropic') return anthropicMessages(config, apiKey, call, http);
+  return config.api === 'responses'
+    ? openAiResponses(config, apiKey, call, http)
     : openAiChat(config, apiKey, call, http);
 }
 
@@ -37,7 +42,8 @@ export function converse(
   conversation: LlmConversation,
   http: ProviderHttpOptions,
 ): Promise<LlmTurn> {
-  return config.kind === 'anthropic'
-    ? anthropicConverse(config, apiKey, conversation, http)
+  if (config.kind === 'anthropic') return anthropicConverse(config, apiKey, conversation, http);
+  return config.api === 'responses'
+    ? openAiResponsesConverse(config, apiKey, conversation, http)
     : openAiConverse(config, apiKey, conversation, http);
 }

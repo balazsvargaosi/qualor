@@ -50,8 +50,11 @@ describe('the llm worker (llm.md §9, §10, §14)', () => {
     });
 
   beforeAll(async () => {
-    // A model of its own that takes at most 4 096 output tokens, as a Claude 3-era model does.
-    fake = await createFakeLlm({ outputCaps: { 'capped-model': 4_096 } });
+    // Models of their own that take at most 4 096 output tokens, as a Claude 3-era model does.
+    fake = await createFakeLlm({
+      outputCaps: { 'capped-model': 4_096, 'capped-responses-model': 4_096 },
+      jsonNeedsWordInInput: true,
+    });
     h = await createIngestHarness({ config: { llmInternalHosts: parseInternalHosts(fake.host) } });
     const p = await h.project('acme/ai-job');
     projectId = p.id;
@@ -174,6 +177,121 @@ describe('the llm worker (llm.md §9, §10, §14)', () => {
       expect(logs()).not.toMatch(/maximum allowed number|supports at most/);
     },
   );
+
+  describe('through the Responses API', () => {
+    const through = (api: 'chat_completions' | 'responses', model = 'fake-model') => ({
+      ...configuredProvider(h.ctx.config.secretKey, fake, 'openai'),
+      api,
+      model,
+    });
+    type ResponsesBody = {
+      model: string;
+      instructions: unknown;
+      input: { role: string; content: { type: string; text: string }[] }[];
+      max_output_tokens: number;
+      store: boolean;
+      include: string[];
+      text: unknown;
+    };
+
+    it('explains, suggests triage and a fix with the instructions and one user item, and nothing stays at the provider', async () => {
+      await configure({ provider: through('responses') });
+      // The answer caps (1 200 to explain, 800 to triage, 1 500 to fix) and the 4 000 of room.
+      const asked = { explain: 5_200, triage: 4_800, fix: 5_500 };
+      const results: Record<string, unknown> = {};
+      for (const [feature, tokens] of Object.entries(asked)) {
+        fake.requests.length = 0;
+        const { id } = await ask(feature);
+        await runLlmJobs(h, llmJobDeps(h));
+        expect(await row(id), feature).toMatchObject({
+          status: 'succeeded',
+          attempts: 1,
+          inputTokens: 412,
+          outputTokens: 96,
+          errorCode: null,
+          prompt: null,
+        });
+        results[feature] = (await row(id)).result;
+        expect(fake.requests, feature).toHaveLength(1);
+        const sent = fake.requests[0]!;
+        expect(sent.path, feature).toBe('/v1/responses');
+        expect(sent.headers.authorization, feature).toBe(`Bearer ${fake.apiKey}`);
+        const json = sent.json as ResponsesBody;
+        expect(json, feature).toMatchObject({
+          model: 'fake-model',
+          max_output_tokens: tokens,
+          store: false,
+          include: ['reasoning.encrypted_content'],
+          text: { format: { type: 'json_object' } },
+        });
+        expect(typeof json.instructions, feature).toBe('string');
+        expect(json.input, feature).toHaveLength(1);
+        expect(json.input[0], feature).toMatchObject({
+          role: 'user',
+          content: [{ type: 'input_text', text: expect.stringContaining('QUALOR-DATA') }],
+        });
+        // The same data block, redacted, as on the other wires.
+        expect(sent.body, feature).not.toContain(token);
+        expect(sent.body, feature).toContain('«redacted»');
+        expect(sent.body, feature).not.toContain('"messages"');
+      }
+      expect(results.explain).toMatchObject({
+        kind: 'explain',
+        summary: 'Loose equality compares after type coercion.',
+      });
+      expect(results.triage).toMatchObject({ kind: 'triage', verdict: 'likely_true_positive' });
+      expect(results.fix).toMatchObject({ kind: 'fix', status: 'fixed' });
+      expect(logs()).not.toContain(fake.apiKey);
+    });
+
+    it('answers the same as Chat Completions does: the same result for the same text', async () => {
+      const text = JSON.stringify({
+        summary: 'S.',
+        explanation: 'Words that explain it.',
+        howToFix: 'Change it.',
+      });
+      const via = async (provider: ReturnType<typeof through>) => {
+        // The same request again is a cached result: it is the call that is compared.
+        await h.ctx.db.delete(llmRequests);
+        await configure({ provider });
+        fake.say(text);
+        const { id } = await ask('explain');
+        await runLlmJobs(h, llmJobDeps(h));
+        return await row(id);
+      };
+      const chat = await via(through('chat_completions'));
+      const responses = await via(through('responses'));
+      expect(responses.result).toEqual(chat.result);
+      expect(responses).toMatchObject({
+        status: chat.status,
+        inputTokens: chat.inputTokens,
+        outputTokens: chat.outputTokens,
+        errorCode: null,
+      });
+      expect(fake.requests.map((r) => r.path)).toEqual(['/v1/chat/completions', '/v1/responses']);
+    });
+
+    it('works against a model that takes at most 4 096 output tokens: the call is asked again without the room, as one row', async () => {
+      await configure({ provider: through('responses', 'capped-responses-model') });
+      const limits = () =>
+        fake.requests.map((r) => (r.json as { max_output_tokens: number }).max_output_tokens);
+      const first = await ask('explain');
+      await runLlmJobs(h, llmJobDeps(h));
+      expect(await row(first.id)).toMatchObject({ status: 'succeeded', attempts: 1 });
+      // One call of the queue and one row; the provider saw the room refused, then the answer alone.
+      expect(limits()).toEqual([1_200 + 4_000, 1_200]);
+      expect(await h.ctx.db.select().from(llmRequests)).toHaveLength(1);
+      // The model is known now: the next requests ask for the answer alone at once.
+      const triage = await ask('triage');
+      await runLlmJobs(h, llmJobDeps(h));
+      expect(await row(triage.id)).toMatchObject({ status: 'succeeded', attempts: 1 });
+      expect(limits()).toEqual([5_200, 1_200, 800]);
+      expect(JSON.stringify(await h.ctx.db.select().from(llmRequests))).not.toMatch(
+        /integer above maximum/,
+      );
+      expect(logs()).not.toMatch(/integer above maximum/);
+    });
+  });
 
   it('draws a fresh random nonce for every request', async () => {
     await ask('explain');

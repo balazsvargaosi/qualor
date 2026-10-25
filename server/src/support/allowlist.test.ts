@@ -234,6 +234,7 @@ describe('the settings allowlist copies whole subtrees only of known shape (Ruli
     'license:savedBy',
     'llm:v',
     'llm:provider.kind',
+    'llm:provider.api',
     'llm:provider.model',
     'llm:provider.strongModel',
     'llm:provider.fastModel',

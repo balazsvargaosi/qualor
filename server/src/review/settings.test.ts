@@ -50,6 +50,7 @@ const PROVIDER: StoredProvider = {
   jsonMode: 'json_object',
   maxTokensField: 'max_tokens',
   temperature: null,
+  api: 'chat_completions',
   workspaceId: null,
   timeoutSeconds: 60,
   apiKeyEnc: null,

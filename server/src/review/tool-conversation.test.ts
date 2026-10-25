@@ -83,6 +83,7 @@ describe('the room a call leaves for the model to think', () => {
       jsonMode: 'json_object',
       maxTokensField: 'max_tokens',
       temperature: null,
+      api: 'chat_completions',
       workspaceId: null,
       timeoutSeconds: 5,
       ...over,
