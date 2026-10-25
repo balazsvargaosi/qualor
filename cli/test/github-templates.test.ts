@@ -200,13 +200,19 @@ describe('integrations/github/qualor-dotnet.yml (github.md §11, config.md §6.1
 
 describe('integrations/github/app-manifest.json', () => {
   const manifest = JSON.parse(read('app-manifest.json')) as Record<string, unknown>;
-  it('asks for the permissions and the event of github.md §2.1, nothing more', () => {
+  it('asks for the permissions and events of github.md §2.1, and Issues (read) for the comment events, nothing more', () => {
     expect(manifest.default_permissions).toEqual({
       checks: 'write',
       pull_requests: 'write',
+      // GitHub delivers `issue_comment` to an App with read access to Issues.
+      issues: 'read',
       metadata: 'read',
     });
-    expect(manifest.default_events).toEqual(['check_run']);
+    expect(manifest.default_events).toEqual([
+      'check_run',
+      'issue_comment',
+      'pull_request_review_comment',
+    ]);
     expect(manifest.public).toBe(false);
     const hook = manifest.hook_attributes as { url: string; active: boolean };
     expect(hook.url).toMatch(/\/api\/v0\/github\/webhooks\/<connection id>$/);

@@ -23,21 +23,28 @@ import {
   branches,
   issues,
   jobs,
+  reviewReplies,
+  reviewRuns,
   scmConnections,
 } from '../src/db/schema';
 import { gateHandlers } from '../src/gates/reevaluate';
 import { jobHandlers } from '../src/ingest/handlers';
+import { createLlmRuntime } from '../src/llm/job';
 import { runUntilIdle, startWorker, type Worker } from '../src/queue/worker';
+import { replyHandlers } from '../src/review/reply-job';
 import { readScmContext } from '../src/scm/context';
 import { scmHandlers } from '../src/scm/decorate';
 import { decryptPrivateKey, decryptWebhookSecret } from '../src/scm/github/credentials';
 import { githubWebBase } from '../src/scm/github/url';
-import { markerOf } from '../src/scm/markdown';
+import { codeSpan, markerOf } from '../src/scm/markdown';
 import { enqueueDecoration, SCM_QUEUE } from '../src/scm/queue';
 import { statusName } from '../src/scm/render';
+import { parseInternalHosts } from '../src/scm/url';
 import { createFakeGitHub, githubWrites, type FakeGitHub } from './fake-github';
+import { createFakeLlm, type FakeLlm } from './fake-llm';
 import { githubDeps, githubTestConfig, WEBHOOK_SECRET } from './github';
 import { createIngestHarness, type IngestHarness, type IngestProject } from './ingest';
+import { queuedAnswers, reviewOn, scanJob } from './replies';
 import { queuedDecorations } from './scm';
 
 /**
@@ -45,8 +52,11 @@ import { queuedDecorations } from './scm';
  * The real CLI (TypeScript sources, as a child process) scans a git repository as a
  * GitHub Actions `pull_request` run would, uploads to a real server (Fastify on a local port,
  * Postgres through Testcontainers), and the server's `scm` queue decorates the fake's pull request.
- * Every log line, response body, job row, stored report and decoration is then searched for every
- * secret of the flow (github.md §12). Nothing contacts a real GitHub.
+ * At the end the App's comment events (6I-4) are delivered signed, as GitHub sends them: a reply in
+ * Qualor's thread and a `qualor review` on the pull request's page are answered through them, by
+ * the `ai-reply` queue against a fake model. Every log line, response body, job row, stored report
+ * and decoration is then searched for every secret of the flow (github.md §12). Nothing contacts a
+ * real GitHub.
  */
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const cliEntry = path.join(repoRoot, 'cli', 'src', 'cli.ts');
@@ -63,6 +73,7 @@ const CI_TOKEN = 'ghs_must_not_leak';
 let harness: IngestHarness;
 let project: IngestProject;
 let fake: FakeGitHub;
+let llm: FakeLlm;
 let url: string;
 const work = mkdtempSync(path.join(os.tmpdir(), 'qualor-github-e2e-'));
 const gitConfig = path.join(work, 'empty.gitconfig');
@@ -202,6 +213,28 @@ async function runScm(): Promise<number> {
   return runUntilIdle(ctx.db, scmHandlers(githubDeps(harness)), ctx.app.log);
 }
 
+/**
+ * Runs the `ai-reply` queue (the answers to replies and commands) until idle, as the review worker
+ * does, logging to the captured log.
+ */
+async function runReplies(): Promise<number> {
+  const { ctx } = harness;
+  const { scm, runtime } = githubDeps(harness);
+  return runUntilIdle(
+    ctx.db,
+    replyHandlers({
+      db: ctx.db,
+      config: ctx.config,
+      logger: ctx.app.log,
+      llmCircuit: createLlmRuntime().circuit,
+      scm,
+      scmRuntime: runtime,
+      shutdown: new AbortController().signal,
+    }),
+    ctx.app.log,
+  );
+}
+
 /** An API call through the app (its body reaches the leak search through the `onSend` hook). */
 async function api(
   method: 'GET' | 'POST' | 'PATCH',
@@ -216,6 +249,20 @@ async function api(
     ...(payload === undefined ? {} : { payload }),
   });
   return res;
+}
+
+/**
+ * A webhook event delivered to the connection's URL, as GitHub sends it (github.md §9): the body as
+ * JSON, with the event and a delivery id, signed with the webhook secret.
+ */
+function webhook(connectionId: string, event: string, payload: Record<string, unknown>) {
+  const body = JSON.stringify(payload);
+  return api('POST', `/api/v0/github/webhooks/${connectionId}`, body, {
+    'content-type': 'application/json',
+    'x-github-event': event,
+    'x-github-delivery': randomUUID(),
+    'x-hub-signature-256': `sha256=${createHmac('sha256', WEBHOOK_SECRET).update(body).digest('hex')}`,
+  });
 }
 
 /** Every request the fake received, across {@link clearRequests}: the JWTs are searched for. */
@@ -241,12 +288,13 @@ const reviewComments = () => fake.reviewComments.filter((c) => c.repoId === REPO
 const threads = () => fake.reviewThreads.filter((t) => t.repoId === REPO_ID);
 
 beforeAll(async () => {
+  llm = await createFakeLlm();
   fake = await createFakeGitHub();
   fake.addRepository({ id: REPO_ID, owner: 'acme', name: 'shop', installationId: INSTALLATION });
   // Every line the server logs at its configured level goes to `harness.ctx.logs` (a pino
   // destination appending to an array), the loggers of the workers and jobs included.
   harness = await createIngestHarness({
-    config: githubTestConfig(fake),
+    config: { ...githubTestConfig(fake), llmInternalHosts: parseInternalHosts(llm.host) },
     beforeReady: (app) =>
       app.addHook('onSend', async (_request, _reply, payload) => {
         if (typeof payload === 'string') bodies.push(payload);
@@ -262,6 +310,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await harness.close();
   await fake.close();
+  await llm.close();
   rmSync(work, { recursive: true, force: true, maxRetries: 5 });
 });
 
@@ -434,7 +483,7 @@ describe('GitHub end to end, against the fake GitHub (github.md §11, §12)', ()
 
     // The check run's Re-run (a signed check_run.rerequested): one decoration, which changes nothing.
     const newest = runs().at(-1)!;
-    const delivery = JSON.stringify({
+    const hook = await webhook(connectionId, 'check_run', {
       action: 'rerequested',
       check_run: {
         id: newest.id,
@@ -445,12 +494,6 @@ describe('GitHub end to end, against the fake GitHub (github.md §11, §12)', ()
       },
       repository: { id: REPO_ID, full_name: KEY },
       installation: { id: INSTALLATION },
-    });
-    const hook = await api('POST', `/api/v0/github/webhooks/${connectionId}`, delivery, {
-      'content-type': 'application/json',
-      'x-github-event': 'check_run',
-      'x-github-delivery': randomUUID(),
-      'x-hub-signature-256': `sha256=${createHmac('sha256', WEBHOOK_SECRET).update(delivery).digest('hex')}`,
     });
     expect(hook.statusCode, hook.body).toBe(204);
     expect(await queuedDecorations(harness)).toHaveLength(1);
@@ -499,6 +542,88 @@ describe('GitHub end to end, against the fake GitHub (github.md §11, §12)', ()
     clearRequests();
     expect(await runScm()).toBe(1);
     expect(writes()).toEqual([]);
+
+    // 6I-4: what people write is answered at once, through the App's comment events. The scans
+    // above ran with AI review off; it is on from here, and the person who writes has the rights
+    // that a reply and a `qualor review` need.
+    await reviewOn(harness, llm);
+    fake.setPermission(REPO_ID, 'octocat', { permission: 'write', roleName: 'write' });
+
+    // A reply in Qualor's thread: a person reopens the thread of the issue that is closed by now,
+    // and asks why. The `pull_request_review_comment` event queues a scan, which reads the reply
+    // through the API, and the answer joins the thread. The issue is not open: Qualor explains,
+    // and the reply changes nothing of the issue.
+    const [before] = await ctx.db.select().from(issues).where(eq(issues.id, issue!.id));
+    expect(before?.status).not.toBe('open');
+    const thread = threads()[0]!;
+    thread.resolved = false;
+    thread.resolvedBy = null;
+    const opening = thread.commentIds[0]!;
+    const asked = fake.replyToReviewComment(REPO_ID, PR, opening, {
+      body: 'Why is this a false positive?',
+      login: 'octocat',
+    });
+    const replied = await webhook(connectionId, 'pull_request_review_comment', {
+      action: 'created',
+      comment: {
+        id: asked.id,
+        in_reply_to_id: opening,
+        body: asked.body,
+        user: { login: 'octocat', type: 'User' },
+      },
+      pull_request: { number: PR },
+      repository: { id: REPO_ID, full_name: KEY },
+      installation: { id: INSTALLATION },
+    });
+    expect(replied.statusCode, replied.body).toBe(204);
+    const waiting = async () =>
+      (await queuedAnswers(ctx.db, prBranch!.id)).jobs.filter((job) => job.status === 'queued');
+    expect(await waiting()).toEqual([scanJob(prBranch!.id)]);
+    const explanation = 'The rule flags a loose comparison: both sides may differ in type.';
+    llm.say(JSON.stringify({ intent: 'question', verdict: 'keep', answer: explanation }));
+    expect(await runReplies()).toBe(2); // the scan, and the answer it queued
+    const answered = reviewComments().filter(
+      (c) => c.inReplyToId === opening && c.user.type === 'Bot',
+    );
+    expect(answered).toHaveLength(1);
+    expect(answered[0]?.body).toContain(`**AI review** · reply\n\n${explanation}`);
+    const [reply] = await ctx.db
+      .select()
+      .from(reviewReplies)
+      .where(and(eq(reviewReplies.branchId, prBranch!.id), eq(reviewReplies.kind, 'reply')));
+    expect(reply).toMatchObject({
+      noteId: asked.id,
+      author: 'octocat',
+      status: 'done',
+      verdict: 'keep',
+      answerNoteId: answered[0]!.id,
+    });
+    const [after] = await ctx.db.select().from(issues).where(eq(issues.id, issue!.id));
+    expect(after?.status).toBe(before?.status);
+
+    // A `qualor review` on the pull request's page: the `issue_comment` event queues a scan, which
+    // finds the command, and Qualor answers on the page and asks for the review of the commit.
+    const asking = fake.addComment(REPO_ID, PR, { body: 'qualor review', login: 'octocat' });
+    const commanded = await webhook(connectionId, 'issue_comment', {
+      action: 'created',
+      issue: { number: PR, pull_request: { url: `${fake.url}/repos/${KEY}/pulls/${PR}` } },
+      comment: { id: asking.id, body: asking.body, user: { login: 'octocat', type: 'User' } },
+      repository: { id: REPO_ID, full_name: KEY },
+      installation: { id: INSTALLATION },
+    });
+    expect(commanded.statusCode, commanded.body).toBe(204);
+    expect(await waiting()).toEqual([scanJob(prBranch!.id)]);
+    expect(await runReplies()).toBe(2);
+    const noted = fake.comments.filter(
+      (c) => c.repoId === REPO_ID && c.issue === PR && c.user.type === 'Bot' && c.id > asking.id,
+    );
+    expect(noted).toHaveLength(1);
+    expect(noted[0]?.body).toContain(`Reviewing this commit (${codeSpan(fixed.slice(0, 12))}).`);
+    const [run] = await ctx.db
+      .select()
+      .from(reviewRuns)
+      .where(eq(reviewRuns.branchId, prBranch!.id));
+    expect(run).toMatchObject({ status: 'waiting', requestedBy: 'octocat' });
 
     // github.md §12: the leak search.
     const pkcs1 = fake.privateKeyPem;

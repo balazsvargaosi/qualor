@@ -7,6 +7,11 @@
     "url": "https://<your Qualor server>/api/v0/github/webhooks/<connection id>",
     "active": false
   },
-  "default_permissions": { "checks": "write", "pull_requests": "write", "metadata": "read" },
-  "default_events": ["check_run"]
+  "default_permissions": {
+    "checks": "write",
+    "pull_requests": "write",
+    "issues": "read",
+    "metadata": "read"
+  },
+  "default_events": ["check_run", "issue_comment", "pull_request_review_comment"]
 }
