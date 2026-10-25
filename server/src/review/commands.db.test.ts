@@ -68,6 +68,7 @@ const CHANGE: SnapshotLine[] = [
 ];
 
 const NOT_AVAILABLE = 'Auto-fix is not switched on for this project.';
+const NOT_A_MEMBER = 'Only project members can ask for an AI review.';
 const REVIEW_OFF = 'AI review is not switched on for this project.';
 const IN_PROGRESS = 'A review of this commit is in progress.';
 const reviewed = (sha: string) =>
@@ -163,6 +164,14 @@ describe('the qualor review, fix and stop commands (6I-4)', () => {
     h.ctx.db
       .delete(jobs)
       .where(and(eq(jobs.queue, SCM_QUEUE), sql`${jobs.payload} ->> 'analysisId' = ${analysisId}`));
+  /** The merge request's analysis has no run, as when AI review was off at its ingestion. */
+  const withoutRun = async (mr: Mr) => {
+    const run = await runOf(mr.analysisId);
+    await h.ctx.db.delete(reviewRuns).where(eq(reviewRuns.id, run.id));
+    await h.ctx.db
+      .delete(jobs)
+      .where(and(eq(jobs.queue, AI_REVIEW_QUEUE), sql`${jobs.payload} ->> 'runId' = ${run.id}`));
+  };
   /**
    * The merge request's run as a review leaves it once it ended (or is running): its job is gone.
    */
@@ -198,7 +207,8 @@ describe('the qualor review, fix and stop commands (6I-4)', () => {
   };
   const rowById = async (id: string) =>
     first(await h.ctx.db.select().from(reviewReplies).where(eq(reviewReplies.id, id)));
-  const contextOf = async (mr: Mr): Promise<CommandContext> => ({
+  /** The job's loads; the author has the rights `qualor review` needs unless the case says not. */
+  const contextOf = async (mr: Mr, authorMayReview = true): Promise<CommandContext> => ({
     settings: await readLlmSettings(h.ctx.db),
     project: {
       id: mr.project.id,
@@ -207,8 +217,10 @@ describe('the qualor review, fix and stop commands (6I-4)', () => {
     },
     branch: { id: mr.branchId },
     logger: silentLogger,
+    authorMayReview,
   });
-  const decide = async (mr: Mr, row: ReplyRow) => handleCommand(h.ctx.db, row, await contextOf(mr));
+  const decide = async (mr: Mr, row: ReplyRow, authorMayReview = true) =>
+    handleCommand(h.ctx.db, row, await contextOf(mr, authorMayReview));
 
   const jobDeps = (): ReviewJobDeps => ({
     db: h.ctx.db,
@@ -452,6 +464,96 @@ describe('the qualor review, fix and stop commands (6I-4)', () => {
     expect(await decorations(mr.analysisId)).toEqual([]);
   });
 
+  it('qualor review from someone without the rights is refused with a fixed text, and no run is made, started again or touched', async () => {
+    // Whatever the run is: one a review would start again, one that waits, one that is done, none.
+    const runs: [string, Partial<typeof reviewRuns.$inferInsert> | null][] = [
+      ['failed', { status: 'failed', reason: 'internal', headSha: HEAD, startedAt: new Date() }],
+      ['waiting', {}],
+      ['done', { status: 'done', headSha: HEAD, startedAt: new Date() }],
+      ['no run', null],
+    ];
+    for (const [which, state] of runs) {
+      const mr = await mergeRequest();
+      if (state === null) await withoutRun(mr);
+      else if (which !== 'waiting') await settle(mr, state);
+      const before = await runsOfBranch(mr.branchId);
+      const row = await command(mr, 'review', 'eve');
+      expect(await decide(mr, row, false), which).toEqual({
+        outcome: 'not_available',
+        text: NOT_A_MEMBER,
+      });
+      expect(await rowById(row.id), which).toMatchObject({
+        outcome: 'not_available',
+        answer: NOT_A_MEMBER,
+      });
+      // Nothing was made, asked for or touched: the runs as they were, no job, no decoration.
+      expect(await runsOfBranch(mr.branchId), which).toEqual(before);
+      for (const run of before) {
+        expect(await reviewJobs(run.id), which).toEqual(
+          which === 'waiting' ? [{ due: false }] : [],
+        );
+      }
+      expect(await decorations(mr.analysisId), which).toEqual([]);
+    }
+  });
+
+  it('the refusal comes before the AI-review-off answer', async () => {
+    const mr = await mergeRequest();
+    await reviewOff(h);
+    expect(await decide(mr, await command(mr, 'review'), false)).toEqual({
+      outcome: 'not_available',
+      text: NOT_A_MEMBER,
+    });
+    // With the rights, it is AI review that is off.
+    expect(await decide(mr, await command(mr, 'review'), true)).toEqual({
+      outcome: 'review_off',
+      text: REVIEW_OFF,
+    });
+  });
+
+  it('qualor fix and qualor stop are answered for everyone: the rights decide nothing for them', async () => {
+    const mr = await mergeRequest();
+    for (const which of ['fix', 'stop'] as const) {
+      const row = await command(mr, which, 'eve');
+      expect(await decide(mr, row, false), which).toEqual({
+        outcome: 'not_available',
+        text: NOT_AVAILABLE,
+      });
+    }
+  });
+
+  it('a refusal and a restart are decided once: a retry finds the decision, whatever the rights say then', async () => {
+    const mr = await mergeRequest();
+    await settle(mr, {
+      status: 'failed',
+      reason: 'internal',
+      headSha: HEAD,
+      startedAt: new Date(),
+    });
+    const refused = await command(mr, 'review', 'eve');
+    expect(await decide(mr, refused, false)).toEqual({
+      outcome: 'not_available',
+      text: NOT_A_MEMBER,
+    });
+    const asked = await command(mr, 'review', 'octocat');
+    expect(await decide(mr, asked, true)).toEqual({
+      outcome: 'review_requested',
+      text: requested(HEAD),
+    });
+    // The rights of the one are now the other's: nothing is decided again.
+    expect(await decide(mr, refused, true)).toEqual({
+      outcome: 'not_available',
+      text: NOT_A_MEMBER,
+    });
+    expect(await decide(mr, asked, false)).toEqual({
+      outcome: 'review_requested',
+      text: requested(HEAD),
+    });
+    // The run is the member's, once.
+    expect(await runsOfBranch(mr.branchId)).toHaveLength(1);
+    expect(await runOf(mr.analysisId)).toMatchObject({ status: 'waiting', requestedBy: 'octocat' });
+  });
+
   it('each command note gets one answer: a row that was decided is not decided again', async () => {
     const mr = await mergeRequest();
     await settle(mr, {
@@ -612,11 +714,7 @@ describe('the qualor review, fix and stop commands (6I-4)', () => {
 
   it('two commands decided at once for an analysis with no run make its run once', async () => {
     const mr = await mergeRequest();
-    const run = await runOf(mr.analysisId);
-    await h.ctx.db.delete(reviewRuns).where(eq(reviewRuns.id, run.id));
-    await h.ctx.db
-      .delete(jobs)
-      .where(and(eq(jobs.queue, AI_REVIEW_QUEUE), sql`${jobs.payload} ->> 'runId' = ${run.id}`));
+    await withoutRun(mr);
     const rows = [await command(mr, 'review', 'octocat'), await command(mr, 'review', 'hubot')];
     // Both find no run: the second must wait for the first to make it, not make a second one (an
     // analysis has one run, which its unique key would refuse).
@@ -634,12 +732,13 @@ describe('the qualor review, fix and stop commands (6I-4)', () => {
     const mr = await mergeRequest();
     const author = '@all <b>x</b> `y` [z](https://evil.example)';
     const texts: string[] = [];
-    const answer = async (which: ReplyCommand) => {
-      const decided = await decide(mr, await command(mr, which, author));
+    const answer = async (which: ReplyCommand, mayReview = true) => {
+      const decided = await decide(mr, await command(mr, which, author), mayReview);
       texts.push(decided.text);
     };
     await answer('fix');
     await answer('stop');
+    await answer('review', false);
     await reviewOff(h);
     await answer('review');
     await reviewOn(h, llm);
@@ -648,7 +747,7 @@ describe('the qualor review, fix and stop commands (6I-4)', () => {
     await settle(mr, { status: 'failed', reason: 'internal', startedAt: new Date() });
     await answer('review');
     await answer('review');
-    expect(texts).toHaveLength(6);
+    expect(texts).toHaveLength(7);
     for (const text of texts) {
       expect(text).not.toContain('evil');
       expect(text).not.toContain('@all');

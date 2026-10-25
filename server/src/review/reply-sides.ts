@@ -14,17 +14,24 @@ import type { ReplyRow } from './replies';
  * the merge request, or GitHub's review thread of the pull request, each through the job's own
  * client and its request budget. Beside them, where the answer to a command goes: a reply in the
  * discussion the command's note opened on GitLab, a comment on the page of the pull request on
- * GitHub.
+ * GitHub; and whether the command's author has the rights a review asks for, which are the rights a
+ * reply needs to change a status, by the same functions.
  */
 
-/** GitLab's Developer role: the least access level whose reply may change a finding's status. */
+/**
+ * GitLab's Developer role: the least access level whose reply may change a finding's status, and
+ * whose note may ask for a review.
+ */
 const GITLAB_DEVELOPER = 30;
 /**
  * The most authors of a round whose rights are asked for, each once: a round of more changes no
  * status.
  */
 const MAX_AUTHORS_LOOKED_UP = 5;
-/** GitHub's roles of a repository whose people may change a finding's status through a reply. */
+/**
+ * GitHub's roles of a repository whose people may change a finding's status through a reply, or
+ * ask for a review.
+ */
 const GITHUB_TRIAGE_ROLES: ReadonlySet<string> = new Set(['admin', 'maintain', 'write', 'triage']);
 /** GitHub's other built-in roles, which may not. */
 const GITHUB_OTHER_ROLES: ReadonlySet<string> = new Set(['read', 'none']);
@@ -33,16 +40,47 @@ const GITHUB_TRIAGE_PERMISSIONS: ReadonlySet<string> = new Set(['admin', 'write'
 
 /**
  * Whether a person with this permission on the repository may change a finding's status through a
- * reply: a role of admin, maintain, write or triage, or a custom role whose base permission is
- * admin or write. With no role named (an older GitHub Enterprise Server), the legacy permission
- * decides the same way: admin or write may. Nobody else may: the read role, none, or no permission
- * at all (null).
+ * reply, or ask for a review through a command: a role of admin, maintain, write or triage, or a
+ * custom role whose base permission is admin or write. With no role named (an older GitHub
+ * Enterprise Server), the legacy permission decides the same way: admin or write may. Nobody else
+ * may: the read role, none, or no permission at all (null).
  */
 function githubMayTriage(found: { permission: string; roleName: string | null } | null): boolean {
   if (found === null) return false;
   if (found.roleName !== null && GITHUB_TRIAGE_ROLES.has(found.roleName)) return true;
   if (found.roleName !== null && GITHUB_OTHER_ROLES.has(found.roleName)) return false;
   return GITHUB_TRIAGE_PERMISSIONS.has(found.permission);
+}
+
+/**
+ * Whether the GitLab user may change a finding's status through a reply, or ask for a review
+ * through a command: a membership in force (`memberAccessLevel`: an active user, in an active
+ * membership that has not ended) of Developer or more. Nobody else may: no member, a Reporter, a
+ * Guest.
+ */
+async function gitlabMayTriage(
+  client: GitLabClient,
+  ref: string,
+  userId: number,
+): Promise<boolean> {
+  const level = await client.memberAccessLevel(ref, userId);
+  return level !== null && level >= GITLAB_DEVELOPER;
+}
+
+/**
+ * The login's permission on the repository (`repositoryPermission`: none for a login GitHub could
+ * not have, asked with no request). An answer of GitHub's that does not parse is no permission
+ * either: `unparsed` says so in one line without its text, so that one author's odd answer never
+ * fails the job.
+ */
+async function githubPermissionOf(client: GitHubClient, login: string, unparsed: () => void) {
+  try {
+    return await client.repositoryPermission(login);
+  } catch (err) {
+    if (!(err instanceof ScmError) || err.kind !== 'bad_answer') throw err;
+    unparsed();
+    return null;
+  }
 }
 
 /** A row of a reply: in a thread, about an issue. */
@@ -143,8 +181,7 @@ export function gitlabSide(
       if (authors.length > MAX_AUTHORS_LOOKED_UP) return false;
       for (const userId of authors) {
         if (userId === undefined) return false;
-        const level = await client.memberAccessLevel(ref, userId);
-        if (level === null || level < GITLAB_DEVELOPER) return false;
+        if (!(await gitlabMayTriage(client, ref, userId))) return false;
       }
       return true;
     },
@@ -173,22 +210,13 @@ export function githubSide(
   const loginOf = new Map<number, string>();
   /** The thread's GraphQL node id, which it is resolved by. */
   let threadNode: string | null = null;
-  /**
-   * The login's permission on the repository. An answer of GitHub's that does not parse is no
-   * permission, said in one line without its text: one author's odd answer never fails the round.
-   */
-  const permissionOf = async (login: string) => {
-    try {
-      return await client.repositoryPermission(login);
-    } catch (err) {
-      if (!(err instanceof ScmError) || err.kind !== 'bad_answer') throw err;
+  const permissionOf = (login: string) =>
+    githubPermissionOf(client, login, () =>
       logger.warn(
         { replyId: row.id },
         'GitHub permission answer not understood; the reply changes no status',
-      );
-      return null;
-    }
-  };
+      ),
+    );
   return {
     connectionId,
     async read() {
@@ -243,10 +271,19 @@ export interface CommandSide {
   /**
    * What the provider holds of the answer: the id of the note of Qualor's whose first line names
    * the row, posted already (a post whose outcome was lost), or null when there is none or the
-   * listing was cut at its page bound before it. Null as a whole when the command's discussion is
-   * gone.
+   * listing was cut at its page bound before it. Null as a whole when the command's note is gone
+   * (its discussion on GitLab, its comment on GitHub) from a listing read whole. It also finds who
+   * wrote the command's note, for `mayReview`; whoever an earlier read found is forgotten first.
    */
   read(): Promise<{ answered: number | null } | null>;
+  /**
+   * Whether the author of the command's note, as the last `read` found it, has the rights
+   * `qualor review` needs, which are the ones a reply needs to change a finding's status: one
+   * request, through the same functions. It fails closed: no author found (a note a listing cut at
+   * its page bound does not show, an account that is gone, no read yet), a login GitHub could not
+   * have and an answer of GitHub's that does not parse have no rights.
+   */
+  mayReview(): Promise<boolean>;
   /** Posts `body` as the answer: answers the new note's id. Comes after `read`. */
   post(body: string): Promise<number>;
 }
@@ -265,26 +302,32 @@ export function gitlabCommandSide(
   threadId: string,
 ): CommandSide {
   const marker = replyMarker(row.id);
+  /** The GitLab user who wrote the command's note, as the last read found it: none until it did. */
+  let author: number | undefined;
   return {
     connectionId,
     async read() {
+      author = undefined;
       const me = await client.currentUser();
       const listed = await client.discussions(ref, iid, MAX_DISCUSSION_PAGES);
       const discussion = listed.items.find((d) => d.id === threadId);
       if (discussion === undefined) return listed.complete ? null : { answered: null };
+      author = discussion.notes.find((note) => note.id === row.noteId)?.author.id;
       const answer = discussion.notes.find(
         (note) => !note.system && note.author.id === me.id && firstLineOf(note.body) === marker,
       );
       return { answered: answer?.id ?? null };
     },
+    mayReview: async () => author !== undefined && (await gitlabMayTriage(client, ref, author)),
     post: async (body) => (await client.replyToDiscussion(ref, iid, threadId, body)).id,
   };
 }
 
 /**
  * The answer to a command on GitHub: a comment on the pull request's page, which the page's
- * comment listing finds by its marker. Beyond the listing's page bound the answer may be unseen,
- * and is posted all the same.
+ * comment listing finds by its marker, as it finds the command's own comment and the login that
+ * wrote it now. Beyond the listing's page bound the answer may be unseen, and is posted all the
+ * same. `logger` says when a permission GitHub answered is not understood.
  */
 export function githubCommandSide(
   connectionId: string,
@@ -292,15 +335,24 @@ export function githubCommandSide(
   repo: GitHubRepoRef,
   number: string,
   row: ReplyRow,
+  logger: Pick<WorkerLogger, 'warn'>,
 ): CommandSide {
   const marker = replyMarker(row.id);
+  /** The login that wrote the command's comment, as the last read found it: none until it did. */
+  let author: string | undefined;
   return {
     connectionId,
     async read() {
+      author = undefined;
       const app = await client.app();
       await client.useRepository(repo);
       const bot = `${app.slug}[bot]`;
       const comments = await client.issueComments(number, MAX_COMMENT_PAGES);
+      const command = comments.items.find((c) => c.id === row.noteId);
+      // A comment missing from a listing read whole was deleted; from one cut at its page bound it
+      // may only be unseen, and its author is then unknown.
+      if (command === undefined && comments.complete) return null;
+      author = command?.user?.login;
       const answer = comments.items.find(
         (c) =>
           c.user?.type === 'Bot' &&
@@ -309,6 +361,16 @@ export function githubCommandSide(
           firstLineOf(c.body) === marker,
       );
       return { answered: answer?.id ?? null };
+    },
+    async mayReview() {
+      if (author === undefined) return false;
+      const permission = await githubPermissionOf(client, author, () =>
+        logger.warn(
+          { replyId: row.id },
+          'GitHub permission answer not understood; the command is refused',
+        ),
+      );
+      return githubMayTriage(permission);
     },
     post: async (body) => (await client.createComment(number, body)).id,
   };

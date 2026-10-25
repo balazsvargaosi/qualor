@@ -22,7 +22,9 @@ import { reviewActive } from './settings';
  * `qualor stop`. `parseCommand` reads the note; `handleCommand` decides what a command row of the
  * replies ledger comes to, for the answer job (reply-job.ts). A command makes no model call, and
  * every answer is Qualor's fixed text, with a commit in a code span: no word of the person who
- * wrote the note is in it.
+ * wrote the note is in it. `qualor review` costs a review, so only someone with the rights a reply
+ * needs to change a finding's status may ask for one; `qualor fix` and `qualor stop` are answered
+ * for everyone, as they do nothing yet.
  */
 
 /**
@@ -59,6 +61,12 @@ export interface CommandContext {
   project: { id: string; organizationId: string; scmConnectionId: string | null };
   branch: { id: string };
   logger: Pick<WorkerLogger, 'info' | 'warn'>;
+  /**
+   * Whether the author of the command's note has the SCM rights `qualor review` needs (the ones a
+   * reply needs to change a finding's status). The job asks the provider for a `qualor review`
+   * that has no decision yet, and says false otherwise: only such a command looks at it.
+   */
+  authorMayReview: boolean;
 }
 
 /**
@@ -74,6 +82,7 @@ export class NothingToReview extends Error {
 }
 
 const NOT_AVAILABLE = 'Auto-fix is not switched on for this project.';
+const NOT_A_MEMBER = 'Only project members can ask for an AI review.';
 const REVIEW_OFF = 'AI review is not switched on for this project.';
 const IN_PROGRESS = 'A review of this commit is in progress.';
 /** A commit as the review summary writes it: its first 12 characters, in a code span. */
@@ -110,16 +119,18 @@ async function commitOf(tx: Tx, analysisId: string, runHead: string | null): Pro
 }
 
 /**
- * `qualor review`: the run of the branch's newest analysis, as it is under the branch's lock. A
- * review that was done (or found the same diff as the last one that was) is not repeated, one that
- * waits or runs is not asked for twice, and any other run (or none) is made or started again for
- * the person who asked.
+ * `qualor review`. Someone without the rights is refused, before anything else: no run is made,
+ * started again or looked at, and AI review being off is not said. Otherwise the run of the
+ * branch's newest analysis, as it is under the branch's lock: a review that was done (or found the
+ * same diff as the last one that was) is not repeated, one that waits or runs is not asked for
+ * twice, and any other run (or none) is made or started again for the person who asked.
  */
 async function reviewDecision(
   tx: Tx,
   row: ReplyRow,
   ctx: CommandContext,
 ): Promise<CommandDecision> {
+  if (!ctx.authorMayReview) return { outcome: 'not_available', text: NOT_A_MEMBER };
   if (!reviewActive(ctx.settings, ctx.project).active) {
     return { outcome: 'review_off', text: REVIEW_OFF };
   }
@@ -156,10 +167,11 @@ async function reviewDecision(
  * and for `qualor review` the run that is made or started again, which the transaction carries out.
  * The decision is stored on the row (`answer` and `outcome`, written once), so that a job that
  * takes the row again finds it and decides nothing a second time: a row that restarted a run is
- * not answered "in progress" for it by its own retry. `qualor review` takes the branch's decoration
- * lock and then the run's row, in the order ingestion and the review job take them, so that the
- * runs of a merge request are never made or restarted twice: the second of two notes written
- * together finds the run waiting. Throws NothingToReview for a branch with no newest analysis.
+ * not answered "in progress" for it by its own retry, and a refusal is not asked again. `qualor
+ * review` takes the branch's decoration lock and then the run's row, in the order ingestion and the
+ * review job take them, so that the runs of a merge request are never made or restarted twice: the
+ * second of two notes written together finds the run waiting. Throws NothingToReview for a branch
+ * with no newest analysis.
  */
 export async function handleCommand(
   db: Db,

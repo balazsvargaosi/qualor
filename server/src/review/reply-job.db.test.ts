@@ -87,11 +87,12 @@ const addedPatch = (lines: readonly string[]) =>
 
 /**
  * Who replies: five people with the rights to triage (`member` the least of them), someone with no
- * rights at all, and two with less than the rights.
+ * rights at all, and two with less than the rights. `refused` is a login that GitHub's rules refuse
+ * (nobody has it, and no request is made for it); on GitLab it is one more user with no membership.
  */
 const INSIDERS = ['member', 'maintainer', 'owner', 'triager', 'customWriter'] as const;
 const OUTSIDERS = ['outsider', 'reporter', 'customReader'] as const;
-type Person = (typeof INSIDERS)[number] | (typeof OUTSIDERS)[number];
+type Person = (typeof INSIDERS)[number] | (typeof OUTSIDERS)[number] | 'refused';
 /** GitLab's users of every project: each a member with the level `GITLAB_LEVELS` gives. */
 const GITLAB_USERS: Readonly<Record<Person, number>> = {
   member: 5,
@@ -102,6 +103,7 @@ const GITLAB_USERS: Readonly<Record<Person, number>> = {
   outsider: 6,
   reporter: 7,
   customReader: 12,
+  refused: 13,
 };
 /** Developer, Maintainer and Owner have the rights; no member, Reporter and Guest have not. */
 const GITLAB_LEVELS: Readonly<Record<Person, number | null>> = {
@@ -113,6 +115,7 @@ const GITLAB_LEVELS: Readonly<Record<Person, number | null>> = {
   outsider: null,
   reporter: 20,
   customReader: 10,
+  refused: null,
 };
 /**
  * GitHub's accounts, with the permission each has on every repository: the roles write, maintain,
@@ -137,6 +140,7 @@ const GITHUB_USERS: Readonly<
   outsider: { login: 'stranger', permission: null },
   reporter: { login: 'visitor', permission: { permission: 'read', roleName: 'read' } },
   customReader: { login: 'auditor', permission: { permission: 'read', roleName: 'auditor' } },
+  refused: { login: '-refused-', permission: null },
 };
 /** A request that asks for someone's rights, on either provider. */
 const RIGHTS_LOOKUP = /\/members\/all\/|\/collaborators\/[^/]+\/permission/;
@@ -156,6 +160,7 @@ const MEMBERS_ONLY = 'the people who replied cannot change the status of this fi
 /** What Qualor answers to a command: fixed texts, with a commit in a code span. */
 const REVIEW_OFF = 'AI review is not switched on for this project.';
 const NOT_AVAILABLE = 'Auto-fix is not switched on for this project.';
+const NOT_A_MEMBER = 'Only project members can ask for an AI review.';
 const IN_PROGRESS = 'A review of this commit is in progress.';
 const requested = (sha: string) => `Reviewing this commit (${codeSpan(sha.slice(0, 12))}).`;
 /** The review of HEAD ended without its findings: a command restarts it. */
@@ -212,6 +217,8 @@ interface Mr {
   resolved(threadId: string): boolean;
   resolveAsPerson(threadId: string): void;
   deleteThread(threadId: string): void;
+  /** A person deletes their command: its discussion on GitLab, its comment on GitHub. */
+  deleteCommand(command: { noteId: number; threadId: string | null }): void;
   /** A person deletes their note of the thread. */
   deleteNote(threadId: string, noteId: number): void;
   close(): void;
@@ -419,6 +426,10 @@ describe('the answer job (6I-4)', () => {
           const list = gitlab.discussions(gitlabId, 12);
           list.splice(list.indexOf(discussion(threadId)), 1);
         },
+        deleteCommand: ({ threadId }) => {
+          const list = gitlab.discussions(gitlabId, 12);
+          list.splice(list.indexOf(discussion(threadId!)), 1);
+        },
         deleteNote: (threadId, noteId) => {
           const { notes } = discussion(threadId);
           notes.splice(
@@ -585,6 +596,12 @@ describe('the answer job (6I-4)', () => {
             .map((c) => ({ id: c.id, body: c.body })),
         resolved: (threadId) => threadOf(threadId).resolved,
         resolveAsPerson: (threadId) => github.resolveThreadAs(threadOf(threadId).id, 'octocat'),
+        deleteCommand: ({ noteId }) => {
+          github.comments.splice(
+            github.comments.findIndex((c) => c.repoId === repo.id && c.id === noteId),
+            1,
+          );
+        },
         deleteThread: (threadId) => {
           const thread = threadOf(threadId);
           github.reviewThreads.splice(github.reviewThreads.indexOf(thread), 1);
@@ -770,6 +787,8 @@ describe('the answer job (6I-4)', () => {
     runUntilIdle(h.ctx.db, reviewHandlers(jobDeps(over)), silentLogger);
   const runOf = async (analysisId: string) =>
     first(await h.ctx.db.select().from(reviewRuns).where(eq(reviewRuns.analysisId, analysisId)));
+  const runsOfBranch = (branchId: string) =>
+    h.ctx.db.select().from(reviewRuns).where(eq(reviewRuns.branchId, branchId));
   /** The `ai-review` jobs queued for the run, each with whether it is due now. */
   const reviewJobsOf = (runId: string) =>
     h.ctx.db
@@ -1553,24 +1572,25 @@ describe('the answer job (6I-4)', () => {
 
       /**
        * A merge request whose review of HEAD ended as `end` says (the seeded one is done), and a
-       * command written on it (`qualor review` unless `body` says), queued by a decoration.
+       * command written on it (`qualor review` unless `body` says) by a member (unless `who` says
+       * otherwise), queued by a decoration.
        */
       const commanded = async (
         key: string,
-        o: { end?: Partial<typeof reviewRuns.$inferInsert>; body?: string } = {},
+        o: { end?: Partial<typeof reviewRuns.$inferInsert>; body?: string; who?: Person } = {},
       ) => {
         const d = driverOf();
         const mr = await d.setup(`${slug}-command-${key}`);
         await reviewOn(h, llm);
         if (o.end !== undefined) await endRun(mr.analysisId, o.end);
-        const sent = mr.command(o.body ?? 'qualor review');
+        const sent = mr.command(o.body ?? 'qualor review', o.who);
         await mr.decorate();
         const row = await commandRow(mr.branchId, sent.noteId);
         expect(row).toMatchObject({
           kind: 'command',
           status: 'queued',
           threadId: sent.threadId,
-          author: mr.username('member'),
+          author: mr.username(o.who ?? 'member'),
         });
         return { d, mr, sent, row };
       };
@@ -1692,7 +1712,10 @@ describe('the answer job (6I-4)', () => {
       it('a retry after the restart but before the post answers what the first try decided, posts once and restarts nothing more', async () => {
         const { d, mr, sent } = await commanded('retry-before-post', { end: FAILED });
         mr.failNextPost(false, 'command');
+        d.clearRequests();
         await answer();
+        // The first try asked for the author's rights, once.
+        expect(d.requests().filter((r) => RIGHTS_LOOKUP.test(r))).toHaveLength(1);
         // The decision is on the row and the run waits again; nothing was posted.
         const row = await commandRow(mr.branchId, sent.noteId);
         expect(row).toMatchObject({
@@ -1708,6 +1731,8 @@ describe('the answer job (6I-4)', () => {
         d.clearRequests();
         await retryNow();
         expect(await answer()).toBe(1);
+        // The decision has the rights in it: the retry asks for them no more.
+        expect(d.requests().filter((r) => RIGHTS_LOOKUP.test(r))).toEqual([]);
         // "Reviewing", not the "in progress" of the run the first try restarted.
         const answers = mr.commandAnswers();
         expect(answers.map((a) => a.body)).toEqual([commandNote(row.id, requested(HEAD))]);
@@ -1756,6 +1781,150 @@ describe('the answer job (6I-4)', () => {
         });
       });
 
+      // On GitLab: no membership at all, a Reporter and a Guest. On GitHub: no permission (a 404),
+      // the read role and a custom role on read.
+      it.each(OUTSIDERS)(
+        'qualor review from %s is refused with a fixed text: one request for the rights, and no run is made or restarted',
+        async (who) => {
+          const { d, mr, sent, row } = await commanded(`refused-${who}`, { end: FAILED, who });
+          const before = await runOf(mr.analysisId);
+          d.clearRequests();
+          expect(await answer()).toBe(1);
+          expect(d.requests().filter((r) => RIGHTS_LOOKUP.test(r))).toHaveLength(1);
+          const answers = mr.commandAnswers();
+          expect(answers.map((a) => a.body)).toEqual([commandNote(row.id, NOT_A_MEMBER)]);
+          expect(await commandRow(mr.branchId, sent.noteId)).toMatchObject({
+            status: 'done',
+            outcome: 'not_available',
+            reason: null,
+            answer: NOT_A_MEMBER,
+            answerNoteId: answers[0]!.id,
+          });
+          // The run is as it was: not restarted, no job, no decoration.
+          expect(await runOf(mr.analysisId)).toEqual(before);
+          expect(before.status).toBe('failed');
+          expect(await reviewJobsOf(before.id)).toEqual([]);
+          expect(await queuedDecorations(mr.analysisId)).toEqual([]);
+        },
+      );
+
+      it('qualor review from someone with the rights restarts the run, whatever their role: the first of five asks, one request each', async () => {
+        const { d, mr } = await commanded('insiders', { end: FAILED, who: INSIDERS[0] });
+        for (const who of INSIDERS.slice(1)) mr.command('qualor review', who);
+        await mr.decorate();
+        d.clearRequests();
+        await answer();
+        // None is refused: the first restarted the run, the others find it waiting.
+        const rows = await commandRows(mr.branchId);
+        expect(rows.map((r) => [r.author, r.status, r.outcome])).toEqual([
+          [mr.username('member'), 'done', 'review_requested'],
+          ...INSIDERS.slice(1).map((who) => [mr.username(who), 'done', 'in_progress']),
+        ]);
+        expect(d.requests().filter((r) => RIGHTS_LOOKUP.test(r))).toHaveLength(INSIDERS.length);
+        expect(await runOf(mr.analysisId)).toMatchObject({
+          status: 'waiting',
+          requestedBy: mr.username('member'),
+        });
+        expect(await runsOfBranch(mr.branchId)).toHaveLength(1);
+      });
+
+      it('qualor fix and qualor stop from someone without the rights still get the auto-fix answer, and ask for no rights', async () => {
+        const { d, mr } = await commanded('fix-stop-outsider', {
+          body: 'qualor fix',
+          who: 'outsider',
+        });
+        mr.command('qualor stop', 'outsider');
+        await mr.decorate();
+        d.clearRequests();
+        await answer();
+        const rows = await commandRows(mr.branchId);
+        expect(rows.map((r) => [r.command, r.status, r.outcome, r.answer])).toEqual([
+          ['fix', 'done', 'not_available', NOT_AVAILABLE],
+          ['stop', 'done', 'not_available', NOT_AVAILABLE],
+        ]);
+        expect(mr.commandAnswers().map((a) => a.body)).toEqual(
+          rows.map((r) => commandNote(r.id, NOT_AVAILABLE)),
+        );
+        expect(d.requests().filter((r) => RIGHTS_LOOKUP.test(r))).toEqual([]);
+      });
+
+      it.skipIf(provider === 'GitHub')(
+        'a GitLab command whose author the discussion does not show is refused, and no request is made for it: the rights fail closed',
+        async () => {
+          const { d, mr, sent, row } = await commanded('author-unknown', { end: FAILED });
+          const before = await runOf(mr.analysisId);
+          // The row names a note the discussion does not hold, as if the note were not the one found.
+          await h.ctx.db
+            .update(reviewReplies)
+            .set({ noteId: sent.noteId + 7_000 })
+            .where(eq(reviewReplies.id, row.id));
+          d.clearRequests();
+          await answer();
+          expect(d.requests().filter((r) => RIGHTS_LOOKUP.test(r))).toEqual([]);
+          expect(await rowById(row.id)).toMatchObject({
+            status: 'done',
+            outcome: 'not_available',
+            answer: NOT_A_MEMBER,
+          });
+          expect(await runOf(mr.analysisId)).toEqual(before);
+        },
+      );
+
+      it.skipIf(provider === 'GitLab')(
+        'qualor review from a login GitHub could not have is refused, and no request is made for it',
+        async () => {
+          const { d, mr, sent, row } = await commanded('refused-login', {
+            end: FAILED,
+            who: 'refused',
+          });
+          const before = await runOf(mr.analysisId);
+          d.clearRequests();
+          await answer();
+          expect(d.requests().filter((r) => RIGHTS_LOOKUP.test(r))).toEqual([]);
+          expect(mr.commandAnswers().map((a) => a.body)).toEqual([
+            commandNote(row.id, NOT_A_MEMBER),
+          ]);
+          expect(await commandRow(mr.branchId, sent.noteId)).toMatchObject({
+            status: 'done',
+            outcome: 'not_available',
+          });
+          expect(await runOf(mr.analysisId)).toEqual(before);
+        },
+      );
+
+      it.skipIf(provider === 'GitLab')(
+        'a permission answer of GitHub that does not parse gives no rights: the command is refused, with one line that holds no text of the answer',
+        async () => {
+          const { mr, sent, row } = await commanded('odd-permission', { end: FAILED });
+          const before = await runOf(mr.analysisId);
+          github.inject('GET', /\/collaborators\/octocat\/permission$/, {
+            status: 200,
+            body: { role_name: 'write' },
+          });
+          const warned: unknown[][] = [];
+          const logger = {
+            info: () => undefined,
+            warn: (...args: unknown[]) => void warned.push(args),
+            error: () => undefined,
+          };
+          await answer({ logger });
+          expect(mr.commandAnswers().map((a) => a.body)).toEqual([
+            commandNote(row.id, NOT_A_MEMBER),
+          ]);
+          expect(await commandRow(mr.branchId, sent.noteId)).toMatchObject({
+            status: 'done',
+            outcome: 'not_available',
+          });
+          expect(await runOf(mr.analysisId)).toEqual(before);
+          expect(warned.filter(([, message]) => String(message).includes('permission'))).toEqual([
+            [
+              { replyId: row.id },
+              'GitHub permission answer not understood; the command is refused',
+            ],
+          ]);
+        },
+      );
+
       it('a closed merge request ends the row skipped: closed, with no answer and no run', async () => {
         const { d, mr, sent } = await commanded('closed', { end: FAILED });
         const before = await runOf(mr.analysisId);
@@ -1774,31 +1943,37 @@ describe('the answer job (6I-4)', () => {
         expect(await runOf(mr.analysisId)).toEqual(before);
       });
 
+      it('a command whose note was deleted ends the row skipped: thread_gone, with no rights asked for, no run made and no answer posted', async () => {
+        const { d, mr, sent } = await commanded('note-gone', { end: FAILED });
+        const before = await runOf(mr.analysisId);
+        mr.deleteCommand(sent);
+        d.clearRequests();
+        await answer();
+        expect(await commandRow(mr.branchId, sent.noteId)).toMatchObject({
+          status: 'skipped',
+          reason: 'thread_gone',
+          outcome: null,
+          answer: null,
+          finishedAt: expect.any(Date),
+        });
+        expect(await runOf(mr.analysisId)).toEqual(before);
+        expect(d.requests().filter((r) => RIGHTS_LOOKUP.test(r))).toEqual([]);
+        expect(d.requests().filter((r) => POST_OF_COMMAND.test(r))).toEqual([]);
+        expect(mr.commandAnswers()).toEqual([]);
+      });
+
       it.skipIf(provider === 'GitHub')(
-        'a GitLab discussion that is gone ends the row skipped: thread_gone, before any run is made',
+        'a GitLab discussion that is gone only when the answer is posted ends the row skipped: thread_gone, the run restarted',
         async () => {
-          const { mr, sent } = await commanded('discussion-gone', { end: FAILED });
-          const before = await runOf(mr.analysisId);
-          mr.deleteThread(sent.threadId!);
+          const { mr, sent } = await commanded('discussion-gone-at-post', { end: FAILED });
+          mr.goneOnNextPost();
           await answer();
           expect(await commandRow(mr.branchId, sent.noteId)).toMatchObject({
             status: 'skipped',
             reason: 'thread_gone',
-            answer: null,
-            finishedAt: expect.any(Date),
-          });
-          expect(await runOf(mr.analysisId)).toEqual(before);
-
-          // Gone only when the answer is posted: the run was restarted, and the row ends the same.
-          const late = await commanded('discussion-gone-at-post', { end: FAILED });
-          late.mr.goneOnNextPost();
-          await answer();
-          expect(await commandRow(late.mr.branchId, late.sent.noteId)).toMatchObject({
-            status: 'skipped',
-            reason: 'thread_gone',
             answerNoteId: null,
           });
-          expect(await runOf(late.mr.analysisId)).toMatchObject({ status: 'waiting' });
+          expect(await runOf(mr.analysisId)).toMatchObject({ status: 'waiting' });
         },
       );
 

@@ -68,9 +68,9 @@ import { openSnapshotReader, type SnapshotReader } from './snapshot-reader';
 /*
  * The `ai-reply` jobs (6I-4): Qualor's answer to a round of people's replies in one of its
  * threads, or to a person's command, which decoration (or a webhook's scan) wrote as a row of the
- * replies ledger with its job (reply-queue.ts). The job takes the row and then, for a reply, in this
- * order, each step written on the row, or found again where it was done, so that a retry resumes
- * after the last one:
+ * replies ledger with its job (reply-queue.ts). The job takes the row and then, for a reply, in
+ * this order, each step written on the row, or found again where it was done, so that a retry
+ * resumes after the last one:
  * 1. AI review no longer active for the project ends the row `skipped: inactive`;
  * 2. with no decision yet, a day with no tokens left for it ends it `skipped: budget_spent`, and a
  *    newer round of its thread that was answered or holds a decision (that round read this row's
@@ -98,16 +98,19 @@ import { openSnapshotReader, type SnapshotReader } from './snapshot-reader';
  * The row's issue must be its project's, before the decision and before the thread is acted on (a
  * monorepo's thread of another project's issue never is): otherwise the row ends `failed: internal`.
  *
- * A command row (`qualor review`, `qualor fix`, `qualor stop`) is taken in the same way and makes no
- * model call, and asks no budget. The merge request is read, and one that is merged or closed ends
- * the row `skipped: closed`, with no run made and no answer; the discussion a GitLab command opened
- * is read too, and one that is gone ends it `skipped: thread_gone`. Then `handleCommand`
- * (commands.ts) decides, in one transaction that also makes or restarts the run, and stores the
- * fixed text of the answer on the row, so that a retry never decides twice. The answer is posted
- * once, beside the command's note (a note of Qualor's whose first line names the row is the answer
- * a post stored though its outcome was lost), and the row ends `done` with the decision's outcome.
- * AI review being off does not skip a command: it is answered so. A branch with no newest analysis
- * ends the row `failed: internal`, with no answer.
+ * A command row (`qualor review`, `qualor fix`, `qualor stop`) is taken in the same way and makes
+ * no model call, and asks no budget. The merge request is read, and one that is merged or closed
+ * ends the row `skipped: closed`, with no run made and no answer; the command's own note is read
+ * too (a GitLab command's discussion, a GitHub command's comment), and one that is gone ends it
+ * `skipped: thread_gone`. For a `qualor review` with no decision yet, one more request asks the
+ * provider whether the author of that note has the rights a reply needs to change a status (a
+ * review costs tokens). Then `handleCommand` (commands.ts) decides, in one transaction that also
+ * makes or restarts the run, and stores the fixed text of the answer on the row, so that a retry
+ * never decides twice nor asks for the rights again. The answer is posted once, beside the
+ * command's note (a note of Qualor's whose first line names the row is the answer a post stored
+ * though its outcome was lost), and the row ends `done` with the decision's outcome: a refusal is
+ * `not_available`. AI review being off does not skip a command: it is answered so. A branch with no
+ * newest analysis ends the row `failed: internal`, with no answer.
  *
  * The job's own requests pass the connection's circuit as the `scm` worker's jobs do (scm.md
  * §4.2), in two goes, so that no probe of it waits on the model: the merge request, the thread and
@@ -592,31 +595,40 @@ class ReplyJob {
     if (seen === WAITING) return;
     if (seen === CLOSED) return this.end(row, { status: 'skipped', reason: 'closed' });
     if (seen === null) return this.end(row, THREAD_GONE);
-    const decision = await this.decideCommand(row, target);
+    const decision = await this.decideCommand(row, target, seen.mayReview);
     if (decision === null) return;
     const posted = row.answerNoteId ?? seen.answered;
     await this.throughCircuit(row, side, () => this.postCommandAnswer(row, side, posted, decision));
   }
 
   /**
-   * What the first go reads for a command: CLOSED when the merge request is merged or closed; else
-   * what the provider holds of the answer; null when the command's discussion is gone.
+   * What the first go reads for a command: CLOSED when the merge request is merged or closed; null
+   * when the command's discussion is gone; else what the provider holds of the answer, and, for a
+   * `qualor review` that has no decision yet, whether its author has the rights it needs (one
+   * request). A decision on the row has them in it, and `qualor fix` and `qualor stop` are
+   * answered for everyone.
    */
   private async readCommand(
     row: ReplyRow,
     target: Target,
     side: CommandSide,
-  ): Promise<{ answered: number | null } | typeof CLOSED | null> {
+  ): Promise<{ answered: number | null; mayReview: boolean } | typeof CLOSED | null> {
     if (await this.closed(row, target)) return CLOSED;
     const found = await orGone(() => side.read());
-    return found === GONE ? null : found;
+    if (found === GONE || found === null) return null;
+    const asks = row.command === 'review' && row.answer === null;
+    return { ...found, mayReview: asks && (await side.mayReview()) };
   }
 
   /**
    * What the command comes to (commands.ts), stored on the row; null when the row ended instead: a
    * branch with no newest analysis has nothing to review.
    */
-  private async decideCommand(row: ReplyRow, target: Target): Promise<CommandDecision | null> {
+  private async decideCommand(
+    row: ReplyRow,
+    target: Target,
+    authorMayReview: boolean,
+  ): Promise<CommandDecision | null> {
     const { db, logger } = this.deps;
     try {
       return await handleCommand(db, row, {
@@ -624,6 +636,7 @@ class ReplyJob {
         project: target.project,
         branch: target.branch,
         logger,
+        authorMayReview,
       });
     } catch (err) {
       if (!(err instanceof NothingToReview)) throw err;
@@ -730,7 +743,14 @@ class ReplyJob {
       if (repo === null || 'problem' in found || !GITHUB_PR_NUMBER.test(branch.name)) {
         return 'unusable';
       }
-      return githubCommandSide(connection.id, found.client, repo, branch.name, row);
+      return githubCommandSide(
+        connection.id,
+        found.client,
+        repo,
+        branch.name,
+        row,
+        this.deps.logger,
+      );
     }
     const found = gitlabClientFor(connection, this.deps.scm);
     if ('problem' in found || !GITLAB_MR_IID.test(branch.name) || row.threadId === null) {
