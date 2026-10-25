@@ -38,6 +38,7 @@ import {
   issues,
   jobs,
   llmRequests,
+  projects,
   reviewFindings,
   reviewReplies,
   reviewRuns,
@@ -48,11 +49,17 @@ import { enqueue } from '../queue/queue';
 import { runUntilIdle } from '../queue/worker';
 import { markerOf } from '../scm/markdown';
 import { enqueueDecoration } from '../scm/queue';
-import { CircuitBreaker, SCM_CIRCUIT_FAILURES, SCM_CIRCUIT_OPEN_MS } from '../scm/runtime';
+import {
+  CircuitBreaker,
+  MAX_DECORATIONS_PER_ORGANIZATION,
+  SCM_CIRCUIT_FAILURES,
+  SCM_CIRCUIT_OPEN_MS,
+} from '../scm/runtime';
 import { parseInternalHosts } from '../scm/url';
 import type { ReviewJobDeps } from './job';
 import { ofBranch } from './lifecycle';
 import { replyNote } from './render';
+import type { ReplyRow } from './replies';
 import { replyHandlers } from './reply-job';
 import { AI_REPLY_QUEUE, reconcileStuckReplies, replyKey } from './reply-queue';
 
@@ -107,13 +114,17 @@ const GITLAB_LEVELS: Readonly<Record<Person, number | null>> = {
 /**
  * GitHub's accounts, with the permission each has on every repository: the roles write, maintain,
  * admin and triage, and a custom role whose base permission is write, have the rights; no
- * permission (GitHub's 404), the read role and a custom role on read have not.
+ * permission (GitHub's 404), the read role and a custom role on read have not. The maintainer is an
+ * Enterprise Managed User, whose login names its enterprise's short code.
  */
 const GITHUB_USERS: Readonly<
   Record<Person, { login: string; permission: { permission: string; roleName: string } | null }>
 > = {
   member: { login: 'octocat', permission: { permission: 'write', roleName: 'write' } },
-  maintainer: { login: 'mona', permission: { permission: 'write', roleName: 'maintain' } },
+  maintainer: {
+    login: 'mona-cat_octo',
+    permission: { permission: 'write', roleName: 'maintain' },
+  },
   owner: { login: 'hubot', permission: { permission: 'admin', roleName: 'admin' } },
   triager: { login: 'triage-bob', permission: { permission: 'read', roleName: 'triage' } },
   customWriter: {
@@ -660,6 +671,21 @@ describe('the answer job (6I-4)', () => {
       .update(jobs)
       .set({ runAt: sql`now()` })
       .where(and(eq(jobs.queue, AI_REPLY_QUEUE), eq(jobs.status, 'queued')));
+  /**
+   * The row's queued job is due at once, or in an hour: whether a test's worker may take it now. A
+   * branch's jobs run in the order they were queued in any case, a job waiting for an earlier one.
+   */
+  const dueAt = (replyId: string, when: 'now' | 'later') =>
+    h.ctx.db
+      .update(jobs)
+      .set({ runAt: when === 'now' ? sql`now()` : sql`now() + interval '1 hour'` })
+      .where(
+        and(
+          eq(jobs.queue, AI_REPLY_QUEUE),
+          eq(jobs.status, 'queued'),
+          sql`${jobs.payload} ->> 'replyId' = ${replyId}`,
+        ),
+      );
 
   beforeAll(async () => {
     llm = await createFakeLlm();
@@ -963,6 +989,26 @@ describe('the answer job (6I-4)', () => {
         outcome: null,
         verdict: null,
       });
+      expect(callsSince(calls)).toEqual([]);
+      expect(mr.answers(threadId)).toEqual([]);
+    });
+
+    it('reads the merge request’s state through no organisation slot: with every slot taken, a closed one ends the row skipped: closed', async () => {
+      const { mr, threadId, row } = await replied('closed-no-slot');
+      const runtime = githubDeps(h).runtime;
+      const [project] = await h.ctx.db
+        .select({ organizationId: projects.organizationId })
+        .from(projects)
+        .where(eq(projects.id, mr.project.id));
+      // Decorations of the organisation hold every slot.
+      for (let n = 0; n < MAX_DECORATIONS_PER_ORGANIZATION; n += 1) {
+        expect(runtime.slots.tryTake(project!.organizationId)).toBe(true);
+      }
+      expect(runtime.slots.tryTake(project!.organizationId)).toBe(false);
+      mr.close();
+      const calls = llm.requests.length;
+      await answer({ scmRuntime: runtime });
+      expect(await rowById(row.id)).toMatchObject({ status: 'skipped', reason: 'closed' });
       expect(callsSince(calls)).toEqual([]);
       expect(mr.answers(threadId)).toEqual([]);
     });
@@ -1547,8 +1593,11 @@ describe('the answer job (6I-4)', () => {
       const answered = await replied('circuit-answer');
       const runtime = githubDeps(h).runtime;
       const failures = (connectionId: string) => runtime.circuit.inspect(connectionId).failures;
-      // The read of the merge request's state fails, and counts; the job's own requests answer,
-      // and the count starts again.
+      // Other jobs failed twice. The read of the merge request's state fails too: a state that
+      // cannot be read lets the job go on. Its requests of the thread answer, and the count
+      // starts again.
+      runtime.circuit.failure(answered.mr.connectionId);
+      runtime.circuit.failure(answered.mr.connectionId);
       answered.mr.failNextMergeRequestRead();
       llm.say(WONT_FIX);
       await answer({ scmRuntime: runtime });
@@ -1662,6 +1711,263 @@ describe('the answer job (6I-4)', () => {
       ]);
       expect(await rowById(row.id)).toMatchObject({ status: 'done', outcome: 'wont_fix' });
     });
+
+    /** A second note in the thread, while the model decides, queued as a newer round by a decoration. */
+    const replyAgain = async (mr: Mr, threadId: string, body: string) => {
+      const noteId = mr.reply(threadId, body);
+      await mr.decorate();
+      const newer = await rowOfNote(mr.branchId, noteId);
+      // Its job waits for the worker that comes later.
+      await dueAt(newer.id, 'later');
+      return newer;
+    };
+    const SECOND = 'The same goes for the test file.';
+
+    it('a row put back in the queue by a stop is superseded when a newer round of its thread runs first: one answer covers both notes', async () => {
+      const { mr, threadId, row } = await replied('superseded-stop');
+      const shutdown = new AbortController();
+      const calls = llm.requests.length;
+      llm.enqueue({ status: 200, body: openAiAnswer(WONT_FIX), delayMs: 4_000 });
+      const running = answer({ shutdown: shutdown.signal });
+      await vi.waitFor(() => expect(llm.requests.length).toBe(calls + 1));
+      const newer = await replyAgain(mr, threadId, SECOND);
+      shutdown.abort();
+      await running;
+      expect(await rowById(row.id)).toMatchObject({ status: 'queued', verdict: null });
+      // The next server meets the newer round's job first: its round reads both notes.
+      await dueAt(row.id, 'later');
+      await dueAt(newer.id, 'now');
+      const before = llm.requests.length;
+      llm.say(WONT_FIX);
+      await answer();
+      expect(callsSince(before)).toHaveLength(1);
+      const asked = JSON.stringify(callsSince(before)[0]!.json);
+      expect(asked).toContain('We will not fix this now');
+      expect(asked).toContain(SECOND);
+      expect(await rowById(newer.id)).toMatchObject({ status: 'done', outcome: 'wont_fix' });
+      // The row that waited is superseded: nothing is read, asked or posted for it.
+      await dueAt(row.id, 'now');
+      await answer();
+      expect(callsSince(before)).toHaveLength(1);
+      expect(await rowById(row.id)).toMatchObject({
+        status: 'skipped',
+        reason: 'superseded',
+        verdict: null,
+        answerNoteId: null,
+      });
+      expect(mr.answers(threadId).map((a) => a.body)).toEqual([
+        replyNote(newer.id, ACCEPTED, 'wont_fix'),
+      ]);
+    });
+
+    it('a row that waited for the circuit with its decision is superseded when a newer round answers first, its decision dropped', async () => {
+      const { mr, threadId, row } = await replied('superseded-circuit');
+      const runtime = githubDeps(h).runtime;
+      let newer: ReplyRow | undefined;
+      // While the model decides, the person writes again, and the circuit opens.
+      llm.enqueue(async () => {
+        newer = await replyAgain(mr, threadId, SECOND);
+        for (let n = 0; n < SCM_CIRCUIT_FAILURES; n += 1) runtime.circuit.failure(mr.connectionId);
+        return { status: 200, body: openAiAnswer(KEEP) };
+      });
+      await answer({ scmRuntime: runtime });
+      expect(await rowById(row.id)).toMatchObject({ status: 'queued', verdict: 'keep' });
+      // The circuit closes, and the newer round's job runs first.
+      runtime.circuit.success(mr.connectionId);
+      await dueAt(row.id, 'later');
+      await dueAt(newer!.id, 'now');
+      llm.say(WONT_FIX);
+      await answer({ scmRuntime: runtime });
+      expect(await rowById(newer!.id)).toMatchObject({ status: 'done', outcome: 'wont_fix' });
+      await dueAt(row.id, 'now');
+      const before = llm.requests.length;
+      await answer({ scmRuntime: runtime });
+      expect(callsSince(before)).toEqual([]);
+      expect(await rowById(row.id)).toMatchObject({
+        status: 'skipped',
+        reason: 'superseded',
+        verdict: null,
+        answer: null,
+        answerNoteId: null,
+      });
+      expect(mr.answers(threadId).map((a) => a.body)).toEqual([
+        replyNote(newer!.id, ACCEPTED, 'wont_fix'),
+      ]);
+    });
+
+    it('a row that changed the status before its wait finishes after a newer round: it posts its status line and resolves the thread', async () => {
+      const { mr, issueId, threadId, row } = await replied('acted-then-wait');
+      const runtime = githubDeps(h).runtime;
+      // The status changes, and the post fails: the job's second try is due.
+      mr.failNextPost(false);
+      llm.say(WONT_FIX);
+      await answer({ scmRuntime: runtime });
+      expect(await rowById(row.id)).toMatchObject({ status: 'running', outcome: 'wont_fix' });
+      const later = mr.reply(threadId, 'Is anything left to do here?');
+      await mr.decorate();
+      const newer = await rowOfNote(mr.branchId, later);
+      // The second try meets an open circuit: the row waits behind the newer round.
+      for (let n = 0; n < SCM_CIRCUIT_FAILURES; n += 1) runtime.circuit.failure(mr.connectionId);
+      await retryNow();
+      await dueAt(newer.id, 'later');
+      await answer({ scmRuntime: runtime });
+      expect(await rowById(row.id)).toMatchObject({ status: 'queued', outcome: 'wont_fix' });
+      // The circuit closes, and the newer round runs first. Its finding is no longer open: it can
+      // only answer.
+      runtime.circuit.success(mr.connectionId);
+      await dueAt(row.id, 'later');
+      await dueAt(newer.id, 'now');
+      llm.say(KEEP);
+      await answer({ scmRuntime: runtime });
+      expect(await rowById(newer.id)).toMatchObject({ status: 'done', verdict: 'keep' });
+      // The row that changed the status finishes all the same: its answer says what it changed.
+      await dueAt(row.id, 'now');
+      await answer({ scmRuntime: runtime });
+      expect(await rowById(row.id)).toMatchObject({ status: 'done', outcome: 'wont_fix' });
+      expect(mr.answers(threadId).map((a) => a.body)).toEqual([
+        replyNote(newer.id, EXPLAINED, null),
+        replyNote(row.id, ACCEPTED, 'wont_fix'),
+      ]);
+      expect(mr.resolved(threadId)).toBe(true);
+      expect(await changesOf(issueId)).toHaveLength(1);
+    });
+
+    it('a row superseded by a newer round that then fails: a later round reads its notes again', async () => {
+      const { mr, threadId, row } = await replied('superseded-then-failed');
+      const shutdown = new AbortController();
+      const calls = llm.requests.length;
+      llm.enqueue({ status: 200, body: openAiAnswer(WONT_FIX), delayMs: 4_000 });
+      const running = answer({ shutdown: shutdown.signal });
+      await vi.waitFor(() => expect(llm.requests.length).toBe(calls + 1));
+      const newer = await replyAgain(mr, threadId, SECOND);
+      shutdown.abort();
+      await running;
+      // The newer round decides, and its post fails: it holds its decision while its retry waits,
+      // and the row that waited stays behind it (the jobs of a branch run in their order).
+      await dueAt(newer.id, 'now');
+      mr.failNextPost(false);
+      llm.say(KEEP);
+      await answer();
+      expect(await rowById(newer.id)).toMatchObject({ status: 'running', verdict: 'keep' });
+      expect((await rowById(row.id)).status).toBe('queued');
+      // Its last try fails too. The row that waited then runs, and is superseded by the decision
+      // the newer round holds; the sweep ends the newer round.
+      await retryNow();
+      mr.failNextPost(false);
+      await answer();
+      expect(await rowById(row.id)).toMatchObject({ status: 'skipped', reason: 'superseded' });
+      expect(await reconcileStuckReplies(h.ctx.db)).toBe(1);
+      expect(await rowById(newer.id)).toMatchObject({ status: 'failed', reason: 'internal' });
+      // A later round reads the three notes: neither round before it was answered.
+      const third = mr.reply(threadId, 'Any news on this?');
+      await mr.decorate();
+      const latest = await rowOfNote(mr.branchId, third);
+      const before = llm.requests.length;
+      llm.say(KEEP);
+      await answer();
+      const asked = JSON.stringify(callsSince(before)[0]!.json);
+      for (const text of ['We will not fix this now', SECOND, 'Any news on this?']) {
+        expect(asked).toContain(text);
+      }
+      expect(await rowById(latest.id)).toMatchObject({ status: 'done', outcome: 'answered' });
+      expect(mr.answers(threadId).map((a) => a.body)).toEqual([
+        replyNote(latest.id, EXPLAINED, null),
+      ]);
+    });
+
+    it('a row that changed the status posts its answer even in a thread someone resolved since, through the circuit', async () => {
+      const { mr, threadId, row } = await replied('acted-then-resolved');
+      mr.failNextPost(false);
+      llm.say(WONT_FIX);
+      await answer();
+      expect(await rowById(row.id)).toMatchObject({ status: 'running', outcome: 'wont_fix' });
+      mr.resolveAsPerson(threadId);
+      // The retry's two goes each pass the circuit: the read, then the post.
+      const runtime = githubDeps(h).runtime;
+      const passed = vi.spyOn(runtime.circuit, 'success');
+      await retryNow();
+      await answer({ scmRuntime: runtime });
+      expect(passed).toHaveBeenCalledTimes(2);
+      expect(mr.answers(threadId).map((a) => a.body)).toEqual([
+        replyNote(row.id, ACCEPTED, 'wont_fix'),
+      ]);
+      expect(mr.resolved(threadId)).toBe(true);
+      expect(await rowById(row.id)).toMatchObject({ status: 'done', outcome: 'wont_fix' });
+    });
+
+    it('a posted answer settles the status step: a retry after the issue was opened again changes nothing', async () => {
+      const { mr, issueId, threadId, row } = await replied('posted-settles');
+      mr.failNextResolve();
+      // While the model decides, the issue is marked won't fix (a person's change, made here
+      // directly): the reply finds it no longer open.
+      llm.enqueue(async () => {
+        await h.ctx.db.update(issues).set({ status: 'wont_fix' }).where(eq(issues.id, issueId));
+        return { status: 200, body: openAiAnswer(WONT_FIX) };
+      });
+      await answer();
+      // The answer is posted without a status line, and the resolution failed.
+      expect(await rowById(row.id)).toMatchObject({
+        status: 'running',
+        outcome: null,
+        answerNoteId: expect.any(Number),
+      });
+      expect(mr.answers(threadId).map((a) => a.body)).toEqual([replyNote(row.id, ACCEPTED, null)]);
+      // The issue is opened again before the retry, which changes nothing: the answer is given.
+      await h.ctx.db.update(issues).set({ status: 'open' }).where(eq(issues.id, issueId));
+      await retryNow();
+      await answer();
+      expect((await issueById(issueId)).status).toBe('open');
+      expect(await changesOf(issueId)).toEqual([]);
+      expect(mr.resolved(threadId)).toBe(true);
+      expect(await rowById(row.id)).toMatchObject({ status: 'done', outcome: 'answered' });
+    });
+
+    it.skipIf(provider === 'GitLab')(
+      'GitHub with no role named: the legacy permission decides, and a permission answer that does not parse gives no rights',
+      async () => {
+        const permission = /\/collaborators\/octocat\/permission$/;
+        // Write, with no role named: the reply changes the status.
+        const writer = await replied('legacy-write');
+        github.inject('GET', permission, { status: 200, body: { permission: 'write' } });
+        llm.say(WONT_FIX);
+        await answer();
+        expect((await issueById(writer.issueId)).status).toBe('wont_fix');
+        // Read, with no role named: it does not.
+        const reader = await replied('legacy-read');
+        github.inject('GET', permission, { status: 200, body: { permission: 'read' } });
+        let calls = llm.requests.length;
+        llm.say(WONT_FIX, KEEP);
+        await answer();
+        expect(systemOf(callsSince(calls)[0]!)).toContain(MEMBERS_ONLY);
+        expect((await issueById(reader.issueId)).status).toBe('open');
+        // An answer with no permission is not understood: no rights, one line without its text,
+        // and the round is answered all the same.
+        const odd = await replied('odd-permission');
+        github.inject('GET', permission, { status: 200, body: { role_name: 'write' } });
+        const warned: unknown[][] = [];
+        const logger = {
+          info: () => undefined,
+          warn: (...args: unknown[]) => void warned.push(args),
+          error: () => undefined,
+        };
+        calls = llm.requests.length;
+        llm.say(WONT_FIX, KEEP);
+        await answer({ logger });
+        expect(systemOf(callsSince(calls)[0]!)).toContain(MEMBERS_ONLY);
+        expect((await issueById(odd.issueId)).status).toBe('open');
+        expect(await rowById(odd.row.id)).toMatchObject({
+          status: 'done',
+          outcome: 'answered',
+          verdict: 'keep',
+        });
+        expect(warned.filter(([, message]) => String(message).includes('permission'))).toEqual([
+          [
+            { replyId: odd.row.id },
+            'GitHub permission answer not understood; the reply changes no status',
+          ],
+        ]);
+      },
+    );
 
     it('reads the branch’s newest ready snapshot when its newest analysis has none, with that snapshot’s head', async () => {
       const { mr, issueId, threadId, row } = await replied('snapshot-fallback', {

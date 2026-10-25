@@ -252,13 +252,14 @@ export interface FakeGitHub {
   /**
    * The user's permission on the repository, as GitHub's permission endpoint answers it: its legacy
    * `permission` (`admin`, `write`, `read` or `none`) and its `roleName` (`admin`, `maintain`,
-   * `write`, `triage`, `read` or a custom role's name). Null: none (a 404). Logins are compared
-   * without case, as GitHub's are.
+   * `write`, `triage`, `read` or a custom role's name; null: no `role_name` at all, as an older
+   * GitHub Enterprise Server answers). Null: none (a 404). Logins are compared without case, as
+   * GitHub's are.
    */
   setPermission(
     repoId: number,
     login: string,
-    permission: { permission: string; roleName: string } | null,
+    permission: { permission: string; roleName: string | null } | null,
   ): void;
   /** The thread is resolved by someone else: a person's `login`, or another App's `<slug>[bot]`. */
   resolveThreadAs(threadId: string, login: string): void;
@@ -409,7 +410,7 @@ export async function createFakeGitHub(
   const repos = new Map<string, FakeRepository>();
   const pulls = new Map<string, FakePull>();
   /** The users' permissions on repositories (`setPermission`), by repository id and login. */
-  const permissions = new Map<string, { permission: string; roleName: string }>();
+  const permissions = new Map<string, { permission: string; roleName: string | null }>();
   const permissionKey = (repoId: number, login: string) => `${repoId}|${login.toLowerCase()}`;
   const permissionShape = githubShape('collaborator_permission');
   const injections: { method: string; path: RegExp; answers: InjectedAnswer[] }[] = [];
@@ -1097,12 +1098,16 @@ export async function createFakeGitHub(
       const login = decodeURIComponent(permissionOf[1]!);
       const found = permissions.get(permissionKey(repo.id, login));
       if (found === undefined) return deny(res, 404, 'Not Found');
+      // No role name: the answer has no `role_name`, nor has its user.
+      const withRole = (o: Record<string, unknown>) =>
+        found.roleName === null
+          ? Object.fromEntries(Object.entries(o).filter(([key]) => key !== 'role_name'))
+          : { ...o, role_name: found.roleName };
       const user = permissionShape['user'] as Record<string, unknown>;
       return send(res, 200, {
-        ...permissionShape,
+        ...withRole(permissionShape),
         permission: found.permission,
-        role_name: found.roleName,
-        user: { ...user, login, role_name: found.roleName },
+        user: withRole({ ...user, login }),
       });
     }
     const listRuns = /^\/commits\/([0-9a-f]{40,64})\/check-runs$/.exec(rest);

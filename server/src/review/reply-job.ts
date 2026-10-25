@@ -1,4 +1,4 @@
-import { and, desc, eq, lt, max } from 'drizzle-orm';
+import { and, desc, eq, gt, isNotNull, lt, max, or } from 'drizzle-orm';
 import { SYSTEM_ACTOR } from '../audit/recorder';
 import type { Db } from '../db/client';
 import { pgErrorCode } from '../db/errors';
@@ -65,19 +65,26 @@ import { openSnapshotReader, type SnapshotReader } from './snapshot-reader';
  * threads, which decoration (or a webhook's scan) wrote as a row of the replies ledger with its job
  * (reply-queue.ts). The job takes the row and then, in this order, each step written on the row, or
  * found again where it was done, so that a retry resumes after the last one:
- * 1. AI review no longer active for the project ends the row `skipped: inactive`, and a merge
- *    request that is merged or closed `skipped: closed`;
- * 2. with no decision yet, a day with no tokens left for it ends it `skipped: budget_spent`, before
- *    anything is read or sent;
- * 3. the thread is read again through the job's own client: one that is gone, or that someone
- *    resolved, ends it `skipped: thread_gone`;
+ * 1. AI review no longer active for the project ends the row `skipped: inactive`;
+ * 2. with no decision yet, a day with no tokens left for it ends it `skipped: budget_spent`, and a
+ *    newer round of its thread that was answered or holds a decision (that round read this row's
+ *    notes too) `skipped: superseded`, before anything is read or sent;
+ * 3. the merge request is read, as the review job reads it: merged or closed ends the row
+ *    `skipped: closed`. The thread is read again through the job's own client: one that is gone
+ *    ends it `skipped: thread_gone`, and so does one that someone resolved before Qualor answered,
+ *    unless the row already changed the status;
  * 4. with no decision yet, the model decides (reply-engine.ts) over the people's notes of the round,
  *    with the rights in the SCM of those who wrote them, and the decision is stored: the model is
- *    never asked twice for one row;
+ *    never asked twice for one row. A row put back in the queue runs behind the jobs queued before
+ *    it, so a row that has neither changed the status nor posted its answer is then skipped as
+ *    superseded, its decision dropped, when a newer round was answered or decided meanwhile. A row
+ *    that has done either finishes, whatever newer rows did: its effect happened, and its answer
+ *    says so;
  * 5. a verdict that is not `keep` changes the status of the thread's open AI finding, as the
- *    system's change (transitions.ts), recorded on the row with it, so that it is made once,
- *    before the thread is resolved: decoration reopens a thread Qualor resolved while its finding
- *    is open;
+ *    system's change (transitions.ts), recorded on the row with it, so that it is made once. It is
+ *    never made once the answer is posted (the answer said what the reply changed), and always
+ *    before the thread is resolved: decoration reopens a thread Qualor resolved while its finding is
+ *    open;
  * 6. the answer is posted once: a note of Qualor's in the thread whose first line names the row is
  *    the answer a post stored though its outcome was lost, and is not posted again;
  * 7. a verdict that is not `keep` resolves the thread;
@@ -86,12 +93,12 @@ import { openSnapshotReader, type SnapshotReader } from './snapshot-reader';
  * monorepo's thread of another project's issue never is): otherwise the row ends `failed: internal`.
  *
  * The job's own requests pass the connection's circuit as the `scm` worker's jobs do (scm.md
- * §4.2), in two goes, so that no probe of it waits on the model: the thread and the round's rights
- * (3 and 4) before the model is asked, and the status change, the post and the resolution (5 to 7)
- * after it. A circuit that is open, or half-open with another job's probe in flight, puts the row
- * back in the queue for when it lets a job through, with no try spent and nothing changed by that
- * go; the circuit hears what came of the requests it let through. The organisation's slots are the
- * decorations': the job takes none.
+ * §4.2), in two goes, so that no probe of it waits on the model: the merge request, the thread and
+ * the round's rights (3 and 4) before the model is asked, and the status change, the post and the
+ * resolution (5 to 7) after it. A circuit that is open, or half-open with another job's probe in
+ * flight, puts the row back in the queue for when it lets a job through, with no try spent and
+ * nothing changed by that go; the circuit hears what came of the requests it let through. The
+ * organisation's slots are the decorations': the job takes none.
  *
  * A stop of the server while the model decides puts the row back in the queue for the next server;
  * AI review switched off meanwhile ends it `skipped: inactive`. Any other error fails the job into
@@ -120,6 +127,9 @@ type Seen = { thread: ReadThread; posted: number | null } & (
 
 /** What a go through the circuit answers when the circuit did not let it through: the row waits. */
 const WAITING = Symbol('waiting');
+
+/** What the first go answers for a merge request that is merged or closed. */
+const CLOSED = Symbol('closed');
 
 /** The merge request of a row, its project and the connection the project is mapped to now. */
 interface Target {
@@ -215,6 +225,29 @@ async function lastAnsweredNote(db: Db, row: ReplyInThread): Promise<number> {
 }
 
 /**
+ * Whether a newer round of the row's thread covers its notes: the reply of a later note of the
+ * thread was answered (`done`), or holds a decision. That round read this row's notes too (they
+ * come after the thread's last answered round), so the row is not answered again. A round that
+ * fails later reads them once more: a superseded row is skipped, not done.
+ */
+async function coveredByNewer(db: Db, row: ReplyInThread): Promise<boolean> {
+  const [newer] = await db
+    .select({ id: reviewReplies.id })
+    .from(reviewReplies)
+    .where(
+      and(
+        eq(reviewReplies.branchId, row.branchId),
+        eq(reviewReplies.threadId, row.threadId),
+        eq(reviewReplies.kind, 'reply'),
+        gt(reviewReplies.noteId, row.noteId),
+        or(eq(reviewReplies.status, 'done'), isNotNull(reviewReplies.verdict)),
+      ),
+    )
+    .limit(1);
+  return newer !== undefined;
+}
+
+/**
  * The snapshot the reply's tools read: the ready one of the branch's newest analysis, else the
  * branch's newest ready one; null when the branch has none, and the model then reads no code.
  */
@@ -244,6 +277,7 @@ const statusComment = (verdict: 'wont_fix' | 'false_positive', author: string): 
   `${verdict === 'wont_fix' ? "Won't fix" : 'False positive'} after \`${author}\` replied in the merge request.`;
 
 const THREAD_GONE: ReplyEnd = { status: 'skipped', reason: 'thread_gone' };
+const SUPERSEDED: ReplyEnd = { status: 'skipped', reason: 'superseded', dropDecision: true };
 
 class ReplyJob {
   constructor(
@@ -311,28 +345,23 @@ class ReplyJob {
     if (provider === null || !reviewActive(settings, target.project).active) {
       return this.end(row, { status: 'skipped', reason: 'inactive' });
     }
-    const state = await readMergeRequestState(
-      { db, scm: this.deps.scm, runtime: this.deps.scmRuntime },
-      row.projectId,
-      target.branch.name,
-    );
-    if (state !== null && state.state !== 'open') {
-      return this.end(row, { status: 'skipped', reason: 'closed' });
-    }
     const replyDeps = this.replyDeps(row, settings, target);
     if (row.verdict === null && (await replyTokensLeft(replyDeps, provider)) <= 0) {
       return this.end(row, { status: 'skipped', reason: 'budget_spent' });
     }
     const issue = await issueOf(db, row);
     if (issue === null) return this.failInternal(row, 'the issue is not of the project of the row');
+    // With no decision yet, nothing is read or sent for a round that a newer one covers.
+    if (row.verdict === null && (await coveredByNewer(db, row))) return this.end(row, SUPERSEDED);
 
     const side = this.sideOf(row, target);
     if (side === 'gone') return this.end(row, THREAD_GONE);
     if (side === 'unusable') {
       return this.failInternal(row, 'the SCM connection of the project cannot be used');
     }
-    const seen = await this.throughCircuit(row, side, () => this.read(row, issue, side));
+    const seen = await this.throughCircuit(row, side, () => this.read(row, target, issue, side));
     if (seen === WAITING) return;
+    if (seen === CLOSED) return this.end(row, { status: 'skipped', reason: 'closed' });
     if (seen === null) return this.end(row, THREAD_GONE);
     const decision =
       'decided' in seen
@@ -340,13 +369,22 @@ class ReplyJob {
         : await this.decide(row, target, issue, seen.thread, seen.round, replyDeps);
     if (decision === null) return;
 
+    // A row that changed the status or posted its answer finishes, whatever newer rows did: its
+    // effect happened, and its answer says so. Any other is superseded by a newer round answered or
+    // decided meanwhile, and a thread someone resolved before Qualor answered is closed for it.
+    const acted = row.outcome !== null || seen.posted !== null;
+    if (!acted && (await coveredByNewer(db, row))) return this.end(row, SUPERSEDED);
+    if (!acted && seen.thread.resolved) return this.end(row, THREAD_GONE);
+
     // The rest posts the answer and resolves the thread, as far as either is left to do. When
     // anything is, the rest goes through the circuit as one go, the status change with it, once the
-    // issue is found the project's again: a row that waits for the circuit has changed nothing.
+    // issue is found the project's again: a row that waits for the circuit has changed nothing. A
+    // verdict that is not `keep` with no answer posted always has a request left: the resolution,
+    // or, in a thread resolved meanwhile, the post that says what its row changed.
     const asks =
       decision.verdict === 'keep'
         ? seen.posted === null && decision.answer !== ''
-        : !seen.thread.resolved;
+        : seen.posted === null || !seen.thread.resolved;
     if (!asks) return this.finish(row, issue, side, seen, decision);
     if ((await issueOf(db, row)) === null) {
       return this.failInternal(row, 'the issue is not of the project of the row');
@@ -355,27 +393,33 @@ class ReplyJob {
   }
 
   /**
-   * The thread read again, through the job's own requests; null when it is gone, is not read whole,
-   * or someone resolved it before Qualor answered (it is closed for the round). With no decision on
-   * the row yet, also the round: the people's notes after the thread's last answered round, up to
-   * the row's own (null when none is left: they were deleted), and whether every author of them may
-   * change the status, asked only in an open AI finding's thread (no other can change).
+   * What the first go reads. The merge request's state comes first, read as the review job reads it,
+   * through no organisation slot: CLOSED when it is merged or closed, and a state that cannot be
+   * read lets the job go on. Then the thread again, through the job's own client: null when it is
+   * gone or is not read whole, and, for a row with no decision yet, when someone resolved it (it is
+   * closed for the round). With no decision on the row yet, also the round: the people's notes after
+   * the thread's last answered round, up to the row's own (null when none is left: they were
+   * deleted), and whether every author of them may change the status, asked only in an open AI
+   * finding's thread (no other can change).
    */
   private async read(
     row: ReplyInThread,
+    target: Target,
     issue: ReplyIssue,
     side: ThreadSide,
-  ): Promise<Seen | null> {
+  ): Promise<Seen | typeof CLOSED | null> {
+    const { db, scm } = this.deps;
+    const state = await readMergeRequestState({ db, scm }, row.projectId, target.branch.name);
+    if (state !== null && state.state !== 'open') return CLOSED;
     const thread = await orGone(() => side.read());
     if (thread === GONE || thread === null) return null;
     const posted = row.answerNoteId ?? thread.answered;
-    // A thread resolved before Qualor answered is closed for the round; one resolved after the
-    // answer was posted is this job's own resolution, or a person's: the rest goes on.
-    if (thread.resolved && posted === null) return null;
     if (row.verdict !== null && row.answer !== null) {
       return { thread, posted, decided: { verdict: row.verdict, answer: row.answer } };
     }
-    const after = await lastAnsweredNote(this.deps.db, row);
+    // With no decision yet nothing was posted: a thread someone resolved is closed for the round.
+    if (thread.resolved && posted === null) return null;
+    const after = await lastAnsweredNote(db, row);
     const notes = thread.notes.filter((note) => note.id > after && note.id <= row.noteId);
     if (notes.length === 0) return null;
     const changeable = issue.engine === AI_ENGINE && issue.status === 'open';
@@ -449,7 +493,7 @@ class ReplyJob {
     { verdict, answer }: Decided,
   ): Promise<void> {
     const { db } = this.deps;
-    const changed = verdict === 'keep' ? null : await this.changeStatus(row, verdict);
+    const changed = verdict === 'keep' ? null : await this.changeStatus(row, verdict, posted);
     let noteId = posted;
     if (noteId === null && (answer !== '' || changed !== null)) {
       const note = await orGone(() => side.post(replyNote(row.id, answer, changed)));
@@ -470,14 +514,17 @@ class ReplyJob {
    * The verdict's status on the row's issue while it is an open finding of the AI review of the
    * row's project, as the system's change, recorded on the row in the same transaction. Answers the
    * verdict when the reply changed the status, now or in an earlier try (which the row records),
-   * else null. A status is changed once for a row, whatever became of it since: a person's change
-   * after the reply's stands.
+   * else null. A status is changed once for a row, whatever became of it since (a person's change
+   * after the reply's stands), and never once its answer is `posted`: the answer settled what the
+   * reply changed.
    */
   private async changeStatus(
     row: ReplyInThread,
     verdict: 'wont_fix' | 'false_positive',
+    posted: number | null,
   ): Promise<'wont_fix' | 'false_positive' | null> {
     if (row.outcome === verdict) return verdict;
+    if (posted !== null) return null;
     const { db, audit } = this.deps;
     const issue = await issueOf(db, row);
     if (issue?.engine !== AI_ENGINE || issue.status !== 'open') return null;
@@ -551,7 +598,7 @@ class ReplyJob {
       if (repo === null || 'problem' in found || !GITHUB_PR_NUMBER.test(branch.name)) {
         return 'unusable';
       }
-      return githubSide(connection.id, found.client, repo, branch.name, row);
+      return githubSide(connection.id, found.client, repo, branch.name, row, this.deps.logger);
     }
     const found = gitlabClientFor(connection, this.deps.scm);
     if ('problem' in found || !GITLAB_MR_IID.test(branch.name)) return 'unusable';
@@ -561,7 +608,7 @@ class ReplyJob {
   /**
    * What the reply conversation needs: the settings read at the start, the organisation's day, and
    * a stop of its own when AI review is no longer active for the project (the settings read again).
-   * The merge request's state is not asked again: the start did.
+   * The merge request's state is not asked again: the first go did.
    */
   private replyDeps(row: ReplyRow, settings: StoredLlmSettings, target: Target): ReplyDeps {
     const { db } = this.deps;

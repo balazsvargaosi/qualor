@@ -1918,12 +1918,16 @@ export const REPLY_OUTCOMES = [
 ] as const;
 export type ReplyOutcome = (typeof REPLY_OUTCOMES)[number];
 
-/** Why a note was not answered: the first four are reasons to skip it, the others how it failed. */
+/**
+ * Why a note was not answered: the first five are reasons to skip it (`superseded`: a newer round
+ * of its thread answers its notes), the others how it failed.
+ */
 export const REPLY_REASONS = [
   'budget_spent',
   'inactive',
   'closed',
   'thread_gone',
+  'superseded',
   'provider_error',
   'provider_no_tools',
   'bad_answer',
@@ -2024,7 +2028,7 @@ export const reviewReplies = pgTable(
     ),
     check(
       'review_replies_reason_check',
-      sql`reason IN ('budget_spent','inactive','closed','thread_gone','provider_error','provider_no_tools','bad_answer','internal')`,
+      sql`reason IN ('budget_spent','inactive','closed','thread_gone','superseded','provider_error','provider_no_tools','bad_answer','internal')`,
     ),
     check('review_replies_verdict_check', sql`verdict IN ('keep','wont_fix','false_positive')`),
     check('review_replies_answer_length', sql`char_length(answer) <= 1200`),

@@ -835,6 +835,18 @@ describe('GitHub REST client (github.md §4–§6)', () => {
         'GET /repos/acme/api/collaborators/Mona/permission',
         'GET /repos/acme/api/collaborators/stranger/permission',
       ]);
+      // An Enterprise Managed User's login, `<handle>_<short code>`, and its setup user's.
+      fake.setPermission(424242, 'mona-cat_octo', { permission: 'write', roleName: 'maintain' });
+      fake.clearRequests();
+      expect(await client.repositoryPermission('mona-cat_octo')).toEqual({
+        permission: 'write',
+        roleName: 'maintain',
+      });
+      expect(await client.repositoryPermission('octo_admin')).toBeNull();
+      expect(fake.requests.map((r) => `${r.method} ${r.path}`)).toEqual([
+        'GET /repos/acme/api/collaborators/mona-cat_octo/permission',
+        'GET /repos/acme/api/collaborators/octo_admin/permission',
+      ]);
       // A login GitHub could not have, a bot's among them, has no rights, and is never sent.
       fake.clearRequests();
       for (const login of [
@@ -848,18 +860,40 @@ describe('GitHub REST client (github.md §4–§6)', () => {
         'octo/cat',
         '..',
         'ü',
+        '_octo',
+        'octo_',
+        'mona_cat_octo',
+        'mona_cat-octo',
+        'octo-_cat',
+        `${'a'.repeat(35)}_octo`,
       ]) {
         expect(await client.repositoryPermission(login), login).toBeNull();
       }
       expect(fake.requests).toEqual([]);
-      // The longest login GitHub allows is asked for.
+      // The longest logins GitHub allows are asked for.
       expect(await client.repositoryPermission(`a${'-b'.repeat(19)}`)).toBeNull();
-      expect(fake.requests).toHaveLength(1);
-      // An answer without the role is not understood, and any other error is no answer either.
+      expect(await client.repositoryPermission(`${'a'.repeat(34)}_octo`)).toBeNull();
+      expect(fake.requests).toHaveLength(2);
+      // An older GitHub Enterprise Server names no role: the legacy permission is all there is.
       fake.inject(
         'GET',
         /\/collaborators\/octocat\/permission$/,
         { status: 200, body: { permission: 'write' } },
+        { status: 200, body: { permission: 'read', user: { login: 'octocat' } } },
+      );
+      expect(await client.repositoryPermission('octocat')).toEqual({
+        permission: 'write',
+        roleName: null,
+      });
+      expect(await client.repositoryPermission('octocat')).toEqual({
+        permission: 'read',
+        roleName: null,
+      });
+      // An answer with no permission is not understood, and any other error is no answer either.
+      fake.inject(
+        'GET',
+        /\/collaborators\/octocat\/permission$/,
+        { status: 200, body: { role_name: 'write' } },
         { status: 502, body: { message: 'Bad Gateway' } },
       );
       expect((await failure(client.repositoryPermission('octocat'))).kind).toBe('bad_answer');
@@ -872,6 +906,7 @@ describe('GitHub REST client (github.md §4–§6)', () => {
       expect((await failure(small.repositoryPermission('octocat'))).kind).toBe('budget');
       fake.setPermission(424242, 'octocat', null);
       fake.setPermission(424242, 'mona', null);
+      fake.setPermission(424242, 'mona-cat_octo', null);
     });
 
     it('created_at is read from review comments and issue comments', async () => {

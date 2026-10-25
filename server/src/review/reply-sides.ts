@@ -1,3 +1,4 @@
+import type { WorkerLogger } from '../queue/worker';
 import { MAX_THREAD_PAGES, type GitHubClient } from '../scm/github/client';
 import { MAX_COMMENT_PAGES } from '../scm/github/threads';
 import type { GitHubRepoRef } from '../scm/github/url';
@@ -31,12 +32,14 @@ const GITHUB_TRIAGE_PERMISSIONS: ReadonlySet<string> = new Set(['admin', 'write'
 /**
  * Whether a person with this permission on the repository may change a finding's status through a
  * reply: a role of admin, maintain, write or triage, or a custom role whose base permission is
- * admin or write. Nobody else may: the read role, none, or no permission at all (null).
+ * admin or write. With no role named (an older GitHub Enterprise Server), the legacy permission
+ * decides the same way: admin or write may. Nobody else may: the read role, none, or no permission
+ * at all (null).
  */
-function githubMayTriage(found: { permission: string; roleName: string } | null): boolean {
+function githubMayTriage(found: { permission: string; roleName: string | null } | null): boolean {
   if (found === null) return false;
-  if (GITHUB_TRIAGE_ROLES.has(found.roleName)) return true;
-  if (GITHUB_OTHER_ROLES.has(found.roleName)) return false;
+  if (found.roleName !== null && GITHUB_TRIAGE_ROLES.has(found.roleName)) return true;
+  if (found.roleName !== null && GITHUB_OTHER_ROLES.has(found.roleName)) return false;
   return GITHUB_TRIAGE_PERMISSIONS.has(found.permission);
 }
 
@@ -151,19 +154,39 @@ export function gitlabSide(
   };
 }
 
-/** The thread on GitHub: the review thread whose first comment is the row's thread id. */
+/**
+ * The thread on GitHub: the review thread whose first comment is the row's thread id. `logger` says
+ * when a permission GitHub answered is not understood.
+ */
 export function githubSide(
   connectionId: string,
   client: GitHubClient,
   repo: GitHubRepoRef,
   number: string,
   row: ReplyInThread,
+  logger: Pick<WorkerLogger, 'warn'>,
 ): ThreadSide {
   const firstId = Number(row.threadId);
   /** The login of each person's comment the last read found. */
   const loginOf = new Map<number, string>();
   /** The thread's GraphQL node id, which it is resolved by. */
   let threadNode: string | null = null;
+  /**
+   * The login's permission on the repository. An answer of GitHub's that does not parse is no
+   * permission, said in one line without its text: one author's odd answer never fails the round.
+   */
+  const permissionOf = async (login: string) => {
+    try {
+      return await client.repositoryPermission(login);
+    } catch (err) {
+      if (!(err instanceof ScmError) || err.kind !== 'bad_answer') throw err;
+      logger.warn(
+        { replyId: row.id },
+        'GitHub permission answer not understood; the reply changes no status',
+      );
+      return null;
+    }
+  };
   return {
     connectionId,
     async read() {
@@ -201,7 +224,7 @@ export function githubSide(
       if (logins.length > MAX_AUTHORS_LOOKED_UP) return false;
       for (const login of logins) {
         if (login === undefined) return false;
-        if (!githubMayTriage(await client.repositoryPermission(login))) return false;
+        if (!githubMayTriage(await permissionOf(login))) return false;
       }
       return true;
     },

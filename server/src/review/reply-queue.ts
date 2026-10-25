@@ -145,7 +145,9 @@ async function enqueueAnswers(
 /**
  * A running row queued again, its start kept (a queued row may have one), with a new job due in
  * `seconds`, in one transaction: the job that gave it back ends, and no try of the new one is
- * spent yet. Answers whether the row was still running.
+ * spent yet. The new job comes after the branch's jobs queued before it, a newer round of the
+ * row's thread among them, which then answers the row's notes too: the row is superseded
+ * (reply-job.ts). Answers whether the row was still running.
  */
 async function queueAgain(
   db: Db,

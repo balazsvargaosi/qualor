@@ -180,14 +180,18 @@ const review = z.looseObject({ id: z.number().int(), state: z.string() });
 /**
  * A user's permission on a repository: the legacy `permission` (`admin`, `write`, `read`, `none`)
  * and the role it comes from (`role_name`: `admin`, `maintain`, `write`, `triage`, `read`, or a
- * custom role's name).
+ * custom role's name), which an older GitHub Enterprise Server does not send.
  */
 const collaboratorPermission = z.looseObject({
   permission: z.string().max(255),
-  role_name: z.string().max(255),
+  role_name: z.string().max(255).optional(),
 });
-/** A GitHub login: 1–39 letters and digits, single hyphens between them. A bot's `<slug>[bot]` is none. */
-const GITHUB_LOGIN = /^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/;
+/**
+ * A GitHub login: at most 39 letters and digits, single hyphens between them, and for an
+ * Enterprise Managed User one underscore before its enterprise's short code (`<handle>_<code>`,
+ * the setup user's `<code>_admin`). A bot's `<slug>[bot]` is none.
+ */
+const GITHUB_LOGIN = /^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*(?:_[A-Za-z0-9]+)?$/;
 const MAX_LOGIN_CHARS = 39;
 export type GitHubReview = z.infer<typeof review>;
 const errorBody = z.looseObject({ message: z.unknown().optional() });
@@ -933,13 +937,14 @@ export class GitHubClient {
   /**
    * The permission the GitHub user `login` has on the repository
    * (`GET …/collaborators/:login/permission`, under the Metadata (read) permission an installation
-   * token always has): its legacy `permission` and its `roleName`. What a person may decide through
-   * a reply in Qualor's threads (6I-4) is read from it. Null when GitHub answers 404, and, with no
-   * request, for a login GitHub could not have (a bot's `<slug>[bot]` among them): no rights.
+   * token always has): its legacy `permission` and its `roleName`, null when GitHub names no role
+   * (an older Enterprise Server). What a person may decide through a reply in Qualor's threads
+   * (6I-4) is read from it. Null when GitHub answers 404, and, with no request, for a login GitHub
+   * could not have (a bot's `<slug>[bot]` among them): no rights.
    */
   async repositoryPermission(
     login: string,
-  ): Promise<{ permission: string; roleName: string } | null> {
+  ): Promise<{ permission: string; roleName: string | null } | null> {
     if (login.length > MAX_LOGIN_CHARS || !GITHUB_LOGIN.test(login)) return null;
     try {
       const { json } = await this.repoCall(
@@ -947,7 +952,7 @@ export class GitHubClient {
         `${this.repoPath()}/collaborators/${encodeURIComponent(login)}/permission`,
       );
       const found = this.parse(collaboratorPermission, json);
-      return { permission: found.permission, roleName: found.role_name };
+      return { permission: found.permission, roleName: found.role_name ?? null };
     } catch (err) {
       if (err instanceof ScmError && err.status === 404) return null;
       throw err;

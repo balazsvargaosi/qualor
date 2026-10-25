@@ -16,7 +16,8 @@ export type { ReplyOutcome, ReplyReason } from '../db/schema';
  * there. The job that answers writes each step on the row as it is done, so a retry resumes after
  * the last one: the model's decision first, then the status the reply changed, then the id of the
  * note posted, then the end. Every write here is made once: a row that has its decision, its
- * change, its answer note or its end keeps them.
+ * change, its answer note or its end keeps them, but for a superseded row's decision, dropped
+ * with its end.
  */
 
 /** The most tokens (input and output, over all its calls) the conversation of one reply may use. */
@@ -146,6 +147,11 @@ export interface ReplyEnd {
   status: 'done' | 'skipped' | 'failed';
   outcome?: ReplyOutcome;
   reason?: ReplyReason;
+  /**
+   * The row's decision (its verdict and answer) is dropped with the end, what it spent kept: a
+   * superseded row's, which no older round may then take for a round that answers its notes.
+   */
+  dropDecision?: boolean;
 }
 
 /** Ends a row that is queued or running, now. An ended row is left as it is. */
@@ -156,6 +162,7 @@ export async function endReply(db: Executor, id: string, end: ReplyEnd): Promise
       status: end.status,
       outcome: end.outcome ?? null,
       reason: end.reason ?? null,
+      ...(end.dropDecision === true ? { verdict: null, answer: null } : {}),
       finishedAt: sql`now()`,
     })
     .where(and(eq(reviewReplies.id, id), inArray(reviewReplies.status, ['queued', 'running'])));
