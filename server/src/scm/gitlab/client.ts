@@ -141,6 +141,20 @@ const discussion = z.looseObject({
 });
 export type GitLabDiscussion = z.infer<typeof discussion>;
 
+/** The notes of a discussion that can be resolved: its resolution is theirs alone. */
+export function resolvableNotes(d: GitLabDiscussion): GitLabNote[] {
+  return d.notes.filter((n) => n.resolvable === true);
+}
+
+/**
+ * Whether the discussion is resolved, as GitLab's `resolved` of it: it has notes that can be
+ * resolved and every one is. One with none (a comment on the page) never is.
+ */
+export function discussionResolved(d: GitLabDiscussion): boolean {
+  const resolvable = resolvableNotes(d);
+  return resolvable.length > 0 && resolvable.every((n) => n.resolved === true);
+}
+
 const commitStatus = z.looseObject({
   id: z.number().int(),
   sha,

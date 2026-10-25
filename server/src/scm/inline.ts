@@ -14,7 +14,9 @@ import {
   type DesiredAiIssue,
 } from './decoration-data';
 import {
+  discussionResolved,
   GitLabError,
+  resolvableNotes,
   type GitLabClient,
   type GitLabDiff,
   type GitLabDiscussion,
@@ -146,12 +148,12 @@ function ownThreads(discussions: readonly GitLabDiscussion[], botId: number) {
     if (!first || first.author.id !== botId || first.system) continue;
     const marker = markerOf(first.body);
     if (marker?.kind !== 'issue' || threads.has(marker.issueId)) continue;
-    const resolvable = discussion.notes.filter((n) => n.resolvable === true);
-    const resolved = resolvable.length > 0 && resolvable.every((n) => n.resolved === true);
+    const resolved = discussionResolved(discussion);
     threads.set(marker.issueId, {
       id: discussion.id,
       resolved,
-      resolvedByQualor: resolved && resolvable.every((n) => n.resolved_by?.id === botId),
+      resolvedByQualor:
+        resolved && resolvableNotes(discussion).every((n) => n.resolved_by?.id === botId),
       humanReplied: replies.some((n) => !n.system && n.author.id !== botId),
     });
   }
