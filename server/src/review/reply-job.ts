@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, isNotNull, lt, max, or } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, isNotNull, lt, max, or } from 'drizzle-orm';
 import { SYSTEM_ACTOR } from '../audit/recorder';
 import type { Db } from '../db/client';
 import { pgErrorCode } from '../db/errors';
@@ -45,6 +45,7 @@ import {
   queueAfterStop,
   REPLY_CIRCUIT_WAIT_SECONDS,
   replyPayload,
+  withLiveJob,
 } from './reply-queue';
 import {
   GONE,
@@ -226,9 +227,13 @@ async function lastAnsweredNote(db: Db, row: ReplyInThread): Promise<number> {
 
 /**
  * Whether a newer round of the row's thread covers its notes: the reply of a later note of the
- * thread was answered (`done`), or holds a decision. That round read this row's notes too (they
- * come after the thread's last answered round), so the row is not answered again. A round that
- * fails later reads them once more: a superseded row is skipped, not done.
+ * same thread of the same merge request was answered (`done`), or holds a decision and is alive,
+ * queued or running with its job there. That round read this row's notes too (they come after the
+ * thread's last answered round), so the row is not answered again; and should it fail later, a
+ * later round reads them once more, as a superseded row is skipped, not done. A newer row that
+ * ended `failed` or `skipped` with its decision kept (the sweep's end, `thread_gone`, `closed` and
+ * `inactive` keep it) covers nothing, nor does a running one whose job is gone for good (the
+ * sweep's next): its round is never answered, so this row answers its own notes.
  */
 async function coveredByNewer(db: Db, row: ReplyInThread): Promise<boolean> {
   const [newer] = await db
@@ -240,7 +245,14 @@ async function coveredByNewer(db: Db, row: ReplyInThread): Promise<boolean> {
         eq(reviewReplies.threadId, row.threadId),
         eq(reviewReplies.kind, 'reply'),
         gt(reviewReplies.noteId, row.noteId),
-        or(eq(reviewReplies.status, 'done'), isNotNull(reviewReplies.verdict)),
+        or(
+          eq(reviewReplies.status, 'done'),
+          and(
+            isNotNull(reviewReplies.verdict),
+            inArray(reviewReplies.status, ['queued', 'running']),
+            withLiveJob(),
+          ),
+        ),
       ),
     )
     .limit(1);

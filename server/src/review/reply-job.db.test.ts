@@ -1722,17 +1722,28 @@ describe('the answer job (6I-4)', () => {
       return newer;
     };
     const SECOND = 'The same goes for the test file.';
+    /**
+     * The server stops while the model decides the round of the thread's first row, after the
+     * person wrote again and a decoration queued the newer round: answers the newer row. The note is
+     * written while the model's answer is held back, so the stop always comes before the answer.
+     */
+    const replyAgainThenStop = async (mr: Mr, threadId: string): Promise<ReplyRow> => {
+      const shutdown = new AbortController();
+      let newer: ReplyRow | undefined;
+      llm.enqueue(async () => {
+        newer = await replyAgain(mr, threadId, SECOND);
+        return { status: 200, body: openAiAnswer(WONT_FIX), delayMs: 4_000 };
+      });
+      const running = answer({ shutdown: shutdown.signal });
+      await vi.waitFor(() => expect(newer).toBeDefined(), { timeout: 30_000 });
+      shutdown.abort();
+      await running;
+      return newer!;
+    };
 
     it('a row put back in the queue by a stop is superseded when a newer round of its thread runs first: one answer covers both notes', async () => {
       const { mr, threadId, row } = await replied('superseded-stop');
-      const shutdown = new AbortController();
-      const calls = llm.requests.length;
-      llm.enqueue({ status: 200, body: openAiAnswer(WONT_FIX), delayMs: 4_000 });
-      const running = answer({ shutdown: shutdown.signal });
-      await vi.waitFor(() => expect(llm.requests.length).toBe(calls + 1));
-      const newer = await replyAgain(mr, threadId, SECOND);
-      shutdown.abort();
-      await running;
+      const newer = await replyAgainThenStop(mr, threadId);
       expect(await rowById(row.id)).toMatchObject({ status: 'queued', verdict: null });
       // The next server meets the newer round's job first: its round reads both notes.
       await dueAt(row.id, 'later');
@@ -1832,16 +1843,10 @@ describe('the answer job (6I-4)', () => {
       expect(await changesOf(issueId)).toHaveLength(1);
     });
 
-    it('a row superseded by a newer round that then fails: a later round reads its notes again', async () => {
-      const { mr, threadId, row } = await replied('superseded-then-failed');
-      const shutdown = new AbortController();
-      const calls = llm.requests.length;
-      llm.enqueue({ status: 200, body: openAiAnswer(WONT_FIX), delayMs: 4_000 });
-      const running = answer({ shutdown: shutdown.signal });
-      await vi.waitFor(() => expect(llm.requests.length).toBe(calls + 1));
-      const newer = await replyAgain(mr, threadId, SECOND);
-      shutdown.abort();
-      await running;
+    it('a newer round that fails covers nothing: the older row answers its own notes, and a later round reads the rest', async () => {
+      const { mr, threadId, row } = await replied('newer-round-failed');
+      const newer = await replyAgainThenStop(mr, threadId);
+      expect(await rowById(row.id)).toMatchObject({ status: 'queued', verdict: null });
       // The newer round decides, and its post fails: it holds its decision while its retry waits,
       // and the row that waited stays behind it (the jobs of a branch run in their order).
       await dueAt(newer.id, 'now');
@@ -1850,29 +1855,118 @@ describe('the answer job (6I-4)', () => {
       await answer();
       expect(await rowById(newer.id)).toMatchObject({ status: 'running', verdict: 'keep' });
       expect((await rowById(row.id)).status).toBe('queued');
-      // Its last try fails too. The row that waited then runs, and is superseded by the decision
-      // the newer round holds; the sweep ends the newer round.
+      // Its last try fails too: its job is gone, though its row is still running with its decision
+      // until the sweep. The row that waited runs right after, and answers its own note.
       await retryNow();
       mr.failNextPost(false);
+      let before = llm.requests.length;
+      llm.say(KEEP);
       await answer();
-      expect(await rowById(row.id)).toMatchObject({ status: 'skipped', reason: 'superseded' });
+      expect(await rowById(row.id)).toMatchObject({
+        status: 'done',
+        outcome: 'answered',
+        verdict: 'keep',
+      });
+      let asked = JSON.stringify(callsSince(before)[0]!.json);
+      expect(asked).toContain('We will not fix this now');
+      expect(asked).not.toContain(SECOND);
+      // The sweep ends the newer round, its decision kept: it still covers nothing.
       expect(await reconcileStuckReplies(h.ctx.db)).toBe(1);
-      expect(await rowById(newer.id)).toMatchObject({ status: 'failed', reason: 'internal' });
-      // A later round reads the three notes: neither round before it was answered.
+      expect(await rowById(newer.id)).toMatchObject({
+        status: 'failed',
+        reason: 'internal',
+        verdict: 'keep',
+      });
+      // A later round reads the rest: the newer round's note and its own.
       const third = mr.reply(threadId, 'Any news on this?');
       await mr.decorate();
       const latest = await rowOfNote(mr.branchId, third);
-      const before = llm.requests.length;
+      before = llm.requests.length;
       llm.say(KEEP);
       await answer();
-      const asked = JSON.stringify(callsSince(before)[0]!.json);
-      for (const text of ['We will not fix this now', SECOND, 'Any news on this?']) {
-        expect(asked).toContain(text);
-      }
+      asked = JSON.stringify(callsSince(before)[0]!.json);
+      expect(asked).toContain(SECOND);
+      expect(asked).toContain('Any news on this?');
+      expect(asked).not.toContain('We will not fix this now');
       expect(await rowById(latest.id)).toMatchObject({ status: 'done', outcome: 'answered' });
       expect(mr.answers(threadId).map((a) => a.body)).toEqual([
+        replyNote(row.id, EXPLAINED, null),
         replyNote(latest.id, EXPLAINED, null),
       ]);
+    });
+
+    it('a newer row of another thread or of another merge request, or one that ended with its decision kept, supersedes no row', async () => {
+      const d = driverOf();
+      const { mr, threadId, row } = await replied('cover-filter');
+      // A second thread of the merge request, with a newer reply in it.
+      const otherIssue = await aiFinding(mr.branchId, 12);
+      await mr.decorate();
+      const otherThread = mr.threadOf(otherIssue);
+      const otherNote = mr.reply(otherThread, 'Line 12 is fine as it is.');
+      await mr.decorate();
+      const inOtherThread = await rowOfNote(mr.branchId, otherNote);
+      // A newer reply of another merge request, answered first; then made, by hand, a row of the
+      // first thread's id, so that only the merge request tells it apart.
+      const other = await d.setup(`${slug}-cover-filter-other`);
+      await reviewOn(h, llm);
+      const otherMrIssue = await aiFinding(other.branchId, 9);
+      await other.decorate();
+      const otherMrNote = other.reply(other.threadOf(otherMrIssue), 'This one can wait too.');
+      await other.decorate();
+      const ofOtherMr = await rowOfNote(other.branchId, otherMrNote);
+      expect(ofOtherMr.noteId).toBeGreaterThan(inOtherThread.noteId);
+      expect(inOtherThread.noteId).toBeGreaterThan(row.noteId);
+      // The first thread's row waits for an open circuit: its new job comes after the second
+      // thread's.
+      const runtime = githubDeps(h).runtime;
+      await dueAt(inOtherThread.id, 'later');
+      await dueAt(ofOtherMr.id, 'later');
+      for (let n = 0; n < SCM_CIRCUIT_FAILURES; n += 1) runtime.circuit.failure(mr.connectionId);
+      await answer({ scmRuntime: runtime });
+      expect((await rowById(row.id)).status).toBe('queued');
+      runtime.circuit.success(mr.connectionId);
+      // The newer rows of the other thread and of the other merge request are answered first.
+      await dueAt(row.id, 'later');
+      await dueAt(inOtherThread.id, 'now');
+      await dueAt(ofOtherMr.id, 'now');
+      llm.say(KEEP, KEEP);
+      await answer({ scmRuntime: runtime });
+      expect(await rowById(inOtherThread.id)).toMatchObject({ status: 'done' });
+      expect(await rowById(ofOtherMr.id)).toMatchObject({ status: 'done' });
+      await h.ctx.db
+        .update(reviewReplies)
+        .set({ threadId })
+        .where(eq(reviewReplies.id, ofOtherMr.id));
+      // A newer reply of the first thread that ended with its decision kept, as the sweep, a gone
+      // thread, a closed merge request or AI review switched off leave one.
+      await h.ctx.db.insert(reviewReplies).values({
+        projectId: row.projectId,
+        branchId: row.branchId,
+        provider: row.provider,
+        threadId,
+        issueId: row.issueId,
+        kind: 'reply',
+        noteId: ofOtherMr.noteId + 1,
+        author: 'someone',
+        status: 'failed',
+        reason: 'internal',
+        verdict: 'wont_fix',
+        answer: ACCEPTED,
+        startedAt: new Date(),
+        finishedAt: new Date(),
+      });
+      // The first thread's row answers its own note all the same.
+      await dueAt(row.id, 'now');
+      const before = llm.requests.length;
+      llm.say(KEEP);
+      await answer({ scmRuntime: runtime });
+      expect(callsSince(before)).toHaveLength(1);
+      expect(await rowById(row.id)).toMatchObject({
+        status: 'done',
+        outcome: 'answered',
+        verdict: 'keep',
+      });
+      expect(mr.answers(threadId).map((a) => a.body)).toEqual([replyNote(row.id, EXPLAINED, null)]);
     });
 
     it('a row that changed the status posts its answer even in a thread someone resolved since, through the circuit', async () => {

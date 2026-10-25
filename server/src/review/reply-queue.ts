@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, gte, inArray, lt, notExists, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, eq, gt, gte, inArray, lt, not, notExists, or, sql, type SQL } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { z } from 'zod';
 import type { Db, Executor } from '../db/client';
@@ -205,6 +205,18 @@ export async function queueAfterCircuit(
 }
 
 /**
+ * Whether an `ai-reply` job is queued or running for the row of the replies ledger that the
+ * statement reads (`review_replies.id`): a row with one is alive, and a running row without one is
+ * the sweep's (below). Compared as text, so that a malformed payload never fails the statement.
+ */
+export function withLiveJob(): SQL {
+  return sql`EXISTS (SELECT 1 FROM ${jobs}
+                      WHERE ${jobs.queue} = ${AI_REPLY_QUEUE}
+                        AND ${jobs.status} IN ('queued', 'running')
+                        AND ${jobs.payload} ->> 'replyId' = ${reviewReplies.id}::text)`;
+}
+
+/**
  * The rows that are `running` with no `ai-reply` job queued or running for them: their job is gone
  * for good (its lease expired on both tries, or both tries failed), so nothing would ever end them.
  * After every reap of the review worker (main.ts) each ends `failed: internal` here, as the sweep of
@@ -217,16 +229,7 @@ export async function reconcileStuckReplies(db: Executor): Promise<number> {
   const ended = await db
     .update(reviewReplies)
     .set({ status: 'failed', outcome: null, reason: 'internal', finishedAt: sql`now()` })
-    .where(
-      and(
-        eq(reviewReplies.status, 'running'),
-        // Compared as text, so that a malformed payload never fails the statement.
-        sql`NOT EXISTS (SELECT 1 FROM ${jobs}
-                         WHERE ${jobs.queue} = ${AI_REPLY_QUEUE}
-                           AND ${jobs.status} IN ('queued', 'running')
-                           AND ${jobs.payload} ->> 'replyId' = ${reviewReplies.id}::text)`,
-      ),
-    )
+    .where(and(eq(reviewReplies.status, 'running'), not(withLiveJob())))
     .returning({ id: reviewReplies.id });
   return ended.length;
 }
