@@ -25,9 +25,10 @@ import { GITLAB_MR_IID } from '../scm/gitlab/client';
 import { readMergeRequestState } from '../scm/mr-state';
 import { ScmError } from '../scm/provider';
 import type { IssueStatus } from '../tracking/plan';
+import { handleCommand, NothingToReview, type CommandDecision } from './commands';
 import type { ReviewJobDeps } from './job';
 import { ofBranch } from './lifecycle';
-import { replyNote } from './render';
+import { commandNote, replyNote } from './render';
 import {
   claimReply,
   endReply,
@@ -49,9 +50,12 @@ import {
 } from './reply-queue';
 import {
   GONE,
+  githubCommandSide,
   githubSide,
+  gitlabCommandSide,
   gitlabSide,
   orGone,
+  type CommandSide,
   type ReadThread,
   type ReplyInThread,
   type ThreadNote,
@@ -63,9 +67,10 @@ import { openSnapshotReader, type SnapshotReader } from './snapshot-reader';
 
 /*
  * The `ai-reply` jobs (6I-4): Qualor's answer to a round of people's replies in one of its
- * threads, which decoration (or a webhook's scan) wrote as a row of the replies ledger with its job
- * (reply-queue.ts). The job takes the row and then, in this order, each step written on the row, or
- * found again where it was done, so that a retry resumes after the last one:
+ * threads, or to a person's command, which decoration (or a webhook's scan) wrote as a row of the
+ * replies ledger with its job (reply-queue.ts). The job takes the row and then, for a reply, in this
+ * order, each step written on the row, or found again where it was done, so that a retry resumes
+ * after the last one:
  * 1. AI review no longer active for the project ends the row `skipped: inactive`;
  * 2. with no decision yet, a day with no tokens left for it ends it `skipped: budget_spent`, and a
  *    newer round of its thread that was answered or holds a decision (that round read this row's
@@ -93,19 +98,30 @@ import { openSnapshotReader, type SnapshotReader } from './snapshot-reader';
  * The row's issue must be its project's, before the decision and before the thread is acted on (a
  * monorepo's thread of another project's issue never is): otherwise the row ends `failed: internal`.
  *
+ * A command row (`qualor review`, `qualor fix`, `qualor stop`) is taken in the same way and makes no
+ * model call, and asks no budget. The merge request is read, and one that is merged or closed ends
+ * the row `skipped: closed`, with no run made and no answer; the discussion a GitLab command opened
+ * is read too, and one that is gone ends it `skipped: thread_gone`. Then `handleCommand`
+ * (commands.ts) decides, in one transaction that also makes or restarts the run, and stores the
+ * fixed text of the answer on the row, so that a retry never decides twice. The answer is posted
+ * once, beside the command's note (a note of Qualor's whose first line names the row is the answer
+ * a post stored though its outcome was lost), and the row ends `done` with the decision's outcome.
+ * AI review being off does not skip a command: it is answered so. A branch with no newest analysis
+ * ends the row `failed: internal`, with no answer.
+ *
  * The job's own requests pass the connection's circuit as the `scm` worker's jobs do (scm.md
  * §4.2), in two goes, so that no probe of it waits on the model: the merge request, the thread and
  * the round's rights (3 and 4) before the model is asked, and the status change, the post and the
- * resolution (5 to 7) after it. A circuit that is open, or half-open with another job's probe in
+ * resolution (5 to 7) after it; for a command, the merge request and its discussion before the
+ * decision, and the post after it. A circuit that is open, or half-open with another job's probe in
  * flight, puts the row back in the queue for when it lets a job through, with no try spent and
  * nothing changed by that go; the circuit hears what came of the requests it let through. The
  * organisation's slots are the decorations': the job takes none.
  *
  * A stop of the server while the model decides puts the row back in the queue for the next server;
  * AI review switched off meanwhile ends it `skipped: inactive`. Any other error fails the job into
- * its second try, which resumes; a row left running after both is the sweep's (reply-queue.ts). A
- * command row is not this job's: it stays queued, as it was. Nothing the people or the model wrote
- * is ever logged: the row's id, codes and counts only.
+ * its second try, which resumes; a row left running after both is the sweep's (reply-queue.ts).
+ * Nothing the people or the model wrote is ever logged: the row's id, codes and counts only.
  */
 
 /** What the model decided on a row: its verdict, and the answer it wrote. */
@@ -319,21 +335,12 @@ class ReplyJob {
   }
 
   /**
-   * The row to answer: a queued reply, taken now; or, on a retry, the one the first try took and
-   * left running. Null for anything else: a command (not this job's: it stays queued), a row taken
-   * by another job, ended, or gone.
+   * The row to answer, a reply or a command: a queued row, taken now; or, on a retry, the one the
+   * first try took and left running. Null for anything else: a row taken by another job, ended, or
+   * gone.
    */
   private async take(): Promise<ReplyRow | null> {
     const { db } = this.deps;
-    const [found] = await db
-      .select({ kind: reviewReplies.kind })
-      .from(reviewReplies)
-      .where(eq(reviewReplies.id, this.replyId));
-    if (found === undefined) return null;
-    if (found.kind !== 'reply') {
-      this.deps.logger.debug?.({ replyId: this.replyId }, 'AI reply job left a command queued');
-      return null;
-    }
     const claimed = await claimReply(db, this.replyId);
     if (claimed !== null || !this.retry) return claimed;
     const [running] = await db
@@ -348,6 +355,11 @@ class ReplyJob {
     const taken = await this.take();
     if (taken === null) return;
     const target = await targetOf(db, taken);
+    if (taken.kind === 'command') {
+      return target === null
+        ? this.failInternal(taken, 'the row has no merge request')
+        : this.answerCommand(taken, target);
+    }
     if (taken.threadId === null || taken.issueId === null || target === null) {
       return this.failInternal(taken, 'the row has no thread, no issue or no merge request');
     }
@@ -420,9 +432,8 @@ class ReplyJob {
     issue: ReplyIssue,
     side: ThreadSide,
   ): Promise<Seen | typeof CLOSED | null> {
-    const { db, scm } = this.deps;
-    const state = await readMergeRequestState({ db, scm }, row.projectId, target.branch.name);
-    if (state !== null && state.state !== 'open') return CLOSED;
+    const { db } = this.deps;
+    if (await this.closed(row, target)) return CLOSED;
     const thread = await orGone(() => side.read());
     if (thread === GONE || thread === null) return null;
     const posted = row.answerNoteId ?? thread.answered;
@@ -555,6 +566,94 @@ class ReplyJob {
   }
 
   /**
+   * Whether the merge request is merged or closed, read as the review job reads it, through no
+   * organisation slot: a state that cannot be read lets the job go on.
+   */
+  private async closed(row: Pick<ReplyRow, 'projectId'>, target: Target): Promise<boolean> {
+    const { db, scm } = this.deps;
+    const state = await readMergeRequestState({ db, scm }, row.projectId, target.branch.name);
+    return state !== null && state.state !== 'open';
+  }
+
+  /**
+   * A command row, in the steps the header gives. The merge request and the command's discussion
+   * are read in a go through the circuit, then the decision is made (no request), and the post is
+   * another go: a row that waits for the circuit before its decision has made no run. It resumes
+   * after the last step the row records: a decision on it is posted, never made again, and an
+   * answer note on it ends the row.
+   */
+  private async answerCommand(row: ReplyRow, target: Target): Promise<void> {
+    const side = this.commandSideOf(row, target);
+    if (side === 'gone') return this.end(row, THREAD_GONE);
+    if (side === 'unusable') {
+      return this.failInternal(row, 'the SCM connection of the project cannot be used');
+    }
+    const seen = await this.throughCircuit(row, side, () => this.readCommand(row, target, side));
+    if (seen === WAITING) return;
+    if (seen === CLOSED) return this.end(row, { status: 'skipped', reason: 'closed' });
+    if (seen === null) return this.end(row, THREAD_GONE);
+    const decision = await this.decideCommand(row, target);
+    if (decision === null) return;
+    const posted = row.answerNoteId ?? seen.answered;
+    await this.throughCircuit(row, side, () => this.postCommandAnswer(row, side, posted, decision));
+  }
+
+  /**
+   * What the first go reads for a command: CLOSED when the merge request is merged or closed; else
+   * what the provider holds of the answer; null when the command's discussion is gone.
+   */
+  private async readCommand(
+    row: ReplyRow,
+    target: Target,
+    side: CommandSide,
+  ): Promise<{ answered: number | null } | typeof CLOSED | null> {
+    if (await this.closed(row, target)) return CLOSED;
+    const found = await orGone(() => side.read());
+    return found === GONE ? null : found;
+  }
+
+  /**
+   * What the command comes to (commands.ts), stored on the row; null when the row ended instead: a
+   * branch with no newest analysis has nothing to review.
+   */
+  private async decideCommand(row: ReplyRow, target: Target): Promise<CommandDecision | null> {
+    const { db, logger } = this.deps;
+    try {
+      return await handleCommand(db, row, {
+        settings: await readLlmSettings(db),
+        project: target.project,
+        branch: target.branch,
+        logger,
+      });
+    } catch (err) {
+      if (!(err instanceof NothingToReview)) throw err;
+      await this.failInternal(row, 'the merge request has no analysis to review');
+      return null;
+    }
+  }
+
+  /**
+   * The answer to a command posted once, beside the command's note: not when `posted` says it is
+   * (the row's answer note, or the one found in the first go). The row then ends `done`, with the
+   * decision's outcome.
+   */
+  private async postCommandAnswer(
+    row: ReplyRow,
+    side: CommandSide,
+    posted: number | null,
+    decision: CommandDecision,
+  ): Promise<void> {
+    let noteId = posted;
+    if (noteId === null) {
+      const note = await orGone(() => side.post(commandNote(row.id, decision.text)));
+      if (note === GONE) return this.end(row, THREAD_GONE);
+      noteId = note;
+    }
+    if (row.answerNoteId === null) await recordAnswerNote(this.deps.db, row.id, noteId);
+    return this.end(row, { status: 'done', outcome: decision.outcome });
+  }
+
+  /**
    * `step`, a go of the job's own requests, through the connection's circuit as the `scm` worker's
    * jobs pass it (scm.md §4.2). A circuit that is open, or half-open with another job's probe in
    * flight, does not let it through: the row goes back to the queue for when the circuit reopens,
@@ -565,7 +664,7 @@ class ReplyJob {
    */
   private async throughCircuit<T>(
     row: ReplyRow,
-    side: ThreadSide,
+    side: Pick<ThreadSide, 'connectionId'>,
     step: () => Promise<T>,
   ): Promise<T | typeof WAITING> {
     const { circuit } = this.deps.scmRuntime;
@@ -615,6 +714,36 @@ class ReplyJob {
     const found = gitlabClientFor(connection, this.deps.scm);
     if ('problem' in found || !GITLAB_MR_IID.test(branch.name)) return 'unusable';
     return gitlabSide(connection.id, found.client, project.scmProjectRef, branch.name, row);
+  }
+
+  /**
+   * Where the answer to a command goes, on the provider the project is mapped to now: `gone` and
+   * `unusable` as for {@link sideOf}. A GitLab command has the discussion its note opened.
+   */
+  private commandSideOf(row: ReplyRow, target: Target): CommandSide | 'gone' | 'unusable' {
+    const { connection, project, branch } = target;
+    if (connection === null || connection.provider !== row.provider) return 'gone';
+    if (project.scmProjectRef === null) return 'unusable';
+    if (connection.provider === 'github') {
+      const repo = parseRepoRef(project.scmProjectRef);
+      const found = githubClientFor(connection, this.deps.scm, this.deps.scmRuntime);
+      if (repo === null || 'problem' in found || !GITHUB_PR_NUMBER.test(branch.name)) {
+        return 'unusable';
+      }
+      return githubCommandSide(connection.id, found.client, repo, branch.name, row);
+    }
+    const found = gitlabClientFor(connection, this.deps.scm);
+    if ('problem' in found || !GITLAB_MR_IID.test(branch.name) || row.threadId === null) {
+      return 'unusable';
+    }
+    return gitlabCommandSide(
+      connection.id,
+      found.client,
+      project.scmProjectRef,
+      branch.name,
+      row,
+      row.threadId,
+    );
   }
 
   /**

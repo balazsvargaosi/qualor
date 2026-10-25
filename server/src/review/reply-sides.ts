@@ -12,7 +12,9 @@ import type { ReplyRow } from './replies';
  * The thread of a reply on its provider (6I-4), as the `ai-reply` job (reply-job.ts) reads it,
  * asks who may change a finding's status, posts its answer and resolves it: GitLab's discussion of
  * the merge request, or GitHub's review thread of the pull request, each through the job's own
- * client and its request budget.
+ * client and its request budget. Beside them, where the answer to a command goes: a reply in the
+ * discussion the command's note opened on GitLab, a comment on the page of the pull request on
+ * GitHub.
  */
 
 /** GitLab's Developer role: the least access level whose reply may change a finding's status. */
@@ -231,5 +233,83 @@ export function githubSide(
     post: async (body) => (await client.replyToReviewComment(number, firstId, body)).id,
     resolve: async () =>
       threadNode !== null && (await client.setThreadResolved(threadNode, true)) === 'done',
+  };
+}
+
+/** Where the answer to a command goes, through the job's own client and its request budget. */
+export interface CommandSide {
+  /** The SCM connection the requests are made through, whose circuit they pass. */
+  connectionId: string;
+  /**
+   * What the provider holds of the answer: the id of the note of Qualor's whose first line names
+   * the row, posted already (a post whose outcome was lost), or null when there is none or the
+   * listing was cut at its page bound before it. Null as a whole when the command's discussion is
+   * gone.
+   */
+  read(): Promise<{ answered: number | null } | null>;
+  /** Posts `body` as the answer: answers the new note's id. Comes after `read`. */
+  post(body: string): Promise<number>;
+}
+
+/**
+ * The answer to a command on GitLab: a reply in the discussion the command's note opened
+ * (`threadId`), which the merge request's listing finds. A discussion missing from a listing read
+ * whole is gone; from one cut at its page bound it may only be unseen, and the post then finds out.
+ */
+export function gitlabCommandSide(
+  connectionId: string,
+  client: GitLabClient,
+  ref: string,
+  iid: string,
+  row: ReplyRow,
+  threadId: string,
+): CommandSide {
+  const marker = replyMarker(row.id);
+  return {
+    connectionId,
+    async read() {
+      const me = await client.currentUser();
+      const listed = await client.discussions(ref, iid, MAX_DISCUSSION_PAGES);
+      const discussion = listed.items.find((d) => d.id === threadId);
+      if (discussion === undefined) return listed.complete ? null : { answered: null };
+      const answer = discussion.notes.find(
+        (note) => !note.system && note.author.id === me.id && firstLineOf(note.body) === marker,
+      );
+      return { answered: answer?.id ?? null };
+    },
+    post: async (body) => (await client.replyToDiscussion(ref, iid, threadId, body)).id,
+  };
+}
+
+/**
+ * The answer to a command on GitHub: a comment on the pull request's page, which the page's
+ * comment listing finds by its marker. Beyond the listing's page bound the answer may be unseen,
+ * and is posted all the same.
+ */
+export function githubCommandSide(
+  connectionId: string,
+  client: GitHubClient,
+  repo: GitHubRepoRef,
+  number: string,
+  row: ReplyRow,
+): CommandSide {
+  const marker = replyMarker(row.id);
+  return {
+    connectionId,
+    async read() {
+      const app = await client.app();
+      await client.useRepository(repo);
+      const bot = `${app.slug}[bot]`;
+      const comments = await client.issueComments(number, MAX_COMMENT_PAGES);
+      const answer = comments.items.find(
+        (c) =>
+          c.user?.type === 'Bot' &&
+          c.user.login === bot &&
+          c.body !== null &&
+          firstLineOf(c.body) === marker,
+      );
+      return { answered: answer?.id ?? null };
+    },
+    post: async (body) => (await client.createComment(number, body)).id,
   };
 }

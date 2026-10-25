@@ -1,6 +1,6 @@
 import type { Report } from '@qualor/shared';
 import { and, asc, eq, inArray, sql } from 'drizzle-orm';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { QUIET_AUDIT_LOG } from '../../test/audit-log';
 import { createFakeGitHub, type FakeGitHub } from '../../test/fake-github';
 import { createFakeGitLab, type FakeGitLab } from '../../test/fake-gitlab';
@@ -20,7 +20,7 @@ import {
 import { createIngestHarness, type IngestHarness, type IngestProject } from '../../test/ingest';
 import { reviewOff, reviewOn } from '../../test/replies';
 import { engine, file, finding } from '../../test/reports';
-import { seedAiIssue, storeTestSnapshot, switchReviewOn } from '../../test/review';
+import { reviewResponder, seedAiIssue, storeTestSnapshot, switchReviewOn } from '../../test/review';
 import {
   decorationDeps,
   mappedProject,
@@ -47,8 +47,8 @@ import {
 import { createLlmRuntime } from '../llm/job';
 import { enqueue } from '../queue/queue';
 import { runUntilIdle } from '../queue/worker';
-import { markerOf } from '../scm/markdown';
-import { enqueueDecoration } from '../scm/queue';
+import { codeSpan, firstLineOf, markerOf, replyMarker } from '../scm/markdown';
+import { enqueueDecoration, SCM_QUEUE } from '../scm/queue';
 import {
   CircuitBreaker,
   MAX_DECORATIONS_PER_ORGANIZATION,
@@ -56,19 +56,22 @@ import {
   SCM_CIRCUIT_OPEN_MS,
 } from '../scm/runtime';
 import { parseInternalHosts } from '../scm/url';
-import type { ReviewJobDeps } from './job';
+import { reviewHandlers, type ReviewJobDeps } from './job';
 import { ofBranch } from './lifecycle';
-import { replyNote } from './render';
+import { commandNote, replyNote } from './render';
 import type { ReplyRow } from './replies';
 import { replyHandlers } from './reply-job';
 import { AI_REPLY_QUEUE, reconcileStuckReplies, replyKey } from './reply-queue';
+import { AI_REVIEW_QUEUE } from './runs';
 
 /*
  * The answer job (6I-4): a person replies in one of Qualor's threads on a GitLab merge request
  * or a GitHub pull request, decoration queues the reply, and the job answers it through the fakes:
  * the model decides, the finding's status changes as the system's, one answer is posted and the
  * thread resolved, in that order, each step resumed by a retry from what the row says. The review
- * that raised the findings is seeded: a run that is done, and the snapshot it read.
+ * that raised the findings is seeded: a run that is done, and the snapshot it read. A person's
+ * `qualor review`, `qualor fix` or `qualor stop` is a row of the same ledger, which the job answers
+ * with a fixed text beside the command's note, and, for `qualor review`, a run it makes or restarts.
  */
 
 const HEAD = '1'.repeat(40);
@@ -150,6 +153,16 @@ const EXPLAINED = 'The rule flags a call left in the code: remove it, or use the
 const KEEP = decision('keep', 'question', EXPLAINED);
 const MEMBERS_ONLY = 'the people who replied cannot change the status of this finding';
 
+/** What Qualor answers to a command: fixed texts, with a commit in a code span. */
+const REVIEW_OFF = 'AI review is not switched on for this project.';
+const NOT_AVAILABLE = 'Auto-fix is not switched on for this project.';
+const IN_PROGRESS = 'A review of this commit is in progress.';
+const requested = (sha: string) => `Reviewing this commit (${codeSpan(sha.slice(0, 12))}).`;
+/** The review of HEAD ended without its findings: a command restarts it. */
+const FAILED = { status: 'failed', reason: 'provider_error', summary: null } as const;
+/** The post of an answer to a command: GitLab's reply in its discussion, GitHub's comment on the page. */
+const POST_OF_COMMAND = /^POST .*\/(discussions\/[0-9a-f]+\/notes|issues\/7\/comments)$/;
+
 /** Whether a note opens with the marker of the issue's thread. */
 const marksIssue = (body: string, issueId: string): boolean => {
   const marker = markerOf(body);
@@ -176,8 +189,24 @@ interface Mr {
   reply(threadId: string, body: string, who?: Person): number;
   /** The `n`th of the project's other people with the rights to triage writes in the thread. */
   colleague(threadId: string, body: string, n: number): void;
-  /** A person gives a command on the merge request (a note of its own). */
-  command(body: string): void;
+  /**
+   * A person gives a command on the merge request (a note of its own): answers its note, and on
+   * GitLab the discussion it opened, where Qualor answers.
+   */
+  command(body: string, who?: Person): { noteId: number; threadId: string | null };
+  /** A person writes a note beside the command: in its discussion on GitLab, on the page on GitHub. */
+  writeBeside(command: { threadId: string | null }, body: string): void;
+  /**
+   * Qualor's answers to the commands: its notes beside the people's notes of a command (not those
+   * of its own threads), oldest first; on GitLab each with the discussion it is in.
+   */
+  commandAnswers(): { id: number; body: string; threadId: string | null }[];
+  /** The notes of Qualor's summary of the merge request. */
+  summaries(): { id: number; body: string }[];
+  /** The merge request is a draft, or is none. */
+  setDraft(draft: boolean): void;
+  /** Runs the decorations that are queued, as the `scm` worker does, and queues none of its own. */
+  decorateQueued(): Promise<void>;
   /** Qualor's notes in the thread after its first one: its answers. */
   answers(threadId: string): { id: number; body: string }[];
   resolved(threadId: string): boolean;
@@ -186,8 +215,11 @@ interface Mr {
   /** A person deletes their note of the thread. */
   deleteNote(threadId: string, noteId: number): void;
   close(): void;
-  /** The next post of an answer fails; with `stored`, the provider stored it all the same. */
-  failNextPost(stored: boolean): void;
+  /**
+   * The next post of an answer fails; with `stored`, the provider stored it all the same. The answer
+   * is the one to a reply, or with `to` the one to a command.
+   */
+  failNextPost(stored: boolean, to?: 'reply' | 'command'): void;
   /** The next resolution of a thread fails, once the answer before it is posted. */
   failNextResolve(): void;
   /** The provider has no such thread when the next answer is posted. */
@@ -348,8 +380,30 @@ describe('the answer job (6I-4)', () => {
           gitlab.setMember(gitlabId, 100 + n, 40);
           gitlab.reply(gitlabId, 12, threadId, { body, authorId: 100 + n });
         },
-        command: (body) =>
-          void gitlab.addNote(gitlabId, 12, { body, authorId: GITLAB_USERS.member }),
+        command: (body, who = 'member') => {
+          const opened = gitlab.addNote(gitlabId, 12, { body, authorId: GITLAB_USERS[who] });
+          return { noteId: opened.notes[0]!.id, threadId: opened.id };
+        },
+        writeBeside: ({ threadId }, body) =>
+          void gitlab.reply(gitlabId, 12, threadId!, { body, authorId: GITLAB_USERS.member }),
+        commandAnswers: () =>
+          gitlab
+            .discussions(gitlabId, 12)
+            .filter((d) => d.notes[0]?.authorId !== gitlab.botUserId)
+            .flatMap((d) =>
+              d.notes
+                .slice(1)
+                .filter((n) => n.authorId === gitlab.botUserId)
+                .map((n) => ({ id: n.id, body: n.body, threadId: d.id })),
+            ),
+        summaries: () =>
+          gitlab
+            .discussions(gitlabId, 12)
+            .flatMap((d) => d.notes)
+            .filter((n) => n.authorId === gitlab.botUserId && markerOf(n.body)?.kind === 'summary')
+            .map((n) => ({ id: n.id, body: n.body })),
+        setDraft: (draft) => gitlab.updateMergeRequest(gitlabId, 12, { draft }),
+        decorateQueued: async () => void (await runDecorations(h, decorationDeps(h))),
         answers: (threadId) =>
           discussion(threadId)
             .notes.slice(1)
@@ -456,6 +510,7 @@ describe('the answer job (6I-4)', () => {
         return found;
       };
       const replies = new RegExp(`^/repos/acme/${repo.name}/pulls/7/comments/(\\d+)/replies$`);
+      const issueComments = new RegExp(`^/repos/acme/${repo.name}/issues/7/comments$`);
       return {
         project,
         branchId,
@@ -500,7 +555,30 @@ describe('the answer job (6I-4)', () => {
           github.setPermission(repo.id, `dev-${n}`, { permission: 'write', roleName: 'write' });
           github.replyToReviewComment(repo.id, 7, Number(threadId), { body, login: `dev-${n}` });
         },
-        command: (body) => void github.addComment(repo.id, 7, { body, login: 'octocat' }),
+        command: (body, who = 'member') => {
+          const written = github.addComment(repo.id, 7, { body, login: GITHUB_USERS[who].login });
+          return { noteId: written.id, threadId: null };
+        },
+        writeBeside: (_command, body) =>
+          void github.addComment(repo.id, 7, { body, login: GITHUB_USERS.member.login }),
+        commandAnswers: () =>
+          github.comments
+            .filter(
+              (c) =>
+                c.repoId === repo.id &&
+                c.issue === 7 &&
+                c.user.type === 'Bot' &&
+                firstLineOf(c.body).startsWith('<!-- qualor:reply '),
+            )
+            .map((c) => ({ id: c.id, body: c.body, threadId: null })),
+        summaries: () =>
+          github.comments
+            .filter(
+              (c) => c.repoId === repo.id && c.issue === 7 && markerOf(c.body)?.kind === 'summary',
+            )
+            .map((c) => ({ id: c.id, body: c.body })),
+        setDraft: (draft) => github.updatePull(repo.id, 7, { draft }),
+        decorateQueued: async () => void (await runDecorations(h, githubDeps(h))),
         answers: (threadId) =>
           github.reviewComments
             .filter((c) => c.inReplyToId === Number(threadId) && c.user.type === 'Bot')
@@ -526,8 +604,8 @@ describe('the answer job (6I-4)', () => {
           );
         },
         close: () => github.updatePull(repo.id, 7, { state: 'closed' }),
-        failNextPost: (stored) =>
-          github.inject('POST', replies, {
+        failNextPost: (stored, to = 'reply') =>
+          github.inject('POST', to === 'reply' ? replies : issueComments, {
             status: 502,
             body: { message: 'Bad Gateway' },
             ...(stored
@@ -535,13 +613,14 @@ describe('the answer job (6I-4)', () => {
                   // GitHub made the comment, and the answer never came back.
                   before: () => {
                     const sent = github.requests.at(-1)!;
-                    const firstId = Number(replies.exec(sent.path.split('?')[0] ?? '')?.[1]);
                     const { body } = JSON.parse(sent.body) as { body: string };
-                    github.replyToReviewComment(repo.id, 7, firstId, {
-                      body,
-                      login: `${github.slug}[bot]`,
-                      type: 'Bot',
-                    });
+                    const bot = { body, login: `${github.slug}[bot]`, type: 'Bot' } as const;
+                    if (to === 'command') {
+                      github.addComment(repo.id, 7, bot);
+                      return;
+                    }
+                    const firstId = Number(replies.exec(sent.path.split('?')[0] ?? '')?.[1]);
+                    github.replyToReviewComment(repo.id, 7, firstId, bot);
                   },
                 }
               : {}),
@@ -684,6 +763,47 @@ describe('the answer job (6I-4)', () => {
           eq(jobs.queue, AI_REPLY_QUEUE),
           eq(jobs.status, 'queued'),
           sql`${jobs.payload} ->> 'replyId' = ${replyId}`,
+        ),
+      );
+  /** Runs the `ai-review` jobs that are due, as the review worker does. */
+  const reviews = (over: Partial<ReviewJobDeps> = {}) =>
+    runUntilIdle(h.ctx.db, reviewHandlers(jobDeps(over)), silentLogger);
+  const runOf = async (analysisId: string) =>
+    first(await h.ctx.db.select().from(reviewRuns).where(eq(reviewRuns.analysisId, analysisId)));
+  /** The `ai-review` jobs queued for the run, each with whether it is due now. */
+  const reviewJobsOf = (runId: string) =>
+    h.ctx.db
+      .select({ due: sql<boolean>`${jobs.runAt} <= now()` })
+      .from(jobs)
+      .where(
+        and(
+          eq(jobs.queue, AI_REVIEW_QUEUE),
+          eq(jobs.status, 'queued'),
+          sql`${jobs.payload} ->> 'runId' = ${runId}`,
+        ),
+      );
+  /** The review of HEAD that `seedReview` made (it is done) ended otherwise: as `state` says. */
+  const endRun = (analysisId: string, state: Partial<typeof reviewRuns.$inferInsert>) =>
+    h.ctx.db.update(reviewRuns).set(state).where(eq(reviewRuns.analysisId, analysisId));
+  /** The ledger's rows of the commands of the merge request, the oldest note first. */
+  const commandRows = (branchId: string) =>
+    h.ctx.db
+      .select()
+      .from(reviewReplies)
+      .where(and(eq(reviewReplies.branchId, branchId), eq(reviewReplies.kind, 'command')))
+      .orderBy(asc(reviewReplies.noteId));
+  const commandRow = async (branchId: string, noteId: number) =>
+    first((await commandRows(branchId)).filter((row) => row.noteId === noteId));
+  /** The decorations queued for the analysis. */
+  const queuedDecorations = (analysisId: string) =>
+    h.ctx.db
+      .select({ id: jobs.id })
+      .from(jobs)
+      .where(
+        and(
+          eq(jobs.queue, SCM_QUEUE),
+          eq(jobs.status, 'queued'),
+          sql`${jobs.payload} ->> 'analysisId' = ${analysisId}`,
         ),
       );
 
@@ -1425,28 +1545,446 @@ describe('the answer job (6I-4)', () => {
       expect(callsSince(calls)[0]!.body).not.toContain('The first question.');
     });
 
-    it('a command row is left queued', async () => {
-      const d = driverOf();
-      const mr = await d.setup(`${slug}-command`);
-      await reviewOn(h, llm);
-      mr.command('qualor review');
-      await mr.decorate();
-      const [row] = await h.ctx.db
-        .select()
-        .from(reviewReplies)
-        .where(eq(reviewReplies.branchId, mr.branchId));
-      expect(row).toMatchObject({ kind: 'command', command: 'review', status: 'queued' });
-      d.clearRequests();
-      const calls = llm.requests.length;
-      expect(await answer()).toBe(1);
-      expect(await rowById(row!.id)).toMatchObject({
-        status: 'queued',
-        startedAt: null,
-        finishedAt: null,
+    describe('the commands', () => {
+      // A command restarts a run, whose review job stays queued: the reviews a case runs are its own.
+      beforeEach(async () => {
+        await h.ctx.db.delete(jobs).where(eq(jobs.queue, AI_REVIEW_QUEUE));
       });
-      expect((await jobsOf(row!.id)).map((j) => j.status)).toEqual(['succeeded']);
-      expect(d.requests()).toEqual([]);
-      expect(callsSince(calls)).toEqual([]);
+
+      /**
+       * A merge request whose review of HEAD ended as `end` says (the seeded one is done), and a
+       * command written on it (`qualor review` unless `body` says), queued by a decoration.
+       */
+      const commanded = async (
+        key: string,
+        o: { end?: Partial<typeof reviewRuns.$inferInsert>; body?: string } = {},
+      ) => {
+        const d = driverOf();
+        const mr = await d.setup(`${slug}-command-${key}`);
+        await reviewOn(h, llm);
+        if (o.end !== undefined) await endRun(mr.analysisId, o.end);
+        const sent = mr.command(o.body ?? 'qualor review');
+        await mr.decorate();
+        const row = await commandRow(mr.branchId, sent.noteId);
+        expect(row).toMatchObject({
+          kind: 'command',
+          status: 'queued',
+          threadId: sent.threadId,
+          author: mr.username('member'),
+        });
+        return { d, mr, sent, row };
+      };
+
+      it('qualor review on a draft reviews it', async () => {
+        const { mr, sent } = await commanded('draft', {
+          end: { status: 'skipped', reason: 'draft', summary: null },
+        });
+        mr.setDraft(true);
+        expect(await answer()).toBe(1);
+        expect(await commandRow(mr.branchId, sent.noteId)).toMatchObject({
+          status: 'done',
+          outcome: 'review_requested',
+        });
+        // The same run waits again, asked for by the person who wrote the note.
+        const asker = mr.username('member');
+        expect(await runOf(mr.analysisId)).toMatchObject({ status: 'waiting', requestedBy: asker });
+        // The review worker then reviews the draft: a lite review, two reviewers and the judge.
+        const calls = llm.requests.length;
+        llm.enqueue(reviewResponder(), reviewResponder(), reviewResponder());
+        expect(await reviews()).toBe(1);
+        expect(await runOf(mr.analysisId)).toMatchObject({
+          status: 'done',
+          reason: null,
+          requestedBy: asker,
+          headSha: HEAD,
+        });
+        expect(callsSince(calls)).toHaveLength(3);
+      });
+
+      it('each command note gets one answer, and a decoration or a second job of a note adds none', async () => {
+        const { d, mr, sent, row: firstRow } = await commanded('one-each', { end: FAILED });
+        mr.command('qualor fix');
+        mr.command('Qualor  STOP please');
+        mr.command('qualor review');
+        await mr.decorate();
+        expect(await commandRows(mr.branchId)).toHaveLength(4);
+        d.clearRequests();
+        const calls = llm.requests.length;
+        expect(await answer()).toBe(4);
+        // A command makes no model call.
+        expect(callsSince(calls)).toEqual([]);
+        const rows = await commandRows(mr.branchId);
+        expect(rows.map((r) => [r.command, r.status, r.outcome])).toEqual([
+          ['review', 'done', 'review_requested'],
+          ['fix', 'done', 'not_available'],
+          ['stop', 'done', 'not_available'],
+          // The first note restarted the run: the second finds it waiting.
+          ['review', 'done', 'in_progress'],
+        ]);
+        expect(rows.map((r) => r.answer)).toEqual([
+          requested(HEAD),
+          NOT_AVAILABLE,
+          NOT_AVAILABLE,
+          IN_PROGRESS,
+        ]);
+        // One answer for each, with its row's marker, and its id on the row.
+        const answers = mr.commandAnswers();
+        expect(answers.map((a) => a.body)).toEqual(rows.map((r) => commandNote(r.id, r.answer!)));
+        expect(rows.map((r) => r.answerNoteId)).toEqual(answers.map((a) => a.id));
+        expect(d.requests().filter((r) => POST_OF_COMMAND.test(r))).toHaveLength(4);
+        // The run was restarted once.
+        const run = await runOf(mr.analysisId);
+        expect(run).toMatchObject({ status: 'waiting', requestedBy: mr.username('member') });
+        expect(await reviewJobsOf(run.id)).toEqual([{ due: true }]);
+
+        // Another decoration finds the notes held: no new row, no new answer. Its listing holds
+        // Qualor's own answers, which are no commands.
+        await mr.decorate();
+        expect(await commandRows(mr.branchId)).toEqual(rows);
+        expect(await answer()).toBe(0);
+        // A second job for a note that was answered finds it done, and answers nothing.
+        await enqueue(h.ctx.db, {
+          queue: AI_REPLY_QUEUE,
+          payload: { kind: 'answer', replyId: firstRow.id },
+          concurrencyKey: replyKey(mr.branchId),
+          maxAttempts: 2,
+        });
+        expect(await answer()).toBe(1);
+        expect(mr.commandAnswers()).toEqual(answers);
+        expect(await commandRow(mr.branchId, sent.noteId)).toEqual(rows[0]);
+        expect(await runOf(mr.analysisId)).toEqual(run);
+      });
+
+      it('a GitLab answer goes into the command’s discussion, and a GitHub answer is an issue comment, each with its marker', async () => {
+        const { d, mr, sent, row } = await commanded('where', { end: FAILED });
+        d.clearRequests();
+        await answer();
+        const answers = mr.commandAnswers();
+        expect(answers).toHaveLength(1);
+        const [posted] = answers;
+        expect(posted).toMatchObject({
+          body: commandNote(row.id, requested(HEAD)),
+          // On GitLab the discussion the person's note opened; on GitHub the page, no thread.
+          threadId: sent.threadId,
+        });
+        expect(firstLineOf(posted!.body)).toBe(replyMarker(row.id));
+        expect(markerOf(posted!.body)).toBeNull();
+        expect(await commandRow(mr.branchId, sent.noteId)).toMatchObject({
+          status: 'done',
+          outcome: 'review_requested',
+          reason: null,
+          answer: requested(HEAD),
+          answerNoteId: posted!.id,
+          model: null,
+          finishedAt: expect.any(Date),
+        });
+        const posts = d.requests().filter((r) => r.startsWith('POST') && !r.includes('graphql'));
+        expect(posts.filter((r) => POST_OF_COMMAND.test(r))).toHaveLength(1);
+        if (provider === 'GitLab') {
+          expect(posts.join('\n')).toContain(`/discussions/${sent.threadId}/notes`);
+        } else {
+          expect(posts.join('\n')).toMatch(/\/issues\/7\/comments/);
+        }
+        // The job is done with it.
+        expect((await jobsOf(row.id)).map((j) => j.status)).toEqual(['succeeded']);
+      });
+
+      it('a retry after the restart but before the post answers what the first try decided, posts once and restarts nothing more', async () => {
+        const { d, mr, sent } = await commanded('retry-before-post', { end: FAILED });
+        mr.failNextPost(false, 'command');
+        await answer();
+        // The decision is on the row and the run waits again; nothing was posted.
+        const row = await commandRow(mr.branchId, sent.noteId);
+        expect(row).toMatchObject({
+          status: 'running',
+          outcome: 'review_requested',
+          answer: requested(HEAD),
+          answerNoteId: null,
+        });
+        const restarted = await runOf(mr.analysisId);
+        expect(restarted).toMatchObject({ status: 'waiting', requestedBy: mr.username('member') });
+        expect(mr.commandAnswers()).toEqual([]);
+
+        d.clearRequests();
+        await retryNow();
+        expect(await answer()).toBe(1);
+        // "Reviewing", not the "in progress" of the run the first try restarted.
+        const answers = mr.commandAnswers();
+        expect(answers.map((a) => a.body)).toEqual([commandNote(row.id, requested(HEAD))]);
+        expect(d.requests().filter((r) => POST_OF_COMMAND.test(r))).toHaveLength(1);
+        expect(await commandRow(mr.branchId, sent.noteId)).toMatchObject({
+          status: 'done',
+          outcome: 'review_requested',
+          answerNoteId: answers[0]!.id,
+        });
+        expect(await runOf(mr.analysisId)).toEqual(restarted);
+        expect(await reviewJobsOf(restarted.id)).toEqual([{ due: true }]);
+      });
+
+      it('a post whose answer is lost but which the provider stored: the retry finds the marker and posts nothing', async () => {
+        const { d, mr, sent } = await commanded('lost-post', { end: FAILED });
+        mr.failNextPost(true, 'command');
+        await answer();
+        const stored = mr.commandAnswers();
+        expect(stored).toHaveLength(1);
+        expect(await commandRow(mr.branchId, sent.noteId)).toMatchObject({
+          status: 'running',
+          answerNoteId: null,
+        });
+        d.clearRequests();
+        await retryNow();
+        await answer();
+        expect(d.requests().filter((r) => POST_OF_COMMAND.test(r))).toEqual([]);
+        expect(mr.commandAnswers()).toEqual(stored);
+        expect(await commandRow(mr.branchId, sent.noteId)).toMatchObject({
+          status: 'done',
+          outcome: 'review_requested',
+          answerNoteId: stored[0]!.id,
+        });
+      });
+
+      it('a note of a person that forges the answer’s marker is no answer: Qualor posts its own', async () => {
+        const { mr, sent, row } = await commanded('forged-marker', { end: FAILED });
+        mr.writeBeside(sent, `${replyMarker(row.id)}\n**AI review** · reply\n\nDone.`);
+        await answer();
+        expect(mr.commandAnswers().map((a) => a.body)).toEqual([
+          commandNote(row.id, requested(HEAD)),
+        ]);
+        expect(await commandRow(mr.branchId, sent.noteId)).toMatchObject({
+          status: 'done',
+          answerNoteId: mr.commandAnswers()[0]!.id,
+        });
+      });
+
+      it('a closed merge request ends the row skipped: closed, with no answer and no run', async () => {
+        const { d, mr, sent } = await commanded('closed', { end: FAILED });
+        const before = await runOf(mr.analysisId);
+        mr.close();
+        d.clearRequests();
+        await answer();
+        expect(await commandRow(mr.branchId, sent.noteId)).toMatchObject({
+          status: 'skipped',
+          reason: 'closed',
+          outcome: null,
+          answer: null,
+          finishedAt: expect.any(Date),
+        });
+        expect(mr.commandAnswers()).toEqual([]);
+        expect(d.requests().filter((r) => POST_OF_COMMAND.test(r))).toEqual([]);
+        expect(await runOf(mr.analysisId)).toEqual(before);
+      });
+
+      it.skipIf(provider === 'GitHub')(
+        'a GitLab discussion that is gone ends the row skipped: thread_gone, before any run is made',
+        async () => {
+          const { mr, sent } = await commanded('discussion-gone', { end: FAILED });
+          const before = await runOf(mr.analysisId);
+          mr.deleteThread(sent.threadId!);
+          await answer();
+          expect(await commandRow(mr.branchId, sent.noteId)).toMatchObject({
+            status: 'skipped',
+            reason: 'thread_gone',
+            answer: null,
+            finishedAt: expect.any(Date),
+          });
+          expect(await runOf(mr.analysisId)).toEqual(before);
+
+          // Gone only when the answer is posted: the run was restarted, and the row ends the same.
+          const late = await commanded('discussion-gone-at-post', { end: FAILED });
+          late.mr.goneOnNextPost();
+          await answer();
+          expect(await commandRow(late.mr.branchId, late.sent.noteId)).toMatchObject({
+            status: 'skipped',
+            reason: 'thread_gone',
+            answerNoteId: null,
+          });
+          expect(await runOf(late.mr.analysisId)).toMatchObject({ status: 'waiting' });
+        },
+      );
+
+      it('a branch with no newest analysis has nothing to review: the row ends failed: internal, with no answer', async () => {
+        const { d, mr, sent, row } = await commanded('no-analysis', { end: FAILED });
+        await h.ctx.db
+          .update(branches)
+          .set({ lastAnalysisId: null })
+          .where(eq(branches.id, mr.branchId));
+        d.clearRequests();
+        await answer();
+        expect(await commandRow(mr.branchId, sent.noteId)).toMatchObject({
+          status: 'failed',
+          reason: 'internal',
+          outcome: null,
+          answer: null,
+          finishedAt: expect.any(Date),
+        });
+        expect(mr.commandAnswers()).toEqual([]);
+        expect(d.requests().filter((r) => POST_OF_COMMAND.test(r))).toEqual([]);
+        // Nothing to try again: the job is done with it.
+        expect((await jobsOf(row.id)).map((j) => j.status)).toEqual(['succeeded']);
+      });
+
+      it('makes no model call and asks no budget: a day with no tokens left answers a command all the same', async () => {
+        const { mr, sent } = await commanded('no-budget', { end: FAILED });
+        await switchReviewOn(h.ctx.db, {
+          secretKey: h.ctx.config.secretKey,
+          fake: llm,
+          organizationId: h.organizationId,
+          userId: h.ctx.adminId,
+          consentAt: new Date(Date.now() - 3_600_000),
+          budgets: { tokensPerDay: 0 },
+        });
+        const calls = llm.requests.length;
+        await answer();
+        expect(await commandRow(mr.branchId, sent.noteId)).toMatchObject({
+          status: 'done',
+          outcome: 'review_requested',
+          model: null,
+          inputTokens: 0,
+          outputTokens: 0,
+        });
+        expect(callsSince(calls)).toEqual([]);
+        expect(
+          await h.ctx.db
+            .select()
+            .from(llmRequests)
+            .where(
+              and(
+                eq(llmRequests.feature, 'review-reply'),
+                eq(llmRequests.projectId, mr.project.id),
+              ),
+            ),
+        ).toEqual([]);
+      });
+
+      it('qualor review with AI review switched off meanwhile answers so, and the row ends done', async () => {
+        const { mr, sent } = await commanded('review-off', { end: FAILED });
+        const before = await runOf(mr.analysisId);
+        await reviewOff(h);
+        await answer();
+        const row = await commandRow(mr.branchId, sent.noteId);
+        expect(row).toMatchObject({
+          status: 'done',
+          outcome: 'review_off',
+          reason: null,
+          answer: REVIEW_OFF,
+        });
+        expect(mr.commandAnswers().map((a) => a.body)).toEqual([commandNote(row.id, REVIEW_OFF)]);
+        expect(await runOf(mr.analysisId)).toEqual(before);
+      });
+
+      it('qualor fix and qualor stop are answered when AI review is off, as when it is on', async () => {
+        const { mr } = await commanded('fix-stop', { body: 'qualor fix' });
+        const stop = mr.command('qualor stop');
+        await mr.decorate();
+        await reviewOff(h);
+        await answer();
+        const rows = await commandRows(mr.branchId);
+        expect(rows.map((r) => [r.command, r.status, r.outcome])).toEqual([
+          ['fix', 'done', 'not_available'],
+          ['stop', 'done', 'not_available'],
+        ]);
+        expect(mr.commandAnswers().map((a) => a.body)).toEqual(
+          rows.map((r) => commandNote(r.id, NOT_AVAILABLE)),
+        );
+        expect(rows[1]!.noteId).toBe(stop.noteId);
+      });
+
+      it('waits while the connection’s circuit is open: the command is queued again with no try spent, and answered once when it has closed', async () => {
+        const { d, mr, sent } = await commanded('circuit', { end: FAILED });
+        const runtime = githubDeps(h).runtime;
+        for (let n = 0; n < SCM_CIRCUIT_FAILURES; n += 1) runtime.circuit.failure(mr.connectionId);
+        d.clearRequests();
+        expect(await answer({ scmRuntime: runtime })).toBe(1);
+        // Nothing is asked of the provider, and no run is made: the decision comes after the wait.
+        expect(d.requests()).toEqual([]);
+        const row = await commandRow(mr.branchId, sent.noteId);
+        expect(row).toMatchObject({
+          status: 'queued',
+          answer: null,
+          outcome: null,
+          finishedAt: null,
+        });
+        expect(await runOf(mr.analysisId)).toMatchObject({ status: 'failed' });
+        expect((await jobsOf(row.id)).map((j) => [j.status, j.attempts])).toEqual([
+          ['succeeded', 1],
+          ['queued', 0],
+        ]);
+        // Once the circuit has closed, the next job answers.
+        runtime.circuit.success(mr.connectionId);
+        await retryNow();
+        await answer({ scmRuntime: runtime });
+        expect(await commandRow(mr.branchId, sent.noteId)).toMatchObject({
+          status: 'done',
+          outcome: 'review_requested',
+        });
+        expect(mr.commandAnswers()).toHaveLength(1);
+      });
+
+      it('a circuit that is closed to the post: the decision is kept, nothing is posted, and the next job posts it without a second run', async () => {
+        const { d, mr, sent } = await commanded('circuit-at-post', { end: FAILED });
+        const runtime = githubDeps(h).runtime;
+        // The first go (the merge request and the discussion) passes the circuit; the second, the
+        // post, finds it closed to it.
+        const tryPass = runtime.circuit.tryPass.bind(runtime.circuit);
+        let goes = 0;
+        vi.spyOn(runtime.circuit, 'tryPass').mockImplementation((id) =>
+          goes++ === 0 ? tryPass(id) : false,
+        );
+        d.clearRequests();
+        expect(await answer({ scmRuntime: runtime })).toBe(1);
+        expect(d.requests().filter((r) => POST_OF_COMMAND.test(r))).toEqual([]);
+        // The run was restarted and the decision is on the row, which waits in the queue.
+        const row = await commandRow(mr.branchId, sent.noteId);
+        expect(row).toMatchObject({
+          status: 'queued',
+          outcome: 'review_requested',
+          answer: requested(HEAD),
+          answerNoteId: null,
+          finishedAt: null,
+        });
+        const restarted = await runOf(mr.analysisId);
+        expect(restarted).toMatchObject({ status: 'waiting', requestedBy: mr.username('member') });
+        expect(mr.commandAnswers()).toEqual([]);
+        expect((await jobsOf(row.id)).map((j) => [j.status, j.attempts])).toEqual([
+          ['succeeded', 1],
+          ['queued', 0],
+        ]);
+
+        // The next job answers what was decided: "Reviewing", not "in progress", and no second run.
+        await retryNow();
+        expect(await answer()).toBe(1);
+        expect(mr.commandAnswers().map((a) => a.body)).toEqual([
+          commandNote(row.id, requested(HEAD)),
+        ]);
+        expect(await commandRow(mr.branchId, sent.noteId)).toMatchObject({
+          status: 'done',
+          outcome: 'review_requested',
+        });
+        expect(await runOf(mr.analysisId)).toEqual(restarted);
+        expect(await reviewJobsOf(restarted.id)).toEqual([{ due: true }]);
+      });
+
+      it('the restart queues a decoration: the summary then says the review is in progress, found beside the answer and updated in place', async () => {
+        const { mr } = await commanded('summary', { end: FAILED });
+        const [before, ...others] = mr.summaries();
+        expect(others).toEqual([]);
+        expect(before!.body).toContain('AI review failed');
+        expect(await answer()).toBe(1);
+        // The restart queued the decoration of the analysis; nothing ran it yet.
+        expect(await queuedDecorations(mr.analysisId)).toHaveLength(1);
+        const answered = mr.commandAnswers();
+        expect(answered).toHaveLength(1);
+        await mr.decorateQueued();
+        // The summary is the same note, updated: the answer is not taken for it, and no second
+        // summary is posted.
+        expect(mr.summaries()).toEqual([
+          { id: before!.id, body: expect.stringContaining('AI review in progress…') },
+        ]);
+        expect(mr.summaries()[0]!.body).not.toContain('AI review failed');
+        // The answer is left as it was.
+        expect(mr.commandAnswers()).toEqual(answered);
+        expect(await queuedDecorations(mr.analysisId)).toEqual([]);
+      });
     });
 
     it('the sweep ends an orphaned running row, and leaves a row whose job is there', async () => {

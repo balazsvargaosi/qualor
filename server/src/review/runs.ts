@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray, ne, or, sql, type SQL } from 'drizzle-orm';
 import type { Db, Executor, Tx } from '../db/client';
 import { uuidv7 } from '../db/ids';
-import { branches, jobs, reviewRuns } from '../db/schema';
+import { branches, jobs, reviewRuns, type ReviewRunStatus } from '../db/schema';
 import { enqueue } from '../queue/queue';
 import type { WorkerLogger } from '../queue/worker';
 import { tryLockBranchQueue } from '../scm/queue';
@@ -14,7 +14,8 @@ import { decorateRun, endRun, errorClass, type RunEnd } from './run-ends';
  * it: its job is due at once. The job decides the rest (job.ts). A newer analysis of the merge
  * request supersedes an older run, unless that run is storing its results already. A run that
  * ended for want of a snapshot waits again when one comes after all, while its analysis is still
- * the branch's newest.
+ * the branch's newest. A person's `qualor review` makes the newest analysis' run when it has none,
+ * or starts one that ended without a review again (requestReviewRun), with its job due at once.
  *
  * A branch's jobs run one at a time (their concurrency key), in the order they were queued, so a
  * newer run reads the findings of an older one only once that one has stored them. A job queued
@@ -84,15 +85,17 @@ const liveJobOf = (runId: SQL): SQL =>
                  AND ${jobs.status} IN ('queued', 'running')
                  AND ${jobs.payload} ->> 'runId' = (${runId})::text)`;
 
+type RunInput = { analysisId: string; projectId: string; branchId: string };
+
 /**
- * The run of a merge request analysis, `waiting` for its snapshot, and its job at the deadline,
- * 15 minutes from now; the branch's older runs are superseded first. Called by the ingestion stage
- * in the ingestion's transaction. Answers the run's id.
+ * The run of a merge request analysis, `waiting` for its snapshot, with the deadline 15 minutes
+ * from now; the branch's older runs are superseded first. `requestedBy` is the person who asked
+ * for it (`qualor review`), null for the run of an ingestion. The job of a run nobody asked for
+ * comes at the deadline: a snapshot that arrives wakes it before. The job of a requested run is due
+ * at once, since a snapshot that is ready was linked before the run existed and no wake will come
+ * (the job itself waits for the deadline when it finds none yet). Answers the run's id.
  */
-export async function createReviewRun(
-  tx: Tx,
-  input: { analysisId: string; projectId: string; branchId: string },
-): Promise<string> {
+async function insertRun(tx: Tx, input: RunInput, requestedBy: string | null): Promise<string> {
   const id = uuidv7();
   await supersedeRuns(tx, input.branchId, id);
   // The deadline and the job's time are the same instant: one expression in one transaction.
@@ -102,10 +105,104 @@ export async function createReviewRun(
     branchId: input.branchId,
     analysisId: input.analysisId,
     status: 'waiting',
+    requestedBy,
     deadlineAt: deadlineFromNow(),
   });
-  await queueJob(tx, { id, branchId: input.branchId }, deadlineFromNow());
+  await queueJob(
+    tx,
+    { id, branchId: input.branchId },
+    requestedBy === null ? deadlineFromNow() : undefined,
+  );
   return id;
+}
+
+/**
+ * The run of a merge request analysis, `waiting` for its snapshot, and its job at the deadline,
+ * 15 minutes from now; the branch's older runs are superseded first. Called by the ingestion stage
+ * in the ingestion's transaction. Answers the run's id.
+ */
+export function createReviewRun(tx: Tx, input: RunInput): Promise<string> {
+  return insertRun(tx, input, null);
+}
+
+/** The runs a request starts again: the ones that ended without a review. */
+const RESTARTABLE: readonly ReviewRunStatus[] = ['skipped', 'failed', 'superseded'];
+
+/**
+ * A person's `qualor review` (6I-4): the review of the branch's newest analysis starts, or starts
+ * again, for `requestedBy`. An analysis with no run gets one, as an ingestion makes it (the branch's
+ * older runs superseded, the deadline 15 minutes on). A run that ended skipped, failed or
+ * superseded becomes a fresh `waiting` run in the same row, so that an analysis still has one run
+ * however often a review is asked for: everything the earlier try left on it is reset, a new
+ * deadline is set, and what that try spent stays in its `llm_requests` rows, which the day's budget
+ * counts. The run's job is due now either way. A requested run is reviewed even as a draft
+ * (job.ts). The analysis' decoration is queued in the same transaction, so that the summary says
+ * the review is in progress instead of how the earlier run ended.
+ *
+ * The caller holds the branch's decoration lock and then the run's row, in that order, as
+ * ingestion and the review job do. A run that waits, runs or is done is not started again: the
+ * caller answers that instead, and this throws. Answers what it did.
+ */
+export async function requestReviewRun(
+  tx: Tx,
+  input: RunInput & { requestedBy: string },
+  logger: Pick<WorkerLogger, 'info' | 'warn'>,
+): Promise<'created' | 'restarted'> {
+  const [found] = await tx
+    .select({ id: reviewRuns.id, status: reviewRuns.status })
+    .from(reviewRuns)
+    .where(eq(reviewRuns.analysisId, input.analysisId));
+  if (found !== undefined && !RESTARTABLE.includes(found.status)) {
+    throw new Error(`a review run that is ${found.status} is not started again`);
+  }
+  const runId =
+    found === undefined
+      ? await insertRun(tx, input, input.requestedBy)
+      : await restartRun(tx, { id: found.id, branchId: input.branchId }, input.requestedBy);
+  await decorateRun(
+    tx,
+    { id: runId, analysisId: input.analysisId, branchId: input.branchId },
+    logger,
+  );
+  return found === undefined ? 'created' : 'restarted';
+}
+
+/** The run again, as a fresh `waiting` run asked for by `requestedBy`, its job due now. */
+async function restartRun(tx: Tx, run: RunRef, requestedBy: string): Promise<string> {
+  await tx
+    .update(reviewRuns)
+    .set({
+      status: 'waiting',
+      phase: null,
+      reason: null,
+      detail: null,
+      requestedBy,
+      snapshotId: null,
+      headSha: null,
+      sinceSha: null,
+      diffDigest: null,
+      tier: null,
+      reviewers: [],
+      providerHost: null,
+      model: null,
+      modelCalls: 0,
+      toolCalls: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      costMicroUsd: null,
+      tokenLimitReached: false,
+      snapshotPartial: false,
+      summary: null,
+      findingsNew: 0,
+      findingsOpen: 0,
+      findingsFixed: 0,
+      deadlineAt: deadlineFromNow(),
+      startedAt: null,
+      finishedAt: null,
+    })
+    .where(eq(reviewRuns.id, run.id));
+  await dueNow(tx, run);
+  return run.id;
 }
 
 /**

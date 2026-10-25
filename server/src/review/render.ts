@@ -29,7 +29,8 @@ import { ANSWER_LIMITS, type ReviewNote } from './schemas';
  * The first note of a finding's thread (aiThreadNote) is made of the same pieces, and of the one
  * text no model word goes through `safeProse` in: the lines of its one-click suggestion, code that a
  * person applies, which the storing of the finding checked and which are checked again here. So is
- * Qualor's answer to a person's reply in such a thread (replyNote).
+ * Qualor's answer to a person's reply in such a thread (replyNote). Its answer to a command
+ * (commandNote) is Qualor's own sentence, with a commit in a code span, and holds no other word.
  */
 
 /** The most bytes of the section; the summary comment as a whole has 16 KiB. */
@@ -635,4 +636,14 @@ export function replyNote(
     if (shown !== '') return [...head, '', shown, ...tail].join('\n');
   }
   return [...head, ...tail].join('\n');
+}
+
+/**
+ * Qualor's answer to a command (6I-4), on GitLab or GitHub: the reply marker of the ledger row it
+ * answers (`rowId`), which the job looks for before it posts again, the fixed heading of an
+ * answer, and `text`. The text is fixed (commands.ts: a sentence of Qualor's, a commit in a code
+ * span): no word of a person or of the model, so it does not go through `safeProse`.
+ */
+export function commandNote(rowId: string, text: string): string {
+  return [replyMarker(rowId), REPLY_HEADING, '', text].join('\n');
 }

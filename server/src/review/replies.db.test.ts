@@ -10,6 +10,7 @@ import {
   largestNoteIds,
   type NewReply,
   recordAnswerNote,
+  recordCommandDecision,
   recordDecision,
   REPLY_TOKEN_BUDGET,
   type ReplyDecision,
@@ -308,6 +309,32 @@ describe('the replies ledger (6I-4)', () => {
         ...decision,
       });
     }
+  });
+
+  it('the answer to a command is recorded once, with its outcome and no other column', async () => {
+    const id = await insertOne({ threadId: null, kind: 'command', command: 'review' });
+    const before = await stored(id);
+    await recordCommandDecision(t.db, id, {
+      outcome: 'review_requested',
+      text: 'Reviewing this commit (` aaaaaaaaaaaa `).',
+    });
+    // A job that decides again finds the text kept: a command is answered once.
+    await recordCommandDecision(t.db, id, { outcome: 'in_progress', text: 'Another text.' });
+    expect(await stored(id)).toEqual({
+      ...before,
+      outcome: 'review_requested',
+      answer: 'Reviewing this commit (` aaaaaaaaaaaa `).',
+    });
+    // It is no model's decision: no verdict, no model, no tokens.
+    expect(await stored(id)).toMatchObject({
+      verdict: null,
+      model: null,
+      inputTokens: 0,
+      outputTokens: 0,
+      costMicroUsd: null,
+      answerNoteId: null,
+      status: 'queued',
+    });
   });
 
   it('endReply ends a row once and sets finished_at', async () => {

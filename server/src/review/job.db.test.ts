@@ -39,11 +39,11 @@ import { createLlmRuntime } from '../llm/job';
 import type { StoredPricing, StoredProvider } from '../llm/settings';
 import { runUntilIdle, startWorker } from '../queue/worker';
 import { markerOf } from '../scm/markdown';
-import { enqueueLatestDecoration, SCM_QUEUE } from '../scm/queue';
+import { enqueueLatestDecoration, lockBranchQueue, SCM_QUEUE } from '../scm/queue';
 import { parseInternalHosts } from '../scm/url';
 import { REVIEW_LEASE_MS, reviewHandlers, type ReviewJobDeps } from './job';
 import { mergeRequestStateHandlers, REVIEW_MR_STATE_QUEUE } from './lifecycle';
-import { AI_REVIEW_QUEUE } from './runs';
+import { AI_REVIEW_QUEUE, requestReviewRun } from './runs';
 import type { ReviewBudgets } from './settings';
 import { storeSnapshotUpload, unpackSnapshot } from './snapshot-store';
 import { reviewUsageToday } from './usage';
@@ -566,6 +566,65 @@ describe('the ai-review job (6I-3, R15)', () => {
     // The snapshot stays: the merge request is still open.
     expect(await snapshotsOfBranch(run.branchId)).toHaveLength(1);
     expect(await decorationsOf(analysisId)).toHaveLength(1);
+  });
+
+  it('a draft is reviewed when a person asked for the run, and the next push is skipped as a draft again', async () => {
+    const mr = mergeRequest({ draft: true });
+    const first = await analysisOf(mr, 1);
+    await snapshotOf(first, mr);
+    expect(await runReviews()).toBe(1);
+    const skipped = await runOf(first);
+    expect(skipped).toMatchObject({ status: 'skipped', reason: 'draft', requestedBy: null });
+
+    // `qualor review`: the same run waits again, asked for by a person.
+    await h.ctx.db.transaction(async (tx) => {
+      await lockBranchQueue(tx, skipped.branchId);
+      await requestReviewRun(
+        tx,
+        { analysisId: first, projectId: p.id, branchId: skipped.branchId, requestedBy: 'octocat' },
+        silentLogger,
+      );
+    });
+    const calls = reviewCalls().length;
+    llm.enqueue(reviewResponder(FOUND), reviewResponder(FOUND));
+    expect(await runReviews()).toBe(1);
+    expect(await runOf(first)).toMatchObject({
+      status: 'done',
+      reason: null,
+      requestedBy: 'octocat',
+      headSha: HEAD,
+      findingsNew: 1,
+    });
+    expect(reviewCalls()).toHaveLength(calls + 2);
+
+    // The next push is no request of anyone's: its run is skipped as a draft again.
+    const second = await analysisOf(mr, 2);
+    await snapshotOf(second, mr);
+    expect(await runReviews()).toBe(1);
+    expect(await runOf(second)).toMatchObject({
+      status: 'skipped',
+      reason: 'draft',
+      requestedBy: null,
+    });
+    expect(reviewCalls()).toHaveLength(calls + 2);
+  });
+
+  it('a requested run is skipped as closed when its merge request is merged, draft or not', async () => {
+    const mr = mergeRequest({ state: 'merged', draft: true });
+    const analysisId = await analysisOf(mr, 1);
+    await snapshotOf(analysisId, mr);
+    await h.ctx.db
+      .update(reviewRuns)
+      .set({ requestedBy: 'octocat' })
+      .where(eq(reviewRuns.analysisId, analysisId));
+    const calls = reviewCalls().length;
+    expect(await runReviews()).toBe(1);
+    expect(await runOf(analysisId)).toMatchObject({
+      status: 'skipped',
+      reason: 'closed',
+      requestedBy: 'octocat',
+    });
+    expect(reviewCalls()).toHaveLength(calls);
   });
 
   it('a merge request the provider cannot be asked about is reviewed all the same', async () => {

@@ -15,9 +15,10 @@ export type { ReplyOutcome, ReplyReason } from '../db/schema';
  * whichever of decoration and a webhook finds it first queues its answer, and the other finds it
  * there. The job that answers writes each step on the row as it is done, so a retry resumes after
  * the last one: the model's decision first, then the status the reply changed, then the id of the
- * note posted, then the end. Every write here is made once: a row that has its decision, its
- * change, its answer note or its end keeps them, but for a superseded row's decision, dropped
- * with its end.
+ * note posted, then the end. A command makes no model call: its decision is the fixed text it is
+ * answered with and the outcome, stored once the run it asked for is made. Every write here is made
+ * once: a row that has its decision, its change, its answer note or its end keeps them, but for a
+ * superseded row's decision, dropped with its end.
  */
 
 /** The most tokens (input and output, over all its calls) the conversation of one reply may use. */
@@ -132,6 +133,23 @@ export async function recordStatusChange(
         isNull(reviewReplies.outcome),
       ),
     );
+}
+
+/**
+ * Stores what a command row is answered with, for a row that has no answer yet: the fixed text, and
+ * the outcome its end keeps. It is written in the transaction that carried the decision out (the
+ * run it made or restarted), so that a job that takes the row again posts this text and decides
+ * nothing a second time.
+ */
+export async function recordCommandDecision(
+  db: Executor,
+  id: string,
+  decision: { outcome: ReplyOutcome; text: string },
+): Promise<void> {
+  await db
+    .update(reviewReplies)
+    .set({ answer: decision.text, outcome: decision.outcome })
+    .where(and(eq(reviewReplies.id, id), isNull(reviewReplies.answer)));
 }
 
 /** Stores the id of the note Qualor posted as its answer, for a row that has none yet. */

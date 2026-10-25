@@ -20,6 +20,7 @@ import { lockBranchQueue, SCM_QUEUE } from '../scm/queue';
 import {
   AI_REVIEW_QUEUE,
   reconcileStuckReviewRuns,
+  requestReviewRun,
   REVIEW_SNAPSHOT_WAIT_SECONDS,
   supersedeRuns,
   wakeReviewRun,
@@ -362,6 +363,238 @@ describe('the review run lifecycle (6I-3, R15)', () => {
     expect(await runOf(run.analysisId)).toMatchObject({ status: 'skipped', reason: 'no_snapshot' });
     expect(await jobsOf(run.id)).toEqual([]);
     expect((await runOf(newer.analysisId)).status).toBe('waiting');
+  });
+
+  describe('a run a person asks for (6I-4, requestReviewRun)', () => {
+    /** The analysis of a new merge request that has no run: AI review was off when it was ingested. */
+    const withoutRun = async (mr: number, n = 1) => {
+      await writeLlmSettings(h.ctx.db, DEFAULT_LLM_SETTINGS);
+      const analysisId = await p.ingestOk(report(mr, n));
+      await reviewOn();
+      expect(await runsOf(analysisId)).toEqual([]);
+      return analysisId;
+    };
+    /** The merge request's analysis, with a run: waiting for its snapshot, as ingestion made it. */
+    const withRun = async (mr: number) => {
+      const run = await runOf(await p.ingestOk(report(mr)));
+      return { run, mr };
+    };
+    const branchOf = async (analysisId: string) => {
+      const [found] = await h.ctx.db
+        .select({ branchId: analyses.branchId })
+        .from(analyses)
+        .where(eq(analyses.id, analysisId));
+      return found!.branchId!;
+    };
+    /**
+     * What a command does: the locks come first, the branch's decoration lock and then the run's
+     * row (the caller's, as ingestion's and the review job's are); the run is asked for under them.
+     */
+    const request = (analysisId: string, branchId: string, requestedBy = 'octocat') =>
+      h.ctx.db.transaction(async (tx) => {
+        await lockBranchQueue(tx, branchId);
+        return requestReviewRun(
+          tx,
+          { analysisId, projectId: p.id, branchId, requestedBy },
+          sweepLogger,
+        );
+      });
+    /** The run ended as `end` says, after a try that left its traces (spend, summary, findings) on it. */
+    const endedWithTraces = async (
+      run: { id: string; analysisId: string },
+      mr: number,
+      end: {
+        status: 'skipped' | 'failed' | 'superseded' | 'done';
+        reason: 'draft' | 'no_snapshot' | 'budget_spent' | 'provider_error' | 'internal' | null;
+      },
+    ) => {
+      // A snapshot the run read: a real row, which the restart must let go of.
+      const snapshotId = await snapshotOf(run.analysisId, mr);
+      await h.ctx.db
+        .update(reviewRuns)
+        .set({
+          ...end,
+          phase: null,
+          detail: end.status === 'skipped' ? 'A_CODE' : null,
+          requestedBy: 'olduser',
+          snapshotId,
+          headSha: revision(1),
+          sinceSha: revision(2),
+          diffDigest: 'd'.repeat(64),
+          tier: 'lite',
+          reviewers: ['quality', 'tests'],
+          providerHost: 'llm.example',
+          model: 'a-model',
+          modelCalls: 3,
+          toolCalls: 4,
+          inputTokens: 3_000,
+          outputTokens: 300,
+          costMicroUsd: 1_234,
+          tokenLimitReached: true,
+          snapshotPartial: true,
+          summary: { verdict: 'The earlier try.', walkthrough: [], notes: [] },
+          findingsNew: 2,
+          findingsOpen: 3,
+          findingsFixed: 1,
+          startedAt: new Date(Date.now() - 7_200_000),
+          finishedAt: new Date(Date.now() - 3_600_000),
+          deadlineAt: new Date(Date.now() - 3_600_000),
+        })
+        .where(eq(reviewRuns.id, run.id));
+      // An ended run has no job.
+      await h.ctx.db.delete(jobs).where(sql`${jobs.payload} ->> 'runId' = ${run.id}`);
+      await h.ctx.db.delete(jobs).where(eq(jobs.queue, SCM_QUEUE));
+    };
+
+    it('makes the run of the newest analysis when it has none: waiting, due at once, with who asked', async () => {
+      const analysisId = await withoutRun(nextMergeRequest());
+      const branchId = await branchOf(analysisId);
+      const before = Date.now();
+      expect(await request(analysisId, branchId, 'octocat')).toBe('created');
+      const after = Date.now();
+      const run = await runOf(analysisId);
+      expect(run).toMatchObject({
+        projectId: p.id,
+        branchId,
+        status: 'waiting',
+        phase: null,
+        reason: null,
+        requestedBy: 'octocat',
+        headSha: null,
+        startedAt: null,
+        finishedAt: null,
+      });
+      const wait = REVIEW_SNAPSHOT_WAIT_SECONDS * 1_000;
+      expect(run.deadlineAt.getTime()).toBeGreaterThanOrEqual(before + wait - 5_000);
+      expect(run.deadlineAt.getTime()).toBeLessThanOrEqual(after + wait + 5_000);
+      // Its job is due now, not at the deadline: a snapshot that is ready was linked before the run
+      // existed, so no wake comes. The job decides when there is none yet (job.ts).
+      expect(await jobsOf(run.id)).toEqual([
+        {
+          id: expect.any(String),
+          concurrencyKey: `ai-review:branch:${branchId}`,
+          maxAttempts: 2,
+          runAt: expect.any(Date),
+          due: true,
+        },
+      ]);
+      // The summary of the merge request is decorated again, so that it says the review is in progress.
+      expect(await decorationsOf(analysisId)).toHaveLength(1);
+    });
+
+    it('a run it makes supersedes the branch’s older runs, as an ingestion’s does', async () => {
+      const mr = nextMergeRequest();
+      const { run: older } = await withRun(mr);
+      const analysisId = await withoutRun(mr, 2);
+      expect(await jobsOf(older.id)).toHaveLength(1);
+      expect(await request(analysisId, older.branchId)).toBe('created');
+      expect(await runOf(older.analysisId)).toMatchObject({
+        status: 'superseded',
+        finishedAt: expect.any(Date),
+      });
+      expect(await jobsOf(older.id)).toEqual([]);
+      expect(await runOf(analysisId)).toMatchObject({ status: 'waiting', requestedBy: 'octocat' });
+    });
+
+    it.each([
+      ['skipped', 'draft'],
+      ['skipped', 'no_snapshot'],
+      ['skipped', 'budget_spent'],
+      ['failed', 'provider_error'],
+      ['failed', 'internal'],
+      ['superseded', null],
+    ] as const)(
+      'restarts a %s run (%s): the same row, as a fresh waiting run, due at once',
+      async (status, reason) => {
+        const { run, mr } = await withRun(nextMergeRequest());
+        await endedWithTraces(run, mr, { status, reason });
+        const before = Date.now();
+        expect(await request(run.analysisId, run.branchId, 'octocat')).toBe('restarted');
+        const restarted = await runOf(run.analysisId);
+        // One run for the analysis, still: its row is the earlier try's, with nothing of it left.
+        expect(await runsOf(run.analysisId)).toHaveLength(1);
+        expect(restarted).toMatchObject({
+          id: run.id,
+          projectId: p.id,
+          branchId: run.branchId,
+          analysisId: run.analysisId,
+          createdAt: run.createdAt,
+          status: 'waiting',
+          phase: null,
+          reason: null,
+          detail: null,
+          requestedBy: 'octocat',
+          snapshotId: null,
+          headSha: null,
+          sinceSha: null,
+          diffDigest: null,
+          tier: null,
+          reviewers: [],
+          providerHost: null,
+          model: null,
+          modelCalls: 0,
+          toolCalls: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          costMicroUsd: null,
+          tokenLimitReached: false,
+          snapshotPartial: false,
+          summary: null,
+          findingsNew: 0,
+          findingsOpen: 0,
+          findingsFixed: 0,
+          startedAt: null,
+          finishedAt: null,
+        });
+        // A new deadline, 15 minutes on; and the job is due now, with the run's key.
+        const wait = REVIEW_SNAPSHOT_WAIT_SECONDS * 1_000;
+        expect(restarted.deadlineAt.getTime()).toBeGreaterThanOrEqual(before + wait - 5_000);
+        expect(await jobsOf(run.id)).toEqual([
+          {
+            id: expect.any(String),
+            concurrencyKey: `ai-review:branch:${run.branchId}`,
+            maxAttempts: 2,
+            runAt: expect.any(Date),
+            due: true,
+          },
+        ]);
+        expect(await decorationsOf(run.analysisId)).toHaveLength(1);
+      },
+    );
+
+    it('moves the job an ended run still has queued: one job, due at once', async () => {
+      const { run } = await withRun(nextMergeRequest());
+      await h.ctx.db
+        .update(reviewRuns)
+        .set({ status: 'skipped', reason: 'no_snapshot', finishedAt: new Date() })
+        .where(eq(reviewRuns.id, run.id));
+      expect(await jobsOf(run.id)).toEqual([expect.objectContaining({ due: false })]);
+      expect(await request(run.analysisId, run.branchId)).toBe('restarted');
+      expect(await jobsOf(run.id)).toEqual([expect.objectContaining({ due: true })]);
+    });
+
+    it.each(['waiting', 'running', 'done'] as const)(
+      'never restarts a run that is %s: it throws and changes nothing',
+      async (status) => {
+        const { run, mr } = await withRun(nextMergeRequest());
+        if (status !== 'waiting') {
+          await endedWithTraces(run, mr, { status: 'done', reason: null });
+          await h.ctx.db
+            .update(reviewRuns)
+            .set({
+              status,
+              phase: status === 'running' ? 'judge' : null,
+              finishedAt: status === 'running' ? null : new Date(),
+            })
+            .where(eq(reviewRuns.id, run.id));
+        }
+        const held = await runOf(run.analysisId);
+        const jobsBefore = await jobsOf(run.id);
+        await expect(request(run.analysisId, run.branchId)).rejects.toThrow();
+        expect(await runOf(run.analysisId)).toEqual(held);
+        expect(await jobsOf(run.id)).toEqual(jobsBefore);
+      },
+    );
   });
 
   describe('the sweep of runs whose job is gone (reconcileStuckReviewRuns)', () => {

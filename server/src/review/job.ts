@@ -91,8 +91,8 @@ import {
  *    one, `skipped: snapshot_rejected`;
  * 5. the run is `running`, with its snapshot, head and last reviewed commit;
  * 6. the merge request as its provider says it is now: merged or closed, the branch's snapshots
- *    are deleted and the run `skipped: closed`; a draft, `skipped: draft`; no answer, the review
- *    goes on;
+ *    are deleted and the run `skipped: closed`; a draft, `skipped: draft`, unless a person asked for
+ *    this run (`qualor review`, `requested_by`); no answer, the review goes on;
  * 7–9. nothing reviewable changed (`empty_diff`), the same diff as the last review that was done
  *    (`unchanged`), no tokens left today or too few for the smallest share of the review
  *    (`budget_spent`; detail `too_large` when even Tokens per review is too few for a merge request
@@ -459,7 +459,11 @@ class ReviewJob {
       await deleteBranchSnapshots(db, run.branchId);
       return this.endRunning(run, { status: 'skipped', reason: 'closed' });
     }
-    if (state?.draft === true) return this.endRunning(run, { status: 'skipped', reason: 'draft' });
+    // A draft is reviewed when a person asked for this run. A push after it makes a run of its own,
+    // which nobody asked for.
+    if (state?.draft === true && run.requestedBy === null) {
+      return this.endRunning(run, { status: 'skipped', reason: 'draft' });
+    }
 
     const opened = run.snapshotId === null ? null : await openSnapshotReader(db, run.snapshotId);
     if (opened === null) {

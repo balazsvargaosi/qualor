@@ -7,13 +7,14 @@ import {
   FORBIDDEN_ANYWHERE,
   outsideCodeSpans,
 } from '../../test/markdown-check';
-import { markerOf, replyMarker } from '../scm/markdown';
+import { codeSpan, markerOf, replyMarker } from '../scm/markdown';
 import {
   AI_SECTION_MAX_BYTES,
   AI_THREAD_MAX_BYTES,
   aiSummarySection,
   aiThreadBody,
   aiThreadNote,
+  commandNote,
   REPLY_NOTE_MAX_BYTES,
   replyNote,
   withMergeRequestHead,
@@ -1135,5 +1136,24 @@ describe('the answer to a reply', () => {
     // Lines that fit are kept whole: twenty lines of plain words are all there.
     const plain = Array.from({ length: 20 }, (_, i) => `Line ${i + 1} of the answer.`).join('\n');
     expect(answerLines(replyNote(ROW, plain, 'wont_fix'), true)).toEqual(plain.split('\n'));
+  });
+});
+
+describe('the answer to a command', () => {
+  const ROW = '01920000-0000-7000-8000-0000000000bb';
+
+  it('is the reply marker of its row, the fixed heading and the text as it was given', () => {
+    const text = `Reviewing this commit (${codeSpan(SHA.slice(0, 12))}).`;
+    expect(commandNote(ROW, text).split('\n')).toEqual([
+      `<!-- qualor:reply ${ROW} -->`,
+      '**AI review** · reply',
+      '',
+      'Reviewing this commit (` aaaaaaaaaaaa `).',
+    ]);
+  });
+
+  it('is never taken for a thread or a summary: the marker is no marker of either', () => {
+    expect(markerOf(commandNote(ROW, 'A review of this commit is in progress.'))).toBeNull();
+    expect(() => commandNote('not-a-uuid', 'Text.')).toThrow();
   });
 });
