@@ -1,37 +1,44 @@
 import { describe, expect, it } from 'vitest';
-import { askWithRoom, MAX_REFUSED_ROOMS, outputLimitRefused, RefusedRooms } from './output-room';
+import { askWithRoom, MAX_REFUSED_ROOMS, outputLimitRefusal, RefusedRooms } from './output-room';
 import { LlmError, type ProviderConfig } from './types';
 
-/** The words of the providers for a limit that is more than the model takes (each pinned as given). */
-const KNOWN: [string, string][] = [
+/**
+ * The words of the providers for a limit that is more than the model takes (each pinned as given),
+ * and whose limit it is: a cap of the model's own, or the context window that the prompt shares.
+ */
+const KNOWN: [string, string, 'cap' | 'context'][] = [
   [
     'Anthropic',
     'max_tokens: 20384 > 8192, which is the maximum allowed number of output tokens for claude-3-5-sonnet-20241022',
+    'cap',
   ],
   [
     'OpenAI',
     'max_tokens is too large: 20000. This model supports at most 16384 completion tokens, whereas you provided 20000.',
+    'cap',
   ],
   [
     'vLLM and the servers that word it as OpenAI does',
     "This model's maximum context length is 8192 tokens. However, you requested 9000 tokens (4000 in the messages, 5000 in the completion). Please reduce the length of the messages or completion.",
+    'context',
   ],
   [
     // As the controller remembers it: Anthropic's older models, when what is sent and what is
     // asked for pass the context window together.
     'Anthropic, when the input and the limit pass the context window together',
     'input length and `max_tokens` exceed context limit: 190000 + 20000 > 200000, decrease input length or `max_tokens` and try again',
+    'context',
   ],
 ];
 
-describe('outputLimitRefused: the words of a refusal of the output limit', () => {
-  it.each(KNOWN)('knows what %s says', (_who, message) => {
-    expect(outputLimitRefused(message)).toBe(true);
+describe('outputLimitRefusal: the words of a refusal of the output limit, and whose limit it is', () => {
+  it.each(KNOWN)('knows what %s says, and whose limit it is', (_who, message, whose) => {
+    expect(outputLimitRefusal(message)).toBe(whose);
   });
 
-  it.each(KNOWN)('does not mind the case: %s', (_who, message) => {
-    expect(outputLimitRefused(message.toUpperCase())).toBe(true);
-    expect(outputLimitRefused(message.toLowerCase())).toBe(true);
+  it.each(KNOWN)('does not mind the case: %s', (_who, message, whose) => {
+    expect(outputLimitRefusal(message.toUpperCase())).toBe(whose);
+    expect(outputLimitRefusal(message.toLowerCase())).toBe(whose);
   });
 
   it.each([
@@ -39,29 +46,41 @@ describe('outputLimitRefused: the words of a refusal of the output limit', () =>
     [
       'the other field of the OpenAI API',
       'max_completion_tokens is too large: 20000. This model supports at most 16384 completion tokens, whereas you provided 20000.',
+      'cap',
     ],
     [
       'the newer words of vLLM',
       "'max_tokens' or 'max_completion_tokens' is too large: 5000. This model's maximum context length is 8192 tokens and your request has 4500 input tokens (5000 > 8192 - 4500).",
+      // It says "is too large" as OpenAI does, but it names the window the prompt shares.
+      'context',
     ],
     [
       'a request whose tools take room too',
       "This model's maximum context length is 8192 tokens. However, you requested 9000 tokens (7000 in the messages, 1000 in the functions, 1000 in the completion). Please reduce the length of the messages, functions, or completion.",
+      'context',
     ],
     [
       "OpenAI's other wording",
       "Invalid 'max_tokens': integer above maximum value. Expected a value <= 4096, but got 8000 instead.",
+      'cap',
     ],
     [
       "Anthropic's context window wording without its backticks",
       'input length and max_tokens exceed context limit: 190000 + 20000 > 200000, decrease input length or max_tokens and try again',
+      'context',
     ],
     [
       "Anthropic's context window wording in quotes, with the verb and the article of another form",
       "Input length and 'max_tokens' exceeds the context limit: 190000 + 20000 > 200000.",
+      'context',
     ],
-  ])('knows %s', (_what, message) => {
-    expect(outputLimitRefused(message)).toBe(true);
+    [
+      'the completion counted beside the messages, with the window not named',
+      'You requested 9000 tokens (4000 in the messages, 5000 in the completion). Please reduce the length of the messages or completion.',
+      'context',
+    ],
+  ])('knows %s, and whose limit it is', (_what, message, whose) => {
+    expect(outputLimitRefusal(message)).toBe(whose);
   });
 
   it.each([
@@ -94,7 +113,7 @@ describe('outputLimitRefused: the words of a refusal of the output limit', () =>
       'input length exceeds context limit: 210000 > 200000, decrease input length and try again',
     ],
   ])('does not take %s for one', (_what, message) => {
-    expect(outputLimitRefused(message)).toBe(false);
+    expect(outputLimitRefusal(message)).toBeNull();
   });
 });
 
@@ -140,13 +159,16 @@ describe('askWithRoom: one call, asked again without the room that a model refus
     timeoutSeconds: 5,
     ...over,
   });
+  /** A refusal of a cap the model has of its own. */
   const refused = () => new LlmError('rejected', 'refused', 400, null, false, true);
+  /** A refusal of the context window, which the prompt shares with the limit. */
+  const refusedContext = () => new LlmError('rejected', 'refused', 400, null, false, true, true);
   /** An attempt that is refused above `most` tokens, and records what it was asked for. */
-  const attempts = (most: number, asked: number[] = []) => ({
+  const attempts = (most: number, asked: number[] = [], refusal = refused) => ({
     asked,
     attempt: (tokens: number) => {
       asked.push(tokens);
-      return tokens > most ? Promise.reject(refused()) : Promise.resolve(`answer of ${tokens}`);
+      return tokens > most ? Promise.reject(refusal()) : Promise.resolve(`answer of ${tokens}`);
     },
   });
   const limits = { maxOutputTokens: 1_200, reasoningAllowance: 4_000 };
@@ -175,6 +197,36 @@ describe('askWithRoom: one call, asked again without the room that a model refus
     expect(run.asked).toEqual([5_200, 1_200]);
     expect(await askWithRoom(pair, limits, run.attempt)).toBe('answer of 1200');
     expect(run.asked).toEqual([5_200, 1_200, 1_200]);
+  });
+
+  it('asks again without the room when the context is refused, and does not remember the model: the next call asks for the room again', async () => {
+    const pair = config();
+    const run = attempts(4_096, [], refusedContext);
+    expect(await askWithRoom(pair, limits, run.attempt)).toBe('answer of 1200');
+    expect(await askWithRoom(pair, limits, run.attempt)).toBe('answer of 1200');
+    // What the model takes depends on how long the prompt is: each call asks for the room, and is
+    // asked again without it when the prompt leaves none.
+    expect(run.asked).toEqual([5_200, 1_200, 5_200, 1_200]);
+    // A prompt that leaves room is given it.
+    const roomy = attempts(100_000);
+    expect(await askWithRoom(pair, limits, roomy.attempt)).toBe('answer of 5200');
+  });
+
+  it('remembers a model only for a cap of its own, whatever the context refused before', async () => {
+    const pair = config();
+    const asked: number[] = [];
+    let refusal = refusedContext;
+    const attempt = (tokens: number) => {
+      asked.push(tokens);
+      return tokens > 4_096 ? Promise.reject(refusal()) : Promise.resolve('answer');
+    };
+    await askWithRoom(pair, limits, attempt);
+    refusal = refused;
+    await askWithRoom(pair, limits, attempt);
+    await askWithRoom(pair, limits, attempt);
+    // The context first, which is not remembered; then the cap, which is; and then the model goes
+    // without the room at once.
+    expect(asked).toEqual([5_200, 1_200, 5_200, 1_200, 1_200]);
   });
 
   it('remembers a pair of a base URL and a model, and no other', async () => {

@@ -792,7 +792,8 @@ describe('converse: conversations with read-only tools (R5)', () => {
   describe('a model that refuses the room to think', () => {
     // A call carries the room apart from the answer's tokens, and the adapter asks for both. A model
     // that refuses a limit that large is asked again, in the same call, for the answer's tokens
-    // alone, and the process does not ask it for the room again.
+    // alone, and the process does not ask it for the room again when a cap of its own is what it
+    // refused.
     const ASKED = { maxOutputTokens: 1_200, reasoningAllowance: 4_000 };
     const call = { system: 'S', user: 'U', ...ASKED };
     const conversation: LlmConversation = { ...start, ...ASKED };
@@ -820,9 +821,15 @@ describe('converse: conversations with read-only tools (R5)', () => {
       body: kind === 'anthropic' ? anthropicAnswer('{"ok":true}') : openAiAnswer('{"ok":true}'),
     });
     const GENERIC = 'The provider refused the request (HTTP 400); check the base URL and model';
-    const REFUSALS: [string, (typeof KINDS)[number], unknown][] = [
+    /**
+     * What each provider says of a limit that is more than the model takes, and whether a process
+     * remembers the model for it: only a cap of the model's own is the same for every prompt. A
+     * refusal of the context window, which the prompt and the limit share, is not: what the model
+     * takes depends on how long the prompt is.
+     */
+    const REFUSALS: [string, (typeof KINDS)[number], unknown, boolean][] = [
       [
-        'Anthropic',
+        'Anthropic (the cap of the model)',
         'anthropic',
         {
           type: 'error',
@@ -832,9 +839,10 @@ describe('converse: conversations with read-only tools (R5)', () => {
               'max_tokens: 20384 > 8192, which is the maximum allowed number of output tokens for claude-3-5-sonnet-20241022',
           },
         },
+        true,
       ],
       [
-        'OpenAI',
+        'OpenAI (the cap of the model)',
         'openai',
         {
           error: {
@@ -845,9 +853,10 @@ describe('converse: conversations with read-only tools (R5)', () => {
             code: null,
           },
         },
+        true,
       ],
       [
-        'vLLM',
+        'vLLM (the context window)',
         'openai',
         {
           object: 'error',
@@ -857,6 +866,20 @@ describe('converse: conversations with read-only tools (R5)', () => {
           param: null,
           code: 400,
         },
+        false,
+      ],
+      [
+        'vLLM, in its newer words (the context window)',
+        'openai',
+        {
+          object: 'error',
+          message:
+            "'max_tokens' or 'max_completion_tokens' is too large: 5200. This model's maximum context length is 8192 tokens and your request has 4500 input tokens (5200 > 8192 - 4500).",
+          type: 'BadRequestError',
+          param: 'max_tokens',
+          code: 400,
+        },
+        false,
       ],
       [
         'Anthropic (the context window)',
@@ -869,37 +892,63 @@ describe('converse: conversations with read-only tools (R5)', () => {
               'input length and `max_tokens` exceed context limit: 190000 + 20000 > 200000, decrease input length or `max_tokens` and try again',
           },
         },
+        false,
       ],
     ];
+    /** The replies for the next call of a model that was refused, as a process remembers it or not. */
+    const nextCall = (kind: (typeof KINDS)[number], body: unknown, remembered: boolean) =>
+      remembered ? [answer(kind)] : [{ status: 400, body }, answer(kind)];
+    /** The limits of the two calls of such a model: the second asks for the room only if it must. */
+    const afterTwoCalls = (remembered: boolean) =>
+      remembered ? [5_200, 1_200, 1_200] : [5_200, 1_200, 5_200, 1_200];
 
     it.each(REFUSALS)(
-      '%s: a call is asked again, once, for the answer alone, and the next call of that model asks for it at once',
-      async (_who, kind, body) => {
+      '%s: a call is asked again, once, for the answer alone, and the model is remembered only for a cap of its own',
+      async (_who, kind, body, remembered) => {
         const config = own(configFor(kind));
         fake.enqueue({ status: 400, body }, answer(kind));
         expect((await callProvider(config, fake.apiKey, call, http)).finishReason).toBe('stop');
         expect(limits()).toEqual([5_200, 1_200]);
         // Else the same request.
         expect(withoutLimit(fake.requests[1]!)).toEqual(withoutLimit(fake.requests[0]!));
-        fake.enqueue(answer(kind));
+        // The next call of that model asks for the answer alone at once for a cap of its own, and
+        // for the room again, and the same two asks, for a refusal of the context.
+        fake.enqueue(...nextCall(kind, body, remembered));
         await callProvider(config, fake.apiKey, call, http);
-        expect(limits()).toEqual([5_200, 1_200, 1_200]);
+        expect(limits()).toEqual(afterTwoCalls(remembered));
       },
     );
 
     it.each(REFUSALS)(
-      '%s: a conversation too, with its tools, and the other turns of it go without the room',
-      async (_who, kind, body) => {
+      '%s: a conversation too, with its tools, and its other turns go without the room only for a cap of its own',
+      async (_who, kind, body, remembered) => {
         const config = own(configFor(kind));
-        fake.enqueue({ status: 400, body }, answer(kind), answer(kind));
+        fake.enqueue({ status: 400, body }, answer(kind));
         const turn = await converse(config, fake.apiKey, conversation, http);
         expect(turn.finishReason).toBe('stop');
         expect(limits()).toEqual([5_200, 1_200]);
         expect(withoutLimit(fake.requests[1]!)).toEqual(withoutLimit(fake.requests[0]!));
+        fake.enqueue(...nextCall(kind, body, remembered));
         await converse(config, fake.apiKey, conversation, http);
-        expect(limits()).toEqual([5_200, 1_200, 1_200]);
+        expect(limits()).toEqual(afterTwoCalls(remembered));
       },
     );
+
+    it('learns a cap of the model’s own after refusals of the context, and only from it', async () => {
+      const config = own(anthropic);
+      const cap = REFUSALS[0]![2];
+      const context = REFUSALS[4]![2];
+      fake.enqueue(
+        { status: 400, body: context },
+        answer('anthropic'),
+        { status: 400, body: cap },
+        answer('anthropic'),
+        answer('anthropic'),
+      );
+      for (let i = 0; i < 3; i += 1) await callProvider(config, fake.apiKey, call, http);
+      // The first call was refused for the context and the second for the cap; the third knows it.
+      expect(limits()).toEqual([5_200, 1_200, 5_200, 1_200, 1_200]);
+    });
 
     it('does not pass on what it learned to another model', async () => {
       const learned = own(anthropic);

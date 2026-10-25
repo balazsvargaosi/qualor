@@ -30,18 +30,41 @@ const OUTPUT_LIMIT_REFUSALS: readonly RegExp[] = [
   /\binput\s+length\s+and\s+\W{0,2}max_tokens\W{0,2}\s+exceeds?\s+(?:the\s+)?context\s+limit\b/i,
 ];
 
-/** Whether the message of a provider's 400 says that the output limit asked for is too large. */
-export function outputLimitRefused(message: string): boolean {
-  return OUTPUT_LIMIT_REFUSALS.some((pattern) => pattern.test(message));
+/**
+ * What says of such a refusal that the limit it speaks of is the context window, which the prompt
+ * and the output share, and not a cap of the model's own: it names the window ("maximum context
+ * length", "context limit"), or counts the completion beside the messages ("5000 in the
+ * completion"). The newer words of vLLM say "is too large" as OpenAI does, and name the window.
+ */
+const CONTEXT_REFUSALS: readonly RegExp[] = [
+  /\bcontext\s+(?:length|limit)\b/i,
+  /\b\d+\s+in\s+the\s+completion\b/i,
+];
+
+/**
+ * Whose limit a 400 refuses. A `cap` is the model's own and is the same for every prompt:
+ * Anthropic's "maximum allowed number of output tokens", OpenAI's "supports at most". A `context`
+ * is the window the prompt shares with the output: what the model takes of it depends on how long
+ * the prompt is, so a prompt that is short enough is given room that a long one is not.
+ */
+export type OutputLimitRefusal = 'cap' | 'context';
+
+/**
+ * What the message of a provider's 400 says of the output limit asked for: that it is more than
+ * the model takes, and whose limit that is; null when it says no such thing.
+ */
+export function outputLimitRefusal(message: string): OutputLimitRefusal | null {
+  if (!OUTPUT_LIMIT_REFUSALS.some((pattern) => pattern.test(message))) return null;
+  return CONTEXT_REFUSALS.some((pattern) => pattern.test(message)) ? 'context' : 'cap';
 }
 
 /** How many pairs of a base URL and a model a process remembers as refusing the room. */
 export const MAX_REFUSED_ROOMS = 1_000;
 
 /**
- * The models a process has found to refuse the room: a set bounded to `limit`, the oldest dropped
- * first (a pair added again is the newest). It is in memory only, so a process asks each of them
- * once, and a restart asks again.
+ * The models a process has found to refuse the room by a cap of their own: a set bounded to
+ * `limit`, the oldest dropped first (a pair added again is the newest). It is in memory only, so a
+ * process asks each of them once, and a restart asks again.
  */
 export class RefusedRooms {
   private readonly pairs = new Set<string>();
@@ -82,11 +105,14 @@ function pairOf(config: ProviderConfig): string {
  * Some models take less than that (a model with an output limit of 4 096, a server with a small
  * context), and refuse such a call with a 400 that says so (`LlmError.refusedOutputLimit`). That is
  * asked once more, in the same call, for the answer's own tokens alone, which is the limit the call
- * had before the room: one call for the caller, whatever it took. The pair of that base URL and that
- * model is then remembered, and the calls that follow send the answer's limit at once; a model that
- * refuses the room costs one quick 400 for each process. A model is remembered only when the second
- * ask is answered. When it fails too, its own error stands, as a prompt that is too long on its own
- * fails; and an error that is not that refusal is not asked again at all.
+ * had before the room: one call for the caller, whatever it took. When what the model refused is a
+ * cap of its own, the pair of that base URL and that model is then remembered, and the calls that
+ * follow send the answer's limit at once; such a model costs one quick 400 for each process. A
+ * refusal of the context window (`LlmError.refusedContext`) is not remembered: what the model
+ * takes of the output depends on how long the prompt is, so the next call asks for the room again,
+ * and is asked again without it when its prompt leaves none. A model is remembered only when the
+ * second ask is answered. When it fails too, its own error stands, as a prompt that is too long on
+ * its own fails; and an error that is not that refusal is not asked again at all.
  */
 export async function askWithRoom<T>(
   config: ProviderConfig,
@@ -96,12 +122,14 @@ export async function askWithRoom<T>(
   const room = limits.reasoningAllowance ?? 0;
   const pair = pairOf(config);
   if (!(room > 0) || refusedRooms.has(pair)) return await attempt(limits.maxOutputTokens);
+  let refusal: LlmError;
   try {
     return await attempt(limits.maxOutputTokens + room);
   } catch (error) {
     if (!(error instanceof LlmError && error.refusedOutputLimit)) throw error;
+    refusal = error;
   }
   const answer = await attempt(limits.maxOutputTokens);
-  refusedRooms.add(pair);
+  if (!refusal.refusedContext) refusedRooms.add(pair);
   return answer;
 }

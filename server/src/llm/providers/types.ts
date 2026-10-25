@@ -152,10 +152,12 @@ export type LlmFailure = (typeof LLM_FAILURES)[number];
 
 /**
  * A provider call that did not answer usably. `message` is a fixed text, never the provider's
- * body, a header or the API key. `refusedTools` and `refusedOutputLimit` are each a yes or no read
- * from the provider's error body: the request carried tools and was refused in words that name
- * tools or functions (the model or its server cannot call tools), and the request was refused (a
- * 400) because its output limit is more than the model takes.
+ * body, a header or the API key. `refusedTools`, `refusedOutputLimit` and `refusedContext` are each
+ * a yes or no read from the provider's error body: the request carried tools and was refused in
+ * words that name tools or functions (the model or its server cannot call tools); the request was
+ * refused (a 400) because its output limit is more than the model takes; and, always with that,
+ * the limit that was passed is the context window that the prompt shares with the output, so that
+ * what the model takes depends on how long the prompt is, and is no cap of the model's own.
  */
 export class LlmError extends Error {
   constructor(
@@ -165,6 +167,7 @@ export class LlmError extends Error {
     readonly retryAfterSeconds: number | null = null,
     readonly refusedTools = false,
     readonly refusedOutputLimit = false,
+    readonly refusedContext = false,
   ) {
     super(message);
     this.name = 'LlmError';

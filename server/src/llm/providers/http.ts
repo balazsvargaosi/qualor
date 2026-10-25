@@ -2,7 +2,7 @@ import type { IncomingHttpHeaders } from 'node:http';
 import { outboundRequest } from '../../http/outbound';
 import { isInternalHostAllowed, scmRefusedAddress } from '../../scm/url';
 import { llmBaseUrlProblem } from '../url';
-import { outputLimitRefused } from './output-room';
+import { outputLimitRefusal } from './output-room';
 import {
   LLM_MAX_ANSWER_BYTES,
   LlmCallAborted,
@@ -43,9 +43,10 @@ export function retryAfterSeconds(
  * read, the whole exchange within `timeoutSeconds`): the parsed JSON of a 2xx, else an LlmError.
  * An error body is read once, and only to classify (llm.md §14): a 400 that says the output limit
  * is more than the model takes is flagged (`refusedOutputLimit`), for the call to be asked again
- * with less; `outputLimitField`, the output limit field the request carried, is matched against
- * the error's `param`; nothing of the body is shown or logged. A call that `http.signal` gives up
- * is cut where it is, as the timeout cuts it, and throws LlmCallAborted: no LlmError, since the
+ * with less, and also `refusedContext` when the limit is the context window that the prompt
+ * shares; `outputLimitField`, the output limit field the request carried, is matched against the
+ * error's `param`; nothing of the body is shown or logged. A call that `http.signal` gives up is
+ * cut where it is, as the timeout cuts it, and throws LlmCallAborted: no LlmError, since the
  * provider neither failed nor was slow.
  */
 export async function postJson(
@@ -142,8 +143,17 @@ export async function postJson(
     }
     // Before the refusal of the field: OpenAI names the parameter of a limit that is too large
     // too, and it is the value that is refused then, not the field.
-    if (status === 400 && outputLimitRefused(refused.message)) {
-      throw new LlmError('rejected', refusedText(status), status, null, false, true);
+    const limit = status === 400 ? outputLimitRefusal(refused.message) : null;
+    if (limit !== null) {
+      throw new LlmError(
+        'rejected',
+        refusedText(status),
+        status,
+        null,
+        false,
+        true,
+        limit === 'context',
+      );
     }
     if (outputLimitField !== undefined && refusedParam(refused) === outputLimitField) {
       const other = outputLimitField === 'max_tokens' ? 'max_completion_tokens' : 'max_tokens';
