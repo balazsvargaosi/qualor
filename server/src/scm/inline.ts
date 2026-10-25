@@ -279,6 +279,7 @@ async function queueAnswers(ctx: InlineContext, issueIds: ReadonlySet<string>): 
   await queueReplies(
     ctx.db,
     { projectId: ctx.projectId, branchId: ctx.branchId, provider: 'gitlab' },
+    ctx.replies,
     {
       rounds: gitlabRounds(ctx.discussions, options).filter((round) => issueIds.has(round.issueId)),
       commands: gitlabCommands(ctx.discussions, options),

@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createFakeGitLab, type FakeGitLab } from '../../test/fake-gitlab';
 import { createFakeLlm, type FakeLlm } from '../../test/fake-llm';
@@ -15,7 +15,7 @@ import {
 } from '../../test/scm';
 import { first } from '../db/rows';
 import { branches, issues, jobs, reviewReplies } from '../db/schema';
-import { endReply, MAX_QUEUED_ROUNDS } from '../review/replies';
+import { endReply, insertReplies, MAX_QUEUED_ROUNDS } from '../review/replies';
 import { replyKey } from '../review/reply-job';
 import { MAX_GITLAB_REQUESTS } from './gitlab/client';
 import {
@@ -754,6 +754,84 @@ describe('GitLab inline discussions (scm.md §5.4)', () => {
       // Once: the row is queued now, so another decoration offers nothing.
       await decorate(s);
       expect(await queuedAnswers(h.ctx.db, s.branchId)).toEqual(queued);
+    });
+
+    it('leaves a reply skipped for the budget alone once its row is older than a note may be', async () => {
+      // The consent was given 60 days ago: a note counts for 30 days.
+      const s = await started('replies/budget-window', [3]);
+      await reviewOn(h, llm, daysAgo(60));
+      fake.reply(s.gitlabId, 7, threadAt(s.gitlabId, 3).id, whoSaid('This is intended.'));
+      await decorate(s);
+      const [row] = (await queuedAnswers(h.ctx.db, s.branchId)).rows;
+      // Its job skipped it for the budget two days ago, and the row was made 40 days ago.
+      const finishedAt = daysAgo(2);
+      await h.ctx.db
+        .update(jobs)
+        .set({ status: 'succeeded' })
+        .where(eq(jobs.concurrencyKey, replyKey(s.branchId)));
+      await endReply(h.ctx.db, row!.id, { status: 'skipped', reason: 'budget_spent' });
+      await h.ctx.db
+        .update(reviewReplies)
+        .set({ createdAt: daysAgo(40), finishedAt })
+        .where(eq(reviewReplies.id, row!.id));
+      await decorate(s);
+      // It stays as the skip left it, its end where housekeeping finds it; no job is queued.
+      const aged = await queuedAnswers(h.ctx.db, s.branchId);
+      expect(aged.rows).toMatchObject([
+        { id: row!.id, status: 'skipped', reason: 'budget_spent', finishedAt },
+      ]);
+      expect(aged.jobs).toEqual([{ ...answerJob(s.branchId, row!.id), status: 'succeeded' }]);
+      // The control: made 10 days ago, the row is inside the window and is queued again.
+      await h.ctx.db
+        .update(reviewReplies)
+        .set({ createdAt: daysAgo(10) })
+        .where(eq(reviewReplies.id, row!.id));
+      await decorate(s);
+      expect((await queuedAnswers(h.ctx.db, s.branchId)).rows).toMatchObject([
+        { id: row!.id, status: 'queued', finishedAt: null },
+      ]);
+    });
+
+    it('offers at most the room the caps leave, the oldest first, and the rest in a later decoration', async () => {
+      const s = await started('replies/budget-caps', [3]);
+      await reviewOn(h, llm);
+      // Sixty replies that were skipped for the budget two days ago, each in a thread of its own
+      // made newest first, the newer the note the smaller its thread's id: neither the order of the
+      // rows nor the order of the threads is the order of the notes.
+      const notes = Array.from({ length: MAX_QUEUED_ROUNDS + 10 }, (_, i) => 700_000 + i);
+      const ids = await insertReplies(
+        h.ctx.db,
+        notes.toReversed().map((noteId) => ({
+          projectId: s.project.id,
+          branchId: s.branchId,
+          provider: 'gitlab' as const,
+          noteId,
+          threadId: (0xfffff - noteId).toString(16).padStart(8, '0'),
+          kind: 'reply' as const,
+          author: 'jane',
+        })),
+      );
+      await h.ctx.db
+        .update(reviewReplies)
+        .set({ status: 'skipped', reason: 'budget_spent', finishedAt: daysAgo(2) })
+        .where(inArray(reviewReplies.id, ids));
+      const state = async () => {
+        const { rows, jobs: queued } = await queuedAnswers(h.ctx.db, s.branchId);
+        return { statuses: rows.map((row) => [row.noteId, row.status]), jobs: queued.length };
+      };
+
+      // The fifty oldest notes are queued again, one job each; the ten newest wait.
+      await decorate(s);
+      expect(await state()).toEqual({
+        statuses: notes.map((noteId, i) => [noteId, i < MAX_QUEUED_ROUNDS ? 'queued' : 'skipped']),
+        jobs: MAX_QUEUED_ROUNDS,
+      });
+      // A later decoration queues the rest, and the first fifty are not offered a second time.
+      await decorate(s);
+      expect(await state()).toEqual({
+        statuses: notes.map((noteId) => [noteId, 'queued']),
+        jobs: MAX_QUEUED_ROUNDS + 10,
+      });
     });
 
     it('ignores a note from before the consent, and one from more than 30 days ago', async () => {

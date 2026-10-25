@@ -1,7 +1,8 @@
-import { and, eq, inArray, isNotNull, isNull, lt, max, sql } from 'drizzle-orm';
+import { and, asc, eq, gte, inArray, isNotNull, isNull, lt, max, or, sql } from 'drizzle-orm';
 import type { Db, Executor } from '../db/client';
 import {
   reviewReplies,
+  type ReplyKind,
   type ReplyOutcome,
   type ReplyReason,
   type ReplyVerdict,
@@ -24,16 +25,18 @@ export type { ReplyOutcome, ReplyReason } from '../db/schema';
  *
  * What detection found (reply-detect.ts) is queued by `queueReplies`, in one short transaction: a
  * row for each new round and command, the oldest note first and a few at a time (the rest wait for
- * the next decoration), a job for each new row, and a job again for each reply that was skipped
- * for the day's budget on an earlier day.
+ * the next decoration), a job for each new row, and a job again for a few of the replies that were
+ * skipped for the day's budget on an earlier day: the room the caps leave, and only while their row
+ * is as young as a note may be (a row queued again ends again, and would never age out).
  */
 
 /** The most tokens (input and output, over all its calls) the conversation of one reply may use. */
 export const REPLY_TOKEN_BUDGET = 60_000;
 
 /**
- * The most rounds one decoration queues. The oldest go first and the rest wait for the next
- * decoration, which bounds the statement that inserts them and the burst of jobs.
+ * The most rounds one decoration queues, new ones and replies queued again together. The oldest go
+ * first and the rest wait for the next decoration, which bounds the statements that write them and
+ * the burst of jobs.
  */
 export const MAX_QUEUED_ROUNDS = 50;
 /** The most commands one decoration queues, as {@link MAX_QUEUED_ROUNDS} bounds the rounds. */
@@ -242,6 +245,27 @@ async function enqueueAnswers(
   }
 }
 
+/** The rounds a pass queues: those the ledger can hold, the oldest {@link MAX_QUEUED_ROUNDS}. */
+function roundsToQueue(rounds: readonly Round[]): Round[] {
+  return oldest(
+    rounds.filter((round) => THREAD_ID.test(round.threadId)),
+    (round) => round.newest,
+    MAX_QUEUED_ROUNDS,
+  );
+}
+
+/**
+ * The commands a pass queues, chosen as {@link roundsToQueue} chooses rounds: the oldest
+ * {@link MAX_QUEUED_COMMANDS}.
+ */
+function commandsToQueue(notes: readonly CommandNote[]): CommandNote[] {
+  return oldest(
+    notes.filter((note) => note.threadId === null || THREAD_ID.test(note.threadId)),
+    (note) => note.noteId,
+    MAX_QUEUED_COMMANDS,
+  );
+}
+
 /**
  * Queues the answers to `rounds` (reply-detect.ts): a row for each, which is its newest note's,
  * and a job for each new row. Given a transaction, it writes them in it. At most
@@ -254,14 +278,9 @@ export async function queueRounds(
   ctx: ReplyContext,
   rounds: readonly Round[],
 ): Promise<number> {
-  const queued = oldest(
-    rounds.filter((round) => THREAD_ID.test(round.threadId)),
-    (round) => round.newest,
-    MAX_QUEUED_ROUNDS,
-  );
   const ids = await insertReplies(
     db,
-    queued.map((round) => ({
+    roundsToQueue(rounds).map((round) => ({
       projectId: ctx.projectId,
       branchId: ctx.branchId,
       provider: ctx.provider,
@@ -286,14 +305,9 @@ export async function queueCommands(
   ctx: ReplyContext,
   notes: readonly CommandNote[],
 ): Promise<number> {
-  const queued = oldest(
-    notes.filter((note) => note.threadId === null || THREAD_ID.test(note.threadId)),
-    (note) => note.noteId,
-    MAX_QUEUED_COMMANDS,
-  );
   const ids = await insertReplies(
     db,
-    queued.map((note) => ({
+    commandsToQueue(notes).map((note) => ({
       projectId: ctx.projectId,
       branchId: ctx.branchId,
       provider: ctx.provider,
@@ -308,26 +322,67 @@ export async function queueCommands(
   return ids.length;
 }
 
+/** What {@link requeueBudgetSkips} may queue again. */
+export interface RequeueBounds {
+  /** Only skips that ended before this: the start of the day, which has a budget of its own. */
+  dayStart: Date;
+  /**
+   * Only rows made at or after this, as detection counts notes ({@link repliesSince}). An older
+   * row has aged out: queued again it would end skipped again with a new end, and housekeeping,
+   * which deletes a finished row by its end, would never reach it.
+   */
+  since: Date;
+  /** The most replies, and the most commands, to queue again: the room the caps have left. */
+  rounds: number;
+  commands: number;
+}
+
 /**
- * Moves the branch's replies that were skipped for the day's budget on a day before `dayStart`
- * back to `queued`: a new day has a new budget. Their end is cleared and their start is kept (a
- * queued row may have one: the job that takes it starts it again). Answers their ids, the oldest
- * note first. A skip of the day itself is left as it is: the budget is spent until the day is over.
+ * Moves the branch's replies and commands that were skipped for the day's budget back to `queued`
+ * (a new day has a new budget), within `bounds`: skips of an earlier day, whose row is no older
+ * than the window, the oldest note first up to the room of each kind. Their end is cleared and
+ * their start is kept (a queued row may have one: the job that takes it starts it again). Answers
+ * their ids, the oldest note first. The others stay as they are: a skip of the day itself until
+ * the day is over, an aged row for housekeeping, the rest for a later pass. A row that two writers
+ * choose at once is queued again by one of them.
  */
 export async function requeueBudgetSkips(
   db: Executor,
   branchId: string,
-  dayStart: Date,
+  bounds: RequeueBounds,
 ): Promise<string[]> {
+  const skippedForBudget = and(
+    eq(reviewReplies.status, 'skipped'),
+    eq(reviewReplies.reason, 'budget_spent'),
+  );
+  const oldestSkips = (kind: ReplyKind, room: number) =>
+    db
+      .select({ id: reviewReplies.id })
+      .from(reviewReplies)
+      .where(
+        and(
+          eq(reviewReplies.branchId, branchId),
+          eq(reviewReplies.kind, kind),
+          skippedForBudget,
+          lt(reviewReplies.finishedAt, bounds.dayStart),
+          gte(reviewReplies.createdAt, bounds.since),
+        ),
+      )
+      .orderBy(asc(reviewReplies.noteId))
+      .limit(Math.max(0, room));
   const requeued = await db
     .update(reviewReplies)
     .set({ status: 'queued', outcome: null, reason: null, finishedAt: null })
     .where(
       and(
         eq(reviewReplies.branchId, branchId),
-        eq(reviewReplies.status, 'skipped'),
-        eq(reviewReplies.reason, 'budget_spent'),
-        lt(reviewReplies.finishedAt, dayStart),
+        // Again what makes a row a skip for the budget: one another writer queued meanwhile is no
+        // longer one, and is left to that writer.
+        skippedForBudget,
+        or(
+          inArray(reviewReplies.id, oldestSkips('reply', bounds.rounds)),
+          inArray(reviewReplies.id, oldestSkips('command', bounds.commands)),
+        ),
       ),
     )
     .returning({ id: reviewReplies.id, noteId: reviewReplies.noteId });
@@ -335,23 +390,32 @@ export async function requeueBudgetSkips(
 }
 
 /**
- * What a decoration (or a webhook's scan) does with the notes it found, in one transaction: the
- * replies skipped for the budget of an earlier day are queued again, then the rounds and the
- * commands are queued, and each new or requeued row has its answer job. A row and its job are
- * written together or not at all. Answers how many jobs it queued.
+ * What a decoration (or a webhook's scan) does with the notes it found, in one transaction. The
+ * caps are the pass's, new notes and old together: the new rounds and commands count first, and
+ * the replies skipped for the budget of an earlier day are queued again in the room that is left
+ * (`requeueBudgetSkips`, within `window`: a row older than the window stays as it is). Each new or
+ * requeued row has its answer job, the requeued ones first: their notes are the older. A row and
+ * its job are written together or not at all. Answers how many jobs it queued.
  */
 export async function queueReplies(
   db: Db,
   ctx: ReplyContext,
+  window: Pick<ReplyWindow, 'since'>,
   found: { rounds: readonly Round[]; commands: readonly CommandNote[] },
   now: Date = new Date(),
 ): Promise<number> {
   return db.transaction(async (tx) => {
-    // The requeued rows are the oldest notes: their jobs go in first.
-    const again = await requeueBudgetSkips(tx, ctx.branchId, utcDayStart(now));
+    const rounds = roundsToQueue(found.rounds);
+    const commands = commandsToQueue(found.commands);
+    const again = await requeueBudgetSkips(tx, ctx.branchId, {
+      dayStart: utcDayStart(now),
+      since: window.since,
+      rounds: MAX_QUEUED_ROUNDS - rounds.length,
+      commands: MAX_QUEUED_COMMANDS - commands.length,
+    });
     await enqueueAnswers(tx, ctx.branchId, again);
-    const rounds = await queueRounds(tx, ctx, found.rounds);
-    const commands = await queueCommands(tx, ctx, found.commands);
-    return again.length + rounds + commands;
+    const queuedRounds = await queueRounds(tx, ctx, rounds);
+    const queuedCommands = await queueCommands(tx, ctx, commands);
+    return again.length + queuedRounds + queuedCommands;
   });
 }

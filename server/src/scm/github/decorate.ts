@@ -378,6 +378,7 @@ async function queueAnswers(
   await queueReplies(
     deps.db,
     { projectId: loaded.project.id, branchId: loaded.branch.id, provider: 'github' },
+    part.replies,
     { rounds: part.planned?.plan.rounds ?? [], commands: githubCommands(comments, options) },
   );
 }

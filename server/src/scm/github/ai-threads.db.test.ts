@@ -26,10 +26,12 @@ import {
   branches,
   issues,
   reviewFindings,
+  reviewReplies,
   reviewRuns,
   reviewSnapshots,
   type AiCategory,
 } from '../../db/schema';
+import { endReply } from '../../review/replies';
 import { markerOf } from '../markdown';
 import { enqueueDecoration } from '../queue';
 
@@ -1197,6 +1199,41 @@ describe('GitHub decoration: AI review threads (6I-3, R16, R18)', () => {
       const after = replyAt(switched, 4, 5);
       await decorateAgain(switched.s);
       expect(await queuedNotes(switched.s.branchId)).toEqual([['reply', after.id]]);
+    });
+
+    it('leaves a reply skipped for the budget alone once its row is older than a note may be', async () => {
+      const s = await setup('gh-replies/budget-window', {
+        findings: [finding({ path: PATH, line: 3 })],
+        review: false,
+      });
+      await runDecorations(h, githubDeps(h));
+      // The consent was given 60 days ago: a note counts for 30 days.
+      await reviewOn(h, llm, daysAgo(60));
+      const [, comment] = [...threadsOf(s.repo.id)][0]!;
+      fake.replyToReviewComment(s.repo.id, 7, comment.id, whoSaid('Intended.'));
+      await decorateAgain(s);
+      const [row] = (await queuedAnswers(h.ctx.db, s.branchId)).rows;
+      // Its job skipped it for the budget two days ago, and the row was made 40 days ago.
+      const finishedAt = daysAgo(2);
+      await endReply(h.ctx.db, row!.id, { status: 'skipped', reason: 'budget_spent' });
+      await h.ctx.db
+        .update(reviewReplies)
+        .set({ createdAt: daysAgo(40), finishedAt })
+        .where(eq(reviewReplies.id, row!.id));
+      await decorateAgain(s);
+      // It stays as the skip left it, its end where housekeeping finds it.
+      expect((await queuedAnswers(h.ctx.db, s.branchId)).rows).toMatchObject([
+        { id: row!.id, status: 'skipped', reason: 'budget_spent', finishedAt },
+      ]);
+      // The control: made 10 days ago, the row is inside the window and is queued again.
+      await h.ctx.db
+        .update(reviewReplies)
+        .set({ createdAt: daysAgo(10) })
+        .where(eq(reviewReplies.id, row!.id));
+      await decorateAgain(s);
+      expect((await queuedAnswers(h.ctx.db, s.branchId)).rows).toMatchObject([
+        { id: row!.id, status: 'queued', finishedAt: null },
+      ]);
     });
   });
 });

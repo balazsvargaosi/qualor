@@ -1,11 +1,11 @@
-import { eq } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestDatabase, type TestDatabase } from '../../test/db';
 import { answerJob, queuedAnswers } from '../../test/replies';
 import { seedAiIssue } from '../../test/review';
 import { uuidv7 } from '../db/ids';
 import { first } from '../db/rows';
-import { branches, organizations, projects, reviewReplies } from '../db/schema';
+import { branches, organizations, projects, reviewReplies, type ReplyKind } from '../db/schema';
 import {
   claimReply,
   endReply,
@@ -25,6 +25,7 @@ import {
   type ReplyDecision,
   type ReplyEnd,
   type ReplyRow,
+  type RequeueBounds,
   requeueBudgetSkips,
   utcDayStart,
 } from './replies';
@@ -388,6 +389,19 @@ describe('the replies ledger (6I-4)', () => {
       author: 'jane',
       ...over,
     });
+    /** A window that reaches back to the beginning: no row is too old for it. */
+    const EVER = { since: new Date(0) };
+    /**
+     * What the re-offer may take back: the skips before 20 October, none too old, and as many as
+     * the caps allow, unless `over` says otherwise.
+     */
+    const bounds = (over: Partial<RequeueBounds> = {}): RequeueBounds => ({
+      dayStart: new Date('2026-10-20T00:00:00.000Z'),
+      since: EVER.since,
+      rounds: MAX_QUEUED_ROUNDS,
+      commands: MAX_QUEUED_COMMANDS,
+      ...over,
+    });
     /**
      * A row the answer job skipped for the day's budget (or ended as `end` says), at `finishedAt`,
      * in the thread `threadId`.
@@ -408,6 +422,39 @@ describe('the replies ledger (6I-4)', () => {
         .where(eq(reviewReplies.id, id));
       return id;
     };
+    /**
+     * Rows of `kind` for `notes`, made in that order, that the answer job skipped for the day's
+     * budget at `finishedAt`: answers their ids in the same order. Each is in a thread of its own,
+     * whose id is the smaller the newer the note: the order of the threads is not the order of the
+     * notes either.
+     */
+    const manySkipped = async (
+      branch: string,
+      kind: ReplyKind,
+      notes: readonly number[],
+      finishedAt: Date,
+    ): Promise<string[]> => {
+      const ids = await insertReplies(
+        t.db,
+        notes.map((noteId) =>
+          reply({
+            branchId: branch,
+            noteId,
+            kind,
+            threadId: (0xfffff - noteId).toString(16).padStart(8, '0'),
+            ...(kind === 'command' ? { command: 'review' as const } : {}),
+          }),
+        ),
+      );
+      await t.db
+        .update(reviewReplies)
+        .set({ status: 'skipped', reason: 'budget_spent', finishedAt })
+        .where(inArray(reviewReplies.id, ids));
+      return ids;
+    };
+    /** The kind and the note of each of the rows `ids`, in that order. */
+    const notesOf = async (ids: readonly string[]) =>
+      (await Promise.all(ids.map(stored))).map((row) => [row.kind, row.noteId]);
 
     beforeAll(async () => {
       issueId = await seedAiIssue(t.db, {
@@ -590,8 +637,8 @@ describe('the replies ledger (6I-4)', () => {
       const commands = notes.slice(0, 10).map((note) => command(note + 1_000));
       // A decoration and a webhook's scan, the second with the notes the other way round.
       const both = await Promise.all([
-        queueReplies(t.db, contextOf(branch), { rounds, commands }),
-        queueReplies(t.db, contextOf(branch), {
+        queueReplies(t.db, contextOf(branch), EVER, { rounds, commands }),
+        queueReplies(t.db, contextOf(branch), EVER, {
           rounds: rounds.toReversed(),
           commands: commands.toReversed(),
         }),
@@ -642,7 +689,9 @@ describe('the replies ledger (6I-4)', () => {
       const before = await Promise.all(ids.map(stored));
 
       // Only a skip that ended before the day began: the row is queued again, with nothing else changed.
-      expect(await requeueBudgetSkips(t.db, branch, day)).toEqual([yesterday]);
+      expect(await requeueBudgetSkips(t.db, branch, bounds({ dayStart: day }))).toEqual([
+        yesterday,
+      ]);
       const after = await Promise.all(ids.map(stored));
       expect(after[0]).toEqual({
         ...before[0],
@@ -654,13 +703,114 @@ describe('the replies ledger (6I-4)', () => {
       expect(after[0]?.startedAt).toEqual(before[0]?.startedAt);
       expect(after.slice(1)).toEqual(before.slice(1));
       // Once: the row is queued now, and a second look finds nothing to offer.
-      expect(await requeueBudgetSkips(t.db, branch, day)).toEqual([]);
+      expect(await requeueBudgetSkips(t.db, branch, bounds({ dayStart: day }))).toEqual([]);
       // It is a queued row like any other: the job takes it.
       expect(await claimReply(t.db, yesterday)).toMatchObject({ id: yesterday, status: 'running' });
 
       // The next day's start is past the others' skips: they are offered, the oldest note first.
       const next = new Date('2026-10-21T00:00:00.000Z');
-      expect(await requeueBudgetSkips(t.db, branch, next)).toEqual([startOfDay, today]);
+      expect(await requeueBudgetSkips(t.db, branch, bounds({ dayStart: next }))).toEqual([
+        startOfDay,
+        today,
+      ]);
+    });
+
+    it('leaves a skip alone whose row is older than the window, so that it ages out', async () => {
+      const branch = await newBranch('requeue-window');
+      const day = new Date('2026-10-24T00:00:00.000Z');
+      const skippedAt = new Date('2026-10-23T09:00:00.000Z');
+      const since = new Date('2026-09-25T12:00:00.000Z');
+      const made = async (noteId: number, at: string) => {
+        const id = await skippedForBudget(branch, noteId, skippedAt);
+        await t.db
+          .update(reviewReplies)
+          .set({ createdAt: new Date(at) })
+          .where(eq(reviewReplies.id, id));
+        return id;
+      };
+      // A row made a millisecond before the window, one made at its first moment, one well inside.
+      const aged = await made(81_001, '2026-09-25T11:59:59.999Z');
+      const edge = await made(81_002, since.toISOString());
+      const inside = await made(81_003, '2026-10-10T00:00:00.000Z');
+      const before = await stored(aged);
+      expect(before).toMatchObject({
+        status: 'skipped',
+        reason: 'budget_spent',
+        finishedAt: skippedAt,
+      });
+
+      const within = bounds({ dayStart: day, since });
+      expect(await requeueBudgetSkips(t.db, branch, within)).toEqual([edge, inside]);
+      // The aged row is as its skip left it, its end where housekeeping finds it, however often
+      // it is looked at.
+      expect(await stored(aged)).toEqual(before);
+      expect(await requeueBudgetSkips(t.db, branch, within)).toEqual([]);
+      expect(await stored(aged)).toEqual(before);
+    });
+
+    it('queues again at most the room each kind has left, the oldest note first, and the rest in a later pass', async () => {
+      const branch = await newBranch('requeue-room');
+      const skippedAt = new Date('2026-10-19T09:00:00.000Z');
+      const replyNotes = Array.from({ length: 60 }, (_, i) => 82_000 + i);
+      const commandNotes = Array.from({ length: 25 }, (_, i) => 82_500 + i);
+      // Made newest first: the order of the rows is not the order of the notes.
+      await manySkipped(branch, 'reply', replyNotes.toReversed(), skippedAt);
+      await manySkipped(branch, 'command', commandNotes.toReversed(), skippedAt);
+      const pass = async (over: Partial<RequeueBounds>) =>
+        notesOf(await requeueBudgetSkips(t.db, branch, bounds(over)));
+      const replies = (notes: readonly number[]) => notes.map((note) => ['reply', note]);
+      const commands = (notes: readonly number[]) => notes.map((note) => ['command', note]);
+
+      // No room, or less than none, queues nothing.
+      expect(await pass({ rounds: 0, commands: 0 })).toEqual([]);
+      expect(await pass({ rounds: -5, commands: -1 })).toEqual([]);
+      // Room for three replies and no command.
+      expect(await pass({ rounds: 3, commands: 0 })).toEqual(replies(replyNotes.slice(0, 3)));
+      // The full room: fifty replies and twenty commands, the oldest of each.
+      expect(await pass({})).toEqual([
+        ...replies(replyNotes.slice(3, 53)),
+        ...commands(commandNotes.slice(0, 20)),
+      ]);
+      // A later pass takes what is left of both, and the next finds nothing.
+      expect(await pass({})).toEqual([
+        ...replies(replyNotes.slice(53)),
+        ...commands(commandNotes.slice(20)),
+      ]);
+      expect(await pass({})).toEqual([]);
+    });
+
+    it('queues a skipped reply again once when two writers choose it at the same time', async () => {
+      const branch = await newBranch('requeue-race');
+      const notes = Array.from({ length: 5 }, (_, i) => 86_000 + i);
+      await manySkipped(branch, 'reply', notes, new Date('2026-10-19T09:00:00.000Z'));
+      // The first writer queues them again and holds its transaction open, so that the rows stay
+      // locked; the second chooses the same rows, and waits for the first to end.
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      let queuedByFirst!: () => void;
+      const firstQueued = new Promise<void>((resolve) => (queuedByFirst = resolve));
+      const first = t.db.transaction(async (tx) => {
+        const ids = await requeueBudgetSkips(tx, branch, bounds());
+        queuedByFirst();
+        await held;
+        return ids;
+      });
+      await firstQueued;
+      const second = requeueBudgetSkips(t.db, branch, bounds());
+      for (let tries = 0; ; tries++) {
+        const waiting = await t.db.execute(
+          sql`SELECT 1 FROM pg_stat_activity
+               WHERE datname = current_database() AND wait_event_type = 'Lock'`,
+        );
+        if (waiting.rows.length > 0) break;
+        if (tries > 200) throw new Error('the second writer never waited for the first');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      release();
+      const [firstIds, secondIds] = await Promise.all([first, second]);
+      // Each row is queued again by one writer, never by both: one job each, not two.
+      expect(await notesOf(firstIds)).toEqual(notes.map((note) => ['reply', note]));
+      expect(secondIds).toEqual([]);
     });
 
     it('queues the rounds, the commands and the skipped replies in one transaction, the skipped first', async () => {
@@ -668,7 +818,7 @@ describe('the replies ledger (6I-4)', () => {
       const now = new Date('2026-10-24T10:00:00.000Z');
       const skipped = await skippedForBudget(branch, 90_001, new Date('2026-10-23T09:00:00.000Z'));
       const found = { rounds: [round(90_010)], commands: [command(90_020)] };
-      expect(await queueReplies(t.db, contextOf(branch), found, now)).toBe(3);
+      expect(await queueReplies(t.db, contextOf(branch), EVER, found, now)).toBe(3);
       const queued = await queuedAnswers(t.db, branch);
       expect(queued.rows.map((row) => [row.noteId, row.kind, row.status])).toEqual([
         [90_001, 'reply', 'queued'],
@@ -680,14 +830,11 @@ describe('the replies ledger (6I-4)', () => {
         [skipped, queued.rows[1]!.id, queued.rows[2]!.id].map((id) => answerJob(branch, id)),
       );
       // A decoration with nothing new has nothing to queue.
-      expect(await queueReplies(t.db, contextOf(branch), { rounds: [], commands: [] }, now)).toBe(
-        0,
-      );
+      const nothing = { rounds: [], commands: [] };
+      expect(await queueReplies(t.db, contextOf(branch), EVER, nothing, now)).toBe(0);
       // And one with nothing new still gives a skip of an earlier day its second try.
       const later = await skippedForBudget(branch, 90_002, new Date('2026-10-22T09:00:00.000Z'));
-      expect(await queueReplies(t.db, contextOf(branch), { rounds: [], commands: [] }, now)).toBe(
-        1,
-      );
+      expect(await queueReplies(t.db, contextOf(branch), EVER, nothing, now)).toBe(1);
       expect((await queuedAnswers(t.db, branch)).jobs.at(-1)).toEqual(answerJob(branch, later));
     });
 
@@ -701,6 +848,7 @@ describe('the replies ledger (6I-4)', () => {
         queueReplies(
           t.db,
           contextOf(branch),
+          EVER,
           { rounds: [stray], commands: [command(91_020)] },
           now,
         ),
@@ -710,6 +858,70 @@ describe('the replies ledger (6I-4)', () => {
         rows: [{ id: skipped, status: 'skipped' }],
         jobs: [],
       });
+    });
+
+    it('counts the new notes against the caps first, and queues skipped replies again in what they leave', async () => {
+      const branch = await newBranch('queue-replies-caps');
+      const now = new Date('2026-10-24T10:00:00.000Z');
+      const skippedAt = new Date('2026-10-23T09:00:00.000Z');
+      const replyNotes = Array.from({ length: 60 }, (_, i) => 83_000 + i);
+      const commandNotes = Array.from({ length: 25 }, (_, i) => 83_500 + i);
+      const skippedReplies = await manySkipped(branch, 'reply', replyNotes, skippedAt);
+      await manySkipped(branch, 'command', commandNotes, skippedAt);
+      const queuedNotes = async (kind: ReplyKind, status: string) =>
+        (await queuedAnswers(t.db, branch)).rows
+          .filter((row) => row.kind === kind && row.status === status)
+          .map((row) => row.noteId);
+
+      // Three new rounds and two new commands take their places in the caps first: the oldest of
+      // the skipped replies and commands share what is left, and the others wait.
+      const found = {
+        rounds: [84_001, 84_002, 84_003].map((note) =>
+          round(note, { threadId: note.toString(16) }),
+        ),
+        commands: [84_501, 84_502].map((note) => command(note)),
+      };
+      expect(await queueReplies(t.db, contextOf(branch), EVER, found, now)).toBe(
+        MAX_QUEUED_ROUNDS + MAX_QUEUED_COMMANDS,
+      );
+      expect(await queuedNotes('reply', 'queued')).toEqual([
+        ...replyNotes.slice(0, MAX_QUEUED_ROUNDS - 3),
+        84_001,
+        84_002,
+        84_003,
+      ]);
+      expect(await queuedNotes('command', 'queued')).toEqual([
+        ...commandNotes.slice(0, MAX_QUEUED_COMMANDS - 2),
+        84_501,
+        84_502,
+      ]);
+      expect(await queuedNotes('reply', 'skipped')).toEqual(
+        replyNotes.slice(MAX_QUEUED_ROUNDS - 3),
+      );
+      expect(await queuedNotes('command', 'skipped')).toEqual(
+        commandNotes.slice(MAX_QUEUED_COMMANDS - 2),
+      );
+      // One job for each of them, the skipped replies' first and the oldest of those first.
+      const { jobs: queued } = await queuedAnswers(t.db, branch);
+      expect(queued).toHaveLength(MAX_QUEUED_ROUNDS + MAX_QUEUED_COMMANDS);
+      expect(queued[0]).toEqual(answerJob(branch, skippedReplies[0]!));
+
+      // A pass that finds as many new notes as the caps take queues no skipped reply at all.
+      const full = {
+        rounds: Array.from({ length: MAX_QUEUED_ROUNDS }, (_, i) =>
+          round(85_000 + i, { threadId: (85_000 + i).toString(16) }),
+        ),
+        commands: Array.from({ length: MAX_QUEUED_COMMANDS }, (_, i) => command(85_500 + i)),
+      };
+      expect(await queueReplies(t.db, contextOf(branch), EVER, full, now)).toBe(
+        MAX_QUEUED_ROUNDS + MAX_QUEUED_COMMANDS,
+      );
+      expect(await queuedNotes('reply', 'skipped')).toEqual(
+        replyNotes.slice(MAX_QUEUED_ROUNDS - 3),
+      );
+      expect(await queuedNotes('command', 'skipped')).toEqual(
+        commandNotes.slice(MAX_QUEUED_COMMANDS - 2),
+      );
     });
 
     it('counts a note from the later of the consent and 30 days before now', () => {
