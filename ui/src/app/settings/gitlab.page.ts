@@ -22,9 +22,13 @@ import { keepFocus } from '../shared/focus';
 import { clearField, inputValue } from '../shared/forms';
 import { Icon } from '../shared/icon';
 import { KeysetList } from '../shared/keyset';
+import { CopyValue } from './copy-value';
 import { gitlabTestText } from './gitlab-text';
 
 export type Connection = ItemOf<'/api/v0/scm-connections'>;
+
+/** The webhook secret, 16–256 printable ASCII characters without spaces, as the server checks it. */
+const WEBHOOK_SECRET = /^[\x21-\x7e]{16,256}$/;
 
 /**
  * A base URL as the server stores it (scm.md §2.1: normalised, without a trailing slash), so that
@@ -38,9 +42,9 @@ function normalBaseUrl(raw: string): string | null {
   }
 }
 
-/** A refused field of a connection's own form. */
+/** A refused field of a connection's own forms: its address and token, and its webhook secret. */
 interface RowError {
-  field: 'url' | 'token';
+  field: 'url' | 'token' | 'newSecret' | 'secret';
   message: string;
 }
 
@@ -53,6 +57,11 @@ interface RowError {
  * connections, and Repositories maps each project to a connection of either provider (step 11:
  * the mapping moved there from this page).
  *
+ * 6I-4: each connection also shows the URL of its webhook, to paste into the GitLab project's
+ * webhooks with the secret, so that replies and commands in merge requests are answered at once.
+ * The secret is write-only like the token: set, replaced or removed here, read from its field once,
+ * sent once, never shown. A new address with a stored secret needs it again, or its removal.
+ *
  * Step 8 of the redesign (spec §7.8): each connection a panel whose pill says how its last test
  * here went (Not tested, Connected, Test failed: the server keeps no state), with Test and a quiet
  * Delete; its own form in setting rows; "New connection" (a short create form) in a dialog; the
@@ -60,7 +69,7 @@ interface RowError {
  */
 @Component({
   selector: 'q-gitlab-page',
-  imports: [DateTimePipe, Icon, RouterLink],
+  imports: [CopyValue, DateTimePipe, Icon, RouterLink],
   templateUrl: './gitlab.page.html',
   styleUrl: './scm.page.css',
 })
@@ -218,52 +227,75 @@ export class GitLabPage {
   }
 
   /**
-   * A connection's own form: a new token, and with it, optionally, a new address. The token is
-   * read from the field and never kept; a new address without a token is refused here, as the
-   * server would (scm.md §2.1: the stored token only ever goes to the address it was saved for).
+   * A connection's own form: a new token, and with it, optionally, a new address and, while a
+   * webhook secret is stored, a new secret or its removal. The token and the secret are read from
+   * their fields and never kept; a new address without a token is refused here, as the server would
+   * (scm.md §2.1: the stored token only ever goes to the address it was saved for), and so is one
+   * with a stored secret that is neither given again nor dropped.
    */
   protected async update(connection: Connection, event: Event): Promise<void> {
     event.preventDefault();
     const form = event.target instanceof HTMLFormElement ? event.target : null;
     const urlField = form?.querySelector<HTMLInputElement>('input[type="url"]') ?? null;
-    const tokenField = form?.querySelector<HTMLInputElement>('input[type="password"]') ?? null;
+    const tokenField = form?.querySelector<HTMLInputElement>('input[name="token"]') ?? null;
+    const secretField =
+      form?.querySelector<HTMLInputElement>('input[name="webhookSecret"]') ?? null;
+    const dropField = form?.querySelector<HTMLInputElement>('input[name="dropSecret"]') ?? null;
     if (this.busy()) return;
-    // The token is read once and the field emptied at once, before any check or request: whatever
-    // happens next (a refusal here, a 422, a network error), it never stays on the page.
+    // The token and the secret are read once and their fields emptied at once, before any check or
+    // request: whatever happens next (a refusal here, a 422, a network error), neither stays on
+    // the page.
     const token = tokenField?.value ?? '';
+    const secret = secretField?.value ?? '';
     if (tokenField) tokenField.value = '';
+    if (secretField) secretField.value = '';
     const typed = (urlField?.value ?? connection.baseUrl).trim();
     const changed = typed !== '' && normalBaseUrl(typed) !== connection.baseUrl;
+    // The box is shown only while a secret is stored.
+    const secretStored = connection.gitlab?.webhookSecretSet ?? false;
+    const drop = secretStored && (dropField?.checked ?? false);
     const refuse = (field: RowError['field'], message: string) => {
       this.rowErrors.update((all) => ({ ...all, [connection.id]: { field, message } }));
-      (field === 'url' ? urlField : tokenField)?.focus();
+      const target = { url: urlField, token: tokenField, newSecret: secretField, secret: null }[
+        field
+      ];
+      target?.focus();
     };
-    if (typed === '' || !token) {
-      if (typed === '') refuse('url', badUrl());
-      else refuse('token', changed ? tokenForNewUrl() : badToken());
+    const refusal: [RowError['field'], string] | null =
+      typed === ''
+        ? ['url', badUrl()]
+        : !token
+          ? ['token', changed ? tokenForNewUrl() : badToken()]
+          : secret !== '' && drop
+            ? ['newSecret', secretAndDrop()]
+            : secret !== '' && !WEBHOOK_SECRET.test(secret)
+              ? ['newSecret', badSecret()]
+              : changed && secretStored && secret === '' && !drop
+                ? ['newSecret', secretForNewUrl()]
+                : null;
+    if (refusal) {
+      refuse(...refusal);
       return;
     }
     this.clearRowError(connection);
     const generation = this.orgGeneration;
     await this.run(
       async () => {
-        const updated = await ok(
-          this.api.client.PATCH('/api/v0/scm-connections/{id}', {
-            params: { path: { id: connection.id } },
-            body: changed ? { baseUrl: typed, token } : { token },
-          }),
-        );
+        const updated = await this.patch(connection, {
+          ...(changed ? { baseUrl: typed } : {}),
+          token,
+          ...(secret !== '' ? { webhookSecret: secret } : drop ? { webhookSecret: null } : {}),
+        });
         if (generation !== this.orgGeneration) return;
-        this.connections.items.update((items) =>
-          items.map((c) => (c.id === updated.id ? updated : c)),
-        );
-        this.results.update((all) => without(all, connection.id));
-        // A new token or address has not been tested yet.
-        this.outcomes.update((all) => without(all, connection.id));
+        if (dropField) dropField.checked = false;
         this.announcement.set(
           changed
-            ? $localize`:@@gitlab.urlChanged:The connection now points at ${updated.baseUrl}:url:.`
-            : $localize`:@@gitlab.tokenReplaced:The token of ${updated.baseUrl}:url: was replaced.`,
+            ? drop
+              ? $localize`:@@gitlab.urlChangedSecretRemoved:The connection now points at ${updated.baseUrl}:url:, and its webhook secret was removed: replies and commands are answered at the next analysis.`
+              : $localize`:@@gitlab.urlChanged:The connection now points at ${updated.baseUrl}:url:.`
+            : drop
+              ? $localize`:@@gitlab.tokenReplacedSecretRemoved:The token of ${updated.baseUrl}:url: was replaced, and its webhook secret was removed: replies and commands are answered at the next analysis.`
+              : $localize`:@@gitlab.tokenReplaced:The token of ${updated.baseUrl}:url: was replaced.`,
         );
       },
       (err) => {
@@ -271,10 +303,80 @@ export class GitLabPage {
         if (fields['body.baseUrl'] !== undefined) refuse('url', badUrl());
         else if (fields['body.token'] !== undefined) {
           refuse('token', changed ? tokenForNewUrl() : badToken());
+        } else if (fields['body.webhookSecret'] !== undefined) {
+          refuse('newSecret', changed && secret === '' ? secretForNewUrl() : badSecret());
         } else return false;
         return true;
       },
     );
+  }
+
+  /** Sets (or replaces) the webhook secret; the field is read once and emptied at once. */
+  protected async setSecret(connection: Connection, event: Event): Promise<void> {
+    event.preventDefault();
+    const form = event.target instanceof HTMLFormElement ? event.target : null;
+    const field = form?.querySelector<HTMLInputElement>('input[type="password"]') ?? null;
+    if (!field) return;
+    const secret = field.value;
+    field.value = '';
+    if (this.busy()) return;
+    const refuse = () => {
+      this.rowErrors.update((all) => ({
+        ...all,
+        [connection.id]: { field: 'secret', message: badSecret() },
+      }));
+      field.focus();
+    };
+    if (!WEBHOOK_SECRET.test(secret)) {
+      refuse();
+      return;
+    }
+    this.clearRowError(connection);
+    const generation = this.orgGeneration;
+    await this.run(
+      async () => {
+        await this.patch(connection, { webhookSecret: secret });
+        if (generation !== this.orgGeneration) return;
+        this.announcement.set($localize`:@@gitlab.secretSet:The webhook secret was set.`);
+      },
+      (err) => {
+        if (fieldErrors(err)['body.webhookSecret'] === undefined) return false;
+        refuse();
+        return true;
+      },
+    );
+  }
+
+  protected async removeSecret(connection: Connection): Promise<void> {
+    if (this.busy()) return;
+    const generation = this.orgGeneration;
+    await this.run(async () => {
+      await this.patch(connection, { webhookSecret: null });
+      if (generation !== this.orgGeneration) return;
+      this.announcement.set(
+        $localize`:@@gitlab.secretRemoved:The webhook secret was removed: replies and commands are answered at the next analysis.`,
+      );
+    });
+  }
+
+  /**
+   * Changes the connection (`PATCH`) and puts the answer in the list. A changed token, address or
+   * secret has not been tested yet, and the last test's result is of what it was.
+   */
+  private async patch(
+    connection: Connection,
+    body: { baseUrl?: string; token?: string; webhookSecret?: string | null },
+  ): Promise<Connection> {
+    const updated = await ok(
+      this.api.client.PATCH('/api/v0/scm-connections/{id}', {
+        params: { path: { id: connection.id } },
+        body,
+      }),
+    );
+    this.connections.items.update((items) => items.map((c) => (c.id === updated.id ? updated : c)));
+    this.results.update((all) => without(all, connection.id));
+    this.outcomes.update((all) => without(all, connection.id));
+    return updated;
   }
 
   protected async test(connection: Connection): Promise<void> {
@@ -397,4 +499,16 @@ function badToken(): string {
 
 function tokenForNewUrl(): string {
   return $localize`:@@gitlab.tokenForNewUrl:Changing the address needs the token again: Qualor sends a stored token only to the address it was saved for.`;
+}
+
+function secretAndDrop(): string {
+  return $localize`:@@gitlab.secretAndDrop:Type a new webhook secret or tick "Drop the webhook secret", not both.`;
+}
+
+function badSecret(): string {
+  return $localize`:@@gitlab.badSecret:Use 16 to 256 printable characters without spaces, the same as the Secret token in the GitLab project's webhook (openssl rand -hex 32 makes a good one).`;
+}
+
+function secretForNewUrl(): string {
+  return $localize`:@@gitlab.secretForNewUrl:Changing the address needs the webhook secret again, or tick "Drop the webhook secret".`;
 }

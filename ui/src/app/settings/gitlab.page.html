@@ -85,90 +85,224 @@
             }
           </div>
         </div>
-        @if (results()[c.id] || canManage()) {
-          <div class="panel-body connection-body">
-            @if (results()[c.id]; as result) {
-              <p class="prose-text connection-result">{{ result }}</p>
+        <div class="panel-body connection-body">
+          @if (c.gitlab; as gl) {
+            @if (gl.webhookSecretSet && !gl.webhookSecretReadable) {
+              <p class="alert alert-error" i18n="@@gitlab.secretUnreadable">
+                The webhook secret can no longer be read: set it again.
+              </p>
             }
-            @if (canManage()) {
-              <details class="connection-edit">
-                <summary i18n="@@gitlab.replaceToken">
-                  Replace the token or change the address
-                </summary>
-                <form novalidate (submit)="update(c, $event)">
-                  <p class="connection-replacing" i18n="@@gitlab.replacing">
-                    Replacing <code class="prose-text">{{ c.baseUrl }}</code> (token and address)
-                  </p>
-                  <div class="setting-row">
-                    <div class="setting-text">
-                      <label [attr.for]="'url-' + c.id" i18n="@@gitlab.address">Address</label>
-                    </div>
-                    <div class="setting-field">
-                      <input
-                        [id]="'url-' + c.id"
-                        type="url"
-                        required
-                        maxlength="2048"
-                        autocomplete="off"
-                        spellcheck="false"
-                        [value]="c.baseUrl"
-                        [attr.aria-invalid]="rowError(c, 'url') ? true : null"
-                        [attr.aria-describedby]="rowError(c, 'url') ? 'url-error-' + c.id : null"
-                        (input)="clearRowError(c)"
-                      />
-                      @if (rowError(c, 'url'); as message) {
-                        <span [id]="'url-error-' + c.id" class="field-error" role="alert">{{
-                          message
-                        }}</span>
-                      }
-                    </div>
+            @if (!gl.webhookSecretSet) {
+              <p class="muted" i18n="@@gitlab.noSecret">
+                No webhook secret: replies and commands are answered at the next analysis.
+              </p>
+            } @else if (gl.webhookUrl) {
+              <div class="webhook-address">
+                <q-copy-value
+                  [fieldId]="'webhook-url-' + c.id"
+                  label="Webhook URL"
+                  i18n-label="@@gitlab.webhookUrl"
+                  [value]="gl.webhookUrl"
+                />
+                <p class="hint" i18n="@@gitlab.webhookUrlHint">
+                  In the GitLab project's Settings → Webhooks, paste this address and the secret,
+                  and tick Comments.
+                </p>
+              </div>
+            } @else {
+              <p class="muted" i18n="@@gitlab.noPublicUrl">
+                No webhook URL: the server has no QUALOR_PUBLIC_URL.
+              </p>
+            }
+          }
+          @if (results()[c.id]; as result) {
+            <p class="prose-text connection-result">{{ result }}</p>
+          }
+          @if (canManage()) {
+            <details class="connection-edit">
+              <summary i18n="@@gitlab.replaceToken">
+                Replace the token or change the address
+              </summary>
+              <form novalidate (submit)="update(c, $event)">
+                <p class="connection-replacing" i18n="@@gitlab.replacing">
+                  Replacing <code class="prose-text">{{ c.baseUrl }}</code> (token and address)
+                </p>
+                <div class="setting-row">
+                  <div class="setting-text">
+                    <label [attr.for]="'url-' + c.id" i18n="@@gitlab.address">Address</label>
                   </div>
+                  <div class="setting-field">
+                    <input
+                      [id]="'url-' + c.id"
+                      type="url"
+                      required
+                      maxlength="2048"
+                      autocomplete="off"
+                      spellcheck="false"
+                      [value]="c.baseUrl"
+                      [attr.aria-invalid]="rowError(c, 'url') ? true : null"
+                      [attr.aria-describedby]="rowError(c, 'url') ? 'url-error-' + c.id : null"
+                      (input)="clearRowError(c)"
+                    />
+                    @if (rowError(c, 'url'); as message) {
+                      <span [id]="'url-error-' + c.id" class="field-error" role="alert">{{
+                        message
+                      }}</span>
+                    }
+                  </div>
+                </div>
+                <div class="setting-row">
+                  <div class="setting-text">
+                    <label [attr.for]="'token-' + c.id" i18n="@@gitlab.newToken">New token</label>
+                    <p [id]="'token-hint-' + c.id" i18n="@@gitlab.newTokenHint">
+                      Changing the address needs the token again: Qualor sends a stored token only
+                      to the address it was saved for.
+                    </p>
+                  </div>
+                  <div class="setting-field">
+                    <input
+                      [id]="'token-' + c.id"
+                      name="token"
+                      type="password"
+                      required
+                      autocomplete="new-password"
+                      data-1p-ignore
+                      data-lpignore="true"
+                      spellcheck="false"
+                      maxlength="1024"
+                      [attr.aria-invalid]="rowError(c, 'token') ? true : null"
+                      [attr.aria-describedby]="
+                        rowError(c, 'token') ? 'token-error-' + c.id : 'token-hint-' + c.id
+                      "
+                      (input)="clearRowError(c)"
+                    />
+                    @if (rowError(c, 'token'); as message) {
+                      <span [id]="'token-error-' + c.id" class="field-error" role="alert">{{
+                        message
+                      }}</span>
+                    }
+                  </div>
+                </div>
+                @if (c.gitlab?.webhookSecretSet) {
                   <div class="setting-row">
                     <div class="setting-text">
-                      <label [attr.for]="'token-' + c.id" i18n="@@gitlab.newToken">New token</label>
-                      <p [id]="'token-hint-' + c.id" i18n="@@gitlab.newTokenHint">
-                        Changing the address needs the token again: Qualor sends a stored token only
-                        to the address it was saved for.
+                      <label [attr.for]="'new-secret-' + c.id" i18n="@@gitlab.newSecret">
+                        Webhook secret (optional)
+                      </label>
+                      <p [id]="'new-secret-hint-' + c.id" i18n="@@gitlab.newSecretHint">
+                        A new address with a stored webhook secret needs the secret again, or
+                        dropping it.
                       </p>
                     </div>
                     <div class="setting-field">
                       <input
-                        [id]="'token-' + c.id"
+                        [id]="'new-secret-' + c.id"
+                        name="webhookSecret"
                         type="password"
-                        required
+                        maxlength="256"
                         autocomplete="new-password"
                         data-1p-ignore
                         data-lpignore="true"
                         spellcheck="false"
-                        maxlength="1024"
-                        [attr.aria-invalid]="rowError(c, 'token') ? true : null"
+                        [attr.aria-invalid]="rowError(c, 'newSecret') ? true : null"
                         [attr.aria-describedby]="
-                          rowError(c, 'token') ? 'token-error-' + c.id : 'token-hint-' + c.id
+                          rowError(c, 'newSecret')
+                            ? 'new-secret-error-' + c.id + ' new-secret-hint-' + c.id
+                            : 'new-secret-hint-' + c.id
                         "
                         (input)="clearRowError(c)"
                       />
-                      @if (rowError(c, 'token'); as message) {
-                        <span [id]="'token-error-' + c.id" class="field-error" role="alert">{{
+                      @if (rowError(c, 'newSecret'); as message) {
+                        <span [id]="'new-secret-error-' + c.id" class="field-error" role="alert">{{
                           message
                         }}</span>
                       }
+                      <label class="row">
+                        <input
+                          type="checkbox"
+                          name="dropSecret"
+                          [id]="'drop-secret-' + c.id"
+                          (change)="clearRowError(c)"
+                        />
+                        <span i18n="@@gitlab.dropSecret">Drop the webhook secret</span>
+                      </label>
                     </div>
                   </div>
-                  <div class="setting-actions">
+                }
+                <div class="setting-actions">
+                  <button
+                    type="submit"
+                    class="btn"
+                    [attr.aria-disabled]="busy() ? true : null"
+                    i18n="@@gitlab.saveToken"
+                  >
+                    Save token
+                  </button>
+                </div>
+              </form>
+            </details>
+
+            <details class="connection-edit">
+              <summary i18n="@@gitlab.webhookSecret">Webhook secret</summary>
+              <form novalidate (submit)="setSecret(c, $event)">
+                <div class="setting-row">
+                  <div class="setting-text">
+                    <label [attr.for]="'secret-' + c.id" i18n="@@gitlab.secret"
+                      >Webhook secret</label
+                    >
+                    <p [id]="'secret-hint-' + c.id" i18n="@@gitlab.secretHint">
+                      The same secret as the Secret token in the GitLab project's webhook. Stored
+                      encrypted; Qualor never shows it again.
+                    </p>
+                  </div>
+                  <div class="setting-field setting-inline">
+                    <input
+                      [id]="'secret-' + c.id"
+                      type="password"
+                      required
+                      maxlength="256"
+                      autocomplete="new-password"
+                      data-1p-ignore
+                      data-lpignore="true"
+                      spellcheck="false"
+                      [attr.aria-invalid]="rowError(c, 'secret') ? true : null"
+                      [attr.aria-describedby]="
+                        rowError(c, 'secret')
+                          ? 'secret-error-' + c.id + ' secret-hint-' + c.id
+                          : 'secret-hint-' + c.id
+                      "
+                      (input)="clearRowError(c)"
+                    />
                     <button
                       type="submit"
                       class="btn"
                       [attr.aria-disabled]="busy() ? true : null"
-                      i18n="@@gitlab.saveToken"
+                      i18n="@@gitlab.setSecret"
                     >
-                      Save token
+                      Set the webhook secret
                     </button>
+                    @if (c.gitlab?.webhookSecretSet) {
+                      <button
+                        type="button"
+                        class="btn-quiet danger"
+                        [attr.aria-disabled]="busy() ? true : null"
+                        (click)="removeSecret(c)"
+                        i18n="@@gitlab.removeSecret"
+                      >
+                        Remove the webhook secret
+                      </button>
+                    }
+                    @if (rowError(c, 'secret'); as message) {
+                      <span [id]="'secret-error-' + c.id" class="field-error" role="alert">{{
+                        message
+                      }}</span>
+                    }
                   </div>
-                </form>
-              </details>
-            }
-          </div>
-        }
+                </div>
+              </form>
+            </details>
+          }
+        </div>
       </section>
     } @empty {
       @if (connections.loaded()) {

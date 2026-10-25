@@ -24,6 +24,15 @@ const CONNECTION: Connection = {
   gitlab: { webhookSecretSet: false, webhookSecretReadable: false, webhookUrl: null },
 };
 
+// Assembled at run time, so the repository's own Gitleaks check finds no fake secret here (.gitleaks.toml).
+const SECRET = ['glhook-ui-', '0123456789abcdef'].join('');
+const WEBHOOK_URL = 'https://q.example/api/v0/gitlab/webhooks/c1';
+/** The connection as the server shows it once its webhook secret is set. */
+const WITH_SECRET: Connection = {
+  ...CONNECTION,
+  gitlab: { webhookSecretSet: true, webhookSecretReadable: true, webhookUrl: WEBHOOK_URL },
+};
+
 const GITHUB: Connection = {
   id: 'g1',
   organizationId: ORG_ID,
@@ -290,6 +299,293 @@ describe('GitLabPage (scm.md §2)', () => {
     expect(form.textContent?.replace(/\s+/g, ' ')).toContain(
       'Replacing https://gitlab.example.com (token and address)',
     );
+  });
+
+  describe('the webhook (6I-4)', () => {
+    function withSecret(server: FakeServer): void {
+      server.on('GET', '/api/v0/scm-connections', { body: page([WITH_SECRET]) });
+    }
+    /** A PATCH answered as the server does: the connection with the secret as the request left it. */
+    function patched(server: FakeServer): void {
+      server.on('PATCH', '/api/v0/scm-connections/c1', (request) => {
+        const body = request.body as { baseUrl?: string; webhookSecret?: string | null };
+        const set = body.webhookSecret !== null && body.webhookSecret !== undefined;
+        const unset = body.webhookSecret === null;
+        return {
+          body: {
+            ...WITH_SECRET,
+            baseUrl: body.baseUrl ?? WITH_SECRET.baseUrl,
+            gitlab: unset
+              ? { webhookSecretSet: false, webhookSecretReadable: false, webhookUrl: null }
+              : {
+                  ...WITH_SECRET.gitlab!,
+                  webhookSecretSet: set || WITH_SECRET.gitlab!.webhookSecretSet,
+                },
+          },
+        };
+      });
+    }
+    const patches = (server: FakeServer) =>
+      server.requestsTo('PATCH', '/api/v0/scm-connections/c1');
+
+    it('shows the webhook URL with its copy button, and what to paste where', async () => {
+      const server = setup();
+      withSecret(server);
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+      const { fixture, root } = await render();
+      const card = root.querySelector<HTMLElement>('section.card')!;
+      const field = card.querySelector<HTMLInputElement>('#webhook-url-c1')!;
+      expect(field.value).toBe(WEBHOOK_URL);
+      expect(field.readOnly).toBe(true);
+      expect(card.querySelector('label[for="webhook-url-c1"]')?.textContent).toContain(
+        'Webhook URL',
+      );
+      expect(card.textContent?.replace(/\s+/g, ' ')).toContain(
+        "In the GitLab project's Settings → Webhooks, paste this address and the secret, and tick Comments.",
+      );
+      button(card, 'Copy').click();
+      await settle(fixture);
+      expect(writeText).toHaveBeenCalledWith(WEBHOOK_URL);
+      expect(card.textContent).toContain('Copied.');
+      // Neither the secret nor a hint of one is on the page.
+      expect(card.textContent).not.toContain(SECRET);
+      expect(card.textContent).not.toContain('No webhook secret');
+    });
+
+    it('says when there is no webhook secret, when it can no longer be read, and when the server has no public URL', async () => {
+      const server = setup();
+      server.on('GET', '/api/v0/scm-connections', {
+        body: page([
+          CONNECTION,
+          {
+            ...WITH_SECRET,
+            id: 'c2',
+            baseUrl: 'https://gitlab.two.test',
+            gitlab: {
+              webhookSecretSet: true,
+              webhookSecretReadable: false,
+              webhookUrl: WEBHOOK_URL,
+            },
+          },
+          {
+            ...WITH_SECRET,
+            id: 'c3',
+            baseUrl: 'https://gitlab.three.test',
+            gitlab: { webhookSecretSet: true, webhookSecretReadable: true, webhookUrl: null },
+          },
+        ]),
+      });
+      const { root } = await render();
+      const [none, unreadable, nowhere] = [...root.querySelectorAll('section.card')];
+      expect(none?.textContent?.replace(/\s+/g, ' ')).toContain(
+        'No webhook secret: replies and commands are answered at the next analysis.',
+      );
+      expect(none?.querySelector('#webhook-url-c1')).toBeNull();
+      expect(none?.querySelector('.alert')).toBeNull();
+      expect(unreadable?.querySelector('.alert-error')?.textContent?.trim()).toBe(
+        'The webhook secret can no longer be read: set it again.',
+      );
+      expect(unreadable?.textContent).not.toContain('No webhook secret');
+      expect(nowhere?.textContent?.replace(/\s+/g, ' ')).toContain(
+        'No webhook URL: the server has no QUALOR_PUBLIC_URL.',
+      );
+      expect(nowhere?.querySelector('#webhook-url-c3')).toBeNull();
+      expect(nowhere?.textContent).not.toContain('No webhook secret');
+    });
+
+    it('sets, replaces and removes the secret: read once from its field, sent once, never shown', async () => {
+      const server = setup();
+      patched(server);
+      const { fixture, root } = await render();
+      expect(button(root, 'Remove the webhook secret')).toBeUndefined();
+      const field = root.querySelector<HTMLInputElement>('#secret-c1')!;
+      expect(field.type).toBe('password');
+      expect(field.getAttribute('autocomplete')).toBe('new-password');
+      expectNoPasswordManager(field);
+      const form = field.closest('form')!;
+      // Too short: refused before any request, under the field, which takes focus.
+      field.value = 'short';
+      form.dispatchEvent(new Event('submit'));
+      await settle(fixture);
+      expect(patches(server)).toHaveLength(0);
+      expect(field.value).toBe('');
+      expect(field.getAttribute('aria-invalid')).toBe('true');
+      expect(root.querySelector('#secret-error-c1')?.textContent).toContain(
+        'Use 16 to 256 printable characters without spaces',
+      );
+      expect(document.activeElement).toBe(field);
+      // Spaces are no part of a secret: a long one with them is refused too.
+      field.value = 'a secret with spaces in it';
+      form.dispatchEvent(new Event('submit'));
+      await settle(fixture);
+      expect(patches(server)).toHaveLength(0);
+      expect(root.querySelector('#secret-error-c1')?.textContent).toContain('Use 16 to 256');
+      // A right one is sent once, the field is emptied, and the page shows the URL to paste.
+      field.value = SECRET;
+      form.dispatchEvent(new Event('submit'));
+      await settle(fixture);
+      expect(patches(server)[0]?.body).toEqual({ webhookSecret: SECRET });
+      expect(field.value).toBe('');
+      expect(field.getAttribute('aria-invalid')).toBeNull();
+      expect(root.textContent).not.toContain(SECRET);
+      expect(root.querySelector('[role="status"]')?.textContent).toContain(
+        'The webhook secret was set.',
+      );
+      expect(root.querySelector<HTMLInputElement>('#webhook-url-c1')?.value).toBe(WEBHOOK_URL);
+      // Replaced: the same field. Removed: a button that only a stored secret has.
+      field.value = `${SECRET}-2`;
+      form.dispatchEvent(new Event('submit'));
+      await settle(fixture);
+      expect(patches(server)[1]?.body).toEqual({ webhookSecret: `${SECRET}-2` });
+      button(root, 'Remove the webhook secret').click();
+      await settle(fixture);
+      expect(patches(server)[2]?.body).toEqual({ webhookSecret: null });
+      expect(root.querySelector('[role="status"]')?.textContent).toContain(
+        'The webhook secret was removed: replies and commands are answered at the next analysis.',
+      );
+      expect(root.querySelector('#webhook-url-c1')).toBeNull();
+      expect(root.textContent).toContain('No webhook secret');
+      expect(button(root, 'Remove the webhook secret')).toBeUndefined();
+    });
+
+    it('maps the server’s refusal of the secret to its field, in the UI’s own words', async () => {
+      const server = setup();
+      server.on('PATCH', '/api/v0/scm-connections/c1', {
+        status: 422,
+        body: problem(422, 'VALIDATION_FAILED', [
+          { path: 'body.webhookSecret', message: 'Use 16-256 printable ASCII characters' },
+        ]),
+      });
+      const { fixture, root } = await render();
+      const field = root.querySelector<HTMLInputElement>('#secret-c1')!;
+      field.value = SECRET;
+      field.closest('form')!.dispatchEvent(new Event('submit'));
+      await settle(fixture);
+      expect(field.value).toBe('');
+      expect(root.querySelector('#secret-error-c1')?.textContent).toContain(
+        'Use 16 to 256 printable characters',
+      );
+      expect(root.textContent).not.toContain('Use 16-256 printable ASCII characters');
+      expect(root.querySelector('p[role="alert"]')).toBeNull();
+    });
+
+    it('offers the secret with a new address only while one is stored', async () => {
+      setup();
+      const { root } = await render();
+      expect(root.querySelector('#new-secret-c1')).toBeNull();
+      expect(root.querySelector('#drop-secret-c1')).toBeNull();
+    });
+
+    it('needs the secret again with a new address, or "Drop the webhook secret", and sends what it is given', async () => {
+      const server = setup();
+      withSecret(server);
+      patched(server);
+      const { fixture, root } = await render();
+      const form = root.querySelector<HTMLInputElement>('#token-c1')!.closest('form')!;
+      const token = root.querySelector<HTMLInputElement>('#token-c1')!;
+      const secret = root.querySelector<HTMLInputElement>('#new-secret-c1')!;
+      const drop = root.querySelector<HTMLInputElement>('#drop-secret-c1')!;
+      expect(secret.type).toBe('password');
+      expectNoPasswordManager(secret);
+      expect(form.textContent?.replace(/\s+/g, ' ')).toContain(
+        'A new address with a stored webhook secret needs the secret again, or dropping it.',
+      );
+      const submit = async (fields: {
+        url?: string;
+        token?: string;
+        secret?: string;
+        drop?: boolean;
+      }) => {
+        type(root, '#url-c1', fields.url ?? 'https://gitlab.other.test');
+        token.value = fields.token ?? 'glpat-new';
+        secret.value = fields.secret ?? '';
+        drop.checked = fields.drop ?? false;
+        form.dispatchEvent(new Event('submit'));
+        await settle(fixture);
+      };
+      // A new address with neither the secret nor the box: refused before any request.
+      await submit({});
+      expect(patches(server)).toHaveLength(0);
+      expect(root.querySelector('#new-secret-error-c1')?.textContent).toContain(
+        'Changing the address needs the webhook secret again, or tick "Drop the webhook secret".',
+      );
+      expect(document.activeElement).toBe(secret);
+      // Both at once, and a secret that is too short: refused too.
+      await submit({ secret: SECRET, drop: true });
+      expect(root.querySelector('#new-secret-error-c1')?.textContent).toContain(
+        'Type a new webhook secret or tick "Drop the webhook secret", not both.',
+      );
+      await submit({ secret: 'short' });
+      expect(root.querySelector('#new-secret-error-c1')?.textContent).toContain(
+        'Use 16 to 256 printable characters',
+      );
+      expect(patches(server)).toHaveLength(0);
+      // The secret again is sent with the address and the token, and every field is emptied.
+      await submit({ secret: SECRET });
+      expect(patches(server)[0]?.body).toEqual({
+        baseUrl: 'https://gitlab.other.test',
+        token: 'glpat-new',
+        webhookSecret: SECRET,
+      });
+      expect([token.value, secret.value, drop.checked]).toEqual(['', '', false]);
+      expect(root.querySelector('#new-secret-error-c1')).toBeNull();
+      expect(root.textContent).not.toContain(SECRET);
+      // The box drops it: null, and the page says so.
+      await submit({ url: 'https://gitlab.third.test', drop: true });
+      expect(patches(server)[1]?.body).toEqual({
+        baseUrl: 'https://gitlab.third.test',
+        token: 'glpat-new',
+        webhookSecret: null,
+      });
+      expect(drop.checked).toBe(false);
+      expect(root.querySelector('[role="status"]')?.textContent).toContain(
+        'The connection now points at https://gitlab.third.test, and its webhook secret was removed: replies and commands are answered at the next analysis.',
+      );
+    });
+
+    it('sends a replaced secret with the token alone, and drops it with the token alone', async () => {
+      const server = setup();
+      withSecret(server);
+      patched(server);
+      const { fixture, root } = await render();
+      const form = root.querySelector<HTMLInputElement>('#token-c1')!.closest('form')!;
+      root.querySelector<HTMLInputElement>('#token-c1')!.value = 'glpat-new';
+      root.querySelector<HTMLInputElement>('#new-secret-c1')!.value = SECRET;
+      form.dispatchEvent(new Event('submit'));
+      await settle(fixture);
+      // Same address: the secret travels with the token, no address.
+      expect(patches(server)[0]?.body).toEqual({ token: 'glpat-new', webhookSecret: SECRET });
+      root.querySelector<HTMLInputElement>('#token-c1')!.value = 'glpat-newer';
+      root.querySelector<HTMLInputElement>('#drop-secret-c1')!.checked = true;
+      form.dispatchEvent(new Event('submit'));
+      await settle(fixture);
+      expect(patches(server)[1]?.body).toEqual({ token: 'glpat-newer', webhookSecret: null });
+      expect(root.querySelector('[role="status"]')?.textContent).toContain(
+        'The token of https://gitlab.example.com was replaced, and its webhook secret was removed: replies and commands are answered at the next analysis.',
+      );
+    });
+
+    it('maps the server’s demand for the secret again to its field', async () => {
+      const server = setup();
+      withSecret(server);
+      server.on('PATCH', '/api/v0/scm-connections/c1', {
+        status: 422,
+        body: problem(422, 'VALIDATION_FAILED', [
+          { path: 'body.webhookSecret', message: 'The server’s own words about the secret' },
+        ]),
+      });
+      const { fixture, root } = await render();
+      const form = root.querySelector<HTMLInputElement>('#token-c1')!.closest('form')!;
+      // The page's own check passes (a secret is typed), the server's does not (it holds another).
+      type(root, '#url-c1', 'https://gitlab.other.test');
+      root.querySelector<HTMLInputElement>('#token-c1')!.value = 'glpat-new';
+      root.querySelector<HTMLInputElement>('#new-secret-c1')!.value = SECRET;
+      form.dispatchEvent(new Event('submit'));
+      await settle(fixture);
+      expect(root.querySelector('#new-secret-error-c1')).not.toBeNull();
+      expect(root.textContent).not.toContain('The server’s own words about the secret');
+    });
   });
 
   it('lists only GitLab connections', async () => {
