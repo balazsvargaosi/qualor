@@ -41,12 +41,12 @@ export function retryAfterSeconds(
  * One JSON POST to `<baseUrl><path>` through the outbound core (llm.md §4: the base URL checked
  * first, every resolved address checked and pinned, no proxy, no redirect followed, at most 1 MiB
  * read, the whole exchange within `timeoutSeconds`): the parsed JSON of a 2xx, else an LlmError.
- * An error body is read only to classify (llm.md §14): a 400 that says the output limit is more
- * than the model takes is flagged (`refusedOutputLimit`), for the call to be asked again with less;
- * `outputLimitField`, the output limit field the request carried, is matched against the error's
- * `param`; nothing of the body is shown or logged. A call that `http.signal` gives up is cut where
- * it is, as the timeout cuts it, and throws LlmCallAborted: no LlmError, since the provider neither
- * failed nor was slow.
+ * An error body is read once, and only to classify (llm.md §14): a 400 that says the output limit
+ * is more than the model takes is flagged (`refusedOutputLimit`), for the call to be asked again
+ * with less; `outputLimitField`, the output limit field the request carried, is matched against
+ * the error's `param`; nothing of the body is shown or logged. A call that `http.signal` gives up
+ * is cut where it is, as the timeout cuts it, and throws LlmCallAborted: no LlmError, since the
+ * provider neither failed nor was slow.
  */
 export async function postJson(
   config: ProviderConfig,
@@ -130,20 +130,22 @@ export async function postJson(
   }
   if (status >= 500) throw new LlmError('unavailable', UNREACHABLE, status, retryAfter);
   if (status < 200 || status >= 300) {
+    // Read once, whatever it is checked for.
+    const refused = errorOf(result.body);
     if (
       status === 400 &&
       config.kind === 'anthropic' &&
       config.workspaceId === null &&
-      namesMissingWorkspace(result.body)
+      namesMissingWorkspace(refused)
     ) {
       throw new LlmError('workspace_required', WORKSPACE_REQUIRED_TEXT, status);
     }
     // Before the refusal of the field: OpenAI names the parameter of a limit that is too large
     // too, and it is the value that is refused then, not the field.
-    if (status === 400 && outputLimitRefused(errorOf(result.body).message)) {
+    if (status === 400 && outputLimitRefused(refused.message)) {
       throw new LlmError('rejected', refusedText(status), status, null, false, true);
     }
-    if (outputLimitField !== undefined && refusedParam(result.body) === outputLimitField) {
+    if (outputLimitField !== undefined && refusedParam(refused) === outputLimitField) {
       const other = outputLimitField === 'max_tokens' ? 'max_completion_tokens' : 'max_tokens';
       throw new LlmError(
         'rejected',
@@ -151,7 +153,7 @@ export async function postJson(
         status,
       );
     }
-    if (carriesTools(body) && refusesTools(result.body)) {
+    if (carriesTools(body) && refusesTools(refused)) {
       throw new LlmError(
         'rejected',
         `The provider refused the request (HTTP ${status}): the model or its server does not accept tools`,
@@ -210,14 +212,20 @@ const asRecord = (value: unknown): Record<string, unknown> | null =>
     ? (value as Record<string, unknown>)
     : null;
 
+/** What an error body holds: the object with the detail (its `param` and `code`), and its message. */
+interface ErrorBody {
+  detail: Record<string, unknown> | null;
+  /** '' when there is none. */
+  message: string;
+}
+
 /**
- * What an error body holds, as the providers shape it: the object with the detail (its `param` and
- * `code`), and its message ('' when there is none). The error is at `error` (OpenAI, Anthropic,
+ * What an error body holds, as the providers shape it. The error is at `error` (OpenAI, Anthropic,
  * Ollama's OpenAI endpoint), is `error` itself when that is a string (Ollama's own API), or is at
  * the top of the body (vLLM). A body that is not JSON holds nothing. Callers use only a yes or no
  * of it: nothing of the text is shown, stored or logged.
  */
-function errorOf(body: Buffer): { detail: Record<string, unknown> | null; message: string } {
+function errorOf(body: Buffer): ErrorBody {
   let parsed: unknown;
   try {
     parsed = JSON.parse(body.toString('utf8'));
@@ -243,8 +251,7 @@ function errorOf(body: Buffer): { detail: Record<string, unknown> | null; messag
  * long, although OpenAI's message for that counts the tokens "in the functions". Only this yes or
  * no is used.
  */
-function refusesTools(body: Buffer): boolean {
-  const { detail, message } = errorOf(body);
+function refusesTools({ detail, message }: ErrorBody): boolean {
   const code = detail?.code;
   if (SCHEMA.test(message)) return false;
   const param = detail?.param;
@@ -262,26 +269,15 @@ function refusesTools(body: Buffer): boolean {
 const WORKSPACE_REQUIRED = /\bnot\s+scoped\s+to\s+a\s+workspace\b|\banthropic-workspace-id\b/i;
 
 /**
- * Whether an Anthropic error body (`error.message`) says that the key is not scoped to a workspace.
- * Only this yes or no is used: nothing of the text is shown, stored or logged.
+ * Whether an Anthropic error body says that the key is not scoped to a workspace. Only this yes or
+ * no is used: nothing of the text is shown, stored or logged.
  */
-function namesMissingWorkspace(body: Buffer): boolean {
-  try {
-    const parsed = JSON.parse(body.toString('utf8')) as { error?: { message?: unknown } } | null;
-    const message = parsed?.error?.message;
-    return typeof message === 'string' && WORKSPACE_REQUIRED.test(message);
-  } catch {
-    return false;
-  }
+function namesMissingWorkspace({ message }: ErrorBody): boolean {
+  return WORKSPACE_REQUIRED.test(message);
 }
 
-/** The `error.param` of an OpenAI-style error body, when it is a string; null otherwise. */
-function refusedParam(body: Buffer): string | null {
-  try {
-    const parsed = JSON.parse(body.toString('utf8')) as { error?: { param?: unknown } } | null;
-    const param = parsed?.error?.param;
-    return typeof param === 'string' ? param : null;
-  } catch {
-    return null;
-  }
+/** The `param` of an error body (OpenAI's names the parameter it refuses), when it is a string. */
+function refusedParam({ detail }: ErrorBody): string | null {
+  const param = detail?.param;
+  return typeof param === 'string' ? param : null;
 }

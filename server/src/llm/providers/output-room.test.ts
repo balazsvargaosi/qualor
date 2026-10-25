@@ -16,6 +16,12 @@ const KNOWN: [string, string][] = [
     'vLLM and the servers that word it as OpenAI does',
     "This model's maximum context length is 8192 tokens. However, you requested 9000 tokens (4000 in the messages, 5000 in the completion). Please reduce the length of the messages or completion.",
   ],
+  [
+    // As the controller remembers it: Anthropic's older models, when what is sent and what is
+    // asked for pass the context window together.
+    'Anthropic, when the input and the limit pass the context window together',
+    'input length and `max_tokens` exceed context limit: 190000 + 20000 > 200000, decrease input length or `max_tokens` and try again',
+  ],
 ];
 
 describe('outputLimitRefused: the words of a refusal of the output limit', () => {
@@ -46,6 +52,14 @@ describe('outputLimitRefused: the words of a refusal of the output limit', () =>
       "OpenAI's other wording",
       "Invalid 'max_tokens': integer above maximum value. Expected a value <= 4096, but got 8000 instead.",
     ],
+    [
+      "Anthropic's context window wording without its backticks",
+      'input length and max_tokens exceed context limit: 190000 + 20000 > 200000, decrease input length or max_tokens and try again',
+    ],
+    [
+      "Anthropic's context window wording in quotes, with the verb and the article of another form",
+      "Input length and 'max_tokens' exceeds the context limit: 190000 + 20000 > 200000.",
+    ],
   ])('knows %s', (_what, message) => {
     expect(outputLimitRefused(message)).toBe(true);
   });
@@ -70,6 +84,14 @@ describe('outputLimitRefused: the words of a refusal of the output limit', () =>
     [
       'an integer above the maximum of another parameter',
       "Invalid 'n': integer above maximum value.",
+    ],
+    [
+      "Anthropic's prompt that is too long alone",
+      'prompt is too long: 210000 tokens > 200000 maximum',
+    ],
+    [
+      'an input over the context limit on its own, with no max_tokens in it',
+      'input length exceeds context limit: 210000 > 200000, decrease input length and try again',
     ],
   ])('does not take %s for one', (_what, message) => {
     expect(outputLimitRefused(message)).toBe(false);

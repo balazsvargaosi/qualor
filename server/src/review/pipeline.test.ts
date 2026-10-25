@@ -8,7 +8,8 @@ import {
   type ReviewableChange,
   type ReviewContext,
 } from './context';
-import type { ConversationResult } from './conversation';
+import type { LlmConversation } from '../llm/providers';
+import { CONVERSATION_TEXTS, type ConversationResult } from './conversation';
 import { envelope, newNonce } from './envelope';
 import type { ModelTier } from './model-tiers';
 import {
@@ -24,6 +25,7 @@ import {
   type ReviewRole,
 } from './pipeline';
 import { specialistData, SYSTEM_PROMPTS } from './prompts';
+import { converseOverTools } from './tool-conversation';
 
 /** The fake provider key of a test is built at run time, so no scanner takes it for a real one. */
 const j = (...parts: string[]) => parts.join('');
@@ -82,9 +84,9 @@ interface Call {
   tokenBudget: number;
   data: Record<string, unknown>;
   /** The check of an answer the pipeline gave the conversation. */
-  accept: (text: string) => boolean;
+  accept: (text: string) => boolean | string;
   /** What the check said of each answer a scripted model gave (see `texts`). */
-  accepted: boolean[];
+  accepted: (boolean | string)[];
   /** The tier of the model the pipeline asked the conversation to run on. */
   modelTier: ModelTier;
 }
@@ -121,7 +123,7 @@ function asked({ texts: answers, tokens: [input, output] }: Texts, call: Call): 
   for (const [index, text] of answers.slice(0, 2).entries()) {
     const ok = call.accept(text);
     call.accepted.push(ok);
-    if (ok) {
+    if (ok === true) {
       return {
         kind: 'answer',
         text,
@@ -561,8 +563,62 @@ describe('runReviewPipeline', () => {
     ] as const) {
       const limit = 4 * REVIEW_OUTPUT_TOKENS[role];
       expect(call.accept(padded(valid, limit)), role).toBe(true);
-      expect(call.accept(padded(valid, limit + 1)), role).toBe(false);
+      // One more is not read, and what the model is told is that it was too long.
+      expect(call.accept(padded(valid, limit + 1)), role).toBe(CONVERSATION_TEXTS.shorter);
     }
+    // Only the length is told so: an answer within it that is not the JSON asked for is refused
+    // as before, and the loop says its own words.
+    expect(quality.accept(`Here you go.${' '.repeat(100)}`)).toBe(false);
+  });
+
+  it('asks a role for a shorter answer when its answer is longer than it is read, and for JSON again when it is not JSON', async () => {
+    // The conversations run for real here, over a model that gives these texts in turn.
+    const sent: Partial<Record<ReviewRole, LlmConversation[]>> = {};
+    const left = new Map<ReviewRole, string[]>();
+    const json = JSON.stringify({ findings: [] });
+    const padded = (length: number) => `${json}${' '.repeat(length - json.length)}`;
+    const deps: PipelineDeps = {
+      providerKey: null,
+      converse: (role, user, nonce, tokenBudget, accept) =>
+        converseOverTools(
+          { role, user, nonce, tokenBudget, accept },
+          {
+            reader: null,
+            shouldStop: () => Promise.resolve(false),
+            send: (conversation) => {
+              (sent[role] ??= []).push(conversation);
+              const text = left.get(role)?.shift();
+              if (text === undefined) return Promise.reject(new Error(`no text left for ${role}`));
+              return Promise.resolve({
+                text,
+                finishReason: 'stop' as const,
+                usage: { inputTokens: 100, outputTokens: 10 },
+                model: null,
+                toolCalls: [],
+              });
+            },
+          },
+        ),
+    };
+    const run = async (quality: string[]) => {
+      left.set('quality', quality);
+      left.set('judge', [JSON.stringify(judgeSays())]);
+      sent.quality = [];
+      const { outcome } = await review(contextOf([change('src/cart.ts', 2)]), 1_000_000, deps);
+      expect(outcome.kind).toBe('reviewed');
+      return sent.quality ?? [];
+    };
+
+    // Longer than four characters for each token it may write: asked again, shorter.
+    const long = await run([padded(4 * REVIEW_OUTPUT_TOKENS.quality + 1), json]);
+    expect(long).toHaveLength(2);
+    expect(long[1]?.messages.at(-1)).toEqual({ role: 'user', text: CONVERSATION_TEXTS.shorter });
+    // Not JSON, and not long: the loop's own words.
+    const prose = await run(['Here you go.', json]);
+    expect(prose).toHaveLength(2);
+    expect(prose[1]?.messages.at(-1)).toEqual({ role: 'user', text: CONVERSATION_TEXTS.retry });
+    // At the limit it is read, and nobody asks again.
+    expect(await run([padded(4 * REVIEW_OUTPUT_TOKENS.quality)])).toHaveLength(1);
   });
 
   it('verification drops rejected, downgrades needs_validation, marks confirmed, and stops after 5', async () => {

@@ -13,14 +13,14 @@ import {
 } from '../llm/settings';
 import type { WorkerLogger } from '../queue/worker';
 import { AI_ENGINE } from '../rules/server-engines';
-import type { ConversationInput } from './conversation';
+import { CONVERSATION_TEXTS, type ConversationInput } from './conversation';
 import { envelope, newNonce } from './envelope';
 import { lineHashOf } from './findings-render';
 import { scrubKeyDeep } from './key-scrub';
 import { MaskedFiles, type MaskBudget } from './masked-files';
 import { Masker, MaskerClosed } from './masker';
 import { modelFor, tierOfCall } from './model-tiers';
-import { ANSWER_CHARS_PER_TOKEN, CHARS_PER_TOKEN, REVIEW_OUTPUT_TOKENS } from './pipeline';
+import { answerCharLimit, CHARS_PER_TOKEN, REVIEW_OUTPUT_TOKENS } from './pipeline';
 import {
   REPLY_LIMITS,
   REPLY_PROMPT_VERSION,
@@ -364,11 +364,13 @@ async function decide(input: ReplyInput, io: ReplyConversationIo): Promise<Decid
   let readCode = false;
   /**
    * What a text is: the answer, when it is one the thread bears out; or what to say to ask again,
-   * which is a fixed text for an answer the gate refuses, and false for one that is not the JSON
-   * asked for (the loop's own words then).
+   * which is a fixed text for an answer the gate refuses, and for one that is longer than it is
+   * read (the loop's own words for an answer cut off), and false for one that is not the JSON asked
+   * for (the loop's other words then).
    */
   const judge = (text: string): { answer: ReplyAnswer } | { retry: string | false } => {
-    const parsed = parseModelJson(text, ANSWER_CHARS_PER_TOKEN * REVIEW_OUTPUT_TOKENS.reply);
+    if (text.length > answerCharLimit('reply')) return { retry: CONVERSATION_TEXTS.shorter };
+    const parsed = parseModelJson(text, answerCharLimit('reply'));
     if (parsed === undefined) return { retry: false };
     const checked = replyAnswerSchema.safeParse(scrubKeyDeep(parsed, io.providerKey));
     if (!checked.success) return { retry: false };

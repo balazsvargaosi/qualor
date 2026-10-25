@@ -656,6 +656,29 @@ const port = 8080;
       expect(row.prompt).not.toBeNull();
     });
 
+    it('ends a conversation whose turn holds a block that cannot be written out again as a bad answer, with its row, and no RangeError in the sender', async () => {
+      // A block of no kind the loop reads, nested past what JSON.stringify follows: kept in the
+      // history it would make the sender's next JSON.stringify of the conversation throw.
+      const deep = `${'{"a":'.repeat(100_000)}1${'}'.repeat(100_000)}`;
+      const turn = `{"id":"msg_1","type":"message","role":"assistant","model":"m","stop_reason":"tool_use","content":[{"type":"thinking","thinking":"","signature":"sig-deep"},{"type":"tool_use","id":"c1","name":"read_file","input":{"path":"a.ts"}},{"type":"text","text":"Reading.","citations":${deep}}],"usage":{"input_tokens":10,"output_tokens":9}}`;
+      const { result, sent } = await converseThrough(
+        'anthropic',
+        [{ status: 200, body: turn }, textTurn('anthropic', '{"findings":[]}', [20, 5])],
+        settingsFor('anthropic', { storePrompts: true }),
+      );
+      // The provider's answer was not understood, and the conversation goes no further.
+      expect(result).toMatchObject({ kind: 'failed', reason: 'provider_error' });
+      expect(sent).toHaveLength(1);
+      expect(fake.requests).toHaveLength(1);
+      const stored = await rows();
+      expect(stored).toHaveLength(1);
+      expect(stored[0]).toMatchObject({
+        status: 'failed',
+        errorCode: 'PROVIDER_BAD_ANSWER',
+        result: null,
+      });
+    });
+
     it('does not join the two halves of a key that a NUL splits, in the stored prompt or in the stored result', async () => {
       const key = fake.apiKey;
       // The scrub does not see this as the key, and the store must not make it one.

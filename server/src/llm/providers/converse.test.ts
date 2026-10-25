@@ -858,6 +858,18 @@ describe('converse: conversations with read-only tools (R5)', () => {
           code: 400,
         },
       ],
+      [
+        'Anthropic (the context window)',
+        'anthropic',
+        {
+          type: 'error',
+          error: {
+            type: 'invalid_request_error',
+            message:
+              'input length and `max_tokens` exceed context limit: 190000 + 20000 > 200000, decrease input length or `max_tokens` and try again',
+          },
+        },
+      ],
     ];
 
     it.each(REFUSALS)(
@@ -1185,6 +1197,27 @@ describe('converse: conversations with read-only tools (R5)', () => {
       expect(fake.requests).toHaveLength(0);
     });
   });
+
+  it.each(KINDS)(
+    '%s: reads the body of a refused request once, whatever it is checked for',
+    async (kind) => {
+      // A body that none of the checks takes for its own, so that each of them is made on it: the
+      // key not scoped to a workspace (Anthropic), the output limit and its field, and the tools.
+      const text = JSON.stringify({
+        error: { message: 'Refused for a reason of its own', param: 'other', code: null },
+      });
+      const parse = vi.spyOn(JSON, 'parse');
+      try {
+        for (const conversation of [start, { ...start, tools: [] }]) {
+          fake.enqueue({ status: 400, body: text });
+          await converse(configFor(kind), fake.apiKey, conversation, http).catch(() => undefined);
+        }
+        expect(parse.mock.calls.filter(([arg]) => arg === text)).toHaveLength(2);
+      } finally {
+        parse.mockRestore();
+      }
+    },
+  );
 
   // Anthropic's errors name no parameter and no code, so these two are OpenAI's alone.
   it('openai: a refusal is flagged by the parameter it refuses and the code that says it is unsupported, whatever the words', async () => {

@@ -10,7 +10,7 @@ import {
 } from '../llm/providers';
 import { CONVERSATION_LIMITS, CONVERSATION_TEXTS } from './conversation';
 import { Masker } from './masker';
-import { CHARS_PER_TOKEN, REVIEW_OUTPUT_TOKENS } from './pipeline';
+import { ANSWER_CHARS_PER_TOKEN, CHARS_PER_TOKEN, REVIEW_OUTPUT_TOKENS } from './pipeline';
 import { REPLY_LIMITS, replyRetryText, replySystemPrompt, SYSTEM_PROMPTS } from './prompts';
 import { REPLY_TOKEN_BUDGET } from './replies';
 import {
@@ -1127,6 +1127,29 @@ describe('the answer to a reply', () => {
       const refused = history.at(-2);
       expect(refused?.role).toBe('assistant');
       expect(refused?.role === 'assistant' ? refused.text : '').toContain(MARKER);
+    });
+
+    it('asks for a shorter answer when the text is longer than it is read, and says nothing of its words', async () => {
+      const limit = ANSWER_CHARS_PER_TOKEN * REVIEW_OUTPUT_TOKENS.reply;
+      const json = says('other', 'keep').text;
+      const padded = (length: number) =>
+        turn({ text: `${json}${' '.repeat(length - json.length)}` });
+      // At the limit it is read, in one call; one character more is not, and is asked again, shorter.
+      expect((await converse([padded(limit)])).sent).toHaveLength(1);
+      const over = await converse([padded(limit + 1), says('other', 'keep')]);
+      expect(over.sent).toHaveLength(2);
+      expect(retryOf(over.sent)).toBe(CONVERSATION_TEXTS.shorter);
+      expect(decided(over.decision)).toMatchObject({ verdict: 'keep' });
+      // The text is fixed: it holds nothing the model wrote.
+      const marked = await converse([
+        turn({ text: `${MARKER}${' '.repeat(limit + 1)}` }),
+        says('other', 'keep'),
+      ]);
+      expect(retryOf(marked.sent)).toBe(CONVERSATION_TEXTS.shorter);
+      expect(retryOf(marked.sent)).not.toContain(MARKER);
+      // A second answer that is too long ends it, as any second refusal does.
+      const twice = await converse([padded(limit + 1), padded(limit + 1)]);
+      expect(twice.decision).toEqual({ failed: 'bad_answer' });
     });
 
     it('leaves an answer that is not the JSON asked for to the loop’s own text', async () => {

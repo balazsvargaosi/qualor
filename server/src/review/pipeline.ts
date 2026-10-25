@@ -8,7 +8,7 @@ import {
   type ReviewableChange,
   type ReviewContext,
 } from './context';
-import type { ConversationResult } from './conversation';
+import { CONVERSATION_TEXTS, type ConversationResult } from './conversation';
 import { envelope, newNonce } from './envelope';
 import { scrubKeyDeep } from './key-scrub';
 import { tierOfCall, type ConversationRole, type ModelTier } from './model-tiers';
@@ -98,6 +98,9 @@ export const REVIEW_OUTPUT_TOKENS: Readonly<Record<ConversationRole, number>> = 
   reply: 2_048,
 });
 export const ANSWER_CHARS_PER_TOKEN = 4;
+/** The longest answer of a role that is read, in characters: four for each token it may write. */
+export const answerCharLimit = (role: ConversationRole): number =>
+  ANSWER_CHARS_PER_TOKEN * REVIEW_OUTPUT_TOKENS[role];
 
 /**
  * The characters a token of code or JSON stands for, at the least: what a first message may hold is
@@ -162,15 +165,16 @@ export interface PipelineDeps {
    * One conversation of a role over the tools. `user` is the envelope built with `nonce`; the
    * job's implementation runs `runConversation` with that nonce for the tool results, with
    * `tokenBudget` (more than 0) and REVIEW_OUTPUT_TOKENS of the role, and with `accept` as its
-   * check of an answer. Every call of the conversation goes to the model of `modelTier`, which the
-   * pipeline picks for the role and the size of the review (`tierOfCall`).
+   * check of an answer: `true` takes it, and a text is what to say in asking again (an answer
+   * that is too long to be read is told so). Every call of the conversation goes to the model of
+   * `modelTier`, which the pipeline picks for the role and the size of the review (`tierOfCall`).
    */
   converse(
     role: ReviewRole,
     user: string,
     nonce: string,
     tokenBudget: number,
-    accept: (text: string) => boolean,
+    accept: (text: string) => boolean | string,
     modelTier: ModelTier,
   ): Promise<ConversationResult>;
   /** The provider's API key, taken out of every answer before it is used; null when there is none. */
@@ -323,9 +327,10 @@ class Review {
 
   /**
    * One slot of a stage: a conversation of `role` over `data` with `tokens` to spend, which asks
-   * once more for an answer that does not match `schema` (runConversation's `accept`). What it
-   * spent is taken from `share`. Its answer is checked again here: a conversation that gave one
-   * back without checking it is not believed.
+   * once more for an answer that does not match `schema` (runConversation's `accept`), and for a
+   * shorter one when the answer is longer than it is read. What it spent is taken from `share`.
+   * Its answer is checked again here: a conversation that gave one back without checking it is not
+   * believed.
    */
   async ask<T>(
     role: ReviewRole,
@@ -340,7 +345,10 @@ class Review {
     }
     /** What the check read of the answers it took, by their text. */
     const accepted = new Map<string, T>();
-    const accept = (text: string): boolean => {
+    const accept = (text: string): boolean | string => {
+      // The room to think lets a model write past the answer's cap, so a text can be too long to
+      // be read: it is told so, which the loop's text for JSON that does not match does not say.
+      if (text.length > answerCharLimit(role)) return CONVERSATION_TEXTS.shorter;
       const value = this.read(role, text, schema);
       if (value !== undefined) accepted.set(text, value);
       return value !== undefined;
@@ -371,7 +379,7 @@ class Review {
    * answer is read up to four characters for each token the role may write.
    */
   private read<T>(role: ReviewRole, text: string, schema: z.ZodType<T>): T | undefined {
-    const parsed = parseModelJson(text, ANSWER_CHARS_PER_TOKEN * REVIEW_OUTPUT_TOKENS[role]);
+    const parsed = parseModelJson(text, answerCharLimit(role));
     if (parsed === undefined) return undefined;
     const checked = schema.safeParse(scrubKeyDeep(parsed, this.deps.providerKey));
     return checked.success ? checked.data : undefined;

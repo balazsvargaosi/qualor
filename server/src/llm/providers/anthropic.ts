@@ -59,29 +59,57 @@ function headers(config: ProviderConfig, apiKey: string | null): Record<string, 
   return result;
 }
 
-/** Whether the blocks can be written out again: an input nested deeper than JSON.stringify follows cannot. */
-function writable(blocks: readonly unknown[]): boolean {
+/**
+ * A copy of blocks that can be written out again (what is nested deeper than JSON.stringify follows
+ * cannot) and copied, or null when they cannot be. The copy is its own: the blocks are the
+ * provider's, and what shares objects with them is not.
+ */
+function copyOf(blocks: readonly unknown[]): unknown[] | null {
   try {
     JSON.stringify(blocks);
-    return true;
+    return structuredClone(blocks) as unknown[];
   } catch {
-    return false;
+    return null;
   }
+}
+
+/**
+ * The replay of a turn: its whole content as the provider sent it, in a copy of its own. The
+ * thinking in it is signed and goes back unchanged, and nothing done later to the turn's calls,
+ * which share their input with the content, may change it. What cannot be written out again must
+ * not be in a history that is sent again and again, whatever block it is in:
+ * - a call whose input cannot leaves the turn without a replay, and the loop refuses those
+ *   arguments and sends the turn from its text and its calls;
+ * - any other block that cannot is a fault of the provider's, which no model sends, and its answer
+ *   is not understood.
+ */
+function replayOf(
+  content: readonly unknown[],
+  toolUse: readonly unknown[],
+): ProviderReplay | undefined {
+  const items = copyOf(content);
+  if (items !== null) return { kind: 'anthropic', items };
+  if (copyOf(toolUse) === null) return undefined;
+  throw new LlmError('bad_answer', NOT_UNDERSTOOD);
 }
 
 /**
  * POST <baseUrl>/v1/messages and read the answer: the text blocks joined, the provider's own
  * `tool_use` blocks, which only a conversation reads further, and the whole `content` exactly as
- * it came, as the replay that sends the turn back. A refusal (an answer of HTTP 200 whose stop
- * reason says so) has none of it: what its content holds, an apology or half an answer or a call
- * that cannot be read, is not the turn's.
+ * it came, which a conversation turns into the replay that sends the turn back (`replayOf`). A
+ * refusal (an answer of HTTP 200 whose stop reason says so) has none of it: what its content
+ * holds, an apology or half an answer or a call that cannot be read, is not the turn's.
  */
 async function send(
   config: ProviderConfig,
   apiKey: string | null,
   body: Record<string, unknown>,
   http: ProviderHttpOptions,
-): Promise<{ answer: LlmAnswer; toolUse: readonly unknown[]; replay?: ProviderReplay }> {
+): Promise<{
+  answer: LlmAnswer;
+  toolUse: readonly unknown[];
+  content: readonly unknown[] | null;
+}> {
   const raw = await postJson(config, '/v1/messages', headers(config, apiKey), body, http);
   const parsed = answerSchema.safeParse(raw);
   if (!parsed.success) throw new LlmError('bad_answer', NOT_UNDERSTOOD);
@@ -91,13 +119,13 @@ async function send(
   };
   const model = parsed.data.model ?? null;
   if (parsed.data.stop_reason === 'refusal') {
-    return { answer: { text: '', finishReason: 'refusal', usage, model }, toolUse: [] };
+    return {
+      answer: { text: '', finishReason: 'refusal', usage, model },
+      toolUse: [],
+      content: null,
+    };
   }
   const toolUse = parsed.data.content.filter((b) => b.type === 'tool_use');
-  // The blocks as the provider sent them (the schema checked that `content` is a list), not the
-  // copies the schema made: the thinking in them is signed, and goes back unchanged. A call that
-  // cannot be written out again leaves the turn without a replay, as no history may hold it.
-  const items = (raw as { content: readonly unknown[] }).content;
   return {
     answer: {
       text: parsed.data.content
@@ -109,7 +137,9 @@ async function send(
       model,
     },
     toolUse,
-    ...(writable(toolUse) ? { replay: { kind: 'anthropic' as const, items } } : {}),
+    // The blocks as the provider sent them (the schema checked that `content` is a list), not the
+    // copies the schema made: the thinking in them is signed, and goes back unchanged.
+    content: (raw as { content: readonly unknown[] }).content,
   };
 }
 
@@ -225,7 +255,7 @@ function toolCall(raw: unknown): LlmToolCall {
  * tools as `tools` (`input_schema` is the parameters) with `tool_choice` auto, both sent only when
  * there are tools. Only auto: the current models refuse a forced choice (`any`, `tool`) with a 400.
  * The request, the limits and the failures are those of `anthropicMessages`; the `tool_use` blocks
- * of the answer are the turn's calls, in order, and its content is the turn's replay.
+ * of the answer are the turn's calls, in order, and a copy of its content is the turn's replay.
  */
 export async function anthropicConverse(
   config: ProviderConfig,
@@ -250,7 +280,9 @@ export async function anthropicConverse(
       body.tools = tools;
       body.tool_choice = { type: 'auto' };
     }
-    const { answer, toolUse, replay } = await send(config, apiKey, body, http);
-    return { ...answer, toolCalls: toolUse.map(toolCall), ...(replay ? { replay } : {}) };
+    const { answer, toolUse, content } = await send(config, apiKey, body, http);
+    const toolCalls = toolUse.map(toolCall);
+    const replay = content === null ? undefined : replayOf(content, toolUse);
+    return { ...answer, toolCalls, ...(replay ? { replay } : {}) };
   });
 }

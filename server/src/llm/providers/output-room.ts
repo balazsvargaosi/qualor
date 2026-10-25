@@ -12,7 +12,12 @@ import { LlmError, type ProviderConfig } from './types';
  * - vLLM, and the servers that word it as OpenAI's own servers once did: "This model's maximum
  *   context length is 8192 tokens. However, you requested 9000 tokens (4000 in the messages, 5000
  *   in the completion). Please reduce the length of the messages or completion." A completion with
- *   tokens counted in it is the mark of it.
+ *   tokens counted in it is the mark of it;
+ * - Anthropic, for its older models, when what is sent and what is asked for pass the context window
+ *   together (the text as it is remembered, not as a call showed it): "input length and
+ *   `max_tokens` exceed context limit: 190000 + 20000 > 200000, decrease input length or
+ *   `max_tokens` and try again", read loosely: the quotes are optional, and so are the verb's s and
+ *   the article.
  * What these have in common is that a smaller limit may help. A prompt that is too long on its own
  * ("your messages resulted in 9000 tokens") and a refusal of the field (`max_tokens` is not
  * supported, use `max_completion_tokens`) are none of them.
@@ -22,6 +27,7 @@ const OUTPUT_LIMIT_REFUSALS: readonly RegExp[] = [
   /\bmax_(?:completion_)?tokens\b['"]?\s+is\s+too\s+large\b/i,
   /\bmax_(?:completion_)?tokens\b['"]?:\s*integer\s+above\s+maximum\s+value\b/i,
   /\b\d+\s+in\s+the\s+completion\b/i,
+  /\binput\s+length\s+and\s+\W{0,2}max_tokens\W{0,2}\s+exceeds?\s+(?:the\s+)?context\s+limit\b/i,
 ];
 
 /** Whether the message of a provider's 400 says that the output limit asked for is too large. */

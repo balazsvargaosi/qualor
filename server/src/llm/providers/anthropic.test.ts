@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   anthropicAnswer,
   anthropicRedactedThinking,
@@ -566,6 +566,115 @@ describe('the Anthropic adapter: the current models', () => {
       expect(turn.finishReason).toBe('tool');
       expect(turn.toolCalls).toHaveLength(1);
       expect(turn.replay).toBeUndefined();
+    });
+
+    describe('a block that is not a call and nests deeper than JSON can write', () => {
+      const DEPTH = 100_000;
+      const deep = `${'{"a":'.repeat(DEPTH)}1${'}'.repeat(DEPTH)}`;
+      /** An answer as the provider's JSON text, from the text of each block of its content. */
+      const rawAnswer = (stop: string, ...blocks: string[]): string =>
+        `{"id":"msg_1","type":"message","role":"assistant","model":"m","stop_reason":"${stop}","content":[${blocks.join(',')}],"usage":{"input_tokens":1,"output_tokens":1}}`;
+      const THINKING = '{"type":"thinking","thinking":"","signature":"sig-deep"}';
+      const CALL = '{"type":"tool_use","id":"toolu_1","name":"read_file","input":{"path":"a.ts"}}';
+      const BLOCKS: [string, string][] = [
+        ['a text block with deep citations', `{"type":"text","text":"Done.","citations":${deep}}`],
+        [
+          'a block of a kind it does not know',
+          `{"type":"server_tool_use","id":"srv_1","name":"web_search","input":${deep}}`,
+        ],
+        [
+          'a thinking block with a deep field of its own',
+          `{"type":"thinking","thinking":"","signature":"s","extra":${deep}}`,
+        ],
+      ];
+
+      it.each(BLOCKS)(
+        'ends as the adapter’s own bad answer for %s, whatever turn it comes in, never as a turn no request can carry',
+        async (_what, block) => {
+          for (const [stop, blocks] of [
+            ['tool_use', [THINKING, CALL, block]],
+            ['end_turn', [THINKING, block]],
+          ] as const) {
+            fake.enqueue({ status: 200, body: rawAnswer(stop, ...blocks) });
+            // Not the turn itself: what a failing test shows of a turn that deep cannot be sent
+            // between the processes of the runner.
+            const err = await converse(anthropic, fake.apiKey, start, http).then(
+              () => 'a turn',
+              (e: unknown) => e,
+            );
+            expect(err).toBeInstanceOf(LlmError);
+            expect(err).toMatchObject({
+              failure: 'bad_answer',
+              message: "The provider's answer was not understood",
+            });
+          }
+        },
+      );
+
+      it('is still read in a single call, which keeps no replay and sends nothing back', async () => {
+        fake.enqueue({
+          status: 200,
+          body: rawAnswer('end_turn', THINKING, `{"type":"text","text":"{}","citations":${deep}}`),
+        });
+        expect(await callProvider(anthropic, fake.apiKey, call, http)).toMatchObject({
+          text: '{}',
+          finishReason: 'stop',
+        });
+      });
+
+      it('keeps the replay of a block nested as deep as JSON still follows, as it came', async () => {
+        const nested = `${'{"a":'.repeat(500)}1${'}'.repeat(500)}`;
+        const text = rawAnswer(
+          'end_turn',
+          THINKING,
+          `{"type":"text","text":"Done.","citations":${nested}}`,
+        );
+        fake.enqueue({ status: 200, body: text });
+        const turn = await converse(anthropic, fake.apiKey, start, http);
+        expect(turn.text).toBe('Done.');
+        expect(JSON.stringify(turn.replay?.items)).toBe(
+          JSON.stringify((JSON.parse(text) as Content).content),
+        );
+      });
+
+      it('does not lean on how deep a copy can follow: what JSON cannot write is a bad answer however the copy is made', async () => {
+        // A copy that follows any depth, as another runtime's may.
+        vi.stubGlobal('structuredClone', <T>(value: T): T => value);
+        try {
+          const [, block] = BLOCKS[0]!;
+          fake.enqueue({ status: 200, body: rawAnswer('end_turn', THINKING, block) });
+          const err = await converse(anthropic, fake.apiKey, start, http).then(
+            () => 'a turn',
+            (e: unknown) => e,
+          );
+          expect(err).toMatchObject({ failure: 'bad_answer' });
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+    });
+
+    it('keeps a copy of the content as the replay: nothing done to the calls of the turn changes it', async () => {
+      const input = { path: 'a.ts', nested: { keep: true } };
+      fake.enqueue({
+        status: 200,
+        body: answerOf([
+          anthropicThinking('sig-copy'),
+          toolUseBlock('toolu_1', 'read_file', input),
+        ]),
+      });
+      const turn = await converse(anthropic, fake.apiKey, start, http);
+      const before = JSON.stringify(turn.replay?.items);
+      expect(before).toContain('"keep":true');
+      const sent = turn.toolCalls[0]!.arguments as typeof input;
+      sent.path = 'changed.ts';
+      sent.nested.keep = false;
+      expect(JSON.stringify(turn.replay?.items)).toBe(before);
+      // And the copy is of the whole content, thinking and all, in its order.
+      expect(turn.replay?.items).toEqual([
+        anthropicThinking('sig-copy'),
+        toolUseBlock('toolu_1', 'read_file', { path: 'a.ts', nested: { keep: true } }),
+      ]);
     });
   });
 
