@@ -16,8 +16,8 @@ import { reviewActive, reviewSettingsOf } from './settings';
  * `queueReplies` writes what it found, in one short transaction: a row of the replies ledger
  * (replies.ts) for each note that is new to the project, and the `ai-reply` job that answers it,
  * which the review worker runs beside the reviews (reply-job.ts). Nothing else writes these rows
- * and jobs (the job's own stop queues its row again here too), so a row is queued exactly when its
- * job is, and the sweep below ends a row its job left running.
+ * and jobs (the job's own stop, and its wait for an SCM circuit, queue its row again here too), so
+ * a row is queued exactly when its job is, and the sweep below ends a row its job left running.
  *
  * A pass is bounded: at most 50 rounds and 20 commands, new ones and notes queued again together,
  * the oldest first, and the rest wait for the next pass. The caps count only what the ledger does
@@ -143,15 +143,14 @@ async function enqueueAnswers(
 }
 
 /**
- * A running row whose answer the stopping server gave up before anything was decided: it is
- * queued again, its start kept (a queued row may have one), with a new job a few seconds on, for
- * another replica or for this server once it is up again (not at once, so that a worker of the
- * stopping server that is still polling does not take it straight back), in one transaction.
- * Answers whether the row was still running.
+ * A running row queued again, its start kept (a queued row may have one), with a new job due in
+ * `seconds`, in one transaction: the job that gave it back ends, and no try of the new one is
+ * spent yet. Answers whether the row was still running.
  */
-export async function queueAfterStop(
+async function queueAgain(
   db: Db,
   reply: { id: string; branchId: string },
+  seconds: number,
 ): Promise<boolean> {
   return db.transaction(async (tx) => {
     const [queued] = await tx
@@ -164,10 +163,43 @@ export async function queueAfterStop(
       tx,
       reply.branchId,
       [reply.id],
-      sql`now() + make_interval(secs => ${REVIEW_AFTER_STOP_SECONDS})`,
+      sql`now() + make_interval(secs => ${seconds})`,
     );
     return true;
   });
+}
+
+/**
+ * A running row whose answer the stopping server gave up before anything was decided: it is
+ * queued again with a new job a few seconds on, for another replica or for this server once it is
+ * up again (not at once, so that a worker of the stopping server that is still polling does not
+ * take it straight back). Answers whether the row was still running.
+ */
+export async function queueAfterStop(
+  db: Db,
+  reply: { id: string; branchId: string },
+): Promise<boolean> {
+  return queueAgain(db, reply, REVIEW_AFTER_STOP_SECONDS);
+}
+
+/**
+ * How long an answer waits for its SCM connection's circuit when the circuit cannot tell when it
+ * lets a job through: it is half-open, and another job's probe has no answer yet.
+ */
+export const REPLY_CIRCUIT_WAIT_SECONDS = 60;
+
+/**
+ * A running row whose job found its SCM connection's circuit closed to it before its own requests
+ * (reply-job.ts): it is queued again with a new job due in `waitSeconds`, when the circuit lets a
+ * job through again. Nothing of the wait is written on the row. Answers whether the row was still
+ * running.
+ */
+export async function queueAfterCircuit(
+  db: Db,
+  reply: { id: string; branchId: string },
+  waitSeconds: number,
+): Promise<boolean> {
+  return queueAgain(db, reply, waitSeconds);
 }
 
 /**

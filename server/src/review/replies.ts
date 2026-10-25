@@ -14,8 +14,9 @@ export type { ReplyOutcome, ReplyReason } from '../db/schema';
  * commands. A note is a row once (the project, the provider, the kind and the note's id), so
  * whichever of decoration and a webhook finds it first queues its answer, and the other finds it
  * there. The job that answers writes each step on the row as it is done, so a retry resumes after
- * the last one: the model's decision first, then the id of the note posted, then the end. Every
- * write here is made once: a row that has its decision, its answer note or its end keeps them.
+ * the last one: the model's decision first, then the status the reply changed, then the id of the
+ * note posted, then the end. Every write here is made once: a row that has its decision, its
+ * change, its answer note or its end keeps them.
  */
 
 /** The most tokens (input and output, over all its calls) the conversation of one reply may use. */
@@ -108,6 +109,28 @@ export async function recordDecision(
       costMicroUsd: decision.costMicroUsd,
     })
     .where(and(eq(reviewReplies.id, id), isNull(reviewReplies.verdict)));
+}
+
+/**
+ * Stores that the row's reply changed its issue's status to `status` (its `outcome`, which the end
+ * keeps), for a running row that has none yet, in the transaction that changed the status: a job
+ * that takes the row again knows it so, and changes nothing a second time.
+ */
+export async function recordStatusChange(
+  db: Executor,
+  id: string,
+  status: 'wont_fix' | 'false_positive',
+): Promise<void> {
+  await db
+    .update(reviewReplies)
+    .set({ outcome: status })
+    .where(
+      and(
+        eq(reviewReplies.id, id),
+        eq(reviewReplies.status, 'running'),
+        isNull(reviewReplies.outcome),
+      ),
+    );
 }
 
 /** Stores the id of the note Qualor posted as its answer, for a row that has none yet. */

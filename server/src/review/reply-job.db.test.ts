@@ -41,14 +41,17 @@ import {
   reviewFindings,
   reviewReplies,
   reviewRuns,
+  reviewSnapshots,
 } from '../db/schema';
 import { createLlmRuntime } from '../llm/job';
 import { enqueue } from '../queue/queue';
 import { runUntilIdle } from '../queue/worker';
 import { markerOf } from '../scm/markdown';
 import { enqueueDecoration } from '../scm/queue';
+import { CircuitBreaker, SCM_CIRCUIT_FAILURES, SCM_CIRCUIT_OPEN_MS } from '../scm/runtime';
 import { parseInternalHosts } from '../scm/url';
 import type { ReviewJobDeps } from './job';
+import { ofBranch } from './lifecycle';
 import { replyNote } from './render';
 import { replyHandlers } from './reply-job';
 import { AI_REPLY_QUEUE, reconcileStuckReplies, replyKey } from './reply-queue';
@@ -62,6 +65,8 @@ import { AI_REPLY_QUEUE, reconcileStuckReplies, replyKey } from './reply-queue';
  */
 
 const HEAD = '1'.repeat(40);
+/** A later commit of the merge request, which no snapshot is of. */
+const NEWER = '2'.repeat(40);
 const BASE = 'b'.repeat(40);
 const PATH = 'src/cart.ts';
 /** The file the merge request adds, as the snapshot holds it. */
@@ -144,6 +149,14 @@ const marksIssue = (body: string, issueId: string): boolean => {
 interface Mr {
   project: IngestProject;
   branchId: string;
+  /** The project's SCM connection, whose circuit the jobs ask. */
+  connectionId: string;
+  /** The analysis of HEAD, which the review read. */
+  analysisId: string;
+  /** A newer commit of the merge request is analysed, with no snapshot: answers its analysis. */
+  analyseNewer(): Promise<string>;
+  /** The snapshot of HEAD of one of the merge request's analyses, unpacked and ready. */
+  snapshotOf(analysisId: string): Promise<void>;
   /** Decorates it: Qualor's threads, its summary, and the answers queued. */
   decorate(): Promise<void>;
   /** The id of Qualor's thread of the issue, as the replies ledger names it. */
@@ -170,6 +183,10 @@ interface Mr {
   goneOnNextPost(): void;
   /** The provider has no such thread when the next one is resolved, once its answer is posted. */
   goneOnNextResolve(): void;
+  /** The next read of the merge request's state fails as a provider that is down does (502). */
+  failNextMergeRequestRead(): void;
+  /** The next read of the thread's notes fails as a provider that is down does (502). */
+  failNextThreadRead(): void;
   /** The provider's name of a person, which the changelog quotes. */
   username(who: Person): string;
 }
@@ -217,6 +234,10 @@ describe('the answer job (6I-4)', () => {
       headSha: HEAD,
       summary: { verdict: 'The cart has problems.', walkthrough: [], notes: [] },
     });
+    await storeSnapshot(analysisId, mergeRequestId);
+  };
+  /** The analysis' snapshot of HEAD, which adds PATH as LINES, unpacked and ready. */
+  const storeSnapshot = async (analysisId: string, mergeRequestId: string) => {
     await storeTestSnapshot(
       h.ctx.db,
       analysisId,
@@ -283,6 +304,22 @@ describe('the answer job (6I-4)', () => {
       return {
         project,
         branchId,
+        connectionId: project.connectionId,
+        analysisId,
+        analyseNewer: async () => {
+          await reviewOff(h);
+          return project.ingestOk(
+            mergeRequestReport(12, NEWER, {
+              projectKey: project.key,
+              // A day after the first analysis' (the reports' default date).
+              analysisDate: '2026-09-23T10:15:00Z',
+              gitlab: { projectId: String(gitlabId), mergeRequestEventType: 'detached' },
+              files: [file(PATH, { lines: LINES.length, newLines: [[1, LINES.length]] })],
+              findings,
+            }),
+          );
+        },
+        snapshotOf: (id) => storeSnapshot(id, '12'),
         decorate: async () => {
           await enqueueDecoration(h.ctx.db, { analysisId, branchId, gitlab: null });
           await runDecorations(h, decorationDeps(h));
@@ -352,6 +389,16 @@ describe('the answer job (6I-4)', () => {
             status: 404,
             body: { message: '404 Discussion Not Found' },
           }),
+        failNextMergeRequestRead: () =>
+          gitlab.inject('GET', new RegExp(`^/projects/${gitlabId}/merge_requests/12$`), {
+            status: 502,
+          }),
+        failNextThreadRead: () =>
+          gitlab.inject(
+            'GET',
+            new RegExp(`^/projects/${gitlabId}/merge_requests/12/discussions$`),
+            { status: 502 },
+          ),
         username: (who) => `user${GITLAB_USERS[who]}`,
       };
     },
@@ -401,6 +448,22 @@ describe('the answer job (6I-4)', () => {
       return {
         project,
         branchId,
+        connectionId: project.connectionId,
+        analysisId,
+        analyseNewer: async () => {
+          await reviewOff(h);
+          return project.ingestOk(
+            pullRequestReport(7, NEWER, {
+              projectKey: project.key,
+              analysisDate: new Date(Date.UTC(2026, 8, 1, 10) + 86_400_000 * day++).toISOString(),
+              engines: [engine('eslint')],
+              files: [file(PATH, { lines: LINES.length, newLines: [[1, LINES.length]] })],
+              findings,
+              github: context,
+            }),
+          );
+        },
+        snapshotOf: (id) => storeSnapshot(id, '7'),
         decorate: async () => {
           await enqueueDecoration(h.ctx.db, {
             analysisId,
@@ -503,6 +566,16 @@ describe('the answer job (6I-4)', () => {
                   ],
                 },
               }),
+          }),
+        failNextMergeRequestRead: () =>
+          github.inject('GET', new RegExp(`^/repos/acme/${repo.name}/pulls/7$`), {
+            status: 502,
+            body: { message: 'Bad Gateway' },
+          }),
+        failNextThreadRead: () =>
+          github.inject('GET', new RegExp(`^/repos/acme/${repo.name}/pulls/7/comments$`), {
+            status: 502,
+            body: { message: 'Bad Gateway' },
           }),
         username: (who) => GITHUB_USERS[who].login,
       };
@@ -1204,6 +1277,30 @@ describe('the answer job (6I-4)', () => {
       expect((await issueById(foreign)).status).toBe('open');
     });
 
+    it('an issue that is another project’s once the model has decided is not acted on: the row ends failed: internal', async () => {
+      const { mr, issueId, threadId, row } = await replied('foreign-after-model');
+      const other = await driverOf().setup(`${slug}-foreign-after-model-other`);
+      await reviewOn(h, llm);
+      // While the model decides, the issue becomes the other project's.
+      llm.enqueue(async () => {
+        await h.ctx.db
+          .update(issues)
+          .set({ projectId: other.project.id })
+          .where(eq(issues.id, issueId));
+        return { status: 200, body: openAiAnswer(WONT_FIX) };
+      });
+      await answer();
+      expect(await rowById(row.id)).toMatchObject({
+        status: 'failed',
+        reason: 'internal',
+        verdict: 'wont_fix',
+        answerNoteId: null,
+      });
+      expect((await issueById(issueId)).status).toBe('open');
+      expect(mr.answers(threadId)).toEqual([]);
+      expect(mr.resolved(threadId)).toBe(false);
+    });
+
     it('a false-positive claim the code bears out marks the issue as the system, and says so', async () => {
       const { mr, issueId, threadId, row } = await replied('false-positive', {
         body: 'Line 9 is right: the constant is meant to be 9.',
@@ -1384,6 +1481,227 @@ describe('the answer job (6I-4)', () => {
       });
       expect((await issueById(issueId)).status).toBe('open');
       expect(mr.answers(threadId)).toEqual([]);
+    });
+
+    it('waits while the connection’s circuit is open: queued again for when it opens, and answered once it has closed', async () => {
+      const { d, mr, threadId, row } = await replied('circuit-open');
+      const runtime = githubDeps(h).runtime;
+      for (let n = 0; n < SCM_CIRCUIT_FAILURES; n += 1) runtime.circuit.failure(mr.connectionId);
+      const opensIn = (runtime.circuit.openUntil(mr.connectionId) ?? 0) - Date.now();
+      d.clearRequests();
+      const calls = llm.requests.length;
+      expect(await answer({ scmRuntime: runtime })).toBe(1);
+      // Nothing is asked of the provider or the model, and nothing is recorded.
+      expect(d.requests()).toEqual([]);
+      expect(callsSince(calls)).toEqual([]);
+      expect(await rowById(row.id)).toMatchObject({
+        status: 'queued',
+        startedAt: expect.any(Date),
+        finishedAt: null,
+        verdict: null,
+        reason: null,
+      });
+      // Its job is done, no try spent; the next one is due when the circuit opens again.
+      const queued = await jobsOf(row.id);
+      expect(queued.map((j) => [j.status, j.attempts])).toEqual([
+        ['succeeded', 1],
+        ['queued', 0],
+      ]);
+      const waits = (queued[1]!.runAt.getTime() - queued[1]!.createdAt.getTime()) / 1000;
+      expect(Math.abs(waits - opensIn / 1000)).toBeLessThan(5);
+      // Once the circuit has closed, the next job answers.
+      runtime.circuit.success(mr.connectionId);
+      await retryNow();
+      llm.say(WONT_FIX);
+      await answer({ scmRuntime: runtime });
+      expect(await rowById(row.id)).toMatchObject({ status: 'done', outcome: 'wont_fix' });
+      expect(mr.answers(threadId)).toHaveLength(1);
+    });
+
+    it('waits a minute when the circuit is half-open and another job probes it', async () => {
+      const { d, mr, threadId, row } = await replied('circuit-probe');
+      let clock = Date.now();
+      // The circuit on a clock of the test's; the rest of the runtime as in the other tests.
+      const runtime = githubDeps(h).runtime;
+      runtime.circuit = new CircuitBreaker(() => clock);
+      for (let n = 0; n < SCM_CIRCUIT_FAILURES; n += 1) runtime.circuit.failure(mr.connectionId);
+      // The window is over, and another job took the probe.
+      clock += SCM_CIRCUIT_OPEN_MS + 1;
+      expect(runtime.circuit.tryPass(mr.connectionId)).toBe(true);
+      d.clearRequests();
+      await answer({ scmRuntime: runtime });
+      expect(d.requests()).toEqual([]);
+      expect((await rowById(row.id)).status).toBe('queued');
+      const [, next] = await jobsOf(row.id);
+      expect((next!.runAt.getTime() - next!.createdAt.getTime()) / 1000).toBe(60);
+      // The probe's answer closes the circuit, and the next job answers.
+      runtime.circuit.success(mr.connectionId);
+      await retryNow();
+      llm.say(WONT_FIX);
+      await answer({ scmRuntime: runtime });
+      expect(await rowById(row.id)).toMatchObject({ status: 'done', outcome: 'wont_fix' });
+      expect(mr.answers(threadId)).toHaveLength(1);
+    });
+
+    it('reports its own requests to the circuit: an answer counts for the provider, a transient failure against it', async () => {
+      const answered = await replied('circuit-answer');
+      const runtime = githubDeps(h).runtime;
+      const failures = (connectionId: string) => runtime.circuit.inspect(connectionId).failures;
+      // The read of the merge request's state fails, and counts; the job's own requests answer,
+      // and the count starts again.
+      answered.mr.failNextMergeRequestRead();
+      llm.say(WONT_FIX);
+      await answer({ scmRuntime: runtime });
+      expect(await rowById(answered.row.id)).toMatchObject({ status: 'done' });
+      expect(failures(answered.mr.connectionId)).toBe(0);
+
+      // The provider fails the job's read of the thread: the circuit counts it, and the job's
+      // second try is due.
+      const failed = await replied('circuit-failure');
+      failed.mr.failNextThreadRead();
+      await answer({ scmRuntime: runtime });
+      expect(failures(failed.mr.connectionId)).toBe(1);
+      expect(await rowById(failed.row.id)).toMatchObject({ status: 'running', verdict: null });
+      expect((await jobsOf(failed.row.id)).map((j) => [j.status, j.attempts])).toEqual([
+        ['queued', 1],
+      ]);
+      // Its retry answers, and the count starts again.
+      await retryNow();
+      llm.say(WONT_FIX);
+      await answer({ scmRuntime: runtime });
+      expect(await rowById(failed.row.id)).toMatchObject({ status: 'done', outcome: 'wont_fix' });
+      expect(failures(failed.mr.connectionId)).toBe(0);
+    });
+
+    it('a circuit that opens while the model decides: the decision is kept and nothing changes until the next job', async () => {
+      const { mr, issueId, threadId, row } = await replied('circuit-after-model');
+      const runtime = githubDeps(h).runtime;
+      const calls = llm.requests.length;
+      // Meanwhile the provider fails other jobs of the connection, and its circuit opens.
+      llm.enqueue(async () => {
+        for (let n = 0; n < SCM_CIRCUIT_FAILURES; n += 1) runtime.circuit.failure(mr.connectionId);
+        return Promise.resolve({ status: 200, body: openAiAnswer(WONT_FIX) });
+      });
+      await answer({ scmRuntime: runtime });
+      expect(await rowById(row.id)).toMatchObject({
+        status: 'queued',
+        verdict: 'wont_fix',
+        answer: ACCEPTED,
+        outcome: null,
+        answerNoteId: null,
+      });
+      expect((await issueById(issueId)).status).toBe('open');
+      expect(await changesOf(issueId)).toEqual([]);
+      expect(mr.answers(threadId)).toEqual([]);
+      expect(mr.resolved(threadId)).toBe(false);
+      expect((await jobsOf(row.id)).map((j) => [j.status, j.attempts])).toEqual([
+        ['succeeded', 1],
+        ['queued', 0],
+      ]);
+      // Once it has closed, the next job does the rest: the model was asked once in all.
+      runtime.circuit.success(mr.connectionId);
+      await retryNow();
+      await answer({ scmRuntime: runtime });
+      expect(callsSince(calls)).toHaveLength(1);
+      expect((await issueById(issueId)).status).toBe('wont_fix');
+      expect(mr.answers(threadId).map((a) => a.body)).toEqual([
+        replyNote(row.id, ACCEPTED, 'wont_fix'),
+      ]);
+      expect(mr.resolved(threadId)).toBe(true);
+      expect(await rowById(row.id)).toMatchObject({ status: 'done', outcome: 'wont_fix' });
+
+      // An answer that keeps the finding waits as well before it is posted.
+      const kept = await replied('circuit-after-model-keep');
+      llm.enqueue(async () => {
+        for (let n = 0; n < SCM_CIRCUIT_FAILURES; n += 1) {
+          runtime.circuit.failure(kept.mr.connectionId);
+        }
+        return Promise.resolve({ status: 200, body: openAiAnswer(KEEP) });
+      });
+      await answer({ scmRuntime: runtime });
+      expect(await rowById(kept.row.id)).toMatchObject({
+        status: 'queued',
+        verdict: 'keep',
+        answerNoteId: null,
+      });
+      expect(kept.mr.answers(kept.threadId)).toEqual([]);
+      runtime.circuit.success(kept.mr.connectionId);
+      await retryNow();
+      await answer({ scmRuntime: runtime });
+      expect(kept.mr.answers(kept.threadId).map((a) => a.body)).toEqual([
+        replyNote(kept.row.id, EXPLAINED, null),
+      ]);
+      expect(await rowById(kept.row.id)).toMatchObject({ status: 'done', outcome: 'answered' });
+    });
+
+    it('a status the reply changed before a wait for the circuit is changed once, and the answer says so', async () => {
+      const { mr, issueId, threadId, row } = await replied('changed-then-wait');
+      const runtime = githubDeps(h).runtime;
+      // The status changes, and the post fails: the job's second try is due.
+      mr.failNextPost(false);
+      llm.say(WONT_FIX);
+      await answer({ scmRuntime: runtime });
+      expect(await rowById(row.id)).toMatchObject({ status: 'running', outcome: 'wont_fix' });
+      expect(await changesOf(issueId)).toHaveLength(1);
+      // The circuit is open when the second try comes: the row waits for it, and its next job
+      // takes it again (a new start).
+      for (let n = 0; n < SCM_CIRCUIT_FAILURES; n += 1) runtime.circuit.failure(mr.connectionId);
+      await retryNow();
+      await answer({ scmRuntime: runtime });
+      expect(await rowById(row.id)).toMatchObject({ status: 'queued', outcome: 'wont_fix' });
+      // Meanwhile the issue is opened again (a person's change, made here directly).
+      await h.ctx.db.update(issues).set({ status: 'open' }).where(eq(issues.id, issueId));
+      runtime.circuit.success(mr.connectionId);
+      await retryNow();
+      await answer({ scmRuntime: runtime });
+      // No second change: the person's stands, and the answer says what the reply changed.
+      expect(await changesOf(issueId)).toHaveLength(1);
+      expect((await issueById(issueId)).status).toBe('open');
+      expect(mr.answers(threadId).map((a) => a.body)).toEqual([
+        replyNote(row.id, ACCEPTED, 'wont_fix'),
+      ]);
+      expect(await rowById(row.id)).toMatchObject({ status: 'done', outcome: 'wont_fix' });
+    });
+
+    it('reads the branch’s newest ready snapshot when its newest analysis has none, with that snapshot’s head', async () => {
+      const { mr, issueId, threadId, row } = await replied('snapshot-fallback', {
+        body: 'Line 9 is right: the constant is meant to be 9.',
+      });
+      // A newer commit is analysed, and no snapshot has come for it. Its ingestion deleted the
+      // older copies (a merge request keeps its newest analysis' only), so the branch holds an
+      // older ready snapshot only while a job's view of it is older than an ingestion: the test
+      // makes that state, with the analysis of HEAD the newest while its snapshot is stored again.
+      const newer = await mr.analyseNewer();
+      const newest = (id: string) =>
+        h.ctx.db.update(branches).set({ lastAnalysisId: id }).where(eq(branches.id, mr.branchId));
+      await newest(mr.analysisId);
+      await mr.snapshotOf(mr.analysisId);
+      await newest(newer);
+      await reviewOn(h, llm);
+      expect(
+        await h.ctx.db
+          .select({ analysisId: reviewSnapshots.analysisId, status: reviewSnapshots.status })
+          .from(reviewSnapshots)
+          .where(ofBranch(h.ctx.db, mr.branchId)),
+      ).toEqual([{ analysisId: mr.analysisId, status: 'ready' }]);
+      const words = 'The file shows that line 9 sets the intended value.';
+      const calls = llm.requests.length;
+      llm.enqueue(
+        {
+          status: 200,
+          body: openAiToolCalls([{ id: 'c1', name: 'read_file', arguments: { path: PATH } }]),
+        },
+        { status: 200, body: openAiAnswer(decision('false_positive', 'factual', words)) },
+      );
+      await answer();
+      // The tools read the older analysis' snapshot, and a claim of fact was offered: the finding
+      // was reviewed at that snapshot's head, which the job named as the snapshot's.
+      expect(systemOf(callsSince(calls)[0]!)).toContain('"false_positive"');
+      expect(callsSince(calls)[1]!.body).toContain('export const line9 = 9;');
+      expect(await issueById(issueId)).toMatchObject({ status: 'false_positive' });
+      expect(mr.answers(threadId).map((a) => a.body)).toEqual([
+        replyNote(row.id, words, 'false_positive'),
+      ]);
     });
   });
 
