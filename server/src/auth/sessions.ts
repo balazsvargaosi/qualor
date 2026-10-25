@@ -28,8 +28,13 @@ export function sessionCookieOptions(
   };
 }
 
+/** The SHA-256 of a string's UTF-8 bytes: 32 bytes, whatever the string's length. */
+function digestOf(value: string): Buffer {
+  return createHash('sha256').update(value, 'utf8').digest();
+}
+
 export function sessionIdFor(secret: string): Buffer {
-  return createHash('sha256').update(secret, 'utf8').digest();
+  return digestOf(secret);
 }
 
 /** Ruling R13: HMAC of the session cookie under an HKDF-derived key; nothing extra stored. */
@@ -38,10 +43,14 @@ export function csrfTokenFor(secretKey: string, sessionSecret: string): string {
   return createHmac('sha256', key).update(sessionSecret).digest('base64url');
 }
 
+/**
+ * Whether two secrets are equal (the CSRF header, a webhook's token), in a time that tells nothing
+ * about where they differ or how long they are: each is hashed to 32 bytes, and the digests are
+ * compared in constant time. `timingSafeEqual` needs buffers of one length, and checking the
+ * lengths first would answer early whenever they differ.
+ */
 export function safeEqual(a: string, b: string): boolean {
-  const x = Buffer.from(a, 'utf8');
-  const y = Buffer.from(b, 'utf8');
-  return x.length === y.length && timingSafeEqual(x, y);
+  return timingSafeEqual(digestOf(a), digestOf(b));
 }
 
 /** An SSO session's secret: this many random bytes, then the first bytes of their HMAC. */

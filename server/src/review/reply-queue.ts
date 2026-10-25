@@ -2,6 +2,7 @@ import { and, asc, eq, gt, gte, inArray, lt, not, notExists, or, sql, type SQL }
 import { alias } from 'drizzle-orm/pg-core';
 import { z } from 'zod';
 import type { Db, Executor } from '../db/client';
+import { LOCKS } from '../db/locks';
 import { branches, issues, jobs, reviewReplies, THREAD_ID, type ReplyKind } from '../db/schema';
 import { readLlmSettings } from '../llm/settings';
 import { enqueue } from '../queue/queue';
@@ -30,7 +31,8 @@ import { reviewActive, reviewSettingsOf } from './settings';
  *
  * The other `ai-reply` job, a scan, is a webhook's: it names a merge request and reads its notes
  * through the API (reply-scan.ts), never trusting what the webhook carried. `queueScan` queues it,
- * one at a time for a merge request, and what a scan finds is queued as a decoration's notes are.
+ * at most one waiting for a merge request and none waiting for another delivery or for ingestion,
+ * and what a scan finds is queued as a decoration's notes are.
  *
  * A pass is bounded: at most 50 rounds and 20 commands, new ones and notes queued again together,
  * the oldest first, and the rest wait for the next pass. The caps count only what the ledger does
@@ -67,19 +69,23 @@ export type ReplyPayload = z.infer<typeof replyPayload>;
  * already for the branch: that one has not read the notes yet, so it reads the new note too. A scan
  * that is running does not count, since it may have listed the notes before this one was written,
  * and neither do the branch's answer jobs. The check and the queueing are one step for the branch,
- * which takes the branch's row first (as `FOR NO KEY UPDATE`, which conflicts with itself but
- * leaves the foreign-key checks of ingestion and of the ledger's rows alone), so that two
- * deliveries at once queue one scan: a burst of notes makes at most one scan waiting. The scan is
- * due `runAt` (now when left out). Answers whether it queued one; a branch that is gone has none.
+ * under an advisory lock of its own (`LOCKS.replyScan`) that is taken without waiting. A caller that
+ * does not get it gives way to the one that has it, which is queueing a scan just now: the note of
+ * the caller that gave way exists already, and the scan being queued has not run, so it lists that
+ * note too. A burst of notes makes at most one scan waiting, and no delivery waits for another.
+ * The branch's row is read and not locked: ingestion holds it from the upsert of the branch until
+ * it commits, and a delivery that waited for it could outlast the provider's timeout (ten seconds
+ * on GitLab). The scan is due `runAt` (now when left out). Answers whether it queued one; a branch
+ * that is gone has none.
  */
 export async function queueScan(db: Db, branchId: string, runAt?: SQL): Promise<boolean> {
   return db.transaction(async (tx) => {
     const [branch] = await tx
       .select({ id: branches.id })
       .from(branches)
-      .where(eq(branches.id, branchId))
-      .for('no key update');
+      .where(eq(branches.id, branchId));
     if (branch === undefined) return false;
+    if (!(await tryLockScanQueue(tx, branchId))) return false;
     const [waiting] = await tx
       .select({ id: jobs.id })
       .from(jobs)
@@ -102,6 +108,17 @@ export async function queueScan(db: Db, branchId: string, runAt?: SQL): Promise<
     });
     return true;
   });
+}
+
+/**
+ * The branch's scan-queueing lock until the transaction ends, taken without waiting: false while
+ * another transaction holds it.
+ */
+async function tryLockScanQueue(db: Executor, branchId: string): Promise<boolean> {
+  const result = await db.execute<{ locked: boolean }>(
+    sql`SELECT pg_try_advisory_xact_lock(${LOCKS.replyScan}, hashtext(${branchId})) AS locked`,
+  );
+  return result.rows[0]?.locked === true;
 }
 
 /**
@@ -262,9 +279,9 @@ export async function queueAfterCircuit(
 /**
  * A scan whose job found its SCM connection's circuit closed to it before its own requests: the
  * scan is queued again, due in `waitSeconds`, when the circuit lets a job through again. The job
- * that gave it back ends, and no try of the new one is spent. A scan the branch has queued already
- * is that one (`queueScan`): it runs sooner and waits for the circuit in its turn. Answers whether
- * it queued one.
+ * that gave it back ends, and no try of the new one is spent. A scan the branch has queued already,
+ * or that a delivery is queueing just now, is that one (`queueScan`): it runs sooner and waits for
+ * the circuit in its turn. Answers whether it queued one.
  */
 export async function queueScanAfterCircuit(
   db: Db,

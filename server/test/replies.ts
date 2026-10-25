@@ -1,5 +1,6 @@
 import { and, asc, eq, sql } from 'drizzle-orm';
-import type { Db } from '../src/db/client';
+import type { Db, Executor } from '../src/db/client';
+import { LOCKS } from '../src/db/locks';
 import { jobs, reviewReplies } from '../src/db/schema';
 import { DEFAULT_LLM_SETTINGS, readLlmSettings, writeLlmSettings } from '../src/llm/settings';
 import { AI_REPLY_QUEUE, replyKey } from '../src/review/reply-queue';
@@ -94,6 +95,32 @@ export function scanJob(branchId: string) {
     maxAttempts: 2,
     status: 'queued',
   };
+}
+
+/**
+ * Takes the lock that a delivery holds between its check for a queued scan of the branch and the
+ * queueing of one (`queueScan`), until the transaction ends: a delivery meanwhile gives way.
+ */
+export async function holdScanQueue(tx: Executor, branchId: string): Promise<void> {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(${LOCKS.replyScan}, hashtext(${branchId}))`);
+}
+
+/**
+ * What `pending` answers, or `undefined` when it has not answered after `ms`: a call that waits
+ * where it should not fails its test, where it would hang it until the test's timeout.
+ */
+export async function answeredWithin<T>(pending: Promise<T>, ms = 2_000): Promise<T | undefined> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      pending,
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**

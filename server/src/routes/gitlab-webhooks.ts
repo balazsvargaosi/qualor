@@ -94,6 +94,9 @@ export const gitlabWebhookRoutes: FastifyPluginAsync<{ deps: RouteDeps }> = asyn
       }
       const body = request.body;
       if (!safeEqual(header(request.headers['x-gitlab-token']), secret)) {
+        // As GitHub's webhook does, the throttle counts only the deliveries with a wrong token. One
+        // that counted every delivery would let someone who shares GitLab's address turn GitLab's
+        // own deliveries into 429s. What stops a guess is the secret: 16 characters at the least.
         if (!failures.hit(request.ip)) {
           throw new ProblemError(429, 'RATE_LIMITED', 'Too many deliveries with a wrong token', {
             headers: { 'retry-after': '60' },
