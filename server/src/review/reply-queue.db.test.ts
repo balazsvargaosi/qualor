@@ -1,6 +1,6 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createTestDatabase, type TestDatabase } from '../../test/db';
+import { createTestDatabase, type TestDatabase, waitForLockWaiters } from '../../test/db';
 import {
   answeredWithin,
   answerJob,
@@ -10,6 +10,7 @@ import {
   scanJob,
 } from '../../test/replies';
 import { seedAiIssue } from '../../test/review';
+import type { Executor } from '../db/client';
 import { uuidv7 } from '../db/ids';
 import { first } from '../db/rows';
 import {
@@ -20,6 +21,7 @@ import {
   reviewReplies,
   type ReplyKind,
 } from '../db/schema';
+import { enqueue } from '../queue/queue';
 import type { GitHubComment } from '../scm/github/client';
 import type { GitLabDiscussion } from '../scm/gitlab/client';
 import { issueMarker } from '../scm/markdown';
@@ -807,29 +809,96 @@ describe('the queue of the answers (6I-4)', () => {
       expect(await jobsOf(branch)).toEqual([['scan', 'queued']]);
     });
 
-    it('queues one scan for requests at once: the one that gets the branch’s lock queues it, the others give way', async () => {
+    it('queues one scan for requests at once: each takes its turn at the branch’s lock, and only the first queues', async () => {
       const branch = await newBranch('scan-concurrent');
       const outcomes = await Promise.all(Array.from({ length: 8 }, () => queueScan(t.db, branch)));
       expect(outcomes.filter(Boolean)).toHaveLength(1);
       expect(await jobsOf(branch)).toEqual([['scan', 'queued']]);
     });
 
-    it('gives way to a request that holds the branch’s lock, at once and queueing nothing: the next one queues', async () => {
-      const branch = await newBranch('scan-gives-way');
-      const other = await newBranch('scan-gives-way-other');
+    /**
+     * Runs `request` while another transaction holds the branch's scan lock, as a request does
+     * between its check and its queueing. The lock is let go once the request waits for it and
+     * `meanwhile` has run in the holder's transaction: answers what the request answered.
+     */
+    const whileLockHeld = async (
+      branch: string,
+      request: () => Promise<boolean>,
+      meanwhile: (tx: Executor) => Promise<void> = async () => undefined,
+    ) => {
+      let pending!: Promise<boolean>;
       await t.db.transaction(async (tx) => {
-        // Another request is between its check and its queueing.
         await holdScanQueue(tx, branch);
-        // The lock is the branch's: another merge request's scan is queued all the same.
-        expect(await answeredWithin(queueScan(t.db, other))).toBe(true);
-        // None waits for it, the one after a circuit included: the holder queues the scan.
-        expect(await answeredWithin(queueScan(t.db, branch))).toBe(false);
-        expect(await answeredWithin(queueScanAfterCircuit(t.db, branch, 60))).toBe(false);
+        pending = request();
+        await waitForLockWaiters(t.db, 1);
+        await meanwhile(tx);
       });
-      expect(await jobsOf(branch)).toEqual([]);
-      expect(await jobsOf(other)).toEqual([['scan', 'queued']]);
-      expect(await queueScan(t.db, branch)).toBe(true);
+      return pending;
+    };
+
+    it('waits its turn for the branch’s own lock, and then queues what the request before it left unqueued', async () => {
+      const branch = await newBranch('scan-waits');
+      const other = await newBranch('scan-waits-other');
+      const answer = await whileLockHeld(
+        branch,
+        () => queueScan(t.db, branch),
+        async () => {
+          // Another merge request's scan is queued meanwhile, and this one's waits.
+          expect(await answeredWithin(queueScan(t.db, other))).toBe(true);
+          expect(await jobsOf(branch)).toEqual([]);
+        },
+      );
+      expect(answer).toBe(true);
       expect(await jobsOf(branch)).toEqual([['scan', 'queued']]);
+      expect(await jobsOf(other)).toEqual([['scan', 'queued']]);
+    });
+
+    it('waits likewise after a circuit, and its scan is then due when it was told to be', async () => {
+      const branch = await newBranch('scan-waits-circuit');
+      expect(await whileLockHeld(branch, () => queueScanAfterCircuit(t.db, branch, 90))).toBe(true);
+      const [waiting] = await everyJobOf(branch);
+      const wait = (waiting!.runAt.getTime() - waiting!.createdAt.getTime()) / 1000;
+      expect(Math.abs(wait - 90)).toBeLessThan(5);
+    });
+
+    it('decides on what the request before it committed: the scan that one queued is the one, and none is queued beside it', async () => {
+      const branch = await newBranch('scan-waits-queued');
+      const answer = await whileLockHeld(
+        branch,
+        () => queueScan(t.db, branch),
+        async (tx) => {
+          // What `queueScan` does under the lock, done by the holder: the request that waits sees it.
+          await enqueue(tx, {
+            queue: AI_REPLY_QUEUE,
+            payload: { kind: 'scan', branchId: branch },
+            concurrencyKey: replyKey(branch),
+            maxAttempts: AI_REPLY_MAX_ATTEMPTS,
+          });
+        },
+      );
+      expect(answer).toBe(false);
+      expect(await jobsOf(branch)).toEqual([['scan', 'queued']]);
+    });
+
+    it('decides after the wait and not before: a scan that began to run while it waited is none, so the request queues the next', async () => {
+      const branch = await newBranch('scan-waits-running');
+      expect(await queueScan(t.db, branch)).toBe(true);
+      const answer = await whileLockHeld(
+        branch,
+        () => queueScan(t.db, branch),
+        async () => {
+          // The worker takes the scan, and reads the notes, while the request waits.
+          await t.db
+            .update(jobs)
+            .set({ status: 'running' })
+            .where(eq(jobs.concurrencyKey, replyKey(branch)));
+        },
+      );
+      expect(answer).toBe(true);
+      expect(await jobsOf(branch)).toEqual([
+        ['scan', 'running'],
+        ['scan', 'queued'],
+      ]);
     });
   });
 

@@ -91,12 +91,13 @@ export const LOCKS = {
    */
   reviewMrCheck: 7_310_026,
   /**
-   * The first key of `pg_try_advisory_xact_lock(key, hashtext(branchId))`: the check for a queued
-   * scan of a merge request's notes and the queueing of one are one step per branch (6I-4,
-   * review/reply-queue.ts `queueScan`). It is taken without waiting: a webhook delivery that does
-   * not get it leaves the scan to the one that has it, so no delivery waits for another, and none
-   * for a transaction that holds the branch's row (ingestion). Nothing is waited for under it, so
-   * no order is owed to the other locks.
+   * The first key of `pg_advisory_xact_lock(key, hashtext(branchId))`: the check for a queued scan
+   * of a merge request's notes and the queueing of one are one step per branch (6I-4,
+   * review/reply-queue.ts `queueScan`), so two deliveries never both queue one, and a delivery
+   * decides on what the one before it committed. Only `queueScan` takes it, after a plain read of
+   * the branch and with nothing else held, and under it runs only that check and the insert: a
+   * delivery waits for another delivery's few milliseconds, never for a transaction that holds the
+   * branch's row (ingestion), which does not take it. No order is owed to the other locks.
    */
   replyScan: 7_310_027,
 } as const;

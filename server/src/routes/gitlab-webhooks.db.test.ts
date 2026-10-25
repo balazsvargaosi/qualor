@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { waitForLockWaiters } from '../../test/db';
 import { createFakeGitHub, type FakeGitHub } from '../../test/fake-github';
 import { createFakeGitLab, type FakeGitLab } from '../../test/fake-gitlab';
 import { createFakeLlm, type FakeLlm } from '../../test/fake-llm';
@@ -23,7 +24,6 @@ import {
   PUBLIC_URL,
   silentLogger,
 } from '../../test/scm';
-import type { Executor } from '../db/client';
 import { branches, jobs, projects, reviewReplies, scmConnections } from '../db/schema';
 import { createLlmRuntime } from '../llm/job';
 import { runUntilIdle } from '../queue/worker';
@@ -421,7 +421,7 @@ describe('GitLab webhooks (6I-4)', () => {
     expect(await allJobs()).toHaveLength(1);
   });
 
-  it('makes one scan of deliveries at once: the one that gets the merge request’s lock queues it, the others give way', async () => {
+  it('makes one scan of deliveries at once: each takes its turn at the merge request’s lock, and only the first queues', async () => {
     const answers = await Promise.all(
       Array.from({ length: 6 }, () => deliver(noteEvent(), { idempotencyKey: randomUUID() })),
     );
@@ -430,41 +430,56 @@ describe('GitLab webhooks (6I-4)', () => {
   });
 
   /**
-   * A delivery made while a transaction holds something (`hold` takes it): its answer, `undefined`
-   * when it has not come after two seconds, and how long it took in milliseconds. The delivery
-   * is let finish either way, so that a delivery that waits fails the test and does not hang it.
+   * A delivery made while a transaction holds the merge request's scan lock, as a delivery does
+   * between its check and its queueing. The lock is let go once the delivery waits for it and
+   * `meanwhile` has run: answers the delivery's answer.
    */
-  const deliveredWhileHolding = async (hold: (tx: Executor) => Promise<void>) => {
+  const deliveredWhileLockHeld = async (meanwhile: () => Promise<void> = async () => undefined) => {
+    let delivery!: ReturnType<typeof deliver>;
+    await h.ctx.db.transaction(async (tx) => {
+      await holdScanQueue(tx, paymentsBranch);
+      delivery = deliver(noteEvent(), { idempotencyKey: randomUUID() });
+      await waitForLockWaiters(h.ctx.db, 1);
+      await meanwhile();
+    });
+    return delivery;
+  };
+
+  it('waits its turn for a delivery that is queueing the merge request’s scan, then queues what that one left unqueued', async () => {
+    const answer = await deliveredWhileLockHeld(async () => {
+      expect(await scansOf(paymentsBranch)).toHaveLength(0);
+    });
+    expect(answer.statusCode).toBe(204);
+    expect(await scansOf(paymentsBranch)).toHaveLength(1);
+  });
+
+  it('decides after its wait: a scan that began to run meanwhile is none, so the delivery queues the next, which reads its note', async () => {
+    await deliver(noteEvent(), { idempotencyKey: randomUUID() });
+    const answer = await deliveredWhileLockHeld(async () => {
+      // The worker takes the queued scan, and reads the notes, while the delivery waits.
+      await h.ctx.db.update(jobs).set({ status: 'running' }).where(eq(jobs.queue, AI_REPLY_QUEUE));
+    });
+    expect(answer.statusCode).toBe(204);
+    expect((await allJobs()).map((job) => job.status).sort()).toEqual(['queued', 'running']);
+  });
+
+  it('is not delayed by an ingestion that holds the merge request’s branch: 204 within a second, and the scan queued', async () => {
     let delivery!: ReturnType<typeof deliver>;
     let answer: Awaited<ReturnType<typeof deliver>> | undefined;
     let took = 0;
     await h.ctx.db.transaction(async (tx) => {
-      await hold(tx);
-      const began = performance.now();
-      delivery = deliver(noteEvent(), { idempotencyKey: randomUUID() });
-      answer = await answeredWithin(delivery);
-      took = performance.now() - began;
-    });
-    await delivery;
-    return { answer, took };
-  };
-
-  it('gives way to a delivery that is queueing the merge request’s scan: 204 at once and nothing queued, then the next one queues', async () => {
-    const { answer } = await deliveredWhileHolding((tx) => holdScanQueue(tx, paymentsBranch));
-    expect(answer?.statusCode).toBe(204);
-    expect(await scansOf(paymentsBranch)).toHaveLength(0);
-    await deliver(noteEvent(), { idempotencyKey: randomUUID() });
-    expect(await scansOf(paymentsBranch)).toHaveLength(1);
-  });
-
-  it('is not delayed by an ingestion that holds the merge request’s branch: 204 within a second, and the scan queued', async () => {
-    const { answer, took } = await deliveredWhileHolding(async (tx) => {
       // What the ingestion of an analysis of the merge request does to the branch, and holds until it commits.
       await tx
         .update(branches)
         .set({ updatedAt: sql`now()` })
         .where(eq(branches.id, paymentsBranch));
+      const began = performance.now();
+      delivery = deliver(noteEvent(), { idempotencyKey: randomUUID() });
+      // A delivery that waited for the row would fail the test here, where it would hang it.
+      answer = await answeredWithin(delivery);
+      took = performance.now() - began;
     });
+    await delivery;
     expect(answer?.statusCode).toBe(204);
     expect(took).toBeLessThan(1_000);
     expect(await scansOf(paymentsBranch)).toHaveLength(1);

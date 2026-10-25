@@ -99,7 +99,7 @@ export function scanJob(branchId: string) {
 
 /**
  * Takes the lock that a delivery holds between its check for a queued scan of the branch and the
- * queueing of one (`queueScan`), until the transaction ends: a delivery meanwhile gives way.
+ * queueing of one (`queueScan`), until the transaction ends: a delivery meanwhile waits for it.
  */
 export async function holdScanQueue(tx: Executor, branchId: string): Promise<void> {
   await tx.execute(sql`SELECT pg_advisory_xact_lock(${LOCKS.replyScan}, hashtext(${branchId}))`);
