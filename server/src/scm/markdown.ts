@@ -343,6 +343,16 @@ export function reviewMarker(projectId: string): string {
 }
 
 /**
+ * The first line of Qualor's answer to a reply in one of its threads (6I-4): the id of the row of
+ * the replies ledger it answers, which the answer job looks for before it posts, so that an answer
+ * whose post timed out after the provider stored it is never posted twice. A thread is known by its
+ * first note only, which this never is: {@link markerOf} does not know it.
+ */
+export function replyMarker(replyId: string): string {
+  return `<!-- qualor:reply ${uuid(replyId)} -->`;
+}
+
+/**
  * What a note body's first line marks, or null. Only the first line counts: a marker quoted in a
  * reply or inside a value (always on a later line) is ignored. The caller also checks the author.
  */

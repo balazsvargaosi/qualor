@@ -47,7 +47,9 @@ import { fileURLToPath } from 'node:url';
  * A reply to a review comment (`POST /pulls/{n}/comments/{id}/replies`) is taken for the first
  * comment of a thread only: GitHub documents no reply to a reply, and the fake answers one, like a
  * comment it has none of, with the 404 that endpoint lists. Every issue comment and review comment
- * carries `created_at` and `updated_at` read from the fake's clock (`now`) when it was made.
+ * carries `created_at` and `updated_at` read from the fake's clock (`now`) when it was made. A
+ * person's review comment says its author is a `COLLABORATOR` of the repository (`author_association`)
+ * unless a test gives another association, or none; a bot's says `NONE`, as the recorded shapes do.
  */
 
 const SHAPES = path.join(path.dirname(fileURLToPath(import.meta.url)), 'github-shapes');
@@ -123,6 +125,11 @@ export interface FakeReviewComment {
   inReplyToId: number | null;
   /** As {@link FakeComment.createdAt}. */
   createdAt: string;
+  /**
+   * GitHub's `author_association` of the comment's author with the repository. Unset, a person's
+   * comment is a `COLLABORATOR`'s and a bot's is `NONE`; null leaves the field out of the answer.
+   */
+  authorAssociation?: string | null;
 }
 /** A review thread: a first review comment and the replies to it (GraphQL's `PullRequestReviewThread`). */
 export interface FakeReviewThread {
@@ -180,6 +187,13 @@ export interface InjectedAnswer {
   status: number;
   body?: unknown;
   headers?: Record<string, string>;
+  /**
+   * Runs before the answer, once the request is in `requests`: a test's change in the middle of a
+   * job, such as storing what a request sent whose answer then never arrives.
+   */
+  before?: () => void;
+  /** After `before`, answer as the fake normally would (`status` is then ignored). */
+  passThrough?: boolean;
 }
 export interface FakeGitHub {
   /** The API base URL (`http://127.0.0.1:<port>/api/v3`); GraphQL is beside it, at `/api/graphql`. */
@@ -230,13 +244,20 @@ export interface FakeGitHub {
   ): FakeCheckRun;
   /**
    * A reply to the thread's first review comment `commentId` (GitHub takes no reply to a reply),
-   * by `login`; the thread keeps its first comment and gains the reply.
+   * by `login`, with the author association `association` when given
+   * ({@link FakeReviewComment.authorAssociation}); the thread keeps its first comment and gains the
+   * reply.
    */
   replyToReviewComment(
     repoId: number,
     pull: number,
     commentId: number,
-    reply: { body: string; login: string; type?: 'Bot' | 'User' },
+    reply: {
+      body: string;
+      login: string;
+      type?: 'Bot' | 'User';
+      association?: string | null;
+    },
   ): FakeReviewComment;
   /** The thread is resolved by someone else: a person's `login`, or another App's `<slug>[bot]`. */
   resolveThreadAs(threadId: string, login: string): void;
@@ -468,12 +489,14 @@ export async function createFakeGitHub(
       if (!first || !thread || first.inReplyToId !== null) {
         throw new Error(`no first review comment ${commentId} on pull request ${pull}`);
       }
-      return addReply(
+      const made = addReply(
         first,
         thread,
         { login: reply.login, id: reply.type === 'Bot' ? 41898282 : 5, type: reply.type ?? 'User' },
         reply.body,
       );
+      if (reply.association !== undefined) made.authorAssociation = reply.association;
+      return made;
     },
     resolveThreadAs: (threadId, login) => {
       const thread = fake.reviewThreads.find((t) => t.id === threadId);
@@ -579,11 +602,18 @@ export async function createFakeGitHub(
   });
 
   const reviewCommentJson = (repo: FakeRepository) => (c: FakeReviewComment) => {
-    const shape = githubShape(
+    const { author_association: unset, ...shape } = githubShape(
       c.inReplyToId === null ? 'pull_request_review_comment' : 'pull_request_review_comment_reply',
     );
+    const association =
+      c.authorAssociation === undefined
+        ? c.user.type === 'User'
+          ? 'COLLABORATOR'
+          : unset
+        : c.authorAssociation;
     return {
       ...shape,
+      ...(association === null ? {} : { author_association: association }),
       id: c.id,
       node_id: reviewCommentNodeId(c.id),
       body: c.body,
@@ -929,7 +959,10 @@ export async function createFakeGitHub(
     for (const injection of injections) {
       if (injection.method === method && injection.path.test(p) && injection.answers.length > 0) {
         const answer = injection.answers.shift()!;
-        return send(res, answer.status, answer.body, answer.headers);
+        answer.before?.();
+        if (answer.passThrough !== true)
+          return send(res, answer.status, answer.body, answer.headers);
+        break;
       }
     }
     if (url.pathname === GRAPHQL_PATH && method === 'POST') {

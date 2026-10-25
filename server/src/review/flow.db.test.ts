@@ -229,6 +229,7 @@ describe('the AI review of a GitLab merge request (6I-3)', () => {
         logger: silentLogger,
         llmCircuit: createLlmRuntime().circuit,
         scm: decorationDeps(h).scm,
+        scmRuntime: decorationDeps(h).runtime,
         shutdown: new AbortController().signal,
       }),
       silentLogger,

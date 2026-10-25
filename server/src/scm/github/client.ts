@@ -162,7 +162,9 @@ export type GitHubComment = z.infer<typeof comment>;
  * A pull request review comment (llm.md §8.4): a comment on lines of the diff. `node_id` is the
  * comment's GraphQL id, which ties it to its thread (github.md §6.4); `in_reply_to_id` (the
  * thread's first comment) is a number on a reply only, and absent or null on a first comment
- * (ruling R6). `created_at` (ISO 8601) is what replies count by their age.
+ * (ruling R6). `created_at` (ISO 8601) is what replies count by their age. `author_association`
+ * says what the author is to the repository (`OWNER`, `MEMBER`, `COLLABORATOR`, `CONTRIBUTOR`, …),
+ * which decides whether their reply may change a finding's status (6I-4); GitHub always sends it.
  */
 const reviewComment = z.looseObject({
   id: z.number().int(),
@@ -173,6 +175,7 @@ const reviewComment = z.looseObject({
   in_reply_to_id: z.number().int().nullish(),
   path: z.string().optional(),
   created_at: z.string(),
+  author_association: z.string().max(64).optional(),
 });
 export type GitHubReviewComment = z.infer<typeof reviewComment>;
 /** A pull request review (github.md §6.4): only that GitHub made one is read. */

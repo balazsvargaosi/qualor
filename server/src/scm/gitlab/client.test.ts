@@ -102,6 +102,7 @@ describe('GitLab client (scm.md §4.3) against the fake GitLab', () => {
       'discussions.json': 'discussions',
       'commit_status.json': 'commitStatus',
       'commit_statuses.json': 'commitStatuses',
+      'member.json': 'member',
     };
     expect(files.sort()).toEqual(Object.keys(schemaOf).sort());
     for (const file of files) {
@@ -421,6 +422,40 @@ describe('GitLab client (scm.md §4.3) against the fake GitLab', () => {
         'bad_answer',
       );
     }
+  });
+
+  it("reads a user's access level in the project, an inherited one too, and null for no member", async () => {
+    const c = client();
+    fake.setMember(7, 5, 30);
+    fake.setMember(7, 8, 50);
+    expect(await c.memberAccessLevel('7', 5)).toBe(30);
+    expect(await c.memberAccessLevel('acme/payments/api', 8)).toBe(50);
+    // GitLab's 404: no member of the project.
+    expect(await c.memberAccessLevel('7', 6)).toBeNull();
+    expect(fake.requests.map((r) => `${r.method} ${r.path}`)).toEqual([
+      'GET /projects/7/members/all/5',
+      'GET /projects/acme%2Fpayments%2Fapi/members/all/8',
+      'GET /projects/7/members/all/6',
+    ]);
+    // A user id it would not put into a path is refused before any request.
+    fake.clearRequests();
+    for (const id of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53]) {
+      expect(await failure(c.memberAccessLevel('7', id)), String(id)).toMatchObject({
+        kind: 'refused',
+        reason: 'invalid_input',
+      });
+    }
+    expect(fake.requests).toHaveLength(0);
+    // An answer without a level is not understood, and any other error is no answer either.
+    fake.inject('GET', /\/members\/all\/5$/, { status: 200, body: { id: 5 } }, { status: 500 });
+    expect((await failure(c.memberAccessLevel('7', 5))).kind).toBe('bad_answer');
+    expect((await failure(c.memberAccessLevel('7', 5))).kind).toBe('transient');
+    // Each lookup is a request of the job's budget.
+    const small = client({ maxRequests: 1 });
+    expect(await small.memberAccessLevel('7', 5)).toBe(30);
+    expect((await failure(small.memberAccessLevel('7', 5))).kind).toBe('budget');
+    fake.setMember(7, 5, null);
+    fake.setMember(7, 8, null);
   });
 
   it('checks the discussion id before putting it into a path', async () => {

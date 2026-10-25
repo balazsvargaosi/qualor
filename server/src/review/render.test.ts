@@ -2,17 +2,20 @@ import { marked } from 'marked';
 import { describe, expect, it } from 'vitest';
 import {
   checkAiThreadLines,
+  checkProse,
   checkSectionLine,
   FORBIDDEN_ANYWHERE,
   outsideCodeSpans,
 } from '../../test/markdown-check';
-import { markerOf } from '../scm/markdown';
+import { markerOf, replyMarker } from '../scm/markdown';
 import {
   AI_SECTION_MAX_BYTES,
   AI_THREAD_MAX_BYTES,
   aiSummarySection,
   aiThreadBody,
   aiThreadNote,
+  REPLY_NOTE_MAX_BYTES,
+  replyNote,
   withMergeRequestHead,
   withUnplacedFindings,
   type AiThreadInput,
@@ -1042,5 +1045,95 @@ describe('model text in the section is inert', () => {
     expect(section(done()).join('\n')).toContain('**Findings:**');
     // A review that is not done has no findings to leave out.
     expect(section({ kind: 'pending' })).toEqual(['#### AI review', '', 'AI review in progress…']);
+  });
+});
+
+describe('the answer to a reply', () => {
+  const ROW = '01920000-0000-7000-8000-0000000000aa';
+  const bytes = (text: string) => Buffer.byteLength(text, 'utf8');
+  /** The lines of the answer itself: after the marker, the heading and the blank line. */
+  const answerLines = (note: string, statusLine: boolean) => {
+    const lines = note.split('\n').slice(3);
+    return statusLine ? lines.slice(0, -2) : lines;
+  };
+
+  it('starts with the reply marker and a fixed heading, then the answer', () => {
+    expect(replyNote(ROW, 'The loop covers the last item.', null).split('\n')).toEqual([
+      `<!-- qualor:reply ${ROW} -->`,
+      '**AI review** · reply',
+      '',
+      'The loop covers the last item.',
+    ]);
+    expect(replyMarker(ROW)).toBe(`<!-- qualor:reply ${ROW} -->`);
+  });
+
+  it('says in a fixed line of its own what became of the finding when the reply changed its status', () => {
+    expect(
+      replyNote(ROW, 'Understood: the team accepts it for now.', 'wont_fix').split('\n'),
+    ).toEqual([
+      `<!-- qualor:reply ${ROW} -->`,
+      '**AI review** · reply',
+      '',
+      'Understood: the team accepts it for now.',
+      '',
+      "Marked won't fix.",
+    ]);
+    expect(replyNote(ROW, 'The guard above covers it.', 'false_positive').split('\n').at(-1)).toBe(
+      'Marked as a false positive: the code shows it does not hold.',
+    );
+    // An empty answer leaves the heading and the line.
+    expect(replyNote(ROW, '', 'wont_fix').split('\n')).toEqual([
+      `<!-- qualor:reply ${ROW} -->`,
+      '**AI review** · reply',
+      '',
+      "Marked won't fix.",
+    ]);
+  });
+
+  it('writes the model’s answer through safeProse: a link, a mention and a quick action stay code', () => {
+    const note = replyNote(
+      ROW,
+      'See https://evil.example/x and ping @all about #12.\n/close\n- [click](https://evil.example)',
+      'wont_fix',
+    );
+    expect(note).toContain('See ` https://evil.example/x ` and ping ` @all ` about ` #12. `');
+    expect(note).not.toMatch(FORBIDDEN_ANYWHERE);
+    const lines = answerLines(note, true);
+    expect(lines.length).toBeGreaterThan(1);
+    for (const line of lines) {
+      expect(checkProse(line), line).toBe(true);
+      expect(line, line).not.toMatch(/^\s*\//);
+    }
+    // Rendered, nothing of it is a link.
+    expect(marked.parse(note, { async: false, gfm: true, breaks: false })).not.toContain('<a ');
+  });
+
+  it('is never taken for a thread: the marker is no marker of an issue or a summary', () => {
+    expect(markerOf(replyNote(ROW, 'An answer.', 'wont_fix'))).toBeNull();
+    expect(markerOf(replyMarker(ROW))).toBeNull();
+    expect(() => replyMarker('not-a-uuid')).toThrow();
+  });
+
+  it('stays within 4 KiB: the fixed lines stay, and the answer is cut at whole lines or shortened', () => {
+    // The longest answer, of words that each need a code span: past the bound whole.
+    const spans = Array.from({ length: 600 }, () => '①').join(' ');
+    expect(spans.length).toBeLessThanOrEqual(1_200);
+    const note = replyNote(ROW, spans, 'false_positive');
+    expect(bytes(note)).toBeLessThanOrEqual(REPLY_NOTE_MAX_BYTES);
+    const lines = note.split('\n');
+    expect(lines.slice(0, 3)).toEqual([
+      `<!-- qualor:reply ${ROW} -->`,
+      '**AI review** · reply',
+      '',
+    ]);
+    expect(lines.at(-1)).toBe('Marked as a false positive: the code shows it does not hold.');
+    const shown = answerLines(note, true).join('\n');
+    const count = shown.split('` ① `').length - 1;
+    expect(count).toBeGreaterThan(0);
+    expect(count).toBeLessThan(600);
+    for (const line of answerLines(note, true)) expect(checkProse(line), line).toBe(true);
+    // Lines that fit are kept whole: twenty lines of plain words are all there.
+    const plain = Array.from({ length: 20 }, (_, i) => `Line ${i + 1} of the answer.`).join('\n');
+    expect(answerLines(replyNote(ROW, plain, 'wont_fix'), true)).toEqual(plain.split('\n'));
   });
 });

@@ -6,6 +6,7 @@ import {
   linesWithinBytes,
   MAX_PATH_CHARS,
   qualorLink,
+  replyMarker,
   safeProse,
 } from '../scm/markdown';
 import { aiSeverityOf, type AiSeverity } from './rules';
@@ -27,7 +28,8 @@ import { ANSWER_LIMITS, type ReviewNote } from './schemas';
  *
  * The first note of a finding's thread (aiThreadNote) is made of the same pieces, and of the one
  * text no model word goes through `safeProse` in: the lines of its one-click suggestion, code that a
- * person applies, which the storing of the finding checked and which are checked again here.
+ * person applies, which the storing of the finding checked and which are checked again here. So is
+ * Qualor's answer to a person's reply in such a thread (replyNote).
  */
 
 /** The most bytes of the section; the summary comment as a whole has 16 KiB. */
@@ -593,4 +595,44 @@ export function aiThreadNote(input: AiThreadInput): AiThreadNote {
 /** The text of the first note of an AI finding's thread (`aiThreadNote`). */
 export function aiThreadBody(input: AiThreadInput): string {
   return aiThreadNote(input).body;
+}
+
+// ─── The answer to a reply ───────────────────────────────────────────────────
+
+/** The most bytes of Qualor's answer to a reply in one of its threads. */
+export const REPLY_NOTE_MAX_BYTES = 4 * 1024;
+const REPLY_HEADING = '**AI review** · reply';
+/** What the note keeps of the model's answer, in characters: all an answer has, then less. */
+const REPLY_ANSWER_CHARS = [ANSWER_LIMITS.replyChars, 600, 300] as const;
+const REPLY_ANSWER_LINES = 20;
+/** The line that says what became of the finding, when the reply changed its status. */
+const STATUS_CHANGED: Readonly<Record<'wont_fix' | 'false_positive', string>> = {
+  wont_fix: "Marked won't fix.",
+  false_positive: 'Marked as a false positive: the code shows it does not hold.',
+};
+
+/**
+ * Qualor's answer to a reply in one of its threads (6I-4), on GitLab or GitHub: the reply marker
+ * of the ledger row it answers (`rowId`), which the job looks for before it posts again; the fixed
+ * heading; the model's answer through `safeProse`; and, when the reply changed the finding's status
+ * (`statusChange`), a fixed line that says so. At most REPLY_NOTE_MAX_BYTES: the fixed lines always
+ * stay, and the answer has the room they leave, its whole lines as far as they fit, from a shorter
+ * cut of it when not even its first line does.
+ */
+export function replyNote(
+  rowId: string,
+  answer: string,
+  statusChange: 'wont_fix' | 'false_positive' | null,
+): string {
+  const head = [replyMarker(rowId), REPLY_HEADING];
+  const tail = statusChange === null ? [] : ['', STATUS_CHANGED[statusChange]];
+  // The answer comes after a blank line: two bytes more besides its own.
+  const room = REPLY_NOTE_MAX_BYTES - bytesOf([...head, ...tail]) - 2;
+  for (const maxChars of REPLY_ANSWER_CHARS) {
+    const prose = safeProse(answer, { maxChars, maxLines: REPLY_ANSWER_LINES });
+    if (prose === '') break;
+    const shown = linesWithinBytes(prose.split('\n'), room);
+    if (shown !== '') return [...head, '', shown, ...tail].join('\n');
+  }
+  return [...head, ...tail].join('\n');
 }

@@ -38,6 +38,8 @@ import { ensurePluginSchedules, startPluginWorker } from './plugins/mount';
 import { startWorker } from './queue/worker';
 import { REVIEW_LEASE_MS, reviewHandlers } from './review/job';
 import { reviewSnapshotHandlers } from './review/jobs';
+import { replyHandlers } from './review/reply-job';
+import { reconcileStuckReplies } from './review/reply-queue';
 import { reconcileStuckReviewRuns } from './review/runs';
 import { scmHandlers } from './scm/decorate';
 import { createScmRuntime } from './scm/runtime';
@@ -339,18 +341,24 @@ async function main(): Promise<void> {
     },
   });
   // 6I-3 R21: AI reviews have their own worker, so a review never holds explain, triage or fix
-  // behind it, nor an analysis or a decoration. It shares the `llm` worker's circuit.
+  // behind it, nor an analysis or a decoration. It shares the `llm` worker's circuit, and the `scm`
+  // worker's runtime for what the answers to replies read and write on GitLab and GitHub (6I-4).
   const reviewShutdown = new AbortController();
+  const reviewDeps = {
+    db: database.db,
+    config,
+    logger,
+    llmCircuit: llmRuntime.circuit,
+    scm: { secretKey: config.secretKey, internalHosts: config.scmInternalHosts },
+    scmRuntime,
+    shutdown: reviewShutdown.signal,
+    audit,
+  };
   const reviewWorker = startWorker({
     db: database.db,
-    handlers: reviewHandlers({
-      db: database.db,
-      config,
-      logger,
-      llmCircuit: llmRuntime.circuit,
-      scm: { secretKey: config.secretKey, internalHosts: config.scmInternalHosts },
-      shutdown: reviewShutdown.signal,
-    }),
+    // The worker tries the queues in this order: an answer to a reply, which is short, never
+    // waits behind a review.
+    handlers: { ...replyHandlers(reviewDeps), ...reviewHandlers(reviewDeps) },
     concurrency: config.reviewWorkerConcurrency,
     leaseMs: REVIEW_LEASE_MS,
     logger,
@@ -360,6 +368,9 @@ async function main(): Promise<void> {
       if (swept.ended > 0 || swept.queued > 0) {
         logger.warn(swept, 'reconciled AI review runs whose job was lost');
       }
+      // So is an answer to a reply that its job left running.
+      const replies = await reconcileStuckReplies(db);
+      if (replies > 0) logger.warn({ ended: replies }, 'ended AI replies whose job was lost');
     },
   });
   // E1 spec: email has its own worker, so a slow SMTP server never delays analyses, deliveries

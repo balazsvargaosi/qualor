@@ -46,6 +46,9 @@ import { fileURLToPath } from 'node:url';
  *   pipeline status of a commit").
  * - `commit_statuses.json`: `GET /projects/:id/repository/commits/:sha/statuses`
  *   (doc/api/commits.md, "List the statuses of a commit"; the same entity as the POST answer).
+ * - `member.json`: `GET /projects/:id/members/all/:user_id` (doc/api/members.md, "Get a member of a
+ *   group or project, including inherited and invited members"); a user who is no member is 404.
+ *   Added in 6I-4 and not yet compared with a real answer by the opt-in checks.
  * Error answers (`{ message }` / `{ error }` bodies, the 400 "Cannot transition status via …" and
  * the 400 on a diff position without a line code) follow the texts GitLab's API returns for them.
  */
@@ -151,6 +154,8 @@ interface FakeProject {
   discussions: Map<number, FakeDiscussion[]>;
   /** Pipeline id -> its ref. */
   pipelines: Map<number, string>;
+  /** User id -> the access level of a member, inherited or not; anyone else is no member. */
+  members: Map<number, number>;
 }
 
 export interface FakeGitLab {
@@ -167,6 +172,12 @@ export interface FakeGitLab {
   updateMergeRequest(projectId: number, iid: number, changes: Partial<FakeMergeRequest>): void;
   /** A pipeline of the project, on `ref` (default `main`). */
   addPipeline(projectId: number, pipelineId: number, ref?: string): void;
+  /**
+   * Makes the user a member of the project with `accessLevel` (10 Guest, 20 Reporter, 30 Developer,
+   * 40 Maintainer, 50 Owner), as `GET …/members/all/:user_id` answers it; null: no member (404).
+   * Nobody is a member until a test says so.
+   */
+  setMember(projectId: number, userId: number, accessLevel: number | null): void;
   /** Adds a note by another user (or the bot), as a discussion of its own. */
   addNote(projectId: number, iid: number, note: { body: string; authorId: number }): FakeDiscussion;
   discussions(projectId: number, iid: number): FakeDiscussion[];
@@ -244,6 +255,7 @@ export async function createFakeGitLab(
   const noteShape = gitlabShape<Record<string, unknown>>('note');
   const diffNoteShape = gitlabShape<{ notes: Record<string, unknown>[] }>('discussion').notes[0]!;
   const statusShape = gitlabShape('commit_status');
+  const memberShape = gitlabShape('member');
   /** Per-row bookkeeping beside the rows tests read (`statuses`). */
   const statusMeta = new Map<FakeStatus, { id: number; retried: boolean }>();
   const statusJson = (s: FakeStatus) => ({
@@ -442,6 +454,23 @@ export async function createFakeGitLab(
           )
           .map(statusJson),
       );
+    }
+    if (
+      req.method === 'GET' &&
+      rest.length === 3 &&
+      rest[0] === 'members' &&
+      rest[1] === 'all' &&
+      /^\d+$/.test(rest[2] ?? '')
+    ) {
+      const userId = Number(rest[2]);
+      const level = project.members.get(userId);
+      if (level === undefined) return send(res, 404, { message: '404 Not found' });
+      return send(res, 200, {
+        ...(memberShape as Record<string, unknown>),
+        id: userId,
+        username: author(userId).username,
+        access_level: level,
+      });
     }
     if (req.method === 'POST' && rest[0] === 'statuses' && rest.length === 2) {
       const sha = rest[1]!;
@@ -664,6 +693,7 @@ export async function createFakeGitLab(
         mergeRequests: new Map(),
         discussions: new Map(),
         pipelines: new Map(),
+        members: new Map(),
       });
     },
     addMergeRequest(projectId, mr) {
@@ -676,6 +706,11 @@ export async function createFakeGitLab(
     },
     addPipeline(projectId, pipelineId, ref = 'main') {
       projectOf(projectId).pipelines.set(pipelineId, ref);
+    },
+    setMember(projectId, userId, accessLevel) {
+      const { members } = projectOf(projectId);
+      if (accessLevel === null) members.delete(userId);
+      else members.set(userId, accessLevel);
     },
     addNote(projectId, iid, { body, authorId }) {
       const project = projectOf(projectId);

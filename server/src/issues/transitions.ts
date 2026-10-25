@@ -259,19 +259,7 @@ export async function transitionIssuesIn(
   }
 
   const rows = [...changes].map(([id, from]) => ({ id, from_status: from }));
-  const resolving = to !== 'open';
-  const applied: { id: string; old_value: string }[] = [];
-  for (const chunk of jsonChunks(rows)) {
-    const updated = await tx.execute<{ id: string; old_value: string }>(sql`
-      UPDATE issues AS i SET status = ${to},
-        resolved_at = ${resolving ? sql`now()` : sql`NULL`},
-        resolved_by = ${resolving ? user.id : null}::uuid,
-        updated_at = now()
-      FROM jsonb_to_recordset(${chunk}::jsonb) AS r(id uuid, from_status text)
-      WHERE i.id = r.id AND i.status = r.from_status
-      RETURNING i.id, r.from_status AS old_value`);
-    applied.push(...updated.rows);
-  }
+  const applied = await writeStatus(tx, rows, to, user.id);
   const log = applied
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
     .map((a) => ({
@@ -280,18 +268,96 @@ export async function transitionIssuesIn(
       old_value: a.old_value,
       comment: commentOf.get(a.id) ?? comment,
     }));
-  for (const chunk of jsonChunks(log)) {
-    await tx.execute(sql`
-      INSERT INTO issue_changes (id, issue_id, user_id, field, old_value, new_value, comment)
-      SELECT r.id, r.issue_id, ${user.id}, 'status', r.old_value, ${to}, r.comment
-        FROM jsonb_to_recordset(${chunk}::jsonb) AS r(id uuid, issue_id uuid, old_value text, comment text)`);
-  }
+  await writeStatusLog(tx, log, user.id, to);
   await enqueueReevaluations(
     tx,
     applied.map((a) => a.id),
   );
   if (options.audit) await recordStatusChanges(tx, options.audit, log, to, result.succeeded);
   return result;
+}
+
+/** One `issue_changes` row of a status change, as a transition writes it. */
+interface StatusLogRow {
+  id: string;
+  issue_id: string;
+  old_value: string;
+  comment: string | null;
+}
+
+/**
+ * Sets `to` on each issue of `rows` that still has its `from_status` (the lost-update guard), as
+ * resolved now by the user `resolvedBy` (null: nobody, a change of the system's), or no longer
+ * resolved when `to` is `open`. Answers the issues it changed, with the status each had.
+ */
+async function writeStatus(
+  tx: Tx,
+  rows: readonly { id: string; from_status: string }[],
+  to: UserStatus,
+  resolvedBy: string | null,
+): Promise<{ id: string; old_value: string }[]> {
+  const resolving = to !== 'open';
+  const applied: { id: string; old_value: string }[] = [];
+  for (const chunk of jsonChunks(rows)) {
+    const updated = await tx.execute<{ id: string; old_value: string }>(sql`
+      UPDATE issues AS i SET status = ${to},
+        resolved_at = ${resolving ? sql`now()` : sql`NULL`},
+        resolved_by = ${resolving ? resolvedBy : null}::uuid,
+        updated_at = now()
+      FROM jsonb_to_recordset(${chunk}::jsonb) AS r(id uuid, from_status text)
+      WHERE i.id = r.id AND i.status = r.from_status
+      RETURNING i.id, r.from_status AS old_value`);
+    applied.push(...updated.rows);
+  }
+  return applied;
+}
+
+/** The changelog of a status change to `to`: one row of `log` each, by `userId` (null: the system). */
+async function writeStatusLog(
+  tx: Tx,
+  log: readonly StatusLogRow[],
+  userId: string | null,
+  to: UserStatus,
+): Promise<void> {
+  for (const chunk of jsonChunks(log)) {
+    await tx.execute(sql`
+      INSERT INTO issue_changes (id, issue_id, user_id, field, old_value, new_value, comment)
+      SELECT r.id, r.issue_id, ${userId}::uuid, 'status', r.old_value, ${to}, r.comment
+        FROM jsonb_to_recordset(${chunk}::jsonb) AS r(id uuid, issue_id uuid, old_value text, comment text)`);
+  }
+}
+
+/**
+ * Sets `to` on the issue `issueId` as the system (6I-4: a person replied in Qualor's thread of an
+ * AI finding, and the reply decided its status), in the caller's transaction. Nobody's permission
+ * is checked and no user is named: `comment` says who replied. The issue is locked as every
+ * transition locks it ({@link lockIssues}) and changes only from `open`: it is resolved now, by
+ * nobody, with one `issue_changes` row of no user, the re-evaluation of its branch's gate queued
+ * (which decorates its merge request again), and, with `audit`, one `issue.status_changed` by the
+ * actor the caller gives (the system), in the details' shape a person's transition has. Duplicates
+ * do not follow it: the AI findings it is for have none (tracking never dedupes them). Answers
+ * whether it changed the issue.
+ */
+export async function transitionAsSystem(
+  tx: Tx,
+  issueId: string,
+  to: 'wont_fix' | 'false_positive',
+  comment: string,
+  audit?: { recorder: AuditRecorder; context: AuditActorContext },
+): Promise<boolean> {
+  const locked = (await lockIssues(tx, [issueId])).find((row) => row.id === issueId);
+  if (locked?.status !== 'open') return false;
+  const applied = await writeStatus(tx, [{ id: issueId, from_status: 'open' }], to, null);
+  if (applied.length === 0) return false;
+  const log: StatusLogRow[] = [{ id: uuidv7(), issue_id: issueId, old_value: 'open', comment }];
+  await writeStatusLog(tx, log, null, to);
+  await enqueueReevaluations(tx, [issueId]);
+  if (audit) {
+    await recordStatusChanges(tx, { ...audit, bulk: false, suggestionId: null }, log, to, [
+      issueId,
+    ]);
+  }
+  return true;
 }
 
 /**
@@ -303,7 +369,7 @@ export async function transitionIssuesIn(
 async function recordStatusChanges(
   tx: Tx,
   audit: TransitionAudit,
-  log: readonly { issue_id: string; old_value: string; comment: string | null }[],
+  log: readonly StatusLogRow[],
   to: UserStatus,
   succeeded: readonly string[],
 ): Promise<void> {

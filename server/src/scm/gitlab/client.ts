@@ -155,6 +155,9 @@ export function discussionResolved(d: GitLabDiscussion): boolean {
   return resolvable.length > 0 && resolvable.every((n) => n.resolved === true);
 }
 
+/** A member of a project, as `GET …/members/all/:user_id` answers: its level is what is read. */
+const member = z.looseObject({ access_level: z.number().int() });
+
 const commitStatus = z.looseObject({
   id: z.number().int(),
   sha,
@@ -186,6 +189,7 @@ export const GITLAB_SHAPES = {
   discussion,
   commitStatus,
   commitStatuses: z.array(commitStatus),
+  member,
 } as const;
 
 /** scm.md §4.2–§4.3: a GitLab merge request IID, 1–10 digits (the only form sent in a path). */
@@ -569,6 +573,27 @@ export class GitLabClient {
       { body },
     );
     return this.parse(note, json);
+  }
+
+  /**
+   * The access level the GitLab user `userId` has in the project (10 Guest, 20 Reporter, 30
+   * Developer, 40 Maintainer, 50 Owner), a membership it inherits from a group included
+   * (`GET …/members/all/:user_id`); null when the user is no member, GitLab's 404. What a person
+   * may decide through a reply in Qualor's threads (6I-4) is read from it.
+   */
+  async memberAccessLevel(ref: string, userId: number): Promise<number | null> {
+    if (!Number.isSafeInteger(userId) || userId < 1) {
+      throw new GitLabError('refused', 'The user id is not a GitLab user id', {
+        reason: 'invalid_input',
+      });
+    }
+    try {
+      const { json } = await this.call('GET', `${this.projectPath(ref)}/members/all/${userId}`);
+      return this.parse(member, json).access_level;
+    } catch (err) {
+      if (err instanceof GitLabError && err.status === 404) return null;
+      throw err;
+    }
   }
 
   async resolveDiscussion(

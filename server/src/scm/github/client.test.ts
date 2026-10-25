@@ -813,6 +813,43 @@ describe('GitHub REST client (github.md §4–§6)', () => {
       expect(pacer.waits).toHaveLength(2);
     });
 
+    it('reads the author association of a review comment, and none where GitHub names none', async () => {
+      const { number, first } = await threadOn();
+      const client = clientFor();
+      await client.useRepository(REPO);
+      const member = fake.replyToReviewComment(424242, Number(number), first.id, {
+        body: 'Ours.',
+        login: 'octocat',
+      });
+      const outsider = fake.replyToReviewComment(424242, Number(number), first.id, {
+        body: 'Mine.',
+        login: 'stranger',
+        association: 'CONTRIBUTOR',
+      });
+      const unnamed = fake.replyToReviewComment(424242, Number(number), first.id, {
+        body: 'Hm.',
+        login: 'visitor',
+        association: null,
+      });
+      const listed = await client.reviewComments(number, 5);
+      expect(listed.items.map((c) => [c.id, c.author_association])).toEqual([
+        // The App's own comment, as the recorded shape has it.
+        [first.id, 'NONE'],
+        [member.id, 'COLLABORATOR'],
+        [outsider.id, 'CONTRIBUTOR'],
+        [unnamed.id, undefined],
+      ]);
+      // A value longer than any GitHub sends is not understood.
+      fake.inject('GET', new RegExp(`/pulls/${number}/comments$`), {
+        status: 200,
+        body: [
+          { ...githubShape('pull_request_review_comment'), author_association: 'X'.repeat(65) },
+        ],
+      });
+      const err = await failure(client.reviewComments(number, 1));
+      expect([err.kind, err.message]).toEqual(['bad_answer', GITHUB_TEXT.badAnswer]);
+    });
+
     it('created_at is read from review comments and issue comments', async () => {
       const { number, first, firstAt } = await threadOn();
       const client = clientFor();

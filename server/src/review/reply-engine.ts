@@ -497,9 +497,13 @@ export interface ReplyDeps {
 /**
  * The tokens the answer may use now: the least of REPLY_TOKEN_BUDGET, in the place of a review's
  * ceiling, and what the organisation's day and its project's have left (`remainingReviewTokens`,
- * for the reviews and the answers to replies together).
+ * for the reviews and the answers to replies together). The job asks it before it reads a thread
+ * for a reply the day has nothing left for.
  */
-async function tokensLeft(deps: ReplyDeps, provider: StoredProvider): Promise<number> {
+export async function replyTokensLeft(
+  deps: Pick<ReplyDeps, 'db' | 'settings' | 'organizationId' | 'reply'>,
+  provider: StoredProvider,
+): Promise<number> {
   const { db, settings, organizationId } = deps;
   const [organization, project] = await Promise.all([
     reviewUsageToday(db, organizationId),
@@ -527,7 +531,7 @@ export async function decideReply(input: ReplyInput, deps: ReplyDeps): Promise<D
   const key = providerApiKey(settings, deps.config.secretKey);
   // No provider, or a key that no longer decrypts (the server's secret key changed): no call can be made.
   if (provider === null || !key.ok) return { failed: 'provider_error' };
-  const tokenBudget = await tokensLeft(deps, provider);
+  const tokenBudget = await replyTokensLeft(deps, provider);
   const tier = tierOfCall('reply', null);
   const model = modelFor(provider, tier);
   const pricing = pricingFor(settings.pricing, provider, tier);

@@ -1,12 +1,13 @@
-import { and, asc, eq, gt, gte, inArray, lt, notExists, or, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, gte, inArray, lt, notExists, or, sql, type SQL } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { z } from 'zod';
 import type { Db, Executor } from '../db/client';
-import { issues, reviewReplies, THREAD_ID, type ReplyKind } from '../db/schema';
+import { issues, jobs, reviewReplies, THREAD_ID, type ReplyKind } from '../db/schema';
 import { readLlmSettings } from '../llm/settings';
 import { enqueue } from '../queue/queue';
 import { insertReplies, largestNoteIds } from './replies';
 import type { CommandNote, DetectOptions, Round } from './reply-detect';
+import { REVIEW_AFTER_STOP_SECONDS } from './runs';
 import { reviewActive, reviewSettingsOf } from './settings';
 
 /*
@@ -14,8 +15,9 @@ import { reviewActive, reviewSettingsOf } from './settings';
  * (reply-detect.ts) finds the new replies in Qualor's threads and the notes that give a command;
  * `queueReplies` writes what it found, in one short transaction: a row of the replies ledger
  * (replies.ts) for each note that is new to the project, and the `ai-reply` job that answers it,
- * which the review worker runs beside the reviews. Nothing else writes these rows and jobs, so a
- * row is queued exactly when its job is.
+ * which the review worker runs beside the reviews (reply-job.ts). Nothing else writes these rows
+ * and jobs (the job's own stop queues its row again here too), so a row is queued exactly when its
+ * job is, and the sweep below ends a row its job left running.
  *
  * A pass is bounded: at most 50 rounds and 20 commands, new ones and notes queued again together,
  * the oldest first, and the rest wait for the next pass. The caps count only what the ledger does
@@ -119,11 +121,15 @@ function oldest<T>(items: readonly T[], noteOf: (item: T) => number, limit: numb
   return items.toSorted((a, b) => noteOf(a) - noteOf(b)).slice(0, limit);
 }
 
-/** Queues the job that answers each of the rows `replyIds`, after the jobs the branch has. */
+/**
+ * Queues the job that answers each of the rows `replyIds`, after the jobs the branch has, due at
+ * `runAt` (now when left out).
+ */
 async function enqueueAnswers(
   db: Executor,
   branchId: string,
   replyIds: readonly string[],
+  runAt?: SQL,
 ): Promise<void> {
   for (const replyId of replyIds) {
     await enqueue(db, {
@@ -131,8 +137,64 @@ async function enqueueAnswers(
       payload: { kind: 'answer', replyId } satisfies ReplyPayload,
       concurrencyKey: replyKey(branchId),
       maxAttempts: AI_REPLY_MAX_ATTEMPTS,
+      ...(runAt === undefined ? {} : { runAt }),
     });
   }
+}
+
+/**
+ * A running row whose answer the stopping server gave up before anything was decided: it is
+ * queued again, its start kept (a queued row may have one), with a new job a few seconds on, for
+ * another replica or for this server once it is up again (not at once, so that a worker of the
+ * stopping server that is still polling does not take it straight back), in one transaction.
+ * Answers whether the row was still running.
+ */
+export async function queueAfterStop(
+  db: Db,
+  reply: { id: string; branchId: string },
+): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    const [queued] = await tx
+      .update(reviewReplies)
+      .set({ status: 'queued' })
+      .where(and(eq(reviewReplies.id, reply.id), eq(reviewReplies.status, 'running')))
+      .returning({ id: reviewReplies.id });
+    if (queued === undefined) return false;
+    await enqueueAnswers(
+      tx,
+      reply.branchId,
+      [reply.id],
+      sql`now() + make_interval(secs => ${REVIEW_AFTER_STOP_SECONDS})`,
+    );
+    return true;
+  });
+}
+
+/**
+ * The rows that are `running` with no `ai-reply` job queued or running for them: their job is gone
+ * for good (its lease expired on both tries, or both tries failed), so nothing would ever end them.
+ * After every reap of the review worker (main.ts) each ends `failed: internal` here, as the sweep of
+ * the review runs ends a run without its job (runs.ts). Decided by whether a job is there, never by
+ * the row's age: a job that runs keeps its lease. A row and its job are written together (above),
+ * and a row is running only while a job has taken it, so one statement is enough. Answers how many
+ * it ended.
+ */
+export async function reconcileStuckReplies(db: Executor): Promise<number> {
+  const ended = await db
+    .update(reviewReplies)
+    .set({ status: 'failed', outcome: null, reason: 'internal', finishedAt: sql`now()` })
+    .where(
+      and(
+        eq(reviewReplies.status, 'running'),
+        // Compared as text, so that a malformed payload never fails the statement.
+        sql`NOT EXISTS (SELECT 1 FROM ${jobs}
+                         WHERE ${jobs.queue} = ${AI_REPLY_QUEUE}
+                           AND ${jobs.status} IN ('queued', 'running')
+                           AND ${jobs.payload} ->> 'replyId' = ${reviewReplies.id}::text)`,
+      ),
+    )
+    .returning({ id: reviewReplies.id });
+  return ended.length;
 }
 
 /**

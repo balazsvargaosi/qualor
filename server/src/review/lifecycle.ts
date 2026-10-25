@@ -34,7 +34,7 @@ const checkKey = (branchId: string): string => `review-mr-state:branch:${branchI
 const checkPayload = z.object({ branchId: z.uuid() });
 
 /** The snapshots of the merge request branch `branchId`: its linked one and each analysis' own. */
-function ofBranch(db: Executor, branchId: string) {
+export function ofBranch(db: Executor, branchId: string) {
   return or(
     eq(reviewSnapshots.branchId, branchId),
     inArray(

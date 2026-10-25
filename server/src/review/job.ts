@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import { and, eq, sql, type SQL } from 'drizzle-orm';
+import type { FastifyBaseLogger } from 'fastify';
 import { z } from 'zod';
+import type { AuditRecorder } from '../audit/recorder';
 import type { Config } from '../config';
 import type { Db, Executor } from '../db/client';
 import { pgErrorCode } from '../db/errors';
@@ -28,6 +30,7 @@ import type { JobHandlers, WorkerLogger } from '../queue/worker';
 import type { DecorationDeps } from '../scm/decorate';
 import { readMergeRequestState } from '../scm/mr-state';
 import { lockBranchQueue } from '../scm/queue';
+import type { ScmRuntime } from '../scm/runtime';
 import {
   analyzerFindings,
   buildReviewContext,
@@ -116,8 +119,10 @@ import {
 /** The job's lease: a review waits on its provider, call after call; the worker extends it. */
 export const REVIEW_LEASE_MS = 20 * 60_000;
 
-type Logger = WorkerLogger;
+/** The worker's logger; a line that only says what a job left alone goes out at debug, when it can. */
+type Logger = WorkerLogger & Partial<Pick<FastifyBaseLogger, 'debug'>>;
 
+/** What the review worker's jobs share: the reviews' (`ai-review`) and the answers' (`ai-reply`). */
 export interface ReviewJobDeps {
   db: Db;
   config: Config;
@@ -129,6 +134,15 @@ export interface ReviewJobDeps {
    */
   llmCircuit: LlmRuntime['circuit'];
   scm: DecorationDeps['scm'];
+  /**
+   * The `scm` worker's per-process state (main.ts): an answer reads its merge request through the
+   * organisation's slots and the connection's circuit, and its GitHub client shares the
+   * installation tokens and the pacing of mutations. Each job builds its own client, with its own
+   * request budget.
+   */
+  scmRuntime: ScmRuntime;
+  /** The recorder a status an answer changes is recorded through, as the system's. */
+  audit?: AuditRecorder;
   /**
    * Aborted when the server stops (main.ts), before it waits for its workers: a review takes
    * minutes, and would keep the stop waiting past its grace period. A running review then ends at

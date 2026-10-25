@@ -245,6 +245,7 @@ describe('the ai-review job (6I-3, R15)', () => {
     logger,
     llmCircuit: createLlmRuntime().circuit,
     scm: decorationDeps(h).scm,
+    scmRuntime: decorationDeps(h).runtime,
     shutdown: new AbortController().signal,
     ...over,
   });
