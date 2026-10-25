@@ -1,5 +1,5 @@
 import { and, asc, count, eq, inArray, isNotNull, sql } from 'drizzle-orm';
-import type { Tx } from '../db/client';
+import type { Executor, Tx } from '../db/client';
 import { uuidv7 } from '../db/ids';
 import {
   issueChanges,
@@ -21,6 +21,7 @@ import {
 import type { MaskBudget, MaskedFiles, MaskedText } from './masked-files';
 import type { Masker } from './masker';
 import type { PipelineOutcome } from './pipeline';
+import { startedAtIs } from './run-ends';
 import { AI_RULES } from './rules';
 
 /*
@@ -91,7 +92,8 @@ export interface StoreCounts {
 
 /**
  * The run is not storing its results: it was stored already, it ended another way, or its snapshot
- * was deleted.
+ * was deleted, or it is no longer the start of it that the caller made (it was ended and started
+ * again).
  */
 export class ReviewNotStoringError extends Error {
   override name = 'ReviewNotStoringError';
@@ -205,26 +207,54 @@ const findingRow = (rows: RenderedFinding, runId: string, headSha: string) => ({
 });
 
 /**
- * Takes the run's row, if it is storing its results and still has its snapshot; the transaction
- * keeps it to the end, so that no other store of the run can start before this one has ended it. A
- * snapshot deleted since the run's last stop check (its merge request was merged or closed) leaves
- * the run's reference null: what the review read is gone, and nothing of it is stored. A deletion
- * that comes once the row is taken waits for the store to end.
+ * The run turns to `storing`, once, and only the start of it that `run.startedAt` names (a job that
+ * outlived its lease finds a run ended and started again to be another job's): it must be running
+ * and not storing yet. Answers the run as it is now, or undefined when it is not: a newer analysis
+ * superseded it, it ended or was started again, or it is storing already. From then on no newer
+ * analysis supersedes it, and `storeReviewOutcome` stores it.
  */
-async function lockRun(tx: Tx, runId: string): Promise<void> {
+export async function startStoring(
+  db: Executor,
+  run: Pick<ReviewRunRow, 'id' | 'startedAt'>,
+): Promise<ReviewRunRow | undefined> {
+  const [storing] = await db
+    .update(reviewRuns)
+    .set({ phase: 'storing' })
+    .where(
+      and(
+        eq(reviewRuns.id, run.id),
+        eq(reviewRuns.status, 'running'),
+        startedAtIs(run.startedAt),
+        sql`${reviewRuns.phase} IS DISTINCT FROM 'storing'`,
+      ),
+    )
+    .returning();
+  return storing;
+}
+
+/**
+ * Takes the run's row, if it is storing its results, is the start of it that `run.startedAt` names
+ * and still has its snapshot; the transaction keeps it to the end, so that no other store of the
+ * run can start before this one has ended it. A snapshot deleted since the run's last stop check
+ * (its merge request was merged or closed) leaves the run's reference null: what the review read is
+ * gone, and nothing of it is stored. A deletion that comes once the row is taken waits for the store
+ * to end.
+ */
+async function lockRun(tx: Tx, run: Pick<ReviewRunRow, 'id' | 'startedAt'>): Promise<void> {
   const locked = await tx
     .select({ id: reviewRuns.id })
     .from(reviewRuns)
     .where(
       and(
-        eq(reviewRuns.id, runId),
+        eq(reviewRuns.id, run.id),
         eq(reviewRuns.status, 'running'),
         eq(reviewRuns.phase, 'storing'),
+        startedAtIs(run.startedAt),
         isNotNull(reviewRuns.snapshotId),
       ),
     )
     .for('no key update');
-  if (locked.length === 0) throw new ReviewNotStoringError(runId);
+  if (locked.length === 0) throw new ReviewNotStoringError(run.id);
 }
 
 /**
@@ -259,8 +289,8 @@ async function lockOpen(
  * as closed ones with a changelog entry, and the run as `done` with its counts and its summary.
  * `ruleIds` are the ids of the eight AI rules by category: call `ensureAiRules` on the pool before
  * the transaction opens, so that the store never waits on another store's open transaction. It
- * throws {@link ReviewNotStoringError}, writing nothing, when the run is not storing or its snapshot
- * is gone.
+ * throws {@link ReviewNotStoringError}, writing nothing, when the run is not storing, is not the
+ * start of it that `run.startedAt` names, or its snapshot is gone.
  *
  * A finding is written with the head its anchor and its suggestion were made for. An earlier finding
  * that is only kept or closed keeps the head of its last placement: the review marks that it looked
@@ -273,7 +303,7 @@ export async function storeReviewOutcome(
   ruleIds: ReadonlyMap<AiCategory, string>,
 ): Promise<StoreCounts> {
   const headSha = (run.headSha ?? prepared.headSha).toLowerCase();
-  await lockRun(tx, run.id);
+  await lockRun(tx, run);
   const openNow = await lockOpen(tx, run, ruleIds, [
     ...prepared.updated.map((u) => u.priorId),
     ...prepared.kept,

@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import type { Db, Executor } from '../db/client';
 import {
   analyses,
@@ -47,6 +47,18 @@ export type RunRef = Pick<ReviewRunRow, 'id' | 'analysisId' | 'branchId'>;
 
 type Logger = Pick<WorkerLogger, 'info' | 'warn'>;
 
+/**
+ * The run is the one a job started: the `started_at` that job set is still on it. A restart clears
+ * `started_at` and the next job sets its own, so a job that outlived its lease finds the run, ended
+ * and started again, no longer its own, and writes nothing into it. The column keeps microseconds
+ * and a Date only milliseconds, so the column is cut to milliseconds, as the Date was when it was
+ * read. A null is a run no job started: nobody's.
+ */
+export const startedAtIs = (startedAt: Date | null): SQL =>
+  startedAt === null
+    ? sql`false`
+    : sql`date_trunc('milliseconds', ${reviewRuns.startedAt}) = ${startedAt.toISOString()}::timestamptz`;
+
 export interface EndExtra {
   /**
    * What the run spent, as its own job counted it. Left out, the spend columns are left as they
@@ -55,6 +67,12 @@ export interface EndExtra {
   spend?: RunSpend;
   /** The digest of the reviewed diff, when it was made. */
   diffDigest?: string | null;
+  /**
+   * The `started_at` the ending job set when it started the run: the run is ended only while it is
+   * still that start of it ({@link startedAtIs}), not one that was ended and started again since.
+   * Left out, any run in `from` is ended: the sweep's, which knows no job.
+   */
+  startedAt?: Date | null;
 }
 
 /**
@@ -83,7 +101,13 @@ export async function endRun(
         ? {}
         : { diffDigest: extra.diffDigest }),
     })
-    .where(and(eq(reviewRuns.id, run.id), inArray(reviewRuns.status, [...from])))
+    .where(
+      and(
+        eq(reviewRuns.id, run.id),
+        inArray(reviewRuns.status, [...from]),
+        extra.startedAt === undefined ? undefined : startedAtIs(extra.startedAt),
+      ),
+    )
     .returning({ id: reviewRuns.id });
   return ended.length > 0;
 }
@@ -178,7 +202,19 @@ export async function endAndDecorate(
   return ended;
 }
 
-/** What a run spent, written on it as it is: a run another job or a newer analysis ended. */
-export async function writeRunSpend(db: Executor, runId: string, spend: RunSpend): Promise<void> {
-  await db.update(reviewRuns).set(spend).where(eq(reviewRuns.id, runId));
+/**
+ * What a run spent, written on it as it is: a run another job or a newer analysis ended. Only while
+ * the run is still the start of it that `startedAt` names ({@link startedAtIs}): a run that was
+ * started again since is another job's, and what this job spent is not written on it.
+ */
+export async function writeRunSpend(
+  db: Executor,
+  runId: string,
+  spend: RunSpend,
+  startedAt: Date | null,
+): Promise<void> {
+  await db
+    .update(reviewRuns)
+    .set(spend)
+    .where(and(eq(reviewRuns.id, runId), startedAtIs(startedAt)));
 }

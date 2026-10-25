@@ -54,9 +54,9 @@ import {
   endRun,
   errorClass,
   logRunEnd,
+  startedAtIs,
   writeRunSpend,
   type RunEnd,
-  type RunRef,
   type RunSpend,
 } from './run-ends';
 import { AI_REVIEW_QUEUE, lastReviewedDigest, queueAfterStop, queueAtDeadline } from './runs';
@@ -67,7 +67,12 @@ import {
   type ReviewProvider,
 } from './settings';
 import { openSnapshotReader, type SnapshotChange, type SnapshotReader } from './snapshot-reader';
-import { prepareReviewOutcome, ReviewNotStoringError, storeReviewOutcome } from './store';
+import {
+  prepareReviewOutcome,
+  ReviewNotStoringError,
+  startStoring,
+  storeReviewOutcome,
+} from './store';
 import { converseOverTools, newToolPolicy, type RoleCall } from './tool-conversation';
 import type { ToolPolicy } from './tools';
 import {
@@ -105,6 +110,11 @@ import {
  * A stop of the server (`ReviewJobDeps.shutdown`) ends a running review at once, `failed:
  * internal`: its masking and its call in flight are given up, no other call is made and nothing is
  * stored. A stopping server starts no run: the run waits for the next server's job.
+ *
+ * A job writes to its run only while the run is the start of it that the job made: the
+ * `started_at` it set (run-ends.ts, `startedAtIs`). A job that lost its lease and is still alive
+ * finds a run that was ended and started again (a `qualor review`) to be another job's: it stops
+ * at its next check, and writes no phase, no end, no spend and no store into it.
  *
  * Every end but `superseded` queues the decoration of the analysis in the same transaction
  * (run-ends.ts), so the summary of the merge request says how the review ended. An exception once
@@ -519,7 +529,7 @@ class ReviewJob {
             ),
           providerKey: key.key,
         },
-        (phase) => this.phase(phase),
+        (phase) => this.phase(run, phase),
       );
       await this.finish(running, outcome, { context, files, masker, policy, shouldStop });
     } finally {
@@ -599,11 +609,12 @@ class ReviewJob {
 
   /**
    * Asked before every call to the provider, and once more after the last: the server is stopping,
-   * or the run was superseded (or its analysis is no longer the newest), or review is no longer on
-   * for the project, or the provider is no longer the one the run started with (R10), or the run's
-   * snapshot is gone (the merge request was merged or closed, which deletes its snapshots, R16; the
-   * run's reference to it is then null). What the run reads of a snapshot that is gone is nothing,
-   * and an outcome built on that is not stored. The masker's signal is aborted with the stop.
+   * or the run was superseded (or its analysis is no longer the newest, or it was ended and started
+   * again, and is another job's now), or review is no longer on for the project, or the provider
+   * is no longer the one the run started with (R10), or the run's snapshot is gone (the merge
+   * request was merged or closed, which deletes its snapshots, R16; the run's reference to it is
+   * then null). What the run reads of a snapshot that is gone is nothing, and an outcome built on
+   * that is not stored. The masker's signal is aborted with the stop.
    */
   private stopCheck(running: Running, controller: AbortController): () => Promise<boolean> {
     const { db } = this.deps;
@@ -623,7 +634,7 @@ class ReviewJob {
         })
         .from(reviewRuns)
         .innerJoin(branches, eq(branches.id, reviewRuns.branchId))
-        .where(eq(reviewRuns.id, run.id));
+        .where(and(eq(reviewRuns.id, run.id), startedAtIs(run.startedAt)));
       if (now?.status !== 'running' || now.newest !== run.analysisId) {
         this.stop = { kind: 'superseded' };
       } else {
@@ -725,15 +736,16 @@ class ReviewJob {
     }
   }
 
-  /** The pipeline starts a phase: written on the run while it reviews. */
-  private async phase(phase: ReviewPhase): Promise<void> {
+  /** The pipeline starts a phase: written on the run while it reviews, if it is still this job's. */
+  private async phase(run: ReviewRunRow, phase: ReviewPhase): Promise<void> {
     await this.deps.db
       .update(reviewRuns)
       .set({ phase })
       .where(
         and(
-          eq(reviewRuns.id, this.runId),
+          eq(reviewRuns.id, run.id),
           eq(reviewRuns.status, 'running'),
+          startedAtIs(run.startedAt),
           sql`${reviewRuns.phase} IS DISTINCT FROM 'storing'`,
         ),
       );
@@ -741,10 +753,11 @@ class ReviewJob {
 
   /**
    * The pipeline's outcome. A review is stored once the run is `storing`, which a guarded update
-   * makes it, and only a run still running and not storing passes: from then on no newer analysis
-   * supersedes it. The values are made before the transaction (masking takes time), which only
-   * writes; the store refuses a run no longer storing, under its lock, and one whose snapshot was
-   * deleted since the last stop check, which then ends `skipped: closed` with nothing stored.
+   * makes it (`startStoring`), and only this job's run, still running and not storing, passes: from
+   * then on no newer analysis supersedes it. The values are made before the transaction (masking
+   * takes time), which only writes; the store refuses a run no longer storing, under its lock, and
+   * one whose snapshot was deleted since the last stop check, which then ends `skipped: closed`
+   * with nothing stored.
    */
   private async finish(
     running: Running,
@@ -764,17 +777,7 @@ class ReviewJob {
     }
     // Asked once more after the last call: nothing is stored for a run that should have stopped.
     if (outcome.kind === 'stopped' || (await o.shouldStop())) return this.stopped(run);
-    const [storing] = await db
-      .update(reviewRuns)
-      .set({ phase: 'storing' })
-      .where(
-        and(
-          eq(reviewRuns.id, run.id),
-          eq(reviewRuns.status, 'running'),
-          sql`${reviewRuns.phase} IS DISTINCT FROM 'storing'`,
-        ),
-      )
-      .returning();
+    const storing = await startStoring(db, run);
     if (storing === undefined) return this.stopped(run);
     const ruleIds = await ensureAiRules(db);
     const prepared = await prepareReviewOutcome(o.context, outcome, {
@@ -810,7 +813,7 @@ class ReviewJob {
         });
       }
       // Ended meanwhile by a job tried again after this one's lease expired: that one decorated.
-      await this.writeSpend();
+      await this.writeSpend(run);
       return;
     }
     this.deps.logger.info(
@@ -850,7 +853,7 @@ class ReviewJob {
    * The server is stopping: the run ends now, `failed: internal`, with its decoration, rather than
    * keep the stop waiting for a review that takes minutes. The next push reviews again.
    */
-  private async givenUp(run: RunRef): Promise<void> {
+  private async givenUp(run: ReviewRunRow): Promise<void> {
     this.deps.logger.warn({ runId: run.id }, 'AI review run given up: the server is stopping');
     await this.endRunning(run, { status: 'failed', reason: 'internal' });
   }
@@ -870,19 +873,23 @@ class ReviewJob {
     };
   }
 
-  /** The spend of a run another job or a newer analysis ended: it was spent all the same. */
-  private async writeSpend(): Promise<void> {
+  /**
+   * The spend of a run another job or a newer analysis ended: it was spent all the same. Not that
+   * of a run that was started again since: it is another job's now.
+   */
+  private async writeSpend(run: ReviewRunRow): Promise<void> {
     if (this.calls === 0) return;
-    await writeRunSpend(this.deps.db, this.runId, this.spend());
+    await writeRunSpend(this.deps.db, run.id, this.spend(), run.startedAt);
   }
 
   /**
    * Ends the running run with what it spent, and queues its decoration unless it was superseded,
    * in one transaction. A run that something else ended meanwhile keeps that end, with this
-   * job's spend written on it.
+   * job's spend written on it; one that was ended and started again since is another job's, and
+   * is left as it is.
    */
   private async endRunning(
-    run: RunRef,
+    run: ReviewRunRow,
     end: RunEnd,
     extra: { diffDigest?: string | null } = {},
   ): Promise<void> {
@@ -891,10 +898,10 @@ class ReviewJob {
       run,
       ['running'],
       end,
-      { ...extra, spend: this.spend() },
+      { ...extra, spend: this.spend(), startedAt: run.startedAt },
       this.deps.logger,
     );
-    if (!ended) await this.writeSpend();
+    if (!ended) await this.writeSpend(run);
   }
 }
 

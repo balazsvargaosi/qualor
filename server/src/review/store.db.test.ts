@@ -31,6 +31,7 @@ import type { SnapshotReader } from './snapshot-reader';
 import {
   prepareReviewOutcome,
   ReviewNotStoringError,
+  startStoring,
   storeReviewOutcome,
   type ReviewPrepareDeps,
 } from './store';
@@ -773,6 +774,85 @@ describe('storeReviewOutcome (6I-3)', () => {
       status: 'running',
       phase: 'storing',
       snapshotId: null,
+    });
+  });
+
+  it('stores nothing for a run that was started again: its start is not the one its job made', async () => {
+    const { branchId, run } = await newRun();
+    const context = await contextOf(branchId, [change('src/cart.ts')]);
+    // The run ended and another job started it again while this job worked: the row holds that start.
+    const again = new Date((run.startedAt?.getTime() ?? 0) + 60_000);
+    await t.db.update(reviewRuns).set({ startedAt: again }).where(eq(reviewRuns.id, run.id));
+    const before = await everything(branchId);
+    await expect(
+      store(run, context, outcomeOf({ findings: [judged({ line: 12 })] })),
+    ).rejects.toBeInstanceOf(ReviewNotStoringError);
+    expect(await everything(branchId)).toEqual(before);
+    expect(await runRow(run.id)).toMatchObject({
+      status: 'running',
+      phase: 'storing',
+      startedAt: again,
+    });
+  });
+
+  it('stores a run whose start has microseconds, which the job read as milliseconds', async () => {
+    const { branchId, run: made } = await newRun();
+    await t.db.execute(
+      sql`UPDATE review_runs SET started_at = '2026-10-25 12:00:00.123456+00' WHERE id = ${made.id}`,
+    );
+    // As the job holds it: read back from the row, where a Date keeps three of the six digits.
+    const run = await runRow(made.id);
+    expect(run.startedAt?.toISOString()).toBe('2026-10-25T12:00:00.123Z');
+    const context = await contextOf(branchId, [change('src/cart.ts')]);
+    expect(
+      await store(run, context, outcomeOf({ findings: [judged({ line: 12 })] })),
+    ).toMatchObject({ created: 1 });
+  });
+
+  describe('startStoring', () => {
+    it('turns a running run to storing, once', async () => {
+      const { run } = await newRun({ phase: 'judge' });
+      expect(await startStoring(t.db, run)).toMatchObject({
+        id: run.id,
+        status: 'running',
+        phase: 'storing',
+      });
+      expect(await startStoring(t.db, run)).toBeUndefined();
+      expect(await runRow(run.id)).toMatchObject({ status: 'running', phase: 'storing' });
+    });
+
+    it('leaves a run that was started again: its start is not the one its job made', async () => {
+      const { run } = await newRun({ phase: 'judge' });
+      const again = new Date((run.startedAt?.getTime() ?? 0) + 60_000);
+      await t.db.update(reviewRuns).set({ startedAt: again }).where(eq(reviewRuns.id, run.id));
+      expect(await startStoring(t.db, run)).toBeUndefined();
+      expect(await runRow(run.id)).toMatchObject({
+        status: 'running',
+        phase: 'judge',
+        startedAt: again,
+      });
+    });
+
+    it('leaves a run that waits or ended', async () => {
+      for (const over of [
+        { status: 'waiting', phase: null, startedAt: null },
+        { status: 'superseded', phase: null },
+        { status: 'failed', phase: null, reason: 'internal' },
+        { status: 'done', phase: null },
+      ] as const) {
+        const { run } = await newRun(over);
+        expect(await startStoring(t.db, run), JSON.stringify(over)).toBeUndefined();
+        expect(await runRow(run.id)).toMatchObject(over);
+      }
+    });
+
+    it('turns a run whose start has microseconds, which the job read as milliseconds', async () => {
+      const { run: made } = await newRun({ phase: 'judge' });
+      await t.db.execute(
+        sql`UPDATE review_runs SET started_at = '2026-10-25 12:00:00.123456+00' WHERE id = ${made.id}`,
+      );
+      const run = await runRow(made.id);
+      expect(await startStoring(t.db, run)).toMatchObject({ phase: 'storing' });
     });
   });
 

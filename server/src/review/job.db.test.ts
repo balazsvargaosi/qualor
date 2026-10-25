@@ -43,7 +43,7 @@ import { enqueueLatestDecoration, lockBranchQueue, SCM_QUEUE } from '../scm/queu
 import { parseInternalHosts } from '../scm/url';
 import { REVIEW_LEASE_MS, reviewHandlers, type ReviewJobDeps } from './job';
 import { mergeRequestStateHandlers, REVIEW_MR_STATE_QUEUE } from './lifecycle';
-import { AI_REVIEW_QUEUE, requestReviewRun } from './runs';
+import { AI_REVIEW_QUEUE, reconcileStuckReviewRuns, requestReviewRun } from './runs';
 import type { ReviewBudgets } from './settings';
 import { storeSnapshotUpload, unpackSnapshot } from './snapshot-store';
 import { reviewUsageToday } from './usage';
@@ -160,6 +160,30 @@ const FOUND: ReviewScript = {
     prior: [],
     summary: { verdict: 'One logic problem in the cart total.', walkthrough: ['Adds a total.'] },
   }),
+};
+
+/**
+ * A reviewer's answer, `text`, that waits to be let go: `reached` is settled when the call arrives
+ * at the provider, and `release` lets it answer.
+ */
+const held = (text: string) => {
+  let arrived!: () => void;
+  let free!: () => void;
+  const reached = new Promise<void>((resolve) => {
+    arrived = resolve;
+  });
+  const freed = new Promise<void>((resolve) => {
+    free = resolve;
+  });
+  return {
+    reached,
+    release: free,
+    answer: async () => {
+      arrived();
+      await freed;
+      return text;
+    },
+  };
 };
 
 describe('the ai-review job (6I-3, R15)', () => {
@@ -739,6 +763,93 @@ describe('the ai-review job (6I-3, R15)', () => {
     expect(await decorationsOf(older)).toEqual([]);
     expect(await decorationsOf(newer!)).toHaveLength(1);
     expect((await runOf(newer!)).status).toBe('waiting');
+  });
+
+  it('a job that lost its lease writes nothing into its run once another job has it again', async () => {
+    const mr = mergeRequest();
+    const analysisId = await analysisOf(mr);
+    await snapshotOf(analysisId, mr);
+    const { id: runId, branchId } = await runOf(analysisId);
+    await forgetDecorations();
+    const calls = reviewCalls().length;
+    const first = held(
+      JSON.stringify({ findings: [{ ...FINDING, title: 'Found by the first job' }] }),
+    );
+    const second = held(
+      JSON.stringify({
+        findings: [{ ...FINDING, line: 4, endLine: 4, title: 'Found by the second' }],
+      }),
+    );
+    llm.enqueue(
+      reviewResponder({ quality: first.answer }),
+      reviewResponder({ quality: second.answer }),
+    );
+    let firstJob: Promise<number> | undefined;
+    let secondJob: Promise<number> | undefined;
+    try {
+      // The first job's reviewer is in flight when its lease is lost: the job is gone for the queue,
+      // the sweep ends its run, and a person asks for the review again.
+      firstJob = runReviews();
+      await first.reached;
+      await h.ctx.db
+        .update(jobs)
+        .set({ status: 'dead', lastError: 'lease expired' })
+        .where(and(eq(jobs.queue, AI_REVIEW_QUEUE), sql`${jobs.payload} ->> 'runId' = ${runId}`));
+      await reconcileStuckReviewRuns(h.ctx.db, silentLogger);
+      expect(await runOf(analysisId)).toMatchObject({ status: 'failed', reason: 'internal' });
+      await h.ctx.db.transaction(async (tx) => {
+        await lockBranchQueue(tx, branchId);
+        await requestReviewRun(
+          tx,
+          { analysisId, projectId: p.id, branchId, requestedBy: 'octocat' },
+          silentLogger,
+        );
+      });
+      // Another job starts the run again, and its reviewer is in flight too.
+      secondJob = runReviews();
+      await second.reached;
+      const restarted = await runOf(analysisId);
+      expect(restarted).toMatchObject({ status: 'running', phase: 'specialists', modelCalls: 0 });
+      await forgetDecorations();
+
+      // The first job's reviewer answers. It finds the run no longer its own: it asks the provider
+      // nothing more, and writes no phase, no end, no spend and no store into the run.
+      first.release();
+      expect(await firstJob).toBe(1);
+      expect(reviewCalls().slice(calls).map(reviewRoleOf)).toEqual(['quality', 'quality']);
+      expect(await runOf(analysisId)).toEqual(restarted);
+      expect(await decorationsOf(analysisId)).toEqual([]);
+      expect(await aiIssuesOf(branchId)).toEqual([]);
+
+      // The second job reviews to the end, and its findings alone are stored.
+      llm.enqueue(
+        reviewResponder({
+          judge: JSON.stringify({
+            findings: [
+              { ...FINDING, line: 4, endLine: 4, title: 'Found by the second', sources: ['s1'] },
+            ],
+            dropped: [],
+            prior: [],
+            summary: { verdict: 'One problem.', walkthrough: ['Adds a total.'] },
+          }),
+        }),
+      );
+      second.release();
+      expect(await secondJob).toBe(1);
+      expect(await runOf(analysisId)).toMatchObject({
+        status: 'done',
+        requestedBy: 'octocat',
+        modelCalls: 2,
+        findingsNew: 1,
+      });
+      const stored = await aiIssuesOf(branchId);
+      expect(stored).toHaveLength(1);
+      expect(stored[0]).toMatchObject({ issue: { startLine: 4 }, finding: { runId } });
+    } finally {
+      first.release();
+      second.release();
+      await Promise.allSettled([firstJob, secondJob]);
+    }
   });
 
   it('review switched off during the run stops it as inactive and stores nothing', async () => {
