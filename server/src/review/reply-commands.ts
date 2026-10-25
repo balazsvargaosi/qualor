@@ -32,7 +32,9 @@ import { CLOSED, JobSteps, THREAD_GONE, WAITING, type Target } from './reply-ste
  * once, beside the command's note (a note of Qualor's whose first line names the row is the answer
  * a post stored though its outcome was lost), and the row ends `done` with the decision's outcome:
  * a refusal is `not_available`. AI review being off does not skip a command: it is answered so. A
- * branch with no newest analysis ends the row `failed: internal`, with no answer.
+ * branch with no newest analysis ends the row `failed: internal`, with no answer. A row that has
+ * its answer note ends `done` with its outcome at once, with no request: what became of the merge
+ * request or of the command's note since changes nothing of an answer that was given.
  *
  * The requests pass the connection's circuit in two goes (reply-steps.ts): the merge request and
  * the command's discussion before the decision, and the post after it, so that a row that waits for
@@ -45,9 +47,12 @@ class CommandFlow extends JobSteps {
    * are read in a go through the circuit, then the decision is made (no request), and the post is
    * another go: a row that waits for the circuit before its decision has made no run. It resumes
    * after the last step the row records: a decision on it is posted, never made again, and an
-   * answer note on it ends the row.
+   * answer note on it ends the row `done` with its outcome, with no request.
    */
   async answerCommand(row: ReplyRow, target: Target): Promise<void> {
+    if (row.answerNoteId !== null && row.outcome !== null) {
+      return this.end(row, { status: 'done', outcome: row.outcome });
+    }
     const side = this.commandSideOf(row, target);
     if (side === 'gone') return this.end(row, THREAD_GONE);
     if (side === 'unusable') {
@@ -164,6 +169,7 @@ class CommandFlow extends JobSteps {
       branch.name,
       row,
       row.threadId,
+      this.deps.logger,
     );
   }
 }

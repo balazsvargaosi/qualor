@@ -208,6 +208,8 @@ interface Mr {
   commandAnswers(): { id: number; body: string; threadId: string | null }[];
   /** The notes of Qualor's summary of the merge request. */
   summaries(): { id: number; body: string }[];
+  /** Qualor's summary of the merge request is deleted. */
+  deleteSummaries(): void;
   /** The merge request is a draft, or is none. */
   setDraft(draft: boolean): void;
   /** Runs the decorations that are queued, as the `scm` worker does, and queues none of its own. */
@@ -409,6 +411,15 @@ describe('the answer job (6I-4)', () => {
             .flatMap((d) => d.notes)
             .filter((n) => n.authorId === gitlab.botUserId && markerOf(n.body)?.kind === 'summary')
             .map((n) => ({ id: n.id, body: n.body })),
+        deleteSummaries: () => {
+          const list = gitlab.discussions(gitlabId, 12);
+          const summarised = list.filter((d) =>
+            d.notes.some(
+              (n) => n.authorId === gitlab.botUserId && markerOf(n.body)?.kind === 'summary',
+            ),
+          );
+          for (const found of summarised) list.splice(list.indexOf(found), 1);
+        },
         setDraft: (draft) => gitlab.updateMergeRequest(gitlabId, 12, { draft }),
         decorateQueued: async () => void (await runDecorations(h, decorationDeps(h))),
         answers: (threadId) =>
@@ -588,6 +599,12 @@ describe('the answer job (6I-4)', () => {
               (c) => c.repoId === repo.id && c.issue === 7 && markerOf(c.body)?.kind === 'summary',
             )
             .map((c) => ({ id: c.id, body: c.body })),
+        deleteSummaries: () => {
+          const summarised = github.comments.filter(
+            (c) => c.repoId === repo.id && c.issue === 7 && markerOf(c.body)?.kind === 'summary',
+          );
+          for (const found of summarised) github.comments.splice(github.comments.indexOf(found), 1);
+        },
         setDraft: (draft) => github.updatePull(repo.id, 7, { draft }),
         decorateQueued: async () => void (await runDecorations(h, githubDeps(h))),
         answers: (threadId) =>
@@ -1849,24 +1866,27 @@ describe('the answer job (6I-4)', () => {
       });
 
       it.skipIf(provider === 'GitHub')(
-        'a GitLab command whose author the discussion does not show is refused, and no request is made for it: the rights fail closed',
+        'a GitLab command whose note was deleted from a discussion that a reply keeps ends the row skipped: thread_gone, with no rights asked for and nothing posted',
         async () => {
-          const { d, mr, sent, row } = await commanded('author-unknown', { end: FAILED });
+          const { d, mr, sent } = await commanded('note-gone-reply-stays', { end: FAILED });
           const before = await runOf(mr.analysisId);
-          // The row names a note the discussion does not hold, as if the note were not the one found.
-          await h.ctx.db
-            .update(reviewReplies)
-            .set({ noteId: sent.noteId + 7_000 })
-            .where(eq(reviewReplies.id, row.id));
+          // Someone replied to the command in its discussion, and then the command's note was
+          // deleted: the discussion is listed, with the reply and without the note.
+          mr.writeBeside(sent, 'Thanks, I will have a look.');
+          mr.deleteNote(sent.threadId!, sent.noteId);
           d.clearRequests();
           await answer();
-          expect(d.requests().filter((r) => RIGHTS_LOOKUP.test(r))).toEqual([]);
-          expect(await rowById(row.id)).toMatchObject({
-            status: 'done',
-            outcome: 'not_available',
-            answer: NOT_A_MEMBER,
+          expect(await commandRow(mr.branchId, sent.noteId)).toMatchObject({
+            status: 'skipped',
+            reason: 'thread_gone',
+            outcome: null,
+            answer: null,
+            finishedAt: expect.any(Date),
           });
           expect(await runOf(mr.analysisId)).toEqual(before);
+          expect(d.requests().filter((r) => RIGHTS_LOOKUP.test(r))).toEqual([]);
+          expect(d.requests().filter((r) => POST_OF_COMMAND.test(r))).toEqual([]);
+          expect(mr.commandAnswers()).toEqual([]);
         },
       );
 
@@ -1925,6 +1945,36 @@ describe('the answer job (6I-4)', () => {
         },
       );
 
+      it.skipIf(provider === 'GitHub')(
+        'a members answer of GitLab that does not parse gives no rights: the command is refused, with one line that holds no text of the answer',
+        async () => {
+          const { mr, sent, row } = await commanded('odd-membership', { end: FAILED });
+          const before = await runOf(mr.analysisId);
+          gitlab.inject('GET', /\/members\/all\/\d+$/, { status: 200, body: { id: 5 } });
+          const warned: unknown[][] = [];
+          const logger = {
+            info: () => undefined,
+            warn: (...args: unknown[]) => void warned.push(args),
+            error: () => undefined,
+          };
+          await answer({ logger });
+          expect(mr.commandAnswers().map((a) => a.body)).toEqual([
+            commandNote(row.id, NOT_A_MEMBER),
+          ]);
+          expect(await commandRow(mr.branchId, sent.noteId)).toMatchObject({
+            status: 'done',
+            outcome: 'not_available',
+          });
+          expect(await runOf(mr.analysisId)).toEqual(before);
+          expect(warned.filter(([, message]) => String(message).includes('membership'))).toEqual([
+            [
+              { replyId: row.id },
+              'GitLab membership answer not understood; the command is refused',
+            ],
+          ]);
+        },
+      );
+
       it('a closed merge request ends the row skipped: closed, with no answer and no run', async () => {
         const { d, mr, sent } = await commanded('closed', { end: FAILED });
         const before = await runOf(mr.analysisId);
@@ -1941,6 +1991,42 @@ describe('the answer job (6I-4)', () => {
         expect(mr.commandAnswers()).toEqual([]);
         expect(d.requests().filter((r) => POST_OF_COMMAND.test(r))).toEqual([]);
         expect(await runOf(mr.analysisId)).toEqual(before);
+      });
+
+      it('a row that has its answer note ends done with its outcome and makes no request, whatever became of the merge request since', async () => {
+        const { d, mr, sent, row } = await commanded('answered', { end: FAILED });
+        await answer();
+        const answered = await commandRow(mr.branchId, sent.noteId);
+        expect(answered).toMatchObject({
+          status: 'done',
+          outcome: 'review_requested',
+          answerNoteId: expect.any(Number),
+        });
+        const run = await runOf(mr.analysisId);
+        // A job that was cut once it had recorded the answer note, before it ended the row: the row
+        // is queued again, with a job; and the merge request has been closed since.
+        await h.ctx.db
+          .update(reviewReplies)
+          .set({ status: 'queued', finishedAt: null })
+          .where(eq(reviewReplies.id, row.id));
+        await enqueue(h.ctx.db, {
+          queue: AI_REPLY_QUEUE,
+          payload: { kind: 'answer', replyId: row.id },
+          concurrencyKey: replyKey(mr.branchId),
+          maxAttempts: 2,
+        });
+        mr.close();
+        d.clearRequests();
+        expect(await answer()).toBe(1);
+        expect(d.requests()).toEqual([]);
+        expect(await commandRow(mr.branchId, sent.noteId)).toMatchObject({
+          status: 'done',
+          outcome: 'review_requested',
+          reason: null,
+          answerNoteId: answered.answerNoteId,
+        });
+        expect(mr.commandAnswers()).toHaveLength(1);
+        expect(await runOf(mr.analysisId)).toEqual(run);
       });
 
       it('a command whose note was deleted ends the row skipped: thread_gone, with no rights asked for, no run made and no answer posted', async () => {
@@ -2159,6 +2245,26 @@ describe('the answer job (6I-4)', () => {
         // The answer is left as it was.
         expect(mr.commandAnswers()).toEqual(answered);
         expect(await queuedDecorations(mr.analysisId)).toEqual([]);
+      });
+
+      it('a decoration that finds no summary posts one, and does not take the command’s answer for it', async () => {
+        const { mr } = await commanded('summary-lost', { end: FAILED });
+        const [lost] = mr.summaries();
+        expect(await answer()).toBe(1);
+        const answered = mr.commandAnswers();
+        expect(answered).toHaveLength(1);
+        // Qualor's summary is deleted before the decoration runs: the answer is the only comment
+        // that has a marker of Qualor's.
+        mr.deleteSummaries();
+        expect(mr.summaries()).toEqual([]);
+        expect(await queuedDecorations(mr.analysisId)).toHaveLength(1);
+        await mr.decorateQueued();
+        // The answer is left as it was, and one new summary is posted.
+        expect(mr.commandAnswers()).toEqual(answered);
+        const [posted, ...others] = mr.summaries();
+        expect(others).toEqual([]);
+        expect(posted!.body).toContain('AI review in progress…');
+        expect(posted!.id).not.toBe(lost!.id);
       });
     });
 
@@ -2771,6 +2877,36 @@ describe('the answer job (6I-4)', () => {
           [
             { replyId: odd.row.id },
             'GitHub permission answer not understood; the reply changes no status',
+          ],
+        ]);
+      },
+    );
+
+    it.skipIf(provider === 'GitHub')(
+      'a members answer of GitLab that does not parse gives no rights: the round is answered and no status is changed, with one line that holds no text of the answer',
+      async () => {
+        const odd = await replied('odd-membership');
+        gitlab.inject('GET', /\/members\/all\/\d+$/, { status: 200, body: { id: 5 } });
+        const warned: unknown[][] = [];
+        const logger = {
+          info: () => undefined,
+          warn: (...args: unknown[]) => void warned.push(args),
+          error: () => undefined,
+        };
+        const calls = llm.requests.length;
+        llm.say(WONT_FIX, KEEP);
+        await answer({ logger });
+        expect(systemOf(callsSince(calls)[0]!)).toContain(MEMBERS_ONLY);
+        expect((await issueById(odd.issueId)).status).toBe('open');
+        expect(await rowById(odd.row.id)).toMatchObject({
+          status: 'done',
+          outcome: 'answered',
+          verdict: 'keep',
+        });
+        expect(warned.filter(([, message]) => String(message).includes('membership'))).toEqual([
+          [
+            { replyId: odd.row.id },
+            'GitLab membership answer not understood; the reply changes no status',
           ],
         ]);
       },

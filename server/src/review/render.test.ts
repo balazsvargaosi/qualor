@@ -77,7 +77,7 @@ describe('the AI review section', () => {
       snapshot_rejected:
         'AI review did not run: the server refused the repository snapshot of this commit.',
       draft:
-        'AI review is skipped while this merge request is a draft; the next pipeline after it is ready reviews it.',
+        'AI review is skipped while this merge request is a draft; the next pipeline after it is ready reviews it, and a `qualor review` note reviews it now.',
       closed: 'AI review did not run because this merge request is merged or closed.',
       inactive: 'AI review is switched off for this project.',
       empty_diff: 'AI review found nothing to review in the changed files.',
@@ -127,7 +127,7 @@ describe('the AI review section', () => {
     const skipped = (reason: 'draft' | 'closed') =>
       section({ kind: 'skipped', reason, detail: null }, 'github')[2];
     expect(skipped('draft')).toBe(
-      'AI review is skipped while this pull request is a draft; the next workflow run after it is ready reviews it.',
+      'AI review is skipped while this pull request is a draft; the next workflow run after it is ready reviews it, and a `qualor review` comment reviews it now.',
     );
     expect(skipped('closed')).toBe(
       'AI review did not run because this pull request is merged or closed.',

@@ -124,10 +124,12 @@ type Provider = 'gitlab' | 'github';
 interface Words {
   request: string;
   run: string;
+  /** What a person's note in the request is called: the note that gives a command. */
+  note: string;
 }
 const WORDS: Record<Provider, Words> = {
-  gitlab: { request: 'merge request', run: 'pipeline' },
-  github: { request: 'pull request', run: 'workflow run' },
+  gitlab: { request: 'merge request', run: 'pipeline', note: 'note' },
+  github: { request: 'pull request', run: 'workflow run', note: 'comment' },
 };
 
 const HEADING = '#### AI review';
@@ -140,7 +142,7 @@ const SKIPPED: Record<ReviewSkipReason, (words: Words) => string> = {
   snapshot_rejected: () =>
     'AI review did not run: the server refused the repository snapshot of this commit.',
   draft: (words) =>
-    `AI review is skipped while this ${words.request} is a draft; the next ${words.run} after it is ready reviews it.`,
+    `AI review is skipped while this ${words.request} is a draft; the next ${words.run} after it is ready reviews it, and a \`qualor review\` ${words.note} reviews it now.`,
   closed: (words) => `AI review did not run because this ${words.request} is merged or closed.`,
   inactive: () => 'AI review is switched off for this project.',
   empty_diff: () => 'AI review found nothing to review in the changed files.',

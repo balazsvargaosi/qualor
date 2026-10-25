@@ -56,14 +56,23 @@ function githubMayTriage(found: { permission: string; roleName: string | null } 
  * Whether the GitLab user may change a finding's status through a reply, or ask for a review
  * through a command: a membership in force (`memberAccessLevel`: an active user, in an active
  * membership that has not ended) of Developer or more. Nobody else may: no member, a Reporter, a
- * Guest.
+ * Guest. An answer of GitLab's that does not parse is no membership either: `unparsed` says so in
+ * one line without its text, so that one author's odd answer never fails the job.
  */
 async function gitlabMayTriage(
   client: GitLabClient,
   ref: string,
   userId: number,
+  unparsed: () => void,
 ): Promise<boolean> {
-  const level = await client.memberAccessLevel(ref, userId);
+  let level: number | null;
+  try {
+    level = await client.memberAccessLevel(ref, userId);
+  } catch (err) {
+    if (!(err instanceof ScmError) || err.kind !== 'bad_answer') throw err;
+    unparsed();
+    return false;
+  }
   return level !== null && level >= GITLAB_DEVELOPER;
 }
 
@@ -137,16 +146,27 @@ const marksIssue = (body: string, issueId: string): boolean => {
   return marker?.kind === 'issue' && marker.issueId === issueId;
 };
 
-/** The thread on GitLab: the merge request's discussion of the row. */
+/**
+ * The thread on GitLab: the merge request's discussion of the row. `logger` says when a
+ * membership GitLab answered is not understood.
+ */
 export function gitlabSide(
   connectionId: string,
   client: GitLabClient,
   ref: string,
   iid: string,
   row: ReplyInThread,
+  logger: Pick<WorkerLogger, 'warn'>,
 ): ThreadSide {
   /** The GitLab user of each person's note the last read found. */
   const authorOf = new Map<number, number>();
+  const mayTriage = (userId: number) =>
+    gitlabMayTriage(client, ref, userId, () =>
+      logger.warn(
+        { replyId: row.id },
+        'GitLab membership answer not understood; the reply changes no status',
+      ),
+    );
   return {
     connectionId,
     async read() {
@@ -181,7 +201,7 @@ export function gitlabSide(
       if (authors.length > MAX_AUTHORS_LOOKED_UP) return false;
       for (const userId of authors) {
         if (userId === undefined) return false;
-        if (!(await gitlabMayTriage(client, ref, userId))) return false;
+        if (!(await mayTriage(userId))) return false;
       }
       return true;
     },
@@ -271,9 +291,10 @@ export interface CommandSide {
   /**
    * What the provider holds of the answer: the id of the note of Qualor's whose first line names
    * the row, posted already (a post whose outcome was lost), or null when there is none or the
-   * listing was cut at its page bound before it. Null as a whole when the command's note is gone
-   * (its discussion on GitLab, its comment on GitHub) from a listing read whole. It also finds who
-   * wrote the command's note, for `mayReview`; whoever an earlier read found is forgotten first.
+   * listing was cut at its page bound before it. Null as a whole when the command's note is gone:
+   * on GitLab its discussion missing from a listing read whole, or listed without it; on GitHub its
+   * comment missing from a listing read whole. It also finds who wrote the command's note, for
+   * `mayReview`; whoever an earlier read found is forgotten first.
    */
   read(): Promise<{ answered: number | null } | null>;
   /**
@@ -292,6 +313,9 @@ export interface CommandSide {
  * The answer to a command on GitLab: a reply in the discussion the command's note opened
  * (`threadId`), which the merge request's listing finds. A discussion missing from a listing read
  * whole is gone; from one cut at its page bound it may only be unseen, and the post then finds out.
+ * A discussion is listed with all its notes: one listed without the command's note has lost it,
+ * though a reply stays in it, and the command is gone. `logger` says when a membership GitLab
+ * answered is not understood.
  */
 export function gitlabCommandSide(
   connectionId: string,
@@ -300,6 +324,7 @@ export function gitlabCommandSide(
   iid: string,
   row: ReplyRow,
   threadId: string,
+  logger: Pick<WorkerLogger, 'warn'>,
 ): CommandSide {
   const marker = replyMarker(row.id);
   /** The GitLab user who wrote the command's note, as the last read found it: none until it did. */
@@ -312,13 +337,23 @@ export function gitlabCommandSide(
       const listed = await client.discussions(ref, iid, MAX_DISCUSSION_PAGES);
       const discussion = listed.items.find((d) => d.id === threadId);
       if (discussion === undefined) return listed.complete ? null : { answered: null };
-      author = discussion.notes.find((note) => note.id === row.noteId)?.author.id;
+      const command = discussion.notes.find((note) => note.id === row.noteId);
+      if (command === undefined) return null;
+      author = command.author.id;
       const answer = discussion.notes.find(
         (note) => !note.system && note.author.id === me.id && firstLineOf(note.body) === marker,
       );
       return { answered: answer?.id ?? null };
     },
-    mayReview: async () => author !== undefined && (await gitlabMayTriage(client, ref, author)),
+    async mayReview() {
+      if (author === undefined) return false;
+      return gitlabMayTriage(client, ref, author, () =>
+        logger.warn(
+          { replyId: row.id },
+          'GitLab membership answer not understood; the command is refused',
+        ),
+      );
+    },
     post: async (body) => (await client.replyToDiscussion(ref, iid, threadId, body)).id,
   };
 }

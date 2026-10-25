@@ -1,14 +1,20 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { GitHubClient, GitHubComment } from '../scm/github/client';
 import type { GitLabClient, GitLabDiscussion } from '../scm/gitlab/client';
+import { issueMarker } from '../scm/markdown';
 import { ScmError } from '../scm/provider';
 import type { ReplyRow } from './replies';
-import { githubCommandSide, gitlabCommandSide } from './reply-sides';
+import {
+  githubCommandSide,
+  gitlabCommandSide,
+  gitlabSide,
+  type ReplyInThread,
+} from './reply-sides';
 
 /*
- * Whether the author of a command's note has the rights `qualor review` needs (6I-4): the same
- * rights a reply needs to change a finding's status, read through the same functions, and failing
- * closed. The sides are driven here by clients that answer from a list, so that every way the
+ * Whether the author of a command's note has the rights `qualor review` needs, and whether the
+ * authors of a reply may change a finding's status (6I-4): the same rights, read through the same
+ * functions, and failing closed. The sides are driven here by clients that answer from a list, so that every way the
  * author may be unknown is reached; the answer job's tests (reply-job.db.test.ts) run the whole
  * flow through the provider fakes.
  */
@@ -21,6 +27,10 @@ const ROW = {
 } as ReplyRow;
 const REF = '77';
 const REPO = { owner: 'acme', repo: 'shop' };
+
+/** What the sides say when an answer of the provider's is not understood. */
+const warnings: unknown[][] = [];
+const logger = { warn: (...args: unknown[]) => void warnings.push(args) };
 
 describe('whether the author of a command on GitLab has the rights `qualor review` needs', () => {
   /** The command's discussion as GitLab lists it: the person's note, written by user `author`. */
@@ -40,11 +50,15 @@ describe('whether the author of a command on GitLab has the rights `qualor revie
   /** A client whose listings are `listings`, one for each read, and whose members have `levels`. */
   const client = (
     listings: { items: GitLabDiscussion[]; complete: boolean }[],
-    levels: Record<number, number | null> = {},
+    levels: Record<number, number | null | Error> = {},
   ) => {
     const discussions = vi.fn();
     for (const listing of listings) discussions.mockResolvedValueOnce(listing);
-    const memberAccessLevel = vi.fn(async (_ref: string, userId: number) => levels[userId] ?? null);
+    const memberAccessLevel = vi.fn(async (_ref: string, userId: number) => {
+      const found = levels[userId] ?? null;
+      if (found instanceof Error) throw found;
+      return found;
+    });
     const stub = {
       currentUser: async () => ({ id: 1, username: 'qualor' }),
       discussions,
@@ -52,7 +66,8 @@ describe('whether the author of a command on GitLab has the rights `qualor revie
     } as unknown as GitLabClient;
     return { stub, memberAccessLevel };
   };
-  const side = (stub: GitLabClient) => gitlabCommandSide('c1', stub, REF, '12', ROW, 'abc123');
+  const side = (stub: GitLabClient) =>
+    gitlabCommandSide('c1', stub, REF, '12', ROW, 'abc123', logger);
 
   it.each([
     [30, true],
@@ -74,22 +89,35 @@ describe('whether the author of a command on GitLab has the rights `qualor revie
     },
   );
 
-  it('an author the discussion does not show has no rights, and none is asked for', async () => {
-    // The discussion holds another note, and is missing from a listing cut at its page bound.
-    for (const listing of [
-      { items: [discussion(5, NOTE + 1)], complete: true },
-      { items: [], complete: false },
-    ]) {
-      const { stub, memberAccessLevel } = client([listing], { 5: 30 });
+  it('a command whose note its discussion no longer holds is gone, though a reply stays in it', async () => {
+    // A discussion is listed with all its notes: this one holds another person's note and not the
+    // command's, which was deleted. A listing cut at its page bound lists it whole all the same.
+    for (const complete of [true, false]) {
+      const { stub, memberAccessLevel } = client([{ items: [discussion(5, NOTE + 1)], complete }], {
+        5: 30,
+      });
       const commandSide = side(stub);
-      await commandSide.read();
+      expect(await commandSide.read()).toBeNull();
       expect(await commandSide.mayReview()).toBe(false);
       expect(memberAccessLevel).not.toHaveBeenCalled();
     }
+  });
+
+  it('a discussion the listing does not show is gone when the listing is whole; its author is unknown, with no request, when it is cut', async () => {
+    const whole = client([{ items: [], complete: true }], { 5: 30 });
+    const wholeSide = side(whole.stub);
+    expect(await wholeSide.read()).toBeNull();
+    expect(await wholeSide.mayReview()).toBe(false);
+    const cut = client([{ items: [], complete: false }], { 5: 30 });
+    const cutSide = side(cut.stub);
+    expect(await cutSide.read()).toEqual({ answered: null });
+    expect(await cutSide.mayReview()).toBe(false);
     // No read at all: nobody is known.
-    const { stub, memberAccessLevel } = client([], { 5: 30 });
-    expect(await side(stub).mayReview()).toBe(false);
-    expect(memberAccessLevel).not.toHaveBeenCalled();
+    const unread = client([], { 5: 30 });
+    expect(await side(unread.stub).mayReview()).toBe(false);
+    for (const { memberAccessLevel } of [whole, cut, unread]) {
+      expect(memberAccessLevel).not.toHaveBeenCalled();
+    }
   });
 
   it('is never the author of an earlier read: what a read does not find it does not know', async () => {
@@ -112,6 +140,96 @@ describe('whether the author of a command on GitLab has the rights `qualor revie
       expect(await commandSide.mayReview()).toBe(false);
       expect(memberAccessLevel).toHaveBeenCalledTimes(1);
     }
+  });
+});
+
+describe('a membership answer of GitLab that does not parse', () => {
+  const discussion: GitLabDiscussion = {
+    id: 'abc123',
+    individual_note: true,
+    notes: [
+      {
+        id: NOTE,
+        body: 'qualor review',
+        author: { id: 5, username: 'user5' },
+        created_at: '2026-10-25T10:00:00Z',
+        system: false,
+      },
+    ],
+  };
+  const odd = () => new ScmError('bad_answer', 'GitLab answered something unexpected');
+  const down = () => new ScmError('transient', 'GitLab could not be reached');
+  const stubOf = (failure: Error) =>
+    ({
+      currentUser: async () => ({ id: 1, username: 'qualor' }),
+      discussions: async () => ({ items: [discussion], complete: true }),
+      memberAccessLevel: async () => {
+        throw failure;
+      },
+    }) as unknown as GitLabClient;
+
+  it('gives the author of a command no rights, said in one line without its text; any other error is thrown', async () => {
+    warnings.length = 0;
+    const oddSide = gitlabCommandSide('c1', stubOf(odd()), REF, '12', ROW, 'abc123', logger);
+    await oddSide.read();
+    expect(await oddSide.mayReview()).toBe(false);
+    expect(warnings).toEqual([
+      [{ replyId: ROW.id }, 'GitLab membership answer not understood; the command is refused'],
+    ]);
+    const downSide = gitlabCommandSide('c1', stubOf(down()), REF, '12', ROW, 'abc123', logger);
+    await downSide.read();
+    await expect(downSide.mayReview()).rejects.toThrow('GitLab could not be reached');
+  });
+
+  describe('in the thread of a reply', () => {
+    const ISSUE = '01920000-0000-7000-8000-0000000000aa';
+    const REPLY = {
+      ...ROW,
+      threadId: 'abc123',
+      issueId: ISSUE,
+    } as ReplyInThread;
+    /** Qualor's thread (user 1) with a reply by user 5, as GitLab lists it. */
+    const thread: GitLabDiscussion = {
+      id: 'abc123',
+      individual_note: false,
+      notes: [
+        {
+          id: 40,
+          body: `${issueMarker(ISSUE)}\nA finding.`,
+          author: { id: 1, username: 'qualor' },
+          created_at: '2026-10-25T09:00:00Z',
+          system: false,
+        },
+        {
+          id: NOTE,
+          body: 'We accept this.',
+          author: { id: 5, username: 'user5' },
+          created_at: '2026-10-25T10:00:00Z',
+          system: false,
+        },
+      ],
+    };
+    const threadStub = (failure: Error) =>
+      ({
+        ...stubOf(failure),
+        discussions: async () => ({ items: [thread], complete: true }),
+      }) as unknown as GitLabClient;
+
+    it('gives the authors of a round no rights, said in one line without its text; any other error is thrown', async () => {
+      warnings.length = 0;
+      const oddSide = gitlabSide('c1', threadStub(odd()), REF, '12', REPLY, logger);
+      await oddSide.read();
+      expect(await oddSide.mayChangeStatus([NOTE])).toBe(false);
+      expect(warnings).toEqual([
+        [
+          { replyId: ROW.id },
+          'GitLab membership answer not understood; the reply changes no status',
+        ],
+      ]);
+      const downSide = gitlabSide('c1', threadStub(down()), REF, '12', REPLY, logger);
+      await downSide.read();
+      await expect(downSide.mayChangeStatus([NOTE])).rejects.toThrow('GitLab could not be reached');
+    });
   });
 });
 
@@ -144,8 +262,6 @@ describe('whether the author of a command on GitHub has the rights `qualor revie
     } as unknown as GitHubClient;
     return { stub, repositoryPermission };
   };
-  const warnings: unknown[][] = [];
-  const logger = { warn: (...args: unknown[]) => void warnings.push(args) };
   const side = (stub: GitHubClient) => githubCommandSide('c1', stub, REPO, '7', ROW, logger);
 
   it.each([

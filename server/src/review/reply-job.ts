@@ -548,7 +548,14 @@ class ReplyJob extends JobSteps {
     }
     const found = gitlabClientFor(connection, this.deps.scm);
     if ('problem' in found || !GITLAB_MR_IID.test(branch.name)) return 'unusable';
-    return gitlabSide(connection.id, found.client, project.scmProjectRef, branch.name, row);
+    return gitlabSide(
+      connection.id,
+      found.client,
+      project.scmProjectRef,
+      branch.name,
+      row,
+      this.deps.logger,
+    );
   }
 
   /**
