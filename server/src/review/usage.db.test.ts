@@ -552,6 +552,25 @@ const port = 8080;
       },
     );
 
+    it('tries a call again whose Anthropic stream fails with api_error, as it tries one that failed with a 500 before the stream', async () => {
+      for (const failed of [
+        { ...textTurn('anthropic', 'half', [1, 1]), stream: { error: { type: 'api_error' } } },
+        failure('anthropic', 500),
+      ]) {
+        await t.db.delete(llmRequests);
+        const { result } = await converseThrough(
+          'anthropic',
+          [failed, textTurn('anthropic', '{"findings":[]}', [10, 5])],
+          settingsFor('anthropic'),
+        );
+        expect(result).toMatchObject({ kind: 'answer', turns: 1 });
+        expect((await rows()).map((row) => [row.status, row.errorCode])).toEqual([
+          ['failed', 'PROVIDER_UNAVAILABLE'],
+          ['succeeded', null],
+        ]);
+      }
+    });
+
     it('has no cost without prices', async () => {
       await converseThrough('openai', [textTurn('openai', 'done', [10, 5])], settingsFor('openai'));
       expect(first(await rows())).toMatchObject({

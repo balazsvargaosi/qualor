@@ -154,6 +154,13 @@ function stopBlock(parts: BlockParts): void {
 }
 
 /**
+ * The error types of the Messages API that say the server failed, in a stream as before it: it is
+ * overloaded (HTTP 529 before the stream), or it failed inside (`api_error`, HTTP 500). Such an
+ * error is unavailable, and tried again as the same status before the stream is.
+ */
+const SERVER_FAILURES: ReadonlySet<unknown> = new Set(['overloaded_error', 'api_error']);
+
+/**
  * Puts the events of a streamed Messages API answer together into the message that is not
  * streamed, for `readMessage` to read: every kind of block into the same content list, in the order
  * of its `index`, so that the replay of the turn is the same.
@@ -165,8 +172,8 @@ function stopBlock(parts: BlockParts): void {
  *   know, which is kept as it came;
  * - `message_delta` gives the stop reason, and the usage so far, which counts the output;
  * - `message_stop` ends the stream: one that ends before it is unavailable;
- * - `ping` is nothing, and `error` is the provider's error: unavailable when it is overloaded, else
- *   its refusal.
+ * - `ping` is nothing, and `error` is the provider's error: unavailable when the server failed
+ *   (`SERVER_FAILURES`), else its refusal.
  */
 async function assembleMessage(events: AsyncIterable<SseEvent>): Promise<unknown> {
   let message: Record<string, unknown> | null = null;
@@ -175,7 +182,7 @@ async function assembleMessage(events: AsyncIterable<SseEvent>): Promise<unknown
   for await (const event of events) {
     const { type, data } = eventOf(event);
     if (type === 'error' || event.event === 'error') {
-      throw errorInStream(asRecord(data?.error)?.type === 'overloaded_error');
+      throw errorInStream(SERVER_FAILURES.has(asRecord(data?.error)?.type));
     }
     if (type === 'message_stop') {
       done = true;

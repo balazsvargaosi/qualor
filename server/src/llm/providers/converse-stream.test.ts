@@ -357,6 +357,8 @@ describe('converse: a streamed answer is the answer that is not streamed (R35)',
       ['chat', 'server_error', 'unavailable'],
       ['chat', 'invalid_request_error', 'rejected'],
       ['anthropic', 'overloaded_error', 'unavailable'],
+      // The type of the API's own failure, as an HTTP 500 before the stream is.
+      ['anthropic', 'api_error', 'unavailable'],
       ['anthropic', 'invalid_request_error', 'rejected'],
       ['responses', 'server_error', 'unavailable'],
       ['responses', 'invalid_prompt', 'rejected'],
