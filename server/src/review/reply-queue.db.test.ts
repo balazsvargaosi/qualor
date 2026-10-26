@@ -39,6 +39,7 @@ import {
   AI_REPLY_QUEUE,
   MAX_QUEUED_COMMANDS,
   MAX_QUEUED_ROUNDS,
+  MAX_ROUNDS_PER_THREAD_PER_DAY,
   queueGitHubAnswers,
   queueGitLabAnswers,
   queueReplies,
@@ -270,6 +271,36 @@ describe('the queue of the answers (6I-4)', () => {
     expect(await pass(branch, { rounds: [round(10_040)] })).toBe(1);
     expect((await queuedAnswers(t.db, branch)).jobs).toHaveLength(3);
   });
+
+  it.each(['gitlab', 'github'] as const)(
+    `queues at most ${MAX_ROUNDS_PER_THREAD_PER_DAY} rounds of one thread in a UTC day (%s): the next waits for a later day, and another thread is not held back`,
+    async (provider) => {
+      expect(MAX_ROUNDS_PER_THREAD_PER_DAY).toBe(5);
+      const branch = await newBranch(`busy-thread-${provider}`);
+      const [busy, quiet] =
+        provider === 'github' ? ['3000000001', '3000000002'] : [THREAD, OTHER_THREAD];
+      // Five rounds of the thread today, whatever became of them.
+      for (let n = 0; n < MAX_ROUNDS_PER_THREAD_PER_DAY; n += 1) {
+        const newest = 40_000 + n * 10;
+        expect(
+          await pass(branch, { rounds: [round(newest, { threadId: busy })] }, { provider }),
+        ).toBe(1);
+      }
+      // A sixth round of the thread is not queued today, and takes no place of the cap; a round of
+      // another thread is.
+      const sixth = round(40_100, { threadId: busy, noteIds: [40_060, 40_100] });
+      expect(
+        await pass(branch, { rounds: [sixth, round(40_101, { threadId: quiet })] }, { provider }),
+      ).toBe(1);
+      expect(await notesWhere(branch, 'reply', 'queued')).toEqual([
+        40_000, 40_010, 40_020, 40_030, 40_040, 40_101,
+      ]);
+      // On a later UTC day the round is queued, with the notes written meanwhile.
+      const tomorrow = new Date(Date.now() + 86_400_000);
+      expect(await pass(branch, { rounds: [sixth] }, { provider, now: tomorrow })).toBe(1);
+      expect(await notesWhere(branch, 'reply', 'queued')).toContain(40_100);
+    },
+  );
 
   it('queues the rounds of a GitHub pull request by the id of the first comment of each thread', async () => {
     const branch = await newBranch('queue-github-rounds');

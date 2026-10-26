@@ -1,4 +1,18 @@
-import { and, asc, eq, gt, gte, inArray, lt, not, notExists, or, sql, type SQL } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  count,
+  eq,
+  gt,
+  gte,
+  inArray,
+  lt,
+  not,
+  notExists,
+  or,
+  sql,
+  type SQL,
+} from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { z } from 'zod';
 import type { Db, Executor } from '../db/client';
@@ -126,6 +140,13 @@ async function lockScanQueue(db: Executor, branchId: string): Promise<void> {
 export const MAX_QUEUED_ROUNDS = 50;
 /** The most commands one pass queues, as {@link MAX_QUEUED_ROUNDS} bounds the rounds. */
 export const MAX_QUEUED_COMMANDS = 20;
+
+/**
+ * The most rounds of one thread the ledger takes in a UTC day: past them, a round of the thread is
+ * not queued until the next day, when its notes are found and queued as ever. On top of the day's
+ * budget, it bounds a thread where a reply bot answers Qualor, or a noisy public one.
+ */
+export const MAX_ROUNDS_PER_THREAD_PER_DAY = 5;
 
 /** A note older than this is never answered, whenever the consent was given: old threads are left alone. */
 export const REPLY_MAX_AGE_DAYS = 30;
@@ -377,23 +398,57 @@ async function heldNotes(
 }
 
 /**
+ * The threads among `rounds` that have had {@link MAX_ROUNDS_PER_THREAD_PER_DAY} rounds since
+ * `dayStart` (a row of the ledger each, whatever became of it), by one read of the threads' index.
+ */
+async function busyThreads(
+  db: Executor,
+  ctx: ReplyContext,
+  rounds: readonly Round[],
+  dayStart: Date,
+): Promise<Set<string>> {
+  if (rounds.length === 0) return new Set();
+  const rows = await db
+    .select({ threadId: reviewReplies.threadId, rounds: count() })
+    .from(reviewReplies)
+    .where(
+      and(
+        eq(reviewReplies.branchId, ctx.branchId),
+        inArray(reviewReplies.threadId, [...new Set(rounds.map((round) => round.threadId))]),
+        eq(reviewReplies.kind, 'reply'),
+        gte(reviewReplies.createdAt, dayStart),
+      ),
+    )
+    .groupBy(reviewReplies.threadId);
+  return new Set(
+    rows.flatMap((row) =>
+      row.threadId !== null && row.rounds >= MAX_ROUNDS_PER_THREAD_PER_DAY ? [row.threadId] : [],
+    ),
+  );
+}
+
+/**
  * The rounds and commands of `found` that are the project's to queue and new to its ledger. The
  * ones detection handed over again are dropped before the caps count anything: detection has no
  * ledger bound for a command, and a round the ledger holds was queued by a pass that ran at the
- * same time.
+ * same time. So is a round of a thread that has had its rounds of the day (`busyThreads`): its
+ * notes stay unqueued, so a pass of a later day finds them again.
  */
 async function newNotes(
   db: Executor,
   ctx: ReplyContext,
   found: { rounds: readonly Round[]; commands: readonly CommandNote[] },
+  dayStart: Date,
 ): Promise<{ rounds: Round[]; commands: CommandNote[] }> {
   const rounds = await ownRounds(db, ctx, found.rounds);
   const held = await heldNotes(db, ctx, {
     rounds: rounds.map((round) => round.newest),
     commands: found.commands.map((note) => note.noteId),
   });
+  const fresh = rounds.filter((round) => !held.rounds.has(round.newest));
+  const busy = await busyThreads(db, ctx, fresh, dayStart);
   return {
-    rounds: rounds.filter((round) => !held.rounds.has(round.newest)),
+    rounds: fresh.filter((round) => !busy.has(round.threadId)),
     commands: found.commands.filter((note) => !held.commands.has(note.noteId)),
   };
 }
@@ -556,12 +611,13 @@ export async function queueReplies(
   found: { rounds: readonly Round[]; commands: readonly CommandNote[] },
   now: Date = new Date(),
 ): Promise<number> {
+  const dayStart = utcDayStart(now);
   return db.transaction(async (tx) => {
-    const fresh = await newNotes(tx, ctx, found);
+    const fresh = await newNotes(tx, ctx, found, dayStart);
     const rounds = await insertRounds(tx, ctx, fresh.rounds);
     const commands = await insertCommands(tx, ctx, fresh.commands);
     const again = await requeueBudgetSkips(tx, ctx.branchId, {
-      dayStart: utcDayStart(now),
+      dayStart,
       since: window.since,
       rounds: MAX_QUEUED_ROUNDS - rounds.length,
       commands: MAX_QUEUED_COMMANDS - commands.length,

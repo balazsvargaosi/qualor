@@ -53,7 +53,8 @@ All notable changes to Qualor are listed here, newest first. The format follows
   `qualor review` (from a project member) reviews the merge request's newest commit, a draft
   included, once for each analysis; `qualor fix` and `qualor stop` are reserved and answer that
   auto-fix is not switched on. The answers draw on the budgets of AI review, at most 60 000 tokens
-  for each reply, and Qualor keeps one record of each reply or command for 90 days. See
+  for each reply and 5 rounds of one thread a UTC day, and Qualor keeps one record of each reply or
+  command for 90 days. See
   [the guide](docs/guide/ai-review.md#replies-and-commands).
 - Webhooks for answers at once. A GitLab connection takes a webhook secret (**Settings → GitLab**;
   `webhookSecret` when a connection is created or changed, `gitlab.webhookUrl` in its answer), and a

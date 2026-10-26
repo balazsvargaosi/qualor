@@ -394,7 +394,8 @@ Qualor answers a note when all of these hold:
 
 All the notes written in a thread since Qualor's last answer are one **round**, and Qualor answers a
 round once, reading every note in it. Two replies written close together usually get one answer,
-and a reply written while Qualor is answering is answered in a round of its own.
+and a reply written while Qualor is answering is answered in a round of its own. A thread gets at
+most 5 rounds in a UTC day ([What replies cost](#what-replies-cost-and-who-can-ask)).
 
 The answer is plain prose in the language of the person's last note, up to 1 200 characters, under
 the heading **AI review** · reply. A thank-you or an acknowledgement may get no answer at all. The
@@ -533,7 +534,11 @@ repository that is anyone with an account. Several limits bound what they can sp
 - `qualor review` costs one review, but only a member can ask for it, an analysis has one review
   however often it is asked for, and the day's budgets still apply;
 - Qualor queues at most 50 replies and 20 commands of a merge request at a time. The rest wait for
-  the next time it looks.
+  the next time it looks;
+- Qualor answers at most 5 rounds of one thread in a UTC day. A reply in the thread after that is
+  answered on a later day, with the notes written meanwhile, when Qualor next looks at the merge
+  request's comments. This keeps a reply bot that answers Qualor, or a noisy public thread, from
+  spending the day's budget.
 
 ### What Qualor keeps
 
@@ -963,6 +968,7 @@ note with no such line was never taken up:
 | A command gets no answer | The first line of the note must start with `qualor review`, `qualor fix` or `qualor stop`, in a top-level note (on GitHub a comment on the pull request's page, not a review comment). AI review must be switched on for the project: on a project without it Qualor says nothing. The merge request needs an analysis by Qualor. Without a webhook the answer comes at the next analysis |
 | On GitHub, `qualor review` is answered only at the next analysis | GitHub does not send the `issue_comment` event: the App lacks the Issues permission or the event, or the owner of an installation has not accepted the new permission ([GitHub](./github.md#update-an-app-you-created-before)) |
 | On GitLab, replies and commands are answered only at the next analysis | there is no webhook on the project, its secret token differs (GitLab shows 401 under **Recent events**), **Comments** is not ticked, or GitLab cannot reach Qualor's address ([GitLab](./gitlab.md#answers-to-replies-and-commands-webhook)) |
+| A reply in a busy thread is answered only the next day | Qualor answers at most 5 rounds of one thread in a UTC day, so that a reply bot answering Qualor cannot keep a thread going. The next round is queued on a later UTC day, when Qualor next looks at the comments (a webhook delivery or an analysis), and reads every note written meanwhile |
 | A reply is answered, but the finding stays open | The person may not change a status ([Who may change a status](#who-may-change-a-status)), the thread is an analyzer's or its issue is no longer open, the reply states no decision of priority and no claim that the code bears out, or the merge request had no snapshot to read the code from, which a false positive needs |
 | A finding changed its status after a reply | A member wrote a decision of priority, or a claim that the code bore out. The issue's **History** has the comment that names the person, and a person can set the status back |
 
