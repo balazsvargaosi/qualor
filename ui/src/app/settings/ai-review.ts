@@ -168,6 +168,11 @@ export function pickerUnavailable(project: ItemOf<'/api/v0/projects'>): string |
     : null;
 }
 
+/** Why AI review cannot be switched on now: AI is not set up, or not allowed for the organisation. */
+export function aiUnavailableText(): string {
+  return $localize`:@@aiReview.aiDisabled:AI review needs AI set up on this server and allowed for this organization. An instance admin sets that up in Settings → AI provider.`;
+}
+
 /**
  * The page's own words for a refusal of the organisation route (409 AI_DISABLED, 422
  * PROJECT_NOT_IN_ORGANIZATION), or null for any other problem. The two consent refusals
@@ -176,9 +181,7 @@ export function pickerUnavailable(project: ItemOf<'/api/v0/projects'>): string |
  */
 export function aiReviewRefusal(err: unknown): string | null {
   if (!(err instanceof ApiError)) return null;
-  if (err.status === 409 && err.code === 'AI_DISABLED') {
-    return $localize`:@@aiReview.aiDisabled:AI review needs AI set up on this server and allowed for this organization. An instance admin sets that up in Settings → AI provider.`;
-  }
+  if (err.status === 409 && err.code === 'AI_DISABLED') return aiUnavailableText();
   if (err.status === 422 && err.code === 'PROJECT_NOT_IN_ORGANIZATION') {
     return $localize`:@@aiReview.foreignProject:A selected project belongs to another organization. Reload the page and select the projects again.`;
   }

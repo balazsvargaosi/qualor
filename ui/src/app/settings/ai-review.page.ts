@@ -43,6 +43,7 @@ import {
   type AiReviewProvider,
   type AiReviewScope,
   aiReviewRefusal,
+  aiUnavailableText,
   budgetFieldOfPath,
   budgetNumber,
   budgetRefusal,
@@ -762,7 +763,12 @@ export class AiReviewPage implements LeaveGuarded {
         if (generation !== this.generation) return;
         if (fresh?.available && fresh.provider) {
           this.askConsent(err.code === 'AI_REVIEW_PROVIDER_CHANGED');
+          return;
         }
+        // The dialog stays closed, and the page says why: AI went meanwhile, or the read failed
+        // (which `reread` said).
+        if (fresh !== null) this.error.set(aiUnavailableText());
+        this.heading().nativeElement.focus();
         return;
       }
       if (err.code === 'AI_DISABLED') {

@@ -619,6 +619,45 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
       expect(document.activeElement).toBe(root.querySelector('h2'));
     });
 
+    it('says why the dialog closed when the provider changed and AI went before the page read again', async () => {
+      const { server, fake } = setup();
+      // The provider changed under the dialog; by the time the page reads again, the
+      // organisation may no longer use AI.
+      server.on('PUT', ROUTE, () => {
+        fake.organizationEnabled = false;
+        return { status: 409, body: problem(409, 'AI_REVIEW_PROVIDER_CHANGED') };
+      });
+      const { fixture, root } = await render();
+      await act(fixture, root, 'Switch on AI review…');
+      await click(fixture, button(consentDialog(root), CONFIRM_A));
+      expect(server.requestsTo('GET', ROUTE)).toHaveLength(2);
+      expect(consentDialog(root).open).toBe(false);
+      expect(text(root.querySelector(':scope > p.alert-error[role="alert"]'))).toBe(
+        'AI review needs AI set up on this server and allowed for this organization. An instance admin sets that up in Settings → AI provider.',
+      );
+      expect(text(root.querySelector('.ai-unavailable h3'))).toBe('Default may not use AI yet.');
+      expect(document.activeElement).toBe(root.querySelector('h2'));
+    });
+
+    it('says why the dialog closed when the settings cannot be read again after a 409', async () => {
+      const { server, fake } = setup();
+      let reads = 0;
+      server.on('GET', ROUTE, () =>
+        ++reads === 1
+          ? { body: fake.answer(ORG_ID) }
+          : { status: 500, body: problem(500, 'INTERNAL') },
+      );
+      const { fixture, root } = await render();
+      await act(fixture, root, 'Switch on AI review…');
+      fake.changeProvider(B);
+      await click(fixture, button(consentDialog(root), CONFIRM_A));
+      expect(consentDialog(root).open).toBe(false);
+      expect(text(root.querySelector(':scope > p.alert-error[role="alert"]'))).toContain(
+        'The request failed (HTTP 500',
+      );
+      expect(document.activeElement).toBe(root.querySelector('h2'));
+    });
+
     describe('a provider with a model for each tier', () => {
       it('shows the notice that names all three, and acknowledges all three on Confirm', async () => {
         const { server, fake } = setup('orgAdmin', { provider: THREE });
