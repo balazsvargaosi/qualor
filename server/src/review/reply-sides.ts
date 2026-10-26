@@ -205,8 +205,11 @@ export interface ThreadSide {
   mayChangeStatus(noteIds: readonly number[]): Promise<boolean>;
   /** Posts `body` in the thread: answers the new note's id. */
   post(body: string): Promise<number>;
-  /** Resolves the thread: false when the provider no longer has it. */
-  resolve(): Promise<boolean>;
+  /**
+   * Resolves the thread: false when the provider no longer has it, `refused` when the provider
+   * does not let Qualor resolve it (a GitHub App without Contents: write), which leaves it open.
+   */
+  resolve(): Promise<boolean | 'refused'>;
 }
 
 /** What the provider says when it has no such thing: the thread is gone, however it says it. */
@@ -358,8 +361,11 @@ export function githubSide(
       return true;
     },
     post: async (body) => (await client.replyToReviewComment(number, firstId, body)).id,
-    resolve: async () =>
-      threadNode !== null && (await client.setThreadResolved(threadNode, true)) === 'done',
+    async resolve() {
+      if (threadNode === null) return false;
+      const result = await client.setThreadResolved(threadNode, true);
+      return result === 'refused' ? result : result === 'done';
+    },
   };
 }
 

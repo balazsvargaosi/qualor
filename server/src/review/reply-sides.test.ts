@@ -6,6 +6,7 @@ import { ScmError } from '../scm/provider';
 import type { ReplyRow } from './replies';
 import {
   githubCommandSide,
+  githubSide,
   gitlabCommandSide,
   gitlabSide,
   type ReplyInThread,
@@ -246,6 +247,65 @@ describe('a membership answer of GitLab that does not parse', () => {
       await downSide.read();
       await expect(downSide.mayChangeStatus([NOTE])).rejects.toThrow('GitLab could not be reached');
     });
+  });
+});
+
+describe('the resolution of a reply’s thread on GitHub', () => {
+  const ISSUE = '01920000-0000-7000-8000-0000000000aa';
+  const FIRST = 3_000_000_001;
+  const REPLY = { ...ROW, threadId: String(FIRST), issueId: ISSUE } as ReplyInThread;
+  /** A client that lists Qualor's thread of the issue, and answers its resolution with `answer`. */
+  const stub = (answer: 'done' | 'not_found' | 'refused') => {
+    const setThreadResolved = vi.fn(async () => answer);
+    const client = {
+      app: async () => ({ id: 1, slug: 'qualor' }),
+      useRepository: async () => ({}),
+      reviewComments: async () => ({
+        items: [
+          {
+            id: FIRST,
+            node_id: 'PRRC_first',
+            body: `${issueMarker(ISSUE)}\nA finding.`,
+            user: { login: 'qualor[bot]', type: 'Bot' },
+            created_at: '2026-10-25T09:00:00Z',
+          },
+        ],
+        complete: true,
+      }),
+      reviewThreads: async () => ({
+        items: [
+          {
+            id: 'PRRT_thread',
+            isResolved: false,
+            resolvedByLogin: null,
+            firstCommentNodeId: 'PRRC_first',
+          },
+        ],
+        complete: true,
+      }),
+      setThreadResolved,
+    } as unknown as GitHubClient;
+    return { client, setThreadResolved };
+  };
+
+  it.each([
+    ['done', true],
+    // GitHub no longer has the thread: the job reads this as it always has, and ends the row.
+    ['not_found', false],
+    // The App may not resolve it (it lacks Contents: write): the thread stays open.
+    ['refused', 'refused'],
+  ] as const)('GitHub answers %s: the side answers %s', async (answer, resolved) => {
+    const { client, setThreadResolved } = stub(answer);
+    const side = githubSide('c1', client, REPO, '7', REPLY, logger);
+    expect(await side.read()).toMatchObject({ resolved: false });
+    expect(await side.resolve()).toBe(resolved);
+    expect(setThreadResolved).toHaveBeenCalledExactlyOnceWith('PRRT_thread', true);
+  });
+
+  it('resolves nothing before it has read the thread', async () => {
+    const { client, setThreadResolved } = stub('done');
+    expect(await githubSide('c1', client, REPO, '7', REPLY, logger).resolve()).toBe(false);
+    expect(setThreadResolved).not.toHaveBeenCalled();
   });
 });
 

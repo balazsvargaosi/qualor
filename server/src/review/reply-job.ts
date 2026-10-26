@@ -92,7 +92,8 @@ import { openSnapshotReader, type SnapshotReader } from './snapshot-reader';
  *    open;
  * 6. the answer is posted once: a note of Qualor's in the thread whose first line names the row is
  *    the answer a post stored though its outcome was lost, and is not posted again;
- * 7. a verdict that is not `keep` resolves the thread;
+ * 7. a verdict that is not `keep` resolves the thread, where the provider lets Qualor: a GitHub
+ *    App without Contents (write) leaves it open, which one line says;
  * 8. the row ends `done`, with what came of it.
  * The row's issue must be its project's, before the decision and before the thread is acted on (a
  * monorepo's thread of another project's issue never is): otherwise the row ends `failed: internal`.
@@ -518,8 +519,17 @@ class ReplyJob extends JobSteps {
       noteId = note;
     }
     if (noteId !== null && row.answerNoteId === null) await recordAnswerNote(db, row.id, noteId);
-    // A thread gone once the answer is posted has nothing left to resolve.
-    if (verdict !== 'keep' && !thread.resolved) await orGone(() => side.resolve());
+    // A thread gone once the answer is posted has nothing left to resolve. One the provider does
+    // not let Qualor resolve stays open: what the reply did stands, and the row ends as it would.
+    if (verdict !== 'keep' && !thread.resolved) {
+      const resolved = await orGone(() => side.resolve());
+      if (resolved === 'refused') {
+        this.deps.logger.warn(
+          { replyId: row.id },
+          'AI reply could not resolve the conversation: the GitHub App needs Contents: Read and write',
+        );
+      }
+    }
 
     const outcome: ReplyOutcome =
       changed ??

@@ -21,6 +21,7 @@ import {
   WONT_FIX,
   type Mr,
   type Person,
+  type SetupOptions,
 } from '../../test/reply-drivers';
 import { finding } from '../../test/reports';
 import { switchReviewOn } from '../../test/review';
@@ -110,9 +111,12 @@ describe('the answer job (6I-4)', () => {
      * A merge request with an open AI finding in Qualor's thread, a person's reply in it (a
      * member's, unless `who` says otherwise), and the reply queued by a decoration.
      */
-    const replied = async (key: string, o: { body?: string; who?: Person } = {}) => {
+    const replied = async (
+      key: string,
+      o: { body?: string; who?: Person; setup?: SetupOptions } = {},
+    ) => {
       const d = driverOf();
-      const mr = await d.setup(`${slug}-${key}`);
+      const mr = await d.setup(`${slug}-${key}`, [], o.setup);
       await reviewOn(h, llm);
       const issueId = await aiFinding(mr.branchId, 9);
       await mr.decorate();
@@ -127,6 +131,7 @@ describe('the answer job (6I-4)', () => {
       expect(row).toMatchObject({ kind: 'reply', status: 'queued', threadId, issueId });
       return { d, mr, issueId, threadId, noteId, row };
     };
+    type Replied = Awaited<ReturnType<typeof replied>>;
 
     it("a won't-fix reply marks the issue, posts one answer and resolves the thread", async () => {
       const { mr, issueId, threadId, row } = await replied('wont-fix');
@@ -1733,6 +1738,84 @@ describe('the answer job (6I-4)', () => {
             'GitHub permission answer not understood; the reply changes no status',
           ],
         ]);
+      },
+    );
+
+    it.skipIf(provider === 'GitLab')(
+      "GitHub, an App that may not resolve the thread: a won't-fix reply is answered and marks the issue, the thread stays open, and the row is done",
+      async () => {
+        const warned: unknown[][] = [];
+        const logger = {
+          info: () => undefined,
+          warn: (...args: unknown[]) => void warned.push(args),
+          error: () => undefined,
+        };
+        const refusal =
+          'AI reply could not resolve the conversation: the GitHub App needs Contents: Read and write';
+        const mutations = () => github.requests.filter((r) => r.body.includes('mutation'));
+        /** The reply was answered as it would be with the permission, and its thread left open. */
+        const answeredOpen = async ({ mr, issueId, threadId, row }: Replied) => {
+          const answers = mr.answers(threadId);
+          expect(answers.map((a) => a.body)).toEqual([replyNote(row.id, ACCEPTED, 'wont_fix')]);
+          expect(await rowById(row.id)).toMatchObject({
+            status: 'done',
+            outcome: 'wont_fix',
+            reason: null,
+            verdict: 'wont_fix',
+            answerNoteId: answers[0]!.id,
+          });
+          expect((await issueById(issueId)).status).toBe('wont_fix');
+          expect(mr.resolved(threadId)).toBe(false);
+          // Done in its first try: nothing is tried again.
+          expect((await jobsOf(row.id)).map((j) => [j.status, j.attempts])).toEqual([
+            ['succeeded', 1],
+          ]);
+        };
+        // The App's installation does not grant Contents (write): no resolution is asked for.
+        const lacking = await replied('no-contents', {
+          setup: {
+            githubPermissions: {
+              checks: 'write',
+              issues: 'read',
+              metadata: 'read',
+              pull_requests: 'write',
+            },
+          },
+        });
+        github.clearRequests();
+        llm.say(WONT_FIX);
+        await answer({ logger });
+        await answeredOpen(lacking);
+        expect(mutations()).toEqual([]);
+        expect(warned).toEqual([[{ replyId: lacking.row.id }, refusal]]);
+        // The installation grants it, and GitHub refuses the token all the same with its
+        // FORBIDDEN (one asked before the grant, or a permission taken away since): the same end.
+        const refused = await replied('contents-refused');
+        github.inject('POST', /\/pulls\/7\/comments\/\d+\/replies$/, {
+          status: 0,
+          passThrough: true,
+          before: () =>
+            github.inject('POST', /^\/api\/graphql$/, {
+              status: 200,
+              body: {
+                data: { resolveReviewThread: null },
+                errors: [
+                  {
+                    type: 'FORBIDDEN',
+                    path: ['resolveReviewThread'],
+                    message: 'Resource not accessible by integration',
+                  },
+                ],
+              },
+            }),
+        });
+        github.clearRequests();
+        warned.length = 0;
+        llm.say(WONT_FIX);
+        await answer({ logger });
+        await answeredOpen(refused);
+        expect(mutations()).toHaveLength(1);
+        expect(warned).toEqual([[{ replyId: refused.row.id }, refusal]]);
       },
     );
 

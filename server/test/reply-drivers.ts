@@ -207,9 +207,18 @@ export interface Mr {
   username(who: Person): string;
 }
 
+/** What a driver's merge request is set up with, beside its findings. */
+export interface SetupOptions {
+  /**
+   * GitHub: what the App's installation grants, on an installation of the repository's own; the
+   * documented App's when left out. GitLab has no such thing, and takes no notice.
+   */
+  githubPermissions?: Record<string, 'read' | 'write'>;
+}
+
 export interface Driver {
   /** A merge request, analysed with the analyzers' `findings`, and reviewed. */
-  setup(key: string, findings?: Report['findings']): Promise<Mr>;
+  setup(key: string, findings?: Report['findings'], options?: SetupOptions): Promise<Mr>;
   /** The requests the provider received since the last clear, as `METHOD path`. */
   requests(): string[];
   clearRequests(): void;
@@ -469,11 +478,19 @@ export function createReplyHarness() {
   };
 
   const githubDriver: Driver = {
-    async setup(key, findings = []) {
+    async setup(key, findings = [], options = {}) {
       // Analysed with AI review off: the test seeds the review that is done.
       await reviewOff(h);
       const repo = { id: nextRepository++, name: key.replace(/\W/g, '-') };
-      github.addRepository({ id: repo.id, owner: 'acme', name: repo.name, installationId: 990 });
+      const permissions = options.githubPermissions;
+      // An installation grants the same to all its repositories: one of its own grants its own.
+      github.addRepository({
+        id: repo.id,
+        owner: 'acme',
+        name: repo.name,
+        installationId: permissions === undefined ? 990 : repo.id,
+        ...(permissions === undefined ? {} : { permissions }),
+      });
       github.addPull(repo.id, {
         number: 7,
         title: 'Add the cart',
