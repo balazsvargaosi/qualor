@@ -91,6 +91,8 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
   /** Not mapped. */
   let unmapped: { id: string; key: string };
   let otherProject: { id: string; key: string };
+  /** The GitLab connection of the organisation that `project` and `second` are mapped to. */
+  let connectionId: string;
   let projectToken: string;
   let unmappedToken: string;
   let otherToken: string;
@@ -104,7 +106,7 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
       ? (caller as Session).headers
       : (caller as Record<string, string>);
   const call = (
-    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
+    method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
     url: string,
     headers: Record<string, string>,
     payload?: object,
@@ -242,10 +244,11 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
         tokenEnc: encryptSecret(encryptionKey(ctx.config.secretKey), 'x', SCM_TOKEN_AAD),
       })
       .returning();
+    connectionId = connection!.id;
     for (const p of [project, second]) {
       await ctx.db
         .update(projects)
-        .set({ scmConnectionId: connection!.id, scmProjectRef: p === project ? '7' : '8' })
+        .set({ scmConnectionId: connectionId, scmProjectRef: p === project ? '7' : '8' })
         .where(eq(projects.id, p.id));
     }
     projectToken = await createProjectToken(ctx, admin, project.id);
@@ -1860,6 +1863,36 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
         organizationEnabled: true,
         reason: 'project_not_selected',
       });
+    });
+
+    it('follows the mapping in the answer of PATCH /projects/{id}, which is built from the updated row', async () => {
+      // The scope all selects `unmapped`, so the mapping is the one condition it lacks.
+      expect((await putReview(onBody({ scope: 'all', projectIds: [] }))).statusCode).toBe(200);
+      expect(await dtoOf(unmapped)).toEqual({
+        enabled: true,
+        organizationEnabled: true,
+        reason: 'not_mapped',
+      });
+      try {
+        // The mapping needs an organisation admin.
+        const patched = await call('PATCH', `/projects/${unmapped.id}`, orgAdmin.headers, {
+          scmConnectionId: connectionId,
+          scmProjectRef: '9',
+        });
+        expect(patched.statusCode, patched.body).toBe(200);
+        expect(patched.json().scmConnectionId).toBe(connectionId);
+        expect(patched.json().aiReview).toEqual({
+          enabled: true,
+          organizationEnabled: true,
+          reason: null,
+        });
+      } finally {
+        // The other tests read `unmapped` as it was set up.
+        await ctx.db
+          .update(projects)
+          .set({ scmConnectionId: null, scmProjectRef: null })
+          .where(eq(projects.id, unmapped.id));
+      }
     });
   });
 });
