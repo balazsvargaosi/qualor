@@ -64,9 +64,9 @@ const TEXT: [string, string[]][] = [
 
 /**
  * Marks and field borders: the chart accent and the pending mark, the fills of states, the focus
- * ring, the border of an input, the thumb of a checked switch on its track, and the severities a
- * chart draws without words beside each mark. Low and Info are the ramp's quiet end: their marks
- * always stand beside their names and counts.
+ * ring, the border of an input, a switch's thumb on its track (checked, and unchecked: white on
+ * the field border's colour), and the severities a chart draws without words beside each mark.
+ * Low and Info are the ramp's quiet end: their marks always stand beside their names and counts.
  */
 const MARKS: [string, string[]][] = [
   ['chart-accent', ['surface', 'chart-track']],
@@ -77,6 +77,7 @@ const MARKS: [string, string[]][] = [
   ['focus', ['bg', 'surface']],
   ['control-border', ['bg', 'surface', 'surface-2']],
   ['switch-thumb-on', ['accent']],
+  ['#ffffff', ['control-border']],
   ['sev-blocker', ['surface']],
   ['sev-high', ['surface']],
   ['sev-medium', ['surface']],
