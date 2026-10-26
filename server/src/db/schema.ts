@@ -857,6 +857,13 @@ export const instanceSettings = pgTable('instance_settings', {
 export const LLM_REQUEST_STATUSES = ['queued', 'running', 'succeeded', 'failed'] as const;
 export type LlmRequestStatus = (typeof LLM_REQUEST_STATUSES)[number];
 
+/**
+ * What a row of `llm_requests` is for: the three single-shot features, `review` (6I-3, migration
+ * 0016_review_runs): the provider calls of an AI review run, and `review-reply` (6I-4, migration
+ * 0017_review_replies): those of an answer to a reply in a merge request.
+ */
+export type LlmRequestFeature = LlmFeature | 'review' | 'review-reply';
+
 /** llm.md §8.4: what happened to a fix suggestion's post. */
 export interface LlmPost {
   status: 'queued' | 'posted' | 'failed';
@@ -879,10 +886,7 @@ export const llmRequests = pgTable(
     // Closed issues are pruned (§7); the audit row stays.
     issueId: uuid('issue_id').references(() => issues.id, { onDelete: 'set null' }),
     userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
-    // The three single-shot features, `review` (6I-3, migration 0016_review_runs): the provider
-    // calls of an AI review run, and `review-reply` (6I-4, migration 0017_review_replies): those of
-    // an answer to a reply in a merge request.
-    feature: text('feature').notNull().$type<LlmFeature | 'review' | 'review-reply'>(),
+    feature: text('feature').notNull().$type<LlmRequestFeature>(),
     cacheKey: char('cache_key', { length: 64 }).notNull(),
     provider: text('provider').notNull(),
     providerHost: text('provider_host').notNull(),

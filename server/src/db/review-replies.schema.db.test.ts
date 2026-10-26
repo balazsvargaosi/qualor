@@ -1,16 +1,17 @@
 import { randomUUID } from 'node:crypto';
-import { LLM_FEATURES, type LlmFeature } from '@qualor/shared';
+import { LLM_FEATURES } from '@qualor/shared';
 import { eq, inArray } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestDatabase, type TestDatabase } from '../../test/db';
 import { seedIssue, seedRule } from '../../test/issues';
 import {
-  PG_CHECK_VIOLATION,
-  PG_FOREIGN_KEY_VIOLATION,
-  PG_UNIQUE_VIOLATION,
-  pgConstraint,
-  pgErrorCode,
-} from './errors';
+  checkViolation,
+  llmRequestRow,
+  PG_NOT_NULL_VIOLATION,
+  refusal,
+  type Refusal,
+} from '../../test/refusals';
+import { PG_FOREIGN_KEY_VIOLATION, PG_UNIQUE_VIOLATION } from './errors';
 import { first } from './rows';
 import {
   analyses,
@@ -28,10 +29,9 @@ import {
   reviewReplies,
   reviewRuns,
   THREAD_ID,
+  type LlmRequestFeature,
 } from './schema';
 
-/** PostgreSQL's not_null_violation. */
-const PG_NOT_NULL_VIOLATION = '23502';
 const DEADLINE = new Date('2026-10-24T09:15:00Z');
 const FINISHED_AT = new Date('2026-10-24T08:00:41Z');
 /** The statuses a row has only once it has ended, and so only with its finish time. */
@@ -40,19 +40,6 @@ const ENDED: readonly string[] = ['done', 'skipped', 'failed'];
 type ReplyInsert = typeof reviewReplies.$inferInsert;
 type RunInsert = typeof reviewRuns.$inferInsert;
 
-/** What a refused statement reports: its SQLSTATE and the constraint that refused it. */
-interface Refusal {
-  code: string | undefined;
-  constraint: string | undefined;
-}
-/** The refusal of `action`, or null when it was accepted. */
-const refusal = (action: PromiseLike<unknown>): Promise<Refusal | null> =>
-  Promise.resolve(action).then(
-    () => null,
-    (err: unknown) => ({ code: pgErrorCode(err), constraint: pgConstraint(err) }),
-  );
-/** The refusal of the named CHECK (23514), not of some other constraint. */
-const checkViolation = (constraint: string): Refusal => ({ code: PG_CHECK_VIOLATION, constraint });
 /** `value` in the column `name`, whatever the column's type allows: for a value the checks must refuse. */
 const column = (name: keyof ReplyInsert, value: unknown): Partial<ReplyInsert> =>
   ({ [name]: value }) as Partial<ReplyInsert>;
@@ -489,19 +476,11 @@ describe('review_replies and the columns beside it (6I-4, migration 0017_review_
   });
 
   it('llm_requests accepts feature review-reply and still refuses another value', async () => {
-    const request = (feature: string) => ({
-      organizationId,
-      projectId,
-      feature: feature as LlmFeature | 'review' | 'review-reply',
-      cacheKey: 'a'.repeat(64),
-      provider: 'openai',
-      providerHost: 'api.example.com',
-      model: 'm',
-      promptVersion: 'reply.v1',
-      inputSha256: 'b'.repeat(64),
-      inputBytes: 10,
-      fields: ['reply'],
-    });
+    const request = (feature: string) =>
+      llmRequestRow({ organizationId, projectId }, feature, {
+        promptVersion: 'reply.v1',
+        field: 'reply',
+      });
     // The three single-shot features and the review, as before, and the reply.
     for (const feature of [...LLM_FEATURES, 'review', 'review-reply']) {
       expect(await refusal(t.db.insert(llmRequests).values(request(feature))), feature).toBeNull();
@@ -510,7 +489,7 @@ describe('review_replies and the columns beside it (6I-4, migration 0017_review_
       await t.db.insert(llmRequests).values(request('review-reply')).returning(),
     );
     // The column's TypeScript type says so too.
-    const feature: LlmFeature | 'review' | 'review-reply' = stored.feature;
+    const feature: LlmRequestFeature = stored.feature;
     expect(feature).toBe('review-reply');
     expect(stored).toMatchObject({ issueId: null, userId: null, status: 'queued' });
     for (const other of ['poem', 'Review-Reply', 'review_reply', 'review-replies', '']) {

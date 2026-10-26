@@ -1,16 +1,17 @@
 import { randomUUID } from 'node:crypto';
-import { LLM_FEATURES, type LlmFeature } from '@qualor/shared';
+import { LLM_FEATURES } from '@qualor/shared';
 import { eq, inArray } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestDatabase, type TestDatabase } from '../../test/db';
 import { seedIssue, seedRule } from '../../test/issues';
 import {
-  PG_CHECK_VIOLATION,
-  PG_FOREIGN_KEY_VIOLATION,
-  PG_UNIQUE_VIOLATION,
-  pgConstraint,
-  pgErrorCode,
-} from '../db/errors';
+  checkViolation,
+  llmRequestRow,
+  PG_NOT_NULL_VIOLATION,
+  refusal,
+  type Refusal,
+} from '../../test/refusals';
+import { PG_FOREIGN_KEY_VIOLATION, PG_UNIQUE_VIOLATION } from '../db/errors';
 import { first } from '../db/rows';
 import {
   AI_CATEGORIES,
@@ -34,31 +35,17 @@ import {
   type ReviewRunStatus,
   reviewSnapshots,
   type ReviewSkipReason,
+  type LlmRequestFeature,
 } from '../db/schema';
 
 const SHA1 = 'a'.repeat(40);
 const SHA256 = '0123456789abcdef'.repeat(4);
 const DEADLINE = new Date('2026-10-22T09:15:00Z');
-/** PostgreSQL's not_null_violation, and string_data_right_truncation (a value too long for `char(64)`). */
-const PG_NOT_NULL_VIOLATION = '23502';
+/** PostgreSQL's string_data_right_truncation: a value too long for `char(64)`. */
 const PG_STRING_TOO_LONG = '22001';
 
 type RunInsert = typeof reviewRuns.$inferInsert;
 type FindingInsert = typeof reviewFindings.$inferInsert;
-
-/** What a refused statement reports: its SQLSTATE and the constraint that refused it. */
-interface Refusal {
-  code: string | undefined;
-  constraint: string | undefined;
-}
-/** The refusal of `action`, or null when it was accepted. */
-const refusal = (action: PromiseLike<unknown>): Promise<Refusal | null> =>
-  Promise.resolve(action).then(
-    () => null,
-    (err: unknown) => ({ code: pgErrorCode(err), constraint: pgConstraint(err) }),
-  );
-/** The refusal of the named CHECK (23514), not of some other constraint. */
-const checkViolation = (constraint: string): Refusal => ({ code: PG_CHECK_VIOLATION, constraint });
 
 /** The reason a run in `status` must carry (null where the status takes none). */
 function reasonFor(status: ReviewRunStatus): ReviewSkipReason | ReviewFailureReason | null {
@@ -632,26 +619,18 @@ describe('review_runs and review_findings (6I-3, migration 0016_review_runs)', (
   });
 
   it('llm_requests accepts feature review and still refuses another value', async () => {
-    const request = (feature: string) => ({
-      organizationId,
-      projectId,
-      feature: feature as LlmFeature | 'review',
-      cacheKey: 'a'.repeat(64),
-      provider: 'openai',
-      providerHost: 'api.example.com',
-      model: 'm',
-      promptVersion: 'review.v1',
-      inputSha256: 'b'.repeat(64),
-      inputBytes: 10,
-      fields: ['review'],
-    });
+    const request = (feature: string) =>
+      llmRequestRow({ organizationId, projectId }, feature, {
+        promptVersion: 'review.v1',
+        field: 'review',
+      });
     // The three single-shot features, as before, and the review.
     for (const feature of [...LLM_FEATURES, 'review']) {
       expect(await refusal(t.db.insert(llmRequests).values(request(feature))), feature).toBeNull();
     }
     const stored = first(await t.db.insert(llmRequests).values(request('review')).returning());
     // The column's TypeScript type says so too.
-    const feature: LlmFeature | 'review' | 'review-reply' = stored.feature;
+    const feature: LlmRequestFeature = stored.feature;
     expect(feature).toBe('review');
     expect(stored).toMatchObject({ issueId: null, userId: null, status: 'queued' });
     for (const other of ['poem', 'Review', 'reviews', '']) {
