@@ -100,6 +100,8 @@ export class ProjectAiPanel {
     triage: $localize`:@@orgAi.feature.triage:Suggest triage`,
     fix: $localize`:@@orgAi.feature.fix:Suggest a fix`,
   };
+  /** The head's chip of an excluded project: the tone of an off line. */
+  protected readonly excludedChip = TONE_CHIPS.off;
   protected readonly fixHelpId = FIX_HELP;
   protected readonly fixNotLinkedId = FIX_NOT_LINKED;
 

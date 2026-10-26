@@ -606,7 +606,11 @@ describe('ProjectAiPanel', () => {
   it('says the excluded state on every line', async () => {
     const server = setup();
     const { root } = await render(project({ autoFix: { excludedFromAi: true } }));
-    expect(text(root.querySelector('.panel-head .sec-chips .badge'))).toBe('Excluded from AI');
+    const chip = root.querySelector('.panel-head .sec-chips .badge');
+    expect(text(chip)).toBe('Excluded from AI');
+    // The chip of an off line: its tone and its icon, never colour alone.
+    expect(chip?.classList).toContain('badge-none');
+    expect(chip?.querySelector('q-icon svg')).not.toBeNull();
     expect(stateOf(root, 'review')).toEqual({
       state: 'Off',
       sentence: 'An instance admin excluded this project from AI, so nothing of it is sent.',

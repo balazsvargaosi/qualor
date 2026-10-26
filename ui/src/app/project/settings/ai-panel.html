@@ -8,7 +8,9 @@
     </div>
     @if (excluded()) {
       <div class="sec-chips">
-        <span class="badge badge-none"><q-icon name="minus" />{{ texts.excluded }}</span>
+        <span class="badge {{ excludedChip.badge }}"
+          ><q-icon [name]="excludedChip.icon" />{{ texts.excluded }}</span
+        >
       </div>
     }
   </div>
@@ -66,17 +68,7 @@
           <span class="badge {{ assistant.badge }}"
             ><q-icon [name]="assistant.icon" />{{ assistant.state }}</span
           >&ngsp;
-          <span
-            >{{ assistant.text }}
-            @if (assistant.where; as place) {
-              @if (place.link) {
-                <a [routerLink]="place.route">{{ place.label }}</a
-                >.
-              } @else {
-                {{ place.label }}.
-              }
-            }
-          </span>
+          <span>{{ assistant.text }}</span>
         </div>
       } @else if (assistantError(); as message) {
         <p class="alert alert-error" role="alert">{{ message }}</p>
