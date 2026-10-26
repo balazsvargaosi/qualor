@@ -2,7 +2,7 @@
   <section class="card stack" aria-labelledby="ai-heading">
     <div>
       <h3 id="ai-heading" i18n="@@ai.panel.title">AI assistant</h3>
-      @if (canAsk() && ai.provider; as provider) {
+      @if (askable() && ai.provider; as provider) {
         <p class="hint" i18n="@@ai.panel.notice">
           Asking sends the rule, the message, the file path, the language and the code around the
           issue to {{ provider.host }} ({{ provider.model }}), after secrets are redacted.
@@ -19,7 +19,11 @@
     @if (error(); as message) {
       <p class="alert alert-error" role="alert">{{ message }}</p>
     }
-    @if (canAsk()) {
+    @if (excluded()) {
+      <p id="ai-excluded" class="muted" i18n="@@ai.panel.excludedProject">
+        An instance admin excluded this project from AI.
+      </p>
+    } @else if (canAsk()) {
       <div class="row">
         @if (ai.features.explain && !explain()) {
           <button
@@ -79,7 +83,7 @@
         } @else if (failure(r); as message) {
           <p class="alert alert-error" role="alert">{{ message }}</p>
         }
-        @if (canAsk() && !pending(r)) {
+        @if (askable() && !pending(r)) {
           <p>
             <button
               type="button"
@@ -138,7 +142,7 @@
         } @else if (failure(r); as message) {
           <p class="alert alert-error" role="alert">{{ message }}</p>
         }
-        @if (canAsk() && !pending(r) && open()) {
+        @if (askable() && !pending(r) && open()) {
           <p>
             <button
               type="button"
@@ -284,7 +288,7 @@
         } @else if (failure(r); as message) {
           <p class="alert alert-error" role="alert">{{ message }}</p>
         }
-        @if (canAsk() && !pending(r) && open()) {
+        @if (askable() && !pending(r) && open()) {
           <p>
             <button
               type="button"

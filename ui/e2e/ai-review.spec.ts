@@ -47,6 +47,9 @@ async function openProjectSettings(page: Page, name: string): Promise<void> {
   await expect(page.getByRole('heading', { name: 'New code', level: 2 })).toBeVisible();
 }
 
+/** The AI review line of a project's AI panel: its chip, then its sentence. */
+const projectReview = (page: Page) => page.locator('section#ai [data-line="review"] .state-line');
+
 /** The AI review line of the Status card, its chip, and the section's foot. */
 const reviewLine = (page: Page) => page.locator('li[data-key="review"]');
 const reviewState = (page: Page) => reviewLine(page).locator('.badge');
@@ -240,17 +243,21 @@ test.describe('as people other than the instance admin', () => {
       await expect(
         page
           .getByRole('navigation', { name: 'Settings sections' })
-          .getByRole('link', { name: 'AI review' }),
+          .getByRole('link', { name: 'AI', exact: true }),
       ).toBeVisible();
-      const panel = page.locator('#ai-review');
-      await expect(panel.getByRole('heading', { name: 'AI review', level: 2 })).toBeVisible();
-      await expect(panel).toContainText('AI review is on for this project.');
-      await expect(panel.locator('#ai-review-organization-off')).toHaveCount(0);
+      const panel = page.locator('section#ai');
+      await expect(panel.getByRole('heading', { name: 'AI', level: 2 })).toBeVisible();
+      await expect(projectReview(page).locator('.badge')).toHaveText('Reviewed');
+      await expect(projectReview(page).locator('> span:not(.badge)')).toHaveText(
+        /^Reviews this project's merge requests, with 127\.0\.0\.1:\d+\.\s*$/,
+      );
       await expectAccessible(page);
 
       await openProjectSettings(page, SHOP.name);
-      await expect(page.locator('#ai-review')).toContainText('AI review is off for this project.');
-      await expect(page.locator('#ai-review-organization-off')).toHaveCount(0);
+      await expect(projectReview(page).locator('.badge')).toHaveText('Off');
+      await expect(projectReview(page).locator('> span:not(.badge)')).toHaveText(
+        'Default reviews selected projects only, and this is not one of them. An organization admin adds it in Settings → AI.',
+      );
     });
 
     await test.step('switching it off asks first, and the panel points to the settings', async () => {
@@ -263,12 +270,11 @@ test.describe('as people other than the instance admin', () => {
       await expect(reviewState(page)).toHaveText('Off');
 
       await openProjectSettings(page, PAYMENTS.name);
-      const panel = page.locator('#ai-review');
-      await expect(panel).toContainText('AI review is off for this project.');
-      await expect(panel.locator('#ai-review-organization-off')).toHaveText(
-        'Your organisation admin switches it on in Settings → AI review.',
+      await expect(projectReview(page).locator('.badge')).toHaveText('Off');
+      await expect(projectReview(page).locator('> span:not(.badge)')).toHaveText(
+        'Default has not switched on AI review. An organization admin switches it on in Settings → AI.',
       );
-      await panel.getByRole('link', { name: 'Settings → AI review' }).click();
+      await projectReview(page).getByRole('link', { name: 'Settings → AI' }).click();
       await expect(page).toHaveURL(/\/settings\/ai-review$/);
       await expect(page.getByRole('heading', { name: 'AI', level: 2, exact: true })).toBeVisible();
     });

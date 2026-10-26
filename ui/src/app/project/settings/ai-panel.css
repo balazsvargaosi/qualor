@@ -1,0 +1,27 @@
+/*
+ * Project → Settings → AI (spec §3.6, §7): a section card of three lines, built from the shared
+ * parts of styles.css (its head, the state line, the requirement and the switch).
+ */
+:host {
+  display: block;
+  min-width: 0;
+}
+.setting-field > p {
+  margin: 0;
+}
+/* The switch's outcome lines up with its name and help (the switch, 36px, and its gap, 12px). */
+.fix-outcome {
+  margin-left: 48px;
+}
+.fix-outcome.field-error {
+  margin-top: 6px;
+}
+.fix-saved {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  color: var(--ok);
+  font-size: 13px;
+  font-weight: 600;
+}

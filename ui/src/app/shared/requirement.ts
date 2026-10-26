@@ -45,6 +45,23 @@ const PLACES: Record<RequirementPlace, Place> = {
   },
 };
 
+/** A place as a viewer sees it: its page, its name, and whether it is a link for them. */
+export interface PlaceView {
+  route: string;
+  label: string;
+  link: boolean;
+}
+
+/** A place for the viewer: a link when they can open its page, else its name only. */
+export function placeView(
+  name: RequirementPlace,
+  session: SessionStore,
+  org: OrgContext,
+): PlaceView {
+  const place = PLACES[name];
+  return { route: place.route, label: place.label(), link: place.opens(session, org) };
+}
+
 /**
  * `q-requirement` (spec §3.3, §7.5): why a control cannot work, in one sentence, directly above
  * the control it disables, which points at the note (`aria-describedby` = `noteId`). `text` names
@@ -68,12 +85,6 @@ export class Requirement {
 
   protected readonly where = computed(() => {
     const name = this.place();
-    if (name === null) return null;
-    const place = PLACES[name];
-    return {
-      route: place.route,
-      label: place.label(),
-      link: place.opens(this.session, this.org),
-    };
+    return name === null ? null : placeView(name, this.session, this.org);
   });
 }

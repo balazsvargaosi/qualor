@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test';
 import { expect, expectAccessible, test } from './fixtures';
-import { PAYMENTS, PROJECT_WEBHOOK_URL } from './seed-data';
+import { PAYMENTS, PETRA, PROJECT_WEBHOOK_URL, SHOP } from './seed-data';
 
 /** Payments API → Settings, through the project's own tabs. */
 async function openSettings(page: Page): Promise<void> {
@@ -21,6 +21,7 @@ test('the settings tab lists its sections and is accessible', async ({ page }) =
     'New code',
     'Quality gate and profiles',
     'Main branch',
+    'AI',
     'Analysis tokens',
     'Webhooks',
     'Danger zone',
@@ -30,6 +31,48 @@ test('the settings tab lists its sections and is accessible', async ({ page }) =
   }
   await expect(page.locator('#main-branch-name')).toHaveValue('main');
   await expectAccessible(page);
+});
+
+test.describe("as the seed's project admin", () => {
+  test.use({ storageState: { cookies: [], origins: [] } });
+
+  test('the AI panel says why AI review does not run, and names the place without a link', async ({
+    page,
+  }) => {
+    // An account the admin created must change its initial password first (ruling R7).
+    await page.goto('/login');
+    await page.getByLabel('Username').fill(PETRA.username);
+    await page.getByLabel('Password').fill(PETRA.initialPassword);
+    await page.getByRole('button', { name: 'Sign in' }).click();
+    await expect(page).toHaveURL(/\/change-password$/);
+    await page.getByLabel('Current password').fill(PETRA.initialPassword);
+    await page.getByLabel('New password', { exact: true }).fill(PETRA.password);
+    await page.getByLabel('Repeat the new password').fill(PETRA.password);
+    await page.getByRole('button', { name: 'Change password' }).click();
+    await expect(page).toHaveURL(/\/projects$/);
+
+    // Her grant is on Web Shop; the seed allows Default to use AI, whose admins leave review off.
+    await page.getByRole('link', { name: SHOP.name }).click();
+    await page
+      .getByRole('navigation', { name: 'Project' })
+      .getByRole('link', { name: 'Settings' })
+      .click();
+    await page
+      .getByRole('navigation', { name: 'Settings sections' })
+      .getByRole('link', { name: 'AI', exact: true })
+      .click();
+    await expect(page).toHaveURL(/\/projects\/[^/]+\/settings#ai$/);
+    const panel = page.locator('section#ai');
+    await expect(panel.getByRole('heading', { level: 2 })).toHaveText('AI');
+    await expect(panel.getByRole('heading', { level: 2 })).toBeFocused();
+    const review = panel.locator('[data-line="review"] .state-line');
+    await expect(review.locator('.badge')).toHaveText('Off');
+    await expect(review.locator('> span:not(.badge)')).toHaveText(
+      'Default has not switched on AI review. An organization admin switches it on in Settings → AI.',
+    );
+    await expect(review.getByRole('link')).toHaveCount(0);
+    await expectAccessible(page);
+  });
 });
 
 test('a new code definition of the last 14 days is saved and kept after a reload', async ({

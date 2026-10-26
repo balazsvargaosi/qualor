@@ -73,7 +73,8 @@ export function postTarget(branch: Branch): PostTarget | null {
  * and labelled as AI-generated. A triage answer is a suggestion only: "Mark as false positive…"
  * hands its id to the issue page's own transition form, where the person writes the comment and
  * decides. A fix is posted to the merge request only after a second, explicit confirmation; one no
- * person asked for (`automatic`, 4E-3a §4) says it was suggested automatically.
+ * person asked for (`automatic`, 4E-3a §4) says it was suggested automatically. For a project an
+ * instance admin excluded from AI it offers nothing to ask, and says so: the server would refuse.
  */
 @Component({
   selector: 'q-ai-panel',
@@ -95,6 +96,8 @@ export class AiPanel {
   readonly acceptTriage = output<string>();
 
   protected readonly orgAi = signal<OrgAi | null>(null);
+  /** An instance admin excluded the issue's project from AI: nothing of it can be asked. */
+  protected readonly excluded = signal(false);
   protected readonly requests = signal<Record<Feature, AiRequest | null>>({
     explain: null,
     triage: null,
@@ -126,6 +129,8 @@ export class AiPanel {
     () =>
       this.visible() && (this.canAsk() || Object.values(this.requests()).some((r) => r !== null)),
   );
+  /** The person may ask, and the project is not excluded from AI: the ask buttons show. */
+  protected readonly askable = computed(() => this.canAsk() && !this.excluded());
   protected readonly explain = computed(() => this.requests().explain);
   protected readonly triage = computed(() => this.requests().triage);
   protected readonly fix = computed(() => this.requests().fix);
@@ -157,6 +162,7 @@ export class AiPanel {
         const generation = ++this.generation;
         this.stopPolling();
         this.orgAi.set(null);
+        this.excluded.set(false);
         this.requests.set({ explain: null, triage: null, fix: null });
         this.sending.set({});
         this.error.set(null);
@@ -322,6 +328,7 @@ export class AiPanel {
         }),
       );
       if (generation !== this.generation) return;
+      this.excluded.set(project.autoFix.excludedFromAi);
       this.orgAi.set(orgAi);
       if (!this.visible()) return;
       if (orgAi.features.fix && project.scmConnectionId !== null) {
@@ -434,7 +441,7 @@ function askErrorText(err: unknown): string {
   if (!(err instanceof ApiError)) return problemMessage(err);
   switch (err.code) {
     case 'AI_DISABLED':
-      return $localize`:@@ai.panel.error.disabled:The AI assistant is not enabled for this organisation.`;
+      return $localize`:@@ai.panel.error.disabled:This organization may not use AI.`;
     case 'AI_NOT_ELIGIBLE':
       switch (detailOf(err)) {
         case 'secret_rule':

@@ -1,0 +1,156 @@
+<section class="card panel" id="ai" aria-labelledby="project-ai-heading">
+  <div class="panel-head">
+    <div class="sec-title">
+      <h2 id="project-ai-heading" tabindex="-1">{{ texts.title }}</h2>
+      <p class="sec-purpose" i18n="@@projectAi.purpose">
+        What AI does for this project's merge requests and issues.
+      </p>
+    </div>
+    @if (excluded()) {
+      <div class="sec-chips">
+        <span class="badge badge-none"><q-icon name="minus" />{{ texts.excluded }}</span>
+      </div>
+    }
+  </div>
+
+  <div class="setting-row" data-line="review">
+    <div class="setting-text">
+      <span class="setting-name">{{ texts.review }}</span>
+      @if (!excluded()) {
+        <p>{{ reviewWho() }}</p>
+      }
+    </div>
+    <div class="setting-field">
+      @let review = reviewLine();
+      <!-- The spaces keep the chip's word and the sentence apart for a screen reader. -->
+      <div class="state-line">
+        <span class="badge {{ review.badge }}"
+          ><q-icon [name]="review.icon" />{{ review.state }}</span
+        >&ngsp;
+        @if (review.text) {
+          <span
+            >{{ review.text }}
+            @if (review.where; as place) {
+              @if (place.link) {
+                <a [routerLink]="place.route">{{ place.label }}</a
+                >.
+              } @else {
+                {{ place.label }}.
+              }
+            }
+          </span>
+        }
+      </div>
+      @if (notMapped()) {
+        <q-requirement
+          noteId="project-ai-not-mapped"
+          [text]="texts.notMapped"
+          place="repositories"
+        />
+      }
+      @if (reviewed()) {
+        <p class="hint" i18n="@@projectAi.reason.ci">
+          Your CI must scan merge requests with the full history:
+          <a routerLink="/docs/ai-review" fragment="what-your-ci-needs">What your CI needs</a>.
+        </p>
+      }
+    </div>
+  </div>
+
+  <div class="setting-row" data-line="assistant">
+    <div class="setting-text">
+      <span class="setting-name">{{ texts.assistant }}</span>
+    </div>
+    <div class="setting-field">
+      @if (assistantLine(); as assistant) {
+        <div class="state-line">
+          <span class="badge {{ assistant.badge }}"
+            ><q-icon [name]="assistant.icon" />{{ assistant.state }}</span
+          >&ngsp;
+          <span
+            >{{ assistant.text }}
+            @if (assistant.where; as place) {
+              @if (place.link) {
+                <a [routerLink]="place.route">{{ place.label }}</a
+                >.
+              } @else {
+                {{ place.label }}.
+              }
+            }
+          </span>
+        </div>
+      } @else if (assistantError(); as message) {
+        <p class="alert alert-error" role="alert">{{ message }}</p>
+      } @else {
+        <p class="hint" i18n="@@orgAi.loading">Loading…</p>
+      }
+    </div>
+  </div>
+
+  @if (fixes(); as fix) {
+    <div class="setting-row" data-line="fixes">
+      <div class="setting-text">
+        <span class="setting-name">{{ texts.fixes }}</span>
+      </div>
+      <div class="setting-field">
+        @switch (fix) {
+          @case ('excluded') {
+            @let line = fixesExcludedLine();
+            <div class="state-line">
+              <span class="badge {{ line.badge }}"
+                ><q-icon [name]="line.icon" />{{ line.state }}</span
+              >&ngsp;<span>{{ line.text }}</span>
+            </div>
+          }
+          @case ('organizationOff') {
+            <q-requirement
+              noteId="project-ai-fix-org-off"
+              [text]="fixOrganizationOff()"
+              place="org-ai"
+            />
+          }
+          @default {
+            <!-- What the switch waits for stands above it; it still works. -->
+            @if (notLinked()) {
+              <q-requirement [noteId]="fixNotLinkedId" [text]="texts.fixNotLinked" />
+            }
+            <div>
+              <!-- A switch is named by its name alone, and its help describes it. -->
+              <div class="switch-row">
+                <input
+                  id="project-ai-fix"
+                  class="switch"
+                  type="checkbox"
+                  role="switch"
+                  aria-labelledby="project-ai-fix-name"
+                  [attr.aria-describedby]="fixDescribedBy()"
+                  [attr.aria-disabled]="busy() ? true : null"
+                  [checked]="fixOn()"
+                  (change)="setFix($event)"
+                />
+                <label for="project-ai-fix">
+                  <span id="project-ai-fix-name" class="sw-name" i18n="@@projectAi.fix.switch"
+                    >Post fix suggestions to this project's merge requests automatically</span
+                  >
+                  &ngsp;<span [id]="fixHelpId" class="sw-help">{{ fixHelp() }}</span>
+                </label>
+              </div>
+              <!-- The outcome under the help: "Saved." politely, a refusal at once. -->
+              <div class="fix-outcome" role="status">
+                @if (fixSaved()) {
+                  <span class="fix-saved"><q-icon name="check" />{{ texts.saved }}</span>
+                }
+              </div>
+              @if (fixError(); as message) {
+                <p class="field-error fix-outcome" role="alert">
+                  <q-icon name="alert" />{{ message }}
+                </p>
+              }
+            </div>
+          }
+        }
+        <!-- 6I-5: auto-fix -->
+      </div>
+    </div>
+  }
+</section>

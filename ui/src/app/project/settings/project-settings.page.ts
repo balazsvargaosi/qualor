@@ -2,24 +2,33 @@ import {
   afterRenderEffect,
   Component,
   computed,
+  DOCUMENT,
   effect,
   ElementRef,
   inject,
   input,
 } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
-import { ActivatedRoute, Router } from '@angular/router';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { can } from '../../auth/permissions';
 import { SessionStore } from '../../auth/session';
 import { CurrentProject } from '../current-project';
-import { AiReviewPanel } from './ai-review-panel';
-import { AutoFixPanel } from './auto-fix-panel';
+import { ProjectAiPanel } from './ai-panel';
 import { GateProfilesPanel } from './gate-profiles-panel';
 import { MainBranchPanel } from './main-branch-panel';
 import { NewCodePanel } from './new-code-panel';
 import { DeleteProjectPanel } from './delete-project-panel';
 import { ProjectTokensPanel } from './project-tokens-panel';
 import { ProjectWebhooksPanel } from './project-webhooks-panel';
+
+/**
+ * The panels that took over an earlier panel's address: an old link or bookmark still leads to the
+ * panel that holds its setting now.
+ */
+const MOVED: ReadonlyMap<string, string> = new Map([
+  ['ai-review', 'ai'],
+  ['auto-fix', 'ai'],
+]);
 
 /**
  * Project → Settings: one panel per setting, each shown for its own permission (spec §3). The
@@ -29,14 +38,14 @@ import { ProjectWebhooksPanel } from './project-webhooks-panel';
 @Component({
   selector: 'q-project-settings-page',
   imports: [
-    AiReviewPanel,
-    AutoFixPanel,
     DeleteProjectPanel,
     GateProfilesPanel,
     MainBranchPanel,
     NewCodePanel,
+    ProjectAiPanel,
     ProjectTokensPanel,
     ProjectWebhooksPanel,
+    RouterLink,
   ],
   templateUrl: './project-settings.page.html',
   styleUrl: './project-settings.page.css',
@@ -45,6 +54,7 @@ export class ProjectSettingsPage {
   protected readonly store = inject(CurrentProject);
   private readonly session = inject(SessionStore);
   private readonly router = inject(Router);
+  private readonly document = inject(DOCUMENT);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly fragment = toSignal(inject(ActivatedRoute).fragment, { initialValue: null });
   private scrolledToFragment = false;
@@ -84,16 +94,27 @@ export class ProjectSettingsPage {
     });
   }
 
-  /** An index link: keeps the fragment in the URL, scrolls to the panel and focuses its heading. */
-  protected go(id: string, event: Event): void {
-    event.preventDefault();
-    void this.router.navigate([], { fragment: id, replaceUrl: true });
+  /**
+   * An index link's plain click: its `routerLink` puts the panel in the address, and this scrolls
+   * to it and focuses its heading. A click that opens the link elsewhere (the middle button, Ctrl,
+   * ⌘ or Shift) is the browser's, and leaves this page as it is.
+   */
+  protected go(id: string, event: MouseEvent): void {
+    if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) {
+      return;
+    }
+    this.scrolledToFragment = true;
     this.reveal(id);
   }
 
+  /**
+   * Scrolls to the panel `id` names (or the one that took its setting over) and focuses its
+   * heading; false while it is not there.
+   */
   private reveal(id: string): boolean {
-    const section = this.host.nativeElement.querySelector<HTMLElement>(`section.panel[id="${id}"]`);
-    if (!section) return false;
+    // By id, not by a selector: the address may hold any text.
+    const section = this.document.getElementById(MOVED.get(id) ?? id);
+    if (section?.tagName !== 'SECTION' || !this.host.nativeElement.contains(section)) return false;
     section.scrollIntoView();
     section.querySelector<HTMLElement>('h2')?.focus({ preventScroll: true });
     return true;

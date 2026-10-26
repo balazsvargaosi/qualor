@@ -1,42 +1,72 @@
 @if (show(); as s) {
   <div class="settings">
+    <!-- Each link is the page's own address with its panel, to open elsewhere or copy. -->
     <nav
       class="settings-index"
       aria-label="Settings sections"
       i18n-aria-label="@@project.settings.sections"
     >
       @if (s.settings) {
-        <a href="#new-code" (click)="go('new-code', $event)" i18n="@@project.settings.newCode"
+        <a
+          [routerLink]="[]"
+          fragment="new-code"
+          [replaceUrl]="true"
+          (click)="go('new-code', $event)"
+          i18n="@@project.settings.newCode"
           >New code</a
         >
-        <a href="#gate" (click)="go('gate', $event)" i18n="@@project.settings.gate"
+        <a
+          [routerLink]="[]"
+          fragment="gate"
+          [replaceUrl]="true"
+          (click)="go('gate', $event)"
+          i18n="@@project.settings.gate"
           >Quality gate and profiles</a
         >
         <a
-          href="#main-branch"
+          [routerLink]="[]"
+          fragment="main-branch"
+          [replaceUrl]="true"
           (click)="go('main-branch', $event)"
           i18n="@@project.settings.mainBranch"
           >Main branch</a
         >
-        <a href="#auto-fix" (click)="go('auto-fix', $event)" i18n="@@project.settings.autoFix"
-          >Automatic fix suggestions</a
-        >
-        <a href="#ai-review" (click)="go('ai-review', $event)" i18n="@@project.settings.aiReview"
-          >AI review</a
+        <a
+          [routerLink]="[]"
+          fragment="ai"
+          [replaceUrl]="true"
+          (click)="go('ai', $event)"
+          i18n="@@project.settings.ai"
+          >AI</a
         >
       }
       @if (s.tokens) {
-        <a href="#tokens" (click)="go('tokens', $event)" i18n="@@project.settings.tokens"
+        <a
+          [routerLink]="[]"
+          fragment="tokens"
+          [replaceUrl]="true"
+          (click)="go('tokens', $event)"
+          i18n="@@project.settings.tokens"
           >Analysis tokens</a
         >
       }
       @if (s.webhooks) {
-        <a href="#webhooks" (click)="go('webhooks', $event)" i18n="@@project.settings.webhooks"
+        <a
+          [routerLink]="[]"
+          fragment="webhooks"
+          [replaceUrl]="true"
+          (click)="go('webhooks', $event)"
+          i18n="@@project.settings.webhooks"
           >Webhooks</a
         >
       }
       @if (s.delete) {
-        <a href="#danger" (click)="go('danger', $event)" i18n="@@project.settings.danger"
+        <a
+          [routerLink]="[]"
+          fragment="danger"
+          [replaceUrl]="true"
+          (click)="go('danger', $event)"
+          i18n="@@project.settings.danger"
           >Danger zone</a
         >
       }
@@ -51,8 +81,7 @@
           />
           <q-gate-profiles-panel [project]="p" (saved)="store.reload()" />
           <q-main-branch-panel [project]="p" (saved)="store.reload()" />
-          <q-auto-fix-panel [project]="p" (saved)="store.reload()" />
-          <q-ai-review-panel [project]="p" />
+          <q-project-ai-panel [project]="p" (saved)="store.reload()" />
         }
       }
       @if (s.tokens) {

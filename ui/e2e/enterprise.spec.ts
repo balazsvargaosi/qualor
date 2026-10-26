@@ -382,21 +382,20 @@ test.describe('automatic fix suggestions (4E-3a §4)', () => {
     await expect(section.getByLabel('At most per analysis')).toHaveValue('5');
     await expect(section.locator('#auto-fix-opted-out')).toHaveText('No project opted out.');
 
-    // The project opts out, and stays out after a reload.
+    // The project opts out with its AI panel's switch, which saves at once, and stays out after a
+    // reload.
     await openProjectSettings(page);
-    const panel = page.locator('#auto-fix');
-    const toggle = panel.getByLabel('Automatic fix suggestions for this project');
+    const toggle = page.locator('section#ai').getByRole('switch', {
+      name: "Post fix suggestions to this project's merge requests automatically",
+    });
     await expect(toggle).toBeChecked();
     await toggle.uncheck();
-    await panel.getByRole('button', { name: 'Save' }).click();
-    await expect(panel.getByRole('status')).toHaveText(
-      'Automatic fix suggestions are off for this project.',
+    await expect(page.locator('section#ai [data-line="fixes"]').getByRole('status')).toHaveText(
+      'Saved.',
     );
     await expectAccessible(page);
     await page.reload();
-    await expect(
-      page.locator('#auto-fix').getByLabel('Automatic fix suggestions for this project'),
-    ).not.toBeChecked();
+    await expect(toggle).not.toBeChecked();
 
     // The organisation's section names it.
     await page.goto('/settings/ai-review#fix-suggestions');

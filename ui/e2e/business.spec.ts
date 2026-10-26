@@ -131,7 +131,8 @@ test('the Business plan has no portfolio', async ({ page }) => {
 // 4E-3a §2, §4: automatic fix suggestions are Enterprise only (`llm.auto-fix`). The organisation's
 // switch-on and the project's opt-out that enterprise.spec.ts saved are kept but not offered: the
 // organisation's AI page has no section for them, and its status says they are Enterprise; the
-// other screens show the Enterprise note in place of their controls.
+// instance page shows the Enterprise note in place of its controls, and the project's AI panel
+// has no Fixes line.
 test('the Business plan shows no fix suggestions section, and the status says they are Enterprise', async ({
   page,
 }) => {
@@ -163,9 +164,10 @@ test('the Business plan shows no fix suggestions section, and the status says th
     .getByRole('navigation', { name: 'Project' })
     .getByRole('link', { name: 'Settings' })
     .click();
-  const panel = page.locator('#auto-fix');
-  await expect(panel).toContainText('Automatic fix suggestions need the Enterprise plan.');
-  await expect(panel.getByRole('checkbox')).toHaveCount(0);
+  const panel = page.locator('section#ai');
+  await expect(panel.locator('[data-line="review"]')).toBeVisible();
+  await expect(panel.locator('[data-line="fixes"]')).toHaveCount(0);
+  await expect(panel.getByRole('switch')).toHaveCount(0);
 });
 
 // 4E-3b: the support bundle is a Business feature too (`support-bundle`).

@@ -87,7 +87,12 @@ function setup(
   const server = new FakeServer();
   // The panel finds the issue's organisation from its project (the one in the header may differ).
   server.on('GET', '/api/v0/projects/p1', {
-    body: { id: 'p1', organizationId: ORG_ID, ...project },
+    body: {
+      id: 'p1',
+      organizationId: ORG_ID,
+      autoFix: { available: true, enabled: true, organizationEnabled: true, excludedFromAi: false },
+      ...project,
+    },
   });
   server.on('GET', '/api/v0/projects/p1/branches', {
     body: page([{ ...MERGE_REQUEST, id: 'main', kind: 'branch', isMain: true }, MERGE_REQUEST]),
@@ -296,6 +301,46 @@ describe('AiPanel (llm.md §18)', () => {
     await settle(fixture);
     expect(root.querySelector('[role="alert"]')?.textContent).toContain(
       'Findings of secret rules are never sent.',
+    );
+  });
+
+  it('shows that the project is excluded from AI, with no button to ask', async () => {
+    const server = setup(ORG_AI, {
+      scmConnectionId: 'c1',
+      autoFix: { available: true, enabled: true, organizationEnabled: true, excludedFromAi: true },
+    });
+    server.on('GET', '/api/v0/issues/i1/ai', {
+      body: {
+        explain: request({
+          status: 'succeeded',
+          result: { kind: 'explain', summary: 'Sum.', explanation: 'Why.', howToFix: null },
+        }),
+        triage: null,
+        fix: null,
+      },
+    });
+    const { root } = await render();
+    const excluded = root.querySelector('#ai-excluded');
+    expect(excluded?.textContent?.trim()).toBe('An instance admin excluded this project from AI.');
+    expect(excluded?.classList).toContain('muted');
+    // An answer asked before the exclusion is still shown, with nothing to ask again.
+    expect(root.querySelector('#ai-explain-heading')).not.toBeNull();
+    expect(root.querySelectorAll('button')).toHaveLength(0);
+    expect(root.textContent).not.toContain('Asking sends');
+    expect(server.requests.filter((r) => r.method === 'POST')).toHaveLength(0);
+  });
+
+  it('says so when the organisation may not use AI', async () => {
+    const server = setup();
+    server.on('POST', '/api/v0/issues/i1/ai/explain', {
+      status: 409,
+      body: problem(409, 'AI_DISABLED'),
+    });
+    const { fixture, root } = await render();
+    button(root, 'Explain').click();
+    await settle(fixture);
+    expect(root.querySelector('[role="alert"]')?.textContent?.trim()).toBe(
+      'This organization may not use AI.',
     );
   });
 

@@ -16,7 +16,13 @@ import { safeHelpUri } from '../shared/links';
 import { type IssueDetail, IssuePage, readSnippet } from './issue.page';
 
 /** The project, with a maintainer's permissions on it (rbac-audit.md §16). */
-const PROJECT = { id: 'p1', organizationId: ORG_ID, permissions: [...MEMBER_PROJECT_PERMISSIONS] };
+/** The issue's project: a member's, not excluded from AI (the AI panel reads it). */
+const PROJECT = {
+  id: 'p1',
+  organizationId: ORG_ID,
+  permissions: [...MEMBER_PROJECT_PERMISSIONS],
+  autoFix: { available: true, enabled: true, organizationEnabled: true, excludedFromAi: false },
+};
 
 /** Issue ids are UUIDs (anything else is "not found" without a request). */
 const ID = '0190a6c2-0000-7000-8000-0000000000a1';
@@ -469,9 +475,7 @@ describe('IssuePage', () => {
   });
 
   it('sends the suggestion id with the false-positive transition the panel opened', async () => {
-    server.on('GET', '/api/v0/projects/p1', {
-      body: { id: 'p1', organizationId: ORG_ID, permissions: [...MEMBER_PROJECT_PERMISSIONS] },
-    });
+    server.on('GET', '/api/v0/projects/p1', { body: PROJECT });
     server.on('GET', `/api/v0/organizations/${ORG_ID}/ai`, {
       body: {
         enabled: true,
