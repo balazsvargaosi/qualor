@@ -3,6 +3,7 @@ import { createServer, type IncomingHttpHeaders } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { eventStream, streamPieces, type StreamFault, type Wire } from './fake-llm-sse';
 
 const SHAPES = path.join(path.dirname(fileURLToPath(import.meta.url)), 'llm-shapes');
 const MAX_BODY = 1024 * 1024;
@@ -19,11 +20,18 @@ export interface RecordedLlmRequest {
   body: string;
   json: unknown;
 }
+/**
+ * One scripted answer: its status, headers and body (an object is sent as JSON), after `delayMs`.
+ * A request that asks for a stream gets a 2xx as the events of that body (fake-llm-sse.ts), with the
+ * fault of `stream` if any; a body whose content-type is `text/event-stream` is the test's own
+ * stream, and is sent as it is.
+ */
 export interface LlmReply {
   status: number;
   headers?: Record<string, string>;
   body: unknown;
   delayMs?: number;
+  stream?: StreamFault;
 }
 export type LlmResponder = (request: RecordedLlmRequest) => LlmReply | Promise<LlmReply>;
 
@@ -383,9 +391,6 @@ function blankTextProblem(json: unknown): string | null {
   return null;
 }
 
-/** The three wires of the fake: Messages, chat completions and Responses. */
-type Wire = 'anthropic' | 'chat' | 'responses';
-
 /**
  * The 400 of a request whose output limit is above the cap of its model, in the words of its API
  * (Anthropic's; OpenAI's chat completions for the field it asked in; and the Responses API's, in the
@@ -443,6 +448,28 @@ function outputCapProblem(
 const openAiProblem = (message: string, param: string | null, code: string | null): unknown => ({
   error: { message, type: 'invalid_request_error', param, code },
 });
+
+/**
+ * The 400 of a server that does not stream, to a request that asks it to, in the words of each API:
+ * a Chat Completions server that does not know `stream_options` names it as the parameter, the
+ * Responses API names `stream`, and the Messages API, which names no parameter, says it of
+ * `stream` in its message.
+ */
+function streamRefusal(wire: Wire): unknown {
+  if (wire === 'anthropic') {
+    return {
+      type: 'error',
+      error: { type: 'invalid_request_error', message: 'stream: Extra inputs are not permitted' },
+    };
+  }
+  return wire === 'responses'
+    ? openAiProblem("Unsupported parameter: 'stream'.", 'stream', 'unsupported_parameter')
+    : openAiProblem(
+        'Unrecognized request argument supplied: stream_options',
+        'stream_options',
+        null,
+      );
+}
 
 /**
  * What the real Responses API refuses that a client can get wrong, as it words it, or null when the
@@ -583,6 +610,11 @@ export interface FakeLlm {
  * limit below 16 tokens, an assistant message of `input_text`, and an output for a call that was not
  * made, and one that asks for JSON mode when the word json is nowhere in its `input` (its
  * instructions do not count).
+ *
+ * A request that asks for a stream (`stream: true`) is answered with the events its API sends for
+ * the answer it would have had (see LlmReply), in pieces. With `refuseStream` it is refused instead,
+ * with a 400 in the words of a server that does not stream (`streamRefusal`), and takes no
+ * scripted reply: the request asked again without the stream takes it.
  */
 export async function createFakeLlm(
   options: {
@@ -591,6 +623,7 @@ export async function createFakeLlm(
     refuseBlankText?: boolean;
     outputCaps?: Record<string, number>;
     toolsOnlyThroughResponses?: readonly string[];
+    refuseStream?: boolean;
   } = {},
 ): Promise<FakeLlm> {
   const apiKey =
@@ -653,6 +686,31 @@ export async function createFakeLlm(
           : request.path === '/v1/responses'
             ? 'responses'
             : 'chat';
+        const streamed = (json as { stream?: unknown } | null)?.stream === true;
+        /**
+         * A scripted or canned answer: to a request that streams, the events of its body, written
+         * at once unless the reply has a delay (no timer to move for a test that fakes them).
+         */
+        const answer = (reply: LlmReply): void => {
+          const own = reply.headers?.['content-type']?.startsWith('text/event-stream') === true;
+          if (!streamed || own || reply.status < 200 || reply.status >= 300) return send(reply);
+          const fault = reply.stream ?? {};
+          const write = (): void => {
+            if (res.destroyed) return;
+            res.writeHead(reply.status, {
+              'content-type': 'text/event-stream',
+              'cache-control': 'no-cache',
+              ...reply.headers,
+            });
+            res.flushHeaders();
+            if (fault.silent === true) return;
+            for (const piece of streamPieces(eventStream(wire, reply.body, fault)))
+              res.write(piece);
+            res.end();
+          };
+          if (reply.delayMs === undefined) write();
+          else setTimeout(write, reply.delayMs);
+        };
         const error = llmShape(anthropic ? 'anthropic-error' : 'openai-error');
         if (size > MAX_BODY) return send({ status: 413, body: error });
         if (
@@ -700,6 +758,9 @@ export async function createFakeLlm(
             });
           }
         }
+        if (streamed && options.refuseStream === true) {
+          return send({ status: 400, body: streamRefusal(wire) });
+        }
         const refused =
           wire === 'responses'
             ? (responsesProblem(json) ?? jsonWordProblem(json))
@@ -711,10 +772,10 @@ export async function createFakeLlm(
         if (capped !== null) return send({ status: 400, body: capped });
         const next = queue.shift();
         try {
-          if (next === undefined) return send(shaped(request, cannedModelText(request)));
-          if (typeof next === 'function') return send(await next(request));
-          if ('say' in next) return send(shaped(request, next.say));
-          return send(next);
+          if (next === undefined) return answer(shaped(request, cannedModelText(request)));
+          if (typeof next === 'function') return answer(await next(request));
+          if ('say' in next) return answer(shaped(request, next.say));
+          return answer(next);
         } catch {
           // A throwing responder answers 500 instead of leaving the request hanging.
           return send({ status: 500, body: error });

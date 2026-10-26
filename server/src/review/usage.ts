@@ -13,6 +13,7 @@ import {
   type LlmConversation,
   type LlmTurn,
   type ProviderKind,
+  type StreamLimits,
 } from '../llm/providers';
 import { UTC_DAY_START } from '../llm/service';
 import {
@@ -75,6 +76,29 @@ export function reviewCallSettings(settings: StoredLlmSettings): StoredLlmSettin
   return {
     ...settings,
     provider: { ...provider, timeoutSeconds: REVIEW_CALL_MIN_TIMEOUT_SECONDS },
+  };
+}
+
+/** The longest a review call that streams may take in all, in seconds: 15 minutes. */
+export const REVIEW_STREAM_TOTAL_SECONDS = 900;
+
+/** The most raw bytes the stream of a review call may send: 16 MiB. */
+const REVIEW_STREAM_MAX_BYTES = 16 * 1024 * 1024;
+
+/**
+ * The limits of a review call's stream, for a provider whose timeout is `timeoutSeconds`: that
+ * timeout, but never less than REVIEW_CALL_MIN_TIMEOUT_SECONDS, is the wait for the first byte and
+ * the longest the stream may be silent between two chunks, as a reasoning model can think for
+ * minutes before it writes, after its stream began; the whole call has 15 minutes, and its stream
+ * 16 MiB.
+ */
+export function reviewStreamLimits(timeoutSeconds: number): StreamLimits {
+  const silentMs = Math.max(timeoutSeconds, REVIEW_CALL_MIN_TIMEOUT_SECONDS) * 1_000;
+  return {
+    firstByteMs: silentMs,
+    idleMs: silentMs,
+    totalMs: REVIEW_STREAM_TOTAL_SECONDS * 1_000,
+    maxStreamBytes: REVIEW_STREAM_MAX_BYTES,
   };
 }
 
@@ -346,7 +370,10 @@ interface Outcome {
  * it is returned or stored. A failure is thrown after it is recorded; a key that cannot be read is
  * thrown as the provider refusing it. A call that `deps.signal` gives up is cut at once and thrown
  * as `LlmCallAborted`, with no row: the provider gave no answer and failed at nothing, so the call
- * is charged to no budget and the circuit only hands its probe on.
+ * is charged to no budget and the circuit only hands its probe on. Every call is streamed, within
+ * `reviewStreamLimits` (R35), so that a gateway that cuts a connection which stays idle does not cut
+ * a long answer; a server that will not stream is asked again without it in the same call, which is
+ * still one row.
  */
 export function reviewSender(
   deps: ReviewSenderDeps,
@@ -359,6 +386,7 @@ export function reviewSender(
   const http = {
     internalHosts: deps.config.llmInternalHosts,
     version: VERSION,
+    stream: reviewStreamLimits(provider.timeoutSeconds),
     ...(deps.signal === undefined ? {} : { signal: deps.signal }),
   };
   const owner = OWNER[deps.feature];

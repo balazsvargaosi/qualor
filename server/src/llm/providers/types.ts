@@ -1,5 +1,5 @@
 import type { FinishReason } from '@qualor/shared';
-import type { Resolver } from '../../http/outbound';
+import type { OutboundStreamLimits, Resolver } from '../../http/outbound';
 
 export const PROVIDER_KINDS = ['openai', 'anthropic'] as const;
 export type ProviderKind = (typeof PROVIDER_KINDS)[number];
@@ -182,7 +182,9 @@ export type LlmFailure = (typeof LLM_FAILURES)[number];
  * that was passed is the context window that the prompt shares with the output, so that what the
  * model takes depends on how long the prompt is, and is no cap of the model's own; and, always
  * with the first, a request to the Chat Completions API was refused in words that name the
- * Responses API, which is where the model takes its tools.
+ * Responses API, which is where the model takes its tools. `refusedStream` is a request that asked
+ * for a streamed answer and was refused (a 400) in words that name the stream: the server does not
+ * stream, and the request is asked again without it.
  */
 export interface LlmErrorOptions {
   status?: number | null;
@@ -191,6 +193,7 @@ export interface LlmErrorOptions {
   refusedOutputLimit?: boolean;
   refusedContext?: boolean;
   needsResponses?: boolean;
+  refusedStream?: boolean;
 }
 
 /**
@@ -204,6 +207,7 @@ export class LlmError extends Error {
   readonly refusedOutputLimit: boolean;
   readonly refusedContext: boolean;
   readonly needsResponses: boolean;
+  readonly refusedStream: boolean;
 
   constructor(
     readonly failure: LlmFailure,
@@ -218,6 +222,7 @@ export class LlmError extends Error {
     this.refusedOutputLimit = options.refusedOutputLimit ?? false;
     this.refusedContext = options.refusedContext ?? false;
     this.needsResponses = options.needsResponses ?? false;
+    this.refusedStream = options.refusedStream ?? false;
   }
 }
 
@@ -234,6 +239,13 @@ export class LlmCallAborted extends Error {
   }
 }
 
+/**
+ * The limits of a streamed call, which its caller sets: `firstByteMs` until the status line, then
+ * `idleMs` between two chunks of the body, `totalMs` for the whole call, and at most
+ * `maxStreamBytes` raw bytes of the body.
+ */
+export type StreamLimits = Omit<OutboundStreamLimits, 'maxErrorBytes'>;
+
 export interface ProviderHttpOptions {
   internalHosts: ReadonlySet<string>;
   /** Qualor's version, for `User-Agent`. */
@@ -244,6 +256,12 @@ export interface ProviderHttpOptions {
    * the call throws {@link LlmCallAborted}. One that aborted before sends nothing.
    */
   signal?: AbortSignal;
+  /**
+   * Set, a conversation's call (`converse`) asks for a streamed answer and reads it as it comes,
+   * within these limits; a server that will not stream is asked once more without it. Left out, the
+   * call is not streamed, as a single-shot call (`callProvider`) never is.
+   */
+  stream?: StreamLimits;
 }
 
 /**
@@ -266,3 +284,11 @@ export function tokenCount(value: unknown): number | null {
 
 /** llm.md §4: answers over 1 MiB are refused. */
 export const LLM_MAX_ANSWER_BYTES = 1024 * 1024;
+
+/**
+ * The most one event of a streamed answer may hold. An answer streamed is held to the cap of an
+ * answer (LLM_MAX_ANSWER_BYTES) once it is put together, but one of its events may hold more than
+ * the answer: the Responses API's last event repeats the whole response, with its instructions and
+ * its tools besides what the model wrote.
+ */
+export const LLM_MAX_EVENT_BYTES = 4 * LLM_MAX_ANSWER_BYTES;

@@ -111,6 +111,21 @@ describe('the llm worker (llm.md §9, §10, §14)', () => {
     expect(logs()).not.toContain(fake.openAiBaseUrl);
   });
 
+  it.each(['openai', 'anthropic'] as const)(
+    'explain, triage and fix ask for no stream (%s)',
+    async (kind) => {
+      await configure({ kind });
+      for (const feature of ['explain', 'triage', 'fix']) await ask(feature);
+      await runLlmJobs(h, llmJobDeps(h));
+      expect(fake.requests).toHaveLength(3);
+      for (const request of fake.requests) {
+        expect(request.json).not.toHaveProperty('stream');
+        expect(request.json).not.toHaveProperty('stream_options');
+        expect(request.headers.accept).toBe('application/json');
+      }
+    },
+  );
+
   it('works with the Anthropic shape too', async () => {
     await configure({
       kind: 'anthropic',

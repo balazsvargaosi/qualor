@@ -2,6 +2,17 @@ import type { FinishReason } from '@qualor/shared';
 import { z } from 'zod';
 import { NOT_UNDERSTOOD, postJson } from './http';
 import { askWithRoom } from './output-room';
+import type { SseEvent } from './sse';
+import {
+  answerAsker,
+  cutShort,
+  errorInStream,
+  eventOf,
+  notUnderstood,
+  serverFailed,
+  withinAnswerCap,
+  type StreamWire,
+} from './streamed';
 import {
   LlmError,
   tokenCount,
@@ -95,6 +106,140 @@ export function readChoice(raw: unknown): { answer: LlmAnswer; toolCalls: readon
     toolCalls,
   };
 }
+
+/** A chunk of a streamed chat completion, as far as `assembleChat` reads it. */
+const chunkSchema = z.looseObject({
+  model: z.string().nullable().optional(),
+  choices: z
+    .array(
+      z.looseObject({
+        index: z.number().nullable().optional(),
+        delta: z
+          .looseObject({
+            content: z.string().nullable().optional(),
+            refusal: z.string().nullable().optional(),
+            tool_calls: z
+              .array(
+                z.looseObject({
+                  index: z.number().int().min(0),
+                  id: z.string().nullable().optional(),
+                  type: z.string().nullable().optional(),
+                  function: z
+                    .looseObject({
+                      name: z.string().nullable().optional(),
+                      arguments: z.string().nullable().optional(),
+                    })
+                    .nullable()
+                    .optional(),
+                }),
+              )
+              .nullable()
+              .optional(),
+          })
+          .nullable()
+          .optional(),
+        finish_reason: z.string().nullable().optional(),
+      }),
+    )
+    .nullable()
+    .optional(),
+  usage: z.unknown().optional(),
+});
+
+/** A call as the deltas of its `index` make it. */
+interface CallParts {
+  id?: string;
+  type?: string;
+  name?: string;
+  arguments?: string;
+}
+
+/** A call, as the `tool_calls` of a completion that is not streamed have it. */
+function callOf(parts: CallParts): unknown {
+  return {
+    ...(parts.id === undefined ? {} : { id: parts.id }),
+    ...(parts.type === undefined ? {} : { type: parts.type }),
+    function: {
+      ...(parts.name === undefined ? {} : { name: parts.name }),
+      ...(parts.arguments === undefined ? {} : { arguments: parts.arguments }),
+    },
+  };
+}
+
+/**
+ * Puts the chunks of a streamed chat completion together into the completion that is not streamed,
+ * for `readChoice` to read, as OpenAI streams it:
+ * - the content and the refusal of the first choice are its deltas, joined;
+ * - a call is the deltas of its `index`, merged: its id, its type and its name from the first delta
+ *   that has each, its arguments joined; the calls come in the order of their index, whatever order
+ *   their deltas came in;
+ * - the finish reason is the last the choice gives, and the model the last a chunk names;
+ * - the usage is the chunk's that has one (`stream_options.include_usage` sends it last, in a chunk
+ *   of no choices), the last when there are more.
+ * A chunk that carries an `error`, or an `error` event, is the provider's error (`serverFailed`). The
+ * stream ends at `[DONE]`; one that ends before it is unavailable.
+ */
+async function assembleChat(events: AsyncIterable<SseEvent>): Promise<unknown> {
+  let model: string | undefined;
+  let content: string | null = null;
+  let refusal: string | null = null;
+  let finishReason: string | null = null;
+  let usage: unknown;
+  const calls = new Map<number, CallParts>();
+  let done = false;
+  for await (const event of events) {
+    if (event.data.trim() === '[DONE]') {
+      done = true;
+      break;
+    }
+    const { data } = eventOf(event);
+    const error = event.event === 'error' ? (data?.error ?? data) : data?.error;
+    if (event.event === 'error' || (error !== undefined && error !== null)) {
+      throw errorInStream(serverFailed(error));
+    }
+    const parsed = chunkSchema.safeParse(data);
+    if (!parsed.success) throw notUnderstood();
+    const chunk = parsed.data;
+    if (typeof chunk.model === 'string' && chunk.model !== '') model = chunk.model;
+    if (chunk.usage !== undefined && chunk.usage !== null) usage = chunk.usage;
+    for (const choice of chunk.choices ?? []) {
+      if ((choice.index ?? 0) !== 0) continue;
+      const delta = choice.delta;
+      if (typeof delta?.content === 'string') content = (content ?? '') + delta.content;
+      if (typeof delta?.refusal === 'string') refusal = (refusal ?? '') + delta.refusal;
+      for (const part of delta?.tool_calls ?? []) {
+        const call = calls.get(part.index) ?? {};
+        calls.set(part.index, call);
+        if (call.id === undefined && part.id) call.id = part.id;
+        if (call.type === undefined && part.type) call.type = part.type;
+        if (call.name === undefined && part.function?.name) call.name = part.function.name;
+        const piece = part.function?.arguments;
+        if (typeof piece === 'string') call.arguments = (call.arguments ?? '') + piece;
+      }
+      if (typeof choice.finish_reason === 'string') finishReason = choice.finish_reason;
+    }
+  }
+  if (!done) throw cutShort();
+  const message = {
+    content,
+    refusal,
+    ...(calls.size > 0
+      ? {
+          tool_calls: [...calls.entries()]
+            .sort(([a], [b]) => a - b)
+            .map(([, parts]) => callOf(parts)),
+        }
+      : {}),
+  };
+  withinAnswerCap(message);
+  return { model, choices: [{ message, finish_reason: finishReason }], usage };
+}
+
+/** How a conversation's call streams on Chat Completions: the usage asked for, in a last chunk. */
+const CHAT_STREAM: StreamWire = {
+  fields: { stream: true, stream_options: { include_usage: true } },
+  assemble: assembleChat,
+};
 
 /** POST <baseUrl>/chat/completions and read the first choice (`readChoice`). */
 async function chat(
@@ -197,7 +342,9 @@ export function toolCall(raw: unknown): LlmToolCall {
  * the messages, and the tools as `tools` with `tool_choice: "auto"` (sent only when there are
  * tools). No `response_format` while tools are sent (the R5 ruling): the caller asks for its JSON
  * in the prompt. A conversation without tools keeps the JSON mode of the settings, as `openAiChat`
- * does. The request, the limits and the failures are those of `openAiChat`.
+ * does. The request, the limits and the failures are those of `openAiChat`, but that the answer is
+ * streamed when `http.stream` says so (`stream`, and `stream_options` for the usage), and put
+ * together into the completion it would have been (`assembleChat`).
  */
 export async function openAiConverse(
   config: ProviderConfig,
@@ -213,6 +360,7 @@ export async function openAiConverse(
     type: 'function',
     function: { name: tool.name, description: tool.description, parameters: tool.parameters },
   }));
+  const ask = answerAsker(config, http, CHAT_STREAM);
   return await askWithRoom(config, conversation, async (maxTokens) => {
     const body: Record<string, unknown> = {
       model: config.model,
@@ -226,7 +374,14 @@ export async function openAiConverse(
       body.response_format = { type: 'json_object' };
     }
     if (config.temperature !== null) body.temperature = config.temperature;
-    const { answer, toolCalls } = await chat(config, apiKey, body, http);
+    const { answer, toolCalls } = readChoice(
+      await ask({
+        path: '/chat/completions',
+        headers: authHeaders(config, apiKey),
+        body,
+        outputLimitField: config.maxTokensField,
+      }),
+    );
     return { ...answer, toolCalls: toolCalls.map(toolCall) };
   });
 }

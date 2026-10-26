@@ -9,6 +9,7 @@ import { NOT_UNDERSTOOD, postJson, postStream } from './http';
 import { parseSse, SseError, type SseEvent } from './sse';
 import {
   LLM_MAX_ANSWER_BYTES,
+  LLM_MAX_EVENT_BYTES,
   LlmCallAborted,
   LlmError,
   WORKSPACE_REQUIRED_TEXT,
@@ -344,6 +345,7 @@ function shape(error: unknown): unknown {
       refusedOutputLimit: error.refusedOutputLimit,
       refusedContext: error.refusedContext,
       needsResponses: error.needsResponses,
+      refusedStream: error.refusedStream,
     };
   }
   return error instanceof LlmCallAborted ? 'LlmCallAborted' : error;
@@ -690,6 +692,128 @@ describe('postStream', () => {
     },
   );
 
+  /** The refusals of a server that does not stream, as each kind of server words them. */
+  const STREAM_REFUSALS: [string, Wire, unknown][] = [
+    [
+      'a Chat Completions server that does not know stream_options, by its param',
+      'openai',
+      {
+        error: {
+          message: 'Fake error text',
+          type: 'invalid_request_error',
+          param: 'stream_options',
+          code: null,
+        },
+      },
+    ],
+    [
+      'the Responses API, by its param stream',
+      'openai',
+      {
+        error: {
+          message: 'Fake error text',
+          type: 'invalid_request_error',
+          param: 'stream',
+          code: 'unsupported_parameter',
+        },
+      },
+    ],
+    [
+      'a server that names stream_options in its words (Azure)',
+      'openai',
+      refusal('Unrecognized request argument supplied: stream_options'),
+    ],
+    [
+      'a server whose validation refuses stream_options (vLLM)',
+      'openai',
+      {
+        object: 'error',
+        message: 'stream_options: Extra inputs are not permitted',
+        type: 'BadRequestError',
+        param: null,
+        code: 400,
+      },
+    ],
+    [
+      'the Messages API, which names no param',
+      'anthropic',
+      {
+        type: 'error',
+        error: { type: 'invalid_request_error', message: 'stream: Extra inputs are not permitted' },
+      },
+    ],
+    [
+      'a server that says it does not stream',
+      'openai',
+      refusal('Streaming is not supported for this model'),
+    ],
+    [
+      'a server that will not stream tools, which takes them unstreamed',
+      'openai',
+      refusal('Streaming tool calls is not supported for this model'),
+    ],
+  ];
+
+  it.each(STREAM_REFUSALS)(
+    'flags a 400 that refuses the stream of a streamed request: %s',
+    async (_name, wire, body) => {
+      const config = wire === 'anthropic' ? anthropic : openai;
+      const { path, headers } = wire === 'anthropic' ? messages() : chat();
+      const sent = { ...withTools, stream: true };
+      fake.enqueue(reply(400, body), reply(400, body));
+      const err = await postStream(config, path, headers, sent, http, LIMITS).catch(
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(LlmError);
+      expect(shape(err)).toMatchObject({
+        failure: 'rejected',
+        status: 400,
+        refusedStream: true,
+        refusedTools: false,
+        message: 'The provider refused the request (HTTP 400); check the base URL and model',
+      });
+      // A request that did not ask for a stream is not refused for one.
+      const plain = await postJson(config, path, headers, withTools, http).catch((e: unknown) => e);
+      expect(shape(plain)).toMatchObject({ failure: 'rejected', refusedStream: false });
+    },
+  );
+
+  it.each([
+    [
+      'a 400 that names stream and says nothing of support',
+      400,
+      refusal('stream: Input should be a valid boolean'),
+    ],
+    [
+      'a 400 that says something else is not supported',
+      400,
+      refusal("Unsupported parameter: 'temperature'"),
+    ],
+    [
+      'a refusal of stream_options with another status',
+      422,
+      {
+        error: {
+          message: 'Fake error text',
+          type: 'invalid_request_error',
+          param: 'stream_options',
+          code: null,
+        },
+      },
+    ],
+  ])('does not flag %s', async (_name, status, body) => {
+    fake.enqueue(reply(status, body));
+    const err = await postStream(
+      openai,
+      chat().path,
+      chat().headers,
+      { stream: true },
+      http,
+      LIMITS,
+    ).catch((e: unknown) => e);
+    expect(shape(err)).toMatchObject({ failure: 'rejected', status, refusedStream: false });
+  });
+
   it('refuses a body over 1 MiB as it reads it: the status counts, and nothing is held in full', async () => {
     fake.enqueue({
       status: 400,
@@ -957,18 +1081,32 @@ describe('postStream', () => {
     });
   });
 
-  it('refuses an event over the answer cap of 1 MiB as an answer that is not understood', async () => {
+  it('refuses an event over 4 MiB as an answer that is not understood', async () => {
     await withStreamServer(async (server) => {
       const pending = start(server);
       const answer = await server.next();
       answer.head();
       const iterator = (await pending)[Symbol.asyncIterator]();
-      await answer.write(`data: ${'x'.repeat(LLM_MAX_ANSWER_BYTES)}\n\n`);
+      await answer.write(`data: ${'x'.repeat(LLM_MAX_EVENT_BYTES)}\n\n`);
       await expect(iterator.next()).rejects.toMatchObject({
         failure: 'bad_answer',
         message: NOT_UNDERSTOOD,
       });
       // The connection is not left open behind the refusal.
+      await answer.closed;
+    });
+  });
+
+  it('reads an event over the 1 MiB of an answer: an event may hold more than the answer does', async () => {
+    await withStreamServer(async (server) => {
+      const pending = start(server);
+      const answer = await server.next();
+      answer.head();
+      const iterator = (await pending)[Symbol.asyncIterator]();
+      const data = 'x'.repeat(LLM_MAX_ANSWER_BYTES + 1);
+      await answer.write(`data: ${data}\n\n`);
+      expect(await iterator.next()).toEqual({ done: false, value: event(data) });
+      await iterator.return?.();
       await answer.closed;
     });
   });

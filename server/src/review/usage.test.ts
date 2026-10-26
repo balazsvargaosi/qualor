@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { StoredLlmSettings, StoredProvider } from '../llm/settings';
-import { REVIEW_CALL_MIN_TIMEOUT_SECONDS, reviewCallSettings } from './usage';
+import {
+  REVIEW_CALL_MIN_TIMEOUT_SECONDS,
+  REVIEW_STREAM_TOTAL_SECONDS,
+  reviewCallSettings,
+  reviewStreamLimits,
+} from './usage';
 
 const provider = (timeoutSeconds: number): StoredProvider => ({
   kind: 'openai',
@@ -45,5 +50,28 @@ describe('reviewCallSettings', () => {
   it('leaves settings without a provider alone', () => {
     const none = settings(null);
     expect(reviewCallSettings(none)).toBe(none);
+  });
+});
+
+describe('reviewStreamLimits', () => {
+  it('waits the timeout of the settings, never less than five minutes, for the first byte and between two chunks', () => {
+    // A reasoning model may think for minutes after the stream began: the assistant's 60 s would cut it.
+    expect(reviewStreamLimits(60)).toMatchObject({ firstByteMs: 300_000, idleMs: 300_000 });
+    expect(reviewStreamLimits(5)).toMatchObject({ firstByteMs: 300_000, idleMs: 300_000 });
+    expect(reviewStreamLimits(REVIEW_CALL_MIN_TIMEOUT_SECONDS)).toMatchObject({
+      firstByteMs: 300_000,
+      idleMs: 300_000,
+    });
+    expect(reviewStreamLimits(600)).toMatchObject({ firstByteMs: 600_000, idleMs: 600_000 });
+  });
+
+  it('gives a call 15 minutes and 16 MiB of stream in all, whatever the timeout', () => {
+    expect(REVIEW_STREAM_TOTAL_SECONDS).toBe(900);
+    for (const timeout of [5, 60, 600]) {
+      expect(reviewStreamLimits(timeout)).toMatchObject({
+        totalMs: 900_000,
+        maxStreamBytes: 16 * 1024 * 1024,
+      });
+    }
   });
 });

@@ -5,7 +5,6 @@ import {
   OutboundStreamError,
   type OutboundFailure,
   type OutboundRequest,
-  type OutboundStreamLimits,
   type OutboundStreamTimer,
 } from '../../http/outbound';
 import { isInternalHostAllowed, scmRefusedAddress } from '../../scm/url';
@@ -14,12 +13,14 @@ import { outputLimitRefusal } from './output-room';
 import { parseSse, SseError, type SseEvent } from './sse';
 import {
   LLM_MAX_ANSWER_BYTES,
+  LLM_MAX_EVENT_BYTES,
   LlmCallAborted,
   LlmError,
   RESPONSES_REQUIRED_TEXT,
   WORKSPACE_REQUIRED_TEXT,
   type ProviderConfig,
   type ProviderHttpOptions,
+  type StreamLimits,
 } from './types';
 
 export const NOT_UNDERSTOOD = "The provider's answer was not understood";
@@ -169,13 +170,6 @@ export async function postJson(
 }
 
 /**
- * The limits of a streamed call, which its caller sets: `firstByteMs` until the status line, then
- * `idleMs` between chunks, `totalMs` for the whole call, and at most `maxStreamBytes` raw bytes of
- * the body.
- */
-export type StreamLimits = Omit<OutboundStreamLimits, 'maxErrorBytes'>;
-
-/**
  * What a streamed call that ran out of a timer is told: for the first byte and the idle timer, how
  * long the model sent nothing, and that the timeout of the settings is what to raise; for the total
  * limit, which no setting changes, the limit in its own words.
@@ -204,16 +198,16 @@ function streamTimeout(
 /**
  * The events of a 2xx's body, read as the chunks arrive. What goes wrong while it streams is thrown
  * from here as what the same would be before the stream: the signal's giving up is LlmCallAborted;
- * a timer that ran out is the `streamTimeout`; a stream over its raw cap, or an event over the answer
- * cap, is an answer that is not understood; a connection that breaks is the provider being
- * unavailable.
+ * a timer that ran out is the `streamTimeout`; a stream over its raw cap, or an event over its bound
+ * (LLM_MAX_EVENT_BYTES, more than an answer may hold: the answer is capped once it is put together),
+ * is an answer that is not understood; a connection that breaks is the provider being unavailable.
  */
 async function* streamEvents(
   chunks: AsyncIterable<Buffer>,
   limits: StreamLimits,
 ): AsyncGenerator<SseEvent, void, undefined> {
   try {
-    yield* parseSse(chunks, { maxEventBytes: LLM_MAX_ANSWER_BYTES });
+    yield* parseSse(chunks, { maxEventBytes: LLM_MAX_EVENT_BYTES });
   } catch (error) {
     if (error instanceof OutboundStreamError) {
       throw failureOf(error, () => streamTimeout(error.timer, limits));
@@ -258,10 +252,11 @@ function eventsOf(
  * even before its first read: `eventsOf`).
  * An answer with any other status throws what `postJson` throws for it, with the one function that
  * classifies a refusal for both (`refusedBy`), so that a streamed call is asked again, as a call
- * that is not, when its output limit is refused; the body of such an answer is read up to 1 MiB, only
- * to classify it. What goes wrong before the status line is `postJson`'s failure too, and what goes
- * wrong while the events stream is thrown from them (`streamEvents`). The terminator of a stream is
- * the provider's to require; a stream that ends without one is still an end here.
+ * that is not, when its output limit is refused; a server that does not stream says so in it too
+ * (`refusedStream`). The body of such an answer is read up to 1 MiB, only to classify it. What goes
+ * wrong before the status line is `postJson`'s failure too, and what goes wrong while the events
+ * stream is thrown from them (`streamEvents`). The terminator of a stream is the provider's to
+ * require; a stream that ends without one is still an end here.
  */
 export async function postStream(
   config: ProviderConfig,
@@ -332,6 +327,12 @@ function refusedBy(
   ) {
     return new LlmError('workspace_required', WORKSPACE_REQUIRED_TEXT, { status });
   }
+  // A server that does not stream is asked again without the stream. Before the other refusals,
+  // which such a server may word with the stream in them: one that does not stream tool calls
+  // takes the same tools unstreamed.
+  if (status === 400 && streamed(request) && refusesStream(refused)) {
+    return new LlmError('rejected', refusedText(status), { status, refusedStream: true });
+  }
   // Before the refusal of the field: OpenAI names the parameter of a limit that is too large
   // too, and it is the value that is refused then, not the field.
   const limit = status === 400 ? outputLimitRefusal(refused.message) : null;
@@ -377,6 +378,11 @@ function refusedBy(
 /** What a request that the provider refused is told, whatever it was refused for. */
 function refusedText(status: number): string {
   return `The provider refused the request (HTTP ${status}); check the base URL and model`;
+}
+
+/** Whether the request body asks for a streamed answer (the key every wire uses for it). */
+function streamed(body: unknown): boolean {
+  return (body as { stream?: unknown } | null)?.stream === true;
 }
 
 /** Whether the request body offers the model tools (the key every wire uses for them). */
@@ -444,6 +450,24 @@ function errorOf(body: Buffer): ErrorBody {
         ? top.error
         : '';
   return { detail, message };
+}
+
+/** The parameters of a streamed request, which a server that does not stream refuses by name. */
+const STREAM_PARAMS: ReadonlySet<string> = new Set(['stream', 'stream_options']);
+/** Words that name the stream: `stream`, `stream_options`, `streaming`. */
+const STREAM_WORDS = /\bstream(?:_options|ing)?\b/i;
+
+/**
+ * Whether an error body says that the server does not stream: the parameter it refuses is one of
+ * the stream's (Chat Completions' `stream_options`, the Responses API's `stream`), or its message
+ * names the stream and says that it is not supported, in the phrases of `refusesTools` ("stream:
+ * Extra inputs are not permitted", "Unrecognized request argument supplied: stream_options").
+ * Only this yes or no is used.
+ */
+function refusesStream({ detail, message }: ErrorBody): boolean {
+  const param = detail?.param;
+  if (typeof param === 'string' && STREAM_PARAMS.has(param)) return true;
+  return STREAM_WORDS.test(message) && NOT_SUPPORTED.test(message);
 }
 
 /**

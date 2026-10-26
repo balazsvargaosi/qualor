@@ -64,6 +64,7 @@ import {
   recordReviewCall,
   RedactionTally,
   remainingReviewTokens,
+  REVIEW_CALL_MIN_TIMEOUT_SECONDS,
   REVIEW_FEATURE,
   REVIEW_REPLY_FEATURE,
   reviewSender,
@@ -128,6 +129,21 @@ const failure = (kind: Kind, status: number): LlmReply => ({
   status,
   body: llmShape(kind === 'anthropic' ? 'anthropic-error' : 'openai-error'),
 });
+
+/** The timers a stream arms, moved by the test, and the clock with them. */
+const fakeTimers = (): void => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+};
+
+/**
+ * Lets the event loop run some turns, so that what the fake wrote has been read by its client
+ * (the timers may be faked: only immediates are used).
+ */
+async function reading(): Promise<void> {
+  for (let turn = 0; turn < 10; turn += 1) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
 
 describe('the review’s own usage (6I-3)', () => {
   let t: TestDatabase;
@@ -473,16 +489,26 @@ const port = 8080;
     it.each(KINDS)(
       'charges a call that timed out, and one answered unreadably, the same input in the result of the loop and in the day (%s)',
       async (kind) => {
-        // The shortest time the provider is given is a second; the fake keeps the first call waiting longer.
-        const settings = settingsFor(kind, {
-          provider: { ...configuredProvider(config.secretKey, fake, kind), timeoutSeconds: 1 },
-        });
-        const late = { ...textTurn(kind, 'late', [1, 1]), delayMs: 1_500 };
-        const timedOut = await converseThrough(
-          kind,
-          [late, textTurn(kind, 'done', [10, 5])],
-          settings,
-        );
+        // The provider begins the first answer, and then sends nothing for as long as a review's
+        // stream may be silent; the call is tried again, and answered.
+        const settings = settingsFor(kind);
+        const silent: LlmReply = { ...textTurn(kind, 'late', [1, 1]), stream: { silent: true } };
+        let timedOut: Awaited<ReturnType<typeof converseThrough>>;
+        fakeTimers();
+        try {
+          const conversation = converseThrough(
+            kind,
+            [silent, textTurn(kind, 'done', [10, 5])],
+            settings,
+          );
+          await vi.waitFor(() => expect(fake.requests).toHaveLength(1));
+          await reading();
+          await vi.advanceTimersByTimeAsync(REVIEW_CALL_MIN_TIMEOUT_SECONDS * 1_000);
+          timedOut = await conversation;
+        } finally {
+          vi.useRealTimers();
+        }
+        expect(fake.requests).toHaveLength(2);
         const [lost, answered] = await rows();
         expect(lost).toMatchObject({
           status: 'failed',
@@ -713,10 +739,58 @@ const port = 8080;
       // A block of no kind the loop reads, nested past what JSON.stringify follows: kept in the
       // history it would make the sender's next JSON.stringify of the conversation throw.
       const deep = `${'{"a":'.repeat(100_000)}1${'}'.repeat(100_000)}`;
-      const turn = `{"id":"msg_1","type":"message","role":"assistant","model":"m","stop_reason":"tool_use","content":[{"type":"thinking","thinking":"","signature":"sig-deep"},{"type":"tool_use","id":"c1","name":"read_file","input":{"path":"a.ts"}},{"type":"text","text":"Reading.","citations":${deep}}],"usage":{"input_tokens":10,"output_tokens":9}}`;
+      // The turn as the Messages API streams it, written by hand: the fake cannot write the block
+      // out to stream it.
+      const sse = (type: string, data: unknown): string =>
+        `event: ${type}\ndata: ${typeof data === 'string' ? data : JSON.stringify(data)}\n\n`;
+      const turn = [
+        sse('message_start', {
+          type: 'message_start',
+          message: {
+            id: 'msg_1',
+            type: 'message',
+            role: 'assistant',
+            model: 'm',
+            content: [],
+            stop_reason: null,
+            usage: { input_tokens: 10, output_tokens: 1 },
+          },
+        }),
+        sse('content_block_start', {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'thinking', thinking: '', signature: 'sig-deep' },
+        }),
+        sse('content_block_stop', { type: 'content_block_stop', index: 0 }),
+        sse('content_block_start', {
+          type: 'content_block_start',
+          index: 1,
+          content_block: { type: 'tool_use', id: 'c1', name: 'read_file', input: {} },
+        }),
+        sse('content_block_delta', {
+          type: 'content_block_delta',
+          index: 1,
+          delta: { type: 'input_json_delta', partial_json: '{"path":"a.ts"}' },
+        }),
+        sse('content_block_stop', { type: 'content_block_stop', index: 1 }),
+        sse(
+          'content_block_start',
+          `{"type":"content_block_start","index":2,"content_block":{"type":"text","text":"Reading.","citations":${deep}}}`,
+        ),
+        sse('content_block_stop', { type: 'content_block_stop', index: 2 }),
+        sse('message_delta', {
+          type: 'message_delta',
+          delta: { stop_reason: 'tool_use' },
+          usage: { output_tokens: 9 },
+        }),
+        sse('message_stop', { type: 'message_stop' }),
+      ].join('');
       const { result, sent } = await converseThrough(
         'anthropic',
-        [{ status: 200, body: turn }, textTurn('anthropic', '{"findings":[]}', [20, 5])],
+        [
+          { status: 200, headers: { 'content-type': 'text/event-stream' }, body: turn },
+          textTurn('anthropic', '{"findings":[]}', [20, 5]),
+        ],
         settingsFor('anthropic', { storePrompts: true }),
       );
       // The provider's answer was not understood, and the conversation goes no further.
@@ -951,6 +1025,107 @@ const port = 8080;
         outputTokens: 5,
       });
       expect(JSON.stringify(stored)).not.toMatch(/maximum allowed number/);
+    });
+
+    it.each([
+      ['openai', 'chat_completions'],
+      ['anthropic', 'chat_completions'],
+      ['openai', 'responses'],
+    ] as const)(
+      'streams its calls (%s, %s), and the row has the tokens the stream counted',
+      async (kind, api) => {
+        const settings = settingsFor(kind, {
+          provider: { ...configuredProvider(config.secretKey, fake, kind), api },
+        });
+        fake.say('done');
+        expect((await converse1(senderFor(kind, { settings }))).text).toBe('done');
+        const [request] = fake.requests;
+        expect(request!.headers.accept).toBe('text/event-stream');
+        expect(request!.json).toMatchObject({ stream: true });
+        // Chat Completions asks for the usage, which it sends only when asked.
+        if (kind === 'openai' && api === 'chat_completions') {
+          expect(request!.json).toMatchObject({ stream_options: { include_usage: true } });
+        } else {
+          expect(request!.json).not.toHaveProperty('stream_options');
+        }
+        const [input, output] = kind === 'anthropic' ? [431, 102] : [412, 96];
+        expect(first(await rows())).toMatchObject({
+          status: 'succeeded',
+          inputTokens: input,
+          outputTokens: output,
+        });
+      },
+    );
+
+    it.each([
+      [60, 300],
+      [400, 400],
+    ])(
+      'waits for a silent stream as long as the timeout of the settings (%i s), but never less than five minutes: %i s',
+      async (timeoutSeconds, waits) => {
+        const settings = settingsFor('openai', {
+          provider: { ...configuredProvider(config.secretKey, fake), timeoutSeconds },
+        });
+        fake.enqueue({ ...textTurn('openai', 'late', [1, 1]), stream: { silent: true } });
+        fakeTimers();
+        try {
+          const call = converse1(senderFor('openai', { settings })).catch((e: unknown) => e);
+          let settled = false;
+          void call.then(() => (settled = true));
+          await vi.waitFor(() => expect(fake.requests).toHaveLength(1));
+          await reading();
+          // A second short of the limit the call still waits: the provider has begun its answer.
+          await vi.advanceTimersByTimeAsync(waits * 1_000 - 1_000);
+          expect(settled).toBe(false);
+          await vi.advanceTimersByTimeAsync(2_000);
+          expect(await call).toMatchObject({
+            failure: 'timeout',
+            message: `The model sent nothing for ${waits} s; raise the timeout in the AI assistant settings`,
+          });
+        } finally {
+          vi.useRealTimers();
+        }
+        expect(first(await rows())).toMatchObject({
+          status: 'failed',
+          errorCode: 'PROVIDER_TIMEOUT',
+        });
+      },
+    );
+
+    it('records one row for a call the server would not stream, asked once more without it', async () => {
+      await fake.close();
+      fake = await createFakeLlm({ refuseStream: true });
+      config = testConfig({ llmInternalHosts: parseInternalHosts(fake.host) });
+      fake.enqueue(textTurn('openai', 'done', [20, 5]));
+      expect((await converse1(senderFor('openai'))).text).toBe('done');
+      // The stream refused, and the same request asked without it, which the fake answered.
+      expect(
+        fake.requests.map((request) => (request.json as { stream?: unknown }).stream ?? null),
+      ).toEqual([true, null]);
+      const stored = await rows();
+      expect(stored).toHaveLength(1);
+      expect(stored[0]).toMatchObject({
+        status: 'succeeded',
+        errorCode: null,
+        inputTokens: 20,
+        outputTokens: 5,
+      });
+    });
+
+    it('keeps null on the row of a call whose stream counted nothing, which fills the day by the bytes it was sent', async () => {
+      // A server that sends no usage in its stream, whatever its answer counts.
+      fake.enqueue({ ...textTurn('openai', 'done', [10, 5]), stream: { noUsage: true } });
+      await converse1(
+        senderFor('openai', { settings: settingsFor('openai', { pricing: PRICING }) }),
+      );
+      const row = first(await rows());
+      expect(row).toMatchObject({
+        status: 'succeeded',
+        inputTokens: null,
+        outputTokens: null,
+        costMicroUsd: null,
+      });
+      expect((await reviewUsageToday(t.db, orgA)).tokens).toBe(Math.ceil(row.inputBytes / 4));
     });
 
     it('writes the organisation of the run’s project on the row', async () => {
@@ -1869,6 +2044,55 @@ const port = 8080;
         tokens: 0,
         costMicroUsd: 0,
       });
+    });
+
+    it('decides the same, and writes the same rows, from streamed answers as from answers that are not streamed', async () => {
+      const reply = { id: randomUUID(), projectId: projectA1 };
+      const PER_CALL = new Set([
+        'id',
+        'providerHost',
+        'createdAt',
+        'updatedAt',
+        'finishedAt',
+        'durationMs',
+        'cacheKey',
+        'inputSha256',
+      ]);
+      /** The reply decided against a fake that streams its answers, or one that will not stream. */
+      const decide = async (refuseStream: boolean) => {
+        await fake.close();
+        fake = await createFakeLlm({ refuseStream });
+        config = testConfig({ llmInternalHosts: parseInternalHosts(fake.host) });
+        const settings = settingsFor('openai', { storePrompts: true, pricing: PRICING });
+        fake.enqueue(readTurn([1_000, 100]), textTurn('openai', DECISION, [2_000, 200]));
+        const decision = await decideReply(inputOf(), depsOf(settings, { reply }));
+        // What a row says of the call, but for when it was made, where the fake listened, and the
+        // nonce of the envelope, which each conversation draws anew (and the hashes of what it sent,
+        // which hold it).
+        const stored = (await rows()).map((row) => {
+          const text = JSON.stringify(
+            Object.fromEntries(Object.entries(row).filter(([field]) => !PER_CALL.has(field))),
+          );
+          const nonce = /QUALOR-DATA-([0-9a-f]{32})/.exec(text)?.[1];
+          return JSON.parse(
+            nonce === undefined ? text : text.split(nonce).join('NONCE'),
+          ) as unknown;
+        });
+        await t.db.delete(llmRequests);
+        const streamed = fake.requests.map(
+          (request) => (request.json as { stream?: unknown }).stream === true,
+        );
+        return { decision, stored, streamed };
+      };
+      const streamed = await decide(false);
+      const unstreamed = await decide(true);
+      expect(streamed.streamed).toEqual([true, true]);
+      // Each call was refused its stream, and asked again without it.
+      expect(unstreamed.streamed).toEqual([true, false, true, false]);
+      expect(streamed.decision).toMatchObject({ verdict: 'false_positive', readCode: true });
+      expect(streamed.decision).toEqual(unstreamed.decision);
+      expect(streamed.stored).toHaveLength(2);
+      expect(streamed.stored).toEqual(unstreamed.stored);
     });
 
     it('a day without room skips the reply before any call, and what replies spend is what the day loses', async () => {

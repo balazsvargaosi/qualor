@@ -3,6 +3,17 @@ import { NOT_UNDERSTOOD, postJson } from './http';
 import { authHeaders, readChoice, toolCall } from './openai';
 import { askWithRoom } from './output-room';
 import { replayOf } from './replay';
+import type { SseEvent } from './sse';
+import {
+  answerAsker,
+  cutShort,
+  errorInStream,
+  eventOf,
+  NOT_COMPLETED,
+  serverFailed,
+  withinAnswerCap,
+  type StreamWire,
+} from './streamed';
 import {
   LlmError,
   type LlmAnswer,
@@ -23,11 +34,9 @@ import {
  * as it came, beside the calls it led to. What an answer holds is read into the shape of a chat
  * completion's first choice and then by the code of the Chat Completions wire (`readChoice`), so
  * that a turn of either wire is read the same way: its text, its calls, its finish reason, its usage.
- * JSON mode has a condition of its own here: see `userItem`.
+ * JSON mode has a condition of its own here: see `userItem`. A conversation's answer is streamed
+ * when the call's options say so (`assembleResponse`).
  */
-
-/** What an answer that failed is told, whatever the provider said of it: a fixed text. */
-const FAILED = 'The model provider could not complete the answer';
 
 // What an answer is read from. Everything else in it is the provider's, and an item of its output
 // is read only as far as its text and its calls: the items themselves go back as they came.
@@ -90,7 +99,7 @@ function readResponse(raw: unknown): Read {
   if (!parsed.success) throw new LlmError('bad_answer', NOT_UNDERSTOOD);
   const response = parsed.data;
   if (response.status === 'failed' || (response.error !== undefined && response.error !== null)) {
-    throw new LlmError('unavailable', FAILED);
+    throw new LlmError('unavailable', NOT_COMPLETED);
   }
   const { output } = response;
   if (!Array.isArray(output)) throw new LlmError('bad_answer', NOT_UNDERSTOOD);
@@ -151,6 +160,42 @@ function asToolCall(item: unknown): unknown {
     function: { name: call.name, arguments: call.arguments },
   };
 }
+
+/** The events of a streamed response that end it, each with the whole response as it ended. */
+const TERMINATORS: ReadonlySet<string> = new Set([
+  'response.completed',
+  'response.incomplete',
+  'response.failed',
+]);
+
+/**
+ * Puts the events of a streamed response together into the response that is not streamed, for
+ * `readResponse` to read. The event that ends the stream (`response.completed`, `.incomplete` or
+ * `.failed`) carries the whole response, its output and its usage, as the answer that is not
+ * streamed has them, and that is the answer, as OpenAI's own client takes it. The events before it
+ * (the items as they are added and done, the deltas of their texts and arguments) say what that
+ * response holds, and are read only for an `error`, which is the provider's error (`serverFailed`).
+ * A stream that ends before its terminator is unavailable. What the model wrote, the output, is held
+ * to the cap of an answer; the event that carries it may hold more, as it repeats the instructions
+ * and the tools of the request.
+ */
+async function assembleResponse(events: AsyncIterable<SseEvent>): Promise<unknown> {
+  for await (const event of events) {
+    const { type, data } = eventOf(event);
+    if (type === 'error' || event.event === 'error') {
+      throw errorInStream(serverFailed(data?.error ?? data));
+    }
+    if (type !== null && TERMINATORS.has(type)) {
+      const response = data?.response;
+      withinAnswerCap((response as { output?: unknown } | null | undefined)?.output);
+      return response;
+    }
+  }
+  throw cutShort();
+}
+
+/** How a conversation's call streams on the Responses API. */
+const RESPONSES_STREAM: StreamWire = { fields: { stream: true }, assemble: assembleResponse };
 
 /** POST <baseUrl>/responses and read the answer. */
 async function send(
@@ -281,9 +326,10 @@ function inputItems(messages: readonly LlmMessage[], jsonMode: boolean): unknown
  * R5, on the Responses API: POST <baseUrl>/responses with the whole conversation as `input`, the
  * tools as flat function tools that are not strict (the API makes them strict unless told not to,
  * and Qualor's own schemas are not) with `tool_choice: "auto"`. The request, the limits and the
- * failures are those of `openAiResponses`; the `function_call` items of the answer are the turn's
- * calls, in order, and a copy of its whole output (the reasoning items, the message and the calls)
- * is the turn's replay, which goes back as it came with the results of the calls.
+ * failures are those of `openAiResponses`, but that the answer is streamed when `http.stream` says
+ * so (`assembleResponse`); the `function_call` items of the answer are the turn's calls, in order,
+ * and a copy of its whole output (the reasoning items, the message and the calls) is the turn's
+ * replay, which goes back as it came with the results of the calls.
  */
 export async function openAiResponsesConverse(
   config: ProviderConfig,
@@ -299,9 +345,12 @@ export async function openAiResponsesConverse(
     strict: false,
   }));
   const input = inputItems(conversation.messages, asksForJson(config, tools));
+  const ask = answerAsker(config, http, RESPONSES_STREAM);
   return await askWithRoom(config, conversation, async (maxTokens) => {
     const body = requestBody(config, conversation.system, input, tools, maxTokens);
-    const { answer, toolCalls, output, calls } = await send(config, apiKey, body, http);
+    const { answer, toolCalls, output, calls } = readResponse(
+      await ask({ path: '/responses', headers: authHeaders(config, apiKey), body }),
+    );
     const replay = output === null ? undefined : replayOf('openai', output, calls);
     return { ...answer, toolCalls: toolCalls.map(toolCall), ...(replay ? { replay } : {}) };
   });

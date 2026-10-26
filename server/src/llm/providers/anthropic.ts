@@ -3,6 +3,17 @@ import { z } from 'zod';
 import { NOT_UNDERSTOOD, postJson } from './http';
 import { askWithRoom } from './output-room';
 import { replayOf } from './replay';
+import type { SseEvent } from './sse';
+import {
+  answerAsker,
+  asRecord,
+  cutShort,
+  errorInStream,
+  eventOf,
+  notUnderstood,
+  withinAnswerCap,
+  type StreamWire,
+} from './streamed';
 import {
   LlmError,
   tokenCount,
@@ -60,23 +71,18 @@ function headers(config: ProviderConfig, apiKey: string | null): Record<string, 
 }
 
 /**
- * POST <baseUrl>/v1/messages and read the answer: the text blocks joined, the provider's own
- * `tool_use` blocks, which only a conversation reads further, and the whole `content` exactly as
- * it came, which a conversation turns into the replay that sends the turn back (`replayOf`). A
- * refusal (an answer of HTTP 200 whose stop reason says so) has none of it: what its content
- * holds, an apology or half an answer or a call that cannot be read, is not the turn's.
+ * Reads the answer of POST <baseUrl>/v1/messages (`raw`, the message as JSON, or as its stream put
+ * it together): the text blocks joined, the provider's own `tool_use` blocks, which only a
+ * conversation reads further, and the whole `content` exactly as it came, which a conversation
+ * turns into the replay that sends the turn back (`replayOf`). A refusal (an answer of HTTP 200
+ * whose stop reason says so) has none of it: what its content holds, an apology or half an answer
+ * or a call that cannot be read, is not the turn's.
  */
-async function send(
-  config: ProviderConfig,
-  apiKey: string | null,
-  body: Record<string, unknown>,
-  http: ProviderHttpOptions,
-): Promise<{
+function readMessage(raw: unknown): {
   answer: LlmAnswer;
   toolUse: readonly unknown[];
   content: readonly unknown[] | null;
-}> {
-  const raw = await postJson(config, '/v1/messages', headers(config, apiKey), body, http);
+} {
   const parsed = answerSchema.safeParse(raw);
   if (!parsed.success) throw new LlmError('bad_answer', NOT_UNDERSTOOD);
   const usage = {
@@ -109,6 +115,116 @@ async function send(
   };
 }
 
+/** A content block as its events make it: the block, and the JSON its input deltas have joined. */
+interface BlockParts {
+  block: Record<string, unknown>;
+  json: string | null;
+}
+
+/** The `index` of a block's event: a whole number from 0, or the events are not understood. */
+function blockIndex(data: Record<string, unknown> | null): number {
+  const index = data?.index;
+  if (typeof index !== 'number' || !Number.isInteger(index) || index < 0) throw notUnderstood();
+  return index;
+}
+
+/** Joins a text delta's `piece` to the `field` of a block. */
+function append(block: Record<string, unknown>, field: string, piece: unknown): void {
+  if (typeof piece !== 'string') return;
+  const before = block[field];
+  block[field] = (typeof before === 'string' ? before : '') + piece;
+}
+
+/**
+ * A block that stops: the JSON its input deltas joined is read once, into its input. JSON that does
+ * not make an object (a call cut off at the output limit) leaves the block the input it started
+ * with, so that the turn can still go back to the API as it is: the call then has no arguments.
+ */
+function stopBlock(parts: BlockParts): void {
+  const joined = parts.json;
+  parts.json = null;
+  if (joined === null || joined.trim() === '') return;
+  let input: unknown;
+  try {
+    input = JSON.parse(joined);
+  } catch {
+    return;
+  }
+  if (asRecord(input) !== null) parts.block.input = input;
+}
+
+/**
+ * Puts the events of a streamed Messages API answer together into the message that is not
+ * streamed, for `readMessage` to read: every kind of block into the same content list, in the order
+ * of its `index`, so that the replay of the turn is the same.
+ * - `message_start` is the message (its model and its input usage);
+ * - `content_block_start` opens a block as it is but for what its deltas add: the `text_delta`s of
+ *   a text, the `thinking_delta`s of a thinking block and its `signature_delta`, the
+ *   `input_json_delta`s of a call, read once when the block stops (`stopBlock`); a block whose
+ *   thinking is redacted comes whole, with its `data`, and so does a block of a kind this does not
+ *   know, which is kept as it came;
+ * - `message_delta` gives the stop reason, and the usage so far, which counts the output;
+ * - `message_stop` ends the stream: one that ends before it is unavailable;
+ * - `ping` is nothing, and `error` is the provider's error: unavailable when it is overloaded, else
+ *   its refusal.
+ */
+async function assembleMessage(events: AsyncIterable<SseEvent>): Promise<unknown> {
+  let message: Record<string, unknown> | null = null;
+  const blocks = new Map<number, BlockParts>();
+  let done = false;
+  for await (const event of events) {
+    const { type, data } = eventOf(event);
+    if (type === 'error' || event.event === 'error') {
+      throw errorInStream(asRecord(data?.error)?.type === 'overloaded_error');
+    }
+    if (type === 'message_stop') {
+      done = true;
+      break;
+    }
+    if (type === 'message_start') {
+      const started = asRecord(data?.message);
+      if (started === null) throw notUnderstood();
+      message = { ...started };
+    } else if (type === 'content_block_start') {
+      const block = asRecord(data?.content_block);
+      if (block === null) throw notUnderstood();
+      blocks.set(blockIndex(data), { block: { ...block }, json: null });
+    } else if (type === 'content_block_delta' || type === 'content_block_stop') {
+      const parts = blocks.get(blockIndex(data));
+      if (parts === undefined) throw notUnderstood();
+      if (type === 'content_block_stop') {
+        stopBlock(parts);
+        continue;
+      }
+      const delta = asRecord(data?.delta);
+      if (delta?.type === 'text_delta') append(parts.block, 'text', delta.text);
+      else if (delta?.type === 'thinking_delta') append(parts.block, 'thinking', delta.thinking);
+      else if (delta?.type === 'signature_delta') append(parts.block, 'signature', delta.signature);
+      else if (delta?.type === 'input_json_delta' && typeof delta.partial_json === 'string') {
+        parts.json = (parts.json ?? '') + delta.partial_json;
+      }
+    } else if (type === 'message_delta') {
+      if (message === null) throw notUnderstood();
+      Object.assign(message, asRecord(data?.delta));
+      const usage = asRecord(data?.usage);
+      if (usage !== null) message.usage = { ...asRecord(message.usage), ...usage };
+    }
+  }
+  if (!done) throw cutShort();
+  if (message === null) throw notUnderstood();
+  const content = [...blocks.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([, parts]) => {
+      stopBlock(parts);
+      return parts.block;
+    });
+  withinAnswerCap(content);
+  return { ...message, content };
+}
+
+/** How a conversation's call streams on the Messages API. */
+const MESSAGES_STREAM: StreamWire = { fields: { stream: true }, assemble: assembleMessage };
+
 /**
  * llm.md §2.3: POST <baseUrl>/v1/messages with `x-api-key` and `anthropic-version`. No streaming,
  * tools, metadata, thinking or sampling parameter: the current models refuse a temperature, a
@@ -129,7 +245,8 @@ export async function anthropicMessages(
       system: call.system,
       messages: [{ role: 'user', content: call.user }],
     };
-    return (await send(config, apiKey, body, http)).answer;
+    return readMessage(await postJson(config, '/v1/messages', headers(config, apiKey), body, http))
+      .answer;
   });
 }
 
@@ -220,8 +337,9 @@ function toolCall(raw: unknown): LlmToolCall {
  * R5: POST <baseUrl>/v1/messages with the whole conversation: `system`, the messages, and the
  * tools as `tools` (`input_schema` is the parameters) with `tool_choice` auto, both sent only when
  * there are tools. Only auto: the current models refuse a forced choice (`any`, `tool`) with a 400.
- * The request, the limits and the failures are those of `anthropicMessages`; the `tool_use` blocks
- * of the answer are the turn's calls, in order, and a copy of its content is the turn's replay.
+ * The request, the limits and the failures are those of `anthropicMessages`, but that the answer is
+ * streamed when `http.stream` says so (`assembleMessage`); the `tool_use` blocks of the answer are
+ * the turn's calls, in order, and a copy of its content is the turn's replay.
  */
 export async function anthropicConverse(
   config: ProviderConfig,
@@ -235,6 +353,7 @@ export async function anthropicConverse(
     description: tool.description,
     input_schema: tool.parameters,
   }));
+  const ask = answerAsker(config, http, MESSAGES_STREAM);
   return await askWithRoom(config, conversation, async (maxTokens) => {
     const body: Record<string, unknown> = {
       model: config.model,
@@ -246,7 +365,9 @@ export async function anthropicConverse(
       body.tools = tools;
       body.tool_choice = { type: 'auto' };
     }
-    const { answer, toolUse, content } = await send(config, apiKey, body, http);
+    const { answer, toolUse, content } = readMessage(
+      await ask({ path: '/v1/messages', headers: headers(config, apiKey), body }),
+    );
     const toolCalls = toolUse.map(toolCall);
     const replay = content === null ? undefined : replayOf('anthropic', content, toolUse);
     return { ...answer, toolCalls, ...(replay ? { replay } : {}) };

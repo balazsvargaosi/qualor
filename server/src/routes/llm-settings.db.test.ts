@@ -1250,6 +1250,26 @@ describe('/system/llm (llm.md §3, §16)', () => {
       expect(res.body).not.toContain(fake.apiKey);
     });
 
+    it.each(['openai', 'anthropic'] as const)(
+      'asks for no stream, in the plain call or in the tool check (%s)',
+      async (kind) => {
+        await useProvider(kind);
+        try {
+          fake.enqueue(plainOk(kind), toolAnswer(kind));
+          const res = await check();
+          expect(res.json()).toMatchObject({ ok: true, problem: null, toolCalling: 'supported' });
+          expect(fake.requests).toHaveLength(2);
+          for (const request of fake.requests) {
+            expect(request.json).not.toHaveProperty('stream');
+            expect(request.json).not.toHaveProperty('stream_options');
+            expect(request.headers.accept).toBe('application/json');
+          }
+        } finally {
+          await useProvider('openai');
+        }
+      },
+    );
+
     it('sends the same check to an Anthropic provider, in its own wire format', async () => {
       await useProvider('anthropic');
       try {

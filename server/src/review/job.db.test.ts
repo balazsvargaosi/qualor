@@ -452,6 +452,101 @@ describe('the ai-review job (6I-3, R15)', () => {
     }
   });
 
+  it('stores the same findings and rows from streamed answers as from answers that are not streamed', async () => {
+    // The same review twice: through the fake, which streams its answers, and through a fake that
+    // will not stream, so that each call is asked once more without it.
+    const PER_RUN = new Set([
+      'id',
+      'projectId',
+      'branchId',
+      'analysisId',
+      'snapshotId',
+      'providerHost',
+      'deadlineAt',
+      'createdAt',
+      'updatedAt',
+      'startedAt',
+      'finishedAt',
+    ]);
+    const unstreaming = await createFakeLlm({ refuseStream: true });
+    try {
+      const config = {
+        ...h.ctx.config,
+        llmInternalHosts: parseInternalHosts(`${llm.host},${unstreaming.host}`),
+      };
+      const review = async (fake: FakeLlm) => {
+        await switchReviewOn(h.ctx.db, {
+          secretKey: h.ctx.config.secretKey,
+          fake,
+          organizationId: h.organizationId,
+          userId: h.ctx.adminId,
+          over: { pricing: PRICING },
+        });
+        const mr = mergeRequest();
+        const analysisId = await analysisOf(mr);
+        await snapshotOf(analysisId, mr);
+        const before = { requests: fake.requests.length, rows: (await reviewRows()).length };
+        fake.enqueue(reviewResponder(FOUND), reviewResponder(FOUND));
+        expect(await runReviews({ config })).toBe(1);
+        // The run, but for what is the merge request's own, where the fake listened, and when.
+        const ran = await runOf(analysisId);
+        const run = Object.fromEntries(
+          Object.entries(ran).filter(([field]) => !PER_RUN.has(field)),
+        );
+        const found = (await aiIssuesOf(ran.branchId)).map(({ issue, finding, ruleKey }) => ({
+          ruleKey,
+          issue: {
+            path: issue.path,
+            startLine: issue.startLine,
+            endLine: issue.endLine,
+            message: issue.message,
+            severity: issue.severity,
+            status: issue.status,
+            confidence: issue.confidence,
+          },
+          finding: finding && {
+            category: finding.category,
+            body: finding.body,
+            assumption: finding.assumption,
+            verification: finding.verification,
+            suggestion: finding.suggestion,
+            anchorLine: finding.anchorLine,
+            reviewedHeadSha: finding.reviewedHeadSha,
+          },
+        }));
+        const rows = (await reviewRows()).slice(before.rows).map((row) => ({
+          feature: row.feature,
+          provider: row.provider,
+          model: row.model,
+          promptVersion: row.promptVersion,
+          status: row.status,
+          errorCode: row.errorCode,
+          attempts: row.attempts,
+          redactions: row.redactions,
+          inputTokens: row.inputTokens,
+          outputTokens: row.outputTokens,
+          costMicroUsd: row.costMicroUsd,
+        }));
+        const streamed = fake.requests
+          .slice(before.requests)
+          .map((request) => (request.json as { stream?: unknown }).stream === true);
+        return { run, found, rows, streamed };
+      };
+      const streamed = await review(llm);
+      const unstreamed = await review(unstreaming);
+      expect(streamed.streamed).toEqual([true, true]);
+      expect(unstreamed.streamed).toEqual([true, false, true, false]);
+      expect(streamed.run).toMatchObject({ status: 'done', modelCalls: 2, findingsNew: 1 });
+      expect(streamed.found).toHaveLength(1);
+      expect(streamed.rows).toHaveLength(2);
+      expect(streamed.run).toEqual(unstreamed.run);
+      expect(streamed.found).toEqual(unstreamed.found);
+      expect(streamed.rows).toEqual(unstreamed.rows);
+    } finally {
+      await unstreaming.close();
+    }
+  });
+
   it('a review call waits past the assistant’s timeout', async () => {
     await reviewOn();
     // The assistant gives up after 5 s (the least it can be set to); the reviewer's call takes the
