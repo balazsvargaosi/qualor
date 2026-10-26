@@ -353,7 +353,7 @@ test.describe('automatic fix suggestions (4E-3a §4)', () => {
       page
         .getByRole('navigation', { name: 'On this page' })
         .getByRole('link', { name: 'Automatic fix suggestions' }),
-    ).toHaveAttribute('href', '#fix-suggestions');
+    ).toHaveAttribute('href', '/settings/ai-review#fix-suggestions');
     const fixSwitch = section.getByRole('switch', { name: 'Post fix suggestions automatically' });
     await expect(fixSwitch).not.toBeChecked();
     await expect(fixSwitch).toBeEnabled();
