@@ -55,3 +55,9 @@
   color: var(--warn);
   font-weight: 600;
 }
+/* A budget meter's note, under the budget's words, stays plain whatever the budget's state. */
+.reached .meter-added,
+.attention .meter-added {
+  color: var(--text-muted);
+  font-weight: 400;
+}

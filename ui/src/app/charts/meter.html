@@ -29,4 +29,7 @@
       {{ note }}
     </span>
   }
+  @if (addedNote(); as note) {
+    <span class="meter-note meter-added">{{ note }}</span>
+  }
 </div>

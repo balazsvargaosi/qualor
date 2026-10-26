@@ -41,6 +41,40 @@ describe('Meter', () => {
     expect(root.querySelector('[role="meter"]')?.getAttribute('aria-valuenow')).toBe('200');
   });
 
+  it('says the budget is reached before a note it was given, and draws it reached', async () => {
+    TestBed.configureTestingModule({ imports: [Meter] });
+    const fixture = TestBed.createComponent(Meter);
+    fixture.componentRef.setInput('label', 'AI review');
+    fixture.componentRef.setInput('value', 1_000_000);
+    fixture.componentRef.setInput('max', 1_000_000);
+    fixture.componentRef.setInput('note', '3 reviews · $1.23');
+    await fixture.whenStable();
+    const root = fixture.nativeElement as HTMLElement;
+    const notes = () => [...root.querySelectorAll('.meter-note')].map((n) => text(n));
+    expect(notes()).toEqual(['Budget reached for today', '3 reviews · $1.23']);
+    expect(root.querySelector('.meter')?.classList).toContain('reached');
+    // The budget's words are bold; the note under them stays plain.
+    const [reached, added] = [...root.querySelectorAll('.meter-note')];
+    expect(getComputedStyle(reached!).fontWeight).toBe('600');
+    expect(getComputedStyle(added!).fontWeight).toBe('400');
+    // The alert's icon goes with the budget's words, not with the note.
+    expect(root.querySelectorAll('.meter-note q-icon')).toHaveLength(1);
+    expect(root.querySelector('.meter-note q-icon')?.closest('.meter-note')).toBe(
+      root.querySelector('.meter-note'),
+    );
+    expect(root.querySelector('[role="meter"]')?.getAttribute('aria-valuetext')).toBe(
+      '1,000,000 of 1,000,000, budget reached for today, 3 reviews · $1.23',
+    );
+    // Under the budget, the note alone.
+    fixture.componentRef.setInput('value', 10);
+    await fixture.whenStable();
+    expect(notes()).toEqual(['3 reviews · $1.23']);
+    expect(root.querySelector('.meter')?.classList).not.toContain('reached');
+    expect(root.querySelector('[role="meter"]')?.getAttribute('aria-valuetext')).toBe(
+      '10 of 1,000,000, 3 reviews · $1.23',
+    );
+  });
+
   it('says that a budget of 0 allows none', async () => {
     const root = await render(0, 0);
     expect(text(root.querySelector('.meter-value'))).toBe('0 of 0');

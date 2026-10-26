@@ -1007,6 +1007,19 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
       ]);
     });
 
+    it('says the budget is reached for today, then how many reviews it took', async () => {
+      setup('orgAdmin', {
+        ceiling: 1_000_000,
+        usage: { tokensToday: 1_000_000, costTodayUsd: 1.23, reviewsToday: 3 },
+      });
+      const { root } = await render();
+      const meter = line(root, 'today').querySelector('q-meter')!;
+      expect([...meter.querySelectorAll('.meter-note')].map((n) => text(n))).toEqual([
+        'Budget reached for today',
+        '3 reviews · $1.23',
+      ]);
+    });
+
     it("counts against the organisation's own budget when it is the smaller, in the right number", async () => {
       setup('orgAdmin', {
         ceiling: 900_000,

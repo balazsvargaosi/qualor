@@ -26,7 +26,10 @@ export class Meter {
   readonly unit = input<'count' | 'usd'>('count');
   /** A meter that is no daily budget says its value in its own words ("245 days left")… */
   readonly text = input<string | null>(null);
-  /** …and its own note, instead of the budget notes. */
+  /**
+   * …and its own note, instead of the budget notes. A budget meter (no words of its own) shows a
+   * note after them: "Budget reached for today", then "3 reviews · $1.23".
+   */
   readonly note = input<string | null>(null);
   /**
    * Draws it as needing attention (amber) or as a failure (red, as a reached budget); the note says
@@ -34,8 +37,8 @@ export class Meter {
    */
   readonly alert = input<MeterAlert | null>(null);
 
-  /** A budget meter: no words of its own were given. */
-  private readonly budget = computed(() => this.text() === null && this.note() === null);
+  /** A budget meter: no words of its own were given for its value. */
+  private readonly budget = computed(() => this.text() === null);
 
   protected readonly state = computed(() => {
     const max = this.max();
@@ -59,6 +62,7 @@ export class Meter {
       : $localize`:@@meter.of:${value}:value: of ${this.format(max)}:max:`;
   });
 
+  /** The first note: the budget's words, or the own note of a meter that is no budget. */
   protected readonly noteText = computed(() => {
     if (!this.budget()) return this.note();
     switch (this.state()) {
@@ -73,27 +77,24 @@ export class Meter {
     }
   });
 
+  /** A budget meter's note, after the budget's words. */
+  protected readonly addedNote = computed(() => (this.budget() ? this.note() : null));
+
   /** Its tone: what the page says, else a failure once a budget is reached. */
   protected readonly tone = computed<MeterAlert | null>(
     () => this.alert() ?? (this.budget() && this.state() === 'reached' ? 'failure' : null),
   );
 
-  /** What a screen reader hears for the track: the value's words, and why it needs attention. */
+  /** What a screen reader hears for the track: the value's words, why it needs attention, the note. */
   protected readonly spoken = computed(() => {
-    if (!this.budget()) {
-      const note = this.note();
-      return note === null
-        ? this.valueText()
-        : $localize`:@@meter.spokenNote:${this.valueText()}:value:, ${note}:note:`;
+    let words = this.valueText();
+    if (this.budget() && this.state() === 'reached') {
+      words = $localize`:@@meter.reachedSpoken:${words}:value:, budget reached for today`;
+    } else if (this.budget() && this.state() === 'off') {
+      words = $localize`:@@meter.offSpoken:${words}:value:, none allowed: the budget is 0`;
     }
-    switch (this.state()) {
-      case 'reached':
-        return $localize`:@@meter.reachedSpoken:${this.valueText()}:value:, budget reached for today`;
-      case 'off':
-        return $localize`:@@meter.offSpoken:${this.valueText()}:value:, none allowed: the budget is 0`;
-      default:
-        return this.valueText();
-    }
+    const note = this.note();
+    return note === null ? words : $localize`:@@meter.spokenNote:${words}:value:, ${note}:note:`;
   });
 
   /** The track's value within its range; past a budget its words say the real one. */
