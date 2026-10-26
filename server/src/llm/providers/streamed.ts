@@ -1,4 +1,4 @@
-import { NOT_UNDERSTOOD, postJson, postStream } from './http';
+import { asRecord, NOT_UNDERSTOOD, postJson, postStream } from './http';
 import { pairOf, RememberedPairs } from './remembered-pairs';
 import type { SseEvent } from './sse';
 import {
@@ -90,12 +90,6 @@ export function answerAsker(
     return await postJson(config, path, headers, body, http, outputLimitField);
   };
 }
-
-/** A JSON object of an event's data, or null for anything else. */
-export const asRecord = (value: unknown): Record<string, unknown> | null =>
-  typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
 
 /** An answer whose events were not understood: the text of an answer that was not. */
 export function notUnderstood(): LlmError {

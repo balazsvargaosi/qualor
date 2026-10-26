@@ -468,7 +468,8 @@ const NOT_SUPPORTED =
  */
 const SCHEMA = /\bschema\b|input_schema/i;
 
-const asRecord = (value: unknown): Record<string, unknown> | null =>
+/** A JSON object, as an error body or the data of an event holds one; null for anything else. */
+export const asRecord = (value: unknown): Record<string, unknown> | null =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
@@ -506,8 +507,8 @@ function errorOf(body: Buffer): ErrorBody {
 
 /** The parameters of a streamed request, which a server that does not stream refuses by name. */
 const STREAM_PARAMS: ReadonlySet<string> = new Set(['stream', 'stream_options']);
-/** Words that name the stream: `stream`, `stream_options`, `streaming`. */
-const STREAM_WORDS = /\bstream(?:_options|ing)?\b/i;
+/** Words that name the stream: `stream`, `stream_options`, `streaming`, `streamed`. */
+const STREAM_WORDS = /\bstream(?:_options|ing|ed)?\b/i;
 
 /**
  * Whether an error body says that the server does not stream: the parameter it refuses is one of

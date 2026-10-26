@@ -396,6 +396,31 @@ describe('converse: a streamed answer is the answer that is not streamed (R35)',
     });
   });
 
+  it('a Responses stream that ends in response.failed is the provider failing, as the failed response is unstreamed', async () => {
+    const failed = () => ({
+      status: 200,
+      body: {
+        ...(responsesAnswer('{}') as object),
+        status: 'failed',
+        error: { code: 'server_error', message: 'Fake error text: it broke' },
+      },
+    });
+    fake.enqueue(failed(), failed());
+    const asStream = await converse(configs.responses, fake.apiKey, start, streamed).catch(
+      (e: unknown) => e,
+    );
+    const whole = await converse(configs.responses, fake.apiKey, start, http).catch(
+      (e: unknown) => e,
+    );
+    expect(whole).toMatchObject({ failure: 'unavailable' });
+    expect(asStream).toBeInstanceOf(LlmError);
+    expect(asStream).toMatchObject({
+      failure: 'unavailable',
+      message: (whole as LlmError).message,
+    });
+    expect((asStream as Error).message).not.toContain('Fake error text');
+  });
+
   it.each(WIRES)('%s: a stream that ends without its terminator is unavailable', async (wire) => {
     fake.enqueue({
       status: 200,
@@ -871,6 +896,83 @@ describe('converse: a stream answered by hand', () => {
           items: [{ type: 'tool_use', id: 'toolu_1', name: 'read_file', input: {} }],
         },
       });
+    });
+  });
+
+  it('an Anthropic message_delta whose usage leaves a count null, or is null, keeps the counts there were', async () => {
+    await withStreamServer(async (server) => {
+      const config: ProviderConfig = {
+        ...base,
+        kind: 'anthropic',
+        baseUrl: `http://${server.host}`,
+      };
+      const { http } = against(server);
+      const turn = converse(config, 'k', start, http);
+      const answer = await server.next();
+      answer.head();
+      const event = (data: Record<string, unknown>) =>
+        `event: ${String(data.type)}\ndata: ${JSON.stringify(data)}\n\n`;
+      await answer.end(
+        [
+          event({
+            type: 'message_start',
+            message: {
+              id: 'msg_1',
+              type: 'message',
+              role: 'assistant',
+              model: 'm-1',
+              content: [],
+              stop_reason: null,
+              usage: { input_tokens: 5, output_tokens: 1 },
+            },
+          }),
+          event({
+            type: 'content_block_start',
+            index: 0,
+            content_block: { type: 'text', text: '' },
+          }),
+          event({
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'text_delta', text: 'done' },
+          }),
+          event({ type: 'content_block_stop', index: 0 }),
+          event({
+            type: 'message_delta',
+            delta: { stop_reason: 'end_turn' },
+            usage: { input_tokens: null, output_tokens: 7, cache_read_input_tokens: null },
+          }),
+          event({ type: 'message_delta', delta: {}, usage: null }),
+          event({ type: 'message_stop' }),
+        ].join(''),
+      );
+      expect(await turn).toMatchObject({
+        text: 'done',
+        finishReason: 'stop',
+        usage: { inputTokens: 5, outputTokens: 7 },
+      });
+    });
+  });
+
+  it('a tool-call delta without its index is not understood: nothing says which call it is of', async () => {
+    await withStreamServer(async (server) => {
+      const { config, http } = against(server);
+      const turn = converse(config, 'k', start, http).catch((e: unknown) => e);
+      const answer = await server.next();
+      answer.head();
+      await answer.end(
+        [
+          chunk({ role: 'assistant', content: null }),
+          chunk({
+            tool_calls: [
+              { id: 'call_a', type: 'function', function: { name: 'read_file', arguments: '{}' } },
+            ],
+          }),
+          chunk({}, 'tool_calls'),
+          'data: [DONE]\n\n',
+        ].join(''),
+      );
+      expect(await turn).toMatchObject({ failure: 'bad_answer' });
     });
   });
 

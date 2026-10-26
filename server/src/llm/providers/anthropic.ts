@@ -1,12 +1,11 @@
 import type { FinishReason } from '@qualor/shared';
 import { z } from 'zod';
-import { NOT_UNDERSTOOD, postJson } from './http';
+import { asRecord, NOT_UNDERSTOOD, postJson } from './http';
 import { askWithRoom } from './output-room';
 import { replayOf } from './replay';
 import type { SseEvent } from './sse';
 import {
   answerAsker,
-  asRecord,
   cutShort,
   errorInStream,
   eventOf,
@@ -154,6 +153,18 @@ function stopBlock(parts: BlockParts): void {
 }
 
 /**
+ * The counts of a `message_delta`'s usage that say something: a count it leaves null (the input's,
+ * which `message_start` gave) keeps the one there was, and so does a usage that is none.
+ */
+function countsOf(usage: unknown): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(asRecord(usage) ?? {}).filter(
+      ([, count]) => count !== null && count !== undefined,
+    ),
+  );
+}
+
+/**
  * The error types of the Messages API that say the server failed, in a stream as before it: it is
  * overloaded (HTTP 529 before the stream), or it failed inside (`api_error`, HTTP 500). Such an
  * error is unavailable, and tried again as the same status before the stream is.
@@ -170,7 +181,8 @@ const SERVER_FAILURES: ReadonlySet<unknown> = new Set(['overloaded_error', 'api_
  *   `input_json_delta`s of a call, read once when the block stops (`stopBlock`); a block whose
  *   thinking is redacted comes whole, with its `data`, and so does a block of a kind this does not
  *   know, which is kept as it came;
- * - `message_delta` gives the stop reason, and the usage so far, which counts the output;
+ * - `message_delta` gives the stop reason, and the usage so far, which counts the output (a count
+ *   it leaves null keeps the one there was: `countsOf`);
  * - `message_stop` ends the stream: one that ends before it is unavailable;
  * - `ping` is nothing, and `error` is the provider's error: unavailable when the server failed
  *   (`SERVER_FAILURES`), else its refusal.
@@ -213,8 +225,8 @@ async function assembleMessage(events: AsyncIterable<SseEvent>): Promise<unknown
     } else if (type === 'message_delta') {
       if (message === null) throw notUnderstood();
       Object.assign(message, asRecord(data?.delta));
-      const usage = asRecord(data?.usage);
-      if (usage !== null) message.usage = { ...asRecord(message.usage), ...usage };
+      const counts = countsOf(data?.usage);
+      if (Object.keys(counts).length > 0) message.usage = { ...asRecord(message.usage), ...counts };
     }
   }
   if (!done) throw cutShort();

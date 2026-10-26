@@ -121,6 +121,8 @@ const chunkSchema = z.looseObject({
             tool_calls: z
               .array(
                 z.looseObject({
+                  // What tells the calls of a turn apart: a delta without it is not understood,
+                  // never taken for a part of the first call.
                   index: z.number().int().min(0),
                   id: z.string().nullable().optional(),
                   type: z.string().nullable().optional(),

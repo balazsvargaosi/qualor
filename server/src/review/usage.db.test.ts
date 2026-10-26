@@ -34,7 +34,13 @@ import {
   type ReviewSkipReason,
 } from '../db/schema';
 import { createLlmRuntime, type LlmRuntime } from '../llm/job';
-import type { LlmConversation, LlmMessage, LlmTurn, ProviderKind } from '../llm/providers';
+import {
+  LlmCallAborted,
+  type LlmConversation,
+  type LlmMessage,
+  type LlmTurn,
+  type ProviderKind,
+} from '../llm/providers';
 import { todayUsage } from '../llm/service';
 import { DEFAULT_LLM_SETTINGS, pricingFor, type StoredLlmSettings } from '../llm/settings';
 import type { WorkerLogger } from '../queue/worker';
@@ -67,6 +73,7 @@ import {
   REVIEW_CALL_MIN_TIMEOUT_SECONDS,
   REVIEW_FEATURE,
   REVIEW_REPLY_FEATURE,
+  reviewCallSettings,
   reviewSender,
   reviewUsageToday,
   type ReviewCallRecord,
@@ -1162,6 +1169,51 @@ const port = 8080;
         inputTokens: 20,
         outputTokens: 5,
       });
+    });
+
+    it('waits for the answer of a call asked again without the stream as long as a review call waits: five minutes, past the assistant’s timeout', async () => {
+      await fake.close();
+      fake = await createFakeLlm({ refuseStream: true });
+      config = testConfig({ llmInternalHosts: parseInternalHosts(fake.host) });
+      // The settings a review sends its calls with: the assistant's 60 s, raised to the floor.
+      const settings = reviewCallSettings(
+        settingsFor('openai', {
+          provider: { ...configuredProvider(config.secretKey, fake), timeoutSeconds: 60 },
+        }),
+      );
+      // The answer the server gives without the stream comes after four minutes.
+      fake.enqueue({ ...textTurn('openai', 'late', [1, 1]), delayMs: 240_000 });
+      fakeTimers();
+      try {
+        const call = converse1(senderFor('openai', { settings })).catch((e: unknown) => e);
+        await vi.waitFor(() => expect(fake.requests).toHaveLength(2));
+        await vi.advanceTimersByTimeAsync(240_000);
+        expect(await call).toMatchObject({ text: 'late' });
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(
+        fake.requests.map((request) => (request.json as { stream?: unknown }).stream ?? null),
+      ).toEqual([true, null]);
+    });
+
+    it('gives a call up when its signal aborts after the status line: no row, and nothing counted against the provider', async () => {
+      const sender = senderFor('openai');
+      await failing(sender, 503, SCM_CIRCUIT_FAILURES - 1);
+      const controller = new AbortController();
+      fake.enqueue({ ...textTurn('openai', 'never', [1, 1]), stream: { silent: true } });
+      const call = converse1(senderFor('openai', { signal: controller.signal })).catch(
+        (e: unknown) => e,
+      );
+      await vi.waitFor(() => expect(fake.requests).toHaveLength(SCM_CIRCUIT_FAILURES));
+      // The status line has reached the call: it waits for the body when it is given up.
+      await reading();
+      controller.abort();
+      expect(await call).toBeInstanceOf(LlmCallAborted);
+      await vi.waitFor(() => expect(fake.abandoned).toHaveLength(1));
+      // No row for it, and one more failure would not have left the circuit closed.
+      expect(await rows()).toHaveLength(SCM_CIRCUIT_FAILURES - 1);
+      expect(runtime.circuit.openUntil(fake.openAiBaseUrl)).toBeNull();
     });
 
     it('logs one line, with nothing the provider said, when the server refuses the stream, and the later calls of the model ask for none', async () => {

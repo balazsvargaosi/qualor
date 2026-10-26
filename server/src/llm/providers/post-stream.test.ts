@@ -507,6 +507,11 @@ describe('postStream', () => {
       'openai',
       refusal('Streaming tool calls is not supported for this model'),
     ],
+    [
+      'a server that says a response cannot be streamed',
+      'openai',
+      refusal('A streamed response is not supported by this endpoint'),
+    ],
   ];
 
   it.each(STREAM_REFUSALS)(
