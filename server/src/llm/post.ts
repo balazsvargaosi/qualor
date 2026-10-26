@@ -28,6 +28,7 @@ import { MAX_FILE_PAGES } from '../scm/github/decorate';
 import { githubWebBase, parseRepoRef, type GitHubRepoRef } from '../scm/github/url';
 import { GITLAB_MR_IID, type GitLabClient } from '../scm/gitlab/client';
 import { addedLineTexts, MAX_DIFF_PAGES, MAX_DISCUSSION_PAGES } from '../scm/inline';
+import { firstLineOf } from '../scm/markdown';
 import { ScmError } from '../scm/provider';
 import { decorationRetryDelaySeconds, inSeconds, MAX_DECORATION_ATTEMPTS } from '../scm/queue';
 import { retryable } from '../scm/runtime';
@@ -379,8 +380,6 @@ async function loadTarget(
   return { row, loaded, path: built.issue.path, fix, body, marker };
 }
 
-const firstLine = (body: string) => (body.split('\n', 1)[0] ?? '').replace(/\r$/, '');
-
 /**
  * llm.md §8.3–§8.4 on GitLab: the comment found by its marker (posted already: a retry, or an
  * outcome that was lost) whatever else changed, else the merge request open at the analysed head,
@@ -401,7 +400,7 @@ async function postToGitLab(client: GitLabClient, t: Target): Promise<Outcome> {
   const listed = await client.discussions(ref, iid, MAX_DISCUSSION_PAGES);
   for (const discussion of listed.items) {
     const note = discussion.notes[0];
-    if (note && note.author.id === me.id && !note.system && firstLine(note.body) === t.marker) {
+    if (note && note.author.id === me.id && !note.system && firstLineOf(note.body) === t.marker) {
       return { kind: 'posted', url: noteUrl(note.id) };
     }
   }
@@ -455,7 +454,7 @@ async function postToGitHub(
   const login = `${app.slug}[bot]`;
   const listed = await client.reviewComments(number, MAX_REVIEW_COMMENT_PAGES);
   const own = listed.items.find(
-    (c) => c.user?.type === 'Bot' && c.user.login === login && firstLine(c.body) === t.marker,
+    (c) => c.user?.type === 'Bot' && c.user.login === login && firstLineOf(c.body) === t.marker,
   );
   if (own) return { kind: 'posted', url: commentUrl(own.html_url) };
   const pull = await client.pullRequest(number);
