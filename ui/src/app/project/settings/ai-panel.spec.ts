@@ -109,6 +109,8 @@ interface Row {
   reason: Reason;
   excluded?: boolean;
   state: string;
+  /** The chip's tone: works, set up but stopped, or off. */
+  badge: 'badge-passed' | 'badge-warn' | 'badge-none';
   sentence: string;
   requirement?: string;
 }
@@ -119,12 +121,14 @@ const ROWS: readonly Row[] = [
     name: 'reviewed',
     reason: null,
     state: 'Reviewed',
+    badge: 'badge-passed',
     sentence: "Reviews this project's merge requests, with ollama:11434.",
   },
   {
     name: 'not linked to a repository',
     reason: 'not_mapped',
     state: 'Not reviewed',
+    badge: 'badge-warn',
     sentence: 'Selected, but not reviewed.',
     requirement:
       'This project is not linked to a GitLab or GitHub repository, where reviews are posted. An organization admin links it in Settings → Repositories.',
@@ -133,6 +137,7 @@ const ROWS: readonly Row[] = [
     name: 'not selected',
     reason: 'project_not_selected',
     state: 'Off',
+    badge: 'badge-none',
     sentence:
       'Default reviews selected projects only, and this is not one of them. An organization admin adds it in Settings → AI.',
   },
@@ -140,12 +145,14 @@ const ROWS: readonly Row[] = [
     name: 'paused for a new provider',
     reason: 'consent_outdated',
     state: 'Paused',
+    badge: 'badge-warn',
     sentence: 'Paused until an organization admin confirms the new AI provider in Settings → AI.',
   },
   {
     name: 'not switched on',
     reason: 'review_disabled',
     state: 'Off',
+    badge: 'badge-none',
     sentence:
       'Default has not switched on AI review. An organization admin switches it on in Settings → AI.',
   },
@@ -153,12 +160,14 @@ const ROWS: readonly Row[] = [
     name: 'the organization may not use AI',
     reason: 'organization_disabled',
     state: 'Off',
+    badge: 'badge-none',
     sentence: 'Default may not use AI. An instance admin allows it in Settings → AI provider.',
   },
   {
     name: 'no provider',
     reason: 'no_provider',
     state: 'Off',
+    badge: 'badge-none',
     sentence:
       "AI isn't set up on this server. An instance admin connects a provider in Settings → AI provider.",
   },
@@ -167,6 +176,7 @@ const ROWS: readonly Row[] = [
     reason: 'project_not_selected',
     excluded: true,
     state: 'Off',
+    badge: 'badge-none',
     sentence: 'An instance admin excluded this project from AI, so nothing of it is sent.',
   },
 ];
@@ -197,6 +207,9 @@ describe('ProjectAiPanel', () => {
         project({ reason: row.reason, autoFix: { excludedFromAi: row.excluded ?? false } }),
       );
       expect(stateOf(root, 'review')).toEqual({ state: row.state, sentence: row.sentence });
+      expect(line(root, 'review')?.querySelector('.state-line .badge')?.classList).toContain(
+        row.badge,
+      );
       const requirement = line(root, 'review')?.querySelector('.req');
       expect(text(requirement)).toBe(row.requirement);
       // The project admin cannot open the places: they are named only.
@@ -466,6 +479,39 @@ describe('ProjectAiPanel', () => {
       await settle(fixture);
       expect(fix.checked).toBe(false);
       expect(fix.getAttribute('aria-disabled')).toBeNull();
+    });
+
+    it('flips back on a refusal that comes after a second move was undone', async () => {
+      const server = setup();
+      let refuse!: () => void;
+      server.on(
+        'PUT',
+        ROUTE,
+        () =>
+          new Promise((resolve) => {
+            refuse = () =>
+              resolve({ status: 409, body: problem(409, 'AUTO_FIX_OPT_OUT_LIMIT_REACHED') });
+          }),
+      );
+      const { fixture, root, saved } = await render();
+      const fix = toggle(root)!;
+      fix.focus();
+      fix.click();
+      await settle(fixture);
+      // A second move while the first is on its way is undone at once.
+      fix.click();
+      await settle(fixture);
+      expect(fix.checked).toBe(false);
+      refuse();
+      await settle(fixture);
+      expect(server.requestsTo('PUT', ROUTE).map((r) => r.body)).toEqual([{ enabled: false }]);
+      expect(fix.checked).toBe(true);
+      expect(fix.getAttribute('aria-disabled')).toBeNull();
+      expect(text(line(root, 'fixes')?.querySelector('[role="alert"]'))).toBe(
+        'This organisation already has 1 000 projects opted out. Switch one back on first.',
+      );
+      expect(saved).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(fix);
     });
 
     it('waits for a repository link above a switch that still works', async () => {
