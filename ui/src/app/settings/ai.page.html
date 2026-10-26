@@ -267,7 +267,7 @@
           <div class="setting-text">
             <label for="ai-strong-model" i18n="@@ai.settings.strongModel">Strong model</label>
             <p id="ai-strong-model-hint" i18n="@@ai.settings.strongModelHint">
-              Used for the judge and the security checks. Empty: the model above.
+              Used for the judge and the verification of security findings. Empty: the model above.
             </p>
           </div>
           <div class="setting-field">
@@ -409,35 +409,33 @@
             </div>
           </div>
         }
-        @if (kind() !== 'anthropic') {
-          @if (kind() === 'openai') {
-            <div class="setting-row">
-              <div class="setting-text">
-                <label for="ai-api" i18n="@@ai.settings.api">API</label>
-                <p id="ai-api-hint" i18n="@@ai.settings.apiHint">
-                  The newest OpenAI models take tools only through the Responses API.
-                </p>
-              </div>
-              <div class="setting-field">
-                <select id="ai-api" aria-describedby="ai-api-hint" (change)="setApi($event)">
-                  <option
-                    value="chat_completions"
-                    [selected]="openAiApi() === 'chat_completions'"
-                    i18n="@@ai.settings.apiChatCompletions"
-                  >
-                    Chat Completions
-                  </option>
-                  <option
-                    value="responses"
-                    [selected]="openAiApi() === 'responses'"
-                    i18n="@@ai.settings.apiResponses"
-                  >
-                    Responses
-                  </option>
-                </select>
-              </div>
+        @if (kind() === 'openai') {
+          <div class="setting-row">
+            <div class="setting-text">
+              <label for="ai-api" i18n="@@ai.settings.api">API</label>
+              <p id="ai-api-hint" i18n="@@ai.settings.apiHint">
+                The newest OpenAI models take tools only through the Responses API.
+              </p>
             </div>
-          }
+            <div class="setting-field">
+              <select id="ai-api" aria-describedby="ai-api-hint" (change)="setApi($event)">
+                <option
+                  value="chat_completions"
+                  [selected]="openAiApi() === 'chat_completions'"
+                  i18n="@@ai.settings.apiChatCompletions"
+                >
+                  Chat Completions
+                </option>
+                <option
+                  value="responses"
+                  [selected]="openAiApi() === 'responses'"
+                  i18n="@@ai.settings.apiResponses"
+                >
+                  Responses
+                </option>
+              </select>
+            </div>
+          </div>
           <div class="setting-row">
             <div class="setting-text">
               <label for="ai-auth" i18n="@@ai.settings.auth">Key header</label>

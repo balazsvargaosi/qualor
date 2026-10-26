@@ -122,6 +122,9 @@ const SERVER_PATHS: [string, Field][] = [
   ['body.pricing.outputUsdPerMTok', 'price-output'],
   ['body.pricing.strong.inputUsdPerMTok', 'price-strong-input'],
   ['body.pricing.strong.outputUsdPerMTok', 'price-strong-output'],
+  // A tier's prices missing for its own model ("Give … prices too"). The server's other refusal
+  // there, a pair for a tier without a model of its own ("Set … first"), cannot come from this
+  // page: it sends no pair for such a tier (`pricingBody`).
   ['body.pricing.strong', 'price-strong-input'],
   ['body.pricing.fast.inputUsdPerMTok', 'price-fast-input'],
   ['body.pricing.fast.outputUsdPerMTok', 'price-fast-output'],

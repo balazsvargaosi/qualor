@@ -38,7 +38,7 @@ describe('AiSettingsPage: the models of the tiers (6I-4)', () => {
       expect(labelOf(root, 'ai-strong-model')).toBe('Strong model');
       expect(labelOf(root, 'ai-fast-model')).toBe('Fast model');
       expect(root.querySelector('#ai-strong-model-hint')?.textContent?.trim()).toBe(
-        'Used for the judge and the security checks. Empty: the model above.',
+        'Used for the judge and the verification of security findings. Empty: the model above.',
       );
       expect(root.querySelector('#ai-fast-model-hint')?.textContent?.trim()).toBe(
         'Used for small reviews. Empty: the model above.',

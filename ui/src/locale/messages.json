@@ -1224,7 +1224,7 @@
     "ai.settings.urlHint": " Such as https://api.openai.com/v1, https://api.anthropic.com or http://ollama:11434/v1. An internal host must be listed by the operator in QUALOR_LLM_INTERNAL_HOSTS. ",
     "ai.settings.model": "Model",
     "ai.settings.strongModel": "Strong model",
-    "ai.settings.strongModelHint": " Used for the judge and the security checks. Empty: the model above. ",
+    "ai.settings.strongModelHint": " Used for the judge and the verification of security findings. Empty: the model above. ",
     "ai.settings.fastModel": "Fast model",
     "ai.settings.fastModelHint": " Used for small reviews. Empty: the model above. ",
     "ai.settings.key": "API key",

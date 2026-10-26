@@ -332,11 +332,12 @@ describe('AiSettingsPage: the OpenAI Responses API (6I-4)', () => {
       expect(root.textContent).not.toContain('Chat Completions');
     });
 
-    it('is a setting of the OpenAI kind alone: not while no kind is chosen, nor for Anthropic', async () => {
+    it('is a setting of the OpenAI kind alone: not while no kind is chosen, nor for Anthropic, as the key header, the JSON mode and the output limit field', async () => {
       setup();
       const { fixture, root } = await render();
       expect(field(root, 'ai-kind').value).toBe('');
-      expect(root.querySelector('#ai-api')).toBeNull();
+      const OPENAI_ONLY = ['ai-api', 'ai-auth', 'ai-json', 'ai-max-tokens-field'];
+      for (const id of OPENAI_ONLY) expect(root.querySelector(`#${id}`), id).toBeNull();
       for (const [kind, shown] of [
         ['openai', true],
         ['anthropic', false],
@@ -345,7 +346,11 @@ describe('AiSettingsPage: the OpenAI Responses API (6I-4)', () => {
       ] as const) {
         type(root, '#ai-kind', kind);
         await settle(fixture);
-        expect(root.querySelector('#ai-api') !== null, `kind ${kind || 'none'}`).toBe(shown);
+        for (const id of OPENAI_ONLY) {
+          expect(root.querySelector(`#${id}`) !== null, `${id}, kind ${kind || 'none'}`).toBe(
+            shown,
+          );
+        }
       }
     });
 
@@ -415,7 +420,7 @@ describe('AiSettingsPage: the OpenAI Responses API (6I-4)', () => {
       expect(field(root, 'ai-max-tokens-field').value).toBe('max_tokens');
     });
 
-    it('leaves the output limit field to a kind that the choice of API is not for: Responses chosen under OpenAI changes nothing once the kind is None', async () => {
+    it('shows none of the OpenAI rows while no kind is chosen, and brings them back as they were with OpenAI', async () => {
       setup(CONFIGURED);
       const { fixture, root } = await render();
       type(root, '#ai-api', 'responses');
@@ -423,8 +428,16 @@ describe('AiSettingsPage: the OpenAI Responses API (6I-4)', () => {
       expect(root.querySelector('#ai-max-tokens-field')).toBeNull();
       type(root, '#ai-kind', '');
       await settle(fixture);
-      expect(root.querySelector('#ai-api')).toBeNull();
-      expect(root.querySelector('#ai-max-tokens-field')).not.toBeNull();
+      for (const id of ['ai-api', 'ai-auth', 'ai-json', 'ai-max-tokens-field']) {
+        expect(root.querySelector(`#${id}`), id).toBeNull();
+      }
+      type(root, '#ai-kind', 'openai');
+      await settle(fixture);
+      // As they were: the Responses API is chosen, which has no output limit field.
+      expect(field(root, 'ai-api').value).toBe('responses');
+      expect(root.querySelector('#ai-auth')).not.toBeNull();
+      expect(root.querySelector('#ai-json')).not.toBeNull();
+      expect(root.querySelector('#ai-max-tokens-field')).toBeNull();
     });
 
     it('keeps the output limit field the admin set, and sends it, while another API is chosen', async () => {
