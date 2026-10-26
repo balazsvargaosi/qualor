@@ -139,6 +139,20 @@ describe('StatusList', () => {
     expect(line('today').querySelector('.badge')).toBeNull();
   });
 
+  it('lets a long name in a state wrap instead of widening the page', async () => {
+    // An organisation's name has up to 255 characters, and may have no break point.
+    const name = 'A'.repeat(255);
+    const { root, line } = await render([
+      { key: 'review', label: 'AI review', tone: 'ok', state: `On in ${name}` },
+    ]);
+    const chip = line('review').querySelector<HTMLElement>('.badge')!;
+    expect(text(chip)).toBe(`On in ${name}`);
+    expect(getComputedStyle(chip).whiteSpace).toBe('normal');
+    expect(getComputedStyle(chip).maxWidth).toBe('100%');
+    // It breaks anywhere, as all of the line's text does.
+    expect(getComputedStyle(root.querySelector('.st-text')!).overflowWrap).toBe('anywhere');
+  });
+
   it('is a list under a heading named Status', async () => {
     const { root } = await render();
     const section = root.querySelector('section[aria-labelledby]')!;

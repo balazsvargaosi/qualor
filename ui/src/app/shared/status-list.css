@@ -32,6 +32,11 @@
   align-items: center;
   gap: 6px 10px;
 }
+/* A state may quote a name of up to 255 characters ("On in …"): it wraps inside its chip. */
+.st-line .badge {
+  max-width: 100%;
+  white-space: normal;
+}
 .st-sub {
   color: var(--text-muted);
   font-size: 13px;
