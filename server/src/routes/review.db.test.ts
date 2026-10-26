@@ -788,7 +788,11 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
       const context = await contextOf(project.key, bearer(projectToken));
       expect(context.json()).toMatchObject({ review: false, reason: 'consent_outdated' });
       const projectAnswer = await call('GET', `/projects/${project.id}`, orgAdmin.headers);
-      expect(projectAnswer.json().aiReview).toEqual({ enabled: false, organizationEnabled: false });
+      expect(projectAnswer.json().aiReview).toEqual({
+        enabled: false,
+        organizationEnabled: false,
+        reason: 'consent_outdated',
+      });
       // The notice names the host and the model, which did not change: confirming gives the new address.
       const confirmed = await putReview(onBody({ acknowledgeDataSharing: read.provider }));
       expect(confirmed.statusCode, confirmed.body).toBe(200);
@@ -1746,27 +1750,48 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
       (await call('GET', `/projects/${p.id}`, headersOf(caller))).json().aiReview;
 
     it('is off for everything by default', async () => {
-      expect(await dtoOf()).toEqual({ enabled: false, organizationEnabled: false });
+      expect(await dtoOf()).toEqual({
+        enabled: false,
+        organizationEnabled: false,
+        reason: 'review_disabled',
+      });
+      // An organisation without an entry is not enabled for the AI assistant.
       expect(await dtoOf(otherProject, admin)).toEqual({
         enabled: false,
         organizationEnabled: false,
+        reason: 'organization_disabled',
       });
     });
 
     it('says whether it is on for the project, and whether the organisation has it on', async () => {
       expect((await putReview(onBody())).statusCode).toBe(200);
-      expect(await dtoOf()).toEqual({ enabled: true, organizationEnabled: true });
+      expect(await dtoOf()).toEqual({ enabled: true, organizationEnabled: true, reason: null });
       // Another project of the organisation: the organisation has it on, the project is not selected.
-      expect(await dtoOf(second)).toEqual({ enabled: false, organizationEnabled: true });
-      // Every project with the scope all (a mapping does not matter to the settings).
+      expect(await dtoOf(second)).toEqual({
+        enabled: false,
+        organizationEnabled: true,
+        reason: 'project_not_selected',
+      });
+      // Every project with the scope all. The mapping does not change `enabled`, which says what
+      // the settings select; the reason says that a project not mapped is not reviewed.
       expect((await putReview(onBody({ scope: 'all', projectIds: [] }))).statusCode).toBe(200);
-      for (const p of [project, second, unmapped]) {
-        expect(await dtoOf(p), p.key).toEqual({ enabled: true, organizationEnabled: true });
+      for (const p of [project, second]) {
+        expect(await dtoOf(p), p.key).toEqual({
+          enabled: true,
+          organizationEnabled: true,
+          reason: null,
+        });
       }
+      expect(await dtoOf(unmapped)).toEqual({
+        enabled: true,
+        organizationEnabled: true,
+        reason: 'not_mapped',
+      });
       // The other organisation is not affected.
       expect(await dtoOf(otherProject, admin)).toEqual({
         enabled: false,
         organizationEnabled: false,
+        reason: 'organization_disabled',
       });
     });
 
@@ -1774,27 +1799,51 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
       expect((await putReview(onBody())).statusCode).toBe(200);
       const on = await storedReview();
       await configure({ enabled: false, review: on });
-      expect(await dtoOf()).toEqual({ enabled: false, organizationEnabled: false });
+      expect(await dtoOf()).toEqual({
+        enabled: false,
+        organizationEnabled: false,
+        reason: 'organization_disabled',
+      });
       await configure({ review: on }, null);
-      expect(await dtoOf()).toEqual({ enabled: false, organizationEnabled: false });
+      expect(await dtoOf()).toEqual({
+        enabled: false,
+        organizationEnabled: false,
+        reason: 'no_provider',
+      });
       await configure({ review: { ...on, enabled: false } });
-      expect(await dtoOf()).toEqual({ enabled: false, organizationEnabled: false });
+      expect(await dtoOf()).toEqual({
+        enabled: false,
+        organizationEnabled: false,
+        reason: 'review_disabled',
+      });
     });
 
     it('is off for everything while the consent is outdated', async () => {
       expect((await putReview(onBody())).statusCode).toBe(200);
       expect((await changeProvider({ model: 'another-model' })).statusCode).toBe(200);
-      expect(await dtoOf()).toEqual({ enabled: false, organizationEnabled: false });
+      expect(await dtoOf()).toEqual({
+        enabled: false,
+        organizationEnabled: false,
+        reason: 'consent_outdated',
+      });
       const confirmed = await putReview(onBody({ acknowledgeDataSharing: await shownProvider() }));
       expect(confirmed.statusCode, confirmed.body).toBe(200);
-      expect(await dtoOf()).toEqual({ enabled: true, organizationEnabled: true });
+      expect(await dtoOf()).toEqual({ enabled: true, organizationEnabled: true, reason: null });
     });
 
     it('is off for a project the organisation excludes from the AI assistant', async () => {
       expect((await putReview(onBody({ scope: 'all', projectIds: [] }))).statusCode).toBe(200);
       await configure({ excludedProjectIds: [second.id], review: await storedReview() });
-      expect(await dtoOf(second)).toEqual({ enabled: false, organizationEnabled: true });
-      expect(await dtoOf(project)).toEqual({ enabled: true, organizationEnabled: true });
+      expect(await dtoOf(second)).toEqual({
+        enabled: false,
+        organizationEnabled: true,
+        reason: 'project_not_selected',
+      });
+      expect(await dtoOf(project)).toEqual({
+        enabled: true,
+        organizationEnabled: true,
+        reason: null,
+      });
     });
 
     it('is in the project list too, for each project', async () => {
@@ -1804,10 +1853,12 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
       expect(items.find((p) => p.id === project.id)?.aiReview).toEqual({
         enabled: true,
         organizationEnabled: true,
+        reason: null,
       });
       expect(items.find((p) => p.id === second.id)?.aiReview).toEqual({
         enabled: false,
         organizationEnabled: true,
+        reason: 'project_not_selected',
       });
     });
   });

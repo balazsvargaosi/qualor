@@ -55,8 +55,9 @@ import { hasSnapshot, snapshotExists, storeSnapshotUpload } from '../review/snap
 import { reviewUsageToday, type ReviewUsage } from '../review/usage';
 
 /**
- * The project DTO's `aiReview` (6I-2): whether AI review runs for the project, and whether its
- * organisation has it on, so the project settings can say who switches it on.
+ * The project DTO's `aiReview` (6I-2): whether AI review is on for the project, whether its
+ * organisation has it on, and why it does not run, so the project settings can name the reason and
+ * who changes it.
  */
 export const projectAiReviewSchema = z.object({
   /**
@@ -64,11 +65,15 @@ export const projectAiReviewSchema = z.object({
    * organisation enabled for the AI assistant, review switched on with a consent that covers the
    * provider) and selects the project (the scope `all`, or the project listed), and does not
    * exclude it from the AI assistant. Whether the project is mapped to an SCM connection is not
-   * part of it: `GET /projects/review-context` says so.
+   * part of it: `reason` says so (`not_mapped`), and so does `GET /projects/review-context`.
    */
   enabled: z.boolean(),
   /** The organisation has AI review on, as above, whichever projects it selects. */
   organizationEnabled: z.boolean(),
+  reason: z.enum(REVIEW_INACTIVE_REASONS).nullable().meta({
+    description:
+      'Why AI review does not run for the project: the first condition that fails, in the order the values are listed; null while it runs',
+  }),
 });
 
 /**

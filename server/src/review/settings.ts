@@ -222,17 +222,22 @@ export function reviewActive(
 }
 
 /**
- * The project DTO's `aiReview`: whether review is on for the project, and whether the organisation
- * has it on (so a project that is off can say its organisation admin switches it on).
+ * The project DTO's `aiReview`: whether review is on for the project, whether the organisation has
+ * it on (so a project that is off can say its organisation admin switches it on), and why review
+ * does not run for the project: the reason {@link reviewActive} gives, null while it runs. `enabled`
+ * leaves the mapping out, so a selected project that is not mapped is on and its reason is
+ * `not_mapped`.
  */
 export function projectAiReview(
   settings: StoredLlmSettings,
-  project: { id: string; organizationId: string },
-): { enabled: boolean; organizationEnabled: boolean } {
+  project: { id: string; organizationId: string; scmConnectionId: string | null },
+): { enabled: boolean; organizationEnabled: boolean; reason: ReviewInactiveReason | null } {
   const organizationEnabled = organizationReviewInactive(settings, project.organizationId) === null;
+  const verdict = reviewActive(settings, project);
   return {
     enabled: organizationEnabled && projectReviewSelected(settings, project),
     organizationEnabled,
+    reason: verdict.active ? null : verdict.reason,
   };
 }
 

@@ -103,8 +103,9 @@ export const projectSchema = z.object({
    */
   autoFix: projectAutoFixSchema,
   /**
-   * 6I-2: whether AI review runs for the project, and whether its organisation has it on (the
-   * organisation admin switches it on in Settings → AI review).
+   * 6I-2: whether AI review is on for the project, whether its organisation has it on (the
+   * organisation admin switches it on in Settings → AI review), and why it does not run for the
+   * project.
    */
   aiReview: projectAiReviewSchema,
 });

@@ -36,7 +36,7 @@ async function render(aiReview: ProjectDto['aiReview']) {
 describe('AiReviewPanel (6I-2 Task 9)', () => {
   it('renders its section, which the settings index links to', async () => {
     setup();
-    const { root } = await render({ enabled: true, organizationEnabled: true });
+    const { root } = await render({ enabled: true, organizationEnabled: true, reason: null });
     const section = root.querySelector('section.card.panel')!;
     expect(section.id).toBe('ai-review');
     expect(section.querySelector('.panel-head h2')?.textContent?.trim()).toBe('AI review');
@@ -44,7 +44,7 @@ describe('AiReviewPanel (6I-2 Task 9)', () => {
 
   it('says AI review is on for the project', async () => {
     const server = setup();
-    const { root } = await render({ enabled: true, organizationEnabled: true });
+    const { root } = await render({ enabled: true, organizationEnabled: true, reason: null });
     expect(root.querySelector('#ai-review-state')?.textContent?.trim()).toBe(
       'AI review is on for this project.',
     );
@@ -55,7 +55,11 @@ describe('AiReviewPanel (6I-2 Task 9)', () => {
 
   it('says AI review is off for the project while its organisation has it on', async () => {
     const server = setup();
-    const { root } = await render({ enabled: false, organizationEnabled: true });
+    const { root } = await render({
+      enabled: false,
+      organizationEnabled: true,
+      reason: 'project_not_selected',
+    });
     expect(root.querySelector('#ai-review-state')?.textContent?.trim()).toBe(
       'AI review is off for this project.',
     );
@@ -65,7 +69,11 @@ describe('AiReviewPanel (6I-2 Task 9)', () => {
 
   it('says the organisation admin switches it on in Settings → AI review while the organisation has it off', async () => {
     const server = setup();
-    const { root } = await render({ enabled: false, organizationEnabled: false });
+    const { root } = await render({
+      enabled: false,
+      organizationEnabled: false,
+      reason: 'review_disabled',
+    });
     expect(root.querySelector('#ai-review-state')?.textContent?.trim()).toBe(
       'AI review is off for this project.',
     );
@@ -80,14 +88,25 @@ describe('AiReviewPanel (6I-2 Task 9)', () => {
 
   it('is read-only: it has no control to change anything', async () => {
     setup();
-    const { root } = await render({ enabled: false, organizationEnabled: false });
+    const { root } = await render({
+      enabled: false,
+      organizationEnabled: false,
+      reason: 'review_disabled',
+    });
     expect(root.querySelectorAll('input, button, select, textarea')).toHaveLength(0);
   });
 
   it('follows the project when it is read again', async () => {
     setup();
-    const { fixture, root } = await render({ enabled: false, organizationEnabled: true });
-    fixture.componentRef.setInput('project', project({ enabled: true, organizationEnabled: true }));
+    const { fixture, root } = await render({
+      enabled: false,
+      organizationEnabled: true,
+      reason: 'project_not_selected',
+    });
+    fixture.componentRef.setInput(
+      'project',
+      project({ enabled: true, organizationEnabled: true, reason: null }),
+    );
     await settle(fixture);
     expect(root.querySelector('#ai-review-state')?.textContent?.trim()).toBe(
       'AI review is on for this project.',

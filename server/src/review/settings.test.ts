@@ -30,6 +30,7 @@ import {
   reviewSettingsSchema,
   sameReview,
   withOrganizationReview,
+  type ReviewInactiveReason,
   type ReviewSettings,
 } from './settings';
 
@@ -772,45 +773,100 @@ describe('effectiveReviewBudgets (the instance ceiling)', () => {
 
 describe('projectAiReview (the project DTO)', () => {
   const dtoOf = (settings: StoredLlmSettings, id = PROJECT, organizationId = ORG) =>
-    projectAiReview(settings, { id, organizationId });
+    projectAiReview(settings, { id, organizationId, scmConnectionId: CONNECTION });
 
   it('is on for a selected project of an organisation that has review on', () => {
-    expect(dtoOf(settingsWith())).toEqual({ enabled: true, organizationEnabled: true });
+    expect(dtoOf(settingsWith())).toEqual({
+      enabled: true,
+      organizationEnabled: true,
+      reason: null,
+    });
   });
 
   it('is off for a project the organisation does not select, but says the organisation has it on', () => {
     expect(dtoOf(settingsWith(), OTHER_PROJECT)).toEqual({
       enabled: false,
       organizationEnabled: true,
+      reason: 'project_not_selected',
     });
     expect(dtoOf(settingsWith({ scope: 'all' }), OTHER_PROJECT)).toEqual({
       enabled: true,
       organizationEnabled: true,
+      reason: null,
     });
   });
 
-  it.each<[string, StoredLlmSettings]>([
-    ['there is no provider', settingsWith({}, {}, null)],
-    ['the organisation is AI-disabled', settingsWith({}, { enabled: false })],
-    ['review is off', settingsWith({ enabled: false })],
-    ['the consent is outdated', settingsWith({}, {}, { ...PROVIDER, model: 'other' })],
-  ])('is off for every project while %s', (_name, settings) => {
-    expect(dtoOf(settings)).toEqual({ enabled: false, organizationEnabled: false });
+  it.each<[string, StoredLlmSettings, ReviewInactiveReason]>([
+    ['there is no provider', settingsWith({}, {}, null), 'no_provider'],
+    [
+      'the organisation is AI-disabled',
+      settingsWith({}, { enabled: false }),
+      'organization_disabled',
+    ],
+    ['review is off', settingsWith({ enabled: false }), 'review_disabled'],
+    [
+      'the consent is outdated',
+      settingsWith({}, {}, { ...PROVIDER, model: 'other' }),
+      'consent_outdated',
+    ],
+  ])('is off for every project while %s', (_name, settings, reason) => {
+    expect(dtoOf(settings)).toEqual({ enabled: false, organizationEnabled: false, reason });
     expect(dtoOf(settingsWith({ scope: 'all' }, { enabled: false }))).toEqual({
       enabled: false,
       organizationEnabled: false,
+      reason: 'organization_disabled',
     });
   });
 
-  it('does not depend on the project’s mapping, and leaves out an excluded project', () => {
+  it('leaves out an excluded project, and reads only the project’s own organisation', () => {
     expect(dtoOf(settingsWith({}, { excludedProjectIds: [PROJECT] }))).toEqual({
       enabled: false,
       organizationEnabled: true,
+      reason: 'project_not_selected',
     });
     expect(dtoOf(settingsWith(), PROJECT, OTHER_ORG)).toEqual({
       enabled: false,
       organizationEnabled: false,
+      reason: 'organization_disabled',
     });
+  });
+
+  it('keeps a selected project that is not mapped on, and says it is not mapped', () => {
+    // The mapping is the one condition `enabled` leaves out; the reason says it.
+    expect(projectAiReview(settingsWith(), unmapped)).toEqual({
+      enabled: true,
+      organizationEnabled: true,
+      reason: 'not_mapped',
+    });
+    expect(projectAiReview(settingsWith(), mapped)).toEqual({
+      enabled: true,
+      organizationEnabled: true,
+      reason: null,
+    });
+  });
+
+  it('gives the reason reviewActive gives', () => {
+    // The settings that make review fail at each step and at none before it; the record is
+    // complete while every reason has an entry.
+    const failing: Record<ReviewInactiveReason, StoredLlmSettings> = {
+      no_provider: settingsWith({}, {}, null),
+      organization_disabled: settingsWith({}, { enabled: false }),
+      review_disabled: settingsWith({ enabled: false }),
+      consent_outdated: settingsWith({}, {}, { ...PROVIDER, model: 'other' }),
+      project_not_selected: settingsWith({ projectIds: [OTHER_PROJECT] }),
+      not_mapped: settingsWith(),
+    };
+    for (const reason of REVIEW_INACTIVE_REASONS) {
+      // The mapping is the last condition: a project that is not mapped has the reason of the
+      // step that fails before it, and `not_mapped` only when none does.
+      for (const project of reason === 'not_mapped' ? [unmapped] : [mapped, unmapped]) {
+        expect(reviewActive(failing[reason], project), reason).toEqual({ active: false, reason });
+        expect(projectAiReview(failing[reason], project).reason, reason).toBe(reason);
+      }
+    }
+    // Where review runs there is no reason.
+    expect(reviewActive(settingsWith(), mapped)).toEqual({ active: true });
+    expect(projectAiReview(settingsWith(), mapped).reason).toBeNull();
   });
 });
 

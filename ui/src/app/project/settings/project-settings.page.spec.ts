@@ -35,7 +35,7 @@ function setup(options: Setup): FakeServer {
       updatedAt: '',
       permissions: options.projectPermissions,
       autoFix: { available: true, enabled: true, organizationEnabled: true, excludedFromAi: false },
-      aiReview: { enabled: false, organizationEnabled: false },
+      aiReview: { enabled: false, organizationEnabled: false, reason: 'review_disabled' },
     },
   });
   TestBed.configureTestingModule({

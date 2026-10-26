@@ -4662,11 +4662,31 @@
                               },
                               "organizationEnabled": {
                                 "type": "boolean"
+                              },
+                              "reason": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "no_provider",
+                                      "organization_disabled",
+                                      "review_disabled",
+                                      "consent_outdated",
+                                      "project_not_selected",
+                                      "not_mapped"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "Why AI review does not run for the project: the first condition that fails, in the order the values are listed; null while it runs"
                               }
                             },
                             "required": [
                               "enabled",
-                              "organizationEnabled"
+                              "organizationEnabled",
+                              "reason"
                             ],
                             "additionalProperties": false
                           }
@@ -5047,11 +5067,31 @@
                         },
                         "organizationEnabled": {
                           "type": "boolean"
+                        },
+                        "reason": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "no_provider",
+                                "organization_disabled",
+                                "review_disabled",
+                                "consent_outdated",
+                                "project_not_selected",
+                                "not_mapped"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "Why AI review does not run for the project: the first condition that fails, in the order the values are listed; null while it runs"
                         }
                       },
                       "required": [
                         "enabled",
-                        "organizationEnabled"
+                        "organizationEnabled",
+                        "reason"
                       ],
                       "additionalProperties": false
                     }
@@ -5414,11 +5454,31 @@
                         },
                         "organizationEnabled": {
                           "type": "boolean"
+                        },
+                        "reason": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "no_provider",
+                                "organization_disabled",
+                                "review_disabled",
+                                "consent_outdated",
+                                "project_not_selected",
+                                "not_mapped"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "Why AI review does not run for the project: the first condition that fails, in the order the values are listed; null while it runs"
                         }
                       },
                       "required": [
                         "enabled",
-                        "organizationEnabled"
+                        "organizationEnabled",
+                        "reason"
                       ],
                       "additionalProperties": false
                     }
@@ -5772,11 +5832,31 @@
                         },
                         "organizationEnabled": {
                           "type": "boolean"
+                        },
+                        "reason": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "no_provider",
+                                "organization_disabled",
+                                "review_disabled",
+                                "consent_outdated",
+                                "project_not_selected",
+                                "not_mapped"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "Why AI review does not run for the project: the first condition that fails, in the order the values are listed; null while it runs"
                         }
                       },
                       "required": [
                         "enabled",
-                        "organizationEnabled"
+                        "organizationEnabled",
+                        "reason"
                       ],
                       "additionalProperties": false
                     }
@@ -6255,11 +6335,31 @@
                         },
                         "organizationEnabled": {
                           "type": "boolean"
+                        },
+                        "reason": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "no_provider",
+                                "organization_disabled",
+                                "review_disabled",
+                                "consent_outdated",
+                                "project_not_selected",
+                                "not_mapped"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "Why AI review does not run for the project: the first condition that fails, in the order the values are listed; null while it runs"
                         }
                       },
                       "required": [
                         "enabled",
-                        "organizationEnabled"
+                        "organizationEnabled",
+                        "reason"
                       ],
                       "additionalProperties": false
                     }

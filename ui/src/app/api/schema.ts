@@ -2802,6 +2802,8 @@ export interface paths {
                                 aiReview: {
                                     enabled: boolean;
                                     organizationEnabled: boolean;
+                                    /** @description Why AI review does not run for the project: the first condition that fails, in the order the values are listed; null while it runs */
+                                    reason: ("no_provider" | "organization_disabled" | "review_disabled" | "consent_outdated" | "project_not_selected" | "not_mapped") | null;
                                 };
                             }[];
                             nextCursor: string | null;
@@ -2913,6 +2915,8 @@ export interface paths {
                             aiReview: {
                                 enabled: boolean;
                                 organizationEnabled: boolean;
+                                /** @description Why AI review does not run for the project: the first condition that fails, in the order the values are listed; null while it runs */
+                                reason: ("no_provider" | "organization_disabled" | "review_disabled" | "consent_outdated" | "project_not_selected" | "not_mapped") | null;
                             };
                         };
                     };
@@ -3044,6 +3048,8 @@ export interface paths {
                             aiReview: {
                                 enabled: boolean;
                                 organizationEnabled: boolean;
+                                /** @description Why AI review does not run for the project: the first condition that fails, in the order the values are listed; null while it runs */
+                                reason: ("no_provider" | "organization_disabled" | "review_disabled" | "consent_outdated" | "project_not_selected" | "not_mapped") | null;
                             };
                         };
                     };
@@ -3168,6 +3174,8 @@ export interface paths {
                             aiReview: {
                                 enabled: boolean;
                                 organizationEnabled: boolean;
+                                /** @description Why AI review does not run for the project: the first condition that fails, in the order the values are listed; null while it runs */
+                                reason: ("no_provider" | "organization_disabled" | "review_disabled" | "consent_outdated" | "project_not_selected" | "not_mapped") | null;
                             };
                         };
                     };
@@ -3372,6 +3380,8 @@ export interface paths {
                             aiReview: {
                                 enabled: boolean;
                                 organizationEnabled: boolean;
+                                /** @description Why AI review does not run for the project: the first condition that fails, in the order the values are listed; null while it runs */
+                                reason: ("no_provider" | "organization_disabled" | "review_disabled" | "consent_outdated" | "project_not_selected" | "not_mapped") | null;
                             };
                         };
                     };
