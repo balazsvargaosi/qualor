@@ -290,7 +290,9 @@ export class GitLabPage {
           changed
             ? drop
               ? $localize`:@@gitlab.urlChangedSecretRemoved:The connection now points at ${updated.baseUrl}:url:, and its webhook secret was removed: replies and commands are answered at the next analysis.`
-              : $localize`:@@gitlab.urlChanged:The connection now points at ${updated.baseUrl}:url:.`
+              : secret !== ''
+                ? $localize`:@@gitlab.urlChangedSecretReplaced:The connection now points at ${updated.baseUrl}:url:, and its webhook secret was replaced.`
+                : $localize`:@@gitlab.urlChanged:The connection now points at ${updated.baseUrl}:url:.`
             : drop
               ? $localize`:@@gitlab.tokenReplacedSecretRemoved:The token of ${updated.baseUrl}:url: was replaced, and its webhook secret was removed: replies and commands are answered at the next analysis.`
               : secret !== ''

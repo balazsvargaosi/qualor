@@ -530,6 +530,9 @@ describe('GitLabPage (scm.md §2)', () => {
       });
       expect([token.value, secret.value, drop.checked]).toEqual(['', '', false]);
       expect(root.querySelector('#new-secret-error-c1')).toBeNull();
+      expect(root.querySelector('[role="status"]')?.textContent).toContain(
+        'The connection now points at https://gitlab.other.test, and its webhook secret was replaced.',
+      );
       expect(root.textContent).not.toContain(SECRET);
       // The box drops it: null, and the page says so.
       await submit({ url: 'https://gitlab.third.test', drop: true });

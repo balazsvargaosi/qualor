@@ -334,14 +334,24 @@ export class GitHubPage {
         if (generation !== this.orgGeneration) return;
         if (dropField) dropField.checked = false;
         const appId = updated.github?.appId ?? '';
+        // A secret typed here replaces the stored one, or is the first where none was stored (the
+        // field is shown either way).
         this.announcement.set(
           changed
             ? drop
               ? $localize`:@@github.urlChangedSecretRemoved:The App now uses ${updated.baseUrl}:url:, and its webhook secret was removed: the Re-run button does nothing now, and replies and commands are answered at the next analysis.`
-              : $localize`:@@github.urlChanged:The App now uses ${updated.baseUrl}:url:.`
+              : secret === ''
+                ? $localize`:@@github.urlChanged:The App now uses ${updated.baseUrl}:url:.`
+                : secretStored
+                  ? $localize`:@@github.urlChangedSecretReplaced:The App now uses ${updated.baseUrl}:url:, and its webhook secret was replaced.`
+                  : $localize`:@@github.urlChangedSecretSet:The App now uses ${updated.baseUrl}:url:, and its webhook secret was set.`
             : drop
               ? $localize`:@@github.keyReplacedSecretRemoved:The private key of App ${appId}:appId: was replaced, and its webhook secret was removed: the Re-run button does nothing now, and replies and commands are answered at the next analysis.`
-              : $localize`:@@github.keyReplaced:The private key of App ${appId}:appId: was replaced.`,
+              : secret === ''
+                ? $localize`:@@github.keyReplaced:The private key of App ${appId}:appId: was replaced.`
+                : secretStored
+                  ? $localize`:@@github.keyAndSecretReplaced:The private key and the webhook secret of App ${appId}:appId: were replaced.`
+                  : $localize`:@@github.keyReplacedSecretSet:The private key of App ${appId}:appId: was replaced, and its webhook secret was set.`,
         );
       },
       (err) => {

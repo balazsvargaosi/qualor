@@ -88,6 +88,14 @@ describe('GitHubPage (github.md §2)', () => {
     expect(root.textContent).not.toContain('Projects list of the');
   });
 
+  it("names the App's four permissions, Issues among them", async () => {
+    setup();
+    const { root } = await render();
+    expect(root.querySelector('.settings-head')?.textContent?.replace(/\s+/g, ' ')).toContain(
+      'Give the App Checks and Pull requests (read and write), and Issues and Metadata (read-only).',
+    );
+  });
+
   it('lists only GitHub connections, with the App id and the webhook URL', async () => {
     setup();
     const { root } = await render();
@@ -306,8 +314,62 @@ describe('GitHubPage (github.md §2)', () => {
       webhookSecret: 'whsec-new-0123456789',
     });
     expect(root.querySelector<HTMLInputElement>('#new-secret-g1')!.value).toBe('');
+    expect(root.querySelector('[role="status"]')?.textContent).toContain(
+      'The App now uses https://ghe.acme.test/api/v3, and its webhook secret was replaced.',
+    );
     expect(root.textContent).not.toContain('MIIEow');
     expect(root.textContent).not.toContain('whsec-new-0123456789');
+  });
+
+  it('says that the secret typed with a new key was replaced, or set where none was stored', async () => {
+    const server = setup();
+    const WITHOUT_SECRET: Connection = {
+      ...GITHUB,
+      github: {
+        ...GITHUB.github!,
+        webhookSecretSet: false,
+        webhookSecretReadable: false,
+        webhookUrl: null,
+      },
+    };
+    let stored = GITHUB;
+    server.on('GET', '/api/v0/scm-connections', () => ({ body: page([stored]) }));
+    server.on('PATCH', '/api/v0/scm-connections/g1', (request) => ({
+      body: {
+        ...stored,
+        baseUrl: (request.body as { baseUrl?: string }).baseUrl ?? stored.baseUrl,
+      },
+    }));
+    const submit = async (fields: { url?: string }) => {
+      const { fixture, root } = await render();
+      if (fields.url !== undefined) type(root, '#url-g1', fields.url);
+      root.querySelector<HTMLTextAreaElement>('#key-g1')!.value = PEM;
+      root.querySelector<HTMLInputElement>('#new-secret-g1')!.value = 'whsec-new-0123456789';
+      root.querySelector('#key-g1')!.closest('form')!.dispatchEvent(new Event('submit'));
+      await settle(fixture);
+      const status = root.querySelector('[role="status"]')?.textContent;
+      fixture.destroy();
+      return status;
+    };
+    expect(await submit({})).toContain(
+      'The private key and the webhook secret of App 123456 were replaced.',
+    );
+    stored = WITHOUT_SECRET;
+    expect(await submit({})).toContain(
+      'The private key of App 123456 was replaced, and its webhook secret was set.',
+    );
+    expect(await submit({ url: 'https://ghe.acme.test/api/v3' })).toContain(
+      'The App now uses https://ghe.acme.test/api/v3, and its webhook secret was set.',
+    );
+    expect(server.requestsTo('PATCH', '/api/v0/scm-connections/g1').map((r) => r.body)).toEqual([
+      { privateKey: PEM, webhookSecret: 'whsec-new-0123456789' },
+      { privateKey: PEM, webhookSecret: 'whsec-new-0123456789' },
+      {
+        baseUrl: 'https://ghe.acme.test/api/v3',
+        privateKey: PEM,
+        webhookSecret: 'whsec-new-0123456789',
+      },
+    ]);
   });
 
   it("changes the App id, sets and removes the webhook secret, and deletes after the page's own confirmation", async () => {
