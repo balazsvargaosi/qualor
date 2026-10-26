@@ -125,12 +125,16 @@ const MARKUP_LINES: ReadonlySet<string> = new Set(AI_SECTION_MARKUP_LINES);
 
 /**
  * The line of a finding that sits on no changed line: after its severity, its place in a code span,
- * then (each after a separator) its title, which is prose, and its link, in this order.
+ * then (each after a separator) its title, which is prose, and its link, in this order. Only the
+ * title may join two of its code spans with a mark (`outsideProseSpans`): the place is one span
+ * alone, as Qualor writes it, and is read as strictly as any code span (`outsideCodeSpans`).
  */
 function checkFindingLine(line: string): boolean {
   const start = FINDING_START.exec(line);
   if (start === null) return false;
-  const [place, ...parts] = outsideProseSpans(line.slice(start[0].length)).split(' · ');
+  const tail = line.slice(start[0].length);
+  const [place] = outsideCodeSpans(tail).split(' · ');
+  const [, ...parts] = outsideProseSpans(tail).split(' · ');
   if (place !== ' ') return false;
   const [first = '', second = ''] = parts;
   const isLink = (part: string): boolean => SECTION_LINK.test(part);

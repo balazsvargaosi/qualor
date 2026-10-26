@@ -596,31 +596,53 @@ async function runLlmJob(deps: LlmJobDeps, payload: LlmJobPayload): Promise<void
 }
 
 /**
+ * A running request back to queued with its next job, in one transaction: the stuck-row sweep
+ * never sees one without the other. `attempts` is what the row then says of its tries (unchanged
+ * when left out), and the job carries `payload`, due in `waitSeconds`. Only a row still running: a
+ * job that lost its lease (the sweep failed the row) neither requeues it nor enqueues anything.
+ * Answers whether it requeued the row.
+ */
+async function requeueRunning(
+  deps: LlmJobDeps,
+  row: LlmRequestRow,
+  next: { payload: LlmJobPayload; waitSeconds: number; attempts?: number },
+): Promise<boolean> {
+  return deps.db.transaction(async (tx) => {
+    const updated = await tx
+      .update(llmRequests)
+      .set({
+        status: 'queued',
+        ...(next.attempts === undefined ? {} : { attempts: next.attempts }),
+        updatedAt: sql`now()`,
+      })
+      .where(and(eq(llmRequests.id, row.id), eq(llmRequests.status, 'running')))
+      .returning({ id: llmRequests.id });
+    if (updated.length === 0) return false;
+    await enqueue(tx, {
+      queue: LLM_QUEUE,
+      payload: next.payload,
+      runAt: inSeconds(next.waitSeconds),
+      maxAttempts: 1,
+    });
+    return true;
+  });
+}
+
+/**
  * The server is stopping and gives the request up (its call was cut, or its job did not start): the
  * row goes back to queued as it was before this job claimed it, no attempt spent, with the same job
- * a few seconds on, in one transaction, so that the next server or another replica answers it.
- * Nothing is recorded of the call: no failure, no tokens, no cost. Only a row still running: a job
- * that lost its lease (the sweep failed the row) neither requeues it nor enqueues anything.
+ * a few seconds on (`requeueRunning`), so that the next server or another replica answers it.
+ * Nothing is recorded of the call: no failure, no tokens, no cost.
  */
 async function requeueAfterStop(
   deps: LlmJobDeps,
   row: LlmRequestRow,
   payload: LlmJobPayload,
 ): Promise<void> {
-  const requeued = await deps.db.transaction(async (tx) => {
-    const updated = await tx
-      .update(llmRequests)
-      .set({ status: 'queued', attempts: payload.attempt, updatedAt: sql`now()` })
-      .where(and(eq(llmRequests.id, row.id), eq(llmRequests.status, 'running')))
-      .returning({ id: llmRequests.id });
-    if (updated.length === 0) return false;
-    await enqueue(tx, {
-      queue: LLM_QUEUE,
-      payload,
-      runAt: inSeconds(LLM_AFTER_STOP_SECONDS),
-      maxAttempts: 1,
-    });
-    return true;
+  const requeued = await requeueRunning(deps, row, {
+    payload,
+    waitSeconds: LLM_AFTER_STOP_SECONDS,
+    attempts: payload.attempt,
   });
   if (requeued) {
     deps.logger?.info(
@@ -651,23 +673,9 @@ async function retryOrFail(
         ? 0
         : Math.min(MAX_RETRY_AFTER, Math.max(MIN_RETRY_AFTER, err.retryAfterSeconds));
     const wait = Math.max(base, asked);
-    // The row goes back to queued with its next job in one transaction: the stuck-row sweep
-    // never sees one without the other. Only a row still running: a job that lost its lease (the
-    // sweep failed the row) neither requeues it nor enqueues anything.
-    const requeued = await deps.db.transaction(async (tx) => {
-      const updated = await tx
-        .update(llmRequests)
-        .set({ status: 'queued', updatedAt: sql`now()` })
-        .where(and(eq(llmRequests.id, row.id), eq(llmRequests.status, 'running')))
-        .returning({ id: llmRequests.id });
-      if (updated.length === 0) return false;
-      await enqueue(tx, {
-        queue: LLM_QUEUE,
-        payload: { ...payload, attempt: next } satisfies LlmJobPayload,
-        runAt: inSeconds(wait),
-        maxAttempts: 1,
-      });
-      return true;
+    const requeued = await requeueRunning(deps, row, {
+      payload: { ...payload, attempt: next } satisfies LlmJobPayload,
+      waitSeconds: wait,
     });
     if (!requeued) return;
     deps.logger?.info(

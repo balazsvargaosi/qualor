@@ -444,12 +444,16 @@ async function main(): Promise<void> {
       reviewShutdown.abort();
       llmShutdown.abort();
       const reviewsStopped = reviewWorker.stop();
+      // The llm worker stops polling now too: a request its stop put back in the queue comes due
+      // again in a few seconds, and this server, while it drains, does not claim it and put it back
+      // again.
+      const requestsStopped = llmWorker.stop();
       updates?.stop();
       await app.close();
       await worker.stop();
       await webhookWorker.stop();
       await scmWorker.stop();
-      await llmWorker.stop();
+      await requestsStopped;
       await reviewsStopped;
       await mailWorker.stop();
       await pluginWorker?.stop();

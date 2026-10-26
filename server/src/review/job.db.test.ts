@@ -1820,7 +1820,8 @@ describe('the ai-review job (6I-3, R15)', () => {
       const stopping = Date.now();
       shutdown.abort();
       await worker.stop();
-      expect(Date.now() - stopping).toBeLessThan(2_000);
+      // Within a second: the wait is cut, not sat out.
+      expect(Date.now() - stopping).toBeLessThan(1_000);
     } finally {
       shutdown.abort();
       await worker.stop();

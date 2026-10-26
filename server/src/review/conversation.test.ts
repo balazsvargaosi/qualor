@@ -1,3 +1,4 @@
+import { getEventListeners } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   anthropicAnswer,
@@ -1180,6 +1181,23 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
       expect(fake.requests).toHaveLength(1);
       expect(Date.now() - began).toBeLessThan(10_000);
     });
+
+    it.each(KINDS)(
+      'a wait that its timer ends leaves no listener on the signal, which outlives it (%s)',
+      async (kind) => {
+        fake.enqueue(
+          failure(kind, 429, { headers: { 'retry-after': '1' } }),
+          textTurn(kind, '{"findings":[]}'),
+        );
+        // The server's stop: it lives as long as the server does.
+        const signal = new AbortController().signal;
+        // The real wait, a second long, which nothing aborts.
+        const { result } = await run(kind, { sleep: undefined, signal });
+        expect(result).toMatchObject({ kind: 'answer' });
+        expect(fake.requests).toHaveLength(2);
+        expect(getEventListeners(signal, 'abort')).toEqual([]);
+      },
+    );
 
     it.each(KINDS)('a signal that has aborted already makes no wait at all (%s)', async (kind) => {
       fake.enqueue(

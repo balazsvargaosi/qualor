@@ -939,6 +939,13 @@ describe('model text in the section is inert', () => {
       expect(checkSectionLine(bad), bad).toBe(false);
     }
     expect(outsideCodeSpans('` @all `')).not.toContain('@');
+    // Only the title, the model's prose, may join two of its code spans with a mark: the place is
+    // one span alone, as Qualor writes it.
+    const link = '[View in Qualor](https://q.example/projects/p/issues/i)';
+    expect(checkSectionLine(`- **High** · \` a.ts:3 \` · Use \`try\`/\`catch\` · ${link}`)).toBe(
+      true,
+    );
+    expect(checkSectionLine(`- **High** · \` a.ts \`/\` 3 \` · A title · ${link}`)).toBe(false);
   });
 
   it('accepts a fixed text that holds markup only as a whole line or where it belongs', () => {
