@@ -9702,6 +9702,8 @@ export interface paths {
                                 code: "undecryptable" | "url_not_allowed" | "not_public" | "unresolved" | "timeout" | "unreachable" | "token_refused" | "not_found" | "http_error" | "bad_answer" | "not_installed" | "permission_missing";
                                 message: string;
                             } | null;
+                            /** @description GitHub, with a repository: what the App's installation lacks of the access Qualor uses beyond what every job needs (Checks and Pull requests, read and write, whose lack fails the test), in this order: `contents_write` (Qualor's conversations are not resolved or reopened), `issues_read` (GitHub sends no Issue comment event), `event_check_run` (the Re-run button does nothing), `event_issue_comment` and `event_pull_request_review_comment` (commands and replies are answered at the next analysis). `[]` when nothing is missing; the test passes either way. Null for GitLab, without a repository, and when the test failed. */
+                            missingAccess: ("contents_write" | "issues_read" | "event_check_run" | "event_issue_comment" | "event_pull_request_review_comment")[] | null;
                         };
                     };
                 };

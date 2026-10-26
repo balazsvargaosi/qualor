@@ -2,6 +2,7 @@ import { encryptionKey } from '../../crypto/secrets';
 import {
   TEST_PROBLEM_CODES,
   type ConnectionTest,
+  type MissingAccess,
   type ScmConnectionRow,
   type ScmDeps,
   type TestProblemCode,
@@ -14,7 +15,7 @@ import {
   type InstallationTokenCache,
   type MutationPacer,
 } from './app-auth';
-import { GitHubClient, GITHUB_TEXT } from './client';
+import { GitHubClient, GITHUB_TEXT, type InstallationAccess } from './client';
 import { decryptPrivateKey, UNDECRYPTABLE_KEY } from './credentials';
 import { githubBaseUrlProblem, parseRepoRef } from './url';
 
@@ -76,9 +77,32 @@ function problemCode(err: ScmError): TestProblemCode {
   }
 }
 
+/** The events the test checks the App subscribes to, each with the code that says it does not. */
+const CHECKED_EVENTS = [
+  ['check_run', 'event_check_run'],
+  ['issue_comment', 'event_issue_comment'],
+  ['pull_request_review_comment', 'event_pull_request_review_comment'],
+] as const;
+
+/**
+ * What the installation lacks of the access Qualor uses beyond what every job needs, in the order
+ * of `MISSING_ACCESS`: Contents (write), which resolves and reopens Qualor's conversations, Issues
+ * (read or write), and each event the test checks.
+ */
+function missingAccess({ permissions, events }: InstallationAccess): MissingAccess[] {
+  const missing: MissingAccess[] = [];
+  if (permissions['contents'] !== 'write') missing.push('contents_write');
+  const issues = permissions['issues'];
+  if (issues !== 'read' && issues !== 'write') missing.push('issues_read');
+  for (const [event, code] of CHECKED_EVENTS) if (!events.includes(event)) missing.push(code);
+  return missing;
+}
+
 /**
  * `POST /scm-connections/{id}/test` for GitHub (github.md §2.2): `GET /app` with the JWT and, with
- * `owner/repo`, the installation, a scoped token and the repository. Fixed texts and codes only.
+ * `owner/repo`, the installation, a scoped token and the repository, and what the installation
+ * lacks of the rest of the access Qualor uses (`missingAccess`), which is no failure. Fixed texts
+ * and codes only.
  */
 export async function testGitHubConnection(
   row: ScmConnectionRow,
@@ -90,6 +114,7 @@ export async function testGitHubConnection(
     user: null,
     project: null,
     problem: { code, message },
+    missingAccess: null,
   });
   const found = githubClientFor(row, deps);
   if ('problem' in found) {
@@ -101,13 +126,22 @@ export async function testGitHubConnection(
   try {
     const app = await found.client.app();
     let project: ConnectionTest['project'] = null;
+    let missing: ConnectionTest['missingAccess'] = null;
     if (projectRef !== null) {
       const ref = parseRepoRef(projectRef);
       if (ref === null) return failed('not_found', GITHUB_TEXT.notFound);
       const repo = await found.client.useRepository(ref);
       project = { id: repo.id, pathWithNamespace: repo.full_name, accessLevel: null };
+      const access = found.client.installationAccess;
+      missing = access === null ? null : missingAccess(access);
     }
-    return { ok: true, user: { username: `${app.slug}[bot]` }, project, problem: null };
+    return {
+      ok: true,
+      user: { username: `${app.slug}[bot]` },
+      project,
+      problem: null,
+      missingAccess: missing,
+    };
   } catch (err) {
     if (err instanceof ScmError) return failed(problemCode(err), err.message);
     throw err;

@@ -75,6 +75,23 @@ export const TEST_PROBLEM_CODES = [
 ] as const;
 export type TestProblemCode = (typeof TEST_PROBLEM_CODES)[number];
 
+/**
+ * github.md §2.2: what a GitHub App's installation may lack of the access Qualor uses beyond what
+ * every job needs (Checks and Pull requests, read and write, whose lack fails the test), as stable
+ * codes the UI turns into its own words, in the order the test lists them: Contents (write), which
+ * resolves and reopens Qualor's conversations; Issues (read), without which GitHub sends no Issue
+ * comment event; and the events the App subscribes to: Check run (the Re-run button), Issue
+ * comment (commands) and Pull request review comment (replies in Qualor's conversations).
+ */
+export const MISSING_ACCESS = [
+  'contents_write',
+  'issues_read',
+  'event_check_run',
+  'event_issue_comment',
+  'event_pull_request_review_comment',
+] as const;
+export type MissingAccess = (typeof MISSING_ACCESS)[number];
+
 export interface ConnectionTest {
   ok: boolean;
   user: { username: string } | null;
@@ -85,6 +102,11 @@ export interface ConnectionTest {
   project: { id: number; pathWithNamespace: string; accessLevel: number | null } | null;
   /** One of scm.md §4.4's fixed texts with its code; never GitLab's own words. */
   problem: { code: TestProblemCode; message: string } | null;
+  /**
+   * GitHub, with a repository: what its installation lacks ({@link MISSING_ACCESS}), `[]` when
+   * nothing. Null for GitLab, without a repository, and when the test failed.
+   */
+  missingAccess: MissingAccess[] | null;
 }
 
 function problemCode(err: GitLabError): TestProblemCode {
@@ -125,6 +147,7 @@ export async function testConnection(
     user: null,
     project: null,
     problem: { code, message },
+    missingAccess: null,
   });
   const found = gitlabClientFor(row, deps);
   if ('problem' in found) {
@@ -147,6 +170,7 @@ export async function testConnection(
           }
         : null,
       problem: null,
+      missingAccess: null,
     };
   } catch (err) {
     if (err instanceof GitLabError) return failed(problemCode(err), err.message);

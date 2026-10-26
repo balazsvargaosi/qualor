@@ -38,6 +38,7 @@ import { queueSnapshotPurge } from '../review/jobs';
 import {
   forgetForeignMergeRequestUrls,
   MAX_SCM_CONNECTIONS_PER_ORGANIZATION,
+  MISSING_ACCESS,
   SCM_TOKEN_AAD,
   SCM_TOKEN_PATTERN,
   TEST_PROBLEM_CODES,
@@ -108,6 +109,10 @@ const testResultSchema = z.object({
     })
     .nullable(),
   problem: z.object({ code: z.enum(TEST_PROBLEM_CODES), message: z.string() }).nullable(),
+  missingAccess: z.array(z.enum(MISSING_ACCESS)).nullable().meta({
+    description:
+      "GitHub, with a repository: what the App's installation lacks of the access Qualor uses beyond what every job needs (Checks and Pull requests, read and write, whose lack fails the test), in this order: `contents_write` (Qualor's conversations are not resolved or reopened), `issues_read` (GitHub sends no Issue comment event), `event_check_run` (the Re-run button does nothing), `event_issue_comment` and `event_pull_request_review_comment` (commands and replies are answered at the next analysis). `[]` when nothing is missing; the test passes either way. Null for GitLab, without a repository, and when the test failed.",
+  }),
 });
 
 function connectionDto(

@@ -2,7 +2,7 @@ import { eq, sql } from 'drizzle-orm';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { ADMIN_PASSWORD, addMember, createUser, login, type Session } from '../../test/app';
 import { waitForLockWaiters } from '../../test/db';
-import { createFakeGitHub, type FakeGitHub } from '../../test/fake-github';
+import { createFakeGitHub, type FakeGitHub, type FakeRepository } from '../../test/fake-github';
 import { createFakeGitLab, type FakeGitLab } from '../../test/fake-gitlab';
 import { githubTestConfig, WEBHOOK_SECRET } from '../../test/github';
 import { createIngestHarness, type IngestHarness } from '../../test/ingest';
@@ -199,6 +199,8 @@ describe('SCM connections API and project mapping (scm.md §2)', () => {
       user: { username: 'project_7_bot_4b1e2c' },
       project: { id: 7, pathWithNamespace: 'acme/payments/api', accessLevel: 30 },
       problem: null,
+      // A GitHub App's alone.
+      missingAccess: null,
     });
     const missing = await call('POST', `/scm-connections/${connection.id}/test`, h.orgAdmin, {
       projectRef: 'acme/nope',
@@ -243,6 +245,7 @@ describe('SCM connections API and project mapping (scm.md §2)', () => {
       user: null,
       project: null,
       problem: { code: 'token_refused', message: 'GitLab refused the token (HTTP 401)' },
+      missingAccess: null,
     });
     // A token encrypted under another key (QUALOR_SECRET_KEY rotated) is named, not sent.
     await h.ctx.db
@@ -409,6 +412,7 @@ describe('SCM connections API and project mapping (scm.md §2)', () => {
         user: null,
         project: null,
         problem: { code: 'http_error', message: `GitLab answered HTTP ${status}` },
+        missingAccess: null,
       });
       expect(res.body).not.toContain('glpat-echoed');
       expect(res.body).not.toContain('script');
@@ -659,6 +663,8 @@ describe('SCM connections API and project mapping (scm.md §2)', () => {
 describe('GitHub App connections (github.md §2.2, §2.5, D1)', () => {
   let h: IngestHarness;
   let fake: FakeGitHub;
+  /** A repository on an installation of its own, whose grant a test sets. */
+  const partial: FakeRepository = { id: 8, owner: 'acme', name: 'partial', installationId: 779 };
   const post = (payload: Record<string, unknown>) =>
     h.ctx.app.inject({
       method: 'POST',
@@ -705,6 +711,7 @@ describe('GitHub App connections (github.md §2.2, §2.5, D1)', () => {
       installationId: 778,
       permissions: { metadata: 'read', pull_requests: 'write' },
     });
+    fake.addRepository(partial);
     h = await createIngestHarness({ config: githubTestConfig(fake) });
   });
   afterAll(async () => {
@@ -943,12 +950,23 @@ describe('GitHub App connections (github.md §2.2, §2.5, D1)', () => {
       user: { username: `${fake.slug}[bot]` },
       project: { id: 424242, pathWithNamespace: 'acme/api', accessLevel: null },
       problem: null,
+      // The documented App lacks nothing.
+      missingAccess: [],
     });
-    expect((await test('acme/bare')).json().problem.code).toBe('not_installed');
-    expect((await test('acme/nochecks')).json().problem.code).toBe('permission_missing');
+    expect((await test('acme/bare')).json()).toMatchObject({
+      problem: { code: 'not_installed' },
+      missingAccess: null,
+    });
+    // Checks and Pull requests are needed by every job: the token request fails the test.
+    expect((await test('acme/nochecks')).json()).toMatchObject({
+      ok: false,
+      problem: { code: 'permission_missing' },
+      missingAccess: null,
+    });
     // GitHub answers 404 for the installation of a repository it does not show the App.
     expect((await test('acme/nope')).json().problem.code).toBe('not_installed');
-    expect((await test()).json().ok).toBe(true);
+    // Without a repository there is no installation to read.
+    expect((await test()).json()).toMatchObject({ ok: true, project: null, missingAccess: null });
     for (const bad of ['424242', 'acme/api/x', 'acme/..']) {
       const res = await test(bad);
       expect([res.statusCode, errorPaths(res.body)]).toEqual([422, ['body.projectRef']]);
@@ -960,6 +978,55 @@ describe('GitHub App connections (github.md §2.2, §2.5, D1)', () => {
     fake.clearRequests();
     expect((await test()).json().problem.code).toBe('undecryptable');
     expect(fake.requests).toHaveLength(0);
+  });
+
+  it('lists what the installation lacks of the rest of what Qualor uses, in a fixed order', async () => {
+    const id = (await post({})).json().id as string;
+    /** The Test of acme/partial, whose installation grants `permissions` and subscribes to `events`. */
+    const missing = async (permissions: Record<string, 'read' | 'write'>, events: string[]) => {
+      partial.permissions = permissions;
+      partial.events = events;
+      const res = await h.ctx.app.inject({
+        method: 'POST',
+        url: `/api/v0/scm-connections/${id}/test`,
+        headers: h.orgAdmin.headers,
+        payload: { projectRef: 'acme/partial' },
+      });
+      // What it lacks is no failure: the test passes.
+      expect(res.json()).toMatchObject({ ok: true, problem: null });
+      return res.json().missingAccess as unknown;
+    };
+    /** What every job needs, which the token request checks. */
+    const required = { checks: 'write', metadata: 'read', pull_requests: 'write' } as const;
+    const full = { ...required, contents: 'write', issues: 'read' } as const;
+    const events = ['check_run', 'issue_comment', 'pull_request_review_comment'];
+    expect(await missing(full, events)).toEqual([]);
+    // Issues to write reads them too; an event the Test does not check is no matter.
+    expect(await missing({ ...full, issues: 'write' }, [...events, 'push'])).toEqual([]);
+    expect(await missing({ ...required, issues: 'read' }, events)).toEqual(['contents_write']);
+    expect(await missing({ ...full, contents: 'read' }, events)).toEqual(['contents_write']);
+    expect(await missing({ ...required, contents: 'write' }, events)).toEqual(['issues_read']);
+    for (const [event, code] of [
+      ['check_run', 'event_check_run'],
+      ['issue_comment', 'event_issue_comment'],
+      ['pull_request_review_comment', 'event_pull_request_review_comment'],
+    ]) {
+      expect(
+        await missing(
+          full,
+          events.filter((e) => e !== event),
+        ),
+        event,
+      ).toEqual([code]);
+    }
+    // All of it, in the order the Test lists it.
+    expect(await missing(required, [])).toEqual([
+      'contents_write',
+      'issues_read',
+      'event_check_run',
+      'event_issue_comment',
+      'event_pull_request_review_comment',
+    ]);
   });
 
   it('maps a project to owner/repo only', async () => {
