@@ -35,6 +35,12 @@ export type { Paged };
 
 /** A failed GitLab request (scm.md §4.3–§4.4); see {@link ScmError}. */
 export class GitLabError extends ScmError {
+  /**
+   * The field of GitLab's answer that was not understood, when one is known: its name, never what
+   * it held.
+   */
+  readonly field: string | null;
+
   constructor(
     kind: GitLabErrorKind,
     message: string,
@@ -43,11 +49,13 @@ export class GitLabError extends ScmError {
       retryAfterSeconds?: number | null;
       gitlabMessage?: string | null;
       reason?: GitLabErrorReason;
+      field?: string;
     } = {},
   ) {
-    const { gitlabMessage, ...rest } = options;
+    const { gitlabMessage, field, ...rest } = options;
     super(kind, message, { ...rest, providerMessage: gitlabMessage ?? null });
     this.name = 'GitLabError';
+    this.field = field ?? null;
   }
 
   /** GitLab's own `message` (decisions only). */
@@ -157,14 +165,38 @@ export function discussionResolved(d: GitLabDiscussion): boolean {
 
 /**
  * A member of a project, as `GET …/members/all/:user_id` answers: its level, the user's state, the
- * membership's own state (an older GitLab names none) and its last day.
+ * membership's own state (an older GitLab names none) and its last day, read on its own
+ * (`lastDayOf`).
  */
 const member = z.looseObject({
   access_level: z.number().int(),
   state: z.string(),
   membership_state: z.string().optional(),
-  expires_at: z.iso.date().nullable(),
+  expires_at: z.unknown(),
 });
+
+/**
+ * The last day of a membership as GitLab names it: a bare date, as its documentation writes it, or
+ * a date-time with its zone, as some of its examples do; null for a membership that does not end.
+ */
+const lastDay = z.union([z.iso.date(), z.iso.datetime({ offset: true })]).nullable();
+
+/**
+ * The UTC date (`YYYY-MM-DD`) of a membership's last day, from GitLab's `expires_at`: a bare date is
+ * the day, and a date-time's day is its UTC date; null for none. Anything else is not understood:
+ * the error names the field, and never holds what it was.
+ */
+function lastDayOf(expiresAt: unknown): string | null {
+  const parsed = lastDay.safeParse(expiresAt);
+  if (!parsed.success) {
+    throw new GitLabError('bad_answer', "GitLab's answer was not understood", {
+      field: 'expires_at',
+    });
+  }
+  const day = parsed.data;
+  if (day === null || /^\d{4}-\d{2}-\d{2}$/.test(day)) return day;
+  return new Date(day).toISOString().slice(0, 10);
+}
 
 const commitStatus = z.looseObject({
   id: z.number().int(),
@@ -590,8 +622,8 @@ export class GitLabClient {
    * Developer, 40 Maintainer, 50 Owner), a membership it inherits from a group included
    * (`GET …/members/all/:user_id`); null when the user has none in force: no member (GitLab's
    * 404), a user who is not active (blocked, deactivated), a membership that is not active (an
-   * invitation awaiting its answer), or one whose last day is today or past (UTC). What a person may
-   * decide through a reply in Qualor's threads (6I-4) is read from it.
+   * invitation awaiting its answer), or one whose last day is today or past (UTC; `lastDayOf`). What
+   * a person may decide through a reply in Qualor's threads (6I-4) is read from it.
    */
   async memberAccessLevel(ref: string, userId: number): Promise<number | null> {
     if (!Number.isSafeInteger(userId) || userId < 1) {
@@ -607,11 +639,12 @@ export class GitLabClient {
       if (err instanceof GitLabError && err.status === 404) return null;
       throw err;
     }
+    const ends = lastDayOf(found.expires_at);
     const today = new Date((this.options.now ?? Date.now)()).toISOString().slice(0, 10);
     const inForce =
       found.state === 'active' &&
       (found.membership_state === undefined || found.membership_state === 'active') &&
-      (found.expires_at === null || found.expires_at > today);
+      (ends === null || ends > today);
     return inForce ? found.access_level : null;
   }
 

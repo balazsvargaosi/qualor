@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { GitHubClient, GitHubComment } from '../scm/github/client';
-import type { GitLabClient, GitLabDiscussion } from '../scm/gitlab/client';
+import { GitLabError, type GitLabClient, type GitLabDiscussion } from '../scm/gitlab/client';
 import { issueMarker } from '../scm/markdown';
 import { ScmError } from '../scm/provider';
 import type { ReplyRow } from './replies';
@@ -179,6 +179,22 @@ describe('a membership answer of GitLab that does not parse', () => {
     const downSide = gitlabCommandSide('c1', stubOf(down()), REF, '12', ROW, 'abc123', logger);
     await downSide.read();
     await expect(downSide.mayReview()).rejects.toThrow('GitLab could not be reached');
+  });
+
+  it('names the field GitLab answered unreadably, never what it held', async () => {
+    warnings.length = 0;
+    const lastDay = new GitLabError('bad_answer', "GitLab's answer was not understood", {
+      field: 'expires_at',
+    });
+    const oddSide = gitlabCommandSide('c1', stubOf(lastDay), REF, '12', ROW, 'abc123', logger);
+    await oddSide.read();
+    expect(await oddSide.mayReview()).toBe(false);
+    expect(warnings).toEqual([
+      [
+        { replyId: ROW.id, field: 'expires_at' },
+        'GitLab membership answer not understood; the command is refused',
+      ],
+    ]);
   });
 
   describe('in the thread of a reply', () => {

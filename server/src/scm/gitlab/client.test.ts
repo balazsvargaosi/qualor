@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { inspect } from 'node:util';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   addedLines,
@@ -481,15 +482,30 @@ describe('GitLab client (scm.md §4.3) against the fake GitLab', () => {
     expect(await levelOf({ membershipState: 'created' })).toBeNull();
     expect(await levelOf({ expiresAt: '2026-10-25' })).toBeNull();
     expect(await levelOf({ expiresAt: '2026-10-24' })).toBeNull();
-    // A day that is no day, or an answer without the user's state, is not understood.
-    for (const body of [
-      { ...gitlabShape('member'), expires_at: '2026-13-01' },
-      { ...gitlabShape('member'), expires_at: 'soon' },
-      Object.fromEntries(Object.entries(gitlabShape('member')).filter(([key]) => key !== 'state')),
-    ]) {
-      fake.inject('GET', /\/members\/all\/20$/, { status: 200, body });
-      expect((await failure(c.memberAccessLevel('7', 20))).kind).toBe('bad_answer');
+    // A date-time, as some of GitLab's examples write the last day: its UTC date is the day.
+    expect(await levelOf({ expiresAt: '2026-10-26T00:00:00Z' })).toBe(40);
+    expect(await levelOf({ expiresAt: '2026-10-25T22:00:00.000-03:00' })).toBe(40);
+    expect(await levelOf({ expiresAt: '2026-10-25T23:59:59Z' })).toBeNull();
+    expect(await levelOf({ expiresAt: '2026-10-26T01:00:00+02:00' })).toBeNull();
+    // A day that is no day, or no date at all, is not understood: the error names the field and
+    // never what it held.
+    for (const expiresAt of ['2026-13-01', 'soon', '2026-10-26T10:00:00', 20261026]) {
+      fake.inject('GET', /\/members\/all\/20$/, {
+        status: 200,
+        body: { ...(gitlabShape('member') as object), expires_at: expiresAt },
+      });
+      const err = await failure(c.memberAccessLevel('7', 20));
+      expect(err, String(expiresAt)).toMatchObject({ kind: 'bad_answer', field: 'expires_at' });
+      expect(inspect(err, { depth: 5, showHidden: true })).not.toContain(String(expiresAt));
     }
+    // An answer without the user's state is not understood either.
+    fake.inject('GET', /\/members\/all\/20$/, {
+      status: 200,
+      body: Object.fromEntries(
+        Object.entries(gitlabShape('member')).filter(([key]) => key !== 'state'),
+      ),
+    });
+    expect((await failure(c.memberAccessLevel('7', 20))).kind).toBe('bad_answer');
     fake.setMember(7, 20, null);
   });
 

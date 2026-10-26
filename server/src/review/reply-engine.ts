@@ -102,9 +102,11 @@ export interface ReplyInput {
   notes: readonly { author: string; body: string }[];
   /**
    * Whether every person whose note is in the round may change the issue's status: the SCM rights
-   * the caller read (GitLab: access level Developer or more on the project; GitHub: author
-   * association OWNER, MEMBER or COLLABORATOR). A status change is a triage decision, and on a
-   * public repository anyone can reply: the intent the model reads out of a note is no authorisation.
+   * the caller read (reply-sides.ts). On GitLab an active, current membership of the project at
+   * Developer or more; on GitHub the role the collaborator permission API names, `admin`,
+   * `maintain`, `write` or `triage`, or for a role it does not name the legacy permission `admin` or
+   * `write` (`githubMayTriage`). A status change is a triage decision, and on a public repository
+   * anyone can reply: the intent the model reads out of a note is no authorisation.
    */
   mayChangeStatus: boolean;
   /** The snapshot the tools read; null when there is none, and the model is then given no tools. */

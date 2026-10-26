@@ -12,6 +12,7 @@ import { parseRepoRef, type GitHubRepoRef } from '../scm/github/url';
 import {
   discussionResolved,
   GITLAB_MR_IID,
+  GitLabError,
   type GitLabClient,
   type GitLabDiscussion,
   type GitLabUser,
@@ -77,24 +78,31 @@ function githubMayTriage(found: { permission: string; roleName: string | null } 
  * through a command: a membership in force (`memberAccessLevel`: an active user, in an active
  * membership that has not ended) of Developer or more. Nobody else may: no member, a Reporter, a
  * Guest. An answer of GitLab's that does not parse is no membership either: `unparsed` says so in
- * one line without its text, so that one author's odd answer never fails the job.
+ * one line without its text, with the field that was not understood when the client names it, so
+ * that one author's odd answer never fails the job.
  */
 async function gitlabMayTriage(
   client: GitLabClient,
   ref: string,
   userId: number,
-  unparsed: () => void,
+  unparsed: (field: string | null) => void,
 ): Promise<boolean> {
   let level: number | null;
   try {
     level = await client.memberAccessLevel(ref, userId);
   } catch (err) {
     if (!(err instanceof ScmError) || err.kind !== 'bad_answer') throw err;
-    unparsed();
+    unparsed(err instanceof GitLabError ? err.field : null);
     return false;
   }
   return level !== null && level >= GITLAB_DEVELOPER;
 }
+
+/** The fields of the warn line of a membership answer that was not understood. */
+const unparsedFields = (replyId: string, field: string | null) => ({
+  replyId,
+  ...(field === null ? {} : { field }),
+});
 
 /**
  * The login's permission on the repository (`repositoryPermission`: none for a login GitHub could
@@ -235,9 +243,9 @@ export function gitlabSide(
   /** The GitLab user of each person's note the last read found. */
   const authorOf = new Map<number, number>();
   const mayTriage = (userId: number) =>
-    gitlabMayTriage(client, ref, userId, () =>
+    gitlabMayTriage(client, ref, userId, (field) =>
       logger.warn(
-        { replyId: row.id },
+        unparsedFields(row.id, field),
         'GitLab membership answer not understood; the reply changes no status',
       ),
     );
@@ -417,9 +425,9 @@ export function gitlabCommandSide(
     },
     async mayReview() {
       if (author === undefined) return false;
-      return gitlabMayTriage(client, ref, author, () =>
+      return gitlabMayTriage(client, ref, author, (field) =>
         logger.warn(
-          { replyId: row.id },
+          unparsedFields(row.id, field),
           'GitLab membership answer not understood; the command is refused',
         ),
       );
