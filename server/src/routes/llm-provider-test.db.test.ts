@@ -977,6 +977,67 @@ describe('/system/llm (llm.md §3, §16)', () => {
       expect((await get()).json().lastTest).toBeNull();
     });
 
+    it('keeps the Test through a save that leaves the provider alone, whatever else it changes', async () => {
+      fake.enqueue(...passing);
+      expect((await check()).statusCode).toBe(200);
+      const read = (await get()).json();
+      expect(read.lastTest).not.toBeNull();
+      const stored = (await rowOf())!.value;
+      /** What the organisation's admins are told of the provider's models. */
+      const toldToOrganizations = async () => {
+        const res = await ctx.app.inject({
+          method: 'GET',
+          url: `/api/v0/organizations/${org}/ai/review`,
+          headers: admin.headers,
+        });
+        expect(res.statusCode, res.body).toBe(200);
+        return res.json().providerTest;
+      };
+      const told = await toldToOrganizations();
+      expect(told).toEqual({
+        at: read.lastTest.at,
+        toolCalling: 'supported',
+        modelsWithoutTools: [],
+      });
+      /** Saves `over` besides the provider, left as it is with its key, and expects the Test to stand. */
+      const saveKeepingProvider = async (over: Record<string, unknown>) => {
+        const saved = await put(body({ provider: keyless(), ...over }));
+        expect(saved.statusCode, saved.body).toBe(200);
+        expect(saved.json().lastTest).toEqual(read.lastTest);
+        expect((await get()).json().lastTest).toEqual(read.lastTest);
+        expect(await toldToOrganizations()).toEqual(told);
+        return saved.json();
+      };
+      // Limits: the budgets and the prices.
+      const limits = await saveKeepingProvider({
+        budgets: {
+          explainPerDay: 150,
+          triagePerDay: 80,
+          fixPerDay: 20,
+          tokensPerDay: 750_000,
+          costPerDayUsd: 12.5,
+          perUserPerHour: 20,
+        },
+        pricing: { inputUsdPerMTok: 3, outputUsdPerMTok: 15, strong: null, fast: null },
+      });
+      // The save did change them.
+      expect(limits.budgets).toMatchObject({ explainPerDay: 150, tokensPerDay: 750_000 });
+      expect(limits.pricing).toMatchObject({ inputUsdPerMTok: 3, outputUsdPerMTok: 15 });
+      // Data: the excluded paths, whether prompts are kept, and for how long.
+      const data = await saveKeepingProvider({
+        excludePaths: ['vendor/**', 'dist/**'],
+        storePrompts: true,
+        promptRetentionDays: 30,
+      });
+      expect(data).toMatchObject({
+        excludePaths: ['vendor/**', 'dist/**'],
+        storePrompts: true,
+        promptRetentionDays: 30,
+      });
+      // Nothing of the record was touched.
+      expect((await rowOf())!.value).toEqual(stored);
+    });
+
     it('reads a row that does not parse as no Test, though its fingerprint is the provider’s', async () => {
       const { provider: saved } = await readLlmSettings(ctx.db);
       await ctx.db.insert(instanceSettings).values({
