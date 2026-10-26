@@ -31,57 +31,7 @@
   @if (error(); as message) {
     <p class="alert alert-error" role="alert">{{ message }}</p>
   }
-  @if (!settings.available) {
-    <section class="card panel ai-unavailable" aria-labelledby="ai-unavailable-title">
-      <div class="empty">
-        <span class="badge badge-none"
-          ><q-icon name="minus" /><ng-container i18n="@@orgAi.none.state"
-            >Not set up</ng-container
-          ></span
-        >
-        @if (settings.unavailableReason === 'no_provider') {
-          <h3 id="ai-unavailable-title" class="big" i18n="@@orgAi.none.title">
-            AI isn't set up on this server yet.
-          </h3>
-          <p i18n="@@orgAi.none.text">
-            An instance admin connects an AI provider in
-            <a [routerLink]="providerLink()">Settings → AI provider</a> and allows
-            {{ orgName() }} to use it. Then you can switch on AI review here.
-          </p>
-          @if (providerLink(); as link) {
-            <a class="btn btn-primary" [routerLink]="link" i18n="@@orgAi.setUpProvider"
-              >Set up the provider</a
-            >
-          }
-        } @else {
-          <h3 id="ai-unavailable-title" class="big" i18n="@@orgAi.notAllowed.title">
-            {{ orgName() }} may not use AI yet.
-          </h3>
-          <p i18n="@@orgAi.notAllowed.text">
-            An instance admin allows it in
-            <a [routerLink]="providerLink()" fragment="organizations"
-              >Settings → AI provider → Organizations</a
-            >.
-          </p>
-        }
-      </div>
-      @if (settings.enabled) {
-        <div class="setting-actions">
-          <span class="foot-status" i18n="@@orgAi.stopped"
-            >AI review was switched on before, and is stopped.</span
-          >
-          <button
-            type="button"
-            class="btn"
-            [attr.aria-disabled]="busy() ? true : null"
-            (click)="askSwitchOff()"
-          >
-            {{ texts.switchOff }}
-          </button>
-        </div>
-      }
-    </section>
-  } @else {
+  @if (settings.available) {
     <nav class="page-index" aria-labelledby="ai-index-label">
       <span id="ai-index-label" i18n="@@orgAi.index">On this page</span>
       <a href="#review" (click)="go('review', $event)">{{ texts.reviewTitle }}</a>
@@ -92,7 +42,59 @@
         <a href="#fix-suggestions" (click)="go('fix-suggestions', $event)">{{ texts.fixTitle }}</a>
       }
     </nav>
-    <div class="ai-sections">
+  }
+  <div class="ai-sections">
+    @if (!settings.available) {
+      <section class="card panel ai-unavailable" aria-labelledby="ai-unavailable-title">
+        <div class="empty">
+          <span class="badge badge-none"
+            ><q-icon name="minus" /><ng-container i18n="@@orgAi.none.state"
+              >Not set up</ng-container
+            ></span
+          >
+          @if (settings.unavailableReason === 'no_provider') {
+            <h3 id="ai-unavailable-title" class="big" i18n="@@orgAi.none.title">
+              AI isn't set up on this server yet.
+            </h3>
+            <p i18n="@@orgAi.none.text">
+              An instance admin connects an AI provider in
+              <a [routerLink]="providerLink()">Settings → AI provider</a> and allows
+              {{ orgName() }} to use it. Then you can switch on AI review here.
+            </p>
+            @if (providerLink(); as link) {
+              <a class="btn btn-primary" [routerLink]="link" i18n="@@orgAi.setUpProvider"
+                >Set up the provider</a
+              >
+            }
+          } @else {
+            <h3 id="ai-unavailable-title" class="big" i18n="@@orgAi.notAllowed.title">
+              {{ orgName() }} may not use AI yet.
+            </h3>
+            <p i18n="@@orgAi.notAllowed.text">
+              An instance admin allows it in
+              <a [routerLink]="providerLink()" fragment="organizations"
+                >Settings → AI provider → Organizations</a
+              >.
+            </p>
+          }
+        </div>
+        @if (settings.enabled) {
+          <div class="setting-actions">
+            <span class="foot-status" i18n="@@orgAi.stopped"
+              >AI review was switched on before, and is stopped.</span
+            >
+            <button
+              type="button"
+              class="btn"
+              [attr.aria-disabled]="busy() ? true : null"
+              (click)="askSwitchOff()"
+            >
+              {{ texts.switchOff }}
+            </button>
+          </div>
+        }
+      </section>
+    } @else {
       <q-status-list [lines]="statusLines()" (act)="onAct($event)" />
 
       <section #reviewSection id="review" class="card panel" aria-labelledby="ai-review-heading">
@@ -534,19 +536,19 @@
           }
         </div>
       </section>
-      <!-- fix suggestions -->
-      @if (fixSuggestions()) {
-        <q-fix-suggestions-section
-          [organizationId]="org.currentId() ?? ''"
-          [organizationName]="orgName()"
-          [projects]="fixProjects()"
-          [orgAi]="orgAi()"
-          (status)="fixLine.set($event)"
-        />
-      }
-      <!-- 6I-5: auto-fix -->
-    </div>
-  }
+    }
+    <!-- fix suggestions -->
+    @if (fixSuggestions()) {
+      <q-fix-suggestions-section
+        [organizationId]="org.currentId() ?? ''"
+        [organizationName]="orgName()"
+        [projects]="fixProjects()"
+        [orgAi]="orgAi()"
+        (status)="fixLine.set($event)"
+      />
+    }
+    <!-- 6I-5: auto-fix -->
+  </div>
 
   <dialog
     #consentDialog

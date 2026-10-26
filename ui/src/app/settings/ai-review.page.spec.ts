@@ -1724,6 +1724,72 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
       expect(document.activeElement).toBe(fixSection(root).querySelector('h3'));
     });
 
+    describe('while AI cannot be used', () => {
+      /** The assistant as the server answers it then: not enabled, every feature off. */
+      const AI_OFF = orgAi({
+        enabled: false,
+        features: { explain: false, triage: false, fix: false },
+      });
+
+      it('shows them under the not-set-up card, and switches a stored-on setting off', async () => {
+        const { server } = setup('orgAdmin', { provider: null }, AI_OFF);
+        enterprise(server, { organizations: { [ORG_ID]: { ...STORED_ON } } });
+        const { fixture, root } = await render();
+        expect(root.querySelector('.ai-unavailable')).not.toBeNull();
+        expect(root.querySelector('q-status-list, nav.page-index')).toBeNull();
+        const section = fixSection(root);
+        expect(text(section.querySelector('#auto-fix-not-running'))).toBe(
+          'On, but not running: Suggest a fix is off for Default. An instance admin turns it on in Settings → AI provider.',
+        );
+        const toggle = field(root, 'auto-fix-enabled');
+        expect(toggle.checked).toBe(true);
+        expect(toggle.disabled).toBe(false);
+        await click(fixture, toggle);
+        await click(fixture, button(section, 'Save fix suggestions'));
+        expect(
+          server
+            .requestsTo('PUT', `/api/v0/organizations/${ORG_ID}/ai/auto-fix`)
+            .map((r) => r.body),
+        ).toEqual([{ enabled: false, minSeverity: 'high', maxPerAnalysis: 10 }]);
+        expect(section.querySelector('#auto-fix-not-running')).toBeNull();
+      });
+
+      it('shows them under the not-allowed card, the switch off under what it needs', async () => {
+        const { server } = setup('orgAdmin', { organizationEnabled: false }, AI_OFF);
+        enterprise(server);
+        const { root } = await render();
+        expect(text(root.querySelector('.ai-unavailable h3'))).toBe('Default may not use AI yet.');
+        const toggle = field(root, 'auto-fix-enabled');
+        expect(toggle.disabled).toBe(true);
+        expect(toggle.getAttribute('aria-describedby')?.split(' ')).toContain('auto-fix-needs-fix');
+        expect(text(fixSection(root).querySelector('#auto-fix-needs-fix'))).toBe(
+          'Needs Suggest a fix for Default, which an instance admin turns on in Settings → AI provider.',
+        );
+      });
+
+      it('shows no fix suggestions under the card without the Enterprise plan', async () => {
+        setup('orgAdmin', { provider: null }, AI_OFF);
+        const { root } = await render();
+        expect(root.querySelector('.ai-unavailable')).not.toBeNull();
+        expect(root.querySelector('q-fix-suggestions-section')).toBeNull();
+      });
+
+      it('/settings/auto-fix reveals the section under the not-set-up card', async () => {
+        const { server } = setup('orgAdmin', { provider: null }, AI_OFF, [
+          { path: 'settings', children: settingsRoutes },
+        ]);
+        enterprise(server, { organizations: { [ORG_ID]: { ...STORED_ON } } });
+        const scroll = catchScrolls();
+        const harness = await RouterTestingHarness.create();
+        await harness.navigateByUrl('/settings/auto-fix', AiReviewPage);
+        await settle(harness.fixture);
+        const root = harness.routeNativeElement!;
+        expect(root.querySelector('.ai-unavailable')).not.toBeNull();
+        expect(scroll.mock.contexts.at(-1)).toBe(fixSection(root));
+        expect(document.activeElement).toBe(fixSection(root).querySelector('h3'));
+      });
+    });
+
     it('asks before leaving with unsaved fix suggestions, naming them, and not once they are saved', async () => {
       const { server } = setup('orgAdmin', {}, FIX_ON);
       enterprise(server, { organizations: { [ORG_ID]: { ...STORED_ON } } });

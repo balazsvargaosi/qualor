@@ -114,8 +114,9 @@ const FEATURES: readonly Feature[] = ['explain', 'triage', 'fix'];
  * An index under the head leads to the sections, and an address that names one
  * (`/settings/auto-fix` leads to `#fix-suggestions`) scrolls to it once it has rendered. Without a
  * provider, or while the organisation may not use AI, the page says who changes that (and offers
- * an instance admin to set up the provider), and only switches off a review stored on. Leaving it
- * with unsaved edits in any section asks first.
+ * an instance admin to set up the provider), and only switches off a review stored on; the
+ * automatic fix suggestions still show under that card, so they too can be seen and switched off.
+ * Leaving it with unsaved edits in any section asks first.
  */
 @Component({
   selector: 'q-ai-review-page',
