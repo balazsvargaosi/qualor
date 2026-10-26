@@ -608,7 +608,8 @@ Each new scan of a merge request is reviewed again, on its latest commit.
   streaming, and Qualor remembers that server address and model until the server restarts: their
   later calls are not streamed, and one line in the server log says so. A call that is not streamed
   waits at least 5 minutes for its whole answer. A server that ignores the request for a stream and
-  sends its whole answer as JSON is read as it is.
+  sends its whole answer as JSON is read as it is: an answer with a JSON content type, or with none
+  that starts with `{` or `[`. An answer of any other content type is read as a stream.
   A review usually takes a few minutes, and a big merge request can take 15 or more. The summary
   says the review is in progress until it ends.
 - **Room to think.** A model that thinks counts its thinking in the output limit, so a call asks for

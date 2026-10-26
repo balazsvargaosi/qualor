@@ -148,22 +148,32 @@ describe('postStream', () => {
     ]);
   });
 
-  it('reads a 2xx that is no event stream whole, as JSON: a server that ignored the stream', async () => {
+  it('reads a 2xx whole, as JSON, when its content type is JSON: a server that ignored the stream', async () => {
     const whole = { id: 'chatcmpl-1', choices: [{ message: { content: 'é 😀' } }] };
-    for (const type of ['application/json', 'application/json; charset=utf-8', 'text/plain']) {
+    for (const type of [
+      'application/json',
+      'Application/JSON; charset=utf-8',
+      'application/vnd.api+json',
+      'application/problem+json; charset=utf-8',
+    ]) {
       fake.enqueue({ status: 200, headers: { 'content-type': type }, body: whole });
       expect(await postStream(openai, chat().path, chat().headers, {}, http, LIMITS), type).toEqual(
         { kind: 'whole', answer: whole },
       );
     }
-    // An event stream is its events, whatever the case and the parameters of its type.
-    fake.enqueue({
-      status: 200,
-      headers: { 'content-type': 'Text/Event-Stream; charset=utf-8' },
-      body: 'data: x\n\n',
-    });
-    const stream = await postStream(openai, chat().path, chat().headers, {}, http, LIMITS);
-    expect(await drain(eventsOf(stream))).toEqual([event('x')]);
+  });
+
+  it('reads a 2xx of any other content type as an event stream: a gateway that streams under a wrong type', async () => {
+    for (const type of [
+      'Text/Event-Stream; charset=utf-8',
+      'text/plain',
+      'application/octet-stream',
+      'application/jsonl',
+    ]) {
+      fake.enqueue({ status: 200, headers: { 'content-type': type }, body: 'data: x\n\n' });
+      const stream = await postStream(openai, chat().path, chat().headers, {}, http, LIMITS);
+      expect(await drain(eventsOf(stream)), type).toEqual([event('x')]);
+    }
   });
 
   it('refuses a whole answer that is not JSON, or is over 1 MiB, as postJson refuses it', async () => {
@@ -768,6 +778,91 @@ describe('postStream', () => {
       controller.abort();
       expect(await given).toBeInstanceOf(LlmCallAborted);
       await answer.closed;
+    });
+  });
+
+  it('reads a 2xx with no content type by its first byte that is not blank: `{` or `[` whole, as JSON, and anything else as an event stream', async () => {
+    // What each body, in its pieces, comes to: the answer, its events, or the error.
+    const outcomes: unknown[] = [];
+    for (const pieces of [
+      ['{"text":"x"}'],
+      // Blanks first, in pieces of their own: the first byte that is not blank decides.
+      [' \r\n\t', '\n', '[1,', '2]'],
+      ['{oops'],
+      ['data: 1\n\n', 'data: 2\n\n'],
+      ['\n', ': ping\n\n', 'data: 1\n\ndata: 2\n\n'],
+      // Nothing but blanks: an event stream with no events.
+      ['\n\n'],
+    ]) {
+      await withStreamServer(async (server) => {
+        const pending = startWhole(server);
+        const answer = await server.next();
+        answer.head(200, {});
+        for (const piece of pieces) await answer.write(piece);
+        await answer.end();
+        const got = await pending.catch((e: unknown) => e);
+        outcomes.push(
+          got instanceof Error
+            ? shape(got)
+            : (got as StreamedAnswer).kind === 'events'
+              ? { events: await drain(eventsOf(got as StreamedAnswer)) }
+              : got,
+        );
+      });
+    }
+    expect(outcomes).toEqual([
+      { kind: 'whole', answer: { text: 'x' } },
+      { kind: 'whole', answer: [1, 2] },
+      expect.objectContaining({ failure: 'bad_answer', message: NOT_UNDERSTOOD, status: 200 }),
+      { events: [event('1'), event('2')] },
+      { events: [event('1'), event('2')] },
+      { events: [] },
+    ]);
+  });
+
+  it('decides on a 2xx with no content type within the timers of the stream, and its caller can give it up', async () => {
+    await withStreamServer(async (server) => {
+      fakeTimers();
+      const quiet = startWhole(server, { idleMs: 1_000 }).catch((e: unknown) => e);
+      const answer = await server.next();
+      answer.head(200, {});
+      await answer.write('  ');
+      // The status line and the blanks have reached the call before the clock moves.
+      for (let turn = 0; turn < 10; turn += 1) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(shape(await quiet)).toMatchObject({
+        failure: 'timeout',
+        message: 'The model sent nothing for 1 s; raise the timeout in the AI assistant settings',
+      });
+      await answer.closed;
+    });
+    await withStreamServer(async (server) => {
+      const controller = new AbortController();
+      const given = startWhole(server, {}, controller.signal).catch((e: unknown) => e);
+      const answer = await server.next();
+      answer.head(200, {});
+      await answer.write('\n');
+      controller.abort();
+      expect(await given).toBeInstanceOf(LlmCallAborted);
+      await answer.closed;
+    });
+  });
+
+  it('a reader of a 2xx with no content type that stops early closes the connection and leaves no timer', async () => {
+    await withStreamServer(async (server) => {
+      fakeTimers();
+      const pending = startWhole(server);
+      const answer = await server.next();
+      answer.head(200, {});
+      await answer.write('data: 1\n\ndata: 2\n\n');
+      for await (const next of eventsOf(await pending)) {
+        expect(next).toEqual(event('1'));
+        break;
+      }
+      await answer.closed;
+      expect(vi.getTimerCount()).toBe(0);
     });
   });
 

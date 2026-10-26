@@ -246,24 +246,79 @@ function eventsOf(
 /**
  * What a streamed call is answered with: the events of its stream, or the whole answer of a server
  * that does not stream. Such a server answers a request that asks for a stream as one that does
- * not: with a 2xx whose content type is not an event stream, whose body is the answer as JSON, as
- * `postJson` parses it.
+ * not: with a 2xx whose body is the answer as JSON, as `postJson` parses it.
  */
 export type StreamedAnswer =
   { kind: 'events'; events: AsyncIterable<SseEvent> } | { kind: 'whole'; answer: unknown };
 
-/** Whether a 2xx's content type says that its body is an event stream, with any parameters. */
-function isEventStream(headers: IncomingHttpHeaders): boolean {
+/** A JSON content type, with any parameters: `application/json`, or any type that ends in `+json`. */
+const JSON_TYPE = /^\s*(?:application\/json|[\w.!#$&^+-]+\/[\w.!#$&^+-]+\+json)\s*(?:;|$)/i;
+
+/**
+ * How a 2xx's body is read, by its content type: whole, as JSON, for a JSON type; as an event
+ * stream for any other, so that a gateway that streams under a type of its own still streams; and,
+ * for a body with no content type, by its first byte that is not blank (`firstByteOf`).
+ */
+function bodyKindOf(headers: IncomingHttpHeaders): 'json' | 'events' | 'untyped' {
   const type = headers['content-type'];
-  return typeof type === 'string' && /^\s*text\/event-stream\s*(?:;|$)/i.test(type);
+  if (typeof type !== 'string' || type.trim() === '') return 'untyped';
+  return JSON_TYPE.test(type) ? 'json' : 'events';
+}
+
+/** The bytes JSON allows before a value: space, tab, line feed and carriage return. */
+const BLANKS: ReadonlySet<number> = new Set([0x20, 0x09, 0x0a, 0x0d]);
+
+/**
+ * The start of a 2xx's body that has no content type, read until a byte that is not blank, or the
+ * body's end, or LLM_MAX_ANSWER_BYTES of blanks (more than a JSON answer may hold): whether that
+ * byte opens JSON (`{` or `[`), and the body from its start, the chunks read here first, for the
+ * reader that reads it next, whose `return()` closes the connection. What goes wrong while it is
+ * read is thrown as what goes wrong while the events stream.
+ */
+async function firstByteOf(
+  chunks: AsyncIterable<Buffer>,
+  limits: StreamLimits,
+): Promise<{ json: boolean; chunks: AsyncIterable<Buffer> }> {
+  const body = chunks[Symbol.asyncIterator]();
+  const read: Buffer[] = [];
+  let size = 0;
+  let first: number | undefined;
+  try {
+    while (first === undefined && size <= LLM_MAX_ANSWER_BYTES) {
+      const next = await body.next();
+      if (next.done === true) break;
+      read.push(next.value);
+      size += next.value.length;
+      first = next.value.find((byte) => !BLANKS.has(byte));
+    }
+  } catch (error) {
+    if (error instanceof OutboundStreamError) {
+      throw failureOf(error, () => streamTimeout(error.timer, limits));
+    }
+    throw error;
+  }
+  const replayed: AsyncIterator<Buffer> = {
+    next: async () => {
+      const chunk = read.shift();
+      return chunk === undefined ? body.next() : { done: false, value: chunk };
+    },
+    return: async () => {
+      read.length = 0;
+      return (await body.return?.()) ?? { done: true, value: undefined };
+    },
+  };
+  return {
+    json: first === 0x7b || first === 0x5b,
+    chunks: { [Symbol.asyncIterator]: () => replayed },
+  };
 }
 
 /**
- * The body of a 2xx that is no event stream, read whole as it arrives and then parsed as JSON, as
- * `postJson` reads an answer: more than LLM_MAX_ANSWER_BYTES is an answer not understood (and the
- * connection is closed), and so is a body that is not JSON. What goes wrong while it is read is
- * thrown as what goes wrong while events stream (`streamEvents`): the signal's giving up, a timer
- * that ran out, a connection that breaks.
+ * The body of a 2xx read whole as it arrives and then parsed as JSON, as `postJson` reads an
+ * answer: more than LLM_MAX_ANSWER_BYTES is an answer not understood (and the connection is
+ * closed), and so is a body that is not JSON. What goes wrong while it is read is thrown as what
+ * goes wrong while events stream (`streamEvents`): the signal's giving up, a timer that ran out, a
+ * connection that breaks.
  */
 async function wholeAnswer(
   chunks: AsyncIterable<Buffer>,
@@ -297,9 +352,10 @@ async function wholeAnswer(
  * same headers), but the call asks for an event stream, and reads it as it arrives, within the
  * caller's `limits`. Resolves when the status line of a 2xx has come: with its events, which are
  * read from it as they arrive (`for await`; a reader that stops early closes the connection, even
- * before its first read: `eventsOf`); or, when its content type is not an event stream, with the
- * whole answer, as JSON (`wholeAnswer`): a server that does not stream may ignore the ask and
- * answer as it does to a request that makes none.
+ * before its first read: `eventsOf`); or, when its content type is JSON, with the whole answer, as
+ * JSON (`wholeAnswer`): a server that does not stream may ignore the ask and answer as it does to a
+ * request that makes none. Any other content type is read as an event stream, and a body with none
+ * by its first byte that is not blank (`bodyKindOf`).
  * An answer with any other status throws what `postJson` throws for it, with the one function that
  * classifies a refusal for both (`refusedBy`), so that a streamed call is asked again, as a call
  * that is not, when its output limit is refused; a server that does not stream says so in it too
@@ -327,10 +383,16 @@ export async function postStream(
       throw failureOf(result, () => streamTimeout(result.timer, limits));
     case 'response':
       throw refusedBy(config, result, body, outputLimitField);
-    case 'stream':
-      return isEventStream(result.headers)
-        ? { kind: 'events', events: eventsOf(result.chunks, limits) }
-        : { kind: 'whole', answer: await wholeAnswer(result.chunks, result.status, limits) };
+    case 'stream': {
+      const kind = bodyKindOf(result.headers);
+      const start =
+        kind === 'untyped'
+          ? await firstByteOf(result.chunks, limits)
+          : { json: kind === 'json', chunks: result.chunks };
+      return start.json
+        ? { kind: 'whole', answer: await wholeAnswer(start.chunks, result.status, limits) }
+        : { kind: 'events', events: eventsOf(start.chunks, limits) };
+    }
   }
 }
 
