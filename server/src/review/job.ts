@@ -587,7 +587,11 @@ class ReviewJob {
       if (!(err instanceof SkipReview)) throw err;
       return { kind: 'skipped', reason: err.reason, detail: err.detail, digest: seen.digest };
     }
-    await db.update(reviewRuns).set({ diffDigest: seen.digest }).where(eq(reviewRuns.id, run.id));
+    // Only into the run this job started: one started again meanwhile has its own digest to make.
+    await db
+      .update(reviewRuns)
+      .set({ diffDigest: seen.digest })
+      .where(and(eq(reviewRuns.id, run.id), startedAtIs(run.startedAt)));
     return { kind: 'built', context };
   }
 

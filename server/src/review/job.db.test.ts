@@ -863,6 +863,47 @@ describe('the ai-review job (6I-3, R15)', () => {
     expect((await runOf(newer!)).status).toBe('waiting');
   });
 
+  it('a job whose run was started again before its context was built writes no digest into it', async () => {
+    const mr = mergeRequest();
+    const analysisId = await analysisOf(mr);
+    await snapshotOf(analysisId, mr);
+    const { id: runId, branchId } = await runOf(analysisId);
+    await forgetDecorations();
+    // While the job reads the merge request's state, its lease is lost, the sweep ends its run, and
+    // a person asks for the review again: the run waits for the job that comes next.
+    gitlab.inject('GET', /\/merge_requests\/\d+$/, {
+      status: 200,
+      passThrough: true,
+      before: async () => {
+        await h.ctx.db
+          .update(jobs)
+          .set({ status: 'dead', lastError: 'lease expired' })
+          .where(and(eq(jobs.queue, AI_REVIEW_QUEUE), sql`${jobs.payload} ->> 'runId' = ${runId}`));
+        await reconcileStuckReviewRuns(h.ctx.db, silentLogger);
+        await h.ctx.db.transaction(async (tx) => {
+          await lockBranchQueue(tx, branchId);
+          await requestReviewRun(
+            tx,
+            { analysisId, projectId: p.id, branchId, requestedBy: 'octocat' },
+            silentLogger,
+          );
+        });
+        await h.ctx.db
+          .update(jobs)
+          .set({ runAt: sql`now() + interval '1 hour'` })
+          .where(and(eq(jobs.queue, AI_REVIEW_QUEUE), eq(jobs.status, 'queued')));
+      },
+    });
+    const calls = reviewCalls().length;
+    expect(await runReviews()).toBe(1);
+    expect(reviewCalls().slice(calls)).toEqual([]);
+    expect(await runOf(analysisId)).toMatchObject({
+      status: 'waiting',
+      startedAt: null,
+      diffDigest: null,
+    });
+  });
+
   it('a job that lost its lease writes nothing into its run once another job has it again', async () => {
     const mr = mergeRequest();
     const analysisId = await analysisOf(mr);
