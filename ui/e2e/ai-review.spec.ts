@@ -4,11 +4,13 @@ import { expect, expectAccessible, test } from './fixtures';
 import { OLGA, PAYMENTS, SHOP, STORAGE_STATE, VERA } from './seed-data';
 
 /**
- * AI review (6I-2 Task 9) on the community e2e server: Settings → AI review for an organisation
- * admin, with the data-sharing dialog, and the read-only panel in a project's settings. The seed
- * (`seedAi`) points the instance's provider at the fake LLM on loopback and enables the default
- * organisation, so review can be switched on; nothing here reaches a real model. The tests sign in
- * as people other than the instance admin, who is an organisation admin of everything anyway.
+ * The organisation's AI page (Settings → AI, `/settings/ai-review`) on the community e2e server,
+ * for an organisation admin: AI review switched on with the status's button and its data-sharing
+ * dialog, its projects and budgets, and the read-only panel in a project's settings. The seed
+ * (`seedAi`) points the instance's provider at the fake LLM on loopback, enables the default
+ * organisation and links Payments API to the fake GitLab, so review can be switched on; nothing
+ * here reaches a real model. The tests sign in as people other than the instance admin, who is an
+ * organisation admin of everything anyway.
  */
 
 async function signIn(page: Page, user: { username: string; password: string }): Promise<void> {
@@ -45,10 +47,27 @@ async function openProjectSettings(page: Page, name: string): Promise<void> {
   await expect(page.getByRole('heading', { name: 'New code', level: 2 })).toBeVisible();
 }
 
+/** The AI review line of the Status card, its chip, and the section's foot. */
+const reviewLine = (page: Page) => page.locator('li[data-key="review"]');
+const reviewState = (page: Page) => reviewLine(page).locator('.badge');
+const foot = (page: Page) => page.locator('#review .foot-status');
+const SAVED = /^Saved at \d{1,2}:\d{2} [AP]M UTC\.$/;
+
+/** Switches AI review off with the status's button and its confirmation. */
+async function switchOff(page: Page): Promise<void> {
+  await reviewLine(page).getByRole('button', { name: 'Switch off AI review' }).click();
+  const confirm = page.getByRole('dialog', { name: 'Switch off AI review?' });
+  await expect(confirm).toBeVisible();
+  await expect(confirm.getByRole('button', { name: 'Cancel' })).toBeFocused();
+  await confirm.getByRole('button', { name: 'Switch off', exact: true }).click();
+  await expect(confirm).toBeHidden();
+  await expect(reviewState(page)).toHaveText('Off');
+}
+
 test.describe('as people other than the instance admin', () => {
   test.use({ storageState: { cookies: [], origins: [] } });
 
-  test('an organisation admin switches AI review on with the dialog and finds it saved after a reload', async ({
+  test('an organisation admin switches AI review on with the button and finds it saved after a reload', async ({
     page,
   }) => {
     const puts: string[] = [];
@@ -59,28 +78,35 @@ test.describe('as people other than the instance admin', () => {
     });
     await signIn(page, OLGA);
 
-    await test.step('the entry is in the Organization group of Settings', async () => {
+    await test.step('the entry is AI, in the Organization group of Settings', async () => {
       await page.goto('/settings');
       const nav = page.getByRole('navigation', { name: 'Settings' });
       await nav
         .getByRole('group', { name: 'Organization' })
-        .getByRole('link', { name: 'AI review' })
+        .getByRole('link', { name: 'AI', exact: true })
         .click();
       await expect(page).toHaveURL(/\/settings\/ai-review$/);
-      await expect(page).toHaveTitle('AI review · Qualor');
-      await expect(page.getByRole('heading', { name: 'AI review', level: 2 })).toBeVisible();
-      await expect(nav.getByRole('link', { name: 'AI review' })).toHaveAttribute(
+      await expect(page).toHaveTitle('AI · Qualor');
+      await expect(page.getByRole('heading', { name: 'AI', level: 2, exact: true })).toBeVisible();
+      await expect(nav.getByRole('link', { name: 'AI', exact: true })).toHaveAttribute(
         'aria-current',
         'page',
       );
       // The seed's provider: the fake LLM on loopback.
-      await expect(page.locator('#ai-review-provider')).toHaveText(
-        /^\s*Model fake-model at 127\.0\.0\.1:\d+\s*$/,
+      await expect(page.locator('.settings-head p')).toHaveText(
+        /^\s*AI features for Default, on this server's AI provider \(127\.0\.0\.1:\d+\)\./,
       );
-      await expect(page.locator('#ai-review-unavailable')).toHaveCount(0);
+      await expect(reviewState(page)).toHaveText('Off');
       await expect(
-        page.getByRole('checkbox', { name: 'Review merge requests with AI' }),
-      ).not.toBeChecked();
+        reviewLine(page).getByRole('button', { name: 'Switch on AI review…' }),
+      ).toBeVisible();
+      await expect(page.locator('#review .sec-purpose')).toContainText(
+        /with 127\.0\.0\.1:\d+ \(fake-model\)/,
+      );
+      // The assistant, read-only: the seed enables every feature for Default.
+      await expect(page.locator('li[data-key="assistant"]')).toContainText(
+        'Explain, Suggest triage, and Suggest a fix on.',
+      );
       await expectAccessible(page);
     });
 
@@ -88,9 +114,10 @@ test.describe('as people other than the instance admin', () => {
     const confirm = dialog.getByRole('button', {
       name: /^Switch on and send code to 127\.0\.0\.1:\d+$/,
     });
+    const switchOn = reviewLine(page).getByRole('button', { name: 'Switch on AI review…' });
 
-    await test.step('the dialog holds the notice; Cancel sends nothing and unchecks the box', async () => {
-      await page.getByRole('checkbox', { name: 'Review merge requests with AI' }).check();
+    await test.step('the dialog holds the notice; Cancel sends nothing', async () => {
+      await switchOn.click();
       await expect(dialog).toBeVisible();
       await expect(dialog.locator('#ai-review-notice')).toContainText(
         /^AI review sends the merge request's diff and any repository file the model chooses to read to 127\.0\.0\.1:\d+ \(fake-model\)\./,
@@ -100,6 +127,9 @@ test.describe('as people other than the instance admin', () => {
       );
       await expect(dialog.locator('#ai-review-notice')).toContainText(
         'Secrets the analyzers found are masked; credentials files are never sent.',
+      );
+      await expect(dialog.locator('#ai-review-scope-line')).toHaveText(
+        'No project is selected yet: choose projects below first.',
       );
       await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeFocused();
       await expectAccessible(page);
@@ -114,21 +144,19 @@ test.describe('as people other than the instance admin', () => {
       await dialog.getByRole('button', { name: 'Cancel' }).click();
       await page.setViewportSize({ width: 1280, height: 720 });
       await expect(dialog).toBeHidden();
-      await expect(
-        page.getByRole('checkbox', { name: 'Review merge requests with AI' }),
-      ).not.toBeChecked();
+      // The focus is back on the button that opened it.
+      await expect(switchOn).toBeFocused();
+      await expect(reviewState(page)).toHaveText('Off');
       expect(puts).toEqual([]);
     });
 
     await test.step('Confirm acknowledges the host and model the dialog named', async () => {
-      await page.getByRole('checkbox', { name: 'Review merge requests with AI' }).check();
+      await switchOn.click();
       await expect(dialog).toBeVisible();
       await confirm.click();
       await expect(dialog).toBeHidden();
-      await expect(page.getByRole('status')).toHaveText('The AI review settings were saved.');
-      await expect(
-        page.getByRole('checkbox', { name: 'Review merge requests with AI' }),
-      ).toBeChecked();
+      await expect(reviewState(page)).toHaveText('On');
+      await expect(foot(page)).toHaveText(SAVED);
       expect(puts).toHaveLength(1);
       const sent = JSON.parse(puts[0]!) as {
         enabled: boolean;
@@ -137,44 +165,71 @@ test.describe('as people other than the instance admin', () => {
       expect(sent.enabled).toBe(true);
       expect(sent.acknowledgeDataSharing.host).toMatch(/^127\.0\.0\.1:\d+$/);
       expect(sent.acknowledgeDataSharing.model).toBe('fake-model');
-      // The consent covers the provider: no warning to confirm again.
-      await expect(page.locator('#ai-review-outdated')).toHaveCount(0);
+      await expect(reviewLine(page).locator('.st-sub')).toHaveText(
+        /^Confirmed on \w{3} \d{1,2}, \d{4} \(by you\) for 127\.0\.0\.1:\d+ \(fake-model\)\.$/,
+      );
     });
 
-    await test.step('the scope, the projects and the budgets save without asking again', async () => {
-      await page.getByRole('radio', { name: 'Selected projects' }).check();
+    await test.step('the projects and the budgets save without asking again', async () => {
+      await expect(page.getByRole('radio', { name: 'Selected projects' })).toBeChecked();
+      await page.getByRole('button', { name: 'Add projects' }).click();
       await page.getByRole('checkbox', { name: /^Payments API/ }).check();
-      await expect(page.locator('#ai-review-selected-count')).toHaveText('1 project selected');
+      await page.getByRole('button', { name: 'Add 1 project' }).click();
+      const row = page.locator('table.chosen tbody tr', { hasText: PAYMENTS.name });
+      await expect(row).toContainText('Yes');
+      await expect(foot(page)).toHaveText('1 unsaved change');
+
+      await page.locator('#review details.fold > summary').click();
       await page.getByLabel('Tokens per day', { exact: true }).fill('500000');
-      await page.getByLabel('Cost per day in US dollars').fill('25');
-      await page.getByLabel('Tokens per project and day').fill('250000');
       await page.getByLabel('Tokens per review').fill('120000');
-      await page.getByRole('button', { name: 'Save' }).click();
-      await expect(page.getByRole('status')).toHaveText('The AI review settings were saved.');
+      await page.getByRole('switch', { name: /^Limit tokens per project/ }).check();
+      await page.getByLabel('Tokens per project per day').fill('250000');
+      // No prices on this server: a cost limit would count nothing.
+      await expect(page.getByRole('switch', { name: /^Limit the cost/ })).toBeDisabled();
+      await expect(page.locator('#ai-review-no-prices')).toContainText(
+        'No prices are set on this server, so a cost limit would count nothing.',
+      );
+      await expect(foot(page)).toHaveText('4 unsaved changes');
+      await page.getByRole('button', { name: 'Save AI review' }).click();
+      await expect(foot(page)).toHaveText(SAVED);
       await expect(dialog).toBeHidden();
       expect(puts).toHaveLength(2);
       expect(JSON.parse(puts[1]!)).not.toHaveProperty('acknowledgeDataSharing');
+      expect(JSON.parse(puts[1]!)).toMatchObject({
+        enabled: true,
+        scope: 'selected',
+        budgets: {
+          tokensPerDay: 500_000,
+          maxTokensPerReview: 120_000,
+          perProjectTokensPerDay: 250_000,
+          costPerDayUsd: null,
+        },
+      });
+      await expect(reviewLine(page).locator('.st-line')).toHaveText(/On\s*Reviewing 1 project/);
+      // On, with the budgets open.
       await expectAccessible(page);
     });
 
     await test.step('a reload shows what was saved', async () => {
       await page.reload();
-      await expect(
-        page.getByRole('checkbox', { name: 'Review merge requests with AI' }),
-      ).toBeChecked();
+      await expect(reviewState(page)).toHaveText('On');
       await expect(page.getByRole('radio', { name: 'Selected projects' })).toBeChecked();
-      await expect(page.getByRole('checkbox', { name: /^Payments API/ })).toBeChecked();
-      await expect(page.getByRole('checkbox', { name: /^Web Shop/ })).not.toBeChecked();
-      await expect(page.getByLabel('Tokens per day', { exact: true })).toHaveValue('500000');
-      await expect(page.getByLabel('Cost per day in US dollars')).toHaveValue('25');
-      await expect(page.getByLabel('Tokens per project and day')).toHaveValue('250000');
-      await expect(page.getByLabel('Tokens per review')).toHaveValue('120000');
-      await expect(page.locator('#ai-review-outdated')).toHaveCount(0);
-      // No review ran on this server: the day's use is nothing, against the budget just saved.
-      await expect(page.locator('#ai-review-usage')).toHaveText(
-        'Today: 0 of 500,000 tokens · 0 reviews',
+      await expect(page.locator('table.chosen tbody tr', { hasText: PAYMENTS.name })).toContainText(
+        'Yes',
       );
-      await expectAccessible(page);
+      await expect(page.locator('#review details.fold > summary')).toHaveText(
+        /500,000 tokens a day\s*120,000 per review\s*250,000 per project a day\s*No cost limit/,
+      );
+      await expect(page.getByLabel('Tokens per day', { exact: true })).toHaveValue('500,000');
+      await expect(page.getByLabel('Tokens per review')).toHaveValue('120,000');
+      await expect(page.getByLabel('Tokens per project per day')).toHaveValue('250,000');
+      // No review ran on this server: the day's use is nothing, against the budget just saved.
+      await expect(
+        page
+          .locator('li[data-key="today"] q-meter', { hasText: 'AI review' })
+          .locator('.meter-value'),
+      ).toHaveText('0 of 500,000');
+      await expect(foot(page)).toHaveText('No unsaved changes');
     });
 
     await test.step('the project panels say which projects are reviewed', async () => {
@@ -195,18 +250,14 @@ test.describe('as people other than the instance admin', () => {
       await expect(page.locator('#ai-review-organization-off')).toHaveCount(0);
     });
 
-    await test.step('switching it off needs no confirmation, and the panel points to the settings', async () => {
+    await test.step('switching it off asks first, and the panel points to the settings', async () => {
       await page.goto('/settings/ai-review');
-      await page.getByRole('checkbox', { name: 'Review merge requests with AI' }).uncheck();
-      await expect(dialog).toBeHidden();
-      await page.getByRole('button', { name: 'Save' }).click();
-      await expect(page.getByRole('status')).toHaveText('The AI review settings were saved.');
+      await switchOff(page);
       expect(puts).toHaveLength(3);
       expect(JSON.parse(puts[2]!)).toMatchObject({ enabled: false });
+      expect(JSON.parse(puts[2]!)).not.toHaveProperty('acknowledgeDataSharing');
       await page.reload();
-      await expect(
-        page.getByRole('checkbox', { name: 'Review merge requests with AI' }),
-      ).not.toBeChecked();
+      await expect(reviewState(page)).toHaveText('Off');
 
       await openProjectSettings(page, PAYMENTS.name);
       const panel = page.locator('#ai-review');
@@ -216,7 +267,7 @@ test.describe('as people other than the instance admin', () => {
       );
       await panel.getByRole('link', { name: 'Settings → AI review' }).click();
       await expect(page).toHaveURL(/\/settings\/ai-review$/);
-      await expect(page.getByRole('heading', { name: 'AI review', level: 2 })).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'AI', level: 2, exact: true })).toBeVisible();
     });
   });
 
@@ -230,7 +281,7 @@ test.describe('as people other than the instance admin', () => {
       );
     });
 
-    test('switching review on with three models names all three in the warning and sends them', async ({
+    test('switching review on with three models names all three in the notice and sends them', async ({
       page,
       playwright,
       baseURL,
@@ -247,14 +298,14 @@ test.describe('as people other than the instance admin', () => {
       );
       await signIn(page, OLGA);
       await page.goto('/settings/ai-review');
-      await expect(page.getByRole('heading', { name: 'AI review', level: 2 })).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'AI', level: 2, exact: true })).toBeVisible();
       // The three models, sorted, as the notice names them.
-      await expect(page.locator('#ai-review-provider')).toHaveText(
-        /^\s*Models fake-fast, fake-model, fake-strong at 127\.0\.0\.1:\d+\s*$/,
+      await expect(page.locator('#review .sec-purpose')).toContainText(
+        /with 127\.0\.0\.1:\d+ \(fake-fast, fake-model, fake-strong\)/,
       );
 
       const dialog = page.getByRole('dialog', { name: 'Switch on AI review' });
-      await page.getByRole('checkbox', { name: 'Review merge requests with AI' }).check();
+      await reviewLine(page).getByRole('button', { name: 'Switch on AI review…' }).click();
       await expect(dialog).toBeVisible();
       await expect(dialog.locator('#ai-review-notice')).toContainText(
         /to 127\.0\.0\.1:\d+ \(fake-fast, fake-model, fake-strong\)\./,
@@ -264,7 +315,7 @@ test.describe('as people other than the instance admin', () => {
         .getByRole('button', { name: /^Switch on and send code to 127\.0\.0\.1:\d+$/ })
         .click();
       await expect(dialog).toBeHidden();
-      await expect(page.getByRole('status')).toHaveText('The AI review settings were saved.');
+      await expect(reviewState(page)).toHaveText('On');
       // The acknowledgement names the standard model and the whole set the dialog showed.
       expect(puts).toHaveLength(1);
       const sent = JSON.parse(puts[0]!) as {
@@ -281,20 +332,15 @@ test.describe('as people other than the instance admin', () => {
       ]);
       // The consent names all three: nothing to confirm again, also after a reload.
       await page.reload();
-      await expect(
-        page.getByRole('checkbox', { name: 'Review merge requests with AI' }),
-      ).toBeChecked();
-      await expect(page.locator('#ai-review-outdated')).toHaveCount(0);
+      await expect(reviewState(page)).toHaveText('On');
 
       // Leave review off, as the test before this one did.
-      await page.getByRole('checkbox', { name: 'Review merge requests with AI' }).uncheck();
-      await page.getByRole('button', { name: 'Save' }).click();
-      await expect(page.getByRole('status')).toHaveText('The AI review settings were saved.');
+      await switchOff(page);
       expect(puts).toHaveLength(2);
     });
   });
 
-  test('a member sees no AI review entry, and the address says it is for organisation admins', async ({
+  test('a member sees no AI entry, and the address says it is for organisation admins', async ({
     page,
   }) => {
     // An account the admin created must change its initial password first (ruling R7).
@@ -312,15 +358,13 @@ test.describe('as people other than the instance admin', () => {
     await page.goto('/settings');
     const nav = page.getByRole('navigation', { name: 'Settings' });
     await expect(nav.getByRole('link', { name: 'Access tokens' })).toBeVisible();
-    await expect(nav.getByRole('link', { name: 'AI review' })).toHaveCount(0);
+    await expect(nav.getByRole('link', { name: 'AI', exact: true })).toHaveCount(0);
 
     await page.goto('/settings/ai-review');
     await expect(
       page.getByText('Only organisation administrators change the AI review settings.'),
     ).toBeVisible();
-    await expect(page.getByRole('checkbox', { name: 'Review merge requests with AI' })).toHaveCount(
-      0,
-    );
+    await expect(page.getByRole('button', { name: 'Switch on AI review…' })).toHaveCount(0);
     await expectAccessible(page);
   });
 });

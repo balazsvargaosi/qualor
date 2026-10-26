@@ -1,5 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
+import { orgAi } from '../../testing/ai-settings';
 import {
   FakeAiReview,
   type FakeAiReviewOptions,
@@ -9,6 +10,7 @@ import {
   ORG_ID,
   page,
   problem,
+  projectItem,
   provideFakeServer,
   settle,
 } from '../../testing/fake-server';
@@ -23,11 +25,28 @@ const ROUTE = `/api/v0/organizations/${ORG_ID}/ai/review`;
 const PAYMENTS = '0190a6c2-0000-7000-8000-0000000000f1';
 const SHOP = '0190a6c2-0000-7000-8000-0000000000f2';
 const OTHER_PROJECT = '0190a6c2-0000-7000-8000-0000000000f3';
+const LEGACY = '0190a6c2-0000-7000-8000-0000000000f4';
+/** Payments is linked to a repository, Web Shop is not, and an instance admin excluded Legacy. */
 const PROJECTS = [
-  { id: PAYMENTS, organizationId: ORG_ID, key: 'acme/payments', name: 'Payments' },
-  { id: SHOP, organizationId: ORG_ID, key: 'acme/web-shop', name: 'Web Shop' },
-  { id: OTHER_PROJECT, organizationId: OTHER_ID, key: 'other/api', name: 'Other API' },
+  projectItem({ id: PAYMENTS, key: 'acme/payments', name: 'Payments', scmConnectionId: 'c1' }),
+  projectItem({ id: SHOP, key: 'acme/web-shop', name: 'Web Shop' }),
+  projectItem({
+    id: LEGACY,
+    key: 'acme/legacy',
+    name: 'Legacy',
+    autoFix: { excludedFromAi: true },
+  }),
+  projectItem({
+    id: OTHER_PROJECT,
+    organizationId: OTHER_ID,
+    key: 'other/api',
+    name: 'Other API',
+    scmConnectionId: 'c2',
+  }),
 ];
+const ALL_THREE = [PAYMENTS, SHOP, LEGACY];
+/** Someone other than the signed-in user (`me()`), who confirmed the notice instead. */
+const ANOTHER_USER = '0190a6c2-0000-7000-8000-00000000000b';
 
 /** The provider the fake names by default, and the second one an instance admin switches to. */
 const A = { host: 'llm.example.com', model: 'gpt-review', models: ['gpt-review'] };
@@ -41,6 +60,8 @@ const THREE = {
 /** The notice for A, word for word (spec §5, D4) with the 14 days of the default retention. */
 const NOTICE_A =
   "AI review sends the merge request's diff and any repository file the model chooses to read to llm.example.com (gpt-review). The scanner uploads a copy of the repository to this Qualor server for each merge request; Qualor keeps it until the merge request is closed (at most 14 days). Secrets the analyzers found are masked; credentials files are never sent.";
+const NOTICE_THREE =
+  "AI review sends the merge request's diff and any repository file the model chooses to read to llm.example.com (gpt-fast, gpt-review, gpt-strong). The scanner uploads a copy of the repository to this Qualor server for each merge request; Qualor keeps it until the merge request is closed (at most 14 days). Secrets the analyzers found are masked; credentials files are never sent.";
 const CONFIRM_A = 'Switch on and send code to llm.example.com';
 const CONFIRM_B = 'Switch on and send code to llm2.example.com:8443';
 const DEFAULT_BUDGETS = {
@@ -49,23 +70,29 @@ const DEFAULT_BUDGETS = {
   perProjectTokensPerDay: null,
   maxTokensPerReview: 300_000,
 };
+/** A day on a server that sets prices: the cost is counted, so a cost limit can be. */
+const PRICED = { tokensToday: 0, costTodayUsd: 0, reviewsToday: 0 };
+const SAVED_AT = /^Saved at \d{1,2}:\d{2} [AP]M UTC\.$/;
 
-type Who = 'orgAdmin' | 'member';
+type Who = 'orgAdmin' | 'member' | 'instanceAdmin' | 'aiOnly';
 
 function user(who: Who): Me {
+  if (who === 'instanceAdmin') return me({ admin: true });
   const base = me();
   if (who === 'member') return base;
+  // An admin by role, or a custom role that manages AI and nothing of the repositories.
+  const permissions: Me['memberships'][number]['permissions'] =
+    who === 'orgAdmin' ? [...ORG_ADMIN_PERMISSIONS] : ['org.read', 'org.ai.manage'];
   return {
     ...base,
-    memberships: [
-      { ...base.memberships[0]!, role: 'admin', permissions: [...ORG_ADMIN_PERMISSIONS] },
-    ],
+    memberships: [{ ...base.memberships[0]!, role: 'admin', permissions }],
   };
 }
 
 function setup(
   who: Who = 'orgAdmin',
   review: FakeAiReviewOptions = {},
+  assistant: object = orgAi(),
 ): { server: FakeServer; fake: FakeAiReview } {
   const server = new FakeServer();
   server.on('GET', '/api/v0/organizations', {
@@ -80,6 +107,7 @@ function setup(
   server.on('GET', '/api/v0/projects', (request) => ({
     body: page(PROJECTS.filter((p) => p.organizationId === request.query.get('organizationId'))),
   }));
+  server.on('GET', /^\/api\/v0\/organizations\/[^/]+\/ai$/, { body: assistant });
   const fake = FakeAiReview.install(server, review);
   TestBed.configureTestingModule({
     providers: [provideRouter([{ path: '**', children: [] }]), provideFakeServer(server)],
@@ -94,16 +122,52 @@ type Fixture = { whenStable(): Promise<unknown> };
 async function render() {
   const fixture = TestBed.createComponent(AiReviewPage);
   await settle(fixture);
-  return { fixture, root: fixture.nativeElement as HTMLElement };
+  return { fixture, root: fixture.nativeElement as HTMLElement, page: fixture.componentInstance };
 }
 
+const text = (el: Element | null | undefined) => el?.textContent?.replace(/\s+/g, ' ').trim();
 const field = <T extends HTMLElement = HTMLInputElement>(root: HTMLElement, id: string) =>
   root.querySelector<T>(`#${id}`)!;
-const dialog = (root: HTMLElement) =>
+const line = (root: HTMLElement, key: string) =>
+  root.querySelector<HTMLElement>(`li[data-key="${key}"]`)!;
+const section = (root: HTMLElement) => root.querySelector<HTMLElement>('section#review')!;
+const consentDialog = (root: HTMLElement) =>
   root.querySelector<HTMLDialogElement>('dialog#ai-review-dialog')!;
-const button = (within: HTMLElement, text: string) =>
-  [...within.querySelectorAll('button')].find((b) => b.textContent?.trim() === text);
+const offDialog = (root: HTMLElement) =>
+  root.querySelector<HTMLDialogElement>('dialog#ai-review-off-dialog')!;
+const button = (within: Element, name: string) =>
+  [...within.querySelectorAll<HTMLButtonElement>('button')].find((b) => text(b) === name);
+const buttons = (within: Element) => [...within.querySelectorAll('button')].map((b) => text(b));
+const foot = (root: HTMLElement) => text(section(root).querySelector('.foot-status'));
+const fold = (root: HTMLElement) =>
+  section(root).querySelector<HTMLDetailsElement>('details.fold')!;
+const chips = (root: HTMLElement) =>
+  [...fold(root).querySelectorAll('summary .chip')].map((c) => ({
+    text: text(c),
+    set: c.classList.contains('set'),
+  }));
+const rows = (root: HTMLElement) => [
+  ...section(root).querySelectorAll<HTMLElement>('table.chosen tbody tr'),
+];
+const row = (root: HTMLElement, name: string) =>
+  rows(root).find((r) => text(r.querySelector('th'))?.startsWith(`${name} `))!;
+/** The switch named `name`: its label's `.sw-name`. */
+const switchNamed = (root: HTMLElement, name: string) => {
+  const label = [...root.querySelectorAll('.switch-row > label')].find(
+    (l) => text(l.querySelector('.sw-name')) === name,
+  )!;
+  return field(root, label.getAttribute('for')!);
+};
+const meters = (root: HTMLElement) =>
+  [...line(root, 'today').querySelectorAll('q-meter')].map((m) => ({
+    label: text(m.querySelector('.meter-label')),
+    value: text(m.querySelector('.meter-value')),
+    note: text(m.querySelector('.meter-note')),
+  }));
+const facts = (within: Element) =>
+  [...within.querySelectorAll('dl.facts dt')].map((dt) => [text(dt), text(dt.nextElementSibling)]);
 
+/** Types into a field as a person does: the number field takes each input event. */
 function type(root: HTMLElement, id: string, value: string): void {
   const input = field(root, id);
   input.value = value;
@@ -115,62 +179,77 @@ async function click(fixture: Fixture, target: HTMLElement | undefined) {
   await settle(fixture);
 }
 
-async function save(fixture: Fixture, root: HTMLElement) {
-  root.querySelector('form')!.dispatchEvent(new Event('submit'));
+/** Presses the action of a status line. */
+async function act(fixture: Fixture, root: HTMLElement, name: string) {
+  await click(fixture, button(root.querySelector('q-status-list')!, name));
+}
+
+/** Presses Save AI review once what was typed has rendered (it enables Save). */
+async function saveReview(fixture: Fixture, root: HTMLElement) {
+  await settle(fixture);
+  await click(fixture, button(section(root), 'Save AI review'));
+}
+
+/** Opens or closes the budgets' fold, as its summary does. */
+async function setFold(fixture: Fixture, root: HTMLElement, open: boolean) {
+  fold(root).open = open;
+  fold(root).dispatchEvent(new Event('toggle'));
   await settle(fixture);
 }
 
-/** Checks the switch, which opens the data-sharing dialog. */
-async function switchOn(fixture: Fixture, root: HTMLElement) {
-  await click(fixture, field(root, 'ai-review-enabled'));
-}
-
-describe('AiReviewPage (6I-2 Task 9)', () => {
-  it("shows the organisation's stored review: provider, switch, scope, projects and budgets", async () => {
-    setup('orgAdmin', {
-      ceiling: 750_000,
-      organizations: {
-        [ORG_ID]: {
-          enabled: true,
-          scope: 'selected',
-          projectIds: [PAYMENTS],
-          budgets: {
-            tokensPerDay: 500_000,
-            costPerDayUsd: 12.5,
-            perProjectTokensPerDay: 100_000,
-            maxTokensPerReview: 200_000,
-          },
-          consentFor: A,
-        },
-      },
-    });
+describe('AiReviewPage (AI settings redesign, Task 5)', () => {
+  it('opens with the status: off, what the selection would review, and the button to switch on', async () => {
+    setup('orgAdmin', { organizations: { [ORG_ID]: { projectIds: ALL_THREE } } });
     const { root } = await render();
-    expect(root.querySelector('h2')?.textContent?.trim()).toBe('AI review');
-    expect(field(root, 'ai-review-provider').textContent?.trim()).toBe(
-      'Model gpt-review at llm.example.com',
+    expect(text(root.querySelector('h2'))).toBe('AI');
+    const review = line(root, 'review');
+    expect(text(review.querySelector('.st-label'))).toBe('AI review');
+    expect(text(review.querySelector('.badge'))).toBe('Off');
+    expect(review.querySelector('.badge')?.classList).toContain('badge-none');
+    expect(text(review.querySelector('.st-sub'))).toBe(
+      '1 of 3 selected projects can be reviewed: 1 not linked to a repository, 1 excluded from AI.',
     );
-    expect(root.querySelector('label[for="ai-review-enabled"]')?.textContent?.trim()).toBe(
-      'Review merge requests with AI',
+    expect(button(review, 'Switch on AI review…')?.classList).toContain('btn-primary');
+    // The status, then the AI review and Assistant sections, in that order.
+    expect(
+      [...root.querySelectorAll('li[data-key]')].map((l) => l.getAttribute('data-key')),
+    ).toEqual(['review', 'today', 'assistant']);
+    expect([...root.querySelectorAll('section.card h3')].map((h) => text(h))).toEqual([
+      'Status',
+      'AI review',
+      'Assistant',
+    ]);
+    // The section's head repeats the state as a chip.
+    expect(text(section(root).querySelector('.sec-chips .badge'))).toBe('Off');
+    // No bare checkbox: the budgets' switches are switches, and the picker's ticks its own list.
+    const bare = [...root.querySelectorAll('input[type="checkbox"]')].filter(
+      (input) => !input.closest('q-project-picker') && input.getAttribute('role') !== 'switch',
     );
-    expect(field(root, 'ai-review-enabled').checked).toBe(true);
-    expect(field(root, 'ai-review-scope-selected').checked).toBe(true);
-    expect(field(root, 'ai-review-scope-all').checked).toBe(false);
-    expect(field(root, `ai-review-project-${PAYMENTS}`).checked).toBe(true);
-    expect(field(root, `ai-review-project-${SHOP}`).checked).toBe(false);
-    // Only the organisation's own projects are offered.
-    expect(root.querySelector(`#ai-review-project-${OTHER_PROJECT}`)).toBeNull();
-    expect(field(root, 'ai-review-tokens').value).toBe('500000');
-    expect(field(root, 'ai-review-cost').value).toBe('12.5');
-    expect(field(root, 'ai-review-per-project').value).toBe('100000');
-    expect(field(root, 'ai-review-max-per-review').value).toBe('200000');
-    // Nothing to confirm: no warning, no dialog, no unavailable note.
-    expect(root.querySelector('.alert-warn')).toBeNull();
-    expect(root.querySelector('#ai-review-unavailable')).toBeNull();
-    expect(dialog(root).open).toBe(false);
+    expect(bare).toEqual([]);
+    expect(consentDialog(root).open).toBe(false);
+  });
+
+  it('names the provider in the intro and in the purpose of AI review, every model of it', async () => {
+    setup('orgAdmin', { provider: THREE });
+    const { root } = await render();
+    expect(text(root.querySelector('.settings-head p'))).toBe(
+      "AI features for Default, on this server's AI provider (llm.example.com). AI review sends repository code to the provider, so switching it on asks you to confirm.",
+    );
+    expect(text(section(root).querySelector('.sec-purpose'))).toBe(
+      'Reviews each merge request of the projects you choose with llm.example.com (gpt-fast, gpt-review, gpt-strong), and posts what it finds to the merge request.',
+    );
+    // The section links where replies are answered at once, and what the CI needs.
+    expect([...section(root).querySelectorAll('a')].map((a) => a.getAttribute('href'))).toEqual([
+      '/settings/gitlab',
+      '/settings/github',
+      '/docs/ai-review#what-your-ci-needs',
+    ]);
   });
 
   it("asks for the organisation's projects, every page of them", async () => {
-    const { server } = setup();
+    const { server } = setup('orgAdmin', {
+      organizations: { [ORG_ID]: { projectIds: [PAYMENTS, SHOP] } },
+    });
     server.on('GET', '/api/v0/projects', (request) =>
       request.query.get('cursor') === null
         ? { body: page([PROJECTS[0]], 'next') }
@@ -179,130 +258,328 @@ describe('AiReviewPage (6I-2 Task 9)', () => {
     const { root } = await render();
     const asked = server.requests.filter((r) => r.path === '/api/v0/projects');
     expect(asked.map((r) => r.query.get('organizationId'))).toEqual([ORG_ID, ORG_ID]);
-    expect(field(root, `ai-review-project-${PAYMENTS}`)).not.toBeNull();
-    expect(field(root, `ai-review-project-${SHOP}`)).not.toBeNull();
+    expect(rows(root).map((r) => text(r.querySelector('th')))).toEqual([
+      'Payments acme/payments',
+      'Web Shop acme/web-shop',
+    ]);
+  });
+
+  describe('the chosen projects', () => {
+    it('lists the chosen projects with whether each is reviewed, and removes one', async () => {
+      const { server } = setup('orgAdmin', {
+        organizations: { [ORG_ID]: { projectIds: ALL_THREE } },
+      });
+      const { fixture, root } = await render();
+      expect(field(root, 'ai-review-scope-selected').checked).toBe(true);
+      expect(text(field(root, 'ai-review-scope-all').closest('label'))).toBe(
+        'All projects of Default (3)',
+      );
+      const table = section(root).querySelector('table.chosen')!;
+      expect([...table.querySelectorAll('thead th')].map((th) => text(th))).toEqual([
+        'Project',
+        'Reviewed?',
+        'Actions',
+      ]);
+      expect(rows(root).map((r) => text(r.querySelector('th')))).toEqual([
+        'Payments acme/payments',
+        'Web Shop acme/web-shop',
+        'Legacy acme/legacy',
+      ]);
+      expect(text(row(root, 'Payments').querySelector('td'))).toBe('Yes');
+      expect(text(row(root, 'Web Shop').querySelector('td'))).toBe(
+        'Not linked Not linked to a GitLab or GitHub repository, so it is not reviewed. Link it in Settings → Repositories.',
+      );
+      // An organisation admin links repositories, so the place is a link.
+      expect(row(root, 'Web Shop').querySelector('td a')?.getAttribute('href')).toBe(
+        '/settings/repositories',
+      );
+      expect(text(row(root, 'Legacy').querySelector('td'))).toBe(
+        'Excluded Excluded from AI by an instance admin: never reviewed.',
+      );
+      // A stacked row names its cells on a phone.
+      expect(
+        [...row(root, 'Payments').querySelectorAll('[data-label]')].map((c) =>
+          c.getAttribute('data-label'),
+        ),
+      ).toEqual(['Project', 'Reviewed?']);
+      expect(foot(root)).toBe('No unsaved changes');
+      expect(button(section(root), 'Save AI review')?.disabled).toBe(true);
+
+      const remove = button(row(root, 'Web Shop'), 'Remove')!;
+      expect(remove.getAttribute('aria-label')).toBe('Remove Web Shop');
+      await click(fixture, remove);
+      expect(rows(root).map((r) => text(r.querySelector('th .cell-stack > span')))).toEqual([
+        'Payments',
+        'Legacy',
+      ]);
+      expect(foot(root)).toBe('1 unsaved change');
+      // The focus goes to the row that took the removed one's place.
+      expect(document.activeElement).toBe(button(row(root, 'Legacy'), 'Remove'));
+      await saveReview(fixture, root);
+      expect(server.requestsTo('PUT', ROUTE).map((r) => r.body)).toEqual([
+        {
+          enabled: false,
+          scope: 'selected',
+          projectIds: [PAYMENTS, LEGACY],
+          budgets: DEFAULT_BUDGETS,
+        },
+      ]);
+      expect(foot(root)).toMatch(SAVED_AT);
+    });
+
+    it('names the place to link a repository without a link for someone who cannot open it', async () => {
+      setup('aiOnly', { organizations: { [ORG_ID]: { projectIds: [SHOP] } } });
+      const { root } = await render();
+      expect(text(row(root, 'Web Shop').querySelector('td'))).toContain(
+        'Link it in Settings → Repositories.',
+      );
+      expect(row(root, 'Web Shop').querySelector('td a')).toBeNull();
+    });
+
+    it('adds projects with the picker, which offers an excluded project disabled with the reason', async () => {
+      const { server } = setup();
+      const { fixture, root } = await render();
+      expect(rows(root)).toEqual([]);
+      expect(text(section(root).querySelector('.dep > .hint'))).toBe(
+        'No project is selected yet: choose projects below first.',
+      );
+      await click(fixture, button(section(root), 'Add projects'));
+      const options = [...section(root).querySelectorAll<HTMLElement>('q-project-picker li')];
+      expect(options.map((o) => text(o))).toEqual([
+        'Payments acme/payments',
+        'Web Shop acme/web-shop',
+        'Legacy acme/legacy Excluded from AI by an instance admin',
+      ]);
+      expect(options[2]!.querySelector('input')?.disabled).toBe(true);
+      options[0]!.querySelector('input')!.click();
+      await click(fixture, options[1]!.querySelector('input')!);
+      await click(fixture, button(section(root), 'Add 2 projects'));
+      expect(rows(root).map((r) => text(r.querySelector('th .cell-stack > span')))).toEqual([
+        'Payments',
+        'Web Shop',
+      ]);
+      expect(text(row(root, 'Web Shop').querySelector('.badge'))).toBe('Not linked');
+      expect(foot(root)).toBe('2 unsaved changes');
+      await saveReview(fixture, root);
+      expect(server.requestsTo('PUT', ROUTE)[0]?.body).toMatchObject({
+        projectIds: [PAYMENTS, SHOP],
+      });
+    });
+
+    it('says in one line what All reviews, and keeps the selection for later', async () => {
+      const { server } = setup('orgAdmin', {
+        organizations: { [ORG_ID]: { projectIds: [PAYMENTS] } },
+      });
+      const { fixture, root } = await render();
+      expect(rows(root)).toHaveLength(1);
+      await click(fixture, field(root, 'ai-review-scope-all'));
+      expect(section(root).querySelector('table.chosen')).toBeNull();
+      expect(text(field(root, 'ai-review-all-line'))).toBe(
+        '1 of the 3 projects of Default can be reviewed: 1 not linked to a repository, 1 excluded from AI.',
+      );
+      expect(foot(root)).toBe('1 unsaved change');
+      await saveReview(fixture, root);
+      // The list of the scope `selected` is kept while the scope is `all`.
+      expect(server.requestsTo('PUT', ROUTE)[0]?.body).toMatchObject({
+        scope: 'all',
+        projectIds: [PAYMENTS],
+      });
+    });
+
+    it('says so when the projects cannot be listed, and keeps the stored selection', async () => {
+      const { server } = setup('orgAdmin', {
+        organizations: { [ORG_ID]: { projectIds: [PAYMENTS] } },
+      });
+      server.on('GET', '/api/v0/projects', { status: 500, body: problem(500, 'INTERNAL') });
+      const { fixture, root } = await render();
+      expect(section(root).querySelector('[role="alert"].alert-error')?.textContent).toContain(
+        'The request failed (HTTP 500',
+      );
+      expect(section(root).querySelector('table.chosen')).toBeNull();
+      // What cannot be counted is not summed up either.
+      expect(line(root, 'review').querySelector('.st-sub')).toBeNull();
+      await click(fixture, field(root, 'ai-review-scope-all'));
+      await saveReview(fixture, root);
+      expect(server.requestsTo('PUT', ROUTE)[0]?.body).toMatchObject({ projectIds: [PAYMENTS] });
+    });
   });
 
   describe('switching on', () => {
-    it('opens the dialog with the notice word for word, and sends nothing yet', async () => {
-      const { server } = setup();
+    it('switches on through the dialog, which names what it will review and the unsaved changes', async () => {
+      const { server, fake } = setup('orgAdmin', {
+        organizations: { [ORG_ID]: { projectIds: ALL_THREE } },
+      });
       const { fixture, root } = await render();
-      expect(dialog(root).open).toBe(false);
-      await switchOn(fixture, root);
-      expect(dialog(root).open).toBe(true);
+      await act(fixture, root, 'Switch on AI review…');
+      const dialog = consentDialog(root);
+      expect(dialog.open).toBe(true);
       expect(field(root, 'ai-review-notice').textContent).toBe(NOTICE_A);
-      expect(dialog(root).getAttribute('aria-describedby')).toBe('ai-review-notice');
-      expect(
-        [...dialog(root).querySelectorAll('button')].map((b) => b.textContent?.trim()),
-      ).toEqual(['Cancel', CONFIRM_A]);
+      expect(dialog.getAttribute('aria-describedby')).toBe('ai-review-notice');
+      expect(text(field(root, 'ai-review-scope-line'))).toBe(
+        '1 of 3 selected projects can be reviewed: 1 not linked to a repository, 1 excluded from AI.',
+      );
+      expect(dialog.textContent).not.toContain('Your unsaved changes');
+      expect(buttons(dialog)).toEqual(['Cancel', CONFIRM_A]);
+      expect(button(dialog, 'Cancel')?.hasAttribute('autofocus')).toBe(true);
       expect(server.requestsTo('PUT', ROUTE)).toHaveLength(0);
+
+      // An edit, then the dialog again: it says the edit is saved with the switch.
+      await click(fixture, button(dialog, 'Cancel'));
+      await click(fixture, button(row(root, 'Web Shop'), 'Remove'));
+      await act(fixture, root, 'Switch on AI review…');
+      expect(text(dialog)).toContain('Your unsaved changes to projects and budgets are saved too.');
+      expect(text(field(root, 'ai-review-scope-line'))).toBe(
+        '1 of 2 selected projects can be reviewed: 1 excluded from AI.',
+      );
+      await click(fixture, button(dialog, CONFIRM_A));
+      expect(server.requestsTo('PUT', ROUTE).map((r) => r.body)).toEqual([
+        {
+          enabled: true,
+          scope: 'selected',
+          projectIds: [PAYMENTS, LEGACY],
+          budgets: DEFAULT_BUDGETS,
+          acknowledgeDataSharing: {
+            host: 'llm.example.com',
+            model: 'gpt-review',
+            models: ['gpt-review'],
+          },
+        },
+      ]);
+      expect(dialog.open).toBe(false);
+      expect(text(line(root, 'review').querySelector('.badge'))).toBe('On');
+      expect(text(section(root).querySelector('.sec-chips .badge'))).toBe('On');
+      expect(fake.of(ORG_ID).enabled).toBe(true);
+      expect(foot(root)).toMatch(SAVED_AT);
     });
 
     it('names the retention days the server put in the notice', async () => {
       setup('orgAdmin', { retentionDays: 30 });
       const { fixture, root } = await render();
-      await switchOn(fixture, root);
+      await act(fixture, root, 'Switch on AI review…');
       expect(field(root, 'ai-review-notice').textContent).toContain('(at most 30 days)');
     });
 
-    it('sends the acknowledgement of the host and model it showed, with the form, on Confirm', async () => {
-      const { server, fake } = setup();
-      const { fixture, root } = await render();
-      await switchOn(fixture, root);
-      await click(fixture, button(dialog(root), CONFIRM_A));
-      expect(server.requestsTo('PUT', ROUTE).map((r) => r.body)).toEqual([
-        {
-          enabled: true,
-          scope: 'selected',
-          projectIds: [],
-          budgets: DEFAULT_BUDGETS,
-          acknowledgeDataSharing: A,
+    it('warns in the dialog when the last Test found a model that cannot call tools (A2)', async () => {
+      const { server } = setup('orgAdmin', {
+        providerTest: {
+          at: '2026-10-25T10:00:00.000Z',
+          toolCalling: 'not_supported',
+          modelsWithoutTools: ['gpt-review'],
         },
-      ]);
-      expect(dialog(root).open).toBe(false);
-      expect(field(root, 'ai-review-enabled').checked).toBe(true);
-      expect(root.querySelector('[role="status"]')?.textContent).toContain(
-        'The AI review settings were saved.',
-      );
-      expect(fake.of(ORG_ID).enabled).toBe(true);
-      expect(root.querySelector('.alert-warn')).toBeNull();
-    });
-
-    it('sends what was typed in the form along with the acknowledgement', async () => {
-      const { server } = setup();
+      });
       const { fixture, root } = await render();
-      await click(fixture, field(root, 'ai-review-scope-all'));
-      type(root, 'ai-review-tokens', '750000');
-      type(root, 'ai-review-cost', '20');
-      await switchOn(fixture, root);
-      await click(fixture, button(dialog(root), CONFIRM_A));
-      expect(server.requestsTo('PUT', ROUTE)[0]?.body).toEqual({
+      await act(fixture, root, 'Switch on AI review…');
+      expect(text(field(root, 'ai-review-no-tools'))).toBe(
+        'The last Test found that gpt-review cannot call tools, so reviews would fail. An instance admin can check Settings → AI provider.',
+      );
+      // A warning, not a refusal: Confirm still switches review on.
+      const confirm = button(consentDialog(root), CONFIRM_A)!;
+      expect(confirm.disabled).toBe(false);
+      expect(confirm.getAttribute('aria-disabled')).toBeNull();
+      await click(fixture, confirm);
+      expect(server.requestsTo('PUT', ROUTE)[0]?.body).toMatchObject({
         enabled: true,
-        scope: 'all',
-        projectIds: [],
-        budgets: { ...DEFAULT_BUDGETS, tokensPerDay: 750_000, costPerDayUsd: 20 },
         acknowledgeDataSharing: A,
       });
+    });
+
+    it.each([
+      ['the last Test found tools', { at: '2026-10-25T10:00:00.000Z', toolCalling: 'supported' }],
+      ['there is no Test of the provider as it is now', { at: null, toolCalling: 'unknown' }],
+    ] as const)('says nothing of tools when %s', async (_name, test) => {
+      setup('orgAdmin', { providerTest: { ...test, modelsWithoutTools: [] } });
+      const { fixture, root } = await render();
+      await act(fixture, root, 'Switch on AI review…');
+      expect(consentDialog(root).open).toBe(true);
+      expect(root.querySelector('#ai-review-no-tools')).toBeNull();
+    });
+
+    it('sends nothing on Cancel, nor when the dialog closes otherwise (Escape)', async () => {
+      const { server } = setup();
+      const { fixture, root } = await render();
+      await act(fixture, root, 'Switch on AI review…');
+      await click(fixture, button(consentDialog(root), 'Cancel'));
+      expect(consentDialog(root).open).toBe(false);
+      await act(fixture, root, 'Switch on AI review…');
+      expect(consentDialog(root).open).toBe(true);
+      consentDialog(root).dispatchEvent(new Event('close'));
+      await settle(fixture);
+      expect(server.requestsTo('PUT', ROUTE)).toHaveLength(0);
+      expect(text(line(root, 'review').querySelector('.badge'))).toBe('Off');
+    });
+
+    it('opens no dialog for budgets that cannot be sent, and shows the refused field', async () => {
+      const { server } = setup();
+      const { fixture, root } = await render();
+      await setFold(fixture, root, true);
+      type(root, 'ai-review-tokens', 'many');
+      await setFold(fixture, root, false);
+      await act(fixture, root, 'Switch on AI review…');
+      expect(consentDialog(root).open).toBe(false);
+      expect(fold(root).open).toBe(true);
+      expect(field(root, 'ai-review-tokens').getAttribute('aria-invalid')).toBe('true');
+      expect(foot(root)).toBe('1 field needs attention: Tokens per day');
+      expect(server.requestsTo('PUT', ROUTE)).toHaveLength(0);
     });
 
     it('reads the settings again and asks with the new provider when it changed (409 AI_REVIEW_PROVIDER_CHANGED)', async () => {
       const { server, fake } = setup();
       const { fixture, root } = await render();
-      await switchOn(fixture, root);
+      await act(fixture, root, 'Switch on AI review…');
       expect(field(root, 'ai-review-notice').textContent).toContain('llm.example.com (gpt-review)');
       // The instance administrator switches the provider while the dialog is open.
       fake.changeProvider(B);
-      await click(fixture, button(dialog(root), CONFIRM_A));
+      await click(fixture, button(consentDialog(root), CONFIRM_A));
       expect(server.requestsTo('PUT', ROUTE)[0]?.body).toMatchObject({
         acknowledgeDataSharing: A,
       });
       // Nothing was stored; the settings were read again and the dialog shows the new provider.
       expect(fake.of(ORG_ID).enabled).toBe(false);
       expect(server.requestsTo('GET', ROUTE)).toHaveLength(2);
-      expect(dialog(root).open).toBe(true);
+      expect(consentDialog(root).open).toBe(true);
       expect(field(root, 'ai-review-notice').textContent).toContain(
         'llm2.example.com:8443 (gpt-next)',
       );
       expect(field(root, 'ai-review-notice').textContent).not.toContain('llm.example.com (');
-      expect(dialog(root).textContent).toContain('The AI provider changed');
-      expect(button(dialog(root), CONFIRM_A)).toBeUndefined();
-      expect(field(root, 'ai-review-provider').textContent?.trim()).toBe(
-        'Model gpt-next at llm2.example.com:8443',
+      expect(consentDialog(root).textContent).toContain('The AI provider changed');
+      expect(button(consentDialog(root), CONFIRM_A)).toBeUndefined();
+      expect(text(section(root).querySelector('.sec-purpose'))).toContain(
+        'with llm2.example.com:8443 (gpt-next)',
       );
-      expect(field(root, 'ai-review-enabled').checked).toBe(true);
       // Confirming the new notice acknowledges the new provider.
-      await click(fixture, button(dialog(root), CONFIRM_B));
+      await click(fixture, button(consentDialog(root), CONFIRM_B));
       expect(server.requestsTo('PUT', ROUTE).map((r) => r.body)).toMatchObject([
         { acknowledgeDataSharing: A },
         { enabled: true, acknowledgeDataSharing: B },
       ]);
-      expect(dialog(root).open).toBe(false);
+      expect(consentDialog(root).open).toBe(false);
       expect(fake.of(ORG_ID).consent?.providerHost).toBe('llm2.example.com:8443');
-      expect(root.querySelector('[role="status"]')?.textContent).toContain('were saved');
+      expect(text(line(root, 'review').querySelector('.badge'))).toBe('On');
     });
 
-    it('reopens the dialog when the server asks for the acknowledgement (409 AI_REVIEW_CONSENT_REQUIRED)', async () => {
+    it('reopens the dialog when the server asks for the acknowledgement, the edits kept (409 AI_REVIEW_CONSENT_REQUIRED)', async () => {
       // Review is on with a consent that covers A, as far as this page knows.
       const { server, fake } = setup('orgAdmin', {
         organizations: { [ORG_ID]: { enabled: true, consentFor: A } },
       });
       const { fixture, root } = await render();
-      expect(root.querySelector('.alert-warn')).toBeNull();
+      expect(text(line(root, 'review').querySelector('.badge'))).toBe('On');
       // The provider changed since: a save without the acknowledgement is refused.
       fake.changeProvider(B);
+      await setFold(fixture, root, true);
       type(root, 'ai-review-tokens', '123000');
-      await save(fixture, root);
+      await saveReview(fixture, root);
       const puts = server.requestsTo('PUT', ROUTE);
       expect(puts).toHaveLength(1);
       expect(puts[0]?.body).not.toHaveProperty('acknowledgeDataSharing');
       // The settings were read again; the dialog shows the new notice and keeps what was typed.
       expect(server.requestsTo('GET', ROUTE)).toHaveLength(2);
-      expect(dialog(root).open).toBe(true);
+      expect(consentDialog(root).open).toBe(true);
       expect(field(root, 'ai-review-notice').textContent).toContain(
         'llm2.example.com:8443 (gpt-next)',
       );
       expect(field(root, 'ai-review-tokens').value).toBe('123000');
-      await click(fixture, button(dialog(root), CONFIRM_B));
+      await click(fixture, button(consentDialog(root), CONFIRM_B));
       expect(server.requestsTo('PUT', ROUTE)[1]?.body).toMatchObject({
         enabled: true,
         budgets: { tokensPerDay: 123_000 },
@@ -311,400 +588,373 @@ describe('AiReviewPage (6I-2 Task 9)', () => {
       expect(fake.consentCurrent(fake.of(ORG_ID))).toBe(true);
     });
 
-    it('says why, reads the settings again and leaves the box off when the assistant went (409 AI_DISABLED)', async () => {
+    it('says why, and reads the settings again, when AI went meanwhile (409 AI_DISABLED)', async () => {
       const { server, fake } = setup();
       const { fixture, root } = await render();
-      await switchOn(fixture, root);
+      await act(fixture, root, 'Switch on AI review…');
       fake.organizationEnabled = false;
-      await click(fixture, button(dialog(root), CONFIRM_A));
-      expect(dialog(root).open).toBe(false);
-      expect(root.querySelector('[role="alert"].alert-error')?.textContent).toContain(
-        'AI review needs the AI assistant configured and enabled for this organisation.',
+      await click(fixture, button(consentDialog(root), CONFIRM_A));
+      expect(consentDialog(root).open).toBe(false);
+      expect(text(root.querySelector('[role="alert"].alert-error'))).toBe(
+        'AI review needs AI set up on this server and allowed for this organization. An instance admin sets that up in Settings → AI provider.',
       );
       expect(server.requestsTo('GET', ROUTE)).toHaveLength(2);
-      expect(field(root, 'ai-review-enabled').checked).toBe(false);
-      expect(field(root, 'ai-review-unavailable').textContent).toContain(
-        'AI assistant is not enabled for this organisation.',
-      );
+      expect(text(root.querySelector('.ai-unavailable h3'))).toBe('Default may not use AI yet.');
+      expect(document.activeElement).toBe(root.querySelector('h2'));
     });
 
-    it('sends nothing and unchecks the box on Cancel', async () => {
-      const { server } = setup();
-      const { fixture, root } = await render();
-      await switchOn(fixture, root);
-      expect(field(root, 'ai-review-enabled').checked).toBe(true);
-      await click(fixture, button(dialog(root), 'Cancel'));
-      expect(dialog(root).open).toBe(false);
-      expect(field(root, 'ai-review-enabled').checked).toBe(false);
-      expect(server.requestsTo('PUT', ROUTE)).toHaveLength(0);
-      // Checking it again asks again.
-      await switchOn(fixture, root);
-      expect(dialog(root).open).toBe(true);
-    });
+    describe('a provider with a model for each tier', () => {
+      it('shows the notice that names all three, and acknowledges all three on Confirm', async () => {
+        const { server, fake } = setup('orgAdmin', { provider: THREE });
+        const { fixture, root } = await render();
+        await act(fixture, root, 'Switch on AI review…');
+        expect(field(root, 'ai-review-notice').textContent).toBe(NOTICE_THREE);
+        await click(fixture, button(consentDialog(root), CONFIRM_A));
+        expect(server.requestsTo('PUT', ROUTE).map((r) => r.body)).toEqual([
+          {
+            enabled: true,
+            scope: 'selected',
+            projectIds: [],
+            budgets: DEFAULT_BUDGETS,
+            acknowledgeDataSharing: THREE,
+          },
+        ]);
+        expect(fake.consentCurrent(fake.of(ORG_ID))).toBe(true);
+        expect(text(line(root, 'review').querySelector('.badge'))).toBe('On');
+      });
 
-    it('treats the dialog closing any other way (Escape) as Cancel', async () => {
-      const { server } = setup();
-      const { fixture, root } = await render();
-      await switchOn(fixture, root);
-      dialog(root).dispatchEvent(new Event('close'));
-      await settle(fixture);
-      expect(field(root, 'ai-review-enabled').checked).toBe(false);
-      expect(server.requestsTo('PUT', ROUTE)).toHaveLength(0);
-    });
-
-    it('does not open the dialog for a form that cannot be sent, and unchecks the box', async () => {
-      const { server } = setup();
-      const { fixture, root } = await render();
-      type(root, 'ai-review-tokens', 'many');
-      await switchOn(fixture, root);
-      expect(dialog(root).open).toBe(false);
-      expect(field(root, 'ai-review-enabled').checked).toBe(false);
-      expect(field(root, 'ai-review-tokens').getAttribute('aria-invalid')).toBe('true');
-      expect(server.requestsTo('PUT', ROUTE)).toHaveLength(0);
+      it('reads the settings again and asks with the new set when a tier changed under the dialog', async () => {
+        const { server, fake } = setup('orgAdmin', { provider: THREE });
+        const { fixture, root } = await render();
+        await act(fixture, root, 'Switch on AI review…');
+        // The instance administrator takes the fast model away while the dialog is open.
+        const two = { ...THREE, models: ['gpt-review', 'gpt-strong'] };
+        fake.changeProvider(two);
+        await click(fixture, button(consentDialog(root), CONFIRM_A));
+        expect(fake.of(ORG_ID).enabled).toBe(false);
+        expect(consentDialog(root).open).toBe(true);
+        expect(field(root, 'ai-review-notice').textContent).toContain('(gpt-review, gpt-strong)');
+        expect(consentDialog(root).textContent).toContain('The AI provider changed');
+        await click(fixture, button(consentDialog(root), CONFIRM_A));
+        expect(server.requestsTo('PUT', ROUTE)[1]?.body).toMatchObject({
+          enabled: true,
+          acknowledgeDataSharing: two,
+        });
+        expect(fake.consentCurrent(fake.of(ORG_ID))).toBe(true);
+      });
     });
   });
 
-  describe('a provider with a model for each tier', () => {
-    const NOTICE_THREE =
-      "AI review sends the merge request's diff and any repository file the model chooses to read to llm.example.com (gpt-fast, gpt-review, gpt-strong). The scanner uploads a copy of the repository to this Qualor server for each merge request; Qualor keeps it until the merge request is closed (at most 14 days). Secrets the analyzers found are masked; credentials files are never sent.";
-
-    it('lists every model on the provider line', async () => {
-      setup('orgAdmin', { provider: THREE });
-      const { root } = await render();
-      expect(field(root, 'ai-review-provider').textContent?.trim()).toBe(
-        'Models gpt-fast, gpt-review, gpt-strong at llm.example.com',
-      );
-    });
-
-    it('shows the notice that names all three, and acknowledges all three on Confirm', async () => {
-      const { server, fake } = setup('orgAdmin', { provider: THREE });
+  describe('on', () => {
+    it('says on, what it reviews and who confirmed, and switches off after a confirmation', async () => {
+      const { server, fake } = setup('orgAdmin', {
+        organizations: { [ORG_ID]: { enabled: true, projectIds: [PAYMENTS, SHOP], consentFor: A } },
+      });
       const { fixture, root } = await render();
-      await switchOn(fixture, root);
-      expect(field(root, 'ai-review-notice').textContent).toBe(NOTICE_THREE);
-      await click(fixture, button(dialog(root), CONFIRM_A));
+      const review = line(root, 'review');
+      expect(review.querySelector('.badge')?.classList).toContain('badge-passed');
+      expect(text(review.querySelector('.st-line'))).toBe('On Reviewing 1 project');
+      expect(text(review.querySelector('.st-sub'))).toBe(
+        'Confirmed on Oct 20, 2026 (by you) for llm.example.com (gpt-review).',
+      );
+      const off = button(review, 'Switch off AI review')!;
+      expect(off.classList).not.toContain('btn-primary');
+
+      // An edit waits; switching off sends what is stored, and leaves the edit unsaved.
+      await click(fixture, button(row(root, 'Web Shop'), 'Remove'));
+      await act(fixture, root, 'Switch off AI review');
+      const dialog = offDialog(root);
+      expect(dialog.open).toBe(true);
+      expect(text(dialog.querySelector('h2'))).toBe('Switch off AI review?');
+      expect(text(dialog.querySelector('.dialog-body'))).toBe(
+        'Switching it on again asks you to confirm the data notice again.',
+      );
+      expect(buttons(dialog)).toEqual(['Cancel', 'Switch off']);
+      expect(button(dialog, 'Cancel')?.hasAttribute('autofocus')).toBe(true);
+      expect(server.requestsTo('PUT', ROUTE)).toHaveLength(0);
+      await click(fixture, button(dialog, 'Switch off'));
       expect(server.requestsTo('PUT', ROUTE).map((r) => r.body)).toEqual([
         {
-          enabled: true,
+          enabled: false,
           scope: 'selected',
-          projectIds: [],
+          projectIds: [PAYMENTS, SHOP],
           budgets: DEFAULT_BUDGETS,
-          acknowledgeDataSharing: THREE,
         },
       ]);
-      expect(dialog(root).open).toBe(false);
-      expect(root.querySelector('[role="status"]')?.textContent).toContain(
-        'The AI review settings were saved.',
-      );
-      expect(fake.consentCurrent(fake.of(ORG_ID))).toBe(true);
-      expect(root.querySelector('.alert-warn')).toBeNull();
-    });
-
-    it('reads the settings again and asks with the new set when a tier changed under the dialog (409 AI_REVIEW_PROVIDER_CHANGED)', async () => {
-      const { server, fake } = setup('orgAdmin', { provider: THREE });
-      const { fixture, root } = await render();
-      await switchOn(fixture, root);
-      // The instance administrator takes the fast model away while the dialog is open.
-      const two = { ...THREE, models: ['gpt-review', 'gpt-strong'] };
-      fake.changeProvider(two);
-      await click(fixture, button(dialog(root), CONFIRM_A));
-      expect(server.requestsTo('PUT', ROUTE)[0]?.body).toMatchObject({
-        acknowledgeDataSharing: THREE,
-      });
-      // Nothing was stored; the dialog shows the notice and the provider line of the two models.
+      expect(dialog.open).toBe(false);
       expect(fake.of(ORG_ID).enabled).toBe(false);
-      expect(server.requestsTo('GET', ROUTE)).toHaveLength(2);
-      expect(dialog(root).open).toBe(true);
-      expect(field(root, 'ai-review-notice').textContent).toContain('(gpt-review, gpt-strong)');
-      expect(dialog(root).textContent).toContain('The AI provider changed');
-      expect(field(root, 'ai-review-provider').textContent?.trim()).toBe(
-        'Models gpt-review, gpt-strong at llm.example.com',
-      );
-      await click(fixture, button(dialog(root), CONFIRM_A));
-      expect(server.requestsTo('PUT', ROUTE)[1]?.body).toMatchObject({
-        enabled: true,
-        acknowledgeDataSharing: two,
-      });
-      expect(fake.consentCurrent(fake.of(ORG_ID))).toBe(true);
+      expect(text(line(root, 'review').querySelector('.badge'))).toBe('Off');
+      expect(rows(root).map((r) => text(r.querySelector('th .cell-stack > span')))).toEqual([
+        'Payments',
+      ]);
+      expect(foot(root)).toBe('1 unsaved change');
     });
 
-    it('warns that the consent is outdated when a tier changed since, and confirms the whole set again', async () => {
-      // Acknowledged for one model, and the instance administrator has since added two.
-      const { server, fake } = setup('orgAdmin', {
-        provider: THREE,
+    it('says who confirmed without "by you" when someone else did', async () => {
+      const { fake } = setup('orgAdmin', {
+        organizations: { [ORG_ID]: { enabled: true, projectIds: [PAYMENTS], consentFor: A } },
+      });
+      fake.organizations[ORG_ID]!.consent!.userId = ANOTHER_USER;
+      const { root } = await render();
+      expect(text(line(root, 'review').querySelector('.st-sub'))).toBe(
+        'Confirmed on Oct 20, 2026 for llm.example.com (gpt-review).',
+      );
+    });
+
+    it('keeps it on when the switch-off is cancelled', async () => {
+      const { server } = setup('orgAdmin', {
         organizations: { [ORG_ID]: { enabled: true, consentFor: A } },
       });
       const { fixture, root } = await render();
-      const warning = root.querySelector<HTMLElement>('.alert-warn')!;
-      expect(warning.textContent).toContain(
-        'The AI provider changed; confirm again to keep reviewing.',
-      );
-      await click(fixture, button(warning, 'Confirm again'));
-      expect(field(root, 'ai-review-notice').textContent).toBe(NOTICE_THREE);
-      await click(fixture, button(dialog(root), CONFIRM_A));
-      expect(server.requestsTo('PUT', ROUTE)[0]?.body).toMatchObject({
-        enabled: true,
-        acknowledgeDataSharing: THREE,
-      });
-      expect(fake.consentCurrent(fake.of(ORG_ID))).toBe(true);
-      expect(root.querySelector('.alert-warn')).toBeNull();
+      await act(fixture, root, 'Switch off AI review');
+      await click(fixture, button(offDialog(root), 'Cancel'));
+      expect(offDialog(root).open).toBe(false);
+      await act(fixture, root, 'Switch off AI review');
+      offDialog(root).dispatchEvent(new Event('close'));
+      await settle(fixture);
+      expect(server.requestsTo('PUT', ROUTE)).toHaveLength(0);
+      expect(text(line(root, 'review').querySelector('.badge'))).toBe('On');
     });
 
-    it('shows no warning while the consent names the same three models', async () => {
-      setup('orgAdmin', {
-        provider: THREE,
-        organizations: { [ORG_ID]: { enabled: true, consentFor: THREE } },
+    it('saves the chosen projects without a dialog while the consent is current', async () => {
+      const { server, fake } = setup('orgAdmin', {
+        organizations: { [ORG_ID]: { enabled: true, projectIds: [PAYMENTS, SHOP], consentFor: A } },
       });
-      const { root } = await render();
-      expect(root.querySelector('.alert-warn')).toBeNull();
+      const { fixture, root } = await render();
+      await click(fixture, button(row(root, 'Payments'), 'Remove'));
+      await saveReview(fixture, root);
+      expect(consentDialog(root).open).toBe(false);
+      expect(server.requestsTo('PUT', ROUTE).map((r) => r.body)).toEqual([
+        { enabled: true, scope: 'selected', projectIds: [SHOP], budgets: DEFAULT_BUDGETS },
+      ]);
+      expect(fake.of(ORG_ID).projectIds).toEqual([SHOP]);
+      expect(foot(root)).toMatch(SAVED_AT);
+      expect(text(line(root, 'review').querySelector('.st-line'))).toBe('On Reviewing 0 projects');
     });
   });
 
-  describe('a consent that no longer covers the provider', () => {
+  describe('paused', () => {
     // Acknowledged for A, and the instance administrator has since configured B.
-    const outdated: FakeAiReviewOptions = {
+    const paused: FakeAiReviewOptions = {
       provider: B,
       organizations: { [ORG_ID]: { enabled: true, consentFor: A } },
     };
 
-    it('warns, with a button that opens the same dialog for the new provider', async () => {
-      const { server, fake } = setup('orgAdmin', outdated);
+    it('says paused when the provider changed, what was confirmed and what it uses now', async () => {
+      const { server, fake } = setup('orgAdmin', paused);
       const { fixture, root } = await render();
-      const warning = root.querySelector<HTMLElement>('.alert-warn')!;
-      expect(warning.textContent).toContain(
-        'The AI provider changed; confirm again to keep reviewing.',
+      const review = line(root, 'review');
+      expect(review.querySelector('.badge')?.classList).toContain('badge-warn');
+      expect(text(review.querySelector('.st-line'))).toBe('Paused The AI provider changed');
+      expect(text(review.querySelector('.st-sub'))).toBe(
+        'You confirmed llm.example.com (gpt-review) on Oct 20, 2026. It now uses llm2.example.com:8443 (gpt-next). No merge request is reviewed until you confirm.',
       );
-      expect(field(root, 'ai-review-enabled').checked).toBe(true);
-      expect(dialog(root).open).toBe(false);
-      await click(fixture, button(warning, 'Confirm again'));
-      expect(dialog(root).open).toBe(true);
+      expect(text(section(root).querySelector('.sec-chips .badge'))).toBe('Paused');
+      expect(button(review, 'Review and confirm…')?.classList).toContain('btn-primary');
+      await act(fixture, root, 'Review and confirm…');
+      expect(consentDialog(root).open).toBe(true);
       expect(field(root, 'ai-review-notice').textContent).toContain(
         'llm2.example.com:8443 (gpt-next)',
       );
-      await click(fixture, button(dialog(root), CONFIRM_B));
+      await click(fixture, button(consentDialog(root), CONFIRM_B));
       expect(server.requestsTo('PUT', ROUTE)[0]?.body).toMatchObject({
         enabled: true,
         acknowledgeDataSharing: B,
       });
       expect(fake.consentCurrent(fake.of(ORG_ID))).toBe(true);
-      // The warning is gone, and the box stays checked.
-      expect(root.querySelector('.alert-warn')).toBeNull();
-      expect(field(root, 'ai-review-enabled').checked).toBe(true);
+      expect(text(line(root, 'review').querySelector('.badge'))).toBe('On');
     });
 
-    it('keeps the warning and the box when the dialog is cancelled', async () => {
-      const { server } = setup('orgAdmin', outdated);
+    it('stays paused when the dialog is cancelled', async () => {
+      const { server } = setup('orgAdmin', paused);
       const { fixture, root } = await render();
-      await click(
-        fixture,
-        button(root.querySelector<HTMLElement>('.alert-warn')!, 'Confirm again'),
-      );
-      await click(fixture, button(dialog(root), 'Cancel'));
-      expect(dialog(root).open).toBe(false);
-      expect(root.querySelector('.alert-warn')).not.toBeNull();
-      expect(field(root, 'ai-review-enabled').checked).toBe(true);
+      await act(fixture, root, 'Review and confirm…');
+      await click(fixture, button(consentDialog(root), 'Cancel'));
+      expect(consentDialog(root).open).toBe(false);
+      expect(text(line(root, 'review').querySelector('.badge'))).toBe('Paused');
       expect(server.requestsTo('PUT', ROUTE)).toHaveLength(0);
     });
 
     it('opens the dialog instead of sending a save that the server would refuse', async () => {
-      const { server } = setup('orgAdmin', outdated);
+      const { server } = setup('orgAdmin', paused);
       const { fixture, root } = await render();
-      await save(fixture, root);
+      await click(fixture, field(root, 'ai-review-scope-all'));
+      await saveReview(fixture, root);
       expect(server.requestsTo('PUT', ROUTE)).toHaveLength(0);
-      expect(dialog(root).open).toBe(true);
+      expect(consentDialog(root).open).toBe(true);
     });
 
-    it('shows no warning while review is off, even with a consent for another provider', async () => {
+    it('is not paused while review is off, even with a consent for another provider', async () => {
       setup('orgAdmin', {
         provider: B,
         organizations: { [ORG_ID]: { enabled: false, consentFor: A } },
       });
       const { root } = await render();
-      expect(root.querySelector('.alert-warn')).toBeNull();
-      expect(field(root, 'ai-review-enabled').checked).toBe(false);
+      expect(text(line(root, 'review').querySelector('.badge'))).toBe('Off');
     });
 
-    it('shows no warning while the consent covers the provider', async () => {
-      setup('orgAdmin', { organizations: { [ORG_ID]: { enabled: true, consentFor: A } } });
-      const { root } = await render();
-      expect(root.querySelector('.alert-warn')).toBeNull();
-    });
-  });
-
-  describe('when it cannot be switched on', () => {
-    it.each([
-      [
-        'no provider is configured',
-        { provider: null },
-        'The instance administrator has not configured an AI provider.',
-      ],
-      [
-        'the organisation is not enabled for the assistant',
-        { organizationEnabled: false },
-        'AI assistant is not enabled for this organisation.',
-      ],
-    ] as [string, FakeAiReviewOptions, string][])(
-      'names the reason and disables the form: %s',
-      async (_name, options, reason) => {
-        const { server } = setup('orgAdmin', {
-          ...options,
-          // A stored switch is no reason to ask for anything: the form is locked.
-          organizations: { [ORG_ID]: { enabled: true, consentFor: A } },
-        });
-        const { fixture, root } = await render();
-        const note = field(root, 'ai-review-unavailable');
-        expect(note.classList.contains('alert-info')).toBe(true);
-        expect(note.textContent?.trim()).toBe(reason);
-        const controls = [
-          ...root.querySelectorAll<HTMLInputElement | HTMLButtonElement>('form input, form button'),
-        ];
-        expect(controls.length).toBeGreaterThan(5);
-        expect(controls.filter((c) => !c.disabled)).toEqual([]);
-        // No warning to confirm again: there is nothing to confirm against.
-        expect(root.querySelector('.alert-warn')).toBeNull();
-        field(root, 'ai-review-enabled').click();
-        await save(fixture, root);
-        expect(dialog(root).open).toBe(false);
-        expect(server.requestsTo('PUT', ROUTE)).toHaveLength(0);
-      },
-    );
-
-    it('still names the provider when only the organisation is not enabled', async () => {
-      setup('orgAdmin', { organizationEnabled: false });
-      const { root } = await render();
-      expect(field(root, 'ai-review-provider').textContent?.trim()).toBe(
-        'Model gpt-review at llm.example.com',
-      );
-    });
-
-    it('shows no provider line without a provider', async () => {
-      setup('orgAdmin', { provider: null });
-      const { root } = await render();
-      expect(root.querySelector('#ai-review-provider')).toBeNull();
-    });
-  });
-
-  describe('scope and projects', () => {
-    it('lists the projects only for selected projects, and keeps the ticks when hidden', async () => {
-      const { server } = setup('orgAdmin', {
-        organizations: {
-          [ORG_ID]: { enabled: true, projectIds: [PAYMENTS], consentFor: A },
-        },
+    it('is not paused while the consent names the same three models', async () => {
+      setup('orgAdmin', {
+        provider: THREE,
+        organizations: { [ORG_ID]: { enabled: true, consentFor: THREE } },
       });
-      const { fixture, root } = await render();
-      expect(root.querySelector('fieldset.facet')).not.toBeNull();
-      await click(fixture, field(root, 'ai-review-scope-all'));
-      expect(root.querySelector('fieldset.facet')).toBeNull();
-      await save(fixture, root);
-      // The list of the scope `selected` is kept while the scope is `all`.
-      expect(server.requestsTo('PUT', ROUTE)[0]?.body).toMatchObject({
-        scope: 'all',
-        projectIds: [PAYMENTS],
-      });
+      const { root } = await render();
+      expect(text(line(root, 'review').querySelector('.badge'))).toBe('On');
     });
 
-    it('saves the chosen projects without a dialog while review is on with a current consent', async () => {
+    it('is paused when a tier changed since the consent, and confirms the whole set again', async () => {
       const { server, fake } = setup('orgAdmin', {
-        organizations: { [ORG_ID]: { enabled: true, projectIds: [PAYMENTS], consentFor: A } },
+        provider: THREE,
+        organizations: { [ORG_ID]: { enabled: true, consentFor: A } },
       });
       const { fixture, root } = await render();
-      await click(fixture, field(root, `ai-review-project-${SHOP}`));
-      await click(fixture, field(root, `ai-review-project-${PAYMENTS}`));
-      await save(fixture, root);
-      expect(dialog(root).open).toBe(false);
-      expect(server.requestsTo('PUT', ROUTE).map((r) => r.body)).toEqual([
+      expect(text(line(root, 'review').querySelector('.st-sub'))).toContain(
+        'It now uses llm.example.com (gpt-fast, gpt-review, gpt-strong).',
+      );
+      await act(fixture, root, 'Review and confirm…');
+      expect(field(root, 'ai-review-notice').textContent).toBe(NOTICE_THREE);
+      await click(fixture, button(consentDialog(root), CONFIRM_A));
+      expect(server.requestsTo('PUT', ROUTE)[0]?.body).toMatchObject({
+        enabled: true,
+        acknowledgeDataSharing: THREE,
+      });
+      expect(fake.consentCurrent(fake.of(ORG_ID))).toBe(true);
+    });
+  });
+
+  describe('today', () => {
+    it('shows today as meters, AI review against the capped budget', async () => {
+      setup(
+        'orgAdmin',
         {
-          enabled: true,
-          scope: 'selected',
-          projectIds: [SHOP],
-          budgets: DEFAULT_BUDGETS,
+          ceiling: 1_000_000,
+          usage: { tokensToday: 120_000, costTodayUsd: 1.23, reviewsToday: 3 },
+        },
+        orgAi({ usage: { explain: 12, triage: 4, fix: 1, tokens: 40_000 } }),
+      );
+      const { root } = await render();
+      const today = line(root, 'today');
+      expect(text(today.querySelector('.st-label'))).toBe('Today');
+      expect(today.querySelector('.badge')).toBeNull();
+      expect(meters(root)).toEqual([
+        { label: 'AI review', value: '120,000 of 1,000,000', note: '3 reviews · $1.23' },
+        {
+          label: 'Assistant',
+          value: '40,000 of 1,000,000',
+          note: 'Explanations 12 · Triage 4 · Fixes 1',
         },
       ]);
-      expect(fake.of(ORG_ID).projectIds).toEqual([SHOP]);
-      expect(root.querySelector('[role="status"]')?.textContent).toContain(
-        'The AI review settings were saved.',
-      );
-      expect(field(root, `ai-review-project-${SHOP}`).checked).toBe(true);
     });
 
-    it('counts the selected projects', async () => {
-      setup('orgAdmin', { organizations: { [ORG_ID]: { projectIds: [] } } });
-      const { fixture, root } = await render();
-      const count = () => field(root, 'ai-review-selected-count').textContent?.trim();
-      expect(count()).toBe('No project selected');
-      await click(fixture, field(root, `ai-review-project-${PAYMENTS}`));
-      expect(count()).toBe('1 project selected');
-      await click(fixture, field(root, `ai-review-project-${SHOP}`));
-      expect(count()).toBe('2 projects selected');
-    });
-
-    it('says so when the projects cannot be listed, and keeps the stored selection', async () => {
-      const { server } = setup('orgAdmin', {
-        organizations: { [ORG_ID]: { enabled: true, projectIds: [PAYMENTS], consentFor: A } },
+    it("counts against the organisation's own budget when it is the smaller, in the right number", async () => {
+      setup('orgAdmin', {
+        ceiling: 900_000,
+        usage: { tokensToday: 1_000, costTodayUsd: null, reviewsToday: 1 },
+        organizations: { [ORG_ID]: { budgets: { ...DEFAULT_BUDGETS, tokensPerDay: 500_000 } } },
       });
-      server.on('GET', '/api/v0/projects', { status: 500, body: problem(500, 'INTERNAL') });
-      const { fixture, root } = await render();
-      expect(root.querySelector('[role="alert"].alert-error')?.textContent).toContain(
-        'The request failed (HTTP 500',
-      );
-      expect(root.querySelector('fieldset.facet label')).toBeNull();
-      await save(fixture, root);
-      expect(server.requestsTo('PUT', ROUTE)[0]?.body).toMatchObject({ projectIds: [PAYMENTS] });
+      const { root } = await render();
+      // No prices on the server: no cost to say.
+      expect(meters(root)[0]).toEqual({
+        label: 'AI review',
+        value: '1,000 of 500,000',
+        note: '1 review',
+      });
     });
 
-    it('says so when a selected project belongs to another organisation (422 PROJECT_NOT_IN_ORGANIZATION)', async () => {
+    it('does not follow a budget that was typed and not saved, and reads the saved answer', async () => {
       const { fake } = setup('orgAdmin', {
-        organizations: { [ORG_ID]: { enabled: true, projectIds: [PAYMENTS], consentFor: A } },
-      });
-      fake.foreignProjects.add(PAYMENTS);
-      const { fixture, root } = await render();
-      await save(fixture, root);
-      expect(root.querySelector('[role="alert"].alert-error')?.textContent).toContain(
-        'A selected project belongs to another organisation.',
-      );
-    });
-  });
-
-  describe('budgets', () => {
-    it('sends empty optional budgets as null', async () => {
-      const { server } = setup('orgAdmin', {
+        usage: { tokensToday: 100, costTodayUsd: null, reviewsToday: 1 },
         organizations: {
           [ORG_ID]: {
             enabled: true,
+            budgets: { ...DEFAULT_BUDGETS, tokensPerDay: 500_000 },
             consentFor: A,
-            budgets: {
-              tokensPerDay: 10,
-              costPerDayUsd: 5,
-              perProjectTokensPerDay: 4,
-              maxTokensPerReview: 3,
-            },
           },
         },
       });
       const { fixture, root } = await render();
-      type(root, 'ai-review-cost', '');
-      type(root, 'ai-review-per-project', '');
-      await save(fixture, root);
-      expect(server.requestsTo('PUT', ROUTE)[0]?.body).toMatchObject({
-        budgets: {
-          tokensPerDay: 10,
-          costPerDayUsd: null,
-          perProjectTokensPerDay: null,
-          maxTokensPerReview: 3,
-        },
+      type(root, 'ai-review-tokens', '250000');
+      await settle(fixture);
+      expect(meters(root)[0]?.value).toBe('100 of 500,000');
+      // Saving answers with the day as it is then, and with the budget just saved.
+      fake.usage = { tokensToday: 4_000, costTodayUsd: null, reviewsToday: 2 };
+      await saveReview(fixture, root);
+      expect(meters(root)[0]).toEqual({
+        label: 'AI review',
+        value: '4,000 of 250,000',
+        note: '2 reviews',
       });
     });
+  });
 
-    it('shows the limits of the fields', async () => {
-      setup();
+  describe('budgets', () => {
+    it('folds the budgets, lists them while closed, and opens on a refusal', async () => {
+      const { server } = setup();
+      const { fixture, root } = await render();
+      expect(fold(root).open).toBe(false);
+      expect(text(fold(root).querySelector('summary'))).toBe(
+        'Budgets 2,000,000 tokens a day 300,000 per review No limit per project No cost limit',
+      );
+      expect(chips(root)).toEqual([
+        { text: '2,000,000 tokens a day', set: false },
+        { text: '300,000 per review', set: false },
+        { text: 'No limit per project', set: false },
+        { text: 'No cost limit', set: false },
+      ]);
+      await setFold(fixture, root, true);
+      expect(field(root, 'ai-review-tokens').value).toBe('2,000,000');
+      type(root, 'ai-review-tokens', '1.5');
+      await setFold(fixture, root, false);
+      await saveReview(fixture, root);
+      expect(server.requestsTo('PUT', ROUTE)).toHaveLength(0);
+      expect(fold(root).open).toBe(true);
+      const tokens = field(root, 'ai-review-tokens');
+      expect(tokens.getAttribute('aria-invalid')).toBe('true');
+      expect(text(field(root, 'ai-review-tokens-error'))).toBe(
+        'Use a whole number from 0 to 1,000,000,000.',
+      );
+      // No alert of its own: the foot's summary speaks for the fields.
+      expect(field(root, 'ai-review-tokens-error').getAttribute('role')).toBeNull();
+      expect(tokens.getAttribute('aria-describedby')).toContain('ai-review-tokens-error');
+      const status = section(root).querySelector('.foot-status')!;
+      expect(text(status)).toBe('1 field needs attention: Tokens per day');
+      expect(status.querySelector('a')?.getAttribute('href')).toBe('#ai-review-tokens');
+      expect(document.activeElement).toBe(tokens);
+    });
+
+    it('marks the budgets other than the defaults, and shows the stored values grouped', async () => {
+      setup('orgAdmin', {
+        usage: PRICED,
+        organizations: {
+          [ORG_ID]: {
+            budgets: {
+              tokensPerDay: 500_000,
+              costPerDayUsd: 12.5,
+              perProjectTokensPerDay: 100_000,
+              maxTokensPerReview: 200_000,
+            },
+          },
+        },
+      });
       const { root } = await render();
-      const limits = (id: string) => {
-        const input = field(root, id);
-        return [input.min, input.max, input.type];
-      };
-      expect(limits('ai-review-tokens')).toEqual(['0', '1000000000', 'number']);
-      expect(limits('ai-review-cost')).toEqual(['0', '1000000', 'number']);
-      expect(limits('ai-review-per-project')).toEqual(['0', '1000000000', 'number']);
-      expect(limits('ai-review-max-per-review')).toEqual(['1', '10000000', 'number']);
+      expect(chips(root)).toEqual([
+        { text: '500,000 tokens a day', set: true },
+        { text: '200,000 per review', set: true },
+        { text: '100,000 per project a day', set: true },
+        { text: '$12.50 a day', set: true },
+      ]);
+      expect(field(root, 'ai-review-tokens').value).toBe('500,000');
+      expect(field(root, 'ai-review-max-per-review').value).toBe('200,000');
+      expect(switchNamed(root, 'Limit tokens per project').checked).toBe(true);
+      expect(field(root, 'ai-review-per-project').value).toBe('100,000');
+      expect(switchNamed(root, 'Limit the cost').checked).toBe(true);
+      expect(field(root, 'ai-review-cost').value).toBe('12.50');
+      expect(text(field(root, 'ai-review-cost-prefix'))).toBe('US$');
+      // The currency before the digits is read with the field.
+      expect(field(root, 'ai-review-cost').getAttribute('aria-describedby')).toBe(
+        'ai-review-cost-prefix',
+      );
+      expect(text(field(root, 'ai-review-tokens-unit'))).toBe('tokens');
     });
 
     it.each([
@@ -713,31 +963,60 @@ describe('AiReviewPage (6I-2 Task 9)', () => {
       ['ai-review-tokens', ''],
       ['ai-review-tokens', '1000000001'],
       ['ai-review-cost', '-0.5'],
+      ['ai-review-cost', '1.234'],
       ['ai-review-cost', '1000001'],
+      ['ai-review-cost', ''],
       ['ai-review-per-project', '2.5'],
       ['ai-review-per-project', '1000000001'],
+      ['ai-review-per-project', ''],
       ['ai-review-max-per-review', '0'],
       ['ai-review-max-per-review', '10000001'],
       ['ai-review-max-per-review', ''],
     ])('refuses %s = %j on its field and sends nothing', async (id, value) => {
       const { server } = setup('orgAdmin', {
-        organizations: { [ORG_ID]: { enabled: true, consentFor: A } },
+        usage: PRICED,
+        organizations: {
+          [ORG_ID]: {
+            enabled: true,
+            consentFor: A,
+            budgets: {
+              tokensPerDay: 10,
+              costPerDayUsd: 7,
+              perProjectTokensPerDay: 4,
+              maxTokensPerReview: 3,
+            },
+          },
+        },
       });
       const { fixture, root } = await render();
       type(root, id, value);
-      await save(fixture, root);
+      await saveReview(fixture, root);
       expect(server.requestsTo('PUT', ROUTE)).toHaveLength(0);
+      expect(fold(root).open).toBe(true);
       expect(field(root, id).getAttribute('aria-invalid')).toBe('true');
-      expect(field(root, `${id}-error`).textContent).toMatch(/^Use /);
+      expect(field(root, `${id}-error`).textContent).toMatch(/^\s*Use /);
       expect(field(root, id).getAttribute('aria-describedby')).toContain(`${id}-error`);
       expect(document.activeElement).toBe(field(root, id));
       // Typing again clears the refusal.
       type(root, id, '5');
       await settle(fixture);
       expect(root.querySelector(`#${id}-error`)).toBeNull();
+      expect(foot(root)).toBe('1 unsaved change');
     });
 
-    it('shows the field the server refused in the page’s own words (422)', async () => {
+    it('keeps a refusal when the field only regroups the digits it was left with', async () => {
+      setup();
+      const { fixture, root } = await render();
+      type(root, 'ai-review-tokens', '1000000001');
+      await saveReview(fixture, root);
+      expect(field(root, 'ai-review-tokens').getAttribute('aria-invalid')).toBe('true');
+      field(root, 'ai-review-tokens').dispatchEvent(new Event('blur'));
+      await settle(fixture);
+      expect(field(root, 'ai-review-tokens').value).toBe('1,000,000,001');
+      expect(field(root, 'ai-review-tokens').getAttribute('aria-invalid')).toBe('true');
+    });
+
+    it("shows the field the server refused in the page's own words (422), and opens the fold", async () => {
       const { server } = setup('orgAdmin', {
         organizations: { [ORG_ID]: { enabled: true, consentFor: A } },
       });
@@ -748,101 +1027,304 @@ describe('AiReviewPage (6I-2 Task 9)', () => {
         ]),
       });
       const { fixture, root } = await render();
-      await save(fixture, root);
+      await click(fixture, field(root, 'ai-review-scope-all'));
+      await saveReview(fixture, root);
+      expect(fold(root).open).toBe(true);
       expect(field(root, 'ai-review-max-per-review').getAttribute('aria-invalid')).toBe('true');
-      expect(field(root, 'ai-review-max-per-review-error').textContent).toContain(
-        'Use a whole number from 1 to 10 000 000.',
+      expect(text(field(root, 'ai-review-max-per-review-error'))).toBe(
+        'Use a whole number from 1 to 10,000,000.',
       );
+      expect(foot(root)).toBe('1 field needs attention: Tokens per review');
       expect(root.textContent).not.toContain('server text');
     });
 
-    it('shows the instance ceiling beside the tokens budget when one is set', async () => {
-      setup('orgAdmin', { ceiling: 750_000 });
+    it('limits the cost only with prices', async () => {
+      setup();
       const { root } = await render();
-      const note = field(root, 'ai-review-ceiling');
-      expect(note.textContent).toContain('750,000 tokens per organisation and day');
+      const limit = switchNamed(root, 'Limit the cost');
+      expect(limit.getAttribute('role')).toBe('switch');
+      expect(limit.disabled).toBe(true);
+      expect(limit.checked).toBe(false);
+      const note = field(root, limit.getAttribute('aria-describedby')!);
+      expect(text(note)).toBe(
+        'No prices are set on this server, so a cost limit would count nothing. An instance admin enters model prices in Settings → AI provider.',
+      );
+      expect(root.querySelector('#ai-review-cost')).toBeNull();
+    });
+
+    it('lets a cost limit stored before the prices went be switched off', async () => {
+      const { server } = setup('orgAdmin', {
+        organizations: { [ORG_ID]: { budgets: { ...DEFAULT_BUDGETS, costPerDayUsd: 5 } } },
+      });
+      const { fixture, root } = await render();
+      const limit = switchNamed(root, 'Limit the cost');
+      expect(limit.checked).toBe(true);
+      expect(limit.disabled).toBe(false);
+      expect(root.querySelector('#ai-review-no-prices')).not.toBeNull();
+      await click(fixture, limit);
+      expect(switchNamed(root, 'Limit the cost').disabled).toBe(true);
+      await saveReview(fixture, root);
+      expect(server.requestsTo('PUT', ROUTE)[0]?.body).toMatchObject({
+        budgets: { costPerDayUsd: null },
+      });
+    });
+
+    it('with prices, limits the cost under its switch, and none once it is off', async () => {
+      const { server } = setup('orgAdmin', { usage: PRICED });
+      const { fixture, root } = await render();
+      expect(root.querySelector('#ai-review-no-prices')).toBeNull();
+      expect(text(switchNamed(root, 'Limit the cost').closest('.switch-row'))).toBe(
+        "Limit the cost Counted with the models' prices this server sets.",
+      );
+      await click(fixture, switchNamed(root, 'Limit the cost'));
+      expect(field(root, 'ai-review-cost').closest('.dep')).not.toBeNull();
+      type(root, 'ai-review-cost', '20');
+      await saveReview(fixture, root);
+      expect(server.requestsTo('PUT', ROUTE)[0]?.body).toMatchObject({
+        budgets: { costPerDayUsd: 20 },
+      });
+      expect(chips(root)[3]).toEqual({ text: '$20.00 a day', set: true });
+      await click(fixture, switchNamed(root, 'Limit the cost'));
+      expect(root.querySelector('#ai-review-cost')).toBeNull();
+      await saveReview(fixture, root);
+      expect(server.requestsTo('PUT', ROUTE)[1]?.body).toMatchObject({
+        budgets: { costPerDayUsd: null },
+      });
+    });
+
+    it('limits the tokens per project under its switch, and none once it is off', async () => {
+      const { server } = setup();
+      const { fixture, root } = await render();
+      const limit = switchNamed(root, 'Limit tokens per project');
+      expect(text(limit.closest('.switch-row'))).toBe(
+        'Limit tokens per project Off: no limit per project.',
+      );
+      expect(root.querySelector('#ai-review-per-project')).toBeNull();
+      await click(fixture, limit);
+      // Switched on with nothing typed: a limit needs its number.
+      await saveReview(fixture, root);
+      expect(server.requestsTo('PUT', ROUTE)).toHaveLength(0);
+      expect(text(field(root, 'ai-review-per-project-error'))).toBe(
+        'Use a whole number from 0 to 1,000,000,000.',
+      );
+      type(root, 'ai-review-per-project', '250000');
+      await saveReview(fixture, root);
+      expect(server.requestsTo('PUT', ROUTE)[0]?.body).toMatchObject({
+        budgets: { perProjectTokensPerDay: 250_000 },
+      });
+      expect(chips(root)[2]).toEqual({ text: '250,000 per project a day', set: true });
+      // Off, the limit is gone; its number comes back when it is switched on again.
+      await click(fixture, switchNamed(root, 'Limit tokens per project'));
+      expect(root.querySelector('#ai-review-per-project')).toBeNull();
+      expect(foot(root)).toBe('1 unsaved change');
+      await click(fixture, switchNamed(root, 'Limit tokens per project'));
+      expect(field(root, 'ai-review-per-project').value).toBe('250,000');
+      expect(foot(root)).toMatch(SAVED_AT);
+    });
+
+    it('shows the cap and what the organisation gets', async () => {
+      setup('orgAdmin', { ceiling: 1_000_000 });
+      const { root } = await render();
+      expect(text(field(root, 'ai-review-ceiling'))).toBe(
+        'This server caps AI review at 1,000,000 tokens a day per organization, so Default gets 1,000,000.',
+      );
       expect(field(root, 'ai-review-tokens').getAttribute('aria-describedby')).toContain(
         'ai-review-ceiling',
       );
+      // The capped budget makes room for three full-size reviews a day.
+      expect(text(field(root, 'ai-review-max-per-review-echo'))).toBe(
+        'about 3 full-size reviews a day',
+      );
     });
 
-    it('shows no ceiling note without a ceiling', async () => {
-      setup();
-      const { root } = await render();
-      expect(root.querySelector('#ai-review-ceiling')).toBeNull();
-    });
-  });
-
-  describe('today’s use', () => {
-    const usageText = (root: HTMLElement) =>
-      root.querySelector('#ai-review-usage')?.textContent?.replace(/\s+/g, ' ').trim();
-    /** An organisation with review on, its own tokens per day given. */
-    const reviewing = (tokensPerDay = 500_000) => ({
-      [ORG_ID]: {
-        enabled: true,
-        budgets: { ...DEFAULT_BUDGETS, tokensPerDay },
-        consentFor: A,
-      },
-    });
-
-    it('shows the tokens and the reviews of the day against the budget', async () => {
-      setup('orgAdmin', {
-        usage: { tokensToday: 123_456, costTodayUsd: null, reviewsToday: 7 },
-        organizations: reviewing(),
-      });
-      const { root } = await render();
-      expect(usageText(root)).toBe('Today: 123,456 of 500,000 tokens · 7 reviews');
-    });
-
-    it.each([
-      [300_000, 'Today: 1,000 of 300,000 tokens · 2 reviews'],
-      [900_000, 'Today: 1,000 of 500,000 tokens · 2 reviews'],
-      [null, 'Today: 1,000 of 500,000 tokens · 2 reviews'],
-    ])(
-      'counts against the smaller of the budget and the instance ceiling (%s)',
-      async (ceiling, text) => {
-        setup('orgAdmin', {
-          usage: { tokensToday: 1_000, costTodayUsd: null, reviewsToday: 2 },
-          ceiling,
-          organizations: reviewing(),
-        });
-        expect(usageText((await render()).root)).toBe(text);
+    it.each([[3_000_000], [null]])(
+      'shows no cap while it is not below the organisation budget (%s)',
+      async (ceiling) => {
+        setup('orgAdmin', { ceiling });
+        const { root } = await render();
+        expect(root.querySelector('#ai-review-ceiling')).toBeNull();
+        expect(field(root, 'ai-review-tokens').getAttribute('aria-describedby')).toBe(
+          'ai-review-tokens-unit',
+        );
       },
     );
 
-    it('adds the cost in dollars when the instance sets prices', async () => {
-      setup('orgAdmin', {
-        usage: { tokensToday: 20_000, costTodayUsd: 1.5, reviewsToday: 3 },
-        organizations: reviewing(),
-      });
-      const { root } = await render();
-      expect(usageText(root)).toBe('Today: 20,000 of 500,000 tokens · 3 reviews · $1.50');
+    it('counts the full-size reviews a day the budgets allow', async () => {
+      setup();
+      const { fixture, root } = await render();
+      const echo = () => text(field(root, 'ai-review-max-per-review-echo'));
+      expect(echo()).toBe('about 6 full-size reviews a day');
+      expect(field(root, 'ai-review-max-per-review').getAttribute('aria-describedby')).toBe(
+        'ai-review-max-per-review-echo ai-review-max-per-review-hint ai-review-max-per-review-unit',
+      );
+      expect(text(field(root, 'ai-review-max-per-review-hint'))).toBe(
+        'The most one review may use; it ends with what it found. At the default 300,000, merge requests of about 100 changed files or more are not reviewed: raise it for big merge requests.',
+      );
+      type(root, 'ai-review-max-per-review', '2000000');
+      await settle(fixture);
+      expect(echo()).toBe('about 1 full-size review a day');
+      type(root, 'ai-review-tokens', '0');
+      await settle(fixture);
+      expect(echo()).toBe('not enough for one full-size review a day');
     });
+  });
 
-    it.each([
-      [1, 'Today: 900 of 500,000 tokens · 1 review'],
-      [0, 'Today: 900 of 500,000 tokens · 0 reviews'],
-    ])('counts %s review(s) in the right number', async (reviewsToday, text) => {
-      setup('orgAdmin', {
-        usage: { tokensToday: 900, costTodayUsd: null, reviewsToday },
-        organizations: reviewing(),
-      });
-      expect(usageText((await render()).root)).toBe(text);
-    });
-
-    it('does not follow a budget that was typed and not saved, and reads the saved answer', async () => {
-      const { fake } = setup('orgAdmin', {
-        usage: { tokensToday: 100, costTodayUsd: null, reviewsToday: 1 },
-        organizations: reviewing(),
+  describe('when AI cannot be used', () => {
+    it('says who sets up AI, and switches a stored review off', async () => {
+      const { server } = setup('orgAdmin', {
+        provider: null,
+        organizations: { [ORG_ID]: { enabled: true, consentFor: A } },
       });
       const { fixture, root } = await render();
-      type(root, 'ai-review-tokens', '250000');
+      expect(text(root.querySelector('.settings-head p'))).toBe(
+        "AI features for Default, on this server's AI provider.",
+      );
+      const card = root.querySelector<HTMLElement>('.ai-unavailable')!;
+      expect(text(card.querySelector('.badge'))).toBe('Not set up');
+      expect(text(card.querySelector('h3'))).toBe("AI isn't set up on this server yet.");
+      expect(text(card.querySelector('.empty > p'))).toBe(
+        'An instance admin connects an AI provider in Settings → AI provider and allows Default to use it. Then you can switch on AI review here.',
+      );
+      // An organisation admin cannot open the provider's settings: no link.
+      expect(card.querySelector('a[href]')).toBeNull();
+      expect(root.querySelector('q-status-list')).toBeNull();
+      expect(root.querySelector('section#review')).toBeNull();
+      expect(text(card.querySelector('.setting-actions .foot-status'))).toBe(
+        'AI review was switched on before, and is stopped.',
+      );
+      await click(fixture, button(card, 'Switch off AI review'));
+      await click(fixture, button(offDialog(root), 'Switch off'));
+      expect(server.requestsTo('PUT', ROUTE).map((r) => r.body)).toEqual([
+        { enabled: false, scope: 'selected', projectIds: [], budgets: DEFAULT_BUDGETS },
+      ]);
+      expect(root.querySelector('.ai-unavailable .setting-actions')).toBeNull();
+      expect(document.activeElement).toBe(root.querySelector('h2'));
+    });
+
+    it('links the AI provider settings for an instance admin', async () => {
+      setup('instanceAdmin', { provider: null });
+      const { root } = await render();
+      expect(root.querySelector('.ai-unavailable a')?.getAttribute('href')).toBe('/settings/ai');
+    });
+
+    it('says an instance admin allows the organisation', async () => {
+      setup('orgAdmin', { organizationEnabled: false });
+      const { root } = await render();
+      // The provider is there: the intro names it.
+      expect(text(root.querySelector('.settings-head p'))).toContain(
+        "on this server's AI provider (llm.example.com).",
+      );
+      const card = root.querySelector<HTMLElement>('.ai-unavailable')!;
+      expect(text(card.querySelector('.badge'))).toBe('Not set up');
+      expect(text(card.querySelector('h3'))).toBe('Default may not use AI yet.');
+      expect(text(card.querySelector('.empty > p'))).toBe(
+        'An instance admin allows it in Settings → AI provider → Organizations.',
+      );
+      expect(card.querySelector('a[href]')).toBeNull();
+      // Nothing was ever switched on: nothing to stop.
+      expect(card.querySelector('.setting-actions')).toBeNull();
+      expect(button(card, 'Switch off AI review')).toBeUndefined();
+    });
+
+    it("links the AI provider's organizations for an instance admin", async () => {
+      setup('instanceAdmin', { organizationEnabled: false });
+      const { root } = await render();
+      expect(root.querySelector('.ai-unavailable a')?.getAttribute('href')).toBe(
+        '/settings/ai#organizations',
+      );
+    });
+  });
+
+  describe('the assistant', () => {
+    it('shows the assistant read-only: the features, what is never sent and the limits', async () => {
+      setup();
+      const { root } = await render();
+      const assistant = root.querySelector<HTMLElement>('section#assistant')!;
+      expect(text(assistant.querySelector('h3'))).toBe('Assistant');
+      expect(text(assistant.querySelector('.sec-chips'))).toBe('Read-only');
+      expect(text(assistant.querySelector('.sec-purpose'))).toBe(
+        "Explain, Suggest triage and Suggest a fix on Default's issues, chosen by an instance admin in Settings → AI provider.",
+      );
+      expect(facts(assistant)).toEqual([
+        ['Explain', 'On'],
+        ['Suggest triage', 'On'],
+        ['Suggest a fix', 'Off'],
+        ['Never sent', 'Legacy'],
+        [
+          'Limits a day',
+          '200 explanations · 100 triage · 25 fixes · 1,000,000 tokens · 30 asks per person an hour',
+        ],
+      ]);
+      expect(assistant.querySelector('input, select, textarea, button')).toBeNull();
+      const status = line(root, 'assistant');
+      expect(text(status.querySelector('.st-label'))).toBe('Assistant');
+      expect(status.querySelector('.badge')?.classList).toContain('badge-passed');
+      expect(text(status.querySelector('.st-line'))).toBe(
+        'On Explain and Suggest triage on, Suggest a fix off.',
+      );
+      expect(text(status.querySelector('.st-sub'))).toBe('An instance admin chooses them.');
+    });
+
+    it('says the assistant is off without a feature, and on with all of them', async () => {
+      setup('orgAdmin', {}, orgAi({ features: { explain: false, triage: false, fix: false } }));
+      const { root } = await render();
+      expect(text(line(root, 'assistant').querySelector('.st-line'))).toBe(
+        'Off Explain, Suggest triage, and Suggest a fix off.',
+      );
+      expect(line(root, 'assistant').querySelector('.badge')?.classList).toContain('badge-none');
+      TestBed.resetTestingModule();
+      setup('orgAdmin', {}, orgAi({ features: { explain: true, triage: true, fix: true } }));
+      const all = await render();
+      expect(text(line(all.root, 'assistant').querySelector('.st-line'))).toBe(
+        'On Explain, Suggest triage, and Suggest a fix on.',
+      );
+    });
+
+    it('says None when no project is excluded', async () => {
+      const { server } = setup();
+      server.on('GET', '/api/v0/projects', { body: page(PROJECTS.slice(0, 2)) });
+      const { root } = await render();
+      expect(facts(root.querySelector('section#assistant')!)[3]).toEqual(['Never sent', 'None']);
+    });
+
+    it('says so when the assistant cannot be read, and leaves it out of the status', async () => {
+      const { server } = setup();
+      server.on('GET', /^\/api\/v0\/organizations\/[^/]+\/ai$/, {
+        status: 500,
+        body: problem(500, 'INTERNAL'),
+      });
+      const { root } = await render();
+      expect(text(root.querySelector('section#assistant .alert-error'))).toContain(
+        'The request failed (HTTP 500',
+      );
+      expect(root.querySelector('li[data-key="assistant"]')).toBeNull();
+      expect(meters(root).map((m) => m.label)).toEqual(['AI review']);
+    });
+  });
+
+  describe('leaving', () => {
+    it('asks before leaving with unsaved changes', async () => {
+      setup('orgAdmin', { organizations: { [ORG_ID]: { projectIds: [PAYMENTS] } } });
+      const { fixture, root, page } = await render();
+      expect(page.canLeave()).toBe(true);
+      await click(fixture, button(row(root, 'Payments'), 'Remove'));
+      const unload = new Event('beforeunload', { cancelable: true });
+      window.dispatchEvent(unload);
+      expect(unload.defaultPrevented).toBe(true);
+
+      const leave = root.querySelector<HTMLDialogElement>('q-leave-confirm dialog')!;
+      let answer = page.canLeave() as Promise<boolean>;
       await settle(fixture);
-      expect(usageText(root)).toBe('Today: 100 of 500,000 tokens · 1 review');
-      // Saving answers with the day as it is then, and with the budget just saved.
-      fake.usage = { tokensToday: 4_000, costTodayUsd: null, reviewsToday: 2 };
-      await save(fixture, root);
-      expect(usageText(root)).toBe('Today: 4,000 of 250,000 tokens · 2 reviews');
+      expect(leave.open).toBe(true);
+      expect(text(leave.querySelector('#leave-text'))).toBe(
+        'Your changes to AI review are not saved yet.',
+      );
+      await click(fixture, button(leave, 'Stay'));
+      await expect(answer).resolves.toBe(false);
+      answer = page.canLeave() as Promise<boolean>;
+      await settle(fixture);
+      await click(fixture, button(leave, 'Leave without saving'));
+      await expect(answer).resolves.toBe(true);
     });
   });
 
@@ -850,7 +1332,7 @@ describe('AiReviewPage (6I-2 Task 9)', () => {
     it('never shows the provider as a URL: the answers name its host and model only', async () => {
       setup('orgAdmin', { organizations: { [ORG_ID]: { enabled: true, consentFor: A } } });
       const { fixture, root } = await render();
-      await click(fixture, button(root, 'Save'));
+      await act(fixture, root, 'Switch off AI review');
       // The whole markup, attributes included (ui/tools/templates.test.ts bars reading it as HTML).
       expect(new XMLSerializer().serializeToString(root)).not.toContain('https://');
       expect(root.textContent).not.toContain('https://');
@@ -873,9 +1355,11 @@ describe('AiReviewPage (6I-2 Task 9)', () => {
       await settle(fixture);
       expect(field(root, 'ai-review-scope-all').checked).toBe(true);
       expect(field(root, 'ai-review-tokens').value).toBe('42');
-      expect(root.querySelector('h3')?.textContent?.trim()).toBe('Other');
-      // The other organisation's projects are listed, not Default's.
-      expect(root.querySelector(`#ai-review-project-${PAYMENTS}`)).toBeNull();
+      expect(text(root.querySelector('.settings-head p'))).toContain('AI features for Other,');
+      // Other's own projects are counted, not Default's.
+      expect(text(field(root, 'ai-review-all-line'))).toBe(
+        'The 1 project of Other will be reviewed.',
+      );
     });
 
     it('drops the answer for an organisation left before it arrived', async () => {
@@ -902,14 +1386,26 @@ describe('AiReviewPage (6I-2 Task 9)', () => {
       expect(field(root, 'ai-review-tokens').value).toBe('2');
     });
 
+    it('closes an open dialog with nothing sent when the organisation changes', async () => {
+      const { server } = setup();
+      TestBed.inject(SessionStore).set(me({ admin: true }));
+      const { fixture, root } = await render();
+      await act(fixture, root, 'Switch on AI review…');
+      expect(consentDialog(root).open).toBe(true);
+      TestBed.inject(OrgContext).select(OTHER_ID);
+      await settle(fixture);
+      expect(consentDialog(root).open).toBe(false);
+      expect(server.requests.filter((r) => r.method === 'PUT')).toHaveLength(0);
+    });
+
     it('tells a member who is not an organisation admin, and asks the server nothing', async () => {
       const { server } = setup('member');
       const { root } = await render();
       expect(root.textContent).toContain(
         'Only organisation administrators change the AI review settings.',
       );
-      expect(root.querySelector('form')).toBeNull();
-      expect(server.requests.filter((r) => r.path.endsWith('/ai/review'))).toHaveLength(0);
+      expect(root.querySelector('section#review')).toBeNull();
+      expect(server.requests.filter((r) => r.path.includes('/ai'))).toHaveLength(0);
       expect(server.requests.filter((r) => r.path === '/api/v0/projects')).toHaveLength(0);
     });
 
@@ -921,7 +1417,7 @@ describe('AiReviewPage (6I-2 Task 9)', () => {
       expect(root.textContent).toContain(
         'Only organisation administrators change the AI review settings.',
       );
-      expect(root.querySelector('form')).toBeNull();
+      expect(root.querySelector('section#review')).toBeNull();
       expect(server.requestsTo('GET', `/api/v0/organizations/${OTHER_ID}/ai/review`)).toHaveLength(
         0,
       );
@@ -932,7 +1428,7 @@ describe('AiReviewPage (6I-2 Task 9)', () => {
       server.on('GET', '/api/v0/organizations', { body: page([]) });
       const { root } = await render();
       expect(root.textContent).toContain('There is no organization to show');
-      expect(root.querySelector('form')).toBeNull();
+      expect(root.querySelector('section#review')).toBeNull();
       expect(server.requests.filter((r) => r.path.endsWith('/ai/review'))).toHaveLength(0);
     });
 
@@ -941,38 +1437,52 @@ describe('AiReviewPage (6I-2 Task 9)', () => {
       server.on('GET', ROUTE, { status: 500, body: problem(500, 'INTERNAL') });
       const { root } = await render();
       expect(root.querySelector('[role="alert"].alert-error')).not.toBeNull();
-      expect(root.querySelector('form')).toBeNull();
+      expect(root.querySelector('section#review')).toBeNull();
     });
 
-    it('shows a refusal of the save in its own words, with the form kept', async () => {
+    it('says why a save was refused beside its Save, and keeps the edits', async () => {
       const { server } = setup('orgAdmin', {
         organizations: { [ORG_ID]: { enabled: true, consentFor: A } },
       });
       server.on('PUT', ROUTE, { status: 403, body: problem(403, 'FORBIDDEN') });
       const { fixture, root } = await render();
       type(root, 'ai-review-tokens', '77');
-      await save(fixture, root);
-      expect(root.querySelector('[role="alert"].alert-error')?.textContent).toContain(
-        'You are not allowed to do this.',
-      );
+      await saveReview(fixture, root);
+      expect(foot(root)).toBe('You are not allowed to do this.');
+      expect(section(root).querySelector('.foot-status')?.getAttribute('role')).toBe('status');
       expect(field(root, 'ai-review-tokens').value).toBe('77');
+      // It can be tried again as it is.
+      expect(button(section(root), 'Save AI review')?.disabled).toBe(false);
+    });
+
+    it('says so when a selected project belongs to another organisation (422 PROJECT_NOT_IN_ORGANIZATION)', async () => {
+      const { fake } = setup('orgAdmin', {
+        organizations: { [ORG_ID]: { enabled: true, projectIds: [PAYMENTS], consentFor: A } },
+      });
+      fake.foreignProjects.add(PAYMENTS);
+      const { fixture, root } = await render();
+      await click(fixture, field(root, 'ai-review-scope-all'));
+      await saveReview(fixture, root);
+      expect(foot(root)).toBe(
+        'A selected project belongs to another organization. Reload the page and select the projects again.',
+      );
     });
   });
 });
 
-describe('SettingsPage: AI review (6I-2 Task 9)', () => {
+describe('SettingsPage: AI (AI settings redesign, Task 5)', () => {
   async function nav(who: Who): Promise<(string | undefined)[]> {
     setup(who);
     const fixture = TestBed.createComponent(SettingsPage);
     await settle(fixture);
     const root = fixture.nativeElement as HTMLElement;
-    return [...root.querySelectorAll('nav a')].map((a) => a.textContent?.trim());
+    return [...root.querySelectorAll('nav a')].map((a) => text(a));
   }
 
-  it('lists AI review under Organization for org.ai.manage only', async () => {
-    expect(await nav('orgAdmin')).toContain('AI review');
+  it('lists AI under Organization for org.ai.manage only', async () => {
+    expect(await nav('orgAdmin')).toContain('AI');
     TestBed.resetTestingModule();
-    expect(await nav('member')).not.toContain('AI review');
+    expect(await nav('member')).not.toContain('AI');
   });
 
   it('points the entry at /settings/ai-review', async () => {
@@ -980,7 +1490,7 @@ describe('SettingsPage: AI review (6I-2 Task 9)', () => {
     const fixture = TestBed.createComponent(SettingsPage);
     await settle(fixture);
     const link = [...(fixture.nativeElement as HTMLElement).querySelectorAll('nav a')].find(
-      (a) => a.textContent?.trim() === 'AI review',
+      (a) => text(a) === 'AI',
     );
     expect(link?.getAttribute('href')).toBe('/ai-review');
   });

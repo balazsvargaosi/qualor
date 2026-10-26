@@ -183,6 +183,49 @@ export function page<T>(items: T[], nextCursor: string | null = null) {
   return { items, nextCursor };
 }
 
+type ProjectItem = ItemOf<'/api/v0/projects'>;
+
+/**
+ * A project as `GET /projects` lists it: in the default organisation, with no analysis, not
+ * linked to a repository, not excluded from AI and not reviewed, by default. `autoFix` and
+ * `aiReview` take the fields given over those defaults.
+ */
+export function projectItem(
+  given: Pick<ProjectItem, 'id' | 'key' | 'name'> &
+    Partial<Omit<ProjectItem, 'autoFix' | 'aiReview'>> & {
+      autoFix?: Partial<ProjectItem['autoFix']>;
+      aiReview?: Partial<ProjectItem['aiReview']>;
+    },
+): ProjectItem {
+  const { autoFix, aiReview, ...own } = given;
+  return {
+    organizationId: ORG_ID,
+    mainBranchName: 'main',
+    qualityGateId: null,
+    newCodeDefinition: null,
+    scmConnectionId: null,
+    scmProjectRef: null,
+    createdAt: '2026-09-01T00:00:00.000Z',
+    updatedAt: '2026-09-01T00:00:00.000Z',
+    mainBranch: null,
+    permissions: ['project.read'],
+    ...own,
+    autoFix: {
+      available: true,
+      enabled: true,
+      organizationEnabled: false,
+      excludedFromAi: false,
+      ...autoFix,
+    },
+    aiReview: {
+      enabled: false,
+      organizationEnabled: false,
+      reason: 'review_disabled',
+      ...aiReview,
+    },
+  };
+}
+
 /** Lets pending fetches, navigations and change detection finish (the fake fetch is async). */
 export async function settle(fixture?: { whenStable(): Promise<unknown> }): Promise<void> {
   for (let i = 0; i < 5; i++) {

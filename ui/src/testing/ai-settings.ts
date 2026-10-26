@@ -60,11 +60,21 @@ export const PROJECTS = [
   { id: 'p3', organizationId: 'other-org', key: 'other/api', name: 'Other API' },
 ];
 
-/** The organisation's view of the assistant (`GET /organizations/{id}/ai`): today's use and budgets. */
-export function orgAi(overrides: { enabled?: boolean; usage?: object; budgets?: object } = {}) {
+/**
+ * The organisation's view of the assistant (`GET /organizations/{id}/ai`): the features on, today's
+ * use and budgets. Explain and Suggest triage are on, Suggest a fix off, by default.
+ */
+export function orgAi(
+  overrides: {
+    enabled?: boolean;
+    features?: { explain: boolean; triage: boolean; fix: boolean };
+    usage?: object;
+    budgets?: object;
+  } = {},
+) {
   return {
     enabled: overrides.enabled ?? true,
-    features: { explain: true, triage: true, fix: false },
+    features: overrides.features ?? { explain: true, triage: true, fix: false },
     provider: { kind: 'openai', host: 'ollama:11434', model: 'qwen2.5-coder' },
     dataSent: ['rule', 'message', 'path', 'language', 'snippet'],
     usage: { explain: 0, triage: 0, fix: 0, tokens: 0, costUsd: null, ...overrides.usage },

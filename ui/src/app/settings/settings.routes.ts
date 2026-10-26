@@ -1,4 +1,5 @@
 import type { Routes } from '@angular/router';
+import { unsavedChangesGuard } from '../shared/unsaved-changes';
 
 /** Children of `/settings` (SettingsPage). */
 export const settingsRoutes: Routes = [
@@ -55,10 +56,12 @@ export const settingsRoutes: Routes = [
     loadComponent: () => import('./repositories.page').then((m) => m.RepositoriesPage),
   },
   {
-    // 6I-2: an organisation's AI review and its data-sharing confirmation, for its admins
-    // (org.ai.manage), in every edition.
+    // The organisation's AI (spec §3.5): AI review and its data-sharing confirmation, and the
+    // assistant read-only, for its admins (org.ai.manage), in every edition. Leaving it with
+    // unsaved edits asks first.
     path: 'ai-review',
-    title: $localize`:@@title.aiReview:AI review`,
+    title: $localize`:@@title.orgAi:AI`,
+    canDeactivate: [unsavedChangesGuard],
     loadComponent: () => import('./ai-review.page').then((m) => m.AiReviewPage),
   },
   {

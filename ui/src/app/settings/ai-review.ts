@@ -1,10 +1,12 @@
 import { ApiError } from '../api/errors';
-import type { RequestBody, ResponseBody } from '../api/types';
+import type { ItemOf, RequestBody, ResponseBody } from '../api/types';
+import { formatMoney, formatWhole, parseMoney, parseWhole } from '../shared/numbers';
 
 /**
  * 6I-2: an organisation's AI review as its admin reads it (`GET /organizations/{id}/ai/review`):
  * whether it can be switched on, the provider and the data-sharing notice to show, the stored
- * switch, scope, projects and budgets, and whether the consent covers the provider now.
+ * switch, scope, projects and budgets, whether the consent covers the provider now, and what the
+ * instance admin's last Test found of its models.
  */
 export type OrgAiReview = ResponseBody<'/api/v0/organizations/{id}/ai/review', 'get'>;
 /** What `PUT` stores: the switch, the scope, the projects, the budgets and the acknowledgement. */
@@ -16,34 +18,47 @@ export type AiReviewScope = AiReviewBody['scope'];
  * model and every model it names (once each, sorted, the standard model among them).
  */
 export type AiReviewProvider = NonNullable<OrgAiReview['provider']>;
+/**
+ * The organisation's assistant as the instance admin set it up (`GET /organizations/{id}/ai`,
+ * `org.read`): the features on, today's use and the daily limits.
+ */
+export type OrgAi = ResponseBody<'/api/v0/organizations/{id}/ai', 'get'>;
 
 /** The bounds the server stores for the budgets (6I-2 Task 4, D6). */
 export const MAX_REVIEW_TOKENS_PER_DAY = 1_000_000_000;
 export const MAX_REVIEW_COST_PER_DAY_USD = 1_000_000;
 export const MAX_REVIEW_TOKENS_PER_REVIEW = 10_000_000;
 
-/** The budgets as typed in their fields; an optional budget left empty means none. */
+/**
+ * The budgets as the Budgets fold holds them: the text of each number field, and the switches of
+ * the two optional limits. A limit switched off is none; its text is kept, and comes back when it
+ * is switched on again.
+ */
 export interface AiReviewBudgetsDraft {
   tokensPerDay: string;
-  costPerDayUsd: string;
-  perProjectTokensPerDay: string;
   maxTokensPerReview: string;
+  perProjectLimited: boolean;
+  perProjectTokensPerDay: string;
+  costLimited: boolean;
+  costPerDayUsd: string;
 }
-export type AiReviewBudgetField = keyof AiReviewBudgetsDraft;
+/** The budgets that have a field, which a refusal can name. */
+export type AiReviewBudgetField =
+  'tokensPerDay' | 'maxTokensPerReview' | 'perProjectTokensPerDay' | 'costPerDayUsd';
 export type AiReviewBudgetErrors = Partial<Record<AiReviewBudgetField, string>>;
 
 /** The budget fields in the order the page shows them, and the input each one is. */
 export const AI_REVIEW_BUDGET_FIELDS: readonly AiReviewBudgetField[] = [
   'tokensPerDay',
-  'costPerDayUsd',
-  'perProjectTokensPerDay',
   'maxTokensPerReview',
+  'perProjectTokensPerDay',
+  'costPerDayUsd',
 ];
 export const AI_REVIEW_BUDGET_INPUT: Readonly<Record<AiReviewBudgetField, string>> = {
   tokensPerDay: 'ai-review-tokens',
-  costPerDayUsd: 'ai-review-cost',
-  perProjectTokensPerDay: 'ai-review-per-project',
   maxTokensPerReview: 'ai-review-max-per-review',
+  perProjectTokensPerDay: 'ai-review-per-project',
+  costPerDayUsd: 'ai-review-cost',
 };
 
 /** What an organisation without a stored block has (llm.md §3.3): the server's defaults. */
@@ -54,47 +69,37 @@ export const DEFAULT_AI_REVIEW_BUDGETS: Readonly<AiReviewBudgets> = Object.freez
   maxTokensPerReview: 300_000,
 });
 
-export function budgetsDraftOf(budgets: AiReviewBudgets): AiReviewBudgetsDraft {
+/** The fields of stored budgets, grouped as the locale writes numbers ("2,000,000", "12.50"). */
+export function budgetsDraftOf(budgets: AiReviewBudgets, locale: string): AiReviewBudgetsDraft {
   return {
-    tokensPerDay: String(budgets.tokensPerDay),
-    costPerDayUsd: budgets.costPerDayUsd === null ? '' : String(budgets.costPerDayUsd),
+    tokensPerDay: formatWhole(budgets.tokensPerDay, locale),
+    maxTokensPerReview: formatWhole(budgets.maxTokensPerReview, locale),
+    perProjectLimited: budgets.perProjectTokensPerDay !== null,
     perProjectTokensPerDay:
-      budgets.perProjectTokensPerDay === null ? '' : String(budgets.perProjectTokensPerDay),
-    maxTokensPerReview: String(budgets.maxTokensPerReview),
+      budgets.perProjectTokensPerDay === null
+        ? ''
+        : formatWhole(budgets.perProjectTokensPerDay, locale),
+    costLimited: budgets.costPerDayUsd !== null,
+    costPerDayUsd: budgets.costPerDayUsd === null ? '' : formatMoney(budgets.costPerDayUsd, locale),
   };
-}
-
-/** A whole number from `min` to `max` as typed, or null. */
-function wholeNumber(raw: string, min: number, max: number): number | null {
-  const value = raw.trim();
-  if (!/^\d{1,10}$/.test(value)) return null;
-  const n = Number(value);
-  return n >= min && n <= max ? n : null;
-}
-
-/** An amount from 0 to `max` as typed (a decimal point is allowed), or null. */
-function amount(raw: string, max: number): number | null {
-  const value = raw.trim();
-  const n = value === '' ? Number.NaN : Number(value);
-  return Number.isFinite(n) && n >= 0 && n <= max ? n : null;
 }
 
 export function budgetRefusal(field: AiReviewBudgetField): string {
   switch (field) {
     case 'tokensPerDay':
-      return $localize`:@@aiReview.badTokens:Use a whole number from 0 to 1 000 000 000.`;
-    case 'costPerDayUsd':
-      return $localize`:@@aiReview.badCost:Use an amount in US dollars from 0 to 1 000 000, or leave it empty for no cost limit.`;
-    case 'perProjectTokensPerDay':
-      return $localize`:@@aiReview.badPerProject:Use a whole number from 0 to 1 000 000 000, or leave it empty for no limit per project.`;
+      return $localize`:@@aiReview.badTokens:Use a whole number from 0 to 1,000,000,000.`;
     case 'maxTokensPerReview':
-      return $localize`:@@aiReview.badPerReview:Use a whole number from 1 to 10 000 000.`;
+      return $localize`:@@aiReview.badPerReview:Use a whole number from 1 to 10,000,000.`;
+    case 'perProjectTokensPerDay':
+      return $localize`:@@aiReview.badPerProject:Use a whole number from 0 to 1,000,000,000.`;
+    case 'costPerDayUsd':
+      return $localize`:@@aiReview.badCost:Use an amount in US dollars from 0 to 1,000,000, with at most two decimals.`;
   }
 }
 
 /**
- * The typed budgets as the `PUT` body wants them (an empty optional budget is `null`), or the
- * fields refused with the page's own words.
+ * The typed budgets as the `PUT` body wants them (a limit switched off is `null`), or the fields
+ * refused with the page's own words.
  */
 export function parseBudgets(
   draft: AiReviewBudgetsDraft,
@@ -105,23 +110,49 @@ export function parseBudgets(
     return null;
   };
   const tokensPerDay =
-    wholeNumber(draft.tokensPerDay, 0, MAX_REVIEW_TOKENS_PER_DAY) ?? refuse('tokensPerDay');
-  const costPerDayUsd =
-    draft.costPerDayUsd.trim() === ''
-      ? null
-      : (amount(draft.costPerDayUsd, MAX_REVIEW_COST_PER_DAY_USD) ?? refuse('costPerDayUsd'));
-  const perProjectTokensPerDay =
-    draft.perProjectTokensPerDay.trim() === ''
-      ? null
-      : (wholeNumber(draft.perProjectTokensPerDay, 0, MAX_REVIEW_TOKENS_PER_DAY) ??
-        refuse('perProjectTokensPerDay'));
+    parseWhole(draft.tokensPerDay, 0, MAX_REVIEW_TOKENS_PER_DAY) ?? refuse('tokensPerDay');
   const maxTokensPerReview =
-    wholeNumber(draft.maxTokensPerReview, 1, MAX_REVIEW_TOKENS_PER_REVIEW) ??
+    parseWhole(draft.maxTokensPerReview, 1, MAX_REVIEW_TOKENS_PER_REVIEW) ??
     refuse('maxTokensPerReview');
+  const perProjectTokensPerDay = draft.perProjectLimited
+    ? (parseWhole(draft.perProjectTokensPerDay, 0, MAX_REVIEW_TOKENS_PER_DAY) ??
+      refuse('perProjectTokensPerDay'))
+    : null;
+  const costPerDayUsd = draft.costLimited
+    ? (parseMoney(draft.costPerDayUsd, MAX_REVIEW_COST_PER_DAY_USD) ?? refuse('costPerDayUsd'))
+    : null;
   if (Object.keys(errors).length > 0 || tokensPerDay === null || maxTokensPerReview === null) {
     return { errors };
   }
   return { budgets: { tokensPerDay, costPerDayUsd, perProjectTokensPerDay, maxTokensPerReview } };
+}
+
+/** The number a budget's text stands for, whatever its bounds; null when it is not one. */
+export function budgetNumber(field: AiReviewBudgetField, text: string): number | null {
+  return field === 'costPerDayUsd'
+    ? parseMoney(text, Number.MAX_SAFE_INTEGER)
+    : parseWhole(text, 0, Number.MAX_SAFE_INTEGER);
+}
+
+/**
+ * How many budgets the draft changes from those stored. A limit switched off stands for none, and
+ * a text that is no number changes its budget; digits only grouped otherwise change nothing.
+ */
+export function changedBudgets(draft: AiReviewBudgetsDraft, stored: AiReviewBudgets): number {
+  const value = (field: AiReviewBudgetField, text: string) =>
+    budgetNumber(field, text) ?? Number.NaN;
+  const pairs: [number | null, number | null][] = [
+    [value('tokensPerDay', draft.tokensPerDay), stored.tokensPerDay],
+    [value('maxTokensPerReview', draft.maxTokensPerReview), stored.maxTokensPerReview],
+    [
+      draft.perProjectLimited
+        ? value('perProjectTokensPerDay', draft.perProjectTokensPerDay)
+        : null,
+      stored.perProjectTokensPerDay,
+    ],
+    [draft.costLimited ? value('costPerDayUsd', draft.costPerDayUsd) : null, stored.costPerDayUsd],
+  ];
+  return pairs.filter(([typed, saved]) => typed !== saved).length;
 }
 
 /** The server's 422 paths of the budgets (`body.budgets.<field>`) and the field each one refuses. */
@@ -130,12 +161,11 @@ export function budgetFieldOfPath(path: string): AiReviewBudgetField | null {
   return AI_REVIEW_BUDGET_FIELDS.find((f) => f === field) ?? null;
 }
 
-/** Why AI review cannot be switched on, in the page's words; null while it can. */
-export function unavailableText(settings: OrgAiReview): string | null {
-  if (settings.available) return null;
-  return settings.unavailableReason === 'no_provider'
-    ? $localize`:@@aiReview.noProvider:The instance administrator has not configured an AI provider.`
-    : $localize`:@@aiReview.organizationDisabled:AI assistant is not enabled for this organisation.`;
+/** Why the picker cannot add a project to AI review: an instance admin excluded it from AI. */
+export function pickerUnavailable(project: ItemOf<'/api/v0/projects'>): string | null {
+  return project.autoFix.excludedFromAi
+    ? $localize`:@@orgAi.picker.excluded:Excluded from AI by an instance admin`
+    : null;
 }
 
 /**
@@ -147,10 +177,10 @@ export function unavailableText(settings: OrgAiReview): string | null {
 export function aiReviewRefusal(err: unknown): string | null {
   if (!(err instanceof ApiError)) return null;
   if (err.status === 409 && err.code === 'AI_DISABLED') {
-    return $localize`:@@aiReview.aiDisabled:AI review needs the AI assistant configured and enabled for this organisation. An instance administrator sets that in the AI assistant settings.`;
+    return $localize`:@@aiReview.aiDisabled:AI review needs AI set up on this server and allowed for this organization. An instance admin sets that up in Settings → AI provider.`;
   }
   if (err.status === 422 && err.code === 'PROJECT_NOT_IN_ORGANIZATION') {
-    return $localize`:@@aiReview.foreignProject:A selected project belongs to another organisation. Reload the page and select the projects again.`;
+    return $localize`:@@aiReview.foreignProject:A selected project belongs to another organization. Reload the page and select the projects again.`;
   }
   return null;
 }

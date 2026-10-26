@@ -1,59 +1,201 @@
-/* AI review (6I-2): panels of setting rows, Save at the foot, the data-sharing dialog apart. */
-.ai-review {
+/*
+ * Settings → AI (spec §3.5, §7): the Status card, then one card per section, 24px apart. Each
+ * section's head has its title and purpose at the left and its chips at the right.
+ */
+.ai-sections {
   display: grid;
-  gap: 16px;
-  margin-bottom: 16px;
+  /* A definite column: a section's table or field never widens the page on a phone. */
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-6);
 }
-.ai-review > * {
+.ai-sections > * {
   margin: 0;
 }
 .panel-head {
-  padding-bottom: 14px;
+  align-items: flex-start;
+  padding-bottom: 16px;
 }
-.panel-head h3 {
+.sec-title {
+  display: grid;
+  flex: 1 1 20rem;
+  gap: 3px;
+  min-width: 0;
+}
+.sec-title h3 {
   margin: 0;
 }
-.setting-text > p + p {
-  margin-top: 6px;
-}
-.setting-field > p {
+.sec-purpose {
+  max-width: 72ch;
   margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
   /* The provider's host may have no break point. */
   overflow-wrap: anywhere;
 }
-.dialog-body p {
-  /* The notice names the provider's host, which may have no break point. */
-  overflow-wrap: anywhere;
-}
-.ai-review-actions {
-  display: flex;
-  justify-content: flex-end;
-}
-/* The warning that the provider changed: its words, then the button for the dialog. */
-.ai-review-outdated {
+.sec-chips {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px 16px;
+  gap: 6px;
 }
-.ai-review-outdated p {
+.setting-field {
+  gap: 10px;
+}
+/* Definite columns (spec §7.10): a long project key scrolls in the table's frame, never widening
+   the card. */
+.setting-field,
+.dep {
+  grid-template-columns: minmax(0, 1fr);
+}
+.setting-field > p {
   margin: 0;
 }
-/*
- * A long list of projects scrolls inside its panel instead of lengthening the page. The labels of
- * a facet reach out of their box by the same space (so their hover fills it): the padding keeps
- * them inside the scrolling box, and the margin keeps the words in line with the field above.
- */
-.projects {
-  max-height: 20rem;
-  margin: 0 calc(-1 * var(--space-2));
-  padding: 0 var(--space-2);
-  overflow: auto;
+/* The assistant's facts take the whole row. */
+.facts-row {
+  grid-template-columns: minmax(0, 1fr);
 }
-.project-key {
+.facts-row dl.facts {
+  margin: 0;
+}
+.facts-row > p {
+  margin: 0;
+}
+
+/* AI isn't set up, or the organisation may not use it: what is missing, who changes it, where. */
+.empty {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+  padding: 26px 22px;
+}
+.empty > * {
+  margin: 0;
+}
+.empty p {
+  max-width: 64ch;
+}
+.empty .big {
+  font-size: 16px;
+  font-weight: 700;
+}
+/* The place is a link for whoever can open it; for others it is the place's name only. */
+.empty a:not([href]) {
+  color: inherit;
+}
+
+/* The projects to review: a segmented control of two radios (spec §7.11, a named radiogroup). */
+.segmented {
+  flex-wrap: wrap;
+  justify-self: start;
+  max-width: 100%;
+  /* A pill on one row; a long organisation name wraps it into a rounded box, not an oval. */
+  border-radius: 20px;
+}
+.segmented label {
+  position: relative;
+  padding: 6px 14px;
+  border-radius: 999px;
+  color: var(--text-2);
+  font: 600 13px var(--font);
+  cursor: pointer;
+}
+.segmented label:has(input:checked) {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow:
+    0 1px 2px rgb(10 27 51 / 0.1),
+    0 0 0 1px var(--border);
+}
+.segmented label:has(input:focus-visible) {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.segmented input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  opacity: 0;
+}
+
+/* The chosen projects: a compact table in a frame, one card per row on a phone (.stack-table). */
+.mini {
+  max-width: 46rem;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.mini :is(th, td) {
+  padding: 8px 12px;
+}
+.mini thead th {
+  background: var(--surface-2);
+}
+/* The project keeps room for its key beside a long note in the next column. */
+.chosen tbody th {
+  width: 35%;
+}
+.cell-stack {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  /* A project's name and key keep their words: the column is never narrower than its longest
+     one, which breaks only where it would leave its cell (on a phone's card). */
+  overflow-wrap: break-word;
+}
+.cell-stack > .muted {
+  font-size: 12.5px;
+  font-weight: 450;
+}
+.cell-stack code {
+  font-size: 12px;
+}
+
+/* A field in the Budgets fold: its label above, its field, then what it says about it. */
+.fold-field {
+  display: grid;
+  gap: 6px;
+}
+.fold-field > .lbl {
+  font-size: 13px;
+  font-weight: 650;
+}
+.fold-field > p {
+  margin: 0;
+}
+.num-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 0;
+}
+.per {
+  margin-left: 6px;
   color: var(--text-muted);
+  font-size: 13px;
+}
+.field-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+
+/* The notice in the dialog, word for word, set apart from what the page adds under it. */
+.notice {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+.dialog-body p {
+  margin: 0;
+  /* The notice names the provider's host, which may have no break point. */
   overflow-wrap: anywhere;
+}
+.dialog-body {
+  display: grid;
+  gap: 12px;
 }
 /*
  * The confirmation names the host, which may be long: on a narrow screen its words break and the
@@ -69,9 +211,17 @@
   white-space: normal;
   overflow-wrap: anywhere;
 }
-/* The day's use, under the budgets' heading, in the panel's own padding. */
-.ai-review-usage {
-  margin: 0;
-  padding: 0 22px 16px;
-  font-variant-numeric: tabular-nums;
+@media (max-width: 40rem) {
+  .panel-head,
+  .empty {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+  .mini {
+    max-width: 100%;
+  }
+  /* One card per row: the cell takes the card's width. */
+  .chosen tbody th {
+    width: auto;
+  }
 }

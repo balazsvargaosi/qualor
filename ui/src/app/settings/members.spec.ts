@@ -563,7 +563,7 @@ describe('SettingsPage navigation for members and enterprise entries (rbac-audit
       { title: 'Your account', links: ['Access tokens', 'Connected apps', 'Notifications'] },
       {
         title: 'Organization',
-        links: ['Members', 'Webhooks', 'GitLab', 'GitHub', 'Repositories', 'AI review'],
+        links: ['Members', 'Webhooks', 'GitLab', 'GitHub', 'Repositories', 'AI'],
       },
     ]);
     TestBed.resetTestingModule();

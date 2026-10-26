@@ -53,6 +53,10 @@ test('the settings navigation groups its entries and marks the current page', as
   await expect(
     nav.getByRole('group', { name: 'Organization' }).getByRole('link', { name: 'Members' }),
   ).toBeVisible();
+  // The organisation's AI page, named for what it holds: AI review and the assistant.
+  await expect(
+    nav.getByRole('group', { name: 'Organization' }).getByRole('link', { name: 'AI', exact: true }),
+  ).toHaveAttribute('href', '/settings/ai-review');
   await nav.getByRole('group', { name: 'Instance' }).getByRole('link', { name: 'Users' }).click();
   await expect(page).toHaveTitle('Users · Qualor');
   await expect(nav.getByRole('link', { name: 'Users' })).toHaveAttribute('aria-current', 'page');
