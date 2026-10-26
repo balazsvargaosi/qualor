@@ -765,6 +765,49 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
       expect(text(line(root, 'review').querySelector('.badge'))).toBe('On');
     });
 
+    it('switches a paused review off from its dialog, without confirming the new provider', async () => {
+      const { server, fake } = setup('orgAdmin', paused);
+      const { fixture, root } = await render();
+      await act(fixture, root, 'Review and confirm…');
+      const dialog = consentDialog(root);
+      expect(buttons(dialog)).toEqual(['Cancel', 'Switch off AI review', CONFIRM_B]);
+      await click(fixture, button(dialog, 'Switch off AI review'));
+      expect(dialog.open).toBe(false);
+      expect(server.requestsTo('PUT', ROUTE).map((r) => r.body)).toEqual([
+        { enabled: false, scope: 'selected', projectIds: [], budgets: DEFAULT_BUDGETS },
+      ]);
+      expect(fake.of(ORG_ID).enabled).toBe(false);
+      expect(text(line(root, 'review').querySelector('.badge'))).toBe('Off');
+      expect(foot(root)).toMatch(SAVED_AT);
+    });
+
+    it('offers the switch-off once a save finds the provider changed (A, then B)', async () => {
+      const { server, fake } = setup('orgAdmin', {
+        organizations: { [ORG_ID]: { enabled: true, projectIds: [PAYMENTS], consentFor: A } },
+      });
+      const { fixture, root } = await render();
+      expect(text(line(root, 'review').querySelector('.badge'))).toBe('On');
+      fake.changeProvider(B);
+      await click(fixture, field(root, 'ai-review-scope-all'));
+      await saveReview(fixture, root);
+      // The save was refused and the settings read again: paused, with the dialog asking.
+      expect(text(line(root, 'review').querySelector('.badge'))).toBe('Paused');
+      expect(consentDialog(root).open).toBe(true);
+      await click(fixture, button(consentDialog(root), 'Switch off AI review'));
+      const puts = server.requestsTo('PUT', ROUTE);
+      expect(puts).toHaveLength(2);
+      expect(puts[1]?.body).toEqual({
+        enabled: false,
+        scope: 'selected',
+        projectIds: [PAYMENTS],
+        budgets: DEFAULT_BUDGETS,
+      });
+      expect(fake.of(ORG_ID).enabled).toBe(false);
+      expect(text(line(root, 'review').querySelector('.badge'))).toBe('Off');
+      // The scope's edit is still to be saved.
+      expect(foot(root)).toBe('1 unsaved change');
+    });
+
     it('stays paused when the dialog is cancelled', async () => {
       const { server } = setup('orgAdmin', paused);
       const { fixture, root } = await render();

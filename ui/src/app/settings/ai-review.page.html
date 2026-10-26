@@ -532,6 +532,17 @@
       <button type="button" class="btn" autofocus (click)="cancelConsent()" i18n="@@dialog.cancel">
         Cancel
       </button>
+      @if (paused()) {
+        <button
+          type="button"
+          class="btn"
+          [attr.aria-disabled]="busy() ? true : null"
+          (click)="switchOffPaused()"
+          i18n="@@orgAi.paused.switchOff"
+        >
+          Switch off AI review
+        </button>
+      }
       @if (consent(); as asked) {
         <button
           type="button"

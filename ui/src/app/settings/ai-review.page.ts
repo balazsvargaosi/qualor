@@ -259,6 +259,8 @@ export class AiReviewPage implements LeaveGuarded {
     if (!settings?.enabled) return 'off';
     return settings.consentCurrent ? 'on' : 'paused';
   });
+  /** A paused review: its dialog may also switch it off instead of confirming the provider now. */
+  protected readonly paused = computed(() => this.reviewState() === 'paused');
   protected readonly reviewChip = computed<Chip>(() => {
     switch (this.reviewState()) {
       case 'on':
@@ -594,13 +596,27 @@ export class AiReviewPage implements LeaveGuarded {
     closeDialog(this.offDialog());
   }
 
-  /** Switch off: the stored scope, projects and budgets with the switch off; the edits stay. */
   protected async confirmSwitchOff(): Promise<void> {
-    const settings = this.current();
-    const id = this.org.currentId();
-    if (!this.switchingOff() || this.busy() || settings === null || !id) return;
+    if (!this.switchingOff() || this.busy()) return;
     this.switchingOff.set(false);
     closeDialog(this.offDialog());
+    await this.switchOff();
+  }
+
+  /** The paused review's other way out of its dialog: off, with nothing acknowledged. */
+  protected async switchOffPaused(): Promise<void> {
+    if (!this.consent() || this.busy()) return;
+    // Cleared first: the dialog's close event then finds nothing to cancel.
+    this.consent.set(null);
+    closeDialog(this.consentDialog());
+    await this.switchOff();
+  }
+
+  /** Switches review off: the stored scope, projects and budgets with the switch off; the edits stay. */
+  private async switchOff(): Promise<void> {
+    const settings = this.current();
+    const id = this.org.currentId();
+    if (settings === null || !id) return;
     await this.send(
       id,
       {
