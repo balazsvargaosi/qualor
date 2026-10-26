@@ -584,8 +584,14 @@ export class AiReviewPage implements LeaveGuarded {
     const settings = this.current();
     if (this.busy() || settings === null || !settings.available) return;
     // A review whose consent no longer covers the provider needs it again: the server would
-    // refuse the save, so the dialog asks for it instead.
+    // refuse the save, so the dialog asks for it instead, once the budgets can be sent.
     if (settings.enabled && !settings.consentCurrent) {
+      const parsed = parseBudgets(this.budgets());
+      if ('errors' in parsed) {
+        this.refuse(parsed.errors);
+        return;
+      }
+      this.budgetErrors.set({});
       this.askConsent(false);
       return;
     }
@@ -659,7 +665,8 @@ export class AiReviewPage implements LeaveGuarded {
 
   /**
    * Opens the dialog with the provider and notice of the settings as read, unless the section
-   * could not be sent with it: refused budgets are shown first.
+   * could not be sent with it: refused budgets are shown first. A paused review's dialog opens
+   * whatever the budgets hold: its Switch off sends only what is stored, and Confirm checks them.
    */
   private askConsent(changed: boolean): void {
     const settings = this.current();
@@ -671,12 +678,14 @@ export class AiReviewPage implements LeaveGuarded {
     ) {
       return;
     }
-    const parsed = parseBudgets(this.budgets());
-    if ('errors' in parsed) {
-      this.refuse(parsed.errors);
-      return;
+    if (!(settings.enabled && !settings.consentCurrent)) {
+      const parsed = parseBudgets(this.budgets());
+      if ('errors' in parsed) {
+        this.refuse(parsed.errors);
+        return;
+      }
+      this.budgetErrors.set({});
     }
-    this.budgetErrors.set({});
     this.consent.set({
       host: settings.provider.host,
       model: settings.provider.model,

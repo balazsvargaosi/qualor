@@ -899,6 +899,48 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
       expect(foot(root)).toMatch(SAVED_AT);
     });
 
+    it('opens its dialog to switch off while a budget cannot be sent, and sends the stored values', async () => {
+      const { server, fake } = setup('orgAdmin', paused);
+      const { fixture, root } = await render();
+      await setFold(fixture, root, true);
+      type(root, 'ai-review-tokens', '');
+      await act(fixture, root, 'Review and confirm…');
+      const dialog = consentDialog(root);
+      expect(dialog.open).toBe(true);
+      await click(fixture, button(dialog, 'Switch off AI review'));
+      expect(server.requestsTo('PUT', ROUTE).map((r) => r.body)).toEqual([
+        { enabled: false, scope: 'selected', projectIds: [], budgets: DEFAULT_BUDGETS },
+      ]);
+      expect(fake.of(ORG_ID).enabled).toBe(false);
+      // The emptied budget is still the edit it was, to be saved or changed.
+      expect(field(root, 'ai-review-tokens').value).toBe('');
+      expect(foot(root)).toBe('1 unsaved change');
+    });
+
+    it('refuses a budget that cannot be sent on Confirm, and sends nothing', async () => {
+      const { server } = setup('orgAdmin', paused);
+      const { fixture, root } = await render();
+      await setFold(fixture, root, true);
+      type(root, 'ai-review-tokens', '');
+      await act(fixture, root, 'Review and confirm…');
+      await click(fixture, button(consentDialog(root), CONFIRM_B));
+      expect(server.requestsTo('PUT', ROUTE)).toHaveLength(0);
+      expect(field(root, 'ai-review-tokens').getAttribute('aria-invalid')).toBe('true');
+      expect(foot(root)).toBe('1 field needs attention: Tokens per day');
+      expect(text(line(root, 'review').querySelector('.badge'))).toBe('Paused');
+    });
+
+    it('refuses a budget that cannot be sent on Save AI review before it asks', async () => {
+      const { server } = setup('orgAdmin', paused);
+      const { fixture, root } = await render();
+      await setFold(fixture, root, true);
+      type(root, 'ai-review-tokens', 'many');
+      await saveReview(fixture, root);
+      expect(consentDialog(root).open).toBe(false);
+      expect(foot(root)).toBe('1 field needs attention: Tokens per day');
+      expect(server.requestsTo('PUT', ROUTE)).toHaveLength(0);
+    });
+
     it('offers the switch-off once a save finds the provider changed (A, then B)', async () => {
       const { server, fake } = setup('orgAdmin', {
         organizations: { [ORG_ID]: { enabled: true, projectIds: [PAYMENTS], consentFor: A } },
