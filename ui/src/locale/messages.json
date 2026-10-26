@@ -1128,6 +1128,7 @@
     "orgAi.review.purpose": " Reviews each merge request of the projects you choose with {$INTERPOLATION} ({$INTERPOLATION_1}), and posts what it finds to the merge request. ",
     "orgAi.scope": "Projects to review",
     "orgAi.scope.all": "All projects of {$INTERPOLATION} ({$INTERPOLATION_1})",
+    "orgAi.scope.allUncounted": "All projects of {$INTERPOLATION}",
     "orgAi.scope.selected": "Selected projects",
     "orgAi.col.actions": "Actions",
     "orgAi.reviewed.yes": "Yes",

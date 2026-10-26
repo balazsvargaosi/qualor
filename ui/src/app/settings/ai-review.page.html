@@ -115,9 +115,14 @@
                   [checked]="scope() === 'all'"
                   (change)="setScope('all')"
                 />
-                <span i18n="@@orgAi.scope.all"
-                  >All projects of {{ orgName() }} ({{ projects.items().length }})</span
-                >
+                <!-- Counted once every page of the projects is in; never a part of them. -->
+                @if (projectsReady()) {
+                  <span i18n="@@orgAi.scope.all"
+                    >All projects of {{ orgName() }} ({{ projects.items().length }})</span
+                  >
+                } @else {
+                  <span i18n="@@orgAi.scope.allUncounted">All projects of {{ orgName() }}</span>
+                }
               </label>
               <label>
                 <input
@@ -493,7 +498,9 @@
                   {{ names }}
                 } @else if (neverSent() === '') {
                   <ng-container i18n="@@orgAi.neverSent.none">None</ng-container>
-                } @else if (!projects.error()) {
+                } @else if (projects.error()) {
+                  —
+                } @else {
                   <span class="hint" i18n="@@orgAi.loading">Loading…</span>
                 }
               </dd>
@@ -506,7 +513,7 @@
               }
             </dl>
           } @else if (orgAiError(); as message) {
-            <p class="alert alert-error">{{ message }}</p>
+            <p class="alert alert-error" role="alert">{{ message }}</p>
           } @else {
             <p class="hint" i18n="@@orgAi.loading">Loading…</p>
           }

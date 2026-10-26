@@ -402,6 +402,24 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
       });
     });
 
+    it("counts the projects in the scope's label only once every page of them is in", async () => {
+      const { server } = setup();
+      let release: () => void = () => undefined;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      server.on('GET', '/api/v0/projects', async (request) => {
+        if (request.query.get('cursor') !== null) await held;
+        return request.query.get('cursor') === null
+          ? { body: page([PROJECTS[0]], 'next') }
+          : { body: page(PROJECTS.slice(1, 3)) };
+      });
+      const { fixture, root } = await render();
+      const label = () => text(field(root, 'ai-review-scope-all').closest('label'));
+      expect(label()).toBe('All projects of Default');
+      release();
+      await settle(fixture);
+      expect(label()).toBe('All projects of Default (3)');
+    });
+
     it('says so when the projects cannot be listed, and keeps the stored selection', async () => {
       const { server } = setup('orgAdmin', {
         organizations: { [ORG_ID]: { projectIds: [PAYMENTS] } },
@@ -412,8 +430,13 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
         'The request failed (HTTP 500',
       );
       expect(section(root).querySelector('table.chosen')).toBeNull();
-      // What cannot be counted is not summed up either.
+      // What cannot be counted is not summed up either, nor counted in the scope's label.
       expect(line(root, 'review').querySelector('.st-sub')).toBeNull();
+      expect(text(field(root, 'ai-review-scope-all').closest('label'))).toBe(
+        'All projects of Default',
+      );
+      // Nor can the assistant say which projects are never sent.
+      expect(facts(root.querySelector('section#assistant')!)[3]).toEqual(['Never sent', '—']);
       await click(fixture, field(root, 'ai-review-scope-all'));
       await saveReview(fixture, root);
       expect(server.requestsTo('PUT', ROUTE)[0]?.body).toMatchObject({ projectIds: [PAYMENTS] });
@@ -1418,7 +1441,7 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
         body: problem(500, 'INTERNAL'),
       });
       const { root } = await render();
-      expect(text(root.querySelector('section#assistant .alert-error'))).toContain(
+      expect(text(root.querySelector('section#assistant .alert-error[role="alert"]'))).toContain(
         'The request failed (HTTP 500',
       );
       expect(root.querySelector('li[data-key="assistant"]')).toBeNull();
