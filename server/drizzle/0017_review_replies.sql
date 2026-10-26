@@ -45,6 +45,7 @@ ALTER TABLE "review_replies" ADD CONSTRAINT "review_replies_branch_id_branches_i
 ALTER TABLE "review_replies" ADD CONSTRAINT "review_replies_issue_id_issues_id_fk" FOREIGN KEY ("issue_id") REFERENCES "public"."issues"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "review_replies_thread_idx" ON "review_replies" USING btree ("branch_id","thread_id","note_id");--> statement-breakpoint
 CREATE INDEX "review_replies_issue_idx" ON "review_replies" USING btree ("issue_id") WHERE issue_id IS NOT NULL;--> statement-breakpoint
+CREATE INDEX "review_replies_active_idx" ON "review_replies" USING btree ("status") WHERE status IN ('queued','running');--> statement-breakpoint
 ALTER TABLE "llm_requests" ADD CONSTRAINT "llm_requests_feature_check" CHECK (feature IN ('explain','triage','fix','review','review-reply'));--> statement-breakpoint
 ALTER TABLE "review_runs" ADD CONSTRAINT "review_runs_requested_by_length" CHECK (char_length(requested_by) <= 255);--> statement-breakpoint
 ALTER TABLE "scm_connections" ADD CONSTRAINT "scm_connections_github_app_check" CHECK ((provider = 'gitlab' AND app_id IS NULL) OR (provider = 'github' AND app_id IS NOT NULL AND app_id ~ '^[0-9]{1,20}$'));

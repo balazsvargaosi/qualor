@@ -1,5 +1,5 @@
 {
-  "id": "a6fe7300-d6d0-4134-b3c1-a2e2ba581b44",
+  "id": "610ec75a-2cd6-4b33-9830-9c7897a0bfc1",
   "prevId": "4641ba25-02a5-46d8-9318-8562c1025711",
   "version": "7",
   "dialect": "postgresql",
@@ -5480,6 +5480,22 @@
           ],
           "isUnique": false,
           "where": "issue_id IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "review_replies_active_idx": {
+          "name": "review_replies_active_idx",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "status IN ('queued','running')",
           "concurrently": false,
           "method": "btree",
           "with": {}

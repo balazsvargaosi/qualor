@@ -466,7 +466,7 @@ describe('review_replies and the columns beside it (6I-4, migration 0017_review_
     expect(byId[ofKept.id]).toMatchObject({ issueId: kept });
   });
 
-  it('indexes the replies of a thread by note, and the replies of an issue', async () => {
+  it('indexes the replies of a thread by note, the replies of an issue, and the rows still to answer', async () => {
     const { rows } = await t.pool.query<{ indexname: string; indexdef: string }>(
       `SELECT indexname, indexdef FROM pg_indexes
         WHERE schemaname = 'public' AND tablename = 'review_replies'`,
@@ -480,6 +480,10 @@ describe('review_replies and the columns beside it (6I-4, migration 0017_review_
     );
     expect(definitions['review_replies_note_unique']).toBe(
       'btree (project_id, provider, kind, note_id)',
+    );
+    // The sweep's rows, after every reap of the review worker.
+    expect(definitions['review_replies_active_idx']).toBe(
+      "btree (status) WHERE (status = ANY (ARRAY['queued'::text, 'running'::text]))",
     );
   });
 

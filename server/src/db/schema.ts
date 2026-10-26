@@ -2007,6 +2007,10 @@ export const reviewReplies = pgTable(
     index('review_replies_issue_idx')
       .on(t.issueId)
       .where(sql`issue_id IS NOT NULL`),
+    // The rows still to answer: the sweep after every reap reads only these.
+    index('review_replies_active_idx')
+      .on(t.status)
+      .where(sql`status IN ('queued','running')`),
     check('review_replies_provider_check', sql`provider IN ('gitlab','github')`),
     check('review_replies_kind_check', sql`kind IN ('reply','command')`),
     check('review_replies_command_check', sql`command IN ('review','fix','stop')`),
