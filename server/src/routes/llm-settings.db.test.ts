@@ -1181,6 +1181,37 @@ describe('/system/llm (llm.md §3, §16)', () => {
   });
 
   describe('reviewStatus (A1)', () => {
+    /** What the organisation's own admins are told: `GET /organizations/{id}/ai/review`. */
+    const told = async () =>
+      (
+        await ctx.app.inject({
+          method: 'GET',
+          url: `/api/v0/organizations/${org}/ai/review`,
+          headers: orgAdmin.headers,
+        })
+      ).json();
+    /**
+     * The org admin's save of the organisation's AI review. Switching it on needs
+     * `acknowledgeDataSharing`: the provider its GET names.
+     */
+    const setReview = (payload: Record<string, unknown>) =>
+      ctx.app.inject({
+        method: 'PUT',
+        url: `/api/v0/organizations/${org}/ai/review`,
+        headers: orgAdmin.headers,
+        payload: { scope: 'all', projectIds: [], budgets: DEFAULT_REVIEW_BUDGETS, ...payload },
+      });
+    /**
+     * The instance admin's view of the organisation's AI review is `expected`, and it is what the
+     * organisation's own admins are told.
+     */
+    const expectStatus = async (expected: { enabled: boolean; consentCurrent: boolean }) => {
+      const shown = (await get()).json().organizations[org].reviewStatus;
+      expect(shown).toEqual(expected);
+      const own = await told();
+      expect(shown).toEqual({ enabled: own.enabled, consentCurrent: own.consentCurrent });
+    };
+
     afterAll(async () => {
       // The review block is the organisation admin's: put it back, so that no later test starts
       // from AI review switched on.
@@ -1190,42 +1221,18 @@ describe('/system/llm (llm.md §3, §16)', () => {
 
     it('says whether each organisation has AI review on, and whether its consent covers the provider', async () => {
       expect((await put(body())).statusCode).toBe(200);
-      expect((await get()).json().organizations[org].reviewStatus).toEqual({
-        enabled: false,
-        consentCurrent: false,
-      });
+      await expectStatus({ enabled: false, consentCurrent: false });
       // switch it on as the org admin, acknowledging the provider its GET names
-      const shown = (
-        await ctx.app.inject({
-          method: 'GET',
-          url: `/api/v0/organizations/${org}/ai/review`,
-          headers: orgAdmin.headers,
-        })
-      ).json().provider;
-      const on = await ctx.app.inject({
-        method: 'PUT',
-        url: `/api/v0/organizations/${org}/ai/review`,
-        headers: orgAdmin.headers,
-        payload: {
-          enabled: true,
-          scope: 'all',
-          projectIds: [],
-          budgets: DEFAULT_REVIEW_BUDGETS,
-          acknowledgeDataSharing: shown,
-        },
+      const on = await setReview({
+        enabled: true,
+        acknowledgeDataSharing: (await told()).provider,
       });
       expect(on.statusCode, on.body).toBe(200);
-      expect((await get()).json().organizations[org].reviewStatus).toEqual({
-        enabled: true,
-        consentCurrent: true,
-      });
+      await expectStatus({ enabled: true, consentCurrent: true });
       expect((await put(body({ provider: provider({ model: 'another-model' }) }))).statusCode).toBe(
         200,
       );
-      expect((await get()).json().organizations[org].reviewStatus).toEqual({
-        enabled: true,
-        consentCurrent: false,
-      });
+      await expectStatus({ enabled: true, consentCurrent: false });
     });
 
     it('takes its own answer back as a body: the read-only field is ignored and never stored (R1)', async () => {
@@ -1237,6 +1244,12 @@ describe('/system/llm (llm.md §3, §16)', () => {
       };
       const res = await put({ ...read, provider: provider() });
       expect(res.statusCode, res.body).toBe(200);
+      // The save's own answer says what the settings are, not what its body claimed: the review is
+      // as it was stored, and the provider put back is the one the consent names.
+      expect(res.json().organizations[org].reviewStatus).toEqual({
+        enabled: before.enabled,
+        consentCurrent: true,
+      });
       const [row] = await ctx.db
         .select()
         .from(instanceSettings)
@@ -1245,6 +1258,41 @@ describe('/system/llm (llm.md §3, §16)', () => {
       const stored = await readLlmSettings(ctx.db);
       expect(stored.provider).not.toBeNull(); // the row still parses: a stray field would fail it closed
       expect(stored.organizations[org]!.review).toEqual(before);
+    });
+
+    it.each([
+      ['null', null],
+      ['a string', 'on'],
+    ])(
+      'takes %s as the read-only field, whatever it holds, and never stores it',
+      async (_what, claimed) => {
+        const before = (await readLlmSettings(ctx.db)).organizations[org]!.review;
+        const read = (await get()).json();
+        read.organizations[org].reviewStatus = claimed;
+        const res = await put({ ...read, provider: provider() });
+        expect(res.statusCode, res.body).toBe(200);
+        const [row] = await ctx.db
+          .select()
+          .from(instanceSettings)
+          .where(eq(instanceSettings.key, 'llm'));
+        expect(JSON.stringify(row!.value)).not.toContain('reviewStatus');
+        expect((await readLlmSettings(ctx.db)).organizations[org]!.review).toEqual(before);
+      },
+    );
+
+    it('says the consent is still current while its admins have review switched off', async () => {
+      // the standard provider, whatever an earlier test left
+      expect((await put(body())).statusCode).toBe(200);
+      const on = await setReview({
+        enabled: true,
+        acknowledgeDataSharing: (await told()).provider,
+      });
+      expect(on.statusCode, on.body).toBe(200);
+      await expectStatus({ enabled: true, consentCurrent: true });
+      // switched off: there is nothing to acknowledge, and the consent stays on record
+      const off = await setReview({ enabled: false });
+      expect(off.statusCode, off.body).toBe(200);
+      await expectStatus({ enabled: false, consentCurrent: true });
     });
   });
 });
