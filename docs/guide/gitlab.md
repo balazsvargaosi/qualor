@@ -187,8 +187,9 @@ If GitLab's certificate comes from a private CA, give the server that CA with `N
 - **A discussion on each new issue** that sits on an added line, up to 50 per merge request, with
   the rule's key linked to its documentation. Qualor resolves the discussion when the issue is
   fixed or marked in Qualor, and reopens it if the issue comes back. It never reopens a thread a
-  person resolved. A reply by a person also stops Qualor from resolving the thread: Qualor still
-  reopens a thread it resolved itself.
+  person resolved. A reply by a person also stops Qualor from resolving the thread: when its issue
+  is fixed, Qualor writes one note in it instead, "Fixed in `<sha>`", with the commit, and leaves
+  it open. Qualor still reopens a thread it resolved itself.
 - Marking an issue **false positive** or **won't fix** in Qualor re-evaluates the gate right away, with
   no new scan. If that was the only new issue, the status turns green and the thread is resolved
   (unless a person replied in it).
@@ -281,7 +282,8 @@ Either:
 If you also turn on **All threads must be resolved**, Qualor's open discussions block the merge,
 also those on issues that pass the gate and the open discussions of [AI review](./ai-review.md).
 Qualor resolves a discussion when its issue is fixed or marked in Qualor (unless a person replied in
-it), and a person can resolve it too.
+it: for a fixed issue, Qualor then writes one note in it, "Fixed in `<sha>`"), and a person can
+resolve it too.
 
 ## Troubleshooting
 

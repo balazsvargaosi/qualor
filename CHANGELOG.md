@@ -103,6 +103,9 @@ All notable changes to Qualor are listed here, newest first. The format follows
 - GitHub: Qualor resolves a comment when its issue is fixed or marked in Qualor, and reopens it
   when the issue comes back, unless someone else resolved it (a person or another App). A reply by
   anyone else keeps a fixed issue's comment open.
+- GitLab and GitHub: a thread of Qualor's that a person's reply keeps open gets one note from
+  Qualor when its issue is fixed, "Fixed in `<sha>`", which names the commit; once more when the
+  issue comes back and is fixed again.
 - GitHub: the App asks for **Contents: Read and write**, which Qualor uses only to resolve and
   reopen its own conversations (GitHub lets an App resolve one only with it). Qualor asks for it
   only where the installation grants it. An App without it keeps working and leaves the

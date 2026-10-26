@@ -286,8 +286,10 @@ comment events on:
   the issue comes back, with **Contents: Read and write**. Without it the conversations stay as
   they are, and the summary says how many: an open one stays open, and one Qualor resolved earlier
   stays resolved when its issue comes back. Qualor never reopens a conversation that someone else
-  resolved. A reply by someone else only stops Qualor from resolving the conversation: Qualor
-  still reopens a conversation it resolved itself. A comment keeps the text it was posted with: a
+  resolved. A reply by someone else only stops Qualor from resolving the conversation: when its
+  issue is fixed, Qualor writes one note in it instead, "Fixed in `<sha>`", with the commit (no
+  Contents permission needed), and leaves it open. Qualor still reopens a conversation it resolved
+  itself. A comment keeps the text it was posted with: a
   severity changed later in Qualor shows in the summary. A Qualor comment you delete comes back at
   the next analysis; to silence one, mark its issue in Qualor.
 - **One summary comment** per pull request, edited in place. It holds the verdict, a table of every
@@ -332,9 +334,10 @@ If the rule also requires conversations to be resolved before merging, Qualor's 
 the merge, also those on issues that pass the gate (low and info ones, say) and the open comments of
 [AI review](./ai-review.md). Qualor resolves a comment when its issue is fixed or marked in Qualor
 (unless someone else replied in it, and with **Contents: Read and write**, see
-[What reviewers see](#what-reviewers-see)), and a person can resolve it too. Without that
-permission Qualor resolves none, so the rule waits for a person to resolve each of its open
-comments.
+[What reviewers see](#what-reviewers-see)), and a person can resolve it too. One that someone else
+replied in stays open for them: when its issue is fixed, Qualor writes one note in it, "Fixed in
+`<sha>`". Without that permission Qualor resolves none, so the rule waits for a person to resolve
+each of its open comments.
 
 ## Troubleshooting
 
@@ -350,7 +353,7 @@ comments.
 | Replies and `qualor review` comments are answered only at the next analysis | the webhook is not set up or not active, its secret differs from Qualor's (the App's **Advanced** tab shows 401), or the App does not subscribe to **Issue comment** and **Pull request review comment**. For `qualor review` also: the App lacks **Issues: Read-only**, or the owner of an installation has not accepted it ([Update an App you created before](#update-an-app-you-created-before)) |
 | A reply or a `qualor review` comment gets no answer at all | [AI review: Why a reply or a command was not answered](./ai-review.md#why-a-reply-or-a-command-was-not-answered) |
 | Conversations stay open after a fix or a won't fix | the App lacks **Contents: Read and write**, or the owner of an installation has not accepted it ([Update an App you created before](#update-an-app-you-created-before)). The summary says how many conversations could not be resolved or reopened, and **Settings → GitHub**, **Test** with the repository lists what the App lacks |
-| A conversation stays open after the issue is fixed or marked | someone else replied in it. Qualor leaves such a conversation for people to resolve |
+| A conversation stays open after the issue is fixed or marked | someone else replied in it. Qualor leaves such a conversation for people to resolve, and when the issue is fixed it writes one note in it, "Fixed in `<sha>`" |
 | The summary says "Inline comments could not be updated this time." | GitHub failed or refused a request for the review comments: an outage or a rate limit (Qualor tries again on its own), or a missing permission (it tries again at the next analysis). The server log's `GitHub decoration retried` or `GitHub decoration stopped` line says why |
 | `The GitHub repository was not found` after a rename | update the mapping to the new `owner/repo` |
 

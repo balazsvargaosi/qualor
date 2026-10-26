@@ -367,7 +367,8 @@ change them.
   text, its assumption, the suggested change and the commit it read.
 
 Qualor answers a reply in its threads ([Replies and commands](#replies-and-commands)). A reply from
-a person also keeps Qualor from resolving the thread when the issue is fixed or marked in Qualor.
+a person also keeps Qualor from resolving the thread when the issue is fixed or marked in Qualor:
+when the issue is fixed, Qualor writes one note in the thread instead, "Fixed in `<sha>`".
 Resolving a thread on GitLab or GitHub hides it there and does not dismiss the finding: mark the
 issue in Qualor to do that, or say so in a reply.
 
@@ -568,7 +569,8 @@ Each new scan of a merge request is reviewed again, on its latest commit.
   earlier reviews, the open ones first, and says of each open one whether its problem is still in
   the code. One it is not shown stays as it is.
 - **Fixed findings are closed.** A finding whose problem is gone is closed, and its thread is
-  resolved unless a person replied in it (on GitHub, with **Contents: Read and write**). A finding
+  resolved unless a person replied in it (on GitHub, with **Contents: Read and write**). A thread a
+  person replied in stays open, and Qualor writes one note in it, "Fixed in `<sha>`". A finding
   in a file the merge request deleted is closed
   too. One that is still there, or that the review could not tell, stays open.
 - **A dismissed finding is never raised again.** After you mark a finding false positive or won't
