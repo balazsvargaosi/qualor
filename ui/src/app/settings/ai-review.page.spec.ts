@@ -1759,7 +1759,49 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
       expect(TestBed.inject(Router).url).toBe('/settings/ai-review#fix-suggestions');
       const root = harness.routeNativeElement!;
       // Once it has rendered, the section is scrolled to and its heading takes the focus.
-      expect(scroll.mock.contexts.at(-1)).toBe(fixSection(root));
+      expect(scroll).toHaveBeenCalledTimes(1);
+      expect(scroll.mock.contexts[0]).toBe(fixSection(root));
+      expect(document.activeElement).toBe(fixSection(root).querySelector('h3'));
+      // Once only: a later render, even of new settings, leaves the page where the person is.
+      type(root, 'ai-review-tokens', '3000000');
+      await saveReview(harness.fixture, root);
+      expect(foot(root)).toMatch(SAVED_AT);
+      expect(scroll).toHaveBeenCalledTimes(1);
+    });
+
+    it('reveals the section the address names when the system info answers after the settings', async () => {
+      const { server } = setup('orgAdmin', {}, FIX_ON, [
+        { path: 'settings', children: settingsRoutes },
+      ]);
+      enterprise(server);
+      let release: () => void = () => undefined;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      server.on('GET', '/api/v0/system/info', async () => {
+        await held;
+        return {
+          body: {
+            version: '0.11.0',
+            edition: 'enterprise',
+            features: ['llm.auto-fix'],
+            extensions: [],
+          },
+        };
+      });
+      const scroll = catchScrolls();
+      const harness = await RouterTestingHarness.create();
+      // The harness would wait for the system info too: the page renders by hand meanwhile.
+      const navigating = harness.navigateByUrl('/settings/auto-fix', AiReviewPage);
+      await renderWhileNavigating();
+      const root = harness.routeNativeElement!;
+      // The settings are in; the section waits for the system info.
+      expect(section(root)).not.toBeNull();
+      expect(root.querySelector('section#fix-suggestions')).toBeNull();
+      expect(scroll).not.toHaveBeenCalled();
+      release();
+      await navigating;
+      await settle(harness.fixture);
+      expect(scroll).toHaveBeenCalledTimes(1);
+      expect(scroll.mock.contexts[0]).toBe(fixSection(root));
       expect(document.activeElement).toBe(fixSection(root).querySelector('h3'));
     });
 
