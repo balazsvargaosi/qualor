@@ -197,6 +197,11 @@ export const MASK_INPUT_CHARS = 20_000;
 const CUT_TAIL_LINES = 5;
 /** What a text is shown as when it could not be masked, in time or safely. */
 const NOT_MASKED = '[not shown: it could not be masked]';
+/**
+ * What a text that was cut is shown as when nothing is left of it to show: it was masked, but all
+ * of its start is in the lines that the cut may have split (`CUT_TAIL_LINES`).
+ */
+const TOO_LONG = '[not shown: it is too long]';
 
 /** What `runReplyConversation` is given besides the thread: where its calls go, and its limits. */
 export interface ReplyConversationIo {
@@ -236,8 +241,9 @@ export interface ReplyConversationIo {
 
 /**
  * A text of the thread made fit to send: masked (and, when it was cut at MASK_INPUT_CHARS, without
- * the end of what was masked), or the fixed note for one that could not be masked, in time or
- * safely (a hostile text). The secrets masked are counted on `io.redactions`.
+ * the end of what was masked), or a fixed note: for one that could not be masked, in time or
+ * safely (a hostile text), and for a cut one with nothing left to show. The secrets masked are
+ * counted on `io.redactions`.
  */
 async function maskedText(io: ReplyConversationIo, text: string): Promise<string> {
   if (text === '') return text;
@@ -249,7 +255,7 @@ async function maskedText(io: ReplyConversationIo, text: string): Promise<string
   // The end of what was masked may hold what the cut left of a secret: it is left out, with a mark
   // that the text goes on, and a text with nothing before it is not shown.
   const lines = result.text.split('\n');
-  if (lines.length <= CUT_TAIL_LINES) return NOT_MASKED;
+  if (lines.length <= CUT_TAIL_LINES) return TOO_LONG;
   return `${lines.slice(0, -CUT_TAIL_LINES).join('\n')}…`;
 }
 

@@ -1517,11 +1517,11 @@ describe('the answer to a reply', () => {
       },
     );
 
-    it('shows a text that is nothing but a secret the cut split as not shown', async () => {
+    it('shows a text that is nothing but a secret the cut split as not shown, for being too long', async () => {
       // A key whose body runs on past the cut: the masked start is the BEGIN line and a line of
-      // «redacted», too few lines to keep any.
+      // «redacted», too few lines to keep any. It was masked: it was too long, not unmaskable.
       const { shown } = await shownOf(key(MASK_INPUT_CHARS * 2));
-      expect(shown).toMatch(/^\[not shown: /);
+      expect(shown).toBe('[not shown: it is too long]');
     });
 
     it('shows a cut text that has more lines than it leaves out, and not one that has as many', async () => {
@@ -1534,7 +1534,7 @@ describe('the answer to a reply', () => {
       // Four lines of 5 000 characters and the empty line are five: nothing is left of them.
       const four = prose(5_000).repeat(4);
       expect(four.length).toBe(MASK_INPUT_CHARS);
-      expect((await shownOf(`${four}and more`)).shown).toMatch(/^\[not shown: /);
+      expect((await shownOf(`${four}and more`)).shown).toBe('[not shown: it is too long]');
     });
 
     it('leaves a text that was not cut as it is, its last lines included, and cuts one that is a character over', async () => {
@@ -1568,7 +1568,7 @@ describe('the answer to a reply', () => {
         { masker: spent },
       );
       const { data } = dataOf(sent[0]);
-      expect(data.notes[0]?.body).toMatch(/^\[not shown: /);
+      expect(data.notes[0]?.body).toBe('[not shown: it could not be masked]');
       expect(JSON.stringify(sent)).not.toContain(AWS_KEY);
     } finally {
       await spent.close();
