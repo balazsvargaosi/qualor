@@ -86,9 +86,12 @@ export class OrganizationsPage {
     return $localize`:@@orgs.switchNamed:Switch to ${organization.name}:name:`;
   }
 
-  /** Makes an organisation the current one, as the header's switcher does. */
-  protected switchTo(organization: Organization): void {
-    this.org.select(organization.id);
+  /**
+   * Makes an organisation the current one, as the header's switcher does: once the pages with
+   * unsaved changes let go of them.
+   */
+  protected async switchTo(organization: Organization): Promise<void> {
+    if (!(await this.org.switchTo(organization.id))) return;
     this.announcement.set(
       $localize`:@@orgs.switched:${organization.name}:name: is the current organization now.`,
     );

@@ -1,5 +1,7 @@
+import { ApplicationRef } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { provideRouter } from '@angular/router';
+import { provideRouter, Router, type Routes } from '@angular/router';
+import { RouterTestingHarness } from '@angular/router/testing';
 import { orgAi } from '../../testing/ai-settings';
 import {
   FakeAiReview,
@@ -19,6 +21,7 @@ import { SessionStore } from '../auth/session';
 import { OrgContext } from '../org/org-context';
 import { AiReviewPage } from './ai-review.page';
 import { SettingsPage } from './settings.page';
+import { settingsRoutes } from './settings.routes';
 
 const OTHER_ID = '0190a6c2-0000-7000-8000-000000000002';
 const ROUTE = `/api/v0/organizations/${ORG_ID}/ai/review`;
@@ -93,6 +96,7 @@ function setup(
   who: Who = 'orgAdmin',
   review: FakeAiReviewOptions = {},
   assistant: object = orgAi(),
+  routes: Routes = [{ path: '**', children: [] }],
 ): { server: FakeServer; fake: FakeAiReview } {
   const server = new FakeServer();
   server.on('GET', '/api/v0/organizations', {
@@ -110,7 +114,7 @@ function setup(
   server.on('GET', /^\/api\/v0\/organizations\/[^/]+\/ai$/, { body: assistant });
   const fake = FakeAiReview.install(server, review);
   TestBed.configureTestingModule({
-    providers: [provideRouter([{ path: '**', children: [] }]), provideFakeServer(server)],
+    providers: [provideRouter(routes), provideFakeServer(server)],
   });
   TestBed.inject(SessionStore).set(user(who));
   TestBed.inject(OrgContext).select(ORG_ID);
@@ -185,6 +189,18 @@ async function act(fixture: Fixture, root: HTMLElement, name: string) {
 }
 
 /** Presses Save AI review once what was typed has rendered (it enables Save). */
+/**
+ * Renders while a navigation waits for its guard: `whenStable` would wait for that navigation, which
+ * waits for the person's answer in the page.
+ */
+async function renderWhileNavigating(): Promise<void> {
+  const app = TestBed.inject(ApplicationRef);
+  for (let i = 0; i < 5; i++) {
+    await new Promise((resolve) => setTimeout(resolve));
+    app.tick();
+  }
+}
+
 async function saveReview(fixture: Fixture, root: HTMLElement) {
   await settle(fixture);
   await click(fixture, button(section(root), 'Save AI review'));
@@ -1368,6 +1384,71 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
       await settle(fixture);
       await click(fixture, button(leave, 'Leave without saving'));
       await expect(answer).resolves.toBe(true);
+    });
+
+    it('asks before the router leaves it with unsaved changes, through the route guard', async () => {
+      setup('orgAdmin', { organizations: { [ORG_ID]: { projectIds: [PAYMENTS] } } }, orgAi(), [
+        ...settingsRoutes,
+        { path: 'elsewhere', children: [] },
+      ]);
+      const harness = await RouterTestingHarness.create();
+      await harness.navigateByUrl('/ai-review', AiReviewPage);
+      await settle(harness.fixture);
+      const root = harness.routeNativeElement!;
+      await click(harness.fixture, button(row(root, 'Payments'), 'Remove'));
+      const router = TestBed.inject(Router);
+      const leave = root.querySelector<HTMLDialogElement>('q-leave-confirm dialog')!;
+
+      let leaving = router.navigateByUrl('/elsewhere');
+      await renderWhileNavigating();
+      expect(leave.open).toBe(true);
+      await click(harness.fixture, button(leave, 'Stay'));
+      expect(await leaving).toBe(false);
+      expect(router.url).toBe('/ai-review');
+      expect(foot(root)).toBe('1 unsaved change');
+
+      leaving = router.navigateByUrl('/elsewhere');
+      await renderWhileNavigating();
+      await click(harness.fixture, button(leave, 'Leave without saving'));
+      expect(await leaving).toBe(true);
+      expect(router.url).toBe('/elsewhere');
+    });
+
+    it('asks before the organisation is switched with unsaved changes, and keeps them on Stay', async () => {
+      const { fake } = setup('orgAdmin', {
+        organizations: { [ORG_ID]: { projectIds: [PAYMENTS, SHOP] } },
+      });
+      // An instance admin manages both organisations' AI review.
+      TestBed.inject(SessionStore).set(me({ admin: true }));
+      fake.organizations[OTHER_ID] = { ...fake.of(OTHER_ID), scope: 'all' };
+      const { fixture, root } = await render();
+      await click(fixture, button(row(root, 'Web Shop'), 'Remove'));
+      const org = TestBed.inject(OrgContext);
+      const leave = root.querySelector<HTMLDialogElement>('q-leave-confirm dialog')!;
+
+      // As the header's select does.
+      let switching = org.switchTo(OTHER_ID);
+      await settle(fixture);
+      expect(leave.open).toBe(true);
+      expect(text(leave.querySelector('#leave-text'))).toBe(
+        'Your changes to AI review are not saved yet.',
+      );
+      await click(fixture, button(leave, 'Stay'));
+      expect(await switching).toBe(false);
+      expect(org.currentId()).toBe(ORG_ID);
+      expect(rows(root).map((r) => text(r.querySelector('th .cell-stack > span')))).toEqual([
+        'Payments',
+      ]);
+      expect(foot(root)).toBe('1 unsaved change');
+
+      switching = org.switchTo(OTHER_ID);
+      await settle(fixture);
+      await click(fixture, button(leave, 'Leave without saving'));
+      expect(await switching).toBe(true);
+      await settle(fixture);
+      expect(org.currentId()).toBe(OTHER_ID);
+      expect(field(root, 'ai-review-scope-all').checked).toBe(true);
+      expect(foot(root)).toBe('No unsaved changes');
     });
   });
 

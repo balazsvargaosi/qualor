@@ -26,7 +26,7 @@
   @if (org.orgs().length > 1) {
     <div class="org-switch">
       <label for="org-switch" i18n="@@shell.organization">Organization</label>
-      <select id="org-switch" (change)="org.select(inputValue($event))">
+      <select id="org-switch" (change)="switchOrganization($event)">
         @for (o of org.orgs(); track o.id) {
           <option [value]="o.id" [selected]="o.id === org.currentId()">{{ o.name }}</option>
         }

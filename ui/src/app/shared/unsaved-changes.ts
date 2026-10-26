@@ -1,4 +1,4 @@
-import { DestroyRef, DOCUMENT, inject } from '@angular/core';
+import { DestroyRef, DOCUMENT, inject, Injectable } from '@angular/core';
 import type { CanDeactivateFn } from '@angular/router';
 
 /**
@@ -15,6 +15,33 @@ export interface LeaveGuarded {
  */
 export const unsavedChangesGuard: CanDeactivateFn<LeaveGuarded> = (c: LeaveGuarded | null) =>
   c?.canLeave() ?? true;
+
+/**
+ * The pages on screen that keep drafts, for a change that is no navigation and still replaces
+ * what they show: switching the organisation in the header asks them first, as the route guard
+ * asks a page the router leaves. A page registers itself, in its injection context, for its life.
+ */
+@Injectable({ providedIn: 'root' })
+export class LeaveGuards {
+  private readonly pages = new Set<LeaveGuarded>();
+
+  /**
+   * Asks `page` before such a change from now on. Call it in an injection context: the page is
+   * forgotten when the component or injector it is called in is destroyed.
+   */
+  register(page: LeaveGuarded): void {
+    this.pages.add(page);
+    inject(DestroyRef).onDestroy(() => this.pages.delete(page));
+  }
+
+  /** Asks each page in turn; false as soon as one keeps the person on it (Stay). */
+  async canLeave(): Promise<boolean> {
+    for (const page of [...this.pages]) {
+      if (!(await page.canLeave())) return false;
+    }
+    return true;
+  }
+}
 
 /**
  * Asks the browser to confirm a reload, a closed tab or another address while `dirty()` holds

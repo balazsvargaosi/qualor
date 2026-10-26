@@ -32,7 +32,7 @@ import { type PickedProject, ProjectPicker } from '../shared/project-picker';
 import { Requirement } from '../shared/requirement';
 import { type FootOutcome, SectionFoot } from '../shared/section-foot';
 import { type StatusLine, StatusList, type StatusMeter } from '../shared/status-list';
-import { type LeaveGuarded, whileDirty } from '../shared/unsaved-changes';
+import { type LeaveGuarded, LeaveGuards, whileDirty } from '../shared/unsaved-changes';
 import {
   AI_REVIEW_BUDGET_FIELDS,
   AI_REVIEW_BUDGET_INPUT,
@@ -441,6 +441,8 @@ export class AiReviewPage implements LeaveGuarded {
 
   constructor() {
     whileDirty(() => this.dirty());
+    // Switching the organisation in the header replaces the edits: it asks first, as leaving does.
+    inject(LeaveGuards).register(this);
     effect(() => {
       const id = this.org.currentId();
       const allowed = this.allowed();

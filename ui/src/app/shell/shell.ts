@@ -12,7 +12,6 @@ import { NavigationEnd, Router, RouterLink, RouterLinkActive, RouterOutlet } fro
 import { AuthService } from '../auth/auth.service';
 import { SessionStore } from '../auth/session';
 import { OrgContext } from '../org/org-context';
-import { inputValue } from '../shared/forms';
 import { Icon } from '../shared/icon';
 import { LicenseBanner } from './license-banner';
 import { SsoBanner } from './sso-banner';
@@ -67,7 +66,6 @@ export class Shell {
       return known ? [{ id: e.id, ...known }] : [];
     }),
   );
-  protected readonly inputValue = inputValue;
   private readonly main = viewChild.required<ElementRef<HTMLElement>>('main');
   private readonly header = viewChild.required<ElementRef<HTMLElement>>('header');
 
@@ -112,6 +110,15 @@ export class Shell {
         root.style.removeProperty('--sticky-top');
       });
     });
+  }
+
+  /**
+   * The organization switcher: a page with unsaved changes asks first. While it keeps the person
+   * (Stay), nothing switches and the select shows the organization still in use.
+   */
+  protected async switchOrganization(event: Event): Promise<void> {
+    const select = event.target as HTMLSelectElement;
+    if (!(await this.org.switchTo(select.value))) select.value = this.org.currentId() ?? '';
   }
 
   protected logout(): void {

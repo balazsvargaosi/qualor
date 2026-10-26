@@ -12,6 +12,7 @@ import {
 } from '../../testing/fake-server';
 import { SessionStore } from '../auth/session';
 import { OrgContext } from '../org/org-context';
+import { LeaveGuards } from '../shared/unsaved-changes';
 import { Shell } from './shell';
 
 describe('Shell', () => {
@@ -82,6 +83,39 @@ describe('Shell', () => {
     const select = root.querySelector<HTMLSelectElement>('#org-switch');
     expect(root.querySelector('label[for="org-switch"]')?.textContent).toContain('Organization');
     expect([...(select?.options ?? [])].map((o) => o.textContent)).toEqual(['Default', 'Acme']);
+  });
+
+  it('switches the organization once a page with unsaved changes lets go, and else shows the one in use', async () => {
+    const fixture = TestBed.createComponent(Shell);
+    await settle(fixture);
+    const root = fixture.nativeElement as HTMLElement;
+    let answer: (leave: boolean) => void = () => undefined;
+    let asked = 0;
+    TestBed.runInInjectionContext(() =>
+      TestBed.inject(LeaveGuards).register({
+        canLeave: () => {
+          asked++;
+          return new Promise<boolean>((resolve) => (answer = resolve));
+        },
+      }),
+    );
+    const select = root.querySelector<HTMLSelectElement>('#org-switch')!;
+    // Stay: nothing switches, and the select shows the organisation still in use.
+    select.value = 'org-2';
+    select.dispatchEvent(new Event('change'));
+    answer(false);
+    await settle(fixture);
+    expect(asked).toBe(1);
+    expect(TestBed.inject(OrgContext).currentId()).toBe(ORG_ID);
+    expect(select.value).toBe(ORG_ID);
+    // Leave: it switches.
+    select.value = 'org-2';
+    select.dispatchEvent(new Event('change'));
+    answer(true);
+    await settle(fixture);
+    expect(asked).toBe(2);
+    expect(TestBed.inject(OrgContext).currentId()).toBe('org-2');
+    expect(select.value).toBe('org-2');
   });
 
   describe('the main.nav entries (4E-2 §4)', () => {

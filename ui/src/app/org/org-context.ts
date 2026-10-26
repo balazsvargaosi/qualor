@@ -2,6 +2,7 @@ import { Injectable, computed, inject, resource, signal } from '@angular/core';
 import { Api, ok } from '../api/api';
 import { SessionStore } from '../auth/session';
 import type { Organization } from '../api/types';
+import { LeaveGuards } from '../shared/unsaved-changes';
 
 const STORAGE_KEY = 'qualor.organizationId';
 const PAGE_SIZE = 100;
@@ -28,6 +29,7 @@ function stored(): string | null {
 export class OrgContext {
   private readonly api = inject(Api);
   private readonly session = inject(SessionStore);
+  private readonly leaveGuards = inject(LeaveGuards);
   private readonly chosen = signal<string | null>(stored());
 
   readonly organizations = resource({
@@ -76,6 +78,17 @@ export class OrgContext {
       cursor = answer.nextCursor;
     }
     return all;
+  }
+
+  /**
+   * Switches to another organisation as a person asks to (the header's select, the Organizations
+   * page), once every page with unsaved changes lets go of them; false when one keeps the person.
+   */
+  async switchTo(id: string): Promise<boolean> {
+    if (id === this.currentId()) return true;
+    if (!(await this.leaveGuards.canLeave())) return false;
+    this.select(id);
+    return true;
   }
 
   select(id: string): void {

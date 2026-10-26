@@ -7,7 +7,7 @@ import {
 import { TestBed } from '@angular/core/testing';
 import type { ActivatedRouteSnapshot, RouterStateSnapshot } from '@angular/router';
 import { LeaveConfirm } from './leave-confirm';
-import { type LeaveGuarded, unsavedChangesGuard, whileDirty } from './unsaved-changes';
+import { type LeaveGuarded, LeaveGuards, unsavedChangesGuard, whileDirty } from './unsaved-changes';
 
 describe('unsavedChangesGuard', () => {
   const route = {} as ActivatedRouteSnapshot;
@@ -52,6 +52,34 @@ describe('whileDirty', () => {
     dirty.set(true);
     injector.destroy();
     expect(unload()).toBe(false);
+  });
+});
+
+describe('LeaveGuards', () => {
+  it('asks each page with drafts in turn, stops at the first that keeps the person, and forgets a page that went', async () => {
+    const guards = TestBed.inject(LeaveGuards);
+    const asked: string[] = [];
+    const page = (name: string, leave: boolean): LeaveGuarded => ({
+      canLeave: () => {
+        asked.push(name);
+        return Promise.resolve(leave);
+      },
+    });
+    const injector = createEnvironmentInjector([], TestBed.inject(EnvironmentInjector));
+    runInInjectionContext(injector, () => {
+      guards.register(page('limits', true));
+      guards.register(page('data', false));
+      guards.register(page('never asked', true));
+    });
+    expect(await guards.canLeave()).toBe(false);
+    expect(asked).toEqual(['limits', 'data']);
+    injector.destroy();
+    expect(await guards.canLeave()).toBe(true);
+    expect(asked).toEqual(['limits', 'data']);
+  });
+
+  it('lets go at once while no page keeps drafts', async () => {
+    expect(await TestBed.inject(LeaveGuards).canLeave()).toBe(true);
   });
 });
 
