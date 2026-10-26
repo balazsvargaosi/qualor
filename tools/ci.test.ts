@@ -12,22 +12,11 @@ import {
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
-import { parse as parseYaml, type Tags } from 'yaml';
 import { describe, expect, it } from 'vitest';
 import { qualorRulesPins } from '../cli/test/install-pins';
+import { parseCiYaml as parse } from './ci-yaml';
 import { finalStage } from './deploy/debian-sources';
 import { DEPLOY_LABEL } from './deploy/workspace';
-
-/** GitLab's `!reference [job, key]` tag, kept as { reference: [...] } so it can be asserted on. */
-const gitlabTags: Tags = [
-  {
-    tag: '!reference',
-    collection: 'seq',
-    default: false,
-    resolve: (seq) => ({ reference: seq.toJSON() as unknown }),
-  },
-];
-const parse = (src: string): unknown => parseYaml(src, { customTags: gitlabTags });
 
 const REQUIRED = [
   'lint',

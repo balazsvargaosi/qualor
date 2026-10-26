@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { parse } from 'yaml';
+import { parseCiYaml as parse } from '../ci-yaml';
 import { dcoProblems, parseLog, type Commit } from './dco';
 
 const commit = (message: string, o: Partial<Commit> = {}): Commit => ({
