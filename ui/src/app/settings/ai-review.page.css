@@ -1,6 +1,6 @@
 /*
- * Settings → AI (spec §3.5, §7): the Status card, then one card per section, 24px apart. Each
- * section's head has its title and purpose at the left and its chips at the right.
+ * Settings → AI (spec §3.5, §7): the Status card, then one card per section, 24px apart. The
+ * sections' own parts (head, fields, notes) are the shared ones of styles.css.
  */
 .ai-sections {
   display: grid;
@@ -10,42 +10,6 @@
 }
 .ai-sections > * {
   margin: 0;
-}
-.panel-head {
-  align-items: flex-start;
-  padding-bottom: 16px;
-}
-.sec-title {
-  display: grid;
-  flex: 1 1 20rem;
-  gap: 3px;
-  min-width: 0;
-}
-.sec-title h3 {
-  margin: 0;
-}
-.sec-purpose {
-  max-width: 72ch;
-  margin: 0;
-  color: var(--text-muted);
-  font-size: 13px;
-  /* The provider's host may have no break point. */
-  overflow-wrap: anywhere;
-}
-.sec-chips {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-}
-.setting-field {
-  gap: 10px;
-}
-/* Definite columns (spec §7.10): a long project key scrolls in the table's frame, never widening
-   the card. */
-.setting-field,
-.dep {
-  grid-template-columns: minmax(0, 1fr);
 }
 .setting-field > p {
   margin: 0;
@@ -151,36 +115,6 @@
   font-size: 12px;
 }
 
-/* A field in the Budgets fold: its label above, its field, then what it says about it. */
-.fold-field {
-  display: grid;
-  gap: 6px;
-}
-.fold-field > .lbl {
-  font-size: 13px;
-  font-weight: 650;
-}
-.fold-field > p {
-  margin: 0;
-}
-.num-line {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 0;
-}
-.per {
-  margin-left: 6px;
-  color: var(--text-muted);
-  font-size: 13px;
-}
-.field-error {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 0;
-}
-
 /* The notice in the dialog, word for word, set apart from what the page adds under it. */
 .notice {
   padding: 12px 14px;
@@ -212,7 +146,6 @@
   overflow-wrap: anywhere;
 }
 @media (max-width: 40rem) {
-  .panel-head,
   .empty {
     padding-right: 16px;
     padding-left: 16px;

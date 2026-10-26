@@ -1747,6 +1747,8 @@ input.switch[type='checkbox']:focus-visible {
    content lines up with the switch's label. */
 .dep {
   display: grid;
+  /* A definite column (spec §7.10): a table or field in it never widens the card on a phone. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
   margin: 2px 0 0 17px;
   padding: 4px 0 4px 29px;
@@ -1805,6 +1807,73 @@ input.switch[type='checkbox']:focus-visible {
   background: var(--accent-soft);
   color: var(--accent);
   font-weight: 650;
+}
+/*
+ * A section card (spec §7.2): its head is a title over the section's purpose (.sec-title), with
+ * its state chips at the right (.sec-chips); its fields keep a definite column (spec §7.10), so
+ * nothing in them widens the card on a phone.
+ */
+.panel-head:has(> .sec-title) {
+  align-items: flex-start;
+  padding-bottom: 16px;
+}
+.sec-title {
+  display: grid;
+  flex: 1 1 20rem;
+  gap: 3px;
+  min-width: 0;
+}
+.sec-title h3 {
+  margin: 0;
+}
+.sec-purpose {
+  max-width: 72ch;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  /* It may name a host without a break point. */
+  overflow-wrap: anywhere;
+}
+.sec-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.card:has(> .panel-head > .sec-title) .setting-field {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
+/* A field in a fold or under a switch: its label above, its field, then what it says about it. */
+.fold-field {
+  display: grid;
+  gap: 6px;
+}
+.fold-field > .lbl {
+  font-size: 13px;
+  font-weight: 650;
+}
+.fold-field > p {
+  margin: 0;
+}
+/* A number field and what it comes to ("about 3 full-size reviews a day") on one line. */
+.num-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 0;
+}
+.per {
+  margin-left: 6px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+/* A field's refusal with its icon, under the field. */
+.field-error:has(> q-icon) {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
 }
 /* Notes beside a control: a requirement (what is missing, who changes it, where) right above the
    control it disables, and a consequence (.note) under the control that causes it. */
@@ -1941,6 +2010,10 @@ input.switch[type='checkbox']:focus-visible {
   font-weight: 550;
 }
 @media (max-width: 40rem) {
+  .panel-head:has(> .sec-title) {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
   .dep {
     padding-left: 14px;
   }
