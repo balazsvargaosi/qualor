@@ -300,7 +300,7 @@ describe('GitLab decoration: commit status and summary (scm.md §4, §5.1–§5.
       })
       .where(eq(reviewRuns.id, run!.id));
     await decorateAgain();
-    expect(body()).toContain('#### AI review\n\nAdds refunds ` @all, ` but one path can fail.');
+    expect(body()).toContain('#### AI review\n\nAdds refunds ` @all `, but one path can fail.');
     expect(body()).toContain('**Findings:** 1 high · 0 medium · 0 low');
     expect(body()).toContain('- Adds a refund endpoint');
     expect(body()).toMatch(
