@@ -187,9 +187,19 @@ export class ProjectAiPanel {
           'org-ai',
         );
       case 'organization_disabled':
-        return this.line('off', this.states.off, orgOffText(org), 'ai-provider');
+        return this.line(
+          'off',
+          this.states.off,
+          $localize`:@@projectAi.reason.orgOff:${org}:org: may not use AI. An instance admin allows it in`,
+          'ai-provider',
+        );
       case 'no_provider':
-        return this.line('off', this.states.off, noProviderText(), 'ai-provider');
+        return this.line(
+          'off',
+          this.states.off,
+          $localize`:@@projectAi.reason.noProvider:AI isn't set up on this server. An instance admin connects a provider in`,
+          'ai-provider',
+        );
     }
   });
   /** Reviewed: the CI must scan merge requests with the full history. */
@@ -209,11 +219,16 @@ export class ProjectAiPanel {
     }
     const assistant = this.orgAi();
     if (assistant === null) return null;
-    const org = this.orgName();
-    if (assistant.provider === null) {
-      return this.line('off', notAvailable, noProviderText(), 'ai-provider');
+    // No provider, or an organisation that may not use AI, is the AI review line's reason too
+    // (the server checks them first): that line already says who changes it, and where.
+    if (assistant.provider === null || !assistant.enabled) {
+      return this.line(
+        'off',
+        notAvailable,
+        $localize`:@@projectAi.assistant.sameReason:For the same reason.`,
+      );
     }
-    if (!assistant.enabled) return this.line('off', notAvailable, orgOffText(org), 'ai-provider');
+    const org = this.orgName();
     const on = FEATURES.filter((f) => assistant.features[f]).map((f) => this.featureNames[f]);
     if (on.length === 0) {
       return this.line(
@@ -325,14 +340,6 @@ export class ProjectAiPanel {
       where: place === null ? null : placeView(place, this.session, this.org),
     };
   }
-}
-
-function noProviderText(): string {
-  return $localize`:@@projectAi.reason.noProvider:AI isn't set up on this server. An instance admin connects a provider in`;
-}
-
-function orgOffText(org: string): string {
-  return $localize`:@@projectAi.reason.orgOff:${org}:org: may not use AI. An instance admin allows it in`;
 }
 
 /** Why the switch was refused, in the words the project's settings have always used. */

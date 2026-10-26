@@ -278,14 +278,14 @@ describe('ProjectAiPanel', () => {
         name: 'no provider',
         assistant: assistantFor('no_provider'),
         reason: 'no_provider' as Reason,
-        sentence:
-          "AI isn't set up on this server. An instance admin connects a provider in Settings → AI provider.",
+        // The AI review line above says why, and who changes it where.
+        sentence: 'For the same reason.',
       },
       {
         name: 'the organization may not use AI',
         assistant: assistantFor('organization_disabled'),
         reason: 'organization_disabled' as Reason,
-        sentence: 'Default may not use AI. An instance admin allows it in Settings → AI provider.',
+        sentence: 'For the same reason.',
       },
       {
         name: 'no feature on',
