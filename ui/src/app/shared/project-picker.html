@@ -35,6 +35,12 @@
       @case ('loading') {
         <span class="hint" i18n="@@picker.searching">Searching…</span>
       }
+      @case ('results') {
+        <span class="visually-hidden" i18n="@@picker.count">{options().length, plural,
+          =1 {1 project found}
+          other {{{ options().length }} projects found}
+        }</span>
+      }
       @case ('empty') {
         <span class="hint" i18n="@@picker.none">No project matches.</span>
       }

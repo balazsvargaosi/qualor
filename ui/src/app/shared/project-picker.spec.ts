@@ -131,6 +131,10 @@ describe('ProjectPicker', () => {
     ]);
     // The key in mono.
     expect(panel().querySelector('li label code')?.textContent).toBe('acme/payments');
+    // A screen reader hears how many it found.
+    const live = panel().querySelector('[aria-live="polite"]')!;
+    expect(text(live)).toBe('3 projects found');
+    expect(live.querySelector('.visually-hidden')).not.toBeNull();
 
     type(search(), 'we');
     await flush(100);
@@ -144,6 +148,7 @@ describe('ProjectPicker', () => {
     expect(searched[1]!.query.get('q')).toBe('web');
     expect(searched[1]!.query.get('limit')).toBe('20');
     expect(options(panel())).toEqual(['Web shop acme/web-shop']);
+    expect(text(live)).toBe('1 project found');
 
     type(search(), 'zzz');
     await flush(SEARCH_DELAY_MS);
@@ -172,7 +177,7 @@ describe('ProjectPicker', () => {
     held[0]!.reply({ body: page(PROJECTS) });
     await flush();
     expect(options(panel())).toEqual(['Payments core acme/payments']);
-    expect(text(panel().querySelector('[aria-live="polite"]'))).toBe('');
+    expect(text(panel().querySelector('[aria-live="polite"]'))).toBe('1 project found');
   });
 
   it('offers a project already in the list ticked and disabled', async () => {

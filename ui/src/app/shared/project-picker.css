@@ -21,7 +21,8 @@
   width: 100%;
   min-width: 0;
 }
-/* The live region is always rendered (one that appears with its words is often not read). */
+/* The live region stays rendered while the panel is open, also while it has nothing to say, so
+   each change is read (one that appears with its words often is not). It hides with the panel. */
 .picker-status {
   margin: 0;
 }
