@@ -544,10 +544,12 @@
         </button>
       }
       @if (consent(); as asked) {
+        <!-- The warning that reviews would fail is read with the button that switches it on. -->
         <button
           type="button"
           class="btn btn-primary"
           [attr.aria-disabled]="busy() ? true : null"
+          [attr.aria-describedby]="noToolsText() ? 'ai-review-no-tools' : null"
           (click)="confirmConsent()"
           i18n="@@aiReview.confirm"
         >

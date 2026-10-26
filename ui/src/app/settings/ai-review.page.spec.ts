@@ -492,6 +492,8 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
       const confirm = button(consentDialog(root), CONFIRM_A)!;
       expect(confirm.disabled).toBe(false);
       expect(confirm.getAttribute('aria-disabled')).toBeNull();
+      // Confirm is announced with the warning.
+      expect(confirm.getAttribute('aria-describedby')).toBe('ai-review-no-tools');
       await click(fixture, confirm);
       expect(server.requestsTo('PUT', ROUTE)[0]?.body).toMatchObject({
         enabled: true,
@@ -508,6 +510,7 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
       await act(fixture, root, 'Switch on AI review…');
       expect(consentDialog(root).open).toBe(true);
       expect(root.querySelector('#ai-review-no-tools')).toBeNull();
+      expect(button(consentDialog(root), CONFIRM_A)?.hasAttribute('aria-describedby')).toBe(false);
     });
 
     it('sends nothing on Cancel, nor when the dialog closes otherwise (Escape)', async () => {
