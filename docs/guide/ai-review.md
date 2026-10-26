@@ -981,6 +981,10 @@ What `outcome` says, for a note that was handled (`status` `done`):
 | `not_available` | `qualor fix` or `qualor stop`, which do nothing yet, or a `qualor review` from someone who may not ask |
 | `review_off` | `qualor review`, after AI review was switched off for the project |
 
+A note that changed its finding's status, or a command that started a review, keeps that outcome
+when it then ends skipped or failed, for example when its thread was deleted before Qualor could
+post the answer: the change happened, and the issue's **History** says so.
+
 What `reason` says, for a note that was skipped or that failed. Nothing is posted:
 
 | `reason` | What it means, and what to do |

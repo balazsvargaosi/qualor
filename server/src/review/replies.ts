@@ -172,13 +172,17 @@ export interface ReplyEnd {
   dropDecision?: boolean;
 }
 
-/** Ends a row that is queued or running, now. An ended row is left as it is. */
+/**
+ * Ends a row that is queued or running, now. An ended row is left as it is. An outcome the row
+ * recorded before its end (the status its reply changed, the decision of its command) stays when
+ * the end names none: what the row did happened, whatever ended it afterwards.
+ */
 export async function endReply(db: Executor, id: string, end: ReplyEnd): Promise<void> {
   await db
     .update(reviewReplies)
     .set({
       status: end.status,
-      outcome: end.outcome ?? null,
+      ...(end.outcome === undefined ? {} : { outcome: end.outcome }),
       reason: end.reason ?? null,
       ...(end.dropDecision === true ? { verdict: null, answer: null } : {}),
       finishedAt: sql`now()`,

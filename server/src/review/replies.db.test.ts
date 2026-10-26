@@ -12,6 +12,7 @@ import {
   recordAnswerNote,
   recordCommandDecision,
   recordDecision,
+  recordStatusChange,
   REPLY_TOKEN_BUDGET,
   type ReplyDecision,
   type ReplyRow,
@@ -370,6 +371,35 @@ describe('the replies ledger (6I-4)', () => {
     const plain = await insertOne();
     await endReply(t.db, plain, { status: 'done' });
     expect(await stored(plain)).toMatchObject({ status: 'done', outcome: null, reason: null });
+  });
+
+  it('endReply keeps the outcome a row recorded when its end names none: a status change, a command’s decision', async () => {
+    // A reply that changed its issue's status, and whose thread was then gone.
+    const changed = await insertOne();
+    await claimReply(t.db, changed);
+    await recordStatusChange(t.db, changed, 'wont_fix');
+    await endReply(t.db, changed, { status: 'skipped', reason: 'thread_gone' });
+    expect(await stored(changed)).toMatchObject({
+      status: 'skipped',
+      outcome: 'wont_fix',
+      reason: 'thread_gone',
+    });
+    // A command whose run was made, and whose answer could not be posted.
+    const command = await insertOne({ threadId: null, kind: 'command', command: 'review' });
+    await claimReply(t.db, command);
+    await recordCommandDecision(t.db, command, { outcome: 'review_requested', text: 'Reviewing.' });
+    await endReply(t.db, command, { status: 'failed', reason: 'internal' });
+    expect(await stored(command)).toMatchObject({
+      status: 'failed',
+      outcome: 'review_requested',
+      reason: 'internal',
+    });
+    // An end that names an outcome writes it.
+    const answered = await insertOne();
+    await claimReply(t.db, answered);
+    await recordStatusChange(t.db, answered, 'false_positive');
+    await endReply(t.db, answered, { status: 'done', outcome: 'false_positive' });
+    expect(await stored(answered)).toMatchObject({ status: 'done', outcome: 'false_positive' });
   });
 
   it('keeps the budget of one reply at 60 000 tokens', () => {

@@ -304,15 +304,16 @@ export function withLiveJob(): SQL {
  * The rows that are `running` with no `ai-reply` job queued or running for them: their job is gone
  * for good (its lease expired on both tries, or both tries failed), so nothing would ever end them.
  * After every reap of the review worker (main.ts) each ends `failed: internal` here, as the sweep of
- * the review runs ends a run without its job (runs.ts). Decided by whether a job is there, never by
- * the row's age: a job that runs keeps its lease. A row and its job are written together (above),
- * and a row is running only while a job has taken it, so one statement is enough. Answers how many
- * it ended.
+ * the review runs ends a run without its job (runs.ts), and keeps an outcome it recorded (the status
+ * its reply changed, the decision of its command: they happened). Decided by whether a job is
+ * there, never by the row's age: a job that runs keeps its lease. A row and its job are written
+ * together (above), and a row is running only while a job has taken it, so one statement is enough.
+ * Answers how many it ended.
  */
 export async function reconcileStuckReplies(db: Executor): Promise<number> {
   const ended = await db
     .update(reviewReplies)
-    .set({ status: 'failed', outcome: null, reason: 'internal', finishedAt: sql`now()` })
+    .set({ status: 'failed', reason: 'internal', finishedAt: sql`now()` })
     .where(and(eq(reviewReplies.status, 'running'), not(withLiveJob())))
     .returning({ id: reviewReplies.id });
   return ended.length;

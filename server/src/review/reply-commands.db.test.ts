@@ -20,7 +20,7 @@ import { enqueue } from '../queue/queue';
 import { codeSpan, firstLineOf, markerOf, replyMarker } from '../scm/markdown';
 import { SCM_CIRCUIT_FAILURES } from '../scm/runtime';
 import { commandNote } from './render';
-import { AI_REPLY_QUEUE, replyKey } from './reply-queue';
+import { AI_REPLY_QUEUE, reconcileStuckReplies, replyKey } from './reply-queue';
 import { AI_REVIEW_QUEUE } from './runs';
 
 /*
@@ -293,6 +293,25 @@ describe('the answer job (6I-4)', () => {
         });
         expect(await runOf(mr.analysisId)).toEqual(restarted);
         expect(await reviewJobsOf(restarted.id)).toEqual([{ due: true }]);
+      });
+
+      it('a command that restarted the run and whose post fails on both tries keeps its outcome when the sweep ends it', async () => {
+        const { mr, sent } = await commanded('swept-after-decision', { end: FAILED });
+        mr.failNextPost(false, 'command');
+        await answer();
+        mr.failNextPost(false, 'command');
+        await retryNow();
+        await answer();
+        const row = await commandRow(mr.branchId, sent.noteId);
+        expect((await jobsOf(row.id)).map((j) => j.status)).toEqual(['dead']);
+        expect(await reconcileStuckReplies(h.ctx.db)).toBe(1);
+        expect(await commandRow(mr.branchId, sent.noteId)).toMatchObject({
+          status: 'failed',
+          reason: 'internal',
+          outcome: 'review_requested',
+          answerNoteId: null,
+        });
+        expect(mr.commandAnswers()).toEqual([]);
       });
 
       it('a post whose answer is lost but which the provider stored: the retry finds the marker and posts nothing', async () => {

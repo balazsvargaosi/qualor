@@ -668,6 +668,19 @@ describe('the answer job (6I-4)', () => {
       });
       expect(posting.mr.answers(posting.threadId)).toEqual([]);
 
+      // The status changed, and then the thread is gone: the row keeps what the reply did.
+      const changed = await replied('gone-after-change');
+      changed.mr.goneOnNextPost();
+      llm.say(WONT_FIX);
+      await answer();
+      expect(await rowById(changed.row.id)).toMatchObject({
+        status: 'skipped',
+        reason: 'thread_gone',
+        outcome: 'wont_fix',
+        answerNoteId: null,
+      });
+      expect((await issueById(changed.issueId)).status).toBe('wont_fix');
+
       // The answer is posted, and then the thread is gone: what the reply did stands.
       const resolving = await replied('gone-at-resolve');
       resolving.mr.goneOnNextResolve();
@@ -855,10 +868,11 @@ describe('the answer job (6I-4)', () => {
       expect((await jobsOf(row.id)).map((j) => j.status)).toEqual(['dead']);
       expect((await rowById(row.id)).status).toBe('running');
       expect(await reconcileStuckReplies(h.ctx.db)).toBe(1);
+      // The status the reply changed before its posts failed stays on the row it ended.
       expect(await rowById(row.id)).toMatchObject({
         status: 'failed',
         reason: 'internal',
-        outcome: null,
+        outcome: 'wont_fix',
         finishedAt: expect.any(Date),
       });
       expect(await reconcileStuckReplies(h.ctx.db)).toBe(0);
