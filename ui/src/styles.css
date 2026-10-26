@@ -1021,6 +1021,10 @@ tbody tr:has(.empty-state):hover {
   background: var(--warn-soft);
   color: var(--warn);
 }
+/* A warn badge with its own icon (a state chip, spec §7.8) draws no dot as well. */
+.badge-warn:has(> q-icon)::before {
+  content: none;
+}
 /* A plain tag (a kind, a status, built-in): outlined instead of filled. */
 .badge-tag {
   background: transparent;
@@ -1935,10 +1939,6 @@ input.switch[type='checkbox']:focus-visible {
 }
 .state-line > span:not(.badge) {
   font-weight: 550;
-}
-/* A state chip (spec §7.8) carries its own icon, so a warn chip with one draws no dot as well. */
-.badge-warn:has(> q-icon)::before {
-  content: none;
 }
 @media (max-width: 40rem) {
   .dep {
