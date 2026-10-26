@@ -12,7 +12,7 @@ an [external PostgreSQL](#external-postgresql) instead. On Kubernetes, install t
 | | Minimum | Notes |
 |---|---|---|
 | CPU | 1 vCPU | 2+ for many parallel pipelines |
-| Memory | 1.5 GiB for the server with its database | reports near the 500 MiB decompressed ceiling need about 4 GiB. With [AI review](./ai-review.md) on, add up to 512 MiB for each review that runs at once (`QUALOR_REVIEW_WORKER_CONCURRENCY`, 2 by default) |
+| Memory | 1.5 GiB for the server with its database | reports near the 500 MiB decompressed ceiling need about 4 GiB. With [AI review](./ai-review.md) on, add up to 512 MiB for each AI review or answer to a reply that runs at once (`QUALOR_REVIEW_WORKER_CONCURRENCY`, 2 by default) |
 | Disk | a few GiB for the data volume | reports are kept 7 days; analyses and measures are small |
 | Software | Docker with Compose v2 | or Kubernetes 1.29+ with Helm, or any container platform that runs the image with a volume |
 | Network | inbound HTTPS from CI runners and users | outbound only to your GitLab/GitHub, webhook receivers and, if configured, the [AI assistant](./ai-assistant.md)'s model provider and the SMTP server ([Email](./email.md)), and, unless turned off, `qualor.dev` ([Telemetry](./telemetry.md)) and `hub.docker.com` ([Update check](./telemetry.md#update-check)) |
@@ -417,7 +417,7 @@ into a `postgres://` URL.
 | `QUALOR_MAX_CONCURRENT_UPLOADS` | `4` | uploads read at once, reports and AI review snapshots together. More get 503 with `Retry-After` |
 | `QUALOR_REQUEST_TIMEOUT_MS` | `300000` | longest a request may run |
 | `QUALOR_WORKER_CONCURRENCY` | `1` | analysis jobs processed at once. Each slot can use several times one report's size in memory |
-| `QUALOR_REVIEW_WORKER_CONCURRENCY` | `2` | [AI reviews](./ai-review.md) run at once, 1 to 8. They have a worker of their own, so a review never delays analyses or the AI assistant's answers. The masking worker of each running review can use up to 512 MiB of heap, so plan for that times this number |
+| `QUALOR_REVIEW_WORKER_CONCURRENCY` | `2` | [AI reviews](./ai-review.md) and answers to replies run at once, 1 to 8. They have a worker of their own, so a review never delays analyses or the AI assistant's answers. The masking worker of each running review or answer can use up to 512 MiB of heap, so plan for that times this number |
 | `NODE_EXTRA_CA_CERTS` | none | a PEM bundle, when your GitLab, GitHub Enterprise, webhook receivers or SMTP server use a private CA. Mount the file into the container |
 | `QUALOR_LICENSE` | none | an [enterprise licence](./enterprise.md) key. Not together with `QUALOR_LICENSE_FILE` |
 | `QUALOR_LICENSE_FILE` | none | the path of a file holding the licence key (for example a Docker or Kubernetes secret), read at start: UTF-8, or UTF-16 with a byte-order mark. A file that cannot be read stops the start |

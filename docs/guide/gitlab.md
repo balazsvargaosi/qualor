@@ -187,7 +187,7 @@ If GitLab's certificate comes from a private CA, give the server that CA with `N
 - **A discussion on each new issue** that sits on an added line, up to 50 per merge request, with
   the rule's key linked to its documentation. Qualor resolves the discussion when the issue is
   fixed or marked in Qualor, and reopens it if the issue comes back. It never reopens a thread a
-  person resolved. A reply by a person only stops Qualor from resolving the thread: Qualor still
+  person resolved. A reply by a person also stops Qualor from resolving the thread: Qualor still
   reopens a thread it resolved itself.
 - Marking an issue **false positive** or **won't fix** in Qualor re-evaluates the gate right away, with
   no new scan. If that was the only new issue, the status turns green and the thread is resolved
@@ -230,8 +230,8 @@ its discussions, and a note that starts with `qualor review`
 next analysis of the merge request. A webhook makes the answer come at once. It is optional.
 
 1. In Qualor, open **Settings → GitLab**. On the connection, open **Webhook secret**, type a secret of
-   16 to 256 printable characters without spaces (`openssl rand -hex 32` makes a good one) and press
-   **Set the webhook secret**. The connection then shows its **Webhook URL**:
+   16 to 256 printable ASCII characters without spaces (`openssl rand -hex 32` makes a good one)
+   and press **Set the webhook secret**. The connection then shows its **Webhook URL**:
    `https://qualor.example.com/api/v0/gitlab/webhooks/<connection id>`. The URL needs
    `QUALOR_PUBLIC_URL` on the server.
 2. In GitLab, open the project's **Settings → Webhooks** (you need the Maintainer role) and add a
@@ -241,7 +241,11 @@ next analysis of the merge request. A webhook makes the answer come at once. It 
 
 GitLab sends an event for each comment. Qualor takes only the merge request from it: the text of a
 delivery is never used. It reads the merge request's comments through the API, as a scan does, and
-answers what it finds there.
+answers what it finds there. What Qualor checks of a delivery is its `X-Gitlab-Token` header, the
+secret token, and its `X-Gitlab-Event` header: it reads only a `Note Hook` and answers any other
+event with 204, unread. A delivery that GitLab sends again with the same idempotency key
+(`Idempotency-Key`) is answered 204 and ignored. A proxy in front of Qualor must pass these headers
+on unchanged.
 
 GitLab has to be able to reach the URL from where it runs. GitLab.com cannot reach a Qualor that is
 only on a private network, and a self-managed GitLab refuses to send a webhook to a private address
@@ -254,9 +258,12 @@ failures in a row, and disables it after forty. So Qualor answers every delivery
 made with 204, whatever it does with it: an event it does not read, a project or a merge request it
 does not know, a project without AI review. Only a delivery that cannot be GitLab's gets an error: a
 wrong or missing secret token is 401 (429 after 60 wrong ones in a minute from one address), an
-unknown connection or one without a secret is 404, and a body that is not JSON is 400. If the
-webhook's **Recent events** in GitLab show those, fix the URL or the secret. A webhook that GitLab
-disabled has to be enabled again in GitLab.
+unknown connection or one without a secret is 404, and a body that is not JSON is 400 (415 when its
+content type is not JSON). If the webhook's **Recent events** in GitLab show those, fix the URL or
+the secret. Two more answers can reach a real delivery: 413 for a body over 1 MiB (a very long
+comment), and 500 for a failure inside Qualor. GitLab counts both as failures, and the comments
+are then answered at the next analysis. A webhook that GitLab disabled has to be enabled again in
+GitLab.
 
 GitLab 19 can sign deliveries with a signing token, and says the secret token is not recommended for
 new webhooks. Qualor reads the secret token, which every version of GitLab sends: use the **Secret

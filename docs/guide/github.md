@@ -237,9 +237,10 @@ that can read issues. It is how Qualor is told of a pull request's comments as t
 already has.
 
 Whether a person may change a finding's status with a reply, or ask for a review, depends on their
-role in the repository: admin, maintain, write or triage, or a custom role whose base permission is
-write or admin. Qualor reads it from GitHub's collaborator permission API, which needs only the
-Metadata permission ([Who may change a status](./ai-review.md#who-may-change-a-status)).
+role in the repository: admin, maintain, write or triage, or a custom role whose legacy permission
+(GitHub's `permission` field) is `admin` or `write`. Qualor reads it from GitHub's collaborator
+permission API, which needs only the Metadata permission
+([Who may change a status](./ai-review.md#who-may-change-a-status)).
 
 GitHub Enterprise Server on an internal network needs its host in `QUALOR_SCM_INTERNAL_HOSTS` on the
 server, and a private CA needs `NODE_EXTRA_CA_CERTS`.

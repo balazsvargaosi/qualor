@@ -443,11 +443,11 @@ since on a public repository anyone can comment:
 - **GitLab:** the role Developer or more on the project, through a membership that is in force (one
   inherited from a group counts; an inactive user, or a membership that is not active or has
   ended, does not).
-- **GitHub:** a repository role of admin, maintain, write or triage (a custom role counts when its
-  base permission is write or admin). Qualor reads the role through the collaborator permission
-  API, which needs only the Metadata permission that every App has. Being a member of the
-  organisation is no role: it counts through the role it gives on the repository, and an organisation
-  member with only read access does not qualify.
+- **GitHub:** a repository role of admin, maintain, write or triage (a custom role counts by the
+  legacy permission GitHub gives it, `admin` or `write`). Qualor reads the role through the
+  collaborator permission API, which needs only the Metadata permission that every App has. Being
+  a member of the organisation is no role: it counts through the role it gives on the repository,
+  and an organisation member with only read access does not qualify.
 
 Anyone else, and any round of more than five authors, gets an answer and no status change. A member
 of the project can still make the change in Qualor, or write the reply.
@@ -527,10 +527,14 @@ is busy with a review.
 Anyone who can comment on the merge request can write a reply or a command, and on a public
 repository that is anyone with an account. Several limits bound what they can spend:
 
-- one reply uses at most 60 000 tokens, input and output of all its calls together;
+- one reply keeps to 60 000 tokens, input and output of all its calls together, as far as Qualor
+  can tell ahead: each call may also take up to 16 000 tokens for thinking, so an answer from a
+  model that thinks can end somewhat over;
 - replies count in the day's budgets of AI review
   ([Budgets and today's usage](#budgets-and-todays-usage)). A day without room for a reply skips
-  it, and Qualor offers it again on a later UTC day, as long as the note is not older than 30 days;
+  it. Qualor offers it again only when it next looks at the merge request's comments on a later
+  UTC day ([At once, or at the next analysis](#at-once-or-at-the-next-analysis)), never by itself,
+  and only while the note is not older than 30 days;
 - `qualor review` costs one review, but only a member can ask for it, an analysis has one review
   however often it is asked for, and the day's budgets still apply;
 - Qualor queues at most 50 replies and 20 commands of a merge request at a time. The rest wait for
@@ -848,8 +852,10 @@ on each replica of the server), can each spend what was left: the day can end ov
 to about (slots − 1) × Tokens per review.
 
 **Answers to replies.** An answer asks the day for room before it starts, as a review does, with a
-ceiling of 60 000 tokens in the place of Tokens per review. A day with nothing left, or with less
-than the first call of the answer needs, skips it, and a later UTC day offers it again
+ceiling of 60 000 tokens in the place of Tokens per review, which it keeps to as far as it can tell
+ahead (each call may take up to 16 000 more for thinking: see the next paragraph). A day with
+nothing left, or with less than the first call of the answer needs, skips it. It is offered again
+only when Qualor next looks at the merge request's comments on a later UTC day
 ([What replies cost, and who can ask](#what-replies-cost-and-who-can-ask)).
 
 **Room to think.** A model that thinks counts its thinking in the output limit. So each call of a
@@ -995,7 +1001,7 @@ What `reason` says, for a note that was skipped or that failed. Nothing is poste
 
 | `reason` | What it means, and what to do |
 |---|---|
-| `budget_spent` (skipped) | The day had no room for the answer. Qualor offers it again on a later UTC day, as long as the note is not older than 30 days. To answer sooner, raise the budgets ([Budgets and today's usage](#budgets-and-todays-usage)) |
+| `budget_spent` (skipped) | The day had no room for the answer. Qualor offers it again when it next looks at the merge request's comments on a later UTC day, never by itself ([At once, or at the next analysis](#at-once-or-at-the-next-analysis)), as long as the note is not older than 30 days. To answer sooner, raise the budgets ([Budgets and today's usage](#budgets-and-todays-usage)) |
 | `inactive` (skipped) | AI review stopped covering the project while the note waited or the model decided: it was switched off, the project left the list or was unmapped, or the provider or one of its models changed and the confirmation is outdated ([Why AI review is off for a project](#why-ai-review-is-off-for-a-project)) |
 | `closed` (skipped) | The merge request was merged or closed. Nothing to do |
 | `thread_gone` (skipped) | The thread or the command's note was deleted, someone resolved the thread before Qualor answered, or the project is no longer mapped to that provider. Nothing to do |
@@ -1087,9 +1093,10 @@ A finding is an issue of the engine `ai`: `GET /api/v0/issues?branchId=…&engin
 `GET /api/v0/issues/{id}` gives them `aiReview` (`category`, `body`, `assumption`, `verification`,
 `suggestion` and `reviewedCommit`), which is `null` for every other issue. `POST
 /api/v0/system/llm/test` (instance admins) tests every model of the provider at once. It answers
-`toolCalling` (`supported`, `not_supported` or `not_checked`) and `hint` (`USE_RESPONSES_API`, or
-`null`) for the standard model, and `models`: one entry for each model with its `tier`, `model`,
-`ok`, `reportedModel`, `latencyMs`, `toolCalling`, `problem` and `hint`.
+`toolCalling` (`supported`, `not_supported` or `not_checked`) and `hint` (an object with the `code`
+`USE_RESPONSES_API` and a `message`, or `null`) for the standard model, and `models`: one entry
+for each model with its `tier`, `model`, `ok`, `reportedModel`, `latencyMs`, `toolCalling`,
+`problem` and `hint`.
 
 Errors: `AI_DISABLED` (409: no provider, or the organisation is not enabled for the AI assistant),
 `AI_REVIEW_CONSENT_REQUIRED` (409: switching on without the acknowledgement),

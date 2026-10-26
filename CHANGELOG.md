@@ -52,9 +52,10 @@ All notable changes to Qualor are listed here, newest first. The format follows
   person who replied, and the audit log records it as `system`. A note that starts with
   `qualor review` (from a project member) reviews the merge request's newest commit, a draft
   included, once for each analysis; `qualor fix` and `qualor stop` are reserved and answer that
-  auto-fix is not switched on. The answers draw on the budgets of AI review, at most 60 000 tokens
-  for each reply and 5 rounds of one thread a UTC day, and Qualor keeps one record of each reply or
-  command for 90 days. See
+  auto-fix is not switched on. The answers draw on the budgets of AI review, with 5 rounds of one
+  thread a UTC day and 60 000 tokens for each reply, which the answer keeps to as far as it can tell
+  ahead (each call may take up to 16 000 more for thinking), and Qualor keeps one record of each
+  reply or command for 90 days. See
   [the guide](docs/guide/ai-review.md#replies-and-commands).
 - Webhooks for answers at once. A GitLab connection takes a webhook secret (**Settings → GitLab**;
   `webhookSecret` when a connection is created or changed, `gitlab.webhookUrl` in its answer), and a
@@ -108,9 +109,11 @@ All notable changes to Qualor are listed here, newest first. The format follows
   and info issues that pass the gate. Mark the issue in Qualor, or resolve the comment.
 - GitHub, when you upgrade: an App you created before keeps its permissions and events. To get
   answers to replies and `qualor review` comments at once, add **Issues: Read-only** and the events
-  **Issue comment** and **Pull request review comment** in the App's settings, and have the owner of
-  each installation accept the new permission; until then they are answered at the next analysis.
-  The webhook secret now serves these answers as well as the **Re-run** button.
+  **Issue comment** and **Pull request review comment** in the App's settings. Replies in review
+  threads are answered at once from then on: they need only the events. A `qualor review` comment
+  also waits for the owner of each installation to accept the new permission, and until then it is
+  answered at the next analysis. The webhook secret now serves these answers as well as the
+  **Re-run** button.
 - A temperature stored for an Anthropic provider is ignored, and saving one is refused: the current
   Anthropic models take none.
 - An Explain, Suggest triage or Suggest a fix that is waiting or running when the server is stopped
