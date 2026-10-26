@@ -123,7 +123,8 @@ const providerBody = z.strictObject({
  * An organisation as this route reads and writes it. 6I-2: without its `review` block, which only
  * `PUT /organizations/{id}/ai/review` changes: AI review is the organisation admin's to switch on,
  * and acknowledging the data-sharing notice is theirs to give, so the instance admin's save neither
- * shows nor sets it and always keeps what is stored.
+ * shows nor sets it and always keeps what is stored. The answer shows a derived, read-only view of
+ * it instead: `reviewStatus`.
  */
 const orgSettingsWithoutReview = orgLlmSettingsSchema.omit({ review: true });
 
@@ -569,9 +570,9 @@ function withStoredChoices(
     }),
     ...Object.entries(organizations).map(([id, o]): [string, OrgLlmSettings] => {
       const stored = organizationSettings(current, id);
-      // Field by field, never the body's entry spread: what the settings row holds is exactly what
-      // they name, so a field the answer shows and the row does not store (`reviewStatus`) never
-      // reaches it, where the row's schema would refuse it and read the whole row as none.
+      // Field by field, never the body's entry spread: the settings row holds exactly the fields of
+      // `OrgLlmSettings`, so a field the answer shows and the row does not store (`reviewStatus`)
+      // never reaches it, where the row's schema would refuse it and read the whole row as none.
       return [
         id,
         {
