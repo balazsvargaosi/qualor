@@ -206,7 +206,7 @@ type SettingsBody = z.infer<typeof settingsBody>;
  */
 const reviewStatusSchema = z.object({ enabled: z.boolean(), consentCurrent: z.boolean() }).meta({
   description:
-    "Read-only: whether the organisation's admins switched AI review on, and whether their consent covers the provider configured now. The consent stays theirs (D4)",
+    "Read-only: whether the organisation's admins switched AI review on, and whether their consent covers the provider configured now. The consent stays theirs",
 });
 
 const settingsDto = z.object({

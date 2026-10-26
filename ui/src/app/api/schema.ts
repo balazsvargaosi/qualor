@@ -9820,7 +9820,7 @@ export interface paths {
                                     };
                                     /** @default [] */
                                     autoFixDisabledProjectIds: string[];
-                                    /** @description Read-only: whether the organisation's admins switched AI review on, and whether their consent covers the provider configured now. The consent stays theirs (D4) */
+                                    /** @description Read-only: whether the organisation's admins switched AI review on, and whether their consent covers the provider configured now. The consent stays theirs */
                                     reviewStatus: {
                                         enabled: boolean;
                                         consentCurrent: boolean;
@@ -10046,7 +10046,7 @@ export interface paths {
                                     };
                                     /** @default [] */
                                     autoFixDisabledProjectIds: string[];
-                                    /** @description Read-only: whether the organisation's admins switched AI review on, and whether their consent covers the provider configured now. The consent stays theirs (D4) */
+                                    /** @description Read-only: whether the organisation's admins switched AI review on, and whether their consent covers the provider configured now. The consent stays theirs */
                                     reviewStatus: {
                                         enabled: boolean;
                                         consentCurrent: boolean;
