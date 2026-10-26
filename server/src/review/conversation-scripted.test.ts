@@ -666,11 +666,12 @@ describe('runConversation with a scripted provider', () => {
       expect(await runConversation(s.input)).toEqual({ kind: 'stopped', ...spent });
     });
 
-    it('an open circuit carries what was spent before it', async () => {
+    it('an open circuit carries what was spent before it, and says it was the circuit', async () => {
       const s = scripted(...twoTurns(), new CircuitOpenError());
       expect(await runConversation(s.input)).toEqual({
         kind: 'failed',
         reason: 'provider_error',
+        circuitOpen: true,
         ...spent,
       });
     });
@@ -836,14 +837,18 @@ describe('runConversation with a scripted provider', () => {
   });
 
   describe('failures', () => {
-    it('an open circuit fails at once, with no retry', async () => {
+    it('an open circuit fails at once, with no retry, and says it was the circuit', async () => {
       const s = scripted(new CircuitOpenError());
       expect(await runConversation(s.input)).toMatchObject({
         kind: 'failed',
         reason: 'provider_error',
+        circuitOpen: true,
       });
       expect(s.seen).toHaveLength(1);
       expect(s.sleeps).toEqual([]);
+      // A provider that failed is no circuit.
+      const failing = scripted(new LlmError('rejected', 'refused', { status: 400 }));
+      expect(await runConversation(failing.input)).not.toHaveProperty('circuitOpen');
     });
 
     it('timeouts and unavailable providers share one retry', async () => {

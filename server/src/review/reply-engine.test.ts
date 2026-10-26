@@ -8,7 +8,7 @@ import {
   type LlmToolCall,
   type LlmTurn,
 } from '../llm/providers';
-import { CONVERSATION_LIMITS, CONVERSATION_TEXTS } from './conversation';
+import { CircuitOpenError, CONVERSATION_LIMITS, CONVERSATION_TEXTS } from './conversation';
 import { Masker } from './masker';
 import { ANSWER_CHARS_PER_TOKEN, CHARS_PER_TOKEN, REVIEW_OUTPUT_TOKENS } from './pipeline';
 import { REPLY_LIMITS, replyRetryText, replySystemPrompt, SYSTEM_PROMPTS } from './prompts';
@@ -1752,6 +1752,14 @@ describe('the answer to a reply', () => {
       // Not for a conversation that sent no tools: it did not refuse them.
       const none = await converse([refusedTools], inputOf({ snapshot: null }));
       expect(none.decision).toEqual({ failed: 'provider_error' });
+    });
+
+    it('decides nothing while the provider’s circuit is open: it waits, which is no failure', async () => {
+      const open = await converse([new CircuitOpenError()]);
+      expect(open.decision).toEqual({ circuitOpen: true });
+      // The same after a turn that was answered: nothing was decided either.
+      const later = await converse([reads(), new CircuitOpenError()]);
+      expect(later.decision).toEqual({ circuitOpen: true });
     });
 
     it('stops without a call when it is told to stop, and when it is stopped while it masks', async () => {

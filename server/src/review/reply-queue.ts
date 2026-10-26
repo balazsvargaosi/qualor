@@ -260,10 +260,10 @@ export async function queueAfterStop(
 export const REPLY_CIRCUIT_WAIT_SECONDS = 60;
 
 /**
- * A running row whose job found its SCM connection's circuit closed to it before its own requests
- * (reply-job.ts): it is queued again with a new job due in `waitSeconds`, when the circuit lets a
- * job through again. Nothing of the wait is written on the row. Answers whether the row was still
- * running.
+ * A running row whose job found a circuit closed to it (reply-job.ts): its SCM connection's before
+ * its own requests, or its model provider's before the model decided. It is queued again with a
+ * new job due in `waitSeconds`, when the circuit lets a job through again. Nothing of the wait is
+ * written on the row. Answers whether the row was still running.
  */
 export async function queueAfterCircuit(
   db: Db,

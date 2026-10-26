@@ -110,8 +110,8 @@ export interface ConversationInput {
   /**
    * One call to the provider, recorded, through its circuit. It throws an `LlmError` for a call
    * the provider did not answer, a `CircuitOpenError` for one it was not asked, which fails the
-   * conversation at once, and an `LlmCallAborted` for one its caller gave up (the server is
-   * stopping), which stops it. Anything else it throws ends the conversation.
+   * conversation at once and says so (`circuitOpen`), and an `LlmCallAborted` for one its caller
+   * gave up (the server is stopping), which stops it. Anything else it throws ends the conversation.
    */
   send: (conversation: LlmConversation) => Promise<LlmTurn>;
   /** Asked before every call to the provider, a retry included. */
@@ -155,7 +155,9 @@ export interface ConversationCounts {
 
 /**
  * How a conversation ended. `text` of an answer is the model's: it goes to the parser, never to a
- * log. `budgetReached` says that the answer came after the wrap-up turn.
+ * log. `budgetReached` says that the answer came after the wrap-up turn. A `provider_error` with
+ * `circuitOpen` is a call that was not made because the provider's circuit was open: the provider
+ * is failing for every caller, and the conversation was not asked to wait for it.
  */
 export type ConversationResult =
   | ({ kind: 'answer'; text: string; budgetReached: boolean } & ConversationCounts)
@@ -163,11 +165,12 @@ export type ConversationResult =
   | ({
       kind: 'failed';
       reason: 'provider_error' | 'provider_no_tools' | 'bad_answer';
+      circuitOpen?: true;
     } & ConversationCounts);
 
 /** How a conversation ends without an answer, before the counts are put to it. */
 type FailureReason = Extract<ConversationResult, { kind: 'failed' }>['reason'];
-type Ended = { kind: 'stopped' } | { kind: 'failed'; reason: FailureReason };
+type Ended = { kind: 'stopped' } | { kind: 'failed'; reason: FailureReason; circuitOpen?: true };
 const failed = (reason: FailureReason): Ended => ({ kind: 'failed', reason });
 
 /** What `send` throws when it made no call because the provider's circuit is open. */
@@ -316,7 +319,9 @@ async function nextTurn(
     try {
       return { turn: await input.send(sent), sent };
     } catch (err) {
-      if (err instanceof CircuitOpenError) return failed('provider_error');
+      if (err instanceof CircuitOpenError) {
+        return { kind: 'failed', reason: 'provider_error', circuitOpen: true };
+      }
       if (err instanceof LlmCallAborted) return { kind: 'stopped' };
       if (!(err instanceof LlmError)) throw err;
       if (first && refusedForTools(err, input.tools)) return failed('provider_no_tools');

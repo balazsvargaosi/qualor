@@ -86,13 +86,16 @@ export interface ReplyUsage {
  * What a conversation came to: a verdict with the words to post (empty when there is nothing to
  * say), and whether the model read the finding's own lines (a `read_file` that showed a line of
  * them, or a `grep` that matched on one); or why it decided nothing; or that it was stopped (the
- * server is stopping, or the caller asked it to), which is no failure of the answer. The decision
+ * server is stopping, or the caller asked it to), which is no failure of the answer; or that the
+ * provider's circuit was open (`circuitOpen`: the provider is failing for every caller), which
+ * decided nothing and is no failure of the answer either: it waits for the circuit. The decision
  * the ledger stores (replies.ts) is another type.
  */
 export type DecidedReply =
   | { verdict: ReplyVerdict; answer: string; readCode: boolean; usage: ReplyUsage }
   | { failed: 'bad_answer' | 'provider_error' | 'provider_no_tools' | 'budget_spent' }
-  | { stopped: true };
+  | { stopped: true }
+  | { circuitOpen: true };
 
 export interface ReplyInput {
   issue: ReplyIssue;
@@ -417,7 +420,9 @@ async function decide(input: ReplyInput, io: ReplyConversationIo): Promise<Decid
         },
   );
   if (result.kind === 'stopped') return { stopped: true };
-  if (result.kind === 'failed') return { failed: result.reason };
+  if (result.kind === 'failed') {
+    return result.circuitOpen === true ? { circuitOpen: true } : { failed: result.reason };
+  }
   // Checked again: a conversation that gave an answer back is not believed without it.
   const judged = judge(result.text);
   if (!('answer' in judged)) return { failed: 'bad_answer' };

@@ -1,5 +1,5 @@
 {
-  "id": "610ec75a-2cd6-4b33-9830-9c7897a0bfc1",
+  "id": "2df476f3-27e6-4747-bfd8-cad14109dc2d",
   "prevId": "4641ba25-02a5-46d8-9318-8562c1025711",
   "version": "7",
   "dialect": "postgresql",
@@ -5574,7 +5574,7 @@
         },
         "review_replies_reason_check": {
           "name": "review_replies_reason_check",
-          "value": "reason IN ('budget_spent','inactive','closed','thread_gone','superseded','provider_error','provider_no_tools','bad_answer','internal')"
+          "value": "reason IN ('budget_spent','inactive','closed','thread_gone','superseded','expired','provider_error','provider_no_tools','bad_answer','internal')"
         },
         "review_replies_verdict_check": {
           "name": "review_replies_verdict_check",

@@ -151,6 +151,7 @@ describe('review_replies and the columns beside it (6I-4, migration 0017_review_
       'closed',
       'thread_gone',
       'superseded',
+      'expired',
       'provider_error',
       'provider_no_tools',
       'bad_answer',

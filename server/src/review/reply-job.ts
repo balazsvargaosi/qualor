@@ -29,7 +29,15 @@ import {
 } from './replies';
 import { answerCommand } from './reply-commands';
 import { decideReply, replyTokensLeft, type ReplyDeps, type ReplyIssue } from './reply-engine';
-import { AI_REPLY_QUEUE, queueAfterStop, replyPayload, withLiveJob } from './reply-queue';
+import {
+  AI_REPLY_QUEUE,
+  queueAfterCircuit,
+  queueAfterStop,
+  REPLY_CIRCUIT_WAIT_SECONDS,
+  REPLY_MAX_AGE_DAYS,
+  replyPayload,
+  withLiveJob,
+} from './reply-queue';
 import { scanMergeRequest } from './reply-scan';
 import {
   GONE,
@@ -42,16 +50,25 @@ import {
   type ThreadNote,
   type ThreadSide,
 } from './reply-sides';
-import { CLOSED, JobSteps, targetOf, THREAD_GONE, WAITING, type Target } from './reply-steps';
+import {
+  circuitWaitSeconds,
+  CLOSED,
+  JobSteps,
+  targetOf,
+  THREAD_GONE,
+  WAITING,
+  type Target,
+} from './reply-steps';
 import { reviewActive } from './settings';
 import { openSnapshotReader, type SnapshotReader } from './snapshot-reader';
 
 /*
  * The `ai-reply` jobs (6I-4): Qualor's answer to a round of people's replies in one of its
  * threads, or to a person's command, which decoration (or a webhook's scan) wrote as a row of the
- * replies ledger with its job (reply-queue.ts). The job takes the row and then, for a reply, in
- * this order, each step written on the row, or found again where it was done, so that a retry
- * resumes after the last one:
+ * replies ledger with its job (reply-queue.ts). The job takes the row (a row queued longer ago than
+ * the reply window, which waited that long for a failing SCM connection or model provider, ends
+ * `skipped: expired`) and then, for a reply, in this order, each step written on the row, or found
+ * again where it was done, so that a retry resumes after the last one:
  * 1. AI review no longer active for the project ends the row `skipped: inactive`;
  * 2. with no decision yet, a day with no tokens left for it ends it `skipped: budget_spent`, and a
  *    newer round of its thread that was answered or holds a decision (that round read this row's
@@ -89,7 +106,9 @@ import { openSnapshotReader, type SnapshotReader } from './snapshot-reader';
  * decision, and the post after it. A circuit that is open, or half-open with another job's probe in
  * flight, puts the row back in the queue for when it lets a job through, with no try spent and
  * nothing changed by that go; the circuit hears what came of the requests it let through. The
- * organisation's slots are the decorations': the job takes none.
+ * model provider's circuit, which the calls of the model pass (usage.ts), does the same when it is
+ * closed to them: the row goes back in the queue with nothing decided. The organisation's slots
+ * are the decorations': the job takes none.
  *
  * A stop of the server while the model decides puts the row back in the queue for the next server;
  * AI review switched off meanwhile ends it `skipped: inactive`. Any other error fails the job into
@@ -242,6 +261,16 @@ const statusComment = (verdict: 'wont_fix' | 'false_positive', author: string): 
 
 const SUPERSEDED: ReplyEnd = { status: 'skipped', reason: 'superseded', dropDecision: true };
 
+const EXPIRED: ReplyEnd = { status: 'skipped', reason: 'expired' };
+
+/**
+ * Whether a row was queued longer ago than the reply window ({@link REPLY_MAX_AGE_DAYS}): it
+ * waited that long for an SCM connection or a model provider that was failing, and is not answered
+ * now, as detection queues no note that old.
+ */
+const pastTheWindow = (row: Pick<ReplyRow, 'createdAt'>): boolean =>
+  row.createdAt.getTime() < Date.now() - REPLY_MAX_AGE_DAYS * 86_400_000;
+
 class ReplyJob extends JobSteps {
   constructor(
     deps: ReviewJobDeps,
@@ -283,6 +312,7 @@ class ReplyJob extends JobSteps {
     const { db } = this.deps;
     const taken = await this.take();
     if (taken === null) return;
+    if (pastTheWindow(taken)) return this.end(taken, EXPIRED);
     const target = await targetOf(db, taken.branchId, taken.projectId);
     if (taken.kind === 'command') {
       return target === null
@@ -412,6 +442,22 @@ class ReplyJob extends JobSteps {
         }
       } else {
         await this.end(row, { status: 'skipped', reason: 'inactive' });
+      }
+      return null;
+    }
+    if ('circuitOpen' in decided) {
+      // The model provider is failing for every caller: nothing was decided, and the row waits
+      // for its circuit as it waits for its SCM connection's, with no try spent.
+      const provider = replyDeps.settings.provider;
+      const waitSeconds =
+        provider === null
+          ? REPLY_CIRCUIT_WAIT_SECONDS
+          : circuitWaitSeconds(this.deps.llmCircuit, provider.baseUrl);
+      if (await queueAfterCircuit(db, row, waitSeconds)) {
+        this.deps.logger.info(
+          { replyId: row.id, retryInSeconds: waitSeconds },
+          'AI reply waits for the circuit of its model provider',
+        );
       }
       return null;
     }

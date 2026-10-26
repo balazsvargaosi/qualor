@@ -34,6 +34,8 @@ import {
   reviewReplies,
   reviewSnapshots,
 } from '../db/schema';
+import { createLlmRuntime } from '../llm/job';
+import { readLlmSettings } from '../llm/settings';
 import { enqueue } from '../queue/queue';
 import {
   CircuitBreaker,
@@ -44,7 +46,12 @@ import {
 import { ofBranch } from './lifecycle';
 import { replyNote } from './render';
 import type { ReplyRow } from './replies';
-import { AI_REPLY_QUEUE, reconcileStuckReplies, replyKey } from './reply-queue';
+import {
+  AI_REPLY_QUEUE,
+  reconcileStuckReplies,
+  REPLY_CIRCUIT_WAIT_SECONDS,
+  replyKey,
+} from './reply-queue';
 
 /*
  * The answer job (6I-4): a person replies in one of Qualor's threads on a GitLab merge request
@@ -966,6 +973,88 @@ describe('the answer job (6I-4)', () => {
       await answer({ scmRuntime: runtime });
       expect(await rowById(row.id)).toMatchObject({ status: 'done', outcome: 'wont_fix' });
       expect(mr.answers(threadId)).toHaveLength(1);
+    });
+
+    it('waits while the model provider’s circuit is open: queued again for when it reopens, with no try spent, and answered once it has closed', async () => {
+      const { mr, threadId, row } = await replied('llm-circuit-open');
+      const circuit = createLlmRuntime().circuit;
+      const key = (await readLlmSettings(h.ctx.db)).provider!.baseUrl;
+      for (let n = 0; n < SCM_CIRCUIT_FAILURES; n += 1) circuit.failure(key);
+      const opensIn = (circuit.openUntil(key) ?? 0) - Date.now();
+      const calls = llm.requests.length;
+      const callRows = async () =>
+        (await h.ctx.db.select().from(llmRequests).where(eq(llmRequests.feature, 'review-reply')))
+          .length;
+      const rowsBefore = await callRows();
+      expect(await answer({ llmCircuit: circuit })).toBe(1);
+      // No call to the model, so no row of one, and nothing decided or ended.
+      expect(callsSince(calls)).toEqual([]);
+      expect(await callRows()).toBe(rowsBefore);
+      expect(await rowById(row.id)).toMatchObject({
+        status: 'queued',
+        finishedAt: null,
+        verdict: null,
+        reason: null,
+      });
+      const queued = await jobsOf(row.id);
+      expect(queued.map((j) => [j.status, j.attempts])).toEqual([
+        ['succeeded', 1],
+        ['queued', 0],
+      ]);
+      const waits = (queued[1]!.runAt.getTime() - queued[1]!.createdAt.getTime()) / 1000;
+      expect(Math.abs(waits - opensIn / 1000)).toBeLessThan(5);
+      // Once the circuit has closed, the next job answers.
+      circuit.success(key);
+      await retryNow();
+      llm.say(WONT_FIX);
+      await answer({ llmCircuit: circuit });
+      expect(await rowById(row.id)).toMatchObject({ status: 'done', outcome: 'wont_fix' });
+      expect(mr.answers(threadId)).toHaveLength(1);
+    });
+
+    it('waits a minute for the model provider when its circuit is half-open and another call probes it', async () => {
+      const { row } = await replied('llm-circuit-probe');
+      let now = Date.now();
+      const circuit = createLlmRuntime(() => now).circuit;
+      const key = (await readLlmSettings(h.ctx.db)).provider!.baseUrl;
+      for (let n = 0; n < SCM_CIRCUIT_FAILURES; n += 1) circuit.failure(key);
+      // The pause is over, and another call took the probe: when the circuit lets a call through
+      // again is not known.
+      now += SCM_CIRCUIT_OPEN_MS + 1_000;
+      expect(circuit.tryPass(key)).toBe(true);
+      expect(circuit.openUntil(key)).toBeNull();
+      expect(await answer({ llmCircuit: circuit })).toBe(1);
+      const queued = await jobsOf(row.id);
+      expect(queued.map((j) => j.status)).toEqual(['succeeded', 'queued']);
+      const waits = (queued[1]!.runAt.getTime() - queued[1]!.createdAt.getTime()) / 1000;
+      expect(Math.abs(waits - REPLY_CIRCUIT_WAIT_SECONDS)).toBeLessThan(5);
+      expect(await rowById(row.id)).toMatchObject({ status: 'queued', verdict: null });
+      // The probe came back: the next job answers.
+      circuit.success(key);
+      await retryNow();
+      llm.say(KEEP);
+      await answer({ llmCircuit: circuit });
+      expect(await rowById(row.id)).toMatchObject({ status: 'done', outcome: 'answered' });
+    });
+
+    it('ends a row that waited longer than the reply window skipped: expired, with nothing read or asked', async () => {
+      const { d, mr, threadId, row } = await replied('expired');
+      await h.ctx.db
+        .update(reviewReplies)
+        .set({ createdAt: sql`now() - interval '31 days'` })
+        .where(eq(reviewReplies.id, row.id));
+      d.clearRequests();
+      const calls = llm.requests.length;
+      await answer();
+      expect(await rowById(row.id)).toMatchObject({
+        status: 'skipped',
+        reason: 'expired',
+        verdict: null,
+        finishedAt: expect.any(Date),
+      });
+      expect(d.requests()).toEqual([]);
+      expect(callsSince(calls)).toEqual([]);
+      expect(mr.answers(threadId)).toEqual([]);
     });
 
     it('waits a minute when the circuit is half-open and another job probes it', async () => {

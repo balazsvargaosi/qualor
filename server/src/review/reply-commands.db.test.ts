@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FakeGitHub } from '../../test/fake-github';
 import type { FakeGitLab } from '../../test/fake-gitlab';
@@ -293,6 +293,28 @@ describe('the answer job (6I-4)', () => {
         });
         expect(await runOf(mr.analysisId)).toEqual(restarted);
         expect(await reviewJobsOf(restarted.id)).toEqual([{ due: true }]);
+      });
+
+      it('a command that waited longer than the reply window ends skipped: expired, with no run touched and nothing posted', async () => {
+        const { d, mr, sent } = await commanded('expired', { end: FAILED });
+        const before = await runOf(mr.analysisId);
+        await h.ctx.db
+          .update(reviewReplies)
+          .set({ createdAt: sql`now() - interval '31 days'` })
+          .where(
+            and(eq(reviewReplies.branchId, mr.branchId), eq(reviewReplies.noteId, sent.noteId)),
+          );
+        d.clearRequests();
+        await answer();
+        expect(await commandRow(mr.branchId, sent.noteId)).toMatchObject({
+          status: 'skipped',
+          reason: 'expired',
+          outcome: null,
+          answer: null,
+        });
+        expect(d.requests()).toEqual([]);
+        expect(await runOf(mr.analysisId)).toEqual(before);
+        expect(mr.commandAnswers()).toEqual([]);
       });
 
       it('a command that restarted the run and whose post fails on both tries keeps its outcome when the sweep ends it', async () => {

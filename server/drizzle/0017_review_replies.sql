@@ -31,7 +31,7 @@ CREATE TABLE "review_replies" (
 	CONSTRAINT "review_replies_status_check" CHECK (status IN ('queued','running','done','skipped','failed')),
 	CONSTRAINT "review_replies_finished_by_status" CHECK ((status IN ('done','skipped','failed')) = (finished_at IS NOT NULL)),
 	CONSTRAINT "review_replies_outcome_check" CHECK (outcome IN ('answered','acknowledged','explained','wont_fix','false_positive','review_requested','in_progress','already_reviewed','not_available','review_off')),
-	CONSTRAINT "review_replies_reason_check" CHECK (reason IN ('budget_spent','inactive','closed','thread_gone','superseded','provider_error','provider_no_tools','bad_answer','internal')),
+	CONSTRAINT "review_replies_reason_check" CHECK (reason IN ('budget_spent','inactive','closed','thread_gone','superseded','expired','provider_error','provider_no_tools','bad_answer','internal')),
 	CONSTRAINT "review_replies_verdict_check" CHECK (verdict IN ('keep','wont_fix','false_positive')),
 	CONSTRAINT "review_replies_answer_length" CHECK (char_length(answer) <= 1200),
 	CONSTRAINT "review_replies_thread_id_format" CHECK (thread_id ~ '^[0-9a-f]{1,64}$|^[0-9]{1,20}$')

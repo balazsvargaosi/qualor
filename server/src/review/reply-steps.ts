@@ -5,6 +5,7 @@ import { branches, projects, scmConnections, type BranchKind } from '../db/schem
 import type { ScmConnectionRow } from '../scm/connections';
 import { readMergeRequestState } from '../scm/mr-state';
 import { ScmError } from '../scm/provider';
+import type { CircuitBreaker } from '../scm/runtime';
 import type { ReviewJobDeps } from './job';
 import { endReply, type ReplyEnd, type ReplyRow } from './replies';
 import { queueAfterCircuit, REPLY_CIRCUIT_WAIT_SECONDS } from './reply-queue';
@@ -76,6 +77,18 @@ export async function targetOf(
 
 export const THREAD_GONE: ReplyEnd = { status: 'skipped', reason: 'thread_gone' };
 
+/**
+ * In how many seconds a circuit that let no job through reopens: when its pause ends, or
+ * {@link REPLY_CIRCUIT_WAIT_SECONDS} when that is not known (it is half-open, and another job's
+ * probe has no answer yet). The SCM connection's circuit and the model provider's are both read so.
+ */
+export function circuitWaitSeconds(circuit: CircuitBreaker, key: string): number {
+  const until = circuit.openUntil(key);
+  return until === null
+    ? REPLY_CIRCUIT_WAIT_SECONDS
+    : Math.max(1, Math.ceil((until - Date.now()) / 1000));
+}
+
 /** The job of one merge request or one row, in the steps all its flows take. */
 export abstract class JobSteps {
   constructor(protected readonly deps: ReviewJobDeps) {}
@@ -107,12 +120,7 @@ export abstract class JobSteps {
   ): Promise<T | typeof WAITING> {
     const { circuit } = this.deps.scmRuntime;
     if (!circuit.tryPass(connectionId)) {
-      const until = circuit.openUntil(connectionId);
-      await waitFor(
-        until === null
-          ? REPLY_CIRCUIT_WAIT_SECONDS
-          : Math.max(1, Math.ceil((until - Date.now()) / 1000)),
-      );
+      await waitFor(circuitWaitSeconds(circuit, connectionId));
       return WAITING;
     }
     try {
