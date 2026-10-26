@@ -24,8 +24,10 @@ interface RefusalPart {
 /**
  * `q-section-foot` (spec §7.2, §7.7): a section's foot. At its left a polite live region says the
  * outcome; then the buttons the section projects (Cancel, Test again); then its one Save, named
- * for what it saves ("Save limits"), enabled and primary only while changes wait. A refusal names
- * the fields as links that take the focus to each.
+ * for what it saves ("Save limits"). Save is enabled and primary while changes wait, and after a
+ * save that failed, so it can be tried again as it is; it is disabled while a save is on its way,
+ * while nothing is unsaved, and while a field is refused (saving that again would be refused). A
+ * refusal names the fields as links that take the focus to each.
  */
 @Component({
   selector: 'q-section-foot',
@@ -41,7 +43,8 @@ export class SectionFoot {
   readonly save = output();
 
   protected readonly kind = computed(() => this.outcome().kind);
-  protected readonly pending = computed(() => this.kind() === 'pending');
+  /** Changes wait, or the last save of them failed. */
+  protected readonly canSave = computed(() => this.kind() === 'pending' || this.kind() === 'error');
   /** The changes waiting, or the fields refused. */
   protected readonly count = computed(() => {
     const outcome = this.outcome();
@@ -73,7 +76,7 @@ export class SectionFoot {
   });
 
   protected onSave(): void {
-    if (this.pending()) this.save.emit();
+    if (this.canSave()) this.save.emit();
   }
 
   /** A refused field's link moves the focus to the field; the page's address stays. */

@@ -49,8 +49,8 @@
   <button
     type="button"
     class="btn"
-    [class.btn-primary]="pending()"
-    [disabled]="!pending()"
+    [class.btn-primary]="canSave()"
+    [disabled]="!canSave()"
     (click)="onSave()"
   >
     {{ saveLabel() }}

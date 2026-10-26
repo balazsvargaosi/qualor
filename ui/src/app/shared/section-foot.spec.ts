@@ -87,7 +87,7 @@ describe('SectionFoot', () => {
     await show({ kind: 'error', text: 'The server could not be reached.' });
     expect(text(status())).toBe('The server could not be reached.');
     expect(status().classList).toContain('bad');
-    expect(save().disabled).toBe(true);
+    expect(save().disabled).toBe(false);
   });
 
   it('takes the reader to a refused field', async () => {
@@ -101,7 +101,7 @@ describe('SectionFoot', () => {
     expect(document.activeElement).toBe(root.querySelector('#ai-budget-tokens'));
   });
 
-  it('emits save only while something is pending', async () => {
+  it('emits save only while there is something to save', async () => {
     const { fixture, save, show, host } = await render();
     await show({ kind: 'pending', count: 1 });
     save().click();
@@ -111,6 +111,27 @@ describe('SectionFoot', () => {
     save().click();
     await fixture.whenStable();
     expect(host.saves()).toBe(1);
+    // A refused field is put right first: saving it as it is would be refused again.
+    await show({ kind: 'refused', fields: [{ id: 'ai-budget-tokens', label: 'Tokens per day' }] });
+    expect(save().disabled).toBe(true);
+    save().click();
+    await fixture.whenStable();
+    expect(host.saves()).toBe(1);
+  });
+
+  it('lets a failed save be tried again, without another edit', async () => {
+    const { fixture, save, show, host } = await render();
+    await show({ kind: 'error', text: 'The server could not be reached.' });
+    expect(save().disabled).toBe(false);
+    expect(save().classList).toContain('btn-primary');
+    save().click();
+    await fixture.whenStable();
+    expect(host.saves()).toBe(1);
+    // While that save is on its way, and once it is saved, there is nothing to save again.
+    await show({ kind: 'saving' });
+    expect(save().disabled).toBe(true);
+    await show({ kind: 'saved', at: new Date('2026-10-26T14:05:00Z') });
+    expect(save().disabled).toBe(true);
   });
 
   it('keeps one live region, rendered while it says nothing new', async () => {
