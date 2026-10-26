@@ -101,6 +101,34 @@ describe('FakeAiReview', () => {
     expect(body['notice']).toContain('to llm.example.com (gpt-review).');
   });
 
+  it('answers what the last Test of the provider says of its models: no Test by default, else the one it is given', async () => {
+    const answered = async (server: FakeServer) =>
+      ((await (await server.fetch(URL)).json()) as Record<string, unknown>)['providerTest'];
+    const bare = new FakeServer();
+    FakeAiReview.install(bare);
+    expect(await answered(bare)).toEqual({
+      at: null,
+      toolCalling: 'unknown',
+      modelsWithoutTools: [],
+    });
+    const warned = {
+      at: '2026-10-26T14:02:00.000Z',
+      toolCalling: 'not_supported' as const,
+      modelsWithoutTools: ['gpt-fast'],
+    };
+    const given = new FakeServer();
+    const fake = FakeAiReview.install(given, { providerTest: warned });
+    expect(await answered(given)).toEqual(warned);
+    // A save answers it too, and a test can change it.
+    expect((await put(given, false)).body['providerTest']).toEqual(warned);
+    fake.providerTest = { at: warned.at, toolCalling: 'supported', modelsWithoutTools: [] };
+    expect(await answered(given)).toEqual({
+      at: warned.at,
+      toolCalling: 'supported',
+      modelsWithoutTools: [],
+    });
+  });
+
   it('needs the acknowledgement of the provider now to switch on, and nothing to switch off', async () => {
     const server = new FakeServer();
     const fake = FakeAiReview.install(server);

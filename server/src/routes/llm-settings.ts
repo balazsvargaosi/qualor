@@ -16,6 +16,14 @@ import { VERSION } from '../index';
 import { IssueChangeLimiter } from '../issues/rate-limit';
 import { ERROR_TEXTS, errorCodeOf, LLM_ERROR_CODES, type LlmErrorCode } from '../llm/errors';
 import {
+  freshTest,
+  readStoredTest,
+  storedTestSchema,
+  testFingerprint,
+  writeStoredTest,
+  type StoredTest,
+} from '../llm/last-test';
+import {
   callProvider,
   converse,
   LlmError,
@@ -31,6 +39,7 @@ import {
   ANTHROPIC_NO_TEMPERATURE_TEXT,
   autoFixSettingsSchema,
   budgetsSchema,
+  comparedProvider,
   DEFAULT_AUTO_FIX,
   DISABLED_ORGANIZATION,
   globSchema,
@@ -198,6 +207,9 @@ const settingsBody = z.strictObject({
   }),
   storePrompts: z.boolean(),
   promptRetentionDays: z.number().int().min(1).max(90),
+  // The answer's read-only field, like an organisation's `reviewStatus`: a body that is the answer
+  // put back carries it, and it is neither checked nor stored.
+  lastTest: z.unknown().optional().meta({ description: 'Read-only, as GET answers it: ignored' }),
 });
 type SettingsBody = z.infer<typeof settingsBody>;
 
@@ -208,6 +220,16 @@ type SettingsBody = z.infer<typeof settingsBody>;
 const reviewStatusSchema = z.object({ enabled: z.boolean(), consentCurrent: z.boolean() }).meta({
   description:
     "Read-only: whether the organisation's admins switched AI review on, and whether their consent covers the provider configured now. The consent stays theirs",
+});
+
+/**
+ * The last Test of the provider: who pressed Test, when, and what it found for each model, as codes
+ * and never as the provider's words.
+ */
+const lastTestSchema = z.object({
+  at: storedTestSchema.shape.at,
+  userId: storedTestSchema.shape.userId,
+  models: storedTestSchema.shape.models,
 });
 
 const settingsDto = z.object({
@@ -246,6 +268,10 @@ const settingsDto = z.object({
   pricing: pricingSchema,
   storePrompts: z.boolean(),
   promptRetentionDays: z.number().int(),
+  lastTest: lastTestSchema.nullable().meta({
+    description:
+      "Read-only. The outcome of the last `POST /system/llm/test` for each model of the provider, kept until the provider changes: another address, model or setting, or the key set again. `problemCode` is the code of the model's `problem` in the Test's answer. Null when there is no provider, or none has been tested since it changed",
+  }),
 });
 
 /**
@@ -628,7 +654,16 @@ const withoutReview = (o: OrgLlmSettings): z.infer<typeof orgSettingsWithoutRevi
   autoFixDisabledProjectIds: o.autoFixDisabledProjectIds,
 });
 
-function dto(s: StoredLlmSettings, secretKey: string): z.infer<typeof settingsDto> {
+/**
+ * The settings as the answers show them, with the last Test while it still describes the provider
+ * (`test` is the stored one, fresh or not).
+ */
+function dto(
+  s: StoredLlmSettings,
+  secretKey: string,
+  test: StoredTest | null,
+): z.infer<typeof settingsDto> {
+  const lastTest = freshTest(s, test);
   return {
     provider: s.provider && {
       ...providerConfig(s.provider),
@@ -651,6 +686,8 @@ function dto(s: StoredLlmSettings, secretKey: string): z.infer<typeof settingsDt
     pricing: s.pricing,
     storePrompts: s.storePrompts,
     promptRetentionDays: s.promptRetentionDays,
+    // Field by field: the stored record also holds its fingerprint, which no answer shows.
+    lastTest: lastTest && { at: lastTest.at, userId: lastTest.userId, models: lastTest.models },
   };
 }
 
@@ -667,16 +704,6 @@ function nextKey(
   if (incoming.apiKey === undefined) return moved ? 'needs_key' : current.apiKeyEnc;
   return incoming.apiKey === null ? null : encryptSecret(key, incoming.apiKey, LLM_API_KEY_AAD);
 }
-
-/**
- * The provider as a write is compared: what a call receives, and the models of the tiers, which a
- * call does not.
- */
-const comparedProvider = (p: StoredProvider) => ({
-  ...providerConfig(p),
-  strongModel: p.strongModel,
-  fastModel: p.fastModel,
-});
 
 /** The names of the fields a write changed (never a value), for the audit log line. */
 function changedFields(
@@ -863,7 +890,8 @@ export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
     },
     async (request) => {
       requireInstanceAdmin(request);
-      return dto(await readForAdmin(), deps.config.secretKey);
+      const [settings, test] = await Promise.all([readForAdmin(), readStoredTest(deps.db)]);
+      return dto(settings, deps.config.secretKey, test);
     },
   );
 
@@ -971,7 +999,7 @@ export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
         { userId: principal.user.id, fields: changedFields(current, next, keySent) },
         'LLM settings changed',
       );
-      return dto(next, deps.config.secretKey);
+      return dto(next, deps.config.secretKey, await readStoredTest(deps.db));
     },
   );
 
@@ -990,7 +1018,7 @@ export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
       schema: {
         tags: ['llm'],
         summary:
-          'Send a fixed prompt holding no repository data to each model of the saved provider at once, and when one answers, a second one that asks that model to call a tool (instance admins); no audit row, no quota',
+          'Send a fixed prompt holding no repository data to each model of the saved provider at once, and when one answers, a second one that asks that model to call a tool (instance admins); no audit row, no quota. Its outcome is kept as `lastTest` of `GET /system/llm` until the provider changes',
         response: { 200: testResult },
       },
     },
@@ -1010,7 +1038,23 @@ export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
       }
       testing.add(userId);
       try {
-        return await runTest();
+        const { result, provider } = await runTest();
+        // The record is of the provider that was tested, not of the one saved by now: a save while
+        // the Test ran leaves it stale instead of passing it off as the new provider's.
+        await writeStoredTest(deps.db, {
+          v: 1,
+          at: new Date().toISOString(),
+          userId,
+          fingerprint: testFingerprint(provider),
+          models: result.models.map((m) => ({
+            tier: m.tier,
+            model: m.model,
+            ok: m.ok,
+            toolCalling: m.toolCalling,
+            problemCode: m.problem?.code ?? null,
+          })),
+        });
+        return result;
       } finally {
         testing.delete(userId);
       }
@@ -1020,9 +1064,9 @@ export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
   /**
    * Tests every model of the saved provider at once, each on its own (the standard model, then the
    * strong and the fast model where they name another). The answer's own fields are the standard
-   * model's.
+   * model's. With it, the provider it tested.
    */
-  async function runTest(): Promise<TestResult> {
+  async function runTest(): Promise<{ result: TestResult; provider: StoredProvider }> {
     const settings = await readLlmSettings(deps.db);
     const provider = settings.provider;
     if (!provider) throw conflict('AI_DISABLED', 'No LLM provider is configured');
@@ -1043,13 +1087,16 @@ export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
         .map(lineOf),
     ]);
     return {
-      ok: standard.ok,
-      model: standard.reportedModel,
-      latencyMs: standard.latencyMs,
-      toolCalling: standard.toolCalling,
-      problem: standard.problem,
-      hint: standard.hint,
-      models: [standard, ...others],
+      provider,
+      result: {
+        ok: standard.ok,
+        model: standard.reportedModel,
+        latencyMs: standard.latencyMs,
+        toolCalling: standard.toolCalling,
+        problem: standard.problem,
+        hint: standard.hint,
+        models: [standard, ...others],
+      },
     };
   }
 };

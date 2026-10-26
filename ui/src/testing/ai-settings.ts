@@ -22,6 +22,7 @@ export const EMPTY = {
   pricing: null,
   storePrompts: false,
   promptRetentionDays: 7,
+  lastTest: null,
 };
 export const CONFIGURED = {
   ...EMPTY,

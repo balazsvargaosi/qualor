@@ -25,6 +25,7 @@ import {
   reviewRuns,
   scmConnections,
 } from '../db/schema';
+import { LLM_TEST_KEY, testFingerprint, writeStoredTest } from '../llm/last-test';
 import {
   DEFAULT_AUTO_FIX,
   DEFAULT_BUDGETS,
@@ -287,6 +288,7 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
           consentCurrent: false,
           instanceCeiling: { tokensPerDay: null },
           usage: { tokensToday: 0, costTodayUsd: null, reviewsToday: 0 },
+          providerTest: { at: null, toolCalling: 'unknown', modelsWithoutTools: [] },
         });
       }
       for (const s of [member, viewer, grantee]) {
@@ -381,6 +383,50 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
         // The budget stored is the organisation's own; the ceiling caps it when a review runs.
         budgets: { tokensPerDay: 2_000_000 },
       });
+    });
+
+    it('says whether the provider’s models can call tools, from the last Test (A2)', async () => {
+      await ctx.db.delete(instanceSettings).where(eq(instanceSettings.key, LLM_TEST_KEY)); // the file shares one database
+      const unknown = { at: null, toolCalling: 'unknown', modelsWithoutTools: [] };
+      try {
+        expect((await getReview()).json().providerTest).toEqual(unknown);
+        // configure() stores PROVIDER (apiKeyEnc null); any user's id will do for who tested
+        await writeStoredTest(ctx.db, {
+          v: 1,
+          at: '2026-10-26T14:02:00.000Z',
+          userId: orgAdminId,
+          fingerprint: testFingerprint(PROVIDER),
+          models: [
+            {
+              tier: 'standard',
+              model: 'fake-model',
+              ok: true,
+              toolCalling: 'not_supported',
+              problemCode: null,
+            },
+          ],
+        });
+        const warned = {
+          at: '2026-10-26T14:02:00.000Z',
+          toolCalling: 'not_supported',
+          modelsWithoutTools: ['fake-model'],
+        };
+        expect((await getReview()).json().providerTest).toEqual(warned);
+        // A switch-on answers it too, and an instance admin reads it as the organisation's does.
+        expect((await putReview(onBody())).json().providerTest).toEqual(warned);
+        expect((await getReview(admin)).json().providerTest).toEqual(warned);
+        // The provider keeps its three fields: the answer's provider is copied into an acknowledgement, which is strict.
+        expect(Object.keys((await getReview()).json().provider).sort()).toEqual([
+          'host',
+          'model',
+          'models',
+        ]);
+        // A provider the Test did not run against has no Test: it does not say what its models can do.
+        await configure({}, TIERED);
+        expect((await getReview()).json().providerTest).toEqual(unknown);
+      } finally {
+        await ctx.db.delete(instanceSettings).where(eq(instanceSettings.key, LLM_TEST_KEY));
+      }
     });
 
     it('names the days the server keeps a snapshot, as the retention setting has them', async () => {

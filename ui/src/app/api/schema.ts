@@ -9869,6 +9869,22 @@ export interface paths {
                             } | null;
                             storePrompts: boolean;
                             promptRetentionDays: number;
+                            /** @description Read-only. The outcome of the last `POST /system/llm/test` for each model of the provider, kept until the provider changes: another address, model or setting, or the key set again. `problemCode` is the code of the model's `problem` in the Test's answer. Null when there is no provider, or none has been tested since it changed */
+                            lastTest: {
+                                /** Format: date-time */
+                                at: string;
+                                /** Format: uuid */
+                                userId: string;
+                                models: {
+                                    /** @enum {string} */
+                                    tier: "standard" | "strong" | "fast";
+                                    model: string;
+                                    ok: boolean;
+                                    /** @enum {string} */
+                                    toolCalling: "supported" | "not_supported" | "not_checked";
+                                    problemCode: ("PROVIDER_TIMEOUT" | "PROVIDER_UNAVAILABLE" | "PROVIDER_RATE_LIMITED" | "PROVIDER_REFUSED_KEY" | "PROVIDER_WORKSPACE_REQUIRED" | "PROVIDER_REJECTED_REQUEST" | "PROVIDER_BAD_ANSWER" | "URL_NOT_ALLOWED" | "KEY_UNDECRYPTABLE" | "MALFORMED_OUTPUT" | "OUTPUT_TRUNCATED" | "MODEL_REFUSED" | "OUTPUT_REFUSED" | "AI_DISABLED" | "SETTINGS_CHANGED" | "ISSUE_CHANGED" | "ISSUE_GONE" | "REQUEST_ABANDONED") | null;
+                                }[];
+                            } | null;
                         };
                     };
                 };
@@ -10005,6 +10021,8 @@ export interface paths {
                         } | null;
                         storePrompts: boolean;
                         promptRetentionDays: number;
+                        /** @description Read-only, as GET answers it: ignored */
+                        lastTest?: unknown;
                     };
                 };
             };
@@ -10095,6 +10113,22 @@ export interface paths {
                             } | null;
                             storePrompts: boolean;
                             promptRetentionDays: number;
+                            /** @description Read-only. The outcome of the last `POST /system/llm/test` for each model of the provider, kept until the provider changes: another address, model or setting, or the key set again. `problemCode` is the code of the model's `problem` in the Test's answer. Null when there is no provider, or none has been tested since it changed */
+                            lastTest: {
+                                /** Format: date-time */
+                                at: string;
+                                /** Format: uuid */
+                                userId: string;
+                                models: {
+                                    /** @enum {string} */
+                                    tier: "standard" | "strong" | "fast";
+                                    model: string;
+                                    ok: boolean;
+                                    /** @enum {string} */
+                                    toolCalling: "supported" | "not_supported" | "not_checked";
+                                    problemCode: ("PROVIDER_TIMEOUT" | "PROVIDER_UNAVAILABLE" | "PROVIDER_RATE_LIMITED" | "PROVIDER_REFUSED_KEY" | "PROVIDER_WORKSPACE_REQUIRED" | "PROVIDER_REJECTED_REQUEST" | "PROVIDER_BAD_ANSWER" | "URL_NOT_ALLOWED" | "KEY_UNDECRYPTABLE" | "MALFORMED_OUTPUT" | "OUTPUT_TRUNCATED" | "MODEL_REFUSED" | "OUTPUT_REFUSED" | "AI_DISABLED" | "SETTINGS_CHANGED" | "ISSUE_CHANGED" | "ISSUE_GONE" | "REQUEST_ABANDONED") | null;
+                                }[];
+                            } | null;
                         };
                     };
                 };
@@ -10152,7 +10186,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Send a fixed prompt holding no repository data to each model of the saved provider at once, and when one answers, a second one that asks that model to call a tool (instance admins); no audit row, no quota */
+        /** Send a fixed prompt holding no repository data to each model of the saved provider at once, and when one answers, a second one that asks that model to call a tool (instance admins); no audit row, no quota. Its outcome is kept as `lastTest` of `GET /system/llm` until the provider changes */
         post: {
             parameters: {
                 query?: never;
@@ -12703,6 +12737,18 @@ export interface paths {
                                 costTodayUsd: number | null;
                                 reviewsToday: number;
                             };
+                            /** @description From the instance admin's last Test of the provider (`POST /system/llm/test`): whether its models can call tools, which AI review needs */
+                            providerTest: {
+                                /** @description When the Test ran; null while there is no Test of the provider as it is configured now */
+                                at: string | null;
+                                /**
+                                 * @description supported: every model of the provider called the tool. not_supported: the models of modelsWithoutTools did not. unknown: the provider has not been tested since it changed (another address, model or setting, or the key set again), or the Test could not tell for one of its models
+                                 * @enum {string}
+                                 */
+                                toolCalling: "supported" | "not_supported" | "unknown";
+                                /** @description The models that did not call the tool in the Test, once each and sorted */
+                                modelsWithoutTools: string[];
+                            };
                         };
                     };
                 };
@@ -12819,6 +12865,18 @@ export interface paths {
                                 tokensToday: number;
                                 costTodayUsd: number | null;
                                 reviewsToday: number;
+                            };
+                            /** @description From the instance admin's last Test of the provider (`POST /system/llm/test`): whether its models can call tools, which AI review needs */
+                            providerTest: {
+                                /** @description When the Test ran; null while there is no Test of the provider as it is configured now */
+                                at: string | null;
+                                /**
+                                 * @description supported: every model of the provider called the tool. not_supported: the models of modelsWithoutTools did not. unknown: the provider has not been tested since it changed (another address, model or setting, or the key set again), or the Test could not tell for one of its models
+                                 * @enum {string}
+                                 */
+                                toolCalling: "supported" | "not_supported" | "unknown";
+                                /** @description The models that did not call the tool in the Test, once each and sorted */
+                                modelsWithoutTools: string[];
                             };
                         };
                     };

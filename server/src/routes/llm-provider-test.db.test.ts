@@ -1,4 +1,4 @@
-import { count } from 'drizzle-orm';
+import { count, eq } from 'drizzle-orm';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   ADMIN_PASSWORD,
@@ -24,8 +24,9 @@ import {
   type RecordedLlmRequest,
 } from '../../test/fake-llm';
 import { encryptionKey, encryptSecret } from '../crypto/secrets';
-import { auditEvents, llmRequests } from '../db/schema';
-import { DEFAULT_LLM_SETTINGS, writeLlmSettings } from '../llm/settings';
+import { auditEvents, instanceSettings, llmRequests } from '../db/schema';
+import { testFingerprint } from '../llm/last-test';
+import { DEFAULT_LLM_SETTINGS, readLlmSettings, writeLlmSettings } from '../llm/settings';
 import { parseInternalHosts } from '../scm/url';
 
 /** The call the model makes to the echo tool of the tool-calling check. */
@@ -763,6 +764,255 @@ describe('/system/llm (llm.md §3, §16)', () => {
         }),
       ]);
       expect(fake.requests).toHaveLength(0);
+    });
+  });
+
+  describe('the last Test of the provider (A2)', () => {
+    /** The `instance_settings` row that keeps it. */
+    const rowOf = async () =>
+      (await ctx.db.select().from(instanceSettings).where(eq(instanceSettings.key, 'llm-test')))[0];
+    const forgetIt = () =>
+      ctx.db.delete(instanceSettings).where(eq(instanceSettings.key, 'llm-test'));
+    const modelOf = (request: RecordedLlmRequest) => (request.json as { model: string }).model;
+    const asksForTool = (request: RecordedLlmRequest) =>
+      (request.json as { tools?: unknown }).tools !== undefined;
+    /** The plain call passes, and the model calls the echo tool. */
+    const passing: LlmReply[] = [
+      { status: 200, body: openAiAnswer('{"ok": true}') },
+      { status: 200, body: openAiToolCalls([ECHO_CALL]) },
+    ];
+    /** The provider as the body of a save that leaves its key alone. */
+    const keyless = (over: Record<string, unknown> = {}) =>
+      provider({ apiKey: undefined, ...over });
+    // The Test button is limited to ten presses a minute per admin: each case has an admin of its own.
+    let testers = 0;
+    let tester: { id: string; session: Session };
+    beforeEach(async () => {
+      // The file shares one database: no case starts from another's record or provider.
+      await forgetIt();
+      expect((await put(body())).statusCode).toBe(200);
+      testers += 1;
+      const u = await createUser(ctx, {
+        username: `llm-last-test-${testers}`,
+        isInstanceAdmin: true,
+      });
+      tester = { id: u.id, session: await login(ctx, u.username, u.password) };
+    });
+    afterAll(async () => {
+      await put(body());
+    });
+    const check = () => test(tester.session);
+
+    it('keeps the last Test until the provider changes, with codes and never the provider’s words (A2)', async () => {
+      fake.enqueue(...passing);
+      const pressed = Date.now();
+      const tested = await check();
+      expect(tested.statusCode, tested.body).toBe(200);
+      const read = (await get()).json();
+      expect(read.lastTest).toEqual({
+        at: expect.any(String),
+        userId: tester.id,
+        models: [
+          {
+            tier: 'standard',
+            model: 'fake-model',
+            ok: true,
+            toolCalling: 'supported',
+            problemCode: null,
+          },
+        ],
+      });
+      // When it ran, not when it was read.
+      expect(Date.parse(read.lastTest.at)).toBeGreaterThanOrEqual(pressed);
+      expect(Date.parse(read.lastTest.at)).toBeLessThanOrEqual(Date.now());
+      // The row holds codes and names: no key, no word of the provider's, nothing it answered.
+      const row = await rowOf();
+      expect(JSON.stringify(row!.value)).not.toContain(fake.apiKey);
+      expect(Object.keys(row!.value as object).sort()).toEqual([
+        'at',
+        'fingerprint',
+        'models',
+        'userId',
+        'v',
+      ]);
+      expect(Object.keys((row!.value as { models: object[] }).models[0]!).sort()).toEqual([
+        'model',
+        'ok',
+        'problemCode',
+        'tier',
+        'toolCalling',
+      ]);
+      // A save that leaves the provider and its key alone keeps it, in its own answer too.
+      const kept = await put(body({ provider: keyless() }));
+      expect(kept.statusCode, kept.body).toBe(200);
+      expect(kept.json().lastTest).toEqual(read.lastTest);
+      expect((await get()).json().lastTest).toEqual(read.lastTest);
+      // A change of the provider ends it.
+      const changed = await put(body({ provider: provider({ model: 'other-model' }) }));
+      expect(changed.statusCode, changed.body).toBe(200);
+      expect(changed.json().lastTest).toBeNull();
+      expect((await get()).json().lastTest).toBeNull();
+    });
+
+    it('keeps a failed model’s problem code, in place of the Test before it', async () => {
+      fake.enqueue(...passing);
+      expect((await check()).statusCode).toBe(200);
+      expect((await get()).json().lastTest.models[0]).toMatchObject({ ok: true });
+      fake.enqueue({
+        status: 401,
+        body: { error: { message: `FAKE-PROVIDER-WORDS ${fake.apiKey}` } },
+      });
+      const res = await check();
+      expect(res.statusCode, res.body).toBe(200);
+      expect((await get()).json().lastTest.models).toEqual([
+        {
+          tier: 'standard',
+          model: 'fake-model',
+          ok: false,
+          toolCalling: 'not_checked',
+          problemCode: 'PROVIDER_REFUSED_KEY',
+        },
+      ]);
+      const stored = JSON.stringify((await rowOf())!.value);
+      expect(stored).not.toContain('FAKE-PROVIDER-WORDS');
+      expect(stored).not.toContain(fake.apiKey);
+      expect(ctx.logs.join('\n')).not.toContain(fake.apiKey);
+    });
+
+    it('keeps a line for each model of the provider', async () => {
+      await put(
+        body({ provider: provider({ strongModel: 'fake-strong', fastModel: 'fake-fast' }) }),
+      );
+      const provides: LlmResponder = (request) => {
+        const model = modelOf(request);
+        if (model === 'fake-fast') return { status: 404, body: { error: { message: 'no model' } } };
+        // The strong model answers its tool check in text.
+        if (model === 'fake-strong' && asksForTool(request)) {
+          return { status: 200, body: openAiAnswer('ok') };
+        }
+        return {
+          status: 200,
+          body: asksForTool(request) ? openAiToolCalls([ECHO_CALL]) : openAiAnswer('{"ok": true}'),
+        };
+      };
+      // The plain call of each of the three models, and a tool check of the two that answered.
+      fake.enqueue(...Array.from({ length: 5 }, () => provides));
+      const res = await check();
+      expect(res.statusCode, res.body).toBe(200);
+      expect((await get()).json().lastTest.models).toEqual([
+        {
+          tier: 'standard',
+          model: 'fake-model',
+          ok: true,
+          toolCalling: 'supported',
+          problemCode: null,
+        },
+        {
+          tier: 'strong',
+          model: 'fake-strong',
+          ok: true,
+          toolCalling: 'not_supported',
+          problemCode: null,
+        },
+        {
+          tier: 'fast',
+          model: 'fake-fast',
+          ok: false,
+          toolCalling: 'not_checked',
+          problemCode: 'PROVIDER_REJECTED_REQUEST',
+        },
+      ]);
+    });
+
+    it('keeps nothing for a Test it refuses', async () => {
+      // No provider: 409. It takes the first of the ten presses a minute.
+      expect((await put(body({ provider: null }))).statusCode).toBe(200);
+      const without = await check();
+      expect([without.statusCode, without.json().code]).toEqual([409, 'AI_DISABLED']);
+      expect(await rowOf()).toBeUndefined();
+      expect((await get()).json().lastTest).toBeNull();
+      // Too many presses: 429, after the nine that are left, which do keep a Test.
+      expect((await put(body())).statusCode).toBe(200);
+      for (let i = 1; i < 10; i += 1) expect((await check()).statusCode).toBe(200);
+      expect(await rowOf()).toBeDefined();
+      await forgetIt();
+      const limited = await check();
+      expect([limited.statusCode, limited.json().code]).toEqual([429, 'RATE_LIMITED']);
+      expect(await rowOf()).toBeUndefined();
+    });
+
+    it('takes lastTest back in a body and ignores it (R1)', async () => {
+      fake.enqueue(...passing);
+      await check();
+      const stored = (await rowOf())!.value;
+      const read = (await get()).json();
+      expect(read.lastTest).not.toBeNull();
+      // The answer put back, its Test saying something else: it is accepted, and changes nothing.
+      const claimed = {
+        ...read.lastTest,
+        models: [{ ...read.lastTest.models[0], ok: false, problemCode: 'PROVIDER_REFUSED_KEY' }],
+      };
+      const res = await put({ ...read, provider: keyless(), lastTest: claimed });
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json().lastTest).toEqual(read.lastTest);
+      expect((await rowOf())!.value).toEqual(stored);
+      const [llm] = await ctx.db
+        .select()
+        .from(instanceSettings)
+        .where(eq(instanceSettings.key, 'llm'));
+      expect(JSON.stringify(llm!.value)).not.toContain('lastTest');
+      // Whatever it holds, it is not checked.
+      const odd = await put({ ...read, provider: keyless(), lastTest: { at: 'yesterday' } });
+      expect(odd.statusCode, odd.body).toBe(200);
+      expect((await rowOf())!.value).toEqual(stored);
+    });
+
+    it('is not shown once the key is set again: its envelope is another one', async () => {
+      fake.enqueue(...passing);
+      await check();
+      expect((await get()).json().lastTest).not.toBeNull();
+      const again = await put(body());
+      expect(again.statusCode, again.body).toBe(200);
+      expect(again.json().lastTest).toBeNull();
+      expect((await get()).json().lastTest).toBeNull();
+    });
+
+    it('reads a row that does not parse as no Test, though its fingerprint is the provider’s', async () => {
+      const { provider: saved } = await readLlmSettings(ctx.db);
+      await ctx.db.insert(instanceSettings).values({
+        key: 'llm-test',
+        value: {
+          v: 1,
+          at: 'yesterday',
+          userId: tester.id,
+          fingerprint: testFingerprint(saved!),
+          models: [],
+        },
+      });
+      const read = await get();
+      expect(read.statusCode, read.body).toBe(200);
+      expect(read.json().lastTest).toBeNull();
+      // The next Test replaces it.
+      fake.enqueue(...passing);
+      expect((await check()).statusCode).toBe(200);
+      expect((await get()).json().lastTest).toMatchObject({ userId: tester.id });
+    });
+
+    it('belongs to the provider it ran against, whatever is saved while it runs', async () => {
+      let saved = 0;
+      // The provider is replaced while the plain call is in flight.
+      fake.enqueue(async () => {
+        saved = (await put(body({ provider: provider({ model: 'other-model' }) }))).statusCode;
+        return passing[0]!;
+      }, passing[1]!);
+      const res = await check();
+      expect(res.statusCode, res.body).toBe(200);
+      expect(saved).toBe(200);
+      const read = (await get()).json();
+      expect(read.provider.model).toBe('other-model');
+      // The record is of the provider that was tested, which is no longer the provider.
+      expect(read.lastTest).toBeNull();
+      expect(await rowOf()).toBeDefined();
     });
   });
 

@@ -1102,9 +1102,12 @@ An organisation admin's settings page uses these endpoints, so you can script th
 
 - `GET /api/v0/organizations/{id}/ai/review` returns the settings, the warning (`notice`), the
   provider (`provider.host`, `provider.model` and `provider.models`: every model it uses, once each
-  and sorted), `consentCurrent`, the instance ceiling (`instanceCeiling.tokensPerDay`) and today's
+  and sorted), `consentCurrent`, the instance ceiling (`instanceCeiling.tokensPerDay`), today's
   use of the organisation (`usage`: `tokensToday`, `reviewsToday` and `costTodayUsd`, which is
-  `null` while no prices are set).
+  `null` while no prices are set) and `providerTest`: whether the provider's models can call tools,
+  from the instance admin's last Test (`toolCalling` is `supported`, `not_supported` or
+  `unknown`, `modelsWithoutTools` names the models that did not call the tool, and `at` is when the
+  Test ran).
 - `PUT /api/v0/organizations/{id}/ai/review` sets `enabled`, `scope` (`all` or `selected`),
   `projectIds` and `budgets`, and answers with the same fields. To switch AI review on, or to
   confirm it again, add `acknowledgeDataSharing: { host, model, models }`, copied from the
@@ -1117,7 +1120,8 @@ A finding is an issue of the engine `ai`: `GET /api/v0/issues?branchId=…&engin
 `toolCalling` (`supported`, `not_supported` or `not_checked`) and `hint` (an object with the `code`
 `USE_RESPONSES_API` and a `message`, or `null`) for the standard model, and `models`: one entry
 for each model with its `tier`, `model`, `ok`, `reportedModel`, `latencyMs`, `toolCalling`,
-`problem` and `hint`.
+`problem` and `hint`. The server keeps the outcome until the provider's settings or its key
+change, and `GET /api/v0/system/llm` shows it as `lastTest`.
 
 Errors: `AI_DISABLED` (409: no provider, or the organisation is not enabled for the AI assistant),
 `AI_REVIEW_CONSENT_REQUIRED` (409: switching on without the acknowledgement),

@@ -20327,6 +20327,106 @@
                       "type": "integer",
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991
+                    },
+                    "lastTest": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "at": {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            "userId": {
+                              "type": "string",
+                              "format": "uuid",
+                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                            },
+                            "models": {
+                              "minItems": 1,
+                              "maxItems": 3,
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "tier": {
+                                    "type": "string",
+                                    "enum": [
+                                      "standard",
+                                      "strong",
+                                      "fast"
+                                    ]
+                                  },
+                                  "model": {
+                                    "type": "string",
+                                    "maxLength": 200
+                                  },
+                                  "ok": {
+                                    "type": "boolean"
+                                  },
+                                  "toolCalling": {
+                                    "type": "string",
+                                    "enum": [
+                                      "supported",
+                                      "not_supported",
+                                      "not_checked"
+                                    ]
+                                  },
+                                  "problemCode": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "enum": [
+                                          "PROVIDER_TIMEOUT",
+                                          "PROVIDER_UNAVAILABLE",
+                                          "PROVIDER_RATE_LIMITED",
+                                          "PROVIDER_REFUSED_KEY",
+                                          "PROVIDER_WORKSPACE_REQUIRED",
+                                          "PROVIDER_REJECTED_REQUEST",
+                                          "PROVIDER_BAD_ANSWER",
+                                          "URL_NOT_ALLOWED",
+                                          "KEY_UNDECRYPTABLE",
+                                          "MALFORMED_OUTPUT",
+                                          "OUTPUT_TRUNCATED",
+                                          "MODEL_REFUSED",
+                                          "OUTPUT_REFUSED",
+                                          "AI_DISABLED",
+                                          "SETTINGS_CHANGED",
+                                          "ISSUE_CHANGED",
+                                          "ISSUE_GONE",
+                                          "REQUEST_ABANDONED"
+                                        ]
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "tier",
+                                  "model",
+                                  "ok",
+                                  "toolCalling",
+                                  "problemCode"
+                                ],
+                                "additionalProperties": false
+                              }
+                            }
+                          },
+                          "required": [
+                            "at",
+                            "userId",
+                            "models"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Read-only. The outcome of the last `POST /system/llm/test` for each model of the provider, kept until the provider changes: another address, model or setting, or the key set again. `problemCode` is the code of the model's `problem` in the Test's answer. Null when there is no provider, or none has been tested since it changed"
                     }
                   },
                   "required": [
@@ -20336,7 +20436,8 @@
                     "budgets",
                     "pricing",
                     "storePrompts",
-                    "promptRetentionDays"
+                    "promptRetentionDays",
+                    "lastTest"
                   ],
                   "additionalProperties": false
                 }
@@ -20774,6 +20875,9 @@
                     "type": "integer",
                     "minimum": 1,
                     "maximum": 90
+                  },
+                  "lastTest": {
+                    "description": "Read-only, as GET answers it: ignored"
                   }
                 },
                 "required": [
@@ -21179,6 +21283,106 @@
                       "type": "integer",
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991
+                    },
+                    "lastTest": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "at": {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            "userId": {
+                              "type": "string",
+                              "format": "uuid",
+                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                            },
+                            "models": {
+                              "minItems": 1,
+                              "maxItems": 3,
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "tier": {
+                                    "type": "string",
+                                    "enum": [
+                                      "standard",
+                                      "strong",
+                                      "fast"
+                                    ]
+                                  },
+                                  "model": {
+                                    "type": "string",
+                                    "maxLength": 200
+                                  },
+                                  "ok": {
+                                    "type": "boolean"
+                                  },
+                                  "toolCalling": {
+                                    "type": "string",
+                                    "enum": [
+                                      "supported",
+                                      "not_supported",
+                                      "not_checked"
+                                    ]
+                                  },
+                                  "problemCode": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "enum": [
+                                          "PROVIDER_TIMEOUT",
+                                          "PROVIDER_UNAVAILABLE",
+                                          "PROVIDER_RATE_LIMITED",
+                                          "PROVIDER_REFUSED_KEY",
+                                          "PROVIDER_WORKSPACE_REQUIRED",
+                                          "PROVIDER_REJECTED_REQUEST",
+                                          "PROVIDER_BAD_ANSWER",
+                                          "URL_NOT_ALLOWED",
+                                          "KEY_UNDECRYPTABLE",
+                                          "MALFORMED_OUTPUT",
+                                          "OUTPUT_TRUNCATED",
+                                          "MODEL_REFUSED",
+                                          "OUTPUT_REFUSED",
+                                          "AI_DISABLED",
+                                          "SETTINGS_CHANGED",
+                                          "ISSUE_CHANGED",
+                                          "ISSUE_GONE",
+                                          "REQUEST_ABANDONED"
+                                        ]
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "tier",
+                                  "model",
+                                  "ok",
+                                  "toolCalling",
+                                  "problemCode"
+                                ],
+                                "additionalProperties": false
+                              }
+                            }
+                          },
+                          "required": [
+                            "at",
+                            "userId",
+                            "models"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Read-only. The outcome of the last `POST /system/llm/test` for each model of the provider, kept until the provider changes: another address, model or setting, or the key set again. `problemCode` is the code of the model's `problem` in the Test's answer. Null when there is no provider, or none has been tested since it changed"
                     }
                   },
                   "required": [
@@ -21188,7 +21392,8 @@
                     "budgets",
                     "pricing",
                     "storePrompts",
-                    "promptRetentionDays"
+                    "promptRetentionDays",
+                    "lastTest"
                   ],
                   "additionalProperties": false
                 }
@@ -21240,7 +21445,7 @@
     },
     "/api/v0/system/llm/test": {
       "post": {
-        "summary": "Send a fixed prompt holding no repository data to each model of the saved provider at once, and when one answers, a second one that asks that model to call a tool (instance admins); no audit row, no quota",
+        "summary": "Send a fixed prompt holding no repository data to each model of the saved provider at once, and when one answers, a second one that asks that model to call a tool (instance admins); no audit row, no quota. Its outcome is kept as `lastTest` of `GET /system/llm` until the provider changes",
         "tags": [
           "llm"
         ],
@@ -27623,6 +27828,47 @@
                         "reviewsToday"
                       ],
                       "additionalProperties": false
+                    },
+                    "providerTest": {
+                      "type": "object",
+                      "properties": {
+                        "at": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the Test ran; null while there is no Test of the provider as it is configured now"
+                        },
+                        "toolCalling": {
+                          "type": "string",
+                          "enum": [
+                            "supported",
+                            "not_supported",
+                            "unknown"
+                          ],
+                          "description": "supported: every model of the provider called the tool. not_supported: the models of modelsWithoutTools did not. unknown: the provider has not been tested since it changed (another address, model or setting, or the key set again), or the Test could not tell for one of its models"
+                        },
+                        "modelsWithoutTools": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "description": "The models that did not call the tool in the Test, once each and sorted"
+                        }
+                      },
+                      "required": [
+                        "at",
+                        "toolCalling",
+                        "modelsWithoutTools"
+                      ],
+                      "additionalProperties": false,
+                      "description": "From the instance admin's last Test of the provider (`POST /system/llm/test`): whether its models can call tools, which AI review needs"
                     }
                   },
                   "required": [
@@ -27637,7 +27883,8 @@
                     "consent",
                     "consentCurrent",
                     "instanceCeiling",
-                    "usage"
+                    "usage",
+                    "providerTest"
                   ],
                   "additionalProperties": false
                 }
@@ -28033,6 +28280,47 @@
                         "reviewsToday"
                       ],
                       "additionalProperties": false
+                    },
+                    "providerTest": {
+                      "type": "object",
+                      "properties": {
+                        "at": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the Test ran; null while there is no Test of the provider as it is configured now"
+                        },
+                        "toolCalling": {
+                          "type": "string",
+                          "enum": [
+                            "supported",
+                            "not_supported",
+                            "unknown"
+                          ],
+                          "description": "supported: every model of the provider called the tool. not_supported: the models of modelsWithoutTools did not. unknown: the provider has not been tested since it changed (another address, model or setting, or the key set again), or the Test could not tell for one of its models"
+                        },
+                        "modelsWithoutTools": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "description": "The models that did not call the tool in the Test, once each and sorted"
+                        }
+                      },
+                      "required": [
+                        "at",
+                        "toolCalling",
+                        "modelsWithoutTools"
+                      ],
+                      "additionalProperties": false,
+                      "description": "From the instance admin's last Test of the provider (`POST /system/llm/test`): whether its models can call tools, which AI review needs"
                     }
                   },
                   "required": [
@@ -28047,7 +28335,8 @@
                     "consent",
                     "consentCurrent",
                     "instanceCeiling",
-                    "usage"
+                    "usage",
+                    "providerTest"
                   ],
                   "additionalProperties": false
                 }

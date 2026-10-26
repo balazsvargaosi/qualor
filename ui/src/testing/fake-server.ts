@@ -593,6 +593,12 @@ export interface FakeAiReviewOptions {
   retentionDays?: number;
   /** What the organisation's reviews have used today (UTC); nothing by default. */
   usage?: OrgAiReview['usage'];
+  /**
+   * What the instance admin's last Test of the provider says of its models, which every answer
+   * carries. By default there is no Test: `at` null, `toolCalling` `unknown` and no models
+   * without tools.
+   */
+  providerTest?: OrgAiReview['providerTest'];
   /** Stored blocks by organisation id; `consentFor` records an acknowledgement of that provider. */
   organizations?: Record<
     string,
@@ -650,6 +656,8 @@ export class FakeAiReview {
   retentionDays: number;
   /** What the organisation's reviews have used today; every answer shows it. */
   usage: OrgAiReview['usage'];
+  /** What the last Test of the provider says of its models; every answer shows it. */
+  providerTest: OrgAiReview['providerTest'];
   /** Stored blocks by organisation id; one not listed reads as the default. */
   readonly organizations: Record<string, FakeStoredReview> = {};
   /** Project ids of another organisation: a save that lists one is refused. */
@@ -669,6 +677,11 @@ export class FakeAiReview {
     this.ceiling = options.ceiling ?? null;
     this.retentionDays = options.retentionDays ?? 14;
     this.usage = options.usage ?? { tokensToday: 0, costTodayUsd: null, reviewsToday: 0 };
+    this.providerTest = options.providerTest ?? {
+      at: null,
+      toolCalling: 'unknown',
+      modelsWithoutTools: [],
+    };
     for (const [id, given] of Object.entries(options.organizations ?? {})) {
       const { consentFor, ...rest } = given;
       this.organizations[id] = { ...this.of(id), ...rest, consent: this.consentOf(consentFor) };
@@ -730,6 +743,10 @@ export class FakeAiReview {
       consentCurrent: this.consentCurrent(stored),
       instanceCeiling: { tokensPerDay: this.ceiling },
       usage: { ...this.usage },
+      providerTest: {
+        ...this.providerTest,
+        modelsWithoutTools: [...this.providerTest.modelsWithoutTools],
+      },
     };
   }
 

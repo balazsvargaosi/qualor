@@ -23,6 +23,7 @@ import {
   type UploadProblems,
 } from '../ingest/upload';
 import { lockLlmSettings } from '../llm/auto-fix-settings';
+import { providerTestOf, readStoredTest, type StoredTest } from '../llm/last-test';
 import {
   organizationSettings,
   projectOwners,
@@ -114,6 +115,29 @@ const reviewUsageSchema = z.object({
   reviewsToday: z.number().int(),
 });
 
+/**
+ * What the instance admin's last Test of the provider says of its models: whether they can call
+ * tools, which AI review needs. Names models only, as `provider` does.
+ */
+const providerTestSchema = z
+  .object({
+    at: z.iso.datetime().nullable().meta({
+      description:
+        'When the Test ran; null while there is no Test of the provider as it is configured now',
+    }),
+    toolCalling: z.enum(['supported', 'not_supported', 'unknown']).meta({
+      description:
+        'supported: every model of the provider called the tool. not_supported: the models of modelsWithoutTools did not. unknown: the provider has not been tested since it changed (another address, model or setting, or the key set again), or the Test could not tell for one of its models',
+    }),
+    modelsWithoutTools: z.array(z.string()).meta({
+      description: 'The models that did not call the tool in the Test, once each and sorted',
+    }),
+  })
+  .meta({
+    description:
+      "From the instance admin's last Test of the provider (`POST /system/llm/test`): whether its models can call tools, which AI review needs",
+  });
+
 /** `GET`/`PUT /organizations/{id}/ai/review` (6I-2, spec C1, D4, R10). */
 export const organizationReviewSchema = z.object({
   /** AI review can be switched on: a provider is configured and the organisation is enabled. */
@@ -147,6 +171,8 @@ export const organizationReviewSchema = z.object({
   }),
   /** The use of the whole organisation today (UTC), against the budgets above. */
   usage: reviewUsageSchema,
+  /** Whether the provider's models can call tools, so that switching AI review on can warn. */
+  providerTest: providerTestSchema,
 });
 type OrganizationReview = z.infer<typeof organizationReviewSchema>;
 
@@ -229,13 +255,17 @@ function usageAnswer(settings: StoredLlmSettings, spent: ReviewUsage): Organizat
   };
 }
 
-/** The answer for the organisation: `projectIds` are those of its projects that still exist. */
+/**
+ * The answer for the organisation: `projectIds` are those of its projects that still exist, and
+ * `test` is the stored last Test of the provider, fresh or not.
+ */
 function organizationReview(
   settings: StoredLlmSettings,
   organizationId: string,
   retentionDays: number,
   projectIds: readonly string[],
   spent: ReviewUsage,
+  test: StoredTest | null,
 ): OrganizationReview {
   const provider = reviewProvider(settings);
   const organization = organizationSettings(settings, organizationId);
@@ -259,6 +289,7 @@ function organizationReview(
     consentCurrent: consentCurrent(settings, review),
     instanceCeiling: { tokensPerDay: settings.budgets.reviewTokensPerOrganizationPerDay },
     usage: usageAnswer(settings, spent),
+    providerTest: providerTestOf(settings, test),
   };
 }
 
@@ -294,10 +325,11 @@ export const reviewRoutes: FastifyPluginAsyncZod<{
       const principal = requireUser(request);
       const organizationId = request.params.id;
       await requireOrganizationAccess(accessOf(deps), principal, organizationId, 'org.ai.manage');
-      const [settings, retention, spent] = await Promise.all([
+      const [settings, retention, spent, test] = await Promise.all([
         readLlmSettings(deps.db),
         retentionSettings(deps.db),
         reviewUsageToday(deps.db, organizationId),
+        readStoredTest(deps.db),
       ]);
       // llm.md §3.3: the id of a project deleted since is left out.
       const listed = reviewSettingsOf(settings, organizationId).projectIds;
@@ -308,6 +340,7 @@ export const reviewRoutes: FastifyPluginAsyncZod<{
         retention.reviewSnapshotsDays,
         listed.filter((id) => owners.get(id) === organizationId),
         spent,
+        test,
       );
     },
   );
@@ -447,13 +480,17 @@ export const reviewRoutes: FastifyPluginAsyncZod<{
         return { settings: saved, projectIds: next.projectIds };
       });
       // Read after the commit, so that the settings lock is held for the write alone.
-      const spent = await reviewUsageToday(deps.db, organizationId);
+      const [spent, test] = await Promise.all([
+        reviewUsageToday(deps.db, organizationId),
+        readStoredTest(deps.db),
+      ]);
       return organizationReview(
         shown.settings,
         organizationId,
         retentionDays,
         shown.projectIds,
         spent,
+        test,
       );
     },
   );

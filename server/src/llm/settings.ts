@@ -267,6 +267,16 @@ export function providerConfig(stored: StoredProvider): ProviderConfig {
 }
 
 /**
+ * The provider as a write is compared, and as the last Test is tied to it: what a call receives,
+ * and the models of the tiers, which a call does not.
+ */
+export const comparedProvider = (p: StoredProvider) => ({
+  ...providerConfig(p),
+  strongModel: p.strongModel,
+  fastModel: p.fastModel,
+});
+
+/**
  * The prices a call of the tier is costed at: the standard pair for the standard tier and for
  * a tier that uses the standard model, a tier's own pair for a tier with a model of its own. Null
  * without prices, and for a model of its own that has none (a row the API does not store): never
