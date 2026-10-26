@@ -181,9 +181,8 @@ describe('the review settings (6I-2, llm.md §3.3)', () => {
     );
   });
 
-  it('names a model as the provider settings do', () => {
-    expect(MODEL_NAME_PATTERN.source).toBe(MODEL_PATTERN.source);
-    expect(MODEL_NAME_PATTERN.flags).toBe(MODEL_PATTERN.flags);
+  it('names a model as the provider settings do: by the one pattern', () => {
+    expect(MODEL_PATTERN).toBe(MODEL_NAME_PATTERN);
   });
 
   it.each<[string, unknown]>([
@@ -425,6 +424,29 @@ describe('the provider, its consent and the data-sharing notice (R10)', () => {
         'gpt-x-mini',
       ]);
       expect(consentCurrent(settingsWith({}, {}, swapped), consent)).toBe(false);
+    });
+
+    it('a permutation of the strong and the fast model keeps it current: no model is sent what it was not', () => {
+      const both: StoredProvider = {
+        ...PROVIDER,
+        strongModel: 'gpt-x-big',
+        fastModel: 'gpt-x-mini',
+      };
+      const permuted: StoredProvider = {
+        ...PROVIDER,
+        strongModel: 'gpt-x-mini',
+        fastModel: 'gpt-x-big',
+      };
+      const consent = consentOf(['gpt-x', 'gpt-x-big', 'gpt-x-mini']);
+      expect(consentCurrent(settingsWith({}, {}, both), consent)).toBe(true);
+      expect(consentCurrent(settingsWith({}, {}, permuted), consent)).toBe(true);
+      // The provider a run compares with the one it started on (`sameProvider`) is the same too.
+      expect(reviewProvider(settingsWith({}, {}, permuted))).toEqual(
+        reviewProvider(settingsWith({}, {}, both)),
+      );
+      expect(
+        reviewActive(settingsWith({ consent: consent.consent }, {}, permuted), mapped),
+      ).toEqual({ active: true });
     });
   });
 

@@ -9964,6 +9964,7 @@ export interface paths {
                             /** @description Absent keeps the stored ceiling, null removes it */
                             reviewTokensPerOrganizationPerDay?: number | null;
                         };
+                        /** @description USD per million tokens of the standard model, and of the strong and fast models (`strong`, `fast`), or null for no prices. With prices, a tier that has a model of its own needs its prices, and a tier without one takes none: either is a 422 at `pricing.strong` or `pricing.fast` ("Give the strong model's prices too", "Set the strong model first"). */
                         pricing: {
                             inputUsdPerMTok: number;
                             outputUsdPerMTok: number;

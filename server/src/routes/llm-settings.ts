@@ -185,7 +185,10 @@ const settingsBody = z.strictObject({
     ),
   excludePaths: z.array(globSchema).max(100),
   budgets: budgetsBody,
-  pricing: pricingSchema,
+  pricing: pricingSchema.meta({
+    description:
+      'USD per million tokens of the standard model, and of the strong and fast models (`strong`, `fast`), or null for no prices. With prices, a tier that has a model of its own needs its prices, and a tier without one takes none: either is a 422 at `pricing.strong` or `pricing.fast` ("Give the strong model\'s prices too", "Set the strong model first").',
+  }),
   storePrompts: z.boolean(),
   promptRetentionDays: z.number().int().min(1).max(90),
 });

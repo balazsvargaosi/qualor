@@ -212,8 +212,9 @@ type Decision =
   { kind: 'started'; running: Running } | { kind: 'ended'; end: RunEnd } | { kind: 'none' };
 
 /**
- * Whether two providers are the same address, host, model and set of models: a tier moved to
- * another model changes where the review's calls go.
+ * Whether two providers are the same address, host, standard model and set of models: a tier given
+ * a model the consent does not name would send the review's data to it, while tiers that only trade
+ * the models of the set send it to no model it has not named.
  */
 export const sameProvider = (a: ReviewProvider | null, b: ReviewProvider): boolean =>
   a !== null &&

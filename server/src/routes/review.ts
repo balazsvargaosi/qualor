@@ -363,8 +363,8 @@ export const reviewRoutes: FastifyPluginAsyncZod<{
           [...new Set(ids)].filter((id) => owners.get(id) === organizationId).sort();
         const stored: ReviewSettings = { ...current, projectIds: ownProjects(current.projectIds) };
         const provider = reviewProvider(settings);
-        // Switching it on: from off, or confirming again when the provider's address, host or model
-        // changed (the consent no longer names it).
+        // Switching it on: from off, or confirming again when the provider's address, host or set of
+        // models changed (the consent no longer names them all).
         const switchingOn =
           body.enabled && (!current.enabled || !consentCurrent(settings, current));
         let consent = current.consent;

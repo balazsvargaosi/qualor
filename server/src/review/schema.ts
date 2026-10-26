@@ -41,8 +41,8 @@ export const DEFAULT_REVIEW_BUDGETS: Readonly<ReviewBudgets> = Object.freeze({
 });
 
 /**
- * A model name, as the provider settings store one (`MODEL_PATTERN` of llm/settings.ts, which a
- * test keeps equal).
+ * A model name, as the provider settings store one: the settings' `MODEL_PATTERN` (llm/settings.ts)
+ * is this pattern, which lives here because the settings import this module.
  */
 export const MODEL_NAME_PATTERN = /^[A-Za-z0-9._:/@+-]{1,200}$/;
 

@@ -459,7 +459,7 @@ describe('runLive against the fake LLM', () => {
       ]);
     });
 
-    it('sends the specialist of a trivial review to the fast model', async () => {
+    it('sends the quality reviewer of a trivial review to the fast model', async () => {
       enqueueEmpty();
 
       await runLive(options({ ...TIERS, cases: ['java-optional-get'] }));

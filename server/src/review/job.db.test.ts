@@ -1539,7 +1539,7 @@ describe('the ai-review job (6I-3, R15)', () => {
       ]);
     });
 
-    it("a trivial review's specialist runs on the fast model", async () => {
+    it("a trivial review's quality reviewer runs on the fast model", async () => {
       await reviewOn({ pricing: TIER_PRICING, tiers: TIERS });
       const { run, sent } = await reviewWith(CHANGE, FOUND, 2);
 

@@ -7,7 +7,7 @@ import type { Executor } from '../db/client';
 import { uuidList } from '../db/bulk';
 import { instanceSettings, projects } from '../db/schema';
 import type { ModelTier } from '../review/model-tiers';
-import { defaultReview, reviewSettingsSchema } from '../review/schema';
+import { defaultReview, MODEL_NAME_PATTERN, reviewSettingsSchema } from '../review/schema';
 import { instanceSetting } from '../settings';
 import { PROVIDER_APIS, PROVIDER_KINDS, type ProviderConfig } from './providers';
 
@@ -102,7 +102,8 @@ export const DISABLED_ORGANIZATION: OrgLlmSettings = {
 /** llm.md §3.3: at most this many organisations in the map. */
 export const MAX_LLM_ORGANIZATIONS = 1_000;
 
-export const MODEL_PATTERN = /^[A-Za-z0-9._:/@+-]{1,200}$/;
+/** A model name as the settings store one: the pattern the review's consent stores its models by. */
+export const MODEL_PATTERN = MODEL_NAME_PATTERN;
 
 /**
  * A workspace of an Anthropic organisation as the console names it: `wrkspc_` and up to 64 letters
@@ -151,8 +152,11 @@ export const storedProviderSchema = z.strictObject({
 });
 export type StoredProvider = z.infer<typeof storedProviderSchema>;
 
-/** The model tiers in the order their models are listed: the standard model comes first. */
-export const MODEL_TIERS: readonly ModelTier[] = ['standard', 'strong', 'fast'];
+/**
+ * The model tiers in the order their models are listed: the standard model comes first. The
+ * `ModelTier` union is made of this list, so a tier is never missing from it.
+ */
+export const MODEL_TIERS = ['standard', 'strong', 'fast'] as const;
 
 /**
  * The model a tier has of its own: the strong or fast model when it is set and is not the

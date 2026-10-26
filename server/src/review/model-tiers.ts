@@ -6,9 +6,9 @@ import type { ReviewRole } from './prompts';
  * The model tiers of AI review (`ModelTier`, not "tier", which is the size of a review): the
  * provider has up to three models, and each step of a review runs on the tier its role names. An
  * admin sets each model; the strong and the fast one are optional, and an empty one is the standard
- * model.
+ * model. The union is the list's (`MODEL_TIERS`), so the list holds every tier.
  */
-export type ModelTier = 'strong' | 'standard' | 'fast';
+export type ModelTier = (typeof MODEL_TIERS)[number];
 
 /** The fields of the stored provider that name the models. */
 type TierModels = Pick<StoredProvider, 'model' | 'strongModel' | 'fastModel'>;
