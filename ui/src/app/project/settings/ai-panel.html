@@ -46,6 +46,7 @@
           noteId="project-ai-not-mapped"
           [text]="texts.notMapped"
           place="repositories"
+          [organizationId]="organizationId()"
         />
       }
       @if (reviewed()) {
@@ -107,12 +108,17 @@
               noteId="project-ai-fix-org-off"
               [text]="fixOrganizationOff()"
               place="org-ai"
+              [organizationId]="organizationId()"
             />
           }
           @default {
             <!-- What the switch waits for stands above it; it still works. -->
             @if (notLinked()) {
-              <q-requirement [noteId]="fixNotLinkedId" [text]="texts.fixNotLinked" />
+              <q-requirement
+                [noteId]="fixNotLinkedId"
+                [text]="texts.fixNotLinked"
+                [organizationId]="organizationId()"
+              />
             }
             <div>
               <!-- A switch is named by its name alone, and its help describes it. -->

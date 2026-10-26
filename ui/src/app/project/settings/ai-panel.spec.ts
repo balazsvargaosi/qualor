@@ -2,6 +2,7 @@ import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import type { Me } from '../../api/types';
 import { SessionStore } from '../../auth/session';
+import { OrgContext } from '../../org/org-context';
 import { orgAi } from '../../../testing/ai-settings';
 import {
   FakeAutoFix,
@@ -21,6 +22,7 @@ const PROJECT = '0190a6c2-0000-7000-8000-0000000000f1';
 const ROUTE = `/api/v0/projects/${PROJECT}/ai/auto-fix`;
 const ORG_AI = `/api/v0/organizations/${ORG_ID}/ai`;
 const NO_FEATURES = { explain: false, triage: false, fix: false };
+const OTHER_ORG = '0190a6c2-0000-7000-8000-000000000002';
 
 type Reason = ProjectDto['aiReview']['reason'];
 type Who = 'projectAdmin' | 'orgAdmin' | 'instanceAdmin';
@@ -233,6 +235,64 @@ describe('ProjectAiPanel', () => {
       await settle(fixture);
       expect(
         line(root, 'review')?.querySelector('.req a[href="/settings/repositories"]'),
+      ).not.toBeNull();
+    });
+
+    it("links an organization's place only while the header shows the project's organization", async () => {
+      const server = setup('orgAdmin');
+      server.on('GET', '/api/v0/organizations', {
+        body: page([
+          { id: ORG_ID, key: 'default', name: 'Default', createdAt: '', updatedAt: '' },
+          { id: OTHER_ORG, key: 'research', name: 'Research', createdAt: '', updatedAt: '' },
+        ]),
+      });
+      // An admin of both organizations.
+      const admin = person('orgAdmin');
+      const membership = admin.memberships[0]!;
+      TestBed.inject(SessionStore).set({
+        ...admin,
+        memberships: [
+          membership,
+          {
+            ...membership,
+            organizationId: OTHER_ORG,
+            organizationKey: 'research',
+            organizationName: 'Research',
+          },
+        ],
+      });
+      const org = TestBed.inject(OrgContext);
+      onTestFinished(() => localStorage.removeItem('qualor.organizationId'));
+      const { fixture, root } = await render(
+        project({ reason: 'not_mapped', autoFix: { organizationEnabled: false } }),
+      );
+      expect(org.currentId()).toBe(ORG_ID);
+      expect(
+        line(root, 'review')?.querySelector('.req a[href="/settings/repositories"]'),
+      ).not.toBeNull();
+      expect(
+        line(root, 'fixes')?.querySelector('.req a[href="/settings/ai-review"]'),
+      ).not.toBeNull();
+
+      // The header shows Research: the pages would be Research's, so the places are named only.
+      org.select(OTHER_ORG);
+      await settle(fixture);
+      expect(line(root, 'review')?.querySelector('a')).toBeNull();
+      expect(text(line(root, 'review')?.querySelector('.req'))).toBe(
+        'This project is not linked to a GitLab or GitHub repository, where reviews are posted. An organization admin links it in Settings → Repositories.',
+      );
+      expect(line(root, 'fixes')?.querySelector('a')).toBeNull();
+      fixture.componentRef.setInput('project', project({ reason: 'project_not_selected' }));
+      await settle(fixture);
+      expect(line(root, 'review')?.querySelector('.state-line a')).toBeNull();
+      expect(stateOf(root, 'review').sentence).toBe(
+        'Default reviews selected projects only, and this is not one of them. An organization admin adds it in Settings → AI.',
+      );
+
+      org.select(ORG_ID);
+      await settle(fixture);
+      expect(
+        line(root, 'review')?.querySelector('.state-line a[href="/settings/ai-review"]'),
       ).not.toBeNull();
     });
 

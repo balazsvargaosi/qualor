@@ -104,8 +104,11 @@ export class ProjectAiPanel {
   protected readonly fixNotLinkedId = FIX_NOT_LINKED;
 
   private readonly projectId = computed(() => this.project().id);
-  /** A string: the project read again in the same organisation asks nothing again. */
-  private readonly organizationId = computed(() => this.project().organizationId);
+  /**
+   * The project's organisation: its places link only while the header shows it. A string, so the
+   * project read again in the same organisation asks nothing again.
+   */
+  protected readonly organizationId = computed(() => this.project().organizationId);
   /** An instance admin excluded the project from AI: every line says so. */
   protected readonly excluded = computed(() => this.project().autoFix.excludedFromAi);
   private readonly reason = computed(() => this.project().aiReview.reason);
@@ -337,7 +340,8 @@ export class ProjectAiPanel {
       icon: chip.icon,
       state,
       text,
-      where: place === null ? null : placeView(place, this.session, this.org),
+      where:
+        place === null ? null : placeView(place, this.session, this.org, this.organizationId()),
     };
   }
 }
