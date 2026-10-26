@@ -5,6 +5,8 @@ import {
   issueMarker,
   linesWithinBytes,
   MAX_PATH_CHARS,
+  plainProse,
+  plainValue,
   qualorLink,
   replyMarker,
   safeProse,
@@ -19,7 +21,10 @@ import { ANSWER_LIMITS, type ReviewNote } from './schemas';
  * skipped or failed, for each note it makes of itself), a number, a code in a code span, Qualor's
  * own link, or the model's words through `safeProse`: its verdict, the items of its walkthrough,
  * the titles and bodies of its findings. A path is a code span. Nothing the model or the
- * repository wrote is anything but a word to GitLab or GitHub.
+ * repository wrote is anything but a word to GitLab or GitHub. The prompt for an agent is the one
+ * place they are plain: a fenced block, which renders none of its text and which nothing in it can
+ * end, holds the findings' places and the model's words cleaned (`plainProse`), as an agent reads
+ * them.
  *
  * The section has its own bound (AI_SECTION_MAX_BYTES) and gives way to the room the note has, by
  * whole lines: it drops the prompt for an agent first (or lists fewer findings in it), then the
@@ -295,11 +300,16 @@ function reviewedLine(state: Done, words: Words): string | null {
 
 // ─── The prompt for an AI agent ──────────────────────────────────────────────
 
-/** A finding of the prompt: its place, its title and a part of its body, indented under it. */
+/**
+ * A finding of the prompt: its place, its title and a part of its body, indented under it. The
+ * block renders none of it, so they are plain, as an agent reads them: the place `path:line` and
+ * the model's words cleaned (`plainProse`), not code-spanned. Each line starts with Qualor's own
+ * text, the finding's number or the indent of its body.
+ */
 function promptItem(finding: Done['fixPrompt'][number], index: number): string[] {
-  const where = codeSpan(location(finding.path, finding.line), MAX_PATH_CHARS);
-  const title = inlineProse(finding.title, ANSWER_LIMITS.titleChars);
-  const body = safeProse(finding.body, {
+  const where = plainValue(location(finding.path, finding.line), MAX_PATH_CHARS);
+  const title = plainProse(finding.title, { maxChars: ANSWER_LIMITS.titleChars, maxLines: 1 });
+  const body = plainProse(finding.body, {
     maxChars: PROMPT_BODY_CHARS,
     maxLines: PROMPT_BODY_LINES,
   });
@@ -309,7 +319,10 @@ function promptItem(finding: Done['fixPrompt'][number], index: number): string[]
   ];
 }
 
-/** The block: a fence longer than any run of backticks inside it, so that nothing in it can end it. */
+/**
+ * The block: a fence longer than any run of backticks inside it (its content as it is written), so
+ * that nothing in it can end it, and its text renders as code.
+ */
 function promptBlock(content: readonly string[]): string[] {
   let longest = 0;
   for (const line of content) {

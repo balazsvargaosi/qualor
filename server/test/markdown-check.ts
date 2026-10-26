@@ -155,6 +155,51 @@ export function checkSectionLine(line: string): boolean {
   return checkProse(line);
 }
 
+/** The tags of the prompt block, each a line of its own. */
+const PROMPT_OPEN = '<details><summary>Prompt for an AI agent</summary>';
+const PROMPT_CLOSE = '</details>';
+/** The fence that opens the prompt block's text, and the language it names. */
+const PROMPT_FENCE = /^(`{3,})text$/;
+/** Qualor's fixed lines in the prompt block's text: its opening words and its count of the rest. */
+const PROMPT_FIXED_LINE =
+  /^(?:Fix the problems below, which an AI review found in this (?:merge|pull) request\.|The review can be wrong: read the code first and skip a finding that does not hold\.|Keep each change small and run the tests afterwards\.|And \d+ more open (?:finding is|findings are) in Qualor\.)$/;
+/** A line of a finding in the prompt block: its number, or the indent of its body and a word. */
+const PROMPT_FINDING_LINE = /^(?:\d+\. | {3}\S)/;
+
+/**
+ * The first line of an AI review section that breaks the rule that model text is inert, or null.
+ * Outside the prompt block every line passes {@link checkSectionLine}, and none is a fence of its
+ * own or starts with a slash, indented or not (a GitLab quick action). The block's text is in a
+ * fence, between its tags and their blank lines, and renders as code: the model's words in it are
+ * plain, so what is checked there is that nothing in them can end the fence or begin a line. No line
+ * holds a run of backticks as long as the fence, and each is empty, Qualor's fixed text, or a
+ * finding's number or the indent of its body, so none starts with model text (GitLab reads a quick
+ * action at the start of a line only, also where it does not take a fence for a code block).
+ */
+export function badSectionLine(lines: readonly string[]): string | null {
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i]!;
+    const opened = PROMPT_FENCE.exec(line);
+    if (opened === null) {
+      if (/^\s*\//.test(line) || /^`{3,}$/.test(line) || !checkSectionLine(line)) return line;
+      continue;
+    }
+    const fence = opened[1]!;
+    const close = lines.indexOf(fence, i + 1);
+    if (lines[i - 2] !== PROMPT_OPEN || lines[i - 1] !== '') return line;
+    if (close < 0 || lines[close + 1] !== '' || lines[close + 2] !== PROMPT_CLOSE) return line;
+    for (const inside of lines.slice(i + 1, close)) {
+      if ((inside.match(/`+/g) ?? []).some((run) => run.length >= fence.length)) return inside;
+      if (inside === '' || PROMPT_FIXED_LINE.test(inside) || PROMPT_FINDING_LINE.test(inside)) {
+        continue;
+      }
+      return inside;
+    }
+    i = close;
+  }
+  return null;
+}
+
 // ─── The first note of an AI review thread (server/src/review/render.ts) ─────
 
 const ISSUE_MARKER_LINE =

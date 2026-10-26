@@ -3,8 +3,8 @@ import { marked } from 'marked';
 import { describe, expect, it } from 'vitest';
 import { safeCodeSpan, safePlainValue } from '@qualor/shared';
 import {
+  badSectionLine,
   checkProse,
-  checkSectionLine,
   FIXED_TEXT,
   FORBIDDEN_ANYWHERE,
   outsideCodeSpans,
@@ -16,6 +16,7 @@ import {
   codeSpan,
   markerOf,
   MAX_RULE_LINK_CHARS,
+  plainProse,
   plainValue,
   qualorLink,
   ruleDocUrl,
@@ -726,16 +727,14 @@ function checkBody(body: string, maxBytes: number): void {
   expect(body).not.toMatch(FORBIDDEN_ANYWHERE);
   const lines = body.split('\n');
   expect(markerOf(body)).not.toBeNull();
-  // The AI review section holds the model's prose too: its lines are checked as prose.
-  let inAiSection = false;
+  // The AI review section holds the model's words too: it is checked as such (its prose, and the
+  // plain text of its prompt block, which is code).
+  const aiSection = lines.indexOf('#### AI review');
+  if (aiSection > 0) expect(badSectionLine(lines.slice(aiSection))).toBeNull();
   for (const [index, line] of lines.entries()) {
+    if (aiSection > 0 && index >= aiSection) break;
     expect(line, line).not.toMatch(/^\s*\//);
     if (index === 0) continue; // the marker, checked by markerOf above
-    if (line === '#### AI review') inAiSection = true;
-    if (inAiSection) {
-      expect(checkSectionLine(line), line).toBe(true);
-      continue;
-    }
     let markdown = outsideCodeSpans(line).replace(OWN_LINK, ' ');
     markdown = markdown.replace(/^#{3,4} /, ''); // the fixed headings
     expect(markdown, line).toMatch(
@@ -1212,17 +1211,42 @@ describe('safeProse: the model’s words made inert', () => {
     // Only the three markers: a plus is a word like any other.
     expect(prose('+ plus')).toBe('` + ` plus');
     expect(prose('1) one')).toBe('1) one');
-    // More than nine digits is no list marker (CommonMark's own bound), only a number.
-    expect(prose('1234567890. text')).toBe('` 1234567890. ` text');
+    // More than nine digits is no list marker (CommonMark's own bound), only a number, whose full
+    // stop is the sentence's.
+    expect(prose('1234567890. text')).toBe('` 1234567890 `. text');
   });
 
   it('puts every other word in a code span', () => {
     expect(prose('Call foo() or a_b, e.g. C++ at 10% or x=1.')).toBe(
-      'Call ` foo() ` or ` a_b, ` ` e.g. ` ` C++ ` at ` 10% ` or ` x=1. `',
+      'Call ` foo() ` or ` a_b `, ` e.g `. ` C++ ` at ` 10% ` or ` x=1 `.',
     );
-    expect(prose('src/a.ts: it is v2.1 now')).toBe('` src/a.ts: ` it is ` v2.1 ` now');
-    // A word that ends the way a plain word does, but starts with what it may not.
-    expect(prose("'single' (nested(x)) ((x)")).toBe("` 'single' ` ` (nested(x)) ` ` ((x) `");
+    expect(prose('src/a.ts: it is v2.1 now')).toBe('` src/a.ts `: it is ` v2.1 ` now');
+    // A word that ends the way a plain word does, but starts with what it may not: whole when what is
+    // left once its marks are off is plain (`(x)`).
+    expect(prose("'single' (nested(x)) ((x)")).toBe("` 'single' ` (` nested(x) `) ` ((x) `");
+  });
+
+  it('keeps the mark a word that is not plain opens with, and the marks it ends in, outside its span', () => {
+    expect(prose('See src/orders/discounts.js.')).toBe('See ` src/orders/discounts.js `.');
+    expect(prose('(see x.y)')).toBe('(see ` x.y `)');
+    expect(prose('(x.y) “a.b” ‘c.d’, "e.f"; g.h… i.j?!')).toBe(
+      '(` x.y `) “` a.b `” ‘` c.d `’, "` e.f `"; ` g.h `… ` i.j `?!',
+    );
+    // A bracket or a quote that pairs with one inside the word is the code's: it stays in the span.
+    expect(prose('Call foo() or f(a). Set x="a" (f(a)) (a)b)')).toBe(
+      'Call ` foo() ` or ` f(a) `. Set ` x="a" ` (` f(a) `) ` (a)b `)',
+    );
+    // A word of marks alone, or one that is plain once its marks are off, is the word as before:
+    // `www.` stays whole in its span, which GitHub would link outside it.
+    for (const word of ['…', '(', '()', '!?', '("', '.)', '“”']) {
+      expect(prose(word), word).toBe(`\` ${word} \``);
+    }
+    expect(prose('www. (www. www.)')).toBe('` www. ` ` (www. ` ` www.) `');
+    // What it takes out of the span is no more than a plain word may open with or end in.
+    for (const text of ['See src/a.ts. (x.y) “a.b”, f(a).', '(GH-1) 1234567. x.y:', '((x.y))']) {
+      expectInertProse(prose(text), text);
+      expect(prose(prose(text)), text).toBe(prose(text));
+    }
   });
 
   it('re-emits the model’s own backtick spans through codeSpan, as CommonMark reads them', () => {
@@ -1233,9 +1257,10 @@ describe('safeProse: the model’s words made inert', () => {
     expect(prose('Returns `null`. Or (`undefined`), "`x`"; ok')).toBe(
       'Returns ` null `. Or (` undefined `), "` x `"; ok',
     );
-    // A span that is cut off, or glued to letters, is an ordinary word: nothing is lost or joined.
+    // A span that is cut off, or that letters come before, is an ordinary word: nothing is lost or
+    // joined. Letters after it are a word's ending (below).
     expect(prose('`oops here')).toBe('`` `oops `` here');
-    expect(prose('word`glued` and `a`b')).toBe('`` word`glued` `` and `` `a`b ``');
+    expect(prose('word`glued` and `a`b')).toBe('`` word`glued` `` and ` a `b');
     expect(prose('`` ` ``')).toBe('`` ` ``');
     expect(prose('` `')).toBe('` `');
   });
@@ -1283,16 +1308,57 @@ describe('safeProse: the model’s words made inert', () => {
       expect(prose(text), text).toBe(`\`\` ${text} \`\``);
     }
     // A span joined to a plain word, or to an opener, or left open, is one word too.
+    for (const text of ['`a`/b', 'a/`b`', '`a`/(`b`)', '`a`/`b', '`a`/`b`/c', '/`a`/`b`']) {
+      expect(prose(text), text).toBe(`\`\` ${text} \`\``);
+    }
+  });
+
+  it('keeps a word’s ending glued to the model’s span plain: letters, then closing marks', () => {
+    expect(prose('It throws `CheckoutError`s.')).toBe('It throws ` CheckoutError `s.');
+    expect(prose("`codes`'s default")).toBe("` codes `'s default");
+    expect(prose('`codes`’s')).toBe('` codes `’s');
+    // After joined spans too, with the marks that open before and end after them.
+    for (const [text, out] of [
+      ['`row`es `map`ed, `fetch`ing', '` row `es ` map `ed, ` fetch `ing'],
+      ['`a`/`b`s.', '` a `/` b `s.'],
+      ['(`x`s)', '(` x `s)'],
+      ['`x`n’t', '` x `n’t'],
+      ['`x`é.', '` x `é.'],
+    ] as const) {
+      expect(prose(text), text).toBe(out);
+    }
+    // Anything else glued on keeps the whole word in one span, as before: a mark that is no
+    // closing one, a digit, a closing mark with more after it, a lone apostrophe, and an ending
+    // the plain-word test would not let through alone (a hash, `www.`, a tracker key).
     for (const text of [
-      '`a`/b',
-      'a/`b`',
-      '`a`/(`b`)',
-      '`a`/`b',
-      '`a`/`b`x',
-      '`a`/`b`/c',
-      '/`a`/`b`',
+      '`x`.com',
+      '`x`s.com',
+      '`x`@y',
+      '`x`#1',
+      '`x`!1',
+      '`x`(',
+      '`x`2',
+      '`x`s2',
+      "`x`'",
+      '`x`-y',
+      '`x`deadbeef',
+      '`x`www.com',
+      '`x`GH-1',
+      `\`x\`${String.fromCodePoint(0x301)}s`,
     ]) {
       expect(prose(text), text).toBe(`\`\` ${text} \`\``);
+    }
+    // Such a word is a word that is not plain: its closing marks are outside its span, and `www`,
+    // which GitHub links with the full stop after it, stays in.
+    expect(prose('`x`www.')).toBe('`` `x`www ``.');
+    for (const text of [
+      'It throws `CheckoutError`s.',
+      "`codes`'s default",
+      '`a`/`b`s.',
+      '`x`www. `x`www',
+    ]) {
+      expectInertProse(prose(text), text);
+      expect(prose(prose(text)), text).toBe(prose(text));
     }
   });
 
@@ -1310,7 +1376,7 @@ describe('safeProse: the model’s words made inert', () => {
     const text =
       'See deadbeef0 and 1234567. Also GH-26, JIRA-123 and x-JIRA-9, then v-1 or sha-256.';
     expect(prose(text)).toBe(
-      'See ` deadbeef0 ` and ` 1234567. ` Also ` GH-26, ` ` JIRA-123 ` and ` x-JIRA-9, ` then ` v-1 ` or ` sha-256. `',
+      'See ` deadbeef0 ` and ` 1234567 `. Also ` GH-26 `, ` JIRA-123 ` and ` x-JIRA-9 `, then ` v-1 ` or ` sha-256 `.',
     );
     // Six hex characters are an ordinary word, and so are hyphens between letters.
     expect(prose('a decade of well-known facade work')).toBe('a decade of well-known facade work');
@@ -1321,7 +1387,7 @@ describe('safeProse: the model’s words made inert', () => {
     // A part that holds a letter and is followed by a hyphen and a digit: the keys of Jira and
     // GitHub's `GH-` are all of that shape. What it leaves out is a number or a range.
     expect(prose('See AB1-123, X9-1, A1-2 and e2e-2 or Gh-7.')).toBe(
-      'See ` AB1-123, ` ` X9-1, ` ` A1-2 ` and ` e2e-2 ` or ` Gh-7. `',
+      'See ` AB1-123 `, ` X9-1 `, ` A1-2 ` and ` e2e-2 ` or ` Gh-7 `.',
     );
     expect(prose('about 5-10 or 2-way and well-known x-ray')).toBe(
       'about 5-10 or 2-way and well-known x-ray',
@@ -1358,9 +1424,13 @@ describe('safeProse: the model’s words made inert', () => {
     // links `GH-1` after an Arabic-Indic digit, an accented letter or a Han character. The rule is
     // the part (a letter, a hyphen, a digit), not what is before the letter: `9GH-1` and `2D-1`,
     // which no provider links, are in a code span too.
+    // The bracket and the full stop around a key are a sentence's, outside its span.
+    const marked = new Set([`${cp(0x663)}GH-1.`, `(${cp(0x663)}GH-1)`]);
     for (const word of [...KEYS_AFTER_OTHER_CHARACTERS, '9GH-1', '2D-1']) {
-      expect(prose(word), word).toBe(`\` ${word} \``);
+      if (!marked.has(word)) expect(prose(word), word).toBe(`\` ${word} \``);
     }
+    expect(prose(`${cp(0x663)}GH-1.`)).toBe(`\` ${cp(0x663)}GH-1 \`.`);
+    expect(prose(`(${cp(0x663)}GH-1)`)).toBe(`(\` ${cp(0x663)}GH-1 \`)`);
     expect(prose(`see ${cp(0x663)}GH-1 and 9${cp(0xe9)}GH-1 now`)).toBe(
       `see \` ${cp(0x663)}GH-1 \` and \` 9${cp(0xe9)}GH-1 \` now`,
     );
@@ -1483,7 +1553,7 @@ describe('safeProse: the model’s words made inert', () => {
     // The ellipsis of a cut closes a word like a full stop does.
     expect(prose('x'.repeat(50), { maxChars: 10 })).toBe(`${'x'.repeat(9)}…`);
     expect(prose('one two three four five', { maxChars: 12 })).toBe('one two thr…');
-    expect(prose('hello wörld 😀😀😀', { maxChars: 14 })).toBe('hello wörld ` 😀… `');
+    expect(prose('hello wörld 😀😀😀', { maxChars: 14 })).toBe('hello wörld ` 😀 `…');
     for (const text of ['', '   ', '\n \n', '\u200b\u2028']) expect(prose(text), text).toBe('');
     expect(prose('text', { maxChars: 0 })).toBe('');
     expect(prose('text', { maxLines: 0 })).toBe('');
@@ -1714,6 +1784,74 @@ describe('safeProse: the model’s words made inert', () => {
       const out = prose(`${key.slice(0, 8)}${hidden}${key.slice(8)}`);
       expect(out).not.toContain(key);
       expect(out.replaceAll(/[\s`]/g, '')).toBe(key);
+    }
+  });
+});
+
+describe('plainProse: the model\u2019s words cleaned, for a block that renders nothing', () => {
+  const plain = (text: string, options: { maxChars?: number; maxLines?: number } = {}): string =>
+    plainProse(text, { ...PROSE_OPTIONS, ...options });
+
+  it('writes each line as it is: no word is put in a code span, no list marker made over', () => {
+    const text =
+      'Call `foo()` with @user, #12 or x=1.\n* one\n1. two\n/close\n```\n`CheckoutError`s.';
+    expect(plain(text)).toBe(text);
+  });
+
+  it('cleans as safeProse does: controls, bidirectional, invisible and joiner characters and other white space are spaces', () => {
+    expect(plain('a\u202eb\u200bc\u2028d\u0000e\u00adf\u200dg\ufeffh\u{e0041}i')).toBe(
+      'a b c d e f g h i',
+    );
+    expect(plain('x\u0085y\u000bz\u000cw\u061cv')).toBe('x y z w v');
+    expect(plain('a\u00a0b\u2003c\u3000d\u2009e\tf')).toBe('a b c d e f');
+    // CR and CRLF end a line like LF does; a line keeps no space at its ends.
+    expect(plain('a\r\nb\rc\n  /close  ')).toBe('a\nb\nc\n/close');
+    const key = ['sk-test-', '0123456789abcdef'].join('');
+    expect(plain(`${key.slice(0, 8)}\u200b${key.slice(8)}`)).toBe(
+      `${key.slice(0, 8)} ${key.slice(8)}`,
+    );
+  });
+
+  it('cuts at a grapheme with an ellipsis, to at most maxLines lines, and makes repeated blank lines one', () => {
+    expect(plain('a\n\n\n\nb')).toBe('a\n\nb');
+    expect(plain('\n\n  \na\n \n\n')).toBe('a');
+    expect(plain('a\nb\nc', { maxLines: 2 })).toBe('a\nb');
+    expect(plain('a\n\n\nb\nc', { maxLines: 3 })).toBe('a\n\nb');
+    expect(plain('x'.repeat(50), { maxChars: 10 })).toBe(`${'x'.repeat(9)}\u2026`);
+    expect(plain('hello w\u00f6rld \ud83d\ude00\ud83d\ude00\ud83d\ude00', { maxChars: 14 })).toBe(
+      'hello w\u00f6rld \ud83d\ude00\u2026',
+    );
+    for (const text of ['', '   ', '\n \n', '\u200b\u2028']) expect(plain(text), text).toBe('');
+    expect(plain('text', { maxChars: 0 })).toBe('');
+    expect(plain('text', { maxLines: 0 })).toBe('');
+  });
+
+  it('makes a lone surrogate U+FFFD, as safeProse’s code span does', () => {
+    expect(plain('lone \ud800 and \udc00 halves, a\ud800b')).toBe(
+      'lone \ufffd and \ufffd halves, a\ufffdb',
+    );
+  });
+
+  it('keeps the lines safeProse keeps: the same cleaning and cutting, line for line', () => {
+    for (const [name, value] of [
+      ['a line separator before a quick action', 'x\u2028/close'],
+      [
+        'bidirectional controls',
+        '\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\u200e\u200f\u061c',
+      ],
+      ['joiners and fillers', 'a\u200db\u200cc\ufe0fd\u3164e\u2800f\u115fg'],
+      ['lone surrogates', 'a\ud800b\udc00c'],
+      ['tag characters', 'ok\u{e002f}\u{e006d}\u{e0065}'],
+      ['controls', 'a\u0000b\u0001c\u001bd\u007fe\u009bf'],
+      ['blank lines and line ends', '\r\n\r\na\r\n\r\n\r\nb\rc\u2029d'],
+      ['a long text', 'word '.repeat(300)],
+      ['many lines', 'a\nb\n\n\nc\n'.repeat(40)],
+    ] as const) {
+      for (const options of [{}, { maxChars: 50 }, { maxLines: 3 }]) {
+        const out = plain(value, options);
+        expect(out, name).not.toMatch(FORBIDDEN_ANYWHERE);
+        expect(out.split('\n').length, name).toBe(prose(value, options).split('\n').length);
+      }
     }
   });
 });

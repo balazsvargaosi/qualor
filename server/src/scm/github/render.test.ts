@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { GateResult } from '@qualor/shared';
 import { describe, expect, it } from 'vitest';
-import { checkSectionLine } from '../../../test/markdown-check';
+import { badSectionLine } from '../../../test/markdown-check';
 import type { ReviewSummaryState } from '../../review/render';
 import { markerOf } from '../markdown';
 import {
@@ -360,10 +360,7 @@ describe('GitHub bounds and hostile values (github.md §6.1, §6.4, §7)', () =>
       const lines = body.split('\n');
       const section = lines.slice(lines.indexOf('#### AI review'));
       expect(section.length).toBeGreaterThan(1);
-      for (const line of section) {
-        expect(line).not.toMatch(/^\s*\//);
-        expect(checkSectionLine(line), line).toBe(true);
-      }
+      expect(badSectionLine(section)).toBeNull();
       const output = checkRunSummary(body);
       expect(output.length).toBeLessThanOrEqual(GITHUB_SUMMARY_MAX_CHARS);
       expect(output).toContain('#### AI review');

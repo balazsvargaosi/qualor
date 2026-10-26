@@ -24,13 +24,15 @@
  * The AI review's words are the exception that reads as prose, not as a value in a code span: a
  * model's sentences are posted as text through {@link safeProse}, which keeps ordinary words plain
  * and puts every other word in a code span, so nothing it writes is more than a word to GitLab and
- * GitHub either.
+ * GitHub either. In a fenced block, which renders none of it, they are cleaned the same way and
+ * written as they are ({@link plainProse}).
  */
 import {
   CONTROL_CHARS,
   cutAtGrapheme,
   INVISIBLE_CHARS,
   JOINER_CHARS,
+  LONE_SURROGATE_SOURCE,
   safeCodeSpan,
   safePlainValue,
 } from '@qualor/shared';
@@ -63,6 +65,7 @@ export function codeSpan(value: string, max: number = MAX_VALUE_CHARS): string {
  * the joiners (packages/shared's lists, imported). A line break is split off before.
  */
 const PROSE_UNSAFE = new RegExp(`[${CONTROL_CHARS}${INVISIBLE_CHARS}${JOINER_CHARS}]`, 'gu');
+const LONE_SURROGATES = new RegExp(LONE_SURROGATE_SOURCE, 'g');
 /**
  * A word of ordinary prose: a core of letters, each with the combining marks that follow it, and
  * decimal digits, with apostrophes and hyphens between its parts, one opening bracket or quote
@@ -105,6 +108,16 @@ const COMBINING_MARKS = /\p{M}/gu;
 const HASH_EDGES = /['’-]|\p{M}+/u;
 /** A word or a model's span is cut to this many characters. */
 const PROSE_SPAN_CHARS = MAX_PATH_CHARS;
+/**
+ * The ending of a word that may follow the model's spans in it and stay plain, before the closing
+ * marks: letters with their combining marks, an apostrophe before them or between them allowed, as
+ * the `s` of `` `CheckoutError`s ``, the `'s` of `` `codes`'s `` or the `ing` of `` `fetch`ing ``.
+ */
+const SPAN_ENDING = /^['’]?((?:\p{L}\p{M}*)+(?:['’](?:\p{L}\p{M}*)+)*)$/u;
+/** The closing marks that close a bracket or a quote, each with the mark it closes ... */
+const OPENING_OF: Readonly<Record<string, string>> = { ')': '(', '"': '"', '”': '“', '’': '‘' };
+/** ... and each opening mark with the one that closes it. */
+const CLOSING_OF: Readonly<Record<string, string>> = { '(': ')', '"': '"', '“': '”', '‘': '’' };
 
 /**
  * Whether `word` is plain: ordinary letters and digits that no provider turns into a link or a
@@ -123,6 +136,51 @@ function isPlainProse(word: string): boolean {
   // into: GitHub reads a hash beside a mark as part of a word, GitLab may not.
   const parts = [...core.split(/['’-]/), ...marked.split(HASH_EDGES)];
   return !TRACKER_LIKE.test(core) && !parts.some((part) => COMMIT_LIKE.test(part));
+}
+
+/**
+ * Whether what is glued after the model's spans in a word stays plain beside them: closing marks
+ * alone, or a word's ending ({@link SPAN_ENDING}) and then closing marks, which the plain-word test
+ * would let through alone, so that nothing a provider links or references can hide in it.
+ */
+function plainAfterSpans(glued: string): boolean {
+  let end = glued.length;
+  while (end > 0 && PROSE_CLOSERS.includes(glued.charAt(end - 1))) end -= 1;
+  if (end === 0) return true;
+  const ending = SPAN_ENDING.exec(glued.slice(0, end));
+  return ending !== null && isPlainProse(`${ending[1] ?? ''}${glued.slice(end)}`);
+}
+
+/**
+ * Whether `text` holds `mark` without its `partner`: more of it than of the partner, or, for a quote
+ * that is its own partner, an odd number of it.
+ */
+function unpaired(text: string, mark: string, partner: string): boolean {
+  const count = (c: string): number => text.split(c).length - 1;
+  return mark === partner ? count(mark) % 2 === 1 : count(mark) > count(partner);
+}
+
+/**
+ * A word that is not plain, in a code span, with the mark it opens with and the marks it ends in
+ * outside the span, as they are around the model's own spans: `src/a.ts.` is `` `src/a.ts`. `` and
+ * `(x.y)` is `` (`x.y`) ``. A bracket or a quote among them that pairs with one inside the word is
+ * the code's and stays in the span (`foo()`, `x="a"`). A word that is only marks, or that is plain
+ * once they are off (`www.`, which GitHub links), is one span, whole.
+ */
+function wordSpan(word: string): string {
+  let start = PROSE_OPENERS.includes(word.charAt(0)) ? 1 : 0;
+  let end = word.length;
+  while (end > start && PROSE_CLOSERS.includes(word.charAt(end - 1))) {
+    const closing = word.charAt(end - 1);
+    const opening = OPENING_OF[closing];
+    if (opening !== undefined && unpaired(word.slice(start, end - 1), opening, closing)) break;
+    end -= 1;
+  }
+  const opener = word.charAt(0);
+  if (start === 1 && unpaired(word.slice(1, end), CLOSING_OF[opener] ?? opener, opener)) start = 0;
+  const core = word.slice(start, end);
+  if (core === '' || isPlainProse(core)) return codeSpan(word, PROSE_SPAN_CHARS);
+  return `${word.slice(0, start)}${codeSpan(core, PROSE_SPAN_CHARS)}${word.slice(end)}`;
 }
 
 /**
@@ -174,24 +232,22 @@ function spansJoinedAt(text: string, start: number): { out: string; end: number 
 
 /** The word of a line that begins at `at`, as prose writes it, and where the next one may begin. */
 function proseWordAt(text: string, at: number): { out: string; next: number } {
-  // The model's own span or spans, with the mark that opens before and the marks that end after.
+  // The model's own span or spans, with the mark that opens before them and what is glued after.
   const opener =
     PROSE_OPENERS.includes(text.charAt(at)) && text[at + 1] === '`' ? text.charAt(at) : '';
   const start = at + opener.length;
   const spans = text[start] === '`' ? spansJoinedAt(text, start) : null;
   if (spans !== null) {
-    let next = spans.end;
-    while (next < text.length && PROSE_CLOSERS.includes(text.charAt(next))) next += 1;
-    // Anything else glued to it makes the whole of it one ordinary word, below.
-    if (next >= text.length || text[next] === ' ') {
-      const closers = text.slice(spans.end, next);
-      return { out: `${opener}${spans.out}${closers}`, next };
-    }
+    const space = text.indexOf(' ', spans.end);
+    const end = space < 0 ? text.length : space;
+    const glued = text.slice(spans.end, end);
+    // Anything else glued to them makes the whole of it one ordinary word, below.
+    if (plainAfterSpans(glued)) return { out: `${opener}${spans.out}${glued}`, next: end };
   }
   const space = text.indexOf(' ', at);
   const end = space < 0 ? text.length : space;
   const word = text.slice(at, end);
-  return { out: isPlainProse(word) ? word : codeSpan(word, PROSE_SPAN_CHARS), next: end };
+  return { out: isPlainProse(word) ? word : wordSpan(word), next: end };
 }
 
 /** One line of prose, without its list marker: plain words as they are, anything else in a code span. */
@@ -218,39 +274,27 @@ function proseLine(line: string): string {
   return `${prefix}${proseWords(line.slice(marker[0].length))}`;
 }
 
+/** The bounds of a model's text: in characters (code points), and in lines. */
+export interface ProseBounds {
+  maxChars: number;
+  maxLines: number;
+}
+
 /**
- * A model's sentences as text for people that GitLab and GitHub cannot read as anything but words.
- * The text is cleaned, then every line is written word by word:
+ * A model's text cleaned and cut, as lines without their line breaks:
  * - a line break is LF, CRLF or CR; every other control, bidirectional, invisible or joiner
- *   character, and every white space but a space, becomes a space;
+ *   character, and every white space but a space, becomes a space, and a lone surrogate U+FFFD;
+ * - each line loses the spaces at its ends, and repeated blank lines become one;
  * - the text is cut to `maxChars` characters (at a grapheme boundary, with `…`) and to `maxLines`
- *   lines, and repeated blank lines become one;
- * - a line that starts with `- `, `* ` or a number and a dot becomes `- ` or `<n>. ` and keeps its
- *   rest;
- * - the backtick spans the model wrote are written again through {@link codeSpan}, with the marks
- *   that open before and end after them, and the one mark that joins two of them (`/`, `,`, `-`,
- *   `+`, `.` or `:`) plain between them: `` `try`/`catch` `` is two code spans and a slash;
- * - every other word, as white space separates them, stays plain only when it is letters and
- *   decimal digits (apostrophes and hyphens inside, combining marks on the letters, a bracket or
- *   quote before, closing marks after) that no provider turns into a commit link, a tracker
- *   reference or a `www.` link; a dash by itself is plain too. Anything else goes in a code span,
- *   so `@x`, `#1`, `!1`, `~x`, `%x`, `&x`, `$x`, `/x`, `<x>`, `[x](y)`, `*`, `|`, `=`, `www.x`,
- *   `x.y`, `a:b`, `①` and the like are never active; a lone surrogate, which is no letter, is in a
- *   code span, where it becomes U+FFFD.
- * A line therefore starts with a letter, a digit, a backtick, an opening mark, a dash or a list
- * marker.
- *
- * Nothing it takes out is deleted: a character it removes leaves a space, so that a provider's key
- * a model split with hidden characters cannot be joined again here (the shared `codeSpan` and
- * `safePlainValue` delete the invisible ones, but they only ever see words from which this has
- * taken them already). The key itself is scrubbed when the answer is parsed (review/key-scrub.ts).
+ *   lines, with no blank line last.
+ * Nothing it takes out is deleted: a character it removes leaves a space (see {@link safeProse}).
  */
-export function safeProse(text: string, options: { maxChars: number; maxLines: number }): string {
-  const { maxChars, maxLines } = options;
-  if (maxChars < 1 || maxLines < 1) return '';
+function proseLines(text: string, { maxChars, maxLines }: ProseBounds): string[] {
+  if (maxChars < 1 || maxLines < 1) return [];
   const lines: string[] = [];
   for (const raw of text.replace(/\r\n?/g, '\n').split('\n')) {
     const line = raw
+      .replace(LONE_SURROGATES, '\ufffd')
       .replace(PROSE_UNSAFE, ' ')
       .replace(/[^\S ]/gu, ' ')
       .trim();
@@ -259,7 +303,49 @@ export function safeProse(text: string, options: { maxChars: number; maxLines: n
   }
   const cut = cutAtGrapheme(lines.join('\n').trimEnd(), maxChars).split('\n').slice(0, maxLines);
   while (cut.length > 0 && cut[cut.length - 1] === '') cut.pop();
-  return cut.map(proseLine).join('\n');
+  return cut;
+}
+
+/**
+ * A model's sentences as text for people that GitLab and GitHub cannot read as anything but words.
+ * The text is cleaned and cut ({@link proseLines}), then every line is written word by word:
+ * - a line that starts with `- `, `* ` or a number and a dot becomes `- ` or `<n>. ` and keeps its
+ *   rest;
+ * - the backtick spans the model wrote are written again through {@link codeSpan}, with the mark
+ *   that opens before them, the one mark that joins two of them (`/`, `,`, `-`, `+`, `.` or `:`)
+ *   plain between them, and what is glued after them plain when it is closing marks, or a word's
+ *   ending of letters (an apostrophe before or between them) that the plain-word test lets through
+ *   alone, then closing marks: `` `try`/`catch` `` is two code spans and a slash, and
+ *   `` `CheckoutError`s. `` a code span and `s.`. Anything else glued to a span (`.com`, `/x`,
+ *   `@x`, `#1`, a digit) makes the whole word one code span;
+ * - every other word, as white space separates them, stays plain only when it is letters and
+ *   decimal digits (apostrophes and hyphens inside, combining marks on the letters, a bracket or
+ *   quote before, closing marks after) that no provider turns into a commit link, a tracker
+ *   reference or a `www.` link; a dash by itself is plain too. Anything else goes in a code span,
+ *   with the mark it opens with and the marks it ends in outside the span, but a bracket or quote
+ *   that pairs with one inside it (`foo()`), so `@x`, `#1`, `!1`, `~x`, `%x`, `&x`, `$x`, `/x`,
+ *   `<x>`, `[x](y)`, `*`, `|`, `=`, `www.x`, `x.y`, `a:b`, `①` and the like are never active.
+ * A line therefore starts with a letter, a digit, a backtick, an opening mark, a dash or a list
+ * marker.
+ *
+ * Nothing it takes out is deleted: a character it removes leaves a space, so that a provider's key
+ * a model split with hidden characters cannot be joined again here (the shared `codeSpan` and
+ * `safePlainValue` delete the invisible ones, but they only ever see words from which this has
+ * taken them already). The key itself is scrubbed when the answer is parsed (review/key-scrub.ts).
+ */
+export function safeProse(text: string, bounds: ProseBounds): string {
+  return proseLines(text, bounds).map(proseLine).join('\n');
+}
+
+/**
+ * A model's text cleaned and cut as {@link safeProse} cleans and cuts it ({@link proseLines}), each
+ * line then written as it is, with no code span and no list marker made over: for a block that
+ * renders none of it, the fenced block of the summary's prompt for an agent, which its fence (longer
+ * than any run of backticks inside it) keeps inert. Anywhere Markdown renders, the model's words go
+ * through `safeProse`.
+ */
+export function plainProse(text: string, bounds: ProseBounds): string {
+  return proseLines(text, bounds).join('\n');
 }
 
 /**

@@ -1,6 +1,7 @@
 import { marked } from 'marked';
 import { describe, expect, it } from 'vitest';
 import {
+  badSectionLine,
   checkAiThreadLines,
   checkProse,
   checkSectionLine,
@@ -640,9 +641,9 @@ describe('the prompt for an AI agent', () => {
       'The review can be wrong: read the code first and skip a finding that does not hold.',
       'Keep each change small and run the tests afterwards.',
       '',
-      '1. ` src/file1.ts:1 ` Finding number 1',
+      '1. src/file1.ts:1 Finding number 1',
       '   The call in file 1 can fail when the input is empty, so check it first.',
-      '2. ` src/file2.ts:2 ` Second ` thing `',
+      '2. src/file2.ts:2 Second `thing`',
       '   The call in file 2 can fail when the input is empty, so check it first.',
       '```',
       '',
@@ -661,6 +662,83 @@ describe('the prompt for an AI agent', () => {
     expect(lines).toContain(
       'Fix the problems below, which an AI review found in this pull request.',
     );
+  });
+
+  it('writes the model’s words in the block as they were written, cleaned, and the place plain', () => {
+    const lines = prompt(
+      done({
+        counts: { high: 1, medium: 0, low: 0 },
+        fixPrompt: [
+          promptFinding(1, {
+            path: 'src/orders/discounts.js',
+            line: 12,
+            title: 'Throws `CheckoutError`s at @all',
+            body: 'Use `try`/`catch` (see x.y).\n\n\n- once\n/close\r\nok\u202eevil\u200bhidden   ',
+          }),
+        ],
+      }),
+    );
+    expect(lines.slice(7, -3)).toEqual([
+      '1. src/orders/discounts.js:12 Throws `CheckoutError`s at @all',
+      '   Use `try`/`catch` (see x.y).',
+      '',
+      '   - once',
+      '   /close',
+      '   ok evil hidden',
+    ]);
+    // The place is plain too, and one line: a line break or a bidirectional control in it is a space.
+    const odd = prompt(
+      done({
+        fixPrompt: [promptFinding(1, { path: 'src/a\n/close\u202e.ts', line: 3, title: '' })],
+      }),
+    );
+    expect(odd).toContain('1. src/a /close .ts:3');
+  });
+
+  it('gives the block a fence longer than the backticks the model wrote', () => {
+    const lines = prompt(done({ fixPrompt: [promptFinding(1, { title: 'A ``` fence' })] }));
+    expect(lines[2]).toBe('````text');
+    expect(lines).toContain('1. src/file1.ts:1 A ``` fence');
+    expect(lines.at(-3)).toBe('````');
+    // Three backticks are the shortest fence, and a longer run makes it longer still.
+    expect(prompt(done({ fixPrompt: [promptFinding(1)] }))[2]).toBe('```text');
+    const long = prompt(done({ fixPrompt: [promptFinding(1, { body: `x ${'`'.repeat(9)} y` })] }));
+    expect(long[2]).toBe(`${'`'.repeat(10)}text`);
+    expect(long).toContain(`   x ${'`'.repeat(9)} y`);
+  });
+
+  it('writes the threads’ and the rest of the section’s words through safeProse, as before', () => {
+    const words = 'Use `try`/`catch` (see x.y).';
+    const lines = section(
+      done({
+        verdict: words,
+        walkthrough: [words],
+        unplaced: [finding(1, { title: words })],
+        fixPrompt: [promptFinding(1, { title: words, body: words })],
+      }),
+    );
+    const prose = 'Use ` try `/` catch ` (see ` x.y `).';
+    expect(lines[2]).toBe(prose);
+    expect(lines).toContain(`- ${prose}`);
+    expect(lines.find((line) => line.startsWith('- **Medium**'))).toContain(` · ${prose} · `);
+    // In the block the same words are as the model wrote them.
+    expect(lines).toContain(`1. src/file1.ts:1 ${words}`);
+    expect(lines).toContain(`   ${words}`);
+    const thread = aiThreadBody({
+      provider: 'gitlab',
+      issueId: '01920000-0000-7000-8000-000000000001',
+      severity: 'high',
+      category: 'logic',
+      confidence: 'high',
+      ruleKey: 'ai:logic',
+      title: words,
+      body: words,
+      assumption: null,
+      verification: null,
+      suggestion: null,
+      issueUrl: null,
+    });
+    expect(thread.split('\n').slice(3)).toEqual([`**${prose}**`, '', prose]);
   });
 
   it('uses a fence longer than any run of backticks inside it', () => {
@@ -717,12 +795,12 @@ describe('the prompt for an AI agent', () => {
     });
     const whole = section(state);
     expect(bytesOf(whole)).toBeLessThanOrEqual(AI_SECTION_MAX_BYTES);
-    const listed = whole.filter((line) => /^\d+\. ` src\//.test(line)).length;
+    const listed = whole.filter((line) => /^\d+\. src\//.test(line)).length;
     expect(listed).toBeGreaterThan(0);
     expect(listed).toBeLessThan(12);
     // The ones it lists are the first, and it says how many it leaves out.
     for (let n = 1; n <= listed; n += 1)
-      expect(whole.join('\n')).toContain(`${n}. \` src/file${n}.ts:${n} \``);
+      expect(whole).toContain(`${n}. src/file${n}.ts:${n} Finding number ${n}`);
     expect(whole).toContain(`And ${12 - listed} more open findings are in Qualor.`);
     // With less room than the first finding takes, the whole block goes and the rest stays.
     const withoutPrompt = section({ ...state, fixPrompt: [] });
@@ -883,10 +961,9 @@ describe('model text in the section is inert', () => {
     expect(body).not.toMatch(FORBIDDEN_ANYWHERE);
     expect(markerOf(body)).toBeNull();
     expect(bytesOf(lines)).toBeLessThanOrEqual(AI_SECTION_MAX_BYTES);
-    for (const line of lines) {
-      expect(line, line).not.toMatch(/^\s*\//);
-      expect(checkSectionLine(line), line).toBe(true);
-    }
+    expect(badSectionLine(lines)).toBeNull();
+    // The prompt is there, with the model's words in it: the check read its block.
+    expect(lines).toContain('<details><summary>Prompt for an AI agent</summary>');
     // Nothing is a link but Qualor's own, and the details block is the one block there is.
     const html = marked.parse(body, { async: false, gfm: true, breaks: false });
     for (const [, href] of html.matchAll(/<a [^>]*href="([^"]*)"/g)) {
@@ -913,9 +990,8 @@ describe('model text in the section is inert', () => {
         }),
         provider,
       );
-      for (const line of lines) {
-        expect(checkSectionLine(line), line).toBe(true);
-      }
+      expect(badSectionLine(lines)).toBeNull();
+      expect(lines.some((line) => line.startsWith('```'))).toBe(true);
     }
     for (const state of [
       { kind: 'pending' },
@@ -924,9 +1000,7 @@ describe('model text in the section is inert', () => {
       { kind: 'skipped', reason: 'budget_spent', detail: 'too_large' },
       { kind: 'failed', reason: 'bad_answer' },
     ] as const) {
-      for (const line of section(state)) {
-        expect(checkSectionLine(line), line).toBe(true);
-      }
+      expect(badSectionLine(section(state))).toBeNull();
     }
     // The check has teeth: a link, a mention or a heading outside a code span is refused.
     for (const bad of [
@@ -1010,6 +1084,38 @@ describe('model text in the section is inert', () => {
       '[View in Qualor](https://q.example/x)',
     ]) {
       expect(checkSectionLine(bad), bad).toBe(false);
+    }
+  });
+
+  it('checks the prompt block as code: nothing in it may end its fence or begin a line', () => {
+    const block = (...text: string[]) => [
+      '#### AI review',
+      '',
+      '<details><summary>Prompt for an AI agent</summary>',
+      '',
+      '````text',
+      'Keep each change small and run the tests afterwards.',
+      '',
+      ...text,
+      '````',
+      '',
+      '</details>',
+    ];
+    expect(badSectionLine(block('1. @all /merge `x` ``` #1', '   /close <img src=x>', ''))).toBe(
+      null,
+    );
+    // A run as long as the fence, a line that starts with model text, or one unindented.
+    expect(badSectionLine(block('1. a ```` b'))).toBe('1. a ```` b');
+    expect(badSectionLine(block('/close'))).toBe('/close');
+    expect(badSectionLine(block('  /close'))).toBe('  /close');
+    expect(badSectionLine(block('# heading'))).toBe('# heading');
+    // A fence that is never closed, or that is not between the block's tags.
+    expect(badSectionLine(block('1. x').slice(0, -3))).toBe('````text');
+    expect(badSectionLine(block('1. x').slice(0, -1))).toBe('````text');
+    expect(badSectionLine(['#### AI review', '', '````text', '1. x', '````'])).toBe('````text');
+    // Outside the block a slash, a fence of its own and model text out of its spans are refused.
+    for (const bad of ['  /close', '```', 'see @all']) {
+      expect(badSectionLine(['#### AI review', '', bad]), bad).toBe(bad);
     }
   });
 
@@ -1104,7 +1210,7 @@ describe('the answer to a reply', () => {
       'See https://evil.example/x and ping @all about #12.\n/close\n- [click](https://evil.example)',
       'wont_fix',
     );
-    expect(note).toContain('See ` https://evil.example/x ` and ping ` @all ` about ` #12. `');
+    expect(note).toContain('See ` https://evil.example/x ` and ping ` @all ` about ` #12 `.');
     expect(note).not.toMatch(FORBIDDEN_ANYWHERE);
     const lines = answerLines(note, true);
     expect(lines.length).toBeGreaterThan(1);
