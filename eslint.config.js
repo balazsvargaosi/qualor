@@ -294,6 +294,7 @@ export default defineConfig(
       'packages/*/test/**/*.ts',
       'server/test/**/*.ts',
       'cli/test/**/*.ts',
+      'ui/src/testing/**/*.ts',
     ],
     rules: { '@typescript-eslint/no-non-null-assertion': 'off' },
   },
