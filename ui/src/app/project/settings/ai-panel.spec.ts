@@ -216,6 +216,48 @@ describe('ProjectAiPanel', () => {
       expect(line(root, 'review')?.querySelector('.state-line a, .req a')).toBeNull();
     });
 
+    it('says it reviews before the provider is known, and names it once it is', async () => {
+      const server = setup();
+      let answer!: () => void;
+      server.on(
+        'GET',
+        ORG_AI,
+        () =>
+          new Promise((resolve) => {
+            answer = () => resolve({ body: assistantFor(null) });
+          }),
+      );
+      // Rendered while the organization's answer is held back: waiting for a stable fixture would
+      // wait for that answer.
+      const fixture = TestBed.createComponent(ProjectAiPanel);
+      fixture.componentRef.setInput('project', project());
+      for (let i = 0; i < 5; i++) {
+        await new Promise((resolve) => setTimeout(resolve));
+        fixture.detectChanges();
+      }
+      const root = fixture.nativeElement as HTMLElement;
+      expect(server.requestsTo('GET', ORG_AI)).toHaveLength(1);
+      expect(stateOf(root, 'review')).toEqual({
+        state: 'Reviewed',
+        sentence: "Reviews this project's merge requests.",
+      });
+      answer();
+      await settle(fixture);
+      expect(stateOf(root, 'review').sentence).toBe(
+        "Reviews this project's merge requests, with ollama:11434.",
+      );
+    });
+
+    it('says it reviews when the provider could not be read', async () => {
+      const server = setup();
+      server.on('GET', ORG_AI, { status: 500, body: problem(500, 'INTERNAL') });
+      const { root } = await render();
+      expect(stateOf(root, 'review')).toEqual({
+        state: 'Reviewed',
+        sentence: "Reviews this project's merge requests.",
+      });
+    });
+
     it('says who chooses the projects, and that the CI must scan merge requests with the full history', async () => {
       setup();
       const { root } = await render();

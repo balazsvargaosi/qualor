@@ -27,19 +27,17 @@
         <span class="badge {{ review.badge }}"
           ><q-icon [name]="review.icon" />{{ review.state }}</span
         >&ngsp;
-        @if (review.text) {
-          <span
-            >{{ review.text }}
-            @if (review.where; as place) {
-              @if (place.link) {
-                <a [routerLink]="place.route">{{ place.label }}</a
-                >.
-              } @else {
-                {{ place.label }}.
-              }
+        <span
+          >{{ review.text }}
+          @if (review.where; as place) {
+            @if (place.link) {
+              <a [routerLink]="place.route">{{ place.label }}</a
+              >.
+            } @else {
+              {{ place.label }}.
             }
-          </span>
-        }
+          }
+        </span>
       </div>
       @if (notMapped()) {
         <q-requirement

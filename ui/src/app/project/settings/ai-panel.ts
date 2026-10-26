@@ -40,7 +40,7 @@ interface StateLine {
   badge: string;
   icon: IconName;
   state: string;
-  text: string | null;
+  text: string;
   where: PlaceView | null;
 }
 
@@ -153,12 +153,14 @@ export class ProjectAiPanel {
     const org = this.orgName();
     switch (this.reason()) {
       case null: {
+        // The provider's host comes with the organisation's assistant: without it (still being
+        // read, or unreadable) the sentence names none.
         const host = this.orgAi()?.provider?.host;
         return this.line(
           'ok',
           this.states.reviewed,
           host === undefined
-            ? null
+            ? $localize`:@@projectAi.reason.reviewedNoHost:Reviews this project's merge requests.`
             : $localize`:@@projectAi.reason.reviewed:Reviews this project's merge requests, with ${host}:host:.`,
         );
       }
@@ -331,7 +333,7 @@ export class ProjectAiPanel {
   private line(
     tone: StatusTone,
     state: string,
-    text: string | null,
+    text: string,
     place: RequirementPlace | null = null,
   ): StateLine {
     const chip = TONE_CHIPS[tone];

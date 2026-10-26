@@ -895,6 +895,7 @@
     "projectAi.orgFallback": "The organization",
     "projectAi.review.who": "{$org}'s organization admins choose the projects.",
     "projectAi.reason.excluded": "An instance admin excluded this project from AI, so nothing of it is sent.",
+    "projectAi.reason.reviewedNoHost": "Reviews this project's merge requests.",
     "projectAi.reason.reviewed": "Reviews this project's merge requests, with {$host}.",
     "projectAi.reason.notMappedLine": "Selected, but not reviewed.",
     "projectAi.reason.notSelected": "{$org} reviews selected projects only, and this is not one of them. An organization admin adds it in",
