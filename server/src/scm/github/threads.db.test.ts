@@ -629,6 +629,30 @@ describe('GitHub review threads (github.md §6.4)', () => {
     expect(resolvedByLine(s.repo.id)).toEqual({ 3: false });
   });
 
+  it('skips a thread GitHub no longer has when it writes its note, and goes on', async () => {
+    const s = await setup('threads/fixed-gone');
+    await s.ingest([3, 4]);
+    await s.reconcile();
+    for (const line of [3, 4]) replyIn(s.repo.id, line);
+    // Lines 3 and 4 are fixed and line 5 is new. The older thread is deleted while the job runs:
+    // GitHub answers its note with a 404.
+    const [gone, kept] = appThreads(s.repo.id).map((thread) => commentOf(thread));
+    fake.inject(
+      'POST',
+      new RegExp(`^/repos/acme/${s.repo.name}/pulls/7/comments/${gone!.id}/replies$`),
+      { status: 404, body: { message: 'Not Found' } },
+    );
+    await s.ingest([5]);
+    expect(await s.reconcile()).toEqual({ commented: 1, unplaced: 0 });
+    // Its note was asked for, the other thread's is made after it, and the new thread after them.
+    expect(notePosts()).toHaveLength(2);
+    expect(appReplies(s.repo.id, gone!.line)).toEqual([]);
+    expect(appReplies(s.repo.id, kept!.line)).toEqual([
+      fixedText(issueAt(s.repo.id, kept!.line), HEAD),
+    ]);
+    expect(creations().map((c) => c.line)).toEqual([5]);
+  });
+
   it('writes no note for an issue someone decided on, nor in a thread a person resolved', async () => {
     const s = await setup('threads/fixed-decided');
     await s.ingest([3, 4, 5]);

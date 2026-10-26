@@ -594,6 +594,32 @@ describe('GitLab inline discussions (scm.md §5.4)', () => {
       expect(resolvedByLine(gitlabId)).toEqual({ 3: false });
     });
 
+    it('skips a thread GitLab no longer has when it writes its note, and goes on', async () => {
+      const { gitlabId, ingest } = await setup('inline/fixed-gone');
+      await ingest([3, 4]);
+      await runDecorations(h, decorationDeps(h));
+      for (const line of [3, 4]) replyIn(gitlabId, line);
+      // The older thread is deleted while the job runs: GitLab answers its note with a 404.
+      const [gone, kept] = threads(gitlabId);
+      fake.inject(
+        'POST',
+        new RegExp(`^/projects/${gitlabId}/merge_requests/7/discussions/${gone!.id}/notes$`),
+        { status: 404, body: { message: '404 Discussion Not Found' } },
+      );
+      fake.clearRequests();
+      await ingest([]);
+      await runDecorations(h, decorationDeps(h));
+      // Its note was asked for, the other thread's is made after it, and the summary is written.
+      const notes = (discussion: typeof gone) =>
+        discussion!.notes.slice(1).filter((note) => note.authorId === fake.botUserId);
+      expect(notePosts()).toHaveLength(2);
+      expect(notes(gone)).toEqual([]);
+      expect(notes(kept).map((note) => markerOf(note.body)?.kind)).toEqual(['fixed']);
+      expect(summary(gitlabId)).toContain('quality gate passed');
+      // The job ended done: nothing is retried.
+      expect(await queuedDecorations(h)).toEqual([]);
+    });
+
     it('writes none for an issue a person decided on, nor in a thread a person resolved', async () => {
       const { project, gitlabId, ingest } = await setup('inline/fixed-decided');
       const analysisId = await ingest([3, 4, 5]);
