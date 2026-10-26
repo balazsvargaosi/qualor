@@ -185,7 +185,7 @@ describe('InstallationTokenCache (github.md §4)', () => {
   });
 
   it('keys by the credentials, so a replaced key never reuses a token', () => {
-    const parts = { connectionId: 'c', installationId: 9, repo: 'Acme/API' };
+    const parts = { connectionId: 'c', installationId: 9, repo: 'Acme/API', contents: false };
     const a = tokenCacheKey({ ...parts, credentials: credentialsId('1', 'key-a') });
     const b = tokenCacheKey({ ...parts, credentials: credentialsId('1', 'key-b') });
     expect(a).not.toBe(b);
@@ -193,6 +193,13 @@ describe('InstallationTokenCache (github.md §4)', () => {
       tokenCacheKey({ ...parts, repo: 'acme/api', credentials: credentialsId('1', 'key-a') }),
     ).toBe(a);
     expect(a).not.toContain('key-a');
+  });
+
+  it('keys by whether Contents (write) was asked, so a token serves only where it was asked the same', () => {
+    const parts = { connectionId: 'c', credentials: 'x', installationId: 9, repo: 'acme/api' };
+    const asked = tokenCacheKey({ ...parts, contents: true });
+    expect(asked).not.toBe(tokenCacheKey({ ...parts, contents: false }));
+    expect(tokenCacheKey({ ...parts, contents: true })).toBe(asked);
   });
 
   it('holds at most 1 000 entries, dropping the oldest', () => {

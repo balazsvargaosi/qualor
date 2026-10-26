@@ -23,10 +23,17 @@ import { fileURLToPath } from 'node:url';
  *
  * What it checks where Qualor depends on it: the App JWT (RS256 with the App's public key, `iss`
  * the App id, `iat` not in the fake's future, at most 10 minutes); installation tokens (issued
- * only for repositories and permissions the installation has, expiring after an hour, revocable);
- * each endpoint's permission; at most 50 annotations per request (appended on PATCH, as GitHub
- * does: Qualor sends none now, but a check run of 0.11 carries some, and GitHub never removes
- * them); `filter=latest` and `app_id` of the check-run listing; `Link` headers with `rel="next"`.
+ * only for repositories and permissions the installation has, a 422 for any other, expiring after
+ * an hour, revocable); each endpoint's permission; at most 50 annotations per request (appended on
+ * PATCH, as GitHub does: Qualor sends none now, but a check run of 0.11 carries some, and GitHub
+ * never removes them); `filter=latest` and `app_id` of the check-run listing; `Link` headers with
+ * `rel="next"`.
+ *
+ * An installation's answer names the permissions it grants and the events the App subscribes to,
+ * the documented App's unless a test gives its own. Resolving or reopening a review thread takes a
+ * token with `contents: write`, as github.com showed on 2026-10-26: a token without it gets
+ * GraphQL's `FORBIDDEN` whatever else it carries, `pull_requests: write` included, and (as a
+ * public probe found) one with it needs nothing more.
  *
  * A pull request review (`POST /pulls/{n}/reviews`) is all or nothing, as GitHub's: one comment
  * GitHub would not place refuses it (422) and makes none of its comments. GitHub requires a body
@@ -69,8 +76,15 @@ export interface FakeRepository {
   name: string;
   /** Null: the App is not installed on it. */
   installationId: number | null;
-  /** What the installation was granted (default: checks, pull_requests write, metadata read). */
+  /**
+   * What the installation was granted, the documented App's by default ({@link DEFAULT_PERMISSIONS}).
+   * An installation is all of its repositories: the first one added speaks for it, in the token
+   * request and in the installation's answer. The object is kept as given, so a test may change
+   * it later (an owner who grants a permission, or takes one away).
+   */
   permissions?: Record<string, Access>;
+  /** The events the App subscribes to, which the installation's answer lists ({@link DEFAULT_EVENTS}). */
+  events?: string[];
   /**
    * Renamed or transferred to this `owner/name`: a 301 which, as GitHub's, points to
    * `/repositories/{id}` rather than to the new name.
@@ -303,11 +317,20 @@ const REVIEW_STATES: Readonly<Record<string, string>> = {
   REQUEST_CHANGES: 'CHANGES_REQUESTED',
 };
 
+/** The permissions of the App the guide documents (docs/guide/github.md, Create it). */
 const DEFAULT_PERMISSIONS: Record<string, Access> = {
   checks: 'write',
-  pull_requests: 'write',
+  contents: 'write',
+  issues: 'read',
   metadata: 'read',
+  pull_requests: 'write',
 };
+/** The events of the App the guide documents. */
+const DEFAULT_EVENTS: readonly string[] = [
+  'check_run',
+  'issue_comment',
+  'pull_request_review_comment',
+];
 const PREFIX = '/api/v3';
 /** Where GitHub Enterprise Server serves GraphQL: beside `/api/v3`, not under it. */
 const GRAPHQL_PATH = '/api/graphql';
@@ -414,6 +437,14 @@ export async function createFakeGitHub(
   const permissionKey = (repoId: number, login: string) => `${repoId}|${login.toLowerCase()}`;
   const permissionShape = githubShape('collaborator_permission');
   const injections: { method: string; path: RegExp; answers: InjectedAnswer[] }[] = [];
+  /** What an installation grants and subscribes to: its first repository's, else the documented App's. */
+  const installationOf = (installationId: number) => {
+    const first = [...repos.values()].find((r) => r.installationId === installationId);
+    return {
+      permissions: first?.permissions ?? DEFAULT_PERMISSIONS,
+      events: first?.events ?? DEFAULT_EVENTS,
+    };
+  };
   let nextId = 1;
   let nextThread = 1;
   let nextReviewComment = FIRST_REVIEW_COMMENT_ID;
@@ -769,7 +800,8 @@ export async function createFakeGitHub(
    * `NOT_FOUND` for a repository, pull request or thread the token cannot see, `FORBIDDEN` for a
    * missing permission), a variable of the wrong type with errors and no `data`, and a bad
    * credential or request body with an HTTP status. The token must belong to an installation that
-   * has the repository, with `pull_requests` read (a query) or write (a mutation).
+   * has the repository, with `pull_requests` read for the query, and `contents: write` to resolve
+   * or reopen a thread: GitHub refuses a token without it, whatever else it carries.
    */
   const graphql = (
     req: IncomingMessage,
@@ -832,8 +864,8 @@ export async function createFakeGitHub(
       repo !== undefined &&
       repo.installationId === grant.installationId &&
       grant.repositories.includes(repo.name.toLowerCase());
-    const may = (access: Access) => {
-      const has = grant.permissions.pull_requests;
+    const may = (permission: string, access: Access) => {
+      const has = grant.permissions[permission];
       return has !== undefined && (access === 'read' || has === 'write');
     };
     const forbidden = (path: string[]) => ({
@@ -871,7 +903,8 @@ export async function createFakeGitHub(
             message: `Could not resolve to a Repository with the name '${owner}/${name}'.`,
           },
         );
-      if (!may('read')) return answer({ repository: null }, forbidden(['repository']));
+      if (!may('pull_requests', 'read'))
+        return answer({ repository: null }, forbidden(['repository']));
       const pull = pulls.get(`${repo.id}#${number}`);
       if (!pull)
         return answer(
@@ -939,7 +972,8 @@ export async function createFakeGitHub(
             message: `Could not resolve to a node with the global id of '${id}'.`,
           },
         );
-      if (!may('write')) return answer({ [field]: null }, forbidden([field]));
+      // Measured on github.com: Contents (write) is what it takes, and Pull requests does not.
+      if (!may('contents', 'write')) return answer({ [field]: null }, forbidden([field]));
       thread.resolved = field === 'resolveReviewThread';
       // An installation token is this App's: GitHub names its `<slug>[bot]` as the resolver, and
       // nobody once the thread is open again (ruling R6).
@@ -1014,7 +1048,7 @@ export async function createFakeGitHub(
       }
       if (installed.some((r) => r.suspended))
         return deny(res, 403, 'This installation has been suspended');
-      const granted = installed[0]?.permissions ?? DEFAULT_PERMISSIONS;
+      const granted = installationOf(installationId).permissions;
       const wanted = request.permissions ?? granted;
       for (const [name, access] of Object.entries(wanted)) {
         const has = granted[name];
@@ -1059,11 +1093,14 @@ export async function createFakeGitHub(
     if (method === 'GET' && rest === '/installation') {
       if (auth !== 'jwt') return deny(res, 401, 'A JSON web token could not be decoded');
       if (!repo || repo.installationId === null) return deny(res, 404, 'Not Found');
+      const { permissions: granted, events } = installationOf(repo.installationId);
       return send(res, 200, {
         ...githubShape('installation'),
         id: repo.installationId,
         app_id: appId,
         app_slug: slug,
+        permissions: granted,
+        events,
       });
     }
     // Repository endpoints (installation token).

@@ -120,14 +120,19 @@ export function credentialsId(appId: string, privateKey: string): string {
 /**
  * The token cache's key. It holds no secret (the credentials are a hash), but it names the
  * connection, installation and repository: never log it, nor put it in an error or a response.
+ * `contents` is whether the token is asked for Contents (write) too: a token is reused only where
+ * it would be asked the same, so one without it never serves a client that may resolve threads,
+ * nor one with it a client whose installation no longer grants it.
  */
 export function tokenCacheKey(parts: {
   connectionId: string;
   credentials: string;
   installationId: number;
   repo: string;
+  contents: boolean;
 }): string {
-  return `${parts.connectionId}|${parts.credentials}|${parts.installationId}|${parts.repo.toLowerCase()}`;
+  const scope = parts.contents ? 'contents' : 'base';
+  return `${parts.connectionId}|${parts.credentials}|${parts.installationId}|${parts.repo.toLowerCase()}|${scope}`;
 }
 
 /**

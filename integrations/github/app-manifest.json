@@ -9,6 +9,7 @@
   },
   "default_permissions": {
     "checks": "write",
+    "contents": "write",
     "pull_requests": "write",
     "issues": "read",
     "metadata": "read"

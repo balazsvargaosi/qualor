@@ -39,12 +39,22 @@ export const GITHUB_API_VERSION = '2022-11-28';
 /** A pull request number, 1–10 digits (the only form sent in a path). */
 export const GITHUB_PR_NUMBER = /^[0-9]{1,10}$/;
 const SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
-/** github.md §4: what an installation token may do, and nothing more. */
+/**
+ * github.md §4: what an installation token may do, and nothing more. Every token asks for these;
+ * one for an installation that grants Contents (write) asks for that too ({@link CONTENTS_WRITE}).
+ */
 export const INSTALLATION_PERMISSIONS = {
   checks: 'write',
   pull_requests: 'write',
   metadata: 'read',
 } as const;
+/**
+ * What GitHub needs of a token to resolve or reopen a review thread, and all Qualor uses it for:
+ * github.com refused a token without it (2026-10-26), its Pull requests (write) notwithstanding. It
+ * is asked only where the installation grants it: GitHub refuses a token request (a 422) that asks
+ * for a permission the installation lacks.
+ */
+const CONTENTS_WRITE = { contents: 'write' } as const;
 
 /** github.md §5.4: the fixed texts; GitHub's own words are never shown or logged. */
 export const GITHUB_TEXT = {
@@ -53,10 +63,10 @@ export const GITHUB_TEXT = {
   tokenRefused: 'GitHub refused the installation token (HTTP 401)',
   notInstalled: 'The GitHub App is not installed on the repository',
   permission:
-    'The GitHub App lacks a permission Qualor needs (checks: write, pull requests: write)',
+    'The GitHub App lacks a permission Qualor needs (checks: write, contents: write, pull requests: write)',
   /** A 403 on the token request: GitHub answers so for a suspended installation too. */
   permissionOrSuspended:
-    'The GitHub App lacks a permission Qualor needs (checks: write, pull requests: write), or its installation is suspended',
+    'The GitHub App lacks a permission Qualor needs (checks: write, contents: write, pull requests: write), or its installation is suspended',
   notFound: 'The GitHub repository was not found, or the App cannot see it',
   badAnswer: "GitHub's answer was not understood",
   budget: `More than ${MAX_GITHUB_REQUESTS} GitHub requests in one job`,
@@ -103,7 +113,17 @@ export const UNRESOLVE_THREAD_MUTATION =
 const sha = z.string().regex(SHA);
 const app = z.looseObject({ id: z.number().int(), slug: z.string().min(1).max(100) });
 export type GitHubApp = z.infer<typeof app>;
-const installation = z.looseObject({ id: z.number().int(), app_id: z.number().int() });
+/**
+ * A repository's installation: its id, its App's, and what it grants the App (`permissions`, such
+ * as `{ "checks": "write", "issues": "read" }`) with the events the App subscribes to, which are
+ * read leniently ({@link installationAccessOf}): no failure of theirs fails the job.
+ */
+const installation = z.looseObject({
+  id: z.number().int(),
+  app_id: z.number().int(),
+  permissions: z.unknown().optional(),
+  events: z.unknown().optional(),
+});
 const installationToken = z.looseObject({
   token: z.string().regex(/^[\x21-\x7e]{1,512}$/),
   expires_at: z.iso.datetime(),
@@ -279,6 +299,38 @@ export interface GitHubReviewThread {
   firstCommentNodeId: string | null;
 }
 
+/** What a repository's installation grants the App, as GitHub answered it for `useRepository`. */
+export interface InstallationAccess {
+  /** Each permission it grants by GitHub's name (`contents`, `issues`, …), and how: `read` or `write`. */
+  permissions: Readonly<Record<string, string>>;
+  /** The webhook events the App subscribes to (`check_run`, `issue_comment`, …). */
+  events: readonly string[];
+}
+
+/**
+ * The installation's permissions and events, read leniently: a field that is absent or malformed
+ * (not an object of names, not a list of them) is none, and so is an entry that is not text. A
+ * permission or an event the answer does not name is not granted.
+ */
+function installationAccessOf(found: {
+  permissions?: unknown;
+  events?: unknown;
+}): InstallationAccess {
+  const granted = found.permissions;
+  const permissions =
+    typeof granted === 'object' && granted !== null && !Array.isArray(granted)
+      ? Object.fromEntries(
+          Object.entries(granted).filter(
+            (entry): entry is [string, string] => typeof entry[1] === 'string',
+          ),
+        )
+      : {};
+  const events = Array.isArray(found.events)
+    ? found.events.filter((event): event is string => typeof event === 'string')
+    : [];
+  return { permissions, events };
+}
+
 export interface CheckRunUpdate {
   conclusion: 'success' | 'failure';
   title: string;
@@ -445,6 +497,14 @@ function graphqlFailure(
   }
 }
 
+/**
+ * Whether `err` is GraphQL's FORBIDDEN (`graphqlFailure`): the one `auth` failure that comes with
+ * HTTP 200. An HTTP 401 or 403 carries its own status.
+ */
+function graphqlForbidden(err: unknown): boolean {
+  return err instanceof ScmError && err.kind === 'auth' && err.status === 200;
+}
+
 function transportError(result: Extract<OutboundResult, { kind: 'failed' }>): ScmError {
   switch (result.cause) {
     case 'not_public':
@@ -501,6 +561,10 @@ export class GitHubClient {
   #jwt: string | null = null;
   #tokenKey: string | null = null;
   #installationId: number | null = null;
+  /** What the repository's installation grants, read by `useRepository`. */
+  #access: InstallationAccess | null = null;
+  /** Whether the token is asked for Contents (write) too: the installation grants it. */
+  #contents = false;
   #repo: GitHubRepoRef | null = null;
   #refreshed = false;
 
@@ -520,6 +584,22 @@ export class GitHubClient {
 
   get requests(): number {
     return this.requestCount;
+  }
+
+  /**
+   * What the repository's installation grants the App and the events it subscribes to, as
+   * `useRepository` read them (what the connection Test lists as missing); null before.
+   */
+  get installationAccess(): InstallationAccess | null {
+    return this.#access;
+  }
+
+  /**
+   * Whether this client may resolve and reopen review threads: the installation grants Contents
+   * (write), so its token carries it. False before `useRepository`.
+   */
+  get mayResolveThreads(): boolean {
+    return this.#contents;
   }
 
   toJSON(): { baseUrl: string; requests: number } {
@@ -735,8 +815,10 @@ export class GitHubClient {
   }
 
   /**
-   * github.md §4: the repository's installation (JWT), a token scoped to it (cached), then
-   * `GET /repos/{owner}/{repo}`. Every later call of this client is on this repository.
+   * github.md §4: the repository's installation (JWT) and what it grants, a token scoped to it
+   * (cached), then `GET /repos/{owner}/{repo}`. The token asks for Contents (write) too where the
+   * installation grants it, never elsewhere: GitHub would refuse the token. Every later call of
+   * this client is on this repository.
    */
   async useRepository(ref: GitHubRepoRef): Promise<GitHubRepository> {
     // Checked here too, not only where the mapping is saved: no dot segment or slash reaches a path.
@@ -766,11 +848,14 @@ export class GitHubClient {
       throw new ScmError('bad_answer', GITHUB_TEXT.badAnswer);
     }
     this.#installationId = found.id;
+    this.#access = installationAccessOf(found);
+    this.#contents = this.#access.permissions['contents'] === CONTENTS_WRITE.contents;
     this.#tokenKey = tokenCacheKey({
       connectionId: this.#connection.connectionId,
       credentials: this.#connection.credentials,
       installationId: found.id,
       repo: `${ref.owner}/${ref.repo}`,
+      contents: this.#contents,
     });
     this.#token = this.tokens.get(this.#tokenKey);
     if (this.#token === null) await this.issueToken();
@@ -782,13 +867,16 @@ export class GitHubClient {
     if (this.#installationId === null || this.#repo === null || this.#tokenKey === null) {
       throw new Error('useRepository first');
     }
+    const permissions = this.#contents
+      ? { ...INSTALLATION_PERMISSIONS, ...CONTENTS_WRITE }
+      : INSTALLATION_PERMISSIONS;
     let json: unknown;
     try {
       ({ json } = await this.call(
         'POST',
         `/app/installations/${this.#installationId}/access_tokens`,
         'app',
-        { repositories: [this.#repo.repo], permissions: INSTALLATION_PERMISSIONS },
+        { repositories: [this.#repo.repo], permissions },
       ));
     } catch (err) {
       if (
@@ -1052,12 +1140,20 @@ export class GitHubClient {
 
   /**
    * Resolves (`resolved`) or reopens a review thread. `not_found` when GitHub no longer knows the
-   * thread (its comments were deleted): the caller skips it. Done means GitHub reports the state
-   * asked for. Through an installation token the resolver GitHub names is the App's own
-   * `<slug>[bot]` (ruling R6); a reopened thread names none.
+   * thread (its comments were deleted): the caller skips it. `refused` when the App may not do it,
+   * which leaves the thread as it is: with no request where the installation does not grant
+   * Contents (write), and when GitHub answers the mutation with its FORBIDDEN (a token asked before
+   * the installation granted it, or an owner who took the permission away since). Done means GitHub
+   * reports the state asked for. Through an installation token the resolver GitHub names is the
+   * App's own `<slug>[bot]` (ruling R6); a reopened thread names none.
    */
-  async setThreadResolved(threadId: string, resolved: boolean): Promise<'done' | 'not_found'> {
+  async setThreadResolved(
+    threadId: string,
+    resolved: boolean,
+  ): Promise<'done' | 'not_found' | 'refused'> {
     if (!NODE_ID.test(threadId)) throw this.invalid(GITHUB_TEXT.id);
+    if (this.#access === null) throw new Error('useRepository first');
+    if (!this.#contents) return 'refused';
     const variables = { id: threadId };
     try {
       let state: boolean;
@@ -1083,6 +1179,7 @@ export class GitHubClient {
       return 'done';
     } catch (err) {
       if (err instanceof ScmError && err.kind === 'not_found') return 'not_found';
+      if (graphqlForbidden(err)) return 'refused';
       throw err;
     }
   }

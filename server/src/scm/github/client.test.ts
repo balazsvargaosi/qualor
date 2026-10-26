@@ -28,6 +28,20 @@ import { githubGraphqlUrl } from './url';
 
 const REPO = { owner: 'acme', repo: 'api' };
 const SHA = '1'.repeat(40);
+/** What every token asks for: checks and pull requests (write), and metadata (read). */
+const BASE_PERMISSIONS = { checks: 'write', pull_requests: 'write', metadata: 'read' } as const;
+/** An installation of an App that lacks Contents (write): one created before Qualor needed it. */
+const WITHOUT_CONTENTS = {
+  checks: 'write',
+  issues: 'read',
+  metadata: 'read',
+  pull_requests: 'write',
+} as const;
+/** The documented App's (docs/guide/github.md), as GitHub answers for its installation. */
+const DOCUMENTED = {
+  permissions: { ...WITHOUT_CONTENTS, contents: 'write' },
+  events: ['check_run', 'issue_comment', 'pull_request_review_comment'],
+};
 
 /** A pacer that records the keys it is asked to wait for; the waiting itself is the fake clock's. */
 class SpyPacer extends MutationPacer {
@@ -101,6 +115,14 @@ describe('GitHub REST client (github.md §4–§6)', () => {
       installationId: 777,
       movedTo: 'acme/new',
     });
+    fake.addRepository({
+      id: 10,
+      owner: 'acme',
+      name: 'nocontents',
+      installationId: 780,
+      permissions: WITHOUT_CONTENTS,
+      events: ['check_run'],
+    });
     fake.addPull(424242, {
       number: 7,
       title: 'Refund limits',
@@ -126,21 +148,129 @@ describe('GitHub REST client (github.md §4–§6)', () => {
     expect(String(request?.headers['user-agent'])).toMatch(/^Qualor\//);
   });
 
-  it('gets a token scoped to the mapped repository and three permissions, and reuses it', async () => {
+  it('gets a token scoped to the mapped repository and its permissions, and reuses it', async () => {
     const tokens = new InstallationTokenCache(() => clock);
     const repo = await clientFor({ tokens }).useRepository(REPO);
     expect(repo.id).toBe(424242);
     const [grant] = [...fake.tokens.values()].slice(-1);
-    expect(grant).toMatchObject({
-      repositories: ['api'],
-      permissions: { checks: 'write', pull_requests: 'write', metadata: 'read' },
-    });
+    // The installation grants Contents (write): the token carries it, to resolve conversations.
+    expect(grant).toMatchObject({ repositories: ['api'] });
+    expect(grant?.permissions).toEqual({ ...BASE_PERMISSIONS, contents: 'write' });
     fake.clearRequests();
     await clientFor({ tokens }).useRepository(REPO);
     expect(fake.requests.map((r) => r.method + ' ' + r.path)).toEqual([
       'GET /repos/acme/api/installation',
       'GET /repos/acme/api',
     ]);
+  });
+
+  describe('what the installation grants the App (Contents: write, and the rest the Test lists)', () => {
+    /** The permissions each token request of the requests so far asked for. */
+    const asked = () =>
+      fake.requests
+        .filter((r) => r.path.endsWith('/access_tokens'))
+        .map((r) => (JSON.parse(r.body) as { permissions?: unknown }).permissions);
+
+    it('asks for contents: write only where the installation grants it, and says what it learnt', async () => {
+      fake.clearRequests();
+      const granted = clientFor();
+      await granted.useRepository(REPO);
+      expect(granted.mayResolveThreads).toBe(true);
+      expect(granted.installationAccess).toEqual(DOCUMENTED);
+      const lacking = clientFor();
+      await lacking.useRepository({ owner: 'acme', repo: 'nocontents' });
+      expect(lacking.mayResolveThreads).toBe(false);
+      expect(lacking.installationAccess).toEqual({
+        permissions: WITHOUT_CONTENTS,
+        events: ['check_run'],
+      });
+      // A permission the installation does not grant is never asked for: GitHub would refuse the
+      // token (a 422).
+      expect(asked()).toEqual([{ ...BASE_PERMISSIONS, contents: 'write' }, BASE_PERMISSIONS]);
+      // Nothing is known before the repository is.
+      expect([clientFor().mayResolveThreads, clientFor().installationAccess]).toEqual([
+        false,
+        null,
+      ]);
+    });
+
+    it('never reuses a token asked without contents: write where it is asked for, nor the other way round', async () => {
+      const repo = {
+        id: 11,
+        owner: 'acme',
+        name: 'granted-later',
+        installationId: 781,
+        permissions: { ...WITHOUT_CONTENTS } as Record<string, 'read' | 'write'>,
+      };
+      fake.addRepository(repo);
+      const tokens = new InstallationTokenCache(() => clock);
+      const use = async () => {
+        const client = clientFor({ tokens });
+        await client.useRepository({ owner: 'acme', repo: 'granted-later' });
+        return client.mayResolveThreads;
+      };
+      fake.clearRequests();
+      expect([await use(), await use()]).toEqual([false, false]);
+      // The owner grants Contents (write): a token without it is not the one to use.
+      repo.permissions = { ...WITHOUT_CONTENTS, contents: 'write' };
+      expect([await use(), await use()]).toEqual([true, true]);
+      // ... and takes it away again: the token asked with it is not either.
+      repo.permissions = { ...WITHOUT_CONTENTS };
+      expect(await use()).toBe(false);
+      // One token of each kind, each reused from the cache.
+      expect(asked()).toEqual([BASE_PERMISSIONS, { ...BASE_PERMISSIONS, contents: 'write' }]);
+    });
+
+    it('reads the installation’s permissions and events leniently: absent or malformed is none', async () => {
+      const recorded = githubShape('installation');
+      expect({ permissions: recorded['permissions'], events: recorded['events'] }).toEqual(
+        DOCUMENTED,
+      );
+      const bare = Object.fromEntries(
+        Object.entries(recorded).filter(([key]) => key !== 'permissions' && key !== 'events'),
+      );
+      /** The installation answered with `fields` in place of its permissions and events. */
+      const read = async (fields: Record<string, unknown>) => {
+        fake.inject('GET', /^\/repos\/acme\/api\/installation$/, {
+          status: 200,
+          body: { ...bare, id: 777, app_id: fake.appId, ...fields },
+        });
+        fake.clearRequests();
+        const client = clientFor();
+        await client.useRepository(REPO);
+        return [client.installationAccess, client.mayResolveThreads, asked()[0]];
+      };
+      const none = [{ permissions: {}, events: [] }, false, BASE_PERMISSIONS];
+      expect(await read({})).toEqual(none);
+      for (const [permissions, events] of [
+        ['contents', 'check_run'],
+        [null, null],
+        [['contents'], { check_run: true }],
+        [7, 7],
+      ]) {
+        expect(await read({ permissions, events }), JSON.stringify(permissions)).toEqual(none);
+      }
+      // Only what is malformed is left out.
+      expect(
+        await read({
+          permissions: { contents: true, issues: 'read', checks: 'write', pull_requests: 7 },
+          events: ['check_run', 7, null, 'issue_comment'],
+        }),
+      ).toEqual([
+        {
+          permissions: { issues: 'read', checks: 'write' },
+          events: ['check_run', 'issue_comment'],
+        },
+        false,
+        BASE_PERMISSIONS,
+      ]);
+      // Contents to read is not Contents to write.
+      expect(
+        (await read({ permissions: { ...WITHOUT_CONTENTS, contents: 'read' }, events: [] })).slice(
+          1,
+        ),
+      ).toEqual([false, BASE_PERMISSIONS]);
+    });
   });
 
   it('says the App is not installed, and that it lacks a permission', async () => {
@@ -1533,16 +1663,13 @@ describe('GitHub REST client (github.md §4–§6)', () => {
         ]);
         expect(refused.errors?.[0]?.message).toContain(field);
       }
-      // Only the repositories the token is for, and only with the permission the operation needs.
+      // Only the repositories the token is for, and only with the permission the operation needs:
+      // Pull requests (read) for the query, Contents (write) to resolve, which GitHub refuses with
+      // its FORBIDDEN, and the client answers `refused`.
       const grant = fake.tokens.get(token!)!;
       grant.permissions = { metadata: 'read', checks: 'write', pull_requests: 'read' };
       expect((await client.reviewThreads(many.number, 1)).items).toHaveLength(100);
-      const write = await failure(client.setThreadResolved(many.threadIds[0]!, true));
-      expect([write.kind, write.reason, write.message]).toEqual([
-        'auth',
-        'permission_missing',
-        GITHUB_TEXT.permission,
-      ]);
+      expect(await client.setThreadResolved(many.threadIds[0]!, true)).toBe('refused');
       grant.permissions = { metadata: 'read', checks: 'write' };
       const read = await failure(client.reviewThreads(many.number, 1));
       expect([read.kind, read.reason]).toEqual(['auth', 'permission_missing']);
@@ -1551,6 +1678,103 @@ describe('GitHub REST client (github.md §4–§6)', () => {
       expect((await failure(client.reviewThreads(many.number, 1))).kind).toBe('not_found');
       expect(await client.setThreadResolved(many.threadIds[0]!, true)).toBe('not_found');
       expect(fake.reviewThreads.find((t) => t.id === many.threadIds[0])?.resolved).toBe(false);
+    });
+
+    it('is served by a fake that resolves a thread only with a token that carries contents: write, as GitHub does', async () => {
+      const { threadIds } = await pullWithThreads(1);
+      await reader();
+      const [token] = [...fake.tokens.keys()].slice(-1);
+      const grant = fake.tokens.get(token!)!;
+      const thread = fake.reviewThreads.find((t) => t.id === threadIds[0])!;
+      const send = async (query: string) =>
+        (await (
+          await fetch(githubGraphqlUrl(fake.url), {
+            method: 'POST',
+            headers: { authorization: `Bearer ${token!}`, 'user-agent': 'test' },
+            body: JSON.stringify({ query, variables: { id: thread.id } }),
+          })
+        ).json()) as { data?: unknown; errors?: { type?: string; message?: string }[] };
+      // Measured on github.com (2026-10-26): a token without Contents (write) is refused, its
+      // Pull requests (write) notwithstanding, with HTTP 200 and GitHub's FORBIDDEN ...
+      grant.permissions = { ...BASE_PERMISSIONS };
+      for (const query of [RESOLVE_THREAD_MUTATION, UNRESOLVE_THREAD_MUTATION]) {
+        const refused = await send(query);
+        expect([refused.errors?.[0]?.type, refused.errors?.[0]?.message]).toEqual([
+          'FORBIDDEN',
+          'Resource not accessible by integration',
+        ]);
+      }
+      expect([thread.resolved, thread.resolvedBy]).toEqual([false, null]);
+      // ... and a token with it needs nothing more.
+      grant.permissions = { metadata: 'read', contents: 'write' };
+      expect(await send(RESOLVE_THREAD_MUTATION)).toEqual({
+        data: { resolveReviewThread: { thread: { id: thread.id, isResolved: true } } },
+      });
+      expect(await send(UNRESOLVE_THREAD_MUTATION)).toEqual({
+        data: { unresolveReviewThread: { thread: { id: thread.id, isResolved: false } } },
+      });
+    });
+
+    describe('a resolution the App may not make (Contents: write)', () => {
+      const mutations = () =>
+        fake.requests.filter((r) => r.path === '/api/graphql' && r.body.includes('mutation'));
+
+      it('is refused with no request where the installation does not grant contents: write, the reopening too', async () => {
+        const client = clientFor();
+        await client.useRepository({ owner: 'acme', repo: 'nocontents' });
+        fake.clearRequests();
+        expect(await client.setThreadResolved('PRRT_kwDOanything', true)).toBe('refused');
+        expect(await client.setThreadResolved('PRRT_kwDOanything', false)).toBe('refused');
+        expect(fake.requests).toEqual([]);
+        expect(client.requests).toBe(3); // the installation, its token and the repository
+        // An id it would never send is still not an id.
+        expect((await failure(client.setThreadResolved('two words', true))).reason).toBe(
+          'invalid_input',
+        );
+      });
+
+      it('is refused, with no exception, when GitHub answers FORBIDDEN: a token from before the grant, or a permission taken away', async () => {
+        const { threadIds } = await pullWithThreads(1);
+        const client = await reader();
+        expect(client.mayResolveThreads).toBe(true);
+        const [token] = [...fake.tokens.keys()].slice(-1);
+        const thread = fake.reviewThreads.find((t) => t.id === threadIds[0])!;
+        fake.tokens.get(token!)!.permissions = { ...BASE_PERMISSIONS };
+        expect(await client.setThreadResolved(thread.id, true)).toBe('refused');
+        expect(thread.resolved).toBe(false);
+        fake.resolveThreadAs(thread.id, `${fake.slug}[bot]`);
+        expect(await client.setThreadResolved(thread.id, false)).toBe('refused');
+        expect(thread.resolved).toBe(true);
+        // Each was asked of GitHub, which refused it.
+        expect(mutations()).toHaveLength(2);
+        // GitHub's own words, as the measured answer has them.
+        answer({
+          data: { resolveReviewThread: null },
+          errors: [
+            {
+              type: 'FORBIDDEN',
+              path: ['resolveReviewThread'],
+              locations: [{ line: 1, column: 38 }],
+              message: 'Resource not accessible by integration',
+            },
+          ],
+        });
+        expect(await client.setThreadResolved(thread.id, true)).toBe('refused');
+      });
+
+      it('lets every other refusal through: an HTTP 403, and the threads query’s FORBIDDEN', async () => {
+        const client = await reader();
+        answer({ message: 'Resource not accessible by integration' }, 403);
+        const http = await failure(client.setThreadResolved(many.threadIds[0]!, true));
+        expect([http.kind, http.reason, http.status]).toEqual(['auth', 'permission_missing', 403]);
+        answer({ data: null, errors: [{ type: 'FORBIDDEN', message: 'x' }] });
+        const query = await failure(client.reviewThreads(many.number, 1));
+        expect([query.kind, query.reason, query.message]).toEqual([
+          'auth',
+          'permission_missing',
+          GITHUB_TEXT.permission,
+        ]);
+      });
     });
   });
 });

@@ -200,9 +200,11 @@ describe('integrations/github/qualor-dotnet.yml (github.md §11, config.md §6.1
 
 describe('integrations/github/app-manifest.json', () => {
   const manifest = JSON.parse(read('app-manifest.json')) as Record<string, unknown>;
-  it('asks for the permissions and events of github.md §2.1, and Issues (read) for the comment events, nothing more', () => {
+  it('asks for the permissions and events of github.md §2.1, Issues (read) for the comment events and Contents (write) for the conversations, nothing more', () => {
     expect(manifest.default_permissions).toEqual({
       checks: 'write',
+      // GitHub resolves and reopens a review thread only for a token with Contents (write).
+      contents: 'write',
       pull_requests: 'write',
       // GitHub delivers `issue_comment` to an App with read access to Issues.
       issues: 'read',
