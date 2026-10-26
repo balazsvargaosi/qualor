@@ -1,0 +1,74 @@
+<section class="card panel" aria-labelledby="status-heading">
+  <div class="panel-head">
+    <h3 id="status-heading" i18n="@@statusList.title">Status</h3>
+  </div>
+  <ul class="status-list">
+    @for (row of rows(); track row.line.key) {
+      @let line = row.line;
+      <!-- The spaces between the parts keep their words apart for a screen reader. -->
+      <li [attr.data-key]="line.key">
+        <span class="st-label">{{ line.label }}</span
+        >&ngsp;
+        <div class="st-text">
+          @if (line.state || line.text || line.tags?.length) {
+            <div class="st-line">
+              @if (line.state) {
+                <span class="badge {{ row.chip.badge }}"
+                  ><q-icon [name]="row.chip.icon" />{{ line.state }}</span
+                >&ngsp;
+              }
+              @for (tag of line.tags ?? []; track $index) {
+                <span class="badge badge-tag">{{ tag }}</span
+                >&ngsp;
+              }
+              @if (line.text) {
+                <span>{{ line.text }}</span>
+              }
+            </div>
+          }
+          @if (line.meters?.length) {
+            <div class="meters">
+              @for (meter of line.meters; track $index) {
+                <q-meter
+                  [label]="meter.label"
+                  [value]="meter.value"
+                  [max]="meter.max"
+                  [unit]="meter.unit ?? 'count'"
+                  [note]="meter.note ?? null"
+                />
+              }
+            </div>
+          }
+          @if (line.sub) {
+            &ngsp;<span class="st-sub">{{ line.sub }}</span>
+          }
+        </div>
+        &ngsp;
+        <div class="st-act">
+          @if (line.action; as action) {
+            @if (action.link) {
+              <a
+                class="btn"
+                [class.btn-primary]="action.primary === true"
+                [routerLink]="action.link"
+                [fragment]="action.fragment ?? undefined"
+                [attr.aria-label]="action.ariaLabel ?? null"
+                >{{ action.label }}</a
+              >
+            } @else {
+              <button
+                type="button"
+                class="btn"
+                [class.btn-primary]="action.primary === true"
+                [attr.aria-label]="action.ariaLabel ?? null"
+                (click)="act.emit(action.id)"
+              >
+                {{ action.label }}
+              </button>
+            }
+          }
+        </div>
+      </li>
+    }
+  </ul>
+</section>

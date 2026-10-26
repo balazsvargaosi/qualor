@@ -1,0 +1,73 @@
+/* The picker opens in place under its button, as wide as a list of chosen items at most. */
+:host {
+  display: block;
+  min-width: 0;
+}
+.picker {
+  display: grid;
+  gap: 8px;
+  max-width: 36rem;
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+.picker[hidden] {
+  display: none;
+}
+.search-field,
+.search-field input {
+  width: 100%;
+  min-width: 0;
+}
+/* The live region is always rendered (one that appears with its words is often not read). */
+.picker-status {
+  margin: 0;
+}
+.options {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.options label {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 7px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.options label:hover {
+  background: var(--surface-2);
+}
+.options li.disabled label {
+  cursor: not-allowed;
+}
+.options input {
+  margin-top: 3px;
+}
+.option {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.option code {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.why {
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+.picker-foot {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--hairline);
+}

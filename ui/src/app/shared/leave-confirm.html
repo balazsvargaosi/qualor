@@ -1,0 +1,22 @@
+<dialog
+  #dialog
+  class="dialog"
+  aria-labelledby="leave-title"
+  aria-describedby="leave-text"
+  (close)="answer(false)"
+>
+  <div class="dialog-head">
+    <h2 id="leave-title" i18n="@@leave.title">Leave without saving?</h2>
+  </div>
+  <div class="dialog-body">
+    <p id="leave-text">{{ question() }}</p>
+  </div>
+  <div class="dialog-actions">
+    <button type="button" class="btn" autofocus (click)="answer(false)" i18n="@@leave.stay">
+      Stay
+    </button>
+    <button type="button" class="btn btn-danger-solid" (click)="answer(true)" i18n="@@leave.go">
+      Leave without saving
+    </button>
+  </div>
+</dialog>

@@ -1,10 +1,11 @@
-import { formatDate, formatDateTime } from './date-time.pipe';
+import { formatDate, formatDateTime, formatTime } from './date-time.pipe';
 
 describe('formatDateTime', () => {
   it('shows every time in UTC and says so, whatever the browser time zone', () => {
     expect(formatDateTime('2026-09-15T09:00:00.000Z')).toBe('Sep 15, 2026, 9:00 AM UTC');
     expect(formatDateTime('2026-09-15T23:30:00.000Z')).toBe('Sep 15, 2026, 11:30 PM UTC');
     expect(formatDate('2026-09-15T23:30:00.000Z')).toBe('Sep 15, 2026');
+    expect(formatTime('2026-10-26T14:05:00.000Z')).toBe('2:05 PM UTC');
   });
 
   it('shows nothing for no date or one it cannot read', () => {
@@ -12,5 +13,6 @@ describe('formatDateTime', () => {
     expect(formatDateTime(undefined)).toBe('');
     expect(formatDateTime('not a date')).toBe('');
     expect(formatDate('')).toBe('');
+    expect(formatTime('not a date')).toBe('');
   });
 });

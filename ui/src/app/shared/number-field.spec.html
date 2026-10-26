@@ -1,0 +1,13 @@
+<label for="t">{{ label }}</label>
+<q-number-field
+  inputId="t"
+  describedBy="hint"
+  [kind]="kind()"
+  [unit]="unit()"
+  [prefix]="prefix()"
+  [digits]="digits()"
+  [invalid]="invalid()"
+  [disabled]="disabled()"
+  [(value)]="value"
+/>
+<p id="hint">{{ hint }}</p>

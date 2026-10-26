@@ -1,0 +1,14 @@
+<p class="req" [id]="noteId()">
+  <q-icon name="alert" />
+  <span
+    >{{ text() }}
+    @if (where(); as place) {
+      @if (place.link) {
+        <a [routerLink]="place.route">{{ place.label }}</a
+        >.
+      } @else {
+        {{ place.label }}.
+      }
+    }
+  </span>
+</p>

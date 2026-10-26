@@ -1,0 +1,21 @@
+<span class="affix" [class.invalid]="invalid()" [class.disabled]="disabled()" [style.--w]="width()">
+  @if (prefix(); as pre) {
+    <span class="pre" [id]="prefixId()">{{ pre }}</span>
+  }
+  <input
+    type="text"
+    autocomplete="off"
+    spellcheck="false"
+    [id]="inputId()"
+    [attr.inputmode]="kind() === 'money' ? 'decimal' : 'numeric'"
+    [attr.aria-invalid]="invalid() ? true : null"
+    [attr.aria-describedby]="describedByIds()"
+    [disabled]="disabled()"
+    [value]="value()"
+    (input)="onInput($event)"
+    (blur)="onBlur()"
+  />
+  @if (unit(); as post) {
+    <span class="post" [id]="unitId()">{{ post }}</span>
+  }
+</span>

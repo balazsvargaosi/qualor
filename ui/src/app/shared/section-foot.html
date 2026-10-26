@@ -1,0 +1,58 @@
+<div class="setting-actions">
+  <span
+    class="foot-status"
+    role="status"
+    [class.ok]="kind() === 'saved'"
+    [class.pending]="kind() === 'pending'"
+    [class.bad]="kind() === 'refused' || kind() === 'error'"
+  >
+    @switch (kind()) {
+      @case ('clean') {
+        <ng-container i18n="@@foot.clean">No unsaved changes</ng-container>
+      }
+      @case ('pending') {
+        <ng-container i18n="@@foot.pending">{count(), plural,
+          =1 {1 unsaved change}
+          other {{{ count() }} unsaved changes}
+        }</ng-container>
+      }
+      @case ('saving') {
+        <ng-container i18n="@@foot.saving">Saving…</ng-container>
+      }
+      @case ('saved') {
+        <q-icon name="check" /><span i18n="@@foot.saved">Saved at {{ savedAt() }}.</span>
+      }
+      @case ('refused') {
+        <q-icon name="alert" /><span
+          ><ng-container i18n="@@foot.refused">{count(), plural,
+            =1 {1 field needs attention:}
+            other {{{ count() }} fields need attention:}
+          }</ng-container
+          >&ngsp;
+          @for (part of refusal(); track $index) {
+            @if (part.field; as field) {
+              <a [href]="'#' + field.id" (click)="focusField(field.id, $event)">{{
+                field.label
+              }}</a>
+            } @else {
+              {{ part.words }}
+            }
+          }
+        </span>
+      }
+      @case ('error') {
+        <q-icon name="alert" /><span>{{ errorText() }}</span>
+      }
+    }
+  </span>
+  <ng-content />
+  <button
+    type="button"
+    class="btn"
+    [class.btn-primary]="pending()"
+    [disabled]="!pending()"
+    (click)="onSave()"
+  >
+    {{ saveLabel() }}
+  </button>
+</div>

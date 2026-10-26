@@ -1,0 +1,5 @@
+/* The note is `.req` (styles.css); the host only keeps it a block of its own above its control. */
+:host {
+  display: block;
+  min-width: 0;
+}

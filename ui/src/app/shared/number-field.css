@@ -1,0 +1,72 @@
+/* A number with its unit inside the field's border: the box is the field, the input fills it. */
+:host {
+  display: inline-flex;
+  max-width: 100%;
+  vertical-align: middle;
+}
+.affix {
+  display: inline-flex;
+  align-items: stretch;
+  max-width: 100%;
+  min-height: 36px;
+  overflow: hidden;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+.affix:hover {
+  border-color: var(--accent);
+}
+.affix:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+.affix.invalid {
+  border-color: var(--bad);
+}
+.affix.disabled {
+  opacity: 0.6;
+}
+.affix.disabled:hover {
+  border-color: var(--control-border);
+}
+.affix input {
+  width: var(--w);
+  min-width: 0;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.affix input:focus-visible {
+  box-shadow: none;
+}
+.pre,
+.post {
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 550;
+  white-space: nowrap;
+}
+.pre {
+  border-right: 1px solid var(--hairline);
+}
+.post {
+  border-left: 1px solid var(--hairline);
+}
+@media (max-width: 40rem) {
+  .affix input {
+    width: min(var(--w), 40vw);
+  }
+}

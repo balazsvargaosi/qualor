@@ -19,6 +19,19 @@ export function formatDateTime(value: string | null | undefined, locale = 'en-US
     : '';
 }
 
+/** The UTC time of day of an instant, labelled ("2:05 PM UTC"): when something just happened. */
+export function formatTime(value: string | null | undefined, locale = 'en-US'): string {
+  const date = parse(value);
+  return date
+    ? new Intl.DateTimeFormat(locale, {
+        hour: 'numeric',
+        minute: '2-digit',
+        timeZone: 'UTC',
+        timeZoneName: 'short',
+      }).format(date)
+    : '';
+}
+
 /** The UTC calendar day of an instant ("Sep 15, 2026"), for charts and their tables. */
 export function formatDate(value: string | null | undefined, locale = 'en-US'): string {
   const date = parse(value);
