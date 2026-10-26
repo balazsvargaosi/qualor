@@ -91,7 +91,8 @@
             }
             @if (!gh.webhookSecretSet) {
               <p class="muted" i18n="@@github.noSecret">
-                No webhook secret: the Re-run button does nothing.
+                No webhook secret: the Re-run button does nothing, and replies and commands are
+                answered at the next analysis.
               </p>
             } @else if (gh.webhookUrl) {
               <div class="webhook-address">
@@ -472,8 +473,8 @@
         <div class="setting-text">
           <label for="github-secret" i18n="@@github.secretLabel">Webhook secret (optional)</label>
           <p id="github-secret-hint" i18n="@@github.secretHint">
-            The same secret as in the App's webhook settings, for the Re-run button. Stored
-            encrypted; Qualor never shows it again.
+            The same secret as in the App's webhook settings, for the Re-run button and for
+            answering replies and commands at once. Stored encrypted; Qualor never shows it again.
           </p>
         </div>
         <div class="setting-field">

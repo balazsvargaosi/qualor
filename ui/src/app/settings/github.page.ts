@@ -337,10 +337,10 @@ export class GitHubPage {
         this.announcement.set(
           changed
             ? drop
-              ? $localize`:@@github.urlChangedSecretRemoved:The App now uses ${updated.baseUrl}:url:, and its webhook secret was removed: the Re-run button does nothing now.`
+              ? $localize`:@@github.urlChangedSecretRemoved:The App now uses ${updated.baseUrl}:url:, and its webhook secret was removed: the Re-run button does nothing now, and replies and commands are answered at the next analysis.`
               : $localize`:@@github.urlChanged:The App now uses ${updated.baseUrl}:url:.`
             : drop
-              ? $localize`:@@github.keyReplacedSecretRemoved:The private key of App ${appId}:appId: was replaced, and its webhook secret was removed: the Re-run button does nothing now.`
+              ? $localize`:@@github.keyReplacedSecretRemoved:The private key of App ${appId}:appId: was replaced, and its webhook secret was removed: the Re-run button does nothing now, and replies and commands are answered at the next analysis.`
               : $localize`:@@github.keyReplaced:The private key of App ${appId}:appId: was replaced.`,
         );
       },
@@ -434,7 +434,7 @@ export class GitHubPage {
       await this.patch(connection, { webhookSecret: null });
       if (generation !== this.orgGeneration) return;
       this.announcement.set(
-        $localize`:@@github.secretRemoved:The webhook secret was removed: the Re-run button does nothing now.`,
+        $localize`:@@github.secretRemoved:The webhook secret was removed: the Re-run button does nothing now, and replies and commands are answered at the next analysis.`,
       );
     });
   }

@@ -110,6 +110,10 @@ describe('GitHubPage (github.md §2)', () => {
     expect(secret.type).toBe('password');
     expect(secret.getAttribute('autocomplete')).toBe('new-password');
     expectNoPasswordManager(secret);
+    // The secret serves the Re-run button and the answers to replies and commands.
+    expect(root.querySelector('#github-secret-hint')?.textContent?.replace(/\s+/g, ' ')).toContain(
+      "The same secret as in the App's webhook settings, for the Re-run button and for answering replies and commands at once.",
+    );
     type(root, '#github-url', 'https://api.github.com');
     type(root, '#github-app-id', '123456');
     type(root, '#github-key', PEM);
@@ -258,7 +262,9 @@ describe('GitHubPage (github.md §2)', () => {
     expect(first?.textContent).toContain('The private key can no longer be read: set it again');
     expect(first?.textContent).toContain('The webhook secret can no longer be read: set it again');
     expect(second?.textContent).not.toContain('can no longer be read');
-    expect(second?.textContent).toContain('No webhook secret: the Re-run button does nothing');
+    expect(second?.textContent).toContain(
+      'No webhook secret: the Re-run button does nothing, and replies and commands are answered at the next analysis.',
+    );
   });
 
   it('replaces the key, asks for the webhook secret again with a new address, and never echoes either', async () => {
@@ -334,6 +340,9 @@ describe('GitHubPage (github.md §2)', () => {
       { webhookSecret: WEBHOOK_SECRET },
       { webhookSecret: null },
     ]);
+    expect(root.querySelector('[role="status"]')?.textContent).toContain(
+      'The webhook secret was removed: the Re-run button does nothing now, and replies and commands are answered at the next analysis.',
+    );
     button(root, 'Delete').click();
     await settle(fixture);
     const ask = root.querySelector<HTMLDialogElement>('dialog#confirm-dialog')!;
@@ -380,9 +389,11 @@ describe('GitHubPage (github.md §2)', () => {
         { privateKey: PEM, webhookSecret: null },
       ]);
       expect(root.querySelector('[role="status"]')?.textContent).toContain(
-        'The private key of App 123456 was replaced, and its webhook secret was removed',
+        'The private key of App 123456 was replaced, and its webhook secret was removed: the Re-run button does nothing now, and replies and commands are answered at the next analysis.',
       );
-      expect(root.textContent).toContain('No webhook secret: the Re-run button does nothing');
+      expect(root.textContent).toContain(
+        'No webhook secret: the Re-run button does nothing, and replies and commands are answered at the next analysis.',
+      );
     });
 
     it('refuses a typed secret with the box ticked, before any request', async () => {
@@ -417,7 +428,7 @@ describe('GitHubPage (github.md §2)', () => {
         { baseUrl: 'https://ghe.acme.test/api/v3', privateKey: PEM, webhookSecret: null },
       ]);
       expect(root.querySelector('[role="status"]')?.textContent).toContain(
-        'The App now uses https://ghe.acme.test/api/v3, and its webhook secret was removed',
+        'The App now uses https://ghe.acme.test/api/v3, and its webhook secret was removed: the Re-run button does nothing now, and replies and commands are answered at the next analysis.',
       );
     });
   });
