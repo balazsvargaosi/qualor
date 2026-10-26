@@ -95,11 +95,16 @@ export abstract class JobSteps {
 
   /**
    * Whether the merge request is merged or closed, read as the review job reads it, through no
-   * organisation slot: a state that cannot be read lets the job go on.
+   * organisation slot, with the installation tokens the job's other requests use: a state that
+   * cannot be read lets the job go on.
    */
   protected async closed(row: Pick<ReplyRow, 'projectId'>, target: Target): Promise<boolean> {
-    const { db, scm } = this.deps;
-    const state = await readMergeRequestState({ db, scm }, row.projectId, target.branch.name);
+    const { db, scm, scmRuntime } = this.deps;
+    const state = await readMergeRequestState(
+      { db, scm, tokens: scmRuntime },
+      row.projectId,
+      target.branch.name,
+    );
     return state !== null && state.state !== 'open';
   }
 

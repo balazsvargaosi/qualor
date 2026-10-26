@@ -35,6 +35,9 @@ const GITLAB_STATES: Readonly<Record<string, MergeRequestState['state']>> = {
  */
 type Ask = () => Promise<MergeRequestState | null>;
 
+/** The GitHub installation tokens (and the mutation pacer) a worker's clients share. */
+type GitHubTokens = Pick<ScmRuntime, 'githubTokens' | 'githubPacer'>;
+
 /**
  * The GitLab question, or null when there is nothing to ask: the id is no merge request's, or the
  * connection cannot be used (a token that no longer decrypts, an address the rules no longer
@@ -69,11 +72,11 @@ function githubAsk(
   ref: string,
   number: string,
   scm: ScmDeps,
-  runtime: ScmRuntime | undefined,
+  tokens: GitHubTokens | undefined,
 ): Ask | null {
   const repository = parseRepoRef(ref);
   if (repository === null || !GITHUB_PR_NUMBER.test(number)) return null;
-  const found = githubClientFor(connection, scm, runtime);
+  const found = githubClientFor(connection, scm, tokens);
   if ('problem' in found) return null;
   return async () => {
     await found.client.useRepository(repository);
@@ -132,10 +135,12 @@ async function throughRuntime(
  *
  * With the `scm` worker's `runtime` the read shares its state: the organisation's slots, the
  * connection's circuit (null when no slot is free or the circuit is open) and the GitHub
- * installation tokens. The review job reads without it.
+ * installation tokens. The review job reads without it. A job that passes the circuit itself and
+ * takes no slot (an answer to a reply) shares only the tokens (`tokens`), so that the read and the
+ * job's other requests use one installation token.
  */
 export async function readMergeRequestState(
-  deps: { db: Executor; scm: ScmDeps; runtime?: ScmRuntime },
+  deps: { db: Executor; scm: ScmDeps; runtime?: ScmRuntime; tokens?: GitHubTokens },
   projectId: string,
   mergeRequestId: string,
 ): Promise<MergeRequestState | null> {
@@ -153,7 +158,7 @@ export async function readMergeRequestState(
   const { runtime, scm } = deps;
   const ask =
     connection.provider === 'github'
-      ? githubAsk(connection, found.ref, mergeRequestId, scm, runtime)
+      ? githubAsk(connection, found.ref, mergeRequestId, scm, runtime ?? deps.tokens)
       : gitlabAsk(connection, found.ref, mergeRequestId, scm);
   if (ask === null) return null;
   try {

@@ -1484,6 +1484,21 @@ describe('the answer job (6I-4)', () => {
       return made!.id;
     };
 
+    it.skipIf(provider === 'GitLab')(
+      'reads the pull request’s state with the installation token of the job’s other requests: one token for the job',
+      async () => {
+        const { d, row } = await replied('one-token');
+        d.clearRequests();
+        llm.say(KEEP);
+        await answer();
+        expect((await rowById(row.id)).status).toBe('done');
+        const tokens = d
+          .requests()
+          .filter((r) => /^POST \/app\/installations\/\d+\/access_tokens$/.test(r));
+        expect(tokens).toHaveLength(1);
+      },
+    );
+
     it('a newer row whose answer was posted covers the notes, whatever ended it: the row is superseded', async () => {
       const { mr, threadId, row } = await replied('cover-posted');
       // Its answer was posted, and both tries to resolve the thread failed: the sweep ended it.
