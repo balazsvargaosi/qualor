@@ -182,10 +182,13 @@ test.describe('as people other than the instance admin', () => {
       await page.locator('#review details.fold > summary').click();
       await page.getByLabel('Tokens per day', { exact: true }).fill('500000');
       await page.getByLabel('Tokens per review').fill('120000');
-      await page.getByRole('switch', { name: /^Limit tokens per project/ }).check();
+      // A switch is named by its name alone; its help only describes it.
+      await page.getByRole('switch', { name: 'Limit tokens per project', exact: true }).check();
       await page.getByLabel('Tokens per project per day').fill('250000');
       // No prices on this server: a cost limit would count nothing.
-      await expect(page.getByRole('switch', { name: /^Limit the cost/ })).toBeDisabled();
+      await expect(
+        page.getByRole('switch', { name: 'Limit the cost', exact: true }),
+      ).toBeDisabled();
       await expect(page.locator('#ai-review-no-prices')).toContainText(
         'No prices are set on this server, so a cost limit would count nothing.',
       );

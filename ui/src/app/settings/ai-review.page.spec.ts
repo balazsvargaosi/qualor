@@ -1146,7 +1146,10 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
       expect(limit.getAttribute('role')).toBe('switch');
       expect(limit.disabled).toBe(true);
       expect(limit.checked).toBe(false);
-      const note = field(root, limit.getAttribute('aria-describedby')!);
+      // Described by its help, then by why it is disabled.
+      const [help, why] = limit.getAttribute('aria-describedby')!.split(' ');
+      expect(text(field(root, help!))).toBe("Counted with the models' prices this server sets.");
+      const note = field(root, why!);
       expect(text(note)).toBe(
         'No prices are set on this server, so a cost limit would count nothing. An instance admin enters model prices in Settings → AI provider.',
       );
@@ -1191,6 +1194,26 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
       expect(server.requestsTo('PUT', ROUTE)[1]?.body).toMatchObject({
         budgets: { costPerDayUsd: null },
       });
+    });
+
+    it('names each switch by its name alone, and describes it by its help', async () => {
+      setup('orgAdmin', { usage: PRICED });
+      const { fixture, root } = await render();
+      const perProject = switchNamed(root, 'Limit tokens per project');
+      expect(text(field(root, perProject.getAttribute('aria-labelledby')!))).toBe(
+        'Limit tokens per project',
+      );
+      expect(text(field(root, perProject.getAttribute('aria-describedby')!))).toBe(
+        'Off: no limit per project.',
+      );
+      // Switched on, it has no help to point at.
+      await click(fixture, perProject);
+      expect(perProject.hasAttribute('aria-describedby')).toBe(false);
+      const cost = switchNamed(root, 'Limit the cost');
+      expect(text(field(root, cost.getAttribute('aria-labelledby')!))).toBe('Limit the cost');
+      expect(text(field(root, cost.getAttribute('aria-describedby')!))).toBe(
+        "Counted with the models' prices this server sets.",
+      );
     });
 
     it('limits the tokens per project under its switch, and none once it is off', async () => {

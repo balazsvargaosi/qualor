@@ -326,21 +326,32 @@
                   </p>
                 </div>
 
+                <!-- A switch is named by its name alone, and its help describes it. -->
                 <div class="switch-row">
                   <input
                     id="ai-review-per-project-on"
                     class="switch"
                     type="checkbox"
                     role="switch"
+                    aria-labelledby="ai-review-per-project-on-name"
+                    [attr.aria-describedby]="
+                      budgets().perProjectLimited ? null : 'ai-review-per-project-on-help'
+                    "
                     [checked]="budgets().perProjectLimited"
                     (change)="setPerProjectLimited($event)"
                   />
                   <label for="ai-review-per-project-on">
-                    <span class="sw-name" i18n="@@orgAi.limitPerProject"
+                    <span
+                      id="ai-review-per-project-on-name"
+                      class="sw-name"
+                      i18n="@@orgAi.limitPerProject"
                       >Limit tokens per project</span
                     >
                     @if (!budgets().perProjectLimited) {
-                      &ngsp;<span class="sw-help" i18n="@@orgAi.limitPerProject.off"
+                      &ngsp;<span
+                        id="ai-review-per-project-on-help"
+                        class="sw-help"
+                        i18n="@@orgAi.limitPerProject.off"
                         >Off: no limit per project.</span
                       >
                     }
@@ -383,13 +394,21 @@
                     class="switch"
                     type="checkbox"
                     role="switch"
+                    aria-labelledby="ai-review-cost-on-name"
                     [checked]="budgets().costLimited"
                     [disabled]="noPrices() && !budgets().costLimited"
-                    [attr.aria-describedby]="noPrices() ? 'ai-review-no-prices' : null"
+                    [attr.aria-describedby]="
+                      noPrices()
+                        ? 'ai-review-cost-on-help ai-review-no-prices'
+                        : 'ai-review-cost-on-help'
+                    "
                     (change)="setCostLimited($event)"
                   />
                   <label for="ai-review-cost-on">
-                    <span class="sw-name" i18n="@@orgAi.limitCost">Limit the cost</span>&ngsp;<span
+                    <span id="ai-review-cost-on-name" class="sw-name" i18n="@@orgAi.limitCost"
+                      >Limit the cost</span
+                    >&ngsp;<span
+                      id="ai-review-cost-on-help"
                       class="sw-help"
                       i18n="@@orgAi.limitCost.help"
                       >Counted with the models' prices this server sets.</span
