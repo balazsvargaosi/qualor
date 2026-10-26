@@ -253,8 +253,9 @@ server, and a private CA needs `NODE_EXTRA_CA_CERTS`.
 
 ### Update an App you created before
 
-An App created before keeps the permissions and events it had. To give it **Contents**, which
-resolves and reopens Qualor's conversations, and to turn the comment events on:
+An App created before keeps the permissions and events it had. To give it **Contents: Read and
+write**, which Qualor uses only to resolve and reopen its own review conversations, and to turn the
+comment events on:
 
 1. On GitHub, open the App's settings (**Settings → Developer settings → GitHub Apps**, your App,
    **Edit**) and go to **Permissions & events**. Under **Repository permissions** set **Contents**
