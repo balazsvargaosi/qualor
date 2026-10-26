@@ -190,7 +190,6 @@ async function act(fixture: Fixture, root: HTMLElement, name: string) {
   await click(fixture, button(root.querySelector('q-status-list')!, name));
 }
 
-/** Presses Save AI review once what was typed has rendered (it enables Save). */
 /**
  * Renders while a navigation waits for its guard: `whenStable` would wait for that navigation, which
  * waits for the person's answer in the page.
@@ -203,6 +202,7 @@ async function renderWhileNavigating(): Promise<void> {
   }
 }
 
+/** Presses Save AI review once what was typed has rendered (it enables Save). */
 async function saveReview(fixture: Fixture, root: HTMLElement) {
   await settle(fixture);
   await click(fixture, button(section(root), 'Save AI review'));
