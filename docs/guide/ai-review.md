@@ -280,8 +280,9 @@ Until the review ends it says "AI review in progress…". Then it shows:
   them, and those whose thread could not be posted (past the cap, or the merge request moved on). It
   lists up to ten, the most severe first, each with a link to Qualor, and counts the rest. A low
   finding on a changed line, with no suggested change, has no thread and is only counted;
-- notes where the review fell short: it reached its token limit, a reviewer's answer could not be
-  read, more security findings than it verifies, or files the scanner left out of the snapshot;
+- notes where the review fell short: it reached its token limit, a reviewer reached its limit of
+  turns, a reviewer's answer could not be read, more security findings than it verifies, or files
+  the scanner left out of the snapshot;
 - the commit it reviewed, and the merge request's latest commit when that is a different one;
 - when there is room, a collapsed **Prompt for an AI agent** that lists the open findings (up to
   20), to paste into a coding agent.
@@ -848,11 +849,17 @@ is not known ahead. When the day has nothing left, or too little for a review of
 review is skipped and the summary says the day's token budget is spent. When Tokens per review itself is too little for a
 merge request this large, the summary says that instead (see **Big merge requests** below).
 Otherwise the review shares its tokens between its stages: 55 % for the reviewers, an equal part
-each, 35 % for the judge and 10 % for the second check of security findings. A stage that has used
-its share answers with what it has, and the summary says "The review reached its token limit, so it
-may have missed problems." The limit is a ceiling Qualor works to, not a count to the token: it
-stops asking the model when it expects the next answer not to fit, but it cannot know how long an
-answer will be, so a review can end somewhat over it. The day's budget is checked as each review
+each, 35 % for the judge and 10 % for the second check of security findings. What one leaves unused
+goes forward: a reviewer also gets what the reviewers before it left of their parts, the judge what
+the reviewers left, and the second check what the judge left. So a reviewer that reads much of the
+code can use what the others did not need. What one spends past what it was given is taken from
+none of the others. A reviewer, the judge or the second check that has used its tokens answers with
+what it has, and the summary says "The review reached its token limit, so it may have missed
+problems." The token limit is a ceiling Qualor works to, not a count to the token: it stops asking
+the model when it expects the next answer not to fit, but it cannot know how long an answer will
+be, so a review can end somewhat over it. Each of them also answers with what it has once it has
+read the code for 16 turns, whatever tokens it has left, and the summary then says "A reviewer
+reached its limit of 16 turns, so it may have missed problems." The day's budget is checked as each review
 starts, so reviews that start together, one on each worker slot (`QUALOR_REVIEW_WORKER_CONCURRENCY`
 on each replica of the server), can each spend what was left: the day can end over its budget by up
 to about (slots − 1) × Tokens per review.
@@ -960,7 +967,8 @@ and what to do about each:
 | AI review failed: the model provider does not support the tool calls the review needs. The next push reviews again. | Use a model and a server that can call tools. **Test** in **Settings → AI assistant** shows `Tool calling (needed by AI review): not supported` for this one ([Models that work](#models-that-work)). With one of OpenAI's newest models, the cause is usually the API: choose **Responses** under **API** in **Settings → AI assistant**, and the Test says tool calling is supported |
 | AI review failed: the model’s answers could not be read. The next push reviews again. | The judge did not answer in the form the review needs, even when asked again. Small models do this more often: try a stronger one |
 | AI review failed because of an error in Qualor. The next push reviews again. | An unexpected error, or a stop of the server during the review (a review is not resumed). If it keeps happening with the server running, report it with the server log's `AI review run failed` line |
-| The review reached its token limit, so it may have missed problems. | A stage used its share of the tokens. Raise **Tokens per review**, mainly for big merge requests ([Budgets and today's usage](#budgets-and-todays-usage)) |
+| The review reached its token limit, so it may have missed problems. | A reviewer, the judge or the second check used its tokens, with what the stages before it left. Raise **Tokens per review**, mainly for big merge requests ([Budgets and today's usage](#budgets-and-todays-usage)) |
+| A reviewer reached its limit of 16 turns, so it may have missed problems. | A reviewer read the code for 16 turns, the most one may, and answered with what it had. The limit is fixed: more tokens do not raise it. It is likelier in a big merge request |
 | A reviewer’s answer could not be read, so part of the review is missing. | A reviewer did not answer in the form the review needs. The rest of the review is intact. Try a stronger model |
 | There were more serious security findings than the review verifies, so the rest were not checked a second time. | Not an error. The second check covers five findings |
 | The scanner left some files out of the repository snapshot to stay within its limits, so the review did not see all of them. | Raise the [snapshot limits](#size-limits-and-the-two-server-variables) |
