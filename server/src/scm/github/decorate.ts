@@ -45,6 +45,7 @@ import {
 import {
   applyReviewThreads,
   MAX_COMMENT_PAGES,
+  plannedCounts,
   planReviewThreads,
   type ReviewThreadContext,
   type ThreadPlan,
@@ -100,7 +101,10 @@ interface Threads {
 interface PullRequestPart {
   /** Null when the analysis is not the pull request's latest, or it could not be read. */
   pull: GitHubPullRequest | null;
-  /** What the check run says first: the plan's counts, or why there are none. */
+  /**
+   * What the check run says first: the plan's counts, with the updates the App may not make
+   * (`plannedCounts`), or why there are none.
+   */
   inline: Inline;
   /** The threads' plan, when ruling T3 or the AI review allows one and it could be made. */
   planned: PlannedThreads | null;
@@ -252,8 +256,11 @@ async function readPullRequest(
       skipped === null,
       replies,
     );
-    const { commented, unplaced } = planned.plan;
-    return { pull, inline: { commented, unplaced, skipped }, planned, replies };
+    const { commented, unplaced, unresolved } = plannedCounts(
+      planned.plan,
+      client.mayResolveThreads,
+    );
+    return { pull, inline: { commented, unplaced, skipped, unresolved }, planned, replies };
   } catch (err) {
     failures.add(err);
     return { pull, inline: NOT_UPDATED, planned: null, replies };
@@ -271,8 +278,8 @@ async function applyThreads(
 ): Promise<Threads> {
   const applied = await attempt(failures, () => applyReviewThreads(planned.ctx, planned.plan));
   if (applied === null) return { inline: NOT_UPDATED, aiNotPosted: [] };
-  const { commented, unplaced, aiNotPosted } = applied;
-  return { inline: { commented, unplaced, skipped }, aiNotPosted };
+  const { commented, unplaced, unresolved, aiNotPosted } = applied;
+  return { inline: { commented, unplaced, skipped, unresolved }, aiNotPosted };
 }
 
 /** github.md §6.1: the check run of this analysis, its summary the summary comment's `body`. */
@@ -426,6 +433,13 @@ async function writeDecoration(
       ? expected
       : await applyThreads(part.planned, part.inline.skipped, failures);
   if (failures.stop !== null) return failures.stop;
+  const unresolved = threads.inline.unresolved ?? 0;
+  if (unresolved > 0) {
+    deps.logger?.info(
+      { analysisId: loaded.analysis.id, connectionId: loaded.connection.id, unresolved },
+      'GitHub conversations not resolved or reopened: the GitHub App needs Contents: Read and write',
+    );
+  }
   const body = summaryFor(deps, loaded, data, review, part.pull, threads);
   let comments: readonly GitHubComment[] = [];
   if (part.pull?.state === 'open') {

@@ -5,6 +5,7 @@ import {
   githubShape,
   githubWrites,
   type FakeGitHub,
+  type FakeRepository,
 } from '../../../test/fake-github';
 import {
   githubConnection,
@@ -792,6 +793,84 @@ describe('GitHub decoration (github.md §5–§6)', () => {
     expect(summaries(repo.id)[0]?.body).not.toContain('commented inline');
     expect(run.summary).toContain(sentence);
     expect(await queuedDecorations(h)).toEqual([]); // a missing permission is not retried
+  });
+
+  it('goes on past a conversation the App may not resolve: the new thread is made, and the summary says how many stay as they are', async () => {
+    // An App created before Qualor needed Contents (write), on an installation of its own.
+    const id = nextRepo++;
+    const installed: FakeRepository = {
+      id,
+      owner: 'acme',
+      name: 'no-contents',
+      installationId: id,
+      permissions: { checks: 'write', issues: 'read', metadata: 'read', pull_requests: 'write' },
+    };
+    fake.addRepository(installed);
+    fake.addPull(installed.id, {
+      number: 7,
+      title: 'Refunds',
+      state: 'open',
+      headSha: HEAD,
+      baseSha: 'b'.repeat(40),
+      files: [{ filename: 'src/a.ts', patch: PATCH }],
+    });
+    const { project, repo, ingest } = await setup('gh/no-contents', {
+      repo: { id: installed.id, name: installed.name },
+    });
+    await ingest([3, 4]);
+    await runDecorations(h, githubDeps(h));
+    const run = newestRun(repo.id)!;
+    const summary = summaries(repo.id)[0]!;
+    expect(resolvedByLine(repo.id)).toEqual({ 3: false, 4: false });
+    // Line 4 is fixed and line 5 is new: no resolution is asked for, and the rest is written,
+    // the check run once, already with what came of the threads.
+    fake.clearRequests();
+    const told: unknown[][] = [];
+    const logger = { info: (...args: unknown[]) => void told.push(args), warn: () => undefined };
+    const analysisId = await ingest([3, 5]);
+    await runDecorations(h, githubDeps(h, { logger }));
+    expect(writes()).toEqual([
+      `PATCH /repos/acme/${repo.name}/check-runs/${run.id}`,
+      reviewPost(repo.name),
+      `PATCH /repos/acme/${repo.name}/issues/comments/${summary.id}`,
+    ]);
+    expect(resolvedByLine(repo.id)).toEqual({ 3: false, 4: false, 5: false });
+    const line =
+      '1 conversation could not be resolved or reopened: give the GitHub App Contents: Read and write.';
+    for (const body of [summaries(repo.id)[0]!.body, newestRun(repo.id)!.summary!]) {
+      expect(body).toContain('2 new issues are commented inline.');
+      expect(body).toContain(line);
+      expect(body).not.toContain('could not be updated');
+    }
+    expect(newestRun(repo.id)?.summary).toBe(
+      summaries(repo.id)[0]!.body.split('\n').slice(1).join('\n'),
+    );
+    expect(told.filter(([, message]) => String(message).includes('Contents'))).toEqual([
+      [
+        { analysisId, connectionId: project.connectionId, unresolved: 1 },
+        'GitHub conversations not resolved or reopened: the GitHub App needs Contents: Read and write',
+      ],
+    ]);
+    expect(await queuedDecorations(h)).toEqual([]);
+    // The same job again writes nothing: the check run and the summary already say it.
+    fake.clearRequests();
+    await enqueueAgain(analysisId, repo.id);
+    await runDecorations(h, githubDeps(h));
+    expect(writes()).toEqual([]);
+    // The owner grants Contents (write): the next decoration resolves the thread, and says nothing
+    // more of it.
+    installed.permissions = { ...installed.permissions, contents: 'write' };
+    fake.clearRequests();
+    await enqueueAgain(analysisId, repo.id);
+    await runDecorations(h, githubDeps(h));
+    expect(writes()).toEqual([
+      `PATCH /repos/acme/${repo.name}/check-runs/${run.id}`,
+      `POST ${GRAPHQL} QualorResolveThread`,
+      `PATCH /repos/acme/${repo.name}/issues/comments/${summary.id}`,
+    ]);
+    expect(resolvedByLine(repo.id)).toEqual({ 3: false, 4: true, 5: false });
+    expect(summaries(repo.id)[0]?.body).not.toContain('could not be resolved');
+    expect(newestRun(repo.id)?.summary).not.toContain('could not be resolved');
   });
 
   it('ends the job after the check run when the review is rate limited, and the retry makes the rest with no duplicate', async () => {

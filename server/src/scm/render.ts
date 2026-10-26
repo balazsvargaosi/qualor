@@ -175,6 +175,11 @@ export interface SummaryInput {
      * `failed` (GitHub only): reading or changing the threads failed, so the counts are unknown.
      */
     skipped: 'stale' | 'merged_result' | 'checkout_other' | 'failed' | null;
+    /**
+     * GitHub only: Qualor's conversations that were to be resolved or reopened, and stay as they
+     * are because the App may not (it lacks Contents: Read and write). None when absent.
+     */
+    unresolved?: number;
   };
   /** The branch in Qualor, or null without `QUALOR_PUBLIC_URL`. */
   branchUrl: string | null;
@@ -216,6 +221,16 @@ const CHECKOUT_OTHER =
   'The analyzers’ issues are not commented inline: the workflow analysed a commit other than the pull request’s head (GitHub’s merge commit, by default); check out the head to get them (`ref: ${{ github.event.pull_request.head.sha }}`).';
 /** github.md §6.2: the threads could not be read or changed; the next decoration tries again. */
 const NOT_UPDATED = 'Inline comments could not be updated this time.';
+
+/**
+ * GitHub: how many of Qualor's conversations stay as they are because the App may not resolve or
+ * reopen them, and what to give it; null when there is none.
+ */
+function unresolvedSentence(input: SummaryInput): string | null {
+  const n = count(input.inline.unresolved ?? 0);
+  if (n === 0) return null;
+  return `${n} ${plural(n, 'conversation', 'conversations')} could not be resolved or reopened: give the GitHub App Contents: Read and write.`;
+}
 
 /** The headline's marker of a gate status; one this code does not know is a warning. */
 const STATUS_ICON: Record<GateResult['status'], string> = {
@@ -410,7 +425,8 @@ function inlineSentence(
 /**
  * The end of the summary: how many issues the list leaves out (and that all of them are inline,
  * when so), why there are no inline comments or how many there are, the link to Qualor last on
- * its line, then the note that the request moved on.
+ * its line, how many conversations the GitHub App may not resolve or reopen, then the note that
+ * the request moved on.
  */
 function footer(
   input: SummaryInput,
@@ -440,6 +456,8 @@ function footer(
     const last = lines.pop();
     lines.push(last === undefined ? `**${link}**` : `${last} · **${link}**`);
   }
+  const unresolved = unresolvedSentence(input);
+  if (unresolved !== null) lines.push(unresolved);
   // scm.md §5.2 item 7: not for a merged-results or merge-train pipeline, whose merge commit is
   // never the merge request's head.
   if (input.mergeRequestHead !== null && inline.skipped !== 'merged_result') {

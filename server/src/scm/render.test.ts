@@ -408,6 +408,44 @@ describe('summary, inline note and commit status (scm.md §5)', () => {
     expect(github(none, 'f'.repeat(40))).toContain('the pull request is now at ` ffffffffffff `.');
   });
 
+  it('says how many conversations GitHub would not let Qualor resolve or reopen, with its plural', () => {
+    const none = { commented: 0, unplaced: 0, skipped: null };
+    const github = (inline: SummaryInput['inline'], mergeRequestHead: string | null = null) =>
+      summary({ vocabulary: 'github', inline, mergeRequestHead });
+    const one =
+      '1 conversation could not be resolved or reopened: give the GitHub App Contents: Read and write.';
+    const three =
+      '3 conversations could not be resolved or reopened: give the GitHub App Contents: Read and write.';
+    // A line of its own after the inline sentence and the link, before the note that the pull
+    // request moved on.
+    expect(
+      github({ ...none, commented: 2, unresolved: 1 })
+        .split('\n')
+        .slice(-3),
+    ).toEqual([`2 new issues are commented inline. · **[Open in Qualor →](${B})**`, '', one]);
+    expect(
+      github({ ...none, commented: 2, unresolved: 3 }, 'f'.repeat(40))
+        .split('\n')
+        .slice(-5),
+    ).toEqual([
+      `2 new issues are commented inline. · **[Open in Qualor →](${B})**`,
+      '',
+      three,
+      '',
+      'This analysis is of ` abcdef012345 `; the pull request is now at ` ffffffffffff `.',
+    ]);
+    // Beside the sentence of a checkout the analyzers' threads skip: the AI review's are updated.
+    expect(github({ ...none, skipped: 'checkout_other', unresolved: 1 })).toContain(`\n\n${one}`);
+    // Never the words of a failure: the threads were read and the rest was written.
+    expect(github({ ...none, unresolved: 3 })).not.toContain('could not be updated');
+    // Nothing to say: no line.
+    for (const unresolved of [0, -1, Number.NaN, undefined]) {
+      expect(github({ ...none, unresolved }), String(unresolved)).not.toContain(
+        'could not be resolved',
+      );
+    }
+  });
+
   it('ends with how many more issues there are, where they are, and the link', () => {
     const tail = (o: Partial<SummaryInput>) => summary(o).split('\n').at(-1);
     const none = { commented: 0, unplaced: 0, skipped: null };

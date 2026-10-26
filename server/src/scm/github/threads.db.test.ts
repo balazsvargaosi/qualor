@@ -990,6 +990,7 @@ describe('GitHub review threads (github.md §6.4)', () => {
     expect(await applyReviewThreads(ctx, plan)).toEqual({
       commented: 2,
       unplaced: 0,
+      unresolved: 0,
       aiNotPosted: [],
     });
     expect(githubWrites(fake.requests)).toEqual([
@@ -997,6 +998,102 @@ describe('GitHub review threads (github.md §6.4)', () => {
       `POST /repos/acme/${s.repo.name}/pulls/7/reviews`,
     ]);
     expect(resolvedByLine(s.repo.id)).toEqual({ 3: false, 4: true, 5: false });
+  });
+
+  describe('a conversation the App may not resolve or reopen (it lacks Contents: write)', () => {
+    /** The permissions of an App created before Qualor needed Contents (write). */
+    const WITHOUT_CONTENTS = {
+      checks: 'write',
+      issues: 'read',
+      metadata: 'read',
+      pull_requests: 'write',
+    } as const;
+    const FORBIDDEN = {
+      data: { resolveReviewThread: null },
+      errors: [
+        {
+          type: 'FORBIDDEN',
+          path: ['resolveReviewThread'],
+          message: 'Resource not accessible by integration',
+        },
+      ],
+    };
+
+    it('skips each update it may not make, counts it, and still creates the new threads', async () => {
+      // An installation of its own, which grants no Contents (write).
+      const id = nextRepo++;
+      fake.addRepository({
+        id,
+        owner: 'acme',
+        name: 'no-contents',
+        installationId: id,
+        permissions: WITHOUT_CONTENTS,
+      });
+      fake.addPull(id, {
+        number: 7,
+        title: 'Threads',
+        state: 'open',
+        headSha: HEAD,
+        baseSha: BASE,
+        files: [{ filename: 'src/a.ts', patch: PATCH }],
+      });
+      const s = await setup('threads/no-contents', { repo: { id, name: 'no-contents' } });
+      await s.ingest([3, 4]);
+      expect(await s.reconcile()).toEqual({ commented: 2, unplaced: 0 });
+      // Line 4 is fixed and line 5 is new: the resolution is not asked for, and the thread is made.
+      await s.ingest([3, 5]);
+      const ctx = await s.context();
+      const plan = await planReviewThreads(ctx);
+      expect(plan.updates).toEqual([
+        { threadId: threadAt(s.repo.id, 4).id, resolve: true, counted: false },
+      ]);
+      expect(await applyReviewThreads(ctx, plan)).toEqual({
+        commented: 2,
+        unplaced: 0,
+        unresolved: 1,
+        aiNotPosted: [],
+      });
+      expect(mutations()).toEqual([]);
+      expect(creations().map((c) => c.line)).toEqual([5]);
+      expect(resolvedByLine(s.repo.id)).toEqual({ 3: false, 4: false, 5: false });
+      // Line 3's thread was resolved by the App when it could, and its issue is open: the
+      // reopening is not made either, and the open issue whose thread stays resolved does not
+      // count, as one whose thread is gone.
+      fake.resolveThreadAs(threadAt(s.repo.id, 3).id, botLogin);
+      const again = await s.context();
+      expect(await applyReviewThreads(again, await planReviewThreads(again))).toEqual({
+        commented: 1,
+        unplaced: 0,
+        unresolved: 2,
+        aiNotPosted: [],
+      });
+      expect(mutations()).toEqual([]);
+      expect(creations()).toEqual([]);
+      expect(resolvedByLine(s.repo.id)).toEqual({ 3: true, 4: false, 5: false });
+    });
+
+    it('takes GitHub’s FORBIDDEN for an update it may not make: the thread stays, and the rest goes on', async () => {
+      const s = await setup('threads/forbidden');
+      await s.ingest([3, 4, 5]);
+      await s.reconcile();
+      // Lines 4 and 5 are fixed: GitHub refuses the first resolution (a token asked before the
+      // installation lost Contents (write)), and the second is made.
+      await s.ingest([3]);
+      const ctx = await s.context();
+      const plan = await planReviewThreads(ctx);
+      fake.inject('POST', GRAPHQL, { status: 200, body: FORBIDDEN });
+      expect(await applyReviewThreads(ctx, plan)).toEqual({
+        commented: 1,
+        unplaced: 0,
+        unresolved: 1,
+        aiNotPosted: [],
+      });
+      expect(mutations()).toEqual([
+        { operation: 'QualorResolveThread', id: threadAt(s.repo.id, 4).id },
+        { operation: 'QualorResolveThread', id: threadAt(s.repo.id, 5).id },
+      ]);
+      expect(resolvedByLine(s.repo.id)).toEqual({ 3: false, 4: false, 5: true });
+    });
   });
 
   describe('the people’s replies it finds for Qualor to answer (6I-4)', () => {

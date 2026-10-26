@@ -105,6 +105,11 @@ export interface ThreadPlan {
 
 /** What applying the plan came to: the counts it gives, and the AI findings still without a thread. */
 export interface AppliedThreads extends InlineResult {
+  /**
+   * The resolutions and reopenings the App may not make (it lacks Contents: write), whose threads
+   * stay as GitHub holds them.
+   */
+  unresolved: number;
   /** {@link ThreadPlan.aiNotPosted}, and then those GitHub refused. */
   aiNotPosted: readonly DesiredAiIssue[];
 }
@@ -466,22 +471,47 @@ async function createThreads(
 }
 
 /**
+ * What the plan comes to, which the check run says before anything is applied (github.md §6.1):
+ * the plan's own counts, unless the App may not resolve or reopen threads (its installation lacks
+ * Contents: write). Then every update is refused with no request, as applying the plan finds: its
+ * thread stays as it is and counts as unresolved, and an open issue it was to reopen does not
+ * count. So the check run need not be written again for what was known before.
+ */
+export function plannedCounts(
+  plan: ThreadPlan,
+  mayResolveThreads: boolean,
+): Omit<AppliedThreads, 'aiNotPosted'> {
+  if (mayResolveThreads) {
+    return { commented: plan.commented, unplaced: plan.unplaced, unresolved: 0 };
+  }
+  const reopened = plan.updates.filter((update) => update.counted).length;
+  return {
+    commented: plan.commented - reopened,
+    unplaced: plan.unplaced,
+    unresolved: plan.updates.length,
+  };
+}
+
+/**
  * github.md §6.4, the second half: makes the plan's resolutions and reopenings, then its new
  * threads as one review, and gives the counts as they are now. A thread GitHub no longer has
  * (`NOT_FOUND`: a person deleted it after the listing) is skipped, like a refused position, and its
- * open issue no longer counts; a position GitHub refuses counts as not placed (an analyzer's issue)
- * or joins the AI findings that got no thread (a finding of the AI review). Any error (a rate
- * limit, the request budget) stops it where it is: the next decoration plans again from what
- * GitHub then holds.
+ * open issue no longer counts; so is one the App may not resolve or reopen (it lacks Contents:
+ * write), which stays as GitHub holds it and counts as unresolved. A position GitHub refuses counts
+ * as not placed (an analyzer's issue) or joins the AI findings that got no thread (a finding of the
+ * AI review). Any error (a rate limit, the request budget) stops it where it is: the next
+ * decoration plans again from what GitHub then holds.
  */
 export async function applyReviewThreads(
   ctx: ReviewThreadContext,
   plan: ThreadPlan,
 ): Promise<AppliedThreads> {
   let commented = plan.commented;
+  let unresolved = 0;
   for (const update of plan.updates) {
-    const done = (await ctx.client.setThreadResolved(update.threadId, update.resolve)) === 'done';
-    if (!done && update.counted) commented -= 1;
+    const result = await ctx.client.setThreadResolved(update.threadId, update.resolve);
+    if (result === 'refused') unresolved += 1;
+    if (result !== 'done' && update.counted) commented -= 1;
   }
   const refused = await createThreads(ctx, plan.creations);
   const refusedAi = refused.flatMap(({ finding }) =>
@@ -491,6 +521,7 @@ export async function applyReviewThreads(
   return {
     commented: commented - refusedAnalyzers,
     unplaced: plan.unplaced + refusedAnalyzers,
+    unresolved,
     aiNotPosted: [...plan.aiNotPosted, ...refusedAi],
   };
 }
