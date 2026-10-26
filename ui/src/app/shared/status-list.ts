@@ -46,7 +46,11 @@ export interface StatusLine {
   action?: StatusAction | null;
 }
 
-const TONES: Record<StatusTone, { badge: string; icon: IconName }> = {
+/**
+ * Each tone's chip (spec §7.8): its badge and its icon. A section's head that repeats a line's
+ * state draws it with the same.
+ */
+export const TONE_CHIPS: Readonly<Record<StatusTone, { badge: string; icon: IconName }>> = {
   ok: { badge: 'badge-passed', icon: 'check' },
   off: { badge: 'badge-none', icon: 'minus' },
   attention: { badge: 'badge-warn', icon: 'alert' },
@@ -70,6 +74,6 @@ export class StatusList {
   readonly act = output<string>();
 
   protected readonly rows = computed(() =>
-    this.lines().map((line) => ({ line, chip: TONES[line.tone] })),
+    this.lines().map((line) => ({ line, chip: TONE_CHIPS[line.tone] })),
   );
 }

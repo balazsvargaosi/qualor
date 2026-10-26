@@ -1,7 +1,7 @@
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { ICONS } from './icons';
-import { type StatusLine, StatusList } from './status-list';
+import { type StatusLine, StatusList, TONE_CHIPS } from './status-list';
 
 const LINES: readonly StatusLine[] = [
   {
@@ -84,6 +84,15 @@ describe('StatusList', () => {
     expect(text(tag)).toBe('Enterprise');
     expect(line('review').querySelector('.badge')).not.toBe(tag);
     expect(line('test').querySelector('.st-sub')).toBeNull();
+  });
+
+  it("shares each tone's chip, so a section's head says a state as its line does", () => {
+    expect(TONE_CHIPS).toEqual({
+      ok: { badge: 'badge-passed', icon: 'check' },
+      off: { badge: 'badge-none', icon: 'minus' },
+      attention: { badge: 'badge-warn', icon: 'alert' },
+      broken: { badge: 'badge-failed', icon: 'cross' },
+    });
   });
 
   it('emits the action of a line; a link action is a link', async () => {

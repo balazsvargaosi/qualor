@@ -18,12 +18,11 @@ import type { ItemOf } from '../../api/types';
 import { label } from '../../i18n/labels';
 import { inputValue, isChecked } from '../../shared/forms';
 import { Icon } from '../../shared/icon';
-import type { IconName } from '../../shared/icons';
 import { NumberField } from '../../shared/number-field';
 import { formatWhole } from '../../shared/numbers';
 import { Requirement } from '../../shared/requirement';
 import { type FootOutcome, SectionFoot } from '../../shared/section-foot';
-import type { StatusLine, StatusTone } from '../../shared/status-list';
+import { type StatusLine, TONE_CHIPS } from '../../shared/status-list';
 import type { OrgAi } from '../ai-review';
 import {
   AUTO_FIX_SEVERITIES,
@@ -40,14 +39,6 @@ type Project = ItemOf<'/api/v0/projects'>;
 
 /** The input of the maximum per analysis, which a refusal names and focuses. */
 const MAX_INPUT = 'auto-fix-max';
-
-/** The stored switch as the status and the section's head say it (spec §7.8). */
-const CHIPS: Record<StatusTone, { badge: string; icon: IconName }> = {
-  ok: { badge: 'badge-passed', icon: 'check' },
-  off: { badge: 'badge-none', icon: 'minus' },
-  attention: { badge: 'badge-warn', icon: 'alert' },
-  broken: { badge: 'badge-failed', icon: 'cross' },
-};
 
 /**
  * `q-fix-suggestions-section` (spec §3.5 M-O8): the organisation AI page's automatic fix
@@ -212,7 +203,7 @@ export class FixSuggestionsSection {
   /** The head's state chip: the status line's word. */
   protected readonly chip = computed(() => {
     const line = this.line();
-    return line === null ? null : { ...CHIPS[line.tone], state: line.state };
+    return line === null ? null : { ...TONE_CHIPS[line.tone], state: line.state };
   });
 
   constructor() {
