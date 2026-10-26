@@ -32,6 +32,12 @@ describe('parseMoney', () => {
     }
   });
 
+  it('never answers an amount too large to be a number, whatever the maximum', () => {
+    // Grouped thousands may run on: 10 to the 309th is past the largest number.
+    expect(parseMoney(`1${',000'.repeat(103)}`, Number.POSITIVE_INFINITY)).toBeNull();
+    expect(parseMoney(`1${',000'.repeat(5)}`, Number.POSITIVE_INFINITY)).toBe(1e15);
+  });
+
   it('takes whole amounts, spaces and the maximum itself', () => {
     expect(parseMoney('20', 10_000)).toBe(20);
     expect(parseMoney(' 10 000 ', 10_000)).toBe(10_000);

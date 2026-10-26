@@ -30,7 +30,8 @@ export function parseMoney(text: string, max: number): number | null {
   const amount = text.replace(SEPARATORS, '');
   if (!MONEY.test(amount) && !GROUPED_MONEY.test(amount)) return null;
   const n = Number(amount.replaceAll(',', ''));
-  return n <= max ? n : null;
+  // Grouped thousands may run on past the largest number, and an unbounded `max` takes Infinity.
+  return Number.isFinite(n) && n <= max ? n : null;
 }
 
 /** A whole number as the locale writes it, grouped ("2,000,000" in English). */
