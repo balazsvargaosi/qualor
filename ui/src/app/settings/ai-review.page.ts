@@ -71,6 +71,9 @@ interface Consent extends AiReviewProvider {
   changed: boolean;
 }
 
+/** What sent a `PUT`: Save AI review (the section), or a switch on or off (a status action). */
+type SaveOrigin = 'save' | 'switch';
+
 /** A state chip: its badge, its icon and its word (spec §7.8). */
 interface Chip {
   badge: string;
@@ -201,7 +204,10 @@ export class AiReviewPage implements LeaveGuarded {
   /** Why the last save failed, in the section's foot; gone with the next edit. */
   private readonly saveError = signal<string | null>(null);
   private readonly savedAt = signal<Date | null>(null);
-  /** A refusal said under the page's head: AI went, or the section is not there to say it. */
+  /**
+   * A refusal said under the page's head: AI went, a switch on or off failed (Save would not try
+   * it again), or the section is not there to say it.
+   */
   protected readonly error = signal<string | null>(null);
   /** The data-sharing dialog's question while it is open; null while it is closed. */
   protected readonly consent = signal<Consent | null>(null);
@@ -564,7 +570,7 @@ export class AiReviewPage implements LeaveGuarded {
       this.askConsent(false);
       return;
     }
-    await this.put(settings.enabled, null);
+    await this.put(settings.enabled, null, 'save');
   }
 
   /** Confirm: acknowledges the provider the dialog showed, and saves the section with it. */
@@ -574,7 +580,7 @@ export class AiReviewPage implements LeaveGuarded {
     // Cleared first: the dialog's close event then finds nothing to cancel.
     this.consent.set(null);
     closeDialog(this.consentDialog());
-    await this.put(true, { host: asked.host, model: asked.model, models: asked.models });
+    await this.put(true, { host: asked.host, model: asked.model, models: asked.models }, 'switch');
   }
 
   /** Cancel, Escape or the dialog closing otherwise: nothing is sent. */
@@ -628,6 +634,7 @@ export class AiReviewPage implements LeaveGuarded {
         budgets: { ...settings.budgets },
       },
       false,
+      'switch',
     );
   }
 
@@ -666,7 +673,11 @@ export class AiReviewPage implements LeaveGuarded {
   }
 
   /** The section's `PUT`; `acknowledged` is the provider of the dialog that was just confirmed. */
-  private async put(enabled: boolean, acknowledged: AiReviewProvider | null): Promise<void> {
+  private async put(
+    enabled: boolean,
+    acknowledged: AiReviewProvider | null,
+    origin: SaveOrigin,
+  ): Promise<void> {
     const id = this.org.currentId();
     if (!id) return;
     const parsed = parseBudgets(this.budgets());
@@ -693,11 +704,20 @@ export class AiReviewPage implements LeaveGuarded {
           : {}),
       },
       true,
+      origin,
     );
   }
 
-  /** Sends a `PUT`; the answer is the new saved copy, and the edits too when they were sent. */
-  private async send(id: string, body: AiReviewBody, edits: boolean): Promise<void> {
+  /**
+   * Sends a `PUT`; the answer is the new saved copy, and the edits too when they were sent.
+   * `origin` says where a refusal is told: Save AI review's foot, or the page's head for a switch.
+   */
+  private async send(
+    id: string,
+    body: AiReviewBody,
+    edits: boolean,
+    origin: SaveOrigin,
+  ): Promise<void> {
     const generation = this.generation;
     this.busy.set(true);
     this.error.set(null);
@@ -722,14 +742,19 @@ export class AiReviewPage implements LeaveGuarded {
       );
     } catch (err) {
       if (generation !== this.generation) return;
-      await this.refused(err, id, generation);
+      await this.refused(err, id, generation, origin);
     } finally {
       this.busy.set(false);
     }
   }
 
   /** What a refused `PUT` does: asks again, names the budget, or says why in the page's words. */
-  private async refused(err: unknown, id: string, generation: number): Promise<void> {
+  private async refused(
+    err: unknown,
+    id: string,
+    generation: number,
+    origin: SaveOrigin,
+  ): Promise<void> {
     if (err instanceof ApiError && err.status === 409) {
       if (err.code === 'AI_REVIEW_CONSENT_REQUIRED' || err.code === 'AI_REVIEW_PROVIDER_CHANGED') {
         // The settings are read again (the edits are kept), and the dialog shows the provider now.
@@ -758,7 +783,9 @@ export class AiReviewPage implements LeaveGuarded {
       return;
     }
     const message = aiReviewRefusal(err) ?? problemMessage(err);
-    if (this.current()?.available) {
+    // Beside Save only what Save would try again; a switch, or a section no longer shown, says it
+    // under the page's head.
+    if (origin === 'save' && this.current()?.available) {
       this.saveError.set(message);
     } else {
       this.error.set(message);

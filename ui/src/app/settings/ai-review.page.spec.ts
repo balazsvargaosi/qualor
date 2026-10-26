@@ -1564,6 +1564,37 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
       expect(root.querySelector('section#review')).toBeNull();
     });
 
+    it("says why a switch-on failed under the page's head, not beside Save", async () => {
+      const { server } = setup();
+      server.on('PUT', ROUTE, { status: 500, body: problem(500, 'INTERNAL') });
+      const { fixture, root } = await render();
+      await act(fixture, root, 'Switch on AI review…');
+      await click(fixture, button(consentDialog(root), CONFIRM_A));
+      expect(text(root.querySelector(':scope > p.alert-error[role="alert"]'))).toContain(
+        'The request failed (HTTP 500',
+      );
+      expect(document.activeElement).toBe(root.querySelector('h2'));
+      // Save AI review would send the section, not try the switch again.
+      expect(foot(root)).toBe('No unsaved changes');
+      expect(text(line(root, 'review').querySelector('.badge'))).toBe('Off');
+    });
+
+    it("says why a switch-off failed under the page's head, not beside Save", async () => {
+      const { server } = setup('orgAdmin', {
+        organizations: { [ORG_ID]: { enabled: true, consentFor: A } },
+      });
+      server.on('PUT', ROUTE, { status: 500, body: problem(500, 'INTERNAL') });
+      const { fixture, root } = await render();
+      await act(fixture, root, 'Switch off AI review');
+      await click(fixture, button(offDialog(root), 'Switch off'));
+      expect(text(root.querySelector(':scope > p.alert-error[role="alert"]'))).toContain(
+        'The request failed (HTTP 500',
+      );
+      expect(document.activeElement).toBe(root.querySelector('h2'));
+      expect(foot(root)).toBe('No unsaved changes');
+      expect(text(line(root, 'review').querySelector('.badge'))).toBe('On');
+    });
+
     it('says why a save was refused beside its Save, and keeps the edits', async () => {
       const { server } = setup('orgAdmin', {
         organizations: { [ORG_ID]: { enabled: true, consentFor: A } },
