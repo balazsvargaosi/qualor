@@ -22,12 +22,11 @@ import { SEARCH_DELAY_MS } from './user-picker';
 
 type Project = ItemOf<'/api/v0/projects'>;
 
-/** A project the picker adds: what a list of chosen projects shows of it. */
-export interface PickedProject {
-  id: string;
-  name: string;
-  key: string;
-}
+/**
+ * A project the picker adds, as the list carried it: a list of chosen projects shows its name and
+ * key, and may read more of it (a project created after the page loaded its own list is only here).
+ */
+export type PickedProject = Project;
 
 /** The most projects one answer lists; typing narrows the rest (never the whole organisation). */
 const LIMIT = 20;
@@ -132,7 +131,7 @@ export class ProjectPicker {
 
   protected tick(project: Project, event: Event): void {
     const ticked = new Map(this.ticked());
-    if (isChecked(event)) ticked.set(project.id, pickedOf(project));
+    if (isChecked(event)) ticked.set(project.id, project);
     else ticked.delete(project.id);
     this.ticked.set(ticked);
   }
@@ -201,8 +200,4 @@ export class ProjectPicker {
     this.timer = undefined;
     this.generation++;
   }
-}
-
-function pickedOf(project: Project): PickedProject {
-  return { id: project.id, name: project.name, key: project.key };
 }

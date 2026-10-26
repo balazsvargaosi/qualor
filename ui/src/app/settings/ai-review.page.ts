@@ -196,7 +196,7 @@ export class AiReviewPage implements LeaveGuarded {
   protected readonly budgets = signal<AiReviewBudgetsDraft>(
     budgetsDraftOf(DEFAULT_AI_REVIEW_BUDGETS, this.locale),
   );
-  /** Projects the picker added, for their names should the list not hold them yet. */
+  /** Projects the picker added, as it read them: the list lacks one created after it loaded. */
   private readonly picked = signal<ReadonlyMap<string, PickedProject>>(new Map());
   protected readonly budgetErrors = signal<AiReviewBudgetErrors>({});
   protected readonly budgetsOpen = signal(false);
@@ -215,8 +215,18 @@ export class AiReviewPage implements LeaveGuarded {
   /** The switch-off confirmation is open. */
   private readonly switchingOff = signal(false);
 
+  /**
+   * The organisation's projects as far as the page knows them: the list, then those the picker
+   * added that the list lacks. The chosen projects' states, the counts and the summaries read it.
+   */
+  protected readonly knownProjects = computed<readonly Project[]>(() => {
+    const listed = this.projects.items();
+    const ids = new Set(listed.map((p) => p.id));
+    const extra = [...this.picked().values()].filter((p) => !ids.has(p.id));
+    return extra.length === 0 ? listed : [...listed, ...extra];
+  });
   private readonly projectsById = computed(
-    () => new Map(this.projects.items().map((p) => [p.id, p])),
+    () => new Map(this.knownProjects().map((p) => [p.id, p])),
   );
   /** Every page of the projects is in: what is counted from them is the whole of it. */
   protected readonly projectsReady = computed(
@@ -230,13 +240,13 @@ export class AiReviewPage implements LeaveGuarded {
     const settings = this.current();
     return settings === null || !this.projectsReady()
       ? null
-      : selectionSummary(this.projects.items(), settings.scope, settings.projectIds);
+      : selectionSummary(this.knownProjects(), settings.scope, settings.projectIds);
   });
   /** What the edited scope and projects would give it, in a sentence; null until the projects are in. */
   protected readonly draftSummaryText = computed(() =>
     this.projectsReady()
       ? summaryText(
-          selectionSummary(this.projects.items(), this.scope(), this.selected()),
+          selectionSummary(this.knownProjects(), this.scope(), this.selected()),
           this.scope(),
           this.orgName(),
           this.locale,
@@ -246,16 +256,14 @@ export class AiReviewPage implements LeaveGuarded {
   /** The chosen projects, in their order, with what review does with each. */
   protected readonly chosenRows = computed(() => {
     const byId = this.projectsById();
-    const picked = this.picked();
     return this.selected().map((id) => {
       const project = byId.get(id);
-      const known = project ?? picked.get(id);
       return {
         id,
-        name: known?.name ?? id,
-        key: known?.key ?? '',
+        name: project?.name ?? id,
+        key: project?.key ?? '',
         state: project ? chosenState(project) : null,
-        removeLabel: $localize`:@@orgAi.removeProject:Remove ${known?.name ?? id}:name:`,
+        removeLabel: $localize`:@@orgAi.removeProject:Remove ${project?.name ?? id}:name:`,
       };
     });
   });

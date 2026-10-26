@@ -224,12 +224,8 @@ describe('ProjectPicker', () => {
     expect(add.disabled).toBe(false);
     add.click();
     await flush();
-    expect(added).toEqual([
-      [
-        { id: PAYMENTS.id, name: 'Payments core', key: 'acme/payments' },
-        { id: SHOP.id, name: 'Web shop', key: 'acme/web-shop' },
-      ],
-    ]);
+    // As the list carries them: the page may read more of a project than its name.
+    expect(added).toEqual([[PAYMENTS, SHOP]]);
     expect(panel().hidden).toBe(true);
     expect(toggle().getAttribute('aria-expanded')).toBe('false');
     expect(document.activeElement).toBe(toggle());

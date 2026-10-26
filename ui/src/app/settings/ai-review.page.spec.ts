@@ -29,6 +29,8 @@ const PAYMENTS = '0190a6c2-0000-7000-8000-0000000000f1';
 const SHOP = '0190a6c2-0000-7000-8000-0000000000f2';
 const OTHER_PROJECT = '0190a6c2-0000-7000-8000-0000000000f3';
 const LEGACY = '0190a6c2-0000-7000-8000-0000000000f4';
+/** A project created after the page listed the organisation's. */
+const CREATED = '0190a6c2-0000-7000-8000-0000000000f5';
 /** Payments is linked to a repository, Web Shop is not, and an instance admin excluded Legacy. */
 const PROJECTS = [
   projectItem({ id: PAYMENTS, key: 'acme/payments', name: 'Payments', scmConnectionId: 'c1' }),
@@ -380,6 +382,41 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
       expect(server.requestsTo('PUT', ROUTE)[0]?.body).toMatchObject({
         projectIds: [PAYMENTS, SHOP],
       });
+    });
+
+    it('says what review does with a project created after the page listed them, and counts it', async () => {
+      const { server } = setup();
+      const { fixture, root } = await render();
+      // The picker asks the server afresh, so it finds the new project the page's list lacks.
+      const created = projectItem({
+        id: CREATED,
+        key: 'acme/mobile',
+        name: 'Mobile',
+        scmConnectionId: 'c3',
+      });
+      server.on('GET', '/api/v0/projects', (request) => ({
+        body: page(
+          [...PROJECTS, created].filter(
+            (p) => p.organizationId === request.query.get('organizationId'),
+          ),
+        ),
+      }));
+      await click(fixture, button(section(root), 'Add projects'));
+      const option = [...section(root).querySelectorAll<HTMLElement>('q-project-picker li')].find(
+        (o) => text(o)?.startsWith('Mobile '),
+      )!;
+      await click(fixture, option.querySelector('input')!);
+      await click(fixture, button(section(root), 'Add 1 project'));
+      expect(text(row(root, 'Mobile').querySelector('td'))).toBe('Yes');
+      expect(text(field(root, 'ai-review-scope-all').closest('label'))).toBe(
+        'All projects of Default (4)',
+      );
+      await act(fixture, root, 'Switch on AI review…');
+      expect(text(field(root, 'ai-review-scope-line'))).toBe(
+        '1 selected project will be reviewed.',
+      );
+      await click(fixture, button(consentDialog(root), CONFIRM_A));
+      expect(text(line(root, 'review').querySelector('.st-line'))).toBe('On Reviewing 1 project');
     });
 
     it('says in one line what All reviews, and keeps the selection for later', async () => {

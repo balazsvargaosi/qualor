@@ -118,7 +118,7 @@
                 <!-- Counted once every page of the projects is in; never a part of them. -->
                 @if (projectsReady()) {
                   <span i18n="@@orgAi.scope.all"
-                    >All projects of {{ orgName() }} ({{ projects.items().length }})</span
+                    >All projects of {{ orgName() }} ({{ knownProjects().length }})</span
                   >
                 } @else {
                   <span i18n="@@orgAi.scope.allUncounted">All projects of {{ orgName() }}</span>
