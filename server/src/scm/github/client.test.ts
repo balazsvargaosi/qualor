@@ -770,7 +770,8 @@ describe('GitHub REST client (github.md §4–§6)', () => {
       fake.clearRequests();
       const tries = [
         ['a comment GitHub does not have', number, first.id + 1_000_000],
-        ['a reply: GitHub takes no reply to a reply', number, reply.id],
+        // GitHub documents a 404 for a reply to a reply (not seen live): the fake answers so.
+        ['a reply, which GitHub documents it takes no reply to', number, reply.id],
         ['a comment of another pull request', number, other.first.id],
         ['a pull request GitHub does not have', '99999', first.id],
       ] as const;
@@ -1461,7 +1462,7 @@ describe('GitHub REST client (github.md §4–§6)', () => {
       });
       expect(() =>
         fake.replyToReviewComment(424242, Number(number), reply.id, { body: 'x', login: 'a' }),
-      ).toThrow(); // GitHub takes no reply to a reply
+      ).toThrow(); // GitHub documents that it takes no reply to a reply
       const client = await reader();
       const listed = await client.reviewComments(number, 5);
       expect(listed.items.map((c) => [c.id, c.in_reply_to_id, c.path, c.user?.login])).toEqual([

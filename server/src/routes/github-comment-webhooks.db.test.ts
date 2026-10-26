@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFakeGitHub, type FakeGitHub } from '../../test/fake-github';
 import { createFakeLlm, type FakeLlm } from '../../test/fake-llm';
@@ -386,6 +386,37 @@ describe('GitHub comment webhooks (6I-4)', () => {
       expect(res.statusCode).toBe(204);
     }
     expect(await allJobs()).toEqual([]);
+  });
+
+  it('keeps a delivery id per connection: the same delivery to two connections whose Apps share a repository is each one’s', async () => {
+    const other = await githubConnection(h, fake);
+    // A project of the second connection that analysed pull request 7 of the same repository.
+    const second = await mapped('hooks/comments-second', {
+      repositoryId: ACME,
+      repo: 'acme/api',
+      connection: other,
+    });
+    const delivery = randomUUID();
+    for (const connection of [connectionId, other]) {
+      const res = await deliver('pull_request_review_comment', reviewCommentEvent(), {
+        delivery,
+        connection,
+      });
+      expect(res.statusCode).toBe(204);
+    }
+    expect(await scansOf(acmeBranch)).toHaveLength(1);
+    expect(await scansOf(second.branchId)).toHaveLength(1);
+  });
+
+  it('queues nothing for an analysis whose stored context is not GitHub’s, whatever repository it names', async () => {
+    const { branchId, repositoryId } = await mapped('hooks/comments-not-github');
+    // As no ingestion writes it: a GitLab context that carries a GitHub block.
+    await h.ctx.db.execute(
+      sql`UPDATE analyses SET scm_context = jsonb_set(scm_context, '{provider}', '"gitlab"')
+           WHERE id = (SELECT last_analysis_id FROM branches WHERE id = ${branchId})`,
+    );
+    await deliver('pull_request_review_comment', reviewCommentEvent({ repositoryId }));
+    expect(await scansOf(branchId)).toEqual([]);
   });
 
   it('queues one scan for each Qualor project of a monorepo: those that stored the same repository', async () => {

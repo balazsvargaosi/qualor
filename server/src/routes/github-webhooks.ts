@@ -127,13 +127,15 @@ export const githubWebhookRoutes: FastifyPluginAsync<{ deps: RouteDeps }> = asyn
       } catch {
         throw new ProblemError(400, 'BAD_REQUEST', 'The body is not JSON');
       }
-      if (!deliveries.remember(delivery)) return reply.code(204).send();
+      // A delivery id is kept per connection: another connection's App is another delivery.
+      const remembered = `${row.id}:${delivery}`;
+      if (!deliveries.remember(remembered)) return reply.code(204).send();
       try {
         if (event === 'check_run') await rerequested(deps, row.id, row.appId, payload);
         else await queueScans(deps, row.id, event, payload);
       } catch (err) {
         // Not processed: GitHub's redelivery of this id must not be taken for a repeat.
-        deliveries.forget(delivery);
+        deliveries.forget(remembered);
         throw err;
       }
       return reply.code(204).send();
@@ -253,7 +255,11 @@ async function queueScans(
     .where(eq(projects.scmConnectionId, connectionId));
   const own = found.filter(({ scmContext }) => {
     const stored = readScmContext(scmContext);
-    return stored.kind === 'ok' && stored.context.github?.repositoryId === comment.repositoryId;
+    return (
+      stored.kind === 'ok' &&
+      stored.context.provider === 'github' &&
+      stored.context.github?.repositoryId === comment.repositoryId
+    );
   });
   if (own.length === 0) return;
   const settings = await readLlmSettings(deps.db);

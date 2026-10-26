@@ -550,6 +550,12 @@ export class GitHubClient {
     return value;
   }
 
+  /** An id of GitHub's (a check run's, a comment's): a positive whole number it can hold. */
+  private checkId(id: number): number {
+    if (!Number.isSafeInteger(id) || id <= 0) throw this.invalid(GITHUB_TEXT.id);
+    return id;
+  }
+
   private parse<T>(schema: z.ZodType<T>, value: unknown): T {
     const parsed = schema.safeParse(value);
     if (!parsed.success) throw new ScmError('bad_answer', GITHUB_TEXT.badAnswer);
@@ -841,8 +847,8 @@ export class GitHubClient {
 
   /** Updates the conclusion and the output (title and summary) of a check run. */
   async updateCheckRun(id: number, input: CheckRunUpdate): Promise<GitHubCheckRun> {
-    if (!Number.isSafeInteger(id) || id <= 0) throw this.invalid(GITHUB_TEXT.id);
-    const { json } = await this.repoCall('PATCH', `${this.repoPath()}/check-runs/${id}`, {
+    const runId = this.checkId(id);
+    const { json } = await this.repoCall('PATCH', `${this.repoPath()}/check-runs/${runId}`, {
       ...this.checkRunBody(input),
       output: { title: input.title, summary: input.summary },
     });
@@ -914,21 +920,19 @@ export class GitHubClient {
 
   /**
    * A reply in the review thread whose first comment is `firstCommentId`: the new review comment,
-   * which names that comment in `in_reply_to_id`. GitHub takes a reply to a thread's first comment
-   * only, never to a reply; it answers a comment it has no such first comment for with 404, which
-   * is `not_found`.
+   * which names that comment in `in_reply_to_id`. GitHub documents that it takes a reply to a
+   * thread's first comment only, never to a reply, and a 404 for a comment it has no such thread
+   * for, which is `not_found` (documented, not seen live).
    */
   async replyToReviewComment(
     number: string,
     firstCommentId: number,
     body: string,
   ): Promise<GitHubReviewComment> {
-    if (!Number.isSafeInteger(firstCommentId) || firstCommentId <= 0) {
-      throw this.invalid(GITHUB_TEXT.id);
-    }
+    const firstId = this.checkId(firstCommentId);
     const { json } = await this.repoCall(
       'POST',
-      `${this.repoPath()}/pulls/${this.number(number)}/comments/${firstCommentId}/replies`,
+      `${this.repoPath()}/pulls/${this.number(number)}/comments/${firstId}/replies`,
       { body },
     );
     return this.parse(reviewComment, json);
@@ -1084,10 +1088,14 @@ export class GitHubClient {
   }
 
   async updateComment(id: number, body: string): Promise<GitHubComment> {
-    if (!Number.isSafeInteger(id) || id <= 0) throw this.invalid(GITHUB_TEXT.id);
-    const { json } = await this.repoCall('PATCH', `${this.repoPath()}/issues/comments/${id}`, {
-      body,
-    });
+    const commentId = this.checkId(id);
+    const { json } = await this.repoCall(
+      'PATCH',
+      `${this.repoPath()}/issues/comments/${commentId}`,
+      {
+        body,
+      },
+    );
     return this.parse(comment, json);
   }
 }
