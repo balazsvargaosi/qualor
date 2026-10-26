@@ -224,11 +224,38 @@ async function* streamEvents(
 }
 
 /**
+ * The events of a 2xx's body (`streamEvents`), for the one that reads them, whose `return()` closes
+ * the connection at once: before the first read too, and while a read waits. A generator's own
+ * `return()` does neither (before its body has started it has nothing to clean up, and while it
+ * waits the `return()` waits behind it), and the provider would go on answering until a timer ran
+ * out. The body is closed first, which ends the wait of a read with the end of the events; a stream
+ * that is never read is ended by its timers.
+ */
+function eventsOf(
+  chunks: AsyncIterable<Buffer>,
+  limits: StreamLimits,
+): AsyncIterableIterator<SseEvent, void, undefined> {
+  const body = chunks[Symbol.asyncIterator]();
+  const events = streamEvents({ [Symbol.asyncIterator]: () => body }, limits);
+  return {
+    next: () => events.next(),
+    async return() {
+      await body.return?.();
+      return await events.return(undefined);
+    },
+    [Symbol.asyncIterator]() {
+      return this;
+    },
+  };
+}
+
+/**
  * One streamed POST to `<baseUrl><path>`: everything before the answer is `postJson`'s (the base
  * URL checked first, every resolved address checked and pinned, no proxy, no redirect followed, the
  * same headers), but the call asks for an event stream, and reads it as it arrives, within the
  * caller's `limits`. Resolves with the events of a 2xx when its status line has come, and the events
- * are read from it as they arrive (`for await`; a reader that stops early closes the connection).
+ * are read from it as they arrive (`for await`; a reader that stops early closes the connection,
+ * even before its first read: `eventsOf`).
  * An answer with any other status throws what `postJson` throws for it, with the one function that
  * classifies a refusal for both (`refusedBy`), so that a streamed call is asked again, as a call
  * that is not, when its output limit is refused; the body of such an answer is read up to 1 MiB, only
@@ -256,7 +283,7 @@ export async function postStream(
     case 'response':
       throw refusedBy(config, result, body, outputLimitField);
     case 'stream':
-      return streamEvents(result.chunks, limits);
+      return eventsOf(result.chunks, limits);
   }
 }
 

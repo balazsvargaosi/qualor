@@ -139,6 +139,21 @@ function givenUpOf(target: string): OutboundFailed {
   return fail(`The request to ${target} was given up`, 'aborted');
 }
 
+/** What an exchange is when its connection failed: `err`'s system error code, when it has one. */
+function connectionFailedOf(target: string, err?: unknown): OutboundFailed {
+  return fail(
+    `The connection to ${target} failed${errorCode(err)}`,
+    'connection',
+    true,
+    codeOf(err),
+  );
+}
+
+/** What an exchange is when its answer has more bytes than `limit`. */
+function tooLargeOf(target: string, limit: number): OutboundFailed {
+  return fail(`The answer of ${target} is larger than ${limit} bytes`, 'too_large');
+}
+
 /** What the checks before a connection leave of an exchange, to make the connection with. */
 interface Cleared {
   kind: 'cleared';
@@ -369,16 +384,7 @@ export async function outboundRequest(
       req.destroy();
     };
     options.signal?.addEventListener('abort', giveUp, { once: true });
-    req.on('error', (err) =>
-      settle(
-        fail(
-          `The connection to ${target} failed${errorCode(err)}`,
-          'connection',
-          true,
-          codeOf(err),
-        ),
-      ),
-    );
+    req.on('error', (err) => settle(connectionFailedOf(target, err)));
     req.on('response', (res) => {
       const status = res.statusCode ?? 0;
       const chunks: Buffer[] = [];
@@ -386,7 +392,7 @@ export async function outboundRequest(
       const finish = (how: 'end' | 'deadline' | 'closed'): void => {
         if (options.overflow === 'fail' && how === 'deadline') settle(timedOut);
         else if (options.overflow === 'fail' && how === 'closed') {
-          settle(fail(`The connection to ${target} failed`, 'connection', true));
+          settle(connectionFailedOf(target));
         } else {
           const body = Buffer.concat(chunks);
           settle({
@@ -407,12 +413,7 @@ export async function outboundRequest(
         size += chunk.length;
         if (size >= options.maxResponseBytes && options.overflow === 'truncate') finish('end');
         else if (size > options.maxResponseBytes) {
-          settle(
-            fail(
-              `The answer of ${target} is larger than ${options.maxResponseBytes} bytes`,
-              'too_large',
-            ),
-          );
+          settle(tooLargeOf(target, options.maxResponseBytes));
           res.destroy();
         }
       });
@@ -633,19 +634,11 @@ export async function outboundStream(
       return;
     }
     const givenUp = givenUpOf(target);
-    const tooLarge = fail(
-      `The answer of ${target} is larger than ${limits.maxStreamBytes} bytes`,
-      'too_large',
-    );
+    const tooLarge = tooLargeOf(target, limits.maxStreamBytes);
     const lost = (err?: unknown): OutboundFailed =>
       err === undefined
         ? fail(`The connection to ${target} was closed before the answer ended`, 'connection', true)
-        : fail(
-            `The connection to ${target} failed${errorCode(err)}`,
-            'connection',
-            true,
-            codeOf(err),
-          );
+        : connectionFailedOf(target, err);
     /**
      * Where the exchange is: waiting for the status line; reading the body of a refused answer;
      * streaming a body; or over, with everything it held cleaned up.

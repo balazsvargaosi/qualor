@@ -915,3 +915,63 @@ describe.each(CALLERS)('%s: the checks before the connection', (_name, call) => 
     });
   });
 });
+
+describe('the failures both functions share are worded the same way', () => {
+  it('a connection that fails', async () => {
+    const probe = createServer();
+    await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve));
+    const { port } = probe.address() as AddressInfo;
+    await new Promise<void>((resolve) => probe.close(() => resolve()));
+    const url = `http://127.0.0.1:${port}/x`;
+    const asked = await outboundRequest(post(url), {
+      allowInternalHosts: true,
+      timeoutMs: 5_000,
+      maxResponseBytes: 1_024,
+      overflow: 'fail',
+      names: NAMES,
+    });
+    const streamedOnce = await outboundStream(post(url), streamOptions());
+    const failure = {
+      kind: 'failed',
+      cause: 'connection',
+      unreachable: true,
+      code: 'ECONNREFUSED',
+      reason: 'The connection to test failed (ECONNREFUSED)',
+    };
+    expect(asked).toEqual(failure);
+    expect(streamedOnce).toEqual(failure);
+  });
+
+  it('an answer over its limit', async () => {
+    await withStreamServer(async (server) => {
+      const asked = outboundRequest(post(server.url), {
+        allowInternalHosts: true,
+        timeoutMs: 5_000,
+        maxResponseBytes: 10,
+        overflow: 'fail',
+        names: NAMES,
+      });
+      const first = await server.next();
+      first.head(200, { 'content-type': 'application/json' });
+      await first.write('12345678901');
+      expect(await asked).toMatchObject({
+        kind: 'failed',
+        cause: 'too_large',
+        reason: 'The answer of test is larger than 10 bytes',
+      });
+
+      const pending = outboundStream(
+        post(server.url),
+        streamOptions({ limits: { maxStreamBytes: 10 } }),
+      );
+      const second = await server.next();
+      second.head();
+      const chunks = await streamed(pending);
+      await second.write('12345678901');
+      await expect(chunks.next()).rejects.toMatchObject({
+        cause: 'too_large',
+        reason: 'The answer of test is larger than 10 bytes',
+      });
+    });
+  });
+});

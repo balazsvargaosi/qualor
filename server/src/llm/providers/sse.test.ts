@@ -1038,6 +1038,65 @@ describe('postStream', () => {
     });
   });
 
+  it('a reader that stops before its first read closes the connection and leaves no timer', async () => {
+    await withStreamServer(async (server) => {
+      fakeTimers();
+      const pending = start(server);
+      const answer = await server.next();
+      answer.head();
+      const reader = (await pending)[Symbol.asyncIterator]();
+      await answer.write('data: 1\n\n');
+      expect(await reader.return?.()).toEqual({ done: true, value: undefined });
+      await answer.closed;
+      expect(vi.getTimerCount()).toBe(0);
+      // Stopped, it stays stopped: nothing that arrived before is read after.
+      expect(await reader.next()).toEqual({ done: true, value: undefined });
+    });
+  });
+
+  it('a reader that stops while it waits for an event closes the connection at once', async () => {
+    await withStreamServer(async (server) => {
+      fakeTimers();
+      const pending = start(server);
+      const answer = await server.next();
+      answer.head();
+      const reader = (await pending)[Symbol.asyncIterator]();
+      const waiting = reader.next();
+      await reader.return?.();
+      expect(await waiting).toEqual({ done: true, value: undefined });
+      await answer.closed;
+      expect(vi.getTimerCount()).toBe(0);
+    });
+  });
+
+  it('a stream that is never read is still ended by its timers, the total limit the last of them', async () => {
+    await withStreamServer(async (server) => {
+      fakeTimers();
+      const pending = start(server, { idleMs: 1_000, totalMs: 3_000 });
+      const answer = await server.next();
+      answer.head();
+      const stream = await pending;
+      // The provider keeps the idle timer from running out, and nobody reads.
+      for (const n of [1, 2, 3]) {
+        await vi.advanceTimersByTimeAsync(800);
+        await answer.write(`data: ${n}\n\n`);
+      }
+      await vi.advanceTimersByTimeAsync(600);
+      await answer.closed;
+      expect(vi.getTimerCount()).toBe(0);
+      // What came before the limit is read first, and then the limit.
+      const read: unknown[] = [];
+      const err = await (async () => {
+        for await (const next of stream) read.push(next);
+      })().catch((e: unknown) => e);
+      expect(read).toEqual([event('1'), event('2'), event('3')]);
+      expect(shape(err)).toMatchObject({
+        failure: 'timeout',
+        message: 'The model did not finish answering within 3 s; the call was given up',
+      });
+    });
+  });
+
   it('never puts the API key in what it throws, on the way to the stream or in it', async () => {
     const errors: unknown[] = [];
     for (const answer of [
