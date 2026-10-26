@@ -30,6 +30,7 @@ import {
   applyReviewThreads,
   MAX_COMMENT_PAGES,
   MAX_GITHUB_THREAD_UPDATES,
+  plannedCounts,
   planReviewThreads,
   type ReviewThreadContext,
 } from './threads';
@@ -1043,10 +1044,17 @@ describe('GitHub review threads (github.md §6.4)', () => {
       // Line 4 is fixed and line 5 is new: the resolution is not asked for, and the thread is made.
       await s.ingest([3, 5]);
       const ctx = await s.context();
+      expect(ctx.client.mayResolveThreads).toBe(false);
       const plan = await planReviewThreads(ctx);
       expect(plan.updates).toEqual([
         { threadId: threadAt(s.repo.id, 4).id, resolve: true, counted: false },
       ]);
+      // What the check run says before anything is applied is what applying the plan comes to.
+      expect(plannedCounts(plan, ctx.client.mayResolveThreads)).toEqual({
+        commented: 2,
+        unplaced: 0,
+        unresolved: 1,
+      });
       expect(await applyReviewThreads(ctx, plan)).toEqual({
         commented: 2,
         unplaced: 0,
@@ -1061,7 +1069,17 @@ describe('GitHub review threads (github.md §6.4)', () => {
       // count, as one whose thread is gone.
       fake.resolveThreadAs(threadAt(s.repo.id, 3).id, botLogin);
       const again = await s.context();
-      expect(await applyReviewThreads(again, await planReviewThreads(again))).toEqual({
+      const replan = await planReviewThreads(again);
+      expect(replan.updates).toEqual([
+        { threadId: threadAt(s.repo.id, 3).id, resolve: false, counted: true },
+        { threadId: threadAt(s.repo.id, 4).id, resolve: true, counted: false },
+      ]);
+      expect(plannedCounts(replan, again.client.mayResolveThreads)).toEqual({
+        commented: 1,
+        unplaced: 0,
+        unresolved: 2,
+      });
+      expect(await applyReviewThreads(again, replan)).toEqual({
         commented: 1,
         unplaced: 0,
         unresolved: 2,
