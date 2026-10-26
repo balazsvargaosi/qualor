@@ -25,6 +25,15 @@ const BOB = { id: 8, username: 'bob' };
 const SINCE = new Date('2026-10-01T00:00:00.000Z');
 /** When a hand-built note was made, unless its case is about the date: after {@link SINCE}. */
 const AFTER = '2026-10-10T08:30:00.000Z';
+/** Dates of a note that cannot be read: V8 would read the year, and the time with no zone, its own way. */
+const UNREADABLE = [
+  '',
+  'yesterday',
+  '2026-13-45T99:00:00Z',
+  '2099',
+  'foo 2099',
+  '2099-01-01T10:00:00',
+];
 
 const BODIES = ['qualor review', 'QUALOR REVIEW', '  qualor review please'];
 
@@ -174,7 +183,8 @@ describe('gitlabRounds', () => {
     expect(madeAt('2026-10-01T02:00:00.000+03:00')).toEqual([]);
     // A date nobody can read is never taken for a recent one.
     expect(madeAt(AFTER)).toHaveLength(1);
-    for (const unreadable of ['', 'yesterday', '2026-13-45T99:00:00Z']) {
+    // Only an ISO 8601 date and time with its zone is read: a year alone, or words with one, is not.
+    for (const unreadable of UNREADABLE) {
       expect(madeAt(unreadable)).toEqual([]);
     }
     // And nothing is recent for a `since` nobody can read.
@@ -338,7 +348,12 @@ describe('gitlabCommands', () => {
     expect(madeAt(AFTER)).toHaveLength(1);
     expect(madeAt(new Date(SINCE.getTime() - 1).toISOString())).toEqual([]);
     expect(madeAt('2026-09-01T10:00:00.000Z')).toEqual([]);
-    for (const unreadable of ['', 'yesterday']) expect(madeAt(unreadable)).toEqual([]);
+    for (const unreadable of UNREADABLE) expect(madeAt(unreadable)).toEqual([]);
+    // And no command is recent for a `since` nobody can read.
+    const noSince = options({ since: new Date(Number.NaN) });
+    expect(gitlabCommands([overview('d1', { id: 21, body: 'qualor review' })], noSince)).toEqual(
+      [],
+    );
   });
 
   it('finds nothing when Qualor does not know its own user', () => {
@@ -499,7 +514,8 @@ describe('githubRounds', () => {
     expect(madeAt('2026-10-01T03:00:00+03:00')).toHaveLength(1);
     expect(madeAt('2026-10-01T02:00:00+03:00')).toEqual([]);
     expect(madeAt(AFTER)).toHaveLength(1);
-    for (const unreadable of ['', 'yesterday', '2026-13-45T99:00:00Z']) {
+    // Only an ISO 8601 date and time with its zone is read: a year alone, or words with one, is not.
+    for (const unreadable of UNREADABLE) {
       expect(madeAt(unreadable)).toEqual([]);
     }
     expect(rounds([start(), reply(11)], undefined, { since: new Date(Number.NaN) })).toEqual([]);
@@ -655,7 +671,10 @@ describe('githubCommands', () => {
     expect(madeAt(AFTER)).toHaveLength(1);
     expect(madeAt(new Date(SINCE.getTime() - 1).toISOString())).toEqual([]);
     expect(madeAt('2026-09-01T10:00:00Z')).toEqual([]);
-    for (const unreadable of ['', 'yesterday']) expect(madeAt(unreadable)).toEqual([]);
+    for (const unreadable of UNREADABLE) expect(madeAt(unreadable)).toEqual([]);
+    // And no command is recent for a `since` nobody can read.
+    const noSince = options({ since: new Date(Number.NaN) });
+    expect(githubCommands([issueComment({ id: 21 })], noSince)).toEqual([]);
   });
 
   it('a comment without a body is no command', () => {

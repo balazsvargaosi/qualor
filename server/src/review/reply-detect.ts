@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import type { ReplyCommand } from '../db/schema';
 import type { GitHubComment, GitHubReviewComment, GitHubReviewThread } from '../scm/github/client';
 import { discussionResolved, type GitLabDiscussion } from '../scm/gitlab/client';
@@ -69,9 +70,16 @@ interface Reply {
   createdAt: string;
 }
 
+/**
+ * The shape of a note's date as GitLab and GitHub write it: an ISO 8601 date and time with its
+ * zone. `Date.parse` reads far more than that (a year alone, words with a year in them, a time with
+ * no zone in the server's own), so nothing else is read.
+ */
+const NOTE_DATE = z.iso.datetime({ offset: true });
+
 /** Whether `createdAt` (ISO 8601) is at or after `since`: never when either cannot be read. */
 function madeSince(createdAt: string, since: Date): boolean {
-  return Date.parse(createdAt) >= since.getTime();
+  return NOTE_DATE.safeParse(createdAt).success && Date.parse(createdAt) >= since.getTime();
 }
 
 /**
@@ -146,11 +154,11 @@ export function githubRounds(
   // What people replied, by the id of the first comment it names.
   const repliesByFirst = new Map<number, Reply[]>();
   for (const comment of comments) {
-    const first = comment.in_reply_to_id;
-    if (typeof first !== 'number' || comment.user?.type !== 'User') continue;
+    const firstId = comment.in_reply_to_id;
+    if (typeof firstId !== 'number' || comment.user?.type !== 'User') continue;
     const reply = { id: comment.id, author: comment.user.login, createdAt: comment.created_at };
-    const replies = repliesByFirst.get(first);
-    if (replies === undefined) repliesByFirst.set(first, [reply]);
+    const replies = repliesByFirst.get(firstId);
+    if (replies === undefined) repliesByFirst.set(firstId, [reply]);
     else replies.push(reply);
   }
   const rounds: Round[] = [];
