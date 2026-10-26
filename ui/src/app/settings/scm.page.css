@@ -76,3 +76,20 @@
 .new-app-head h3 {
   margin: 0;
 }
+/*
+ * GitHub: what an App's installation lacks, after a passed test. Empty, its live region takes no
+ * room in the card's grid, yet stays in the accessibility tree, so its warning is announced.
+ */
+.connection-missing:empty {
+  position: absolute;
+}
+.connection-missing .alert {
+  margin: 0;
+}
+.connection-missing p {
+  margin: 0;
+}
+.connection-missing ul {
+  margin: 6px 0;
+  padding-left: 20px;
+}

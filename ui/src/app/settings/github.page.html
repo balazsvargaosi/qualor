@@ -9,8 +9,9 @@
       <p class="muted" i18n="@@github.introMapped">
         Qualor creates a check run for every analysis and comments on pull requests (a summary and a
         review comment on each new issue), as a GitHub App you create and install on the
-        repositories. Give the App Checks and Pull requests (read and write), and Issues and
-        Metadata (read-only). Map each project to its repository under
+        repositories. Give the App Checks, Contents and Pull requests (read and write), and Issues
+        and Metadata (read-only). Qualor uses Contents only to resolve and reopen its own review
+        conversations. Map each project to its repository under
         <a routerLink="/settings/repositories">Repositories</a>.
       </p>
     }
@@ -145,6 +146,55 @@
           @if (results()[c.id]; as result) {
             <p class="prose-text connection-result">{{ result }}</p>
           }
+          <!-- Always present, so a screen reader announces the warning when a Test brings one. -->
+          <div [id]="'missing-' + c.id" class="connection-missing" role="status">
+            @if (missing()[c.id]; as lacks) {
+              <div class="alert alert-warn">
+                <p i18n="@@github.missing.lead">The test passed, but the App lacks:</p>
+                <ul>
+                  @for (code of lacks; track code) {
+                    @switch (code) {
+                      @case ('contents_write') {
+                        <li i18n="@@github.missing.contents_write">
+                          <strong>Contents: Read and write</strong>: Qualor uses it only to resolve
+                          and reopen its own review conversations. Without it they stay open after a
+                          fix or a won't fix.
+                        </li>
+                      }
+                      @case ('issues_read') {
+                        <li i18n="@@github.missing.issues_read">
+                          <strong>Issues: Read-only</strong>: GitHub sends the Issue comment event
+                          only to an App that can read issues, so a <code>qualor review</code>
+                          comment is answered only at the next analysis.
+                        </li>
+                      }
+                      @case ('event_check_run') {
+                        <li i18n="@@github.missing.event_check_run">
+                          The <strong>Check run</strong> event: the Re-run button does nothing.
+                        </li>
+                      }
+                      @case ('event_issue_comment') {
+                        <li i18n="@@github.missing.event_issue_comment">
+                          The <strong>Issue comment</strong> event: a <code>qualor review</code>
+                          comment is answered only at the next analysis.
+                        </li>
+                      }
+                      @case ('event_pull_request_review_comment') {
+                        <li i18n="@@github.missing.event_pull_request_review_comment">
+                          The <strong>Pull request review comment</strong> event: a reply in
+                          Qualor's conversations is answered only at the next analysis.
+                        </li>
+                      }
+                    }
+                  }
+                </ul>
+                <p i18n="@@github.missing.fix">
+                  Change the App's permissions and events on GitHub, then accept the new permissions
+                  on the installation.
+                </p>
+              </div>
+            }
+          </div>
 
           @if (canManage()) {
             <details class="connection-edit">

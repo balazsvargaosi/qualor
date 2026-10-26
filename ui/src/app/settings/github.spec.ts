@@ -88,12 +88,137 @@ describe('GitHubPage (github.md §2)', () => {
     expect(root.textContent).not.toContain('Projects list of the');
   });
 
-  it("names the App's four permissions, Issues among them", async () => {
+  it("names the App's five permissions, and what Contents is for", async () => {
     setup();
     const { root } = await render();
-    expect(root.querySelector('.settings-head')?.textContent?.replace(/\s+/g, ' ')).toContain(
-      'Give the App Checks and Pull requests (read and write), and Issues and Metadata (read-only).',
+    const intro = root.querySelector('.settings-head')?.textContent?.replace(/\s+/g, ' ');
+    expect(intro).toContain(
+      'Give the App Checks, Contents and Pull requests (read and write), and Issues and Metadata (read-only). Qualor uses Contents only to resolve and reopen its own review conversations.',
     );
+  });
+
+  describe('what the App lacks, after a Test with a repository', () => {
+    const passed = (missingAccess: string[] | null) => ({
+      body: {
+        ok: true,
+        user: { username: 'qualor-acme[bot]' },
+        project: { id: 424242, pathWithNamespace: 'acme/api', accessLevel: null },
+        problem: null,
+        missingAccess,
+      },
+    });
+    const test = async (
+      root: HTMLElement,
+      fixture: Awaited<ReturnType<typeof render>>['fixture'],
+    ) => {
+      type(root, '#test-ref-g1', 'acme/api');
+      button(root, 'Test').click();
+      await settle(fixture);
+    };
+    const warning = (root: HTMLElement) => root.querySelector('#missing-g1 .alert-warn');
+    const items = (root: HTMLElement) =>
+      [...(warning(root)?.querySelectorAll('li') ?? [])].map((li) =>
+        li.textContent?.replace(/\s+/g, ' ').trim(),
+      );
+
+    it('lists each missing item with its GitHub name, what it costs and what to do, and the Test still passed', async () => {
+      const server = setup();
+      server.on(
+        'POST',
+        '/api/v0/scm-connections/g1/test',
+        passed(['contents_write', 'event_check_run', 'event_pull_request_review_comment']),
+      );
+      const { fixture, root } = await render();
+      // Before any Test the card's region is there, and empty: it takes no room (scm.page.css).
+      expect(root.querySelector('#missing-g1')?.matches(':empty')).toBe(true);
+      await test(root, fixture);
+      // A warning, not an error: the pill, the green news, and no alert.
+      expect(root.querySelector('section .connection-state')?.textContent?.trim()).toBe(
+        'Connected',
+      );
+      expect(root.querySelector('.alert-success')?.textContent).toContain(
+        'the repository acme/api is reachable',
+      );
+      expect(root.querySelector('p[role="alert"]')).toBeNull();
+      expect(warning(root)?.textContent?.replace(/\s+/g, ' ')).toContain(
+        'The test passed, but the App lacks:',
+      );
+      expect(items(root)).toEqual([
+        "Contents: Read and write: Qualor uses it only to resolve and reopen its own review conversations. Without it they stay open after a fix or a won't fix.",
+        'The Check run event: the Re-run button does nothing.',
+        "The Pull request review comment event: a reply in Qualor's conversations is answered only at the next analysis.",
+      ]);
+      // GitHub's own names, as the guide spells them.
+      expect(
+        [...(warning(root)?.querySelectorAll('li strong') ?? [])].map((s) => s.textContent),
+      ).toEqual(['Contents: Read and write', 'Check run', 'Pull request review comment']);
+      expect(warning(root)?.textContent?.replace(/\s+/g, ' ')).toContain(
+        "Change the App's permissions and events on GitHub, then accept the new permissions on the installation.",
+      );
+      // Said where a screen reader hears it: the card's region is there before the warning.
+      expect(root.querySelector('#missing-g1')?.getAttribute('role')).toBe('status');
+    });
+
+    it('has a text of its own for every missing item', async () => {
+      const server = setup();
+      server.on(
+        'POST',
+        '/api/v0/scm-connections/g1/test',
+        passed([
+          'contents_write',
+          'issues_read',
+          'event_check_run',
+          'event_issue_comment',
+          'event_pull_request_review_comment',
+        ]),
+      );
+      const { fixture, root } = await render();
+      await test(root, fixture);
+      const all = items(root);
+      expect(all).toHaveLength(5);
+      expect(new Set(all).size).toBe(5);
+      expect(all[1]).toBe(
+        'Issues: Read-only: GitHub sends the Issue comment event only to an App that can read issues, so a qualor review comment is answered only at the next analysis.',
+      );
+      expect(all[3]).toBe(
+        'The Issue comment event: a qualor review comment is answered only at the next analysis.',
+      );
+    });
+
+    it('shows nothing when the App lacks nothing, or after a Test without a repository, and a later Test takes the warning away', async () => {
+      const server = setup();
+      let answer: { body: unknown } = passed(['issues_read']);
+      server.on('POST', '/api/v0/scm-connections/g1/test', () => answer);
+      const { fixture, root } = await render();
+      await test(root, fixture);
+      expect(items(root)).toHaveLength(1);
+      answer = passed([]);
+      await test(root, fixture);
+      expect(warning(root)).toBeNull();
+      expect(root.querySelector('section .connection-state')?.textContent?.trim()).toBe(
+        'Connected',
+      );
+      answer = { body: { ...passed(null).body, project: null } };
+      type(root, '#test-ref-g1', '');
+      button(root, 'Test').click();
+      await settle(fixture);
+      expect(warning(root)).toBeNull();
+      // A failed Test says its failure, and nothing of what is missing.
+      answer = passed(['issues_read']);
+      await test(root, fixture);
+      expect(items(root)).toHaveLength(1);
+      answer = {
+        body: {
+          ok: false,
+          user: null,
+          project: null,
+          problem: { code: 'not_installed', message: 'x' },
+          missingAccess: null,
+        },
+      };
+      await test(root, fixture);
+      expect(warning(root)).toBeNull();
+    });
   });
 
   it('lists only GitHub connections, with the App id and the webhook URL', async () => {

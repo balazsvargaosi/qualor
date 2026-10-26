@@ -7,6 +7,8 @@ import type { ResponseBody } from '../api/types';
 
 type TestResult = ResponseBody<'/api/v0/scm-connections/{id}/test', 'post'>;
 type ProblemCode = NonNullable<TestResult['problem']>['code'];
+/** What a GitHub App's installation lacks, as the test of a repository lists it. */
+export type MissingAccess = NonNullable<TestResult['missingAccess']>[number];
 
 /** github.md §5.4: a failed test in the UI's own words (the server's text is never shown). */
 export function githubProblemText(code: ProblemCode): string {
@@ -30,7 +32,7 @@ export function githubProblemText(code: ProblemCode): string {
     case 'not_installed':
       return $localize`:@@github.problem.notInstalled:The App is not installed on this repository. Install it from the App's page on GitHub.`;
     case 'permission_missing':
-      return $localize`:@@github.problem.permission:The App lacks a permission, or its installation is suspended. Give it Checks and Pull requests (read and write) and accept the new permissions on the installation, or unsuspend it.`;
+      return $localize`:@@github.problem.permission:The App lacks a permission, or its installation is suspended. Give it Checks, Contents and Pull requests (read and write) and accept the new permissions on the installation, or unsuspend it.`;
     case 'http_error':
       return $localize`:@@github.problem.httpError:GitHub answered with an error.`;
     case 'bad_answer':

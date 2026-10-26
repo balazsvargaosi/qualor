@@ -21,7 +21,7 @@ import { keepFocus } from '../shared/focus';
 import { clearField, inputValue } from '../shared/forms';
 import { Icon } from '../shared/icon';
 import { KeysetList } from '../shared/keyset';
-import { githubTestText } from './github-text';
+import { githubTestText, type MissingAccess } from './github-text';
 import type { Connection } from './gitlab.page';
 import { WEBHOOK_SECRET } from './webhook-secret';
 
@@ -52,8 +52,9 @@ interface RowError {
  * GitHub (github.md §2), for org admins: the organisation's GitHub App connections (the API root,
  * the App id, and the private key and optional webhook secret, which are write-only: read from
  * their fields once, sent once, never kept in the page's state, never shown, and emptied from the
- * page at every submission), a test of each against an `owner/repo`, and the changes the API
- * allows (a new key, and with it a new address; the App id; the webhook secret set or removed).
+ * page at every submission), a test of each against an `owner/repo` (with a warning beside a passed
+ * one that lists what the App's installation lacks), and the changes the API allows (a new key, and
+ * with it a new address; the App id; the webhook secret set or removed).
  * Test answers and refusals are shown in the page's own words (§5.4). Projects are mapped on the
  * GitLab tab, which maps to either provider.
  *
@@ -96,6 +97,11 @@ export class GitHubPage {
   protected readonly busy = signal(false);
   /** Test results, by connection id. */
   protected readonly results = signal<Record<string, string>>({});
+  /**
+   * What the App's installation lacks, by connection id, as its last passed Test with a
+   * repository found it: only an App that lacks something has an entry.
+   */
+  protected readonly missing = signal<Record<string, readonly MissingAccess[]>>({});
   /** How each App's last test on this page went, for its pill. */
   protected readonly outcomes = signal<Record<string, 'ok' | 'failed'>>({});
   /** The deletion the confirmation dialog asks about; null while it is closed. */
@@ -123,6 +129,7 @@ export class GitHubPage {
         this.error.set(null);
         this.createErrors.set({});
         this.results.set({});
+        this.missing.set({});
         this.outcomes.set({});
         this.rowErrors.set({});
         this.emptySecrets();
@@ -468,6 +475,11 @@ export class GitHubPage {
         const text = githubTestText(result);
         this.results.update((all) => ({ ...all, [connection.id]: text }));
         this.outcomes.update((all) => ({ ...all, [connection.id]: result.ok ? 'ok' : 'failed' }));
+        // What the App lacks is a warning beside a passed Test, never a failure of its own.
+        const lacks = result.ok ? (result.missingAccess ?? []) : [];
+        this.missing.update((all) =>
+          lacks.length > 0 ? { ...all, [connection.id]: lacks } : without(all, connection.id),
+        );
         // A failure reads as one: the error alert, never the green news of a success.
         if (result.ok) this.announcement.set(text);
         else this.error.set(text);
@@ -530,6 +542,7 @@ export class GitHubPage {
       await this.connections.refresh();
       this.rowErrors.update((all) => without(all, connection.id));
       this.results.update((all) => without(all, connection.id));
+      this.missing.update((all) => without(all, connection.id));
       this.outcomes.update((all) => without(all, connection.id));
       this.announcement.set(
         $localize`:@@github.deleted:GitHub App ${appId}:appId: at ${connection.baseUrl}:url: deleted.`,
@@ -555,6 +568,7 @@ export class GitHubPage {
     );
     this.connections.items.update((items) => items.map((c) => (c.id === updated.id ? updated : c)));
     this.results.update((all) => without(all, connection.id));
+    this.missing.update((all) => without(all, connection.id));
     // Changed settings have not been tested yet.
     this.outcomes.update((all) => without(all, connection.id));
     return updated;
