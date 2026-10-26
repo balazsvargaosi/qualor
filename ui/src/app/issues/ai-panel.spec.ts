@@ -315,17 +315,34 @@ describe('AiPanel (llm.md §18)', () => {
           status: 'succeeded',
           result: { kind: 'explain', summary: 'Sum.', explanation: 'Why.', howToFix: null },
         }),
-        triage: null,
-        fix: null,
+        triage: request({
+          id: 't1',
+          feature: 'triage',
+          status: 'succeeded',
+          result: {
+            kind: 'triage',
+            verdict: 'likely_false_positive',
+            confidence: 'high',
+            reasons: ['a is a number'],
+          },
+        }),
+        fix: FIX,
       },
     });
     const { root } = await render();
     const excluded = root.querySelector('#ai-excluded');
     expect(excluded?.textContent?.trim()).toBe('An instance admin excluded this project from AI.');
     expect(excluded?.classList).toContain('muted');
-    // An answer asked before the exclusion is still shown, with nothing to ask again.
+    // Answers asked before the exclusion are still shown, with nothing to ask again and no post
+    // (the server refuses both), and no merge request is looked up to post to.
     expect(root.querySelector('#ai-explain-heading')).not.toBeNull();
-    expect(root.querySelectorAll('button')).toHaveLength(0);
+    expect(root.querySelector('#ai-fix-after')).not.toBeNull();
+    expect(button(root, 'Post to merge request')).toBeUndefined();
+    expect(server.requestsTo('GET', '/api/v0/projects/p1/branches')).toHaveLength(0);
+    // The issue's status stays the person's: a false-positive suggestion still opens the form.
+    expect([...root.querySelectorAll('button')].map((b) => b.textContent?.trim())).toEqual([
+      'Mark as false positive…',
+    ]);
     expect(root.textContent).not.toContain('Asking sends');
     expect(server.requests.filter((r) => r.method === 'POST')).toHaveLength(0);
   });

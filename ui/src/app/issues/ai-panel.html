@@ -227,7 +227,7 @@
               <p class="alert alert-error">{{ postFailure(r) }}</p>
             }
           }
-          @if (canAsk() && postable(r) && target(); as to) {
+          @if (askable() && postable(r) && target(); as to) {
             @if (confirming() === r.id) {
               <div class="alert alert-info stack">
                 <p>

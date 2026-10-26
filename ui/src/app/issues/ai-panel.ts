@@ -74,7 +74,8 @@ export function postTarget(branch: Branch): PostTarget | null {
  * hands its id to the issue page's own transition form, where the person writes the comment and
  * decides. A fix is posted to the merge request only after a second, explicit confirmation; one no
  * person asked for (`automatic`, 4E-3a §4) says it was suggested automatically. For a project an
- * instance admin excluded from AI it offers nothing to ask, and says so: the server would refuse.
+ * instance admin excluded from AI it offers nothing to ask or post, and says so: the server would
+ * refuse.
  */
 @Component({
   selector: 'q-ai-panel',
@@ -331,7 +332,8 @@ export class AiPanel {
       this.excluded.set(project.autoFix.excludedFromAi);
       this.orgAi.set(orgAi);
       if (!this.visible()) return;
-      if (orgAi.features.fix && project.scmConnectionId !== null) {
+      // A fix of an excluded project is never posted: the server refuses it.
+      if (orgAi.features.fix && project.scmConnectionId !== null && !this.excluded()) {
         void this.loadTarget(issue, generation);
       }
       const latest = await ok(
