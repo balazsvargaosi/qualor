@@ -1762,6 +1762,32 @@ describe('GitHub REST client (github.md §4–§6)', () => {
         expect(await client.setThreadResolved(thread.id, true)).toBe('refused');
       });
 
+      it.each([
+        ['FORBIDDEN', 'refused'],
+        ['NOT_FOUND', 'not_found'],
+        ['RATE_LIMITED', 'rate_limited'],
+        ['MAX_NODE_LIMIT_EXCEEDED', 'bad_answer'],
+      ] as const)(
+        'takes only GraphQL’s FORBIDDEN for a refusal: %s comes to %s, for a resolution and a reopening',
+        async (type, outcome) => {
+          const client = await reader();
+          for (const resolved of [true, false]) {
+            const field = resolved ? 'resolveReviewThread' : 'unresolveReviewThread';
+            answer({ data: { [field]: null }, errors: [{ type, path: [field], message: 'x' }] });
+            const settled = await client.setThreadResolved(many.threadIds[0]!, resolved).then(
+              (result) => result,
+              (err: unknown) => {
+                if (!(err instanceof ScmError)) throw err;
+                // A refusal is read from the `auth` failure of HTTP 200: no other type is one.
+                expect([err.kind, err.status]).not.toEqual(['auth', 200]);
+                return err.kind;
+              },
+            );
+            expect(settled, `${type}, resolved: ${String(resolved)}`).toBe(outcome);
+          }
+        },
+      );
+
       it('lets every other refusal through: an HTTP 403, and the threads query’s FORBIDDEN', async () => {
         const client = await reader();
         answer({ message: 'Resource not accessible by integration' }, 403);
