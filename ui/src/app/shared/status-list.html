@@ -7,8 +7,12 @@
       @let line = row.line;
       <!-- The spaces between the parts keep their words apart for a screen reader. -->
       <li [attr.data-key]="line.key">
-        <span class="st-label">{{ line.label }}</span
-        >&ngsp;
+        <!-- A line without a label (one sentence under the others) draws none: on a phone an
+             empty one would still take a row. -->
+        @if (line.label) {
+          <span class="st-label">{{ line.label }}</span
+          >&ngsp;
+        }
         <div class="st-text">
           @if (line.state || line.text || line.tags?.length) {
             <div class="st-line">

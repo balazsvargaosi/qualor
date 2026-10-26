@@ -20,8 +20,10 @@
   padding-top: 2px;
   font-weight: 650;
 }
+/* The text keeps its column when a line has no label, under the other lines' sentences. */
 .st-text {
   display: grid;
+  grid-column: 2;
   gap: 4px;
   min-width: 0;
   overflow-wrap: anywhere;
@@ -55,6 +57,9 @@
 @media (max-width: 48rem) {
   .status-list li {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .st-text {
+    grid-column: auto;
   }
   .st-act {
     justify-content: flex-start;

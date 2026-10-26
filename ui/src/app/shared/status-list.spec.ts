@@ -148,6 +148,19 @@ describe('StatusList', () => {
     expect(line('today').querySelector('.badge')).toBeNull();
   });
 
+  it('draws no label for a line without one, and keeps its text in the text column', async () => {
+    const { line } = await render([
+      ...LINES.slice(0, 1),
+      { key: 'community', label: '', tone: 'off', state: '', sub: 'Part of Qualor Enterprise.' },
+    ]);
+    const community = line('community');
+    expect(community.querySelector('.st-label')).toBeNull();
+    expect(text(community)).toBe('Part of Qualor Enterprise.');
+    // Beside the lines with a label, its sentence starts where theirs do.
+    expect(getComputedStyle(community.querySelector('.st-text')!).gridColumn).toBe('2');
+    expect(text(line('provider').querySelector('.st-label'))).toBe('Provider');
+  });
+
   it('lets a long name in a state wrap instead of widening the page', async () => {
     // An organisation's name has up to 255 characters, and may have no break point.
     const name = 'A'.repeat(255);
