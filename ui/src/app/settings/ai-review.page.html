@@ -32,14 +32,30 @@
     <p class="alert alert-error" role="alert">{{ message }}</p>
   }
   @if (settings.available) {
+    <!-- Each link is this page's address with the section's fragment: it can be opened or copied
+         elsewhere, and a plain click scrolls to the section here. -->
     <nav class="page-index" aria-labelledby="ai-index-label">
       <span id="ai-index-label" i18n="@@orgAi.index">On this page</span>
-      <a href="#review" (click)="go('review', $event)">{{ texts.reviewTitle }}</a>
-      <a href="#assistant" (click)="go('assistant', $event)" i18n="@@orgAi.assistant.title">
+      <a [routerLink]="[]" fragment="review" [replaceUrl]="true" (click)="go('review', $event)">{{
+        texts.reviewTitle
+      }}</a>
+      <a
+        [routerLink]="[]"
+        fragment="assistant"
+        [replaceUrl]="true"
+        (click)="go('assistant', $event)"
+        i18n="@@orgAi.assistant.title"
+      >
         Assistant
       </a>
       @if (fixSuggestions()) {
-        <a href="#fix-suggestions" (click)="go('fix-suggestions', $event)">{{ texts.fixTitle }}</a>
+        <a
+          [routerLink]="[]"
+          fragment="fix-suggestions"
+          [replaceUrl]="true"
+          (click)="go('fix-suggestions', $event)"
+          >{{ texts.fixTitle }}</a
+        >
       }
     </nav>
   }

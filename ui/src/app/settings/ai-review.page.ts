@@ -14,7 +14,7 @@ import {
   viewChild,
 } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
-import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { ActivatedRoute, RouterLink } from '@angular/router';
 import { Api, ok } from '../api/api';
 import { ApiError, fieldErrors, problemMessage } from '../api/errors';
 import type { ItemOf } from '../api/types';
@@ -148,7 +148,6 @@ export class AiReviewPage implements LeaveGuarded {
   private readonly locale = inject(LOCALE_ID);
   private readonly session = inject(SessionStore);
   private readonly info = inject(SystemInfo);
-  private readonly router = inject(Router);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly fragment = toSignal(inject(ActivatedRoute).fragment, { initialValue: null });
   protected readonly org = inject(OrgContext);
@@ -576,11 +575,16 @@ export class AiReviewPage implements LeaveGuarded {
     return sections.length > 0 ? this.leaveConfirm().ask(sections) : true;
   }
 
-  /** An index link: keeps the section in the address, scrolls to it and focuses its heading. */
-  protected go(id: string, event: Event): void {
-    event.preventDefault();
+  /**
+   * An index link's plain click: its `routerLink` puts the section in the address, and this
+   * scrolls to it and focuses its heading. A click that opens the link elsewhere (the middle
+   * button, Ctrl, ⌘ or Shift) is the browser's, and leaves this page as it is.
+   */
+  protected go(id: string, event: MouseEvent): void {
+    if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) {
+      return;
+    }
     this.revealed = true;
-    void this.router.navigate([], { fragment: id, replaceUrl: true });
     this.reveal(id);
   }
 

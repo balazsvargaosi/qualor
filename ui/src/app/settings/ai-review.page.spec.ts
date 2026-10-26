@@ -194,9 +194,12 @@ const meters = (root: HTMLElement) =>
     value: text(m.querySelector('.meter-value')),
     note: text(m.querySelector('.meter-note')),
   }));
-/** The in-page index's links: their names and where they lead. */
+/** The in-page index's links: their names and the sections they lead to (their fragments). */
 const indexLinks = (root: HTMLElement) =>
-  [...root.querySelectorAll('nav.page-index a')].map((a) => [text(a), a.getAttribute('href')]);
+  [...root.querySelectorAll('nav.page-index a')].map((a) => [
+    text(a),
+    `#${a.getAttribute('href')?.split('#')[1]}`,
+  ]);
 const facts = (within: Element) =>
   [...within.querySelectorAll('dl.facts dt')].map((dt) => [text(dt), text(dt.nextElementSibling)]);
 
@@ -1738,9 +1741,28 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
       const scroll = catchScrolls();
       const { fixture, root } = await render();
       const link = root.querySelector<HTMLAnchorElement>(
-        'nav.page-index a[href="#fix-suggestions"]',
+        'nav.page-index a[href$="#fix-suggestions"]',
       )!;
+      // Whether the page took the click over, as the browser would see it after every handler.
+      let taken: boolean | null = null;
+      const seen = (event: Event) => {
+        taken = event.defaultPrevented;
+        // The test DOM would try to follow the link otherwise.
+        event.preventDefault();
+      };
+      document.addEventListener('click', seen);
+      onTestFinished(() => document.removeEventListener('click', seen));
+
+      // Ctrl-click (or ⌘, or the middle button) opens it elsewhere: the page stays as it is.
+      link.dispatchEvent(
+        new MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true }),
+      );
+      await settle(fixture);
+      expect(taken).toBe(false);
+      expect(scroll).not.toHaveBeenCalled();
+
       await click(fixture, link);
+      expect(taken).toBe(true);
       expect(scroll).toHaveBeenCalledTimes(1);
       expect(scroll.mock.contexts[0]).toBe(fixSection(root));
       expect(document.activeElement).toBe(fixSection(root).querySelector('h3'));
@@ -1762,6 +1784,14 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
       expect(scroll).toHaveBeenCalledTimes(1);
       expect(scroll.mock.contexts[0]).toBe(fixSection(root));
       expect(document.activeElement).toBe(fixSection(root).querySelector('h3'));
+      // The index links are addresses of this page, to open or copy elsewhere.
+      expect(
+        [...root.querySelectorAll('nav.page-index a')].map((a) => a.getAttribute('href')),
+      ).toEqual([
+        '/settings/ai-review#review',
+        '/settings/ai-review#assistant',
+        '/settings/ai-review#fix-suggestions',
+      ]);
       // Once only: a later render, even of new settings, leaves the page where the person is.
       type(root, 'ai-review-tokens', '3000000');
       await saveReview(harness.fixture, root);
