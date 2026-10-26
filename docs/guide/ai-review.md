@@ -354,7 +354,8 @@ change them.
 - Findings are outside the measures, the quality gate and the counts of new issues. A failed or
   skipped review changes none of them.
 - A person changes a finding's status as for any issue. **False positive** and **Won't fix** dismiss
-  it: its thread is resolved (unless a person replied in it), and the review never raises it again.
+  it: its thread is resolved (unless a person replied in it; on GitHub, with **Contents: Read and
+  write**), and the review never raises it again.
   The issue's history says that the review raised it, and, when a later review closes it, whether
   the problem was fixed or its file was deleted.
 - A reply in the finding's thread can dismiss it too: a member's decision of priority makes it
@@ -566,12 +567,14 @@ Each new scan of a merge request is reviewed again, on its latest commit.
   earlier reviews, the open ones first, and says of each open one whether its problem is still in
   the code. One it is not shown stays as it is.
 - **Fixed findings are closed.** A finding whose problem is gone is closed, and its thread is
-  resolved unless a person replied in it. A finding in a file the merge request deleted is closed
+  resolved unless a person replied in it (on GitHub, with **Contents: Read and write**). A finding
+  in a file the merge request deleted is closed
   too. One that is still there, or that the review could not tell, stays open.
 - **A dismissed finding is never raised again.** After you mark a finding false positive or won't
   fix, the review does not report the same problem in the same place.
 - **Threads follow the finding.** A thread that Qualor resolved is reopened if its finding is open
-  again. A thread that a person resolved stays resolved.
+  again (on GitHub, with **Contents: Read and write**). A thread that a person resolved stays
+  resolved.
 - **A push that changes nothing the review reads** (it touches only files the review leaves out, say)
   is not reviewed again, and the findings stay as they are.
 

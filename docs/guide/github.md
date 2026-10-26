@@ -297,8 +297,7 @@ comment events on:
   branch in Qualor.
 - Marking an issue **false positive** or **won't fix** in Qualor re-evaluates the gate at once, with
   no new scan. The check run is updated in place, and the issue's conversation is resolved (unless
-  someone else replied in it; with **Contents: Read and write**, see
-  [What reviewers see](#what-reviewers-see)).
+  someone else replied in it; with **Contents: Read and write**, as above).
 - **AI review**, when an organisation admin switched it on for the project
   ([AI review](./ai-review.md)). The summary comment gains an **AI review** section, and each finding
   of high or medium severity gets a review comment on its line, **up to 20 per pull request, beside
