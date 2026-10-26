@@ -29,6 +29,7 @@ import {
   readLlmSettings,
   writeLlmSettings,
 } from '../llm/settings';
+import { DEFAULT_REVIEW_BUDGETS, defaultReview, withOrganizationReview } from '../review/settings';
 import { parseInternalHosts } from '../scm/url';
 
 /** The call the model makes to the echo tool of the tool-calling check. */
@@ -1177,6 +1178,74 @@ describe('/system/llm (llm.md §3, §16)', () => {
       maxTokensField: 'max_tokens',
     });
     await put(body());
+  });
+
+  describe('reviewStatus (A1)', () => {
+    afterAll(async () => {
+      // The review block is the organisation admin's: put it back, so that no later test starts
+      // from AI review switched on.
+      const stored = await readLlmSettings(ctx.db);
+      await writeLlmSettings(ctx.db, withOrganizationReview(stored, org, defaultReview()));
+    });
+
+    it('says whether each organisation has AI review on, and whether its consent covers the provider', async () => {
+      expect((await put(body())).statusCode).toBe(200);
+      expect((await get()).json().organizations[org].reviewStatus).toEqual({
+        enabled: false,
+        consentCurrent: false,
+      });
+      // switch it on as the org admin, acknowledging the provider its GET names
+      const shown = (
+        await ctx.app.inject({
+          method: 'GET',
+          url: `/api/v0/organizations/${org}/ai/review`,
+          headers: orgAdmin.headers,
+        })
+      ).json().provider;
+      const on = await ctx.app.inject({
+        method: 'PUT',
+        url: `/api/v0/organizations/${org}/ai/review`,
+        headers: orgAdmin.headers,
+        payload: {
+          enabled: true,
+          scope: 'all',
+          projectIds: [],
+          budgets: DEFAULT_REVIEW_BUDGETS,
+          acknowledgeDataSharing: shown,
+        },
+      });
+      expect(on.statusCode, on.body).toBe(200);
+      expect((await get()).json().organizations[org].reviewStatus).toEqual({
+        enabled: true,
+        consentCurrent: true,
+      });
+      expect((await put(body({ provider: provider({ model: 'another-model' }) }))).statusCode).toBe(
+        200,
+      );
+      expect((await get()).json().organizations[org].reviewStatus).toEqual({
+        enabled: true,
+        consentCurrent: false,
+      });
+    });
+
+    it('takes its own answer back as a body: the read-only field is ignored and never stored (R1)', async () => {
+      const before = (await readLlmSettings(ctx.db)).organizations[org]!.review; // the test above switched it on
+      const read = (await get()).json();
+      read.organizations[org].reviewStatus = {
+        enabled: !read.organizations[org].reviewStatus.enabled,
+        consentCurrent: true,
+      };
+      const res = await put({ ...read, provider: provider() });
+      expect(res.statusCode, res.body).toBe(200);
+      const [row] = await ctx.db
+        .select()
+        .from(instanceSettings)
+        .where(eq(instanceSettings.key, 'llm'));
+      expect(JSON.stringify(row!.value)).not.toContain('reviewStatus');
+      const stored = await readLlmSettings(ctx.db);
+      expect(stored.provider).not.toBeNull(); // the row still parses: a stray field would fail it closed
+      expect(stored.organizations[org]!.review).toEqual(before);
+    });
   });
 });
 

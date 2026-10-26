@@ -48,6 +48,7 @@ export const CONFIGURED = {
       excludedProjectIds: [],
       autoFix: { enabled: false, minSeverity: 'high', maxPerAnalysis: 10 },
       autoFixDisabledProjectIds: [],
+      reviewStatus: { enabled: false, consentCurrent: false },
     },
   },
 };

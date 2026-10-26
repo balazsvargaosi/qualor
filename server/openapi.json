@@ -20029,6 +20029,23 @@
                               "format": "uuid",
                               "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
                             }
+                          },
+                          "reviewStatus": {
+                            "type": "object",
+                            "properties": {
+                              "enabled": {
+                                "type": "boolean"
+                              },
+                              "consentCurrent": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "enabled",
+                              "consentCurrent"
+                            ],
+                            "additionalProperties": false,
+                            "description": "Read-only: whether the organisation's admins switched AI review on, and whether their consent covers the provider configured now. The consent stays theirs (D4)"
                           }
                         },
                         "required": [
@@ -20036,7 +20053,8 @@
                           "features",
                           "excludedProjectIds",
                           "autoFix",
-                          "autoFixDisabledProjectIds"
+                          "autoFixDisabledProjectIds",
+                          "reviewStatus"
                         ],
                         "additionalProperties": false
                       }
@@ -20474,6 +20492,9 @@
                             "format": "uuid",
                             "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
                           }
+                        },
+                        "reviewStatus": {
+                          "description": "Read-only, as GET answers it: ignored"
                         }
                       },
                       "required": [
@@ -20860,6 +20881,23 @@
                               "format": "uuid",
                               "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
                             }
+                          },
+                          "reviewStatus": {
+                            "type": "object",
+                            "properties": {
+                              "enabled": {
+                                "type": "boolean"
+                              },
+                              "consentCurrent": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "enabled",
+                              "consentCurrent"
+                            ],
+                            "additionalProperties": false,
+                            "description": "Read-only: whether the organisation's admins switched AI review on, and whether their consent covers the provider configured now. The consent stays theirs (D4)"
                           }
                         },
                         "required": [
@@ -20867,7 +20905,8 @@
                           "features",
                           "excludedProjectIds",
                           "autoFix",
-                          "autoFixDisabledProjectIds"
+                          "autoFixDisabledProjectIds",
+                          "reviewStatus"
                         ],
                         "additionalProperties": false
                       }

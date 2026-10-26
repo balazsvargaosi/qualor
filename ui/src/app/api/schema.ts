@@ -9820,6 +9820,11 @@ export interface paths {
                                     };
                                     /** @default [] */
                                     autoFixDisabledProjectIds: string[];
+                                    /** @description Read-only: whether the organisation's admins switched AI review on, and whether their consent covers the provider configured now. The consent stays theirs (D4) */
+                                    reviewStatus: {
+                                        enabled: boolean;
+                                        consentCurrent: boolean;
+                                    };
                                 };
                             };
                             excludePaths: string[];
@@ -9953,6 +9958,8 @@ export interface paths {
                                 };
                                 /** @description Absent keeps the stored value */
                                 autoFixDisabledProjectIds?: string[];
+                                /** @description Read-only, as GET answers it: ignored */
+                                reviewStatus?: unknown;
                             };
                         };
                         excludePaths: string[];
@@ -10039,6 +10046,11 @@ export interface paths {
                                     };
                                     /** @default [] */
                                     autoFixDisabledProjectIds: string[];
+                                    /** @description Read-only: whether the organisation's admins switched AI review on, and whether their consent covers the provider configured now. The consent stays theirs (D4) */
+                                    reviewStatus: {
+                                        enabled: boolean;
+                                        consentCurrent: boolean;
+                                    };
                                 };
                             };
                             excludePaths: string[];

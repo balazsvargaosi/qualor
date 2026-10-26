@@ -56,7 +56,7 @@ import { llmBaseUrlProblem } from '../llm/url';
 import { refusedForTools } from '../review/conversation';
 import { queueSnapshotPurge } from '../review/jobs';
 import { tierModels } from '../review/model-tiers';
-import { isDefaultReview } from '../review/settings';
+import { consentCurrent, isDefaultReview } from '../review/settings';
 import { normalBaseUrl } from '../scm/url';
 
 /** llm.md §16: at most this many Test button presses per admin and minute. */
@@ -130,6 +130,8 @@ const orgSettingsWithoutReview = orgLlmSettingsSchema.omit({ review: true });
 /**
  * An organisation in the body. 4E-3a §2: the auto-fix fields may be left out (a form that does not
  * know them), which keeps what is stored, so a save never undoes an organisation admin's choice.
+ * `reviewStatus` is the answer's read-only field: a body that is the answer put back carries it, and
+ * it is neither checked nor stored.
  */
 const orgBody = orgSettingsWithoutReview.extend({
   autoFix: autoFixSettingsSchema.optional().meta({ description: 'Absent keeps the stored value' }),
@@ -138,6 +140,10 @@ const orgBody = orgSettingsWithoutReview.extend({
     .max(MAX_ORGANIZATION_PROJECT_IDS)
     .optional()
     .meta({ description: 'Absent keeps the stored value' }),
+  reviewStatus: z
+    .unknown()
+    .optional()
+    .meta({ description: 'Read-only, as GET answers it: ignored' }),
 });
 type OrgBody = z.infer<typeof orgBody>;
 
@@ -194,6 +200,15 @@ const settingsBody = z.strictObject({
 });
 type SettingsBody = z.infer<typeof settingsBody>;
 
+/**
+ * The organisation's AI review as the instance admin sees it: the organisation's own switch and
+ * consent (`PUT /organizations/{id}/ai/review`), shown here and never set here.
+ */
+const reviewStatusSchema = z.object({ enabled: z.boolean(), consentCurrent: z.boolean() }).meta({
+  description:
+    "Read-only: whether the organisation's admins switched AI review on, and whether their consent covers the provider configured now. The consent stays theirs (D4)",
+});
+
 const settingsDto = z.object({
   provider: z
     .object({
@@ -221,7 +236,10 @@ const settingsDto = z.object({
       apiKeyReadable: z.boolean(),
     })
     .nullable(),
-  organizations: z.record(z.string(), orgSettingsWithoutReview),
+  organizations: z.record(
+    z.string(),
+    orgSettingsWithoutReview.extend({ reviewStatus: reviewStatusSchema }),
+  ),
   excludePaths: z.array(z.string()),
   budgets: budgetsSchema,
   pricing: pricingSchema,
@@ -551,10 +569,15 @@ function withStoredChoices(
     }),
     ...Object.entries(organizations).map(([id, o]): [string, OrgLlmSettings] => {
       const stored = organizationSettings(current, id);
+      // Field by field, never the body's entry spread: what the settings row holds is exactly what
+      // they name, so a field the answer shows and the row does not store (`reviewStatus`) never
+      // reaches it, where the row's schema would refuse it and read the whole row as none.
       return [
         id,
         {
-          ...o,
+          enabled: o.enabled,
+          features: o.features,
+          excludedProjectIds: o.excludedProjectIds,
           autoFix: o.autoFix ?? stored.autoFix,
           autoFixDisabledProjectIds:
             o.autoFixDisabledProjectIds ?? stored.autoFixDisabledProjectIds,
@@ -614,7 +637,13 @@ function dto(s: StoredLlmSettings, secretKey: string): z.infer<typeof settingsDt
       apiKeyReadable: providerApiKey(s, secretKey).ok,
     },
     organizations: Object.fromEntries(
-      Object.entries(s.organizations).map(([id, o]) => [id, withoutReview(o)]),
+      Object.entries(s.organizations).map(([id, o]) => [
+        id,
+        {
+          ...withoutReview(o),
+          reviewStatus: { enabled: o.review.enabled, consentCurrent: consentCurrent(s, o.review) },
+        },
+      ]),
     ),
     excludePaths: s.excludePaths,
     budgets: s.budgets,
