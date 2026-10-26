@@ -832,6 +832,29 @@ describe('GitHub review threads (github.md §6.4)', () => {
     expect(appThreads(s.repo.id)).toHaveLength(3);
   });
 
+  it('writes no note of a fixed issue when the review comments run past the page bound: its note may be there unseen', async () => {
+    const s = await setup('threads/cut-fixed-note');
+    await s.ingest([3]);
+    await s.reconcile();
+    replyIn(s.repo.id, 3);
+    await s.ingest([]);
+    await s.reconcile();
+    const [note] = fake.reviewComments.filter(
+      (c) => c.repoId === s.repo.id && c.user.login === botLogin && c.inReplyToId !== null,
+    );
+    expect(note).toBeDefined();
+    // 98 conversations of people after the person's reply and before the App's note: with a
+    // one-page bound the listing shows the App's thread and the reply, but not the note.
+    fake.reviewComments.splice(fake.reviewComments.indexOf(note!), 1);
+    for (let i = 0; i < 98; i++) foreignThread(s.repo.id, 1, `Later remark ${i}`);
+    fake.reviewComments.push(note!);
+    const plan = await planReviewThreads(await s.context({ maxCommentPages: 1 }));
+    expect(plan.fixedNotes).toEqual([]);
+    // Read whole, the thread shows its note: none is planned either.
+    expect((await planReviewThreads(await s.context())).fixedNotes).toEqual([]);
+    expect(appReplies(s.repo.id, 3)).toHaveLength(1);
+  });
+
   it('creates no thread when the review threads run past the page bound, and resolves the threads it saw', async () => {
     const s = await setup('threads/cut-threads');
     await s.ingest([3, 4]);
