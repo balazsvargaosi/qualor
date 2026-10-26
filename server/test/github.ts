@@ -1,3 +1,4 @@
+import { createHmac, randomUUID } from 'node:crypto';
 import type { Report } from '@qualor/shared';
 import type { Config } from '../src/config';
 import type { DecorationDeps } from '../src/scm/decorate';
@@ -10,6 +11,46 @@ import { decorationDeps, PUBLIC_URL } from './scm';
 
 // Assembled at run time, so the repository's own Gitleaks check finds no fake secret here (.gitleaks.toml).
 export const WEBHOOK_SECRET = ['whsec-test-', '0123456789abcdef'].join('');
+
+/** The `X-Hub-Signature-256` of a delivery: the HMAC-SHA256 of its body with the webhook secret. */
+export const sign = (body: string, secret = WEBHOOK_SECRET) =>
+  `sha256=${createHmac('sha256', secret).update(body).digest('hex')}`;
+
+/**
+ * A delivery to the App's webhook of a connection, as GitHub makes it: signed over the body, with
+ * the event and an id of its own. The harness and the connection are the test's, read when sent.
+ */
+export function deliveryTo(harness: () => IngestHarness, connection: () => string) {
+  return (
+    event: string,
+    payload: unknown,
+    options: {
+      id?: string;
+      signature?: string | null;
+      connection?: string;
+      contentType?: string;
+      delivery?: string;
+      /** The sender's address: each throttle test has its own. */
+      ip?: string;
+    } = {},
+  ) => {
+    const body = typeof payload === 'string' ? payload : JSON.stringify(payload);
+    return harness().ctx.app.inject({
+      method: 'POST',
+      url: `/api/v0/github/webhooks/${options.connection ?? connection()}`,
+      remoteAddress: options.ip ?? '127.0.0.1',
+      headers: {
+        'content-type': options.contentType ?? 'application/json',
+        'x-github-event': event,
+        'x-github-delivery': options.delivery ?? randomUUID(),
+        ...(options.signature === null
+          ? {}
+          : { 'x-hub-signature-256': options.signature ?? sign(body) }),
+      },
+      payload: body,
+    });
+  };
+}
 
 /** The fake listens on 127.0.0.1 with its own port, which the operator lists (scm.md §2.1). */
 export function githubTestConfig(fake: FakeGitHub): Partial<Config> {
