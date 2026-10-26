@@ -301,7 +301,10 @@ export interface GitHubReviewThread {
 
 /** What a repository's installation grants the App, as GitHub answered it for `useRepository`. */
 export interface InstallationAccess {
-  /** Each permission it grants by GitHub's name (`contents`, `issues`, …), and how: `read` or `write`. */
+  /**
+   * Each permission it grants by GitHub's name (`contents`, `issues`, …), at the level GitHub
+   * names (`read`, `write`).
+   */
   permissions: Readonly<Record<string, string>>;
   /** The webhook events the App subscribes to (`check_run`, `issue_comment`, …). */
   events: readonly string[];
@@ -849,7 +852,7 @@ export class GitHubClient {
     }
     this.#installationId = found.id;
     this.#access = installationAccessOf(found);
-    this.#contents = this.#access.permissions['contents'] === CONTENTS_WRITE.contents;
+    this.#contents = this.#access.permissions['contents'] === 'write';
     this.#tokenKey = tokenCacheKey({
       connectionId: this.#connection.connectionId,
       credentials: this.#connection.credentials,
