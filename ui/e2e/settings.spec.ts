@@ -487,6 +487,9 @@ test('an organization admin adds a GitHub App and deletes it (github.md §2.2)',
     publicKeyEncoding: { type: 'spki', format: 'pem' },
   });
   const secret = 'e2e-webhook-secret-0123456789';
+  // The page's own status region, named by what it says: each App's card has a region of its own,
+  // for what its Test finds the App lacks.
+  const news = (text: string) => page.getByRole('status').filter({ hasText: text });
   // Start from no GitHub connection, whatever the seed or an earlier (interrupted) run left.
   await deleteConnections(page, 'github');
   await page.goto('/settings');
@@ -501,7 +504,7 @@ test('an organization admin adds a GitHub App and deletes it (github.md §2.2)',
   await page.locator('#github-key').fill(privateKey);
   await page.locator('#github-secret').fill(secret);
   await page.getByRole('button', { name: 'Add App' }).click();
-  await expect(page.getByRole('status')).toHaveText('GitHub App added.');
+  await expect(news('GitHub App added.')).toHaveText('GitHub App added.');
   await expect(page.locator('#github-key')).toHaveValue('');
   await expect(page.locator('#github-secret')).toHaveValue('');
   const app = page.getByRole('region', {
@@ -535,9 +538,8 @@ test('an organization admin adds a GitHub App and deletes it (github.md §2.2)',
     'Delete the GitHub App 424242 at https://github.qualor.invalid/api/v3? Its projects stop being decorated.',
   );
   await ask.getByRole('button', { name: 'Delete' }).click();
-  await expect(page.getByRole('status')).toHaveText(
-    'GitHub App 424242 at https://github.qualor.invalid/api/v3 deleted.',
-  );
+  const deleted = 'GitHub App 424242 at https://github.qualor.invalid/api/v3 deleted.';
+  await expect(news(deleted)).toHaveText(deleted);
   await expect(page.getByText('No GitHub App yet.')).toBeVisible();
 });
 

@@ -72,6 +72,14 @@ async function render() {
   return { fixture, root: fixture.nativeElement as HTMLElement };
 }
 
+/**
+ * The page's own status region, where its news is said: a child of the page itself, as no App
+ * card's is (each card has a region of its own, for what its Test finds missing).
+ */
+function news(root: HTMLElement): Element | null {
+  return root.querySelector(':scope > [role="status"]');
+}
+
 /** Puts a file in a file input and fires its `change`, as a browser does after a choice. */
 function upload(root: HTMLElement, selector: string, file: File): void {
   const input = root.querySelector<HTMLInputElement>(selector)!;
@@ -338,7 +346,7 @@ describe('GitHubPage (github.md §2)', () => {
     });
     expect(root.textContent).toContain(githubProblemText('not_installed'));
     // A failed test reads as the failure it is, never in the green news of a success.
-    expect(root.querySelector('[role="status"]')?.textContent?.trim()).toBe('');
+    expect(news(root)?.textContent?.trim()).toBe('');
     expect(root.querySelector('p[role="alert"]')?.textContent).toContain(
       githubProblemText('not_installed'),
     );
@@ -439,7 +447,7 @@ describe('GitHubPage (github.md §2)', () => {
       webhookSecret: 'whsec-new-0123456789',
     });
     expect(root.querySelector<HTMLInputElement>('#new-secret-g1')!.value).toBe('');
-    expect(root.querySelector('[role="status"]')?.textContent).toContain(
+    expect(news(root)?.textContent).toContain(
       'The App now uses https://ghe.acme.test/api/v3, and its webhook secret was replaced.',
     );
     expect(root.textContent).not.toContain('MIIEow');
@@ -472,7 +480,7 @@ describe('GitHubPage (github.md §2)', () => {
       root.querySelector<HTMLInputElement>('#new-secret-g1')!.value = 'whsec-new-0123456789';
       root.querySelector('#key-g1')!.closest('form')!.dispatchEvent(new Event('submit'));
       await settle(fixture);
-      const status = root.querySelector('[role="status"]')?.textContent;
+      const status = news(root)?.textContent;
       fixture.destroy();
       return status;
     };
@@ -527,7 +535,7 @@ describe('GitHubPage (github.md §2)', () => {
       { webhookSecret: WEBHOOK_SECRET },
       { webhookSecret: null },
     ]);
-    expect(root.querySelector('[role="status"]')?.textContent).toContain(
+    expect(news(root)?.textContent).toContain(
       'The webhook secret was removed: the Re-run button does nothing now, and replies and commands are answered at the next analysis.',
     );
     button(root, 'Delete').click();
@@ -575,7 +583,7 @@ describe('GitHubPage (github.md §2)', () => {
       expect(server.requestsTo('PATCH', '/api/v0/scm-connections/g1').map((r) => r.body)).toEqual([
         { privateKey: PEM, webhookSecret: null },
       ]);
-      expect(root.querySelector('[role="status"]')?.textContent).toContain(
+      expect(news(root)?.textContent).toContain(
         'The private key of App 123456 was replaced, and its webhook secret was removed: the Re-run button does nothing now, and replies and commands are answered at the next analysis.',
       );
       expect(root.textContent).toContain(
@@ -599,7 +607,7 @@ describe('GitHubPage (github.md §2)', () => {
       expect(secret.value).toBe('');
       expect(root.querySelector<HTMLTextAreaElement>('#key-g1')!.value).toBe('');
       expect(document.activeElement).toBe(secret);
-      expect(root.querySelector('[role="status"]')?.textContent?.trim()).toBe('');
+      expect(news(root)?.textContent?.trim()).toBe('');
     });
 
     it('removes the secret with a new address, and says so', async () => {
@@ -614,7 +622,7 @@ describe('GitHubPage (github.md §2)', () => {
       expect(server.requestsTo('PATCH', '/api/v0/scm-connections/g1').map((r) => r.body)).toEqual([
         { baseUrl: 'https://ghe.acme.test/api/v3', privateKey: PEM, webhookSecret: null },
       ]);
-      expect(root.querySelector('[role="status"]')?.textContent).toContain(
+      expect(news(root)?.textContent).toContain(
         'The App now uses https://ghe.acme.test/api/v3, and its webhook secret was removed: the Re-run button does nothing now, and replies and commands are answered at the next analysis.',
       );
     });
