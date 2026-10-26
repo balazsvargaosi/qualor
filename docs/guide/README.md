@@ -25,10 +25,10 @@ release: **Docs** in the top bar, at `/docs` on your server, for signed-in users
    backups, upgrades and server settings.
 3. [Users, projects and tokens](./users-projects-tokens.md): organisations, roles, projects, and the
    tokens CI uses.
-4. [GitLab](./gitlab.md): the CI job or CI/CD component, and merge request comments with a commit
-   status.
-5. [GitHub](./github.md): the Actions workflow and a GitHub App for check runs and pull request
-   comments.
+4. [GitLab](./gitlab.md): the CI job or CI/CD component, merge request comments with a commit
+   status, and the webhook for replies.
+5. [GitHub](./github.md): the Actions workflow and a GitHub App for check runs, pull request
+   comments and replies.
 6. [Other CI systems and local scans](./other-ci.md): Jenkins, Bitbucket, TeamCity or a laptop.
 7. [Languages and analyzers](./languages-and-analyzers.md): JavaScript, TypeScript, Java, Kotlin,
    Swift, C, C++, C#, Python, PHP, Ruby, Go, HTML, CSS, secrets, dependencies, external SARIF files
@@ -41,11 +41,12 @@ release: **Docs** in the top bar, at `/docs` on your server, for signed-in users
 10. [Quality gates, profiles and issues](./quality-gates.md): metrics, new code, gates, rule
     profiles and issue statuses.
 11. [AI assistant](./ai-assistant.md): explain issues, suggest triage and fixes with your own
-    model; off by default. Enterprise adds automatic fix suggestions for merge requests.
+    model; the provider, its models and their tiers; off by default. Enterprise adds automatic fix
+    suggestions for merge requests.
 12. [AI review](./ai-review.md): a model reviews merge requests on GitLab and GitHub, with comments
-    and suggested changes; switching it on, how a review works, re-reviews, the repository
-    snapshot the scanner uploads and how long it is kept, the budgets, and what to do when a
-    review does not run.
+    and suggested changes, and answers replies and `qualor review` notes; switching it on, how a
+    review works, replies and commands, re-reviews, the repository snapshot the scanner uploads and
+    how long it is kept, the budgets, and what to do when a review or an answer does not come.
 13. [Email](./email.md): the SMTP server, the test message and the alerts for administrators.
 14. [CLI reference](./cli.md): commands, options and exit codes.
 15. [Migrating from SonarQube](./migrate-from-sonarqube.md): `qualor import sonarqube`.

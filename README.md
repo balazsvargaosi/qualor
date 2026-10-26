@@ -141,7 +141,9 @@ qualor:
 
 For merge request comments, inline discussions and a commit status, connect the organisation to
 GitLab in Qualor (Settings, GitLab: the GitLab URL and a project access token with the `api` scope
-and the Maintainer role) and map each project to its GitLab project there.
+and the Maintainer role) and map each project to its GitLab project there. For answers to replies
+and `qualor review` notes at once, set a webhook secret on the connection and add a webhook for
+Comments to the GitLab project, with the URL Qualor shows and that secret.
 
 GitHub Actions: use the [Qualor Action](https://github.com/qualor-dev/scan-action) and set the
 `QUALOR_URL` variable and the `QUALOR_TOKEN` secret. Its steps:
@@ -165,12 +167,13 @@ The checkout takes the pull request's head (so review comments land on its lines
 history and without leaving the job's token in `.git/config`, and skips pull requests from forks,
 which GitHub gives no secrets. For check runs and pull request comments (a summary, and a review
 comment on each new issue), create a GitHub App
-(Checks: read and write, Pull requests: read and write, Metadata: read;
+(Checks: read and write, Pull requests: read and write, Issues: read, Metadata: read;
 [integrations/github/app-manifest.json](integrations/github/app-manifest.json) has these settings),
 install it on the repositories, add it in Qualor (Settings, GitHub: the API URL, the App id and the
-private key) and map each project to `owner/repo`. For the check run's Re-run
-button, set a webhook secret there too, then paste the webhook URL Qualor shows and the same secret
-into the App's webhook settings and activate the webhook.
+private key) and map each project to `owner/repo`. For the check run's Re-run button, and for
+answers to replies and `qualor review` comments at once, set a webhook secret there too, then paste
+the webhook URL Qualor shows and the same secret into the App's webhook settings and activate the
+webhook.
 
 ### Kotlin
 
@@ -311,8 +314,9 @@ Qualor can ask a language model about one issue at a time, on a person's click i
 
 It is **off by default and bring-your-own-key**. An instance admin configures one provider for the
 instance under **Settings → AI assistant**: an OpenAI-compatible chat completions endpoint (OpenAI,
-Azure OpenAI's v1 API, vLLM, Ollama, LM Studio) or the Anthropic Messages API, with its base URL,
-model and API key (write-only, stored encrypted). Each organisation is then enabled with the
+Azure OpenAI's v1 API, vLLM, Ollama, LM Studio), OpenAI's Responses API or the Anthropic Messages
+API, with its base URL, model (and optionally a stronger and a faster model for AI review) and API
+key (write-only, stored encrypted). Each organisation is then enabled with the
 features it wants, and projects and paths can be excluded. No request leaves the server without
 that configuration and a person's click, with two exceptions that an organisation admin must switch
 on first (both are off by default):
@@ -320,7 +324,9 @@ on first (both are off by default):
 - **AI review** of merge requests, in every edition, reviews each merge request of the projects the
   admin chose without a click, and **sends repository files** for it: the diff and any file the
   model chooses to read, from a copy of the repository that the scanner uploads to your server,
-  with secrets masked ([docs/guide/ai-review.md](docs/guide/ai-review.md));
+  with secrets masked. It also answers people's replies in its threads and their `qualor review`
+  comments, and a member's reply can mark an AI finding won't fix or false positive
+  ([docs/guide/ai-review.md](docs/guide/ai-review.md));
 - the Enterprise feature **Automatic fix suggestions** suggests fixes for the new findings of each
   merge request, at or above a severity the admin chooses, and posts them as suggestions without a
   click. A project can opt out.

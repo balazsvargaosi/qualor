@@ -76,6 +76,7 @@ mapping. Its message says what is wrong.
 | no AI review section in the summary | AI review is not switched on for the project ([Why AI review is off for a project](./ai-review.md#why-ai-review-is-off-for-a-project)), or the analysis is not of a merge request |
 | the AI review section says the review did not run or failed | [AI review: What the summary says](./ai-review.md#what-the-summary-says) |
 | GitHub: Re-run does nothing | the webhook is inactive, the secret differs, or `QUALOR_PUBLIC_URL` is not set |
+| a reply to an AI review comment, or a `qualor review` note, is answered late or never | [AI review: Why a reply or a command was not answered](./ai-review.md#why-a-reply-or-a-command-was-not-answered). A webhook makes the answer immediate; without one it comes at the next analysis ([GitLab](./gitlab.md#answers-to-replies-and-commands-webhook), [GitHub](./github.md#turn-on-the-webhook-recommended)) |
 | Slack or Teams: a webhook is refused, a message does not arrive, or there is no digest | [Slack and Microsoft Teams: Troubleshooting](./chat-notifications.md#troubleshooting) |
 
 ## The AI assistant

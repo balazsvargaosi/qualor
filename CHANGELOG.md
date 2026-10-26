@@ -41,6 +41,49 @@ All notable changes to Qualor are listed here, newest first. The format follows
   `PUT /api/v0/organizations/{id}/ai/review`, `toolCalling` on `POST /api/v0/system/llm/test`, and
   `engine` on the issues of `GET /api/v0/branches/{id}/file`. See
   [the guide](docs/guide/ai-review.md).
+- AI review answers replies and commands. When someone replies in one of Qualor's threads on a
+  merge request or pull request, whether it comes from an analyzer or from AI review, Qualor
+  answers once for each round of replies, in plain prose in the language of the person's last note.
+  A reply from a member of the project (GitLab: Developer or more; GitHub: a repository role of
+  admin, maintain, write or triage) can mark an open AI finding **Won't fix**, for a stated decision
+  of priority, or **False positive**, for a claim that the code bears out, and Qualor then resolves
+  the thread. Nothing else in a reply changes anything, and the thread of an analyzer's finding is
+  only explained. The issue's history records the change with no user and a comment that names the
+  person who replied, and the audit log records it as `system`. A note that starts with
+  `qualor review` (from a project member) reviews the merge request's newest commit, a draft
+  included, once for each analysis; `qualor fix` and `qualor stop` are reserved and answer that
+  auto-fix is not switched on. The answers draw on the budgets of AI review, at most 60 000 tokens
+  for each reply, and Qualor keeps one record of each reply or command for 90 days. See
+  [the guide](docs/guide/ai-review.md#replies-and-commands).
+- Webhooks for answers at once. A GitLab connection takes a webhook secret (**Settings → GitLab**;
+  `webhookSecret` when a connection is created or changed, `gitlab.webhookUrl` in its answer), and a
+  GitLab project's webhook for Comments sends its events to `POST /api/v0/gitlab/webhooks/{id}`,
+  which answers every delivery GitLab made with 204 so that GitLab never disables the hook for
+  Qualor's choices. The GitHub App now asks for **Issues: Read-only** and subscribes to **Issue
+  comment** and **Pull request review comment**. Without a webhook, replies and commands are
+  answered at the next analysis. See [GitLab](docs/guide/gitlab.md#answers-to-replies-and-commands-webhook)
+  and [GitHub](docs/guide/github.md#turn-on-the-webhook-recommended).
+- Model tiers for AI review. Besides the model, **Settings → AI assistant** takes an optional strong
+  model (the judge and the second check of security findings) and an optional fast model (the
+  quality reviewer of a review of 10 changed lines or fewer), each with its own prices when prices
+  are set. **Test** checks every model, the AI review warning names all of them, and changing one
+  asks an organisation admin to confirm again. `GET` and `PUT /api/v0/system/llm` gain
+  `provider.strongModel`, `provider.fastModel`, `pricing.strong` and `pricing.fast`; the Test answer
+  gains `models`; `GET /api/v0/organizations/{id}/ai/review` gains `provider.models`, and
+  `acknowledgeDataSharing` takes `models`. See [the guide](docs/guide/ai-assistant.md#model-tiers).
+- The current OpenAI and Anthropic models. OpenAI's Responses API (**API** in the provider settings,
+  `provider.api`), which its newest models need for tool calling, is called statelessly
+  (`store: false`); the Test says when a model needs it (`hint` in its answer). An Anthropic provider
+  takes a workspace ID (`provider.workspaceId`) for a key that is not scoped to a workspace
+  (`PROVIDER_WORKSPACE_REQUIRED`), and no temperature. Calls ask for room to think, 16 000 output
+  tokens beyond the answer for review and reply calls and 4 000 for Explain, Suggest triage, Suggest
+  a fix and the Test, and ask again without it when a model refuses so large a limit. See
+  [the guide](docs/guide/ai-assistant.md#the-current-models).
+- Review and reply calls stream their answers on all three APIs, so that a gateway that cuts idle
+  connections does not cut a long answer. A call waits for the first piece and between two pieces
+  as long as the provider's timeout or 5 minutes, whichever is longer, and 15 minutes in all; a
+  server that refuses streaming is asked again without it. Explain, Suggest triage, Suggest a fix
+  and the Test do not stream.
 
 ### Changed
 
@@ -62,6 +105,17 @@ All notable changes to Qualor are listed here, newest first. The format follows
   changed lines (up to 50 each) at their next analysis. With branch protection that requires
   conversation resolution, Qualor's open comments now block the merge, including comments on low
   and info issues that pass the gate. Mark the issue in Qualor, or resolve the comment.
+- GitHub, when you upgrade: an App you created before keeps its permissions and events. To get
+  answers to replies and `qualor review` comments at once, add **Issues: Read-only** and the events
+  **Issue comment** and **Pull request review comment** in the App's settings, and have the owner of
+  each installation accept the new permission; until then they are answered at the next analysis.
+  The webhook secret now serves these answers as well as the **Re-run** button.
+- A temperature stored for an Anthropic provider is ignored, and saving one is refused: the current
+  Anthropic models take none.
+- An Explain, Suggest triage or Suggest a fix that is waiting or running when the server is stopped
+  in time is answered after the restart, instead of failing as "interrupted".
+- A review that a newer push replaced while it was storing its findings is replaced quietly, and no
+  longer ends as "merged or closed".
 
 ## [0.11.0] - 2026-10-19
 

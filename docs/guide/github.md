@@ -6,7 +6,9 @@ Qualor works with GitHub.com, GHE.com and GitHub Enterprise Server 3.9 or later.
    quality gate fails.
 2. **A GitHub App (optional, recommended)** lets the Qualor server post a check run
    `qualor/<project key>`, a review comment on each new issue on the changed lines, and one summary
-   comment per pull request. Its **Re-run** button re-decorates.
+   comment per pull request. Its **Re-run** button re-decorates. With the App's webhook, Qualor also
+   answers replies to its comments, and `qualor review` comments, at once
+   ([AI review](./ai-review.md#replies-and-commands)).
 
 The workflow itself needs no GitHub write permission. The App posts everything.
 
@@ -187,8 +189,8 @@ that owns the repositories. You can also register it from the manifest
 
 | Setting | Value |
 |---|---|
-| Repository permissions | **Checks: Read and write**, **Pull requests: Read and write**, **Metadata: Read-only**. Nothing else |
-| Subscribe to events | **Check run** (only for the Re-run button) |
+| Repository permissions | **Checks: Read and write**, **Pull requests: Read and write**, **Issues: Read-only**, **Metadata: Read-only**. Nothing else |
+| Subscribe to events | **Check run** (the Re-run button), **Issue comment** and **Pull request review comment** (answers to replies and commands at once) |
 | Webhook | inactive for now. You activate it in step 3 |
 | Where can it be installed | Only on this account |
 
@@ -203,21 +205,62 @@ In Qualor, an **org admin** opens **Settings → GitHub → New GitHub App**:
   GHE.com, or `https://<host>/api/v3` for GitHub Enterprise Server.
 - **App id** and **Private key**: paste the `.pem` file, or choose it. Use the unencrypted RSA key
   that GitHub generated.
-- **Webhook secret** (optional): a random value such as `openssl rand -hex 32`. It is needed only for
-  the Re-run button.
+- **Webhook secret** (optional): a random value such as `openssl rand -hex 32`. It is needed for the
+  webhook ([below](#turn-on-the-webhook-recommended)): the Re-run button, and answers to replies and
+  commands at once.
 
 Then, in **Settings → Repositories**, pick the GitHub connection for each project, enter the
 repository as `owner/repo` and **Save**. **Check** tests that the App is installed there and has the
 permissions it needs.
 
-### Turn on Re-run (optional)
+### Turn on the webhook (recommended)
 
 With a webhook secret saved and `QUALOR_PUBLIC_URL` set on the server, Qualor shows the webhook URL:
 `https://qualor.example.com/api/v0/github/webhooks/<connection id>`. On the App's settings page, paste
 that URL and the same secret, keep the content type **application/json**, and activate the webhook.
+The App must subscribe to three events ([Create it](#create-it)), and Qualor acts on each:
+
+- **Check run**: the **Re-run** button of Qualor's check run decorates the pull request again.
+- **Issue comment** and **Pull request review comment**: when a person comments on a pull request,
+  Qualor reads the pull request's comments and answers a reply in one of its threads, or a
+  `qualor review` comment, at once ([AI review: Replies and commands](./ai-review.md#replies-and-commands)).
+  Without these two events it answers at the next analysis of the pull request, or when someone
+  presses **Re-run**.
+
+Qualor takes only the repository, the pull request, the action and whether the author is a person or
+a bot from an event, never the text of the comment: it reads the comments through the API. A comment
+of a bot, Qualor's own App included, starts nothing.
+
+The **Issues: Read-only** permission is there because GitHub sends `issue_comment` only to an App
+that can read issues. It is how Qualor is told of a pull request's comments as they are written, for
+`qualor review`. Qualor reads and writes the comments with the Pull requests permission that the App
+already has.
+
+Whether a person may change a finding's status with a reply, or ask for a review, depends on their
+role in the repository: admin, maintain, write or triage, or a custom role whose base permission is
+write or admin. Qualor reads it from GitHub's collaborator permission API, which needs only the
+Metadata permission ([Who may change a status](./ai-review.md#who-may-change-a-status)).
 
 GitHub Enterprise Server on an internal network needs its host in `QUALOR_SCM_INTERNAL_HOSTS` on the
 server, and a private CA needs `NODE_EXTRA_CA_CERTS`.
+
+### Update an App you created before
+
+An App created before Qualor answered replies keeps the permissions and events it had. To turn the
+comment events on:
+
+1. On GitHub, open the App's settings (**Settings → Developer settings → GitHub Apps**, your App,
+   **Edit**) and go to **Permissions & events**. Under **Repository permissions** set **Issues** to
+   **Read-only**. Under **Subscribe to events** tick **Issue comment** and **Pull request review
+   comment**, and keep **Check run**. Save the changes.
+2. GitHub then asks the owner of each installation of the App to accept the new permission. The
+   owner of the organisation or the account the App is installed on gets a request, and accepts it
+   on the installation's page. Until then GitHub sends no `issue_comment` event for that
+   installation, so a `qualor review` comment is answered at the next analysis of the pull request
+   or at the next press of **Re-run**. Replies in review threads need no new permission, only the
+   event.
+3. Make sure the webhook is active with Qualor's URL and secret ([above](#turn-on-the-webhook-recommended)).
+   The App's **Advanced** tab lists the recent deliveries and what Qualor answered.
 
 ### What reviewers see
 
@@ -248,7 +291,13 @@ server, and a private CA needs `NODE_EXTRA_CA_CERTS`.
   the 50 above**, in the same review as the analyzers' comments. A finding whose fix is a replacement
   of lines the pull request added comes with a suggested change, which a person applies with
   **Commit suggestion**. Qualor resolves, reopens and leaves these conversations as it does the
-  others. The App needs no extra permission.
+  others. These comments need no extra permission.
+- **Answers to replies and commands**, with AI review switched on for the project. Qualor answers a
+  person's reply in one of its conversations, from an analyzer or from AI review, and a reply to an
+  AI finding can mark it won't fix or false positive and resolve the conversation. A comment on the
+  pull request's page that starts with `qualor review` gets an answer as a comment of its own
+  ([Replies and commands](./ai-review.md#replies-and-commands)). With the webhook this is immediate
+  ([above](#turn-on-the-webhook-recommended)); without it the answer comes at the next analysis.
 
 The check run is written first, so it never waits for the comments. GitHub asks integrations to
 make at most one write a second, and Qualor keeps to that: an analysis's new comments take one
@@ -281,6 +330,8 @@ the merge, also those on issues that pass the gate (low and info ones, say) and 
 | No review comment on an issue | the workflow checked out GitHub's merge commit (the summary says "The analyzers’ issues are not commented inline"; use the `ref:` of [the workflow](#2-the-workflow)), the issue is not on a line the pull request added, or it is past the 50 per pull request (the findings of AI review have 20 more, see the next row). The summary counts the ones it could not place. After a merge-commit checkout only the analyzers' comments are missing: AI review's comments are still posted |
 | No **AI review** section in the summary | AI review is not switched on for the project ([Why AI review is off for a project](./ai-review.md#why-ai-review-is-off-for-a-project)), or the workflow did not run for a pull request |
 | No comment on an AI finding | the section says what became of the review ([What the summary says](./ai-review.md#what-the-summary-says)). A finding of low severity without a suggested change gets none, nor one past the 20 per pull request, nor one the review made for a commit the pull request has since moved past. The summary counts them, and lists those it can |
+| Replies and `qualor review` comments are answered only at the next analysis | the webhook is not set up or not active, its secret differs from Qualor's (the App's **Advanced** tab shows 401), or the App does not subscribe to **Issue comment** and **Pull request review comment**. For `qualor review` also: the App lacks **Issues: Read-only**, or the owner of an installation has not accepted it ([Update an App you created before](#update-an-app-you-created-before)) |
+| A reply or a `qualor review` comment gets no answer at all | [AI review: Why a reply or a command was not answered](./ai-review.md#why-a-reply-or-a-command-was-not-answered) |
 | A conversation stays open after the issue is fixed or marked | someone else replied in it. Qualor leaves such a conversation for people to resolve |
 | The summary says "Inline comments could not be updated this time." | GitHub failed or refused a request for the review comments: an outage or a rate limit (Qualor tries again on its own), or a missing permission (it tries again at the next analysis). The server log's `GitHub decoration retried` or `GitHub decoration stopped` line says why |
 | `The GitHub repository was not found` after a rename | update the mapping to the new `owner/repo` |

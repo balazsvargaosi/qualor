@@ -6,7 +6,8 @@ Qualor works with GitLab.com and self-managed GitLab. Setup has two parts:
    fails. That is enough to block bad merge requests.
 2. **The connection (optional, recommended)** lets the Qualor server comment on merge requests. It
    posts one summary comment, one discussion per new issue on a changed line, and a commit status
-   `qualor/<project key>`.
+   `qualor/<project key>`. A webhook (also optional) lets Qualor answer replies to its comments, and
+   `qualor review` notes, at once ([AI review](./ai-review.md#replies-and-commands)).
 
 ## Before you start
 
@@ -154,7 +155,9 @@ In Qualor, an **org admin** opens **Settings → GitLab**:
      branch;
    - best, a **project access token** of the GitLab project, because it can reach nothing else. For
      many projects, use a **group access token**, or a personal token of a dedicated bot user. Never
-     use a person's own token: every comment would carry their name.
+     use a person's own token: every comment would carry their name, and with
+     [AI review](./ai-review.md#replies-and-commands) Qualor would take that person's replies for
+     its own notes and not answer them.
 2. In **Settings → Repositories**, pick the connection for each Qualor project and enter the GitLab
    project: its numeric id or its full path `group/project`, then **Save**. **Check** tests that the
    token can see the project; it also warns when the token's role is below Maintainer.
@@ -196,6 +199,12 @@ If GitLab's certificate comes from a private CA, give the server that CA with `N
   GitLab suggestion (`suggestion:-0+N`: the line of the discussion and the N lines below it), which a
   person applies with **Apply suggestion**. Qualor resolves, reopens and leaves these discussions as
   it does the others. The token needs no extra scope.
+- **Answers to replies and commands**, with AI review switched on for the project. Qualor answers a
+  person's reply in one of its discussions, from an analyzer or from AI review, and a reply to an
+  AI finding can mark it won't fix or false positive and resolve the discussion. A note that starts
+  with `qualor review` gets an answer in its own discussion
+  ([Replies and commands](./ai-review.md#replies-and-commands)). A webhook makes this immediate
+  (below); without one the answer comes at the next analysis.
 
 In a **merged-results or merge-train pipeline**, the job analyses the merge commit, whose line
 numbers are not the merge request's. The analyzers' discussions are then not created, and the
@@ -212,6 +221,46 @@ Everything a comment quotes from the code is put in code spans. No snippet, no r
 that the report controls reaches GitLab, except a rule's documentation link on its key, and only
 when it is a plain `https://` address. The words of AI review's discussions are model text: Qualor
 puts every word that could link, mention or reference something in code spans too.
+
+### Answers to replies and commands (webhook)
+
+With [AI review](./ai-review.md) switched on for a project, Qualor answers a person's reply in one of
+its discussions, and a note that starts with `qualor review`
+([Replies and commands](./ai-review.md#replies-and-commands)). Without a webhook it does so at the
+next analysis of the merge request. A webhook makes the answer come at once. It is optional.
+
+1. In Qualor, open **Settings → GitLab**. On the connection, open **Webhook secret**, type a secret of
+   16 to 256 printable characters without spaces (`openssl rand -hex 32` makes a good one) and press
+   **Set the webhook secret**. The connection then shows its **Webhook URL**:
+   `https://qualor.example.com/api/v0/gitlab/webhooks/<connection id>`. The URL needs
+   `QUALOR_PUBLIC_URL` on the server.
+2. In GitLab, open the project's **Settings → Webhooks** (you need the Maintainer role) and add a
+   webhook: paste the URL, paste the secret as the **Secret token**, tick **Comments** and nothing
+   else, and save. Add the same webhook, with the same URL and secret, to every GitLab project of
+   this connection that has AI review.
+
+GitLab sends an event for each comment. Qualor takes only the merge request from it: the text of a
+delivery is never used. It reads the merge request's comments through the API, as a scan does, and
+answers what it finds there.
+
+GitLab has to be able to reach the URL from where it runs. GitLab.com cannot reach a Qualor that is
+only on a private network, and a self-managed GitLab refuses to send a webhook to a private address
+until its admin allows requests to the local network from webhooks (**Admin area → Settings →
+Network → Outbound requests**). A delivery that GitLab could not make shows as a failed one under
+the webhook's **Recent events**.
+
+GitLab counts any 4xx or 5xx answer, and a timeout, as a failure: it backs a webhook off after four
+failures in a row, and disables it after forty. So Qualor answers every delivery that GitLab really
+made with 204, whatever it does with it: an event it does not read, a project or a merge request it
+does not know, a project without AI review. Only a delivery that cannot be GitLab's gets an error: a
+wrong or missing secret token is 401 (429 after 60 wrong ones in a minute from one address), an
+unknown connection or one without a secret is 404, and a body that is not JSON is 400. If the
+webhook's **Recent events** in GitLab show those, fix the URL or the secret. A webhook that GitLab
+disabled has to be enabled again in GitLab.
+
+GitLab 19 can sign deliveries with a signing token, and says the secret token is not recommended for
+new webhooks. Qualor reads the secret token, which every version of GitLab sends: use the **Secret
+token** field. The signing token is not supported yet.
 
 ## 4. Block merges on the gate
 
@@ -238,6 +287,8 @@ it), and a person can resolve it too.
 | No discussions from the analyzers in a merge request, and the summary says "The analyzers’ issues are not commented inline" | the pipeline was a merged-results or merge-train pipeline. The analyzers' discussions need a pipeline of the merge request's own commits; AI review's discussions are not affected |
 | No **AI review** section in the summary | AI review is not switched on for the project ([Why AI review is off for a project](./ai-review.md#why-ai-review-is-off-for-a-project)), or the pipeline was not a merge request pipeline |
 | No discussion on an AI finding | the section says what became of the review ([What the summary says](./ai-review.md#what-the-summary-says)). A finding of low severity without a suggested change gets none, nor one past the 20, nor one the review made for a commit the merge request has since moved past |
+| Replies and `qualor review` notes are answered only at the next analysis | the connection has no webhook secret (**Settings → GitLab** says so), the GitLab project has no webhook with **Comments** ticked, its secret token differs from Qualor's (GitLab's **Recent events** for the webhook show 401), GitLab cannot reach the URL (**Recent events** shows a failed delivery), or GitLab disabled the webhook after repeated failures ([Answers to replies and commands](#answers-to-replies-and-commands-webhook)) |
+| A reply or a `qualor review` note gets no answer at all | [AI review: Why a reply or a command was not answered](./ai-review.md#why-a-reply-or-a-command-was-not-answered) |
 | Comments on merge requests, but no commit status on the default branch | the token's role is below Maintainer, and the branch is protected. Give the token the Maintainer role |
 | `@0.11` component not found on self-managed GitLab | the copy is not a CI/CD catalog project with a release. Use `@0.11.0`, or see the steps above |
 | Comments but no links | `QUALOR_PUBLIC_URL` is not set on the server |

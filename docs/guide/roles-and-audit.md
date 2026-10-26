@@ -133,7 +133,8 @@ prefix ending in `.*`, for example `issue.*`):
   condition or a rule changed on one.
 - **Issues:** a status change — one event per issue, even for a bulk transition of 500 — a
   severity override, and one summary event for a `qualor import sonarqube` status import (never
-  one per issue).
+  one per issue). A status that a reply in a merge request changed
+  ([AI review](./ai-review.md#replies-and-commands)) is recorded by `system`, with no user.
 - **Integrations:** a GitLab or GitHub connection created, changed or deleted; a webhook created,
   changed, deleted, its secret regenerated, or a delivery resent.
 - **The licence:** a key uploaded or removed (never the key itself).

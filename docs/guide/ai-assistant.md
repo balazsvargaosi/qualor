@@ -53,8 +53,10 @@ server does. There are two exceptions, and an organisation admin must switch eac
   for each merge request of the projects the admin chose, and **repository files may be sent for
   it**: the merge request's diff and any file the model chooses to read, from a copy of the
   repository that the scanner uploaded to your server. Secrets in it are masked, credentials files
-  are not in the copy, and files on **Never send these paths** are never shown to the model. What
-  it sends is listed in [What the model is sent](./ai-review.md#what-the-model-is-sent).
+  are not in the copy, and files on **Never send these paths** are never shown to the model. It also
+  answers a person's reply in one of its threads in the merge request, with that thread and any file
+  the model chooses to read. What it sends is listed in
+  [What the model is sent](./ai-review.md#what-the-model-is-sent).
 
 What follows is what the single-issue actions send.
 
@@ -97,21 +99,33 @@ instance:
 
 | Setting | What to enter |
 |---|---|
-| Kind | **OpenAI-compatible** (OpenAI, Azure OpenAI, vLLM, Ollama, LM Studio and other servers with the chat completions API) or **Anthropic** |
+| Kind | **OpenAI-compatible** (OpenAI, Azure OpenAI, vLLM, Ollama, LM Studio and other servers with the chat completions API, and OpenAI's Responses API) or **Anthropic** |
 | Base URL | with the version path for OpenAI-compatible servers: `https://api.openai.com/v1`, `https://<resource>.openai.azure.com/openai/v1`, `http://ollama:11434/v1`. Anthropic: `https://api.anthropic.com` |
-| Model | the model's name as the provider spells it |
+| Model | the model's name as the provider spells it: the **standard model**, which Explain, Suggest triage, Suggest a fix, the review's reviewers and the answers to replies use |
+| Strong model | optional: the model of the review's judge and of its second check of security findings. Empty: the model above ([Model tiers](#model-tiers)) |
+| Fast model | optional: the model of the quality reviewer of a small review, 10 changed lines or fewer. Empty: the model above |
 | API key | write-only. It is stored encrypted and never shown again. Leave it empty for a local model without a key |
+| Workspace ID | Anthropic only, optional: `wrkspc_…`, for a key of the whole organisation that is not scoped to a workspace. Sent as `anthropic-workspace-id` on every request. Not a secret ([The current models](#the-current-models)) |
+| API | OpenAI-compatible only: **Chat Completions** (the default; what vLLM, Ollama, LM Studio and Azure serve) or **Responses**, OpenAI's Responses API, which its newest models need for tool calling ([The current models](#the-current-models)) |
 | Key header | `Authorization: Bearer` (the default), or `api-key` for Azure |
 | JSON mode | on by default. Turn it off for a server that refuses `response_format` |
-| Output limit field | `max_completion_tokens` for OpenAI and Azure OpenAI, whose current models refuse `max_tokens`; `max_tokens` for vLLM, Ollama and most other servers. The page picks it from the base URL's host until you choose one |
-| Temperature | optional; not sent when empty |
-| Timeout (seconds) | 5–600, default 60, for the whole request. An AI review call waits at least 300 |
+| Output limit field | Chat Completions only: `max_completion_tokens` for OpenAI and Azure OpenAI, whose current models refuse `max_tokens`; `max_tokens` for vLLM, Ollama and most other servers. The page picks it from the base URL's host until you choose one. The Responses API always uses `max_output_tokens`, and the page hides this row while **Responses** is chosen |
+| Timeout (seconds) | 5–600, default 60, for the whole request of Explain, Suggest triage, Suggest a fix and the Test. A review or reply call streams its answer and waits at least 300 seconds for the first piece and between two pieces, and 15 minutes in all ([Models that work](./ai-review.md#models-that-work)) |
+| Temperature | optional; OpenAI-compatible only; not sent when empty. Anthropic's current models take none: for Anthropic the field is empty and disabled |
 
-Press **Test**. It sends a fixed prompt that holds no repository data to the saved provider, and
-shows the model's name and the latency, or what went wrong. When that passes, it makes a second
-call, also with fixed text, to check tool calling, which [AI review](./ai-review.md#models-that-work)
-needs. The page then adds `Tool calling (needed by AI review): supported` or `not supported`, and
-nothing when the check could not tell.
+Press **Test**. It tests every model of the provider at once: the standard model, and the strong and
+the fast model when they name another model. For each it sends a fixed prompt that holds no
+repository data (it asks for a JSON reply: `Reply in JSON.`), and when that passes, a second call,
+also with fixed text, to check tool calling,
+which [AI review](./ai-review.md#models-that-work) needs. With one model the page shows its name and
+the latency, then `Tool calling (needed by AI review): supported` or `not supported`, and nothing
+when the check could not tell. With several models it shows a line for each, such as
+`gpt-6.1-sol: connected in 812 ms · tool calling supported`, or the model's name and what went wrong.
+A model that fails never fails another, and when any failed the page also says
+`The test failed for 1 of 3 models.` The Test asks through the API you chose. For a model that
+takes tools only through the Responses API it adds `This model takes tools only through the
+Responses API: choose Responses below.`, and for a key that is not scoped to a workspace it says
+`This key is not scoped to a workspace: give its workspace ID below.`
 
 - For Azure OpenAI, use the v1 API's base URL. The older per-deployment URLs
   (`/openai/deployments/<name>/…?api-version=`) are not supported.
@@ -125,6 +139,70 @@ nothing when the check could not tell.
   for 10 minutes. [AI review](./ai-review.md) calls the same provider and its failures count too:
   repeated timeouts or rate limits during reviews pause **Explain**, **Suggest triage** and
   **Suggest a fix** for those 10 minutes, and the reverse.
+
+### The current models
+
+What follows is what Qualor does so that the current models of OpenAI and Anthropic work.
+
+- **OpenAI: Chat Completions or Responses.** The **API** setting picks the API that Qualor calls.
+  Chat Completions is the default, and what vLLM, Ollama, LM Studio, LiteLLM and Azure deployments
+  serve. OpenAI's newest models (`gpt-6.1-sol`, `gpt-5.6-terra` and `gpt-6-luna` were checked)
+  take function tools with reasoning only through the **Responses** API, and
+  [AI review](./ai-review.md#models-that-work) needs tools: choose Responses for them. The Test
+  says so when you do not. Through Responses the output limit is always `max_output_tokens`, so
+  **Output limit field** does not apply. With JSON mode on, the API wants the word JSON in a message
+  of the request, so Qualor adds the line `Reply in JSON.` to the first message when no message
+  says it. A Responses request is stateless: Qualor sends `store: false`, so OpenAI keeps nothing
+  beyond its own abuse monitoring, and the reasoning the model did comes back encrypted and goes
+  back with the next turn of a conversation. The API clamps an output limit that is too large by
+  itself.
+- **Anthropic.** The current models (Claude 4.7 and later) take no temperature: Qualor never sends
+  one, saving a provider of this kind with a temperature is refused ("Anthropic's current models take
+  no temperature: leave it empty"), and a value that an older version stored is ignored. They think
+  by default, and Qualor sends their thinking back unchanged with each turn of a conversation, as
+  they require. A key of the whole organisation that is not scoped to a workspace needs its
+  **Workspace ID**, which Qualor sends as `anthropic-workspace-id` on every request. Without it the
+  provider refuses the call, and the Test says "This key is not scoped to a workspace: give its
+  workspace ID below." (`PROVIDER_WORKSPACE_REQUIRED`).
+- **Room to think.** A model that thinks counts its thinking in the output limit. So review and
+  reply calls ask for 16 000 output tokens more than the answer needs, and Explain, Suggest triage,
+  Suggest a fix and the Test for 4 000 more. The room costs nothing unless the model uses it. A
+  model that takes less (a cap of its own, or a server with a small context window) refuses with a
+  400, and Qualor asks again in the same call without the room. For a cap of the model's own it
+  remembers that server and model until the server restarts, and asks without the room from then on.
+  For a context window that the prompt shares with the answer it remembers nothing, so a vLLM with a
+  small window pays one quick refusal on each call. How the room counts in a review's budget is in
+  [Budgets and today's usage](./ai-review.md#budgets-and-todays-usage).
+- **A refusal fails that step.** A model can refuse a request. Qualor reads a refusal as an answer
+  that could not be read, so the step fails, as [AI review](./ai-review.md#models-that-work) says,
+  and it never falls back to a model you did not choose.
+
+### Model tiers
+
+The work of AI review falls into three tiers, and you can give each its own model. Only the
+standard model is required:
+
+| Tier | Setting | What runs on it |
+|---|---|---|
+| Strong | **Strong model** | the judge of a review, and the second check of its security findings |
+| Standard | **Model** | the reviewers (quality, tests, security and performance), the answers to replies, and Explain, Suggest triage and Suggest a fix |
+| Fast | **Fast model** | the quality reviewer of a review of 10 changed lines or fewer |
+
+A tier you leave empty uses the standard model, and so does a tier whose model is the standard
+model's own name. The assignment is fixed: you choose each tier's model, not what work a tier does.
+The security reviewer that a sensitive path adds to a small review stays on the standard model, as
+do the reviewers of every larger review.
+
+- **Prices.** With prices entered, a tier that has a model of its own needs its prices too
+  ([Budgets and limits](#budgets-and-limits)), and each call is costed at the prices of the model it
+  went to.
+- **The warning.** What an organisation admin confirms to switch AI review on names every model,
+  sorted, such as `api.openai.com (gpt-5.6-terra, gpt-6-luna, gpt-6.1-sol)`. Changing, adding or
+  dropping any of them asks for the confirmation again, and AI review stops until an organisation
+  admin gives it ([The warning](./ai-review.md#the-warning)).
+- **The Test** checks each model on its own ([above](#the-provider-instance-admins)).
+- **The records.** Each call is recorded with the model it went to ([Retention and
+  audit](#retention-and-audit)).
 
 ### Organisations and projects
 
@@ -295,6 +373,16 @@ and day (UTC)**:
 The top of the page shows today's use of the organisation chosen in the header against these
 budgets, one meter per budget, and says when a budget is reached for the day.
 
+**Prices.** The estimated cost needs prices, in US dollars per million tokens: **Input price** and
+**Output price** for the standard model, and, for each tier that has a model of its own
+([Model tiers](#model-tiers)), the same pair for that model. The page shows the strong and the fast
+model's price fields as soon as you name a model for the tier. With prices entered, a tier with its
+own model needs its prices too: saving without them is refused ("Give the strong model's prices
+too", "Give the fast model's prices too"), and so is a pair of prices for a tier that has no model
+of its own ("Set the strong model first"). A call is costed at the prices of the model it went to.
+When a cost budget is set, Qualor turns what is left of it into tokens at the dearest price among
+your models, since the model of the next call is not known ahead.
+
 The field **AI review: most tokens per organisation per day** under them is not a budget of this
 assistant. It caps what an organisation admin may give [AI review](./ai-review.md#budgets-and-todays-usage),
 which has budgets of its own. Leave it empty for no cap.
@@ -339,9 +427,10 @@ it to:
 - Each finished request also writes one log line with the same details, never the content or the
   key. When the provider answered with an error, the line has its HTTP status (`providerStatus`).
 - The calls of an [AI review](./ai-review.md#how-long-copies-live) are recorded the same way, with
-  the feature `review` and no issue or person. With **Store the prompts sent** on, their prompts are
-  kept too, for the days set there, and the model's answers stay with the record. The prompts hold
-  the code the model was shown.
+  the feature `review` (a review's calls) or `review-reply` (the answers to replies), the model that
+  call went to, and no issue or person. With **Store the prompts sent** on, their prompts are kept
+  too, for the days set there, and the model's answers stay with the record. The prompts hold the
+  code the model was shown, and for a reply what people wrote in the thread.
 
 Today's use and budgets for an organisation are at `GET /api/v0/organizations/{id}/ai`.
 
@@ -356,7 +445,11 @@ Today's use and budgets for an organisation are at `GET /api/v0/organizations/{i
 | "The provider refused the request (HTTP 403): the key lacks access to this model, or the account has no credit" | the key is valid but may not use this model: check the model's name, the key's project or workspace permissions, and the account's billing or credit |
 | "The model does not accept max_tokens; set the output limit field to max_completion_tokens in the AI assistant settings" (or the other way round) | the model refused the output limit field: pick the other one in the settings |
 | "The provider refused the request; check the base URL and the model" | an OpenAI-compatible base URL usually needs `/v1`; check the model's name. OpenAI's newer models need the `max_completion_tokens` output limit field; some servers need JSON mode off |
-| "The provider's answer was not understood" | the address is not a chat completions or Anthropic Messages API, or the answer was over 1 MiB |
+| "The provider's answer was not understood" | the address is not a chat completions, Responses or Anthropic Messages API (check the **API** setting too), or the answer was over 1 MiB |
+| "This key is not scoped to a workspace: give its workspace ID" (the Settings page says "below"; the code is `PROVIDER_WORKSPACE_REQUIRED`) | an Anthropic key of the whole organisation needs its **Workspace ID** (`wrkspc_…`) in **Settings → AI assistant**. The request is not retried |
+| "This model takes tools only through the Responses API: choose Responses below" (a line of the Test) | choose **Responses** under **API** in **Settings → AI assistant**, then run **Test** again ([The current models](#the-current-models)) |
+| "Anthropic's current models take no temperature: leave it empty" | an Anthropic provider cannot be saved with a temperature: empty the field, or the API's `provider.temperature` |
+| "Give the strong model's prices too" or "Give the fast model's prices too" | prices are entered, and a tier has a model of its own: enter that model's input and output prices, or clear all prices ([Budgets and limits](#budgets-and-limits)) |
 | "The provider's address is not allowed" | the operator lists the host with its port in `QUALOR_LLM_INTERNAL_HOSTS`, or use an `https` address that resolves to public addresses |
 | "The stored API key can no longer be read; set it again" | `QUALOR_SECRET_KEY` changed. Enter the API key again |
 | "The model's answer could not be used" | the model did not answer with the expected JSON, or its answer was cut off. Ask again, or try another model |
@@ -366,7 +459,7 @@ Today's use and budgets for an organisation are at `GET /api/v0/organizations/{i
 | "Findings of secret rules are never sent" / "Issues in credential files are never sent" | by design: Explain, Triage and Fix never send them. Handle these issues without the assistant |
 | "An administrator excluded this issue's path or project" | by design; an instance admin can change the exclusions |
 | "Something changed since you asked; ask again" | the settings or the issue changed (a new analysis) while the request waited |
-| "The request was interrupted; ask again" | the server restarted, or the request failed unexpectedly, while it ran |
+| "The request was interrupted; ask again" | the server crashed or was killed while the request ran, a stop took longer than its grace period (60 seconds in the guide's Compose file and Helm chart), or the request failed unexpectedly. A request that is waiting or running when the server is stopped in time goes back to the queue and is answered after the restart |
 | "Not posted: the merge request has a newer commit" | analyse the latest commit, then ask for a new fix |
 | "Not posted: the lines are not added lines of the merge request" / "the code on the merge request differs" | suggestions can only replace lines the merge request added, unchanged. Fix it by hand |
 | No automatic suggestions on a merge request | check, in order: the licence lists `llm.auto-fix`; **Settings → Automatic fixes** is on for the organisation, and the organisation and **Suggest a fix** are enabled in **Settings → AI assistant**; the project did not opt out and is not excluded from the AI assistant; the project is mapped to GitLab or GitHub; the findings are new in this merge request, open and at the minimum severity; no suggestion was made for them before; the daily fix budget is not used up |
@@ -379,6 +472,7 @@ Error codes in the API: `AI_DISABLED` (409), `AI_NOT_ELIGIBLE` (409, with the re
 `AI_POST_NOT_POSSIBLE` (409, with the reason in `detail`), `AI_QUOTA_EXCEEDED` (429 with
 `Retry-After`) and `RATE_LIMITED` (429). A failed request's `error.code` is one of `PROVIDER_TIMEOUT`,
 `PROVIDER_UNAVAILABLE`, `PROVIDER_RATE_LIMITED`, `PROVIDER_REFUSED_KEY`,
-`PROVIDER_REJECTED_REQUEST`, `PROVIDER_BAD_ANSWER`, `URL_NOT_ALLOWED`, `KEY_UNDECRYPTABLE`,
-`MALFORMED_OUTPUT`, `OUTPUT_TRUNCATED`, `MODEL_REFUSED`, `OUTPUT_REFUSED`, `AI_DISABLED`,
-`SETTINGS_CHANGED`, `ISSUE_CHANGED`, `ISSUE_GONE` or `REQUEST_ABANDONED`.
+`PROVIDER_WORKSPACE_REQUIRED`, `PROVIDER_REJECTED_REQUEST`, `PROVIDER_BAD_ANSWER`,
+`URL_NOT_ALLOWED`, `KEY_UNDECRYPTABLE`, `MALFORMED_OUTPUT`, `OUTPUT_TRUNCATED`, `MODEL_REFUSED`,
+`OUTPUT_REFUSED`, `AI_DISABLED`, `SETTINGS_CHANGED`, `ISSUE_CHANGED`, `ISSUE_GONE` or
+`REQUEST_ABANDONED`.

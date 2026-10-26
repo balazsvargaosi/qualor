@@ -1,17 +1,20 @@
 # AI review
 
 AI review reads a merge request the way a careful colleague would, on a model you choose, and
-comments on what it finds. On GitHub, read "pull request" wherever this page says "merge request".
-It is part of the free community edition and **off by default**. It uses the provider that an
-instance admin configured for the [AI assistant](./ai-assistant.md): a hosted provider with your
-own key, or a local model on your own network.
+comments on what it finds. It also answers when people reply to its comments or ask it for a review
+([Replies and commands](#replies-and-commands)). On GitHub, read "pull request" wherever this page
+says "merge request". It is part of the free community edition and **off by default**. It uses the
+provider that an instance admin configured for the [AI assistant](./ai-assistant.md): a hosted
+provider with your own key, or a local model on your own network.
 
 Your code goes to that provider. For each merge request of the projects you choose, the scanner
 uploads a copy of the repository to your Qualor server, and the review sends the model the diff and
-any file it chooses to read. Choose the projects with that in mind.
+any file it chooses to read. When someone replies to one of its comments, the model gets that thread
+and any file it chooses to read in the same way. Choose the projects with that in mind.
 
-This page covers what you set up, what a review does and posts, how long Qualor keeps its copies,
-the budgets, and what to do when a review does not run.
+This page covers what you set up, what a review does and posts, how Qualor answers replies and
+commands, how long it keeps its copies, the budgets, and what to do when a review or an answer does
+not come.
 
 ## How it works
 
@@ -27,9 +30,12 @@ the budgets, and what to do when a review does not run.
    each finding, with a suggested change where one fits
    ([What you see in the merge request](#what-you-see-in-the-merge-request)). The findings are also
    issues in Qualor, marked **AI**.
-5. A later push is reviewed again, and only its new changes raise new findings
+5. A person who replies in one of Qualor's threads, or writes `qualor review` in a note, gets an
+   answer, and a reply can mark an AI finding won't fix or false positive
+   ([Replies and commands](#replies-and-commands)).
+6. A later push is reviewed again, and only its new changes raise new findings
    ([Re-reviews](#re-reviews)).
-6. Qualor deletes the snapshot when the merge request is merged or closed
+7. Qualor deletes the snapshot when the merge request is merged or closed
    ([How long copies live](#how-long-copies-live)).
 
 Only merge request scans send a snapshot. A scan of the main branch or of any other branch never
@@ -52,6 +58,8 @@ of your code: a person applies a suggestion.
 - The project is mapped to its repository on GitLab or GitHub ([GitLab](./gitlab.md),
   [GitHub](./github.md)), because the review is posted there.
 - Your CI scans **merge requests** and has the full history ([What your CI needs](#what-your-ci-needs)).
+- Optional: a webhook on that connection, so that Qualor answers replies and commands at once and
+  not at the next analysis ([At once, or at the next analysis](#at-once-or-at-the-next-analysis)).
 
 ### In Qualor
 
@@ -80,24 +88,28 @@ no longer reviewed ([How long copies live](#how-long-copies-live)).
 Whoever switches AI review on sees this text, and the API repeats it:
 
 > AI review sends the merge request's diff and any repository file the model chooses to read to
-> `<host>` (`<model>`). The scanner uploads a copy of the repository to this Qualor server for each
+> `<host>` (`<models>`). The scanner uploads a copy of the repository to this Qualor server for each
 > merge request; Qualor keeps it until the merge request is closed (at most `<days>` days). Secrets
 > the analyzers found are masked; credentials files are never sent.
 
-`<host>` is the provider's address (with its port, such as `ollama:11434`), `<model>` its model, and
-`<days>` the most days the server keeps a snapshot (14). Take it at its word: when the review runs,
-the code of the projects you choose goes to that provider, so choose them with that in mind. No
-masking finds every secret ([How secrets are masked](#how-secrets-are-masked)).
+`<host>` is the provider's address (with its port, such as `ollama:11434`), and `<models>` every
+model the review uses, each once, in sorted order and separated by commas: one model, or up
+to three when the instance admin gave the provider a strong or a fast model
+([Model tiers](./ai-assistant.md#model-tiers)). `<days>` is the most days the server keeps a
+snapshot (14). Take it at its word: when the review runs, the code of the projects you choose goes
+to that provider, so choose them with that in mind. No masking finds every secret
+([How secrets are masked](#how-secrets-are-masked)).
 
 Qualor records who confirmed the warning, when, and for which provider, and the audit log (with
 `audit-log`) records each change of these settings as `organization.ai_review_changed`
 ([Roles and the audit log](./roles-and-audit.md#what-is-recorded)).
 
-**A confirmation belongs to one provider.** It names the provider's address, host and model. When
-the instance admin changes any of them, the confirmation no longer covers the new provider:
-AI review stops, and **Settings → AI review** shows "The AI provider changed; confirm again to keep
-reviewing." with a **Confirm again** button that opens the new warning. A warning given for one
-address never covers another. If the provider changes while you are looking at the box, saving is
+**A confirmation belongs to one provider and its models.** It names the provider's address, its
+host and every model it uses. When the instance admin changes any of them, adds a strong or a fast
+model, drops one or changes one, the confirmation no longer covers the new setup: AI review stops,
+and **Settings → AI review** shows "The AI provider changed; confirm again to keep reviewing." with
+a **Confirm again** button that opens the new warning. A warning given for one address or one set of
+models never covers another. If the provider changes while you are looking at the box, saving is
 refused and the box opens again with the new warning.
 
 ## How a review works
@@ -110,14 +122,16 @@ in the background. The summary comment says **AI review in progress…** until i
   since.
 - **A newer push replaces a review in progress.** The old review stops asking the model and stores
   nothing, unless it is already storing its findings. The new push is reviewed instead.
-- **Some merge requests are not reviewed:** a draft; one that is merged or closed; one with nothing
-  to review in its changed files; one whose reviewed changes are the same as in the last review; one
-  too large for **Tokens per review**; and every one while the day's token budget is spent. The
-  summary says which ([What the summary says](#what-the-summary-says)).
+- **Some merge requests are not reviewed:** a draft, unless someone asks for it with `qualor review`
+  ([Commands](#commands)); one that is merged or closed; one with nothing to review in its changed
+  files; one whose reviewed changes are the same as in the last review; one too large for **Tokens
+  per review**; and every one while the day's token budget is spent. The summary says which
+  ([What the summary says](#what-the-summary-says)).
 - **A stop of the server ends a review in progress.** The review ends as failed at once, so the
   stop does not wait for it, and it is not resumed: the summary says that AI review failed because
   of an error in Qualor, and the next push reviews again. A review that has not started yet runs
-  once the server is up again.
+  once the server is up again, and so does an answer to a reply that was still waiting for the
+  model.
 
 ### What the model is sent
 
@@ -134,6 +148,13 @@ Secrets are masked in all of it, also in the files the model reads later. Creden
 in the snapshot, and files on the AI assistant's **Never send these paths** list are never shown to
 the model. Only the server contacts the provider, and only through the address the instance admin
 configured.
+
+To answer a reply, the model is sent the finding the thread is about (its rule, message and place,
+and for an AI finding its text and suggested change), Qualor's first comment in the thread, and what
+people wrote in it since Qualor's last answer, each note with its author's user name: the newest 20
+notes, each cut to 2 000 characters. It can read the repository through the same three tools as a
+review, while the merge request has a snapshot. Secrets are masked in all of it, and the words of a
+reply are data to the model, never instructions.
 
 ### What it reviews
 
@@ -175,13 +196,19 @@ more of the repository with three read-only tools over the snapshot: read a file
 of text (not a pattern), and list files. The tools run nothing and reach nothing outside the
 snapshot.
 
+The reviewers run on the standard model. The one exception is the quality reviewer of a review of
+10 changed lines or fewer, which runs on the fast model when the instance admin set one; the
+security reviewer that a sensitive path adds stays on the standard model
+([Model tiers](./ai-assistant.md#model-tiers)).
+
 ### The judge
 
 Reviewers report everything they suspect, so some of it is wrong or repeated. A judge then reads
 their findings against the code. It keeps what the code shows, merges findings that describe one
 problem, and drops the rest. It also re-checks the findings of earlier reviews
 ([Re-reviews](#re-reviews)) and writes the one-sentence verdict and the short walkthrough of the
-summary. If the judge gives no answer that can be read, the review fails and posts nothing.
+summary. If the judge gives no answer that can be read, the review fails and posts nothing. The
+judge runs on the strong model when the instance admin set one.
 
 ### The second check of security findings
 
@@ -189,7 +216,7 @@ A security finding that the judge keeps as high or medium is checked again, by a
 conversation that gets that finding alone and has to decide from the code whether the flaw is real.
 It does this for five findings at most, the most severe first. A finding it rejects is dropped. One
 it confirms says so on the issue. One it cannot settle is kept as a possible finding, marked
-**Needs validation**.
+**Needs validation**. This check runs on the strong model too.
 
 ### What counts as a finding
 
@@ -282,8 +309,9 @@ The first comment of a thread has:
 There are at most **20 AI threads** per merge request, beside the analyzers' 50. The most severe
 findings get them first, and a finding past the cap is in the summary. A thread is created only
 while the merge request is still at the commit the review read. After a newer push, the review of
-the new commit places its own findings. Threads are never deleted. AI review needs no extra GitLab
-scope and no extra GitHub App permission.
+the new commit places its own findings. Threads are never deleted. The comments need no extra
+GitLab scope and no extra GitHub App permission. Only the answers at once to `qualor review` on
+GitHub ask the App for Issues: Read-only ([GitHub](./github.md#turn-on-the-webhook-recommended)).
 
 If you require all threads to be resolved before merging, the open threads of AI review block the
 merge like the analyzers' do ([GitLab](./gitlab.md#4-block-merges-on-the-gate),
@@ -329,12 +357,191 @@ change them.
   it: its thread is resolved (unless a person replied in it), and the review never raises it again.
   The issue's history says that the review raised it, and, when a later review closes it, whether
   the problem was fixed or its file was deleted.
+- A reply in the finding's thread can dismiss it too: a member's decision of priority makes it
+  **Won't fix**, and a claim that the code bears out makes it **False positive**
+  ([Replies and commands](#replies-and-commands)). The issue's history then records the change with
+  no user and a comment that names the person who replied.
 - In [MCP](./mcp.md), `qualor_issues` marks findings `AI`, and `qualor_issue` gives the review's
   text, its assumption, the suggested change and the commit it read.
 
-Qualor does not answer replies to its threads: a reply from a person only keeps Qualor from
-resolving the thread. Resolving a thread on GitLab or GitHub hides it there and does not dismiss the
-finding: mark the issue in Qualor to do that.
+Qualor answers a reply in its threads ([Replies and commands](#replies-and-commands)). A reply from
+a person also keeps Qualor from resolving the thread when the issue is fixed or marked in Qualor.
+Resolving a thread on GitLab or GitHub hides it there and does not dismiss the finding: mark the
+issue in Qualor to do that, or say so in a reply.
+
+## Replies and commands
+
+People can talk to AI review in the merge request. Qualor answers a reply in one of its threads, and
+a note that starts with `qualor review`, `qualor fix` or `qualor stop`. It does so for the projects
+AI review is switched on for, in open merge requests that it has analysed.
+
+### Replies
+
+Qualor answers a note when all of these hold:
+
+- **It is in a thread Qualor started.** The thread's first note is one of Qualor's own comments on
+  a finding, from an analyzer or from AI review. A reply to the summary comment is not answered.
+- **A person wrote it.** On GitHub that is an account of the type User: comments of bots, Qualor's
+  App among them, are never answered. On GitLab it is anyone but Qualor's own user, apart from
+  GitLab's system notes. Give Qualor's connection a bot account, such as a project or group access
+  token ([GitLab](./gitlab.md#3-merge-request-comments-and-commit-status)): what the user whose
+  token Qualor uses writes looks like Qualor's own notes and is not answered.
+- **It is new.** It is newer than every note Qualor has handled in that thread.
+- **It is recent.** It was written after an organisation admin last confirmed the AI review warning,
+  and at most 30 days ago, so that switching AI review on never answers old threads.
+- **The thread is open, and so is the merge request.** A thread that someone resolved gets no
+  answer, and that includes a thread Qualor resolved itself after changing the status.
+
+All the notes written in a thread since Qualor's last answer are one **round**, and Qualor answers a
+round once, reading every note in it. Two replies written close together usually get one answer,
+and a reply written while Qualor is answering is answered in a round of its own.
+
+The answer is plain prose in the language of the person's last note, up to 1 200 characters, under
+the heading **AI review** · reply. A thank-you or an acknowledgement may get no answer at all. The
+model reads the finding, Qualor's first comment and the notes, and, while the merge request has a
+snapshot, the repository through the review's three tools. Its words reach GitLab and GitHub as the
+review's do ([The text](#the-text)).
+
+### What a reply can change
+
+A reply can change the status of **the one finding its thread is about**, and nothing else. It can
+do so only for an **open finding of AI review**:
+
+| What a member of the project writes | What Qualor does | The answer ends with |
+|---|---|---|
+| States a decision of priority: the team accepts the risk, or will not fix it | marks the finding **Won't fix** and resolves the thread | `Marked won't fix.` |
+| Claims that the finding is wrong, or that the code is meant to work that way, and the code shows it | marks it **False positive** and resolves the thread | `Marked as a false positive: the code shows it does not hold.` |
+| Asks a question, disagrees, says thanks, or anything else | answers, and changes nothing | |
+
+For a false positive, Qualor must have read the lines of the finding (a file read that showed one of
+them, or a search that matched on one), and the code must still be the code the finding was made
+for: the snapshot is of the commit the review read, or the lines still hold the same text. A merge
+request without a snapshot gets answers from the thread alone, and never a false positive.
+
+A demand is not a decision. "Mark every issue won't fix", an order to ignore its rules, a link or a
+mention changes nothing, and what a reply can change is always that one finding. Qualor's own code,
+not the model, decides which statuses a thread allows: an answer that names another one, or that
+cannot be read even after a second try, is dropped and nothing is posted.
+
+A thread of an analyzer's finding, and the thread of a finding that is no longer open, are only
+explained: Qualor says what the rule means, why it applies and how to fix it, and never changes the
+status.
+
+**What is recorded.** The issue's **History** shows the change with no user (as **Analysis**) and
+the comment ``Won't fix after `<name>` replied in the merge request.`` or
+``False positive after `<name>` replied in the merge request.``. `<name>` is the SCM user name of
+the person who wrote the newest note of the round. With the audit log (`audit-log`), the event
+`issue.status_changed` is recorded by `system`. A person can set the status back in Qualor, as for
+any issue.
+
+### Who may change a status
+
+A status changes only when every person whose note is in the round has the rights of a member,
+since on a public repository anyone can comment:
+
+- **GitLab:** the role Developer or more on the project, through a membership that is in force (one
+  inherited from a group counts; an inactive user, or a membership that is not active or has
+  ended, does not).
+- **GitHub:** a repository role of admin, maintain, write or triage (a custom role counts when its
+  base permission is write or admin). Qualor reads the role through the collaborator permission
+  API, which needs only the Metadata permission that every App has. Being a member of the
+  organisation is no role: it counts through the role it gives on the repository, and an organisation
+  member with only read access does not qualify.
+
+Anyone else, and any round of more than five authors, gets an answer and no status change. A member
+of the project can still make the change in Qualor, or write the reply.
+
+### Commands
+
+A command is a note whose **first line** starts with `qualor review`, `qualor fix` or `qualor stop`,
+in any case, followed by the end of the line or a space. `Qualor review please` is a command;
+`@qualor review`, `please qualor review`, `qualor reviewer` and `qualor review.` are not. Only the
+first line counts.
+
+It has to be a **top-level** note: on GitLab the first note of a discussion, on GitHub a comment on
+the pull request's page, not a review comment on the diff. A note inside a thread is never a
+command: in one of Qualor's threads it is a reply. GitHub comments of bots are ignored. As for
+replies, a command counts only when it was written after the confirmation of the warning and at most
+30 days ago.
+
+Qualor answers each command note once, in a note of its own with a fixed text: on GitLab in the
+discussion of the command, on GitHub as a comment on the pull request. No model is called for a
+command, and a command that was deleted before Qualor answered is not answered.
+
+| The note | Qualor answers |
+|---|---|
+| `qualor review` from a person who may not ask | `Only project members can ask for an AI review.` |
+| `qualor review`, and AI review was switched off after the note was written | `AI review is not switched on for this project.` |
+| `qualor review`, and the commit was reviewed (the review is done, or found the same changes as the last one) | ``This commit (`<sha>`) has been reviewed. Push a new commit to review again.`` |
+| `qualor review`, and a review of the commit is waiting or running | `A review of this commit is in progress.` |
+| `qualor review` in any other case | ``Reviewing this commit (`<sha>`).`` |
+| `qualor fix` or `qualor stop` | `Auto-fix is not switched on for this project.` |
+
+`<sha>` is the first 12 characters of the commit. Only `qualor review` does anything.
+`qualor fix` and `qualor stop` are kept for an automatic fixing of findings that does not exist yet,
+and anyone gets the answer above.
+
+- **Who may ask for a review:** the same members as for a status change (GitLab: Developer or more;
+  GitHub: a role of triage or more). A refusal is still a posted note.
+- **What it starts.** `qualor review` reviews the merge request's newest analysis when no review
+  has run for it, or when the review ended without a result: it was skipped (for any reason but
+  "unchanged"), failed or was replaced by a newer one. The summary says "AI review in progress…"
+  at once.
+- **A draft is reviewed when asked.** A push after it starts an ordinary review, which skips
+  drafts: a draft needs a new `qualor review` after each push.
+- **The snapshot is still needed.** A review that someone asked for reads the scanner's snapshot of
+  that commit. Without one it waits 15 minutes for it and ends skipped again, and the summary says
+  no snapshot came ([What the summary says](#what-the-summary-says)).
+- **One review for each analysis.** However often it is written, an analysis has one review: a
+  second note while it runs is answered "in progress", and one after it is done "has been
+  reviewed". The day's budgets and **Tokens per review** apply as for any review.
+- **In a monorepo,** every Qualor project that is mapped to the repository answers a command, so
+  one note can get an answer for each project, and starts each project's review.
+- **Qualor answers only where AI review is switched on for the project.** On a project without it,
+  a command gets no answer at all.
+
+### At once, or at the next analysis
+
+Qualor finds new replies and commands in one of two ways:
+
+- **A webhook** tells Qualor that someone commented. Qualor then reads the merge request's comments
+  through the API (it never trusts the text in the webhook) and answers as soon as the model has
+  decided. Set it up on [GitLab](./gitlab.md#answers-to-replies-and-commands-webhook) (the Comments
+  events) or on [GitHub](./github.md#turn-on-the-webhook-recommended) (the Issue comment and Pull
+  request review comment events, and the Issues permission).
+- **The next analysis.** Without a webhook, Qualor looks at a merge request's comments each time it
+  updates its own comments there: when the merge request is analysed again, when a review ends, when
+  an issue's status changes in Qualor, and on GitHub when someone presses **Re-run**. A reply waits
+  for that.
+
+A webhook that fails does no harm. The next time Qualor updates the comments it finds the same
+notes, and a note that both ways find is answered once.
+
+Answers are made by the same worker as the reviews (`QUALOR_REVIEW_WORKER_CONCURRENCY`, 2 by
+default). A free slot takes an answer before a waiting review, but an answer waits while every slot
+is busy with a review.
+
+### What replies cost, and who can ask
+
+Anyone who can comment on the merge request can write a reply or a command, and on a public
+repository that is anyone with an account. Several limits bound what they can spend:
+
+- one reply uses at most 60 000 tokens, input and output of all its calls together;
+- replies count in the day's budgets of AI review
+  ([Budgets and today's usage](#budgets-and-todays-usage)). A day without room for a reply skips
+  it, and Qualor offers it again on a later UTC day, as long as the note is not older than 30 days;
+- `qualor review` costs one review, but only a member can ask for it, an analysis has one review
+  however often it is asked for, and the day's budgets still apply;
+- Qualor queues at most 50 replies and 20 commands of a merge request at a time. The rest wait for
+  the next time it looks.
+
+### What Qualor keeps
+
+Each reply and command Qualor handles is one record: the ids of the note and of its thread, the SCM
+user name of the person who wrote it, what came of it, the answer Qualor decided on (up to 1 200
+characters), the model, and the tokens and cost of its calls. The text of the person's note is not
+in it. Records are deleted 90 days after they are finished, and with their merge request or project.
+Every call to the model is recorded as well ([How long copies live](#how-long-copies-live)).
 
 ## Re-reviews
 
@@ -364,17 +571,44 @@ Each new scan of a merge request is reviewed again, on its latest commit.
   review needs. A model that ignores them reviews only what it is shown up front, and misses what
   reading the rest of the repository would have found. **Settings → AI assistant → Test** shows it:
   when the test passes, a second call checks tool calling and the page says
-  `Tool calling (needed by AI review): supported` or `not supported`. It says nothing when it could
-  not tell.
+  `Tool calling (needed by AI review): supported` or `not supported`, with a line for each model
+  when the provider has a strong or a fast model ([Model tiers](./ai-assistant.md#model-tiers)). It
+  says nothing when it could not tell.
+- **OpenAI's newest models need the Responses API.** They take function tools with reasoning only
+  through OpenAI's Responses API, not through Chat Completions. `gpt-6.1-sol`, `gpt-5.6-terra` and
+  `gpt-6-luna` are the ones this was checked with. For such a model choose **Responses** under
+  **API** in **Settings → AI assistant**
+  ([The provider](./ai-assistant.md#the-provider-instance-admins)). On Chat Completions the review
+  fails with the message about tool calls above, and the Test tells you to choose Responses.
+  Servers such as vLLM, Ollama and Azure deployments stay on Chat Completions.
+- **Anthropic's current models** (Claude 4.7 and later) take no temperature, which Qualor never
+  sends, and think before they answer. A key that belongs to the whole organisation and is not
+  scoped to a workspace needs the **Workspace ID** (`wrkspc_…`) in the same settings. Without it the
+  Test says "This key is not scoped to a workspace: give its workspace ID", and a review ends with a
+  provider error (`PROVIDER_WORKSPACE_REQUIRED`, [below](#when-the-model-provider-fails)).
 - **Small local models give weak reviews.** They miss problems, report others that are not there,
   and more often fail to answer in the form the review needs. Use a strong model for code.
 - **Allow time.** A review's answers are long: a reviewer may write up to 12 288 tokens in one
-  answer and the judge up to 16 384, and a reasoning model can take minutes for one. So each call of
-  a review waits at least 5 minutes for its answer, or longer when the timeout in the AI assistant
-  settings is set higher (up to 600 seconds). That timeout, 60 seconds by default, still applies to
-  Explain, Suggest triage and Suggest a fix. A review usually takes a few minutes, and a big merge
-  request can take 15 or more. The summary says the review is in progress until it ends.
-- **The review writes in English**, whatever language your code and comments are in.
+  answer and the judge up to 16 384, and a reasoning model can think for minutes before it writes.
+  So review and reply calls **stream**: the answer arrives in pieces, and a gateway that cuts a
+  connection that sits idle does not cut a long answer. Qualor waits for the first piece, and then
+  for each next one, as long as the timeout in the AI assistant settings (60 seconds by default, up
+  to 600 seconds) or 5 minutes, whichever is longer, and a call has 15 minutes in all. That timeout
+  is the whole wait of Explain, Suggest triage, Suggest a fix and the Test, which do not stream. A
+  server that refuses a streamed request (a 400 that names `stream`) is asked again without
+  streaming, once for each call, and then the call waits at least 5 minutes for its whole answer. A
+  review usually takes a few minutes, and a big merge request can take 15 or more. The summary says
+  the review is in progress until it ends.
+- **Room to think.** A model that thinks counts its thinking in the output limit, so a call asks for
+  room beyond the answer's own tokens. It costs nothing unless the model uses it
+  ([Budgets and today's usage](#budgets-and-todays-usage)).
+- **A refusal fails that step.** A model can refuse a request, and Anthropic's and OpenAI's current
+  models can do it inside an answer. Qualor reads it as an answer that could not be read: a
+  reviewer's or a check's part is missing from the review and the summary says so, the judge's
+  refusal fails the review, and a reply goes unanswered. Qualor never falls back to a model you did
+  not choose.
+- **The review writes in English**, whatever language your code and comments are in. An answer to a
+  reply is written in the language of the person's last note.
 
 ## What the scanner uploads
 
@@ -512,15 +746,19 @@ Allow for its size. The copies take about the text of the repository, which Post
 for each open merge request with a recent push, plus the copies of failed or stale analyses until
 the next successful analysis on the branch deletes them, or 14 days pass.
 
-Two other records hold something of a review:
+Three other records hold something of a review:
 
 - **The findings** are issues, kept like any issue. A closed one is deleted after 30 days.
-- **Every call to the model** is recorded like an AI assistant request, with the feature `review`,
-  the model, the token counts, the estimated cost and a hash of what was sent, for 90 days. The
-  server log has one line for each call, with no content. If an instance admin switched on **Store
-  the prompts sent**, a review's prompts are kept too, for the days set there (1 to 90, 7 by
-  default), and what the model answered stays with the record. They can quote the code the model
-  was shown ([Retention and audit](./ai-assistant.md#retention-and-audit)).
+- **Every call to the model** is recorded like an AI assistant request, with the feature `review`
+  (a review's calls) or `review-reply` (the answers to replies), the model that call went to, the
+  token counts, the estimated cost and a hash of what was sent, for 90 days. The server log has one
+  line for each call, with no content: `AI review call finished`, and for a reply
+  `AI review reply call finished`. If an instance admin switched on **Store the prompts sent**, the
+  prompts are kept too, for the days set there (1 to 90, 7 by default), and what the model answered
+  stays with the record. They can quote the code the model was shown, and for a reply what people
+  wrote in the thread ([Retention and audit](./ai-assistant.md#retention-and-audit)).
+- **The replies and commands Qualor handled**, one record each, for 90 days after they are
+  finished ([What Qualor keeps](#what-qualor-keeps)).
 
 ## Size limits and the two server variables
 
@@ -547,10 +785,12 @@ other projects by a few seconds, so set it to 2 or more on a busy server
 ([Server settings](./install-server.md#server-settings)).
 
 The reviews themselves run on a worker of their own, `QUALOR_REVIEW_WORKER_CONCURRENCY` at once (2
-by default, at most 8), so a review never delays an analysis or an answer of the AI assistant. Each
-review that runs holds a masking worker that can use up to 512 MiB of heap, so allow that many times
-the number of reviews on top of what the server uses otherwise: 1 GiB more at the default of 2. On a
-small server, set the variable to 1 (in the same places as the two above).
+by default, at most 8), so a review never delays an analysis or an answer of the AI assistant. The
+answers to replies and commands run on it too, and take a free slot before a waiting review. Each
+review, and each answer to a reply while the model decides, holds a masking worker that can use up
+to 512 MiB of heap, so allow that many times the number of slots on top of what the server uses
+otherwise: 1 GiB more at the default of 2. On a small server, set the variable to 1 (in the same
+places as the two above).
 
 Fixed limits: 1 MiB per file, 50 000 files, 256 KiB per diff and 64 MiB of diffs in all, 1 024
 bytes per path.
@@ -558,15 +798,16 @@ bytes per path.
 ## Budgets and today's usage
 
 AI review has budgets of its own, separate from the AI assistant's budgets: one large review cannot
-use up the day's explanations, and the reverse. They are per organisation and per UTC day, and an
-organisation admin sets them under **Budgets per day (UTC)** in **Settings → AI review**:
+use up the day's explanations, and the reverse. They pay for the reviews and for the answers to
+replies together. They are per organisation and per UTC day, and an organisation admin sets them
+under **Budgets per day (UTC)** in **Settings → AI review**:
 
 | Budget | Default | Meaning |
 |---|---|---|
-| Tokens per day | 2 000 000 | the most tokens (input and output) all the organisation's reviews may use in a day |
-| Cost per day in US dollars | empty (no limit) | needs the model's prices, which the instance admin enters in the AI assistant settings |
-| Tokens per project and day | empty (no limit) | the most tokens one project's reviews may use in a day |
-| Tokens per review | 300 000 | the most one review may use, from 1 to 10 000 000 |
+| Tokens per day | 2 000 000 | the most tokens (input and output) all the organisation's reviews and answers to replies may use in a day |
+| Cost per day in US dollars | empty (no limit) | needs the models' prices, which the instance admin enters in the AI assistant settings: the standard model's, and a strong or fast model's own ([Model tiers](./ai-assistant.md#model-tiers)) |
+| Tokens per project and day | empty (no limit) | the most tokens one project's reviews and answers may use in a day |
+| Tokens per review | 300 000 | the most one review may use, from 1 to 10 000 000. An answer to a reply has its own limit of 60 000 tokens |
 
 The **instance ceiling** belongs to the instance admin: **Settings → AI assistant**, field **AI
 review: most tokens per organisation per day**. An organisation's tokens per day are the smaller of
@@ -574,17 +815,19 @@ its own value and the ceiling; **Settings → AI review** shows the ceiling next
 means no ceiling.
 
 **Today's usage.** Under the heading of the budgets, **Settings → AI review** shows what the
-organisation's reviews have used since UTC midnight, such as
+organisation's reviews and answers to replies have used since UTC midnight, such as
 `Today: 120,000 of 2,000,000 tokens · 3 reviews`, with `· $1.23` added when prices are set. The
 budget in that line is the smaller of the organisation's tokens per day and the instance ceiling.
+The tokens and the cost include the answers to replies; the number of reviews does not.
 `GET /api/v0/organizations/{id}/ai/review` gives the same figures as `usage`
 ([API](#api)). Reviews that were skipped are not counted.
 
 **How the budgets are enforced.** Before a review starts, Qualor works out what it may spend: the
 smallest of Tokens per review, what the organisation has left of its day, what the project has left
-of its day (when it has a budget), and what the cost budget has left at the model's higher price.
-When the day has nothing left, or too little for a review of this size, the review is skipped and
-the summary says the day's token budget is spent. When Tokens per review itself is too little for a
+of its day (when it has a budget), and what the cost budget has left at the dearest price of your
+models: the highest price per token, input or output, among them, since the model of the next call
+is not known ahead. When the day has nothing left, or too little for a review of this size, the
+review is skipped and the summary says the day's token budget is spent. When Tokens per review itself is too little for a
 merge request this large, the summary says that instead (see **Big merge requests** below).
 Otherwise the review shares its tokens between its stages: 55 % for the reviewers, an equal part
 each, 35 % for the judge and 10 % for the second check of security findings. A stage that has used
@@ -595,6 +838,25 @@ answer will be, so a review can end somewhat over it. The day's budget is checke
 starts, so reviews that start together, one on each worker slot (`QUALOR_REVIEW_WORKER_CONCURRENCY`
 on each replica of the server), can each spend what was left: the day can end over its budget by up
 to about (slots − 1) × Tokens per review.
+
+**Answers to replies.** An answer asks the day for room before it starts, as a review does, with a
+ceiling of 60 000 tokens in the place of Tokens per review. A day with nothing left, or with less
+than the first call of the answer needs, skips it, and a later UTC day offers it again
+([What replies cost, and who can ask](#what-replies-cost-and-who-can-ask)).
+
+**Room to think.** A model that thinks counts its thinking in the output limit. So each call of a
+review or of an answer to a reply asks for 16 000 output tokens more than the answer needs, and
+Explain, Suggest triage, Suggest a fix and the Test for 4 000 more. The room costs nothing unless
+the model uses it. Qualor plans a review's calls with the answer's own limit, so a call that thinks
+can spend up to that room beyond what Qualor expected of it, and a review can end further over its
+limit than it otherwise would. A model that refuses so large a limit, such as one with a smaller
+output cap or a server with a small context window, is asked again in the same call without the
+room. When the refusal names a cap of the model's own, Qualor remembers that server address and
+model until the server restarts, and asks without the room from then on. When it is about a context
+window that the prompt and the answer share, nothing is remembered: Qualor asks for the room again
+on every call, and asks again without it when the prompt leaves none, so a vLLM with a small window
+pays one quick refusal on each call. OpenAI's Responses API clamps a limit that is too large by
+itself, so nothing is asked again there.
 
 **Big merge requests.** The reviewers get the changed code in their first message and read more with
 their tools. At the default of 300 000 tokens per review, a merge request of about 80 changed files
@@ -664,7 +926,7 @@ and what to do about each:
 | AI review in progress… | The review waits for the snapshot (up to 15 minutes) or is running. The summary is updated when it ends |
 | AI review did not run: no repository snapshot came for this commit. See the CI job’s log and the guide’s `fetch-depth` note. | The scanner sent no snapshot, or it took more than 15 minutes to arrive. Read the `AI review:` lines in the CI job's log ([the scan log](#the-scan-log)). A shallow clone, a pipeline that is not a merge request pipeline and a secret scan that did not finish are the usual causes ([What your CI needs](#what-your-ci-needs)). A log with no `AI review:` line at all comes from a scanner of a release before AI review (pin the CI component, the action or the scanner image to the server's release), or from a CI other than GitLab CI and GitHub Actions. A snapshot that arrives later starts the review again |
 | AI review did not run: the server refused the repository snapshot of this commit. (`Reason: SNAPSHOT_INVALID`) | The server could not use the upload, or it was of another merge request. The server log names the reason. Run the job again to upload a new snapshot, and report it if it repeats |
-| AI review is skipped while this merge request is a draft; the next pipeline after it is ready reviews it. | Mark the merge request ready, then run the pipeline again |
+| AI review is skipped while this merge request is a draft; the next pipeline after it is ready reviews it, and a `qualor review` note reviews it now. | Mark the merge request ready, then run the pipeline again, or write `qualor review` in a note to review the draft now. A push after that starts an ordinary review, which skips the draft again ([Commands](#commands)) |
 | AI review did not run because this merge request is merged or closed. | Nothing to do |
 | AI review is switched off for this project. (`Reason: …`) | The reason code says why: [Why AI review is off for a project](#why-ai-review-is-off-for-a-project) |
 | AI review found nothing to review in the changed files. | Not an error. The merge request changes only files the review leaves out: lock files, generated or minified files, binary files and files on the AI assistant's **Never send these paths** list |
@@ -672,7 +934,7 @@ and what to do about each:
 | AI review did not run because its token budget for today is spent. | Wait for UTC midnight, or raise the budgets ([Budgets and today's usage](#budgets-and-todays-usage)). It also appears when what is left of the day is too little for a merge request of this size |
 | AI review did not run because this merge request is too large for the Tokens per review budget; raise it in the AI review settings. | The list of its changes alone leaves a reviewer no room: at the default 300 000 tokens, from about 100 changed files. Raise **Tokens per review** in **Settings → AI review** ([Budgets and today's usage](#budgets-and-todays-usage)) |
 | AI review failed: the model provider returned an error or could not be reached. The next push reviews again. | A call was refused, timed out, was rate limited or got no answer. Qualor tries a rate-limited call again twice and one that timed out once. The server log's `AI review call finished` lines give each call's error code and the provider's HTTP status: [the table below](#when-the-model-provider-fails) says what to do. Run **Test** in **Settings → AI assistant** to check the provider. With no such line for the review in the log, no call was made: the stored API key could no longer be read (`QUALOR_SECRET_KEY` changed; set the API key again in **Settings → AI assistant**), or calls to the provider were paused after repeated failures (`PROVIDER_UNAVAILABLE` below) |
-| AI review failed: the model provider does not support the tool calls the review needs. The next push reviews again. | Use a model and a server that can call tools. **Test** in **Settings → AI assistant** shows `Tool calling (needed by AI review): not supported` for this one ([Models that work](#models-that-work)) |
+| AI review failed: the model provider does not support the tool calls the review needs. The next push reviews again. | Use a model and a server that can call tools. **Test** in **Settings → AI assistant** shows `Tool calling (needed by AI review): not supported` for this one ([Models that work](#models-that-work)). With one of OpenAI's newest models, the cause is usually the API: choose **Responses** under **API** in **Settings → AI assistant**, and the Test says tool calling is supported |
 | AI review failed: the model’s answers could not be read. The next push reviews again. | The judge did not answer in the form the review needs, even when asked again. Small models do this more often: try a stronger one |
 | AI review failed because of an error in Qualor. The next push reviews again. | An unexpected error, or a stop of the server during the review (a review is not resumed). If it keeps happening with the server running, report it with the server log's `AI review run failed` line |
 | The review reached its token limit, so it may have missed problems. | A stage used its share of the tokens. Raise **Tokens per review**, mainly for big merge requests ([Budgets and today's usage](#budgets-and-todays-usage)) |
@@ -683,6 +945,54 @@ and what to do about each:
 A failed or skipped review is not tried again by itself. The next push reviews again, and so does
 running the CI job again.
 
+### Why a reply or a command was not answered
+
+Qualor writes one line to the server log for each reply or command it handled: `AI reply ended`,
+with `replyId` (the id of its record), `status` (`done`, `skipped` or `failed`), `outcome` and
+`reason`. Nothing shows in the merge request when Qualor skips or fails a note, so start there. A
+note with no such line was never taken up:
+
+| Symptom | What to check |
+|---|---|
+| A reply gets no answer, and the log has no `AI reply ended` line for it | The note must be a reply Qualor answers ([Replies](#replies)): in an open thread whose first note is Qualor's own comment on a finding (not the summary), by a person (on GitHub not a bot, on GitLab not the user whose token Qualor uses), written after the confirmation of the warning and 30 days ago at most, in an open merge request. AI review must be switched on for the project ([Why AI review is off for a project](#why-ai-review-is-off-for-a-project)). Without a webhook the answer comes at the next analysis ([At once, or at the next analysis](#at-once-or-at-the-next-analysis)) |
+| A command gets no answer | The first line of the note must start with `qualor review`, `qualor fix` or `qualor stop`, in a top-level note (on GitHub a comment on the pull request's page, not a review comment). AI review must be switched on for the project: on a project without it Qualor says nothing. The merge request needs an analysis by Qualor. Without a webhook the answer comes at the next analysis |
+| On GitHub, `qualor review` is answered only at the next analysis | GitHub does not send the `issue_comment` event: the App lacks the Issues permission or the event, or the owner of an installation has not accepted the new permission ([GitHub](./github.md#update-an-app-you-created-before)) |
+| On GitLab, replies and commands are answered only at the next analysis | there is no webhook on the project, its secret token differs (GitLab shows 401 under **Recent events**), **Comments** is not ticked, or GitLab cannot reach Qualor's address ([GitLab](./gitlab.md#answers-to-replies-and-commands-webhook)) |
+| A reply is answered, but the finding stays open | The person may not change a status ([Who may change a status](#who-may-change-a-status)), the thread is an analyzer's or its issue is no longer open, the reply states no decision of priority and no claim that the code bears out, or the merge request had no snapshot to read the code from, which a false positive needs |
+| A finding changed its status after a reply | A member wrote a decision of priority, or a claim that the code bore out. The issue's **History** has the comment that names the person, and a person can set the status back |
+
+What `outcome` says, for a note that was handled (`status` `done`):
+
+| `outcome` | What happened |
+|---|---|
+| `answered` | Qualor answered in the thread of an AI finding, and changed nothing |
+| `acknowledged` | The model saw nothing to answer, such as a thank-you, so nothing was posted |
+| `explained` | Qualor explained an analyzer's finding in its thread |
+| `wont_fix` | The reply decided the finding's priority: it is marked won't fix, its thread is resolved, and the answer says so |
+| `false_positive` | The code bore out the claim: the finding is marked false positive, and its thread is resolved |
+| `review_requested` | `qualor review` started a review, and Qualor answered "Reviewing this commit" |
+| `in_progress` | `qualor review` found a review of the commit waiting or running |
+| `already_reviewed` | `qualor review` found the commit's review done, or the same as the last review |
+| `not_available` | `qualor fix` or `qualor stop`, which do nothing yet, or a `qualor review` from someone who may not ask |
+| `review_off` | `qualor review`, after AI review was switched off for the project |
+
+What `reason` says, for a note that was skipped or that failed. Nothing is posted:
+
+| `reason` | What it means, and what to do |
+|---|---|
+| `budget_spent` (skipped) | The day had no room for the answer. Qualor offers it again on a later UTC day, as long as the note is not older than 30 days. To answer sooner, raise the budgets ([Budgets and today's usage](#budgets-and-todays-usage)) |
+| `inactive` (skipped) | AI review stopped covering the project while the note waited or the model decided: it was switched off, the project left the list or was unmapped, or the provider or one of its models changed and the confirmation is outdated ([Why AI review is off for a project](#why-ai-review-is-off-for-a-project)) |
+| `closed` (skipped) | The merge request was merged or closed. Nothing to do |
+| `thread_gone` (skipped) | The thread or the command's note was deleted, someone resolved the thread before Qualor answered, or the project is no longer mapped to that provider. Nothing to do |
+| `superseded` (skipped) | A newer round in the same thread covers this one, and its answer reads these notes too |
+| `provider_error` (failed) | The model could not be asked or gave no answer ([When the model provider fails](#when-the-model-provider-fails)). The log has an `AI review reply call finished` line for each call, with its error code |
+| `provider_no_tools` (failed) | The model's server refuses tool calls ([Models that work](#models-that-work)). With one of OpenAI's newest models, choose **Responses** under **API** in **Settings → AI assistant** |
+| `bad_answer` (failed) | The model's answer could not be read, or it named a status the thread does not allow, even after a second try. Nothing is posted, on purpose. A stronger model fails less often |
+| `internal` (failed) | An unexpected error in Qualor, or something that cannot be answered: the SCM connection can no longer be used (its token no longer decrypts after `QUALOR_SECRET_KEY` changed, or its address is no longer allowed), the issue is no longer the project's, or the merge request has no analysis to review. The log's `AI reply not answered:` line or `AI reply failed on its last try` line says which |
+
+A note that was skipped or failed is not tried again, except `budget_spent`. A later reply in the
+same thread is a new round that reads the earlier notes too.
+
 ### When the model provider fails
 
 A review that failed with a provider error has an `AI review call finished` line in the server log for
@@ -690,13 +1000,14 @@ each call, with its status and, for a call that failed, its error code:
 
 | Error code in the log | What to do |
 |---|---|
-| `PROVIDER_TIMEOUT` | The model did not answer within the call's timeout: 5 minutes for a review call, or the AI assistant's timeout when it is set higher. A slow local model may need more time: raise the timeout in **Settings → AI assistant**, up to 600 seconds |
+| `PROVIDER_TIMEOUT` | The model sent nothing for as long as a review call waits, or the call went past its limit. A review or reply call waits for its first piece, and between two pieces, as long as the timeout in the AI assistant settings or 5 minutes, whichever is longer, and a call has 15 minutes in all. A slow local model may need more time: raise the timeout in **Settings → AI assistant**, up to 600 seconds |
 | `PROVIDER_RATE_LIMITED` | The provider's own limit. Qualor waited as the provider asked and tried twice. Review again later, or lower the budgets |
 | `PROVIDER_REFUSED_KEY` | Set a valid API key, and check the key header (`api-key` for Azure) |
 | `PROVIDER_REJECTED_REQUEST` | The provider refused the request: check the base URL, the model's name and the output limit field ([AI assistant: Troubleshooting](./ai-assistant.md#troubleshooting)) |
-| `PROVIDER_BAD_ANSWER` | The provider answered, but not in a form Qualor could read: the address is not a chat completions or Anthropic Messages API, or the answer was over 1 MiB. Check the base URL ([AI assistant: Troubleshooting](./ai-assistant.md#troubleshooting)) |
+| `PROVIDER_BAD_ANSWER` | The provider answered, but not in a form Qualor could read: the address is not a chat completions, Responses or Anthropic Messages API, or the answer was over 1 MiB. Check the base URL and the **API** setting ([AI assistant: Troubleshooting](./ai-assistant.md#troubleshooting)) |
+| `PROVIDER_WORKSPACE_REQUIRED` | An Anthropic key that belongs to the whole organisation is not scoped to a workspace. Enter its workspace ID (`wrkspc_…`) in **Settings → AI assistant**. The call is not retried |
 | `URL_NOT_ALLOWED` | The provider's address is no longer allowed: the operator lists its host, with its port, in `QUALOR_LLM_INTERNAL_HOSTS`, or the instance admin uses an `https` address that resolves to public addresses ([AI assistant: Troubleshooting](./ai-assistant.md#troubleshooting)) |
-| `PROVIDER_UNAVAILABLE` | The provider could not be reached or answered with a server error. Check the base URL and the network. After five failures in a row Qualor pauses calls to that address for 10 minutes, and a review that starts then fails at once, with no call in the log |
+| `PROVIDER_UNAVAILABLE` | The provider could not be reached, answered with a server error, or failed or closed the connection while it was answering (a stream that ended early). Check the base URL and the network. After five failures in a row Qualor pauses calls to that address for 10 minutes, and a review that starts then fails at once, with no call in the log |
 
 ### The scan log
 
@@ -737,35 +1048,38 @@ informational lines about what the snapshot holds and masks. Set `QUALOR_LOG_LEV
 | `no_provider` | An instance admin configures a provider in **Settings → AI assistant** |
 | `organization_disabled` | An instance admin enables the organisation there |
 | `review_disabled` | An organisation admin switches AI review on in **Settings → AI review** |
-| `consent_outdated` | The provider changed. An organisation admin presses **Confirm again** |
+| `consent_outdated` | The provider, or one of its models (a strong or a fast model counts), changed. An organisation admin presses **Confirm again** |
 | `project_not_selected` | Add the project to **Projects to review**. If the instance admin excluded it from the AI assistant, it is never reviewed |
 | `not_mapped` | Map the project to its GitLab or GitHub repository ([GitLab](./gitlab.md), [GitHub](./github.md)) |
-| `provider_changed` | The instance admin changed the provider while a review was running, and the confirmation covers the new one. The review stopped. The next push is reviewed with the new provider |
+| `provider_changed` | The instance admin changed the provider, or one of its models, while a review was running, and the confirmation covers the new setup. The review stopped. The next push is reviewed with the new provider |
 
 ## API
 
 An organisation admin's settings page uses these endpoints, so you can script the same steps:
 
 - `GET /api/v0/organizations/{id}/ai/review` returns the settings, the warning (`notice`), the
-  provider (`provider.host` and `provider.model`), `consentCurrent`, the instance ceiling
-  (`instanceCeiling.tokensPerDay`) and today's use of the organisation (`usage`: `tokensToday`,
-  `reviewsToday` and `costTodayUsd`, which is `null` while no prices are set).
+  provider (`provider.host`, `provider.model` and `provider.models`: every model it uses, once each
+  and sorted), `consentCurrent`, the instance ceiling (`instanceCeiling.tokensPerDay`) and today's
+  use of the organisation (`usage`: `tokensToday`, `reviewsToday` and `costTodayUsd`, which is
+  `null` while no prices are set).
 - `PUT /api/v0/organizations/{id}/ai/review` sets `enabled`, `scope` (`all` or `selected`),
   `projectIds` and `budgets`, and answers with the same fields. To switch AI review on, or to
-  confirm it again, add `acknowledgeDataSharing: { host, model }`, copied from the `provider` of the
-  `GET` answer.
+  confirm it again, add `acknowledgeDataSharing: { host, model, models }`, copied from the
+  `provider` of the `GET` answer.
 
 A finding is an issue of the engine `ai`: `GET /api/v0/issues?branchId=…&engine=ai` lists them, and
 `GET /api/v0/issues/{id}` gives them `aiReview` (`category`, `body`, `assumption`, `verification`,
 `suggestion` and `reviewedCommit`), which is `null` for every other issue. `POST
-/api/v0/system/llm/test` (instance admins) also answers `toolCalling`: `supported`, `not_supported`
-or `not_checked`.
+/api/v0/system/llm/test` (instance admins) tests every model of the provider at once. It answers
+`toolCalling` (`supported`, `not_supported` or `not_checked`) and `hint` (`USE_RESPONSES_API`, or
+`null`) for the standard model, and `models`: one entry for each model with its `tier`, `model`,
+`ok`, `reportedModel`, `latencyMs`, `toolCalling`, `problem` and `hint`.
 
 Errors: `AI_DISABLED` (409: no provider, or the organisation is not enabled for the AI assistant),
 `AI_REVIEW_CONSENT_REQUIRED` (409: switching on without the acknowledgement),
-`AI_REVIEW_PROVIDER_CHANGED` (409: the provider changed since you read the warning; nothing is
-stored, read the `GET` answer again) and `PROJECT_NOT_IN_ORGANIZATION` (422: a project of another
-organisation). The scanner itself uses `GET /api/v0/projects/review-context` and
+`AI_REVIEW_PROVIDER_CHANGED` (409: the provider's host, model or set of models changed since you
+read the warning; nothing is stored, read the `GET` answer again) and
+`PROJECT_NOT_IN_ORGANIZATION` (422: a project of another organisation). The scanner itself uses `GET /api/v0/projects/review-context` and
 `POST /api/v0/analyses/{id}/review-snapshot` with the project's analysis token. Their errors are
 `AI_REVIEW_OFF`, `SNAPSHOT_EXISTS`, `SNAPSHOT_TOO_LARGE`, `SNAPSHOT_INVALID` and
 `ANALYSIS_NOT_FOUND`.
