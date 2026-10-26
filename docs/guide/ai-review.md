@@ -850,13 +850,15 @@ Explain, Suggest triage, Suggest a fix and the Test for 4 000 more. The room cos
 the model uses it. Qualor plans a review's calls with the answer's own limit, so a call that thinks
 can spend up to that room beyond what Qualor expected of it, and a review can end further over its
 limit than it otherwise would. A model that refuses so large a limit, such as one with a smaller
-output cap or a server with a small context window, is asked again in the same call without the
-room. When the refusal names a cap of the model's own, Qualor remembers that server address and
-model until the server restarts, and asks without the room from then on. When it is about a context
-window that the prompt and the answer share, nothing is remembered: Qualor asks for the room again
-on every call, and asks again without it when the prompt leaves none, so a vLLM with a small window
-pays one quick refusal on each call. OpenAI's Responses API clamps a limit that is too large by
-itself, so nothing is asked again there.
+output cap or a server with a small context window, is asked again, once, in the same call without
+the room: Qualor does so after any refusal of such a call (a 400, or a 422 as Hugging Face TGI
+answers), whatever its words, unless the refusal is about the workspace, tools, the Responses API
+or streaming. When the second ask is answered, Qualor remembers that server address and model until
+the server restarts, and asks without the room from then on. When the refusal is about a context
+window that the prompt and the answer share, in the words of vLLM or Anthropic, nothing is
+remembered: Qualor asks for the room again on every call, and asks again without it when the prompt
+leaves none, so a vLLM with a small window pays one quick refusal on each call. OpenAI's Responses
+API clamps a limit that is too large by itself, so nothing is asked again there.
 
 **Big merge requests.** The reviewers get the changed code in their first message and read more with
 their tools. At the default of 300 000 tokens per review, a merge request of about 80 changed files

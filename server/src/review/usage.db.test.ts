@@ -1046,6 +1046,39 @@ const port = 8080;
       expect(JSON.stringify(stored)).not.toMatch(/maximum allowed number/);
     });
 
+    it('records one row for a call refused in words it does not know, and asked again without the room', async () => {
+      const sender = senderFor('openai', { model: 'groq-like' });
+      // Groq's refusal of a limit over the model's (khoj-ai/khoj#1236): it names the field.
+      fake.enqueue(
+        {
+          status: 400,
+          body: {
+            error: {
+              message:
+                '`max_tokens` must be less than or equal to `4096`, the maximum value for `max_tokens` is less than the `context_window` for this model',
+              type: 'invalid_request_error',
+              param: 'max_tokens',
+            },
+          },
+        },
+        textTurn('openai', 'done', [20, 5]),
+      );
+      const turn = await sender({
+        system: 'S',
+        messages: [{ role: 'user', text: 'U' }],
+        tools: TOOLS,
+        maxOutputTokens: 1_200,
+        reasoningAllowance: 4_000,
+      });
+      expect(turn.text).toBe('done');
+      expect(fake.requests.map((r) => (r.json as { max_tokens: number }).max_tokens)).toEqual([
+        5_200, 1_200,
+      ]);
+      const stored = await rows();
+      expect(stored).toHaveLength(1);
+      expect(stored[0]).toMatchObject({ status: 'succeeded', errorCode: null, model: 'groq-like' });
+    });
+
     it.each([
       ['openai', 'chat_completions'],
       ['anthropic', 'chat_completions'],

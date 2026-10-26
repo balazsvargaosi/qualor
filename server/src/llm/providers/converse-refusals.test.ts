@@ -252,7 +252,7 @@ describe('converse: conversations with read-only tools (R5)', () => {
     });
 
     it.each(KINDS)(
-      '%s: asks again only after a 400 that refuses the limit, and for the room alone',
+      '%s: asks again once, without the room, after a 400 it does not know, which keeps its own error when the retry is refused the same way',
       async (kind) => {
         const unrelated = [
           'max_tokens: must be at least 1',
@@ -261,13 +261,14 @@ describe('converse: conversations with read-only tools (R5)', () => {
         ];
         for (const message of unrelated) {
           fake.requests.length = 0;
-          fake.enqueue({
+          const refusal = {
             status: 400,
             body:
               kind === 'anthropic'
                 ? { type: 'error', error: { type: 'invalid_request_error', message } }
                 : { error: { message, type: 'invalid_request_error', param: null, code: null } },
-          });
+          };
+          fake.enqueue(refusal, refusal);
           const err = await callProvider(own(configFor(kind)), fake.apiKey, call, http).catch(
             (e: unknown) => e,
           );
@@ -277,20 +278,178 @@ describe('converse: conversations with read-only tools (R5)', () => {
             refusedOutputLimit: false,
             message: GENERIC,
           });
-          expect(limits(), message).toEqual([5_200]);
+          expect(limits(), message).toEqual([5_200, 1_200]);
         }
       },
     );
 
-    it('asks again after a 400 only: the same words with another status are another refusal', async () => {
-      const words = REFUSALS[0]![2];
-      fake.enqueue({ status: 422, body: words });
-      const err = await callProvider(own(anthropic), fake.apiKey, call, http).catch(
-        (e: unknown) => e,
+    it('asks again after a 422 too, and the words it knows keep their class there: a cap of the model’s own is remembered', async () => {
+      const config = own(anthropic);
+      fake.enqueue(
+        { status: 422, body: REFUSALS[0]![2] },
+        answer('anthropic'),
+        answer('anthropic'),
       );
-      expect(err).toMatchObject({ failure: 'rejected', status: 422, refusedOutputLimit: false });
-      expect(limits()).toEqual([5_200]);
+      await callProvider(config, fake.apiKey, call, http);
+      await callProvider(config, fake.apiKey, call, http);
+      expect(limits()).toEqual([5_200, 1_200, 1_200]);
     });
+
+    /**
+     * What other servers say of a limit that is more than they take, each in its own words and with
+     * its own status, from their sources or as their users quote them: none is a wording the
+     * classifier knows, so each is asked again without the room as a refusal it does not know, and
+     * the model is remembered as for a cap of its own once that is answered.
+     */
+    const VENDORS: [string, number, unknown][] = [
+      [
+        // Its router: `MaxTotalTokens` (router/src/validation.rs), "Input validation error: …"
+        // (router/src/infer/mod.rs), and HTTP 422 for a validation error (router/src/server.rs).
+        'Hugging Face TGI, which answers 422',
+        422,
+        {
+          error:
+            'Input validation error: `inputs` tokens + `max_new_tokens` must be <= 8192. Given: 3000 `inputs` tokens and 5200 `max_new_tokens`',
+          error_type: 'validation',
+        },
+      ],
+      [
+        // As khoj-ai/khoj#1236 quotes it for `max_completion_tokens`, here for the field asked in.
+        'Groq, whose words name the field',
+        400,
+        {
+          error: {
+            message:
+              '`max_tokens` must be less than or equal to `4096`, the maximum value for `max_tokens` is less than the `context_window` for this model',
+            type: 'invalid_request_error',
+            param: 'max_tokens',
+          },
+        },
+      ],
+      [
+        // python/sglang/srt/managers/tokenizer_manager.py, answered as a 400 (serving_base.py).
+        'SGLang',
+        400,
+        {
+          object: 'error',
+          message:
+            "Requested token count exceeds the model's maximum context length of 8192 tokens. You requested a total of 9200 tokens: 4000 tokens from the input messages and 5200 tokens for the completion. Please reduce the number of tokens in the input messages or the completion to fit within the limit.",
+          type: 'BadRequest',
+          param: null,
+          code: 400,
+        },
+      ],
+      [
+        // As deepseek-ai/DeepSeek-V3#69 quotes it.
+        'DeepSeek',
+        400,
+        {
+          error: {
+            message: 'Invalid max_tokens value, the valid range of max_tokens is [1, 4096]',
+            type: 'invalid_request_error',
+            param: null,
+            code: 'invalid_request_error',
+          },
+        },
+      ],
+    ];
+
+    it.each(VENDORS)(
+      '%s: a call is asked again, once, for the answer alone, and the model is remembered',
+      async (_who, status, body) => {
+        const config = own(openai);
+        fake.enqueue({ status, body }, answer('openai'), answer('openai'));
+        expect((await callProvider(config, fake.apiKey, call, http)).finishReason).toBe('stop');
+        expect(limits()).toEqual([5_200, 1_200]);
+        expect(withoutLimit(fake.requests[1]!)).toEqual(withoutLimit(fake.requests[0]!));
+        await callProvider(config, fake.apiKey, call, http);
+        expect(limits()).toEqual([5_200, 1_200, 1_200]);
+      },
+    );
+
+    it.each(VENDORS)(
+      '%s: a conversation too, with its tools, and its other turns go without the room',
+      async (_who, status, body) => {
+        const config = own(openai);
+        fake.enqueue({ status, body }, answer('openai'), answer('openai'));
+        expect((await converse(config, fake.apiKey, conversation, http)).finishReason).toBe('stop');
+        await converse(config, fake.apiKey, conversation, http);
+        expect(limits()).toEqual([5_200, 1_200, 1_200]);
+      },
+    );
+
+    it('Groq: the hint of the field comes only when the answer alone is refused the same way', async () => {
+      const groq = { status: 400, body: VENDORS[1]![2] };
+      fake.enqueue(groq, groq);
+      const err = await callProvider(own(openai), fake.apiKey, call, http).catch((e: unknown) => e);
+      expect(err).toMatchObject({
+        failure: 'rejected',
+        status: 400,
+        message:
+          'The model does not accept max_tokens; set the output limit field to max_completion_tokens in the AI assistant settings',
+      });
+      expect(limits()).toEqual([5_200, 1_200]);
+    });
+
+    it('does not ask again after a refusal that is something else: the workspace, the tools, the Responses API', async () => {
+      const responsesWords =
+        "Function tools with reasoning_effort are not supported for m-1 in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'.";
+      const cases: [string, ProviderConfig, unknown, Record<string, unknown>][] = [
+        [
+          'a key that is not scoped to a workspace',
+          own(anthropic),
+          {
+            type: 'error',
+            error: {
+              type: 'invalid_request_error',
+              message:
+                'Fake error text: this API key is not scoped to a workspace; name one with the anthropic-workspace-id header.',
+            },
+          },
+          { failure: 'workspace_required', status: 400 },
+        ],
+        [
+          'a server without tools',
+          own(openai),
+          {
+            error: {
+              message: 'registry.ollama.ai/library/gemma:2b does not support tools',
+              type: 'invalid_request_error',
+              param: null,
+              code: null,
+            },
+          },
+          { failure: 'rejected', status: 400, refusedTools: true, needsResponses: false },
+        ],
+        [
+          'a model that takes its tools only through the Responses API',
+          own(openai),
+          { error: { message: responsesWords, type: 'invalid_request_error', param: null } },
+          { failure: 'rejected', status: 400, refusedTools: true, needsResponses: true },
+        ],
+      ];
+      for (const [what, config, body, expected] of cases) {
+        fake.requests.length = 0;
+        fake.enqueue({ status: 400, body });
+        const err = await converse(config, fake.apiKey, conversation, http).catch(
+          (e: unknown) => e,
+        );
+        expect(err, what).toMatchObject(expected);
+        expect(limits(), what).toEqual([5_200]);
+      }
+    });
+
+    it.each(KINDS)(
+      '%s: does not ask again after a refusal of another status, or a failure',
+      async (kind) => {
+        for (const status of [401, 403, 404, 409, 429, 500, 503]) {
+          fake.requests.length = 0;
+          fake.enqueue({ status, body: llmShape('openai-error') });
+          await callProvider(own(configFor(kind)), fake.apiKey, call, http).catch(() => undefined);
+          expect(limits(), String(status)).toEqual([5_200]);
+        }
+      },
+    );
 
     it('lets the error of the second call stand, and learns nothing from it: a prompt that is too long alone', async () => {
       const config = own(openai);

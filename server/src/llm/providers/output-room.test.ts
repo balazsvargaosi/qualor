@@ -308,15 +308,66 @@ describe('askWithRoom: one call, asked again without the room that a model refus
     expect([calls, again.asked]).toEqual([[5_200, 1_200], [5_200]]);
   });
 
-  it('asks again only for a refusal of the limit', async () => {
+  it.each([
+    ['a 400', 400],
+    // As Hugging Face TGI answers a limit past its window.
+    ['a 422', 422],
+  ])(
+    'asks again without the room after %s in words it does not know, and remembers the model as for a cap of its own when that is answered',
+    async (_what, status) => {
+      const pair = config();
+      const unknown = () => new LlmError('rejected', 'refused', { status });
+      const run = attempts(4_096, [], unknown);
+      expect(await askWithRoom(pair, limits, run.attempt)).toBe('answer of 1200');
+      expect(await askWithRoom(pair, limits, run.attempt)).toBe('answer of 1200');
+      // The second call knew the model: it went without the room at once.
+      expect(run.asked).toEqual([5_200, 1_200, 1_200]);
+    },
+  );
+
+  it('keeps the error of a refusal it does not know when the retry fails the same way, and learns nothing', async () => {
     const pair = config();
-    const unrelated = [
-      new LlmError('rejected', 'refused', { status: 400 }),
+    // As for a field the model does not take: its words name the field, and the hint is the first's.
+    const hint = () =>
+      new LlmError('rejected', 'The model does not accept max_tokens; set the output limit…', {
+        status: 400,
+      });
+    const run = attempts(0, [], hint);
+    await expect(askWithRoom(pair, limits, run.attempt)).rejects.toMatchObject({
+      failure: 'rejected',
+      status: 400,
+      message: 'The model does not accept max_tokens; set the output limit…',
+      refusedOutputLimit: false,
+    });
+    expect(run.asked).toEqual([5_200, 1_200]);
+    const again = attempts(100_000);
+    await askWithRoom(pair, limits, again.attempt);
+    expect(again.asked).toEqual([5_200]);
+  });
+
+  it('does not ask again after a refusal that is something else, nor after a failure that is no refusal', async () => {
+    const pair = config();
+    const otherwise = [
+      new LlmError('workspace_required', 'workspace', { status: 400 }),
+      new LlmError('rejected', 'tools', { status: 400, refusedTools: true }),
+      new LlmError('rejected', 'tools', { status: 422, refusedTools: true }),
+      new LlmError('rejected', 'responses', {
+        status: 400,
+        refusedTools: true,
+        needsResponses: true,
+      }),
+      new LlmError('rejected', 'stream', { status: 400, refusedStream: true }),
       new LlmError('refused_key', 'key', { status: 401 }),
+      new LlmError('refused_key', 'forbidden', { status: 403 }),
+      new LlmError('rejected', 'missing', { status: 404 }),
+      new LlmError('rejected', 'other', { status: 409 }),
       new LlmError('rate_limited', 'slow', { status: 429 }),
+      new LlmError('unavailable', 'down', { status: 503 }),
+      new LlmError('timeout', 'late'),
+      new LlmError('bad_answer', 'garbled', { status: 200 }),
       new Error('not a provider error'),
     ];
-    for (const error of unrelated) {
+    for (const error of otherwise) {
       const asked: number[] = [];
       await expect(
         askWithRoom(pair, limits, (tokens) => {

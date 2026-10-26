@@ -192,6 +192,34 @@ describe('the llm worker (llm.md §9, §10, §14)', () => {
     },
   );
 
+  it('works against a server that refuses the room in words of its own: asked again without it, as one row', async () => {
+    // Hugging Face TGI's refusal of a limit past its window: a 422, in words the classifier does
+    // not know (router/src/validation.rs).
+    await configure({
+      provider: {
+        ...configuredProvider(h.ctx.config.secretKey, fake, 'openai'),
+        model: 'tgi-model',
+      },
+    });
+    fake.enqueue({
+      status: 422,
+      body: {
+        error:
+          'Input validation error: `inputs` tokens + `max_new_tokens` must be <= 8192. Given: 3000 `inputs` tokens and 5200 `max_new_tokens`',
+        error_type: 'validation',
+      },
+    });
+    const { id } = await ask('explain');
+    await runLlmJobs(h, llmJobDeps(h));
+    expect(await row(id)).toMatchObject({ status: 'succeeded', attempts: 1, errorCode: null });
+    expect(fake.requests.map((r) => (r.json as { max_tokens: number }).max_tokens)).toEqual([
+      5_200, 1_200,
+    ]);
+    expect(await h.ctx.db.select().from(llmRequests)).toHaveLength(1);
+    expect(JSON.stringify(await h.ctx.db.select().from(llmRequests))).not.toMatch(/max_new_tokens/);
+    expect(logs()).not.toMatch(/max_new_tokens/);
+  });
+
   describe('through the Responses API', () => {
     const through = (api: 'chat_completions' | 'responses', model = 'fake-model') => ({
       ...configuredProvider(h.ctx.config.secretKey, fake, 'openai'),

@@ -9,7 +9,7 @@ import {
 } from '../../http/outbound';
 import { isInternalHostAllowed, scmRefusedAddress } from '../../scm/url';
 import { llmBaseUrlProblem } from '../url';
-import { outputLimitRefusal } from './output-room';
+import { outputLimitRefusal, ROOM_REFUSAL_STATUSES } from './output-room';
 import { parseSse, SseError, type SseEvent } from './sse';
 import {
   LLM_MAX_ANSWER_BYTES,
@@ -124,11 +124,11 @@ function failureOf(
  * One JSON POST to `<baseUrl><path>` through the outbound core (llm.md §4: the base URL checked
  * first, every resolved address checked and pinned, no proxy, no redirect followed, at most 1 MiB
  * read, the whole exchange within `timeoutSeconds`): the parsed JSON of a 2xx, else an LlmError.
- * An error body is read once, and only to classify (llm.md §14): a 400 that says the output limit
- * is more than the model takes is flagged (`refusedOutputLimit`), for the call to be asked again
- * with less, and also `refusedContext` when the limit is the context window that the prompt
- * shares; `outputLimitField`, the output limit field the request carried, is matched against the
- * error's `param` (the Responses API has none to name: its field is fixed); a request to Chat
+ * An error body is read once, and only to classify (llm.md §14): a 400 or a 422 that says, in words
+ * pinned in `outputLimitRefusal`, that the output limit is more than the model takes is flagged
+ * (`refusedOutputLimit`), and also `refusedContext` when the limit is the context window that the
+ * prompt shares; `outputLimitField`, the output limit field the request carried, is matched against
+ * the error's `param` (the Responses API has none to name: its field is fixed); a request to Chat
  * Completions that carries tools and is refused in words that name the Responses API is flagged
  * (`needsResponses`); nothing of the body is shown or logged. A call that `http.signal` gives up is
  * cut where it is, as the timeout cuts it, and throws LlmCallAborted: no LlmError, since the
@@ -335,7 +335,7 @@ function refusedBy(
   }
   // Before the refusal of the field: OpenAI names the parameter of a limit that is too large
   // too, and it is the value that is refused then, not the field.
-  const limit = status === 400 ? outputLimitRefusal(refused.message) : null;
+  const limit = ROOM_REFUSAL_STATUSES.has(status) ? outputLimitRefusal(refused.message) : null;
   if (limit !== null) {
     return new LlmError('rejected', refusedText(status), {
       status,

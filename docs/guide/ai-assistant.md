@@ -167,11 +167,15 @@ What follows is what Qualor does so that the current models of OpenAI and Anthro
 - **Room to think.** A model that thinks counts its thinking in the output limit. So review and
   reply calls ask for 16 000 output tokens more than the answer needs, and Explain, Suggest triage,
   Suggest a fix and the Test for 4 000 more. The room costs nothing unless the model uses it. A
-  model that takes less (a cap of its own, or a server with a small context window) refuses with a
-  400, and Qualor asks again in the same call without the room. For a cap of the model's own it
-  remembers that server and model until the server restarts, and asks without the room from then on.
-  For a context window that the prompt shares with the answer it remembers nothing, so a vLLM with a
-  small window pays one quick refusal on each call. How the room counts in a review's budget is in
+  model that takes less (a cap of its own, or a server with a small context window) refuses the
+  call, each server in its own words and some with a 422 (Hugging Face TGI). Qualor asks again,
+  once, in the same call without the room after any such refusal (a 400 or a 422), unless the
+  refusal is about something else: the workspace, tools, the Responses API or streaming. When the
+  answer comes back, it remembers that server and model until the server restarts, and asks
+  without the room from then on. For a context window that the prompt shares with the answer, in
+  the words of vLLM or Anthropic, it remembers nothing, so a vLLM with a small window pays one quick
+  refusal on each call. When the second ask is refused too, its error is what the call reports. How
+  the room counts in a review's budget is in
   [Budgets and today's usage](./ai-review.md#budgets-and-todays-usage).
 - **A refusal fails that step.** A model can refuse a request. Qualor reads a refusal as an answer
   that could not be read, so the step fails, as [AI review](./ai-review.md#models-that-work) says,
@@ -443,7 +447,7 @@ Today's use and budgets for an organisation are at `GET /api/v0/organizations/{i
 | "The model provider is rate limiting Qualor; try later" | the provider's own limit. Qualor retries after the time the provider asks for; try again later, or lower the budgets |
 | "The provider refused the API key (HTTP 401)" | set a valid key; check the key header (`api-key` for Azure) |
 | "The provider refused the request (HTTP 403): the key lacks access to this model, or the account has no credit" | the key is valid but may not use this model: check the model's name, the key's project or workspace permissions, and the account's billing or credit |
-| "The model does not accept max_tokens; set the output limit field to max_completion_tokens in the AI assistant settings" (or the other way round) | the model refused the output limit field: pick the other one in the settings |
+| "The model does not accept max_tokens; set the output limit field to max_completion_tokens in the AI assistant settings" (or the other way round) | the model refused the output limit field, also when asked again without the room to think: pick the other one in the settings |
 | "The provider refused the request; check the base URL and the model" | an OpenAI-compatible base URL usually needs `/v1`; check the model's name. OpenAI's newer models need the `max_completion_tokens` output limit field; some servers need JSON mode off |
 | "The provider's answer was not understood" | the address is not a chat completions, Responses or Anthropic Messages API (check the **API** setting too), or the answer was over 1 MiB |
 | "This key is not scoped to a workspace: give its workspace ID" (the Settings page says "below"; the code is `PROVIDER_WORKSPACE_REQUIRED`) | an Anthropic key of the whole organisation needs its **Workspace ID** (`wrkspc_…`) in **Settings → AI assistant**. The request is not retried |

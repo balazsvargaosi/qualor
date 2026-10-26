@@ -1472,7 +1472,7 @@ describe('the OpenAI Responses API wire', () => {
       expect(limits().at(-1)).toBe(5_200);
     });
 
-    it('does not ask again for what is not a refusal of the limit: a prompt that is too long on its own, a limit below the least, another status', async () => {
+    it('asks again once after a refusal it does not know, which keeps its own error when the answer alone is refused the same way: a prompt that is too long on its own, a limit below the least, a schema', async () => {
       const unrelated = [
         "Invalid 'max_output_tokens': integer below minimum value. Expected a value >= 16, but got 1 instead.",
         'Your input exceeds the context window of this model. Please adjust your input and try again.',
@@ -1480,10 +1480,11 @@ describe('the OpenAI Responses API wire', () => {
       ];
       for (const message of unrelated) {
         fake.requests.length = 0;
-        fake.enqueue({
+        const refusal = {
           status: 400,
           body: { error: { message, type: 'invalid_request_error', param: 'input', code: null } },
-        });
+        };
+        fake.enqueue(refusal, refusal);
         const err = await callProvider(own(responses), fake.apiKey, room, http).catch(
           (e: unknown) => e,
         );
@@ -1493,15 +1494,17 @@ describe('the OpenAI Responses API wire', () => {
           refusedOutputLimit: false,
           message: GENERIC,
         });
-        expect(limits(), message).toEqual([5_200]);
+        expect(limits(), message).toEqual([5_200, 1_200]);
       }
-      fake.requests.length = 0;
-      fake.enqueue({ status: 422, body: REFUSALS[0]![1] });
-      const other = await callProvider(own(responses), fake.apiKey, room, http).catch(
-        (e: unknown) => e,
-      );
-      expect(other).toMatchObject({ failure: 'rejected', status: 422, refusedOutputLimit: false });
-      expect(limits()).toEqual([5_200]);
+    });
+
+    it('asks again after a 422 as after a 400, and its words keep their class there', async () => {
+      const config = own(responses);
+      fake.enqueue({ status: 422, body: REFUSALS[0]![1] }, answer, answer);
+      await callProvider(config, fake.apiKey, room, http);
+      await callProvider(config, fake.apiKey, room, http);
+      // A cap of the model's own: the second call knew it.
+      expect(limits()).toEqual([5_200, 1_200, 1_200]);
     });
 
     it('asks for the answer alone when there is no room, and the refusal then stands, flagged but never asked again', async () => {

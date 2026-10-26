@@ -358,14 +358,18 @@ describe('/system/llm (llm.md §3, §16)', () => {
     );
 
     it.each([
-      ['a refusal that names no tools', 400, 'Invalid request'],
-      ['a refused key', 401, 'bad key'],
-      ['a rate limit', 429, 'slow down'],
-      ['an unavailable provider', 500, 'oops'],
+      // A refusal of a call that asked for the room to think is asked again once without it.
+      ['a refusal that names no tools', 400, 'Invalid request', 2],
+      ['a refused key', 401, 'bad key', 1],
+      ['a rate limit', 429, 'slow down', 1],
+      ['an unavailable provider', 500, 'oops', 1],
     ] as const)(
       'is not_checked after %s, which says nothing of tools',
-      async (_name, status, message) => {
-        fake.enqueue(plainOk('openai'), refusal('openai', status, message));
+      async (_name, status, message, asks) => {
+        fake.enqueue(
+          plainOk('openai'),
+          ...Array.from({ length: asks }, () => refusal('openai', status, message)),
+        );
         const res = await check();
         // The plain test's result stands: the check's failure changes nothing but its own field.
         expect(res.json()).toMatchObject({
@@ -374,7 +378,7 @@ describe('/system/llm (llm.md §3, §16)', () => {
           problem: null,
           toolCalling: 'not_checked',
         });
-        expect(fake.requests).toHaveLength(2);
+        expect(fake.requests).toHaveLength(1 + asks);
       },
     );
 

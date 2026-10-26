@@ -77,8 +77,8 @@ All notable changes to Qualor are listed here, newest first. The format follows
   takes a workspace ID (`provider.workspaceId`) for a key that is not scoped to a workspace
   (`PROVIDER_WORKSPACE_REQUIRED`), and no temperature. Calls ask for room to think, 16 000 output
   tokens beyond the answer for review and reply calls and 4 000 for Explain, Suggest triage, Suggest
-  a fix and the Test, and ask again without it when a model refuses so large a limit. See
-  [the guide](docs/guide/ai-assistant.md#the-current-models).
+  a fix and the Test, and ask again once without it after any refusal of so large a limit (a 400 or
+  a 422, in any words). See [the guide](docs/guide/ai-assistant.md#the-current-models).
 - Review and reply calls stream their answers on all three APIs, so that a gateway that cuts idle
   connections does not cut a long answer. A call waits for the first piece and between two pieces
   as long as the provider's timeout or 5 minutes, whichever is longer, and 15 minutes in all; a

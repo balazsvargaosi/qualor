@@ -178,13 +178,13 @@ export type LlmFailure = (typeof LLM_FAILURES)[number];
  * `refusedTools`, `refusedOutputLimit`, `refusedContext` and `needsResponses` are each a yes or no
  * read from the provider's error body: the request carried tools and was refused in words that
  * name tools or functions (the model or its server cannot call tools); the request was refused (a
- * 400) because its output limit is more than the model takes; and, always with that, the limit
- * that was passed is the context window that the prompt shares with the output, so that what the
- * model takes depends on how long the prompt is, and is no cap of the model's own; and, always
- * with the first, a request to the Chat Completions API was refused in words that name the
- * Responses API, which is where the model takes its tools. `refusedStream` is a request that asked
- * for a streamed answer and was refused (a 400) in words that name the stream: the server does not
- * stream, and the request is asked again without it.
+ * 400 or a 422) in words that say its output limit is more than the model takes; and, always with
+ * that, the limit that was passed is the context window that the prompt shares with the output, so
+ * that what the model takes depends on how long the prompt is, and is no cap of the model's own;
+ * and, always with the first, a request to the Chat Completions API was refused in words that name
+ * the Responses API, which is where the model takes its tools. `refusedStream` is a request that
+ * asked for a streamed answer and was refused (a 400) in words that name the stream: the server
+ * does not stream, and the request is asked again without it.
  */
 export interface LlmErrorOptions {
   status?: number | null;
