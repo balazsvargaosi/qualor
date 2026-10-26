@@ -107,8 +107,8 @@ instance:
 | API key | write-only. It is stored encrypted and never shown again. Leave it empty for a local model without a key |
 | Workspace ID | Anthropic only, optional: `wrkspc_…`, for a key of the whole organisation that is not scoped to a workspace. Sent as `anthropic-workspace-id` on every request. Not a secret ([The current models](#the-current-models)) |
 | API | OpenAI-compatible only: **Chat Completions** (the default; what vLLM, Ollama, LM Studio and Azure serve) or **Responses**, OpenAI's Responses API, which its newest models need for tool calling ([The current models](#the-current-models)) |
-| Key header | `Authorization: Bearer` (the default), or `api-key` for Azure |
-| JSON mode | on by default. Turn it off for a server that refuses `response_format` |
+| Key header | OpenAI-compatible only: `Authorization: Bearer` (the default), or `api-key` for Azure |
+| JSON mode | OpenAI-compatible only: on by default. Turn it off for a server that refuses `response_format` |
 | Output limit field | Chat Completions only: `max_completion_tokens` for OpenAI and Azure OpenAI, whose current models refuse `max_tokens`; `max_tokens` for vLLM, Ollama and most other servers. The page picks it from the base URL's host until you choose one. The Responses API always uses `max_output_tokens`, and the page hides this row while **Responses** is chosen |
 | Timeout (seconds) | 5–600, default 60, for the whole request of Explain, Suggest triage, Suggest a fix and the Test. A review or reply call streams its answer and waits at least 300 seconds for the first piece and between two pieces, and 15 minutes in all ([Models that work](./ai-review.md#models-that-work)) |
 | Temperature | optional; OpenAI-compatible only; not sent when empty. Anthropic's current models take none: for Anthropic the field is empty and disabled |
