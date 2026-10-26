@@ -373,7 +373,7 @@ interface Outcome {
  * is charged to no budget and the circuit only hands its probe on. Every call is streamed, within
  * `reviewStreamLimits` (R35), so that a gateway that cuts a connection which stays idle does not cut
  * a long answer; a server that will not stream is asked again without it in the same call, which is
- * still one row.
+ * still one row, and the later calls of the model are not streamed (one log line says so).
  */
 export function reviewSender(
   deps: ReviewSenderDeps,
@@ -383,13 +383,19 @@ export function reviewSender(
   const config = { ...providerConfig(provider), model: deps.model };
   const providerHost = new URL(provider.baseUrl).host;
   const circuitKey = provider.baseUrl;
+  const owner = OWNER[deps.feature];
   const http = {
     internalHosts: deps.config.llmInternalHosts,
     version: VERSION,
     stream: reviewStreamLimits(provider.timeoutSeconds),
+    // One line when the server will not stream: it says why the calls wait longer from then on.
+    onStreamRefused: () =>
+      deps.logger?.info(
+        { [owner.name]: deps.source.promptKey },
+        'AI review call asked again without streaming: the model provider refused the stream',
+      ),
     ...(deps.signal === undefined ? {} : { signal: deps.signal }),
   };
-  const owner = OWNER[deps.feature];
   let organizationId: string | undefined;
 
   /** The organisation of the project the calls are for, read once. */

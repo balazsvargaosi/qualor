@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { askWithRoom, MAX_REFUSED_ROOMS, outputLimitRefusal, RefusedRooms } from './output-room';
+import { askWithRoom, outputLimitRefusal } from './output-room';
 import { LlmError, type ProviderConfig } from './types';
 
 /**
@@ -141,33 +141,6 @@ describe('outputLimitRefusal: the words of a refusal of the output limit, and wh
     ],
   ])('does not take %s for one', (_what, message) => {
     expect(outputLimitRefusal(message)).toBeNull();
-  });
-});
-
-describe('RefusedRooms: what a process knows of the models that refuse the room', () => {
-  it('keeps at most 1 000 pairs, and drops the oldest first', () => {
-    expect(MAX_REFUSED_ROOMS).toBe(1_000);
-    const rooms = new RefusedRooms();
-    for (let i = 0; i < MAX_REFUSED_ROOMS + 1; i += 1) rooms.add(`pair ${i}`);
-    expect(rooms.has('pair 0')).toBe(false);
-    expect(rooms.has('pair 1')).toBe(true);
-    expect(rooms.has(`pair ${MAX_REFUSED_ROOMS}`)).toBe(true);
-    expect(rooms.size).toBe(MAX_REFUSED_ROOMS);
-  });
-
-  it('holds a pair once however often it is added, and an old pair added again is the newest', () => {
-    const rooms = new RefusedRooms(3);
-    for (const pair of ['a', 'b', 'c']) rooms.add(pair);
-    rooms.add('a');
-    expect(rooms.size).toBe(3);
-    rooms.add('d');
-    // `b` was the oldest after `a` was added again.
-    expect([rooms.has('a'), rooms.has('b'), rooms.has('c'), rooms.has('d')]).toEqual([
-      true,
-      false,
-      true,
-      true,
-    ]);
   });
 });
 

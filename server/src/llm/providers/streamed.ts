@@ -1,4 +1,5 @@
 import { NOT_UNDERSTOOD, postJson, postStream } from './http';
+import { pairOf, RememberedPairs } from './remembered-pairs';
 import type { SseEvent } from './sse';
 import {
   LLM_MAX_ANSWER_BYTES,
@@ -42,21 +43,29 @@ export interface AnswerRequest {
 }
 
 /**
+ * The models whose server refused to stream a call of theirs: their later calls are not streamed.
+ * A process learns each of them once, and a restart learns it again.
+ */
+const refusedStreams = new RememberedPairs();
+
+/**
  * The asker of one call of a conversation: it gives each request of the call the answer as
  * `postJson` parses it. With `http.stream` set, a request asks for its answer streamed (with
  * `wire.fields`) within those limits, and `wire.assemble` puts the events together; a server that
  * ignores the ask and answers whole, as JSON, gives that answer as it is. A server that refuses the
  * stream (`refusedStream`) is asked once more without it, as `postJson` asks, with the timeout of
  * the settings, and so are the requests of the call that follow (a call asks more than once when
- * the room to think is refused: `askWithRoom`). Nothing is remembered from one call to the next: a
- * server that does not stream costs one quick 400 a call.
+ * the room to think is refused: `askWithRoom`). The pair of that base URL and that model is then
+ * remembered, and `http.onStreamRefused` told: the later calls of the model are not streamed, so a
+ * server that does not stream costs one quick 400 for each process.
  */
 export function answerAsker(
   config: ProviderConfig,
   http: ProviderHttpOptions,
   wire: StreamWire,
 ): (request: AnswerRequest) => Promise<unknown> {
-  let limits = http.stream;
+  const pair = pairOf(config);
+  let limits = refusedStreams.has(pair) ? undefined : http.stream;
   return async ({ path, headers, body, outputLimitField }) => {
     if (limits !== undefined) {
       try {
@@ -74,6 +83,8 @@ export function answerAsker(
       } catch (error) {
         if (!(error instanceof LlmError && error.refusedStream)) throw error;
         limits = undefined;
+        refusedStreams.add(pair);
+        http.onStreamRefused?.();
       }
     }
     return await postJson(config, path, headers, body, http, outputLimitField);

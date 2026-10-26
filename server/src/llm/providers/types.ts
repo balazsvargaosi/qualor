@@ -258,10 +258,17 @@ export interface ProviderHttpOptions {
   signal?: AbortSignal;
   /**
    * Set, a conversation's call (`converse`) asks for a streamed answer and reads it as it comes,
-   * within these limits; a server that will not stream is asked once more without it. Left out, the
-   * call is not streamed, as a single-shot call (`callProvider`) never is.
+   * within these limits; a server that will not stream is asked once more without it, and the later
+   * calls of the model are not streamed. Left out, the call is not streamed, as a single-shot call
+   * (`callProvider`) never is.
    */
   stream?: StreamLimits;
+  /**
+   * Told when the server refuses to stream a call: the call is asked once more without the stream,
+   * and the later calls of its model are not streamed, so a process is told of a model about once.
+   * Nothing of the refusal is passed on.
+   */
+  onStreamRefused?: () => void;
 }
 
 /**

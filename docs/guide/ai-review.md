@@ -596,8 +596,10 @@ Each new scan of a merge request is reviewed again, on its latest commit.
   to 600 seconds) or 5 minutes, whichever is longer, and a call has 15 minutes in all. That timeout
   is the whole wait of Explain, Suggest triage, Suggest a fix and the Test, which do not stream. A
   server that refuses a streamed request (a 400 that names `stream`) is asked again without
-  streaming, once for each call, and then the call waits at least 5 minutes for its whole answer. A
-  server that ignores the request for a stream and sends its whole answer as JSON is read as it is.
+  streaming, and Qualor remembers that server address and model until the server restarts: their
+  later calls are not streamed, and one line in the server log says so. A call that is not streamed
+  waits at least 5 minutes for its whole answer. A server that ignores the request for a stream and
+  sends its whole answer as JSON is read as it is.
   A review usually takes a few minutes, and a big merge request can take 15 or more. The summary
   says the review is in progress until it ends.
 - **Room to think.** A model that thinks counts its thinking in the output limit, so a call asks for

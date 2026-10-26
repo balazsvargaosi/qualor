@@ -535,7 +535,9 @@ describe('the ai-review job (6I-3, R15)', () => {
       const streamed = await review(llm);
       const unstreamed = await review(unstreaming);
       expect(streamed.streamed).toEqual([true, true]);
-      expect(unstreamed.streamed).toEqual([true, false, true, false]);
+      // The first call was refused its stream and asked again without it; the second, of the same
+      // model, asked for none.
+      expect(unstreamed.streamed).toEqual([true, false, false]);
       expect(streamed.run).toMatchObject({ status: 'done', modelCalls: 2, findingsNew: 1 });
       expect(streamed.found).toHaveLength(1);
       expect(streamed.rows).toHaveLength(2);

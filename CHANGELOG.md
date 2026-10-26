@@ -82,8 +82,8 @@ All notable changes to Qualor are listed here, newest first. The format follows
 - Review and reply calls stream their answers on all three APIs, so that a gateway that cuts idle
   connections does not cut a long answer. A call waits for the first piece and between two pieces
   as long as the provider's timeout or 5 minutes, whichever is longer, and 15 minutes in all; a
-  server that refuses streaming is asked again without it. Explain, Suggest triage, Suggest a fix
-  and the Test do not stream.
+  server that refuses streaming is asked again without it, and the later calls of that model are
+  not streamed until a restart. Explain, Suggest triage, Suggest a fix and the Test do not stream.
 
 ### Changed
 

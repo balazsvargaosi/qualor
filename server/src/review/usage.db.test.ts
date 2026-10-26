@@ -1164,6 +1164,39 @@ const port = 8080;
       });
     });
 
+    it('logs one line, with nothing the provider said, when the server refuses the stream, and the later calls of the model ask for none', async () => {
+      await fake.close();
+      fake = await createFakeLlm({ refuseStream: true });
+      config = testConfig({ llmInternalHosts: parseInternalHosts(fake.host) });
+      const lines: { data: Record<string, unknown>; message: string }[] = [];
+      const logger = {
+        info: (data: Record<string, unknown>, message: string) =>
+          void lines.push({ data, message }),
+        warn: () => undefined,
+        error: () => undefined,
+      } as unknown as WorkerLogger;
+      const runId = randomUUID();
+      const sender = senderFor('openai', {
+        logger,
+        source: { projectId: projectA1, promptKey: runId },
+      });
+      fake.say('done', 'done');
+      await converse1(sender);
+      await converse1(sender);
+      expect(
+        fake.requests.map((request) => (request.json as { stream?: unknown }).stream ?? null),
+      ).toEqual([true, null, null]);
+      expect(lines.map((line) => line.message)).toEqual([
+        'AI review call asked again without streaming: the model provider refused the stream',
+        'AI review call finished',
+        'AI review call finished',
+      ]);
+      expect(lines[0]!.data).toEqual({ runId });
+      // The words of the refusal are the provider's, and stay out of the log.
+      expect(JSON.stringify(lines)).not.toMatch(/Unrecognized|stream_options/);
+      expect(await rows()).toHaveLength(2);
+    });
+
     it('keeps null on the row of a call whose stream counted nothing, which fills the day by the bytes it was sent', async () => {
       // A server that sends no usage in its stream, whatever its answer counts.
       fake.enqueue({ ...textTurn('openai', 'done', [10, 5]), stream: { noUsage: true } });
@@ -2139,8 +2172,9 @@ const port = 8080;
       const streamed = await decide(false);
       const unstreamed = await decide(true);
       expect(streamed.streamed).toEqual([true, true]);
-      // Each call was refused its stream, and asked again without it.
-      expect(unstreamed.streamed).toEqual([true, false, true, false]);
+      // The first call was refused its stream and asked again without it; the second, of the same
+      // model, asked for none.
+      expect(unstreamed.streamed).toEqual([true, false, false]);
       expect(streamed.decision).toMatchObject({ verdict: 'false_positive', readCode: true });
       expect(streamed.decision).toEqual(unstreamed.decision);
       expect(streamed.stored).toHaveLength(2);

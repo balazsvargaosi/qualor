@@ -495,6 +495,33 @@ describe('converse: a streamed answer is the answer that is not streamed (R35)',
       ]);
     });
 
+    it('remembers a model whose server refused the stream: its later calls go unstreamed at once, and another model still asks for one', async () => {
+      const told: string[] = [];
+      const options: ProviderHttpOptions = {
+        ...streamed,
+        onStreamRefused: () => void told.push('refused'),
+      };
+      const other = { ...configs.chat, model: 'm-2' };
+      for (const config of [configs.chat, configs.chat, other]) {
+        fake.enqueue({ status: 200, body: openAiAnswer('{}') });
+        expect((await converse(config, fake.apiKey, start, options)).text).toBe('{}');
+      }
+      expect(
+        fake.requests.map((request) => {
+          const json = request.json as { model: string; stream?: unknown };
+          return [json.model, json.stream ?? false];
+        }),
+      ).toEqual([
+        ['m-1', true],
+        ['m-1', false],
+        ['m-1', false],
+        ['m-2', true],
+        ['m-2', false],
+      ]);
+      // Told once for each model whose stream was refused.
+      expect(told).toEqual(['refused', 'refused']);
+    });
+
     it('a refusal that is not of the stream is not asked again', async () => {
       await fake.close();
       await fakeOf();

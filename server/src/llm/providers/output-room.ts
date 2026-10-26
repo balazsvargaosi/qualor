@@ -1,3 +1,4 @@
+import { pairOf, RememberedPairs } from './remembered-pairs';
 import { LlmError, type ProviderConfig } from './types';
 
 /**
@@ -90,46 +91,11 @@ function mayRefuseTheRoom(error: unknown): error is LlmError {
   );
 }
 
-/** How many pairs of a base URL and a model a process remembers as refusing the room. */
-export const MAX_REFUSED_ROOMS = 1_000;
-
 /**
  * The models a process has found to refuse the room, by a cap of their own or in words it does not
- * know: a set bounded to `limit`, the oldest dropped first (a pair added again is the newest). It is
- * in memory only, so a process asks each of them once, and a restart asks again.
+ * know: a process asks each of them once, and a restart asks again.
  */
-export class RefusedRooms {
-  private readonly pairs = new Set<string>();
-
-  constructor(private readonly limit = MAX_REFUSED_ROOMS) {}
-
-  has(pair: string): boolean {
-    return this.pairs.has(pair);
-  }
-
-  add(pair: string): void {
-    this.pairs.delete(pair);
-    this.pairs.add(pair);
-    for (const oldest of this.pairs) {
-      if (this.pairs.size <= this.limit) break;
-      this.pairs.delete(oldest);
-    }
-  }
-
-  get size(): number {
-    return this.pairs.size;
-  }
-}
-
-const refusedRooms = new RefusedRooms();
-
-/**
- * A model is its address and its name: a base URL pasted with a trailing slash is the same
- * address (as `postJson` reads it).
- */
-function pairOf(config: ProviderConfig): string {
-  return `${config.baseUrl.replace(/\/+$/, '')}\n${config.model}`;
-}
+const refusedRooms = new RememberedPairs();
 
 /**
  * One call to a provider that asks for the room to think as well as for the answer: `attempt` is
