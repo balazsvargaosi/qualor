@@ -283,12 +283,13 @@ comment events on:
   set, a link to the issue in Qualor. An analysis posts its new comments together, as one review,
   so GitHub notifies once. Each comment is a conversation that people can reply to and resolve.
   Qualor resolves the conversation when the issue is fixed or marked in Qualor, and reopens it if
-  the issue comes back, with **Contents: Read and write**. Without it the conversations stay open,
-  and the summary says how many. Qualor never reopens a conversation that someone else resolved. A
-  reply by someone else only stops Qualor from resolving the conversation: Qualor still reopens a
-  conversation it resolved itself. A comment keeps the text it was posted with: a severity changed
-  later in Qualor shows in the summary. A Qualor comment you delete comes back at the next
-  analysis; to silence one, mark its issue in Qualor.
+  the issue comes back, with **Contents: Read and write**. Without it the conversations stay as
+  they are, and the summary says how many: an open one stays open, and one Qualor resolved earlier
+  stays resolved when its issue comes back. Qualor never reopens a conversation that someone else
+  resolved. A reply by someone else only stops Qualor from resolving the conversation: Qualor
+  still reopens a conversation it resolved itself. A comment keeps the text it was posted with: a
+  severity changed later in Qualor shows in the summary. A Qualor comment you delete comes back at
+  the next analysis; to silence one, mark its issue in Qualor.
 - **One summary comment** per pull request, edited in place. It holds the verdict, a table of every
   gate condition with its value and the value it requires, the new issues by severity, the ten most
   severe ones with their rule (linked to the rule's documentation) and a link to each in Qualor, how
@@ -296,7 +297,8 @@ comment events on:
   branch in Qualor.
 - Marking an issue **false positive** or **won't fix** in Qualor re-evaluates the gate at once, with
   no new scan. The check run is updated in place, and the issue's conversation is resolved (unless
-  someone else replied in it).
+  someone else replied in it; with **Contents: Read and write**, see
+  [What reviewers see](#what-reviewers-see)).
 - **AI review**, when an organisation admin switched it on for the project
   ([AI review](./ai-review.md)). The summary comment gains an **AI review** section, and each finding
   of high or medium severity gets a review comment on its line, **up to 20 per pull request, beside
@@ -330,7 +332,10 @@ Add a branch protection rule (or a ruleset) on the default branch that requires 
 If the rule also requires conversations to be resolved before merging, Qualor's open comments block
 the merge, also those on issues that pass the gate (low and info ones, say) and the open comments of
 [AI review](./ai-review.md). Qualor resolves a comment when its issue is fixed or marked in Qualor
-(unless someone else replied in it), and a person can resolve it too.
+(unless someone else replied in it, and with **Contents: Read and write**, see
+[What reviewers see](#what-reviewers-see)), and a person can resolve it too. Without that
+permission Qualor resolves none, so the rule waits for a person to resolve each of its open
+comments.
 
 ## Troubleshooting
 

@@ -390,7 +390,9 @@ Qualor answers a note when all of these hold:
 - **It is recent.** It was written after an organisation admin last confirmed the AI review warning,
   and at most 30 days ago, so that switching AI review on never answers old threads.
 - **The thread is open, and so is the merge request.** A thread that someone resolved gets no
-  answer, and that includes a thread Qualor resolved itself after changing the status.
+  answer, and that includes a thread Qualor resolved itself after changing the status. On GitHub,
+  an App without **Contents: Read and write** leaves open the thread whose reply changed the
+  status, so later replies in it are still answered.
 
 All the notes written in a thread since Qualor's last answer are one **round**, and Qualor answers a
 round once, reading every note in it. Two replies written close together usually get one answer,
@@ -410,8 +412,8 @@ do so only for an **open finding of AI review**:
 
 | What a member of the project writes | What Qualor does | The answer ends with |
 |---|---|---|
-| States a decision of priority: the team accepts the risk, or will not fix it | marks the finding **Won't fix** and resolves the thread | `Marked won't fix.` |
-| Claims that the finding is wrong, or that the code is meant to work that way, and the code shows it | marks it **False positive** and resolves the thread | `Marked as a false positive: the code shows it does not hold.` |
+| States a decision of priority: the team accepts the risk, or will not fix it | marks the finding **Won't fix** and resolves the thread (on GitHub, with **Contents: Read and write**, see [GitHub: What reviewers see](./github.md#what-reviewers-see)) | `Marked won't fix.` |
+| Claims that the finding is wrong, or that the code is meant to work that way, and the code shows it | marks it **False positive** and resolves the thread (on GitHub, with **Contents: Read and write**) | `Marked as a false positive: the code shows it does not hold.` |
 | Asks a question, disagrees, says thanks, or anything else | answers, and changes nothing | |
 
 For a false positive, Qualor must have read the lines of the finding (a file read that showed one of
@@ -991,8 +993,8 @@ What `outcome` says, for a note that was handled (`status` `done`):
 | `answered` | Qualor answered in the thread of an AI finding, and changed nothing |
 | `acknowledged` | The model saw nothing to answer, such as a thank-you, so nothing was posted |
 | `explained` | Qualor explained an analyzer's finding in its thread |
-| `wont_fix` | The reply decided the finding's priority: it is marked won't fix, its thread is resolved, and the answer says so |
-| `false_positive` | The code bore out the claim: the finding is marked false positive, and its thread is resolved |
+| `wont_fix` | The reply decided the finding's priority: it is marked won't fix, its thread is resolved (on GitHub, with **Contents: Read and write**), and the answer says so |
+| `false_positive` | The code bore out the claim: the finding is marked false positive, and its thread is resolved (on GitHub, with **Contents: Read and write**) |
 | `review_requested` | `qualor review` started a review, and Qualor answered "Reviewing this commit" |
 | `in_progress` | `qualor review` found a review of the commit waiting or running |
 | `already_reviewed` | `qualor review` found the commit's review done, or the same as the last review |
