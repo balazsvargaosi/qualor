@@ -17,7 +17,15 @@ import { alias } from 'drizzle-orm/pg-core';
 import { z } from 'zod';
 import type { Db, Executor } from '../db/client';
 import { LOCKS } from '../db/locks';
-import { branches, issues, jobs, reviewReplies, THREAD_ID, type ReplyKind } from '../db/schema';
+import {
+  branches,
+  issues,
+  jobs,
+  reviewReplies,
+  THREAD_ID,
+  type ReplyKind,
+  type ReplyOutcome,
+} from '../db/schema';
 import { readLlmSettings } from '../llm/settings';
 import { enqueue } from '../queue/queue';
 import type { GitHubComment } from '../scm/github/client';
@@ -329,15 +337,17 @@ export function withLiveJob(): SQL {
  * its reply changed, the decision of its command: they happened). Decided by whether a job is
  * there, never by the row's age: a job that runs keeps its lease. A row and its job are written
  * together (above), and a row is running only while a job has taken it, so one statement is enough.
- * Answers how many it ended.
+ * Answers the rows it ended, each by its id and the outcome it kept (null for none): what the
+ * sweep's line in the log names, and nothing else.
  */
-export async function reconcileStuckReplies(db: Executor): Promise<number> {
-  const ended = await db
+export async function reconcileStuckReplies(
+  db: Executor,
+): Promise<{ replyId: string; outcome: ReplyOutcome | null }[]> {
+  return db
     .update(reviewReplies)
     .set({ status: 'failed', reason: 'internal', finishedAt: sql`now()` })
     .where(and(eq(reviewReplies.status, 'running'), not(withLiveJob())))
-    .returning({ id: reviewReplies.id });
-  return ended.length;
+    .returning({ replyId: reviewReplies.id, outcome: reviewReplies.outcome });
 }
 
 /**

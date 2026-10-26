@@ -326,7 +326,9 @@ describe('the answer job (6I-4)', () => {
         await answer();
         const row = await commandRow(mr.branchId, sent.noteId);
         expect((await jobsOf(row.id)).map((j) => j.status)).toEqual(['dead']);
-        expect(await reconcileStuckReplies(h.ctx.db)).toBe(1);
+        expect(await reconcileStuckReplies(h.ctx.db)).toEqual([
+          { replyId: row.id, outcome: 'review_requested' },
+        ]);
         expect(await commandRow(mr.branchId, sent.noteId)).toMatchObject({
           status: 'failed',
           reason: 'internal',

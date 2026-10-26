@@ -378,7 +378,10 @@ describe('the replies ledger (6I-4)', () => {
     const changed = await insertOne();
     await claimReply(t.db, changed);
     await recordStatusChange(t.db, changed, 'wont_fix');
-    await endReply(t.db, changed, { status: 'skipped', reason: 'thread_gone' });
+    // It answers the outcome the row holds once it has ended.
+    expect(await endReply(t.db, changed, { status: 'skipped', reason: 'thread_gone' })).toBe(
+      'wont_fix',
+    );
     expect(await stored(changed)).toMatchObject({
       status: 'skipped',
       outcome: 'wont_fix',
@@ -388,7 +391,9 @@ describe('the replies ledger (6I-4)', () => {
     const command = await insertOne({ threadId: null, kind: 'command', command: 'review' });
     await claimReply(t.db, command);
     await recordCommandDecision(t.db, command, { outcome: 'review_requested', text: 'Reviewing.' });
-    await endReply(t.db, command, { status: 'failed', reason: 'internal' });
+    expect(await endReply(t.db, command, { status: 'failed', reason: 'internal' })).toBe(
+      'review_requested',
+    );
     expect(await stored(command)).toMatchObject({
       status: 'failed',
       outcome: 'review_requested',
@@ -398,8 +403,14 @@ describe('the replies ledger (6I-4)', () => {
     const answered = await insertOne();
     await claimReply(t.db, answered);
     await recordStatusChange(t.db, answered, 'false_positive');
-    await endReply(t.db, answered, { status: 'done', outcome: 'false_positive' });
+    expect(await endReply(t.db, answered, { status: 'done', outcome: 'false_positive' })).toBe(
+      'false_positive',
+    );
     expect(await stored(answered)).toMatchObject({ status: 'done', outcome: 'false_positive' });
+    // A row that holds no outcome answers null, and so does an end that ended nothing.
+    const plain = await insertOne();
+    expect(await endReply(t.db, plain, { status: 'skipped', reason: 'closed' })).toBeNull();
+    expect(await endReply(t.db, answered, { status: 'failed', reason: 'internal' })).toBeNull();
   });
 
   it('keeps the budget of one reply at 60 000 tokens', () => {

@@ -185,16 +185,14 @@ export abstract class JobSteps {
     else this.deps.logger.warn(fields, `${what} did not finish; its job is tried again`);
   }
 
-  /** Ends the row, and says so once: its id and how it ended. */
+  /**
+   * Ends the row, and says so once: its id and how it ended, with the outcome it holds (one it
+   * recorded before the end stays, as `endReply` keeps it).
+   */
   protected async end(row: Pick<ReplyRow, 'id'>, end: ReplyEnd): Promise<void> {
-    await endReply(this.deps.db, row.id, end);
+    const outcome = await endReply(this.deps.db, row.id, end);
     this.deps.logger.info(
-      {
-        replyId: row.id,
-        status: end.status,
-        outcome: end.outcome ?? null,
-        reason: end.reason ?? null,
-      },
+      { replyId: row.id, status: end.status, outcome, reason: end.reason ?? null },
       'AI reply ended',
     );
   }

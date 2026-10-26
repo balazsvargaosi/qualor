@@ -966,9 +966,13 @@ running the CI job again.
 ### Why a reply or a command was not answered
 
 Qualor writes one line to the server log for each reply or command it handled: `AI reply ended`,
-with `replyId` (the id of its record), `status` (`done`, `skipped` or `failed`), `outcome` and
-`reason`. Nothing shows in the merge request when Qualor skips or fails a note, so start there. A
-note with no such line was never taken up:
+with `replyId` (the id of its record), `status` (`done`, `skipped` or `failed`), `outcome` (the one
+the record holds, also one it kept from before a later failure: see below) and `reason`. A record
+whose job is gone for good (both of its tries failed, or died with their server) has no such line:
+Qualor ends it `failed` with the reason `internal` and writes one warning,
+`ended AI replies whose job was lost`, whose `ended` lists each such record by its `replyId`, with
+its `outcome`. Nothing shows in the merge request when Qualor skips or fails a note, so start
+there. A note with neither line was never taken up:
 
 | Symptom | What to check |
 |---|---|
@@ -1012,7 +1016,7 @@ What `reason` says, for a note that was skipped or that failed. Nothing is poste
 | `provider_error` (failed) | The model could not be asked or gave no answer ([When the model provider fails](#when-the-model-provider-fails)). The log has an `AI review reply call finished` line for each call, with its error code. While Qualor pauses calls to a failing provider, a reply does not fail: it waits, and is answered when the pause ends (the log says `AI reply waits for the circuit of its model provider`) |
 | `provider_no_tools` (failed) | The model's server refuses tool calls ([Models that work](#models-that-work)). With one of OpenAI's newest models, choose **Responses** under **API** in **Settings → AI assistant** |
 | `bad_answer` (failed) | The model's answer could not be read, or it named a status the thread does not allow, even after a second try. Nothing is posted, on purpose. A stronger model fails less often |
-| `internal` (failed) | An unexpected error in Qualor, or something that cannot be answered: the SCM connection can no longer be used (its token no longer decrypts after `QUALOR_SECRET_KEY` changed, or its address is no longer allowed), the issue is no longer the project's, or the merge request has no analysis to review. The log's `AI reply not answered:` line or `AI reply failed on its last try` line says which |
+| `internal` (failed) | An unexpected error in Qualor, or something that cannot be answered: the SCM connection can no longer be used (its token no longer decrypts after `QUALOR_SECRET_KEY` changed, or its address is no longer allowed), the issue is no longer the project's, or the merge request has no analysis to review. The log's `AI reply not answered:` line or `AI reply failed on its last try` line says which. A record whose job was lost is in the `ended` list of the warning `ended AI replies whose job was lost` instead |
 
 A note that was skipped or failed is not tried again, except `budget_spent`. A later reply in the
 same thread is a new round that reads the earlier notes too.

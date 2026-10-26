@@ -676,17 +676,35 @@ describe('the answer job (6I-4)', () => {
       });
       expect(posting.mr.answers(posting.threadId)).toEqual([]);
 
-      // The status changed, and then the thread is gone: the row keeps what the reply did.
+      // The status changed, and then the thread is gone: the row keeps what the reply did, and its
+      // line in the log says so.
       const changed = await replied('gone-after-change');
       changed.mr.goneOnNextPost();
       llm.say(WONT_FIX);
-      await answer();
+      const told: unknown[][] = [];
+      const logger = {
+        info: (...args: unknown[]) => void told.push(args),
+        warn: () => undefined,
+        error: () => undefined,
+      };
+      await answer({ logger });
       expect(await rowById(changed.row.id)).toMatchObject({
         status: 'skipped',
         reason: 'thread_gone',
         outcome: 'wont_fix',
         answerNoteId: null,
       });
+      expect(told.filter(([, message]) => message === 'AI reply ended')).toEqual([
+        [
+          {
+            replyId: changed.row.id,
+            status: 'skipped',
+            outcome: 'wont_fix',
+            reason: 'thread_gone',
+          },
+          'AI reply ended',
+        ],
+      ]);
       expect((await issueById(changed.issueId)).status).toBe('wont_fix');
 
       // The answer is posted, and then the thread is gone: what the reply did stands.
@@ -867,7 +885,7 @@ describe('the answer job (6I-4)', () => {
       await answer();
       // Running, and its job queued for the retry: not the sweep's.
       expect((await rowById(row.id)).status).toBe('running');
-      expect(await reconcileStuckReplies(h.ctx.db)).toBe(0);
+      expect(await reconcileStuckReplies(h.ctx.db)).toEqual([]);
       expect((await rowById(row.id)).status).toBe('running');
       // The retry fails too, and the job is spent: the row is left running.
       mr.failNextPost(false);
@@ -875,15 +893,18 @@ describe('the answer job (6I-4)', () => {
       await answer();
       expect((await jobsOf(row.id)).map((j) => j.status)).toEqual(['dead']);
       expect((await rowById(row.id)).status).toBe('running');
-      expect(await reconcileStuckReplies(h.ctx.db)).toBe(1);
-      // The status the reply changed before its posts failed stays on the row it ended.
+      // The sweep names the row it ended, with the outcome it kept: the status the reply changed
+      // before its posts failed stays on it.
+      expect(await reconcileStuckReplies(h.ctx.db)).toEqual([
+        { replyId: row.id, outcome: 'wont_fix' },
+      ]);
       expect(await rowById(row.id)).toMatchObject({
         status: 'failed',
         reason: 'internal',
         outcome: 'wont_fix',
         finishedAt: expect.any(Date),
       });
-      expect(await reconcileStuckReplies(h.ctx.db)).toBe(0);
+      expect(await reconcileStuckReplies(h.ctx.db)).toEqual([]);
       expect(mr.answers(threadId)).toEqual([]);
     });
 
@@ -1396,7 +1417,7 @@ describe('the answer job (6I-4)', () => {
       expect(asked).toContain('We will not fix this now');
       expect(asked).not.toContain(SECOND);
       // The sweep ends the newer round, its decision kept: it still covers nothing.
-      expect(await reconcileStuckReplies(h.ctx.db)).toBe(1);
+      expect(await reconcileStuckReplies(h.ctx.db)).toEqual([{ replyId: newer.id, outcome: null }]);
       expect(await rowById(newer.id)).toMatchObject({
         status: 'failed',
         reason: 'internal',

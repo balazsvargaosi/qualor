@@ -372,9 +372,12 @@ async function main(): Promise<void> {
       if (swept.ended > 0 || swept.queued > 0) {
         logger.warn(swept, 'reconciled AI review runs whose job was lost');
       }
-      // So is an answer to a reply that its job left running.
+      // So is an answer to a reply that its job left running: the line names each row it ended
+      // and the outcome the row kept.
       const replies = await reconcileStuckReplies(db);
-      if (replies > 0) logger.warn({ ended: replies }, 'ended AI replies whose job was lost');
+      if (replies.length > 0) {
+        logger.warn({ ended: replies }, 'ended AI replies whose job was lost');
+      }
     },
   });
   // E1 spec: email has its own worker, so a slow SMTP server never delays analyses, deliveries
