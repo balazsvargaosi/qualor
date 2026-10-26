@@ -67,8 +67,9 @@ export { MAX_COMMENT_PAGES };
  * - the summary: its creation or edit (1);
  * - what a token refreshed after a 401 adds: the new token and the request made again (2).
  * With the creations (`MAX_CREATION_REQUESTS`: one review, and each comment alone when GitHub
- * refuses it) and the resolutions and reopenings (at most `MAX_GITHUB_THREAD_UPDATES`) this stays
- * within `MAX_GITHUB_REQUESTS`, so the check run and the summary are always written.
+ * refuses it), the resolutions and reopenings (at most `MAX_GITHUB_THREAD_UPDATES`) and the notes
+ * of fixed issues in the threads people replied in (at most `MAX_FIXED_NOTES`) this stays within
+ * `MAX_GITHUB_REQUESTS`, so the check run and the summary are always written.
  */
 export const REQUESTS_OUTSIDE_THREADS =
   5 + MAX_FILE_PAGES + MAX_COMMENT_PAGES + MAX_THREAD_PAGES + 3 + MAX_COMMENT_PAGES + 1 + 2;

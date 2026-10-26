@@ -1,13 +1,14 @@
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { FakeGitHub } from '../../test/fake-github';
 import type { FakeLlm } from '../../test/fake-llm';
 import { githubDeps } from '../../test/github';
 import type { IngestHarness } from '../../test/ingest';
 import { answerJob, queuedAnswers, reviewOff, reviewOn, reviewScope } from '../../test/replies';
-import { createReplyHarness, KEEP, type Driver } from '../../test/reply-drivers';
+import { createReplyHarness, HEAD, KEEP, type Driver } from '../../test/reply-drivers';
 import { uuidv7 } from '../db/ids';
-import { branches, jobs, projects } from '../db/schema';
+import { branches, issueChanges, issues, jobs, projects } from '../db/schema';
+import { firstLineOf, markerOf, replyMarker } from '../scm/markdown';
 import {
   CircuitBreaker,
   MAX_DECORATIONS_PER_ORGANIZATION,
@@ -175,6 +176,42 @@ describe('the notes scan (a webhook’s job)', () => {
       expect(await answer()).toBe(1);
       expect((await queuedFor(mr.branchId)).rows).toEqual(rows);
       expect(mr.answers(threadId)).toHaveLength(1);
+    });
+
+    it('answers a reply that Qualor’s note of the fixed finding came after: the note is no answer, and no reply', async () => {
+      const { mr, issueId, threadId } = await threaded('fixed-note');
+      const noteId = mr.reply(threadId, 'Is this still a problem?');
+      // A later review of the analysis finds it fixed. AI review is off when the decoration runs:
+      // it writes its note in the thread the person keeps open, and queues no answer.
+      await h.ctx.db
+        .update(issues)
+        .set({ status: 'closed', closedAt: sql`now()` })
+        .where(eq(issues.id, issueId));
+      await h.ctx.db.insert(issueChanges).values({
+        issueId,
+        analysisId: mr.analysisId,
+        field: 'status',
+        oldValue: 'open',
+        newValue: 'closed',
+      });
+      await reviewOff(h);
+      await mr.decorate();
+      const notes = mr.answers(threadId);
+      expect(notes).toHaveLength(1);
+      expect(markerOf(notes[0]!.body)).toEqual({ kind: 'fixed', issueId, sha: HEAD });
+      expect(mr.resolved(threadId)).toBe(false);
+      expect((await queuedFor(mr.branchId)).rows).toEqual([]);
+      // On again: the webhook's scan finds the person's reply unanswered, Qualor's note after it
+      // taken neither for its answer nor for a reply, and the answer follows.
+      await reviewOn(h, llm);
+      await scan(mr.branchId);
+      const { rows } = await queuedFor(mr.branchId);
+      expect(rows).toMatchObject([{ kind: 'reply', noteId, threadId, issueId, status: 'queued' }]);
+      llm.say(KEEP);
+      expect(await answer()).toBe(1);
+      const [, answered] = mr.answers(threadId);
+      expect(firstLineOf(answered?.body ?? '')).toBe(replyMarker(rows[0]!.id));
+      expect((await queuedFor(mr.branchId)).rows).toMatchObject([{ noteId, status: 'done' }]);
     });
 
     it.each(['a decoration first', 'the scan first'])(

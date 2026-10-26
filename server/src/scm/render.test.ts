@@ -14,8 +14,11 @@ import {
 import { AI_SECTION_MAX_BYTES, aiSummarySection, type ReviewSummaryState } from '../review/render';
 import {
   codeSpan,
+  fixedMarker,
+  issueMarker,
   markerOf,
   MAX_RULE_LINK_CHARS,
+  notedFixes,
   plainProse,
   plainValue,
   qualorLink,
@@ -26,6 +29,7 @@ import {
 } from './markdown';
 import {
   commitStatusFor,
+  fixedNote,
   INLINE_MAX_BYTES,
   inlineBody,
   mergeRequestTitle,
@@ -744,6 +748,60 @@ function checkBody(body: string, maxBytes: number): void {
     expect(markdown, line).not.toMatch(/<\S/);
   }
 }
+
+describe('the note of a fixed issue in a thread a person replied in', () => {
+  const SHA = 'abcdef0123456789abcdef0123456789abcdef01';
+  const OTHER_ISSUE = '01920000-0000-7000-8000-000000000002';
+
+  it('is its marker, with the issue and the full revision, then a sentence with the commit', () => {
+    expect(fixedNote(ISSUE, SHA).split('\n')).toEqual([
+      `<!-- qualor:fixed ${ISSUE} ${SHA} -->`,
+      'Fixed in ` abcdef0 `. Qualor leaves this thread open because someone replied in it.',
+    ]);
+    // A SHA-256 revision is a full one too.
+    const long = 'a'.repeat(64);
+    expect(fixedMarker(ISSUE, long)).toBe(`<!-- qualor:fixed ${ISSUE} ${long} -->`);
+    // Nothing but an issue's id and a full revision goes in it.
+    for (const bad of ['', 'abcdef0', 'A'.repeat(40), 'g'.repeat(40), 'a'.repeat(41), `${SHA} x`]) {
+      expect(() => fixedMarker(ISSUE, bad), bad).toThrow();
+    }
+    expect(() => fixedMarker('x -->\n/merge', SHA)).toThrow();
+    // Its text is Qualor's own: fixed words, and the commit in a code span.
+    const [, sentence = ''] = fixedNote(ISSUE, SHA).split('\n');
+    expect(outsideCodeSpans(sentence)).toMatch(FIXED_TEXT);
+    expect(sentence).not.toMatch(/^\s*\//);
+  });
+
+  it('is known by its marker as Qualor’s note of a fixed issue: never a thread, never the summary', () => {
+    const body = fixedNote(ISSUE, SHA);
+    expect(markerOf(body)).toEqual({ kind: 'fixed', issueId: ISSUE, sha: SHA });
+    expect(markerOf(`${fixedMarker(ISSUE, SHA)}\r\nFixed`)).toEqual({
+      kind: 'fixed',
+      issueId: ISSUE,
+      sha: SHA,
+    });
+    // On the first line only, and only as Qualor writes it.
+    for (const other of [
+      `Thanks\n${body}`,
+      `<!-- qualor:fixed ${ISSUE} ${SHA.toUpperCase()} -->`,
+      `<!-- qualor:fixed ${ISSUE} -->`,
+      `<!-- qualor:fixed ${ISSUE} ${SHA} --> and more`,
+      `<!-- qualor:fixed not-a-uuid ${SHA} -->`,
+    ]) {
+      expect(markerOf(other), other).toBeNull();
+    }
+    // What a thread's notes say of its issue's fixes: the revisions of its own notes, for that issue.
+    const notes = [
+      issueMarker(ISSUE),
+      body,
+      fixedNote(ISSUE, 'b'.repeat(40)),
+      fixedNote(OTHER_ISSUE, 'c'.repeat(40)),
+      `A person quoting it:\n${body}`,
+    ];
+    expect(notedFixes(notes, ISSUE)).toEqual(new Set([SHA, 'b'.repeat(40)]));
+    expect(notedFixes(notes, OTHER_ISSUE)).toEqual(new Set(['c'.repeat(40)]));
+  });
+});
 
 describe('commit status name (scm.md §5.1, ruling G4)', () => {
   it('names the Qualor project, so the projects of a monorepo keep their own status', () => {
@@ -1788,7 +1846,7 @@ describe('safeProse: the model’s words made inert', () => {
   });
 });
 
-describe('plainProse: the model\u2019s words cleaned, for a block that renders nothing', () => {
+describe('plainProse: the model’s words cleaned, for a block that renders nothing', () => {
   const plain = (text: string, options: { maxChars?: number; maxLines?: number } = {}): string =>
     plainProse(text, { ...PROSE_OPTIONS, ...options });
 

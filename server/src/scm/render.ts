@@ -10,6 +10,7 @@ import { AI_SECTION_MAX_BYTES, aiSummarySection, type ReviewSummaryState } from 
 import type { CommitState } from './gitlab/client';
 import {
   codeSpan,
+  fixedMarker,
   issueMarker,
   linesWithinBytes,
   MAX_MESSAGE_CHARS,
@@ -554,6 +555,18 @@ export function inlineBody(input: InlineInput): string {
     ],
     INLINE_MAX_BYTES,
   );
+}
+
+/**
+ * Qualor's note in the open thread of an issue that was found fixed at `sha` while a person's reply
+ * keeps the thread open for them (6I-4), on GitLab or GitHub: its marker, then a sentence of fixed
+ * text with the commit in a code span.
+ */
+export function fixedNote(issueId: string, sha: string): string {
+  return [
+    fixedMarker(issueId, sha),
+    `Fixed in ${codeSpan(sha.slice(0, 7))}. Qualor leaves this thread open because someone replied in it.`,
+  ].join('\n');
 }
 
 /** A GitLab title as the branch keeps it (scm.md §8): no control characters, 255 at most. */

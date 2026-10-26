@@ -6,19 +6,21 @@ import { githubRounds, type Round } from '../../review/reply-detect';
 import type { ReplyWindow } from '../../review/reply-queue';
 import { AI_THREAD_SEVERITIES } from '../../review/rules';
 import { AI_ENGINE } from '../../rules/server-engines';
-import { desiredInlineIssues, type DesiredAiIssue } from '../decoration-data';
+import { closingRevisions, desiredInlineIssues, type DesiredAiIssue } from '../decoration-data';
 import {
   addedLineTexts,
   aiFindingNote,
   aiThreads,
   liveSuggestion,
   MAX_AI_THREADS,
+  MAX_FIXED_NOTES,
   MAX_INLINE_THREADS,
   postsAiThread,
   type InlineResult,
 } from '../inline';
-import { markerOf } from '../markdown';
-import { inlineBody } from '../render';
+import { markerOf, notedFixes } from '../markdown';
+import { ScmError } from '../provider';
+import { fixedNote, inlineBody } from '../render';
 import {
   MAX_THREAD_PAGES,
   type GitHubClient,
@@ -35,9 +37,10 @@ import { reviewBody } from './render';
 export const MAX_COMMENT_PAGES = 50;
 /**
  * Ruling T6: at most this many threads are resolved or reopened by one job; the rest wait for the
- * branch's next decoration. With the pages a job may read and its creations
- * ({@link MAX_CREATION_REQUESTS}) this keeps it within its request budget (ruling R7), so the
- * check run and the summary are always written.
+ * branch's next decoration. With the pages a job may read, its creations
+ * ({@link MAX_CREATION_REQUESTS}) and its notes of fixed issues ({@link MAX_FIXED_NOTES}) this
+ * keeps it within its request budget (ruling R7), so the check run and the summary are always
+ * written.
  */
 export const MAX_GITHUB_THREAD_UPDATES = 100;
 /**
@@ -70,6 +73,18 @@ export interface ThreadCreation {
 }
 
 /**
+ * Qualor's note in the open thread of a fixed issue that someone replied in, which stays open for
+ * them: a reply to the thread's first comment, "Fixed in" the revision that found the issue fixed.
+ */
+export interface FixedNote {
+  /** The REST id of the thread's first comment, which the note replies to. */
+  firstCommentId: number;
+  issueId: string;
+  /** The full revision the issue was found fixed at. */
+  sha: string;
+}
+
+/**
  * What a decoration does to Qualor's threads (github.md §6.4), worked out from the listings and
  * the database before anything is written, so the check run, which comes first (github.md §6.1),
  * can say how many issues are commented.
@@ -77,6 +92,12 @@ export interface ThreadCreation {
 export interface ThreadPlan {
   /** Resolutions and reopenings, the oldest thread first, at most the job's bound. */
   updates: readonly ThreadUpdate[];
+  /**
+   * The notes of fixed issues in the open threads that someone replied in and that do not hold
+   * theirs yet, the oldest thread first, at most {@link MAX_FIXED_NOTES}. None when the review
+   * comments were cut by their page bound: a thread's note may be there unseen.
+   */
+  fixedNotes: readonly FixedNote[];
   /**
    * New threads, posted together as one review: the most severe analyzer issues first, then the
    * most severe findings of the AI review.
@@ -159,8 +180,12 @@ interface OwnThread {
    * changed for it.
    */
   thread: GitHubReviewThread | null;
+  /** The REST id of the App's first comment, which a reply in the thread names. */
+  firstCommentId: number;
   /** Someone but the App wrote in the thread after the App's first comment. */
   humanReplied: boolean;
+  /** The revisions the App's replies in the thread say its issue was fixed at (`fixedMarker`). */
+  notedFixes: ReadonlySet<string>;
 }
 
 /** A comment is the App's only when its author is a bot of the App's login (github.md §6.3). */
@@ -193,11 +218,14 @@ function ownThreads(
     }
   }
   // A reply names the thread's first comment by its REST id; a reply by anyone but the App is
-  // not Qualor's.
+  // not Qualor's, and the App's own are its notes.
   const repliedIn = new Set<number>();
+  const appReplies = new Map<number, string[]>();
   for (const comment of comments) {
     const first = repliesTo(comment);
-    if (first !== null && !byApp(comment, botLogin)) repliedIn.add(first);
+    if (first === null) continue;
+    if (!byApp(comment, botLogin)) repliedIn.add(first);
+    else appReplies.set(first, [...(appReplies.get(first) ?? []), comment.body]);
   }
   const own = new Map<string, OwnThread>();
   for (const comment of comments) {
@@ -206,7 +234,9 @@ function ownThreads(
     if (marker?.kind !== 'issue' || own.has(marker.issueId)) continue;
     own.set(marker.issueId, {
       thread: byFirstComment.get(comment.node_id) ?? null,
+      firstCommentId: comment.id,
       humanReplied: repliedIn.has(comment.id),
+      notedFixes: notedFixes(appReplies.get(comment.id) ?? [], marker.issueId),
     });
   }
   return own;
@@ -248,17 +278,19 @@ function change(
 }
 
 /**
- * The resolutions and reopenings the threads need, and how many of the analyzers' issues are open.
- * The AI review's threads are updated in every decoration: whether their findings are open comes
- * from the review, not from the analysis' line numbers.
+ * The resolutions and reopenings the threads need, how many of the analyzers' issues are open, and
+ * the fixed issues whose open threads someone replied in (`fixed`, the oldest thread first), which
+ * are told so ({@link planFixedNotes}). The AI review's threads are updated in every decoration:
+ * whether their findings are open comes from the review, not from the analysis' line numbers.
  */
 async function planUpdates(
   ctx: ReviewThreadContext,
   own: ReadonlyMap<string, OwnThread>,
-): Promise<{ updates: ThreadUpdate[]; commented: number }> {
+): Promise<{ updates: ThreadUpdate[]; commented: number; fixed: string[] }> {
   const known = await threadIssues(ctx, [...own.keys()]);
   const maxUpdates = ctx.maxThreadUpdates ?? MAX_GITHUB_THREAD_UPDATES;
   const updates: ThreadUpdate[] = [];
+  const fixed: string[] = [];
   let commented = 0;
   // In the order of the comments, the oldest first: what the bound leaves for the next job is the
   // same on every run, and newer threads never keep the older ones waiting.
@@ -276,8 +308,33 @@ async function planUpdates(
     if (thread !== null && resolve !== null && updates.length < maxUpdates) {
       updates.push({ threadId: thread.id, resolve, counted });
     }
+    const closed = issue.branchId === ctx.branchId && issue.status === 'closed';
+    if (closed && thread !== null && !thread.isResolved && humanReplied) fixed.push(issueId);
   }
-  return { updates, commented };
+  return { updates, commented, fixed };
+}
+
+/**
+ * The notes of the fixed issues `fixed` (the oldest thread first), whose open threads someone
+ * replied in: "Fixed in" the revision that found each issue fixed, for a thread that does not hold
+ * that note yet, at most {@link MAX_FIXED_NOTES}.
+ */
+async function planFixedNotes(
+  ctx: ReviewThreadContext,
+  own: ReadonlyMap<string, OwnThread>,
+  fixed: readonly string[],
+): Promise<FixedNote[]> {
+  if (fixed.length === 0) return [];
+  const revisions = await closingRevisions(ctx.db, fixed);
+  const notes: FixedNote[] = [];
+  for (const issueId of fixed) {
+    const thread = own.get(issueId);
+    const sha = revisions.get(issueId);
+    if (thread === undefined || sha === undefined || thread.notedFixes.has(sha)) continue;
+    if (notes.length === MAX_FIXED_NOTES) break;
+    notes.push({ firstCommentId: thread.firstCommentId, issueId, sha });
+  }
+  return notes;
 }
 
 /**
@@ -398,6 +455,10 @@ function plannedRounds(
  *   made, or one GitHub names nobody for, stays as it is, and the issue still counts (ruling G3);
  * - an issue that is no longer open gets its thread resolved, unless someone but the App replied in
  *   it (a person, or another App);
+ * - an issue that was found fixed (`closed`) whose open thread someone else replied in gets one
+ *   note in it that says so, with the revision that found it fixed ({@link MAX_FIXED_NOTES} a job,
+ *   the oldest threads first): never one a person decided on (won't fix, false positive,
+ *   resolved), nor one whose resolution the App may not make (the summary counts those);
  * - a thread of an issue this project does not have (another Qualor project of a monorepo, or an
  *   issue since deleted) is left alone.
  * Then each of the (at most {@link MAX_INLINE_THREADS}) most severe open new issues without a
@@ -413,11 +474,13 @@ export async function planReviewThreads(ctx: ReviewThreadContext): Promise<Threa
   );
   const listed = await ctx.client.reviewThreads(ctx.number, ctx.maxThreadPages ?? MAX_THREAD_PAGES);
   const own = ownThreads(comments.items, listed.items, ctx.botLogin);
-  const { updates, commented } = await planUpdates(ctx, own);
+  const { updates, commented, fixed } = await planUpdates(ctx, own);
   const rounds = plannedRounds(ctx, comments.items, listed.items);
+  // A thread's note may be beyond the review comments' page bound: none is written then.
+  const fixedNotes = comments.complete ? await planFixedNotes(ctx, own, fixed) : [];
   // Beyond a page bound a thread may exist unseen: never create a second one (github.md §6.4).
   if (!comments.complete || !listed.complete) {
-    return { updates, creations: [], rounds, commented, unplaced: 0, aiNotPosted: [] };
+    return { updates, fixedNotes, creations: [], rounds, commented, unplaced: 0, aiNotPosted: [] };
   }
   const added = addedLinesByPath(ctx.files);
   const analyzers = ctx.analyzers
@@ -426,6 +489,7 @@ export async function planReviewThreads(ctx: ReviewThreadContext): Promise<Threa
   const ai = await planAiCreations(ctx, own, added);
   return {
     updates,
+    fixedNotes,
     creations: [...analyzers.creations, ...ai.creations],
     rounds,
     commented: commented + analyzers.creations.length,
@@ -493,14 +557,15 @@ export function plannedCounts(
 }
 
 /**
- * github.md §6.4, the second half: makes the plan's resolutions and reopenings, then its new
- * threads as one review, and gives the counts as they are now. A thread GitHub no longer has
- * (`NOT_FOUND`: a person deleted it after the listing) is skipped, like a refused position, and its
- * open issue no longer counts; so is one the App may not resolve or reopen (it lacks Contents:
- * write), which stays as GitHub holds it and counts as unresolved. A position GitHub refuses counts
- * as not placed (an analyzer's issue) or joins the AI findings that got no thread (a finding of the
- * AI review). Any error (a rate limit, the request budget) stops it where it is: the next
- * decoration plans again from what GitHub then holds.
+ * github.md §6.4, the second half: makes the plan's resolutions and reopenings, then its notes of
+ * fixed issues, each a reply in its thread, then its new threads as one review, and gives the
+ * counts as they are now. A thread GitHub no longer has (`NOT_FOUND`: a person deleted it after the
+ * listing) is skipped, like a refused position, and its open issue no longer counts; so is one the
+ * App may not resolve or reopen (it lacks Contents: write), which stays as GitHub holds it and
+ * counts as unresolved. A position GitHub refuses counts as not placed (an analyzer's issue) or
+ * joins the AI findings that got no thread (a finding of the AI review). Any error (a rate limit,
+ * the request budget) stops it where it is: the next decoration plans again from what GitHub then
+ * holds.
  */
 export async function applyReviewThreads(
   ctx: ReviewThreadContext,
@@ -512,6 +577,17 @@ export async function applyReviewThreads(
     const result = await ctx.client.setThreadResolved(update.threadId, update.resolve);
     if (result === 'refused') unresolved += 1;
     if (result !== 'done' && update.counted) commented -= 1;
+  }
+  for (const note of plan.fixedNotes) {
+    try {
+      await ctx.client.replyToReviewComment(
+        ctx.number,
+        note.firstCommentId,
+        fixedNote(note.issueId, note.sha),
+      );
+    } catch (err) {
+      if (!(err instanceof ScmError && err.kind === 'not_found')) throw err;
+    }
   }
   const refused = await createThreads(ctx, plan.creations);
   const refusedAi = refused.flatMap(({ finding }) =>

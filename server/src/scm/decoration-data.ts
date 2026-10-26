@@ -11,6 +11,7 @@ import type { Db, Executor } from '../db/client';
 import {
   analyses,
   branches,
+  issueChanges,
   issues,
   measures,
   projects,
@@ -33,6 +34,7 @@ import type { ReviewSuggestion } from '../review/suggestion';
 import { AI_ENGINE } from '../rules/server-engines';
 import { instanceSetting } from '../settings';
 import { readScmContext } from './context';
+import { isFullSha } from './markdown';
 import { mergeRequestTitle, SUMMARY_TOP_ISSUES, type IssueLine, type SummaryInput } from './render';
 
 /**
@@ -397,6 +399,39 @@ export async function loadReviewSummary(
     default:
       return null;
   }
+}
+
+/**
+ * The revision each of the issues was found fixed at: that of the analysis that closed it last
+ * (its newest change of status to `closed`, which an analysis records, or the review of one), as a
+ * full commit SHA in lower case. An issue never closed, or whose closing analysis is gone, has none.
+ */
+export async function closingRevisions(
+  db: Executor,
+  issueIds: readonly string[],
+): Promise<Map<string, string>> {
+  if (issueIds.length === 0) return new Map();
+  const rows = await db
+    .selectDistinctOn([issueChanges.issueId], {
+      issueId: issueChanges.issueId,
+      revision: analyses.revision,
+    })
+    .from(issueChanges)
+    .leftJoin(analyses, eq(analyses.id, issueChanges.analysisId))
+    .where(
+      and(
+        inArray(issueChanges.issueId, [...issueIds]),
+        eq(issueChanges.field, 'status'),
+        eq(issueChanges.newValue, 'closed'),
+      ),
+    )
+    .orderBy(issueChanges.issueId, desc(issueChanges.createdAt), desc(issueChanges.id));
+  const revisions = new Map<string, string>();
+  for (const { issueId, revision } of rows) {
+    const sha = revision?.toLowerCase();
+    if (sha !== undefined && isFullSha(sha)) revisions.set(issueId, sha);
+  }
+  return revisions;
 }
 
 /**

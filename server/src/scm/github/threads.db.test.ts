@@ -21,7 +21,7 @@ import { engine, file, finding } from '../../../test/reports';
 import { PUBLIC_URL } from '../../../test/scm';
 import { analyses, issues } from '../../db/schema';
 import { issueUrl } from '../decoration-data';
-import { MAX_INLINE_THREADS, type InlineResult } from '../inline';
+import { MAX_FIXED_NOTES, MAX_INLINE_THREADS, type InlineResult } from '../inline';
 import { markerOf } from '../markdown';
 import { credentialsId, MutationPacer, parseAppPrivateKey } from './app-auth';
 import { GitHubClient, MAX_THREAD_PAGES } from './client';
@@ -48,8 +48,24 @@ function newFile(count: number): string {
   return `@@ -0,0 +1,${count} @@\n${Array.from({ length: count }, (_, i) => `+l${i + 1}`).join('\n')}`;
 }
 
-/** A client on the fake, whose mutation pacing runs on a fake clock (no real second between them). */
-function clientFor(fake: FakeGitHub): GitHubClient {
+/** A pacer that keeps the key of each request it paces: each is a mutation. */
+class RecordingPacer extends MutationPacer {
+  readonly paced: string[] = [];
+
+  override async wait(key: string): Promise<void> {
+    this.paced.push(key);
+    await super.wait(key);
+  }
+}
+
+/**
+ * A client on the fake, whose mutation pacing runs on a fake clock (no real second between them),
+ * or the pacer given; with a request budget of `maxRequests` when given.
+ */
+function clientFor(
+  fake: FakeGitHub,
+  options: { maxRequests?: number; pacer?: MutationPacer } = {},
+): GitHubClient {
   const parsed = parseAppPrivateKey(fake.privateKeyPem);
   if (!('key' in parsed)) throw new Error('the fake has no usable key');
   let clock = 0;
@@ -64,10 +80,13 @@ function clientFor(fake: FakeGitHub): GitHubClient {
     },
     {
       timeoutMs: 2_000,
-      pacer: new MutationPacer(
-        () => clock,
-        async (ms) => void (clock += ms),
-      ),
+      ...(options.maxRequests === undefined ? {} : { maxRequests: options.maxRequests }),
+      pacer:
+        options.pacer ??
+        new MutationPacer(
+          () => clock,
+          async (ms) => void (clock += ms),
+        ),
     },
   );
 }
@@ -103,8 +122,11 @@ interface Scenario {
   repo: { id: number; name: string };
   /** The pull request's branch, known after the first ingestion. */
   branchId: string;
-  /** Ingests a pull request report of #7 at the head with findings on `lines` of src/a.ts. */
-  ingest(lines: number[], extra?: ReportExtra): Promise<string>;
+  /**
+   * Ingests a pull request report of #7 with findings on `lines` of src/a.ts, at the head unless
+   * `revision` names another commit.
+   */
+  ingest(lines: number[], extra?: ReportExtra, revision?: string): Promise<string>;
   /**
    * The context of a run on #7, with a client of its own and the pull request's files. The
    * requests of the setup are forgotten, so `fake.requests` afterwards holds what the run sent.
@@ -149,9 +171,9 @@ describe('GitHub review threads (github.md §6.4)', () => {
       project,
       repo,
       branchId: '',
-      ingest: async (lines, extra = {}) => {
+      ingest: async (lines, extra = {}, revision = HEAD) => {
         const analysisId = await project.ingestOk(
-          pullRequestReport(7, HEAD, {
+          pullRequestReport(7, revision, {
             projectKey: project.key,
             analysisDate: new Date(Date.UTC(2026, 8, 1, 10) + 86_400_000 * day++).toISOString(),
             engines: [engine('eslint')],
@@ -245,6 +267,33 @@ describe('GitHub review threads (github.md §6.4)', () => {
   /** Every review comment the run POSTed: in its review, then any posted alone. */
   const creations = (): Creation[] => [...reviews().flatMap((r) => r.comments), ...singles()];
   const requests = () => fake.requests.map((r) => `${r.method} ${r.path}`);
+  /** The App's replies in its own thread on `line`, oldest first. */
+  const appReplies = (repoId: number, line: number) => {
+    const first = commentOf(threadAt(repoId, line));
+    return fake.reviewComments
+      .filter((c) => c.inReplyToId === first.id && c.user.login === botLogin)
+      .map((c) => c.body);
+  };
+  /** The issue the App's thread on `line` is for: the marker of its first comment. */
+  const issueAt = (repoId: number, line: number): string => {
+    const marker = markerOf(commentOf(threadAt(repoId, line)).body);
+    if (marker?.kind !== 'issue') throw new Error(`no issue thread on line ${line}`);
+    return marker.issueId;
+  };
+  /** Qualor's note of a fixed issue, as it reads: its marker, then its sentence. */
+  const fixedText = (issueId: string, sha: string) =>
+    `<!-- qualor:fixed ${issueId} ${sha} -->\nFixed in \` ${sha.slice(0, 7)} \`. Qualor leaves this thread open because someone replied in it.`;
+  /** The replies the run POSTed into threads. */
+  const notePosts = () =>
+    fake.requests.filter(
+      (r) => r.method === 'POST' && /\/pulls\/7\/comments\/\d+\/replies$/.test(r.path),
+    );
+  /** A person's reply in the App's thread on `line`. */
+  const replyIn = (repoId: number, line: number, login = 'octocat') =>
+    fake.replyToReviewComment(repoId, 7, commentOf(threadAt(repoId, line)).id, {
+      body: 'Is it?',
+      login,
+    });
   const issueIdsByLine = async (projectId: string): Promise<Record<number, string>> =>
     Object.fromEntries(
       (
@@ -542,9 +591,136 @@ describe('GitHub review threads (github.md §6.4)', () => {
       threadAt(s.repo.id, 6).id,
     ]);
     expect(resolvedByLine(s.repo.id)).toEqual({ 3: false, 4: false, 5: true, 6: true });
-    // Nothing more, run after run: the people's threads are theirs to resolve.
+    // Each thread left open for the others gets the App's one note that its issue is fixed, with
+    // the revision; the ones it resolved get none.
+    expect(notePosts()).toHaveLength(2);
+    expect(appReplies(s.repo.id, 3)).toEqual([fixedText(issueAt(s.repo.id, 3), HEAD)]);
+    expect(appReplies(s.repo.id, 4)).toEqual([fixedText(issueAt(s.repo.id, 4), HEAD)]);
+    expect(appReplies(s.repo.id, 6)).toEqual([]);
+    // Nothing more, run after run: the people's threads are theirs to resolve, and hold the note.
     expect(await s.reconcile()).toEqual({ commented: 0, unplaced: 0 });
     expect(mutations()).toEqual([]);
+    expect(notePosts()).toEqual([]);
+    await s.ingest([]);
+    expect(await s.reconcile()).toEqual({ commented: 0, unplaced: 0 });
+    expect(notePosts()).toEqual([]);
+    expect(appReplies(s.repo.id, 3)).toHaveLength(1);
+  });
+
+  it('writes a new note when a fixed issue, back meanwhile, is fixed again at another revision', async () => {
+    const NEWER = '2'.repeat(40);
+    const s = await setup('threads/fixed-again');
+    await s.ingest([3]);
+    await s.reconcile();
+    replyIn(s.repo.id, 3);
+    const issue = issueAt(s.repo.id, 3);
+    await s.ingest([]);
+    await s.reconcile();
+    // Back: its thread is open, with the note of its first fix.
+    await s.ingest([3]);
+    await s.reconcile();
+    expect(resolvedByLine(s.repo.id)).toEqual({ 3: false });
+    expect(appReplies(s.repo.id, 3)).toEqual([fixedText(issue, HEAD)]);
+    // Fixed again in a newer commit: a note of its own.
+    fake.updatePull(s.repo.id, 7, { headSha: NEWER });
+    await s.ingest([], {}, NEWER);
+    await s.reconcile({ headSha: NEWER });
+    expect(appReplies(s.repo.id, 3)).toEqual([fixedText(issue, HEAD), fixedText(issue, NEWER)]);
+    expect(resolvedByLine(s.repo.id)).toEqual({ 3: false });
+  });
+
+  it('writes no note for an issue someone decided on, nor in a thread a person resolved', async () => {
+    const s = await setup('threads/fixed-decided');
+    await s.ingest([3, 4, 5]);
+    await s.reconcile();
+    for (const line of [3, 4, 5]) replyIn(s.repo.id, line);
+    // Marked in Qualor, whose decoration comes next.
+    for (const [line, status] of [
+      [3, 'wont_fix'],
+      [4, 'false_positive'],
+      [5, 'resolved'],
+    ] as const) {
+      await h.ctx.db
+        .update(issues)
+        .set({ status })
+        .where(eq(issues.id, issueAt(s.repo.id, line)));
+    }
+    await s.reconcile();
+    expect(notePosts()).toEqual([]);
+    expect(resolvedByLine(s.repo.id)).toEqual({ 3: false, 4: false, 5: false });
+
+    // Fixed, in a thread that a person replied in and resolved.
+    const resolved = await setup('threads/fixed-person-resolved');
+    await resolved.ingest([3]);
+    await resolved.reconcile();
+    replyIn(resolved.repo.id, 3);
+    fake.resolveThreadAs(threadAt(resolved.repo.id, 3).id, 'octocat');
+    await resolved.ingest([]);
+    await resolved.reconcile();
+    expect(notePosts()).toEqual([]);
+    expect(appReplies(resolved.repo.id, 3)).toEqual([]);
+  });
+
+  it(`writes at most ${MAX_FIXED_NOTES} such notes a run, the oldest threads first, and the rest in the next`, async () => {
+    const s = await setup('threads/fixed-cap', {
+      files: [{ filename: 'src/a.ts', patch: newFile(30) }],
+    });
+    const lines = Array.from({ length: MAX_FIXED_NOTES + 1 }, (_, i) => i + 1);
+    await s.ingest(lines);
+    await s.reconcile();
+    // In the order the App made them: the oldest first.
+    const made = appThreads(s.repo.id);
+    expect(made).toHaveLength(MAX_FIXED_NOTES + 1);
+    for (const thread of made) {
+      fake.replyToReviewComment(s.repo.id, 7, commentOf(thread).id, {
+        body: 'Hmm.',
+        login: 'octocat',
+      });
+    }
+    const noted = () => made.map((thread) => appReplies(s.repo.id, commentOf(thread).line).length);
+    await s.ingest([]);
+    await s.reconcile();
+    expect(noted()).toEqual([...Array<number>(MAX_FIXED_NOTES).fill(1), 0]);
+    // The next run writes the last one, and no second in the others.
+    await s.reconcile();
+    expect(noted()).toEqual(Array<number>(MAX_FIXED_NOTES + 1).fill(1));
+    expect(notePosts()).toHaveLength(1);
+  });
+
+  it('counts its notes toward the request budget, and paces them as mutations', async () => {
+    const s = await setup('threads/fixed-budget');
+    await s.ingest([3, 4]);
+    await s.reconcile();
+    for (const line of [3, 4]) replyIn(s.repo.id, line);
+    await s.ingest([]);
+    const ctx = await s.context();
+    const plan = await planReviewThreads(ctx);
+    expect(plan.updates).toEqual([]);
+    expect(plan.creations).toEqual([]);
+    expect(plan.fixedNotes).toHaveLength(2);
+    // What pointing a client at the repository costs it.
+    const probe = clientFor(fake);
+    fake.clearRequests();
+    await probe.useRepository({ owner: 'acme', repo: s.repo.name });
+    const pointing = fake.requests.length;
+    // A client with room for that and one request more: the first note is made, the second is not.
+    let clock = 0;
+    const pacer = new RecordingPacer(
+      () => clock,
+      async (ms) => void (clock += ms),
+    );
+    const tight = clientFor(fake, { maxRequests: pointing + 1, pacer });
+    await tight.useRepository({ owner: 'acme', repo: s.repo.name });
+    const pacedBefore = pacer.paced.length;
+    fake.clearRequests();
+    await expect(applyReviewThreads({ ...ctx, client: tight }, plan)).rejects.toMatchObject({
+      kind: 'budget',
+    });
+    expect(notePosts()).toHaveLength(1);
+    expect([...appReplies(s.repo.id, 3), ...appReplies(s.repo.id, 4)]).toHaveLength(1);
+    // The note it made waited its turn among the installation's mutations, as each of them does.
+    expect(pacer.paced.length - pacedBefore).toBe(1);
+    expect(pacer.paced.at(-1)).toMatch(/\|777$/);
   });
 
   it('resolves again a thread of a fixed issue that a person reopened without a word', async () => {
@@ -1088,6 +1264,40 @@ describe('GitHub review threads (github.md §6.4)', () => {
       expect(mutations()).toEqual([]);
       expect(creations()).toEqual([]);
       expect(resolvedByLine(s.repo.id)).toEqual({ 3: true, 4: false, 5: false });
+    });
+
+    it('writes no note in a conversation whose resolution it may not make, and one where someone replied', async () => {
+      const id = nextRepo++;
+      fake.addRepository({
+        id,
+        owner: 'acme',
+        name: 'no-contents-note',
+        installationId: id,
+        permissions: WITHOUT_CONTENTS,
+      });
+      fake.addPull(id, {
+        number: 7,
+        title: 'Threads',
+        state: 'open',
+        headSha: HEAD,
+        baseSha: BASE,
+        files: [{ filename: 'src/a.ts', patch: PATCH }],
+      });
+      const s = await setup('threads/no-contents-note', { repo: { id, name: 'no-contents-note' } });
+      await s.ingest([3, 4]);
+      await s.reconcile();
+      replyIn(s.repo.id, 4);
+      await s.ingest([]);
+      const ctx = await s.context();
+      const plan = await planReviewThreads(ctx);
+      // Line 3's resolution is one the App may not make, which the summary counts: it gets no note.
+      // Line 4 stays open for the person, with the note, which needs no Contents.
+      expect(plan.updates).toEqual([
+        { threadId: threadAt(s.repo.id, 3).id, resolve: true, counted: false },
+      ]);
+      expect(await applyReviewThreads(ctx, plan)).toMatchObject({ unresolved: 1 });
+      expect(appReplies(s.repo.id, 3)).toEqual([]);
+      expect(appReplies(s.repo.id, 4)).toEqual([fixedText(issueAt(s.repo.id, 4), HEAD)]);
     });
 
     it('takes GitHub’s FORBIDDEN for an update it may not make: the thread stays, and the rest goes on', async () => {

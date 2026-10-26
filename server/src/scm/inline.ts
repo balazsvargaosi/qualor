@@ -7,6 +7,7 @@ import { AI_THREAD_SEVERITIES } from '../review/rules';
 import { suggestionApplies, type ReviewSuggestion } from '../review/suggestion';
 import { AI_ENGINE } from '../rules/server-engines';
 import {
+  closingRevisions,
   desiredAiIssues,
   desiredInlineIssues,
   newestReviewedHead,
@@ -22,8 +23,8 @@ import {
   type GitLabDiscussion,
   type GitLabMergeRequest,
 } from './gitlab/client';
-import { markerOf } from './markdown';
-import { inlineBody } from './render';
+import { markerOf, notedFixes } from './markdown';
+import { fixedNote, inlineBody } from './render';
 
 /** scm.md §4.3: pages of discussions one job reads at most ... */
 export const MAX_DISCUSSION_PAGES = 50;
@@ -35,10 +36,16 @@ export const MAX_INLINE_THREADS = 50;
 export const MAX_AI_THREADS = 20;
 /**
  * ... and at most this many threads are resolved or reopened by one job; the rest wait for the
- * branch's next decoration. With {@link REQUESTS_OUTSIDE_INLINE} and the creations this keeps a
- * job within its 400 requests (scm.md §4.3), so the summary is always written.
+ * branch's next decoration. With {@link REQUESTS_OUTSIDE_INLINE}, the creations and the notes of
+ * fixed issues ({@link MAX_FIXED_NOTES}) this keeps a job within its 400 requests (scm.md §4.3), so
+ * the summary is always written.
  */
 export const MAX_THREAD_UPDATES = 200;
+/**
+ * The notes one job writes in the open threads of fixed issues that a person replied in, on GitLab
+ * and on GitHub alike, the oldest threads first; the rest wait for the branch's next decoration.
+ */
+export const MAX_FIXED_NOTES = 20;
 /**
  * The AI findings one job reads: the ones its threads may be for, and past them the ones the summary
  * lists and counts instead. A review stores at most 40 findings, and the findings placed on a head
@@ -135,11 +142,14 @@ interface OwnThread {
   resolvedByQualor: boolean;
   /** A person (not Qualor's user, not GitLab) wrote in the thread after Qualor's note. */
   humanReplied: boolean;
+  /** The revisions Qualor's notes in the thread say its issue was fixed at (`fixedMarker`). */
+  notedFixes: ReadonlySet<string>;
 }
 
 /**
- * Qualor's inline discussions by issue id (scm.md §5.3): the first note is by the token's user and
- * starts with an issue marker. A second thread of one issue (never created by Qualor) is ignored.
+ * Qualor's inline discussions by issue id (scm.md §5.3), in the order GitLab lists them, the oldest
+ * first: the first note is by the token's user and starts with an issue marker. A second thread of
+ * one issue (never created by Qualor) is ignored.
  */
 function ownThreads(discussions: readonly GitLabDiscussion[], botId: number) {
   const threads = new Map<string, OwnThread>();
@@ -149,15 +159,48 @@ function ownThreads(discussions: readonly GitLabDiscussion[], botId: number) {
     const marker = markerOf(first.body);
     if (marker?.kind !== 'issue' || threads.has(marker.issueId)) continue;
     const resolved = discussionResolved(discussion);
+    const qualors = replies.filter((n) => !n.system && n.author.id === botId);
     threads.set(marker.issueId, {
       id: discussion.id,
       resolved,
       resolvedByQualor:
         resolved && resolvableNotes(discussion).every((n) => n.resolved_by?.id === botId),
       humanReplied: replies.some((n) => !n.system && n.author.id !== botId),
+      notedFixes: notedFixes(
+        qualors.map((n) => n.body),
+        marker.issueId,
+      ),
     });
   }
   return threads;
+}
+
+/**
+ * Qualor's note in each of these open threads of fixed issues that a person replied in (their
+ * issue ids, the oldest thread first), which stay open for them: "Fixed in" the revision that
+ * found the issue fixed, unless the thread holds that note already. At most
+ * {@link MAX_FIXED_NOTES}, each a request of the job's; a thread GitLab no longer has is skipped.
+ */
+async function noteFixes(
+  ctx: InlineContext,
+  threads: ReadonlyMap<string, OwnThread>,
+  fixed: readonly string[],
+): Promise<void> {
+  if (fixed.length === 0) return;
+  const revisions = await closingRevisions(ctx.db, fixed);
+  let notes = 0;
+  for (const issueId of fixed) {
+    const thread = threads.get(issueId);
+    const sha = revisions.get(issueId);
+    if (thread === undefined || sha === undefined || thread.notedFixes.has(sha)) continue;
+    if (notes === MAX_FIXED_NOTES) return;
+    notes += 1;
+    try {
+      await ctx.client.replyToDiscussion(ctx.ref, ctx.iid, thread.id, fixedNote(issueId, sha));
+    } catch (err) {
+      if (!(err instanceof GitLabError && err.kind === 'not_found')) throw err;
+    }
+  }
 }
 
 /**
@@ -265,6 +308,9 @@ export const postsAiThread = (issue: DesiredAiIssue, note: AiThreadNote): boolea
  * `analyzers`, the AI review's always):
  * - an open issue whose thread Qualor resolved gets it reopened; one a person resolved stays so;
  * - an issue that is no longer open gets its thread resolved, unless a person replied in it;
+ * - an issue that was found fixed (`closed`) whose open thread a person replied in gets one note in
+ *   it that says so, with the revision that found it fixed ({@link MAX_FIXED_NOTES} a job, the
+ *   oldest threads first): never one a person decided on (won't fix, false positive, resolved);
  * - a thread of an issue this project does not have (another Qualor project of a monorepo, or an
  *   issue since deleted) is left alone.
  * Then, unless the discussions were cut by the page bound, each of the (at most
@@ -295,6 +341,7 @@ export async function reconcileInline(ctx: InlineContext): Promise<InlineReconci
   const maxUpdates = ctx.maxThreadUpdates ?? MAX_THREAD_UPDATES;
   let commented = 0;
   let updates = 0;
+  const fixed = new Set<string>();
   for (const issue of known) {
     const thread = threads.get(issue.id);
     if (!thread) continue;
@@ -313,7 +360,16 @@ export async function reconcileInline(ctx: InlineContext): Promise<InlineReconci
     }
     // The summary counts the analyzers' threads; its AI section speaks for the review's own.
     if (open && exists && !reviewed) commented += 1;
+    // A fixed issue's thread that a person keeps open is told so, below.
+    const closed = issue.branchId === ctx.branchId && issue.status === 'closed';
+    if (closed && !thread.resolved && thread.humanReplied) fixed.add(issue.id);
   }
+  // A discussion is listed with all its notes, so a listed thread shows whether it holds the note.
+  await noteFixes(
+    ctx,
+    threads,
+    threadIssues.filter((id) => fixed.has(id)),
+  );
 
   // Beyond the page bound a thread may exist unseen: never create a second one (scm.md §4.3).
   if (!ctx.discussionsComplete) return { commented, unplaced: 0, aiNotPosted: [] };

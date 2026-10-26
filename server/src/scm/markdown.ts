@@ -428,13 +428,20 @@ export function ruleKeyMarkdown(ruleKey: string, helpUri: string | null | undefi
 
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const IS_UUID = new RegExp(`^${UUID}$`);
+/** A full commit SHA, SHA-1 or SHA-256, in lower case. */
+const FULL_SHA = '[0-9a-f]{40}(?:[0-9a-f]{24})?';
+const IS_FULL_SHA = new RegExp(`^${FULL_SHA}$`);
 const SUMMARY_MARKER = new RegExp(`^<!-- qualor:summary (${UUID}) -->$`);
 const ISSUE_MARKER = new RegExp(`^<!-- qualor:issue (${UUID}) -->$`);
+const FIXED_MARKER = new RegExp(`^<!-- qualor:fixed (${UUID}) (${FULL_SHA}) -->$`);
 
 function uuid(id: string): string {
   if (!IS_UUID.test(id)) throw new Error('a Qualor marker holds a UUID only');
   return id;
 }
+
+/** Whether `sha` is a full commit SHA in lower case, as a marker holds it. */
+export const isFullSha = (sha: string): boolean => IS_FULL_SHA.test(sha);
 
 /** scm.md §5.3: the first line of a summary note. */
 export function summaryMarker(projectId: string): string {
@@ -465,22 +472,52 @@ export function replyMarker(replyId: string): string {
   return `<!-- qualor:reply ${uuid(replyId)} -->`;
 }
 
+/**
+ * The first line of Qualor's note in the open thread of a fixed issue that a person replied in
+ * (6I-4): the issue, and the full revision it was found fixed at. A decoration looks for it before
+ * it writes one, so the thread holds one note each time its issue is fixed. It is no thread's first
+ * note, no summary and no answer to a reply: {@link markerOf} tells it apart as `fixed`.
+ */
+export function fixedMarker(issueId: string, sha: string): string {
+  if (!isFullSha(sha)) throw new Error('a Qualor marker holds a full commit SHA only');
+  return `<!-- qualor:fixed ${uuid(issueId)} ${sha} -->`;
+}
+
 /** A note body's first line, without the carriage return of a CRLF end: where a marker is. */
 export function firstLineOf(body: string): string {
   return (body.split('\n', 1)[0] ?? '').replace(/\r$/, '');
 }
 
+/** What a note's first line marks ({@link markerOf}). */
+export type Marker =
+  | { kind: 'summary'; projectId: string }
+  | { kind: 'issue'; issueId: string }
+  | { kind: 'fixed'; issueId: string; sha: string };
+
 /**
  * What a note body's first line marks, or null. Only the first line counts: a marker quoted in a
  * reply or inside a value (always on a later line) is ignored. The caller also checks the author.
  */
-export function markerOf(
-  body: string,
-): { kind: 'summary'; projectId: string } | { kind: 'issue'; issueId: string } | null {
+export function markerOf(body: string): Marker | null {
   const firstLine = firstLineOf(body);
   const summary = SUMMARY_MARKER.exec(firstLine);
   if (summary?.[1]) return { kind: 'summary', projectId: summary[1] };
   const issue = ISSUE_MARKER.exec(firstLine);
   if (issue?.[1]) return { kind: 'issue', issueId: issue[1] };
+  const fixed = FIXED_MARKER.exec(firstLine);
+  if (fixed?.[1] && fixed[2]) return { kind: 'fixed', issueId: fixed[1], sha: fixed[2] };
   return null;
+}
+
+/**
+ * The revisions that Qualor's notes among `bodies` say `issueId` was fixed at ({@link fixedMarker}):
+ * the notes of a thread, which the caller has kept to Qualor's own.
+ */
+export function notedFixes(bodies: Iterable<string>, issueId: string): Set<string> {
+  const fixes = new Set<string>();
+  for (const body of bodies) {
+    const marker = markerOf(body);
+    if (marker?.kind === 'fixed' && marker.issueId === issueId) fixes.add(marker.sha);
+  }
+  return fixes;
 }

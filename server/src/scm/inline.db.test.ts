@@ -30,6 +30,7 @@ import {
   MAX_AI_THREADS,
   MAX_DIFF_PAGES,
   MAX_DISCUSSION_PAGES,
+  MAX_FIXED_NOTES,
   MAX_INLINE_THREADS,
   MAX_THREAD_UPDATES,
   REQUESTS_OUTSIDE_INLINE,
@@ -61,20 +62,27 @@ describe('addedLineTexts', () => {
 });
 
 describe('the request budget (scm.md §4.3)', () => {
-  it('the GitLab request bounds sum to 357', () => {
+  it('the GitLab request bounds sum to 377', () => {
     // Project, user, merge request, commit status (read, post and its retry without the pipeline),
     // the summary, and every page of discussions and diffs.
     expect(REQUESTS_OUTSIDE_INLINE).toBe(7 + MAX_DISCUSSION_PAGES + MAX_DIFF_PAGES);
-    // The analyzers' threads, the AI review's beside them, and the resolutions and reopenings of
-    // both: a job that does all it may still writes the summary.
+    // The analyzers' threads, the AI review's beside them, the resolutions and reopenings of both,
+    // and the notes of fixed issues in the threads people replied in: a job that does all it may
+    // still writes the summary.
     expect([
       REQUESTS_OUTSIDE_INLINE,
       MAX_INLINE_THREADS,
       MAX_AI_THREADS,
       MAX_THREAD_UPDATES,
-    ]).toEqual([87, 50, 20, 200]);
-    const sum = REQUESTS_OUTSIDE_INLINE + MAX_INLINE_THREADS + MAX_AI_THREADS + MAX_THREAD_UPDATES;
-    expect(sum).toBe(357);
+      MAX_FIXED_NOTES,
+    ]).toEqual([87, 50, 20, 200, 20]);
+    const sum =
+      REQUESTS_OUTSIDE_INLINE +
+      MAX_INLINE_THREADS +
+      MAX_AI_THREADS +
+      MAX_THREAD_UPDATES +
+      MAX_FIXED_NOTES;
+    expect(sum).toBe(377);
     expect(sum).toBeLessThanOrEqual(MAX_GITLAB_REQUESTS);
     expect(MAX_GITLAB_REQUESTS).toBe(400);
   });
@@ -104,9 +112,13 @@ describe('GitLab inline discussions (scm.md §5.4)', () => {
       });
     }
     const project = await mappedProject(h, fake, key, gitlabId);
-    const ingest = (lines: number[], extra: Parameters<typeof mergeRequestReport>[2] = {}) =>
+    const ingest = (
+      lines: number[],
+      extra: Parameters<typeof mergeRequestReport>[2] = {},
+      revision = HEAD,
+    ) =>
       project.ingestOk(
-        mergeRequestReport(7, HEAD, {
+        mergeRequestReport(7, revision, {
           projectKey: project.key,
           analysisDate: new Date(Date.UTC(2026, 8, 1, 10) + 86_400_000 * day++).toISOString(),
           engines: [engine('eslint')],
@@ -495,6 +507,201 @@ describe('GitLab inline discussions (scm.md §5.4)', () => {
     expect(placed.some((d) => d.notes[0]?.position?.['new_line'] === 60)).toBe(true);
     expect(summary(gitlabId)).toContain('50 new issues are commented inline.');
     expect(summary(gitlabId)).toContain('\n…and 50 more\n');
+  });
+
+  describe('the note of a fixed issue in a thread a person replied in', () => {
+    const NEWER = '2'.repeat(40);
+    /** The issue Qualor's thread on `line` is for: the marker of its first note. */
+    const issueAt = (gitlabId: number, line: number): string => {
+      const marker = markerOf(threadAt(gitlabId, line).notes[0]?.body ?? '');
+      if (marker?.kind !== 'issue') throw new Error(`no issue thread on line ${line}`);
+      return marker.issueId;
+    };
+    /** Qualor's notes in its thread on `line`, after the first. */
+    const qualorNotes = (gitlabId: number, line: number) =>
+      threadAt(gitlabId, line)
+        .notes.slice(1)
+        .filter((note) => note.authorId === fake.botUserId)
+        .map((note) => note.body);
+    /** The note, as it reads: its marker, then its sentence. */
+    const fixedText = (issueId: string, sha: string) =>
+      `<!-- qualor:fixed ${issueId} ${sha} -->\nFixed in \` ${sha.slice(0, 7)} \`. Qualor leaves this thread open because someone replied in it.`;
+    const replyIn = (gitlabId: number, line: number) =>
+      fake.reply(gitlabId, 7, threadAt(gitlabId, line).id, { body: 'Is it?', authorId: HUMAN });
+    /** The notes the run posted into discussions. */
+    const notePosts = () =>
+      fake.requests.filter(
+        (r) => r.method === 'POST' && /\/discussions\/[^/]+\/notes$/.test(r.path),
+      );
+    /** The project's merge request branch. */
+    const branchOf = async (projectId: string) =>
+      first(
+        await h.ctx.db
+          .select({ id: branches.id })
+          .from(branches)
+          .where(and(eq(branches.projectId, projectId), eq(branches.kind, 'merge_request'))),
+      ).id;
+    /** Another decoration of the analysis. */
+    const redecorate = async (projectId: string, analysisId: string, deps = decorationDeps(h)) => {
+      const branchId = await branchOf(projectId);
+      await enqueueDecoration(h.ctx.db, { analysisId, branchId, gitlab: null });
+      await runDecorations(h, deps);
+    };
+
+    it('writes one, with the revision, in the open thread of a fixed issue a person replied in; the next decoration none', async () => {
+      const { project, gitlabId, ingest } = await setup('inline/fixed-note');
+      await ingest([3, 4]);
+      await runDecorations(h, decorationDeps(h));
+      replyIn(gitlabId, 3);
+      const issue = issueAt(gitlabId, 3);
+      fake.clearRequests();
+      const fixedAt = await ingest([]);
+      await runDecorations(h, decorationDeps(h));
+      // The person's thread stays open, with Qualor's one note in it; the other is resolved.
+      expect(resolvedByLine(gitlabId)).toEqual({ 3: false, 4: true });
+      expect(qualorNotes(gitlabId, 3)).toEqual([fixedText(issue, HEAD)]);
+      expect(qualorNotes(gitlabId, 4)).toEqual([]);
+      expect(notePosts()).toHaveLength(1);
+      // Decorated again, and after another analysis at which the issue is still fixed: no second
+      // note. Qualor's note is no person's reply, so the thread is still the person's.
+      fake.clearRequests();
+      await redecorate(project.id, fixedAt);
+      await ingest([]);
+      await runDecorations(h, decorationDeps(h));
+      expect(notePosts()).toEqual([]);
+      expect(qualorNotes(gitlabId, 3)).toEqual([fixedText(issue, HEAD)]);
+      expect(resolvedByLine(gitlabId)).toEqual({ 3: false, 4: true });
+    });
+
+    it('writes a new one when the issue, back meanwhile, is fixed again at another revision', async () => {
+      const { gitlabId, ingest } = await setup('inline/fixed-again');
+      await ingest([3]);
+      await runDecorations(h, decorationDeps(h));
+      replyIn(gitlabId, 3);
+      const issue = issueAt(gitlabId, 3);
+      await ingest([]);
+      await runDecorations(h, decorationDeps(h));
+      // Back: its thread is open, with the note of its first fix.
+      await ingest([3]);
+      await runDecorations(h, decorationDeps(h));
+      expect(resolvedByLine(gitlabId)).toEqual({ 3: false });
+      expect(qualorNotes(gitlabId, 3)).toEqual([fixedText(issue, HEAD)]);
+      // Fixed again in a newer commit: a note of its own.
+      fake.updateMergeRequest(gitlabId, 7, { headSha: NEWER });
+      await ingest([], {}, NEWER);
+      await runDecorations(h, decorationDeps(h));
+      expect(qualorNotes(gitlabId, 3)).toEqual([fixedText(issue, HEAD), fixedText(issue, NEWER)]);
+      expect(resolvedByLine(gitlabId)).toEqual({ 3: false });
+    });
+
+    it('writes none for an issue a person decided on, nor in a thread a person resolved', async () => {
+      const { project, gitlabId, ingest } = await setup('inline/fixed-decided');
+      const analysisId = await ingest([3, 4, 5]);
+      await runDecorations(h, decorationDeps(h));
+      for (const line of [3, 4, 5]) replyIn(gitlabId, line);
+      // A person marks each in Qualor, which decorates the analysis again.
+      for (const [line, status] of [
+        [3, 'wont_fix'],
+        [4, 'false_positive'],
+        [5, 'resolved'],
+      ] as const) {
+        await h.ctx.db
+          .update(issues)
+          .set({ status })
+          .where(eq(issues.id, issueAt(gitlabId, line)));
+      }
+      fake.clearRequests();
+      await redecorate(project.id, analysisId);
+      expect(notePosts()).toEqual([]);
+      expect(resolvedByLine(gitlabId)).toEqual({ 3: false, 4: false, 5: false });
+
+      // Fixed, in a thread that a person replied in and resolved.
+      const resolved = await setup('inline/fixed-person-resolved');
+      await resolved.ingest([3]);
+      await runDecorations(h, decorationDeps(h));
+      replyIn(resolved.gitlabId, 3);
+      fake.resolveAs(resolved.gitlabId, 7, threadAt(resolved.gitlabId, 3).id, HUMAN, true);
+      fake.clearRequests();
+      await resolved.ingest([]);
+      await runDecorations(h, decorationDeps(h));
+      expect(notePosts()).toEqual([]);
+      expect(qualorNotes(resolved.gitlabId, 3)).toEqual([]);
+    });
+
+    it(`writes at most ${MAX_FIXED_NOTES} in a decoration, the oldest threads first, and the rest in the next`, async () => {
+      const { project, gitlabId, ingest } = await setup('inline/fixed-cap');
+      fake.updateMergeRequest(gitlabId, 7, {
+        diffs: [
+          {
+            oldPath: 'src/a.ts',
+            newPath: 'src/a.ts',
+            diff: `@@ -0,0 +1,30 @@\n${Array.from({ length: 30 }, (_, i) => `+l${i + 1}`).join('\n')}\n`,
+          },
+        ],
+      });
+      await ingest(Array.from({ length: MAX_FIXED_NOTES + 1 }, (_, i) => i + 1));
+      await runDecorations(h, decorationDeps(h));
+      // In the order GitLab lists them: the oldest first.
+      const listed = threads(gitlabId);
+      expect(listed).toHaveLength(MAX_FIXED_NOTES + 1);
+      for (const discussion of listed) {
+        fake.reply(gitlabId, 7, discussion.id, { body: 'Hmm.', authorId: HUMAN });
+      }
+      const noted = () =>
+        threads(gitlabId).map((discussion) =>
+          discussion.notes.some(
+            (note) => note.authorId === fake.botUserId && markerOf(note.body)?.kind === 'fixed',
+          ),
+        );
+      const fixedAt = await ingest([]);
+      await runDecorations(h, decorationDeps(h));
+      expect(noted()).toEqual([...Array<boolean>(MAX_FIXED_NOTES).fill(true), false]);
+      // The next decoration writes the last one, and no second in the others.
+      fake.clearRequests();
+      await redecorate(project.id, fixedAt);
+      expect(noted()).toEqual(Array<boolean>(MAX_FIXED_NOTES + 1).fill(true));
+      expect(notePosts()).toHaveLength(1);
+    });
+
+    it('counts its notes toward the job’s request budget', async () => {
+      // Twins: one decorated with room for all it does, which shows where its first note comes in
+      // the job's requests; the other with room for that note and none after it.
+      const twin = async (key: string) => {
+        const s = await setup(key);
+        await s.ingest([3, 4]);
+        await runDecorations(h, decorationDeps(h));
+        for (const line of [3, 4]) replyIn(s.gitlabId, line);
+        await s.ingest([]);
+        fake.clearRequests();
+        return s;
+      };
+      const roomy = await twin('inline/fixed-budget-roomy');
+      await runDecorations(h, decorationDeps(h));
+      const firstNote = fake.requests.findIndex(
+        (r) => r.method === 'POST' && /\/discussions\/[^/]+\/notes$/.test(r.path),
+      );
+      expect(notePosts()).toHaveLength(2);
+      expect(qualorNotes(roomy.gitlabId, 3)).toHaveLength(1);
+      const tight = await twin('inline/fixed-budget-tight');
+      const deps = decorationDeps(h);
+      const maxRequests = firstNote + 1;
+      await runDecorations(h, {
+        ...deps,
+        scm: { ...deps.scm, clientOptions: { timeoutMs: 2_000, maxRequests } },
+      });
+      // The first note is the last request the job may make: the second is refused with the job.
+      expect(notePosts()).toHaveLength(1);
+      expect([...qualorNotes(tight.gitlabId, 3), ...qualorNotes(tight.gitlabId, 4)]).toHaveLength(
+        1,
+      );
+      expect(
+        h.ctx.logs.some(
+          (line) =>
+            line.includes('GitLab decoration stopped') &&
+            line.includes(`More than ${maxRequests} GitLab requests in one job`),
+        ),
+      ).toBe(true);
+    });
   });
 
   describe('answers to the people’s notes (6I-4)', () => {
