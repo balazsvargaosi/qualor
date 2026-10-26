@@ -1,7 +1,7 @@
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { FakeServer, me, ORG_ID, page, provideFakeServer, settle } from './fake-server';
-import type { ResponseBody } from '../app/api/types';
+import type { Organization, ResponseBody } from '../app/api/types';
 import { SessionStore } from '../app/auth/session';
 import { AiSettingsPage } from '../app/settings/ai.page';
 
@@ -59,6 +59,20 @@ export const PROJECTS = [
   { id: 'p2', organizationId: ORG_ID, key: 'acme/web', name: 'Web' },
   { id: 'p3', organizationId: 'other-org', key: 'other/api', name: 'Other API' },
 ];
+
+/**
+ * `count` organisations as `GET /organizations` lists them: "Org 1" (key `org-1`) to "Org
+ * {count}", none of them the default organisation.
+ */
+export function organizationsFixture(count: number): Organization[] {
+  return Array.from({ length: count }, (_, i) => ({
+    id: `0190a6c2-0000-7000-9000-${String(i + 1).padStart(12, '0')}`,
+    key: `org-${i + 1}`,
+    name: `Org ${i + 1}`,
+    createdAt: '2026-09-01T00:00:00.000Z',
+    updatedAt: '2026-09-01T00:00:00.000Z',
+  }));
+}
 
 /**
  * The organisation's view of the assistant (`GET /organizations/{id}/ai`): the features on, today's

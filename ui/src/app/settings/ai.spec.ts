@@ -452,88 +452,6 @@ describe('AiSettingsPage (llm.md §3, §18)', () => {
     expect(root.querySelector('.alert-error')).toBeNull();
   });
 
-  it('counts organisations and excluded projects in the singular and the plural', async () => {
-    setup({
-      ...CONFIGURED,
-      organizations: {
-        [ORG_ID]: { ...CONFIGURED.organizations[ORG_ID], excludedProjectIds: ['p1'] },
-      },
-    });
-    const { root } = await render();
-    expect(root.textContent).toContain('On for 1 organisation');
-    expect(root.textContent).not.toContain('1 organisations');
-    expect(root.textContent).toContain('1 project excluded');
-  });
-
-  it('edits the excluded projects of an organisation, keeping one it does not list', async () => {
-    const server = setup({
-      ...CONFIGURED,
-      organizations: {
-        [ORG_ID]: { ...CONFIGURED.organizations[ORG_ID], excludedProjectIds: ['p1', 'p9'] },
-      },
-    });
-    server.on('PUT', '/api/v0/system/llm', { body: CONFIGURED });
-    const { fixture, root } = await render();
-    const payments = root.querySelector<HTMLInputElement>(`#ai-org-${ORG_ID}-exclude-p1`)!;
-    const web = root.querySelector<HTMLInputElement>(`#ai-org-${ORG_ID}-exclude-p2`)!;
-    expect(payments.checked).toBe(true);
-    expect(web.checked).toBe(false);
-    expect(root.querySelector(`label[for="ai-org-${ORG_ID}-exclude-p2"]`)?.textContent).toContain(
-      'Web',
-    );
-    // Another organisation's project is not offered here.
-    expect(root.querySelector(`#ai-org-${ORG_ID}-exclude-p3`)).toBeNull();
-    payments.click();
-    web.click();
-    submit(root);
-    await settle(fixture);
-    const body = server.requestsTo('PUT', '/api/v0/system/llm')[0]?.body as {
-      organizations: Record<string, { excludedProjectIds: string[] }>;
-    };
-    expect(body.organizations[ORG_ID]?.excludedProjectIds.sort()).toEqual(['p2', 'p9']);
-  });
-
-  it('never sends the automatic fix suggestion fields, so a save keeps what other admins set', async () => {
-    const server = setup({
-      ...CONFIGURED,
-      organizations: {
-        [ORG_ID]: {
-          ...CONFIGURED.organizations[ORG_ID],
-          autoFix: { enabled: true, minSeverity: 'medium', maxPerAnalysis: 5 },
-          autoFixDisabledProjectIds: ['p1'],
-        },
-      },
-    });
-    server.on('PUT', '/api/v0/system/llm', { body: CONFIGURED });
-    const { fixture, root } = await render();
-    root.querySelector<HTMLInputElement>(`#ai-org-${ORG_ID}-fix`)!.click();
-    submit(root);
-    await settle(fixture);
-    const body = server.requestsTo('PUT', '/api/v0/system/llm')[0]?.body as {
-      organizations: Record<string, object>;
-    };
-    expect(body.organizations[ORG_ID]).toEqual({
-      enabled: true,
-      features: { explain: true, triage: true, fix: true },
-      excludedProjectIds: [],
-    });
-  });
-
-  it('enables an organisation absent from the settings without the automatic fix fields', async () => {
-    const server = setup({ ...CONFIGURED, organizations: {} });
-    server.on('PUT', '/api/v0/system/llm', { body: CONFIGURED });
-    const { fixture, root } = await render();
-    root.querySelector<HTMLInputElement>(`#ai-org-${ORG_ID}-enabled`)!.click();
-    submit(root);
-    await settle(fixture);
-    const body = server.requestsTo('PUT', '/api/v0/system/llm')[0]?.body as {
-      organizations: Record<string, object>;
-    };
-    expect(body.organizations[ORG_ID]).not.toHaveProperty('autoFix');
-    expect(body.organizations[ORG_ID]).not.toHaveProperty('autoFixDisabledProjectIds');
-    expect(body.organizations[ORG_ID]).toMatchObject({ enabled: true });
-  });
-
   it('refuses a key typed while the kind is None, and says so', async () => {
     const server = setup();
     const { fixture, root } = await render();
@@ -566,20 +484,6 @@ describe('AiSettingsPage (llm.md §3, §18)', () => {
     expect(root.querySelector('#ai-key-hint')?.textContent?.replace(/\s+/g, ' ')).toContain(
       'keep it. Stored encrypted',
     );
-  });
-
-  it('enables an organisation and its features', async () => {
-    const server = setup(CONFIGURED);
-    server.on('PUT', '/api/v0/system/llm', { body: CONFIGURED });
-    const { fixture, root } = await render();
-    root.querySelector<HTMLInputElement>(`#ai-org-${ORG_ID}-fix`)!.click();
-    submit(root);
-    await settle(fixture);
-    expect(server.requestsTo('PUT', '/api/v0/system/llm')[0]?.body).toMatchObject({
-      organizations: {
-        [ORG_ID]: { enabled: true, features: { explain: true, triage: true, fix: true } },
-      },
-    });
   });
 
   it('empties the key field after a refused save too', async () => {

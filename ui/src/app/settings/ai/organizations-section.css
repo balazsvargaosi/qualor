@@ -1,0 +1,96 @@
+/*
+ * The instance's organisations (spec §3.4 M-I5, §7.3 row 8): a section card with a filter, a table
+ * that becomes one card per row on a phone (.stack-table in styles.css), and the editor of one row
+ * under it, on the second surface, the row tinted with the accent's edge.
+ */
+:host {
+  display: block;
+  min-width: 0;
+}
+section {
+  margin: 0;
+}
+.orgs-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 0 22px;
+}
+.orgs-tools .search-field {
+  flex: 0 1 20rem;
+  min-width: 0;
+}
+.orgs-tools .search-field input {
+  width: 100%;
+}
+.orgs-status {
+  flex: 1 1 16rem;
+  margin: 0;
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 600;
+  /* It may name an organisation without a break point. */
+  overflow-wrap: anywhere;
+}
+.features {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+/* The row being edited, then its editor (as specific as the panel's edge padding, and later). */
+.orgs tr.editing > * {
+  background: color-mix(in srgb, var(--accent-soft) 55%, transparent);
+}
+.orgs tr.editing > :first-child {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.orgs tr.editor > td {
+  padding: 0;
+  background: var(--surface-2);
+}
+.editor-body {
+  display: grid;
+  /* A definite column (spec §7.10): the list or the picker never widens the card on a phone. */
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  padding: 18px 22px 6px;
+}
+.editor-body p,
+.dep > div {
+  margin: 0;
+}
+.orgs-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 12px 22px 16px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+@media (max-width: 40rem) {
+  .orgs-tools,
+  .orgs-foot,
+  .editor-body {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+  /* A stacked row tints as a whole, its cells clear; its editor is a block under it. */
+  .stack-table tbody tr.editing {
+    background: color-mix(in srgb, var(--accent-soft) 55%, transparent);
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+  .stack-table tbody tr.editing > * {
+    background: none;
+    box-shadow: none;
+  }
+  .stack-table tbody tr.editor {
+    display: block;
+    padding: 0;
+  }
+  .stack-table tbody tr.editor > td {
+    display: block;
+  }
+}

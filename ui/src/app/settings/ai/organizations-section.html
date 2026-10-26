@@ -1,0 +1,257 @@
+<section id="organizations" class="card panel" aria-labelledby="ai-orgs-heading">
+  <div class="panel-head">
+    <div class="sec-title">
+      <h3 id="ai-orgs-heading" tabindex="-1">{{ texts.title }}</h3>
+      <p class="sec-purpose" i18n="@@aiProvider.orgs.purpose">
+        Who may use AI, and which assistant features. An organization you don't allow sends nothing.
+      </p>
+    </div>
+    <div class="sec-chips">
+      <span class="badge {{ chip().badge }}"><q-icon [name]="chip().icon" />{{ chip().text }}</span>
+    </div>
+  </div>
+
+  <div class="orgs-tools">
+    <span class="search-field">
+      <label class="visually-hidden" for="ai-orgs-filter">{{ texts.filter }}</label>
+      <q-icon name="search" />
+      <input
+        id="ai-orgs-filter"
+        type="search"
+        autocomplete="off"
+        spellcheck="false"
+        [placeholder]="texts.filter"
+        [value]="filter()"
+        (input)="setFilter($event)"
+      />
+    </span>
+    <p class="orgs-status" role="status">{{ status() }}</p>
+  </div>
+
+  <div class="panel-scroll">
+    <table class="stack-table orgs">
+      <thead>
+        <tr>
+          <th scope="col">{{ texts.org }}</th>
+          <th scope="col">{{ texts.ai }}</th>
+          <th scope="col">{{ texts.features }}</th>
+          <th scope="col">{{ texts.neverSent }}</th>
+          <th scope="col">{{ texts.admins }}</th>
+          <th scope="col" class="actions-col">
+            <span class="visually-hidden">{{ texts.actions }}</span>
+          </th>
+        </tr>
+      </thead>
+      <tbody>
+        @for (row of rows(); track row.org.id) {
+          <tr [class.editing]="row.editing">
+            <th scope="row" [attr.data-label]="texts.org">
+              <div class="name-stack">
+                <span>{{ row.org.name }}</span
+                >&ngsp;<code class="muted">{{ row.org.key }}</code>
+              </div>
+            </th>
+            <td [attr.data-label]="texts.ai">
+              @if (row.allowed) {
+                <span class="badge badge-passed"
+                  ><q-icon name="check" /><ng-container i18n="@@aiProvider.orgs.allowed"
+                    >Allowed</ng-container
+                  ></span
+                >
+              } @else {
+                <span class="badge badge-none"
+                  ><q-icon name="minus" /><ng-container i18n="@@aiProvider.orgs.notAllowed"
+                    >Not allowed</ng-container
+                  ></span
+                >
+              }
+            </td>
+            <td [attr.data-label]="texts.features" [class.muted]="!row.allowed">
+              @if (!row.allowed) {
+                —
+              } @else if (row.features.length > 0) {
+                <span class="features">
+                  @for (feature of row.features; track feature) {
+                    <span class="badge badge-accent">{{ feature }}</span
+                    >&ngsp;
+                  }
+                </span>
+              } @else {
+                <ng-container i18n="@@aiProvider.orgs.noFeatures">None</ng-container>
+              }
+            </td>
+            <td [attr.data-label]="texts.neverSent" [class.muted]="!row.allowed">
+              @if (row.allowed) {
+                <ng-container i18n="@@aiProvider.orgs.neverSentCount">{row.excluded, plural,
+                  =0 {None}
+                  =1 {1 project}
+                  other {{{ row.excludedText }} projects}
+                }</ng-container>
+              } @else {
+                —
+              }
+            </td>
+            <td [attr.data-label]="texts.admins" [class.muted]="row.admins.length === 0">
+              {{ row.admins.length > 0 ? row.admins.join(' · ') : '—' }}
+            </td>
+            <td class="actions-col">
+              <div class="row-actions">
+                <button
+                  type="button"
+                  class="btn-quiet"
+                  [id]="'org-' + row.org.id + '-edit'"
+                  [attr.aria-expanded]="row.editing"
+                  [attr.aria-controls]="'org-editor-' + row.org.id"
+                  (click)="toggle(row.org)"
+                >
+                  {{ row.editing ? texts.close : texts.edit }}</button
+                >&ngsp;<button
+                  type="button"
+                  class="btn-quiet"
+                  [attr.aria-label]="row.openLabel"
+                  (click)="openPage(row.org)"
+                >
+                  {{ texts.open }}
+                </button>
+              </div>
+            </td>
+          </tr>
+          @if (row.editing) {
+            @if (view(); as v) {
+              <tr class="editor">
+                <td colspan="6">
+                  <!-- The region holds the editor's foot too: its Save is the editor's. -->
+                  <div role="region" [id]="'org-editor-' + v.id" [attr.aria-label]="v.label">
+                    <div class="editor-body">
+                      <!-- A switch is named by its name alone; its help, and a note under it, describe it. -->
+                      <div class="switch-row">
+                        <input
+                          class="switch"
+                          type="checkbox"
+                          role="switch"
+                          [id]="v.allowId"
+                          [attr.aria-labelledby]="v.allowId + '-name'"
+                          [attr.aria-describedby]="v.allowDescribedBy"
+                          [checked]="v.enabled"
+                          (change)="setAllowed($event)"
+                        />
+                        <label [for]="v.allowId">
+                          <span
+                            [id]="v.allowId + '-name'"
+                            class="sw-name"
+                            [class.changed]="v.enabledChanged"
+                            >{{ v.allow }}</span
+                          >&ngsp;<span [id]="v.allowId + '-help'" class="sw-help">{{
+                            v.allowHelp
+                          }}</span>
+                        </label>
+                      </div>
+                      @if (v.allowNote; as note) {
+                        <q-requirement
+                          [noteId]="v.allowId + '-note'"
+                          [text]="note"
+                          [organizationId]="v.id"
+                        />
+                      }
+                      @if (v.enabled) {
+                        <div class="dep">
+                          <p class="dep-title">{{ texts.editorFeatures }}</p>
+                          @for (f of v.features; track f.feature) {
+                            <div class="switch-row">
+                              <input
+                                class="switch"
+                                type="checkbox"
+                                role="switch"
+                                [id]="f.inputId"
+                                [attr.aria-labelledby]="f.inputId + '-name'"
+                                [attr.aria-describedby]="f.describedBy"
+                                [checked]="f.on"
+                                (change)="setFeature(f.feature, $event)"
+                              />
+                              <label [for]="f.inputId">
+                                <span
+                                  [id]="f.inputId + '-name'"
+                                  class="sw-name"
+                                  [class.changed]="f.changed"
+                                  >{{ f.name }}</span
+                                >&ngsp;<span [id]="f.inputId + '-help'" class="sw-help">{{
+                                  f.help
+                                }}</span>
+                              </label>
+                            </div>
+                            @if (f.note; as note) {
+                              <q-requirement
+                                [noteId]="f.inputId + '-note'"
+                                [text]="note"
+                                [organizationId]="v.id"
+                              />
+                            }
+                          }
+                          <p class="dep-title">{{ texts.editorNeverSent }}</p>
+                          <p class="hint" i18n="@@aiProvider.orgs.neverSentHint">
+                            Their issues are never explained, triaged or fixed, and AI review never
+                            reviews them; its copies of their repositories are deleted.
+                          </p>
+                          @if (looking()) {
+                            <p class="hint" i18n="@@aiProvider.orgs.loading">Loading…</p>
+                          } @else if (v.excluded.length > 0) {
+                            <ul class="list-editor">
+                              @for (project of v.excluded; track project.id; let index = $index) {
+                                <li>
+                                  <span class="item"
+                                    ><strong>{{ project.name }}</strong>
+                                    @if (project.key; as key) {
+                                      &ngsp;<code>{{ key }}</code>
+                                    }</span
+                                  >&ngsp;<button
+                                    type="button"
+                                    class="btn-quiet danger"
+                                    [attr.aria-label]="project.removeLabel"
+                                    (click)="removeExcluded(project.id, index)"
+                                  >
+                                    {{ texts.remove }}
+                                  </button>
+                                </li>
+                              }
+                            </ul>
+                          }
+                          @if (lookupError(); as message) {
+                            <p class="field-error"><q-icon name="alert" />{{ message }}</p>
+                          }
+                          <div>
+                            <q-project-picker
+                              [organizationId]="v.id"
+                              [buttonLabel]="texts.add"
+                              [chosen]="v.excludedIds"
+                              (add)="addExcluded($event)"
+                            />
+                          </div>
+                        </div>
+                      } @else {
+                        <p class="dep-off">{{ v.off }}</p>
+                      }
+                    </div>
+                    <q-section-foot [outcome]="footOutcome()" [saveLabel]="v.save" (save)="save()">
+                      <button type="button" class="btn" (click)="close()">
+                        {{ texts.cancel }}
+                      </button>
+                    </q-section-foot>
+                  </div>
+                </td>
+              </tr>
+            }
+          }
+        }
+      </tbody>
+    </table>
+  </div>
+
+  @if (countText(); as count) {
+    <div class="orgs-foot">
+      <span class="orgs-count" role="status">{{ count }}</span>
+      @if (moreText(); as more) {
+        <button type="button" class="btn" (click)="showMore()">{{ more }}</button>
+      }
+    </div>
+  }
+</section>
