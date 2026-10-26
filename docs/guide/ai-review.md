@@ -597,8 +597,9 @@ Each new scan of a merge request is reviewed again, on its latest commit.
   is the whole wait of Explain, Suggest triage, Suggest a fix and the Test, which do not stream. A
   server that refuses a streamed request (a 400 that names `stream`) is asked again without
   streaming, once for each call, and then the call waits at least 5 minutes for its whole answer. A
-  review usually takes a few minutes, and a big merge request can take 15 or more. The summary says
-  the review is in progress until it ends.
+  server that ignores the request for a stream and sends its whole answer as JSON is read as it is.
+  A review usually takes a few minutes, and a big merge request can take 15 or more. The summary
+  says the review is in progress until it ends.
 - **Room to think.** A model that thinks counts its thinking in the output limit, so a call asks for
   room beyond the answer's own tokens. It costs nothing unless the model uses it
   ([Budgets and today's usage](#budgets-and-todays-usage)).

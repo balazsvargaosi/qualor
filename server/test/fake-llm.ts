@@ -614,7 +614,8 @@ export interface FakeLlm {
  * A request that asks for a stream (`stream: true`) is answered with the events its API sends for
  * the answer it would have had (see LlmReply), in pieces. With `refuseStream` it is refused instead,
  * with a 400 in the words of a server that does not stream (`streamRefusal`), and takes no
- * scripted reply: the request asked again without the stream takes it.
+ * scripted reply: the request asked again without the stream takes it. With `ignoreStream` it is
+ * answered as a request that does not ask for a stream, whole, as JSON: a server that ignores it.
  */
 export async function createFakeLlm(
   options: {
@@ -624,6 +625,7 @@ export async function createFakeLlm(
     outputCaps?: Record<string, number>;
     toolsOnlyThroughResponses?: readonly string[];
     refuseStream?: boolean;
+    ignoreStream?: boolean;
   } = {},
 ): Promise<FakeLlm> {
   const apiKey =
@@ -686,7 +688,8 @@ export async function createFakeLlm(
           : request.path === '/v1/responses'
             ? 'responses'
             : 'chat';
-        const streamed = (json as { stream?: unknown } | null)?.stream === true;
+        const streamed =
+          (json as { stream?: unknown } | null)?.stream === true && options.ignoreStream !== true;
         /**
          * A scripted or canned answer: to a request that streams, the events of its body, written
          * at once unless the reply has a delay (no timer to move for a test that fakes them).

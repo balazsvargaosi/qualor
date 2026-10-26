@@ -44,11 +44,12 @@ export interface AnswerRequest {
 /**
  * The asker of one call of a conversation: it gives each request of the call the answer as
  * `postJson` parses it. With `http.stream` set, a request asks for its answer streamed (with
- * `wire.fields`) within those limits, and `wire.assemble` puts the events together. A server that
- * refuses the stream (`refusedStream`) is asked once more without it, as `postJson` asks, with the
- * timeout of the settings, and so are the requests of the call that follow (a call asks more than
- * once when the room to think is refused: `askWithRoom`). Nothing is remembered from one call to the
- * next: a server that does not stream costs one quick 400 a call.
+ * `wire.fields`) within those limits, and `wire.assemble` puts the events together; a server that
+ * ignores the ask and answers whole, as JSON, gives that answer as it is. A server that refuses the
+ * stream (`refusedStream`) is asked once more without it, as `postJson` asks, with the timeout of
+ * the settings, and so are the requests of the call that follow (a call asks more than once when
+ * the room to think is refused: `askWithRoom`). Nothing is remembered from one call to the next: a
+ * server that does not stream costs one quick 400 a call.
  */
 export function answerAsker(
   config: ProviderConfig,
@@ -60,7 +61,7 @@ export function answerAsker(
     if (limits !== undefined) {
       try {
         const streamed = { ...body, ...wire.fields };
-        const events = await postStream(
+        const answer = await postStream(
           config,
           path,
           headers,
@@ -69,7 +70,7 @@ export function answerAsker(
           limits,
           outputLimitField,
         );
-        return await wire.assemble(events);
+        return answer.kind === 'whole' ? answer.answer : await wire.assemble(answer.events);
       } catch (error) {
         if (!(error instanceof LlmError && error.refusedStream)) throw error;
         limits = undefined;

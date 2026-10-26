@@ -5,7 +5,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { createFakeLlm, llmShape, type FakeLlm, type LlmReply } from '../../../test/fake-llm';
 import { withStreamServer, type StreamServer } from '../../../test/stream-server';
 import { parseInternalHosts } from '../../scm/url';
-import { NOT_UNDERSTOOD, postJson, postStream } from './http';
+import { NOT_UNDERSTOOD, postJson, postStream, type StreamedAnswer } from './http';
 import type { SseEvent } from './sse';
 import {
   LLM_MAX_ANSWER_BYTES,
@@ -24,6 +24,12 @@ async function drain<T>(items: AsyncIterable<T>): Promise<T[]> {
 }
 
 const event = (data: string, type: string | null = null): SseEvent => ({ event: type, data });
+
+/** The events of a streamed answer: what a test of an event stream reads. */
+function eventsOf(answer: StreamedAnswer): AsyncIterable<SseEvent> {
+  if (answer.kind !== 'events') throw new Error('the answer is no event stream');
+  return answer.events;
+}
 
 const LIMITS = {
   firstByteMs: 5_000,
@@ -104,7 +110,11 @@ describe('postStream', () => {
       http,
       LIMITS,
     );
-    expect(await drain(stream)).toEqual([event('1', 'a'), event('2\n3'), event('[DONE]')]);
+    expect(await drain(eventsOf(stream))).toEqual([
+      event('1', 'a'),
+      event('2\n3'),
+      event('[DONE]'),
+    ]);
     const sent = fake.requests[0]!;
     expect(sent).toMatchObject({ method: 'POST', path: '/v1/chat/completions' });
     expect(sent.headers.accept).toBe('text/event-stream');
@@ -128,7 +138,7 @@ describe('postStream', () => {
         body: 'data: x\n\n',
       });
       const stream = await postStream(config, path, headers, {}, http, LIMITS);
-      expect(await drain(stream)).toEqual([event('x')]);
+      expect(await drain(eventsOf(stream))).toEqual([event('x')]);
     }
     expect(fake.requests.map((r) => r.path)).toEqual([
       '/v1/responses',
@@ -136,6 +146,52 @@ describe('postStream', () => {
       '/v1/chat/completions',
       '/v1/messages',
     ]);
+  });
+
+  it('reads a 2xx that is no event stream whole, as JSON: a server that ignored the stream', async () => {
+    const whole = { id: 'chatcmpl-1', choices: [{ message: { content: 'é 😀' } }] };
+    for (const type of ['application/json', 'application/json; charset=utf-8', 'text/plain']) {
+      fake.enqueue({ status: 200, headers: { 'content-type': type }, body: whole });
+      expect(await postStream(openai, chat().path, chat().headers, {}, http, LIMITS), type).toEqual(
+        { kind: 'whole', answer: whole },
+      );
+    }
+    // An event stream is its events, whatever the case and the parameters of its type.
+    fake.enqueue({
+      status: 200,
+      headers: { 'content-type': 'Text/Event-Stream; charset=utf-8' },
+      body: 'data: x\n\n',
+    });
+    const stream = await postStream(openai, chat().path, chat().headers, {}, http, LIMITS);
+    expect(await drain(eventsOf(stream))).toEqual([event('x')]);
+  });
+
+  it('refuses a whole answer that is not JSON, or is over 1 MiB, as postJson refuses it', async () => {
+    const outcomes = async (answer: LlmReply) => {
+      fake.enqueue(answer, answer);
+      const asJson = await postJson(openai, chat().path, chat().headers, {}, http).catch(
+        (e: unknown) => e,
+      );
+      const asStream = await postStream(
+        openai,
+        chat().path,
+        chat().headers,
+        {},
+        http,
+        LIMITS,
+      ).catch((e: unknown) => e);
+      return { asJson: shape(asJson), asStream: shape(asStream) };
+    };
+    const notJson = await outcomes(reply(200, 'not json'));
+    expect(notJson.asStream).toEqual(notJson.asJson);
+    expect(notJson.asStream).toMatchObject({
+      failure: 'bad_answer',
+      message: NOT_UNDERSTOOD,
+      status: 200,
+    });
+    const tooLarge = await outcomes(reply(200, { pad: 'x'.repeat(LLM_MAX_ANSWER_BYTES) }));
+    expect(tooLarge.asStream).toEqual(tooLarge.asJson);
+    expect(tooLarge.asStream).toMatchObject({ failure: 'bad_answer', message: NOT_UNDERSTOOD });
   });
 
   /** A reply of the providers, as the fake serves it. */
@@ -649,8 +705,66 @@ describe('postStream', () => {
       { stream: true },
       signal ? { ...options, signal } : options,
       { ...LIMITS, ...limits },
+    ).then(eventsOf);
+  };
+
+  /** A call answered by hand whose answer is read whole: one that is no event stream. */
+  const startWhole = (
+    server: StreamServer,
+    limits: Partial<typeof LIMITS> = {},
+    signal?: AbortSignal,
+  ) => {
+    const { config, http: options } = against(server);
+    return postStream(
+      config,
+      '/chat/completions',
+      {},
+      { stream: true },
+      signal ? { ...options, signal } : options,
+      { ...LIMITS, ...limits },
     );
   };
+
+  it('reads a whole answer as it arrives, within the timers of the stream, and its caller can give it up', async () => {
+    await withStreamServer(async (server) => {
+      const pending = startWhole(server);
+      const answer = await server.next();
+      answer.head(200, { 'content-type': 'application/json' });
+      // Cut inside a character of two bytes: the answer is decoded once it is whole.
+      const body = Buffer.from('{"text":"é"}');
+      await answer.write(body.subarray(0, 10));
+      await answer.end(body.subarray(10));
+      expect(await pending).toEqual({ kind: 'whole', answer: { text: 'é' } });
+    });
+    await withStreamServer(async (server) => {
+      fakeTimers();
+      const quiet = startWhole(server, { idleMs: 1_000 }).catch((e: unknown) => e);
+      const answer = await server.next();
+      answer.head(200, { 'content-type': 'application/json' });
+      await answer.write('{"text":');
+      // The status line and the piece have reached the call before the clock moves: the call waits
+      // for the rest of a body it began to read, not for its first byte.
+      for (let turn = 0; turn < 10; turn += 1) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(shape(await quiet)).toMatchObject({
+        failure: 'timeout',
+        message: 'The model sent nothing for 1 s; raise the timeout in the AI assistant settings',
+      });
+      await answer.closed;
+    });
+    await withStreamServer(async (server) => {
+      const controller = new AbortController();
+      const given = startWhole(server, {}, controller.signal).catch((e: unknown) => e);
+      const answer = await server.next();
+      answer.head(200, { 'content-type': 'application/json' });
+      await answer.write('{"text":');
+      controller.abort();
+      expect(await given).toBeInstanceOf(LlmCallAborted);
+      await answer.closed;
+    });
+  });
 
   it('yields each event as soon as the chunks that make it have come, whatever their cuts', async () => {
     await withStreamServer(async (server) => {

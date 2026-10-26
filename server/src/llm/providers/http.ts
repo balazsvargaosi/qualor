@@ -244,12 +244,62 @@ function eventsOf(
 }
 
 /**
+ * What a streamed call is answered with: the events of its stream, or the whole answer of a server
+ * that does not stream. Such a server answers a request that asks for a stream as one that does
+ * not: with a 2xx whose content type is not an event stream, whose body is the answer as JSON, as
+ * `postJson` parses it.
+ */
+export type StreamedAnswer =
+  { kind: 'events'; events: AsyncIterable<SseEvent> } | { kind: 'whole'; answer: unknown };
+
+/** Whether a 2xx's content type says that its body is an event stream, with any parameters. */
+function isEventStream(headers: IncomingHttpHeaders): boolean {
+  const type = headers['content-type'];
+  return typeof type === 'string' && /^\s*text\/event-stream\s*(?:;|$)/i.test(type);
+}
+
+/**
+ * The body of a 2xx that is no event stream, read whole as it arrives and then parsed as JSON, as
+ * `postJson` reads an answer: more than LLM_MAX_ANSWER_BYTES is an answer not understood (and the
+ * connection is closed), and so is a body that is not JSON. What goes wrong while it is read is
+ * thrown as what goes wrong while events stream (`streamEvents`): the signal's giving up, a timer
+ * that ran out, a connection that breaks.
+ */
+async function wholeAnswer(
+  chunks: AsyncIterable<Buffer>,
+  status: number,
+  limits: StreamLimits,
+): Promise<unknown> {
+  const parts: Buffer[] = [];
+  let size = 0;
+  try {
+    for await (const chunk of chunks) {
+      size += chunk.length;
+      if (size > LLM_MAX_ANSWER_BYTES) throw new LlmError('bad_answer', NOT_UNDERSTOOD);
+      parts.push(chunk);
+    }
+  } catch (error) {
+    if (error instanceof OutboundStreamError) {
+      throw failureOf(error, () => streamTimeout(error.timer, limits));
+    }
+    throw error;
+  }
+  try {
+    return JSON.parse(Buffer.concat(parts).toString('utf8')) as unknown;
+  } catch {
+    throw new LlmError('bad_answer', NOT_UNDERSTOOD, { status });
+  }
+}
+
+/**
  * One streamed POST to `<baseUrl><path>`: everything before the answer is `postJson`'s (the base
  * URL checked first, every resolved address checked and pinned, no proxy, no redirect followed, the
  * same headers), but the call asks for an event stream, and reads it as it arrives, within the
- * caller's `limits`. Resolves with the events of a 2xx when its status line has come, and the events
- * are read from it as they arrive (`for await`; a reader that stops early closes the connection,
- * even before its first read: `eventsOf`).
+ * caller's `limits`. Resolves when the status line of a 2xx has come: with its events, which are
+ * read from it as they arrive (`for await`; a reader that stops early closes the connection, even
+ * before its first read: `eventsOf`); or, when its content type is not an event stream, with the
+ * whole answer, as JSON (`wholeAnswer`): a server that does not stream may ignore the ask and
+ * answer as it does to a request that makes none.
  * An answer with any other status throws what `postJson` throws for it, with the one function that
  * classifies a refusal for both (`refusedBy`), so that a streamed call is asked again, as a call
  * that is not, when its output limit is refused; a server that does not stream says so in it too
@@ -266,7 +316,7 @@ export async function postStream(
   http: ProviderHttpOptions,
   limits: StreamLimits,
   outputLimitField?: ProviderConfig['maxTokensField'],
-): Promise<AsyncIterable<SseEvent>> {
+): Promise<StreamedAnswer> {
   const url = callUrl(config, path, http);
   const result = await outboundStream(callRequest(url, headers, body, http, 'text/event-stream'), {
     ...reach(url, http),
@@ -278,7 +328,9 @@ export async function postStream(
     case 'response':
       throw refusedBy(config, result, body, outputLimitField);
     case 'stream':
-      return eventsOf(result.chunks, limits);
+      return isEventStream(result.headers)
+        ? { kind: 'events', events: eventsOf(result.chunks, limits) }
+        : { kind: 'whole', answer: await wholeAnswer(result.chunks, result.status, limits) };
   }
 }
 

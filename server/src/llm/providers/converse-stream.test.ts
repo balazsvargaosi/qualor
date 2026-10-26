@@ -517,6 +517,75 @@ describe('converse: a streamed answer is the answer that is not streamed (R35)',
     });
   });
 
+  describe('a server that ignores the stream', () => {
+    beforeEach(async () => {
+      await fake.close();
+      await fakeOf({ ignoreStream: true });
+    });
+
+    /** An answer with text, calls and usage, and the thinking or reasoning of the wires that have it. */
+    const richAnswer = (wire: Wire): unknown =>
+      wire === 'anthropic'
+        ? anthropicToolUse(
+            [{ id: 'toolu_1', name: 'read_file', input: { path: 'src/café/😀.ts' } }],
+            {
+              text: TEXT,
+              thinking: [anthropicThinking('SIGNATURE-ONE', 'I should read 😀 first.')],
+              usage: { input_tokens: 431, output_tokens: 1_102 },
+            },
+          )
+        : wire === 'responses'
+          ? responsesToolCalls(CALLS, {
+              text: TEXT,
+              reasoning: [responsesReasoning('ENCRYPTED-ONE')],
+              usage: { input_tokens: 120, output_tokens: 34 },
+            })
+          : openAiToolCalls(CALLS, {
+              text: TEXT,
+              usage: { prompt_tokens: 120, completion_tokens: 34 },
+            });
+
+    it.each(WIRES)(
+      '%s: its whole answer, JSON and no event stream, is read as the answer that is not streamed, in one request',
+      async (wire) => {
+        fake.enqueue(
+          { status: 200, body: richAnswer(wire) },
+          { status: 200, body: richAnswer(wire) },
+        );
+        const turn = await converse(configs[wire], fake.apiKey, start, streamed);
+        expect(fake.requests).toHaveLength(1);
+        expect(fake.requests[0]!.json).toMatchObject({ stream: true });
+        expect(turn).toEqual(await converse(configs[wire], fake.apiKey, start, http));
+        expect(turn.toolCalls.length).toBeGreaterThan(0);
+      },
+    );
+
+    it.each(WIRES)('%s: a whole answer that is not JSON is not understood', async (wire) => {
+      fake.enqueue({ status: 200, body: 'this is not JSON' });
+      const err = await converse(configs[wire], fake.apiKey, start, streamed).catch(
+        (e: unknown) => e,
+      );
+      expect(err).toMatchObject({ failure: 'bad_answer', status: 200 });
+    });
+
+    it.each(WIRES)('%s: a whole answer over 1 MiB is not understood', async (wire) => {
+      const text = 'é'.repeat(LLM_MAX_ANSWER_BYTES / 2 + 1);
+      fake.enqueue({
+        status: 200,
+        body:
+          wire === 'anthropic'
+            ? anthropicAnswer(text)
+            : wire === 'responses'
+              ? responsesAnswer(text)
+              : openAiAnswer(text),
+      });
+      const err = await converse(configs[wire], fake.apiKey, start, streamed).catch(
+        (e: unknown) => e,
+      );
+      expect(err).toMatchObject({ failure: 'bad_answer' });
+    });
+  });
+
   it.each(WIRES)(
     '%s: explain, triage, fix and the Test do not stream: a single call never does, nor a conversation not told to',
     async (wire) => {
