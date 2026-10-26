@@ -67,12 +67,15 @@ export const projectAiReviewSchema = z.object({
    * exclude it from the AI assistant. Whether the project is mapped to an SCM connection is not
    * part of it: `reason` says so (`not_mapped`), and so does `GET /projects/review-context`.
    */
-  enabled: z.boolean(),
+  enabled: z.boolean().meta({
+    description:
+      'The project is chosen for AI review in an organisation where review is on, whatever its repository mapping',
+  }),
   /** The organisation has AI review on, as above, whichever projects it selects. */
   organizationEnabled: z.boolean(),
   reason: z.enum(REVIEW_INACTIVE_REASONS).nullable().meta({
     description:
-      'Why AI review does not run for the project: the first condition that fails, in the order the values are listed; null while it runs',
+      "Why AI review does not run for the project: the first condition that fails, in the order the values are listed; null while it runs. no_provider: no AI provider is configured; organization_disabled: AI is not enabled for the organisation; review_disabled: the organisation has not switched AI review on; consent_outdated: the organisation's consent does not cover the provider configured now; project_not_selected: the organisation does not review this project; not_mapped: the project is not mapped to a repository",
   }),
 });
 

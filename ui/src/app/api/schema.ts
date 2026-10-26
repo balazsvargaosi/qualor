@@ -2800,9 +2800,10 @@ export interface paths {
                                     excludedFromAi: boolean;
                                 };
                                 aiReview: {
+                                    /** @description The project is chosen for AI review in an organisation where review is on, whatever its repository mapping */
                                     enabled: boolean;
                                     organizationEnabled: boolean;
-                                    /** @description Why AI review does not run for the project: the first condition that fails, in the order the values are listed; null while it runs */
+                                    /** @description Why AI review does not run for the project: the first condition that fails, in the order the values are listed; null while it runs. no_provider: no AI provider is configured; organization_disabled: AI is not enabled for the organisation; review_disabled: the organisation has not switched AI review on; consent_outdated: the organisation's consent does not cover the provider configured now; project_not_selected: the organisation does not review this project; not_mapped: the project is not mapped to a repository */
                                     reason: ("no_provider" | "organization_disabled" | "review_disabled" | "consent_outdated" | "project_not_selected" | "not_mapped") | null;
                                 };
                             }[];
@@ -2913,9 +2914,10 @@ export interface paths {
                                 excludedFromAi: boolean;
                             };
                             aiReview: {
+                                /** @description The project is chosen for AI review in an organisation where review is on, whatever its repository mapping */
                                 enabled: boolean;
                                 organizationEnabled: boolean;
-                                /** @description Why AI review does not run for the project: the first condition that fails, in the order the values are listed; null while it runs */
+                                /** @description Why AI review does not run for the project: the first condition that fails, in the order the values are listed; null while it runs. no_provider: no AI provider is configured; organization_disabled: AI is not enabled for the organisation; review_disabled: the organisation has not switched AI review on; consent_outdated: the organisation's consent does not cover the provider configured now; project_not_selected: the organisation does not review this project; not_mapped: the project is not mapped to a repository */
                                 reason: ("no_provider" | "organization_disabled" | "review_disabled" | "consent_outdated" | "project_not_selected" | "not_mapped") | null;
                             };
                         };
@@ -3046,9 +3048,10 @@ export interface paths {
                                 excludedFromAi: boolean;
                             };
                             aiReview: {
+                                /** @description The project is chosen for AI review in an organisation where review is on, whatever its repository mapping */
                                 enabled: boolean;
                                 organizationEnabled: boolean;
-                                /** @description Why AI review does not run for the project: the first condition that fails, in the order the values are listed; null while it runs */
+                                /** @description Why AI review does not run for the project: the first condition that fails, in the order the values are listed; null while it runs. no_provider: no AI provider is configured; organization_disabled: AI is not enabled for the organisation; review_disabled: the organisation has not switched AI review on; consent_outdated: the organisation's consent does not cover the provider configured now; project_not_selected: the organisation does not review this project; not_mapped: the project is not mapped to a repository */
                                 reason: ("no_provider" | "organization_disabled" | "review_disabled" | "consent_outdated" | "project_not_selected" | "not_mapped") | null;
                             };
                         };
@@ -3172,9 +3175,10 @@ export interface paths {
                                 excludedFromAi: boolean;
                             };
                             aiReview: {
+                                /** @description The project is chosen for AI review in an organisation where review is on, whatever its repository mapping */
                                 enabled: boolean;
                                 organizationEnabled: boolean;
-                                /** @description Why AI review does not run for the project: the first condition that fails, in the order the values are listed; null while it runs */
+                                /** @description Why AI review does not run for the project: the first condition that fails, in the order the values are listed; null while it runs. no_provider: no AI provider is configured; organization_disabled: AI is not enabled for the organisation; review_disabled: the organisation has not switched AI review on; consent_outdated: the organisation's consent does not cover the provider configured now; project_not_selected: the organisation does not review this project; not_mapped: the project is not mapped to a repository */
                                 reason: ("no_provider" | "organization_disabled" | "review_disabled" | "consent_outdated" | "project_not_selected" | "not_mapped") | null;
                             };
                         };
@@ -3378,9 +3382,10 @@ export interface paths {
                                 excludedFromAi: boolean;
                             };
                             aiReview: {
+                                /** @description The project is chosen for AI review in an organisation where review is on, whatever its repository mapping */
                                 enabled: boolean;
                                 organizationEnabled: boolean;
-                                /** @description Why AI review does not run for the project: the first condition that fails, in the order the values are listed; null while it runs */
+                                /** @description Why AI review does not run for the project: the first condition that fails, in the order the values are listed; null while it runs. no_provider: no AI provider is configured; organization_disabled: AI is not enabled for the organisation; review_disabled: the organisation has not switched AI review on; consent_outdated: the organisation's consent does not cover the provider configured now; project_not_selected: the organisation does not review this project; not_mapped: the project is not mapped to a repository */
                                 reason: ("no_provider" | "organization_disabled" | "review_disabled" | "consent_outdated" | "project_not_selected" | "not_mapped") | null;
                             };
                         };
