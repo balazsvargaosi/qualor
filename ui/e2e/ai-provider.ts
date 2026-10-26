@@ -10,9 +10,9 @@ export interface TierModels {
  * The instance admin's save of the AI assistant settings with the models of the strong and the
  * fast tier set (or none), everything else as it is stored: the API, as the AI assistant page's own
  * save sends it. The key is left out, so the stored one stays. `admin` is a request context signed
- * in as the instance admin. The tests that set tier models put the seed's one model back with it,
- * in a `finally` or an `afterEach`, so that a failure midway never leaves them in the shared e2e
- * database.
+ * in as the instance admin. The tests that set tier models put the seed's one model back with it
+ * in an `afterEach`, so that a failure midway never leaves them in the shared e2e database, and a
+ * failure of that never hides the test's own.
  */
 export async function setTierModels(admin: APIRequestContext, models: TierModels): Promise<void> {
   const me = (await (await admin.get('/api/v0/auth/me')).json()) as { csrfToken: string };

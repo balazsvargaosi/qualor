@@ -1,4 +1,4 @@
-import type { Page } from '@playwright/test';
+import type { APIRequest, APIRequestContext, Page } from '@playwright/test';
 import { setTierModels } from './ai-provider';
 import { expect, expectAccessible, test } from './fixtures';
 import { OLGA, PAYMENTS, SHOP, STORAGE_STATE, VERA } from './seed-data';
@@ -17,6 +17,20 @@ async function signIn(page: Page, user: { username: string; password: string }):
   await page.getByLabel('Password').fill(user.password);
   await page.getByRole('button', { name: 'Sign in' }).click();
   await expect(page).toHaveURL(/\/projects$/);
+}
+
+/** Runs `act` with a request context signed in as the instance admin, disposed after it. */
+async function asAdmin(
+  request: APIRequest,
+  baseURL: string | undefined,
+  act: (admin: APIRequestContext) => Promise<void>,
+): Promise<void> {
+  const admin = await request.newContext({ baseURL, storageState: STORAGE_STATE });
+  try {
+    await act(admin);
+  } finally {
+    await admin.dispose();
+  }
 }
 
 /** Payments API's or Web Shop's settings, through the project's own tabs. */
@@ -206,21 +220,31 @@ test.describe('as people other than the instance admin', () => {
     });
   });
 
-  test('switching review on with three models names all three in the warning and sends them', async ({
-    page,
-    playwright,
-    baseURL,
-  }) => {
-    const puts: string[] = [];
-    page.on('request', (request) => {
-      if (request.method() === 'PUT' && request.url().includes('/ai/review')) {
-        puts.push(request.postData() ?? '');
-      }
+  test.describe('with a model for each tier', () => {
+    // A failure midway, a timeout too, must never leave the models in the shared e2e database:
+    // the seed's one model is put back through the API whatever the test did. In a hook, a
+    // failure of that is reported beside the test's own, never in its place.
+    test.afterEach(async ({ playwright, baseURL }) => {
+      await asAdmin(playwright.request, baseURL, (admin) =>
+        setTierModels(admin, { strongModel: null, fastModel: null }),
+      );
     });
-    // The instance admin gives the strong and the fast tier a model each (the seed has one model).
-    const admin = await playwright.request.newContext({ baseURL, storageState: STORAGE_STATE });
-    try {
-      await setTierModels(admin, { strongModel: 'fake-strong', fastModel: 'fake-fast' });
+
+    test('switching review on with three models names all three in the warning and sends them', async ({
+      page,
+      playwright,
+      baseURL,
+    }) => {
+      const puts: string[] = [];
+      page.on('request', (request) => {
+        if (request.method() === 'PUT' && request.url().includes('/ai/review')) {
+          puts.push(request.postData() ?? '');
+        }
+      });
+      // The instance admin gives the strong and the fast tier a model each (the seed has one model).
+      await asAdmin(playwright.request, baseURL, (admin) =>
+        setTierModels(admin, { strongModel: 'fake-strong', fastModel: 'fake-fast' }),
+      );
       await signIn(page, OLGA);
       await page.goto('/settings/ai-review');
       await expect(page.getByRole('heading', { name: 'AI review', level: 2 })).toBeVisible();
@@ -267,14 +291,7 @@ test.describe('as people other than the instance admin', () => {
       await page.getByRole('button', { name: 'Save' }).click();
       await expect(page.getByRole('status')).toHaveText('The AI review settings were saved.');
       expect(puts).toHaveLength(2);
-    } finally {
-      // The shared e2e database as the seed made it, whatever happened: the one model.
-      try {
-        await setTierModels(admin, { strongModel: null, fastModel: null });
-      } finally {
-        await admin.dispose();
-      }
-    }
+    });
   });
 
   test('a member sees no AI review entry, and the address says it is for organisation admins', async ({
