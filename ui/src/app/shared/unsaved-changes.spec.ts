@@ -25,6 +25,11 @@ describe('unsavedChangesGuard', () => {
     answer(true);
     await expect(result).resolves.toBe(true);
   });
+
+  it('lets a route go whose outlet holds no page', () => {
+    // Angular passes null for the component of a route whose outlet was never activated.
+    expect(guard(null as unknown as LeaveGuarded)).toBe(true);
+  });
 });
 
 describe('whileDirty', () => {

@@ -9,8 +9,12 @@ export interface LeaveGuarded {
   canLeave(): boolean | Promise<boolean>;
 }
 
-/** The route's `canDeactivate`: the page decides, and the navigation waits for its answer. */
-export const unsavedChangesGuard: CanDeactivateFn<LeaveGuarded> = (c) => c.canLeave();
+/**
+ * The route's `canDeactivate`: the page decides, and the navigation waits for its answer. Angular
+ * passes null for a route whose outlet was never activated: there is no page to ask, so it goes.
+ */
+export const unsavedChangesGuard: CanDeactivateFn<LeaveGuarded> = (c: LeaveGuarded | null) =>
+  c?.canLeave() ?? true;
 
 /**
  * Asks the browser to confirm a reload, a closed tab or another address while `dirty()` holds
