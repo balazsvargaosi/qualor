@@ -167,7 +167,8 @@ The checkout takes the pull request's head (so review comments land on its lines
 history and without leaving the job's token in `.git/config`, and skips pull requests from forks,
 which GitHub gives no secrets. For check runs and pull request comments (a summary, and a review
 comment on each new issue), create a GitHub App
-(Checks: read and write, Pull requests: read and write, Issues: read, Metadata: read;
+(Checks: read and write, Contents: read and write, Issues: read, Metadata: read, Pull requests:
+read and write; Qualor uses Contents only to resolve and reopen its own review conversations;
 [integrations/github/app-manifest.json](integrations/github/app-manifest.json) has these settings),
 install it on the repositories, add it in Qualor (Settings, GitHub: the API URL, the App id and the
 private key) and map each project to `owner/repo`. For the check run's Re-run button, and for

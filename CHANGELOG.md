@@ -103,17 +103,27 @@ All notable changes to Qualor are listed here, newest first. The format follows
 - GitHub: Qualor resolves a comment when its issue is fixed or marked in Qualor, and reopens it
   when the issue comes back, unless someone else resolved it (a person or another App). A reply by
   anyone else keeps a fixed issue's comment open.
+- GitHub: the App asks for **Contents: Read and write**, which Qualor uses only to resolve and
+  reopen its own conversations (GitHub lets an App resolve one only with it). Qualor asks for it
+  only where the installation grants it. An App without it keeps working and leaves the
+  conversations open: the summary says how many could not be resolved or reopened, and a reply
+  that marks a finding won't fix or false positive is answered and changes its status all the same.
+  The **Test** of an App with a repository on **Settings → GitHub** lists what the App lacks
+  (Contents, Issues and the three events) and what each costs; the answer of
+  `POST /api/v0/scm-connections/{id}/test` gains `missingAccess`. See
+  [the guide](docs/guide/github.md#update-an-app-you-created-before).
 - GitHub, when you upgrade: open pull requests get comments for all their open new issues on
   changed lines (up to 50 each) at their next analysis. With branch protection that requires
   conversation resolution, Qualor's open comments now block the merge, including comments on low
   and info issues that pass the gate. Mark the issue in Qualor, or resolve the comment.
-- GitHub, when you upgrade: an App you created before keeps its permissions and events. To get
-  answers to replies and `qualor review` comments at once, add **Issues: Read-only** and the events
-  **Issue comment** and **Pull request review comment** in the App's settings. Replies in review
-  threads are answered at once from then on: they need only the events. A `qualor review` comment
-  also waits for the owner of each installation to accept the new permission, and until then it is
-  answered at the next analysis. The webhook secret now serves these answers as well as the
-  **Re-run** button.
+- GitHub, when you upgrade: an App you created before keeps its permissions and events. For Qualor
+  to resolve and reopen its conversations, add **Contents: Read and write** in the App's settings;
+  they stay open until the owner of each installation accepts it. To get answers to replies and
+  `qualor review` comments at once, add **Issues: Read-only** and the events **Issue comment** and
+  **Pull request review comment**. Replies in review threads are answered at once from then on:
+  they need only the events. A `qualor review` comment also waits for the owner of each
+  installation to accept the new permission, and until then it is answered at the next analysis.
+  The webhook secret now serves these answers as well as the **Re-run** button.
 - A temperature stored for an Anthropic provider is ignored, and saving one is refused: the current
   Anthropic models take none.
 - An Explain, Suggest triage or Suggest a fix that is waiting or running when the server is stopped

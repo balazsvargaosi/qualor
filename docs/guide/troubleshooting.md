@@ -71,7 +71,7 @@ mapping. Its message says what is wrong.
 | "The stored token can no longer be read" | `QUALOR_SECRET_KEY` changed. Enter the token again |
 | comments have no links | `QUALOR_PUBLIC_URL` is not set |
 | no inline discussion or review comment for an issue | it is not on an added line of the diff, or it is past the 50 per merge or pull request. The summary counts both |
-| GitHub: `not_installed` / `permission_missing` | install the App on the repository, and grant Checks and Pull requests write |
+| GitHub: `not_installed` / `permission_missing` | install the App on the repository, and grant Checks, Contents and Pull requests write. Qualor uses Contents only to resolve and reopen its own review conversations: without it the App works, and its conversations stay open ([GitHub: Troubleshooting](./github.md#troubleshooting)) |
 | GitHub: no inline comments for the analyzers' issues | the workflow checked out the merge commit. Use `ref: ${{ github.event.pull_request.head.sha }}`. Only the analyzers' comments are missing then: the comments of AI review are still posted |
 | no AI review section in the summary | AI review is not switched on for the project ([Why AI review is off for a project](./ai-review.md#why-ai-review-is-off-for-a-project)), or the analysis is not of a merge request |
 | the AI review section says the review did not run or failed | [AI review: What the summary says](./ai-review.md#what-the-summary-says) |

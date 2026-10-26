@@ -95,9 +95,11 @@ appears in Qualor.
 Phase 4, merge request feedback. Connect the SCM in Qualor as
 gitlab.md or github.md describes: a project or group access token
 with the api scope and Maintainer role for GitLab, or a GitHub App
-with Checks and Pull requests write and Issues read for GitHub. Map
-each pilot project, run the connection test, and show me a merge
-request with Qualor's summary comment and inline findings.
+with Checks, Contents and Pull requests write and Issues read for
+GitHub (Qualor uses Contents only to resolve and reopen its own
+review conversations). Map each pilot project, run the connection
+test, and show me a merge request with Qualor's summary comment and
+inline findings.
 
 Phase 5, tuning. Look at the pilot results. Propose the
 organisation's gate and profile changes, with a reason for each:
