@@ -1199,6 +1199,21 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
       expect(root.textContent).not.toContain('server text');
     });
 
+    it('says in its chip that a budget left empty is not set', async () => {
+      setup('orgAdmin', { usage: PRICED });
+      const { fixture, root } = await render();
+      // Switched on with nothing typed yet.
+      await click(fixture, switchNamed(root, 'Limit tokens per project'));
+      await click(fixture, switchNamed(root, 'Limit the cost'));
+      expect(chips(root).slice(2)).toEqual([
+        { text: 'Tokens per project per day: not set', set: true },
+        { text: 'Cost per day: not set', set: true },
+      ]);
+      type(root, 'ai-review-tokens', '');
+      await settle(fixture);
+      expect(chips(root)[0]).toEqual({ text: 'Tokens per day: not set', set: true });
+    });
+
     it('limits the cost only with prices', async () => {
       setup();
       const { root } = await render();

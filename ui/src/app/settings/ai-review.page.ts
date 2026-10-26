@@ -335,7 +335,10 @@ export class AiReviewPage implements LeaveGuarded {
     return at === null ? { kind: 'clean' } : { kind: 'saved', at };
   });
 
-  /** The values of the closed fold, as chips; a value other than the default is marked. */
+  /**
+   * The values of the closed fold, as chips; a value other than the default is marked, and a field
+   * left empty (a limit just switched on, say) says it is not set rather than show no number.
+   */
   protected readonly budgetChips = computed(() => {
     const draft = this.budgets();
     const tokens = budgetNumber('tokensPerDay', draft.tokensPerDay);
@@ -343,26 +346,33 @@ export class AiReviewPage implements LeaveGuarded {
     const perProject = budgetNumber('perProjectTokensPerDay', draft.perProjectTokensPerDay);
     const cost = budgetNumber('costPerDayUsd', draft.costPerDayUsd);
     const shown = (n: number | null, typed: string) => (n === null ? typed : this.whole(n));
+    const unset = (field: AiReviewBudgetField) =>
+      draft[field].trim() === ''
+        ? {
+            text: $localize`:@@orgAi.chip.unset:${this.fieldLabels[field]}:field:: not set`,
+            set: true,
+          }
+        : null;
     return [
-      {
+      unset('tokensPerDay') ?? {
         text: $localize`:@@orgAi.chip.tokens:${shown(tokens, draft.tokensPerDay)}:n: tokens a day`,
         set: tokens !== DEFAULT_AI_REVIEW_BUDGETS.tokensPerDay,
       },
-      {
+      unset('maxTokensPerReview') ?? {
         text: $localize`:@@orgAi.chip.perReview:${shown(perReview, draft.maxTokensPerReview)}:n: per review`,
         set: perReview !== DEFAULT_AI_REVIEW_BUDGETS.maxTokensPerReview,
       },
       draft.perProjectLimited
-        ? {
+        ? (unset('perProjectTokensPerDay') ?? {
             text: $localize`:@@orgAi.chip.perProject:${shown(perProject, draft.perProjectTokensPerDay)}:n: per project a day`,
             set: true,
-          }
+          })
         : { text: $localize`:@@orgAi.chip.noPerProject:No limit per project`, set: false },
       draft.costLimited
-        ? {
+        ? (unset('costPerDayUsd') ?? {
             text: $localize`:@@orgAi.chip.cost:${cost === null ? draft.costPerDayUsd : this.usd(cost)}:amount: a day`,
             set: true,
-          }
+          })
         : { text: $localize`:@@orgAi.chip.noCost:No cost limit`, set: false },
     ];
   });

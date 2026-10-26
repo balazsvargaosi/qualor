@@ -1184,6 +1184,7 @@
     "orgAi.feature.triage": "Suggest triage",
     "orgAi.feature.fix": "Suggest a fix",
     "orgAi.removeProject": "Remove {$name}",
+    "orgAi.chip.unset": "{$field}: not set",
     "orgAi.chip.tokens": "{$n} tokens a day",
     "orgAi.chip.perReview": "{$n} per review",
     "orgAi.chip.perProject": "{$n} per project a day",
