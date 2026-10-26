@@ -107,9 +107,11 @@ import { openSnapshotReader, type SnapshotReader } from './snapshot-reader';
  * decision, and the post after it. A circuit that is open, or half-open with another job's probe in
  * flight, puts the row back in the queue for when it lets a job through, with no try spent and
  * nothing changed by that go; the circuit hears what came of the requests it let through. The
- * model provider's circuit, which the calls of the model pass (usage.ts), does the same when it is
- * closed to them: the row goes back in the queue with nothing decided. The organisation's slots
- * are the decorations': the job takes none.
+ * model provider's circuit, which the calls of the model pass (usage.ts), does the same for a row
+ * the model has yet to decide: asked right after the day's budget, before any request to GitLab
+ * or GitHub or any masking, it puts the row back unless it would let the job through (closed, or
+ * half-open with this job as its probe), and a call it refuses later does the same, with nothing
+ * decided. The organisation's slots are the decorations': the job takes none.
  *
  * A stop of the server while the model decides puts the row back in the queue for the next server;
  * AI review switched off meanwhile ends it `skipped: inactive`. Any other error fails the job into
@@ -335,6 +337,12 @@ class ReplyJob extends JobSteps {
     if (row.verdict === null && (await replyTokensLeft(replyDeps, provider)) <= 0) {
       return this.end(row, { status: 'skipped', reason: 'budget_spent' });
     }
+    // A row the model has yet to decide waits for a model provider that is failing for every caller
+    // before anything is read from GitLab or GitHub or masked. Only a job that can be the probe of
+    // a half-open circuit goes on.
+    if (row.verdict === null && !this.deps.llmCircuit.wouldPass(provider.baseUrl)) {
+      return this.waitForModel(row, provider.baseUrl);
+    }
     const issue = await issueOf(db, row);
     if (issue === null) return this.failInternal(row, 'the issue is not of the project of the row');
     // With no decision yet, nothing is read or sent for a round that a newer one covers.
@@ -449,19 +457,9 @@ class ReplyJob extends JobSteps {
       return null;
     }
     if ('circuitOpen' in decided) {
-      // The model provider is failing for every caller: nothing was decided, and the row waits
-      // for its circuit as it waits for its SCM connection's, with no try spent.
-      const provider = replyDeps.settings.provider;
-      const waitSeconds =
-        provider === null
-          ? REPLY_CIRCUIT_WAIT_SECONDS
-          : circuitWaitSeconds(this.deps.llmCircuit, provider.baseUrl);
-      if (await queueAfterCircuit(db, row, waitSeconds)) {
-        this.deps.logger.info(
-          { replyId: row.id, retryInSeconds: waitSeconds },
-          'AI reply waits for the circuit of its model provider',
-        );
-      }
+      // The circuit closed to the call after the job had passed it (another job took the probe
+      // meanwhile): nothing was decided.
+      await this.waitForModel(row, replyDeps.settings.provider?.baseUrl ?? null);
       return null;
     }
     if ('failed' in decided) {
@@ -480,6 +478,24 @@ class ReplyJob extends JobSteps {
       ...decided.usage,
     });
     return { verdict: decided.verdict, answer: decided.answer };
+  }
+
+  /**
+   * Puts the row back in the queue for when the circuit of its model provider (`baseUrl`) lets a call
+   * through again, as it waits for its SCM connection's: the provider is failing for every caller,
+   * nothing was decided, and no try is spent.
+   */
+  private async waitForModel(row: ReplyInThread, baseUrl: string | null): Promise<void> {
+    const waitSeconds =
+      baseUrl === null
+        ? REPLY_CIRCUIT_WAIT_SECONDS
+        : circuitWaitSeconds(this.deps.llmCircuit, baseUrl);
+    if (await queueAfterCircuit(this.deps.db, row, waitSeconds)) {
+      this.deps.logger.info(
+        { replyId: row.id, retryInSeconds: waitSeconds },
+        'AI reply waits for the circuit of its model provider',
+      );
+    }
   }
 
   /**

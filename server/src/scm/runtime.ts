@@ -55,6 +55,17 @@ export class CircuitBreaker {
     return true;
   }
 
+  /**
+   * Whether {@link tryPass} would let a job through now: the circuit is closed, or it is half-open
+   * with no probe in flight. It makes no job the probe: a job that has work of its own to do before
+   * its requests asks it first, and passes the circuit when it sends them.
+   */
+  wouldPass(key: string): boolean {
+    const entry = this.state.get(key);
+    if (!entry || entry.failures < this.threshold) return true;
+    return entry.openUntil <= this.now() && !entry.probing;
+  }
+
   /** GitLab answered: the count starts again and the circuit is closed. */
   success(key: string): void {
     this.state.delete(key);

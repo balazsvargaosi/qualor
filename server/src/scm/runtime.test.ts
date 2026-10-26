@@ -38,6 +38,21 @@ describe('the circuit breaker of a connection (scm.md §4.2)', () => {
     expect(circuit.openUntil('k')).toBeNull(); // the window is over; the probe decides
   });
 
+  it('tells whether a job would pass without making it the probe', () => {
+    let now = 0;
+    const circuit = new CircuitBreaker(() => now, 1, 1_000);
+    expect(circuit.wouldPass('k')).toBe(true); // closed
+    circuit.failure('k');
+    expect(circuit.wouldPass('k')).toBe(false); // open
+    now = 1_001;
+    expect(circuit.wouldPass('k')).toBe(true); // half-open, no probe in flight
+    expect(circuit.wouldPass('k')).toBe(true); // asking took nothing
+    expect(circuit.tryPass('k')).toBe(true); // the probe
+    expect(circuit.wouldPass('k')).toBe(false); // the others wait for its answer
+    circuit.success('k');
+    expect(circuit.wouldPass('k')).toBe(true);
+  });
+
   it('keeps connections apart, and releasing a closed circuit changes nothing', () => {
     const circuit = new CircuitBreaker(() => 0, 1, 1_000);
     circuit.failure('a');
