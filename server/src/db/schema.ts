@@ -1772,7 +1772,10 @@ export const reviewRuns = pgTable(
     outputTokens: bigint('output_tokens', { mode: 'number' }).notNull().default(0),
     /** Estimated, as in `llm_requests`: null when no prices are set. */
     costMicroUsd: bigint('cost_micro_usd', { mode: 'number' }),
-    /** A stage used up its share of the token budget and answered with what it had. */
+    /**
+     * A conversation used up its tokens and answered with what it had, or had none to start with
+     * (a turn limit is no token limit: the summary's notes say it).
+     */
     tokenLimitReached: boolean('token_limit_reached').notNull().default(false),
     /** The scanner left files out of the snapshot to stay within its limits. */
     snapshotPartial: boolean('snapshot_partial').notNull().default(false),

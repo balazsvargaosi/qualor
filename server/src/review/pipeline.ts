@@ -51,14 +51,19 @@ export { REVIEW_NOTES, type ReviewFinding, type ReviewNote } from './schemas';
  * does not pass. A reviewer that still does not answer in its JSON adds nothing, and a judge that
  * does not fails the review (fail closed).
  *
- * The review's token budget is shared out between the stages, each of which spends from its own
- * share whichever way its conversations end: 55 % for the specialists, an even part for each that
- * the others' spending does not touch; 35 % for the judge; 10 % for the verification, each in turn
- * given an even part of what is left of it. A conversation that used up its part answers through
- * its wrap-up, and one with nothing to spend does not run; the review goes on, with
- * `tokenLimitReached`. Only a judge cannot be done without. What a first message holds is sized to
- * a third of its conversation's tokens (`reviewLimits`, and the judge's data): every call sends it
- * again, and a third leaves room for a turn of tools, what the tools answer, and the wrap-up.
+ * The review's token budget is shared out between the stages: 55 % for the specialists, 35 % for
+ * the judge and 10 % for the verification, shares that add up to the budget. What is left unspent
+ * goes forward, and what is spent past what was given is taken from no other: each specialist has
+ * an even part of the specialists' share and what the ones before it left of theirs; the judge its
+ * share and what the specialists left of theirs; the verification its share and what the judge
+ * left, each finding it checks an even part of that and what the ones before it left. A
+ * conversation that used up its tokens answers through its wrap-up, and the review notes the token
+ * limit (`tokenLimitReached`); one that took all its turns answers through its own, and the review
+ * notes the turn limit; one with nothing to spend does not run, and the review notes the token
+ * limit. The review goes on: only a judge cannot be done without. What a first message holds is
+ * sized to a third of the tokens its conversation is sure of (`reviewLimits`, with a specialist's
+ * even part, and the judge's data, with its share): every call sends it again, and a third leaves
+ * room for a turn of tools, what the tools answer, and the wrap-up.
  *
  * Each conversation runs on the model of a tier (model-tiers.ts): the judge and the verification on
  * the strong one, the specialists on the standard one, and the quality reviewer of a trivial review
@@ -290,9 +295,38 @@ export function reviewLimits(shape: ContextShape, budget: number): ContextLimits
   };
 }
 
-/** What a stage may still spend. */
-interface Share {
-  left: number;
+/**
+ * The tokens of a stage, given to its conversations one after the other: each is given an even
+ * part of them and what the one before it left of what it was given (which holds what the ones
+ * before that left). What one spends past what it was given is taken from no other: the next has
+ * its even part all the same. What the stage leaves unspent is the next stage's.
+ */
+class StageTokens {
+  private readonly part: number;
+  /** What the last conversation left of what it was given: the next one has it besides its part. */
+  private carried = 0;
+
+  constructor(
+    private readonly tokens: number,
+    private readonly slots: number,
+  ) {
+    this.part = slots > 0 ? Math.floor(tokens / slots) : 0;
+  }
+
+  /** What the next conversation is given. */
+  next(): number {
+    return this.part + this.carried;
+  }
+
+  /** Takes note of what a conversation that was given `given` spent: what it left goes forward. */
+  settle(given: number, spent: number): void {
+    this.carried = Math.max(0, given - spent);
+  }
+
+  /** What the stage left unspent: what its last conversation left, and its parts' rounding. */
+  unspent(): number {
+    return this.carried + this.tokens - this.part * this.slots;
+  }
 }
 
 /** How one conversation slot ended. */
@@ -326,19 +360,20 @@ class Review {
   }
 
   /**
-   * One slot of a stage: a conversation of `role` over `data` with `tokens` to spend, which asks
-   * once more for an answer that does not match `schema` (runConversation's `accept`), and for a
-   * shorter one when the answer is longer than it is read. What it spent is taken from `share`.
+   * One slot of a stage: a conversation of `role` over `data` with the tokens `stage` gives it next,
+   * which asks once more for an answer that does not match `schema` (runConversation's `accept`),
+   * and for a shorter one when the answer is longer than it is read. `stage` is told what it spent.
    * Its answer is checked again here: a conversation that gave one back without checking it is not
-   * believed.
+   * believed. A wrap-up for the tokens is noted as the token limit, one for the turns as the turn
+   * limit.
    */
   async ask<T>(
     role: ReviewRole,
     data: unknown,
     schema: z.ZodType<T>,
-    tokens: number,
-    share: Share,
+    stage: StageTokens,
   ): Promise<Asked<T>> {
+    const tokens = stage.next();
     if (tokens <= 0) {
       this.limitReached();
       return { kind: 'no_tokens' };
@@ -362,14 +397,15 @@ class Review {
       accept,
       tierOfCall(role, this.sizeTier),
     );
-    share.left -= result.inputTokens + result.outputTokens;
+    stage.settle(tokens, result.inputTokens + result.outputTokens);
     if (result.kind === 'stopped') return { kind: 'stopped' };
     if (result.kind === 'failed') {
       return result.reason === 'bad_answer'
         ? { kind: 'unread' }
         : { kind: 'failed', reason: result.reason };
     }
-    if (result.budgetReached) this.limitReached();
+    if (result.wrappedUp === 'budget') this.limitReached();
+    if (result.wrappedUp === 'turns') this.note('turn_limit_reached');
     const value = accepted.get(result.text) ?? this.read(role, result.text, schema);
     return value === undefined ? { kind: 'unread' } : { kind: 'answer', value };
   }
@@ -388,10 +424,6 @@ class Review {
 
 const STOPPED = { kind: 'stopped' } as const;
 const NOT_JUDGED = { kind: 'failed', reason: 'bad_answer' } as const;
-
-/** An even part of what is left of a share, for the `index`th of `count` slots. */
-const evenPart = (share: Share, index: number, count: number): number =>
-  Math.floor(share.left / (count - index));
 
 /**
  * A finding of the judge as the outcome holds it: its sources are the specialist ids it was given,
@@ -425,14 +457,13 @@ const isSerious = (finding: JudgedFinding): boolean =>
   (finding.severity === 'critical' || finding.severity === 'major');
 
 /**
- * Reviews the merge request the context is of, with `budget` tokens shared out between its stages:
- * each conversation is given what is left of its part, and keeps room in it for its wrap-up: it
- * goes past it only by as much as the loop's guesses fell short, or when its first turn of tools
- * already left no room (conversation.ts). A stage, whose share the others cannot spend, can still
- * take the review past `budget` by what the stages before it overspent. `onPhase` is told each
- * stage as it starts. The outcome is `stopped`
- * as soon as a conversation is, and `failed` when the provider fails or the judge gives no answer
- * of its schema: nothing of a failed review is stored.
+ * Reviews the merge request the context is of, with `budget` tokens shared out between its stages
+ * (the header above): each conversation is given its tokens, and keeps room in them for its
+ * wrap-up. It goes past them only by as much as the loop's guesses fell short, or when its first
+ * turn of tools already left no room (conversation.ts), and what it spends past them is taken from
+ * no other conversation: the review goes past `budget` by that much at most. `onPhase` is told each
+ * stage as it starts. The outcome is `stopped` as soon as a conversation is, and `failed` when the
+ * provider fails or the judge gives no answer of its schema: nothing of a failed review is stored.
  */
 export async function runReviewPipeline(
   context: ReviewContext,
@@ -442,19 +473,22 @@ export async function runReviewPipeline(
 ): Promise<PipelineOutcome> {
   const plan = planReview(context.reviewed);
   const review = new Review(deps, plan.tier);
-  const judgeTokens = shareOf(budget, STAGE_SHARES.judge);
+  const judgeShare = shareOf(budget, STAGE_SHARES.judge);
   // Without a judge nothing can be kept: a budget too small for its share is not spent at all.
-  if (judgeTokens <= 0) return NOT_JUDGED;
+  if (judgeShare <= 0) return NOT_JUDGED;
 
-  // The specialists, one after the other, each with an even part of their share, whatever the
-  // others spent: one that overshoots its part takes nothing from the next.
+  // The specialists, one after the other, each with an even part of their share and what the ones
+  // before it left of theirs: one that overshoots what it was given takes nothing from the next.
   await onPhase('specialists');
-  const part = Math.floor(shareOf(budget, STAGE_SHARES.specialists) / plan.specialists.length);
+  const specialists = new StageTokens(
+    shareOf(budget, STAGE_SHARES.specialists),
+    plan.specialists.length,
+  );
   const ran: Specialist[] = [];
   const labelled: LabelledFinding[] = [];
   const shown = specialistData(context);
   for (const specialist of plan.specialists) {
-    const asked = await review.ask(specialist, shown, specialistAnswerSchema, part, { left: part });
+    const asked = await review.ask(specialist, shown, specialistAnswerSchema, specialists);
     if (asked.kind === 'stopped') return STOPPED;
     if (asked.kind === 'failed') return { kind: 'failed', reason: asked.reason };
     if (asked.kind === 'no_tokens') continue;
@@ -472,14 +506,14 @@ export async function runReviewPipeline(
     }
   }
 
-  // The judge, with its own share: what the specialists spent past theirs is not taken from it.
-  // Its data takes a third of it at most: the bodies of the findings are cut to fit.
+  // The judge, with its own share and what the specialists left of theirs: what they spent past
+  // what they were given is not taken from it. Its data takes a third of its share at most: the
+  // bodies of the findings are cut to fit.
   await onPhase('judge');
-  const judgeRoom = firstMessageChars(judgeTokens) - SYSTEM_PROMPTS.judge.length - ENVELOPE_CHARS;
+  const judgeRoom = firstMessageChars(judgeShare) - SYSTEM_PROMPTS.judge.length - ENVELOPE_CHARS;
   const judgeShown = judgeData(context, labelled, judgeRoom);
-  const asked = await review.ask('judge', judgeShown, judgeAnswerSchema, judgeTokens, {
-    left: judgeTokens,
-  });
+  const judge = new StageTokens(judgeShare + specialists.unspent(), 1);
+  const asked = await review.ask('judge', judgeShown, judgeAnswerSchema, judge);
   if (asked.kind === 'stopped') return STOPPED;
   if (asked.kind === 'failed') return { kind: 'failed', reason: asked.reason };
   if (asked.kind !== 'answer') return NOT_JUDGED;
@@ -497,7 +531,8 @@ export async function runReviewPipeline(
   const kept = answered.filter((finding) => finding.confidence !== 'low');
 
   // The serious security findings, critical first, each verified alone, with the verification's
-  // own share: what the stages before it overspent is not taken from it.
+  // own share and what the judge left of its tokens: what the stages before it overspent is not
+  // taken from it.
   const verdicts = new Map<JudgedFinding, VerifyVerdict>();
   const serious = kept
     .filter(isSerious)
@@ -506,14 +541,15 @@ export async function runReviewPipeline(
     await onPhase('verification');
     if (serious.length > MAX_VERIFICATIONS) review.note('verification_capped');
     const checked = serious.slice(0, MAX_VERIFICATIONS);
-    const verification: Share = { left: shareOf(budget, STAGE_SHARES.verification) };
-    for (const [index, finding] of checked.entries()) {
-      const tokens = evenPart(verification, index, checked.length);
+    const verification = new StageTokens(
+      shareOf(budget, STAGE_SHARES.verification) + judge.unspent(),
+      checked.length,
+    );
+    for (const finding of checked) {
       const told = await review.ask(
         'verify',
         verifyData(finding),
         verifyAnswerSchema,
-        tokens,
         verification,
       );
       if (told.kind === 'stopped') return STOPPED;

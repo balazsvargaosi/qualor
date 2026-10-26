@@ -127,7 +127,7 @@ function asked({ texts: answers, tokens: [input, output] }: Texts, call: Call): 
       return {
         kind: 'answer',
         text,
-        budgetReached: false,
+        wrappedUp: null,
         ...spent(input * (index + 1), output * (index + 1)),
       };
     }
@@ -170,11 +170,11 @@ function scripted(
 const answer = (
   value: unknown,
   [input, output]: [number, number] = [100, 10],
-  budgetReached = false,
+  wrappedUp: 'budget' | 'turns' | null = null,
 ): ConversationResult => ({
   kind: 'answer',
   text: JSON.stringify(value),
-  budgetReached,
+  wrappedUp,
   ...spent(input, output),
 });
 /** An answer that is not JSON, as a conversation that did not check it would give it back. */
@@ -184,7 +184,7 @@ const prose = (
 ): ConversationResult => ({
   kind: 'answer',
   text,
-  budgetReached: false,
+  wrappedUp: null,
   ...spent(input, output),
 });
 const stopped = (): ConversationResult => ({ kind: 'stopped', ...spent(50, 0) });
@@ -828,16 +828,18 @@ describe('runReviewPipeline', () => {
     expect(calls.map((c) => c.role)).toEqual(['quality', 'judge']);
   });
 
-  it("a specialist cannot spend the judge's share, nor another specialist's part", async () => {
+  it('a specialist has its part and what the ones before it left of theirs, never what one overspent, and the judge what the specialists left', async () => {
     // Of 10 000 tokens the specialists have 5 500, a part of 2 750 for each of the two of a lite
     // review; the judge 3 500 and the verification 1 000.
     const context = contextOf([change('src/cart.ts', 50)]);
-    for (const spent of [
-      [400, 100],
-      [4_000, 1_000],
-      // Past the whole of the specialists' share, and past what the judge's would leave.
-      [6_500, 500],
-    ] as [number, number][]) {
+    for (const [spent, tests, judge] of [
+      // 500 of its 2 750: the 2 250 it left are the next one's, and what that one leaves the judge's.
+      [[400, 100], 5_000, 8_000],
+      // Past its part, and past the whole of the specialists' share: the next has its own part
+      // still, and the judge its share and what the second left.
+      [[4_000, 1_000], 2_750, 5_750],
+      [[6_500, 500], 2_750, 5_750],
+    ] as [[number, number], number, number][]) {
       const { deps, calls } = scripted({
         quality: [answer({ findings: [] }, spent)],
         tests: [answer({ findings: [] }, [400, 100])],
@@ -849,8 +851,8 @@ describe('runReviewPipeline', () => {
         String(spent),
       ).toEqual([
         ['quality', 2_750],
-        ['tests', 2_750],
-        ['judge', 3_500],
+        ['tests', tests],
+        ['judge', judge],
       ]);
       expect(outcome).toMatchObject({
         kind: 'reviewed',
@@ -869,15 +871,16 @@ describe('runReviewPipeline', () => {
     const three = await review(context, 10_000, failing.deps);
     expect(failing.calls.map((c) => [c.role, c.tokenBudget])).toEqual([
       ['quality', 2_750],
-      ['tests', 2_750],
-      ['judge', 3_500],
+      ['tests', 3_500],
+      ['judge', 6_500],
     ]);
     expect(three.outcome).toMatchObject({ kind: 'reviewed', notes: ['reviewer_unreadable'] });
 
-    // A part that rounds to nothing is not run, and the review says the limit was reached.
+    // A part that rounds to nothing is not run, and the review says the limit was reached; the
+    // token of the specialists' share nobody spent is the judge's.
     const none = scripted({ judge: [answer(judgeSays())] });
     const tiny = await review(context, 3, none.deps);
-    expect(none.calls.map((c) => [c.role, c.tokenBudget])).toEqual([['judge', 1]]);
+    expect(none.calls.map((c) => [c.role, c.tokenBudget])).toEqual([['judge', 2]]);
     expect(tiny.outcome).toMatchObject({
       kind: 'reviewed',
       specialists: [],
@@ -886,9 +889,130 @@ describe('runReviewPipeline', () => {
     });
   });
 
-  it('an answer given after the wrap-up says that the token limit was reached', async () => {
+  it('with four specialists the last has what the three before it left: one that wrapped up on its part now finishes', async () => {
+    // The demo's review: 300 000 tokens and a full review, four specialists of 41 250 each. The first
+    // three answer at once; the fourth (performance) reads with its tools for five turns, each
+    // sending its growing history again (6 000 tokens, then 360 more each time: 35 213 used after
+    // five), and answers in the sixth.
+    const play = async (firstThreeSpend: number) => {
+      const budgets: [ReviewRole, number][] = [];
+      const wrappedUp: ReviewRole[] = [];
+      const turns = new Map<ReviewRole, number>();
+      const deps: PipelineDeps = {
+        providerKey: null,
+        converse: (role, user, nonce, tokenBudget, accept) => {
+          budgets.push([role, tokenBudget]);
+          return converseOverTools(
+            { role, user, nonce, tokenBudget, accept },
+            {
+              reader: null,
+              shouldStop: () => Promise.resolve(false),
+              send: (conversation) => {
+                const n = (turns.get(role) ?? 0) + 1;
+                turns.set(role, n);
+                const last = conversation.messages.at(-1);
+                const wrapUp = last?.role === 'user' && last.text === CONVERSATION_TEXTS.wrapUp;
+                if (wrapUp) wrappedUp.push(role);
+                const reads = role === 'performance' && !wrapUp && n < 6;
+                const usage =
+                  role === 'performance'
+                    ? { inputTokens: 6_000 + 360 * (n - 1), outputTokens: n === 5 ? 333 : 320 }
+                    : { inputTokens: firstThreeSpend - 200, outputTokens: 200 };
+                return Promise.resolve({
+                  text: reads
+                    ? ''
+                    : JSON.stringify(role === 'judge' ? judgeSays() : { findings: [] }),
+                  finishReason: reads ? ('tool' as const) : ('stop' as const),
+                  usage,
+                  model: null,
+                  toolCalls: reads
+                    ? [{ id: `c${n}`, name: 'read_file', arguments: { path: 'src/cart.ts' } }]
+                    : [],
+                });
+              },
+            },
+          );
+        },
+      };
+      const { outcome } = await review(contextOf([change('src/cart.ts', 301)]), 300_000, deps);
+      return { outcome, budgets, wrappedUp, turns: turns.get('performance') };
+    };
+
+    // The first three spend 7 000 of their 41 250 each: the fourth has its own part and their
+    // 102 750, and reads to the end without a wrap-up.
+    const rolled = await play(7_000);
+    expect(rolled.budgets).toEqual([
+      ['security', 41_250],
+      ['quality', 75_500],
+      ['tests', 109_750],
+      ['performance', 144_000],
+      // The judge's 105 000, and what the specialists left: 144 000 less the fourth's 43 333.
+      ['judge', 205_667],
+    ]);
+    expect(rolled.wrappedUp).toEqual([]);
+    expect(rolled.turns).toBe(6);
+    expect(rolled.outcome).toMatchObject({ kind: 'reviewed', tokenLimitReached: false, notes: [] });
+
+    // With nothing left by the three before it, the fourth has its part alone, as every specialist
+    // had before: it is asked to wrap up, and the review says it reached its token limit.
+    const even = await play(41_250);
+    expect(even.budgets.slice(0, 4).map(([, tokens]) => tokens)).toEqual([
+      41_250, 41_250, 41_250, 41_250,
+    ]);
+    expect(even.wrappedUp).toEqual(['performance']);
+    expect(even.turns).toBeLessThan(6);
+    expect(even.outcome).toMatchObject({
+      kind: 'reviewed',
+      tokenLimitReached: true,
+      notes: ['token_limit_reached'],
+    });
+  });
+
+  it('never gives out more than the budget: only what a conversation spends past what it was given goes over it', async () => {
+    let seed = 20_261_026;
+    const next = (): number => {
+      seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648;
+      return seed / 2_147_483_648;
+    };
+    for (let round = 0; round < 300; round += 1) {
+      const budget = 1_000 + Math.floor(next() * 999_000);
+      const lines = [2, 50, 301][Math.floor(next() * 3)] ?? 2;
+      const serious = Math.floor(next() * 8);
+      // In half the rounds a conversation may spend up to half again what it was given.
+      const most = round % 2 === 0 ? 1 : 1.5;
+      const given: number[] = [];
+      const spent: number[] = [];
+      const deps: PipelineDeps = {
+        providerKey: null,
+        converse: (role, _user, _nonce, tokenBudget) => {
+          const used = Math.floor(tokenBudget * next() * most);
+          given.push(tokenBudget);
+          spent.push(used);
+          const findings = Array.from({ length: serious }, (_, i) =>
+            judgedAs({ category: 'security', severity: 'critical', title: `S${i}` }),
+          );
+          const value =
+            role === 'judge'
+              ? judgeSays({ findings })
+              : role === 'verify'
+                ? { verdict: 'confirmed', reason: 'r' }
+                : { findings: [] };
+          return Promise.resolve(answer(value, [used, 0]));
+        },
+      };
+      const { outcome } = await review(contextOf([change('src/cart.ts', lines)]), budget, deps);
+      const name = `round ${round}: ${budget} tokens, ${lines} lines, ${serious} serious`;
+      expect(outcome.kind, name).toBe('reviewed');
+      const total = spent.reduce((sum, used) => sum + used, 0);
+      const past = spent.reduce((sum, used, i) => sum + Math.max(0, used - (given[i] ?? 0)), 0);
+      expect(total, name).toBeLessThanOrEqual(budget + past);
+      if (most === 1) expect(total, name).toBeLessThanOrEqual(budget);
+    }
+  });
+
+  it('an answer given after the wrap-up for the tokens says that the token limit was reached', async () => {
     const { deps } = scripted({
-      quality: [answer({ findings: [found()] }, [900, 100], true)],
+      quality: [answer({ findings: [found()] }, [900, 100], 'budget')],
       judge: [answer(judgeSays({ findings: [judgedAs()] }))],
     });
     const { outcome } = await review(contextOf([change('src/cart.ts', 2)]), 100_000, deps);
@@ -900,7 +1024,34 @@ describe('runReviewPipeline', () => {
     });
   });
 
-  it('verification has a share of its own, shared between the findings it checks', async () => {
+  it('an answer given after the wrap-up for the turns says that a reviewer reached its turn limit, not the token limit', async () => {
+    const { deps } = scripted({
+      quality: [answer({ findings: [found()] }, [900, 100], 'turns')],
+      judge: [answer(judgeSays({ findings: [judgedAs()] }))],
+    });
+    const { outcome } = await review(contextOf([change('src/cart.ts', 2)]), 100_000, deps);
+    expect(outcome).toMatchObject({
+      kind: 'reviewed',
+      findings: [outcomeFinding()],
+      tokenLimitReached: false,
+      notes: ['turn_limit_reached'],
+    });
+    // Both, by two reviewers: each is said once.
+    const both = scripted({
+      quality: [answer({ findings: [] }, [900, 100], 'turns')],
+      tests: [answer({ findings: [] }, [900, 100], 'budget')],
+      security: [answer({ findings: [] }, [900, 100], 'turns')],
+      judge: [answer(judgeSays())],
+    });
+    const twice = await review(contextOf([change('src/auth.ts', 50)]), 100_000, both.deps);
+    expect(twice.outcome).toMatchObject({
+      kind: 'reviewed',
+      tokenLimitReached: true,
+      notes: ['turn_limit_reached', 'token_limit_reached'],
+    });
+  });
+
+  it('verification has a share of its own and what the judge left, shared between the findings it checks', async () => {
     const serious = judgeSays({
       findings: [
         judgedAs({ category: 'security', title: 'A' }),
@@ -909,18 +1060,24 @@ describe('runReviewPipeline', () => {
     });
     const confirmed = (): ConversationResult =>
       answer({ verdict: 'confirmed', reason: 'r' }, [200, 50]);
-    // Of 10 000 tokens the verification has 1 000: half for the first, what is left for the second.
+    // Of 10 000 tokens the one specialist of a trivial review has 5 500 and leaves 5 390, the judge
+    // has its 3 500 and them, and leaves 8 780, which the verification has with its own 1 000: half
+    // for the first finding, and its half and what the first left for the second.
     const shared = scripted({
       quality: [answer({ findings: [] })],
       judge: [answer(serious)],
       verify: [confirmed(), confirmed()],
     });
     await review(contextOf([change('src/cart.ts', 2)]), 10_000, shared.deps);
-    expect(shared.calls.filter((c) => c.role === 'verify').map((c) => c.tokenBudget)).toEqual([
-      500, 750,
+    expect(shared.calls.map((c) => [c.role, c.tokenBudget])).toEqual([
+      ['quality', 5_500],
+      ['judge', 8_890],
+      ['verify', 4_890],
+      ['verify', 9_530],
     ]);
 
-    // What the judge spent past its share is not taken from it: the findings are verified still.
+    // What the judge spent past what it was given is not taken from the verification: its share
+    // stays its own, and the findings are verified still.
     const overspent = scripted({
       quality: [answer({ findings: [] })],
       judge: [answer(serious, [9_800, 200])],
@@ -929,6 +1086,16 @@ describe('runReviewPipeline', () => {
     const { outcome } = await review(contextOf([change('src/cart.ts', 2)]), 10_000, overspent.deps);
     expect(overspent.calls.filter((c) => c.role === 'verify').map((c) => c.tokenBudget)).toEqual([
       500, 750,
+    ]);
+    // A verification that overspends takes nothing from the next one's half either.
+    const greedy = scripted({
+      quality: [answer({ findings: [] })],
+      judge: [answer(serious, [9_800, 200])],
+      verify: [answer({ verdict: 'confirmed', reason: 'r' }, [900, 100]), confirmed()],
+    });
+    await review(contextOf([change('src/cart.ts', 2)]), 10_000, greedy.deps);
+    expect(greedy.calls.filter((c) => c.role === 'verify').map((c) => c.tokenBudget)).toEqual([
+      500, 500,
     ]);
     expect(outcome).toMatchObject({
       kind: 'reviewed',

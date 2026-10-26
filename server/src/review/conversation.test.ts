@@ -325,7 +325,7 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
           outputTokens: 42,
           turns: 3,
           toolCalls: 3,
-          budgetReached: false,
+          wrappedUp: null,
         });
         expect(ran).toEqual([
           { id: 'c1', name: 'read_file', arguments: { path: 'a.ts' } },
@@ -371,7 +371,7 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
           outputTokens: 30,
           turns: 3,
           toolCalls: 2,
-          budgetReached: true,
+          wrappedUp: 'turns',
         });
         expect(ran.map((c) => c.id)).toEqual(['c1', 'c2']);
 
@@ -384,6 +384,35 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
         expect(wire.results(wrapUp)).toHaveLength(2);
         expect(wire.lastUser(wrapUp)).toBe(WRAP_UP);
         expect(wire.lastUser(fake.requests[1]!)).not.toContain('Token budget');
+      },
+    );
+
+    it.each(KINDS)(
+      'says why it wrapped up: `turns` at the turn limit, `budget` for the tokens, and `budget` when both are due (%s)',
+      async (kind) => {
+        // One turn of tools of 3 300 tokens, then the answer.
+        const play = async (limits: Partial<ConversationInput['limits']>) => {
+          fake.requests.length = 0;
+          fake.enqueue(
+            toolTurn(kind, [{ id: 'c1', args: { path: 'a.ts' } }], [3_200, 100]),
+            textTurn(kind, '{"findings":[]}', [10, 1]),
+          );
+          const { result } = await run(kind, { limits: { ...LIMITS, ...limits } });
+          expect(result, JSON.stringify(limits)).toMatchObject({ kind: 'answer', turns: 2 });
+          return { result, wrapUp: WIRES[kind].lastUser(fake.requests[1]!) === WRAP_UP };
+        };
+        // The turn limit alone: a million tokens leave room for many more turns.
+        const turns = await play({ maxTurns: 1 });
+        expect(turns).toMatchObject({ result: { wrappedUp: 'turns' }, wrapUp: true });
+        // The tokens alone: another turn as large, and the wrap-up after it, would pass 10 000.
+        const budget = await play({ tokenBudget: 10_000 });
+        expect(budget).toMatchObject({ result: { wrappedUp: 'budget' }, wrapUp: true });
+        // Both at once: the tokens are what it says, which is what the review tells.
+        const both = await play({ maxTurns: 1, tokenBudget: 10_000 });
+        expect(both).toMatchObject({ result: { wrappedUp: 'budget' }, wrapUp: true });
+        // Neither: no wrap-up, and nothing to say.
+        const none = await play({});
+        expect(none).toMatchObject({ result: { wrappedUp: null }, wrapUp: false });
       },
     );
 
@@ -412,7 +441,7 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
           inputTokens: 29_000 + 19_000 + 13_000 + 9_000 + 6_000 + 4_400 + 10,
           outputTokens: 4 * 1_000 + 500 + 100 + 1,
           turns: 7,
-          budgetReached: true,
+          wrappedUp: 'budget',
         });
         expect(WIRES[kind].lastUser(fake.requests[6]!)).toBe(WRAP_UP);
         expect(WIRES[kind].lastUser(fake.requests[5]!)).not.toContain('Token budget');
@@ -421,7 +450,7 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
         fake.requests.length = 0;
         fake.enqueue(...turnsOf(4_400), textTurn(kind, '{"findings":[]}', [10, 1]));
         const under = await run(kind, { limits });
-        expect(under.result).toMatchObject({ kind: 'answer', turns: 7, budgetReached: false });
+        expect(under.result).toMatchObject({ kind: 'answer', turns: 7, wrappedUp: null });
         expect(WIRES[kind].lastUser(fake.requests[6]!)).not.toContain('Token budget');
       },
     );
@@ -438,7 +467,7 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
           textTurn(kind, '{"findings":[]}', [10, 1]),
         );
         const reached = await run(kind, { limits });
-        expect(reached.result).toMatchObject({ kind: 'answer', turns: 2, budgetReached: true });
+        expect(reached.result).toMatchObject({ kind: 'answer', turns: 2, wrappedUp: 'budget' });
         expect(WIRES[kind].lastUser(fake.requests[1]!)).toBe(WRAP_UP);
 
         // Three hundred tokens fewer, and the wrap-up after another turn would fit: the model goes on.
@@ -448,7 +477,7 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
           textTurn(kind, '{"findings":[]}', [10, 1]),
         );
         const fits = await run(kind, { limits });
-        expect(fits.result).toMatchObject({ kind: 'answer', turns: 2, budgetReached: false });
+        expect(fits.result).toMatchObject({ kind: 'answer', turns: 2, wrappedUp: null });
         expect(WIRES[kind].lastUser(fake.requests[1]!)).not.toContain('Token budget');
       },
     );
@@ -466,13 +495,13 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
         const long = await run(kind, {
           limits: { ...LIMITS, tokenBudget: 10_000, maxOutputTokens: 2_000 },
         });
-        expect(long.result).toMatchObject({ kind: 'answer', turns: 2, budgetReached: true });
+        expect(long.result).toMatchObject({ kind: 'answer', turns: 2, wrappedUp: 'budget' });
         expect(WIRES[kind].lastUser(fake.requests[1]!)).toBe(WRAP_UP);
 
         fake.requests.length = 0;
         fake.enqueue(...reply());
         const short = await run(kind, { limits: { ...LIMITS, tokenBudget: 10_000 } });
-        expect(short.result).toMatchObject({ kind: 'answer', turns: 2, budgetReached: false });
+        expect(short.result).toMatchObject({ kind: 'answer', turns: 2, wrappedUp: null });
         expect(WIRES[kind].lastUser(fake.requests[1]!)).not.toContain('Token budget');
       },
     );
@@ -489,7 +518,7 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
           textTurn(kind, '{"findings":[]}', [10, 1]),
         );
         const { result } = await run(kind, { limits });
-        expect(result).toMatchObject({ kind: 'answer', turns: 2, budgetReached: false });
+        expect(result).toMatchObject({ kind: 'answer', turns: 2, wrappedUp: null });
         expect(WIRES[kind].lastUser(fake.requests[1]!)).not.toContain('Token budget');
         // Every call asked for the answer's 50 tokens and the room.
         expect(fake.requests).toHaveLength(2);
@@ -510,7 +539,7 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
           textTurn(kind, '{"findings":[]}', [10, 1]),
         );
         const wordy = await run(kind, { limits });
-        expect(wordy.result).toMatchObject({ kind: 'answer', turns: 2, budgetReached: true });
+        expect(wordy.result).toMatchObject({ kind: 'answer', turns: 2, wrappedUp: 'budget' });
         expect(WIRES[kind].lastUser(fake.requests[1]!)).toBe(WRAP_UP);
 
         // 1 000 written: about 8 200 in all, and the model goes on.
@@ -520,7 +549,7 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
           textTurn(kind, '{"findings":[]}', [10, 1]),
         );
         const terse = await run(kind, { limits });
-        expect(terse.result).toMatchObject({ kind: 'answer', turns: 2, budgetReached: false });
+        expect(terse.result).toMatchObject({ kind: 'answer', turns: 2, wrappedUp: null });
         expect(WIRES[kind].lastUser(fake.requests[1]!)).not.toContain('Token budget');
       },
     );
@@ -538,7 +567,7 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
           textTurn(kind, '{"findings":[]}', [10, 1]),
         );
         const large = await run(kind, { limits, runTool: read('x'.repeat(9_000)) });
-        expect(large.result).toMatchObject({ kind: 'answer', turns: 2, budgetReached: true });
+        expect(large.result).toMatchObject({ kind: 'answer', turns: 2, wrappedUp: 'budget' });
         expect(WIRES[kind].lastUser(fake.requests[1]!)).toBe(WRAP_UP);
 
         // A small result leaves room for another turn: the model goes on.
@@ -548,7 +577,7 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
           textTurn(kind, '{"findings":[]}', [10, 1]),
         );
         const small = await run(kind, { limits, runTool: read('a small file') });
-        expect(small.result).toMatchObject({ kind: 'answer', turns: 2, budgetReached: false });
+        expect(small.result).toMatchObject({ kind: 'answer', turns: 2, wrappedUp: null });
         expect(WIRES[kind].lastUser(fake.requests[1]!)).not.toContain('Token budget');
       },
     );
@@ -700,7 +729,7 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
         textTurn('anthropic', '{"findings":[]}'),
       );
       const { result } = await run('anthropic', { limits: { ...LIMITS, maxTurns: 1 } });
-      expect(result).toMatchObject({ kind: 'answer', budgetReached: true, turns: 3 });
+      expect(result).toMatchObject({ kind: 'answer', wrappedUp: 'turns', turns: 3 });
       expect(rolesOf(fake.requests[2]!)).toEqual(['user', 'assistant', 'user']);
       expectAlternating();
     });
@@ -845,7 +874,7 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
         outputTokens: 70,
         turns: 2,
         toolCalls: 0,
-        budgetReached: false,
+        wrappedUp: null,
       });
     });
   });
@@ -891,7 +920,7 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
           outputTokens: 30,
           turns: 2,
           toolCalls: 0,
-          budgetReached: false,
+          wrappedUp: null,
         });
         expect(ran).toEqual([]);
         const wire = WIRES[kind];
@@ -936,7 +965,7 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
           outputTokens: 30,
           turns: 2,
           toolCalls: 0,
-          budgetReached: false,
+          wrappedUp: null,
         });
         const second = fake.requests[1]!;
         // The answer stays in the history, and the one user turn after it is the text given.
@@ -988,7 +1017,7 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
           text: '{"findings":[]}',
           turns: 3,
           toolCalls: 1,
-          budgetReached: true,
+          wrappedUp: 'budget',
         });
         expect(fake.requests).toHaveLength(3);
         expect(WIRES[kind].lastUser(fake.requests[2]!)).toBe(RETRY);

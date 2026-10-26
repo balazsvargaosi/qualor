@@ -429,7 +429,7 @@ describe('runConversation with a scripted provider', () => {
       );
       s.input.limits = { ...LIMITS, maxTurns: 3 };
       const result = await runConversation(s.input);
-      expect(result).toMatchObject({ kind: 'answer', turns: 4, budgetReached: true });
+      expect(result).toMatchObject({ kind: 'answer', turns: 4, wrappedUp: 'turns' });
       const lastUser = (n: number) => s.seen[n]!.messages.findLast((m) => m.role === 'user');
       expect(lastUser(2)).toEqual({ role: 'user', text: USER_TEXT });
       expect(lastUser(3)).toEqual({ role: 'user', text: WRAP_UP });
@@ -454,8 +454,8 @@ describe('runConversation with a scripted provider', () => {
       const next = 100 + 20 + grown + 20;
       const wrapUpAfter = 100 + 20 + grown + 20 + grown + 30;
       const due = 100 + 20 + next + wrapUpAfter;
-      expect((await play(due)).result).toMatchObject({ kind: 'answer', budgetReached: true });
-      expect((await play(due + 1)).result).toMatchObject({ kind: 'answer', budgetReached: false });
+      expect((await play(due)).result).toMatchObject({ kind: 'answer', wrappedUp: 'budget' });
+      expect((await play(due + 1)).result).toMatchObject({ kind: 'answer', wrappedUp: null });
     });
 
     it('sends the tools and the output limit on the wrap-up turn too', async () => {
@@ -485,7 +485,7 @@ describe('runConversation with a scripted provider', () => {
           outputTokens: 2 * LIMITS.maxOutputTokens,
           turns: 2,
           toolCalls: 1,
-          budgetReached: false,
+          wrappedUp: null,
         });
       });
 
@@ -590,7 +590,7 @@ describe('runConversation with a scripted provider', () => {
       expect(result).toMatchObject({
         kind: 'answer',
         text: '{"findings":[]}',
-        budgetReached: true,
+        wrappedUp: 'turns',
       });
       const last = s.seen[2]!.messages;
       expect(last.at(-1)).toMatchObject({ role: 'user' });
@@ -734,7 +734,7 @@ describe('runConversation with a scripted provider', () => {
       expect(await runConversation(s.input)).toEqual({
         kind: 'answer',
         text: 'done',
-        budgetReached: false,
+        wrappedUp: null,
         inputTokens: quarterOfBytes(s.seen[0]!) + 10,
         outputTokens: 5,
         turns: 1,
@@ -807,7 +807,7 @@ describe('runConversation with a scripted provider', () => {
       // take a few hundred more: well short of this budget. With the call that timed out they used
       // 30 and its guess, nearly all of it.
       const { s, result } = play(40 + guessed);
-      expect(await result).toMatchObject({ kind: 'answer', budgetReached: true });
+      expect(await result).toMatchObject({ kind: 'answer', wrappedUp: 'budget' });
       expect(s.seen.at(-1)!.messages.at(-1)).toEqual({ role: 'user', text: WRAP_UP });
     });
 

@@ -314,7 +314,7 @@ describe('converseOverTools', () => {
       },
       shouldStop: () => Promise.resolve(false),
     });
-    expect(result).toMatchObject({ kind: 'answer', budgetReached: true });
+    expect(result).toMatchObject({ kind: 'answer', wrappedUp: 'budget' });
     expect(sent[1]?.messages.at(-1)).toEqual({ role: 'user', text: CONVERSATION_TEXTS.wrapUp });
   });
 

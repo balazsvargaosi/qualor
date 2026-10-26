@@ -262,6 +262,25 @@ describe('the AI review section', () => {
     expect(section(done()).join('\n')).not.toContain('token limit');
   });
 
+  it('says that a reviewer reached its turn limit in a sentence of its own, apart from the token limit', () => {
+    const TOKENS = 'The review reached its token limit, so it may have missed problems.';
+    const TURNS = 'A reviewer reached its limit of 16 turns, so it may have missed problems.';
+    const notesLine = (over: Partial<Done>) => section(done(over)).at(-3);
+    expect(notesLine({ notes: ['turn_limit_reached'] })).toBe(TURNS);
+    expect(section(done({ notes: ['turn_limit_reached'] })).join('\n')).not.toContain(
+      'token limit',
+    );
+    expect(notesLine({ tokenLimitReached: true })).toBe(TOKENS);
+    // Both, the token limit first, each once.
+    expect(
+      notesLine({
+        tokenLimitReached: true,
+        notes: ['turn_limit_reached', 'token_limit_reached', 'turn_limit_reached'],
+      }),
+    ).toBe(`${TOKENS} ${TURNS}`);
+    expect(checkProse(TURNS)).toBe(true);
+  });
+
   it('says when the merge request has moved on, and what the next pipeline does', () => {
     const moved = (provider: 'gitlab' | 'github', head: string | null) =>
       section(done({ mergeRequestHeadSha: head }), provider).at(-1);

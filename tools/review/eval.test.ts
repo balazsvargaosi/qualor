@@ -51,7 +51,7 @@ interface Said {
 const answer = (text: string, tokens: [number, number] = [1_000, 100]): ConversationResult => ({
   kind: 'answer',
   text,
-  budgetReached: false,
+  wrappedUp: null,
   inputTokens: tokens[0],
   outputTokens: tokens[1],
   turns: 1,

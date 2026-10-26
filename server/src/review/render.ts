@@ -11,6 +11,7 @@ import {
   replyMarker,
   safeProse,
 } from '../scm/markdown';
+import { CONVERSATION_LIMITS } from './conversation';
 import { aiSeverityOf, type AiSeverity } from './rules';
 import { ANSWER_LIMITS, type ReviewNote } from './schemas';
 
@@ -181,6 +182,7 @@ const NEXT_PUSH = 'The next push reviews again.';
 const NOTES: Record<ReviewNote, string> = {
   reviewer_unreadable: 'A reviewer’s answer could not be read, so part of the review is missing.',
   token_limit_reached: 'The review reached its token limit, so it may have missed problems.',
+  turn_limit_reached: `A reviewer reached its limit of ${CONVERSATION_LIMITS.maxTurns} turns, so it may have missed problems.`,
   verification_capped:
     'There were more serious security findings than the review verifies, so the rest were not checked a second time.',
 };
@@ -281,6 +283,7 @@ function noteSentences(state: Done): string[] {
   if (state.tokenLimitReached || notes.has('token_limit_reached')) {
     sentences.push(NOTES.token_limit_reached);
   }
+  if (notes.has('turn_limit_reached')) sentences.push(NOTES.turn_limit_reached);
   if (state.snapshotPartial) sentences.push(SNAPSHOT_PARTIAL);
   if (notes.has('reviewer_unreadable')) sentences.push(NOTES.reviewer_unreadable);
   if (notes.has('verification_capped')) sentences.push(NOTES.verification_capped);

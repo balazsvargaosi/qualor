@@ -220,11 +220,13 @@ export function reviewFindingOf(found: z.infer<typeof findingSchema>): ReviewFin
 
 /**
  * What the review says of itself in the summary: a reviewer whose answers could not be read, a
- * stage that reached its share of the tokens, more serious security findings than are verified.
+ * conversation that used up its tokens, one that took all its turns, more serious security findings
+ * than are verified.
  */
 export const REVIEW_NOTES = [
   'reviewer_unreadable',
   'token_limit_reached',
+  'turn_limit_reached',
   'verification_capped',
 ] as const;
 export type ReviewNote = (typeof REVIEW_NOTES)[number];

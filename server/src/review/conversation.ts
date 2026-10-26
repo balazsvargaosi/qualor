@@ -154,13 +154,21 @@ export interface ConversationCounts {
 }
 
 /**
+ * Why a conversation wrapped up: its tokens (85 % of them used, or no room left for the wrap-up
+ * after another turn of tools: `wrapUpDue`), or its turns (`maxTurns` taken). When both come at
+ * once it is the tokens.
+ */
+export type WrapUpReason = 'budget' | 'turns';
+
+/**
  * How a conversation ended. `text` of an answer is the model's: it goes to the parser, never to a
- * log. `budgetReached` says that the answer came after the wrap-up turn. A `provider_error` with
- * `circuitOpen` is a call that was not made because the provider's circuit was open: the provider
- * is failing for every caller, and the conversation was not asked to wait for it.
+ * log. `wrappedUp` says why the answer came after the wrap-up turn, and is null for one that came
+ * before any. A `provider_error` with `circuitOpen` is a call that was not made because the
+ * provider's circuit was open: the provider is failing for every caller, and the conversation was
+ * not asked to wait for it.
  */
 export type ConversationResult =
-  | ({ kind: 'answer'; text: string; budgetReached: boolean } & ConversationCounts)
+  | ({ kind: 'answer'; text: string; wrappedUp: WrapUpReason | null } & ConversationCounts)
   | ({ kind: 'stopped' } & ConversationCounts)
   | ({
       kind: 'failed';
@@ -465,7 +473,8 @@ export async function runConversation(input: ConversationInput): Promise<Convers
   let toolCalls = 0;
   let inputTokens = 0;
   let outputTokens = 0;
-  let wrappingUp = false;
+  /** Why the next turn is the wrap-up, once it is. */
+  let wrapUp: WrapUpReason | null = null;
   let askedForShorter = false;
   /** An answer was not accepted: the model is asked for it again, and runs no more tools. */
   let askedAgain = false;
@@ -490,17 +499,16 @@ export async function runConversation(input: ConversationInput): Promise<Convers
     outputTokens += spent.output;
     if (turn.finishReason === 'refusal') return ended(failed('bad_answer'));
 
-    if (turn.toolCalls.length > 0 && !wrappingUp && !askedAgain) {
+    if (turn.toolCalls.length > 0 && wrapUp === null && !askedAgain) {
       const ids = new Set(turn.toolCalls.map((call) => call.id));
       if (ids.size !== turn.toolCalls.length) return ended(failed('bad_answer'));
       // The model's turn joins the history first, then the answers to its calls.
       const answersFrom = messages.length + 1;
       toolCalls += await answerCalls(input, turn.text, turn.toolCalls, turn.replay, messages);
       const grown = guessedTokens(messages.slice(answersFrom));
-      if (turns >= limits.maxTurns || wrapUpDue(limits, inputTokens + outputTokens, spent, grown)) {
-        messages.push({ role: 'user', text: CONVERSATION_TEXTS.wrapUp });
-        wrappingUp = true;
-      }
+      if (wrapUpDue(limits, inputTokens + outputTokens, spent, grown)) wrapUp = 'budget';
+      else if (turns >= limits.maxTurns) wrapUp = 'turns';
+      if (wrapUp !== null) messages.push({ role: 'user', text: CONVERSATION_TEXTS.wrapUp });
       continue;
     }
 
@@ -545,7 +553,7 @@ export async function runConversation(input: ConversationInput): Promise<Convers
       outputTokens,
       turns,
       toolCalls,
-      budgetReached: wrappingUp,
+      wrappedUp: wrapUp,
     };
   }
 }
