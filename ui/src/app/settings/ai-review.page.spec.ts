@@ -494,7 +494,7 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
       expect(text(field(root, 'ai-review-scope-line'))).toBe(
         '1 of 3 selected projects can be reviewed: 1 not linked to a repository, 1 excluded from AI.',
       );
-      expect(dialog.textContent).not.toContain('Your unsaved changes');
+      expect(dialog.textContent).not.toContain('unsaved changes');
       expect(buttons(dialog)).toEqual(['Cancel', CONFIRM_A]);
       expect(button(dialog, 'Cancel')?.hasAttribute('autofocus')).toBe(true);
       expect(server.requestsTo('PUT', ROUTE)).toHaveLength(0);
@@ -503,7 +503,11 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
       await click(fixture, button(dialog, 'Cancel'));
       await click(fixture, button(row(root, 'Web Shop'), 'Remove'));
       await act(fixture, root, 'Switch on AI review…');
-      expect(text(dialog)).toContain('Your unsaved changes to projects and budgets are saved too.');
+      expect(text(field(root, 'ai-review-unsaved'))).toBe(
+        'Switching on also saves your unsaved changes to projects and budgets.',
+      );
+      // The button that saves them is announced with it.
+      expect(button(dialog, CONFIRM_A)?.getAttribute('aria-describedby')).toBe('ai-review-unsaved');
       expect(text(field(root, 'ai-review-scope-line'))).toBe(
         '1 of 2 selected projects can be reviewed: 1 excluded from AI.',
       );
@@ -897,6 +901,19 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
       expect(fake.of(ORG_ID).enabled).toBe(false);
       expect(text(line(root, 'review').querySelector('.badge'))).toBe('Off');
       expect(foot(root)).toMatch(SAVED_AT);
+    });
+
+    it('says that switching on saves the unsaved changes, and not switching off', async () => {
+      setup('orgAdmin', paused);
+      const { fixture, root } = await render();
+      await click(fixture, field(root, 'ai-review-scope-all'));
+      await act(fixture, root, 'Review and confirm…');
+      const dialog = consentDialog(root);
+      expect(text(field(root, 'ai-review-unsaved'))).toBe(
+        'Switching on also saves your unsaved changes to projects and budgets.',
+      );
+      expect(button(dialog, CONFIRM_B)?.getAttribute('aria-describedby')).toBe('ai-review-unsaved');
+      expect(button(dialog, 'Switch off AI review')?.hasAttribute('aria-describedby')).toBe(false);
     });
 
     it('opens its dialog to switch off while a budget cannot be sent, and sends the stored values', async () => {

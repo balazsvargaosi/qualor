@@ -416,6 +416,14 @@ export class AiReviewPage implements LeaveGuarded {
     );
     return $localize`:@@orgAi.dialog.noTools:The last Test found that ${models}:models: cannot call tools, so reviews would fail. An instance admin can check`;
   });
+  /** What the dialog's switch-on is read with: the edits it saves too, then the warning of tools. */
+  protected readonly confirmDescribedBy = computed(() => {
+    const ids = [
+      this.changeCount() > 0 ? 'ai-review-unsaved' : null,
+      this.noToolsText() === null ? null : 'ai-review-no-tools',
+    ].filter((id) => id !== null);
+    return ids.length > 0 ? ids.join(' ') : null;
+  });
 
   protected readonly assistantFeatures = computed(() => {
     const assistant = this.orgAi();

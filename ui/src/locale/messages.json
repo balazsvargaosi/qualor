@@ -1156,7 +1156,7 @@
     "orgAi.limitsDay.value": " {$INTERPOLATION} explanations · {$INTERPOLATION_1} triage · {$INTERPOLATION_2} fixes · {$INTERPOLATION_3} tokens · {$INTERPOLATION_4} asks per person an hour ",
     "aiReview.dialogTitle": "Switch on AI review",
     "aiReview.dialogChanged": " The AI provider changed while this was open. This is the notice for the new one. ",
-    "orgAi.dialog.unsaved": " Your unsaved changes to projects and budgets are saved too. ",
+    "orgAi.dialog.unsaved": " Switching on also saves your unsaved changes to projects and budgets. ",
     "orgAi.paused.switchOff": " Switch off AI review ",
     "aiReview.confirm": " Switch on and send code to {$INTERPOLATION} ",
     "orgAi.off.title": "Switch off AI review?",

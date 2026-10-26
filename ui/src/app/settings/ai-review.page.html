@@ -545,9 +545,10 @@
       @if (draftSummaryText(); as summary) {
         <p id="ai-review-scope-line">{{ summary }}</p>
       }
+      <!-- Said of the switch-on alone: a paused review's Switch off sends only what is stored. -->
       @if (changeCount() > 0) {
-        <p i18n="@@orgAi.dialog.unsaved">
-          Your unsaved changes to projects and budgets are saved too.
+        <p id="ai-review-unsaved" i18n="@@orgAi.dialog.unsaved">
+          Switching on also saves your unsaved changes to projects and budgets.
         </p>
       }
       @if (noToolsText(); as warning) {
@@ -570,12 +571,13 @@
         </button>
       }
       @if (consent(); as asked) {
-        <!-- The warning that reviews would fail is read with the button that switches it on. -->
+        <!-- What switching on saves too, and the warning that reviews would fail, are read with
+             the button that switches it on. -->
         <button
           type="button"
           class="btn btn-primary"
           [attr.aria-disabled]="busy() ? true : null"
-          [attr.aria-describedby]="noToolsText() ? 'ai-review-no-tools' : null"
+          [attr.aria-describedby]="confirmDescribedBy()"
           (click)="confirmConsent()"
           i18n="@@aiReview.confirm"
         >
