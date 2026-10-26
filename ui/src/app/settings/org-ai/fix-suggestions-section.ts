@@ -37,6 +37,13 @@ import {
 
 type Project = ItemOf<'/api/v0/projects'>;
 
+/** The edits a save sent, as they were then: an edit made while it is on its way is kept. */
+interface SentEdits {
+  enabled: boolean;
+  minSeverity: AutoFixSeverity;
+  maxPerAnalysis: string;
+}
+
 /** The input of the maximum per analysis, which a refusal names and focuses. */
 const MAX_INPUT = 'auto-fix-max';
 
@@ -254,6 +261,11 @@ export class FixSuggestionsSection {
       this.refuseMax();
       return;
     }
+    const sent: SentEdits = {
+      enabled: this.enabled(),
+      minSeverity: this.minSeverity(),
+      maxPerAnalysis: this.maxPerAnalysis(),
+    };
     const generation = this.generation;
     this.busy.set(true);
     this.saveError.set(null);
@@ -261,16 +273,17 @@ export class FixSuggestionsSection {
       const saved = await ok(
         this.api.client.PUT('/api/v0/organizations/{id}/ai/auto-fix', {
           params: { path: { id } },
-          body: { enabled: this.enabled(), minSeverity: this.minSeverity(), maxPerAnalysis },
+          body: { enabled: sent.enabled, minSeverity: sent.minSeverity, maxPerAnalysis },
         }),
       );
       if (generation !== this.generation) return;
-      this.show(saved);
+      this.showSaved(saved, sent);
       this.savedAt.set(new Date());
     } catch (err) {
       if (generation !== this.generation) return;
       if ('body.maxPerAnalysis' in fieldErrors(err)) {
-        this.refuseMax();
+        // A maximum typed again meanwhile is not the one refused: the next Save checks it.
+        if (this.maxPerAnalysis() === sent.maxPerAnalysis) this.refuseMax();
         return;
       }
       this.saveError.set(autoFixRefusal(err) ?? problemMessage(err));
@@ -300,7 +313,20 @@ export class FixSuggestionsSection {
     }
   }
 
-  /** Puts saved settings into the edits: as read, or as saved. */
+  /**
+   * Puts a save's answer into the edits, except an edit made while it was on its way: that one
+   * stays, unsaved, and the foot says so.
+   */
+  private showSaved(saved: OrgAutoFix, sent: SentEdits): void {
+    this.current.set(saved);
+    if (this.enabled() === sent.enabled) this.enabled.set(saved.enabled);
+    if (this.minSeverity() === sent.minSeverity) this.minSeverity.set(saved.minSeverity);
+    if (this.maxPerAnalysis() === sent.maxPerAnalysis) {
+      this.maxPerAnalysis.set(formatWhole(saved.maxPerAnalysis, this.locale));
+    }
+  }
+
+  /** Puts the settings as read into the edits. */
   private show(settings: OrgAutoFix): void {
     this.current.set(settings);
     this.enabled.set(settings.enabled);

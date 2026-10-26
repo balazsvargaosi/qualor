@@ -270,6 +270,35 @@ describe('FixSuggestionsSection (AI settings redesign, Task 6)', () => {
     expect(root.querySelector('.dep')).toBeNull();
   });
 
+  it('keeps an edit made while a save was on its way, unsaved', async () => {
+    const { server, fake } = setup({ organizations: { [ORG_ID]: { ...STORED_ON } } });
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    server.on('PUT', ROUTE, async (request) => {
+      await held;
+      fake.organizations[ORG_ID] = request.body as typeof STORED_ON;
+      return { body: { available: true, ...fake.of(ORG_ID) } };
+    });
+    const { fixture, root, section } = await render();
+    type(root, 'auto-fix-max', '5');
+    await save(fixture, root);
+    // The answer has not come: the field stays usable, and is changed again.
+    const max = field(root, 'auto-fix-max');
+    expect(max.disabled).toBe(false);
+    type(root, 'auto-fix-max', '7');
+    max.focus();
+    release();
+    await settle(fixture);
+    expect(server.requestsTo('PUT', ROUTE).map((r) => r.body)).toEqual([
+      { enabled: true, minSeverity: 'high', maxPerAnalysis: 5 },
+    ]);
+    expect(max.value).toBe('7');
+    expect(document.activeElement).toBe(max);
+    expect(foot(root)).toBe('1 unsaved change');
+    expect(section.dirty()).toBe(true);
+    expect(button(root, 'Save fix suggestions')?.disabled).toBe(false);
+  });
+
   it('names the projects whose admins opted out', async () => {
     setup({ organizations: { [ORG_ID]: { ...STORED_ON } } });
     const { fixture, root } = await render();

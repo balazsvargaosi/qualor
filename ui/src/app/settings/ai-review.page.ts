@@ -78,6 +78,13 @@ interface Consent extends AiReviewProvider {
   changed: boolean;
 }
 
+/** The section's edits a save sent, as they were then: an edit made while it is on its way is kept. */
+interface SentEdits {
+  scope: AiReviewScope;
+  selected: readonly string[];
+  budgets: AiReviewBudgetsDraft;
+}
+
 /** What sent a `PUT`: Save AI review (the section), or a switch on or off (a status action). */
 type SaveOrigin = 'save' | 'switch';
 
@@ -737,7 +744,7 @@ export class AiReviewPage implements LeaveGuarded {
         projectIds: [...settings.projectIds],
         budgets: { ...settings.budgets },
       },
-      false,
+      null,
       'switch',
     );
   }
@@ -783,12 +790,17 @@ export class AiReviewPage implements LeaveGuarded {
     if (!id) return;
     const budgets = this.sendableBudgets();
     if (budgets === null) return;
+    const sent: SentEdits = {
+      scope: this.scope(),
+      selected: this.selected(),
+      budgets: this.budgets(),
+    };
     await this.send(
       id,
       {
         enabled,
-        scope: this.scope(),
-        projectIds: [...this.selected()],
+        scope: sent.scope,
+        projectIds: [...sent.selected],
         budgets,
         ...(acknowledged
           ? {
@@ -800,19 +812,20 @@ export class AiReviewPage implements LeaveGuarded {
             }
           : {}),
       },
-      true,
+      sent,
       origin,
     );
   }
 
   /**
-   * Sends a `PUT`; the answer is the new saved copy, and the edits too when they were sent.
-   * `origin` says where a refusal is told: Save AI review's foot, or the page's head for a switch.
+   * Sends a `PUT`; the answer is the new saved copy, and the edits too when they were sent
+   * (`edits`, as they were then). `origin` says where a refusal is told: Save AI review's foot, or
+   * the page's head for a switch.
    */
   private async send(
     id: string,
     body: AiReviewBody,
-    edits: boolean,
+    edits: SentEdits | null,
     origin: SaveOrigin,
   ): Promise<void> {
     const generation = this.generation;
@@ -828,7 +841,7 @@ export class AiReviewPage implements LeaveGuarded {
       );
       if (generation !== this.generation) return;
       this.current.set(saved);
-      if (edits) this.showEdits(saved);
+      if (edits) this.showSaved(saved, edits);
       this.savedAt.set(new Date());
       // A button that went with the save (the stopped review's) leaves the focus in the page.
       keepFocus(
@@ -978,7 +991,20 @@ export class AiReviewPage implements LeaveGuarded {
     await this.projects.loadRest(() => generation === this.generation);
   }
 
-  /** Puts saved settings into the section's edits: as read, or as saved. */
+  /**
+   * Puts a save's answer into the section's edits, except those made while it was on its way:
+   * they stay, unsaved, and the foot counts them.
+   */
+  private showSaved(saved: OrgAiReview, sent: SentEdits): void {
+    if (this.scope() === sent.scope) this.scope.set(saved.scope);
+    if (this.selected() === sent.selected) this.selected.set([...saved.projectIds]);
+    this.budgets.set(
+      savedWhereUnchanged(this.budgets(), sent.budgets, budgetsDraftOf(saved.budgets, this.locale)),
+    );
+    this.budgetErrors.set({});
+  }
+
+  /** Puts the settings as read into the section's edits. */
   private showEdits(settings: OrgAiReview): void {
     this.scope.set(settings.scope);
     this.selected.set([...settings.projectIds]);
@@ -1146,6 +1172,15 @@ export class AiReviewPage implements LeaveGuarded {
       amount,
     );
   }
+}
+
+/** `now`, with each field that still holds what was sent replaced by the saved one. */
+function savedWhereUnchanged<T extends object>(now: T, sent: T, saved: T): T {
+  const merged = { ...now };
+  for (const key of Object.keys(now) as (keyof T)[]) {
+    if (now[key] === sent[key]) merged[key] = saved[key];
+  }
+  return merged;
 }
 
 function closeDialog(ref: ElementRef<HTMLDialogElement> | undefined): void {

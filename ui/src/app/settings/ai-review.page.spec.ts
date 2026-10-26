@@ -1149,6 +1149,45 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
   });
 
   describe('budgets', () => {
+    it('keeps an edit made while a save was on its way, unsaved, and writes back the rest', async () => {
+      const { server, fake } = setup();
+      let release: () => void = () => undefined;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      server.on('PUT', ROUTE, async (request) => {
+        await held;
+        const body = request.body as { scope: 'all' | 'selected'; budgets: typeof DEFAULT_BUDGETS };
+        fake.organizations[ORG_ID] = {
+          ...fake.of(ORG_ID),
+          scope: body.scope,
+          budgets: body.budgets,
+        };
+        return { body: fake.answer(ORG_ID) };
+      });
+      const { fixture, root, page } = await render();
+      await setFold(fixture, root, true);
+      await click(fixture, field(root, 'ai-review-scope-all'));
+      type(root, 'ai-review-tokens', '3000000');
+      await saveReview(fixture, root);
+      // The answer has not come: the field stays usable, and is changed again.
+      const tokens = field(root, 'ai-review-tokens');
+      expect(tokens.disabled).toBe(false);
+      type(root, 'ai-review-tokens', '4000000');
+      tokens.focus();
+      release();
+      await settle(fixture);
+      expect(server.requestsTo('PUT', ROUTE)[0]?.body).toMatchObject({
+        scope: 'all',
+        budgets: { ...DEFAULT_BUDGETS, tokensPerDay: 3_000_000 },
+      });
+      expect(tokens.value).toBe('4000000');
+      expect(document.activeElement).toBe(tokens);
+      // The scope, unchanged since, is the saved one; the budget is still to be saved.
+      expect(field(root, 'ai-review-scope-all').checked).toBe(true);
+      expect(foot(root)).toBe('1 unsaved change');
+      expect(button(section(root), 'Save AI review')?.disabled).toBe(false);
+      expect(page.canLeave()).not.toBe(true);
+    });
+
     it('folds the budgets, lists them while closed, and opens on a refusal', async () => {
       const { server } = setup();
       const { fixture, root } = await render();
