@@ -1462,6 +1462,118 @@ describe('the answer job (6I-4)', () => {
       expect(mr.answers(threadId).map((a) => a.body)).toEqual([replyNote(row.id, EXPLAINED, null)]);
     });
 
+    /** A newer row of the thread of `row`, written by hand as the job would have left it. */
+    const newerRowOf = async (
+      row: ReplyRow,
+      state: Partial<typeof reviewReplies.$inferInsert>,
+    ): Promise<string> => {
+      const [made] = await h.ctx.db
+        .insert(reviewReplies)
+        .values({
+          projectId: row.projectId,
+          branchId: row.branchId,
+          provider: row.provider,
+          threadId: row.threadId,
+          issueId: row.issueId,
+          kind: 'reply',
+          noteId: row.noteId + 1_000_000,
+          author: 'someone',
+          ...state,
+        })
+        .returning({ id: reviewReplies.id });
+      return made!.id;
+    };
+
+    it('a newer row whose answer was posted covers the notes, whatever ended it: the row is superseded', async () => {
+      const { mr, threadId, row } = await replied('cover-posted');
+      // Its answer was posted, and both tries to resolve the thread failed: the sweep ended it.
+      await newerRowOf(row, {
+        status: 'failed',
+        reason: 'internal',
+        verdict: 'keep',
+        answer: 'Noted.',
+        answerNoteId: 99_999_001,
+        startedAt: new Date(),
+        finishedAt: new Date(),
+      });
+      const before = llm.requests.length;
+      await answer();
+      expect(callsSince(before)).toEqual([]);
+      expect(await rowById(row.id)).toMatchObject({ status: 'skipped', reason: 'superseded' });
+      expect(mr.answers(threadId)).toEqual([]);
+    });
+
+    it('a newer row that holds a decision and is alive covers the notes: the row is superseded', async () => {
+      const { mr, threadId, row } = await replied('cover-live');
+      // Decided, and queued again with its job (a wait for a circuit, a stop of the server).
+      const newer = await newerRowOf(row, {
+        status: 'queued',
+        verdict: 'keep',
+        answer: 'Noted.',
+        startedAt: new Date(),
+      });
+      await enqueue(h.ctx.db, {
+        queue: AI_REPLY_QUEUE,
+        payload: { kind: 'answer', replyId: newer },
+        concurrencyKey: replyKey(row.branchId),
+        maxAttempts: 2,
+      });
+      await dueAt(newer, 'later');
+      const before = llm.requests.length;
+      await answer();
+      expect(callsSince(before)).toEqual([]);
+      expect(await rowById(row.id)).toMatchObject({ status: 'skipped', reason: 'superseded' });
+      // The newer row answers, once its job is due.
+      await dueAt(newer, 'now');
+      await answer();
+      expect(await rowById(newer)).toMatchObject({ status: 'done', outcome: 'answered' });
+      expect(mr.answers(threadId)).toHaveLength(1);
+    });
+
+    it('a round reads the notes after the last answered round of its own thread of its own merge request only', async () => {
+      const d = driverOf();
+      const other = await d.setup(`${slug}-last-answered-filter-other`);
+      const mr = await d.setup(`${slug}-last-answered-filter`);
+      await reviewOn(h, llm);
+      const issueId = await aiFinding(mr.branchId, 9);
+      await mr.decorate();
+      const threadId = mr.threadOf(issueId);
+      const first = mr.reply(threadId, 'First, the loop is bounded.');
+      const second = mr.reply(threadId, 'Second, the input is checked.');
+      await mr.decorate();
+      const row = await rowOfNote(mr.branchId, second);
+      // Rows that ended done, with the first note's id: of another thread of this merge request,
+      // and of this thread's id in another merge request (another project's).
+      const otherIssue = await aiFinding(mr.branchId, 12);
+      await mr.decorate();
+      await newerRowOf(row, {
+        threadId: mr.threadOf(otherIssue),
+        issueId: otherIssue,
+        noteId: first,
+        status: 'done',
+        outcome: 'answered',
+        startedAt: new Date(),
+        finishedAt: new Date(),
+      });
+      await newerRowOf(row, {
+        projectId: other.project.id,
+        branchId: other.branchId,
+        issueId: null,
+        noteId: first,
+        status: 'done',
+        outcome: 'answered',
+        startedAt: new Date(),
+        finishedAt: new Date(),
+      });
+      const before = llm.requests.length;
+      llm.say(KEEP);
+      await answer();
+      const asked = JSON.stringify(callsSince(before)[0]!.json);
+      expect(asked).toContain('First, the loop is bounded.');
+      expect(asked).toContain('Second, the input is checked.');
+      expect(await rowById(row.id)).toMatchObject({ status: 'done', outcome: 'answered' });
+    });
+
     it('a row that changed the status posts its answer even in a thread someone resolved since, through the circuit', async () => {
       const { mr, threadId, row } = await replied('acted-then-resolved');
       mr.failNextPost(false);

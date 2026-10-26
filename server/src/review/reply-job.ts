@@ -71,8 +71,9 @@ import { openSnapshotReader, type SnapshotReader } from './snapshot-reader';
  * again where it was done, so that a retry resumes after the last one:
  * 1. AI review no longer active for the project ends the row `skipped: inactive`;
  * 2. with no decision yet, a day with no tokens left for it ends it `skipped: budget_spent`, and a
- *    newer round of its thread that was answered or holds a decision (that round read this row's
- *    notes too) `skipped: superseded`, before anything is read or sent;
+ *    newer round of its thread that was answered, posted its answer, or holds a decision and is
+ *    alive (that round read this row's notes too: `coveredByNewer`) `skipped: superseded`, before
+ *    anything is read or sent;
  * 3. the merge request is read, as the review job reads it: merged or closed ends the row
  *    `skipped: closed`. The thread is read again through the job's own client: one that is gone
  *    ends it `skipped: thread_gone`, and so does one that someone resolved before Qualor answered,
@@ -81,7 +82,7 @@ import { openSnapshotReader, type SnapshotReader } from './snapshot-reader';
  *    with the rights in the SCM of those who wrote them, and the decision is stored: the model is
  *    never asked twice for one row. A row put back in the queue runs behind the jobs queued before
  *    it, so a row that has neither changed the status nor posted its answer is then skipped as
- *    superseded, its decision dropped, when a newer round was answered or decided meanwhile. A row
+ *    superseded, its decision dropped, when a newer round covers it meanwhile (as in 2). A row
  *    that has done either finishes, whatever newer rows did: its effect happened, and its answer
  *    says so;
  * 5. a verdict that is not `keep` changes the status of the thread's open AI finding, as the
@@ -198,13 +199,14 @@ async function lastAnsweredNote(db: Db, row: ReplyInThread): Promise<number> {
 
 /**
  * Whether a newer round of the row's thread covers its notes: the reply of a later note of the
- * same thread of the same merge request was answered (`done`), or holds a decision and is alive,
- * queued or running with its job there. That round read this row's notes too (they come after the
- * thread's last answered round), so the row is not answered again; and should it fail later, a
- * later round reads them once more, as a superseded row is skipped, not done. A newer row that
- * ended `failed` or `skipped` with its decision kept (the sweep's end, `thread_gone`, `closed` and
- * `inactive` keep it) covers nothing, nor does a running one whose job is gone for good (the
- * sweep's next): its round is never answered, so this row answers its own notes.
+ * same thread of the same merge request was answered (`done`), or its answer was posted whatever
+ * ended it, or it holds a decision and is alive, queued or running with its job there. That round
+ * read this row's notes too (they come after the thread's last answered round), so the row is not
+ * answered again; and should it fail later, a later round reads them once more, as a superseded row
+ * is skipped, not done. A newer row that ended `failed` or `skipped` with its decision kept and
+ * nothing posted (the sweep's end, `thread_gone`, `closed` and `inactive` keep it) covers nothing,
+ * nor does a running one whose job is gone for good (the sweep's next): its round is never
+ * answered, so this row answers its own notes.
  */
 async function coveredByNewer(db: Db, row: ReplyInThread): Promise<boolean> {
   const [newer] = await db
@@ -218,6 +220,7 @@ async function coveredByNewer(db: Db, row: ReplyInThread): Promise<boolean> {
         gt(reviewReplies.noteId, row.noteId),
         or(
           eq(reviewReplies.status, 'done'),
+          isNotNull(reviewReplies.answerNoteId),
           and(
             isNotNull(reviewReplies.verdict),
             inArray(reviewReplies.status, ['queued', 'running']),
