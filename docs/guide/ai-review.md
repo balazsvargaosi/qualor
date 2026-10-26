@@ -872,8 +872,9 @@ or streaming. When the second ask is answered, Qualor remembers that server addr
 the server restarts, and asks without the room from then on. When the refusal is about a context
 window that the prompt and the answer share, in the words of vLLM or Anthropic, nothing is
 remembered: Qualor asks for the room again on every call, and asks again without it when the prompt
-leaves none, so a vLLM with a small window pays one quick refusal on each call. OpenAI's Responses
-API clamps a limit that is too large by itself, so nothing is asked again there.
+leaves none, so a vLLM with a small window pays one quick refusal on each call. The Responses API
+is no exception: OpenAI clamps a limit that is too large by itself, but a server of that API that
+refuses a call with the room (a 400 or a 422) is asked again once without it, as on the other APIs.
 
 **Big merge requests.** The reviewers get the changed code in their first message and read more with
 their tools. At the default of 300 000 tokens per review, a merge request of about 80 changed files
