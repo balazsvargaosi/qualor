@@ -41,6 +41,7 @@ import {
   AI_REVIEW_BUDGET_INPUT,
   type AiReviewBody,
   type AiReviewBudgetErrors,
+  type AiReviewBudgets,
   type AiReviewBudgetField,
   type AiReviewBudgetsDraft,
   type AiReviewProvider,
@@ -669,13 +670,7 @@ export class AiReviewPage implements LeaveGuarded {
     // A review whose consent no longer covers the provider needs it again: the server would
     // refuse the save, so the dialog asks for it instead, once the budgets can be sent.
     if (settings.enabled && !settings.consentCurrent) {
-      const parsed = parseBudgets(this.budgets());
-      if ('errors' in parsed) {
-        this.refuse(parsed.errors);
-        return;
-      }
-      this.budgetErrors.set({});
-      this.askConsent(false);
+      if (this.sendableBudgets() !== null) this.askConsent(false);
       return;
     }
     await this.put(settings.enabled, null, 'save');
@@ -761,14 +756,8 @@ export class AiReviewPage implements LeaveGuarded {
     ) {
       return;
     }
-    if (!(settings.enabled && !settings.consentCurrent)) {
-      const parsed = parseBudgets(this.budgets());
-      if ('errors' in parsed) {
-        this.refuse(parsed.errors);
-        return;
-      }
-      this.budgetErrors.set({});
-    }
+    const paused = settings.enabled && !settings.consentCurrent;
+    if (!paused && this.sendableBudgets() === null) return;
     this.consent.set({
       host: settings.provider.host,
       model: settings.provider.model,
@@ -791,19 +780,15 @@ export class AiReviewPage implements LeaveGuarded {
   ): Promise<void> {
     const id = this.org.currentId();
     if (!id) return;
-    const parsed = parseBudgets(this.budgets());
-    if ('errors' in parsed) {
-      this.refuse(parsed.errors);
-      return;
-    }
-    this.budgetErrors.set({});
+    const budgets = this.sendableBudgets();
+    if (budgets === null) return;
     await this.send(
       id,
       {
         enabled,
         scope: this.scope(),
         projectIds: [...this.selected()],
-        budgets: parsed.budgets,
+        budgets,
         ...(acknowledged
           ? {
               acknowledgeDataSharing: {
@@ -907,6 +892,20 @@ export class AiReviewPage implements LeaveGuarded {
       this.error.set(message);
       this.heading().nativeElement.focus();
     }
+  }
+
+  /**
+   * The budgets as they would be sent, and no refusal left on them; null when a field cannot be
+   * sent, which is then shown refused.
+   */
+  private sendableBudgets(): AiReviewBudgets | null {
+    const parsed = parseBudgets(this.budgets());
+    if ('errors' in parsed) {
+      this.refuse(parsed.errors);
+      return null;
+    }
+    this.budgetErrors.set({});
+    return parsed.budgets;
   }
 
   /** Shows refused budgets: the fold opens on them, and the first takes the focus. */
