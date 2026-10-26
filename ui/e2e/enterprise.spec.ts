@@ -308,7 +308,9 @@ test.describe('automatic fix suggestions (4E-3a §4)', () => {
     await expect(page).toHaveURL(/\/projects\/[^/]+\/settings$/);
   }
 
-  test('the organisation switches them on and a project opts out', async ({ page }) => {
+  test('an organisation admin switches automatic fix suggestions on in Settings → AI, and a project opts out', async ({
+    page,
+  }) => {
     // The instance admin points the assistant at a host under .invalid (RFC 6761): saving contacts
     // nothing, and no test asks the model. The organisation's block is left as it was, so the save
     // sends none (it would undo what an organisation admin changes meanwhile).
@@ -337,23 +339,48 @@ test.describe('automatic fix suggestions (4E-3a §4)', () => {
     await expect(page.getByRole('status')).toHaveText('The AI assistant settings were saved.');
     await expectAccessible(page);
 
-    // Settings → Automatic fixes: the organisation's own screen.
+    // Settings → AI, the organisation's page: its section, where the old address leads.
     await page.goto('/settings');
-    await page.getByRole('link', { name: 'Automatic fixes' }).click();
-    await expect(page).toHaveTitle('Automatic fix suggestions · Qualor');
+    await expect(page.getByRole('link', { name: 'Automatic fixes' })).toHaveCount(0);
+    await page.goto('/settings/auto-fix');
+    await expect(page).toHaveURL(/\/settings\/ai-review#fix-suggestions$/);
+    await expect(page).toHaveTitle('AI · Qualor');
+    const section = page.locator('#fix-suggestions');
     await expect(
-      page.getByText('Suggestions are posted to merge requests without a click.'),
-    ).toBeVisible();
-    await page.getByLabel('Post fix suggestions automatically').check();
-    await page.getByLabel('Minimum severity').selectOption('medium');
-    await page.getByLabel('At most per analysis').fill('5');
-    await page.getByRole('button', { name: 'Save' }).click();
-    await expect(page.getByRole('status')).toHaveText('The automatic fix suggestions were saved.');
+      section.getByRole('heading', { name: 'Automatic fix suggestions', level: 3 }),
+    ).toBeFocused();
+    await expect(
+      page
+        .getByRole('navigation', { name: 'On this page' })
+        .getByRole('link', { name: 'Automatic fix suggestions' }),
+    ).toHaveAttribute('href', '#fix-suggestions');
+    const fixSwitch = section.getByRole('switch', { name: 'Post fix suggestions automatically' });
+    await expect(fixSwitch).not.toBeChecked();
+    await expect(fixSwitch).toBeEnabled();
+    await expect(section.getByLabel('Minimum severity')).toHaveCount(0);
+    await expect(page.locator('li[data-key="fix"]')).toContainText('Off');
     await expectAccessible(page);
+
+    // On, the severity and the maximum hang from the switch.
+    await fixSwitch.check();
+    await section.getByLabel('Minimum severity').selectOption('medium');
+    await section.getByLabel('At most per analysis').fill('5');
+    const foot = section.locator('.foot-status');
+    await expect(foot).toHaveText('3 unsaved changes');
+    // Save turns primary; its colours fade in (0.15s), which axe must not measure halfway.
+    const save = section.getByRole('button', { name: 'Save fix suggestions' });
+    await expect(save).toHaveCSS('background-color', 'rgb(31, 95, 191)');
+    await expectAccessible(page);
+    await save.click();
+    await expect(foot).toHaveText(/^Saved at \d{1,2}:\d{2} [AP]M UTC\.$/);
+    await expect(page.locator('li[data-key="fix"]')).toContainText(
+      'For new findings of Medium and above.',
+    );
     await page.reload();
-    await expect(page.getByLabel('Post fix suggestions automatically')).toBeChecked();
-    await expect(page.getByLabel('Minimum severity')).toHaveValue('medium');
-    await expect(page.getByLabel('At most per analysis')).toHaveValue('5');
+    await expect(fixSwitch).toBeChecked();
+    await expect(section.getByLabel('Minimum severity')).toHaveValue('medium');
+    await expect(section.getByLabel('At most per analysis')).toHaveValue('5');
+    await expect(section.locator('#auto-fix-opted-out')).toHaveText('No project opted out.');
 
     // The project opts out, and stays out after a reload.
     await openProjectSettings(page);
@@ -370,6 +397,12 @@ test.describe('automatic fix suggestions (4E-3a §4)', () => {
     await expect(
       page.locator('#auto-fix').getByLabel('Automatic fix suggestions for this project'),
     ).not.toBeChecked();
+
+    // The organisation's section names it.
+    await page.goto('/settings/ai-review#fix-suggestions');
+    await expect(page.locator('#auto-fix-opted-out')).toHaveText(
+      `Opted out by their project admins: ${PAYMENTS.name}.`,
+    );
 
     // The instance admin's screen shows what the organisation admin chose.
     await page.goto('/settings/ai');

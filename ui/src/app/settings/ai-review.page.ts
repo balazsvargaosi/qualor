@@ -1,10 +1,11 @@
 import {
   afterNextRender,
+  afterRenderEffect,
   Component,
   computed,
   DOCUMENT,
   effect,
-  type ElementRef,
+  ElementRef,
   inject,
   Injector,
   LOCALE_ID,
@@ -12,7 +13,8 @@ import {
   untracked,
   viewChild,
 } from '@angular/core';
-import { RouterLink } from '@angular/router';
+import { toSignal } from '@angular/core/rxjs-interop';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { Api, ok } from '../api/api';
 import { ApiError, fieldErrors, problemMessage } from '../api/errors';
 import type { ItemOf } from '../api/types';
@@ -33,6 +35,7 @@ import { Requirement } from '../shared/requirement';
 import { type FootOutcome, SectionFoot } from '../shared/section-foot';
 import { type StatusLine, StatusList, type StatusMeter } from '../shared/status-list';
 import { type LeaveGuarded, LeaveGuards, whileDirty } from '../shared/unsaved-changes';
+import { SystemInfo } from '../shell/system-info';
 import {
   AI_REVIEW_BUDGET_FIELDS,
   AI_REVIEW_BUDGET_INPUT,
@@ -57,6 +60,8 @@ import {
   parseBudgets,
   pickerUnavailable,
 } from './ai-review';
+import { AUTO_FIX_FEATURE } from './auto-fix';
+import { FixSuggestionsSection } from './org-ai/fix-suggestions-section';
 import { chosenState, selectionSummary, summaryText } from './org-ai/review-state';
 
 type Project = ItemOf<'/api/v0/projects'>;
@@ -101,13 +106,20 @@ const FEATURES: readonly Feature[] = ['explain', 'triage', 'fix'];
  *   server wanted and did not get a 409 AI_REVIEW_CONSENT_REQUIRED: both read the settings again,
  *   keep the edits and ask again. Switching off asks first, and sends what is stored.
  * - **Assistant**, read-only: the features, the projects never sent, the daily limits.
+ * - **Automatic fix suggestions** (`q-fix-suggestions-section`), while the Enterprise feature
+ *   `llm.auto-fix` is active; without it the status ends with one line that says they are part
+ *   of Qualor Enterprise.
  *
- * Without a provider, or while the organisation may not use AI, the page says who changes that,
- * and only switches off a review stored on. Leaving it with unsaved edits asks first.
+ * An index under the head leads to the sections, and an address that names one
+ * (`/settings/auto-fix` leads to `#fix-suggestions`) scrolls to it once it has rendered. Without a
+ * provider, or while the organisation may not use AI, the page says who changes that (and offers
+ * an instance admin to set up the provider), and only switches off a review stored on. Leaving it
+ * with unsaved edits in any section asks first.
  */
 @Component({
   selector: 'q-ai-review-page',
   imports: [
+    FixSuggestionsSection,
     Icon,
     LeaveConfirm,
     NumberField,
@@ -126,13 +138,18 @@ export class AiReviewPage implements LeaveGuarded {
   private readonly document = inject(DOCUMENT);
   private readonly locale = inject(LOCALE_ID);
   private readonly session = inject(SessionStore);
+  private readonly info = inject(SystemInfo);
+  private readonly router = inject(Router);
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly fragment = toSignal(inject(ActivatedRoute).fragment, { initialValue: null });
   protected readonly org = inject(OrgContext);
 
-  /** The status line of the automatic fix suggestions, after the assistant's; Task 6 sets it. */
+  /** The status line of the automatic fix suggestions, after the assistant's, as their section says. */
   readonly fixLine = signal<StatusLine | null>(null);
 
   protected readonly texts = {
     reviewTitle: $localize`:@@orgAi.review.title:AI review`,
+    fixTitle: $localize`:@@orgAi.fix.title:Automatic fix suggestions`,
     save: $localize`:@@orgAi.save:Save AI review`,
     switchOff: $localize`:@@orgAi.action.switchOff:Switch off AI review`,
     addProjects: $localize`:@@orgAi.addProjects:Add projects`,
@@ -174,6 +191,14 @@ export class AiReviewPage implements LeaveGuarded {
   protected readonly providerLink = computed(() =>
     this.session.user()?.isInstanceAdmin === true ? '/settings/ai' : null,
   );
+  /**
+   * The automatic fix suggestions are licensed (`llm.auto-fix`): their section shows; without
+   * them the status says they are Enterprise. Null while the system info is not in: neither.
+   */
+  protected readonly fixSuggestions = computed(() =>
+    this.info.info() === null ? null : this.info.features().includes(AUTO_FIX_FEATURE),
+  );
+  private readonly fixSection = viewChild(FixSuggestionsSection);
 
   /** The settings as the server last answered: what the status says and what edits compare with. */
   protected readonly current = signal<OrgAiReview | null>(null);
@@ -234,6 +259,10 @@ export class AiReviewPage implements LeaveGuarded {
       this.projects.loaded() &&
       this.projects.nextCursor() === null &&
       this.projects.error() === null,
+  );
+  /** The projects, for the fix suggestions to name those opted out; null until all are in. */
+  protected readonly fixProjects = computed(() =>
+    this.projectsReady() ? this.knownProjects() : null,
   );
   /** What the saved scope and projects give AI review; null until the projects are in. */
   private readonly storedSummary = computed(() => {
@@ -297,8 +326,19 @@ export class AiReviewPage implements LeaveGuarded {
     const lines: StatusLine[] = [this.reviewLine(settings), this.todayLine(settings)];
     const assistant = this.assistantLine();
     if (assistant !== null) lines.push(assistant);
+    const licensed = this.fixSuggestions();
     const fix = this.fixLine();
-    if (fix !== null) lines.push(fix);
+    if (licensed === true && fix !== null) lines.push(fix);
+    if (licensed === false) {
+      // One muted line, the only place the plan is named (spec §3.5).
+      lines.push({
+        key: 'community',
+        label: '',
+        tone: 'off',
+        state: '',
+        sub: $localize`:@@orgAi.community:Automatic fix suggestions are part of Qualor Enterprise.`,
+      });
+    }
     return lines;
   });
 
@@ -317,7 +357,12 @@ export class AiReviewPage implements LeaveGuarded {
       changedBudgets(this.budgets(), settings.budgets)
     );
   });
-  private readonly dirty = computed(() => this.changeCount() > 0);
+  /** The sections with unsaved edits, by their headings: AI review, the fix suggestions. */
+  private readonly unsavedSections = computed(() => [
+    ...(this.changeCount() > 0 ? [this.texts.reviewTitle] : []),
+    ...(this.fixSection()?.dirty() ? [this.texts.fixTitle] : []),
+  ]);
+  private readonly dirty = computed(() => this.unsavedSections().length > 0);
 
   protected readonly footOutcome = computed<FootOutcome>(() => {
     if (this.busy()) return { kind: 'saving' };
@@ -471,6 +516,8 @@ export class AiReviewPage implements LeaveGuarded {
   private readonly leaveConfirm = viewChild.required(LeaveConfirm);
   /** Counts the organisations read: an answer for an earlier one is dropped. */
   private generation = 0;
+  /** The section the address named was scrolled to, or the index was used: not again. */
+  private revealed = false;
 
   constructor() {
     whileDirty(() => this.dirty());
@@ -496,6 +543,7 @@ export class AiReviewPage implements LeaveGuarded {
         this.budgetsOpen.set(false);
         this.picked.set(new Map());
         this.projects.clear();
+        this.fixLine.set(null);
         if (allowed && id) {
           void this.load(id, this.generation);
           void this.loadAssistant(id, this.generation);
@@ -503,11 +551,38 @@ export class AiReviewPage implements LeaveGuarded {
         }
       });
     });
+    // An address that names a section: scroll to it once it has rendered (the fix suggestions
+    // wait for the system info too).
+    afterRenderEffect(() => {
+      const fragment = this.fragment();
+      if (this.revealed || fragment === null || this.current() === null) return;
+      this.fixSuggestions();
+      if (this.reveal(fragment)) this.revealed = true;
+    });
   }
 
-  /** Leaving with unsaved edits asks first (the route's `canDeactivate`). */
+  /** Leaving with unsaved edits asks first (the route's `canDeactivate`), naming their sections. */
   canLeave(): boolean | Promise<boolean> {
-    return this.dirty() ? this.leaveConfirm().ask([this.texts.reviewTitle]) : true;
+    const sections = this.unsavedSections();
+    return sections.length > 0 ? this.leaveConfirm().ask(sections) : true;
+  }
+
+  /** An index link: keeps the section in the address, scrolls to it and focuses its heading. */
+  protected go(id: string, event: Event): void {
+    event.preventDefault();
+    this.revealed = true;
+    void this.router.navigate([], { fragment: id, replaceUrl: true });
+    this.reveal(id);
+  }
+
+  /** Scrolls to the page's section `id` and focuses its heading; false while it is not there. */
+  private reveal(id: string): boolean {
+    // By id, not by a selector: the address may hold any text.
+    const section = this.document.getElementById(id);
+    if (section?.tagName !== 'SECTION' || !this.host.nativeElement.contains(section)) return false;
+    section.scrollIntoView();
+    section.querySelector<HTMLElement>('h3')?.focus({ preventScroll: true });
+    return true;
   }
 
   /** The status line's action: switch on, confirm again (both the dialog), or switch off. */

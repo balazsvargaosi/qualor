@@ -1,4 +1,5 @@
-import type { Routes } from '@angular/router';
+import { inject } from '@angular/core';
+import { Router, type Routes } from '@angular/router';
 import { unsavedChangesGuard } from '../shared/unsaved-changes';
 
 /** Children of `/settings` (SettingsPage). */
@@ -56,19 +57,20 @@ export const settingsRoutes: Routes = [
     loadComponent: () => import('./repositories.page').then((m) => m.RepositoriesPage),
   },
   {
-    // The organisation's AI (spec §3.5): AI review and its data-sharing confirmation, and the
-    // assistant read-only, for its admins (org.ai.manage), in every edition. Leaving it with
-    // unsaved edits asks first.
+    // The organisation's AI (spec §3.5): AI review and its data-sharing confirmation, the
+    // assistant read-only and, with the Enterprise plan, the automatic fix suggestions, for its
+    // admins (org.ai.manage), in every edition. Leaving it with unsaved edits asks first.
     path: 'ai-review',
     title: $localize`:@@title.orgAi:AI`,
     canDeactivate: [unsavedChangesGuard],
     loadComponent: () => import('./ai-review.page').then((m) => m.AiReviewPage),
   },
   {
-    // 4E-3a §4: an organisation's automatic fix suggestions, for its admins (org.ai.manage).
+    // The automatic fix suggestions' own page became a section of the organisation's AI page;
+    // links and bookmarks to it lead there.
     path: 'auto-fix',
-    title: $localize`:@@title.autoFix:Automatic fix suggestions`,
-    loadComponent: () => import('./auto-fix.page').then((m) => m.AutoFixPage),
+    redirectTo: () =>
+      inject(Router).createUrlTree(['/settings/ai-review'], { fragment: 'fix-suggestions' }),
   },
   {
     // 6M §8: the organisation's licence policy, for its admins (org.licenses.manage).

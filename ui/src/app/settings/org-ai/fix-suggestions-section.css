@@ -1,0 +1,92 @@
+/*
+ * The automatic fix suggestions of Settings → AI (spec §3.5 M-O8, §7.2): a section card as the
+ * page's others, its title and purpose at the left of its head and its chips at the right.
+ */
+:host {
+  display: block;
+  min-width: 0;
+}
+section {
+  margin: 0;
+}
+.panel-head {
+  align-items: flex-start;
+  padding-bottom: 16px;
+}
+.sec-title {
+  display: grid;
+  flex: 1 1 20rem;
+  gap: 3px;
+  min-width: 0;
+}
+.sec-title h3 {
+  margin: 0;
+}
+.sec-purpose {
+  max-width: 72ch;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.sec-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+/* Definite columns (spec §7.10): nothing in the field widens the card on a phone. */
+.setting-field,
+.dep {
+  grid-template-columns: minmax(0, 1fr);
+}
+.setting-field {
+  gap: 10px;
+}
+/* A row of one message (loading, a failed read, the Enterprise note) takes the whole width. */
+.full-row {
+  grid-template-columns: minmax(0, 1fr);
+}
+.full-row > p {
+  margin: 0;
+}
+
+/* A field under the switch: its label above, its field, then what it says about it. */
+.fold-field {
+  display: grid;
+  gap: 6px;
+}
+.fold-field > .lbl {
+  font-size: 13px;
+  font-weight: 650;
+}
+.fold-field > p,
+.dep > p {
+  margin: 0;
+}
+.fold-field > select {
+  justify-self: start;
+  max-width: 100%;
+}
+.num-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 0;
+}
+.per {
+  margin-left: 6px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.field-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+@media (max-width: 40rem) {
+  .panel-head {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+}

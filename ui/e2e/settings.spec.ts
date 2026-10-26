@@ -66,6 +66,28 @@ test('the settings navigation groups its entries and marks the current page', as
   await expectAccessible(page);
 });
 
+// The automatic fix suggestions' old address leads to the organisation's AI page, whose index
+// leads to its sections; without the Enterprise plan the status says what that plan adds.
+test("/settings/auto-fix leads to the organisation's AI page, which says fix suggestions are Enterprise", async ({
+  page,
+}) => {
+  await page.goto('/settings/auto-fix');
+  await expect(page).toHaveURL(/\/settings\/ai-review#fix-suggestions$/);
+  await expect(page).toHaveTitle('AI · Qualor');
+  await expect(page.locator('li[data-key="community"]')).toHaveText(
+    'Automatic fix suggestions are part of Qualor Enterprise.',
+  );
+  await expect(page.locator('#fix-suggestions')).toHaveCount(0);
+  const index = page.getByRole('navigation', { name: 'On this page' });
+  await expect(index.getByRole('link')).toHaveText(['AI review', 'Assistant']);
+  await index.getByRole('link', { name: 'Assistant' }).click();
+  await expect(page).toHaveURL(/\/settings\/ai-review#assistant$/);
+  await expect(
+    page.getByRole('heading', { name: 'Assistant', exact: true, level: 3 }),
+  ).toBeFocused();
+  await expectAccessible(page);
+});
+
 test.describe('on a tablet', () => {
   test.use({ viewport: { width: 768, height: 1024 } });
 

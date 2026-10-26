@@ -1,0 +1,135 @@
+<section id="fix-suggestions" class="card panel" aria-labelledby="ai-fix-heading">
+  <div class="panel-head">
+    <div class="sec-title">
+      <h3 id="ai-fix-heading" tabindex="-1">{{ texts.title }}</h3>
+      <p class="sec-purpose" i18n="@@orgAi.fix.purpose">
+        Qualor suggests fixes for the new findings of each analysed merge request and posts them as
+        suggestion comments, without anyone asking. Nothing is committed.
+      </p>
+    </div>
+    <!-- The spaces keep the chips' words apart for a screen reader. -->
+    <div class="sec-chips">
+      @if (chip(); as state) {
+        <span class="badge {{ state.badge }}"><q-icon [name]="state.icon" />{{ state.state }}</span
+        >&ngsp;
+      }
+      <span class="badge badge-tag">{{ texts.enterprise }}</span>
+    </div>
+  </div>
+
+  @if (current(); as settings) {
+    @if (!settings.available) {
+      <div class="setting-row full-row">
+        <p id="auto-fix-not-licensed" class="note">
+          <q-icon name="info" /><span>{{ notLicensed }}</span>
+        </p>
+      </div>
+    } @else {
+      <div class="setting-row">
+        <div class="setting-text">
+          <span class="setting-name">{{ texts.label }}</span>
+        </div>
+        <div class="setting-field">
+          <!-- What keeps the switch off stands above it; what keeps it from running, below. -->
+          @if (needsFix()) {
+            <q-requirement
+              noteId="auto-fix-needs-fix"
+              [text]="needsFixText()"
+              place="ai-provider"
+            />
+          }
+          <!-- A switch is named by its name alone, and its help describes it. -->
+          <div class="switch-row">
+            <input
+              id="auto-fix-enabled"
+              class="switch"
+              type="checkbox"
+              role="switch"
+              aria-labelledby="auto-fix-enabled-name"
+              [attr.aria-describedby]="switchDescribedBy()"
+              [checked]="enabled()"
+              [disabled]="switchDisabled()"
+              (change)="setEnabled($event)"
+            />
+            <label for="auto-fix-enabled">
+              <span id="auto-fix-enabled-name" class="sw-name" i18n="@@orgAi.fix.switch"
+                >Post fix suggestions automatically</span
+              >
+              @if (switchHelp(); as help) {
+                &ngsp;<span id="auto-fix-enabled-help" class="sw-help">{{ help }}</span>
+              }
+            </label>
+          </div>
+          @if (notRunning()) {
+            <q-requirement
+              noteId="auto-fix-not-running"
+              [text]="notRunningText()"
+              place="ai-provider"
+            />
+          }
+          @if (showDependents()) {
+            <div class="dep">
+              <div class="fold-field">
+                <label class="lbl" for="auto-fix-severity" i18n="@@autoFix.minSeverity"
+                  >Minimum severity</label
+                >
+                <select
+                  id="auto-fix-severity"
+                  aria-describedby="auto-fix-severity-hint"
+                  (change)="setMinSeverity($event)"
+                >
+                  @for (severity of severities; track severity) {
+                    <option [value]="severity" [selected]="severity === minSeverity()">
+                      {{ severityLabel(severity) }}
+                    </option>
+                  }
+                </select>
+                <p id="auto-fix-severity-hint" class="hint" i18n="@@autoFix.minSeverityHint">
+                  New findings at or above it.
+                </p>
+              </div>
+              <div class="fold-field">
+                <label class="lbl" for="auto-fix-max">{{ texts.max }}</label>
+                <div class="num-line">
+                  <q-number-field
+                    inputId="auto-fix-max"
+                    [digits]="3"
+                    [value]="maxPerAnalysis()"
+                    [invalid]="maxError() !== null"
+                    [describedBy]="
+                      maxError() === null
+                        ? 'auto-fix-max-echo'
+                        : 'auto-fix-max-error auto-fix-max-echo'
+                    "
+                    (valueChange)="setMaxPerAnalysis($event)"
+                  />
+                  <span id="auto-fix-max-echo" class="per" i18n="@@orgAi.fix.maxEcho"
+                    >the most severe first</span
+                  >
+                </div>
+                @if (maxError(); as message) {
+                  <p id="auto-fix-max-error" class="field-error">
+                    <q-icon name="alert" />{{ message }}
+                  </p>
+                }
+              </div>
+              @if (optedOutText(); as optedOut) {
+                <p id="auto-fix-opted-out" class="hint">{{ optedOut }}</p>
+              }
+            </div>
+          }
+        </div>
+      </div>
+
+      <q-section-foot [outcome]="footOutcome()" [saveLabel]="texts.save" (save)="save()" />
+    }
+  } @else if (loadError(); as message) {
+    <div class="setting-row full-row">
+      <p class="alert alert-error" role="alert">{{ message }}</p>
+    </div>
+  } @else {
+    <div class="setting-row full-row">
+      <p class="hint" i18n="@@orgAi.loading">Loading…</p>
+    </div>
+  }
+</section>

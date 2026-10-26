@@ -48,6 +48,11 @@
             <a [routerLink]="providerLink()">Settings → AI provider</a> and allows
             {{ orgName() }} to use it. Then you can switch on AI review here.
           </p>
+          @if (providerLink(); as link) {
+            <a class="btn btn-primary" [routerLink]="link" i18n="@@orgAi.setUpProvider"
+              >Set up the provider</a
+            >
+          }
         } @else {
           <h3 id="ai-unavailable-title" class="big" i18n="@@orgAi.notAllowed.title">
             {{ orgName() }} may not use AI yet.
@@ -77,6 +82,16 @@
       }
     </section>
   } @else {
+    <nav class="page-index" aria-labelledby="ai-index-label">
+      <span id="ai-index-label" i18n="@@orgAi.index">On this page</span>
+      <a href="#review" (click)="go('review', $event)">{{ texts.reviewTitle }}</a>
+      <a href="#assistant" (click)="go('assistant', $event)" i18n="@@orgAi.assistant.title">
+        Assistant
+      </a>
+      @if (fixSuggestions()) {
+        <a href="#fix-suggestions" (click)="go('fix-suggestions', $event)">{{ texts.fixTitle }}</a>
+      }
+    </nav>
     <div class="ai-sections">
       <q-status-list [lines]="statusLines()" (act)="onAct($event)" />
 
@@ -520,6 +535,15 @@
         </div>
       </section>
       <!-- fix suggestions -->
+      @if (fixSuggestions()) {
+        <q-fix-suggestions-section
+          [organizationId]="org.currentId() ?? ''"
+          [organizationName]="orgName()"
+          [projects]="fixProjects()"
+          [orgAi]="orgAi()"
+          (status)="fixLine.set($event)"
+        />
+      }
       <!-- 6I-5: auto-fix -->
     </div>
   }

@@ -3,7 +3,6 @@ import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { SessionStore } from '../auth/session';
 import { OrgContext } from '../org/org-context';
 import { PageHeader } from '../shared/page-header';
-import { AUTO_FIX_FEATURE } from './auto-fix';
 import { LICENSE_POLICY_FEATURE } from './license-policy';
 import { SystemInfo } from '../shell/system-info';
 
@@ -68,17 +67,11 @@ export class SettingsPage {
     () => this.ids().has('compliance') && this.org.can('org.read'),
   );
   /**
-   * The organisation's AI review (6I-2): for holders of `org.ai.manage`, in every edition. The
-   * page itself says when the instance has no AI provider or the organisation is not enabled.
+   * The organisation's AI (spec §3.5): AI review, the assistant and, with the Enterprise plan, the
+   * automatic fix suggestions, for holders of `org.ai.manage`, in every edition. The page itself
+   * says when the instance has no AI provider or the organisation is not enabled.
    */
   protected readonly aiReview = computed(() => this.org.can('org.ai.manage'));
-  /**
-   * The organisation's automatic fix suggestions (4E-3a §4, ruling R7): for holders of
-   * `org.ai.manage`, while `llm.auto-fix` is active; the address itself says when it is not.
-   */
-  protected readonly autoFix = computed(
-    () => this.info.features().includes(AUTO_FIX_FEATURE) && this.org.can('org.ai.manage'),
-  );
   /**
    * The organisation's licence policy (6M §8): for holders of `org.licenses.manage`, while
    * `license-policy` is active; the address itself shows the Business note when it is not.
@@ -88,9 +81,8 @@ export class SettingsPage {
       this.info.features().includes(LICENSE_POLICY_FEATURE) && this.org.can('org.licenses.manage'),
   );
   /**
-   * The organization's entries: members, webhooks, the SCM connections, AI review (6I-2), the
-   * automatic fix suggestions (4E-3a §4), the licence policy (6M §8), the audit log and the
-   * compliance reports.
+   * The organization's entries: members, webhooks, the SCM connections, AI (spec §3.5), the
+   * licence policy (6M §8), the audit log and the compliance reports.
    */
   protected readonly organization = computed(
     () =>
@@ -98,7 +90,6 @@ export class SettingsPage {
       this.org.can('org.webhooks.manage') ||
       this.org.can('org.scm.manage') ||
       this.aiReview() ||
-      this.autoFix() ||
       this.licensePolicy() ||
       this.auditLog() ||
       this.compliance(),

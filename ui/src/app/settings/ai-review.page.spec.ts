@@ -6,6 +6,8 @@ import { orgAi } from '../../testing/ai-settings';
 import {
   FakeAiReview,
   type FakeAiReviewOptions,
+  FakeAutoFix,
+  type FakeAutoFixOptions,
   FakeServer,
   me,
   ORG_ADMIN_PERMISSIONS,
@@ -123,6 +125,28 @@ function setup(
   return { server, fake };
 }
 
+/**
+ * The server as the Enterprise plan has it (`llm.auto-fix` active), with the automatic fix
+ * suggestion routes over in-memory settings.
+ */
+function enterprise(server: FakeServer, options: FakeAutoFixOptions = {}): FakeAutoFix {
+  server.on('GET', '/api/v0/system/info', {
+    body: { version: '0.11.0', edition: 'enterprise', features: ['llm.auto-fix'], extensions: [] },
+  });
+  return FakeAutoFix.install(server, options);
+}
+
+/** Lets `scrollIntoView` be called, which the test DOM lacks, for the rest of the test. */
+function catchScrolls() {
+  const scroll = vi.fn();
+  const original = Element.prototype.scrollIntoView;
+  Element.prototype.scrollIntoView = scroll;
+  onTestFinished(() => {
+    Element.prototype.scrollIntoView = original;
+  });
+  return scroll;
+}
+
 type Fixture = { whenStable(): Promise<unknown> };
 
 async function render() {
@@ -170,6 +194,9 @@ const meters = (root: HTMLElement) =>
     value: text(m.querySelector('.meter-value')),
     note: text(m.querySelector('.meter-note')),
   }));
+/** The in-page index's links: their names and where they lead. */
+const indexLinks = (root: HTMLElement) =>
+  [...root.querySelectorAll('nav.page-index a')].map((a) => [text(a), a.getAttribute('href')]);
 const facts = (within: Element) =>
   [...within.querySelectorAll('dl.facts dt')].map((dt) => [text(dt), text(dt.nextElementSibling)]);
 
@@ -228,10 +255,11 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
       '1 of 3 selected projects can be reviewed: 1 not linked to a repository, 1 excluded from AI.',
     );
     expect(button(review, 'Switch on AI review…')?.classList).toContain('btn-primary');
-    // The status, then the AI review and Assistant sections, in that order.
+    // The status, then the AI review and Assistant sections, in that order; without the
+    // Enterprise plan, the status ends with the line that says what it adds.
     expect(
       [...root.querySelectorAll('li[data-key]')].map((l) => l.getAttribute('data-key')),
-    ).toEqual(['review', 'today', 'assistant']);
+    ).toEqual(['review', 'today', 'assistant', 'community']);
     expect([...root.querySelectorAll('section.card h3')].map((h) => text(h))).toEqual([
       'Status',
       'AI review',
@@ -1456,9 +1484,12 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
       expect(text(card.querySelector('.empty > p'))).toBe(
         'An instance admin connects an AI provider in Settings → AI provider and allows Default to use it. Then you can switch on AI review here.',
       );
-      // An organisation admin cannot open the provider's settings: no link.
+      // An organisation admin cannot open the provider's settings: no link, and no button to.
       expect(card.querySelector('a[href]')).toBeNull();
+      expect(text(card)).not.toContain('Set up the provider');
       expect(root.querySelector('q-status-list')).toBeNull();
+      // Nor an index: there is one card only.
+      expect(root.querySelector('nav.page-index')).toBeNull();
       expect(root.querySelector('section#review')).toBeNull();
       expect(text(card.querySelector('.setting-actions .foot-status'))).toBe(
         'AI review was switched on before, and is stopped.',
@@ -1472,10 +1503,14 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
       expect(document.activeElement).toBe(root.querySelector('h2'));
     });
 
-    it('links the AI provider settings for an instance admin', async () => {
+    it('links the AI provider settings for an instance admin, and offers to set up the provider', async () => {
       setup('instanceAdmin', { provider: null });
       const { root } = await render();
-      expect(root.querySelector('.ai-unavailable a')?.getAttribute('href')).toBe('/settings/ai');
+      const card = root.querySelector<HTMLElement>('.ai-unavailable')!;
+      expect(card.querySelector('.empty > p a')?.getAttribute('href')).toBe('/settings/ai');
+      const setUp = [...card.querySelectorAll('a')].find((a) => text(a) === 'Set up the provider');
+      expect(setUp?.getAttribute('href')).toBe('/settings/ai');
+      expect(setUp?.classList).toContain('btn-primary');
     });
 
     it('says an instance admin allows the organisation', async () => {
@@ -1503,6 +1538,8 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
       expect(root.querySelector('.ai-unavailable a')?.getAttribute('href')).toBe(
         '/settings/ai#organizations',
       );
+      // The provider is set up: only the organisation is to allow.
+      expect(text(root.querySelector('.ai-unavailable'))).not.toContain('Set up the provider');
     });
   });
 
@@ -1570,6 +1607,178 @@ describe('AiReviewPage (AI settings redesign, Task 5)', () => {
       );
       expect(root.querySelector('li[data-key="assistant"]')).toBeNull();
       expect(meters(root).map((m) => m.label)).toEqual(['AI review']);
+    });
+  });
+
+  describe('automatic fix suggestions (Task 6)', () => {
+    const FIX_ON = orgAi({ features: { explain: true, triage: true, fix: true } });
+    const STORED_ON = { enabled: true, minSeverity: 'high', maxPerAnalysis: 10 } as const;
+    const fixSection = (root: HTMLElement) =>
+      root.querySelector<HTMLElement>('section#fix-suggestions')!;
+
+    it('in community the section is absent, and the status ends with one muted line', async () => {
+      const { server } = setup();
+      const { root } = await render();
+      expect(root.querySelector('q-fix-suggestions-section, section#fix-suggestions')).toBeNull();
+      const last = [...root.querySelectorAll<HTMLElement>('li[data-key]')].at(-1)!;
+      expect(last.getAttribute('data-key')).toBe('community');
+      expect(text(last)).toBe('Automatic fix suggestions are part of Qualor Enterprise.');
+      // No state and no label: one muted sentence.
+      expect(last.querySelector('.badge')).toBeNull();
+      expect(text(last.querySelector('.st-sub'))).toBe(
+        'Automatic fix suggestions are part of Qualor Enterprise.',
+      );
+      expect(server.requests.filter((r) => r.path.endsWith('/ai/auto-fix'))).toHaveLength(0);
+      // The index leads to the two sections the page has.
+      expect(indexLinks(root)).toEqual([
+        ['AI review', '#review'],
+        ['Assistant', '#assistant'],
+      ]);
+    });
+
+    it('shows them after the assistant, in the status and as a section, with the Enterprise plan', async () => {
+      const { server } = setup('orgAdmin', {}, FIX_ON);
+      enterprise(server, { organizations: { [ORG_ID]: { ...STORED_ON } } });
+      // Web Shop's admins opted their project out.
+      server.on('GET', '/api/v0/projects', {
+        body: page([
+          PROJECTS[0],
+          { ...PROJECTS[1]!, autoFix: { ...PROJECTS[1]!.autoFix, enabled: false } },
+        ]),
+      });
+      const { root } = await render();
+      expect(
+        [...root.querySelectorAll('li[data-key]')].map((l) => l.getAttribute('data-key')),
+      ).toEqual(['review', 'today', 'assistant', 'fix']);
+      const fix = line(root, 'fix');
+      expect(text(fix.querySelector('.st-label'))).toBe('Fix suggestions');
+      expect(text(fix.querySelector('.st-line'))).toBe(
+        'On Enterprise For new findings of High and above.',
+      );
+      expect([...root.querySelectorAll('section.card h3')].map((h) => text(h))).toEqual([
+        'Status',
+        'AI review',
+        'Assistant',
+        'Automatic fix suggestions',
+      ]);
+      // The section reads the page's organisation, its projects and its assistant.
+      const section = fixSection(root);
+      expect(text(section.querySelector('#auto-fix-opted-out'))).toBe(
+        'Opted out by their project admins: Web Shop.',
+      );
+      expect(text(section.querySelector('#auto-fix-enabled-help'))).toBe(
+        'For the new findings of each merge request, within the daily fix budget (25).',
+      );
+      expect(server.requestsTo('GET', `/api/v0/organizations/${ORG_ID}/ai/auto-fix`)).toHaveLength(
+        1,
+      );
+      expect(indexLinks(root)).toEqual([
+        ['AI review', '#review'],
+        ['Assistant', '#assistant'],
+        ['Automatic fix suggestions', '#fix-suggestions'],
+      ]);
+      const index = root.querySelector('nav.page-index')!;
+      expect(text(root.querySelector(`#${index.getAttribute('aria-labelledby')}`))).toBe(
+        'On this page',
+      );
+    });
+
+    it('says who turns Suggest a fix on for the organisation', async () => {
+      const { server } = setup();
+      enterprise(server);
+      const { root } = await render();
+      expect(text(fixSection(root).querySelector('#auto-fix-needs-fix'))).toBe(
+        'Needs Suggest a fix for Default, which an instance admin turns on in Settings → AI provider.',
+      );
+      expect(text(line(root, 'fix').querySelector('.st-line'))).toBe('Off Enterprise');
+    });
+
+    it('goes to a section from the index, and keeps it in the address', async () => {
+      const { server } = setup('orgAdmin', {}, FIX_ON);
+      enterprise(server);
+      const scroll = catchScrolls();
+      const { fixture, root } = await render();
+      const link = root.querySelector<HTMLAnchorElement>(
+        'nav.page-index a[href="#fix-suggestions"]',
+      )!;
+      await click(fixture, link);
+      expect(scroll).toHaveBeenCalledTimes(1);
+      expect(scroll.mock.contexts[0]).toBe(fixSection(root));
+      expect(document.activeElement).toBe(fixSection(root).querySelector('h3'));
+      expect(TestBed.inject(Router).url).toBe('/#fix-suggestions');
+    });
+
+    it('/settings/auto-fix leads to the section on the AI page (/settings/ai-review#fix-suggestions)', async () => {
+      const { server } = setup('orgAdmin', {}, FIX_ON, [
+        { path: 'settings', children: settingsRoutes },
+      ]);
+      enterprise(server);
+      const scroll = catchScrolls();
+      const harness = await RouterTestingHarness.create();
+      await harness.navigateByUrl('/settings/auto-fix', AiReviewPage);
+      await settle(harness.fixture);
+      expect(TestBed.inject(Router).url).toBe('/settings/ai-review#fix-suggestions');
+      const root = harness.routeNativeElement!;
+      // Once it has rendered, the section is scrolled to and its heading takes the focus.
+      expect(scroll.mock.contexts.at(-1)).toBe(fixSection(root));
+      expect(document.activeElement).toBe(fixSection(root).querySelector('h3'));
+    });
+
+    it('asks before leaving with unsaved fix suggestions, naming them, and not once they are saved', async () => {
+      const { server } = setup('orgAdmin', {}, FIX_ON);
+      enterprise(server, { organizations: { [ORG_ID]: { ...STORED_ON } } });
+      const { fixture, root, page } = await render();
+      expect(page.canLeave()).toBe(true);
+      type(root, 'auto-fix-max', '7');
+      await settle(fixture);
+      const unload = new Event('beforeunload', { cancelable: true });
+      window.dispatchEvent(unload);
+      expect(unload.defaultPrevented).toBe(true);
+
+      const leave = root.querySelector<HTMLDialogElement>('q-leave-confirm dialog')!;
+      let answer = page.canLeave() as Promise<boolean>;
+      await settle(fixture);
+      expect(leave.open).toBe(true);
+      expect(text(leave.querySelector('#leave-text'))).toBe(
+        'Your changes to Automatic fix suggestions are not saved yet.',
+      );
+      await click(fixture, button(leave, 'Stay'));
+      await expect(answer).resolves.toBe(false);
+
+      // Both sections changed: both are named.
+      await click(fixture, field(root, 'ai-review-scope-all'));
+      answer = page.canLeave() as Promise<boolean>;
+      await settle(fixture);
+      expect(text(leave.querySelector('#leave-text'))).toBe(
+        'Your changes to AI review and Automatic fix suggestions are not saved yet.',
+      );
+      await click(fixture, button(leave, 'Stay'));
+      await expect(answer).resolves.toBe(false);
+
+      await saveReview(fixture, root);
+      await click(fixture, button(fixSection(root), 'Save fix suggestions'));
+      expect(server.requestsTo('PUT', `/api/v0/organizations/${ORG_ID}/ai/auto-fix`)).toHaveLength(
+        1,
+      );
+      expect(page.canLeave()).toBe(true);
+    });
+
+    it('asks before the organisation is switched with unsaved fix suggestions', async () => {
+      const { server } = setup('orgAdmin', {}, FIX_ON);
+      TestBed.inject(SessionStore).set(me({ admin: true }));
+      enterprise(server, { organizations: { [ORG_ID]: { ...STORED_ON } } });
+      const { fixture, root } = await render();
+      type(root, 'auto-fix-max', '7');
+      await settle(fixture);
+      const org = TestBed.inject(OrgContext);
+      const leave = root.querySelector<HTMLDialogElement>('q-leave-confirm dialog')!;
+      const switching = org.switchTo(OTHER_ID);
+      await settle(fixture);
+      expect(leave.open).toBe(true);
+      await click(fixture, button(leave, 'Stay'));
+      expect(await switching).toBe(false);
+      expect(org.currentId()).toBe(ORG_ID);
+      expect(field(root, 'auto-fix-max').value).toBe('7');
     });
   });
 
@@ -1850,6 +2059,19 @@ describe('SettingsPage: AI (AI settings redesign, Task 5)', () => {
     expect(await nav('orgAdmin')).toContain('AI');
     TestBed.resetTestingModule();
     expect(await nav('member')).not.toContain('AI');
+  });
+
+  it('lists no entry of its own for the automatic fix suggestions, which are a section of AI', async () => {
+    const { server } = setup('orgAdmin');
+    enterprise(server);
+    const fixture = TestBed.createComponent(SettingsPage);
+    await settle(fixture);
+    const labels = [...(fixture.nativeElement as HTMLElement).querySelectorAll('nav a')].map((a) =>
+      text(a),
+    );
+    expect(labels).toContain('AI');
+    expect(labels).not.toContain('Automatic fixes');
+    expect(labels).not.toContain('Automatic fix suggestions');
   });
 
   it('points the entry at /settings/ai-review', async () => {

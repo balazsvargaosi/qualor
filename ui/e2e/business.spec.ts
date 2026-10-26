@@ -129,18 +129,23 @@ test('the Business plan has no portfolio', async ({ page }) => {
 });
 
 // 4E-3a §2, §4: automatic fix suggestions are Enterprise only (`llm.auto-fix`). The organisation's
-// switch-on and the project's opt-out that enterprise.spec.ts saved are kept but not offered: each
-// screen shows the Enterprise note in place of its controls.
-test('the Business plan shows the Enterprise note for automatic fix suggestions', async ({
+// switch-on and the project's opt-out that enterprise.spec.ts saved are kept but not offered: the
+// organisation's AI page has no section for them, and its status says they are Enterprise; the
+// other screens show the Enterprise note in place of their controls.
+test('the Business plan shows no fix suggestions section, and the status says they are Enterprise', async ({
   page,
 }) => {
   await page.goto('/settings/auto-fix');
-  await expect(page).toHaveTitle('Automatic fix suggestions · Qualor');
-  await expect(page.locator('#auto-fix-not-licensed')).toHaveText(
-    'Automatic fix suggestions need the Enterprise plan.',
+  await expect(page).toHaveURL(/\/settings\/ai-review#fix-suggestions$/);
+  await expect(page).toHaveTitle('AI · Qualor');
+  await expect(page.locator('li[data-key="community"]')).toHaveText(
+    'Automatic fix suggestions are part of Qualor Enterprise.',
   );
+  await expect(page.locator('#fix-suggestions')).toHaveCount(0);
   await expect(page.getByLabel('Post fix suggestions automatically')).toHaveCount(0);
-  // Ruling R7: no Settings entry without the feature; the address above still says why.
+  await expect(page.getByRole('navigation', { name: 'On this page' }).getByRole('link')).toHaveText(
+    ['AI review', 'Assistant'],
+  );
   await expect(page.getByRole('link', { name: 'Automatic fixes' })).toHaveCount(0);
   await expectAccessible(page);
 
