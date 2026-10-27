@@ -1318,6 +1318,7 @@
     "numberField.days": "days",
     "aiProvider.data.save": "Save data and privacy",
     "aiProvider.data.removeLabel": "Remove {$path}",
+    "aiProvider.data.listed": "That pattern is already listed.",
     "aiProvider.data.badGlob": "Use a glob from the repository root, such as config/** or **/*.pem.",
     "ai.settings.badExclude": "Use at most 100 globs, relative to the repository root.",
     "ai.settings.badRetention": "Use a whole number of days from 1 to 90.",

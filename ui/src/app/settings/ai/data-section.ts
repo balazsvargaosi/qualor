@@ -197,9 +197,10 @@ export class DataSection {
   protected add(): void {
     const glob = this.pattern().trim();
     const paths = this.draft().paths;
-    const refused =
-      !isGlob(glob) || paths.includes(glob)
-        ? badGlob()
+    const refused = !isGlob(glob)
+      ? badGlob()
+      : paths.includes(glob)
+        ? $localize`:@@aiProvider.data.listed:That pattern is already listed.`
         : paths.length >= MAX_PATHS
           ? tooManyPaths()
           : null;

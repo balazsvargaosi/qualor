@@ -20,6 +20,7 @@ type Sent = Pick<LlmBody, 'excludePaths' | 'storePrompts' | 'promptRetentionDays
 const PATHS = { ...CONFIGURED, excludePaths: ['config/**', '**/*.pem'] };
 const COPIES = { ...CONFIGURED, storePrompts: true, promptRetentionDays: 30 };
 const BAD_GLOB = 'Use a glob from the repository root, such as config/** or **/*.pem.';
+const LISTED = 'That pattern is already listed.';
 
 /** The settings the server holds: what the section was given, then what each save stored. */
 let stored: LlmSettings;
@@ -230,7 +231,7 @@ describe('DataSection: the paths never sent', () => {
   it('refuses a pattern that is no glob from the repository root, or one already listed', async () => {
     setup();
     const { fixture, root } = await render({ settings: PATHS });
-    for (const pattern of ['', '   ', '/etc/**', 'a\u0000b', 'x'.repeat(201), 'config/**']) {
+    for (const pattern of ['', '   ', '/etc/**', 'a\u0000b', 'x'.repeat(201)]) {
       await add(fixture, root, pattern);
       expect(field(root, 'ai-exclude-add').getAttribute('aria-invalid'), pattern).toBe('true');
       expect(text(root.querySelector('#ai-exclude-add-error')), pattern).toBe(BAD_GLOB);
@@ -241,6 +242,12 @@ describe('DataSection: the paths never sent', () => {
       'A glob from the repository root; at most 100.',
     ]);
     expect(document.activeElement).toBe(field(root, 'ai-exclude-add'));
+    // One already listed, as typed or with spaces around it, says so.
+    for (const pattern of ['config/**', ' **/*.pem ']) {
+      await add(fixture, root, pattern);
+      expect(text(root.querySelector('#ai-exclude-add-error')), pattern).toBe(LISTED);
+      expect(items(root), pattern).toEqual(['config/**', '**/*.pem']);
+    }
     // A pattern refused is no refusal of the section: nothing to save is wrong.
     expect(foot(root)).toBe('No unsaved changes');
     // Typing again clears the refusal; 200 characters are a glob.
@@ -250,7 +257,7 @@ describe('DataSection: the paths never sent', () => {
     expect(items(root)).toHaveLength(3);
     // The list added to stays savable while a pattern is refused.
     await add(fixture, root, 'config/**');
-    expect(text(root.querySelector('#ai-exclude-add-error'))).toBe(BAD_GLOB);
+    expect(text(root.querySelector('#ai-exclude-add-error'))).toBe(LISTED);
     expect(foot(root)).toBe('1 unsaved change');
     expect(button(root, 'Save data and privacy').hasAttribute('disabled')).toBe(false);
   });
