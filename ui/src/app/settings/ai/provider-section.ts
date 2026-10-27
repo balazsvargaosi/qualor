@@ -37,6 +37,7 @@ import {
   consentFields,
   pausesReview,
   reviewingOrganizations,
+  unnamedReviewing,
 } from './consent-impact';
 import type { LlmBody, LlmSettings } from './llm-body';
 import { namesOf } from './names';
@@ -351,21 +352,25 @@ export class ProviderSection {
           this.keyTyped() ||
           this.errors().key !== undefined)),
   );
-  /** The organisations a change of the address or the models pauses, as `reviewStatus` says. */
-  private readonly reviewing = computed(() =>
-    reviewingOrganizations(this.saved(), this.organizations()),
-  );
+  /**
+   * The organisations a change of the address or the models pauses, as `reviewStatus` says: by
+   * name where the page's list has them, else counted.
+   */
+  private readonly reviewing = computed(() => {
+    const saved = this.saved();
+    const organizations = this.organizations();
+    const named = reviewingOrganizations(saved, organizations).map((o) => o.name);
+    const unnamed = unnamedReviewing(saved, organizations);
+    return { named, unnamed, count: named.length + unnamed };
+  });
   /** What changing the address does, while a provider is saved. */
   protected readonly urlNote = computed(() => {
     if (this.provider() === null) return null;
     const reviewing = this.reviewing();
-    if (reviewing.length === 0) {
+    if (reviewing.count === 0) {
       return $localize`:@@aiProvider.url.keyOnly:Changing the address needs the API key again.`;
     }
-    const names = namesOf(
-      reviewing.map((o) => o.name),
-      this.locale,
-    );
+    const names = namesOf(reviewing.named, this.locale, reviewing.unnamed);
     return $localize`:@@aiProvider.url.pauses:Changing the address needs the API key again, and pauses AI review in ${names}:names: until an organization admin confirms the new address.`;
   });
   protected readonly urlDescribedBy = computed(() =>
@@ -679,12 +684,8 @@ export class ProviderSection {
     }
     const saved = this.provider();
     const reviewing = this.reviewing();
-    if (saved !== null && reviewing.length > 0 && pausesReview(saved, built.consent)) {
-      this.askPause(
-        saved,
-        built.consent,
-        reviewing.map((o) => o.name),
-      );
+    if (saved !== null && reviewing.count > 0 && pausesReview(saved, built.consent)) {
+      this.askPause(saved, built.consent, namesOf(reviewing.named, this.locale, reviewing.unnamed));
       return;
     }
     await this.send(built.change);
@@ -935,10 +936,10 @@ export class ProviderSection {
     return true;
   }
 
-  private askPause(saved: SavedProvider, next: ConsentInput, names: readonly string[]): void {
+  /** Opens the question before a change pauses AI review in `who` (their names, or a count). */
+  private askPause(saved: SavedProvider, next: ConsentInput, who: string): void {
     const before = consentFields(saved);
     const after = consentFields(next);
-    const who = namesOf(names, this.locale);
     const wasModels = before.models.join(', ');
     const nowModels = after.models.join(', ');
     this.pause.set({

@@ -15,4 +15,13 @@ describe('namesOf', () => {
     expect(namesOf(orgs(5), 'en-GB')).toBe('Org 1, Org 2, Org 3 and 2 more');
     expect(namesOf(orgs(1_004), 'en-US')).toBe('Org 1, Org 2, Org 3, and 1,001 more');
   });
+
+  it('counts organisations it cannot name, with those it names or alone', () => {
+    expect(namesOf(['Acme'], 'en-US', 2)).toBe('Acme and 2 more');
+    expect(namesOf(orgs(3), 'en-US', 1)).toBe('Org 1, Org 2, Org 3, and 1 more');
+    expect(namesOf(orgs(5), 'en-US', 1)).toBe('Org 1, Org 2, Org 3, and 3 more');
+    expect(namesOf([], 'en-US', 3)).toBe('3 organizations');
+    expect(namesOf([], 'en-US', 1)).toBe('1 organization');
+    expect(namesOf([], 'en-US', 1_200)).toBe('1,200 organizations');
+  });
 });

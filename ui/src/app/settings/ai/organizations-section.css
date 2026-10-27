@@ -91,3 +91,11 @@ section {
     display: block;
   }
 }
+/* The organisations could not be read: the alert, and its Try again beside it. */
+.orgs-failed {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}

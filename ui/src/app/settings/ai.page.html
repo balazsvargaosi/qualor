@@ -18,11 +18,6 @@
   <!-- Nothing more: the server is asked nothing. -->
 } @else if (loadError(); as message) {
   <p class="alert alert-error" role="alert">{{ message }}</p>
-} @else if (organizationsFailed()) {
-  <!-- Without them, the provider's question before a change could not name whom it pauses. -->
-  <p class="alert alert-error" role="alert" i18n="@@aiProvider.organizationsFailed">
-    The organizations could not be loaded.
-  </p>
 } @else if (saved(); as settings) {
   @if (settings.provider) {
     <!-- Each link is this page's address with the section's fragment: it can be opened or copied
@@ -54,7 +49,9 @@
         [organizations]="organizations()"
         [autoFixAvailable]="autoFixAvailable()"
         [saveEntry]="saveEntry"
+        [listFailed]="organizationsFailed()"
         (openOrganization)="openOrganization($event)"
+        (retry)="retryOrganizations()"
       />
       <q-ai-limits-section [settings]="settings" [saveLimits]="saveLimits" />
       <q-ai-data-section [settings]="settings" [host]="providerHost()" [saveData]="saveData" />

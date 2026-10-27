@@ -180,17 +180,71 @@ describe('AiSettingsPage: what it shows', () => {
     expect(root.querySelector('q-status-list')).toBeNull();
   });
 
-  it('says the organizations could not be loaded, and offers nothing that needs them', async () => {
-    const server = setup(CONFIGURED);
+  it('works without the organizations, counts those the settings hold, and reads them again on Try again', async () => {
+    const server = setup(configured());
+    storeBodies(server, configured());
+    server.on('POST', '/api/v0/system/llm/test', {
+      body: testAnswer({
+        ok: true,
+        model: 'qwen3-coder',
+        latencyMs: 12,
+        toolCalling: 'supported',
+        problem: null,
+      }),
+    });
     server.on('GET', '/api/v0/organizations', { status: 500, body: problem(500, 'INTERNAL') });
-    const { root } = await render();
-    expect(text(root.querySelector('.alert-error[role="alert"]'))).toBe(
-      'The organizations could not be loaded.',
+    const { fixture, root } = await render();
+    // The Organizations section says so in place of its table, and the status counts.
+    const organizations = root.querySelector('section#organizations')!;
+    const alert = organizations.querySelector('[role="alert"]');
+    expect(text(alert)).toBe('The organizations could not be loaded. Try again');
+    expect(organizations.querySelector('table')).toBeNull();
+    expect(text(statusLine(root, 'organizations'))).toBe(
+      'Organizations 1 organization may use AI Manage',
     );
-    // A provider change pauses AI review only where the page knows of it: without the
-    // organisations, the provider is not offered.
-    expect(root.querySelector('q-ai-provider-section')).toBeNull();
-    expect(root.querySelector('q-status-list')).toBeNull();
+    expect(text(statusLine(root, 'review'))).toBe('AI review On in 1 organization');
+    // Limits and Data and privacy work as usual.
+    await fill(fixture, root, 'ai-budget-explain', '300');
+    await click(fixture, button(root.querySelector('section#limits')!, 'Save limits'));
+    expect(puts(server)[0]).toMatchObject({ budgets: { explainPerDay: 300 } });
+
+    // The provider still saves, after its question, which counts the organizations it pauses.
+    await fill(fixture, root, 'ai-model', 'qwen3-coder');
+    await click(fixture, button(root.querySelector('section#provider')!, 'Save and test'));
+    expect(text(root.querySelector('#ai-pause-dialog h2'))).toBe(
+      'Pause AI review in 1 organization?',
+    );
+    expect(puts(server)).toHaveLength(1);
+    await click(
+      fixture,
+      button(root.querySelector('#ai-pause-dialog')!, 'Save and pause AI review'),
+    );
+    expect(puts(server)).toHaveLength(2);
+    expect(puts(server)[1]?.provider).toMatchObject({ model: 'qwen3-coder' });
+
+    // Try again reads them, and the table comes back.
+    server.on('GET', '/api/v0/organizations', { body: page([DEFAULT_ORG]) });
+    await click(fixture, button(alert!, 'Try again'));
+    expect(organizations.querySelector('[role="alert"]')).toBeNull();
+    expect(text(organizations.querySelector('tbody th'))).toBe('Default default');
+    expect(text(statusLine(root, 'organizations').querySelector('.badge'))).toBe(
+      '1 of 1 may use AI',
+    );
+  });
+
+  it('keeps saying the organizations could not be loaded while Try again fails', async () => {
+    const server = setup(configured());
+    server.on('GET', '/api/v0/organizations', { status: 500, body: problem(500, 'INTERNAL') });
+    const { fixture, root } = await render();
+    const before = server.requestsTo('GET', '/api/v0/organizations').length;
+    await click(
+      fixture,
+      button(root.querySelector('section#organizations [role="alert"]')!, 'Try again'),
+    );
+    expect(server.requestsTo('GET', '/api/v0/organizations').length).toBeGreaterThan(before);
+    expect(text(root.querySelector('section#organizations [role="alert"]'))).toBe(
+      'The organizations could not be loaded. Try again',
+    );
   });
 
   it('opens with the status, and shows only Status and Provider before a provider is saved', async () => {
@@ -308,10 +362,15 @@ describe('AiSettingsPage: what it shows', () => {
 });
 
 describe('instanceStatusLines', () => {
-  const lines = (settings: LlmSettings, organizations: readonly Organization[] = [DEFAULT_ORG]) =>
-    instanceStatusLines(settings, organizations, 'en-US');
-  const lineOf = (settings: LlmSettings, key: string, organizations?: readonly Organization[]) =>
-    lines(settings, organizations).find((l) => l.key === key)!;
+  const lines = (
+    settings: LlmSettings,
+    organizations: readonly Organization[] | null = [DEFAULT_ORG],
+  ) => instanceStatusLines(settings, organizations, 'en-US');
+  const lineOf = (
+    settings: LlmSettings,
+    key: string,
+    organizations?: readonly Organization[] | null,
+  ) => lines(settings, organizations).find((l) => l.key === key)!;
 
   it('names the provider’s kind, host and models, and what its last Test found of each', () => {
     const three = {
@@ -449,6 +508,34 @@ describe('instanceStatusLines', () => {
     expect(review({ reviewStatus: { enabled: false, consentCurrent: false } }, null).state).toBe(
       'Off everywhere',
     );
+  });
+
+  it('counts what the settings hold while the organizations could not be read', () => {
+    const on = { reviewStatus: { enabled: true, consentCurrent: true } };
+    const paused = { reviewStatus: { enabled: true, consentCurrent: false } };
+    const settings = configured({
+      organizations: {
+        [ORG_ID]: stored(on),
+        [RESEARCH]: stored(on),
+        '0190a6c2-0000-7000-8000-000000000003': stored(paused),
+        '0190a6c2-0000-7000-8000-000000000004': stored({ ...on, enabled: false }),
+      },
+    });
+    expect(lineOf(settings, 'organizations', null)).toMatchObject({
+      tone: 'ok',
+      state: '3 organizations may use AI',
+      sub: null,
+      action: { id: 'manage' },
+    });
+    expect(lineOf(settings, 'review', null)).toMatchObject({
+      tone: 'attention',
+      state: 'Paused in 1 organization',
+      text: 'On in 2 organizations',
+    });
+    expect(lineOf(configured({ organizations: {} }), 'organizations', null)).toMatchObject({
+      tone: 'off',
+      state: 'None may use AI',
+    });
   });
 
   it('says the limits, the cap, and the prices set', () => {

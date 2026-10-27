@@ -70,3 +70,18 @@ export function reviewingOrganizations(
     })
     .map((o) => ({ id: o.id, name: o.name }));
 }
+
+/**
+ * How many organisations a provider change pauses that `organizations` does not name: their AI
+ * review is on and confirmed, and the list lacks them (it could not be read, or ends before
+ * them). They are counted, so the question before the change is still asked.
+ */
+export function unnamedReviewing(
+  settings: LlmSettings,
+  organizations: readonly Organization[],
+): number {
+  const named = new Set(organizations.map((o) => o.id));
+  return Object.entries(settings.organizations).filter(
+    ([id, o]) => !named.has(id) && o.reviewStatus.enabled && o.reviewStatus.consentCurrent,
+  ).length;
+}

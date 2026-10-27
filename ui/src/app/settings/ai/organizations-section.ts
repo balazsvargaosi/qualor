@@ -94,7 +94,9 @@ interface Row {
  * - **Open** asks the page to open the organisation's AI page (`openOrganization`): the page
  *   asks once before it leaves unsaved changes, switches the header's organisation, and goes there.
  *
- * The page reads `dirty` and `dirtyLabel` for its leave guard.
+ * While the page could not read the organisations (`listFailed`), an alert with Try again
+ * (`retry`) stands in place of the table. The page reads `dirty` and `dirtyLabel` for its leave
+ * guard.
  */
 @Component({
   selector: 'q-ai-organizations-section',
@@ -118,8 +120,12 @@ export class OrganizationsSection {
   /** The automatic fix suggestions are licensed (`llm.auto-fix`). */
   readonly autoFixAvailable = input.required<boolean>();
   readonly saveEntry = input.required<SaveEntry>();
+  /** The page could not read the organisations: an alert stands in place of the table. */
+  readonly listFailed = input(false);
   /** Open: the organisation whose AI page the person wants, by its id. */
   readonly openOrganization = output<string>();
+  /** Try again: the page reads the organisations again. */
+  readonly retry = output();
   /** The section's name, for the question asked before leaving it with unsaved changes. */
   readonly dirtyLabel = $localize`:@@aiProvider.orgs.title:Organizations`;
 

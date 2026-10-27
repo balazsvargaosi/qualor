@@ -16,16 +16,20 @@ import { namesOf } from './names';
  *   on only with a provider, in an organisation allowed to use AI whose admins switched it on and
  *   confirmed (the server's order of reasons); an organisation the settings lack has it off;
  * - once a provider is saved, the limits and the prices.
+ *
+ * `organizations` is null while they could not be read: the lines then count the organisations
+ * the settings hold, unnamed.
  */
 export function instanceStatusLines(
   saved: LlmSettings,
-  organizations: readonly Organization[],
+  organizations: readonly Organization[] | null,
   locale: string,
 ): StatusLine[] {
+  const known = knownOrganizations(saved, organizations);
   const lines = [
     providerLine(saved, locale),
-    organizationsLine(saved, organizations, locale),
-    reviewLine(saved, organizations, locale),
+    organizationsLine(saved, known, organizations !== null, locale),
+    reviewLine(saved, known, locale),
   ];
   if (saved.provider !== null) lines.push(limitsLine(saved, locale), pricesLine(saved, locale));
   return lines;
@@ -99,9 +103,31 @@ function testedText(test: LlmSettings['lastTest'], locale: string): string {
     : $localize`:@@aiProvider.status.tested:Tested ${date}:date:: all ${n}:n: models connect and can call tools.`;
 }
 
+/** An organisation the lines speak of: by name, or by id alone while the list could not be read. */
+interface Known {
+  id: string;
+  name: string | null;
+}
+
+function knownOrganizations(
+  saved: LlmSettings,
+  organizations: readonly Organization[] | null,
+): Known[] {
+  return organizations === null
+    ? Object.keys(saved.organizations).map((id) => ({ id, name: null }))
+    : organizations.map((o) => ({ id: o.id, name: o.name }));
+}
+
+/** Organisations in a sentence: those named, and the others counted. */
+function whoOf(organizations: readonly Known[], locale: string): string {
+  const named = organizations.flatMap((o) => (o.name === null ? [] : [o.name]));
+  return namesOf(named, locale, organizations.length - named.length);
+}
+
 function organizationsLine(
   saved: LlmSettings,
-  organizations: readonly Organization[],
+  organizations: readonly Known[],
+  listed: boolean,
   locale: string,
 ): StatusLine {
   const label = $localize`:@@aiProvider.status.organizations:Organizations`;
@@ -121,6 +147,18 @@ function organizationsLine(
       action: saved.provider === null ? null : action,
     };
   }
+  if (!listed) {
+    // How many there are in all is not known: those allowed are counted.
+    const who = whoOf(allowed, locale);
+    return {
+      key: 'organizations',
+      label,
+      tone: 'ok',
+      state: $localize`:@@aiProvider.status.allowedUnlisted:${who}:organizations: may use AI`,
+      sub: null,
+      action,
+    };
+  }
   const a = formatWhole(allowed.length, locale);
   const t = formatWhole(organizations.length, locale);
   return {
@@ -128,17 +166,14 @@ function organizationsLine(
     label,
     tone: 'ok',
     state: $localize`:@@aiProvider.status.allowed:${a}:allowed: of ${t}:total: may use AI`,
-    sub: namesOf(
-      allowed.map((o) => o.name),
-      locale,
-    ),
+    sub: whoOf(allowed, locale),
     action,
   };
 }
 
 function reviewLine(
   saved: LlmSettings,
-  organizations: readonly Organization[],
+  organizations: readonly Known[],
   locale: string,
 ): StatusLine {
   const label = $localize`:@@aiProvider.status.review:AI review`;
@@ -151,15 +186,15 @@ function reviewLine(
           const stored = saved.organizations[o.id];
           return stored?.enabled === true && stored.reviewStatus.enabled;
         });
-  const current = (o: Organization) => saved.organizations[o.id]?.reviewStatus.consentCurrent;
-  const on = switchedOn.filter((o) => current(o)).map((o) => o.name);
-  const paused = switchedOn.filter((o) => !current(o)).map((o) => o.name);
-  const onText = (names: readonly string[]) => {
-    const list = namesOf(names, locale);
+  const current = (o: Known) => saved.organizations[o.id]?.reviewStatus.consentCurrent;
+  const on = switchedOn.filter((o) => current(o));
+  const paused = switchedOn.filter((o) => !current(o));
+  const onText = (who: readonly Known[]) => {
+    const list = whoOf(who, locale);
     return $localize`:@@aiProvider.status.reviewOn:On in ${list}:names:`;
   };
   if (paused.length > 0) {
-    const list = namesOf(paused, locale);
+    const list = whoOf(paused, locale);
     return {
       key: 'review',
       label,

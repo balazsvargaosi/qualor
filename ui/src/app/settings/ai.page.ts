@@ -54,7 +54,9 @@ interface Guarded {
  *   settings every section is given; a section with unsaved changes keeps them. Saves go one at a
  *   time: each is built on the answer to the one before, so none undoes another.
  * - The page reads every organisation (ten pages of a hundred), never every project: the status
- *   counts them, and the provider's question before a change names those it pauses.
+ *   counts them, and the provider's question before a change names those it pauses. Without
+ *   them the page works on: what needs them counts what the settings hold, and the Organizations
+ *   section offers to read them again.
  *
  * Leaving it with unsaved changes in any section asks first, once, naming them: Open of an
  * organisation, which switches the header's organisation and leaves, asks once for both.
@@ -87,9 +89,13 @@ export class AiSettingsPage implements LeaveGuarded {
   protected readonly instanceAdmin = computed(() => this.session.user()?.isInstanceAdmin === true);
   /** The settings as the server last answered: what the status says and the sections are given. */
   protected readonly saved = signal<LlmSettings | null>(null);
-  /** Every organisation, in the server's order. */
+  /** Every organisation, in the server's order; none while they could not be read. */
   protected readonly organizations = signal<readonly Organization[]>([]);
   protected readonly loadError = signal<string | null>(null);
+  /**
+   * The organisations could not be read: the page works on, the Organizations section says so in
+   * place of its table and offers to read them again, and what needs them counts the settings'.
+   */
   protected readonly organizationsFailed = signal(false);
   /** The automatic fix suggestions are licensed (`llm.auto-fix`). */
   protected readonly autoFixAvailable = computed(() =>
@@ -104,7 +110,11 @@ export class AiSettingsPage implements LeaveGuarded {
     const settings = this.saved();
     return settings === null
       ? []
-      : instanceStatusLines(settings, this.organizations(), this.locale);
+      : instanceStatusLines(
+          settings,
+          this.organizationsFailed() ? null : this.organizations(),
+          this.locale,
+        );
   });
   /** The sections, in the page's order, as the index leads to them. */
   protected readonly index: readonly { id: string; label: string }[] = [
@@ -142,6 +152,8 @@ export class AiSettingsPage implements LeaveGuarded {
   });
   /** The last request to `/system/llm`, settled: the next waits for it. */
   private queue: Promise<unknown> = Promise.resolve();
+  /** The organisations are being read: Try again waits for it. */
+  private readingOrganizations = false;
   /** Open was confirmed: the switch of the organisation and the navigation ask nothing more. */
   private leaving = false;
   /** The section the address named was scrolled to, or the index was used: not again. */
@@ -251,20 +263,33 @@ export class AiSettingsPage implements LeaveGuarded {
     return answer;
   }
 
+  /** Try again, for the organisations that could not be read. */
+  protected async retryOrganizations(): Promise<void> {
+    if (this.readingOrganizations) return;
+    await this.readOrganizations();
+  }
+
   private async load(): Promise<void> {
     this.loadError.set(null);
-    this.organizationsFailed.set(false);
-    const [settings, organizations] = await Promise.allSettled([
+    const [settings] = await Promise.allSettled([
       ok(this.api.client.GET('/api/v0/system/llm')),
-      this.allOrganizations(),
+      this.readOrganizations(),
     ]);
-    if (settings.status === 'rejected') {
-      this.loadError.set(problemMessage(settings.reason));
-    } else if (organizations.status === 'rejected') {
+    if (settings.status === 'rejected') this.loadError.set(problemMessage(settings.reason));
+    else this.saved.set(settings.value);
+  }
+
+  /** Reads every organisation; a failure leaves none, and says so. */
+  private async readOrganizations(): Promise<void> {
+    this.readingOrganizations = true;
+    try {
+      this.organizations.set(await this.allOrganizations());
+      this.organizationsFailed.set(false);
+    } catch {
+      this.organizations.set([]);
       this.organizationsFailed.set(true);
-    } else {
-      this.organizations.set(organizations.value);
-      this.saved.set(settings.value);
+    } finally {
+      this.readingOrganizations = false;
     }
   }
 

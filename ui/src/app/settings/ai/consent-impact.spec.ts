@@ -6,6 +6,7 @@ import {
   consentFields,
   pausesReview,
   reviewingOrganizations,
+  unnamedReviewing,
 } from './consent-impact';
 
 type LlmSettings = ResponseBody<'/api/v0/system/llm', 'get'>;
@@ -138,5 +139,29 @@ describe('reviewingOrganizations', () => {
       organizations: { [acme.id]: status(false, true) },
     } as unknown as LlmSettings;
     expect(reviewingOrganizations(settings, [acme, research])).toEqual([]);
+  });
+});
+
+describe('unnamedReviewing', () => {
+  const [acme, research] = organizationsFixture(2) as [Organization, Organization];
+  const status = (enabled: boolean, consentCurrent: boolean) => ({
+    ...CONFIGURED.organizations[ORG_ID],
+    reviewStatus: { enabled, consentCurrent },
+  });
+
+  it('counts the organisations a change pauses that the list does not name', () => {
+    const settings = {
+      ...CONFIGURED,
+      organizations: {
+        [acme.id]: status(true, true),
+        [research.id]: status(true, true),
+        [ORG_ID]: status(true, false),
+      },
+    } as unknown as LlmSettings;
+    // The list could not be read: all of them.
+    expect(unnamedReviewing(settings, [])).toBe(2);
+    // It names Acme: one more.
+    expect(unnamedReviewing(settings, [acme])).toBe(1);
+    expect(unnamedReviewing(settings, [acme, research])).toBe(0);
   });
 });

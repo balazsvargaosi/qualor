@@ -718,6 +718,30 @@ describe('OrganizationsSection (AI settings redesign, Task 8)', () => {
     // 120 rendered rows take about 3 s on a busy machine, near the default 5 s.
   }, 20_000);
 
+  it('says the organizations could not be loaded in place of its table, and asks for them again', async () => {
+    setup();
+    const { fixture, root, section } = await render({ organizations: [] });
+    let retries = 0;
+    section.retry.subscribe(() => retries++);
+    fixture.componentRef.setInput('listFailed', true);
+    await settle(fixture);
+    const alert = root.querySelector('[role="alert"]')!;
+    expect(text(alert)).toBe('The organizations could not be loaded. Try again');
+    expect(root.querySelector('table')).toBeNull();
+    expect(root.querySelector('#ai-orgs-filter')).toBeNull();
+    // No count of what is not known.
+    expect(root.querySelector('.sec-chips')).toBeNull();
+    expect(text(root.querySelector('#ai-orgs-heading'))).toBe('Organizations');
+    await click(fixture, button(alert, 'Try again'));
+    expect(retries).toBe(1);
+
+    fixture.componentRef.setInput('organizations', ORGS);
+    fixture.componentRef.setInput('listFailed', false);
+    await settle(fixture);
+    expect(root.querySelector('[role="alert"]')).toBeNull();
+    expect(rows(root)).toHaveLength(2);
+  });
+
   it('asks the page to open an organisation’s AI page, and changes nothing itself', async () => {
     setup();
     const { fixture, root, section } = await render();

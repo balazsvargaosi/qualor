@@ -2102,6 +2102,25 @@ describe('ProviderSection: before pausing AI review (Review Focus 3)', () => {
     // The key stays in its field while the question is open.
     expect(field(root, 'ai-key').value).toBe(KEY);
   });
+
+  it('counts the organizations it cannot name, and still asks', async () => {
+    const server = setup();
+    // The page could not read the organisations: it knows none of them by name.
+    const { fixture, root } = await render({ settings: REVIEWED, organizations: [] });
+    expect(textOf(root, '#ai-url-note')).toBe(
+      'Changing the address needs the API key again, and pauses AI review in 1 organization until an organization admin confirms the new address.',
+    );
+    await fill(fixture, root, '#ai-model', 'qwen3-coder');
+    await saveAndTest(fixture, root);
+    expect(dialog(root).open).toBe(true);
+    expect(textOf(root, '#ai-pause-dialog h2')).toBe('Pause AI review in 1 organization?');
+    expect(textOf(root, '#ai-pause-was')).toBe(
+      '1 organization confirmed sending code to ollama:11434 (qwen-fast, qwen2.5-coder).',
+    );
+    expect(puts(server)).toHaveLength(0);
+    await press(fixture, root, 'Save and pause AI review', '#ai-pause-dialog');
+    expect(puts(server)[0]?.provider).toMatchObject({ model: 'qwen3-coder' });
+  });
 });
 
 describe('ProviderSection: removing the provider', () => {
