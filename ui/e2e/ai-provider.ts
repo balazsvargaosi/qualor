@@ -50,3 +50,28 @@ export async function setTierModels(admin: APIRequestContext, models: TierModels
   });
   expect(saved.status(), await saved.text()).toBe(200);
 }
+
+/** An OpenAI-compatible provider as the API takes one: its address, model and key. */
+export interface ProviderSetup {
+  baseUrl: string;
+  model: string;
+  apiKey: string;
+}
+
+/**
+ * The instance admin's save of a provider through the API, everything else as it is stored: what
+ * a test that is not about the provider sets up with, so no Test of it runs. `admin` is a
+ * request context signed in as the instance admin.
+ */
+export async function setProvider(
+  admin: APIRequestContext,
+  provider: ProviderSetup,
+): Promise<void> {
+  const me = (await (await admin.get('/api/v0/auth/me')).json()) as { csrfToken: string };
+  const stored = (await (await admin.get('/api/v0/system/llm')).json()) as object;
+  const saved = await admin.put('/api/v0/system/llm', {
+    headers: { 'x-qualor-csrf': me.csrfToken },
+    data: { ...stored, provider: { kind: 'openai', ...provider } },
+  });
+  expect(saved.status(), await saved.text()).toBe(200);
+}

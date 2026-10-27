@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import type { Locator, Page } from '@playwright/test';
+import { setProvider } from './ai-provider';
 import { expect, expectAccessible, test } from './fixtures';
 import { OLGA, PAYMENTS, SIEM_URL } from './seed-data';
 
@@ -311,22 +312,21 @@ test.describe('automatic fix suggestions (4E-3a §4)', () => {
   test('an organisation admin switches automatic fix suggestions on in Settings → AI, and a project opts out', async ({
     page,
   }) => {
-    // The instance admin points the provider at a host under .invalid (RFC 6761): the save
-    // contacts nothing, and its Test reaches no model. An organisation's save sends its
-    // switches and exclusions only, never the automatic fix suggestions, which would undo what an
-    // organisation admin changes meanwhile.
+    // The instance admin points the provider at a host under .invalid (RFC 6761) through the API:
+    // saving contacts nothing, and no Test asks the model. Then, on the page, an organisation's
+    // save sends its switches and exclusions only, never the automatic fix suggestions, which
+    // would undo what an organisation admin changes meanwhile.
+    await setProvider(page.request, {
+      baseUrl: 'https://llm.example.invalid/v1',
+      model: 'fake-model',
+      apiKey: ['e2e', 'llm', 'key', 'never', 'sent'].join('-'),
+    });
     await page.goto('/settings/ai');
     await expect(page.getByRole('heading', { name: 'AI provider', level: 2 })).toBeVisible();
-    await expect(page.locator('li[data-key="provider"] .badge')).toHaveText('Not connected');
-    await page.getByRole('radio', { name: /^OpenAI-compatible/ }).check();
-    await page.getByLabel('Base URL').fill('https://llm.example.invalid/v1');
-    await page.getByLabel('Model', { exact: true }).fill('fake-model');
-    await page.locator('#ai-key').fill(['e2e', 'llm', 'key', 'never', 'sent'].join('-'));
-    await page.getByRole('button', { name: 'Save and test' }).click();
-    await expect(page.locator('#provider .foot-status')).toHaveText(
-      /^Saved at \d{1,2}:\d{2} [AP]M UTC\.$/,
+    await expect(page.locator('li[data-key="provider"]')).toContainText(
+      'OpenAI-compatible at llm.example.invalid · 1 model',
     );
-    // Once a provider is saved, the organisations: Default may use AI, with Suggest a fix.
+    // The organisations: Default may use AI, with Suggest a fix.
     const organizations = page.locator('section#organizations');
     await organizations
       .locator('tbody tr')
