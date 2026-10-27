@@ -10,7 +10,8 @@ The CI scanner of [Qualor](https://qualor.dev), the open-source, self-hosted Son
 with no lines-of-code licence. One job in your pipeline runs the analyzers on the checkout, works
 out which lines the merge request changed, and sends one report to your Qualor server
 ([`qualor/server`](https://hub.docker.com/r/qualor/server)). It waits for the verdict and fails
-the job when the quality gate fails.
+the job when the quality gate fails. When AI review is switched on for the project, it also sends
+the repository snapshot that the review reads.
 
 Website: <https://qualor.dev> · Documentation: <https://qualor.dev/docs> · Source and issues:
 <https://github.com/qualor-dev/qualor> · Configuration reference (`qualor.yml`, environment, exit

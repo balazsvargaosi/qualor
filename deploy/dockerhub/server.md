@@ -1,17 +1,21 @@
 # qualor/server
 
-Short description: Open-source SonarQube alternative: self-hosted code quality with no lines-of-code licence
+Short description: Self-hosted SAST and AI code review on your own model. Open-source SonarQube alternative.
 
 Categories: Developer tools, Integration & delivery, Security
 
 ## Overview
 
-**Quality gates for new code. No lines-of-code licence.**
+**Static analysis and AI code review in one self-hosted server.**
 
 Qualor is an open-source, self-hosted SonarQube alternative for GitLab and GitHub. It runs the
 analyzers you already trust, follows every issue across commits, and fails the merge request that
-makes the code worse. MIT licensed, with no limit on lines, users or projects.
+makes the code worse. An AI reviewer comments on the same merge requests, on a model you choose.
+MIT licensed, with no limit on lines, users or projects.
 
+- **An AI reviewer on your own model.** It reads the change and the files it needs, and comments in
+  threads with suggested changes you apply in one click. It answers replies. Any OpenAI-compatible
+  or Anthropic model, hosted with your key or local. Off by default, in every edition.
 - **It judges only the code you changed.** A quality gate on new code, a summary and a status on
   every GitLab merge request and GitHub pull request, and new issues marked on the lines that
   caused them.
@@ -27,8 +31,7 @@ makes the code worse. MIT licensed, with no limit on lines, users or projects.
 - **Leave SonarQube in one command.** `qualor import sonarqube` brings over quality profiles,
   quality gates and accepted issues.
 - **An assistant on your terms.** Explanations, false-positive triage and fix suggestions from the
-  model you choose: any OpenAI-compatible endpoint, Anthropic, or a local model through Ollama or
-  vLLM.
+  same model, on a person's click.
 - **Simple.** One container, database included.
 
 Website: <https://qualor.dev> · Documentation: <https://qualor.dev/docs> · Source and issues:
