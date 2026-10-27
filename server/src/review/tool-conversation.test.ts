@@ -425,6 +425,46 @@ describe('converseOverTools', () => {
     expect(policy.budget.calls).toBe(TOOL_LIMITS.callsPerReview - 1);
   });
 
+  describe('the second check keeps tool calls of its own (T21a)', () => {
+    const run = async (role: 'verify' | 'judge' | 'reply', calls: number, greps: number) => {
+      const reader = memorySnapshot();
+      const policy = newToolPolicy({
+        excludePaths: [],
+        masked: new MaskedFiles(reader, { masker }),
+        masker,
+      });
+      policy.budget.calls = calls;
+      policy.budget.greps = greps;
+      await converseOverTools(callOf(role), {
+        reader,
+        policy,
+        send: () => Promise.resolve(turn({ text: '{"ok":true}' })),
+        shouldStop: () => Promise.resolve(false),
+      });
+      return policy.budget;
+    };
+
+    it('a verification starts with at least 8 tool calls and 3 searches, even after the reviewers used them all', async () => {
+      expect(TOOL_LIMITS.verifyCallsFloor).toBe(8);
+      expect(TOOL_LIMITS.verifyGrepsFloor).toBe(3);
+      const spent = await run('verify', 0, 0);
+      expect(spent.calls).toBe(TOOL_LIMITS.verifyCallsFloor);
+      expect(spent.greps).toBe(TOOL_LIMITS.verifyGrepsFloor);
+      // A little left is raised to the floor, and more than the floor is left as it is.
+      const little = await run('verify', 2, 1);
+      expect([little.calls, little.greps]).toEqual([8, 3]);
+      const plenty = await run('verify', 50, 20);
+      expect([plenty.calls, plenty.greps]).toEqual([50, 20]);
+    });
+
+    it('leaves the budget of every other role as it is', async () => {
+      for (const role of ['judge', 'reply'] as const) {
+        const left = await run(role, 0, 0);
+        expect([left.calls, left.greps]).toEqual([0, 0]);
+      }
+    });
+  });
+
   it('runs as many calls of a turn as the loop allows, and asks again for an answer the pipeline refuses', async () => {
     const reader = memorySnapshot();
     const policy = newToolPolicy({

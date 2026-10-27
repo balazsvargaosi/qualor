@@ -131,6 +131,13 @@ export function newToolPolicy(o: {
  * the window had no room for. The pipeline's contract for `converse` (pipeline.ts).
  */
 export function converseOverTools(call: RoleCall, io: ConversationIo): Promise<ConversationResult> {
+  // The second check keeps a floor of its own, so it can still look things up after the reviewers
+  // used the shared budget; no other role is given more.
+  if (call.role === 'verify' && io.reader !== null) {
+    const { budget } = io.policy;
+    budget.calls = Math.max(budget.calls, TOOL_LIMITS.verifyCallsFloor);
+    budget.greps = Math.max(budget.greps, TOOL_LIMITS.verifyGrepsFloor);
+  }
   return runConversation({
     system: call.system ?? SYSTEM_PROMPTS[call.role],
     user: call.user,

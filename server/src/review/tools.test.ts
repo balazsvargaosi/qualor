@@ -1723,6 +1723,8 @@ describe('REVIEW_TOOLS', () => {
       listEntries: 500,
       callsPerReview: 120,
       grepsPerReview: 40,
+      verifyCallsFloor: 8,
+      verifyGrepsFloor: 3,
       maskedBytesPerReview: 256 * 1024 * 1024,
     });
     for (const tool of REVIEW_TOOLS) {

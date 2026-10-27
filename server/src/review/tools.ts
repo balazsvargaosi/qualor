@@ -46,6 +46,13 @@ export const TOOL_LIMITS = {
   callsPerReview: 120,
   grepsPerReview: 40,
   /**
+   * The tool calls and searches a verification (the second check) always starts with, though the
+   * reviewers used up the review's shared budget: a review makes at most
+   * `callsPerReview + 5 * verifyCallsFloor` calls.
+   */
+  verifyCallsFloor: 8,
+  verifyGrepsFloor: 3,
+  /**
    * Bytes of file text one review may have masked, all its files together: a file masked again
    * (the masked files kept are bounded, masked-files.ts) is counted again.
    */
