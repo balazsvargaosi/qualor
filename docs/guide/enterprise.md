@@ -41,8 +41,8 @@ working; the name `rbac` switches nothing on or off.
 
 Keys issued earlier may list the feature `llm.fix-quota`, which used to lift the limit on AI fix
 suggestions. It is kept for licences already issued and no longer changes anything: no edition
-limits AI fix suggestions, and your own budget in **Settings → AI assistant** is the only limit
-([Budgets and limits](./ai-assistant.md#budgets-and-limits)).
+limits AI fix suggestions, and your own budget (**Fix suggestions per day** in **Settings → AI
+provider**) is the only limit ([Budgets and limits](./ai-assistant.md#budgets-and-limits)).
 
 The audit log's export (**Settings → Audit log → Export JSON Lines**) is a plain download link, so
 a refusal shows up only as a failed download in your browser, with no message on the page: 429

@@ -22,7 +22,7 @@ UTF-8 JSON, except `logs.jsonl`, which holds one JSON log line per line.
 | `plugins.json` | the enterprise plugins that loaded, or why one did not |
 | `migrations.json` | the applied database migrations and how many are pending |
 | `config.json` | the effective configuration: only the settings that are safe to share (port, log level, worker settings, retention, switches, the kind of database). Every other setting shows only `[set]` or `[unset]`. A URL keeps its scheme, host and port only |
-| `settings.json` | the settings saved in the database, the same way: for example the AI provider's kind, model and host, and which organisations are enabled, but never a key |
+| `settings.json` | the settings saved in the database, the same way: for example the AI provider's kind, model and host, and which organisations may use AI, but never a key |
 | `health.json` | the readiness checks, the database pool, the database size and the estimated row counts of the 15 largest tables |
 | `jobs.json` | the number of jobs by queue and status, and the last 50 failed jobs with their error text (cut to 500 characters, no job data) |
 | `analyses.json` | the last 50 failed analyses: the project key, the branch, the time and the error |

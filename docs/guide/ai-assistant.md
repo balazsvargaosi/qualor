@@ -43,10 +43,11 @@ it.
 
 ## What is sent, and where
 
-Nothing is sent to any model until an instance admin has configured a provider **and** enabled
-the organisation **and** the feature, **and** a person clicks. No scan, merge request comment or
-background job calls a model by itself, and the scanner (the CLI) never contacts a model: only the
-server does. There are two exceptions, and an organisation admin must switch each one on first:
+Nothing is sent to any model until an instance admin has connected a provider **and** allowed the
+organisation to use AI **and** switched the feature on, **and** a person clicks. No scan, merge
+request comment or background job calls a model by itself, and the scanner (the CLI) never contacts
+a model: only the server does. There are two exceptions, and an organisation admin must switch each
+one on first:
 
 - the Enterprise feature [automatic fix suggestions](#automatic-fix-suggestions-enterprise);
 - [AI review](./ai-review.md), which is in every edition. It calls the model without anyone's click,
@@ -87,50 +88,83 @@ properties, Dockerfiles, connection strings and XML).
 - issues of an excluded project or on an excluded path;
 - the names of the project, organisation and branch, commit SHAs, users and changelog comments.
 
-The **What is sent** panel in the settings, and a notice in the issue view's panel, name these
-fields together with the provider's host and model.
+**What is sent**, in the **Data and privacy** section of **Settings → AI provider**, lists what
+each feature sends and to which host. A notice in the issue view's panel names these fields
+together with the provider's host and model.
 
 ## Configuration
 
 ### The provider (instance admins)
 
-An instance admin opens **Settings → AI assistant** and configures one provider for the whole
-instance:
+An instance admin opens **Settings → AI provider** and connects one provider for the whole
+instance. The page opens with a **Status** card: the provider and its last Test, how many
+organisations may use AI, where AI review is on or paused, the limits and the prices. Under it come
+four sections, each with its own Save: **Provider**, **Organizations**, **Limits** and **Data and
+privacy**. Until a provider is saved, only **Provider** shows. Leaving the page with changes that
+are not saved asks first ("Leave without saving?").
+
+In the **Provider** section, choose the kind of API the model speaks; the other settings show once
+you do:
 
 | Setting | What to enter |
 |---|---|
-| Kind | **OpenAI-compatible** (OpenAI, Azure OpenAI, vLLM, Ollama, LM Studio and other servers with the chat completions API, and OpenAI's Responses API) or **Anthropic** |
-| Base URL | with the version path for OpenAI-compatible servers: `https://api.openai.com/v1`, `https://<resource>.openai.azure.com/openai/v1`, `http://ollama:11434/v1`. Anthropic: `https://api.anthropic.com` |
-| Model | the model's name as the provider spells it: the **standard model**, which Explain, Suggest triage, Suggest a fix, the review's reviewers and the answers to replies use |
-| Strong model | optional: the model of the review's judge and of its second check of security findings. Empty: the model above ([Model tiers](#model-tiers)) |
-| Fast model | optional: the model of the quality reviewer of a small review, 10 changed lines or fewer. Empty: the model above |
-| API key | write-only. It is stored encrypted and never shown again. Leave it empty for a local model without a key |
+| Provider | **OpenAI-compatible** (OpenAI, Azure OpenAI, vLLM, Ollama, LM Studio, LiteLLM and other servers of the Chat Completions or Responses API) or **Anthropic** (Claude models at `api.anthropic.com`) |
+| Base URL | with the version path for OpenAI-compatible servers: `https://api.openai.com/v1`, `https://<resource>.openai.azure.com/openai/v1`, `http://ollama:11434/v1`. Anthropic: `https://api.anthropic.com`, which choosing **Anthropic** fills into an empty field |
+| API key | write-only. It is stored encrypted and never shown again. Leave it empty for a local model without a key. Once a key is stored, the page shows **Set** and "An API key is set." in place of the field, with **Replace the key** and **Remove the key** |
 | Workspace ID | Anthropic only, optional: `wrkspc_…`, for a key of the whole organisation that is not scoped to a workspace. Sent as `anthropic-workspace-id` on every request. Not a secret ([The current models](#the-current-models)) |
-| API | OpenAI-compatible only: **Chat Completions** (the default; what vLLM, Ollama, LM Studio and Azure serve) or **Responses**, OpenAI's Responses API, which its newest models need for tool calling ([The current models](#the-current-models)) |
-| Key header | OpenAI-compatible only: `Authorization: Bearer` (the default), or `api-key` for Azure |
-| JSON mode | OpenAI-compatible only: on by default. Turn it off for a server that refuses `response_format` |
-| Output limit field | Chat Completions only: `max_completion_tokens` for OpenAI and Azure OpenAI, whose current models refuse `max_tokens`; `max_tokens` for vLLM, Ollama and most other servers. The page picks it from the base URL's host until you choose one. The Responses API always uses `max_output_tokens`, and the page hides this row while **Responses** is chosen |
-| Timeout (seconds) | 5–600, default 60, for the whole request of Explain, Suggest triage, Suggest a fix and the Test. A review or reply call streams its answer and waits at least 300 seconds for the first piece and between two pieces, and 15 minutes in all ([Models that work](./ai-review.md#models-that-work)) |
-| Temperature | optional; OpenAI-compatible only; not sent when empty. Anthropic's current models take none: for Anthropic the field is empty and disabled |
+| Model | the model's name as the provider spells it: the **standard model**, which Explain, Suggest triage, Suggest a fix, the review's reviewers and the answers to replies use |
+| Strong model | under the switch **Use a stronger and a faster model for parts of AI review**, off by default: the model of the review's judge and of its second check of security findings. Empty: the model above ([Model tiers](#model-tiers)) |
+| Fast model | under the same switch: the model of the quality reviewer of a small review, 10 changed lines or fewer. Empty: the model above |
+| Prices | under the switch **Count costs with these models' prices**, off by default: an **Input** and an **Output** price for each model, in US dollars per million tokens ([Budgets and limits](#budgets-and-limits)) |
 
-Press **Test**. It tests every model of the provider at once: the standard model, and the strong and
-the fast model when they name another model. For each it sends a fixed prompt that holds no
-repository data (it asks for a JSON reply: `Reply in JSON.`), and when that passes, a second call,
-also with fixed text, to check tool calling,
-which [AI review](./ai-review.md#models-that-work) needs. With one model the page shows its name and
-the latency, then `Tool calling (needed by AI review): supported` or `not supported`, and nothing
-when the check could not tell. With several models it shows a line for each, such as
-`gpt-6.1-sol: connected in 812 ms · tool calling supported`, or the model's name and what went wrong.
-A model that fails never fails another, and when any failed the page also says
+**Connection options** is a fold that lists its values while it is closed. Most providers need
+none of them changed:
+
+| Setting | What to enter |
+|---|---|
+| API | OpenAI-compatible only: **Chat Completions** (what vLLM, Ollama, LM Studio and Azure serve) or **Responses**, OpenAI's Responses API, which its newest models need for tool calling ([The current models](#the-current-models)). The page sets it from the address until you choose: **Responses** for a new provider at `api.openai.com`, **Chat Completions** for any other |
+| Key header | OpenAI-compatible only: `Authorization: Bearer` (the default), or `api-key (Azure)` |
+| Output limit parameter | Chat Completions only: `max_completion_tokens` for OpenAI and Azure OpenAI, whose current models refuse `max_tokens`; `max_tokens` for vLLM, Ollama and most other servers. The page sets it from the base URL's host until you choose one. The Responses API always uses `max_output_tokens`, and the page hides this setting while **Responses** is chosen |
+| Ask for a JSON object | OpenAI-compatible only: JSON mode, on by default. Turn it off for a server that refuses `response_format` |
+| Timeout | 5–600 seconds, default 60, for the whole request of Explain, Suggest triage, Suggest a fix and the Test. A review or reply call streams its answer and waits at least 300 seconds for the first piece and between two pieces, and 15 minutes in all ([Models that work](./ai-review.md#models-that-work)) |
+| Set a temperature | OpenAI-compatible only, off by default: no temperature is sent, and the model uses its own. On, the **Temperature**, from 0 to 2. For Anthropic the page says "Not used: Anthropic's current models take no temperature." |
+
+Press **Save and test**. It saves the provider, then tests every model of it at once: the standard
+model, and the strong and the fast model when they name another model. For each it sends a fixed
+prompt that holds no repository data (it asks for a JSON reply: `Reply in JSON.`), and when that
+passes, a second call, also with fixed text, to check tool calling, which
+[AI review](./ai-review.md#models-that-work) needs. **Last test** then shows a line for each model,
+such as `gpt-6.1-sol: connected in 812 ms · can call tools` or
+`gpt-4o-mini: connected in 640 ms · cannot call tools, so AI review would fail`, or the model's
+name and what went wrong. A model whose tool check could not tell gets its connection only. A model
+that fails never fails another, and when any failed the page also says
 `The test failed for 1 of 3 models.` The Test asks through the API you chose. For a model that
-takes tools only through the Responses API it adds `This model takes tools only through the
-Responses API: choose Responses below.`, and for a key that is not scoped to a workspace it says
-`This key is not scoped to a workspace: give its workspace ID below.`
+takes tools only through the Responses API the page adds `This model takes tools only through the
+Responses API: choose Responses in Connection options.` and opens **Connection options**, and for a
+key that is not scoped to a workspace the model's line says `This key is not scoped to a
+workspace: give its workspace ID above.`
+
+**Test again** tests the saved provider again, while the section has no unsaved changes. Qualor
+keeps the last Test until the provider's settings or its key change: when you come back, **Last
+test** shows it with when it ran and who ran it ("Tested Oct 26, 2026, 2:02 PM UTC, by you."),
+without the time each call took, and the **Provider** line of the Status card sums it up. An
+organisation admin who switches AI review on is warned when it found a model that cannot call
+tools ([In Qualor](./ai-review.md#in-qualor)).
 
 - For Azure OpenAI, use the v1 API's base URL. The older per-deployment URLs
   (`/openai/deployments/<name>/…?api-version=`) are not supported.
 - **Changing the base URL needs the key again**, so a stored key is only ever sent to the address
-  it was entered for. **Remove the key** deletes it.
+  it was entered for: the key field comes back with "You changed the address: enter the key again.
+  Qualor sends a key only to the address it was entered for." **Remove the key** deletes it when
+  you save; **Undo** keeps it.
+- **Changing the address or the models pauses AI review** in the organisations whose admins
+  confirmed them ([The warning](./ai-review.md#the-warning)). The page says so under the base URL,
+  and while AI review is on somewhere, **Save and test** asks first, such as "Pause AI review in
+  Acme?", naming the provider they confirmed and the new one. **Save and pause AI review** saves;
+  **Cancel** sends nothing. Explain, Suggest triage and Suggest a fix carry on as before. The key,
+  the API, the timeout, the temperature, the workspace and the prices pause nothing.
+- **Remove the provider…** asks "Remove the AI provider?", then stops every AI feature in every
+  organisation and deletes the API key. Organisations keep their settings.
 - The key is encrypted with `QUALOR_SECRET_KEY`. After that key changes, set the API key again.
 - The address must be `https` and resolve to public addresses, unless the operator lists the host
   in `QUALOR_LLM_INTERNAL_HOSTS` (see [a local model](#a-local-model-with-ollama)). Redirects are
@@ -144,26 +178,28 @@ Responses API: choose Responses below.`, and for a key that is not scoped to a w
 
 What follows is what Qualor does so that the current models of OpenAI and Anthropic work.
 
-- **OpenAI: Chat Completions or Responses.** The **API** setting picks the API that Qualor calls.
-  Chat Completions is the default, and what vLLM, Ollama, LM Studio, LiteLLM and Azure deployments
-  serve. OpenAI's newest models (`gpt-6.1-sol`, `gpt-5.6-terra` and `gpt-6-luna` were checked)
+- **OpenAI: Chat Completions or Responses.** The **API** setting, in **Connection options**, picks
+  the API that Qualor calls. Chat Completions is what vLLM, Ollama, LM Studio, LiteLLM and Azure
+  deployments serve, and what the page sets for any address but `api.openai.com`. OpenAI's newest
+  models (`gpt-6.1-sol`, `gpt-5.6-terra` and `gpt-6-luna` were checked)
   take function tools with reasoning only through the **Responses** API, and
   [AI review](./ai-review.md#models-that-work) needs tools: choose Responses for them. The Test
   says so when you do not. Through Responses the output limit is always `max_output_tokens`, so
-  **Output limit field** does not apply. With JSON mode on, the API wants the word JSON in a message
-  of the request, so Qualor adds the line `Reply in JSON.` to the first message when no message
-  says it. A Responses request is stateless: Qualor sends `store: false`, so OpenAI keeps nothing
-  beyond its own abuse monitoring, and the reasoning the model did comes back encrypted and goes
-  back with the next turn of a conversation. The API clamps an output limit that is too large by
-  itself.
+  **Output limit parameter** does not apply. With JSON mode on, the API wants the word JSON in a
+  message of the request, so Qualor adds the line `Reply in JSON.` to the first message when no
+  message says it. A Responses request is stateless: Qualor sends `store: false`, so OpenAI keeps
+  nothing beyond its own abuse monitoring, and the reasoning the model did comes back encrypted and
+  goes back with the next turn of a conversation. The API clamps an output limit that is too large
+  by itself.
 - **Anthropic.** The current models (Claude 4.7 and later) take no temperature: Qualor never sends
-  one, saving a provider of this kind with a temperature is refused ("Anthropic's current models take
-  no temperature: leave it empty"), and a value that an older version stored is ignored. They think
+  one, the page offers none for this kind ("Not used: Anthropic's current models take no
+  temperature."), saving one through the API is refused ("Anthropic's current models take no
+  temperature: leave it empty"), and a value that an older version stored is ignored. They think
   by default, and Qualor sends their thinking back unchanged with each turn of a conversation, as
   they require. A key of the whole organisation that is not scoped to a workspace needs its
   **Workspace ID**, which Qualor sends as `anthropic-workspace-id` on every request. Without it the
   provider refuses the call, and the Test says "This key is not scoped to a workspace: give its
-  workspace ID below." (`PROVIDER_WORKSPACE_REQUIRED`).
+  workspace ID above." (`PROVIDER_WORKSPACE_REQUIRED`).
 - **Room to think.** A model that thinks counts its thinking in the output limit. So review and
   reply calls ask for 16 000 output tokens more than the answer needs, and Explain, Suggest triage,
   Suggest a fix and the Test for 4 000 more. The room costs nothing unless the model uses it. A
@@ -192,8 +228,10 @@ standard model is required:
 | Standard | **Model** | the reviewers (quality, tests, security and performance), the answers to replies, and Explain, Suggest triage and Suggest a fix |
 | Fast | **Fast model** | the quality reviewer of a review of 10 changed lines or fewer |
 
-A tier you leave empty uses the standard model, and so does a tier whose model is the standard
-model's own name. The assignment is fixed: you choose each tier's model, not what work a tier does.
+The strong and the fast model are set under the switch **Use a stronger and a faster model for
+parts of AI review**; switched off, both tiers use the standard model. A tier you leave empty uses
+the standard model, and so does a tier whose model is the standard model's own name. The assignment
+is fixed: you choose each tier's model, not what work a tier does.
 The security reviewer that a sensitive path adds to a small review stays on the standard model, as
 do the reviewers of every larger review.
 
@@ -210,18 +248,38 @@ do the reviewers of every larger review.
 
 ### Organisations and projects
 
-On the same page, per organisation, the instance admin chooses:
+The **Organizations** section of the same page lists every organisation, 25 at a time (**Show 25
+more**), with a filter. A row shows whether the organisation may use AI (**Allowed** or **Not
+allowed**), its **Assistant features**, how many of its projects are **Never sent**, and what its
+own admins switched on (**AI review**, **AI review (paused)**, **Fix suggestions** or **Fix
+suggestions (not running)**). **Open** chooses the organisation in the header and goes to its own
+AI page. **Edit** opens the organisation's editor under its row. For an organisation named Acme it
+holds these, saved with **Save Acme**:
 
-- **Enabled**: nothing of an organisation is ever sent while it is off. Organisations start off.
-- the features: **Explain**, **Suggest triage** and **Suggest a fix**, each off until checked;
-- excluded projects, whose issues are never sent.
+- **Allow AI in Acme**: nothing of an organisation is ever sent while it is off, and organisations
+  start off. While it is on, the organisation's people can use the features below, and its admins
+  can switch on AI review, which sends repository code, and automatic fix suggestions. Switching it
+  off where AI review is on says "AI review is on in Acme: it stops, and its repository copies are
+  deleted, when you save."
+- **Assistant features**: **Explain**, **Suggest triage** and **Suggest a fix**, each off until
+  switched on. Switching **Suggest a fix** off where the organisation has automatic fix suggestions
+  on says "Acme's automatic fix suggestions stop without it."
+- **Never sent to the provider**: the organisation's projects whose issues are never explained,
+  triaged or fixed, and that AI review never reviews; its copies of their repositories are deleted.
+  **Add a project** searches the organisation's projects, and **Remove** takes one off the list.
 
-**Never send these paths** takes up to 100 globs (such as `legacy/**` or `**/*.generated.ts`),
-matched against the issue's path in every organisation.
+**Never send these paths**, in the **Data and privacy** section, takes up to 100 globs (such as
+`legacy/**` or `**/*.generated.ts`), added one at a time with **Add**, matched against the issue's
+path in every organisation.
 
-The AI assistant panel appears in the issue view only for an enabled organisation, and each action
-only when its feature is on and the issue can be sent. Any member of the organisation can ask and
-post, as for changing an issue's status: signed in, or with a token that has the `write` scope (see
+An organisation admin sees what was chosen for their organisation, read-only, in the **Assistant**
+section of **Settings → AI**.
+
+The AI assistant panel appears in the issue view only for an organisation that may use AI, and each
+action only when its feature is on and the issue can be sent. For a project an instance admin
+excluded, the panel says "An instance admin excluded this project from AI." in place of the
+actions. Any member of the organisation can ask and post, as for changing an issue's status:
+signed in, or with a token that has the `write` scope (see
 [Users, projects and tokens](./users-projects-tokens.md)).
 
 ## Automatic fix suggestions (Enterprise)
@@ -272,19 +330,28 @@ where](#what-is-sent-and-where)), and the same files and rules are never sent.
 
 ### Switch it on and off
 
-1. An instance admin has configured a provider and enabled the organisation with **Suggest a fix**
-   ([Configuration](#configuration)). Automatic fix suggestions follow from that: they cannot be
-   switched on for an organisation that has none of it.
-2. An **organisation admin** opens **Settings → Automatic fixes** (the organisation chosen in the
-   header) and switches on **Post fix suggestions automatically**, with the **Minimum severity** and
-   the **At most per analysis**. The same block is on **Settings → AI assistant** for an instance
-   admin, per organisation. The permission is `org.ai.manage`, held by the Organization admin role
-   ([Roles and the audit log](./roles-and-audit.md)). Without the licence the page shows an
-   Enterprise note in place of the controls.
-3. A **project admin** can opt one project out: **Project → Settings → Automatic fix
-   suggestions**. A project cannot switch it on when the organisation has it off. Without the
-   organisation's switch the panel says so, and for a project excluded from the AI assistant it
-   says that instead of offering the switch.
+1. An instance admin has connected a provider and allowed the organisation to use AI with
+   **Suggest a fix** on ([Configuration](#configuration)). Automatic fix suggestions follow from
+   that: they cannot be switched on for an organisation that has none of it.
+2. An **organisation admin** opens **Settings → AI** (the organisation chosen in the header). In
+   its **Automatic fix suggestions** section they switch on **Post fix suggestions
+   automatically**, choose the **Minimum severity** and **At most per analysis** under it, and
+   press **Save fix suggestions**. The section also lists the projects whose admins opted out.
+   While the organisation (Acme, say) lacks **Suggest a fix**, the switch is disabled under "Needs
+   Suggest a fix for Acme, which an instance admin turns on in Settings → AI provider."; when
+   **Suggest a fix** goes off after they were switched on, the section says "On, but not running:
+   Suggest a fix is off for Acme. An instance admin turns it on in Settings → AI provider." The
+   permission is `org.ai.manage`, held by the Organization admin role
+   ([Roles and the audit log](./roles-and-audit.md)). Without the licence the section shows
+   "Automatic fix suggestions need the Enterprise plan." in place of the switch, and the community
+   edition has no such section: the page's Status ends with "Automatic fix suggestions are part of
+   Qualor Enterprise." The old address `/settings/auto-fix` opens the section.
+3. A **project admin** can opt one project out in the project's **AI** panel (**Project →
+   Settings → AI**), with the switch **Post fix suggestions to this project's merge requests
+   automatically** under **Fixes**. It saves at once. A project cannot switch it on when the
+   organisation has it off: the panel then says "Acme has automatic fix suggestions off. An
+   organization admin switches them on in Settings → AI.", and for a project excluded from AI it
+   says "Not for a project excluded from AI." instead of offering the switch.
 
 Switching it off, or losing the licence, stops new suggestions at once, including requests already
 waiting, and posts nothing more. Suggestions already posted stay on the merge request. A
@@ -293,9 +360,9 @@ suggestion a person asked for is never posted automatically.
 ### Budget and cost
 
 An automatic suggestion is an ordinary fix request of the organisation: it counts against the
-organisation's **daily fix budget**, its tokens and its estimated cost ([Budgets and
-limits](#budgets-and-limits)). Not against a person's hourly bound, since no person asked. Your
-fix budget is the only limit. When the budget is used up, Qualor stops asking for
+organisation's **daily fix budget** (**Fix suggestions per day**), its tokens and its estimated
+cost ([Budgets and limits](#budgets-and-limits)). Not against a person's hourly bound, since no
+person asked. Your fix budget is the only limit. When the budget is used up, Qualor stops asking for
 that analysis, and the findings that got no suggestion yet are picked up by a later analysis of
 the same merge request, once the budget is back at the next UTC midnight. The server logs one line
 (`outcome: budget_exhausted`). Lower **At most per analysis** or raise the budget if suggestions
@@ -348,13 +415,14 @@ to Ollama's OpenAI-compatible API at `/v1`.
    docker compose exec ollama ollama pull <model>
    ```
 
-4. In **Settings → AI assistant**, choose **OpenAI-compatible**, base URL `http://ollama:11434/v1`,
-   the model's name as `ollama list` shows it, and no API key. Press **Test**, then enable the
-   organisations and features you want.
+4. In **Settings → AI provider**, choose **OpenAI-compatible**, base URL `http://ollama:11434/v1`,
+   the model's name as `ollama list` shows it, and no API key. Press **Save and test**, then allow
+   the organisations you want under **Organizations**, with the features they may use.
 
 A local model on a CPU can be slow. If requests end with "The model did not answer in time", raise
-the timeout (up to 600 s). Give Ollama the memory its model needs. vLLM and LM Studio are set up the
-same way, with their own host and port in `QUALOR_LLM_INTERNAL_HOSTS`.
+the **Timeout** in **Connection options** (up to 600 seconds). Give Ollama the memory its model
+needs. vLLM and LM Studio are set up the same way, with their own host and port in
+`QUALOR_LLM_INTERNAL_HOSTS`.
 
 To run the server with its database on a separate network with no route out, as the repository's
 own `deploy/docker-compose.yml` does, see "A local model with Ollama" in
@@ -362,34 +430,39 @@ own `deploy/docker-compose.yml` does, see "A local model with Ollama" in
 
 ## Budgets and limits
 
-The instance admin sets daily budgets per organisation (UTC days) under **Budgets per organisation
-and day (UTC)**:
+The instance admin sets the assistant's limits in the **Limits** section of **Settings → AI
+provider**, under **Explain, Suggest triage and Suggest a fix**. They are the same for each allowed
+organisation, per UTC day, and automatic fix suggestions count as fix suggestions:
 
-| Budget | Default |
+| Limit | Default |
 |---|---|
-| Explanations | 200 a day |
-| Triage suggestions | 100 a day |
-| Fix suggestions | 25 a day |
-| Tokens (sent and received) | 1 000 000 a day |
-| Estimated cost in US dollars | off. It needs the model's prices per million tokens, which you enter |
-| Requests per person | 30 an hour, all features together |
+| Explanations per day | 200 |
+| Triage suggestions per day | 100 |
+| Fix suggestions per day | 25 |
+| Tokens per day (sent and received) | 1 000 000 |
+| Limit the cost | off. On, **Cost per day** in US dollars. It needs the models' prices: without them the switch is disabled under "No prices are set, so a cost limit would count nothing. Enter them under Provider → Prices." |
+| Asks per person and hour | 30, the three features together |
 
-The top of the page shows today's use of the organisation chosen in the header against these
-budgets, one meter per budget, and says when a budget is reached for the day.
+An organisation's use today is on its own page: the **Today** line of the Status card in
+**Settings → AI** has an **Assistant** meter of its tokens against **Tokens per day**, with the
+explanations, triage suggestions and fixes so far ("Explanations 12 · Triage 3 · Fixes 1"), and
+says "Budget reached for today" once it is. The page's **Assistant** section lists the limits.
 
-**Prices.** The estimated cost needs prices, in US dollars per million tokens: **Input price** and
-**Output price** for the standard model, and, for each tier that has a model of its own
-([Model tiers](#model-tiers)), the same pair for that model. The page shows the strong and the fast
-model's price fields as soon as you name a model for the tier. With prices entered, a tier with its
-own model needs its prices too: saving without them is refused ("Give the strong model's prices
-too", "Give the fast model's prices too"), and so is a pair of prices for a tier that has no model
-of its own ("Set the strong model first"). A call is costed at the prices of the model it went to.
-When a cost budget is set, Qualor turns what is left of it into tokens at the dearest price among
-your models, since the model of the next call is not known ahead.
+**Prices.** The estimated cost needs prices, in US dollars per million tokens. Switch on **Count
+costs with these models' prices** in the **Provider** section: it shows an **Input** and an
+**Output** price for the standard model and, for each tier that has a model of its own
+([Model tiers](#model-tiers)), for that model, each row named by its model. With prices entered, a
+tier with its own model needs its prices too: saving without them is refused ("Give the strong
+model's prices too", "Give the fast model's prices too"), and so is, through the API, a pair of
+prices for a tier that has no model of its own ("Set the strong model first"). A call is costed at
+the prices of the model it went to. When a cost limit is set, Qualor turns what is left of it into
+tokens at the dearest price among your models, since the model of the next call is not known ahead.
 
-The field **AI review: most tokens per organisation per day** under them is not a budget of this
-assistant. It caps what an organisation admin may give [AI review](./ai-review.md#budgets-and-todays-usage),
-which has budgets of its own. Leave it empty for no cap.
+The **AI review** group of **Limits** is not a budget of this assistant. Its switch **Cap the
+tokens an organization may give AI review**, with **Tokens per day, per organization** under it,
+caps what an organisation admin may give [AI review](./ai-review.md#budgets-and-todays-usage),
+which has budgets of its own. Off, there is no cap: "Off: no cap, and organization admins may allow
+up to 1,000,000,000 tokens a day."
 
 Posting a suggestion to a merge request does not count again. The budgets are yours to set, and no
 edition caps them: the fix budget can go up to 100 000 a day, like the explanation and triage budgets.
@@ -421,8 +494,9 @@ the number of redactions, the status, the token counts, the estimated cost when 
 the duration. It never records the API key, and it does not record the content sent unless you ask
 it to:
 
-- **Store the prompts sent** (off by default) keeps the exact redacted data sent, for 1–90 days
-  (**Days to keep them**, default 7).
+- **Keep a copy of what is sent**, in the **Data and privacy** section of **Settings → AI
+  provider** (off by default), keeps the exact data sent, after masking, for 1–90 days (**Keep
+  for**, default 7).
 - The answer is kept, since the issue view shows it and a fix is posted from it. For a fix, the
   lines it replaces are kept with it, to check them against the merge request before posting.
 - Request records are deleted after **90 days**, or with their organisation or project. The record
@@ -432,9 +506,9 @@ it to:
   key. When the provider answered with an error, the line has its HTTP status (`providerStatus`).
 - The calls of an [AI review](./ai-review.md#how-long-copies-live) are recorded the same way, with
   the feature `review` (a review's calls) or `review-reply` (the answers to replies), the model that
-  call went to, and no issue or person. With **Store the prompts sent** on, their prompts are kept
-  too, for the days set there, and the model's answers stay with the record. The prompts hold the
-  code the model was shown, and for a reply what people wrote in the thread.
+  call went to, and no issue or person. With **Keep a copy of what is sent** on, their prompts are
+  kept too, for the days set there, and the model's answers stay with the record. The prompts hold
+  the code the model was shown, and for a reply what people wrote in the thread.
 
 Today's use and budgets for an organisation are at `GET /api/v0/organizations/{id}/ai`.
 
@@ -442,33 +516,33 @@ Today's use and budgets for an organisation are at `GET /api/v0/organizations/{i
 
 | Message | What to do |
 |---|---|
-| "The model did not answer in time" | raise the timeout in the settings; a local model on a CPU needs more |
+| "The model did not answer in time" | raise the **Timeout** in the **Connection options** of **Settings → AI provider**; a local model on a CPU needs more |
 | "The model provider could not be reached" | check the base URL and that the server can reach the host. After 5 failures in a row Qualor pauses calls to that address for 10 minutes, and failures of AI reviews count too ([The provider](#the-provider-instance-admins)) |
 | "The model provider is rate limiting Qualor; try later" | the provider's own limit. Qualor retries after the time the provider asks for; try again later, or lower the budgets |
 | "The provider refused the API key (HTTP 401)" | set a valid key; check the key header (`api-key` for Azure) |
 | "The provider refused the request (HTTP 403): the key lacks access to this model, or the account has no credit" | the key is valid but may not use this model: check the model's name, the key's project or workspace permissions, and the account's billing or credit |
-| "The model does not accept max_tokens; set the output limit field to max_completion_tokens in the AI assistant settings" (or the other way round) | the model refused the output limit field, also when asked again without the room to think: pick the other one in the settings |
-| "The provider refused the request; check the base URL and the model" | an OpenAI-compatible base URL usually needs `/v1`; check the model's name. OpenAI's newer models need the `max_completion_tokens` output limit field; some servers need JSON mode off |
+| "The model does not accept max_tokens; set the output limit parameter to max_completion_tokens in the AI provider settings" (or the other way round) | the model refused the output limit parameter, also when asked again without the room to think: choose the other **Output limit parameter** in **Connection options** |
+| "The provider refused the request; check the base URL and the model" | an OpenAI-compatible base URL usually needs `/v1`; check the model's name. OpenAI's newer models need the `max_completion_tokens` output limit parameter; some servers need **Ask for a JSON object** off |
 | "The provider's answer was not understood" | the address is not a chat completions, Responses or Anthropic Messages API (check the **API** setting too), or the answer was over 1 MiB |
-| "This key is not scoped to a workspace: give its workspace ID" (the Settings page says "below"; the code is `PROVIDER_WORKSPACE_REQUIRED`) | an Anthropic key of the whole organisation needs its **Workspace ID** (`wrkspc_…`) in **Settings → AI assistant**. The request is not retried |
-| "This model takes tools only through the Responses API: choose Responses below" (a line of the Test) | choose **Responses** under **API** in **Settings → AI assistant**, then run **Test** again ([The current models](#the-current-models)) |
-| "Anthropic's current models take no temperature: leave it empty" | an Anthropic provider cannot be saved with a temperature: empty the field, or the API's `provider.temperature` |
+| "This key is not scoped to a workspace: give its workspace ID" (the Test's line ends "above", other pages "in the AI provider settings"; the code is `PROVIDER_WORKSPACE_REQUIRED`) | an Anthropic key of the whole organisation needs its **Workspace ID** (`wrkspc_…`) in **Settings → AI provider**. The request is not retried |
+| "This model takes tools only through the Responses API: choose Responses in Connection options." (under the Test's lines) | choose **Responses** under **API** in **Connection options**, then press **Save and test** ([The current models](#the-current-models)) |
+| "Anthropic's current models take no temperature: leave it empty" | an Anthropic provider cannot be saved with a temperature. The page sends none for it; through the API, leave `provider.temperature` empty |
 | "Give the strong model's prices too" or "Give the fast model's prices too" | prices are entered, and a tier has a model of its own: enter that model's input and output prices, or clear all prices ([Budgets and limits](#budgets-and-limits)) |
 | "The provider's address is not allowed" | the operator lists the host with its port in `QUALOR_LLM_INTERNAL_HOSTS`, or use an `https` address that resolves to public addresses |
 | "The stored API key can no longer be read; set it again" | `QUALOR_SECRET_KEY` changed. Enter the API key again |
 | "The model's answer could not be used" | the model did not answer with the expected JSON, or its answer was cut off. Ask again, or try another model |
 | "The model declined to answer" | the provider's content filter or the model refused |
 | "The suggested fix was not safe to show" | the fix broke a safety rule (outside the shown lines, a secret, control characters, or a GitLab quick action). Ask again or fix it by hand |
-| "The AI assistant is not enabled for this organisation" | an instance admin enables the organisation and the feature |
+| "This organization may not use AI." | an instance admin allows the organisation, with the feature on, under **Organizations** in **Settings → AI provider** |
 | "Findings of secret rules are never sent" / "Issues in credential files are never sent" | by design: Explain, Triage and Fix never send them. Handle these issues without the assistant |
 | "An administrator excluded this issue's path or project" | by design; an instance admin can change the exclusions |
 | "Something changed since you asked; ask again" | the settings or the issue changed (a new analysis) while the request waited |
 | "The request was interrupted; ask again" | the server crashed or was killed while the request ran, a stop took longer than its grace period (60 seconds in the guide's Compose file and Helm chart), or the request failed unexpectedly. A request that is waiting or running when the server is stopped in time goes back to the queue and is answered after the restart |
 | "Not posted: the merge request has a newer commit" | analyse the latest commit, then ask for a new fix |
 | "Not posted: the lines are not added lines of the merge request" / "the code on the merge request differs" | suggestions can only replace lines the merge request added, unchanged. Fix it by hand |
-| No automatic suggestions on a merge request | check, in order: the licence lists `llm.auto-fix`; **Settings → Automatic fixes** is on for the organisation, and the organisation and **Suggest a fix** are enabled in **Settings → AI assistant**; the project did not opt out and is not excluded from the AI assistant; the project is mapped to GitLab or GitHub; the findings are new in this merge request, open and at the minimum severity; no suggestion was made for them before; the daily fix budget is not used up |
-| "Automatic fix suggestions need the Enterprise plan." (the Settings page, or the API's 403 `FEATURE_NOT_LICENSED`) | apply a key that lists `llm.auto-fix` ([Enterprise](./enterprise.md)) |
-| Switching automatic fix suggestions on answers 409 `AI_DISABLED` | an instance admin must configure a provider, enable the organisation and turn on **Suggest a fix** first |
+| No automatic suggestions on a merge request | check, in order: the licence lists `llm.auto-fix`; **Post fix suggestions automatically** is on in **Settings → AI** for the organisation, and the organisation may use AI with **Suggest a fix** on in **Settings → AI provider**; the project did not opt out and is not excluded from AI; the project is mapped to GitLab or GitHub; the findings are new in this merge request, open and at the minimum severity; no suggestion was made for them before; the daily fix budget is not used up |
+| "Automatic fix suggestions need the Enterprise plan." (the **Automatic fix suggestions** section of **Settings → AI**, or the API's 403 `FEATURE_NOT_LICENSED`) | apply a key that lists `llm.auto-fix` ([Enterprise](./enterprise.md)) |
+| "Switching them on needs AI set up on this server and allowed for this organization, with Suggest a fix. …" when saving automatic fix suggestions (the API's 409 `AI_DISABLED`) | an instance admin connects a provider, allows the organisation and turns on **Suggest a fix** first, in **Settings → AI provider** |
 | 409 `AUTO_FIX_OPT_OUT_LIMIT_REACHED` | an organisation lists at most 1 000 projects that opted out; let a project back in first |
 | "The project is not mapped to GitLab or GitHub" | map it in **Settings → Repositories** ([GitLab](./gitlab.md), [GitHub](./github.md)) |
 

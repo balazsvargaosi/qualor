@@ -8,11 +8,11 @@ All notable changes to Qualor are listed here, newest first. The format follows
 
 ### Added
 
-- AI review settings (**Settings → AI review**) and the repository snapshot the scanner sends for
+- AI review settings (**Settings → AI**) and the repository snapshot the scanner sends for
   merge requests when it is on. An organisation admin switches AI review on after confirming a
   warning that names the AI provider's host and model, chooses the projects and sets the budgets;
   when the instance admin changes the provider, reviews stop until the warning is confirmed again.
-  Instance admins can cap the tokens per organisation and day in **Settings → AI assistant**. For
+  Instance admins can cap the tokens per organisation and day in **Settings → AI provider**. For
   the merge requests of the chosen projects, the scanner uploads a copy of the repository with its
   secrets masked. The server deletes the copy when the merge request is merged or closed (within an
   hour), at once when AI review stops covering the project (switched off, the project left out or
@@ -34,8 +34,8 @@ All notable changes to Qualor are listed here, newest first. The format follows
   server show them as such. They never count in the quality gate or the measures, and a review that
   fails never fails the analysis. With branch protection that requires resolved conversations, its
   open threads block the merge like the analyzers'. The review needs a model that can call tools:
-  **Settings → AI assistant → Test** now checks it. The budgets of **Settings → AI review** are
-  enforced, and the page shows today's use. The server gets `QUALOR_REVIEW_WORKER_CONCURRENCY`
+  **Save and test** in **Settings → AI provider** now checks it. The budgets in **Settings → AI**
+  are enforced, and the page shows today's use. The server gets `QUALOR_REVIEW_WORKER_CONCURRENCY`
   (reviews run at once, 2 by default, each with a masking worker of up to 512 MiB of heap). The API
   gains `aiReview` on `GET /api/v0/issues/{id}`, `usage` on `GET` and
   `PUT /api/v0/organizations/{id}/ai/review`, `toolCalling` on `POST /api/v0/system/llm/test`, and
@@ -65,10 +65,10 @@ All notable changes to Qualor are listed here, newest first. The format follows
   comment** and **Pull request review comment**. Without a webhook, replies and commands are
   answered at the next analysis. See [GitLab](docs/guide/gitlab.md#answers-to-replies-and-commands-webhook)
   and [GitHub](docs/guide/github.md#turn-on-the-webhook-recommended).
-- Model tiers for AI review. Besides the model, **Settings → AI assistant** takes an optional strong
+- Model tiers for AI review. Besides the model, **Settings → AI provider** takes an optional strong
   model (the judge and the second check of security findings) and an optional fast model (the
   quality reviewer of a review of 10 changed lines or fewer), each with its own prices when prices
-  are set. **Test** checks every model, the AI review warning names all of them, and changing one
+  are set. The Test checks every model, the AI review warning names all of them, and changing one
   asks an organisation admin to confirm again. `GET` and `PUT /api/v0/system/llm` gain
   `provider.strongModel`, `provider.fastModel`, `pricing.strong` and `pricing.fast`; the Test answer
   gains `models`; `GET /api/v0/organizations/{id}/ai/review` gains `provider.models`, and
@@ -86,6 +86,16 @@ All notable changes to Qualor are listed here, newest first. The format follows
   as long as the provider's timeout or 5 minutes, whichever is longer, and 15 minutes in all; a
   server that refuses streaming is asked again without it, and the later calls of that model are
   not streamed until a restart. Explain, Suggest triage, Suggest a fix and the Test do not stream.
+- Read-only API fields for the AI settings pages. `GET /api/v0/system/llm` answers each
+  organisation's `reviewStatus` (`enabled`: its admins switched AI review on; `consentCurrent`:
+  their confirmation covers the provider as it is now) and `lastTest`, the outcome of the last
+  `POST /api/v0/system/llm/test`, kept until the provider's settings or its key change.
+  `GET /api/v0/organizations/{id}/ai/review` answers `providerTest`, whether that Test found the
+  provider's models able to call tools. A project's `aiReview` answers `reason`, why AI review does
+  not run for it (`no_provider`, `organization_disabled`, `review_disabled`, `consent_outdated`,
+  `project_not_selected` or `not_mapped`; `null` while it runs). `PUT /api/v0/system/llm` accepts
+  the `GET` answer put back and ignores `reviewStatus` and `lastTest`. See
+  [the guide](docs/guide/ai-review.md#api).
 
 ### Changed
 
@@ -94,10 +104,28 @@ All notable changes to Qualor are listed here, newest first. The format follows
   SARIF file whose tool is named `ai` is reported as `ext-ai`. A report that names `ai` as an
   external engine, as an older scanner would write it, is refused with `REPORT_INVALID`: update the
   scanner.
+- The AI settings are one page per level. **Settings → AI assistant** is now **Settings → AI
+  provider**: a status at the top, then **Provider**, **Organizations**, **Limits** and **Data and
+  privacy**, each saved on its own. **Save and test** saves the provider and tests it, **Test
+  again** tests it again, and the last Test is kept until the provider changes. A change of the
+  address or the models asks first, naming the organisations whose AI review it pauses. Whether an
+  organisation may use AI, its features and its projects never sent to the provider are edited in
+  its own row of a table with a filter, and the instance page no longer edits automatic fix
+  suggestions. **Settings →
+  AI review** and **Settings → Automatic fixes** are now one page, **Settings → AI**: its status
+  shows AI review, today's use and the assistant's features; AI review is switched on with **Switch
+  on AI review…** and confirmed again with **Review and confirm…**, its projects are added with a
+  search and say whether each is reviewed, and the switch-on warns when the last Test found a model
+  that cannot call tools; automatic fix suggestions are a section of it (`/settings/auto-fix` opens
+  that section). A project's two panels are one, **AI** in **Project → Settings**, which says why AI
+  review does not run and who changes it. The routes stay. The server's messages name the AI
+  provider settings, and the AI review summary names **Settings → AI**. See
+  [the guide](docs/guide/ai-assistant.md#configuration).
 - No community limit on AI fix suggestions; your own budget applies. The 25 a day that every
-  organisation was held to is gone, and the fix budget in **Settings → AI assistant** (25 by
-  default, up to 100 000) is the only limit. A licence key that lists `llm.fix-quota` stays valid
-  and changes nothing. `GET` and `PUT /api/v0/system/llm` no longer have `maxFixPerDay`.
+  organisation was held to is gone, and the fix budget (**Fix suggestions per day** in **Settings →
+  AI provider**, 25 by default, up to 100 000) is the only limit. A licence key that lists
+  `llm.fix-quota` stays valid and changes nothing. `GET` and `PUT /api/v0/system/llm` no longer have
+  `maxFixPerDay`.
 - GitHub: findings on changed lines are now pull request review comments, posted together as one
   review, instead of check run annotations. The check run keeps the status and the summary.
 - GitHub: Qualor resolves a comment when its issue is fixed or marked in Qualor, and reopens it

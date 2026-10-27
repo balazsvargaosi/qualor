@@ -83,13 +83,13 @@ mapping. Its message says what is wrong.
 
 | Symptom | Fix |
 |---|---|
-| no AI assistant panel in the issue view | an instance admin configures a provider and enables the organisation in **Settings → AI assistant** |
+| no AI assistant panel in the issue view | an instance admin connects a provider and allows the organisation to use AI in **Settings → AI provider** |
 | an action is missing from the panel | its feature is off for the organisation, or the issue cannot be sent (a secret rule, a credentials file, an excluded path or project; triage and fix need an open issue) |
 | "The provider's address is not allowed" | list the model's host and port in `QUALOR_LLM_INTERNAL_HOSTS`, for example `ollama:11434` |
-| "The model did not answer in time" | raise the timeout in the settings (up to 600 s) |
+| "The model did not answer in time" | raise the **Timeout** in the **Connection options** of **Settings → AI provider** (up to 600 seconds) |
 | "The stored API key can no longer be read" | `QUALOR_SECRET_KEY` changed. Enter the API key again |
 | a fix suggestion is "Not posted" | the merge request has a newer commit, or the lines are not lines it added, unchanged |
-| no automatic fix suggestions on a merge request (Enterprise) | see [Automatic fix suggestions](./ai-assistant.md#troubleshooting): the licence, **Settings → Automatic fixes**, the project's opt-out, the minimum severity and the daily fix budget |
+| no automatic fix suggestions on a merge request (Enterprise) | see [Automatic fix suggestions](./ai-assistant.md#troubleshooting): the licence, **Automatic fix suggestions** in **Settings → AI**, the project's opt-out, the minimum severity and the daily fix budget |
 
 Every message and error code is explained in [AI assistant](./ai-assistant.md#troubleshooting).
 

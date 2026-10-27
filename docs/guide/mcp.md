@@ -172,7 +172,7 @@ reused) and `oauth.settings_changed`. Each is in the audit log and in its export
 | The client says it cannot connect or refuses the address | The server is on plain `http://` away from `localhost`, or claude.ai cannot reach it from the internet |
 | "The administrator of this server does not allow this app." on the consent page | An administrator set an allow-list in **Settings → MCP** that does not include the app |
 | This request has expired or was already answered | A sign-in request lives for 10 minutes. Start the connection again from the app |
-| A tool says the AI assistant is off (`AI_DISABLED`) | An administrator has not switched on the [AI assistant](./ai-assistant.md) for the organisation, or the issue's project or path is excluded. The other tools work |
+| A tool says the AI assistant is off (`AI_DISABLED`) | An instance admin has not allowed the organisation to use the [AI assistant](./ai-assistant.md), or its feature, in **Settings → AI provider**, or the issue's project or path is excluded. The other tools work |
 | "Project … has no analysed branch" | CI has not run `qualor scan` on that branch or merge request yet. It appears after the first analysis |
 | "Matches several commits" (`AMBIGUOUS_COMMIT`) | The short SHA the agent gave fits more than one commit. It should send more characters |
 | "Searched the first … branches" (`SEARCH_INCOMPLETE`) | The project has very many branches or analyses and the one asked for was not among the newest. Name it exactly |

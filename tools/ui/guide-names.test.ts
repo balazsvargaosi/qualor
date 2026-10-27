@@ -27,6 +27,50 @@ const REMOVED = [
   'Quality profiles → copy',
   // Step 11: the UI calls them "Rules it does not set" (the list) and "Not set here" (a profile).
   'Unknown rules, meaning',
+  // AI settings redesign (2026-10-26): the instance's page is Settings → AI provider.
+  'Settings → AI assistant',
+  // AI settings redesign (2026-10-26): AI review and automatic fix suggestions are sections of the
+  // organisation's page, Settings → AI.
+  'Settings → AI review',
+  'Settings → Automatic fixes',
+  // AI settings redesign (2026-10-26): a project's two panels are one, Project → Settings → AI.
+  'Project → Settings → AI review',
+  'Project → Settings → Automatic fix suggestions',
+  // AI settings redesign (2026-10-26): the provider's kind is the choice "Provider".
+  'Kind | OpenAI-compatible',
+  // AI settings redesign (2026-10-26): an organisation is not enabled but allowed ("Allow AI in
+  // Acme"), and the instance page says "This organization may not use AI."
+  'enable the organisation',
+  'enables the organisation',
+  'enabled the organisation',
+  'The AI assistant is not enabled for this organisation',
+  // AI settings redesign (2026-10-26): an organisation's excluded projects are "Never sent to the
+  // provider".
+  'Never send issues of these projects',
+  // AI settings redesign (2026-10-26): the instance's budgets are the section Limits, and the
+  // organisation's AI review budgets the fold Budgets.
+  'Budgets per organisation and day (UTC)',
+  'Budgets per day (UTC)',
+  // AI settings redesign (2026-10-26): the ceiling is the switch "Cap the tokens an organization
+  // may give AI review".
+  'AI review: most tokens per organisation per day',
+  // AI settings redesign (2026-10-26): "Asks per person and hour".
+  'Requests per person',
+  // AI settings redesign (2026-10-26): "Keep a copy of what is sent", and "Keep for".
+  'Store the prompts sent',
+  'Days to keep them',
+  // AI settings redesign (2026-10-26): "Output limit parameter".
+  'Output limit field',
+  // AI settings redesign (2026-10-26): the provider's Test is "Save and test", then "Test again",
+  // and its lines say "can call tools" or "cannot call tools, so AI review would fail".
+  'Test in Settings → AI',
+  'Tool calling (needed by AI review)',
+  'choose Responses below',
+  'give its workspace ID below',
+  // AI settings redesign (2026-10-26): AI review is switched on with "Switch on AI review…" and
+  // confirmed again with "Review and confirm…".
+  'Review merge requests with AI',
+  'Confirm again',
 ];
 
 const guide = new URL('../../docs/guide/', import.meta.url);

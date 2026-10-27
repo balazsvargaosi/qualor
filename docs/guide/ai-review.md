@@ -18,8 +18,8 @@ not come.
 
 ## How it works
 
-1. An **organisation admin** switches AI review on in **Settings → AI review**, confirms a warning
-   that names the model's provider, and chooses the projects.
+1. An **organisation admin** chooses the projects in **Settings → AI**, switches AI review on
+   there and confirms a warning that names the model's provider.
 2. Your CI scans a merge request as usual. When AI review is on for the project, the scanner then
    uploads a **snapshot**: a copy of the repository as it is at the merge request's last commit,
    with the merge request's changes, and with secrets masked.
@@ -49,11 +49,13 @@ of your code: a person applies a suggestion.
 
 ### What has to be in place
 
-- An **instance admin** has configured a model provider and enabled the organisation in
-  **Settings → AI assistant** ([Configuration](./ai-assistant.md#configuration)). AI review uses
-  the same provider and model. The AI assistant's three features (Explain, Suggest triage, Suggest a
-  fix) do not have to be on. Without a provider, **Settings → AI review** says so and its form stays
-  disabled.
+- An **instance admin** has connected a model provider in **Settings → AI provider** and allowed
+  the organisation to use AI there ([Configuration](./ai-assistant.md#configuration)). AI review
+  uses the same provider and models. The AI assistant's three features (Explain, Suggest triage,
+  Suggest a fix) do not have to be on. Without a provider, **Settings → AI** says "AI isn't set up
+  on this server yet." in place of its sections, and for an organisation that may not use AI,
+  "Acme may not use AI yet." (for an organisation named Acme). When AI review was on before, it
+  adds "AI review was switched on before, and is stopped." with **Switch off AI review**.
 - The model can call tools ([Models that work](#models-that-work)).
 - The project is mapped to its repository on GitLab or GitHub ([GitLab](./gitlab.md),
   [GitHub](./github.md)), because the review is posted there.
@@ -64,24 +66,43 @@ of your code: a person applies a suggestion.
 ### In Qualor
 
 Organisation admins (the Organization admin role, permission `org.ai.manage`; instance admins hold
-every permission) open **Settings → AI review** with the organisation chosen in the header:
+every permission) open **Settings → AI** with the organisation chosen in the header. Its **Status**
+card says whether AI review is on and how many projects it reviews, and shows today's use; the **AI
+review** section under it holds the projects and the budgets. For an organisation named Acme:
 
-1. Check **Review merge requests with AI**. A box opens with the warning below. Its button reads
-   **Switch on and send code to** followed by your provider's host: press it to confirm, or press
-   **Cancel** to leave AI review off.
-2. Under **Projects to review**, choose **All projects** or **Selected projects** and tick the
-   projects. The default is **Selected projects** with none ticked, so nothing is reviewed until you
-   choose. A project that the instance admin excluded from the AI assistant is never reviewed,
-   whatever you choose here.
-3. Set the [budgets](#budgets-and-todays-usage) if the defaults do not suit you.
-4. Press **Save**.
+1. Under **Projects to review**, choose **All projects of Acme** or **Selected projects**. The
+   default is **Selected projects** with none chosen, so nothing is reviewed until you choose:
+   **Add projects** searches the organisation's projects. Each chosen project says whether it is
+   **Reviewed?**: **Yes**; **Not linked**, with "Not linked to a GitLab or GitHub repository, so it
+   is not reviewed. Link it in Settings → Repositories."; or **Excluded**, with "Excluded from AI by
+   an instance admin: never reviewed.", whatever you choose here. **Remove** takes a project off
+   the list.
+2. Open **Budgets** and set the [budgets](#budgets-and-todays-usage) if the defaults do not suit
+   you.
+3. Press **Save AI review**. The projects and the budgets are saved whether AI review is on or off,
+   so you can prepare them first.
+4. Press **Switch on AI review…** on the **AI review** line of the Status. A box opens with the
+   warning below and what it will review, such as "2 selected projects will be reviewed.". Its
+   button reads **Switch on and send code to** followed by your provider's host: press it to
+   confirm, or press **Cancel** to leave AI review off. Changes to the projects and the budgets that
+   are not saved yet are saved with it ("Switching on also saves your unsaved changes to projects
+   and budgets."). When the instance admin's last Test found a model that cannot call tools, the
+   box warns: "The last Test found that gpt-4o-mini cannot call tools, so reviews would fail. An
+   instance admin can check Settings → AI provider."
 
-A project's settings (**Project → Settings → AI review**) show whether AI review is on for that
-project. The panel only shows the state; the organisation admin changes it.
+The Status then says **On** and "Reviewing 2 projects", with when the warning was confirmed and
+for which provider ("Confirmed on Oct 20, 2026 (by you) for api.openai.com (gpt-5.6-terra)."). A
+chosen project that is not linked to its repository is not counted until it is linked.
 
-To switch AI review off, uncheck the box and save. No confirmation is needed. A review that is
-running stops at its next step, and Qualor deletes the snapshots it holds for the projects that are
-no longer reviewed ([How long copies live](#how-long-copies-live)).
+A project's **AI** panel (**Project → Settings → AI**) shows whether AI review runs for that
+project and, when it does not, the one reason and who changes it, such as "Acme reviews selected
+projects only, and this is not one of them. An organization admin adds it in Settings → AI." The
+panel only shows the state; the organisation admin changes it.
+
+To switch AI review off, press **Switch off AI review** on the Status and confirm with **Switch
+off**: switching it on again asks you to confirm the warning again. A review that is running stops
+at its next step, and Qualor deletes the snapshots it holds for the projects that are no longer
+reviewed ([How long copies live](#how-long-copies-live)).
 
 ### The warning
 
@@ -106,11 +127,15 @@ Qualor records who confirmed the warning, when, and for which provider, and the 
 
 **A confirmation belongs to one provider and its models.** It names the provider's address, its
 host and every model it uses. When the instance admin changes any of them, adds a strong or a fast
-model, drops one or changes one, the confirmation no longer covers the new setup: AI review stops,
-and **Settings → AI review** shows "The AI provider changed; confirm again to keep reviewing." with
-a **Confirm again** button that opens the new warning. A warning given for one address or one set of
-models never covers another. If the provider changes while you are looking at the box, saving is
-refused and the box opens again with the new warning.
+model, drops one or changes one, the confirmation no longer covers the new setup, and AI review
+stops. The instance admin is asked before such a change ("Pause AI review in Acme?"). Then the
+Status of **Settings → AI** says **Paused**, "The AI provider changed", with what was confirmed and
+what the provider uses now, such as "You confirmed api.openai.com (gpt-5.6-terra) on Oct 20, 2026.
+It now uses api.openai.com (gpt-5.6-terra, gpt-6.1-sol). No merge request is reviewed until you
+confirm.", and a **Review and confirm…** button that opens the new warning. A warning given for one
+address or one set of models never covers another. If the provider changes while you are looking at
+the box, saving is refused and the box opens again with the new warning, under "The AI provider
+changed while this was open. This is the notice for the new one."
 
 ## How a review works
 
@@ -145,9 +170,9 @@ in the background. The summary comment says **AI review in progress…** until i
 - the findings of earlier reviews of this merge request.
 
 Secrets are masked in all of it, also in the files the model reads later. Credentials files are not
-in the snapshot, and files on the AI assistant's **Never send these paths** list are never shown to
-the model. Only the server contacts the provider, and only through the address the instance admin
-configured.
+in the snapshot, and files on the **Never send these paths** list of **Settings → AI provider** are
+never shown to the model. Only the server contacts the provider, and only through the address the
+instance admin configured.
 
 To answer a reply, the model is sent the finding the thread is about (its rule, message and place,
 and for an AI finding its text and suggested change), Qualor's first comment in the thread, and what
@@ -165,7 +190,7 @@ The files the merge request changed, except:
 - generated files (`@generated`, or `Code generated … DO NOT EDIT`, in their first lines) and
   minified files;
 - binary files;
-- files on the AI assistant's **Never send these paths** list
+- files on the **Never send these paths** list of **Settings → AI provider**
   ([What is sent, and where](./ai-assistant.md#what-is-sent-and-where)).
 
 ### The reviewers
@@ -586,15 +611,16 @@ Each new scan of a merge request is reviewed again, on its latest commit.
 - **Tool calling is required.** The model reads the repository through tools. A server that refuses
   tools makes the review fail, and the summary says the provider does not support the tool calls the
   review needs. A model that ignores them reviews only what it is shown up front, and misses what
-  reading the rest of the repository would have found. **Settings → AI assistant → Test** shows it:
-  when the test passes, a second call checks tool calling and the page says
-  `Tool calling (needed by AI review): supported` or `not supported`, with a line for each model
-  when the provider has a strong or a fast model ([Model tiers](./ai-assistant.md#model-tiers)). It
-  says nothing when it could not tell.
+  reading the rest of the repository would have found. The Test of **Settings → AI provider**
+  (**Save and test**, **Test again**) shows it: when a model answers, a second call checks tool
+  calling, and the model's line ends `can call tools` or `cannot call tools, so AI review would
+  fail`, with a line for each model when the provider has a strong or a fast model
+  ([Model tiers](./ai-assistant.md#model-tiers)). It says neither when it could not tell. The box
+  that switches AI review on warns when the last Test found a model that cannot call tools.
 - **OpenAI's newest models need the Responses API.** They take function tools with reasoning only
   through OpenAI's Responses API, not through Chat Completions. `gpt-6.1-sol`, `gpt-5.6-terra` and
   `gpt-6-luna` are the ones this was checked with. For such a model choose **Responses** under
-  **API** in **Settings → AI assistant**
+  **API** in the **Connection options** of **Settings → AI provider**
   ([The provider](./ai-assistant.md#the-provider-instance-admins)). On Chat Completions the review
   fails with the message about tool calls above, and the Test tells you to choose Responses.
   Servers such as vLLM, Ollama and Azure deployments stay on Chat Completions.
@@ -609,17 +635,17 @@ Each new scan of a merge request is reviewed again, on its latest commit.
   answer and the judge up to 16 384, and a reasoning model can think for minutes before it writes.
   So review and reply calls **stream**: the answer arrives in pieces, and a gateway that cuts a
   connection that sits idle does not cut a long answer. Qualor waits for the first piece, and then
-  for each next one, as long as the timeout in the AI assistant settings (60 seconds by default, up
-  to 600 seconds) or 5 minutes, whichever is longer, and a call has 15 minutes in all. That timeout
-  is the whole wait of Explain, Suggest triage, Suggest a fix and the Test, which do not stream. A
-  server that refuses a streamed request (a 400 that names `stream`) is asked again without
-  streaming, and Qualor remembers that server address and model until the server restarts: their
-  later calls are not streamed, and one line in the server log says so. A call that is not streamed
-  waits at least 5 minutes for its whole answer. A server that ignores the request for a stream and
-  sends its whole answer as JSON is read as it is: an answer with a JSON content type, or with none
-  that starts with `{` or `[`. An answer of any other content type is read as a stream.
-  A review usually takes a few minutes, and a big merge request can take 15 or more. The summary
-  says the review is in progress until it ends.
+  for each next one, as long as the provider's **Timeout** (in **Connection options**, 60 seconds by
+  default, up to 600 seconds) or 5 minutes, whichever is longer, and a call has 15 minutes in all.
+  That timeout is the whole wait of Explain, Suggest triage, Suggest a fix and the Test, which do
+  not stream. A server that refuses a streamed request (a 400 that names `stream`) is asked again
+  without streaming, and Qualor remembers that server address and model until the server restarts:
+  their later calls are not streamed, and one line in the server log says so. A call that is not
+  streamed waits at least 5 minutes for its whole answer. A server that ignores the request for a
+  stream and sends its whole answer as JSON is read as it is: an answer with a JSON content type, or
+  with none that starts with `{` or `[`. An answer of any other content type is read as a stream. A
+  review usually takes a few minutes, and a big merge request can take 15 or more. The summary says
+  the review is in progress until it ends.
 - **Room to think.** A model that thinks counts its thinking in the output limit, so a call asks for
   room beyond the answer's own tokens. It costs nothing unless the model uses it
   ([Budgets and today's usage](#budgets-and-todays-usage)).
@@ -653,9 +679,9 @@ It holds:
 
 - files that the built-in excludes or your `sources.exclude` match (`node_modules`, `dist`, `build`,
   `vendor`, minified files and the rest of [Built-in excludes](./configuration.md#built-in-excludes)).
-  To keep a file out of the snapshot, list it in `sources.exclude`. The AI assistant's **Never send
-  these paths** list is a server setting that the scanner does not read: those files are still
-  uploaded to your server, and the review never shows them to the model;
+  To keep a file out of the snapshot, list it in `sources.exclude`. **Never send these paths**, in
+  **Settings → AI provider**, is a server setting that the scanner does not read: those files are
+  still uploaded to your server, and the review never shows them to the model;
 - **credentials files**: the files the AI assistant never sends either, such as `.env` files, keys
   and certificates, `id_rsa`, `credentials*`, `.npmrc`, Docker and Kubernetes configs and Terraform
   variables and state ([What is sent, and where](./ai-assistant.md#what-is-sent-and-where)). A file
@@ -752,8 +778,8 @@ upload into one record per file, which takes seconds. Qualor deletes the copy at
   one is an hour later.
 - **AI review stops covering the project.** Qualor deletes a project's copies right after you
   switch AI review off or leave the project out of **Projects to review**. It does the same when an
-  instance admin disables the organisation, excludes the project from the AI assistant, removes the
-  provider or changes it (until an organisation admin confirms again), and when the project is
+  instance admin stops allowing the organisation to use AI, excludes the project from AI, removes
+  the provider or changes it (until an organisation admin confirms again), and when the project is
   unmapped from its repository or its SCM connection is deleted.
 - **After 14 days.** A daily job deletes every snapshot that is **more than 14 days old**, whatever
   its state, and catches the copies the rules above missed. A snapshot the server refused (a damaged
@@ -774,10 +800,10 @@ Three other records hold something of a review:
   (a review's calls) or `review-reply` (the answers to replies), the model that call went to, the
   token counts, the estimated cost and a hash of what was sent, for 90 days. The server log has one
   line for each call, with no content: `AI review call finished`, and for a reply
-  `AI review reply call finished`. If an instance admin switched on **Store the prompts sent**, the
-  prompts are kept too, for the days set there (1 to 90, 7 by default), and what the model answered
-  stays with the record. They can quote the code the model was shown, and for a reply what people
-  wrote in the thread ([Retention and audit](./ai-assistant.md#retention-and-audit)).
+  `AI review reply call finished`. If an instance admin switched on **Keep a copy of what is sent**,
+  the prompts are kept too, for the days set there (1 to 90, 7 by default), and what the model
+  answered stays with the record. They can quote the code the model was shown, and for a reply what
+  people wrote in the thread ([Retention and audit](./ai-assistant.md#retention-and-audit)).
 - **The replies and commands Qualor handled**, one record each, for 90 days after they are
   finished ([What Qualor keeps](#what-qualor-keeps)).
 
@@ -821,27 +847,32 @@ bytes per path.
 AI review has budgets of its own, separate from the AI assistant's budgets: one large review cannot
 use up the day's explanations, and the reverse. They pay for the reviews and for the answers to
 replies together. They are per organisation and per UTC day, and an organisation admin sets them
-under **Budgets per day (UTC)** in **Settings → AI review**:
+in the **Budgets** fold of the **AI review** section in **Settings → AI**. Closed, the fold lists
+their values: by default "2,000,000 tokens a day", "300,000 per review", "No limit per project"
+and "No cost limit".
 
 | Budget | Default | Meaning |
 |---|---|---|
 | Tokens per day | 2 000 000 | the most tokens (input and output) all the organisation's reviews and answers to replies may use in a day |
-| Cost per day in US dollars | empty (no limit) | needs the models' prices, which the instance admin enters in the AI assistant settings: the standard model's, and a strong or fast model's own ([Model tiers](./ai-assistant.md#model-tiers)) |
-| Tokens per project and day | empty (no limit) | the most tokens one project's reviews and answers may use in a day |
 | Tokens per review | 300 000 | the most one review may use, from 1 to 10 000 000. An answer to a reply has its own limit of 60 000 tokens |
+| Tokens per project per day | off (**Limit tokens per project**) | the most tokens one project's reviews and answers may use in a day |
+| Cost per day | off (**Limit the cost**) | in US dollars. It needs the models' prices, which the instance admin enters in **Settings → AI provider**: the standard model's, and a strong or fast model's own ([Model tiers](./ai-assistant.md#model-tiers)). Without them the switch is disabled under "No prices are set on this server, so a cost limit would count nothing. An instance admin enters model prices in Settings → AI provider." |
 
-The **instance ceiling** belongs to the instance admin: **Settings → AI assistant**, field **AI
-review: most tokens per organisation per day**. An organisation's tokens per day are the smaller of
-its own value and the ceiling; **Settings → AI review** shows the ceiling next to the field. Empty
-means no ceiling.
+The **instance ceiling** belongs to the instance admin: the switch **Cap the tokens an organization
+may give AI review** in the **Limits** of **Settings → AI provider**. An organisation's tokens per
+day are the smaller of its own value and the ceiling. While the ceiling is the smaller,
+**Settings → AI** says so under **Tokens per day**, such as "This server caps AI review at
+1,000,000 tokens a day per organization, so Acme gets 1,000,000." With the switch off there is no
+ceiling.
 
-**Today's usage.** Under the heading of the budgets, **Settings → AI review** shows what the
-organisation's reviews and answers to replies have used since UTC midnight, such as
-`Today: 120,000 of 2,000,000 tokens · 3 reviews`, with `· $1.23` added when prices are set. The
-budget in that line is the smaller of the organisation's tokens per day and the instance ceiling.
-The tokens and the cost include the answers to replies; the number of reviews does not.
+**Today's usage.** The **Today** line of the Status card in **Settings → AI** shows what the
+organisation's reviews and answers to replies have used since UTC midnight, on its **AI review**
+meter: such as `120,000 of 2,000,000` and `3 reviews`, with `· $1.23` added when prices are set.
+The budget of that meter is the smaller of the organisation's tokens per day and the instance
+ceiling. The tokens and the cost include the answers to replies; the number of reviews does not.
 `GET /api/v0/organizations/{id}/ai/review` gives the same figures as `usage`
-([API](#api)). Reviews that were skipped are not counted.
+([API](#api)). Reviews that were skipped are not counted. The **Assistant** meter beside it is the
+AI assistant's ([Budgets and limits](./ai-assistant.md#budgets-and-limits)).
 
 **How the budgets are enforced.** Before a review starts, Qualor works out what it may spend: the
 smallest of Tokens per review, what the organisation has left of its day, what the project has left
@@ -896,8 +927,8 @@ or more gets no code in that first message, and its reviewers have room for fewe
 From about 100 changed files it is not reviewed at all: the list of its changes alone would leave a
 reviewer no room. Short paths let more files fit, and many analyzer findings on the changed files
 fewer. The summary then says "AI review did not run because this merge request is too large for the
-Tokens per review budget; raise it in the AI review settings." For big merge requests, raise
-**Tokens per review** in **Settings → AI review** (to 600 000, say), and check that the day's budget
+Tokens per review budget; raise it in Settings → AI." For big merge requests, raise **Tokens per
+review** in the **Budgets** of **Settings → AI** (to 600 000, say), and check that the day's budget
 can pay for it. Mind the model's context window too, the most it reads in one call: the higher
 Tokens per review, the longer one call of a review can grow, and raised far, a call can pass the
 window. The provider then refuses the call, and the review fails with a provider error
@@ -961,12 +992,12 @@ and what to do about each:
 | AI review is skipped while this merge request is a draft; the next pipeline after it is ready reviews it, and a `qualor review` note reviews it now. | Mark the merge request ready, then run the pipeline again, or write `qualor review` in a note to review the draft now. A push after that starts an ordinary review, which skips the draft again ([Commands](#commands)) |
 | AI review did not run because this merge request is merged or closed. | Nothing to do |
 | AI review is switched off for this project. (`Reason: …`) | The reason code says why: [Why AI review is off for a project](#why-ai-review-is-off-for-a-project) |
-| AI review found nothing to review in the changed files. | Not an error. The merge request changes only files the review leaves out: lock files, generated or minified files, binary files and files on the AI assistant's **Never send these paths** list |
+| AI review found nothing to review in the changed files. | Not an error. The merge request changes only files the review leaves out: lock files, generated or minified files, binary files and files on the **Never send these paths** list of **Settings → AI provider** |
 | AI review did not repeat: the changes it reviews are the same as in its last review, whose findings stay open. | Not an error. The push changed nothing the review reads |
 | AI review did not run because its token budget for today is spent. | Wait for UTC midnight, or raise the budgets ([Budgets and today's usage](#budgets-and-todays-usage)). It also appears when what is left of the day is too little for a merge request of this size |
-| AI review did not run because this merge request is too large for the Tokens per review budget; raise it in the AI review settings. | The list of its changes alone leaves a reviewer no room: at the default 300 000 tokens, from about 100 changed files. Raise **Tokens per review** in **Settings → AI review** ([Budgets and today's usage](#budgets-and-todays-usage)) |
-| AI review failed: the model provider returned an error or could not be reached. The next push reviews again. | A call was refused, timed out, was rate limited or got no answer. Qualor tries a rate-limited call again twice and one that timed out once. The server log's `AI review call finished` lines give each call's error code and the provider's HTTP status: [the table below](#when-the-model-provider-fails) says what to do. Run **Test** in **Settings → AI assistant** to check the provider. With no such line for the review in the log, no call was made: the stored API key could no longer be read (`QUALOR_SECRET_KEY` changed; set the API key again in **Settings → AI assistant**), or calls to the provider were paused after repeated failures (`PROVIDER_UNAVAILABLE` below) |
-| AI review failed: the model provider does not support the tool calls the review needs. The next push reviews again. | Use a model and a server that can call tools. **Test** in **Settings → AI assistant** shows `Tool calling (needed by AI review): not supported` for this one ([Models that work](#models-that-work)). With one of OpenAI's newest models, the cause is usually the API: choose **Responses** under **API** in **Settings → AI assistant**, and the Test says tool calling is supported |
+| AI review did not run because this merge request is too large for the Tokens per review budget; raise it in Settings → AI. | The list of its changes alone leaves a reviewer no room: at the default 300 000 tokens, from about 100 changed files. Raise **Tokens per review** in the **Budgets** of **Settings → AI** ([Budgets and today's usage](#budgets-and-todays-usage)) |
+| AI review failed: the model provider returned an error or could not be reached. The next push reviews again. | A call was refused, timed out, was rate limited or got no answer. Qualor tries a rate-limited call again twice and one that timed out once. The server log's `AI review call finished` lines give each call's error code and the provider's HTTP status: [the table below](#when-the-model-provider-fails) says what to do. Press **Test again** in **Settings → AI provider** to check the provider. With no such line for the review in the log, no call was made: the stored API key could no longer be read (`QUALOR_SECRET_KEY` changed; set the API key again in **Settings → AI provider**), or calls to the provider were paused after repeated failures (`PROVIDER_UNAVAILABLE` below) |
+| AI review failed: the model provider does not support the tool calls the review needs. The next push reviews again. | Use a model and a server that can call tools. The Test of **Settings → AI provider** says `cannot call tools, so AI review would fail` for this one ([Models that work](#models-that-work)). With one of OpenAI's newest models, the cause is usually the API: choose **Responses** under **API** in **Connection options** and press **Save and test**, and the model's line says `can call tools` |
 | AI review failed: the model’s answers could not be read. The next push reviews again. | The judge did not answer in the form the review needs, even when asked again. Small models do this more often: try a stronger one |
 | AI review failed because of an error in Qualor. The next push reviews again. | An unexpected error, or a stop of the server during the review (a review is not resumed). If it keeps happening with the server running, report it with the server log's `AI review run failed` line |
 | The review reached its token limit, so it may have missed problems. | A reviewer, the judge or the second check used its tokens, with what the stages before it left. Raise **Tokens per review**, mainly for big merge requests ([Budgets and today's usage](#budgets-and-todays-usage)) |
@@ -1029,7 +1060,7 @@ What `reason` says, for a note that was skipped or that failed. Nothing is poste
 | `superseded` (skipped) | A newer round in the same thread covers this one, and its answer reads these notes too |
 | `expired` (skipped) | The note waited longer than 30 days to be answered, while its GitLab or GitHub connection or the model provider kept failing. Nothing to do: a new reply in the thread is a new round |
 | `provider_error` (failed) | The model could not be asked or gave no answer ([When the model provider fails](#when-the-model-provider-fails)). The log has an `AI review reply call finished` line for each call, with its error code. While Qualor pauses calls to a failing provider, a reply does not fail: it waits, and is answered when the pause ends (the log says `AI reply waits for the circuit of its model provider`) |
-| `provider_no_tools` (failed) | The model's server refuses tool calls ([Models that work](#models-that-work)). With one of OpenAI's newest models, choose **Responses** under **API** in **Settings → AI assistant** |
+| `provider_no_tools` (failed) | The model's server refuses tool calls ([Models that work](#models-that-work)). With one of OpenAI's newest models, choose **Responses** under **API** in the **Connection options** of **Settings → AI provider** |
 | `bad_answer` (failed) | The model's answer could not be read, or it named a status the thread does not allow, even after a second try. Nothing is posted, on purpose. A stronger model fails less often |
 | `internal` (failed) | An unexpected error in Qualor, or something that cannot be answered: the SCM connection can no longer be used (its token no longer decrypts after `QUALOR_SECRET_KEY` changed, or its address is no longer allowed), the issue is no longer the project's, or the merge request has no analysis to review. The log's `AI reply not answered:` line or `AI reply failed on its last try` line says which. A record whose job was lost is in the `ended` list of the warning `ended AI replies whose job was lost` instead |
 
@@ -1043,12 +1074,12 @@ each call, with its status and, for a call that failed, its error code:
 
 | Error code in the log | What to do |
 |---|---|
-| `PROVIDER_TIMEOUT` | The model sent nothing for as long as a review call waits, or the call went past its limit. A review or reply call waits for its first piece, and between two pieces, as long as the timeout in the AI assistant settings or 5 minutes, whichever is longer, and a call has 15 minutes in all. A slow local model may need more time: raise the timeout in **Settings → AI assistant**, up to 600 seconds |
+| `PROVIDER_TIMEOUT` | The model sent nothing for as long as a review call waits, or the call went past its limit. A review or reply call waits for its first piece, and between two pieces, as long as the provider's **Timeout** or 5 minutes, whichever is longer, and a call has 15 minutes in all. A slow local model may need more time: raise the **Timeout** in the **Connection options** of **Settings → AI provider**, up to 600 seconds |
 | `PROVIDER_RATE_LIMITED` | The provider's own limit. Qualor waited as the provider asked and tried twice. Review again later, or lower the budgets |
 | `PROVIDER_REFUSED_KEY` | Set a valid API key, and check the key header (`api-key` for Azure) |
-| `PROVIDER_REJECTED_REQUEST` | The provider refused the request: check the base URL, the model's name and the output limit field ([AI assistant: Troubleshooting](./ai-assistant.md#troubleshooting)) |
+| `PROVIDER_REJECTED_REQUEST` | The provider refused the request: check the base URL, the model's name and the output limit parameter ([AI assistant: Troubleshooting](./ai-assistant.md#troubleshooting)) |
 | `PROVIDER_BAD_ANSWER` | The provider answered, but not in a form Qualor could read: the address is not a chat completions, Responses or Anthropic Messages API, or the answer was over 1 MiB. Check the base URL and the **API** setting ([AI assistant: Troubleshooting](./ai-assistant.md#troubleshooting)) |
-| `PROVIDER_WORKSPACE_REQUIRED` | An Anthropic key that belongs to the whole organisation is not scoped to a workspace. Enter its workspace ID (`wrkspc_…`) in **Settings → AI assistant**. The call is not retried |
+| `PROVIDER_WORKSPACE_REQUIRED` | An Anthropic key that belongs to the whole organisation is not scoped to a workspace. Enter its workspace ID (`wrkspc_…`) in **Settings → AI provider**. The call is not retried |
 | `URL_NOT_ALLOWED` | The provider's address is no longer allowed: the operator lists its host, with its port, in `QUALOR_LLM_INTERNAL_HOSTS`, or the instance admin uses an `https` address that resolves to public addresses ([AI assistant: Troubleshooting](./ai-assistant.md#troubleshooting)) |
 | `PROVIDER_UNAVAILABLE` | The provider could not be reached, answered with a server error, or failed or closed the connection while it was answering (a stream that ended early). Check the base URL and the network. After five failures in a row Qualor pauses calls to that address for 10 minutes: a review that starts then fails at once, with no call in the log, and an answer to a reply waits until the pause ends |
 
@@ -1088,11 +1119,11 @@ informational lines about what the snapshot holds and masks. Set `QUALOR_LOG_LEV
 
 | Reason | Fix |
 |---|---|
-| `no_provider` | An instance admin configures a provider in **Settings → AI assistant** |
-| `organization_disabled` | An instance admin enables the organisation there |
-| `review_disabled` | An organisation admin switches AI review on in **Settings → AI review** |
-| `consent_outdated` | The provider, or one of its models (a strong or a fast model counts), changed. An organisation admin presses **Confirm again** |
-| `project_not_selected` | Add the project to **Projects to review**. If the instance admin excluded it from the AI assistant, it is never reviewed |
+| `no_provider` | An instance admin connects a provider in **Settings → AI provider** |
+| `organization_disabled` | An instance admin allows the organisation to use AI there, under **Organizations** |
+| `review_disabled` | An organisation admin presses **Switch on AI review…** in **Settings → AI** |
+| `consent_outdated` | The provider, or one of its models (a strong or a fast model counts), changed. An organisation admin presses **Review and confirm…** in **Settings → AI** |
+| `project_not_selected` | Add the project to **Projects to review** in **Settings → AI**. If the instance admin excluded it from AI, it is never reviewed |
 | `not_mapped` | Map the project to its GitLab or GitHub repository ([GitLab](./gitlab.md), [GitHub](./github.md)) |
 | `provider_changed` | The instance admin changed the provider, or one of its models, while a review was running, and the confirmation covers the new setup. The review stopped. The next push is reviewed with the new provider |
 
@@ -1121,9 +1152,24 @@ A finding is an issue of the engine `ai`: `GET /api/v0/issues?branchId=…&engin
 `USE_RESPONSES_API` and a `message`, or `null`) for the standard model, and `models`: one entry
 for each model with its `tier`, `model`, `ok`, `reportedModel`, `latencyMs`, `toolCalling`,
 `problem` and `hint`. The server keeps the outcome until the provider's settings or its key
-change, and `GET /api/v0/system/llm` shows it as `lastTest`.
+change, and `GET /api/v0/system/llm` shows it as `lastTest` (`at`, `userId`, and for each model
+its `tier`, `model`, `ok`, `toolCalling` and `problemCode`; `null` when there is no Test of the
+provider as it is now).
 
-Errors: `AI_DISABLED` (409: no provider, or the organisation is not enabled for the AI assistant),
+Read-only, for the pages that show where AI review runs:
+
+- `GET /api/v0/system/llm` (instance admins) gives each organisation's `reviewStatus`: whether its
+  admins switched AI review on (`enabled`) and whether their confirmation covers the provider as it
+  is now (`consentCurrent`). The confirmation stays theirs: a `PUT` that sends the answer back,
+  `reviewStatus` and `lastTest` included, is accepted, and they are ignored.
+- A project's `aiReview` (in `GET /api/v0/projects` and `GET /api/v0/projects/{id}`) gives `reason`:
+  why AI review does not run for it, the first of `no_provider`, `organization_disabled`,
+  `review_disabled`, `consent_outdated`, `project_not_selected` and `not_mapped` that applies
+  ([Why AI review is off for a project](#why-ai-review-is-off-for-a-project)), or `null` while it
+  runs. `enabled` and `organizationEnabled` keep their meaning: `enabled` is true for a chosen
+  project whatever its repository mapping.
+
+Errors: `AI_DISABLED` (409: no provider, or the organisation may not use AI),
 `AI_REVIEW_CONSENT_REQUIRED` (409: switching on without the acknowledgement),
 `AI_REVIEW_PROVIDER_CHANGED` (409: the provider's host, model or set of models changed since you
 read the warning; nothing is stored, read the `GET` answer again) and
