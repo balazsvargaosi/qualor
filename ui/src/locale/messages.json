@@ -473,7 +473,7 @@
     "issue.code": "Code",
     "issue.code.line": "Line {$INTERPOLATION}",
     "issue.aiReview.title": "AI review",
-    "issue.aiReview.assumes": " Assumes: {$INTERPOLATION} ",
+    "issue.aiReview.assumes": " Assumes: {$START_TAG_SPAN}{$INTERPOLATION}{$CLOSE_TAG_SPAN}",
     "issue.aiReview.confirmed": " A second check confirmed it. ",
     "issue.aiReview.needsValidation": " A second check could not confirm it: check it yourself. ",
     "issue.aiReview.suggestionLine": "Suggested change (line {$INTERPOLATION})",

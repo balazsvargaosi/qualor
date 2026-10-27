@@ -369,6 +369,18 @@ describe('IssuePage', () => {
       root.querySelector<HTMLElement>('[aria-labelledby="ai-review-heading"]');
     const flat = (el: Element | null | undefined) => el?.textContent?.replace(/\s+/g, ' ').trim();
 
+    it("the Assumes line starts with 'Assumes:', with no leading space", async () => {
+      const { root } = await renderReview({});
+      const line = cardOf(root)!.querySelector<HTMLElement>('.ai-review-assumption')!;
+      // The paragraph keeps its white space collapsed (no pre-wrap), so the i18n text's own space
+      // at the start is not shown; the model's assumption, a span of its own, keeps its line breaks.
+      expect(line.classList.contains('prose-text')).toBe(false);
+      expect(getComputedStyle(line).whiteSpace).not.toBe('pre-wrap');
+      expect(line.textContent?.trimStart().startsWith('Assumes:')).toBe(true);
+      const assumed = line.querySelector<HTMLElement>('span.prose-text')!;
+      expect(assumed.textContent).toBe('The list is never empty.');
+    });
+
     it('shows the finding as text with what it assumes, the second check, the suggestion, the commit and the notice', async () => {
       const { root } = await renderReview({});
       const card = cardOf(root)!;

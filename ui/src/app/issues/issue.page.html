@@ -73,8 +73,8 @@
           <!-- The review's words are model text: interpolated as text, never built as markup. -->
           <p class="ai-review-body prose-text">{{ review.body }}</p>
           @if (review.assumption; as assumption) {
-            <p class="ai-review-assumption prose-text" i18n="@@issue.aiReview.assumes">
-              Assumes: {{ assumption }}
+            <p class="ai-review-assumption" i18n="@@issue.aiReview.assumes">
+              Assumes: <span class="prose-text">{{ assumption }}</span>
             </p>
           }
           @if (review.verification === 'confirmed') {
