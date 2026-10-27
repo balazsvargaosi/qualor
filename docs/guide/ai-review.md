@@ -878,26 +878,27 @@ AI assistant's ([Budgets and limits](./ai-assistant.md#budgets-and-limits)).
 **How the budgets are enforced.** Before a review starts, Qualor works out what it may spend: the
 smallest of Tokens per review, what the organisation has left of its day, what the project has left
 of its day (when it has a budget), and what the cost budget has left at the dearest price of your
-models: the highest price per token, input or output, among them, since the model of the next call
-is not known ahead. When the day has nothing left, or too little for a review of this size, the
-review is skipped and the summary says the day's token budget is spent. When Tokens per review itself is too little for a
-merge request this large, the summary says that instead; when the model's context window is too
-small for it, the summary names the window (see **Big merge requests** below).
+models, the highest a token may cost: 1.25 times the input price (what Anthropic writes to its
+cache), the cached input price, or the output price, across the models, since the model of the next
+call is not known ahead. When the day has nothing left, or too little for a review of this size, the
+review is skipped and the summary says the day's token budget is spent. When Tokens per review
+itself is too little for a merge request this large, the summary says that instead; when the model's
+context window is too small for it, the summary names the window (see **Big merge requests** below).
 Otherwise the review shares its tokens between its stages: 55 % for the reviewers, an equal part
 each, 35 % for the judge and 10 % for the second check of security findings. What one leaves unused
 goes forward: a reviewer also gets what the reviewers before it left of their parts, the judge what
 the reviewers left, and the second check what the judge left. So a reviewer that reads much of the
-code can use what the others did not need. What one spends past what it was given is taken from
-none of the others. A reviewer, the judge or the second check that has used its tokens answers with
-what it has, and the summary says "The review reached its token limit, so it may have missed
-problems." The token limit is a ceiling Qualor works to, not a count to the token: it stops asking
-the model when it expects the next answer not to fit, but it cannot know how long an answer will
-be, so a review can end somewhat over it. Each of them also answers with what it has once it has
-read the code for 16 turns, whatever tokens it has left, and the summary then says "A reviewer
-reached its limit of 16 turns, so it may have missed problems." The day's budget is checked as
-each review starts, and a review that starts while others of the organisation run counts what each
-of those may still spend, up to Tokens per review, as spent: reviews that run together do not pass
-the day together. One that starts beside them may get less than the day had left.
+code can use what the others did not need. What one spends past what it was given is taken from none
+of the others. A reviewer, the judge or the second check that has used its tokens answers with what
+it has, and the summary says "The review reached its token limit, so it may have missed problems."
+The token limit is a ceiling Qualor works to, not a count to the token: it stops asking the model
+when it expects the next answer not to fit, but it cannot know how long an answer will be, so a
+review can end somewhat over it. Each of them also answers with what it has once it has read the
+code for 16 turns, whatever tokens it has left, and the summary then says "A reviewer reached its
+limit of 16 turns, so it may have missed problems." The day's budget is checked as each review
+starts, and a review that starts while others of the organisation run counts what each of those may
+still spend, up to Tokens per review, as spent: reviews that run together do not pass the day
+together. One that starts beside them may get less than the day had left.
 
 **Answers to replies.** An answer asks the day for room before it starts, as a review does, with a
 ceiling of 60 000 tokens in the place of Tokens per review, which it keeps to as far as it can tell
