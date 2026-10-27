@@ -929,19 +929,20 @@ list of a merge request of about 80 changed files or more leaves the first messa
 code (under 5 000 characters, and under 1 000 from about 100 files), and its reviewers read the code
 with their tools. From about 105 changed files they get shorter lists in that message instead: fewer
 files, fewer line ranges for each and fewer analyzer findings, and room for more code again (about
-11 000 characters). The summary then says "This merge request is large, so the reviewers were shown a
-shorter list of its changes and read the rest with their tools." The files left off a list are
+11 000 characters). The summary then says "This merge request is large, so the reviewers were shown
+a shorter list of its changes and read the rest with their tools." The files left off a list are
 counted, and the reviewers read them with their tools. Long paths, many line ranges for a file and
 many analyzer findings on the changed files bring these limits down. At 600 000 tokens per review, a
-merge request with ordinary paths keeps the lists of today whatever its number of files. A merge request is not
-reviewed for its size only when **Tokens per review** is too small for even the shortest lists,
-below about 110 000 tokens: the summary then says "AI review did not run because this merge request
-is too large for the Tokens per review budget; raise it in Settings → AI." For big merge requests,
-raise **Tokens per review** in the **Budgets** of **Settings → AI** (to 600 000, say), and check
-that the day's budget can pay for it. Each call of a review sends at most the model's context window
-less the room for its answer. Set **Context window** in **Settings → AI provider** when the model
-takes less than 1 000 000 tokens. A reviewer that reaches it answers with what it has, and a merge
-request whose first message alone does not fit, even with the shortest lists, is not reviewed.
+merge request with ordinary paths keeps the lists of today whatever its number of files. A merge
+request is not reviewed for its size only when **Tokens per review** is too small for even the
+shortest lists, below about 110 000 tokens: the summary then says "AI review did not run because
+this merge request is too large for the Tokens per review budget; raise it in Settings → AI." For
+big merge requests, raise **Tokens per review** in the **Budgets** of **Settings → AI** (to 600 000,
+say), and check that the day's budget can pay for it. Each call of a review sends at most the
+model's context window less the room for its answer. Set **Context window** in **Settings → AI
+provider** when the model takes less than 1 000 000 tokens. A reviewer that reaches it answers with
+what it has, and a merge request whose first message alone does not fit, even with the shortest
+lists, is not reviewed.
 
 **How tokens are counted.** Tokens are the counts the provider reports. For a call that reports no
 input count, Qualor counts a quarter of the bytes it sent, both in a review's ceiling and in today's

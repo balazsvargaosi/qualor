@@ -844,7 +844,7 @@ export function replyData(shown: ReplyShown): ReplyData {
 /**
  * The data besides the lists, the slices and the texts: its keys, the empty lists and the numbers,
  * as the JSON of a ReviewData with no content is long (280 characters, measured); the target
- * branch, the instructions files names and the texts are counted apart.
+ * branch, the instructions files' names and the texts are counted apart.
  */
 const WORDS_KEYS_CHARS = 280;
 /** An entry of notInSlices besides its path, at most. */
