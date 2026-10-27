@@ -132,7 +132,7 @@ test.describe('as people other than the instance admin', () => {
         'Secrets the analyzers found are masked; credentials files are never sent.',
       );
       await expect(dialog.locator('#ai-review-scope-line')).toHaveText(
-        'No project is selected yet: choose projects below first.',
+        'No project is selected yet, so nothing is reviewed until you select some.',
       );
       await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeFocused();
       await expectAccessible(page);
