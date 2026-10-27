@@ -78,9 +78,9 @@ describe('liveEnabled and readLiveEnv', () => {
       cases: ['ts-off-by-one', 'go-map-race'],
       strongModel: 'big',
       fastModel: 'small',
-      prices: { inputUsdPerMTok: 3, outputUsdPerMTok: 15.5 },
-      strongPrices: { inputUsdPerMTok: 15, outputUsdPerMTok: 75 },
-      fastPrices: { inputUsdPerMTok: 0.25, outputUsdPerMTok: 1.25 },
+      prices: { inputUsdPerMTok: 3, outputUsdPerMTok: 15.5, cachedInputUsdPerMTok: null },
+      strongPrices: { inputUsdPerMTok: 15, outputUsdPerMTok: 75, cachedInputUsdPerMTok: null },
+      fastPrices: { inputUsdPerMTok: 0.25, outputUsdPerMTok: 1.25, cachedInputUsdPerMTok: null },
       contextWindowTokens: 32_000,
     });
   });
@@ -142,7 +142,7 @@ describe('liveEnabled and readLiveEnv', () => {
     expect(
       readLiveEnv({ ...base, QUALOR_LIVE_REVIEW_PRICE_IN: '0', QUALOR_LIVE_REVIEW_PRICE_OUT: '0' })
         .prices,
-    ).toEqual({ inputUsdPerMTok: 0, outputUsdPerMTok: 0 });
+    ).toEqual({ inputUsdPerMTok: 0, outputUsdPerMTok: 0, cachedInputUsdPerMTok: null });
   });
 
   it('reads the prices of a tier only with both of them', () => {
@@ -154,6 +154,7 @@ describe('liveEnabled and readLiveEnv', () => {
       expect(readLiveEnv({ ...base, ...only('IN'), ...only('OUT') })[key], tier).toEqual({
         inputUsdPerMTok: 5,
         outputUsdPerMTok: 5,
+        cachedInputUsdPerMTok: null,
       });
     }
   });
@@ -493,7 +494,10 @@ describe('runLive against the fake LLM', () => {
     enqueueAnswers();
 
     const { report, text } = await runLive(
-      options({ runs: 2, prices: { inputUsdPerMTok: 3, outputUsdPerMTok: 15 } }),
+      options({
+        runs: 2,
+        prices: { inputUsdPerMTok: 3, outputUsdPerMTok: 15, cachedInputUsdPerMTok: null },
+      }),
     );
 
     expect(report.reviews).toBe(2);
@@ -573,9 +577,9 @@ describe('runLive against the fake LLM', () => {
 
     it('prices each call at the prices of its model', async () => {
       const prices = {
-        prices: { inputUsdPerMTok: 3, outputUsdPerMTok: 15 },
-        strongPrices: { inputUsdPerMTok: 15, outputUsdPerMTok: 75 },
-        fastPrices: { inputUsdPerMTok: 1, outputUsdPerMTok: 5 },
+        prices: { inputUsdPerMTok: 3, outputUsdPerMTok: 15, cachedInputUsdPerMTok: null },
+        strongPrices: { inputUsdPerMTok: 15, outputUsdPerMTok: 75, cachedInputUsdPerMTok: null },
+        fastPrices: { inputUsdPerMTok: 1, outputUsdPerMTok: 5, cachedInputUsdPerMTok: null },
       };
       // Every call spends 1 000 tokens in and 100 out. A trivial review: a fast call and a strong one.
       enqueueEmpty();
@@ -600,10 +604,10 @@ describe('runLive against the fake LLM', () => {
       const { report } = await runLive(
         options({
           strongModel: 'strong-model',
-          prices: { inputUsdPerMTok: 3, outputUsdPerMTok: 15 },
-          strongPrices: { inputUsdPerMTok: 15, outputUsdPerMTok: 75 },
+          prices: { inputUsdPerMTok: 3, outputUsdPerMTok: 15, cachedInputUsdPerMTok: null },
+          strongPrices: { inputUsdPerMTok: 15, outputUsdPerMTok: 75, cachedInputUsdPerMTok: null },
           // The fast tier uses the model: this pair is another model's, and no call is costed at it.
-          fastPrices: { inputUsdPerMTok: 900, outputUsdPerMTok: 900 },
+          fastPrices: { inputUsdPerMTok: 900, outputUsdPerMTok: 900, cachedInputUsdPerMTok: null },
           cases: ['java-optional-get'],
         }),
       );
@@ -617,7 +621,7 @@ describe('runLive against the fake LLM', () => {
       const { report, text } = await runLive(
         options({
           ...TIERS,
-          prices: { inputUsdPerMTok: 3, outputUsdPerMTok: 15 },
+          prices: { inputUsdPerMTok: 3, outputUsdPerMTok: 15, cachedInputUsdPerMTok: null },
           cases: ['java-optional-get'],
         }),
       );

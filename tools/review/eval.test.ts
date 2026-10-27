@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { AiCategory } from '../../server/src/db/schema';
+import type { PricePair } from '../../server/src/llm/settings';
 import type { ConversationResult } from '../../server/src/review/conversation';
 import type { ModelTier } from '../../server/src/review/model-tiers';
 import type { PipelineDeps } from '../../server/src/review/pipeline';
@@ -54,6 +55,8 @@ const answer = (text: string, tokens: [number, number] = [1_000, 100]): Conversa
   wrappedUp: null,
   inputTokens: tokens[0],
   outputTokens: tokens[1],
+  cacheReadTokens: 0,
+  cacheWriteTokens: 0,
   turns: 1,
   toolCalls: 0,
 });
@@ -828,6 +831,8 @@ describe('runEval scores', () => {
         reason: 'provider_error',
         inputTokens: 50,
         outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
         turns: 0,
         toolCalls: 0,
       }),
@@ -862,16 +867,16 @@ describe('runEval scores', () => {
     const priced = scripted({ said: seededIn, tokens: [2_000, 500] });
     const report = await runEval(cases, {
       ...priced.deps,
-      prices: { inputUsdPerMTok: 3, outputUsdPerMTok: 15 },
+      prices: { inputUsdPerMTok: 3, outputUsdPerMTok: 15, cachedInputUsdPerMTok: null },
     });
     expect(report.costUsd).toBeCloseTo((2_000 * calls * 3 + 500 * calls * 15) / 1_000_000, 9);
   });
 
   describe('the cost with the prices of each model tier', () => {
-    const PRICES: Record<ModelTier, { inputUsdPerMTok: number; outputUsdPerMTok: number }> = {
-      standard: { inputUsdPerMTok: 3, outputUsdPerMTok: 15 },
-      strong: { inputUsdPerMTok: 15, outputUsdPerMTok: 75 },
-      fast: { inputUsdPerMTok: 1, outputUsdPerMTok: 5 },
+    const PRICES: Record<ModelTier, PricePair> = {
+      standard: { inputUsdPerMTok: 3, outputUsdPerMTok: 15, cachedInputUsdPerMTok: null },
+      strong: { inputUsdPerMTok: 15, outputUsdPerMTok: 75, cachedInputUsdPerMTok: null },
+      fast: { inputUsdPerMTok: 1, outputUsdPerMTok: 5, cachedInputUsdPerMTok: null },
     };
     const cases = ['one', 'two'].map((id) => synthetic({ id, expected: [problem(10)] }));
     const costAt = (
@@ -1015,7 +1020,7 @@ describe('the report', () => {
 
     const report = await runEval([seeded, clean], {
       ...deps,
-      prices: { inputUsdPerMTok: 3, outputUsdPerMTok: 15 },
+      prices: { inputUsdPerMTok: 3, outputUsdPerMTok: 15, cachedInputUsdPerMTok: null },
     });
 
     // The markers did flow through the review: it found the problem, flagged the clean case and

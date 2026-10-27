@@ -544,7 +544,13 @@ describe('AI requests (llm.md §5, §10, §12, §16)', () => {
     // Budgets a single token or cent would exceed, and a review and a reply that spent far more than both.
     await configure({
       budgets: { ...DEFAULT_LLM_SETTINGS.budgets, tokensPerDay: 100, costPerDayUsd: 0.01 },
-      pricing: { inputUsdPerMTok: 3, outputUsdPerMTok: 15, strong: null, fast: null },
+      pricing: {
+        inputUsdPerMTok: 3,
+        outputUsdPerMTok: 15,
+        cachedInputUsdPerMTok: null,
+        strong: null,
+        fast: null,
+      },
     });
     for (const feature of ['review', 'review-reply'] as const) {
       await h.ctx.db.insert(llmRequests).values({

@@ -380,8 +380,12 @@ interface SentCall {
 interface Outcome {
   status: 'succeeded' | 'failed';
   errorCode: string | null;
+  /** Every prompt token, as the provider counted it, whatever its cache did (R49). */
   inputTokens: number | null;
   outputTokens: number | null;
+  /** Of the input, what the provider read from its cache and wrote to it; null: not counted. */
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
   costMicroUsd: number | null;
   /** What came back; null for a call that failed. */
   turn: LlmTurn | null;
@@ -402,7 +406,11 @@ interface Outcome {
  * is charged to no budget and the circuit only hands its probe on. Every call is streamed, within
  * `reviewStreamLimits` (R35), so that a gateway that cuts a connection which stays idle does not cut
  * a long answer; a server that will not stream is asked again without it in the same call, which is
- * still one row, and the later calls of the model are not streamed (one log line says so).
+ * still one row, and the later calls of the model are not streamed (one log line says so). On
+ * Anthropic every call marks its prompt for the provider's cache (R49, `markedForCache`), and a
+ * server that refuses the markers is asked again without them in the same call, still one row. The
+ * row's input is every prompt token, the cached ones among them; its cost prices what the cache
+ * read and wrote apart (`costOf`), and its log line gives those two counts.
  */
 export function reviewSender(
   deps: ReviewSenderDeps,
@@ -473,6 +481,9 @@ export function reviewSender(
         providerStatus: outcome.providerStatus,
         inputTokens: outcome.inputTokens,
         outputTokens: outcome.outputTokens,
+        // Counts only: what the provider's prompt cache did with the input (R49).
+        cacheReadTokens: outcome.cacheReadTokens,
+        cacheWriteTokens: outcome.cacheWriteTokens,
         durationMs,
       },
       owner.logLine,
@@ -512,6 +523,8 @@ export function reviewSender(
         errorCode: errorCodeOf(err),
         inputTokens: null,
         outputTokens: null,
+        cacheReadTokens: null,
+        cacheWriteTokens: null,
         costMicroUsd: null,
         turn: null,
         providerStatus: err.status,
@@ -525,6 +538,9 @@ export function reviewSender(
       errorCode: null,
       inputTokens: turn.usage.inputTokens,
       outputTokens: turn.usage.outputTokens,
+      cacheReadTokens: turn.usage.cacheReadTokens ?? null,
+      cacheWriteTokens: turn.usage.cacheWriteTokens ?? null,
+      // Every prompt token is counted as input; the cost prices the cache's parts apart (R49).
       costMicroUsd: costOf(deps.pricing, turn.usage),
       turn,
       providerStatus: null,

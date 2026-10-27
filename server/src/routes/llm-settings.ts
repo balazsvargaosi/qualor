@@ -216,7 +216,7 @@ const settingsBody = z.strictObject({
   budgets: budgetsBody,
   pricing: pricingSchema.meta({
     description:
-      'USD per million tokens of the standard model, and of the strong and fast models (`strong`, `fast`), or null for no prices. With prices, a tier that has a model of its own needs its prices, and a tier without one takes none: either is a 422 at `pricing.strong` or `pricing.fast` ("Give the strong model\'s prices too", "Set the strong model first").',
+      'USD per million tokens of the standard model, and of the strong and fast models (`strong`, `fast`), or null for no prices. With prices, a tier that has a model of its own needs its prices, and a tier without one takes none: either is a 422 at `pricing.strong` or `pricing.fast` ("Give the strong model\'s prices too", "Set the strong model first"). Each pair\'s `cachedInputUsdPerMTok` is the price of the input the provider read from its prompt cache; null or absent counts that input at the input price. What Anthropic writes to its cache is counted at 1.25 times the input price.',
   }),
   storePrompts: z.boolean(),
   promptRetentionDays: z.number().int().min(1).max(90),

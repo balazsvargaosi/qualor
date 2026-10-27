@@ -168,10 +168,16 @@ export interface ConversationInput {
  * tokens are the provider's counts; for a count it did not give they are a guess made for the
  * budget (see `tokensOf`). The input of a call that timed out, or whose answer could not be read,
  * is charged as a guess too: the provider most likely billed it, and the day counts it (usage.ts).
+ * `inputTokens` is every prompt token, whatever the provider's cache did with it (R49): the budgets
+ * and the window count all of it. `cacheReadTokens` and `cacheWriteTokens` are the parts of it the
+ * provider counted as read from its cache and written to it (0 for a call that counted none), for
+ * the evaluation and the logs only.
  */
 export interface ConversationCounts {
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
   turns: number;
   toolCalls: number;
 }
@@ -635,6 +641,8 @@ export async function runConversation(input: ConversationInput): Promise<Convers
   let toolCalls = 0;
   let inputTokens = 0;
   let outputTokens = 0;
+  let cacheReadTokens = 0;
+  let cacheWriteTokens = 0;
   /** Why the next turn is the wrap-up, once it is. */
   let wrapUp: WrapUpReason | null = null;
   let askedForShorter = false;
@@ -645,6 +653,8 @@ export async function runConversation(input: ConversationInput): Promise<Convers
     ...end,
     inputTokens,
     outputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
     turns,
     toolCalls,
   });
@@ -691,6 +701,8 @@ export async function runConversation(input: ConversationInput): Promise<Convers
     const spent = tokensOf(turn, sent, limits.maxOutputTokens);
     inputTokens += spent.input;
     outputTokens += spent.output;
+    cacheReadTokens += turn.usage.cacheReadTokens ?? 0;
+    cacheWriteTokens += turn.usage.cacheWriteTokens ?? 0;
     if (turn.finishReason === 'refusal') return ended(failed('bad_answer'));
 
     if (turn.toolCalls.length > 0 && wrapUp === null && !askedAgain) {
@@ -793,6 +805,8 @@ export async function runConversation(input: ConversationInput): Promise<Convers
       text: turn.text,
       inputTokens,
       outputTokens,
+      cacheReadTokens,
+      cacheWriteTokens,
       turns,
       toolCalls,
       wrappedUp: wrapUp,

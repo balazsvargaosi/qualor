@@ -30,6 +30,7 @@ import {
   LlmError,
   REASONING_ALLOWANCE_TOKENS,
   type LlmAnswer,
+  type LlmUsage,
 } from './providers';
 import { LLM_QUEUE } from './service';
 import {
@@ -38,6 +39,7 @@ import {
   providerApiKey,
   providerConfig,
   readLlmSettings,
+  type PricePair,
   type StoredLlmSettings,
   type StoredProvider,
 } from './settings';
@@ -203,16 +205,31 @@ function scrubStrings<T>(value: T, key: string | null): T {
 }
 
 /**
- * llm.md §10.1: the estimated cost in micro-USD whenever prices are set and both token counts are
- * known, whatever became of the answer (the tokens were spent).
+ * R49: what a token written to the provider's prompt cache costs, as a multiple of the input price
+ * (Anthropic's 5-minute cache, the one the markers ask for). OpenAI bills no write.
  */
-export function costOf(
-  pricing: { inputUsdPerMTok: number; outputUsdPerMTok: number } | null,
-  tokens: { inputTokens: number | null; outputTokens: number | null },
-): number | null {
-  if (pricing === null || tokens.inputTokens === null || tokens.outputTokens === null) return null;
+export const CACHE_WRITE_PRICE_FACTOR = 1.25;
+
+/**
+ * llm.md §10.1: the estimated cost in micro-USD whenever prices are set and both token counts are
+ * known, whatever became of the answer (the tokens were spent). A price is US dollars for a
+ * million tokens, which is micro-USD for a token. R49: of the input, what the provider read from
+ * its cache costs the cached input price (the input price when there is none, so that a cost is
+ * never understated), what it wrote to its cache costs CACHE_WRITE_PRICE_FACTOR times the input
+ * price, and the rest the input price:
+ * `max(0, input − read − write)·in + write·in·1.25 + read·(cachedIn ?? in) + output·out`, with a
+ * cache count that is absent or null counted as 0.
+ */
+export function costOf(pricing: PricePair | null, usage: LlmUsage): number | null {
+  if (pricing === null || usage.inputTokens === null || usage.outputTokens === null) return null;
+  const read = usage.cacheReadTokens ?? 0;
+  const written = usage.cacheWriteTokens ?? 0;
+  const input = pricing.inputUsdPerMTok;
   return Math.round(
-    tokens.inputTokens * pricing.inputUsdPerMTok + tokens.outputTokens * pricing.outputUsdPerMTok,
+    Math.max(0, usage.inputTokens - read - written) * input +
+      written * input * CACHE_WRITE_PRICE_FACTOR +
+      read * (pricing.cachedInputUsdPerMTok ?? input) +
+      usage.outputTokens * pricing.outputUsdPerMTok,
   );
 }
 
@@ -564,7 +581,8 @@ async function sendClaimed(
     inputTokens: answer.usage.inputTokens,
     outputTokens: answer.usage.outputTokens,
   };
-  const costMicroUsd = costOf(settings.pricing, tokens);
+  // With the cache counts: OpenAI reads a prefix it has seen from its cache by itself (R49).
+  const costMicroUsd = costOf(settings.pricing, answer.usage);
   const checked = validate(row.feature, answer, key, built.input);
   if (!checked.ok) {
     return await finish(deps, row, started, {

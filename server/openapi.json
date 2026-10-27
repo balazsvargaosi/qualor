@@ -20263,6 +20263,19 @@
                               "minimum": 0,
                               "maximum": 10000
                             },
+                            "cachedInputUsdPerMTok": {
+                              "default": null,
+                              "anyOf": [
+                                {
+                                  "type": "number",
+                                  "minimum": 0,
+                                  "maximum": 10000
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
                             "strong": {
                               "default": null,
                               "anyOf": [
@@ -20278,11 +20291,25 @@
                                       "type": "number",
                                       "minimum": 0,
                                       "maximum": 10000
+                                    },
+                                    "cachedInputUsdPerMTok": {
+                                      "default": null,
+                                      "anyOf": [
+                                        {
+                                          "type": "number",
+                                          "minimum": 0,
+                                          "maximum": 10000
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
                                     }
                                   },
                                   "required": [
                                     "inputUsdPerMTok",
-                                    "outputUsdPerMTok"
+                                    "outputUsdPerMTok",
+                                    "cachedInputUsdPerMTok"
                                   ],
                                   "additionalProperties": false
                                 },
@@ -20306,11 +20333,25 @@
                                       "type": "number",
                                       "minimum": 0,
                                       "maximum": 10000
+                                    },
+                                    "cachedInputUsdPerMTok": {
+                                      "default": null,
+                                      "anyOf": [
+                                        {
+                                          "type": "number",
+                                          "minimum": 0,
+                                          "maximum": 10000
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
                                     }
                                   },
                                   "required": [
                                     "inputUsdPerMTok",
-                                    "outputUsdPerMTok"
+                                    "outputUsdPerMTok",
+                                    "cachedInputUsdPerMTok"
                                   ],
                                   "additionalProperties": false
                                 },
@@ -20323,6 +20364,7 @@
                           "required": [
                             "inputUsdPerMTok",
                             "outputUsdPerMTok",
+                            "cachedInputUsdPerMTok",
                             "strong",
                             "fast"
                           ],
@@ -20826,6 +20868,19 @@
                             "minimum": 0,
                             "maximum": 10000
                           },
+                          "cachedInputUsdPerMTok": {
+                            "default": null,
+                            "anyOf": [
+                              {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 10000
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "strong": {
                             "default": null,
                             "anyOf": [
@@ -20841,6 +20896,19 @@
                                     "type": "number",
                                     "minimum": 0,
                                     "maximum": 10000
+                                  },
+                                  "cachedInputUsdPerMTok": {
+                                    "default": null,
+                                    "anyOf": [
+                                      {
+                                        "type": "number",
+                                        "minimum": 0,
+                                        "maximum": 10000
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
                                   }
                                 },
                                 "required": [
@@ -20869,6 +20937,19 @@
                                     "type": "number",
                                     "minimum": 0,
                                     "maximum": 10000
+                                  },
+                                  "cachedInputUsdPerMTok": {
+                                    "default": null,
+                                    "anyOf": [
+                                      {
+                                        "type": "number",
+                                        "minimum": 0,
+                                        "maximum": 10000
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
                                   }
                                 },
                                 "required": [
@@ -20893,7 +20974,7 @@
                         "type": "null"
                       }
                     ],
-                    "description": "USD per million tokens of the standard model, and of the strong and fast models (`strong`, `fast`), or null for no prices. With prices, a tier that has a model of its own needs its prices, and a tier without one takes none: either is a 422 at `pricing.strong` or `pricing.fast` (\"Give the strong model's prices too\", \"Set the strong model first\")."
+                    "description": "USD per million tokens of the standard model, and of the strong and fast models (`strong`, `fast`), or null for no prices. With prices, a tier that has a model of its own needs its prices, and a tier without one takes none: either is a 422 at `pricing.strong` or `pricing.fast` (\"Give the strong model's prices too\", \"Set the strong model first\"). Each pair's `cachedInputUsdPerMTok` is the price of the input the provider read from its prompt cache; null or absent counts that input at the input price. What Anthropic writes to its cache is counted at 1.25 times the input price."
                   },
                   "storePrompts": {
                     "type": "boolean"
@@ -21246,6 +21327,19 @@
                               "minimum": 0,
                               "maximum": 10000
                             },
+                            "cachedInputUsdPerMTok": {
+                              "default": null,
+                              "anyOf": [
+                                {
+                                  "type": "number",
+                                  "minimum": 0,
+                                  "maximum": 10000
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
                             "strong": {
                               "default": null,
                               "anyOf": [
@@ -21261,11 +21355,25 @@
                                       "type": "number",
                                       "minimum": 0,
                                       "maximum": 10000
+                                    },
+                                    "cachedInputUsdPerMTok": {
+                                      "default": null,
+                                      "anyOf": [
+                                        {
+                                          "type": "number",
+                                          "minimum": 0,
+                                          "maximum": 10000
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
                                     }
                                   },
                                   "required": [
                                     "inputUsdPerMTok",
-                                    "outputUsdPerMTok"
+                                    "outputUsdPerMTok",
+                                    "cachedInputUsdPerMTok"
                                   ],
                                   "additionalProperties": false
                                 },
@@ -21289,11 +21397,25 @@
                                       "type": "number",
                                       "minimum": 0,
                                       "maximum": 10000
+                                    },
+                                    "cachedInputUsdPerMTok": {
+                                      "default": null,
+                                      "anyOf": [
+                                        {
+                                          "type": "number",
+                                          "minimum": 0,
+                                          "maximum": 10000
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
                                     }
                                   },
                                   "required": [
                                     "inputUsdPerMTok",
-                                    "outputUsdPerMTok"
+                                    "outputUsdPerMTok",
+                                    "cachedInputUsdPerMTok"
                                   ],
                                   "additionalProperties": false
                                 },
@@ -21306,6 +21428,7 @@
                           "required": [
                             "inputUsdPerMTok",
                             "outputUsdPerMTok",
+                            "cachedInputUsdPerMTok",
                             "strong",
                             "fast"
                           ],

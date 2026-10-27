@@ -852,9 +852,10 @@ describe('/system/llm (llm.md §3, §16)', () => {
   });
 
   describe('the models of the tiers', () => {
-    const STANDARD = { inputUsdPerMTok: 3, outputUsdPerMTok: 15 };
-    const STRONG = { inputUsdPerMTok: 15, outputUsdPerMTok: 75 };
-    const FAST = { inputUsdPerMTok: 1, outputUsdPerMTok: 5 };
+    // The answer names the cached input price of each pair (R49): the fixtures give it, as null.
+    const STANDARD = { inputUsdPerMTok: 3, outputUsdPerMTok: 15, cachedInputUsdPerMTok: null };
+    const STRONG = { inputUsdPerMTok: 15, outputUsdPerMTok: 75, cachedInputUsdPerMTok: null };
+    const FAST = { inputUsdPerMTok: 1, outputUsdPerMTok: 5, cachedInputUsdPerMTok: null };
     const tiers = { strongModel: 'fake-strong', fastModel: 'fake-fast' };
     const errorsOf = (res: { json: () => unknown }) =>
       (res.json() as { errors: { path: string; message: string }[] }).errors;
@@ -1068,6 +1069,56 @@ describe('/system/llm (llm.md §3, §16)', () => {
       // A null pair is the same as none.
       const nulls = await put(body({ pricing: { ...STANDARD, strong: null, fast: null } }));
       expect(nulls.json().pricing).toEqual({ ...STANDARD, strong: null, fast: null });
+    });
+
+    it("PUT stores and GET answers each tier's cachedInputUsdPerMTok; a negative price is refused (R49)", async () => {
+      // Fictional prices.
+      const pricing = {
+        inputUsdPerMTok: 3,
+        outputUsdPerMTok: 15,
+        cachedInputUsdPerMTok: 0.3,
+        strong: { inputUsdPerMTok: 15, outputUsdPerMTok: 75, cachedInputUsdPerMTok: 1.5 },
+        fast: { inputUsdPerMTok: 1, outputUsdPerMTok: 5, cachedInputUsdPerMTok: 0 },
+      };
+      const set = await put(body({ provider: provider(tiers), pricing }));
+      expect(set.statusCode, set.body).toBe(200);
+      expect(set.json().pricing).toEqual(pricing);
+      expect((await get()).json().pricing).toEqual(pricing);
+      expect((await readLlmSettings(ctx.db)).pricing).toEqual(pricing);
+      expect(loggedChange()).toContain('"pricing"');
+      // Left out it is null: that input is counted at the input price.
+      const absent = await put(
+        body({
+          provider: provider(tiers),
+          pricing: {
+            inputUsdPerMTok: 3,
+            outputUsdPerMTok: 15,
+            strong: { inputUsdPerMTok: 15, outputUsdPerMTok: 75 },
+            fast: { inputUsdPerMTok: 1, outputUsdPerMTok: 5, cachedInputUsdPerMTok: null },
+          },
+        }),
+      );
+      expect(absent.statusCode, absent.body).toBe(200);
+      const unset = { ...STANDARD, strong: STRONG, fast: FAST };
+      expect(absent.json().pricing).toEqual(unset);
+      expect((await readLlmSettings(ctx.db)).pricing).toEqual(unset);
+      // A price like the others, from 0 to 10 000: each refused at its own path.
+      for (const [tier, value] of [
+        ['', -0.5],
+        ['strong', -1],
+        ['fast', 10_001],
+        ['', 'cheap'],
+      ] as const) {
+        const priced = structuredClone(pricing) as Record<string, unknown>;
+        const pair = (tier === '' ? priced : priced[tier]) as Record<string, unknown>;
+        pair.cachedInputUsdPerMTok = value;
+        const refused = await put(body({ provider: provider(tiers), pricing: priced }));
+        expect(refused.statusCode, `${tier} ${String(value)}`).toBe(422);
+        const path = tier === '' ? 'body.pricing' : `body.pricing.${tier}`;
+        expect(errorsOf(refused).map((e) => e.path)).toContain(`${path}.cachedInputUsdPerMTok`);
+      }
+      // A refused save changes nothing.
+      expect((await get()).json().pricing).toEqual(unset);
     });
 
     it('names a change of a tier price as a change of the pricing', async () => {

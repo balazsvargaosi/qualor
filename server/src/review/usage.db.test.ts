@@ -94,7 +94,13 @@ const TOOLS = [
 const PROMPT_VERSION = 'review-1';
 // Characters of two, three and four bytes: a size in bytes is not a size in characters.
 const USER_TEXT = 'The change under review: café € 😀';
-const PRICING = { inputUsdPerMTok: 3, outputUsdPerMTok: 15, strong: null, fast: null };
+const PRICING = {
+  inputUsdPerMTok: 3,
+  outputUsdPerMTok: 15,
+  cachedInputUsdPerMTok: null,
+  strong: null,
+  fast: null,
+};
 /** A provider with no tier models: all its calls go to its model, at the standard prices. */
 const SINGLE_MODEL = { model: 'fake-model', strongModel: null, fastModel: null };
 /** A fake password and the line that sets it, built at run time so no scanner takes it for real. */
@@ -133,6 +139,23 @@ function textTurn(kind: Kind, text: string, tokens: [number, number] | null): Ll
           }),
   };
 }
+
+/**
+ * An Anthropic answer that read 8 000 tokens of its prompt from the cache and wrote 1 000 to it,
+ * past which it sent 1 000 more (R49): 10 000 prompt tokens, and 500 of output.
+ */
+const cachedAnswer = (): LlmReply => ({
+  status: 200,
+  body: {
+    ...(anthropicAnswer('done') as object),
+    usage: {
+      input_tokens: 1_000,
+      cache_creation_input_tokens: 1_000,
+      cache_read_input_tokens: 8_000,
+      output_tokens: 500,
+    },
+  },
+});
 
 const failure = (kind: Kind, status: number): LlmReply => ({
   status,
@@ -554,6 +577,8 @@ const port = 8080;
           reason: 'provider_error',
           inputTokens: unreadableInput,
           outputTokens: 0,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
           turns: 0,
           toolCalls: 0,
         });
@@ -600,8 +625,8 @@ const port = 8080;
           },
           pricing: {
             ...PRICING,
-            strong: { inputUsdPerMTok: 15, outputUsdPerMTok: 75 },
-            fast: { inputUsdPerMTok: 1, outputUsdPerMTok: 5 },
+            strong: { inputUsdPerMTok: 15, outputUsdPerMTok: 75, cachedInputUsdPerMTok: null },
+            fast: { inputUsdPerMTok: 1, outputUsdPerMTok: 5, cachedInputUsdPerMTok: null },
           },
         });
         for (const tier of ['strong', 'standard', 'fast'] as const) {
@@ -1280,7 +1305,7 @@ const port = 8080;
         textTurn('openai', 'done', [1_000, 100]),
         textTurn('openai', 'done', [1_000, 100]),
       );
-      const prices = { inputUsdPerMTok: 2, outputUsdPerMTok: 8 };
+      const prices = { inputUsdPerMTok: 2, outputUsdPerMTok: 8, cachedInputUsdPerMTok: null };
       await converse1(senderFor('openai', { settings, model: 'given-model', pricing: prices }));
       // No prices for this call: the settings' are another model's, and make no cost of it.
       await converse1(senderFor('openai', { settings, model: 'unpriced-model', pricing: null }));
@@ -1485,6 +1510,8 @@ const port = 8080;
         outputTokens: 96,
       });
       expect(Object.keys(lines[0]!.data).sort()).toEqual([
+        'cacheReadTokens',
+        'cacheWriteTokens',
         'durationMs',
         'errorCode',
         'inputTokens',
@@ -1493,6 +1520,8 @@ const port = 8080;
         'runId',
         'status',
       ]);
+      // The fake's OpenAI answer counts nothing of a cache.
+      expect(lines[0]!.data).toMatchObject({ cacheReadTokens: null, cacheWriteTokens: null });
       expect(lines[1]!.data).toMatchObject({
         status: 'failed',
         errorCode: 'PROVIDER_REFUSED_KEY',
@@ -1504,6 +1533,40 @@ const port = 8080;
       // The count of redactions lives on the row only.
       expect(logged).not.toContain('redactions');
       expect(first(await rows())).toMatchObject({ redactions: 7 });
+    });
+
+    it('logs the cache counts of a call, counts only, and costs its reads at the cached price (R49)', async () => {
+      const lines: { data: Record<string, unknown>; message: string }[] = [];
+      const logger = {
+        info: (data: Record<string, unknown>, message: string) =>
+          void lines.push({ data, message }),
+        warn: () => undefined,
+        error: () => undefined,
+      } as unknown as WorkerLogger;
+      // Fictional prices: 2 for input, 0.2 for cached input, 10 for output.
+      const pricing = { inputUsdPerMTok: 2, outputUsdPerMTok: 10, cachedInputUsdPerMTok: 0.2 };
+      fake.enqueue(cachedAnswer());
+      await converse1(senderFor('anthropic', { logger, pricing }));
+      expect(lines[0]!.data).toMatchObject({
+        status: 'succeeded',
+        inputTokens: 10_000,
+        outputTokens: 500,
+        cacheReadTokens: 8_000,
+        cacheWriteTokens: 1_000,
+      });
+      expect(first(await rows())).toMatchObject({
+        inputTokens: 10_000,
+        outputTokens: 500,
+        costMicroUsd: 2_000 + 2_500 + 1_600 + 5_000,
+      });
+      // A failed call counted nothing.
+      fake.enqueue(failure('anthropic', 401));
+      await converse1(senderFor('anthropic', { logger, pricing })).catch(() => undefined);
+      expect(lines[1]!.data).toMatchObject({
+        status: 'failed',
+        cacheReadTokens: null,
+        cacheWriteTokens: null,
+      });
     });
 
     it('writes the rows of the calls of a reply with their own feature, and names the reply, not a run', async () => {
@@ -1556,6 +1619,8 @@ const port = 8080;
         'AI review reply call finished',
       ]);
       expect(Object.keys(lines[0]!.data).sort()).toEqual([
+        'cacheReadTokens',
+        'cacheWriteTokens',
         'durationMs',
         'errorCode',
         'inputTokens',
@@ -1824,6 +1889,38 @@ const port = 8080;
       ).toBe(0);
     });
 
+    it("a cached call counts every prompt token in the day's budget (R49)", async () => {
+      // Fictional prices. 1 000 tokens sent past the cache, 1 000 written to it and 8 000 read
+      // from it: a row of 10 000 input tokens, which the day counts with its output.
+      const pricing = { inputUsdPerMTok: 2, outputUsdPerMTok: 10, cachedInputUsdPerMTok: 0.2 };
+      const settings = settingsFor('anthropic', {
+        pricing: { ...pricing, strong: null, fast: null },
+      });
+      fake.enqueue(cachedAnswer());
+      await reviewSender({
+        db: t.db,
+        runtime,
+        config,
+        settings,
+        ...callOf(settings),
+        feature: REVIEW_FEATURE,
+        source: { projectId: projectA1, promptKey: randomUUID() },
+        promptVersion: PROMPT_VERSION,
+      })({
+        system: 'S',
+        messages: [{ role: 'user', text: 'U' }],
+        tools: TOOLS,
+        maxOutputTokens: 50,
+      });
+      expect(first(await rows())).toMatchObject({ inputTokens: 10_000, outputTokens: 500 });
+      expect(await reviewUsageToday(t.db, orgA)).toEqual({
+        tokens: 10_000 + 500,
+        costMicroUsd: 11_100,
+        reviews: 0,
+      });
+      expect(await reviewUsageToday(t.db, orgA, projectA1)).toMatchObject({ tokens: 10_500 });
+    });
+
     it('does not guess a cost: the cost of the day is that of the calls whose cost is known', async () => {
       await insertRow({
         inputTokens: null,
@@ -1985,7 +2082,7 @@ const port = 8080;
           remainingReviewTokens(
             priced,
             day(0, 0, 4_000_000),
-            { ...PRICING, inputUsdPerMTok: 20, outputUsdPerMTok: 5 },
+            { ...PRICING, inputUsdPerMTok: 20, outputUsdPerMTok: 5, cachedInputUsdPerMTok: null },
             SINGLE_MODEL,
           ),
         ).toBe(50_000);
@@ -2006,8 +2103,8 @@ const port = 8080;
         const tiers = { model: 'fake-model', strongModel: 'big-model', fastModel: 'small-model' };
         const pricing = {
           ...PRICING,
-          strong: { inputUsdPerMTok: 60, outputUsdPerMTok: 300 },
-          fast: { inputUsdPerMTok: 1, outputUsdPerMTok: 5 },
+          strong: { inputUsdPerMTok: 60, outputUsdPerMTok: 300, cachedInputUsdPerMTok: null },
+          fast: { inputUsdPerMTok: 1, outputUsdPerMTok: 5, cachedInputUsdPerMTok: null },
         };
         // $3 left. The standard model alone, 15 micro-USD a token, would buy 200 000 tokens; the
         // strong model's 300 buys 10 000, and the cost of a call is not known before it is made.
@@ -2018,7 +2115,10 @@ const port = 8080;
           200_000,
         );
         // The dearest input price may be another tier's than the dearest output price.
-        const inputDear = { ...pricing, strong: { inputUsdPerMTok: 500, outputUsdPerMTok: 5 } };
+        const inputDear = {
+          ...pricing,
+          strong: { inputUsdPerMTok: 500, outputUsdPerMTok: 5, cachedInputUsdPerMTok: null },
+        };
         expect(remainingReviewTokens(priced, day(0, 0, 2_000_000), inputDear, tiers)).toBe(6_000);
       });
 
@@ -2031,7 +2131,7 @@ const port = 8080;
           remainingReviewTokens(
             priced,
             day(0, 0, 4_000_000),
-            { ...PRICING, inputUsdPerMTok: 0, outputUsdPerMTok: 0 },
+            { ...PRICING, inputUsdPerMTok: 0, outputUsdPerMTok: 0, cachedInputUsdPerMTok: null },
             SINGLE_MODEL,
           ),
         ).toBe(300_000);
@@ -2162,8 +2262,8 @@ const port = 8080;
         },
         pricing: {
           ...PRICING,
-          strong: { inputUsdPerMTok: 15, outputUsdPerMTok: 75 },
-          fast: { inputUsdPerMTok: 1, outputUsdPerMTok: 5 },
+          strong: { inputUsdPerMTok: 15, outputUsdPerMTok: 75, cachedInputUsdPerMTok: null },
+          fast: { inputUsdPerMTok: 1, outputUsdPerMTok: 5, cachedInputUsdPerMTok: null },
         },
       };
       const lines: { data: Record<string, unknown>; message: string }[] = [];

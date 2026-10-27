@@ -110,6 +110,7 @@ describe('LLM settings (llm.md §3)', () => {
     expect(parsed.pricing).toEqual({
       inputUsdPerMTok: 3,
       outputUsdPerMTok: 15,
+      cachedInputUsdPerMTok: null,
       strong: null,
       fast: null,
     });
@@ -124,11 +125,43 @@ describe('LLM settings (llm.md §3)', () => {
       pricing: {
         inputUsdPerMTok: 3,
         outputUsdPerMTok: 15,
-        strong: { inputUsdPerMTok: 15, outputUsdPerMTok: 75 },
-        fast: { inputUsdPerMTok: 1, outputUsdPerMTok: 5 },
+        cachedInputUsdPerMTok: 0.3,
+        strong: { inputUsdPerMTok: 15, outputUsdPerMTok: 75, cachedInputUsdPerMTok: 1.5 },
+        fast: { inputUsdPerMTok: 1, outputUsdPerMTok: 5, cachedInputUsdPerMTok: null },
       },
     };
     expect(storedLlmSettingsSchema.parse(row)).toEqual(row);
+  });
+
+  it('a stored price pair without cachedInputUsdPerMTok reads null, and one with it keeps it (R49)', () => {
+    // Fictional prices: a row stored before the cached price has none in any pair.
+    const before = {
+      inputUsdPerMTok: 3,
+      outputUsdPerMTok: 15,
+      strong: { inputUsdPerMTok: 15, outputUsdPerMTok: 75 },
+      fast: { inputUsdPerMTok: 1, outputUsdPerMTok: 5 },
+    };
+    expect(pricingSchema.parse(before)).toEqual({
+      inputUsdPerMTok: 3,
+      outputUsdPerMTok: 15,
+      cachedInputUsdPerMTok: null,
+      strong: { inputUsdPerMTok: 15, outputUsdPerMTok: 75, cachedInputUsdPerMTok: null },
+      fast: { inputUsdPerMTok: 1, outputUsdPerMTok: 5, cachedInputUsdPerMTok: null },
+    });
+    expect(pricePairSchema.parse({ inputUsdPerMTok: 3, outputUsdPerMTok: 15 })).toEqual({
+      inputUsdPerMTok: 3,
+      outputUsdPerMTok: 15,
+      cachedInputUsdPerMTok: null,
+    });
+    const kept = { inputUsdPerMTok: 3, outputUsdPerMTok: 15, cachedInputUsdPerMTok: 0 };
+    expect(pricePairSchema.parse(kept)).toEqual(kept);
+    // It is a price like the others: from 0 to 10 000.
+    for (const cached of [-0.01, 10_001, '0.3']) {
+      expect(
+        pricePairSchema.safeParse({ ...kept, cachedInputUsdPerMTok: cached }).success,
+        String(cached),
+      ).toBe(false);
+    }
   });
 
   it.each([
@@ -337,9 +370,9 @@ describe('LLM settings (llm.md §3)', () => {
 });
 
 describe('pricingFor', () => {
-  const standard = { inputUsdPerMTok: 3, outputUsdPerMTok: 15 };
-  const strong = { inputUsdPerMTok: 15, outputUsdPerMTok: 75 };
-  const fast = { inputUsdPerMTok: 1, outputUsdPerMTok: 5 };
+  const standard = { inputUsdPerMTok: 3, outputUsdPerMTok: 15, cachedInputUsdPerMTok: 0.3 };
+  const strong = { inputUsdPerMTok: 15, outputUsdPerMTok: 75, cachedInputUsdPerMTok: 1.5 };
+  const fast = { inputUsdPerMTok: 1, outputUsdPerMTok: 5, cachedInputUsdPerMTok: null };
   const pricing = { ...standard, strong, fast };
   const withModels = (strongModel: string | null, fastModel: string | null): StoredProvider => ({
     ...provider,
@@ -371,7 +404,18 @@ describe('pricingFor', () => {
     expect(Object.keys(pricingFor(pricing, withModels('big', 'small'), 'standard')!)).toEqual([
       'inputUsdPerMTok',
       'outputUsdPerMTok',
+      'cachedInputUsdPerMTok',
     ]);
+  });
+
+  it('carries the cached input price for each tier (R49), null where the pair has none', () => {
+    const tiers = withModels('big', 'small');
+    expect(pricingFor(pricing, tiers, 'standard')?.cachedInputUsdPerMTok).toBe(0.3);
+    expect(pricingFor(pricing, tiers, 'strong')?.cachedInputUsdPerMTok).toBe(1.5);
+    expect(pricingFor(pricing, tiers, 'fast')?.cachedInputUsdPerMTok).toBeNull();
+    // A tier on the standard model has the standard model's cached price too.
+    expect(pricingFor(pricing, withModels(null, null), 'strong')?.cachedInputUsdPerMTok).toBe(0.3);
+    expect(pricingFor(pricing, withModels('m', null), 'strong')?.cachedInputUsdPerMTok).toBe(0.3);
   });
 
   it('is null without prices', () => {
@@ -393,7 +437,16 @@ describe('dearestPrice', () => {
   const standard = { inputUsdPerMTok: 3, outputUsdPerMTok: 15 };
   const strong = { inputUsdPerMTok: 15, outputUsdPerMTok: 75 };
   const fast = { inputUsdPerMTok: 1, outputUsdPerMTok: 5 };
-  const pricing = { ...standard, strong, fast };
+  /** A stored pair: the cached input price is no part of the dearest price (R49). */
+  const stored = (pair: typeof standard, cached: number | null = null) => ({
+    ...pair,
+    cachedInputUsdPerMTok: cached,
+  });
+  const pricing = {
+    ...stored(standard, 30),
+    strong: stored(strong, 150),
+    fast: stored(fast),
+  };
   const withModels = (strongModel: string | null, fastModel: string | null): StoredProvider => ({
     ...provider,
     strongModel,
@@ -412,9 +465,9 @@ describe('dearestPrice', () => {
     expect(dearestPrice(pricing, withModels('big', null))).toEqual(strong);
     // A tier that is dearer than the standard model on one side only.
     const mixed = {
-      ...standard,
-      strong: { inputUsdPerMTok: 20, outputUsdPerMTok: 10 },
-      fast: { inputUsdPerMTok: 1, outputUsdPerMTok: 40 },
+      ...stored(standard),
+      strong: stored({ inputUsdPerMTok: 20, outputUsdPerMTok: 10 }),
+      fast: stored({ inputUsdPerMTok: 1, outputUsdPerMTok: 40 }),
     };
     expect(dearestPrice(mixed, withModels('big', 'small'))).toEqual({
       inputUsdPerMTok: 20,
@@ -423,7 +476,7 @@ describe('dearestPrice', () => {
   });
 
   it('counts the standard model even when every other tier is cheaper', () => {
-    const cheaper = { ...standard, strong: fast, fast };
+    const cheaper = { ...stored(standard), strong: stored(fast), fast: stored(fast) };
     expect(dearestPrice(cheaper, withModels('big', 'small'))).toEqual(standard);
   });
 
@@ -431,7 +484,7 @@ describe('dearestPrice', () => {
     // The fast tier uses the standard model, and the fast pair is never read.
     expect(
       dearestPrice(
-        { ...pricing, fast: { ...fast, outputUsdPerMTok: 900 } },
+        { ...pricing, fast: stored({ ...fast, outputUsdPerMTok: 900 }) },
         withModels('big', null),
       ),
     ).toEqual(strong);
@@ -439,7 +492,7 @@ describe('dearestPrice', () => {
 
   it('counts the price of each tier that names a model, though two tiers name the same model', () => {
     // A call is costed at the pair of its tier, so the dearer of two pairs for one model counts.
-    const same = { ...standard, strong: fast, fast: strong };
+    const same = { ...stored(standard), strong: stored(fast), fast: stored(strong) };
     expect(dearestPrice(same, withModels('both', 'both'))).toEqual(strong);
   });
 
@@ -450,7 +503,7 @@ describe('dearestPrice', () => {
 
   it('skips a model of its own that has no prices, and answers the pairs that are known', () => {
     // The API refuses to store this; the known pairs still bound the cost.
-    const unpriced = { ...standard, strong: null, fast };
+    const unpriced = { ...stored(standard), strong: null, fast: stored(fast) };
     expect(dearestPrice(unpriced, withModels('big', 'small'))).toEqual(standard);
   });
 

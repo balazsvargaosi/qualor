@@ -127,6 +127,8 @@ function opened(user: string, nonce: string): Record<string, unknown> {
 const spent = (input: number, output: number) => ({
   inputTokens: input,
   outputTokens: output,
+  cacheReadTokens: 0,
+  cacheWriteTokens: 0,
   turns: 1,
   toolCalls: 0,
 });

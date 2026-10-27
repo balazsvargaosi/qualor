@@ -1605,7 +1605,7 @@ describe('the answer to a reply', () => {
   });
 
   it('names the model it was given and costs each call at the prices it was given', async () => {
-    const prices = { inputUsdPerMTok: 3, outputUsdPerMTok: 15 };
+    const prices = { inputUsdPerMTok: 3, outputUsdPerMTok: 15, cachedInputUsdPerMTok: null };
     const turns = () => [
       { ...reads(), usage: { inputTokens: 1_000, outputTokens: 100 } },
       says('other', 'keep', 'Fine.', { usage: { inputTokens: 2_000, outputTokens: 200 } }),

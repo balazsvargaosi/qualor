@@ -382,6 +382,8 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
           text: '{"findings":[]}',
           inputTokens: 450,
           outputTokens: 42,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
           turns: 3,
           toolCalls: 3,
           wrappedUp: null,
@@ -428,6 +430,8 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
           text: '{"findings":[]}',
           inputTokens: 300,
           outputTokens: 30,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
           turns: 3,
           toolCalls: 2,
           wrappedUp: 'turns',
@@ -499,6 +503,8 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
           kind: 'answer',
           inputTokens: 29_000 + 19_000 + 13_000 + 9_000 + 6_000 + 4_400 + 10,
           outputTokens: 4 * 1_000 + 500 + 100 + 1,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
           turns: 7,
           wrappedUp: 'budget',
         });
@@ -674,6 +680,8 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
             reason: 'bad_answer',
             inputTokens: 17 * 100,
             outputTokens: 17 * 10,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
             turns: 17,
             toolCalls: 16,
           });
@@ -696,6 +704,8 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
           reason: 'bad_answer',
           inputTokens: 3 * 4_000,
           outputTokens: 3 * 1_000,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
           turns: 3,
           toolCalls: 2,
         });
@@ -845,6 +855,54 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
         expect(uncapped.result).toMatchObject({ kind: 'answer', wrappedUp: null });
       },
     );
+
+    it('wraps up for the window at the same point with cache reads as without, given the same total input (Anthropic, R49)', async () => {
+      // The same 3 000 tokens of input, 2 000 of them read from the cache and 800 written to it:
+      // the window counts every prompt token, as the budgets do.
+      const cachedUsage = {
+        input_tokens: 200,
+        cache_creation_input_tokens: 800,
+        cache_read_input_tokens: 2_000,
+        output_tokens: 100,
+      };
+      const play = async (text: string, cached: boolean) => {
+        await freshFake();
+        const first = toolTurn('anthropic', [{ id: 'c1', args: { path: 'a.ts' } }], [3_000, 100]);
+        fake.enqueue(
+          cached ? { ...first, body: { ...(first.body as object), usage: cachedUsage } } : first,
+          textTurn('anthropic', '{"findings":[]}', [10, 1]),
+        );
+        const tool = answering(text);
+        const { result } = await run('anthropic', {
+          limits: WINDOW_LIMITS,
+          runTool: tool.runTool,
+        });
+        expect(fake.requests).toHaveLength(2);
+        return { result, last: VIEWS.anthropic.lastUser(fake.requests[1]!), told: tool.told };
+      };
+      for (const [read, wrappedUp] of [
+        ['x'.repeat(12_000), 'window'],
+        ['x'.repeat(6_000), null],
+      ] as const) {
+        const plain = await play(read, false);
+        const cached = await play(read, true);
+        expect(plain.result, `${read.length} without the cache`).toMatchObject({
+          kind: 'answer',
+          wrappedUp,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+        });
+        expect(cached.result, `${read.length} with the cache`).toMatchObject({
+          kind: 'answer',
+          wrappedUp,
+          inputTokens: plain.result.inputTokens,
+          cacheReadTokens: 2_000,
+          cacheWriteTokens: 800,
+        });
+        expect(cached.last).toBe(plain.last);
+        expect(cached.told).toEqual(plain.told);
+      }
+    });
 
     it.each(ALL_WIRES)(
       'sends tool results that would pass it as the fixed line, and wraps up with reason window (%s)',
@@ -996,6 +1054,8 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
           reason: 'window_full',
           inputTokens: 0,
           outputTokens: 0,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
           turns: 0,
           toolCalls: 0,
         });
@@ -1332,6 +1392,8 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
         text: '{"findings":[]}',
         inputTokens: 300,
         outputTokens: 70,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
         turns: 2,
         toolCalls: 0,
         wrappedUp: null,
@@ -1378,6 +1440,8 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
           text: '{"findings":[]}',
           inputTokens: 250,
           outputTokens: 30,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
           turns: 2,
           toolCalls: 0,
           wrappedUp: null,
@@ -1401,6 +1465,8 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
         reason: 'bad_answer',
         inputTokens: 250,
         outputTokens: 20,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
         turns: 2,
         toolCalls: 0,
       });
@@ -1423,6 +1489,8 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
           text: '{"findings":[]}',
           inputTokens: 250,
           outputTokens: 30,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
           turns: 2,
           toolCalls: 0,
           wrappedUp: null,
@@ -1451,6 +1519,8 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
           reason: 'bad_answer',
           inputTokens: 250,
           outputTokens: 20,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
           turns: 2,
           toolCalls: 0,
         });

@@ -200,10 +200,16 @@ export const globSchema = z
     'A glob relative to the repository root',
   );
 
-/** A model's prices: US dollars for a million tokens of input and of output. */
+/**
+ * A model's prices: US dollars for a million tokens of input and of output, and of the input the
+ * provider read from its prompt cache (R49), which is null, or absent from a row stored before it,
+ * for the input price: a cost is never understated. What the provider writes to its cache costs
+ * the input price times CACHE_WRITE_PRICE_FACTOR (llm/job.ts), which no setting changes.
+ */
 export const pricePairSchema = z.strictObject({
   inputUsdPerMTok: z.number().min(0).max(10_000),
   outputUsdPerMTok: z.number().min(0).max(10_000),
+  cachedInputUsdPerMTok: z.number().min(0).max(10_000).nullable().default(null),
 });
 export type PricePair = z.infer<typeof pricePairSchema>;
 
@@ -296,9 +302,9 @@ export const comparedProvider = (p: StoredProvider) => ({
 
 /**
  * The prices a call of the tier is costed at: the standard pair for the standard tier and for
- * a tier that uses the standard model, a tier's own pair for a tier with a model of its own. Null
- * without prices, and for a model of its own that has none (a row the API does not store): never
- * the standard pair, which is another model's price.
+ * a tier that uses the standard model, a tier's own pair for a tier with a model of its own, each
+ * with its cached input price (R49). Null without prices, and for a model of its own that has none
+ * (a row the API does not store): never the standard pair, which is another model's price.
  */
 export function pricingFor(
   pricing: StoredPricing,
@@ -307,7 +313,11 @@ export function pricingFor(
 ): PricePair | null {
   if (pricing === null) return null;
   if (tier === 'standard' || ownModel(provider, tier) === null) {
-    return { inputUsdPerMTok: pricing.inputUsdPerMTok, outputUsdPerMTok: pricing.outputUsdPerMTok };
+    return {
+      inputUsdPerMTok: pricing.inputUsdPerMTok,
+      outputUsdPerMTok: pricing.outputUsdPerMTok,
+      cachedInputUsdPerMTok: pricing.cachedInputUsdPerMTok,
+    };
   }
   return pricing[tier];
 }
@@ -318,12 +328,15 @@ export function pricingFor(
  * cost that is left to spend is turned into tokens at this price, since the cost of a call is not
  * known before it is made and any tier's may be the next. Every tier counts, though two may name
  * the same model: a call is costed at the pair of its tier. A tier with no pair is left out, and
- * with no pair at all, or no prices, there is none.
+ * with no pair at all, or no prices, there is none. The cached input price is not part of it (R49):
+ * an input read from the cache is counted at no more than the input price. A cache write costs
+ * CACHE_WRITE_PRICE_FACTOR times the input price, which the dearer of the two covers whenever the
+ * output price is at least that much.
  */
 export function dearestPrice(
   pricing: StoredPricing,
   provider: Pick<StoredProvider, 'model' | 'strongModel' | 'fastModel'>,
-): PricePair | null {
+): Pick<PricePair, 'inputUsdPerMTok' | 'outputUsdPerMTok'> | null {
   const pairs = MODEL_TIERS.flatMap((tier) => {
     const pair = pricingFor(pricing, provider, tier);
     return pair === null ? [] : [pair];

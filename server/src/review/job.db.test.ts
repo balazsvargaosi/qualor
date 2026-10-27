@@ -5,6 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { createFakeGitHub, type FakeGitHub } from '../../test/fake-github';
 import { createFakeGitLab, type FakeGitLab, type FakeMergeRequest } from '../../test/fake-gitlab';
 import {
+  anthropicToolUse,
   createFakeLlm,
   openAiToolCalls,
   type FakeLlm,
@@ -64,14 +65,20 @@ const GITHUB_REPOSITORY = 9_710;
 /** The head and base of `storeTestSnapshot`'s header. */
 const HEAD = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
-const PRICING = { inputUsdPerMTok: 3, outputUsdPerMTok: 15, strong: null, fast: null };
+const PRICING = {
+  inputUsdPerMTok: 3,
+  outputUsdPerMTok: 15,
+  cachedInputUsdPerMTok: null,
+  strong: null,
+  fast: null,
+};
 /** The three models of a tiered provider: the standard one is the fake's `fake-model`. */
 const TIERS = { strongModel: 'strong-model', fastModel: 'fast-model' };
 /** A dear strong model, and a cheap fast one beside the standard model of PRICING. */
 const TIER_PRICING = {
   ...PRICING,
-  strong: { inputUsdPerMTok: 15, outputUsdPerMTok: 75 },
-  fast: { inputUsdPerMTok: 1, outputUsdPerMTok: 5 },
+  strong: { inputUsdPerMTok: 15, outputUsdPerMTok: 75, cachedInputUsdPerMTok: null },
+  fast: { inputUsdPerMTok: 1, outputUsdPerMTok: 5, cachedInputUsdPerMTok: null },
 };
 /** What each call of `reviewResponder` costs at a model's prices: its 1 000 tokens in and 100 out. */
 const callCost = (prices: { inputUsdPerMTok: number; outputUsdPerMTok: number }): number =>
@@ -562,6 +569,97 @@ describe('the ai-review job (6I-3, R15)', () => {
       expect(streamed.rows).toEqual(unstreamed.rows);
     } finally {
       await unstreaming.close();
+    }
+  });
+
+  it("a review conversation's calls carry the markers, the fake reports reads from the second call on, and the run's cost prices them at the cached price (R49)", async () => {
+    const caching = await createFakeLlm({ promptCache: true });
+    try {
+      const config = {
+        ...h.ctx.config,
+        llmInternalHosts: parseInternalHosts(`${llm.host},${caching.host}`),
+      };
+      // Fictional prices: 3 for input, 0.3 for cached input, 15 for output.
+      const prices = { inputUsdPerMTok: 3, outputUsdPerMTok: 15, cachedInputUsdPerMTok: 0.3 };
+      await switchReviewOn(h.ctx.db, {
+        secretKey: h.ctx.config.secretKey,
+        fake: caching,
+        organizationId: h.organizationId,
+        userId: h.ctx.adminId,
+        over: {
+          pricing: { ...prices, strong: null, fast: null },
+          provider: configuredProvider(h.ctx.config.secretKey, caching, 'anthropic'),
+        },
+      });
+      const mr = mergeRequest();
+      const analysisId = await analysisOf(mr);
+      await snapshotOf(analysisId, mr);
+      // The quality reviewer reads the file before it answers: a conversation of two calls.
+      const { input, output } = REVIEW_CALL_USAGE;
+      const readsFirst: LlmResponder = async (request) =>
+        reviewRoleOf(request) === 'quality'
+          ? {
+              status: 200,
+              body: anthropicToolUse(
+                [{ id: 'toolu_1', name: 'read_file', input: { path: 'src/cart.ts' } }],
+                { usage: { input_tokens: input, output_tokens: output } },
+              ),
+            }
+          : await reviewResponder(FOUND)(request);
+      caching.enqueue(readsFirst, reviewResponder(FOUND), reviewResponder(FOUND));
+      const before = logged.length;
+      expect(await runReviews({ config })).toBe(1);
+
+      const calls = caching.requests.filter((request) => reviewRoleOf(request) !== null);
+      expect(calls.map(reviewRoleOf)).toEqual(['quality', 'quality', 'judge']);
+      for (const call of calls) {
+        expect(call.body.match(/"cache_control"/g)).toHaveLength(2);
+        expect((call.json as { system: unknown }).system).toEqual([
+          expect.objectContaining({ type: 'text', cache_control: { type: 'ephemeral' } }),
+        ]);
+      }
+      // What each call said of the cache, in its log line: counts only.
+      const counts = logged
+        .slice(before)
+        .filter((line) => line[2] === 'AI review call finished')
+        .map((line) => line[1] as Record<string, number>);
+      expect(counts).toHaveLength(3);
+      const [opening, reread, judged] = counts;
+      // The first call writes its prefix; the second reads it, and writes what it adds.
+      expect(opening).toMatchObject({ cacheReadTokens: 0 });
+      expect(opening!.cacheWriteTokens).toBeGreaterThan(0);
+      expect(reread!.cacheReadTokens).toBe(opening!.cacheWriteTokens);
+      expect(reread!.cacheWriteTokens).toBeGreaterThan(0);
+      // The judge has a system prompt of its own: nothing of the reviewer's is read.
+      expect(judged).toMatchObject({ cacheReadTokens: 0 });
+      // Every prompt token is the call's input, and each is priced by what the cache did with it.
+      const costOfCall = (c: Record<string, number>) =>
+        Math.round(
+          (c.inputTokens! - c.cacheReadTokens! - c.cacheWriteTokens!) * prices.inputUsdPerMTok +
+            c.cacheWriteTokens! * prices.inputUsdPerMTok * 1.25 +
+            c.cacheReadTokens! * prices.cachedInputUsdPerMTok +
+            c.outputTokens! * prices.outputUsdPerMTok,
+        );
+      for (const c of counts) {
+        expect(c.inputTokens).toBe(input + c.cacheReadTokens! + c.cacheWriteTokens!);
+      }
+      const rows = (await reviewRows()).filter((row) => row.projectId === p.id).slice(-3);
+      expect(rows.map((row) => row.inputTokens)).toEqual(counts.map((c) => c.inputTokens));
+      expect(rows.map((row) => row.costMicroUsd)).toEqual(counts.map(costOfCall));
+      // The reads cost the cached price: less than the same tokens at the input price.
+      expect(costOfCall(reread!)).toBeLessThan(
+        reread!.inputTokens! * prices.inputUsdPerMTok + reread!.outputTokens! * 15,
+      );
+      const run = await runOf(analysisId);
+      expect(run).toMatchObject({
+        status: 'done',
+        modelCalls: 3,
+        toolCalls: 1,
+        inputTokens: counts.reduce((sum, c) => sum + c.inputTokens!, 0),
+        costMicroUsd: counts.reduce((sum, c) => sum + costOfCall(c), 0),
+      });
+    } finally {
+      await caching.close();
     }
   });
 
@@ -1858,7 +1956,10 @@ describe('the ai-review job (6I-3, R15)', () => {
       // too few for the smallest review, though the standard model's $15 would buy 133 333.
       await reviewOn({
         budgets,
-        pricing: { ...TIER_PRICING, strong: { inputUsdPerMTok: 60, outputUsdPerMTok: 300 } },
+        pricing: {
+          ...TIER_PRICING,
+          strong: { inputUsdPerMTok: 60, outputUsdPerMTok: 300, cachedInputUsdPerMTok: null },
+        },
         tiers: TIERS,
       });
       const calls = reviewCalls().length;

@@ -535,7 +535,13 @@ describe('AI review settings, consent and the review context (6I-2, R10)', () =>
         // With prices set, the cost is the micro-dollars of the calls, in dollars.
         await writeLlmSettings(ctx.db, {
           ...(await readLlmSettings(ctx.db)),
-          pricing: { inputUsdPerMTok: 3, outputUsdPerMTok: 15, strong: null, fast: null },
+          pricing: {
+            inputUsdPerMTok: 3,
+            outputUsdPerMTok: 15,
+            cachedInputUsdPerMTok: null,
+            strong: null,
+            fast: null,
+          },
         });
         const priced = { tokensToday: 1_800, costTodayUsd: 0.0054, reviewsToday: 3 };
         expect((await getReview()).json().usage).toEqual(priced);

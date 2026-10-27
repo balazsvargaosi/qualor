@@ -483,6 +483,8 @@ describe('runConversation with a scripted provider', () => {
           text: 'done',
           inputTokens: quarterOfBytes(s.seen[0]!) + quarterOfBytes(s.seen[1]!),
           outputTokens: 2 * LIMITS.maxOutputTokens,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
           turns: 2,
           toolCalls: 1,
           wrappedUp: null,
@@ -622,8 +624,49 @@ describe('runConversation with a scripted provider', () => {
 
   describe('what a conversation reports, whatever its end', () => {
     // Two turns of 10 + 5 tokens, and three calls run.
-    const spent = { inputTokens: 20, outputTokens: 10, turns: 2, toolCalls: 3 };
+    const spent = {
+      inputTokens: 20,
+      outputTokens: 10,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      turns: 2,
+      toolCalls: 3,
+    };
     const twoTurns = () => [callTurn([call('c1')]), callTurn([call('c2'), call('c3')])];
+
+    it('counts the cache reads and writes of its calls beside the input, which holds them (R49)', async () => {
+      const cached = (read: number, written?: number) => ({
+        inputTokens: 1_000,
+        outputTokens: 10,
+        cacheReadTokens: read,
+        ...(written === undefined ? {} : { cacheWriteTokens: written }),
+      });
+      const s = scripted(
+        callTurn([call('c1')], { usage: cached(0, 900) }),
+        callTurn([call('c2')], { usage: cached(900, 80) }),
+        turn('{"done":true}', { usage: { inputTokens: 1_200, outputTokens: 5 } }),
+      );
+      expect(await runConversation(s.input)).toMatchObject({
+        kind: 'answer',
+        inputTokens: 3_200,
+        outputTokens: 25,
+        cacheReadTokens: 900,
+        cacheWriteTokens: 980,
+      });
+      // And so does an end without an answer.
+      const stopped = scripted(callTurn([call('c1')], { usage: cached(400, 100) }), turn('never'));
+      let asked = 0;
+      stopped.input.shouldStop = () => Promise.resolve(++asked > 1);
+      expect(await runConversation(stopped.input)).toEqual({
+        kind: 'stopped',
+        inputTokens: 1_000,
+        outputTokens: 10,
+        cacheReadTokens: 400,
+        cacheWriteTokens: 100,
+        turns: 1,
+        toolCalls: 1,
+      });
+    });
 
     it('a failure carries what was spent before it', async () => {
       const s = scripted(...twoTurns(), new LlmError('rejected', 'refused', { status: 400 }));
@@ -641,6 +684,8 @@ describe('runConversation with a scripted provider', () => {
         reason: 'bad_answer',
         inputTokens: 20,
         outputTokens: 10,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
         turns: 2,
         toolCalls: 1,
       });
@@ -653,6 +698,8 @@ describe('runConversation with a scripted provider', () => {
         reason: 'bad_answer',
         inputTokens: 20,
         outputTokens: 10,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
         turns: 2,
         toolCalls: 1,
       });
@@ -677,7 +724,14 @@ describe('runConversation with a scripted provider', () => {
     });
 
     it('a stop before the first call, and a first call refused for its tools, carry nothing', async () => {
-      const none = { inputTokens: 0, outputTokens: 0, turns: 0, toolCalls: 0 };
+      const none = {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        turns: 0,
+        toolCalls: 0,
+      };
       const stopped = scripted(turn('never asked'));
       stopped.input.shouldStop = () => Promise.resolve(true);
       expect(await runConversation(stopped.input)).toEqual({ kind: 'stopped', ...none });
@@ -724,6 +778,8 @@ describe('runConversation with a scripted provider', () => {
         reason: 'provider_error',
         inputTokens: quarterOfBytes(s.seen[0]!) + quarterOfBytes(s.seen[1]!),
         outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
         turns: 0,
         toolCalls: 0,
       });
@@ -737,6 +793,8 @@ describe('runConversation with a scripted provider', () => {
         wrappedUp: null,
         inputTokens: quarterOfBytes(s.seen[0]!) + 10,
         outputTokens: 5,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
         turns: 1,
         toolCalls: 0,
       });
@@ -750,6 +808,8 @@ describe('runConversation with a scripted provider', () => {
         kind: 'stopped',
         inputTokens: quarterOfBytes(s.seen[0]!),
         outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
         turns: 0,
         toolCalls: 0,
       });
@@ -762,6 +822,8 @@ describe('runConversation with a scripted provider', () => {
         reason: 'provider_error',
         inputTokens: 10 + quarterOfBytes(s.seen[1]!),
         outputTokens: 5,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
         turns: 1,
         toolCalls: 1,
       });
@@ -941,6 +1003,8 @@ describe('runConversation with a scripted provider', () => {
         kind: 'stopped',
         inputTokens: 10,
         outputTokens: 5,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
         turns: 1,
         toolCalls: 1,
       });

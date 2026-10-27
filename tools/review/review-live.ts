@@ -139,7 +139,8 @@ function pricePair(env: Env, prefix: string): PricePair | null {
   const output = price(env, `${prefix}_OUT`);
   return input === null || output === null
     ? null
-    : { inputUsdPerMTok: input, outputUsdPerMTok: output };
+    : // No cached input price: the evaluation counts all of a call's input at the input price.
+      { inputUsdPerMTok: input, outputUsdPerMTok: output, cachedInputUsdPerMTok: null };
 }
 
 /** The model of a tier from its variable; null when it is not set or is empty. */
