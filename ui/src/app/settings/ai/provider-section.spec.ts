@@ -944,6 +944,21 @@ describe('ProviderSection: the prices', () => {
     ]);
   });
 
+  it('takes a price typed with a trailing point as that number', async () => {
+    const server = setup();
+    const { fixture, root } = await render();
+    await pick(fixture, root, '#ai-prices');
+    await fill(fixture, root, '#ai-price-input', '5.');
+    await fill(fixture, root, '#ai-price-output', '.5');
+    await saveAndTest(fixture, root);
+    expect(puts(server)[0]?.pricing).toEqual({
+      inputUsdPerMTok: 5,
+      outputUsdPerMTok: 0.5,
+      strong: null,
+      fast: null,
+    });
+  });
+
   it('takes a price as the field groups it, and one with more decimals', async () => {
     const server = setup();
     const { fixture, root } = await render();

@@ -180,8 +180,11 @@ const ANTHROPIC_URL = 'https://api.anthropic.com';
 const OPENAI_HOST = 'api.openai.com';
 /** How many organisations a sentence names; the others are counted. */
 const NAMED = 3;
-/** A price as people write it: digits grouped in threes by commas, and any decimals after a point. */
-const PRICE = /^(?:\d+|\d{1,3}(?:,\d{3})+)?(?:\.\d+)?$/;
+/**
+ * A price as people write it: digits grouped in threes by commas, and any decimals after a point;
+ * a point with nothing after it ("5.") or before it (".5") reads as the number.
+ */
+const PRICE = /^(?:\d+|\d{1,3}(?:,\d{3})+)?(?:\.\d*)?$/;
 const SEPARATORS = /[\s_\u00a0\u202f]/g;
 
 /** One model's line of a Test: its icon and words, the model set apart in code. */
@@ -1238,8 +1241,8 @@ function temperatureOf(d: Draft): number | null {
 }
 
 /**
- * A price as typed, from 0 to 10 000: as the money field writes it ("1,000.00") or with more
- * decimals ("0.075"); null when it is not one.
+ * A price as typed, from 0 to 10 000: as the money field writes it ("1,000.00"), with more
+ * decimals ("0.075"), or with a bare point ("5."); null when it is not one.
  */
 function parsePrice(text: string): number | null {
   const grouped = parseMoney(text, MAX_PRICE);
