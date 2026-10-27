@@ -31,9 +31,9 @@ The whole report, as an example:
 
 ```json
 {
-  "schema": 1,
+  "schema": 2,
   "installationId": "3f0c9a52-6d1e-4c8b-9f0a-2b7d1e5c4a91",
-  "version": "0.6.0",
+  "version": "0.12.0",
   "edition": "community",
   "platform": { "os": "linux", "arch": "x64", "node": "22.11.0", "runtime": "docker" },
   "database": "embedded",
@@ -44,7 +44,16 @@ The whole report, as an example:
   "languages": ["java", "typescript"],
   "engines": ["qualor", "semgrep"],
   "scm": ["gitlab"],
-  "features": { "sso": false, "scim": false, "aiAssistant": true }
+  "features": { "sso": false, "scim": false, "aiAssistant": true, "aiReview": true },
+  "aiReview": {
+    "organizations": 1, "projects": 3, "provider": "anthropic",
+    "tiers": { "strong": true, "fast": false },
+    "reviews30d": { "done": 41, "skipped": 6, "failed": 1, "superseded": 3 },
+    "findings30d": 57, "inline30d": 38, "suggestions30d": 12,
+    "replies30d": { "answered": 9, "statusChanges": 2 },
+    "commands30d": { "review": 2, "fix": 0, "stop": 0 }
+  },
+  "assistant30d": { "explain": 14, "triage": 3, "fix": 5 }
 }
 ```
 
@@ -58,12 +67,18 @@ The whole report, as an example:
 | `languages` | the languages of the analysed files |
 | `engines` | the built-in analyzers that ran successfully in the last 30 days, and `external` when a SARIF report from another tool was imported |
 | `scm` | `gitlab` and/or `github`, when a connection exists |
-| `features` | whether single sign-on, SCIM and the AI assistant are set up |
+| `features` | whether single sign-on, SCIM, the AI assistant and AI review are set up |
+| `aiReview` | how AI review is used: the organisations that have it on, and the projects it reviews; the kind of model provider (`anthropic`, `openai_chat_completions`, `openai_responses` or `none`), never its address or its models; whether a strong and a fast model are set; and, for the last 30 days, the reviews by how they ended (done, skipped, failed, or superseded by a newer push), the findings they raised, those placed on a changed line and those with a suggestion, the replies answered and the status changes they made, and the `qualor review`, `qualor fix` and `qualor stop` commands handled |
+| `assistant30d` | how many Explain, Suggest triage and Suggest a fix requests were made in the last 30 days |
+
+Servers before 0.12.0 send `schema` 1, without `aiReview`, `assistant30d` and the `aiReview` flag
+of `features`.
 
 ## What is never sent
 
 Names of users, organisations, projects, repositories or branches, email addresses, URLs and
-host names, source code, file paths, issues, tokens, secrets and the licence key.
+host names, model names, the AI provider's address, source code, file paths, issues, prompts,
+model answers and review text, tokens, secrets and the licence key.
 
 ## Update check
 

@@ -5,7 +5,7 @@ import type { TelemetryPayload } from './collect';
 import { sendTelemetry } from './send';
 
 const payload = {
-  schema: 1,
+  schema: 2,
   installationId: '00000000-0000-4000-8000-000000000000',
 } as TelemetryPayload;
 let server: Server | undefined;

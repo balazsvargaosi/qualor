@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { eq, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createIngestHarness, type IngestHarness } from '../../test/ingest';
@@ -7,6 +8,23 @@ import { DEFAULT_LLM_SETTINGS, DISABLED_ORGANIZATION, writeLlmSettings } from '.
 import { VERSION } from '../index';
 import { collectTelemetry } from './collect';
 import { installationId, TELEMETRY_SETTING_KEY } from './installation-id';
+
+const GUIDE = 'docs/guide/telemetry.md';
+
+/**
+ * Every field of a report at every depth, as `path: kind` (`counts.users: number`), sorted. A list
+ * is one field: its items are not fields.
+ */
+function fieldsOf(value: unknown, prefix = ''): string[] {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return [];
+  return Object.entries(value)
+    .flatMap(([key, field]) => {
+      const path = prefix === '' ? key : `${prefix}.${key}`;
+      const kind = Array.isArray(field) ? 'list' : field === null ? 'null' : typeof field;
+      return [`${path}: ${kind}`, ...fieldsOf(field, path)];
+    })
+    .sort();
+}
 
 describe('telemetry payload (telemetry.md)', () => {
   let h: IngestHarness;
@@ -63,7 +81,7 @@ describe('telemetry payload (telemetry.md)', () => {
       dockerEnvExists: false,
     });
     expect(payload).toMatchObject({
-      schema: 1,
+      schema: 2,
       installationId: id,
       version: VERSION,
       edition: 'community',
@@ -72,7 +90,9 @@ describe('telemetry payload (telemetry.md)', () => {
       languages: ['java', 'typescript'],
       engines: ['semgrep'],
       scm: [],
-      features: { sso: false, scim: false, aiAssistant: false },
+      features: { sso: false, scim: false, aiAssistant: false, aiReview: false },
+      aiReview: { provider: 'none', organizations: 0, projects: 0 },
+      assistant30d: { explain: 0, triage: 0, fix: 0 },
     });
     expect(payload.counts.organizations).toBeGreaterThanOrEqual(1);
     expect(payload.counts.users).toBeGreaterThanOrEqual(1);
@@ -126,8 +146,23 @@ describe('telemetry payload (telemetry.md)', () => {
     });
     const payload = await collect();
     expect(payload.features.aiAssistant).toBe(true);
+    // The provider is named by its kind and API alone; AI review is not switched on.
+    expect(payload.features.aiReview).toBe(false);
+    expect(payload.aiReview).toMatchObject({
+      provider: 'openai_chat_completions',
+      organizations: 0,
+      tiers: { strong: true, fast: true },
+    });
     expect(JSON.stringify(payload)).not.toMatch(/example\.test|gpt-test/);
     await writeLlmSettings(h.ctx.db, DEFAULT_LLM_SETTINGS);
+  });
+
+  it("the guide's example names every field the report has, and no other", async () => {
+    const guide = await readFile(GUIDE, 'utf8');
+    const block = /```json\r?\n([\s\S]*?)\r?\n```/.exec(guide);
+    expect(block, `${GUIDE} has a \`\`\`json block`).not.toBeNull();
+    const example: unknown = JSON.parse(block![1]!);
+    expect(fieldsOf(example)).toEqual(fieldsOf(await collect()));
   });
 
   it('counts only the last 30 days of analyses', async () => {
