@@ -409,6 +409,15 @@ describe('MCP read tools', () => {
       );
     });
 
+    it("qualor_issue's description names the AI review part", async () => {
+      const listed = await mcpCall(ctx, token, 'tools/list');
+      const tools = (listed.body?.result as { tools: { name: string; description: string }[] })
+        .tools;
+      expect(tools.find((t) => t.name === 'qualor_issue')?.description).toContain(
+        'For an AI finding it also gives the AI review’s part: its body, the assumption, the second check and the suggestion.',
+      );
+    });
+
     it('qualor_issue shows the AI review of a finding after its code, and nothing of it for an analyzer’s issue', async () => {
       const r = await callTool(ctx, token, 'qualor_issue', { issueId: aiId });
       expect(r.isError).toBe(false);

@@ -108,7 +108,7 @@ export const issueTool: McpTool<typeof input> = {
   name: 'qualor_issue',
   title: 'Issue details',
   description:
-    'One issue in full: the code snippet, secondary locations, the rule’s description and CWE, and its history.',
+    'One issue in full: the code snippet, secondary locations, the rule’s description and CWE, and its history. For an AI finding it also gives the AI review’s part: its body, the assumption, the second check and the suggestion.',
   access: 'read',
   inputSchema: input,
   annotations: { readOnlyHint: true, openWorldHint: false },
