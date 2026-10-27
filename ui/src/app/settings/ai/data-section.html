@@ -133,7 +133,7 @@
           autocomplete="off"
           spellcheck="false"
           [attr.aria-label]="texts.addLabel"
-          [attr.aria-invalid]="errorOf('exclude') ? true : null"
+          [attr.aria-invalid]="patternError() ? true : null"
           [attr.aria-describedby]="addDescribedBy()"
           [value]="pattern()"
           (input)="setPattern($event)"
@@ -143,7 +143,7 @@
           <q-icon name="plus" /><span i18n="@@aiProvider.data.add">Add</span>
         </button>
       </div>
-      @if (errorOf('exclude'); as message) {
+      @if (patternError(); as message) {
         <p id="ai-exclude-add-error" class="field-error"><q-icon name="alert" />{{ message }}</p>
       }
       <p id="ai-exclude-add-hint" class="hint" i18n="@@aiProvider.data.addHint">

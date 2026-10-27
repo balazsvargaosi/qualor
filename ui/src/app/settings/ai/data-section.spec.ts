@@ -241,11 +241,18 @@ describe('DataSection: the paths never sent', () => {
       'A glob from the repository root; at most 100.',
     ]);
     expect(document.activeElement).toBe(field(root, 'ai-exclude-add'));
+    // A pattern refused is no refusal of the section: nothing to save is wrong.
+    expect(foot(root)).toBe('No unsaved changes');
     // Typing again clears the refusal; 200 characters are a glob.
     await fill(fixture, root, 'ai-exclude-add', 'x'.repeat(200));
     expect(root.querySelector('#ai-exclude-add-error')).toBeNull();
     await click(fixture, button(root, 'Add'));
     expect(items(root)).toHaveLength(3);
+    // The list added to stays savable while a pattern is refused.
+    await add(fixture, root, 'config/**');
+    expect(text(root.querySelector('#ai-exclude-add-error'))).toBe(BAD_GLOB);
+    expect(foot(root)).toBe('1 unsaved change');
+    expect(button(root, 'Save data and privacy').hasAttribute('disabled')).toBe(false);
   });
 
   it('refuses a 101st path', async () => {

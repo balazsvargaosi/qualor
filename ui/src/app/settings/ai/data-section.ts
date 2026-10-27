@@ -110,6 +110,8 @@ export class DataSection {
   protected readonly draft = signal<Draft>(draftOf(null, this.locale));
   /** The add field's text: a pattern not added yet is no change. */
   protected readonly pattern = signal('');
+  /** Why Add did not take the pattern: the field says it, and nothing to save is refused. */
+  private readonly addError = signal<string | null>(null);
   protected readonly errors = signal<Errors>({});
   private readonly saving = signal(false);
   /** Why the last save failed, in the foot; gone with the next edit. */
@@ -139,8 +141,10 @@ export class DataSection {
       removeLabel: $localize`:@@aiProvider.data.removeLabel:Remove ${path}:path:`,
     })),
   );
+  /** What the add field says is wrong: the server's refusal of the list, or Add's of the pattern. */
+  protected readonly patternError = computed(() => this.errors().exclude ?? this.addError());
   protected readonly addDescribedBy = computed(() =>
-    this.errors().exclude === undefined
+    this.patternError() === null
       ? 'ai-exclude-add-hint'
       : 'ai-exclude-add-error ai-exclude-add-hint',
   );
@@ -175,7 +179,7 @@ export class DataSection {
 
   protected setPattern(event: Event): void {
     this.pattern.set(inputValue(event));
-    this.clearError('exclude');
+    this.addError.set(null);
   }
 
   /** Enter in the add field adds, as Add does. */
@@ -187,17 +191,21 @@ export class DataSection {
 
   /**
    * Add: the pattern joins the list when it is a glob from the repository root not listed yet,
-   * and the list has room; else the field says why, and keeps the pattern. The focus stays in it.
+   * and the list has room; else the field says why, keeps the pattern and takes the focus. A
+   * pattern refused is not the section's: its Save still saves the list as it is.
    */
   protected add(): void {
     const glob = this.pattern().trim();
     const paths = this.draft().paths;
-    if (!isGlob(glob) || paths.includes(glob)) {
-      this.refuse({ exclude: badGlob() });
-      return;
-    }
-    if (paths.length >= MAX_PATHS) {
-      this.refuse({ exclude: tooManyPaths() });
+    const refused =
+      !isGlob(glob) || paths.includes(glob)
+        ? badGlob()
+        : paths.length >= MAX_PATHS
+          ? tooManyPaths()
+          : null;
+    this.addError.set(refused);
+    if (refused !== null) {
+      this.focusLater(INPUTS.exclude);
       return;
     }
     this.draft.update((d) => ({ ...d, paths: [...d.paths, glob] }));
@@ -301,10 +309,11 @@ export class DataSection {
   private refuse(errors: Errors): void {
     this.errors.set(errors);
     const first = FIELDS.find((field) => errors[field] !== undefined);
-    if (first === undefined) return;
-    afterNextRender(() => this.document.getElementById(INPUTS[first])?.focus(), {
-      injector: this.injector,
-    });
+    if (first !== undefined) this.focusLater(INPUTS[first]);
+  }
+
+  private focusLater(id: string): void {
+    afterNextRender(() => this.document.getElementById(id)?.focus(), { injector: this.injector });
   }
 
   /** A 422 of the paths or the days marks its field; false for any other refusal. */
