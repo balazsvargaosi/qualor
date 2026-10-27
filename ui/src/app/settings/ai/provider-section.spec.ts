@@ -350,7 +350,7 @@ describe('ProviderSection: the API key', () => {
     expect(textOf(root, '#ai-key-state')).toContain('An API key is set.');
   });
 
-  it('sends that there is no key for a provider saved without one', async () => {
+  it('sends that there is no key for a new local provider saved without one', async () => {
     const server = setup();
     const { fixture, root } = await render({ settings: EMPTY });
     await pick(fixture, root, '#ai-kind-openai');
@@ -360,6 +360,32 @@ describe('ProviderSection: the API key', () => {
     // A new address needs a key or null: none was typed, and none is kept.
     expect(puts(server)[0]?.provider).toHaveProperty('apiKey', null);
   });
+
+  it('sends that there is no key for a new address of a provider without one', async () => {
+    const server = setup();
+    const { fixture, root } = await render({
+      settings: { ...CONFIGURED, provider: { ...CONFIGURED.provider, apiKeySet: false } },
+    });
+    await fill(fixture, root, '#ai-url', 'http://vllm:8000/v1');
+    await saveAndTest(fixture, root);
+    expect(puts(server)[0]?.provider).toHaveProperty('apiKey', null);
+  });
+
+  it.each([
+    ['a stored key', true],
+    ['no stored key', false],
+  ])(
+    'leaves the key out for the same address with %s and nothing typed: a key set meanwhile stays',
+    async (_what, apiKeySet) => {
+      const server = setup();
+      const { fixture, root } = await render({
+        settings: { ...CONFIGURED, provider: { ...CONFIGURED.provider, apiKeySet } },
+      });
+      await touch(fixture, root);
+      await saveAndTest(fixture, root);
+      expect(puts(server)[0]?.provider).not.toHaveProperty('apiKey');
+    },
+  );
 
   it('keeps a pasted key through a refusal on the page, and empties it once the request left (Review Focus 1)', async () => {
     const server = setup();

@@ -808,12 +808,16 @@ export class ProviderSection {
     await this.runTest();
   }
 
-  /** The key part of the provider: the key typed, its removal, none for none stored, else kept. */
+  /**
+   * The key part of the provider: the key typed; null after Remove, or for a new address (or a new
+   * provider) without a stored key, which the server needs said; else none, which keeps whatever
+   * key is stored, one another admin set meanwhile too.
+   */
   private takeKey(): { apiKey?: string | null } {
     const typed = this.keyField()?.nativeElement.value ?? '';
     if (typed !== '') return { apiKey: typed };
-    // Without a stored key a new address needs null, which keeps none.
-    return this.draft().removeKey || !this.keySet() ? { apiKey: null } : {};
+    const newAddress = this.provider() === null || this.addressChanged();
+    return this.draft().removeKey || (!this.keySet() && newAddress) ? { apiKey: null } : {};
   }
 
   private emptyKey(): void {
