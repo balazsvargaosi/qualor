@@ -352,13 +352,16 @@ describe('runLive against the fake LLM', () => {
   });
 
   it('gives every conversation the context window it is given', async () => {
-    // The quality reviewer of this trivial case lists the files before it answers.
-    const listsFirst: LlmResponder = (request) => {
+    // The quality reviewer of this case writes at length beside the call it makes first: about
+    // 15 000 tokens, which a window of 40 000 has no room to send again with another turn.
+    const wordy: LlmResponder = (request) => {
       const { messages } = request.json as { messages: { role: string }[] };
       return reviewRoleOf(request) === 'quality' && !messages.some((m) => m.role === 'tool')
         ? {
             status: 200,
-            body: openAiToolCalls([{ id: 'call-1', name: 'list_files', arguments: {} }]),
+            body: openAiToolCalls([{ id: 'call-1', name: 'list_files', arguments: {} }], {
+              text: 'z'.repeat(45_000),
+            }),
           }
         : ANSWERS(request);
     };
@@ -366,19 +369,36 @@ describe('runLive against the fake LLM', () => {
       // A fake of its own for each review: nothing one left in the queue answers the other.
       await fake.close();
       fake = await createFakeLlm();
-      fake.enqueue(...Array.from({ length: 12 }, () => listsFirst));
+      fake.enqueue(...Array.from({ length: 12 }, () => wordy));
       const { report } = await runLive(options({ contextWindowTokens }));
-      return { report, roles: fake.requests.map(reviewRoleOf) };
+      const second = fake.requests[1]?.json as { messages: { role: string; content: string }[] };
+      return {
+        report,
+        roles: fake.requests.map(reviewRoleOf),
+        wrappedUp: second.messages.at(-1)?.content.startsWith('Token budget reached') ?? false,
+      };
     };
-    // Without a window of its own (1 000 000 tokens), the reviewer lists the files and answers.
+    // Without a window of its own (1 000 000 tokens), the reviewer goes on after its turn.
     const ample = await play(null);
     expect(ample.roles).toEqual(['quality', 'quality', 'tests', 'judge']);
+    expect(ample.wrappedUp).toBe(false);
     expect(ample.report.failed).toEqual({});
-    // 8 000 tokens leave the reviewer no room for its answer: it is not asked again past the
-    // window, and the review goes on without it.
-    const tiny = await play(8_000);
-    expect(tiny.roles).toEqual(['quality', 'tests', 'judge']);
-    expect(tiny.report.failed).toEqual({});
+    // In 40 000, the call after it is the wrap-up.
+    const small = await play(40_000);
+    expect(small.roles).toEqual(['quality', 'quality', 'tests', 'judge']);
+    expect(small.wrappedUp).toBe(true);
+    expect(small.report.failed).toEqual({});
+  });
+
+  it('does not review a case its window cannot hold, as the server skips it, and calls nothing', async () => {
+    await fake.close();
+    fake = await createFakeLlm();
+    enqueueAnswers();
+    // The judge's 16 384 tokens of answer leave 8 000 no room at all.
+    const { report, text } = await runLive(options({ contextWindowTokens: 8_000 }));
+    expect(report.failed).toEqual({ window_too_small: 1 });
+    expect(fake.requests).toHaveLength(0);
+    expect(text).toContain('window_too_small');
   });
 
   it('reviews the chosen case through the provider, with the review tools, and scores it', async () => {

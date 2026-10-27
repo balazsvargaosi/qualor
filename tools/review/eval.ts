@@ -13,6 +13,7 @@ import { Masker } from '../../server/src/review/masker';
 import type { ModelTier } from '../../server/src/review/model-tiers';
 import { parsePatch } from '../../server/src/review/patch';
 import {
+  reviewFits,
   reviewLimits,
   runReviewPipeline,
   type PipelineDeps,
@@ -466,9 +467,22 @@ async function foundOf(planned: PlannedFinding, deps: ReviewPrepareDeps): Promis
 const NO_FINDINGS = { analyzer: () => Promise.resolve([]), prior: [] };
 
 /**
+ * A case the review would not run on, as the job skips a merge request (job-context.ts):
+ * `too_large` for Tokens per review, `window_too_small` for the model's context window alone.
+ */
+class CaseSkipped extends Error {
+  constructor(readonly detail: 'too_large' | 'window_too_small') {
+    super(detail);
+    this.name = 'CaseSkipped';
+  }
+}
+
+/**
  * One review of a case, as the job makes one without a database: the snapshot in memory, its files
  * masked by a masker of the review's own, the context, the pipeline, and the findings it would
- * store (planFindings), as it would store them (`foundOf`).
+ * store (planFindings), as it would store them (`foundOf`). A case the job would skip for its size
+ * is not reviewed: it fails with the detail the job gives it (`too_large`, `window_too_small`), and
+ * no call is made. A review the window failed fails as `window_full`.
  */
 async function reviewCase(c: EvalCase, deps: EvalDeps, priceOf: PricesOf | null): Promise<Review> {
   const reader = memorySnapshotReader({
@@ -480,21 +494,34 @@ async function reviewCase(c: EvalCase, deps: EvalDeps, priceOf: PricesOf | null)
   });
   const masker = new Masker();
   const window = deps.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
+  const spent: Spent = { input: 0, output: 0, costUsd: priceOf === null ? null : 0 };
   try {
     const files = new MaskedFiles(reader, { masker });
     const policy = newToolPolicy({ excludePaths: [], masked: files, masker });
-    const context = await buildReviewContext(files, masker, NO_FINDINGS, {
-      excluded: () => false,
-      budget: policy.budget,
-      limits: (shape) => {
-        if (shape.reviewed.length === 0) {
-          throw new Error(`${c.id}: nothing in the patch is reviewed`);
-        }
-        return reviewLimits(shape, REVIEW_TOKENS, window);
-      },
-    });
+    let context;
+    try {
+      context = await buildReviewContext(files, masker, NO_FINDINGS, {
+        excluded: () => false,
+        budget: policy.budget,
+        limits: (shape) => {
+          if (shape.reviewed.length === 0) {
+            throw new Error(`${c.id}: nothing in the patch is reviewed`);
+          }
+          if (!reviewFits(shape, REVIEW_TOKENS, window)) {
+            throw new CaseSkipped(
+              reviewFits(shape, REVIEW_TOKENS, Number.POSITIVE_INFINITY)
+                ? 'window_too_small'
+                : 'too_large',
+            );
+          }
+          return reviewLimits(shape, REVIEW_TOKENS, window);
+        },
+      });
+    } catch (err) {
+      if (!(err instanceof CaseSkipped)) throw err;
+      return { kind: 'failed', reason: err.detail, ...spent };
+    }
     const pipeline = deps.pipelineFor({ evalCase: c, reader, policy });
-    const spent: Spent = { input: 0, output: 0, costUsd: priceOf === null ? null : 0 };
     const outcome = await runReviewPipeline(
       context,
       REVIEW_TOKENS,
@@ -512,7 +539,7 @@ async function reviewCase(c: EvalCase, deps: EvalDeps, priceOf: PricesOf | null)
       window,
     );
     if (outcome.kind !== 'reviewed') {
-      const reason = outcome.kind === 'failed' ? outcome.reason : outcome.kind;
+      const reason = outcome.kind === 'failed' ? (outcome.detail ?? outcome.reason) : outcome.kind;
       return { kind: 'failed', reason, ...spent };
     }
     const found: Found[] = [];
