@@ -151,6 +151,28 @@ describe('the AI review section', () => {
     );
   });
 
+  it('says that a merge request is too large for the model’s context window, and never to raise Tokens per review', () => {
+    const tooSmall = {
+      kind: 'skipped',
+      reason: 'budget_spent',
+      detail: 'window_too_small',
+    } as const;
+    expect(section(tooSmall)).toEqual([
+      '#### AI review',
+      '',
+      'AI review did not run because this merge request is too large for the model’s context window; raise Context window in the AI provider settings if the model takes more.',
+    ]);
+    expect(section(tooSmall, 'github')[2]).toBe(
+      'AI review did not run because this pull request is too large for the model’s context window; raise Context window in the AI provider settings if the model takes more.',
+    );
+    for (const provider of ['gitlab', 'github'] as const) {
+      const lines = section(tooSmall, provider);
+      expect(lines.join('\n')).not.toContain('Tokens per review');
+      expect(lines.join('\n')).not.toContain('Reason:');
+      expect(badSectionLine(lines)).toBeNull();
+    }
+  });
+
   it('names the code a skip or a refusal carries, in a code span, and nothing else', () => {
     expect(
       section({ kind: 'skipped', reason: 'snapshot_rejected', detail: 'SNAPSHOT_INVALID' })[2],
@@ -279,6 +301,30 @@ describe('the AI review section', () => {
       }),
     ).toBe(`${TOKENS} ${TURNS}`);
     expect(checkProse(TURNS)).toBe(true);
+  });
+
+  it('says that a reviewer reached the model’s context window in a sentence of its own, on GitLab and GitHub', () => {
+    const TOKENS = 'The review reached its token limit, so it may have missed problems.';
+    const WINDOW = 'A reviewer reached the model’s context window, so it may have missed problems.';
+    for (const provider of ['gitlab', 'github'] as const) {
+      const notesLine = (over: Partial<Done>) => section(done(over), provider).at(-3);
+      expect(notesLine({ notes: ['context_window_reached'] }), provider).toBe(WINDOW);
+      expect(
+        section(done({ notes: ['context_window_reached'] }), provider).join('\n'),
+      ).not.toContain('token limit');
+      // Beside the token limit, each once, the token limit first.
+      expect(
+        notesLine({
+          tokenLimitReached: true,
+          notes: ['context_window_reached', 'token_limit_reached', 'context_window_reached'],
+        }),
+        provider,
+      ).toBe(`${TOKENS} ${WINDOW}`);
+      expect(
+        badSectionLine(section(done({ notes: ['context_window_reached'] }), provider)),
+      ).toBeNull();
+    }
+    expect(checkProse(WINDOW)).toBe(true);
   });
 
   it('says when the merge request has moved on, and what the next pipeline does', () => {

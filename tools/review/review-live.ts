@@ -12,6 +12,8 @@ import {
   type ProviderKind,
 } from '../../server/src/llm/providers';
 import {
+  CONTEXT_WINDOW_MAX_TOKENS,
+  CONTEXT_WINDOW_MIN_TOKENS,
   ownModel,
   pricingFor,
   WORKSPACE_ID_PATTERN,
@@ -49,7 +51,10 @@ import {
  * workspace needs `QUALOR_LIVE_REVIEW_WORKSPACE_ID` (`wrkspc_…`), which every call sends as the
  * AI settings' Workspace ID does. The newest OpenAI models take function tools only through the
  * Responses API: `QUALOR_LIVE_REVIEW_API=responses` asks through it, as the AI settings' API does
- * (`chat_completions`, the default, is what the OpenAI-compatible servers serve).
+ * (`chat_completions`, the default, is what the OpenAI-compatible servers serve). A model with a
+ * context window smaller than 1 000 000 tokens takes it in `QUALOR_LIVE_REVIEW_CONTEXT_WINDOW`
+ * (8 000 to 10 000 000), as the AI provider's Context window: no call sends more than it less the
+ * room for the answer.
  *
  * The provider is whatever the person sets in the environment. The host they type is the one they
  * mean to call, so it is allowed whatever its address is (a local model, a gateway on the company
@@ -106,6 +111,11 @@ export interface LiveOptions {
    */
   strongPrices: PricePair | null;
   fastPrices: PricePair | null;
+  /**
+   * The model's context window, in tokens (`QUALOR_LIVE_REVIEW_CONTEXT_WINDOW`), one for every
+   * tier; null: 1 000 000, as the AI settings read an empty one.
+   */
+  contextWindowTokens: number | null;
 }
 
 /** The project `review-live` exists (vitest.config.ts) only with both variables set. */
@@ -176,6 +186,18 @@ export function readLiveEnv(env: Env): LiveOptions {
   if (!Number.isInteger(runs) || runs < 1 || runs > MAX_RUNS) {
     throw new Error(`QUALOR_LIVE_REVIEW_RUNS must be a whole number from 1 to ${MAX_RUNS}`);
   }
+  const rawWindow = env.QUALOR_LIVE_REVIEW_CONTEXT_WINDOW ?? '';
+  const window = rawWindow === '' ? null : Number(rawWindow);
+  if (
+    window !== null &&
+    (!Number.isInteger(window) ||
+      window < CONTEXT_WINDOW_MIN_TOKENS ||
+      window > CONTEXT_WINDOW_MAX_TOKENS)
+  ) {
+    throw new Error(
+      `QUALOR_LIVE_REVIEW_CONTEXT_WINDOW must be a whole number of tokens from ${CONTEXT_WINDOW_MIN_TOKENS} to ${CONTEXT_WINDOW_MAX_TOKENS}`,
+    );
+  }
   const names = (env.QUALOR_LIVE_REVIEW_CASES ?? '')
     .split(',')
     .map((name) => name.trim())
@@ -194,6 +216,7 @@ export function readLiveEnv(env: Env): LiveOptions {
     prices: pricePair(env, 'QUALOR_LIVE_REVIEW_PRICE'),
     strongPrices: pricePair(env, 'QUALOR_LIVE_REVIEW_STRONG_PRICE'),
     fastPrices: pricePair(env, 'QUALOR_LIVE_REVIEW_FAST_PRICE'),
+    contextWindowTokens: window,
   };
 }
 
@@ -333,12 +356,19 @@ export async function runLive(
     runs: o.runs,
     prices: (tier) => pricingFor(pricing, models, tier),
     progress,
+    contextWindowTokens: o.contextWindowTokens,
     pipelineFor: ({ reader, policy }) => ({
       providerKey: o.apiKey,
       converse: (role, user, nonce, tokenBudget, accept, modelTier) =>
         converseOverTools(
           { role, user, nonce, tokenBudget, accept },
-          { reader, policy, send: senders[modelTier], shouldStop: () => Promise.resolve(false) },
+          {
+            reader,
+            policy,
+            send: senders[modelTier],
+            shouldStop: () => Promise.resolve(false),
+            contextWindowTokens: o.contextWindowTokens,
+          },
         ),
     }),
   });

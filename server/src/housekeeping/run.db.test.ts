@@ -654,6 +654,7 @@ describe('daily housekeeping (data-model.md §7)', () => {
         api: 'chat_completions' as const,
         workspaceId: null,
         timeoutSeconds: 5,
+        contextWindowTokens: null,
         apiKeyEnc: null,
       },
     };

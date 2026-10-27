@@ -561,6 +561,17 @@ describe('recorded events, part A (rbac-audit.md §8)', () => {
     expect(await latest('ai.settings_updated')).toMatchObject({
       details: { changed: ['provider'] },
     });
+    // So is the model's context window, which no call receives either.
+    expect((await put(body({ ...asked, contextWindowTokens: 32_000 }))).statusCode).toBe(200);
+    expect(await latest('ai.settings_updated')).toMatchObject({
+      details: { changed: ['provider'] },
+    });
+    expect((await put(body({ ...asked, contextWindowTokens: 32_000 }))).statusCode).toBe(200);
+    expect(await latest('ai.settings_updated')).toMatchObject({ details: { changed: [] } });
+    expect((await put(body(asked))).statusCode).toBe(200);
+    expect(await latest('ai.settings_updated')).toMatchObject({
+      details: { changed: ['provider'] },
+    });
     // So are the prices of a tier.
     const standard = { inputUsdPerMTok: 3, outputUsdPerMTok: 15 };
     const tiers = { ...withStrong, fastModel: 'm-small' };

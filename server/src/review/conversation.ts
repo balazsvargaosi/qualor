@@ -15,15 +15,17 @@ import { toolResultMessage } from './envelope';
  * The conversation a reviewer has with the model over the read-only tools (llm.md §2.5, review.md
  * §9.1). The provider layer answers one turn at a time and runs nothing; this loop sends a turn,
  * runs the calls the model made, sends the results and goes on, until the model answers in text.
- * It owns what bounds a model: the caps on turns, on calls per turn and on the arguments it sends,
- * the wrap-up turn when the tokens or the turns are used up, the retries, and the stop check
- * before every call to the provider. It does not make a call itself (`send` does, and records
- * it), run a tool (`runTool`) or read an answer's JSON (the pipeline does).
+ * It owns what bounds a model: the caps on turns, on calls per turn, on the arguments it sends and
+ * on what one call sends (the model's context window, R46), the wrap-up turn when the tokens, the
+ * window or the turns are used up, the retries, and the stop check before every call to the
+ * provider. It does not make a call itself (`send` does, and records it), run a tool (`runTool`) or
+ * read an answer's JSON (the pipeline does).
  *
  * The history only grows. A turn joins it as the provider made it: the `replay` its adapter kept
  * goes on the assistant message unchanged (the current Anthropic models sign their thinking, and a
- * provider that does so checks it against the conversation), and no message that is in the history
- * is ever changed or reordered. The loop never reads a replay.
+ * provider that does so checks it against the conversation), and no message that has been sent is
+ * ever changed or reordered. The loop never reads a replay. A tool answer the window has no room
+ * for is replaced by a fixed line before it is first sent, never after.
  *
  * Nothing the model said is logged here, and nothing in the result of a conversation that did not
  * answer carries any of it.
@@ -53,6 +55,13 @@ export const CONVERSATION_RETRIES = {
   maxWaitSeconds: 60,
 } as const;
 
+/**
+ * What a tool answer is sent as when the next call would pass the model's context window with it
+ * (`limits.maxCallInputTokens`): each answer of that turn, in its envelope, in its place.
+ */
+export const CONTEXT_FULL_TEXT =
+  "not shown: the model's context window is full; answer now with what you have";
+
 /** What the loop itself says to the model, word for word. */
 export const CONVERSATION_TEXTS = {
   wrapUp: 'Token budget reached: answer now, with what you have, in the required JSON.',
@@ -62,6 +71,7 @@ export const CONVERSATION_TEXTS = {
   retry: 'Your answer did not match the required JSON; answer again with JSON only.',
   tooManyCalls: 'too many calls in one turn; this one was not run',
   badArguments: 'the arguments were not valid JSON; call again',
+  contextFull: CONTEXT_FULL_TEXT,
 } as const;
 
 /** Characters of a tool's name the envelope shows. */
@@ -80,7 +90,7 @@ export interface ConversationInput {
    * Runs one call and answers what to tell the model. It is given the arguments checked and
    * limited here. A rejection (a closed masker, a reader that failed) ends the conversation.
    */
-  runTool: (call: LlmToolCall) => Promise<string>;
+  runTool: (call: LlmToolCall) => Promise<ToolAnswer>;
   limits: {
     maxTurns: number;
     maxCallsPerTurn: number;
@@ -106,6 +116,17 @@ export interface ConversationInput {
      * its own thinking, which `maxOutputTokens` plus this bounds.
      */
     reasoningAllowance?: number;
+    /**
+     * The most tokens one call may send (R46): the model's context window less the room for the
+     * answer (`callInputCap`, tool-conversation.ts). Each call after the first is guessed before it
+     * is made (`nextCallInput`): when the wrap-up after the next call would reach it, the next call
+     * is the wrap-up; when the answers of a turn of tools would make the next call reach it, each is
+     * sent as CONTEXT_FULL_TEXT and that call is the wrap-up (`wrappedUp: 'window'`); a call that
+     * would reach it even so, or an answer asked for again that would, is not made, and the
+     * conversation ends as a bad answer. The first call is the caller's to size (the pipeline gives
+     * the first message a third of it). Absent: no cap.
+     */
+    maxCallInputTokens?: number;
   };
   /**
    * One call to the provider, recorded, through its circuit. It throws an `LlmError` for a call
@@ -154,11 +175,21 @@ export interface ConversationCounts {
 }
 
 /**
- * Why a conversation wrapped up: its tokens (85 % of them used, or no room left for the wrap-up
- * after another turn of tools: `wrapUpDue`), or its turns (`maxTurns` taken). When both come at
- * once it is the tokens.
+ * What a tool answered: the text to tell the model, or the text with `sent`, which the loop calls
+ * once it keeps that text for the next call. A text the window has no room for is replaced before
+ * it is sent (CONTEXT_FULL_TEXT), and its `sent` is never called: what it showed of a file, or the
+ * secrets masked in it, never reached the model.
  */
-export type WrapUpReason = 'budget' | 'turns';
+export type ToolAnswer = string | { text: string; sent: () => void };
+
+/**
+ * Why a conversation wrapped up: its tokens (85 % of them used, or no room left for the wrap-up
+ * after another turn of tools: `wrapUpDue`), the model's context window (no room in it for the
+ * wrap-up after another turn, or for the answers of the last one: `limits.maxCallInputTokens`), or
+ * its turns (`maxTurns` taken). When more than one comes at once it is the first of these, in this
+ * order, except for answers the window had no room for, which are always the window.
+ */
+export type WrapUpReason = 'budget' | 'turns' | 'window';
 
 /**
  * How a conversation ended. `text` of an answer is the model's: it goes to the parser, never to a
@@ -303,8 +334,19 @@ const BYTES_PER_TOKEN = 4;
 const guessedTokens = (value: unknown): number =>
   Math.ceil(Buffer.byteLength(JSON.stringify(value), 'utf8') / BYTES_PER_TOKEN);
 
-/** The guess for the input of a call the provider did not count: the JSON that was sent. */
-const guessedInput = (sent: LlmConversation): number => guessedTokens(sent);
+/**
+ * The guess for the input of a call: the JSON that is sent, a quarter of a token for each byte (what
+ * the server records as its input bytes, usage.ts). It stands for a count the provider did not give,
+ * and it is the least the loop guesses a call to send against the model's window (`nextCallInput`).
+ */
+export const guessedInput = (sent: LlmConversation): number => guessedTokens(sent);
+
+/**
+ * The tokens the wrap-up's message adds to the guess for the call it goes with, at the most: its
+ * own, and one for the comma that joins it to the history. A turn whose answers are sent because the
+ * next call has this much room under the window therefore always has room for the wrap-up too.
+ */
+const WRAP_UP_TOKENS = guessedTokens({ role: 'user', text: CONVERSATION_TEXTS.wrapUp }) + 1;
 
 /**
  * The model's next turn, or why there is none: the stop check is asked before every call, a
@@ -347,11 +389,18 @@ async function nextTurn(
 const replayField = (replay: ProviderReplay | undefined): { replay?: ProviderReplay } =>
   replay === undefined ? {} : { replay };
 
+/** The calls of a turn that were answered: how many were run, and their answers' `sent`. */
+interface Answered {
+  run: number;
+  /** What to call once the answers are kept for the next call, each answer's in order. */
+  sent: (() => void)[];
+}
+
 /**
  * Adds the model's turn to the history, with every call echoed (so that each has its answer), and
  * the answer to each: the first `maxCallsPerTurn` calls are run, in order, unless their arguments
  * are unusable, and the others are told there were too many. Every answer is put in the data
- * envelope. The turn's `replay` goes on its message unchanged. Returns how many calls were run.
+ * envelope. The turn's `replay` goes on its message unchanged.
  */
 async function answerCalls(
   input: ConversationInput,
@@ -359,7 +408,7 @@ async function answerCalls(
   calls: readonly LlmToolCall[],
   replay: ProviderReplay | undefined,
   messages: LlmMessage[],
-): Promise<number> {
+): Promise<Answered> {
   const prepared = calls.map((call) => ({ call, args: usableArguments(call.arguments) }));
   messages.push({
     role: 'assistant',
@@ -371,7 +420,7 @@ async function answerCalls(
     })),
     ...replayField(replay),
   });
-  let run = 0;
+  const answered: Answered = { run: 0, sent: [] };
   for (const [index, { call, args }] of prepared.entries()) {
     let answer: string;
     if (index >= input.limits.maxCallsPerTurn) {
@@ -379,17 +428,46 @@ async function answerCalls(
     } else if (args === null) {
       answer = CONVERSATION_TEXTS.badArguments;
     } else {
-      answer = await input.runTool({ id: call.id, name: call.name, arguments: args });
-      run += 1;
+      const ran = await input.runTool({ id: call.id, name: call.name, arguments: args });
+      answered.run += 1;
+      if (typeof ran === 'string') {
+        answer = ran;
+      } else {
+        answer = ran.text;
+        answered.sent.push(ran.sent);
+      }
     }
-    messages.push({
-      role: 'tool',
-      callId: call.id,
-      name: call.name,
-      text: toolResultMessage(cutAtGrapheme(call.name, TOOL_LABEL_CHARS), answer, input.nonce),
-    });
+    messages.push(toolMessage(input, call, answer));
   }
-  return run;
+  return answered;
+}
+
+/** The message that answers a call: `answer` in the data envelope. */
+const toolMessage = (
+  input: Pick<ConversationInput, 'nonce'>,
+  call: Pick<LlmToolCall, 'id' | 'name'>,
+  answer: string,
+): LlmMessage => ({
+  role: 'tool',
+  callId: call.id,
+  name: call.name,
+  text: toolResultMessage(cutAtGrapheme(call.name, TOOL_LABEL_CHARS), answer, input.nonce),
+});
+
+/**
+ * Puts CONTEXT_FULL_TEXT in the place of each answer of the history from `from` on: they have not
+ * been sent, and the next call has no room for them.
+ */
+function withholdAnswers(
+  input: Pick<ConversationInput, 'nonce'>,
+  messages: LlmMessage[],
+  from: number,
+): void {
+  for (let i = from; i < messages.length; i += 1) {
+    const message = messages[i];
+    if (message?.role !== 'tool') continue;
+    messages[i] = toolMessage(input, { id: message.callId, name: message.name }, CONTEXT_FULL_TEXT);
+  }
 }
 
 // ─── The conversation ────────────────────────────────────────────────────────
@@ -423,18 +501,44 @@ function tokensOf(
  * The wrap-up can still go past the budget: by as much as those guesses fall short, or when the
  * first turn of tools, which runs before anything is known of what a turn costs, already left no
  * room for it. A whole turn of tools past it cannot.
+ *
+ * With a window (`limits.maxCallInputTokens`), the next turn is also the wrap-up when the wrap-up
+ * after the next call would send that call's input (`nextInput`, as `nextCallInput` guesses it),
+ * its output and as much more from its tools, with the wrap-up's own words, and reach the window.
+ * The tokens are asked first: when both are due it is the budget.
  */
 function wrapUpDue(
   limits: ConversationInput['limits'],
   used: number,
   last: { input: number; output: number },
   grown: number,
-): boolean {
-  if (used >= CONVERSATION_LIMITS.wrapUpAt * limits.tokenBudget) return true;
-  const nextInput = last.input + last.output + grown;
-  const nextCall = nextInput + last.output;
-  const wrapUpAfter = nextInput + last.output + grown + limits.maxOutputTokens;
-  return used + nextCall + wrapUpAfter >= limits.tokenBudget;
+  nextInput: number,
+): 'budget' | 'window' | null {
+  if (used >= CONVERSATION_LIMITS.wrapUpAt * limits.tokenBudget) return 'budget';
+  const counted = last.input + last.output + grown;
+  const nextCall = counted + last.output;
+  const wrapUpAfter = counted + last.output + grown + limits.maxOutputTokens;
+  if (used + nextCall + wrapUpAfter >= limits.tokenBudget) return 'budget';
+  const cap = limits.maxCallInputTokens;
+  if (cap !== undefined && nextInput + last.output + grown + WRAP_UP_TOKENS >= cap) {
+    return 'window';
+  }
+  return null;
+}
+
+/**
+ * The guess for what the next call sends, in tokens, once `added` (the guess for the messages that
+ * joined the history after the model's last turn: what its tools answered, the loop's own words)
+ * goes with it: the last call's input and output as the provider counted them, and `added`; and
+ * never less than the guess for all of what the call sends (`guessedInput` of `next`), so that a
+ * provider that counts low, or nothing, cannot take a call past the window.
+ */
+function nextCallInput(
+  last: { input: number; output: number },
+  added: number,
+  next: LlmConversation,
+): number {
+  return Math.max(last.input + last.output + added, guessedInput(next));
 }
 
 /**
@@ -442,9 +546,13 @@ function wrapUpDue(
  * - the tool list goes with every turn, the wrap-up included (Anthropic refuses tool blocks in the
  *   history without it);
  * - once the model has had `maxTurns` turns, or the calls have used 85 % of the token budget, or
- *   another turn of tools would leave no room for the wrap-up after it (`wrapUpDue`), the next turn
- *   is the wrap-up: a user message that says to answer now. Calls in its answer are not run, and
- *   its text is the answer;
+ *   another turn of tools would leave no room for the wrap-up after it, in the budget or in the
+ *   model's context window (`wrapUpDue`), the next turn is the wrap-up: a user message that says to
+ *   answer now. Calls in its answer are not run, and its text is the answer;
+ * - answers of a turn of tools that would make the next call reach the window are each sent as
+ *   CONTEXT_FULL_TEXT, and that call is the wrap-up; their `sent` is not called. A call that would
+ *   reach the window even so, or an answer asked for again that would, is not made, and the
+ *   conversation ends as a bad answer (`limits.maxCallInputTokens`);
  * - a call is told apart by what is there, not by the finish reason: `tool` also comes without
  *   calls, and then text is an answer and no text is none;
  * - an answer cut off at the output limit is asked for again, shorter, once; a refusal, a blank
@@ -486,6 +594,13 @@ export async function runConversation(input: ConversationInput): Promise<Convers
     turns,
     toolCalls,
   });
+  const cap = limits.maxCallInputTokens;
+  /**
+   * Whether the next call, with the history as it is now, would reach the window: `last` is what
+   * the model's last turn cost, `added` the guess for what joined the history after it.
+   */
+  const reachesWindow = (last: { input: number; output: number }, added: number): boolean =>
+    cap !== undefined && nextCallInput(last, added, conversation()) >= cap;
 
   for (;;) {
     const next = await nextTurn(input, conversation, turns === 0, (guessed) => {
@@ -504,11 +619,27 @@ export async function runConversation(input: ConversationInput): Promise<Convers
       if (ids.size !== turn.toolCalls.length) return ended(failed('bad_answer'));
       // The model's turn joins the history first, then the answers to its calls.
       const answersFrom = messages.length + 1;
-      toolCalls += await answerCalls(input, turn.text, turn.toolCalls, turn.replay, messages);
+      const answered = await answerCalls(input, turn.text, turn.toolCalls, turn.replay, messages);
+      toolCalls += answered.run;
       const grown = guessedTokens(messages.slice(answersFrom));
-      if (wrapUpDue(limits, inputTokens + outputTokens, spent, grown)) wrapUp = 'budget';
-      else if (turns >= limits.maxTurns) wrapUp = 'turns';
+      const nextInput = cap === undefined ? 0 : nextCallInput(spent, grown, conversation());
+      const withheld = cap !== undefined && nextInput + WRAP_UP_TOKENS >= cap;
+      if (withheld) {
+        // The next call would reach the window with these answers: each goes as the fixed line,
+        // before it is first sent, and that call is the wrap-up (R46).
+        withholdAnswers(input, messages, answersFrom);
+        wrapUp = 'window';
+      } else {
+        wrapUp =
+          wrapUpDue(limits, inputTokens + outputTokens, spent, grown, nextInput) ??
+          (turns >= limits.maxTurns ? 'turns' : null);
+      }
       if (wrapUp !== null) messages.push({ role: 'user', text: CONVERSATION_TEXTS.wrapUp });
+      // A call that would reach the window even so is not made.
+      if (reachesWindow(spent, guessedTokens(messages.slice(answersFrom)))) {
+        return ended(failed('bad_answer'));
+      }
+      if (!withheld) for (const told of answered.sent) told();
       continue;
     }
 
@@ -526,6 +657,8 @@ export async function runConversation(input: ConversationInput): Promise<Convers
         });
       }
       messages.push({ role: 'user', text: CONVERSATION_TEXTS.shorter });
+      // Asked for again only within the window.
+      if (reachesWindow(spent, guessedTokens(messages.at(-1)))) return ended(failed('bad_answer'));
       continue;
     }
 
@@ -544,6 +677,7 @@ export async function runConversation(input: ConversationInput): Promise<Convers
       });
       const said = typeof accepted === 'string' && accepted.trim() !== '';
       messages.push({ role: 'user', text: said ? accepted : CONVERSATION_TEXTS.retry });
+      if (reachesWindow(spent, guessedTokens(messages.at(-1)))) return ended(failed('bad_answer'));
       continue;
     }
     return {

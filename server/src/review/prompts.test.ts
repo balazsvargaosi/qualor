@@ -99,6 +99,57 @@ const PROMPT_HASHES: Record<string, Record<string, string>> = {
     'loop.tooManyCalls': '23833c21f587117534ed60d7532211b3a4ed637a43049715e5eb909f4682dcca',
     'loop.badArguments': '849a9e7482301279245ba0e9a762cddc975972e74c6446623be53e82184d85e3',
   },
+  // review-2 (R46): the loop sends a tool answer that the model's context window has no room
+  // for as a fixed line. Every other text is as in review-1.
+  'review-2': {
+    quality: '628f40e89ddc46422959a226cd9e0e4f5dac70af22432c3d44e9f82076091dd6',
+    tests: '5523ee924bd83e39e5dbca38528db4ee600278b6bb0f85f43e0a62d8efd3036b',
+    security: '377d4978f364aa6d861a17edd42b4d1d4e59a0db2efc453abb0eacb3b20ee307',
+    performance: 'ee9a3ee60f3302be6dc367d3193ac9170c8a89887f2d2f4df9f2b23003af7204',
+    judge: '2ca56107d1046ac25e04b56a90d8621e0cccc4e512548238fbf0200ef76e91ae',
+    verify: '04e3c867ffbc76f0a1a6e0596e1a3973436f2d2826a8ab47ac8ce9680ad5a404',
+    'loop.wrapUp': 'cc5c64c44240094b389da80979aa2ad0821c0e38bb88a763d0a481acb9cd2340',
+    'loop.shorter': '572e61f09a58f0033bb47d4170be06b712ef434b1a6f75cab203c4c1b1079b3d',
+    'loop.retry': 'dba9e7ae6537460f5c68547c0a31f236e268b118a0f89e6282d8667c8d925a5c',
+    'loop.tooManyCalls': '23833c21f587117534ed60d7532211b3a4ed637a43049715e5eb909f4682dcca',
+    'loop.badArguments': '849a9e7482301279245ba0e9a762cddc975972e74c6446623be53e82184d85e3',
+    'loop.contextFull': '71d4d5a42750b8f2c4c37984f3567d5f280f1ec165e2967f8c82015dd4039c32',
+  },
+  // reply-2 (R46): the loop's fixed line for a tool answer the window has no room for reaches a
+  // reply's conversation too. Every other text is as in reply-1.
+  'reply-2': {
+    'an open AI finding, with the code':
+      '5a96ce15c216ed8e5b0af19b5e6deff5ac70960d0c23693c24a06243d0fd065c',
+    'an open AI finding, without the code':
+      'c6c1b004c7dff278ab2662c6e7c9044ed552af21fd7a27bb7488f5becaa348d3',
+    'an open AI finding that is not the same code at the snapshot, with the code':
+      '5a68e92c3e4a105b8b462b1b3dc8f7340fb7db2fe312b5cc2d4af51905dc4098',
+    'an open AI finding the people may not change, with the code':
+      '895f1bd7a911f0f5408a6e9a66d2fb4f74d0bdc4f5ead18ec3c05101f5905501',
+    'an open AI finding the people may not change, without the code':
+      '67488f9fa6e2486b1f9a749f236c974072754d23e9063e657e060b18191ce991',
+    'a thread that only explains, with the code':
+      'bb1c44e72d7a731e57e7c7103ebd0aa9a6305f66489ec839d6c74649dbb08652',
+    'a thread that only explains, without the code':
+      'cb7480f0d1fce4889b0c0a0d80ac1860d51392cf6d81477534a88c74ba0deaec',
+    'retry.verdict (keep)': 'bbd3687fca286a9b710980ebee1b2f2a5aa1991f049e44d618770023f3043d51',
+    'retry.verdict (keep, wont_fix)':
+      '2b2b450f0dc4c03a7115cfd8a2748801fcc8f8af761b38648451547fce4a202f',
+    'retry.wont_fix (keep, wont_fix)':
+      'e970000c0588170fcaab9508f072947d966e07cbac3996f2e671eb8d4182ec69',
+    'retry.wont_fix (keep, wont_fix, false_positive)':
+      'c5cce08a79fc354f214f75d1d3e705378b910c6cdcf96a84399f579e53b0db20',
+    'retry.false_positive (keep, wont_fix, false_positive)':
+      '006151f1a15e3bd0b65983a8cac27854b4a0e21d89e245b01ada96c936cb80a0',
+    'retry.unread (keep, wont_fix)':
+      '6c32858b3ea5cd61b954db1343524ea53eabb07de4e26b5aa8afb2e9e60631a4',
+    'loop.wrapUp': 'cc5c64c44240094b389da80979aa2ad0821c0e38bb88a763d0a481acb9cd2340',
+    'loop.shorter': '572e61f09a58f0033bb47d4170be06b712ef434b1a6f75cab203c4c1b1079b3d',
+    'loop.retry': 'dba9e7ae6537460f5c68547c0a31f236e268b118a0f89e6282d8667c8d925a5c',
+    'loop.tooManyCalls': '23833c21f587117534ed60d7532211b3a4ed637a43049715e5eb909f4682dcca',
+    'loop.badArguments': '849a9e7482301279245ba0e9a762cddc975972e74c6446623be53e82184d85e3',
+    'loop.contextFull': '71d4d5a42750b8f2c4c37984f3567d5f280f1ec165e2967f8c82015dd4039c32',
+  },
 };
 
 /**

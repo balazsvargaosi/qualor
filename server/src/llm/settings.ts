@@ -116,6 +116,10 @@ export const WORKSPACE_ID_PATTERN = /^wrkspc_[A-Za-z0-9]{1,64}$/;
 export const ANTHROPIC_NO_TEMPERATURE_TEXT =
   "Anthropic's current models take no temperature: leave it empty";
 
+/** The smallest and the largest context window a provider may be given, in tokens. */
+export const CONTEXT_WINDOW_MIN_TOKENS = 8_000;
+export const CONTEXT_WINDOW_MAX_TOKENS = 10_000_000;
+
 export const storedProviderSchema = z.strictObject({
   kind: z.enum(PROVIDER_KINDS),
   /**
@@ -148,6 +152,20 @@ export const storedProviderSchema = z.strictObject({
    */
   workspaceId: z.string().regex(WORKSPACE_ID_PATTERN).nullable().default(null),
   timeoutSeconds: z.number().int().min(5).max(600),
+  /**
+   * The model's context window, in tokens (R46): the most one call of a review or of an answer to a
+   * reply sends and has answered. One window for every tier. Null: 1 000 000 tokens
+   * (`DEFAULT_CONTEXT_WINDOW_TOKENS`, review/tool-conversation.ts). No call receives it
+   * (`providerConfig`), so it is no part of the Test's fingerprint, and a change of it changes no
+   * consent and pauses nothing. A row stored before it reads with null.
+   */
+  contextWindowTokens: z
+    .number()
+    .int()
+    .min(CONTEXT_WINDOW_MIN_TOKENS)
+    .max(CONTEXT_WINDOW_MAX_TOKENS)
+    .nullable()
+    .default(null),
   apiKeyEnc: encrypted.nullable(),
 });
 export type StoredProvider = z.infer<typeof storedProviderSchema>;

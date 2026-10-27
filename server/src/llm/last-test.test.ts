@@ -24,6 +24,7 @@ const TIERED: StoredProvider = {
   temperature: null,
   workspaceId: null,
   timeoutSeconds: 60,
+  contextWindowTokens: null,
   apiKeyEnc: KEY,
 };
 
@@ -84,6 +85,14 @@ describe('testFingerprint', () => {
     const other = { ...KEY, ct: 'another-ciphertext', tag: 'another-tag' };
     expect(testFingerprint({ ...TIERED, apiKeyEnc: other })).toBe(testFingerprint(TIERED));
     expect(testFingerprint(TIERED)).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("leaves out the model's context window: a change of it keeps the Test (R46)", () => {
+    for (const contextWindowTokens of [8_000, 32_000, 10_000_000]) {
+      const windowed = { ...TIERED, contextWindowTokens };
+      expect(testFingerprint(windowed)).toBe(testFingerprint(TIERED));
+      expect(freshTest(settingsWith(windowed), TESTED)).toEqual(TESTED);
+    }
   });
 });
 

@@ -39,6 +39,7 @@ export const CONFIGURED = {
     temperature: null,
     workspaceId: null,
     timeoutSeconds: 60,
+    contextWindowTokens: null,
     apiKeySet: true,
     apiKeyReadable: true,
   },

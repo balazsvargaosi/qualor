@@ -33,6 +33,7 @@ const provider = {
   api: 'chat_completions' as const,
   workspaceId: null,
   timeoutSeconds: 60,
+  contextWindowTokens: null,
   apiKeyEnc: null,
 };
 

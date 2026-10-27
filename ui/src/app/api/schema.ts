@@ -9808,6 +9808,7 @@ export interface paths {
                                 temperature: number | null;
                                 workspaceId: string | null;
                                 timeoutSeconds: number;
+                                contextWindowTokens: number | null;
                                 apiKeySet: boolean;
                                 apiKeyReadable: boolean;
                             } | null;
@@ -9968,6 +9969,11 @@ export interface paths {
                             workspaceId?: string | null;
                             /** @default 60 */
                             timeoutSeconds?: number;
+                            /**
+                             * @description The model's context window, in tokens, for every model of the provider: no call of an AI review or of an answer to a reply sends more than it less the room for the answer. Null or absent: 1 000 000. A change of it keeps the last Test and the organisations' consent
+                             * @default null
+                             */
+                            contextWindowTokens?: number | null;
                             /** @description Write-only. A string sets the key, null removes it (a local model), absent keeps it; a new base URL needs it again */
                             apiKey?: string | null;
                         } | null;
@@ -10052,6 +10058,7 @@ export interface paths {
                                 temperature: number | null;
                                 workspaceId: string | null;
                                 timeoutSeconds: number;
+                                contextWindowTokens: number | null;
                                 apiKeySet: boolean;
                                 apiKeyReadable: boolean;
                             } | null;

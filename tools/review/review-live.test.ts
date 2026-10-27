@@ -42,6 +42,7 @@ describe('liveEnabled and readLiveEnv', () => {
       prices: null,
       strongPrices: null,
       fastPrices: null,
+      contextWindowTokens: null,
     });
   });
 
@@ -63,6 +64,7 @@ describe('liveEnabled and readLiveEnv', () => {
         QUALOR_LIVE_REVIEW_STRONG_PRICE_OUT: '75',
         QUALOR_LIVE_REVIEW_FAST_PRICE_IN: '0.25',
         QUALOR_LIVE_REVIEW_FAST_PRICE_OUT: '1.25',
+        QUALOR_LIVE_REVIEW_CONTEXT_WINDOW: '32000',
       }),
     ).toEqual({
       url: 'https://llm.invalid',
@@ -79,7 +81,25 @@ describe('liveEnabled and readLiveEnv', () => {
       prices: { inputUsdPerMTok: 3, outputUsdPerMTok: 15.5 },
       strongPrices: { inputUsdPerMTok: 15, outputUsdPerMTok: 75 },
       fastPrices: { inputUsdPerMTok: 0.25, outputUsdPerMTok: 1.25 },
+      contextWindowTokens: 32_000,
     });
+  });
+
+  it('reads the model’s context window, a whole number of tokens from 8 000 to 10 000 000, and none from an empty or missing variable', () => {
+    const windowOf = (value?: string) =>
+      readLiveEnv(
+        value === undefined ? base : { ...base, QUALOR_LIVE_REVIEW_CONTEXT_WINDOW: value },
+      ).contextWindowTokens;
+    expect(windowOf()).toBeNull();
+    expect(windowOf('')).toBeNull();
+    expect(windowOf('8000')).toBe(8_000);
+    expect(windowOf('200000')).toBe(200_000);
+    expect(windowOf('10000000')).toBe(10_000_000);
+    for (const value of ['7999', '10000001', '0', '-32000', '32000.5', '32k', 'large']) {
+      expect(() => windowOf(value), value).toThrow(
+        'QUALOR_LIVE_REVIEW_CONTEXT_WINDOW must be a whole number of tokens from 8000 to 10000000',
+      );
+    }
   });
 
   it('reads no tier model from an empty or missing variable: the tier uses the model', () => {
@@ -327,7 +347,38 @@ describe('runLive against the fake LLM', () => {
     prices: null,
     strongPrices: null,
     fastPrices: null,
+    contextWindowTokens: null,
     ...over,
+  });
+
+  it('gives every conversation the context window it is given', async () => {
+    // The quality reviewer of this trivial case lists the files before it answers.
+    const listsFirst: LlmResponder = (request) => {
+      const { messages } = request.json as { messages: { role: string }[] };
+      return reviewRoleOf(request) === 'quality' && !messages.some((m) => m.role === 'tool')
+        ? {
+            status: 200,
+            body: openAiToolCalls([{ id: 'call-1', name: 'list_files', arguments: {} }]),
+          }
+        : ANSWERS(request);
+    };
+    const play = async (contextWindowTokens: number | null) => {
+      // A fake of its own for each review: nothing one left in the queue answers the other.
+      await fake.close();
+      fake = await createFakeLlm();
+      fake.enqueue(...Array.from({ length: 12 }, () => listsFirst));
+      const { report } = await runLive(options({ contextWindowTokens }));
+      return { report, roles: fake.requests.map(reviewRoleOf) };
+    };
+    // Without a window of its own (1 000 000 tokens), the reviewer lists the files and answers.
+    const ample = await play(null);
+    expect(ample.roles).toEqual(['quality', 'quality', 'tests', 'judge']);
+    expect(ample.report.failed).toEqual({});
+    // 8 000 tokens leave the reviewer no room for its answer: it is not asked again past the
+    // window, and the review goes on without it.
+    const tiny = await play(8_000);
+    expect(tiny.roles).toEqual(['quality', 'tests', 'judge']);
+    expect(tiny.report.failed).toEqual({});
   });
 
   it('reviews the chosen case through the provider, with the review tools, and scores it', async () => {

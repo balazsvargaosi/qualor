@@ -306,8 +306,8 @@ Until the review ends it says "AI review in progress…". Then it shows:
   lists up to ten, the most severe first, each with a link to Qualor, and counts the rest. A low
   finding on a changed line, with no suggested change, has no thread and is only counted;
 - notes where the review fell short: it reached its token limit, a reviewer reached its limit of
-  turns, a reviewer's answer could not be read, more security findings than it verifies, or files
-  the scanner left out of the snapshot;
+  turns or the model's context window, a reviewer's answer could not be read, more security
+  findings than it verifies, or files the scanner left out of the snapshot;
 - the commit it reviewed, and the merge request's latest commit when that is a different one;
 - when there is room, a collapsed **Prompt for an AI agent** that lists the open findings (up to
   20), to paste into a coding agent.
@@ -881,7 +881,8 @@ of its day (when it has a budget), and what the cost budget has left at the dear
 models: the highest price per token, input or output, among them, since the model of the next call
 is not known ahead. When the day has nothing left, or too little for a review of this size, the
 review is skipped and the summary says the day's token budget is spent. When Tokens per review itself is too little for a
-merge request this large, the summary says that instead (see **Big merge requests** below).
+merge request this large, the summary says that instead, and so it does when the model's context
+window is (see **Big merge requests** below).
 Otherwise the review shares its tokens between its stages: 55 % for the reviewers, an equal part
 each, 35 % for the judge and 10 % for the second check of security findings. What one leaves unused
 goes forward: a reviewer also gets what the reviewers before it left of their parts, the judge what
@@ -930,10 +931,10 @@ reviewer no room. Short paths let more files fit, and many analyzer findings on 
 fewer. The summary then says "AI review did not run because this merge request is too large for the
 Tokens per review budget; raise it in Settings → AI." For big merge requests, raise **Tokens per
 review** in the **Budgets** of **Settings → AI** (to 600 000, say), and check that the day's budget
-can pay for it. Mind the model's context window too, the most it reads in one call: the higher
-Tokens per review, the longer one call of a review can grow, and raised far, a call can pass the
-window. The provider then refuses the call, and the review fails with a provider error
-(`PROVIDER_REJECTED_REQUEST`). Keep **Tokens per review** within what the model takes.
+can pay for it. Each call of a review sends at most the model's context window less the room for
+its answer. Set **Context window** in **Settings → AI provider** when the model takes less than
+1 000 000 tokens. A reviewer that reaches it answers with what it has, and a merge request whose
+first message alone does not fit is not reviewed.
 
 **How tokens are counted.** Tokens are the counts the provider reports. For a call that reports no
 input count, Qualor counts a quarter of the bytes it sent, both in a review's ceiling and in today's
@@ -997,12 +998,14 @@ and what to do about each:
 | AI review did not repeat: the changes it reviews are the same as in its last review, whose findings stay open. | Not an error. The push changed nothing the review reads |
 | AI review did not run because its token budget for today is spent. | Wait for UTC midnight, or raise the budgets ([Budgets and today's usage](#budgets-and-todays-usage)). It also appears when what is left of the day is too little for a merge request of this size |
 | AI review did not run because this merge request is too large for the Tokens per review budget; raise it in Settings → AI. | The list of its changes alone leaves a reviewer no room: at the default 300 000 tokens, from about 100 changed files. Raise **Tokens per review** in the **Budgets** of **Settings → AI** ([Budgets and today's usage](#budgets-and-todays-usage)) |
+| AI review did not run because this merge request is too large for the model’s context window; raise Context window in the AI provider settings if the model takes more. | Tokens per review holds the merge request, but the first message of a reviewer would not fit one call of the model. If the model takes more than the **Context window** set in **Settings → AI provider**, raise it there; otherwise use a model with a larger window. Raising **Tokens per review** does not help |
 | AI review failed: the model provider returned an error or could not be reached. The next push reviews again. | A call was refused, timed out, was rate limited or got no answer. Qualor tries a rate-limited call again twice and one that timed out once. The server log's `AI review call finished` lines give each call's error code and the provider's HTTP status: [the table below](#when-the-model-provider-fails) says what to do. Press **Test again** in **Settings → AI provider** to check the provider. With no such line for the review in the log, no call was made: the stored API key could no longer be read (`QUALOR_SECRET_KEY` changed; set the API key again in **Settings → AI provider**), or calls to the provider were paused after repeated failures (`PROVIDER_UNAVAILABLE` below) |
 | AI review failed: the model provider does not support the tool calls the review needs. The next push reviews again. | Use a model and a server that can call tools. The Test of **Settings → AI provider** says `cannot call tools, so AI review would fail` for this one ([Models that work](#models-that-work)). With one of OpenAI's newest models, the cause is usually the API: choose **Responses** under **API** in **Connection options** and press **Save and test**, and the model's line says `can call tools` |
 | AI review failed: the model’s answers could not be read. The next push reviews again. | The judge did not answer in the form the review needs, even when asked again. Small models do this more often: try a stronger one |
 | AI review failed because of an error in Qualor. The next push reviews again. | An unexpected error, or a stop of the server during the review (a review is not resumed). If it keeps happening with the server running, report it with the server log's `AI review run failed` line |
 | The review reached its token limit, so it may have missed problems. | A reviewer, the judge or the second check used its tokens, with what the stages before it left. Raise **Tokens per review**, mainly for big merge requests ([Budgets and today's usage](#budgets-and-todays-usage)) |
 | A reviewer reached its limit of 16 turns, so it may have missed problems. | A reviewer, the judge or the second check read the code for 16 turns, the most one may, and answered with what it had. The limit is fixed: more tokens do not raise it. It is likelier in a big merge request |
+| A reviewer reached the model’s context window, so it may have missed problems. | A reviewer, the judge or the second check read as much code as one call of the model holds, and answered with what it had. More tokens per review do not change it. If the model takes more than the **Context window** set in **Settings → AI provider**, raise it there; otherwise a model with a larger window reads more |
 | A reviewer’s answer could not be read, so part of the review is missing. | A reviewer did not answer in the form the review needs. The rest of the review is intact. Try a stronger model |
 | There were more serious security findings than the review verifies, so the rest were not checked a second time. | Not an error. The second check covers five findings |
 | The scanner left some files out of the repository snapshot to stay within its limits, so the review did not see all of them. | Raise the [snapshot limits](#size-limits-and-the-two-server-variables) |

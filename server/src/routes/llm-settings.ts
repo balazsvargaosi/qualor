@@ -40,6 +40,8 @@ import {
   autoFixSettingsSchema,
   budgetsSchema,
   comparedProvider,
+  CONTEXT_WINDOW_MAX_TOKENS,
+  CONTEXT_WINDOW_MIN_TOKENS,
   DEFAULT_AUTO_FIX,
   DISABLED_ORGANIZATION,
   globSchema,
@@ -117,6 +119,17 @@ const providerBody = z.strictObject({
         'Anthropic only: the workspace that an organisation-wide key, which is not scoped to one, names in every request (the header anthropic-workspace-id). Not a secret. Null or absent: none; stored as null for another kind',
     }),
   timeoutSeconds: z.number().int().min(5).max(600).default(60),
+  contextWindowTokens: z
+    .number()
+    .int()
+    .min(CONTEXT_WINDOW_MIN_TOKENS)
+    .max(CONTEXT_WINDOW_MAX_TOKENS)
+    .nullable()
+    .default(null)
+    .meta({
+      description:
+        "The model's context window, in tokens, for every model of the provider: no call of an AI review or of an answer to a reply sends more than it less the room for the answer. Null or absent: 1 000 000. A change of it keeps the last Test and the organisations' consent",
+    }),
   apiKey: z
     .string()
     .regex(API_KEY_PATTERN, '1–4 096 printable ASCII characters without spaces')
@@ -253,6 +266,8 @@ const settingsDto = z.object({
       /** The workspace an Anthropic provider's key is scoped to, as entered; not a secret. */
       workspaceId: z.string().nullable(),
       timeoutSeconds: z.number().int(),
+      /** The model's context window, in tokens; null: 1 000 000. */
+      contextWindowTokens: z.number().int().nullable(),
       /** A key is stored (never the key itself). */
       apiKeySet: z.boolean(),
       /** False when the stored key no longer decrypts (QUALOR_SECRET_KEY changed). */
@@ -669,6 +684,7 @@ function dto(
       ...providerConfig(s.provider),
       strongModel: s.provider.strongModel,
       fastModel: s.provider.fastModel,
+      contextWindowTokens: s.provider.contextWindowTokens,
       apiKeySet: s.provider.apiKeyEnc !== null,
       apiKeyReadable: providerApiKey(s, secretKey).ok,
     },
@@ -705,6 +721,15 @@ function nextKey(
   return incoming.apiKey === null ? null : encryptSecret(key, incoming.apiKey, LLM_API_KEY_AAD);
 }
 
+/**
+ * The provider's settings a write can change, without its key envelope: what the Test is tied to
+ * (`comparedProvider`), and the model's context window, which it is not (R46).
+ */
+const changeableProvider = (p: StoredProvider) => ({
+  ...comparedProvider(p),
+  contextWindowTokens: p.contextWindowTokens,
+});
+
 /** The names of the fields a write changed (never a value), for the audit log line. */
 function changedFields(
   current: StoredLlmSettings,
@@ -716,8 +741,8 @@ function changedFields(
   if (current.provider === null || next.provider === null) {
     if (current.provider !== next.provider) fields.push('provider');
   } else {
-    const before = comparedProvider(current.provider);
-    const after = comparedProvider(next.provider);
+    const before = changeableProvider(current.provider);
+    const after = changeableProvider(next.provider);
     for (const k of Object.keys(after) as (keyof typeof after)[]) {
       if (differs(before[k], after[k])) fields.push(`provider.${k}`);
     }
@@ -757,7 +782,7 @@ function settingsFieldsChanged(
 
 /** The top-level settings keys whose JSON differs (the provider without its key envelope). */
 function changedTopLevelKeys(current: StoredLlmSettings, next: StoredLlmSettings): string[] {
-  const provider = (s: StoredLlmSettings) => (s.provider ? comparedProvider(s.provider) : null);
+  const provider = (s: StoredLlmSettings) => (s.provider ? changeableProvider(s.provider) : null);
   // Keys sorted at every level: a row read back from jsonb has another key order than a body.
   const sorted = (_key: string, value: unknown): unknown =>
     value !== null && typeof value === 'object' && !Array.isArray(value)

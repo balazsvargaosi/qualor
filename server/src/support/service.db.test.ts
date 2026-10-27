@@ -173,6 +173,7 @@ describe('ctx.support (4E-3b §2, §4)', () => {
         api: 'chat_completions',
         workspaceId: null,
         timeoutSeconds: 60,
+        contextWindowTokens: null,
         apiKeyEnc: encryptSecret(key, LLM_KEY, LLM_API_KEY_AAD),
       },
     });

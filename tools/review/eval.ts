@@ -25,7 +25,10 @@ import {
   type SnapshotReader,
 } from '../../server/src/review/snapshot-reader';
 import { maskedHead, type ReviewPrepareDeps } from '../../server/src/review/store';
-import { newToolPolicy } from '../../server/src/review/tool-conversation';
+import {
+  DEFAULT_CONTEXT_WINDOW_TOKENS,
+  newToolPolicy,
+} from '../../server/src/review/tool-conversation';
 import type { ToolPolicy } from '../../server/src/review/tools';
 
 /*
@@ -365,6 +368,12 @@ export interface EvalDeps {
    * the tiers have models of their own. The report has a cost only when every call has prices.
    */
   prices?: PricePair | PricesOf | null;
+  /**
+   * The model's context window, in tokens, which the first messages are sized within as the job
+   * sizes them (`reviewLimits`); null or left out: DEFAULT_CONTEXT_WINDOW_TOKENS. `pipelineFor`'s
+   * conversations keep each call within it themselves (`ConversationIo.contextWindowTokens`).
+   */
+  contextWindowTokens?: number | null;
   /** The clock, in milliseconds. */
   now?: () => number;
   /** Told after each review: how many are done, of how many, and the tokens spent so far. */
@@ -470,6 +479,7 @@ async function reviewCase(c: EvalCase, deps: EvalDeps, priceOf: PricesOf | null)
     ),
   });
   const masker = new Masker();
+  const window = deps.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
   try {
     const files = new MaskedFiles(reader, { masker });
     const policy = newToolPolicy({ excludePaths: [], masked: files, masker });
@@ -480,7 +490,7 @@ async function reviewCase(c: EvalCase, deps: EvalDeps, priceOf: PricesOf | null)
         if (shape.reviewed.length === 0) {
           throw new Error(`${c.id}: nothing in the patch is reviewed`);
         }
-        return reviewLimits(shape, REVIEW_TOKENS);
+        return reviewLimits(shape, REVIEW_TOKENS, window);
       },
     });
     const pipeline = deps.pipelineFor({ evalCase: c, reader, policy });
@@ -499,6 +509,7 @@ async function reviewCase(c: EvalCase, deps: EvalDeps, priceOf: PricesOf | null)
         },
       },
       () => Promise.resolve(),
+      window,
     );
     if (outcome.kind !== 'reviewed') {
       const reason = outcome.kind === 'failed' ? outcome.reason : outcome.kind;

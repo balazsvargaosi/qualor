@@ -34,7 +34,7 @@ const CALL = {
   timeoutSeconds: 60,
 };
 /** The provider as stored, without its key. */
-const provider = { ...CALL, strongModel: null, fastModel: null };
+const provider = { ...CALL, strongModel: null, fastModel: null, contextWindowTokens: null };
 
 describe('LLM settings (llm.md §3)', () => {
   it('reads the defaults as not configured', () => {
@@ -252,6 +252,47 @@ describe('LLM settings (llm.md §3)', () => {
       ['over 64 characters after the prefix', `wrkspc_${'a'.repeat(65)}`],
     ])('refuses a stored one that is %s', (_name, workspaceId) => {
       expect(storedProviderSchema.safeParse({ ...anthropic, workspaceId }).success).toBe(false);
+    });
+  });
+
+  describe('the context window of the provider (R46)', () => {
+    const stored = { ...provider, apiKeyEnc: null };
+
+    it('a stored provider without contextWindowTokens reads as null (settings of an older version)', () => {
+      const old = Object.fromEntries(
+        Object.entries(stored).filter(([field]) => field !== 'contextWindowTokens'),
+      );
+      expect(old).not.toHaveProperty('contextWindowTokens');
+      const parsed = storedLlmSettingsSchema.parse({ ...DEFAULT_LLM_SETTINGS, provider: old });
+      expect(parsed.provider).not.toBeNull();
+      expect(parsed.provider?.contextWindowTokens).toBeNull();
+    });
+
+    it('takes a whole number of tokens from 8 000 to 10 000 000, and null', () => {
+      for (const contextWindowTokens of [8_000, 32_000, 10_000_000, null]) {
+        expect(
+          storedProviderSchema.parse({ ...stored, contextWindowTokens }).contextWindowTokens,
+        ).toBe(contextWindowTokens);
+      }
+      for (const contextWindowTokens of [7_999, 10_000_001, 32_000.5, 0, -1, '32000']) {
+        expect(
+          storedProviderSchema.safeParse({ ...stored, contextWindowTokens }).success,
+          String(contextWindowTokens),
+        ).toBe(false);
+      }
+      // A row with one out of bounds does not parse, and reads as not configured (fail closed).
+      expect(
+        storedLlmSettingsSchema.safeParse({
+          ...DEFAULT_LLM_SETTINGS,
+          provider: { ...stored, contextWindowTokens: 7_999 },
+        }).success,
+      ).toBe(false);
+    });
+
+    it('is no part of what a call receives', () => {
+      const config = providerConfig({ ...stored, contextWindowTokens: 32_000 });
+      expect(config).toEqual(CALL);
+      expect(config).not.toHaveProperty('contextWindowTokens');
     });
   });
 

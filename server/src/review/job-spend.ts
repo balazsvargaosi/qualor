@@ -52,9 +52,9 @@ export class RunLedger {
   /**
    * One conversation of the pipeline: its own redaction tally (the context's replacements go with
    * the first message of a reviewer or the judge, each tool answer's with the call after it), the
-   * role's output limit, and every call through the sender that records it, which a stop of the
-   * server cuts short. Every call goes to the model of the conversation's tier, and its row and its
-   * cost are that model's.
+   * role's output limit, the provider's context window, and every call through the sender that
+   * records it, which a stop of the server cuts short. Every call goes to the model of the
+   * conversation's tier, and its row and its cost are that model's.
    */
   async converse(
     ctx: ConverseContext,
@@ -86,6 +86,8 @@ export class RunLedger {
       shouldStop,
       signal: this.deps.shutdown,
       onToolRedactions: (count) => tally.add(count),
+      // One window for every tier (R46): no call sends more than it less the role's answer.
+      contextWindowTokens: storedProvider.contextWindowTokens,
     });
     // Whichever way it ended, what it spent is the run's.
     this.inputTokens += result.inputTokens;

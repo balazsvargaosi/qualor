@@ -25,7 +25,7 @@ import { endAndDecorate, errorClass, logRunEnd } from './run-ends';
 import { AI_REVIEW_QUEUE } from './runs';
 import { effectiveReviewBudgets } from './settings';
 import { openSnapshotReader } from './snapshot-reader';
-import { newToolPolicy } from './tool-conversation';
+import { DEFAULT_CONTEXT_WINDOW_TOKENS, newToolPolicy } from './tool-conversation';
 
 export { sameProvider } from './job-stop';
 
@@ -46,7 +46,8 @@ export { sameProvider } from './job-stop';
  * 7–9. nothing reviewable changed (`empty_diff`), the same diff as the last review that was done
  *    (`unchanged`), no tokens left today or too few for the smallest share of the review
  *    (`budget_spent`; detail `too_large` when even Tokens per review is too few for a merge request
- *    this large): decided before anything is masked or sent;
+ *    this large, `window_too_small` when Tokens per review holds it and the model's context window
+ *    does not): decided before anything is masked or sent;
  * 10. the pipeline (pipeline.ts), its calls recorded as the review's own (usage.ts), stopping at
  *    the next call to the provider when the run is superseded, review is switched off or its
  *    snapshot is deleted (the merge request was merged or closed: `skipped: closed`); then the
@@ -232,9 +233,18 @@ class ReviewJob {
       const policy = newToolPolicy({ excludePaths: settings.excludePaths, masked: files, masker });
       const budget = await reviewTokensLeft(db, running);
       const perReview = effectiveReviewBudgets(settings, running.organizationId).maxTokensPerReview;
+      // R46: no call of the review sends more than the model's window less its answer.
+      const window = settings.provider?.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
       let built: ContextOutcome;
       try {
-        built = await runContext(this.deps, running, { files, masker, policy, budget, perReview });
+        built = await runContext(this.deps, running, {
+          files,
+          masker,
+          policy,
+          budget,
+          perReview,
+          window,
+        });
       } finally {
         // The patches were read for the context and the digest: nothing else reads them.
         release();
@@ -273,6 +283,7 @@ class ReviewJob {
           providerKey: key.key,
         },
         (phase) => this.ledger.phase(run, phase),
+        window,
       );
       await this.ender.finish(running, outcome, { context, files, masker, policy, shouldStop });
     } finally {

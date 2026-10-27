@@ -38,6 +38,7 @@ export function configuredProvider(
     api: 'chat_completions',
     workspaceId: null,
     timeoutSeconds: 5,
+    contextWindowTokens: null,
     apiKeyEnc:
       fake.apiKey === ''
         ? null

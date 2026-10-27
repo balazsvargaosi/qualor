@@ -40,7 +40,7 @@ import type { ReviewSuggestion } from './suggestion';
  * texts the reply engine masked (`replyData`, REPLY_LIMITS).
  */
 
-export const REVIEW_PROMPT_VERSION = 'review-1';
+export const REVIEW_PROMPT_VERSION = 'review-2';
 
 /** The specialist reviewers, in the order they run. */
 export const SPECIALISTS = ['security', 'quality', 'tests', 'performance'] as const;
@@ -267,7 +267,7 @@ const VERIFY = [
  * keeps. The loop's own texts (conversation.ts) reach a reply's conversation as they reach a
  * review's, and are pinned to this version too. It moves apart from the review's.
  */
-export const REPLY_PROMPT_VERSION = 'reply-1';
+export const REPLY_PROMPT_VERSION = 'reply-2';
 
 const REPLY_ROLE =
   "You write Qualor's answer in a thread of a code review. Qualor, a code analysis server, started the thread with a note about one finding in a merge request, and a person has replied. Qualor answers once, to everything the people wrote in the thread since its last answer.";

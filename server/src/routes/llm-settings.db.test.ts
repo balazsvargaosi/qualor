@@ -393,6 +393,7 @@ describe('/system/llm (llm.md §3, §16)', () => {
             api: 'chat_completions',
             workspaceId: null,
             timeoutSeconds: 60,
+            contextWindowTokens: null,
             apiKeyEnc: keyEnc,
           },
         });
@@ -520,6 +521,109 @@ describe('/system/llm (llm.md §3, §16)', () => {
         WORKSPACE,
       ]);
       expect(named.body).not.toContain(fake.apiKey);
+    });
+  });
+
+  describe('the context window of the provider (R46)', () => {
+    const errorsOf = (res: { json: () => unknown }) =>
+      (res.json() as { errors: { path: string; message: string }[] }).errors;
+    afterEach(async () => {
+      await put(body());
+    });
+    afterAll(async () => {
+      // The review block is the organisation admin's: put it back, so that no later test starts
+      // from AI review switched on.
+      const stored = await readLlmSettings(ctx.db);
+      await writeLlmSettings(ctx.db, withOrganizationReview(stored, org, defaultReview()));
+    });
+
+    it("PUT stores the provider's context window and GET answers it; left out or null, it is null", async () => {
+      const res = await put(body({ provider: provider({ contextWindowTokens: 32_000 }) }));
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json().provider.contextWindowTokens).toBe(32_000);
+      expect((await get()).json().provider.contextWindowTokens).toBe(32_000);
+      expect((await readLlmSettings(ctx.db)).provider?.contextWindowTokens).toBe(32_000);
+      // The ends of the range.
+      for (const contextWindowTokens of [8_000, 10_000_000]) {
+        const end = await put(body({ provider: provider({ contextWindowTokens }) }));
+        expect(end.statusCode, end.body).toBe(200);
+        expect(end.json().provider.contextWindowTokens).toBe(contextWindowTokens);
+      }
+      // Left out, or null: none, which is 1 000 000 tokens.
+      for (const over of [{}, { contextWindowTokens: null }]) {
+        const none = await put(body({ provider: provider(over) }));
+        expect(none.statusCode, none.body).toBe(200);
+        expect(none.json().provider.contextWindowTokens).toBeNull();
+        expect((await readLlmSettings(ctx.db)).provider?.contextWindowTokens).toBeNull();
+      }
+    });
+
+    it.each([7_999, 10_000_001, 32_000.5, 0, -32_000])(
+      'out-of-range values are refused with 422: %s',
+      async (contextWindowTokens) => {
+        await put(body({ provider: provider({ contextWindowTokens: 32_000 }) }));
+        const res = await put(body({ provider: provider({ contextWindowTokens }) }));
+        expect(res.statusCode, res.body).toBe(422);
+        expect(errorsOf(res).map((e) => e.path)).toEqual(['body.provider.contextWindowTokens']);
+        expect(res.body).not.toContain(fake.apiKey);
+        // Nothing is stored.
+        expect((await get()).json().provider.contextWindowTokens).toBe(32_000);
+      },
+    );
+
+    it("a context window change keeps the provider's Test current and pauses no organisation", async () => {
+      const keyless = (over: Record<string, unknown> = {}) =>
+        provider({ apiKey: undefined, ...over });
+      expect((await put(body())).statusCode).toBe(200);
+      // The organisation's admins switch AI review on, acknowledging the provider their page names.
+      const review = (payload: Record<string, unknown>) =>
+        ctx.app.inject({
+          method: 'PUT',
+          url: `/api/v0/organizations/${org}/ai/review`,
+          headers: orgAdmin.headers,
+          payload: { scope: 'all', projectIds: [], budgets: DEFAULT_REVIEW_BUDGETS, ...payload },
+        });
+      const told = async () =>
+        (
+          await ctx.app.inject({
+            method: 'GET',
+            url: `/api/v0/organizations/${org}/ai/review`,
+            headers: orgAdmin.headers,
+          })
+        ).json();
+      const on = await review({ enabled: true, acknowledgeDataSharing: (await told()).provider });
+      expect(on.statusCode, on.body).toBe(200);
+      // A Test of the provider, by an admin of its own (the Test is limited per admin).
+      const tester = await createUser(ctx, { username: 'llm-window-test', isInstanceAdmin: true });
+      fake.enqueue(
+        { status: 200, body: openAiAnswer('{"ok": true}') },
+        { status: 200, body: openAiToolCalls([ECHO_CALL]) },
+      );
+      const tested = await test(await login(ctx, tester.username, tester.password));
+      expect(tested.statusCode, tested.body).toBe(200);
+      const read = (await get()).json();
+      expect(read.lastTest).not.toBeNull();
+      expect(read.organizations[org].reviewStatus).toEqual({ enabled: true, consentCurrent: true });
+
+      for (const contextWindowTokens of [32_000, 200_000, null]) {
+        const saved = await put(body({ provider: keyless({ contextWindowTokens }) }));
+        expect(saved.statusCode, saved.body).toBe(200);
+        expect(saved.json().provider.contextWindowTokens).toBe(contextWindowTokens);
+        // The Test still describes the provider, and the organisation's consent still covers it.
+        expect(saved.json().lastTest).toEqual(read.lastTest);
+        expect(saved.json().organizations[org].reviewStatus).toEqual({
+          enabled: true,
+          consentCurrent: true,
+        });
+        expect(await told()).toMatchObject({ enabled: true, consentCurrent: true });
+      }
+      // The change is named in the log line and in the audit, never its value.
+      expect(
+        (await put(body({ provider: keyless({ contextWindowTokens: 64_000 }) }))).statusCode,
+      ).toBe(200);
+      const line = ctx.logs.filter((l) => l.includes('LLM settings changed')).at(-1)!;
+      expect(line).toContain('"provider.contextWindowTokens"');
+      expect(line).not.toContain('64000');
     });
   });
 

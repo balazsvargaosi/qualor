@@ -162,6 +162,12 @@ const SKIPPED: Record<ReviewSkipReason, (words: Words) => string> = {
  */
 const TOO_LARGE = (words: Words): string =>
   `AI review did not run because this ${words.request} is too large for the Tokens per review budget; raise it in Settings → AI.`;
+/**
+ * A spent budget that is the model's context window (`budget_spent`, detail `window_too_small`):
+ * Tokens per review holds the merge request, the window does not. Never says to raise the budget.
+ */
+const WINDOW_TOO_SMALL = (words: Words): string =>
+  `AI review did not run because this ${words.request} is too large for the model’s context window; raise Context window in the AI provider settings if the model takes more.`;
 const SKIPPED_OTHER = 'AI review did not run.';
 const REASON = 'Reason:';
 /** A code of Qualor's own that a skip carries (`SNAPSHOT_INVALID`, `consent_outdated`): never content. */
@@ -185,6 +191,8 @@ const NOTES: Record<ReviewNote, string> = {
   turn_limit_reached: `A reviewer reached its limit of ${CONVERSATION_LIMITS.maxTurns} turns, so it may have missed problems.`,
   verification_capped:
     'There were more serious security findings than the review verifies, so the rest were not checked a second time.',
+  context_window_reached:
+    'A reviewer reached the model’s context window, so it may have missed problems.',
 };
 const SNAPSHOT_PARTIAL =
   'The scanner left some files out of the repository snapshot to stay within its limits, so the review did not see all of them.';
@@ -244,6 +252,9 @@ function skippedText(
   words: Words,
 ): string {
   if (state.reason === 'budget_spent' && state.detail === 'too_large') return TOO_LARGE(words);
+  if (state.reason === 'budget_spent' && state.detail === 'window_too_small') {
+    return WINDOW_TOO_SMALL(words);
+  }
   const sentence = Object.hasOwn(SKIPPED, state.reason)
     ? SKIPPED[state.reason](words)
     : SKIPPED_OTHER;
@@ -284,6 +295,7 @@ function noteSentences(state: Done): string[] {
     sentences.push(NOTES.token_limit_reached);
   }
   if (notes.has('turn_limit_reached')) sentences.push(NOTES.turn_limit_reached);
+  if (notes.has('context_window_reached')) sentences.push(NOTES.context_window_reached);
   if (state.snapshotPartial) sentences.push(SNAPSHOT_PARTIAL);
   if (notes.has('reviewer_unreadable')) sentences.push(NOTES.reviewer_unreadable);
   if (notes.has('verification_capped')) sentences.push(NOTES.verification_capped);

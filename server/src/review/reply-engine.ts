@@ -237,6 +237,11 @@ export interface ReplyConversationIo {
    * loop's own stop.)
    */
   signal?: AbortSignal;
+  /**
+   * The model's context window, in tokens: the provider's `contextWindowTokens` (null or absent:
+   * the default, `callInputCap`). No call of the answer sends more than it less the reply's answer.
+   */
+  contextWindowTokens?: number | null;
 }
 
 /**
@@ -412,13 +417,20 @@ async function decide(input: ReplyInput, io: ReplyConversationIo): Promise<Decid
       },
     },
     snapshot === null || policy === null
-      ? { reader: null, send, shouldStop: io.shouldStop, signal: io.signal }
+      ? {
+          reader: null,
+          send,
+          shouldStop: io.shouldStop,
+          signal: io.signal,
+          contextWindowTokens: io.contextWindowTokens,
+        }
       : {
           reader: snapshot,
           policy,
           send,
           shouldStop: io.shouldStop,
           signal: io.signal,
+          contextWindowTokens: io.contextWindowTokens,
           onToolRedactions: (count) => io.redactions?.add(count),
           onToolRead: (shown) => {
             if (showsFinding(issue, shown)) readCode = true;
@@ -538,7 +550,8 @@ export async function replyTokensLeft(
  * Decides the answer to a reply: it asks what the day has left for it (nothing, or less than its
  * first call needs: `budget_spent`, with no call made), then runs `runReplyConversation` on the
  * model of the `reply` tier at that model's prices, with every call sent through the review's sender
- * as a `review-reply` row, written finished, with the review's 300 s floor on the wait for each. A
+ * as a `review-reply` row, written finished, with the review's 300 s floor on the wait for each,
+ * and none sending more than the provider's context window less the reply's answer (R46). A
  * stop of the server, or of the caller, is `stopped`. Nothing is posted and no ledger row is
  * written: the caller does that with what comes back.
  */
@@ -580,6 +593,7 @@ export async function decideReply(input: ReplyInput, deps: ReplyDeps): Promise<D
       pricing,
       redactions,
       signal: deps.signal,
+      contextWindowTokens: provider.contextWindowTokens,
     });
   } finally {
     await masker.close();

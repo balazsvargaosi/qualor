@@ -22,6 +22,7 @@ const provider = (timeoutSeconds: number): StoredProvider => ({
   api: 'chat_completions',
   workspaceId: null,
   timeoutSeconds,
+  contextWindowTokens: null,
   apiKeyEnc: null,
 });
 

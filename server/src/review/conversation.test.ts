@@ -12,9 +12,20 @@ import {
   type LlmResponder,
   type RecordedLlmRequest,
 } from '../../test/fake-llm';
-import { converse, type LlmToolCall, type ProviderConfig } from '../llm/providers';
+import {
+  converse,
+  type LlmConversation,
+  type LlmToolCall,
+  type ProviderConfig,
+} from '../llm/providers';
 import { parseInternalHosts } from '../scm/url';
-import { CONVERSATION_LIMITS, runConversation, type ConversationInput } from './conversation';
+import {
+  CONTEXT_FULL_TEXT,
+  CONVERSATION_LIMITS,
+  guessedInput,
+  runConversation,
+  type ConversationInput,
+} from './conversation';
 import { newNonce } from './envelope';
 
 const KINDS = ['openai', 'anthropic'] as const;
@@ -28,6 +39,7 @@ const USER_TEXT = 'Review this change';
 const WRAP_UP = 'Token budget reached: answer now, with what you have, in the required JSON.';
 const TOO_MANY = 'too many calls in one turn; this one was not run';
 const BAD_ARGUMENTS = 'the arguments were not valid JSON; call again';
+const CONTEXT_FULL = "not shown: the model's context window is full; answer now with what you have";
 
 const TOOLS = [
   {
@@ -665,6 +677,161 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
         },
       );
     });
+  });
+
+  describe("the model's context window (R46)", () => {
+    /** A cap of 10 000 tokens a call, and a budget that never wraps up first. */
+    const WINDOW_LIMITS = { ...LIMITS, maxCallInputTokens: 10_000 };
+    /** A tool that answers `text` to every call, and the calls it was asked to run. */
+    const answering = (text: string) => {
+      const ran: string[] = [];
+      return {
+        ran,
+        runTool: (call: LlmToolCall) => {
+          ran.push(call.id);
+          return Promise.resolve(text);
+        },
+      };
+    };
+
+    it.each(KINDS)(
+      "wraps up before a call would pass the model's context window (%s)",
+      async (kind) => {
+        // 3 100 tokens sent and written. A read of about 4 000 tokens makes the next call about
+        // 7 100, under the cap; the wrap-up after another turn as large would send about 11 200.
+        const play = async (text: string, limits: ConversationInput['limits']) => {
+          fake.requests.length = 0;
+          fake.enqueue(
+            toolTurn(kind, [{ id: 'c1', args: { path: 'a.ts' } }], [3_000, 100]),
+            textTurn(kind, '{"findings":[]}', [10, 1]),
+          );
+          const { result } = await run(kind, { limits, runTool: answering(text).runTool });
+          expect(fake.requests).toHaveLength(2);
+          return { result, next: fake.requests[1]! };
+        };
+        const reached = await play('x'.repeat(16_000), WINDOW_LIMITS);
+        expect(reached.result).toMatchObject({
+          kind: 'answer',
+          turns: 2,
+          toolCalls: 1,
+          wrappedUp: 'window',
+        });
+        expect(WIRES[kind].lastUser(reached.next)).toBe(WRAP_UP);
+        // What the tool answered fits the call that wraps up: it is sent as it is.
+        expect(WIRES[kind].results(reached.next).map((r) => unwrap(r.text).result)).toEqual([
+          'x'.repeat(16_000),
+        ]);
+
+        // Half as much read: another turn and the wrap-up after it fit, and the model goes on.
+        const fits = await play('x'.repeat(8_000), WINDOW_LIMITS);
+        expect(fits.result).toMatchObject({ kind: 'answer', wrappedUp: null });
+        expect(WIRES[kind].lastUser(fits.next)).not.toBe(WRAP_UP);
+        // Without a cap the large read goes on too: the token budget is a million.
+        const uncapped = await play('x'.repeat(16_000), LIMITS);
+        expect(uncapped.result).toMatchObject({ kind: 'answer', wrappedUp: null });
+      },
+    );
+
+    it.each(KINDS)(
+      'sends tool results that would pass it as the fixed line, and wraps up with reason window (%s)',
+      async (kind) => {
+        // Two reads of about 4 000 tokens each would make the next call about 11 100: past the cap.
+        fake.enqueue(
+          toolTurn(
+            kind,
+            [
+              { id: 'c1', args: { path: 'a.ts' } },
+              { id: 'c2', args: { path: 'b.ts' } },
+            ],
+            [3_000, 100],
+          ),
+          textTurn(kind, '{"findings":[]}', [10, 1]),
+        );
+        const tool = answering('x'.repeat(16_000));
+        const { result } = await run(kind, { limits: WINDOW_LIMITS, runTool: tool.runTool });
+        expect(result).toMatchObject({
+          kind: 'answer',
+          text: '{"findings":[]}',
+          turns: 2,
+          toolCalls: 2,
+          wrappedUp: 'window',
+        });
+        expect(tool.ran).toEqual(['c1', 'c2']);
+        expect(CONTEXT_FULL_TEXT).toBe(CONTEXT_FULL);
+
+        const wire = WIRES[kind];
+        expect(fake.requests).toHaveLength(2);
+        const wrapUp = fake.requests[1]!;
+        // Each call keeps its answer, which is the fixed line the first time it is sent: what the
+        // provider has once seen never changes.
+        expect(wire.echoes(wrapUp).map((c) => c.id)).toEqual(['c1', 'c2']);
+        expect(wire.results(wrapUp).map((r) => [r.id, unwrap(r.text)])).toEqual([
+          ['c1', { tool: 'read_file', result: CONTEXT_FULL }],
+          ['c2', { tool: 'read_file', result: CONTEXT_FULL }],
+        ]);
+        expect(wrapUp.body).not.toContain('x'.repeat(100));
+        expect(wire.lastUser(wrapUp)).toBe(WRAP_UP);
+      },
+    );
+
+    it.each(KINDS)('never sends a call above maxCallInputTokens (%s)', async (kind) => {
+      // A model that reads three files in every turn and never answers, on a provider that counts
+      // nothing, or far too little: whatever it counts, no call sends more than the cap, as the loop
+      // guesses a call (`guessedInput`, what the server records as the call's input bytes).
+      const reads = (request: RecordedLlmRequest) => {
+        const n = fake.requests.indexOf(request);
+        return [1, 2, 3].map((i) => ({ id: `r${n}-${i}`, args: { path: `f${i}.ts` } }));
+      };
+      for (const tokens of [null, [10, 1]]) {
+        fake.requests.length = 0;
+        const sent: LlmConversation[] = [];
+        fake.enqueue(
+          ...Array.from(
+            { length: 40 },
+            (): LlmResponder => (request) => toolTurn(kind, reads(request), tokens),
+          ),
+        );
+        const cap = 6_000;
+        const { result } = await run(kind, {
+          limits: { ...LIMITS, maxOutputTokens: 400, maxCallInputTokens: cap },
+          runTool: answering('y'.repeat(2_500)).runTool,
+          send: (conversation) => {
+            sent.push(conversation);
+            return converse(configs[kind], fake.apiKey, conversation, http);
+          },
+        });
+        const name = JSON.stringify(tokens);
+        // It wrapped up, and its wrap-up answer only called tools: a bad answer.
+        expect(result, name).toMatchObject({ kind: 'failed', reason: 'bad_answer' });
+        expect(WIRES[kind].lastUser(fake.requests.at(-1)!), name).toBe(WRAP_UP);
+        expect(sent, name).toHaveLength(fake.requests.length);
+        expect(sent.length, name).toBeGreaterThan(2);
+        for (const [n, conversation] of sent.entries()) {
+          expect(guessedInput(conversation), `${name} call ${n + 1}`).toBeLessThanOrEqual(cap);
+        }
+      }
+    });
+
+    it.each(KINDS)(
+      'asks for nothing again past it: an answer it has no room to ask for again is a bad answer (%s)',
+      async (kind) => {
+        // An answer cut off at its limit, after 900 tokens sent and 200 written: asking for a
+        // shorter one would send them again, and pass a cap of 1 000.
+        const cutOff = () => textTurn(kind, '{"findings":[', [900, 200], 'length');
+        fake.enqueue(cutOff());
+        expect(
+          (await run(kind, { limits: { ...LIMITS, maxCallInputTokens: 1_000 } })).result,
+        ).toMatchObject({ kind: 'failed', reason: 'bad_answer', turns: 1 });
+        expect(fake.requests).toHaveLength(1);
+        // With room, it is asked for again, shorter.
+        fake.requests.length = 0;
+        fake.enqueue(cutOff(), textTurn(kind, '{"findings":[]}', [10, 1]));
+        expect(
+          (await run(kind, { limits: { ...LIMITS, maxCallInputTokens: 10_000 } })).result,
+        ).toMatchObject({ kind: 'answer', turns: 2 });
+        expect(fake.requests).toHaveLength(2);
+      },
+    );
   });
 
   describe('the Anthropic wire', () => {

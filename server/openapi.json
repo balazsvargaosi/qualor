@@ -20021,6 +20021,18 @@
                               "minimum": -9007199254740991,
                               "maximum": 9007199254740991
                             },
+                            "contextWindowTokens": {
+                              "anyOf": [
+                                {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
                             "apiKeySet": {
                               "type": "boolean"
                             },
@@ -20041,6 +20053,7 @@
                             "temperature",
                             "workspaceId",
                             "timeoutSeconds",
+                            "contextWindowTokens",
                             "apiKeySet",
                             "apiKeyReadable"
                           ],
@@ -20592,6 +20605,20 @@
                             "minimum": 5,
                             "maximum": 600
                           },
+                          "contextWindowTokens": {
+                            "default": null,
+                            "description": "The model's context window, in tokens, for every model of the provider: no call of an AI review or of an answer to a reply sends more than it less the room for the answer. Null or absent: 1 000 000. A change of it keeps the last Test and the organisations' consent",
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": 8000,
+                                "maximum": 10000000
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "apiKey": {
                             "description": "Write-only. A string sets the key, null removes it (a local model), absent keeps it; a new base URL needs it again",
                             "anyOf": [
@@ -20977,6 +21004,18 @@
                               "minimum": -9007199254740991,
                               "maximum": 9007199254740991
                             },
+                            "contextWindowTokens": {
+                              "anyOf": [
+                                {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
                             "apiKeySet": {
                               "type": "boolean"
                             },
@@ -20997,6 +21036,7 @@
                             "temperature",
                             "workspaceId",
                             "timeoutSeconds",
+                            "contextWindowTokens",
                             "apiKeySet",
                             "apiKeyReadable"
                           ],

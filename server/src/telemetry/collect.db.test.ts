@@ -144,6 +144,7 @@ describe('telemetry payload (telemetry.md)', () => {
       api: 'chat_completions' as const,
       workspaceId: null,
       timeoutSeconds: 60,
+      contextWindowTokens: null,
       apiKeyEnc: null,
     };
     await writeLlmSettings(h.ctx.db, {

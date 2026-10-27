@@ -4,7 +4,12 @@ import { and, asc, eq, inArray, or, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFakeGitHub, type FakeGitHub } from '../../test/fake-github';
 import { createFakeGitLab, type FakeGitLab, type FakeMergeRequest } from '../../test/fake-gitlab';
-import { createFakeLlm, type FakeLlm, type LlmResponder } from '../../test/fake-llm';
+import {
+  createFakeLlm,
+  openAiToolCalls,
+  type FakeLlm,
+  type LlmResponder,
+} from '../../test/fake-llm';
 import { mappedGitHubProject, pullRequestReport } from '../../test/github';
 import { createIngestHarness, type IngestHarness, type IngestProject } from '../../test/ingest';
 import { configuredProvider } from '../../test/llm';
@@ -46,6 +51,7 @@ import { REVIEW_LEASE_MS, reviewHandlers, type ReviewJobDeps } from './job';
 import { reviewTokensLeft } from './job-context';
 import type { Running } from './job-start';
 import { mergeRequestStateHandlers, REVIEW_MR_STATE_QUEUE } from './lifecycle';
+import { REVIEW_OUTPUT_TOKENS } from './pipeline';
 import { AI_REVIEW_QUEUE, reconcileStuckReviewRuns, requestReviewRun } from './runs';
 import type { ReviewBudgets } from './settings';
 import { storeSnapshotUpload, unpackSnapshot } from './snapshot-store';
@@ -212,6 +218,8 @@ describe('the ai-review job (6I-3, R15)', () => {
       pricing?: StoredPricing;
       /** The strong and the fast model of the provider; without them it has the standard model alone. */
       tiers?: Pick<StoredProvider, 'strongModel' | 'fastModel'>;
+      /** The model's context window, in tokens; without it the provider has none set. */
+      window?: number;
     } = {},
   ) =>
     switchReviewOn(h.ctx.db, {
@@ -222,9 +230,15 @@ describe('the ai-review job (6I-3, R15)', () => {
       ...(o.budgets === undefined ? {} : { budgets: o.budgets }),
       over: {
         pricing: o.pricing ?? null,
-        ...(o.tiers === undefined
+        ...(o.tiers === undefined && o.window === undefined
           ? {}
-          : { provider: { ...configuredProvider(h.ctx.config.secretKey, llm), ...o.tiers } }),
+          : {
+              provider: {
+                ...configuredProvider(h.ctx.config.secretKey, llm),
+                ...o.tiers,
+                contextWindowTokens: o.window ?? null,
+              },
+            }),
       },
     });
   /** The organisation switches AI review off; everything else stays as it is. */
@@ -933,6 +947,114 @@ describe('the ai-review job (6I-3, R15)', () => {
       'AI review did not run because this merge request is too large for the Tokens per review budget; raise it in Settings → AI.',
     );
     expect(summary).not.toContain('token budget for today');
+  });
+
+  it('a model with a 32 000-token window: no call passes it', async () => {
+    await reviewOn({ window: 32_000 });
+    // A file of about 9 000 tokens beside the change. The quality reviewer reads it three times in
+    // one turn, which no call of its may send in this window; the judge reads it once, which fits
+    // the call that wraps up and leaves no room for another turn as large.
+    const large = Array.from(
+      { length: 400 },
+      (_, i) => `export const large${i} = '${'1'.repeat(64)}';`,
+    );
+    const lines: SnapshotLine[] = [
+      ...CHANGE,
+      { type: 'file', path: 'src/large.ts', text: `${large.join('\n')}\n` },
+    ];
+    const reads = (count: number) =>
+      Array.from({ length: count }, (_, i) => ({
+        id: `read-${i}`,
+        name: 'read_file',
+        arguments: { path: 'src/large.ts' },
+      }));
+    const answers = reviewResponder(FOUND);
+    const readsFirst: LlmResponder = (request) => {
+      const role = reviewRoleOf(request);
+      const { messages } = request.json as { messages: { role: string }[] };
+      if (messages.some((message) => message.role === 'tool') || role === null) {
+        return answers(request);
+      }
+      return {
+        status: 200,
+        body: openAiToolCalls(reads(role === 'quality' ? 3 : 1), {
+          usage: {
+            prompt_tokens: REVIEW_CALL_USAGE.input,
+            completion_tokens: REVIEW_CALL_USAGE.output,
+          },
+        }),
+      };
+    };
+    const mr = mergeRequest();
+    const analysisId = await analysisOf(mr);
+    await snapshotOf(analysisId, mr, lines);
+    const before = { calls: reviewCalls().length, rows: (await reviewRows()).length };
+    llm.enqueue(...Array.from({ length: 4 }, () => readsFirst));
+    expect(await runReviews()).toBe(1);
+
+    const sent = reviewCalls().slice(before.calls);
+    const rows = (await reviewRows()).slice(before.rows);
+    expect(sent.map(reviewRoleOf)).toEqual(['quality', 'quality', 'judge', 'judge']);
+    expect(rows).toHaveLength(sent.length);
+    // Each call's input as the server guesses and records it: a quarter of the bytes it sent.
+    for (const [i, row] of rows.entries()) {
+      const role = reviewRoleOf(sent[i]!)!;
+      expect(Math.ceil(row.inputBytes / 4), `call ${i + 1}, ${role}`).toBeLessThanOrEqual(
+        32_000 - REVIEW_OUTPUT_TOKENS[role],
+      );
+    }
+    // The reviewer's reads were kept back; the judge's read was sent, and its wrap-up came after it.
+    expect(sent[1]!.body).not.toContain('export const large1 ');
+    expect(sent[1]!.body).toContain('context window is full');
+    expect(sent[3]!.body).toContain('export const large1 ');
+    const run = await runOf(analysisId);
+    expect(run).toMatchObject({ status: 'done', findingsNew: 1, toolCalls: 4 });
+    expect(run.summary).toMatchObject({ notes: ['context_window_reached'] });
+  });
+
+  it('a merge request that cannot fit a small window is skipped budget_spent: window_too_small, and the summary says the window is the cause, not Tokens per review', async () => {
+    // A window of 20 000 tokens leaves a judge's call 3 616 of them: a third of that holds no
+    // reviewer's prompt, though Tokens per review holds this small change many times over.
+    await reviewOn({ window: 20_000 });
+    const mr = mergeRequest();
+    const analysisId = await analysisOf(mr);
+    await snapshotOf(analysisId, mr);
+    await forgetDecorations();
+    const calls = reviewCalls().length;
+    expect(await runReviews()).toBe(1);
+    const run = await runOf(analysisId);
+    expect(run).toMatchObject({
+      status: 'skipped',
+      reason: 'budget_spent',
+      detail: 'window_too_small',
+    });
+    expect(run.diffDigest).toMatch(/^[0-9a-f]{64}$/);
+    expect(reviewCalls()).toHaveLength(calls);
+    expect(await decorationsOf(analysisId)).toHaveLength(1);
+    await runDecorations(h, decorationDeps(h));
+    const summary =
+      gitlab
+        .discussions(GITLAB_PROJECT, mr)
+        .flatMap((d) => d.notes)
+        .find((n) => markerOf(n.body)?.kind === 'summary')?.body ?? '';
+    expect(summary).toContain(
+      'AI review did not run because this merge request is too large for the model’s context window; raise Context window in the AI provider settings if the model takes more.',
+    );
+    expect(summary).not.toContain('Tokens per review');
+    expect(summary).not.toContain('token budget for today');
+
+    // Too large for Tokens per review as well, whatever the window: that is what it says then.
+    await reviewOn({ window: 20_000, budgets: { maxTokensPerReview: 1_000 } });
+    const both = mergeRequest();
+    const late = await analysisOf(both);
+    await snapshotOf(late, both);
+    expect(await runReviews()).toBe(1);
+    expect(await runOf(late)).toMatchObject({
+      status: 'skipped',
+      reason: 'budget_spent',
+      detail: 'too_large',
+    });
+    expect(reviewCalls()).toHaveLength(calls);
   });
 
   it('a run superseded between two model calls stores nothing', async () => {

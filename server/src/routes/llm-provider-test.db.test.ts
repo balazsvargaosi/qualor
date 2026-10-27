@@ -730,6 +730,7 @@ describe('/system/llm (llm.md §3, §16)', () => {
           api: 'chat_completions',
           workspaceId: null,
           timeoutSeconds: 60,
+          contextWindowTokens: null,
           apiKeyEnc: encryptSecret(secret, fake.apiKey, 'scm_connections.token_enc'),
         },
       });
@@ -1139,6 +1140,7 @@ describe('/system/llm (llm.md §3, §16)', () => {
         api: 'chat_completions',
         workspaceId: null,
         timeoutSeconds: 60,
+        contextWindowTokens: null,
         apiKeyEnc: encryptSecret(key, fake.apiKey, 'scm_connections.token_enc'),
       },
     });

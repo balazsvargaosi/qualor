@@ -26,12 +26,13 @@ import { remainingReviewTokens, reservedReviewTokens, reviewUsageToday } from '.
 
 /**
  * What the context's limits throw, before anything is masked: the review is skipped. A budget that
- * is spent for the day has no detail; one the merge request is too large for is `too_large`.
+ * is spent for the day has no detail; one the merge request is too large for is `too_large`, and a
+ * model's context window it is too large for, with Tokens per review enough, `window_too_small`.
  */
 export class SkipReview extends Error {
   constructor(
     readonly reason: 'empty_diff' | 'unchanged' | 'budget_spent',
-    readonly detail: 'too_large' | null = null,
+    readonly detail: 'too_large' | 'window_too_small' | null = null,
   ) {
     super(reason);
     this.name = 'SkipReview';
@@ -87,9 +88,11 @@ export function diffDigest(
  * Steps 7 to 9 and the review's context. They are decided when the context asks for its limits,
  * once it knows the reviewed changes and before it masks anything: none (`empty_diff`), the same
  * diff as the branch's last review that was done (`unchanged`), or a budget too small for the
- * smallest share of the review (`budget_spent`). A merge request too large for what one review may
- * use (`perReview`, Tokens per review) has the detail `too_large`, and the summary names that
- * budget; one that only what is left of the day is too little for has none, as the day is what
+ * smallest share of the review, in the model's context window (`window`, R46), as `reviewFits` asks
+ * it (`budget_spent`). A merge request too large for what one review may use (`perReview`, Tokens
+ * per review) whatever the window has the detail `too_large`, and the summary names that budget;
+ * one that Tokens per review holds but not the window, `window_too_small`, and the summary names
+ * the window; one that only what is left of the day is too little for has none, as the day is what
  * stops it. The digest is written on the run either way.
  */
 export async function runContext(
@@ -101,11 +104,13 @@ export async function runContext(
     policy: ToolPolicy;
     budget: number;
     perReview: number;
+    /** The model's context window, in tokens: the provider's, or the default. */
+    window: number;
   },
 ): Promise<ContextOutcome> {
   const { db } = deps;
   const { run, settings } = running;
-  const { budget } = o;
+  const { budget, window } = o;
   const previous = await lastReviewedDigest(db, run.branchId, run.id);
   const changes = await o.files.reader.changes();
   const seen: { digest: string | null } = { digest: null };
@@ -114,10 +119,16 @@ export async function runContext(
     seen.digest = diffDigest(changes, shape.reviewed);
     if (seen.digest === previous) throw new SkipReview('unchanged');
     if (budget <= 0) throw new SkipReview('budget_spent');
-    if (!reviewFits(shape, budget)) {
-      throw new SkipReview('budget_spent', reviewFits(shape, o.perReview) ? null : 'too_large');
+    if (!reviewFits(shape, budget, window)) {
+      // Too large for Tokens per review is said first: a larger window alone would not do.
+      const detail = !reviewFits(shape, o.perReview, Number.POSITIVE_INFINITY)
+        ? 'too_large'
+        : !reviewFits(shape, o.perReview, window)
+          ? 'window_too_small'
+          : null;
+      throw new SkipReview('budget_spent', detail);
     }
-    return reviewLimits(shape, budget);
+    return reviewLimits(shape, budget, window);
   };
   let context: ReviewContext;
   try {

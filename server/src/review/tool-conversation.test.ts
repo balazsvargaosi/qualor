@@ -12,13 +12,24 @@ import {
   type ProviderConfig,
 } from '../llm/providers';
 import { parseInternalHosts } from '../scm/url';
-import { CONVERSATION_LIMITS, CONVERSATION_TEXTS } from './conversation';
+import {
+  CONTEXT_FULL_TEXT,
+  CONVERSATION_LIMITS,
+  CONVERSATION_TEXTS,
+  guessedInput,
+} from './conversation';
 import { newNonce } from './envelope';
 import { MaskedFiles } from './masked-files';
 import { Masker } from './masker';
 import { REVIEW_OUTPUT_TOKENS } from './pipeline';
 import { SYSTEM_PROMPTS } from './prompts';
-import { converseOverTools, newToolPolicy, type RoleCall } from './tool-conversation';
+import {
+  callInputCap,
+  converseOverTools,
+  DEFAULT_CONTEXT_WINDOW_TOKENS,
+  newToolPolicy,
+  type RoleCall,
+} from './tool-conversation';
 import { REVIEW_TOOLS, TOOL_LIMITS, type ShownLines } from './tools';
 
 /** The masker of the tests: one worker for all of them, stopped when they are done. */
@@ -168,6 +179,88 @@ describe('the room a call leaves for the model to think', () => {
     // The call asks for the verification's 2 048 and 16 000 more, apart, and is charged the 2 048.
     expect(sent[0]).toMatchObject({ maxOutputTokens: 2_048, reasoningAllowance: 16_000 });
     expect(result).toMatchObject({ kind: 'answer', outputTokens: REVIEW_OUTPUT_TOKENS.verify });
+  });
+});
+
+describe('the most one call sends: the context window less the room for the answer (R46)', () => {
+  it('is 1 000 000 tokens less the role’s answer unless the provider gives the window', () => {
+    expect(DEFAULT_CONTEXT_WINDOW_TOKENS).toBe(1_000_000);
+    expect(callInputCap(null, 'judge')).toBe(983_616);
+    expect(callInputCap(32_000, 'verify')).toBe(29_952);
+    expect(callInputCap(32_000, 'quality')).toBe(32_000 - REVIEW_OUTPUT_TOKENS.quality);
+    expect(callInputCap(null, 'reply')).toBe(1_000_000 - REVIEW_OUTPUT_TOKENS.reply);
+  });
+
+  it('keeps every call within the window the io gives, and tells nothing of the tool answers it kept back', async () => {
+    // 400 lines of 90 characters, a secret on the first: one read is about 10 000 tokens, and three
+    // of them pass what a quality reviewer's call may send in a window of 32 000.
+    const lines = [
+      `const key = "${AWS_KEY}";`,
+      ...Array.from({ length: 399 }, (_, i) => `export const v${i} = ${'1'.repeat(70)};`),
+    ];
+    const reader = memorySnapshot({ files: { 'src/big.ts': `${lines.join('\n')}\n` } });
+    const reads = ['c1', 'c2', 'c3'].map((id) => ({
+      id,
+      name: 'read_file',
+      arguments: { path: 'src/big.ts' },
+    }));
+    const play = async (contextWindowTokens?: number | null) => {
+      const policy = newToolPolicy({
+        excludePaths: [],
+        masked: new MaskedFiles(reader, { masker }),
+        masker,
+      });
+      const sent: LlmConversation[] = [];
+      const shown: (readonly ShownLines[])[] = [];
+      const redactions: number[] = [];
+      const replies = [
+        turn({ finishReason: 'tool', toolCalls: reads }),
+        turn({ text: '{"findings":[]}' }),
+      ];
+      const result = await converseOverTools(callOf('quality'), {
+        reader,
+        policy,
+        send: (conversation) => {
+          sent.push(conversation);
+          return Promise.resolve(replies.shift() ?? turn({ text: 'unexpected' }));
+        },
+        shouldStop: () => Promise.resolve(false),
+        onToolRead: (lines) => shown.push(lines),
+        onToolRedactions: (count) => redactions.push(count),
+        ...(contextWindowTokens === undefined ? {} : { contextWindowTokens }),
+      });
+      const answers = sent[1]?.messages.filter((message) => message.role === 'tool') ?? [];
+      return { result, sent, shown, redactions, answers };
+    };
+
+    const small = await play(32_000);
+    expect(small.result).toMatchObject({ kind: 'answer', toolCalls: 3, wrappedUp: 'window' });
+    for (const conversation of small.sent) {
+      expect(guessedInput(conversation)).toBeLessThanOrEqual(callInputCap(32_000, 'quality'));
+    }
+    // Each answer is the fixed line, and what the reads showed and masked was never sent.
+    expect(small.answers).toHaveLength(3);
+    for (const answer of small.answers) {
+      const [, line = ''] = answer.text.split('\n');
+      expect(JSON.parse(line)).toEqual({ tool: 'read_file', result: CONTEXT_FULL_TEXT });
+      expect(answer.text).not.toContain('export const');
+    }
+    expect(small.shown).toEqual([]);
+    expect(small.redactions).toEqual([]);
+
+    // The default window, and a null one, take the three reads: they are sent, and told.
+    for (const window of [undefined, null]) {
+      const ample = await play(window);
+      expect(ample.result, String(window)).toMatchObject({ kind: 'answer', wrappedUp: null });
+      expect(ample.answers.map((answer) => answer.text.includes('export const v1 '))).toEqual([
+        true,
+        true,
+        true,
+      ]);
+      expect(ample.shown).toHaveLength(3);
+      // The file is masked once, at its first read: the secret is told with that answer.
+      expect(ample.redactions).toEqual([1, 0, 0]);
+    }
   });
 });
 

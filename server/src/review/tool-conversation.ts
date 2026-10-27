@@ -23,7 +23,8 @@ import {
  * The parts of a review's conversations that are the same wherever the review runs: the `ai-review`
  * job (job.ts) records every call in the database, the evaluation set (tools/review) calls the
  * provider and records nothing. Each supplies where a call goes (`send`) and when to stop
- * (`shouldStop`); the role's prompt, the tools, their budget and the caps of the loop are these.
+ * (`shouldStop`), and the model's context window; the role's prompt, the tools, their budget and
+ * the caps of the loop are these.
  * The answer to a person's reply (reply-engine.ts) is one more conversation of the same kind, with
  * a prompt of its own and, for a merge request that has no snapshot, no tools.
  */
@@ -53,11 +54,12 @@ interface ToolsIo {
   /** The snapshot the tools read. */
   reader: SnapshotReader;
   policy: ToolPolicy;
-  /** Told the secrets masked in each tool answer. */
+  /** Told the secrets masked in each tool answer that is sent. */
   onToolRedactions?: (count: number) => void;
   /**
    * Told the lines of files a tool answer showed (`ToolAnswer.read`), for each call that showed
-   * any: what the model really read, as the tool did it, never as its text says.
+   * any: what the model really read, as the tool did it, never as its text says. An answer the
+   * model's context window had no room for (CONTEXT_FULL_TEXT went in its place) showed nothing.
    */
   onToolRead?: (shown: readonly ShownLines[]) => void;
 }
@@ -71,7 +73,27 @@ export type ConversationIo = {
   shouldStop: ConversationInput['shouldStop'];
   /** Wakes the wait of a retry when it aborts: the server is stopping (`ConversationInput.signal`). */
   signal?: ConversationInput['signal'];
+  /**
+   * The model's context window, in tokens: the provider's `contextWindowTokens`, one for every
+   * tier. Null or absent: DEFAULT_CONTEXT_WINDOW_TOKENS. No call sends more than it less the role's
+   * answer (`callInputCap`).
+   */
+  contextWindowTokens?: number | null;
 } & (ToolsIo | { reader: null });
+
+/** The context window of a model whose provider gives none (R46): the latest models' 1 000 000. */
+export const DEFAULT_CONTEXT_WINDOW_TOKENS = 1_000_000;
+
+/**
+ * The most tokens one call of `role` may send (R46): the model's context window (`window`, or
+ * DEFAULT_CONTEXT_WINDOW_TOKENS when null) less the room for the role's answer
+ * (REVIEW_OUTPUT_TOKENS). Not positive for a window too small for that answer. The room to think
+ * (REASONING_ALLOWANCE_TOKENS) is not taken from it: a model that refuses that much beside its input
+ * is asked again without it (the provider layer).
+ */
+export function callInputCap(window: number | null, role: ConversationRole): number {
+  return (window ?? DEFAULT_CONTEXT_WINDOW_TOKENS) - REVIEW_OUTPUT_TOKENS[role];
+}
 
 /** What a call is answered when it is made though the model has no tools. */
 const NO_TOOLS_ANSWER = 'no tools are available; answer from what you were given';
@@ -103,8 +125,10 @@ export function newToolPolicy(o: {
  * run over the reader under its policy (none without a reader), the loop's caps, and the role's
  * output limit: its answer's tokens (REVIEW_OUTPUT_TOKENS), which the loop estimates with, and the
  * room for the model to think before it answers (REASONING_ALLOWANCE_TOKENS), which only raises
- * what each call asks for, and which a model that refuses that much is asked without. The
- * pipeline's contract for `converse` (pipeline.ts).
+ * what each call asks for, and which a model that refuses that much is asked without. No call sends
+ * more than the io's context window less that answer (`callInputCap`). A tool answer's redactions
+ * and the lines it showed are told once the loop keeps the answer for the next call, never for one
+ * the window had no room for. The pipeline's contract for `converse` (pipeline.ts).
  */
 export function converseOverTools(call: RoleCall, io: ConversationIo): Promise<ConversationResult> {
   return runConversation({
@@ -115,10 +139,15 @@ export function converseOverTools(call: RoleCall, io: ConversationIo): Promise<C
     runTool: async (toolCall) => {
       // Nothing is run for a model that asks for a tool it was not given: it is told so.
       if (io.reader === null) return NO_TOOLS_ANSWER;
+      const { onToolRedactions, onToolRead } = io;
       const answer = await runReviewTool(io.reader, toolCall, io.policy);
-      io.onToolRedactions?.(answer.redactions);
-      if (answer.read !== undefined) io.onToolRead?.(answer.read);
-      return answer.text;
+      return {
+        text: answer.text,
+        sent: () => {
+          onToolRedactions?.(answer.redactions);
+          if (answer.read !== undefined) onToolRead?.(answer.read);
+        },
+      };
     },
     limits: {
       maxTurns: CONVERSATION_LIMITS.maxTurns,
@@ -126,6 +155,7 @@ export function converseOverTools(call: RoleCall, io: ConversationIo): Promise<C
       tokenBudget: call.tokenBudget,
       maxOutputTokens: REVIEW_OUTPUT_TOKENS[call.role],
       reasoningAllowance: REASONING_ALLOWANCE_TOKENS.conversation,
+      maxCallInputTokens: callInputCap(io.contextWindowTokens ?? null, call.role),
     },
     send: io.send,
     shouldStop: io.shouldStop,

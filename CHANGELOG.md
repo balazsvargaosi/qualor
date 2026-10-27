@@ -98,6 +98,10 @@ All notable changes to Qualor are listed here, newest first. The format follows
   `project_not_selected` or `not_mapped`; `null` while it runs). `PUT /api/v0/system/llm` accepts
   the `GET` answer put back and ignores `reviewStatus` and `lastTest`. See
   [the guide](docs/guide/ai-review.md#api).
+- AI review keeps each call within the model's context window: the AI provider's **Context window**
+  (1 000 000 tokens unless set; set it for a local or older model with a smaller window). The
+  `provider` of `GET` and `PUT /api/v0/system/llm` gains `contextWindowTokens` (8 000 to
+  10 000 000, or `null`).
 
 ### Changed
 

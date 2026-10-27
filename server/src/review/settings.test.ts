@@ -54,6 +54,7 @@ const PROVIDER: StoredProvider = {
   api: 'chat_completions',
   workspaceId: null,
   timeoutSeconds: 60,
+  contextWindowTokens: null,
   apiKeyEnc: null,
 };
 

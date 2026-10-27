@@ -34,6 +34,9 @@ import {
   type ReviewNote,
   type VerifyVerdict,
 } from './schemas';
+// tool-conversation.ts reads REVIEW_OUTPUT_TOKENS of this module: neither reads the other's values
+// before a function is called.
+import { callInputCap, DEFAULT_CONTEXT_WINDOW_TOKENS } from './tool-conversation';
 
 export type { ReviewRole, Specialist } from './prompts';
 export { REVIEW_NOTES, type ReviewFinding, type ReviewNote } from './schemas';
@@ -63,7 +66,10 @@ export { REVIEW_NOTES, type ReviewFinding, type ReviewNote } from './schemas';
  * limit. The review goes on: only a judge cannot be done without. What a first message holds is
  * sized to a third of the tokens its conversation is sure of (`reviewLimits`, with a specialist's
  * even part, and the judge's data, with its share): every call sends it again, and a third leaves
- * room for a turn of tools, what the tools answer, and the wrap-up.
+ * room for a turn of tools, what the tools answer, and the wrap-up. No call may send more than the
+ * model's context window less the room for its answer (`callInputCap`, R46), so a third of the
+ * judge's cap bounds both as well. A conversation that reached the window answers through its
+ * wrap-up, and the review notes it (`context_window_reached`).
  *
  * Each conversation runs on the model of a tier (model-tiers.ts): the judge and the verification on
  * the strong one, the specialists on the standard one, and the quality reviewer of a trivial review
@@ -169,7 +175,8 @@ export interface PipelineDeps {
   /**
    * One conversation of a role over the tools. `user` is the envelope built with `nonce`; the
    * job's implementation runs `runConversation` with that nonce for the tool results, with
-   * `tokenBudget` (more than 0) and REVIEW_OUTPUT_TOKENS of the role, and with `accept` as its
+   * `tokenBudget` (more than 0), REVIEW_OUTPUT_TOKENS of the role and the role's cap in the model's
+   * context window (`callInputCap`, the window runReviewPipeline is given), and with `accept` as its
    * check of an answer: `true` takes it, and a text is what to say in asking again (an answer
    * that is too long to be read is told so). Every call of the conversation goes to the model of
    * `modelTier`, which the pipeline picks for the role and the size of the review (`tierOfCall`).
@@ -239,17 +246,19 @@ function evenCut(lengths: readonly number[], total: number, max: number): number
 
 /**
  * The characters the data the specialists share has for the instructions files and the slices: a
- * third of the smallest of a specialist's part and half the judge's share (the judge keeps the
- * other half of its third for the findings), less the longest system prompt, the envelope and the
- * lists, counted as the change has them. Not positive when the lists alone do not fit.
+ * third of the smallest of a specialist's part, half the judge's share (the judge keeps the other
+ * half of its third for the findings) and the judge's cap in the model's context window (the
+ * smallest cap of the roles that are given this data: `callInputCap`), less the longest system
+ * prompt, the envelope and the lists, counted as the change has them. Not positive when the lists
+ * alone do not fit. `window` Infinity: no window.
  */
-function dataRoom(shape: ContextShape, budget: number): number {
+function dataRoom(shape: ContextShape, budget: number, window: number): number {
   const { specialists } = planReview(shape.reviewed);
   const part = Math.floor(shareOf(budget, STAGE_SHARES.specialists) / specialists.length);
   const judgeHalf = Math.floor(shareOf(budget, STAGE_SHARES.judge) / 2);
   const prompt = Math.max(...specialists.map((role) => SYSTEM_PROMPTS[role].length));
   return Math.floor(
-    (firstMessageChars(Math.min(part, judgeHalf)) -
+    (firstMessageChars(Math.min(part, judgeHalf, callInputCap(window, 'judge'))) -
       prompt -
       ENVELOPE_CHARS -
       listedDataChars(shape)) /
@@ -258,27 +267,40 @@ function dataRoom(shape: ContextShape, budget: number): number {
 }
 
 /**
- * Whether a review of `budget` tokens can run on a change of this shape: its smallest share has
- * room for its first message, before the instructions files' floors, as `reviewLimits` counts it.
- * When it has none, `reviewLimits` still gives the instructions their floors, and the review would
- * send a first message larger than a third of its share: the job skips it instead (`budget_spent`,
- * detail `too_large`: the merge request is too large for the budget, not the day's budget spent).
+ * Whether a review of `budget` tokens can run on a change of this shape, on a model of `window`
+ * tokens (DEFAULT_CONTEXT_WINDOW_TOKENS when left out; Infinity: no window, to ask whether the
+ * budget alone holds it): its smallest share, and the judge's cap in the window, have room for its
+ * first message, before the instructions files' floors, as `reviewLimits` counts it. When it has
+ * none, `reviewLimits` still gives the instructions their floors, and the review would send a first
+ * message larger than a third of its share or of that cap: the job skips it instead
+ * (`budget_spent`, detail `too_large` when the budget is too small for the merge request,
+ * `window_too_small` when only the window is, never the day's budget spent).
  */
-export function reviewFits(shape: ContextShape, budget: number): boolean {
-  return dataRoom(shape, budget) > 0;
+export function reviewFits(
+  shape: ContextShape,
+  budget: number,
+  window: number = DEFAULT_CONTEXT_WINDOW_TOKENS,
+): boolean {
+  return dataRoom(shape, budget, window) > 0;
 }
 
 /**
  * How much of the slices and of the instructions a review of `budget` tokens shows of a change of
- * this shape: what buildReviewContext's `limits` answers (the job passes it this, bound to the
- * budget). The data the specialists share is sized so that a specialist's first message takes at
- * most a third of its part, and half of the judge's third (`dataRoom`). That room goes first to the
+ * this shape, on a model of `window` tokens (as `reviewFits` takes it): what buildReviewContext's
+ * `limits` answers (the job passes it this, bound to the budget and the window). The data the
+ * specialists share is sized so that a specialist's first message takes at most a third of its
+ * part, half of the judge's third, and a third of the judge's cap in the window (`dataRoom`). That
+ * room goes first to the
  * instructions files, which no tool can stand in for: each at least INSTRUCTIONS_MIN_CHARS (or all
  * of it, if shorter) even past that room, the long ones cut evenly when they do not all fit. The
  * slices have the rest. Each part is at most CONTEXT_MAXIMA.
  */
-export function reviewLimits(shape: ContextShape, budget: number): ContextLimits {
-  const room = dataRoom(shape, budget);
+export function reviewLimits(
+  shape: ContextShape,
+  budget: number,
+  window: number = DEFAULT_CONTEXT_WINDOW_TOKENS,
+): ContextLimits {
+  const room = dataRoom(shape, budget, window);
   const labels = shape.instructionChars.length * CUT_LABEL_CHARS;
   const instructionsChars = Math.max(
     INSTRUCTIONS_MIN_CHARS,
@@ -365,7 +387,7 @@ class Review {
    * and for a shorter one when the answer is longer than it is read. `stage` is told what it spent.
    * Its answer is checked again here: a conversation that gave one back without checking it is not
    * believed. A wrap-up for the tokens is noted as the token limit, one for the turns as the turn
-   * limit.
+   * limit, one for the model's context window as that.
    */
   async ask<T>(
     role: ReviewRole,
@@ -406,6 +428,7 @@ class Review {
     }
     if (result.wrappedUp === 'budget') this.limitReached();
     if (result.wrappedUp === 'turns') this.note('turn_limit_reached');
+    if (result.wrappedUp === 'window') this.note('context_window_reached');
     const value = accepted.get(result.text) ?? this.read(role, result.text, schema);
     return value === undefined ? { kind: 'unread' } : { kind: 'answer', value };
   }
@@ -461,15 +484,18 @@ const isSerious = (finding: JudgedFinding): boolean =>
  * (the header above): each conversation is given its tokens, and keeps room in them for its
  * wrap-up. It goes past them only by as much as the loop's guesses fell short, or when its first
  * turn of tools already left no room (conversation.ts), and what it spends past them is taken from
- * no other conversation: the review goes past `budget` by that much at most. `onPhase` is told each
- * stage as it starts. The outcome is `stopped` as soon as a conversation is, and `failed` when the
- * provider fails or the judge gives no answer of its schema: nothing of a failed review is stored.
+ * no other conversation: the review goes past `budget` by that much at most. `window` is the model's
+ * context window, which the judge's data is sized within as the first messages are (`reviewLimits`;
+ * `deps.converse` keeps each call within it). `onPhase` is told each stage as it starts. The
+ * outcome is `stopped` as soon as a conversation is, and `failed` when the provider fails or the
+ * judge gives no answer of its schema: nothing of a failed review is stored.
  */
 export async function runReviewPipeline(
   context: ReviewContext,
   budget: number,
   deps: PipelineDeps,
   onPhase: (phase: ReviewPhase) => Promise<void>,
+  window: number = DEFAULT_CONTEXT_WINDOW_TOKENS,
 ): Promise<PipelineOutcome> {
   const plan = planReview(context.reviewed);
   const review = new Review(deps, plan.tier);
@@ -507,10 +533,13 @@ export async function runReviewPipeline(
   }
 
   // The judge, with its own share and what the specialists left of theirs: what they spent past
-  // what they were given is not taken from it. Its data takes a third of its share at most: the
-  // bodies of the findings are cut to fit.
+  // what they were given is not taken from it. Its data takes a third of its share, and of its cap
+  // in the window, at most: the bodies of the findings are cut to fit.
   await onPhase('judge');
-  const judgeRoom = firstMessageChars(judgeShare) - SYSTEM_PROMPTS.judge.length - ENVELOPE_CHARS;
+  const judgeRoom =
+    firstMessageChars(Math.min(judgeShare, callInputCap(window, 'judge'))) -
+    SYSTEM_PROMPTS.judge.length -
+    ENVELOPE_CHARS;
   const judgeShown = judgeData(context, labelled, judgeRoom);
   const judge = new StageTokens(judgeShare + specialists.unspent(), 1);
   const asked = await review.ask('judge', judgeShown, judgeAnswerSchema, judge);
