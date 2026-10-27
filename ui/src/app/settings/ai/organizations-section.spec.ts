@@ -651,7 +651,8 @@ describe('OrganizationsSection (AI settings redesign, Task 8)', () => {
     expect(button(root, 'Show 20 more')).toBeUndefined();
     // The button is gone: the focus goes to the first organisation it showed.
     expect(document.activeElement).toBe(button(row(root, 'Org 101'), 'Edit'));
-  });
+    // 120 rendered rows take about 3 s on a busy machine, near the default 5 s.
+  }, 20_000);
 
   it('opens an organisation’s AI page in the header’s organisation', async () => {
     setup();
@@ -791,7 +792,8 @@ describe('OrganizationsSection (AI settings redesign, Task 8)', () => {
     expect(rows(root)).toHaveLength(25);
     expect(status(root)).toBe('Org 30 saved.');
     expect(count(root)).toBe('25 of 120 organizations');
-  });
+    // Fifty rendered rows take about 1 s, and several times that on a busy machine.
+  }, 20_000);
 
   it('gives the focus to the filter when the row it edited leaves with its editor', async () => {
     setup();
