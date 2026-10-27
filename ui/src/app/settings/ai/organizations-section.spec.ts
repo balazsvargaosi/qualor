@@ -2,6 +2,7 @@ import { TestBed } from '@angular/core/testing';
 import { provideRouter, Router } from '@angular/router';
 import { CONFIGURED, organizationsFixture } from '../../../testing/ai-settings';
 import {
+  type FakeReply,
   FakeServer,
   me,
   ORG_ID,
@@ -587,6 +588,68 @@ describe('OrganizationsSection (AI settings redesign, Task 8)', () => {
     expect(saves).toEqual([
       [ACME, { enabled: true, features: ALL_ON, excludedProjectIds: ['p9', 'p2'] }],
     ]);
+  });
+
+  it('drops the names read for an editor closed meanwhile', async () => {
+    const research = [
+      projectItem({
+        id: 'r1',
+        key: 'research/api',
+        name: 'Research API',
+        organizationId: RESEARCH,
+      }),
+    ];
+    const server = setup(ORGS, [...PROJECTS, ...research]);
+    // Every read waits for its answer.
+    const held: { organizationId: string | null; answer: (reply: FakeReply) => void }[] = [];
+    server.on(
+      'GET',
+      '/api/v0/projects',
+      (request) =>
+        new Promise<FakeReply>((answer) =>
+          held.push({ organizationId: request.query.get('organizationId'), answer }),
+        ),
+    );
+    const { fixture, root } = await render({
+      settings: {
+        ...SETTINGS,
+        organizations: {
+          ...SETTINGS.organizations,
+          [RESEARCH]: stored({ excludedProjectIds: ['r1'] }),
+        },
+      },
+    });
+    const loading = () =>
+      [...(editor(root)?.querySelectorAll('p.hint') ?? [])].some((p) => text(p) === 'Loading…');
+    const error = () => editor(root)?.querySelector('.field-error');
+    await edit(fixture, root, 'Acme');
+    await edit(fixture, root, 'Research');
+    expect(held.map((h) => h.organizationId)).toEqual([ACME, RESEARCH]);
+
+    // Acme's answer comes after its editor closed, and says there is more: it is dropped, and no
+    // more of Acme's list is read.
+    held[0]!.answer({ body: page([], '100') });
+    await settle(fixture);
+    expect(loading()).toBe(true);
+    expect(held).toHaveLength(2);
+    held[1]!.answer({ body: page(research) });
+    await settle(fixture);
+    expect(items(root)).toEqual(['Research API research/api Remove']);
+    expect(loading()).toBe(false);
+    expect(error()).toBeNull();
+
+    // A read that fails after its editor closed says nothing in the next one.
+    await click(fixture, button(row(root, 'Research'), 'Close'));
+    await edit(fixture, root, 'Acme');
+    await edit(fixture, root, 'Research');
+    held[2]!.answer({ status: 500, body: problem(500, 'INTERNAL') });
+    await settle(fixture);
+    expect(error()).toBeNull();
+    expect(loading()).toBe(true);
+    held[3]!.answer({ body: page(research) });
+    await settle(fixture);
+    expect(items(root)).toEqual(['Research API research/api Remove']);
+    expect(error()).toBeNull();
   });
 
   it('reads 20 pages at most for the names, and nothing for an organisation that excludes none', async () => {
