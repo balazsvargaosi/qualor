@@ -1132,7 +1132,7 @@ describe('runReviewPipeline', () => {
     ]);
   });
 
-  it("keeps the judge's first message within a third of its cap, whatever the findings:their bodies, then the prior ones', then the suggestions go, and no finding", async () => {
+  it("keeps the judge's first message within a third of its cap, whatever the findings: their bodies, then the prior ones', then the suggestions go, and no finding", async () => {
     // A re-review: 20 open prior findings, and 24 new ones with long bodies and suggestions (an
     // answer a reviewer's output limit holds).
     const lines = Array.from({ length: 8 }, (_, i) => `const value${i} = compute(${i});`);
