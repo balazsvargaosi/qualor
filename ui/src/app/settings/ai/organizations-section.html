@@ -198,8 +198,12 @@
                             <ul class="list-editor">
                               @for (project of v.excluded; track project.id; let index = $index) {
                                 <li>
-                                  <span class="item"
-                                    ><strong>{{ project.name }}</strong>
+                                  <span class="item">
+                                    @if (project.name; as name) {
+                                      <strong>{{ name }}</strong>
+                                    } @else {
+                                      <code>{{ project.id }}</code>
+                                    }
                                     @if (project.key; as key) {
                                       &ngsp;<code>{{ key }}</code>
                                     }</span

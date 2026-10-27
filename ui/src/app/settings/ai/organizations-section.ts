@@ -287,6 +287,8 @@ export class OrganizationsSection {
         ? $localize`:@@aiProvider.orgs.fixNote:${name}:org:'s automatic fix suggestions stop without it.`
         : null;
     const known = this.known();
+    // A project the names did not include: not listed, when they were all read; else not known.
+    const unlisted = this.lookupError() === null;
     return {
       id,
       enabled: draft.enabled,
@@ -317,12 +319,15 @@ export class OrganizationsSection {
         const project = known.get(projectId);
         const projectName =
           project?.name ??
-          $localize`:@@ai.settings.orgExcludedUnlisted:A project not listed here (${projectId}:INTERPOLATION:)`;
+          (unlisted
+            ? $localize`:@@ai.settings.orgExcludedUnlisted:A project not listed here (${projectId}:INTERPOLATION:)`
+            : null);
         return {
           id: projectId,
+          /** Null while the names could not be read: the id alone stands for it. */
           name: projectName,
           key: project?.key ?? null,
-          removeLabel: $localize`:@@aiProvider.orgs.removeLabel:Remove ${projectName}:name:`,
+          removeLabel: $localize`:@@aiProvider.orgs.removeLabel:Remove ${projectName ?? projectId}:name:`,
         };
       }),
     };

@@ -506,6 +506,22 @@ describe('OrganizationsSection (AI settings redesign, Task 8)', () => {
     expect(server.requestsTo('GET', '/api/v0/projects')).toHaveLength(3);
   });
 
+  it('names a project by its id alone when the names could not be read', async () => {
+    const server = setup();
+    server.on('GET', '/api/v0/projects', { status: 500, body: problem(500, 'INTERNAL') });
+    const { fixture, root } = await render();
+    await edit(fixture, root, 'Acme');
+    // Not "A project not listed here": whether it is listed is not known.
+    expect(items(root)).toEqual(['p3 Remove']);
+    expect(editor(root)?.querySelector('.list-editor .item code')?.textContent).toBe('p3');
+    expect(editor(root)?.querySelector('.list-editor li button')?.getAttribute('aria-label')).toBe(
+      'Remove p3',
+    );
+    expect(text(editor(root)?.querySelector('.list-editor + .field-error'))).toBe(
+      'The request failed (HTTP 500, INTERNAL).',
+    );
+  });
+
   it('reads 20 pages at most for the names, and nothing for an organisation that excludes none', async () => {
     const server = setup();
     // A list that never ends.
