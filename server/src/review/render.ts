@@ -197,7 +197,7 @@ const WINDOW_FULL = (words: Words): string =>
 const NEXT_PUSH = 'The next push reviews again.';
 
 /** What a finished review says of itself. */
-const NOTES: Record<Exclude<ReviewNote, 'lists_shortened'>, string> = {
+const NOTES: Record<ReviewNote, string | ((words: Words) => string)> = {
   reviewer_unreadable: 'A reviewer’s answer could not be read, so part of the review is missing.',
   token_limit_reached: 'The review reached its token limit, so it may have missed problems.',
   turn_limit_reached: `A reviewer reached its limit of ${CONVERSATION_LIMITS.maxTurns} turns, so it may have missed problems.`,
@@ -205,9 +205,14 @@ const NOTES: Record<Exclude<ReviewNote, 'lists_shortened'>, string> = {
     'There were more serious security findings than the review verifies, so the rest were not checked a second time.',
   context_window_reached:
     'A reviewer reached the model’s context window, so it may have missed problems.',
+  lists_shortened: (words) =>
+    `This ${words.request} is large, so the reviewers were shown a shorter list of its changes and read the rest with their tools.`,
 };
-const LISTS_SHORTENED = (words: Words): string =>
-  `This ${words.request} is large, so the reviewers were shown a shorter list of its changes and read the rest with their tools.`;
+/** The text of a note, for the words of the provider. */
+const noteText = (note: ReviewNote, words: Words): string => {
+  const text = NOTES[note];
+  return typeof text === 'string' ? text : text(words);
+};
 const SNAPSHOT_PARTIAL =
   'The scanner left some files out of the repository snapshot to stay within its limits, so the review did not see all of them.';
 
@@ -307,14 +312,15 @@ function noteSentences(state: Done, words: Words): string[] {
   const notes = new Set<string>(state.notes ?? []);
   const sentences: string[] = [];
   if (state.tokenLimitReached || notes.has('token_limit_reached')) {
-    sentences.push(NOTES.token_limit_reached);
+    sentences.push(noteText('token_limit_reached', words));
   }
-  if (notes.has('turn_limit_reached')) sentences.push(NOTES.turn_limit_reached);
-  if (notes.has('context_window_reached')) sentences.push(NOTES.context_window_reached);
-  if (notes.has('lists_shortened')) sentences.push(LISTS_SHORTENED(words));
+  if (notes.has('turn_limit_reached')) sentences.push(noteText('turn_limit_reached', words));
+  if (notes.has('context_window_reached'))
+    sentences.push(noteText('context_window_reached', words));
+  if (notes.has('lists_shortened')) sentences.push(noteText('lists_shortened', words));
   if (state.snapshotPartial) sentences.push(SNAPSHOT_PARTIAL);
-  if (notes.has('reviewer_unreadable')) sentences.push(NOTES.reviewer_unreadable);
-  if (notes.has('verification_capped')) sentences.push(NOTES.verification_capped);
+  if (notes.has('reviewer_unreadable')) sentences.push(noteText('reviewer_unreadable', words));
+  if (notes.has('verification_capped')) sentences.push(noteText('verification_capped', words));
   return sentences;
 }
 

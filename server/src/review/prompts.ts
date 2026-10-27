@@ -841,8 +841,12 @@ export function replyData(shown: ReplyShown): ReplyData {
 
 // ─── What the data takes besides the slices and the instructions ─────────────
 
-/** The merge request's words in the data besides their texts: the keys and the target branch. */
-const WORDS_KEYS_CHARS = 150;
+/**
+ * The data besides the lists, the slices and the texts: its keys, the empty lists and the numbers,
+ * as the JSON of a ReviewData with no content is long (280 characters, measured); the target
+ * branch, the instructions files names and the texts are counted apart.
+ */
+const WORDS_KEYS_CHARS = 280;
 /** An entry of notInSlices besides its path, at most. */
 const NOT_IN_SLICES_CHARS = 70;
 /** A skipped change besides its path. */
@@ -865,7 +869,7 @@ export function listedDataChars(shape: ContextShape, caps: ListCaps): number {
   // The context lists as many changes with no slices, and one line for the others.
   const notInSlices = shape.reviewed
     .slice(0, caps.notInSlices)
-    .reduce((sum, change) => sum + change.path.length + NOT_IN_SLICES_CHARS, NOT_IN_SLICES_CHARS);
+    .reduce((sum, change) => sum + change.path.length + NOT_IN_SLICES_CHARS, 0);
   const skipped = shape.skipped
     .slice(0, caps.skipped)
     .reduce((sum, change) => sum + change.path.length + SKIPPED_CHARS, 0);

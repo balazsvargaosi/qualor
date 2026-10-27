@@ -981,10 +981,11 @@ describe('the ai-review job (6I-3, R15)', () => {
       changes: { lines: number[][]; unlistedLines?: number }[];
       unlistedChanges: number;
     };
-    expect(data.changes.length).toBeLessThanOrEqual(200);
-    expect(data.changes.length + data.unlistedChanges).toBe(150);
+    // Rung 1 exactly: 200 changes fit, so all 150 are listed, with 3 of their 5 ranges.
+    expect(data.changes).toHaveLength(150);
+    expect(data.unlistedChanges).toBe(0);
     for (const change of data.changes) {
-      expect(change.lines.length).toBeLessThanOrEqual(3);
+      expect(change.lines).toHaveLength(3);
       expect(change.lines.length + (change.unlistedLines ?? 0)).toBe(5);
     }
   });
@@ -1057,7 +1058,7 @@ describe('the ai-review job (6I-3, R15)', () => {
   });
 
   it('a merge request that cannot fit a small window is skipped budget_spent: window_too_small, and the summary says the window is the cause, not Tokens per review', async () => {
-    // A window of 24 000 tokens, under the least that a change of one line needs (about 26 500):
+    // A window of 24 000 tokens, under the least that a change of one line needs (about 26 600):
     // the judge's answer and its prompt leave no room in its third for this small change, though
     // Tokens per review holds it many times over.
     await reviewOn({ window: 24_000 });

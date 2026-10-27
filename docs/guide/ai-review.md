@@ -924,14 +924,16 @@ is no exception: OpenAI clamps a limit that is too large by itself, but a server
 refuses a call with the room (a 400 or a 422) is asked again once without it, as on the other APIs.
 
 **Big merge requests.** The reviewers get the list of the changed files and the changed code in
-their first message and read more with their tools. At the default of 300 000 tokens per review, a
-merge request of more than about 100 changed files is given shorter lists in that message: fewer
-files, fewer line ranges for each and fewer analyzer findings, and the code it has room for. The
-summary then says "This merge request is large, so the reviewers were shown a shorter list of its
-changes and read the rest with their tools." The files left off a list are counted, and the
-reviewers read them with their tools. Long paths, many line ranges for a file and many analyzer
-findings on the changed files bring the limit down. At 600 000 tokens per review, a merge request
-with ordinary paths keeps its whole lists whatever its number of files. A merge request is not
+their first message and read more with their tools. At the default of 300 000 tokens per review, the
+list of a merge request of about 80 changed files or more leaves the first message little room for
+code (under 5 000 characters, and under 1 000 from about 100 files), and its reviewers read the code
+with their tools. From about 105 changed files they get shorter lists in that message instead: fewer
+files, fewer line ranges for each and fewer analyzer findings, and room for more code again (about
+11 000 characters). The summary then says "This merge request is large, so the reviewers were shown a
+shorter list of its changes and read the rest with their tools." The files left off a list are
+counted, and the reviewers read them with their tools. Long paths, many line ranges for a file and
+many analyzer findings on the changed files bring these limits down. At 600 000 tokens per review, a
+merge request with ordinary paths keeps the lists of today whatever its number of files. A merge request is not
 reviewed for its size only when **Tokens per review** is too small for even the shortest lists,
 below about 110 000 tokens: the summary then says "AI review did not run because this merge request
 is too large for the Tokens per review budget; raise it in Settings → AI." For big merge requests,
@@ -1003,7 +1005,7 @@ and what to do about each:
 | AI review did not repeat: the changes it reviews are the same as in its last review, whose findings stay open. | Not an error. The push changed nothing the review reads |
 | AI review did not run because its token budget for today is spent. | Wait for UTC midnight, or raise the budgets ([Budgets and today's usage](#budgets-and-todays-usage)). It also appears when what is left of the day is too little for a merge request of this size |
 | AI review did not run because this merge request is too large for the Tokens per review budget; raise it in Settings → AI. | Even the shortest lists of its changes leave a reviewer no room: **Tokens per review** is below about 110 000 tokens. (A larger merge request is reviewed with shorter lists.) Raise **Tokens per review** in the **Budgets** of **Settings → AI** ([Budgets and today's usage](#budgets-and-todays-usage)) |
-| AI review did not run because this merge request is too large for the model’s context window; raise Context window in the AI provider settings if the model takes more. | Tokens per review holds the merge request, but the first message of a reviewer would not fit one call of the model. With the judge's 16 384 tokens of room for its answer, no window under about 26 500 tokens fits even a change of one line, and an instructions file such as `AGENTS.md` needs more. If the model takes more than the **Context window** set in **Settings → AI provider**, raise it there; otherwise use a model with a larger window. Raising **Tokens per review** does not help |
+| AI review did not run because this merge request is too large for the model’s context window; raise Context window in the AI provider settings if the model takes more. | Tokens per review holds the merge request, but the first message of a reviewer would not fit one call of the model. With the judge's 16 384 tokens of room for its answer, no window under about 26 600 tokens fits even a change of one line, and an instructions file such as `AGENTS.md` needs more. If the model takes more than the **Context window** set in **Settings → AI provider**, raise it there; otherwise use a model with a larger window. Raising **Tokens per review** does not help |
 | AI review failed: the model provider returned an error or could not be reached. The next push reviews again. | A call was refused, timed out, was rate limited or got no answer. Qualor tries a rate-limited call again twice and one that timed out once. The server log's `AI review call finished` lines give each call's error code and the provider's HTTP status: [the table below](#when-the-model-provider-fails) says what to do. Press **Test again** in **Settings → AI provider** to check the provider. With no such line for the review in the log, no call was made: the stored API key could no longer be read (`QUALOR_SECRET_KEY` changed; set the API key again in **Settings → AI provider**), or calls to the provider were paused after repeated failures (`PROVIDER_UNAVAILABLE` below) |
 | AI review failed: the model provider does not support the tool calls the review needs. The next push reviews again. | Use a model and a server that can call tools. The Test of **Settings → AI provider** says `cannot call tools, so AI review would fail` for this one ([Models that work](#models-that-work)). With one of OpenAI's newest models, the cause is usually the API: choose **Responses** under **API** in **Connection options** and press **Save and test**, and the model's line says `can call tools` |
 | AI review failed because the model’s context window is too small for this merge request; raise Context window in the AI provider settings, or use a model with a larger window. | A call of the judge did not fit the model's context window. Either its first message, with the findings of the reviewers and the earlier ones, did not fit even with their texts cut, or the judge had read code and a turn with the wrap-up beside it did not fit. The server log's `AI review run ended` line says `detail: window_full`. A push with as many findings fails the same way; one with fewer may not. If the model takes more than the **Context window** set in **Settings → AI provider**, raise it there; otherwise use a model with a larger window |

@@ -1825,13 +1825,13 @@ describe('reviewLimits', () => {
     expect(reviewFits(oneLine, 300_000, 16_384)).toBe(false);
   });
 
-  it('a change of one line with no description needs a window of about 26 500 tokens', () => {
+  it('a change of one line with no description needs a window of about 26 600 tokens', () => {
     // The judge's 16 384 tokens of answer, its prompt, and half of what is left of its third for
     // the data the reviewers share (the guide's figure).
-    for (const window of [8_000, 24_000, 26_400]) {
+    for (const window of [8_000, 24_000, 26_500, 26_570]) {
       expect(reviewFits(oneLine, 300_000, window), String(window)).toBe(false);
     }
-    expect(reviewFits(oneLine, 300_000, 26_500)).toBe(true);
+    expect(reviewFits(oneLine, 300_000, 26_600)).toBe(true);
   });
 
   it("counts the instructions files' floors against the window, not against the budget", () => {
