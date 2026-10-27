@@ -23,7 +23,8 @@ import { Api, ok } from '../../api/api';
 import type { Organization, ResponseBody } from '../../api/types';
 import { SessionStore } from '../../auth/session';
 import type { LlmBody } from './llm-body';
-import { defaultOutputLimitField, ProviderSection, type SaveProvider } from './provider-section';
+import { defaultOutputLimitField } from './provider-draft';
+import { ProviderSection, type SaveProvider } from './provider-section';
 
 type LlmSettings = ResponseBody<'/api/v0/system/llm', 'get'>;
 type Provider = NonNullable<LlmSettings['provider']>;

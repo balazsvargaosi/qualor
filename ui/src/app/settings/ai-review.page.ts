@@ -20,7 +20,6 @@ import { ApiError, fieldErrors, problemMessage } from '../api/errors';
 import type { ItemOf } from '../api/types';
 import { SessionStore } from '../auth/session';
 import { OrgContext } from '../org/org-context';
-import { formatDate } from '../shared/date-time.pipe';
 import { closeModal, openAfterRender } from '../shared/dialog';
 import { keepEdits } from '../shared/drafts';
 import { keepFocus } from '../shared/focus';
@@ -34,7 +33,7 @@ import { formatWhole } from '../shared/numbers';
 import { type PickedProject, ProjectPicker } from '../shared/project-picker';
 import { Requirement } from '../shared/requirement';
 import { type FootOutcome, SectionFoot } from '../shared/section-foot';
-import { type StatusLine, StatusList, type StatusMeter } from '../shared/status-list';
+import { type StatusLine, StatusList } from '../shared/status-list';
 import { type LeaveGuarded, LeaveGuards, whileDirty } from '../shared/unsaved-changes';
 import { SystemInfo } from '../shell/system-info';
 import {
@@ -65,6 +64,7 @@ import {
 } from './ai-review';
 import { AUTO_FIX_FEATURE } from './auto-fix';
 import { FixSuggestionsSection } from './org-ai/fix-suggestions-section';
+import { orgStatusLines, reviewStateOf } from './org-ai/org-status';
 import {
   chosenState,
   dialogSummaryText,
@@ -322,11 +322,7 @@ export class AiReviewPage implements LeaveGuarded {
   });
 
   /** AI review as saved: off, on, or on while its consent no longer covers the provider. */
-  private readonly reviewState = computed<'off' | 'on' | 'paused'>(() => {
-    const settings = this.current();
-    if (!settings?.enabled) return 'off';
-    return settings.consentCurrent ? 'on' : 'paused';
-  });
+  private readonly reviewState = computed(() => reviewStateOf(this.current()));
   /** A paused review: its dialog may also switch it off instead of confirming the provider now. */
   protected readonly paused = computed(() => this.reviewState() === 'paused');
   protected readonly reviewChip = computed<Chip>(() => {
@@ -347,9 +343,13 @@ export class AiReviewPage implements LeaveGuarded {
   protected readonly statusLines = computed<readonly StatusLine[]>(() => {
     const settings = this.current();
     if (settings === null) return [];
-    const lines: StatusLine[] = [this.reviewLine(settings), this.todayLine(settings)];
-    const assistant = this.assistantLine();
-    if (assistant !== null) lines.push(assistant);
+    const lines = orgStatusLines(settings, {
+      summary: this.storedSummary(),
+      organization: this.orgName(),
+      viewerId: this.session.user()?.id ?? null,
+      assistant: this.orgAi(),
+      locale: this.locale,
+    });
     const licensed = this.fixSuggestions();
     const fix = this.fixLine();
     if (licensed === true && fix !== null) lines.push(fix);
@@ -1034,152 +1034,6 @@ export class AiReviewPage implements LeaveGuarded {
     this.budgetErrors.set({});
   }
 
-  private reviewLine(settings: OrgAiReview): StatusLine {
-    const label = $localize`:@@orgAi.status.review:AI review`;
-    const summary = this.storedSummary();
-    switch (this.reviewState()) {
-      case 'off':
-        return {
-          key: 'review',
-          label,
-          tone: 'off',
-          state: this.states.off,
-          sub:
-            summary === null
-              ? null
-              : summaryText(summary, settings.scope, this.orgName(), this.locale),
-          action: {
-            id: 'switch-on',
-            label: $localize`:@@orgAi.action.switchOn:Switch on AI review…`,
-            primary: true,
-          },
-        };
-      case 'on':
-        return {
-          key: 'review',
-          label,
-          tone: 'ok',
-          state: this.states.on,
-          text: summary === null ? null : this.reviewingText(summary.reviewable),
-          sub: this.confirmedText(settings),
-          action: { id: 'switch-off', label: this.texts.switchOff },
-        };
-      case 'paused':
-        return {
-          key: 'review',
-          label,
-          tone: 'attention',
-          state: this.states.paused,
-          text: $localize`:@@orgAi.status.changed:The AI provider changed`,
-          sub: this.pausedText(settings),
-          action: {
-            id: 'confirm',
-            label: $localize`:@@orgAi.action.confirm:Review and confirm…`,
-            primary: true,
-          },
-        };
-    }
-  }
-
-  private reviewingText(count: number): string {
-    return count === 1
-      ? $localize`:@@orgAi.status.reviewingOne:Reviewing 1 project`
-      : $localize`:@@orgAi.status.reviewing:Reviewing ${this.whole(count)}:count: projects`;
-  }
-
-  /** Who confirmed the notice, when, and for which host and model ("by you" for the viewer). */
-  private confirmedText(settings: OrgAiReview): string | null {
-    const consent = settings.consent;
-    if (consent === null) return null;
-    const date = formatDate(consent.at, this.locale);
-    const host = consent.providerHost;
-    const model = consent.model;
-    return consent.userId === this.session.user()?.id
-      ? $localize`:@@orgAi.status.confirmedByYou:Confirmed on ${date}:date: (by you) for ${host}:host: (${model}:model:).`
-      : $localize`:@@orgAi.status.confirmed:Confirmed on ${date}:date: for ${host}:host: (${model}:model:).`;
-  }
-
-  /**
-   * What was confirmed and what the provider is now. The answer leaves out the consent's set of
-   * models (review.md §2.5), so the confirmed side names the standard model alone.
-   */
-  private pausedText(settings: OrgAiReview): string | null {
-    const consent = settings.consent;
-    const provider = settings.provider;
-    if (consent === null || provider === null) return null;
-    const oldHost = consent.providerHost;
-    const oldModel = consent.model;
-    const date = formatDate(consent.at, this.locale);
-    const host = provider.host;
-    const models = provider.models.join(', ');
-    return $localize`:@@orgAi.status.pausedSub:You confirmed ${oldHost}:oldHost: (${oldModel}:oldModel:) on ${date}:date:. It now uses ${host}:host: (${models}:models:). No merge request is reviewed until you confirm.`;
-  }
-
-  /** Today's use: AI review against the smaller of its budget and the cap, then the assistant. */
-  private todayLine(settings: OrgAiReview): StatusLine {
-    const { tokensToday, reviewsToday, costTodayUsd } = settings.usage;
-    const ceiling = settings.instanceCeiling.tokensPerDay;
-    const reviews =
-      reviewsToday === 1
-        ? $localize`:@@orgAi.today.reviewsOne:1 review`
-        : $localize`:@@orgAi.today.reviews:${this.whole(reviewsToday)}:count: reviews`;
-    const meters: StatusMeter[] = [
-      {
-        label: $localize`:@@orgAi.today.review:AI review`,
-        value: tokensToday,
-        max:
-          ceiling === null
-            ? settings.budgets.tokensPerDay
-            : Math.min(settings.budgets.tokensPerDay, ceiling),
-        note:
-          costTodayUsd === null
-            ? reviews
-            : $localize`:@@orgAi.today.reviewsCost:${reviews}:reviews: · ${this.usd(costTodayUsd)}:cost:`,
-      },
-    ];
-    const assistant = this.orgAi();
-    if (assistant !== null) {
-      const { explain, triage, fix, tokens } = assistant.usage;
-      meters.push({
-        label: $localize`:@@orgAi.today.assistant:Assistant`,
-        value: tokens,
-        max: assistant.budgets.tokensPerDay,
-        note: $localize`:@@orgAi.today.assistantNote:Explanations ${this.whole(explain)}:explain: · Triage ${this.whole(triage)}:triage: · Fixes ${this.whole(fix)}:fix:`,
-      });
-    }
-    return {
-      key: 'today',
-      label: $localize`:@@orgAi.status.today:Today`,
-      tone: 'off',
-      state: '',
-      meters,
-    };
-  }
-
-  /** The assistant's features as the instance admin chose them: on if any is. */
-  private assistantLine(): StatusLine | null {
-    const assistant = this.orgAi();
-    if (assistant === null) return null;
-    const list = (features: readonly Feature[]) =>
-      new Intl.ListFormat(this.locale, { type: 'conjunction' }).format(
-        features.map((f) => this.featureNames[f]),
-      );
-    const on = FEATURES.filter((f) => assistant.features[f]);
-    const off = FEATURES.filter((f) => !assistant.features[f]);
-    let text: string;
-    if (off.length === 0) text = $localize`:@@orgAi.assistant.allOn:${list(on)}:on: on.`;
-    else if (on.length === 0) text = $localize`:@@orgAi.assistant.allOff:${list(off)}:off: off.`;
-    else text = $localize`:@@orgAi.assistant.features:${list(on)}:on: on, ${list(off)}:off: off.`;
-    return {
-      key: 'assistant',
-      label: $localize`:@@orgAi.status.assistant:Assistant`,
-      tone: on.length > 0 ? 'ok' : 'off',
-      state: on.length > 0 ? this.states.on : this.states.off,
-      text,
-      sub: $localize`:@@orgAi.assistant.who:An instance admin chooses them.`,
-    };
-  }
-
   private closeDialogs(): void {
     closeDialog(this.consentDialog());
     closeDialog(this.offDialog());
@@ -1187,12 +1041,6 @@ export class AiReviewPage implements LeaveGuarded {
 
   private whole(n: number): string {
     return formatWhole(n, this.locale);
-  }
-
-  private usd(amount: number): string {
-    return new Intl.NumberFormat(this.locale, { style: 'currency', currency: 'USD' }).format(
-      amount,
-    );
   }
 
   /** A cost limit in US dollars, with every decimal it has ("$12.50", "$1.255"). */
