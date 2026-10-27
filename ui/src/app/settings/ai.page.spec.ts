@@ -55,6 +55,17 @@ const ONE_MODEL_PASSED = {
   ],
 };
 
+/** A price pair as the server stores it: no cached input price, null, when the body gave none (R49). */
+const storedPair = (pair: {
+  inputUsdPerMTok: number;
+  outputUsdPerMTok: number;
+  cachedInputUsdPerMTok?: number | null;
+}) => ({
+  inputUsdPerMTok: pair.inputUsdPerMTok,
+  outputUsdPerMTok: pair.outputUsdPerMTok,
+  cachedInputUsdPerMTok: pair.cachedInputUsdPerMTok ?? null,
+});
+
 /** An organisation's stored entry: allowed with Explain and Suggest triage, as CONFIGURED's. */
 function stored(over: Partial<Stored> = {}): Stored {
   return { ...(CONFIGURED.organizations[ORG_ID] as Stored), ...over };
@@ -112,7 +123,11 @@ function storeBodies(
         ...body.budgets,
         reviewTokensPerOrganizationPerDay: body.budgets.reviewTokensPerOrganizationPerDay ?? null,
       },
-      pricing: body.pricing && { strong: null, fast: null, ...body.pricing },
+      pricing: body.pricing && {
+        ...storedPair(body.pricing),
+        strong: body.pricing.strong ? storedPair(body.pricing.strong) : null,
+        fast: body.pricing.fast ? storedPair(body.pricing.fast) : null,
+      },
       storePrompts: body.storePrompts,
       promptRetentionDays: body.promptRetentionDays,
     };
@@ -550,7 +565,7 @@ describe('instanceStatusLines', () => {
       'Set',
       'Assistant: 1,000,000 tokens a day per organization · AI review: capped at 750,000 tokens a day per organization',
     ]);
-    const prices = { inputUsdPerMTok: 1, outputUsdPerMTok: 2 };
+    const prices = { inputUsdPerMTok: 1, outputUsdPerMTok: 2, cachedInputUsdPerMTok: null };
     expect(
       lineOf(configured({ pricing: { ...prices, strong: null, fast: null } }), 'prices'),
     ).toMatchObject({

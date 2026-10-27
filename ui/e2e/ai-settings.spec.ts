@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { Page } from '@playwright/test';
-import { setBudgets, setContextWindow } from './ai-provider';
+import { setBudgets, setContextWindow, setPricing } from './ai-provider';
 import { expect, expectAccessible, test } from './fixtures';
 import { PAYMENTS } from './seed-data';
 
@@ -322,6 +322,58 @@ test('the AI provider page saves the context window, and keeps it after a reload
   } finally {
     // Whatever failed above, the shared server keeps the window it had.
     if ((await windowOf()) !== before) await setContextWindow(page.request, before);
+  }
+});
+
+test('the AI provider page saves a Cached input price, and keeps it after a reload', async ({
+  page,
+}) => {
+  const pricingOf = async () =>
+    (
+      (await (await page.request.get('/api/v0/system/llm')).json()) as {
+        pricing: { cachedInputUsdPerMTok: number | null } | null;
+      }
+    ).pricing;
+  const before = await pricingOf();
+  try {
+    await page.goto('/settings/ai');
+    const provider = page.locator('#provider');
+    const prices = provider.getByRole('switch', { name: "Count costs with these models' prices" });
+    // Fictional prices, put back below: the other tests expect none on this server.
+    await prices.check();
+    await expect(provider.locator('.prices thead th')).toHaveText([
+      'Model',
+      'Input',
+      'Output',
+      'Cached input',
+    ]);
+    const cached = provider.getByLabel('fake-model: cached input, US$ per million tokens');
+    await expect(cached).toHaveValue('');
+    await expect(provider.locator('#ai-prices-cached-help')).toHaveText(
+      'Cached input is what the provider charges for input it read from its cache. Leave it empty to count that input at the input price.',
+    );
+    await provider.getByLabel('fake-model: input, US$ per million tokens').fill('3');
+    await provider.getByLabel('fake-model: output, US$ per million tokens').fill('15');
+    await cached.fill('0.3');
+    const saved = page.waitForResponse(
+      (r) => r.request().method() === 'PUT' && r.url().endsWith('/api/v0/system/llm'),
+    );
+    await provider.getByRole('button', { name: 'Save and test' }).click();
+    expect((await saved).status()).toBe(200);
+    expect(await pricingOf()).toMatchObject({
+      inputUsdPerMTok: 3,
+      outputUsdPerMTok: 15,
+      cachedInputUsdPerMTok: 0.3,
+    });
+
+    await page.reload();
+    await expect(
+      provider.getByLabel('fake-model: cached input, US$ per million tokens'),
+    ).toHaveValue('0.30');
+    await expectAccessible(page);
+  } finally {
+    // Whatever failed above, the shared server keeps the prices it had.
+    if (!isDeepStrictEqual(await pricingOf(), before)) await setPricing(page.request, before);
   }
 });
 

@@ -39,6 +39,15 @@ export async function setBudgets(admin: APIRequestContext, budgets: object): Pro
   await saveStored(admin, () => ({ budgets }));
 }
 
+/**
+ * The instance admin's save of the AI provider settings with the prices given (null: none),
+ * everything else as it is stored: what a test that saved prices puts back in its `finally`, so that
+ * a failure midway never leaves prices in the shared e2e database, whose other tests expect none.
+ */
+export async function setPricing(admin: APIRequestContext, pricing: object | null): Promise<void> {
+  await saveStored(admin, () => ({ pricing }));
+}
+
 /** The stored provider as the `PUT` takes it: the answer's fields without its key's state. */
 interface ProviderBody {
   kind: string;

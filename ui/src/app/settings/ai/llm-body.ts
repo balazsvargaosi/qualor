@@ -25,6 +25,8 @@ export type SectionChange =
  *   change, as that change holds it, and a change without one keeps it missing;
  * - the AI review ceiling always, null for none: a body without it would keep a ceiling another
  *   admin stored meanwhile;
+ * - the stored prices with each pair's cached input price always, null for none
+ *   (`storedPricingBody`);
  * - never the read-only last Test.
  */
 export function bodyFrom(saved: LlmSettings, change: SectionChange): LlmBody {
@@ -47,10 +49,34 @@ export function bodyFrom(saved: LlmSettings, change: SectionChange): LlmBody {
     organizations,
     excludePaths: change.section === 'data' ? change.excludePaths : [...saved.excludePaths],
     budgets: change.section === 'limits' ? change.budgets : { ...saved.budgets },
-    pricing: change.section === 'provider' ? change.pricing : saved.pricing,
+    pricing: change.section === 'provider' ? change.pricing : storedPricingBody(saved.pricing),
     storePrompts: change.section === 'data' ? change.storePrompts : saved.storePrompts,
     promptRetentionDays:
       change.section === 'data' ? change.promptRetentionDays : saved.promptRetentionDays,
+  };
+}
+
+type StoredPricing = NonNullable<LlmSettings['pricing']>;
+type PricePair = Pick<StoredPricing, 'inputUsdPerMTok' | 'outputUsdPerMTok'> & {
+  cachedInputUsdPerMTok?: number | null;
+};
+
+/**
+ * The stored prices as a body sends them back unchanged, each pair with its cached input price
+ * (R49): null when none is set, never left out, as the context window goes (a body without it
+ * stores null all the same, and so would undo nothing; one with it says so).
+ */
+export function storedPricingBody(pricing: LlmSettings['pricing']): LlmBody['pricing'] {
+  if (pricing === null) return null;
+  const pair = (p: PricePair) => ({
+    inputUsdPerMTok: p.inputUsdPerMTok,
+    outputUsdPerMTok: p.outputUsdPerMTok,
+    cachedInputUsdPerMTok: p.cachedInputUsdPerMTok ?? null,
+  });
+  return {
+    ...pair(pricing),
+    strong: pricing.strong === null ? null : pair(pricing.strong),
+    fast: pricing.fast === null ? null : pair(pricing.fast),
   };
 }
 

@@ -52,6 +52,7 @@ import {
   FIELDS,
   type Field,
   hostOf,
+  isCachedPrice,
   isHttpUrl,
   type KeyHeader,
   keyFormat,
@@ -102,14 +103,17 @@ const SERVER_PATHS: [string, Field][] = [
   ['body.provider.temperature', 'temperature'],
   ['body.pricing.inputUsdPerMTok', 'price-input'],
   ['body.pricing.outputUsdPerMTok', 'price-output'],
+  ['body.pricing.cachedInputUsdPerMTok', 'price-cached-input'],
   ['body.pricing.strong.inputUsdPerMTok', 'price-strong-input'],
   ['body.pricing.strong.outputUsdPerMTok', 'price-strong-output'],
+  ['body.pricing.strong.cachedInputUsdPerMTok', 'price-strong-cached-input'],
   // A tier's prices missing for its own model ("Give … prices too"). The server's other refusal
   // there, a pair for a tier without a model of its own ("Set … first"), cannot come from this
   // section: it sends no pair for such a tier.
   ['body.pricing.strong', 'price-strong-input'],
   ['body.pricing.fast.inputUsdPerMTok', 'price-fast-input'],
   ['body.pricing.fast.outputUsdPerMTok', 'price-fast-output'],
+  ['body.pricing.fast.cachedInputUsdPerMTok', 'price-fast-cached-input'],
   ['body.pricing.fast', 'price-fast-input'],
   ['body.pricing', 'price-input'],
 ];
@@ -202,6 +206,7 @@ export class ProviderSection {
     colModel: $localize`:@@aiProvider.prices.col.model:Model`,
     colInput: $localize`:@@aiProvider.prices.col.input:Input`,
     colOutput: $localize`:@@aiProvider.prices.col.output:Output`,
+    colCached: $localize`:@@aiProvider.prices.colCached:Cached input`,
     usd: $localize`:@@numberField.usd:US$`,
     seconds: $localize`:@@numberField.seconds:seconds`,
     tokens: $localize`:@@numberField.tokens:tokens`,
@@ -331,24 +336,37 @@ export class ProviderSection {
   protected readonly showPrices = computed(
     () => this.draft().prices || PRICE_FIELD_NAMES.some((field) => this.errors()[field]),
   );
-  /** A row for the standard model, and one for each tier with a model of its own. */
+  /**
+   * A row for the standard model, and one for each tier with a model of its own: its input, output
+   * and cached input prices (R49), the last described by the words under the table.
+   */
   protected readonly priceRows = computed(() => {
     const draft = this.draft();
     const errors = this.errors();
+    const columns = [this.texts.colInput, this.texts.colOutput, this.texts.colCached];
     return pricedTiers(draft).map((tier) => {
       const model = modelOf(draft, tier);
       return {
         tier,
         model,
         tierName: this.tierNames[tier],
-        cells: PRICE_ROWS[tier].map((field, i) => ({
-          field,
-          id: `ai-${field}`,
-          column: i === 0 ? this.texts.colInput : this.texts.colOutput,
-          label: this.priceLabel(field, model),
-          value: draft[PRICE_FIELDS[field].key],
-          error: errors[field] ?? null,
-        })),
+        cells: PRICE_ROWS[tier].map((field, i) => {
+          const id = `ai-${field}`;
+          const error = errors[field] ?? null;
+          const describedBy = [
+            error === null ? null : `${id}-error`,
+            isCachedPrice(field) ? 'ai-prices-cached-help' : null,
+          ].filter((part) => part !== null);
+          return {
+            field,
+            id,
+            column: columns[i] ?? '',
+            label: this.priceLabel(field, model),
+            value: draft[PRICE_FIELDS[field].key],
+            error,
+            describedBy: describedBy.length === 0 ? null : describedBy.join(' '),
+          };
+        }),
       };
     });
   });
@@ -1024,6 +1042,9 @@ export class ProviderSection {
 
   /** A price field's name: its model, its side, and the currency the "US$" before it means. */
   private priceLabel(field: PriceField, model: string): string {
+    if (isCachedPrice(field)) {
+      return $localize`:@@aiProvider.prices.cachedLabel:${model}:model:: cached input, US$ per million tokens`;
+    }
     return field.endsWith('-input')
       ? $localize`:@@aiProvider.prices.inputLabel:${model}:model:: input, US$ per million tokens`
       : $localize`:@@aiProvider.prices.outputLabel:${model}:model:: output, US$ per million tokens`;

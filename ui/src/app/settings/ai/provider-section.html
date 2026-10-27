@@ -400,6 +400,7 @@
                     <th scope="col">{{ texts.colModel }}</th>
                     <th scope="col">{{ texts.colInput }}</th>
                     <th scope="col">{{ texts.colOutput }}</th>
+                    <th scope="col">{{ texts.colCached }}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -420,7 +421,7 @@
                             [inputId]="cell.id"
                             [value]="cell.value"
                             [invalid]="cell.error !== null"
-                            [describedBy]="cell.error === null ? null : cell.id + '-error'"
+                            [describedBy]="cell.describedBy"
                             (valueChange)="setPrice(cell.field, $event)"
                           />
                           @if (cell.error; as message) {
@@ -435,6 +436,10 @@
                 </tbody>
               </table>
             </div>
+            <p id="ai-prices-cached-help" class="hint" i18n="@@aiProvider.prices.cachedHelp">
+              Cached input is what the provider charges for input it read from its cache. Leave it
+              empty to count that input at the input price.
+            </p>
           </div>
         }
       </div>

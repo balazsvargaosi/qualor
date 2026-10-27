@@ -9858,14 +9858,20 @@ export interface paths {
                                 inputUsdPerMTok: number;
                                 outputUsdPerMTok: number;
                                 /** @default null */
+                                cachedInputUsdPerMTok: number | null;
+                                /** @default null */
                                 strong: {
                                     inputUsdPerMTok: number;
                                     outputUsdPerMTok: number;
+                                    /** @default null */
+                                    cachedInputUsdPerMTok: number | null;
                                 } | null;
                                 /** @default null */
                                 fast: {
                                     inputUsdPerMTok: number;
                                     outputUsdPerMTok: number;
+                                    /** @default null */
+                                    cachedInputUsdPerMTok: number | null;
                                 } | null;
                             } | null;
                             storePrompts: boolean;
@@ -10010,19 +10016,25 @@ export interface paths {
                             /** @description Absent keeps the stored ceiling, null removes it */
                             reviewTokensPerOrganizationPerDay?: number | null;
                         };
-                        /** @description USD per million tokens of the standard model, and of the strong and fast models (`strong`, `fast`), or null for no prices. With prices, a tier that has a model of its own needs its prices, and a tier without one takes none: either is a 422 at `pricing.strong` or `pricing.fast` ("Give the strong model's prices too", "Set the strong model first"). */
+                        /** @description USD per million tokens of the standard model, and of the strong and fast models (`strong`, `fast`), or null for no prices. With prices, a tier that has a model of its own needs its prices, and a tier without one takes none: either is a 422 at `pricing.strong` or `pricing.fast` ("Give the strong model's prices too", "Set the strong model first"). Each pair's `cachedInputUsdPerMTok` is the price of the input the provider read from its prompt cache; null or absent counts that input at the input price. What Anthropic writes to its cache is counted at 1.25 times the input price. */
                         pricing: {
                             inputUsdPerMTok: number;
                             outputUsdPerMTok: number;
                             /** @default null */
+                            cachedInputUsdPerMTok?: number | null;
+                            /** @default null */
                             strong?: {
                                 inputUsdPerMTok: number;
                                 outputUsdPerMTok: number;
+                                /** @default null */
+                                cachedInputUsdPerMTok?: number | null;
                             } | null;
                             /** @default null */
                             fast?: {
                                 inputUsdPerMTok: number;
                                 outputUsdPerMTok: number;
+                                /** @default null */
+                                cachedInputUsdPerMTok?: number | null;
                             } | null;
                         } | null;
                         storePrompts: boolean;
@@ -10108,14 +10120,20 @@ export interface paths {
                                 inputUsdPerMTok: number;
                                 outputUsdPerMTok: number;
                                 /** @default null */
+                                cachedInputUsdPerMTok: number | null;
+                                /** @default null */
                                 strong: {
                                     inputUsdPerMTok: number;
                                     outputUsdPerMTok: number;
+                                    /** @default null */
+                                    cachedInputUsdPerMTok: number | null;
                                 } | null;
                                 /** @default null */
                                 fast: {
                                     inputUsdPerMTok: number;
                                     outputUsdPerMTok: number;
+                                    /** @default null */
+                                    cachedInputUsdPerMTok: number | null;
                                 } | null;
                             } | null;
                             storePrompts: boolean;

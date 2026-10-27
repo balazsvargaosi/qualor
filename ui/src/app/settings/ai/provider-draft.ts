@@ -17,10 +17,13 @@ export type Tier = 'standard' | 'strong' | 'fast';
 type PriceKey =
   | 'priceInput'
   | 'priceOutput'
+  | 'priceCachedInput'
   | 'priceStrongInput'
   | 'priceStrongOutput'
+  | 'priceStrongCachedInput'
   | 'priceFastInput'
-  | 'priceFastOutput';
+  | 'priceFastOutput'
+  | 'priceFastCachedInput';
 
 /**
  * The provider and its prices as the section holds them: each field as typed, each switch. A
@@ -37,10 +40,14 @@ export interface Draft {
   prices: boolean;
   priceInput: string;
   priceOutput: string;
+  /** Each model's cached input price (R49): empty means its input price. */
+  priceCachedInput: string;
   priceStrongInput: string;
   priceStrongOutput: string;
+  priceStrongCachedInput: string;
   priceFastInput: string;
   priceFastOutput: string;
+  priceFastCachedInput: string;
   api: OpenAiApi;
   auth: KeyHeader;
   json: boolean;
@@ -65,10 +72,13 @@ export const FIELDS = [
   'fast-model',
   'price-input',
   'price-output',
+  'price-cached-input',
   'price-strong-input',
   'price-strong-output',
+  'price-strong-cached-input',
   'price-fast-input',
   'price-fast-output',
+  'price-fast-cached-input',
   'timeout',
   'context-window',
   'temperature',
@@ -78,21 +88,30 @@ export type PriceField = Extract<Field, `price-${string}`>;
 
 /** The models' rows in the prices table, in its order. */
 const TIERS: readonly Tier[] = ['standard', 'strong', 'fast'];
-/** Each row's fields: the input price, then the output price. */
-export const PRICE_ROWS: Readonly<Record<Tier, readonly [PriceField, PriceField]>> = {
-  standard: ['price-input', 'price-output'],
-  strong: ['price-strong-input', 'price-strong-output'],
-  fast: ['price-fast-input', 'price-fast-output'],
+/**
+ * Each row's fields: the input price, the output price, then the cached input price (R49), which
+ * may be left empty.
+ */
+export const PRICE_ROWS: Readonly<Record<Tier, readonly [PriceField, PriceField, PriceField]>> = {
+  standard: ['price-input', 'price-output', 'price-cached-input'],
+  strong: ['price-strong-input', 'price-strong-output', 'price-strong-cached-input'],
+  fast: ['price-fast-input', 'price-fast-output', 'price-fast-cached-input'],
 };
 /** Each price field's row, and where the draft keeps its text. */
 export const PRICE_FIELDS: Readonly<Record<PriceField, { tier: Tier; key: PriceKey }>> = {
   'price-input': { tier: 'standard', key: 'priceInput' },
   'price-output': { tier: 'standard', key: 'priceOutput' },
+  'price-cached-input': { tier: 'standard', key: 'priceCachedInput' },
   'price-strong-input': { tier: 'strong', key: 'priceStrongInput' },
   'price-strong-output': { tier: 'strong', key: 'priceStrongOutput' },
+  'price-strong-cached-input': { tier: 'strong', key: 'priceStrongCachedInput' },
   'price-fast-input': { tier: 'fast', key: 'priceFastInput' },
   'price-fast-output': { tier: 'fast', key: 'priceFastOutput' },
+  'price-fast-cached-input': { tier: 'fast', key: 'priceFastCachedInput' },
 };
+
+/** Whether a price field is a row's cached input price, which may be left empty (R49). */
+export const isCachedPrice = (field: PriceField): boolean => field.endsWith('-cached-input');
 /** The most a temperature may be: OpenAI-compatible providers only, Anthropic's models take none. */
 const MAX_TEMPERATURE = 2;
 /** The most a price may be, in US dollars per million tokens. */
@@ -126,7 +145,8 @@ export function draftOf(settings: LlmSettings | null, locale: string): Draft {
   const p = settings?.provider ?? null;
   const pricing = settings?.pricing ?? null;
   // As the money field writes it, without rounding a price of more decimals away.
-  const price = (n: number | undefined) => (n === undefined ? '' : formatAmount(n, locale));
+  const price = (n: number | null | undefined) =>
+    n === undefined || n === null ? '' : formatAmount(n, locale);
   return {
     kind: p?.kind ?? '',
     url: p?.baseUrl ?? '',
@@ -138,10 +158,13 @@ export function draftOf(settings: LlmSettings | null, locale: string): Draft {
     prices: pricing !== null,
     priceInput: price(pricing?.inputUsdPerMTok),
     priceOutput: price(pricing?.outputUsdPerMTok),
+    priceCachedInput: price(pricing?.cachedInputUsdPerMTok),
     priceStrongInput: price(pricing?.strong?.inputUsdPerMTok),
     priceStrongOutput: price(pricing?.strong?.outputUsdPerMTok),
+    priceStrongCachedInput: price(pricing?.strong?.cachedInputUsdPerMTok),
     priceFastInput: price(pricing?.fast?.inputUsdPerMTok),
     priceFastOutput: price(pricing?.fast?.outputUsdPerMTok),
+    priceFastCachedInput: price(pricing?.fast?.cachedInputUsdPerMTok),
     // A provider saved before the API was a setting asks through Chat Completions.
     api: p?.api ?? 'chat_completions',
     auth: p?.auth ?? 'bearer',
@@ -222,7 +245,9 @@ export function pricedTiers(d: Draft): Tier[] {
  * The prices part of the body: null while their switch is off or none is given; refused through
  * `refuse` otherwise. Once a price is given the server needs the standard model's pair and the
  * pair of each tier that has a model of its own, so a pair left out is refused; a tier without a
- * model of its own sends none.
+ * model of its own sends none. Each pair carries its cached input price always (R49): null while
+ * its field is empty, which counts that input at the input price; a cached price alone is no pair,
+ * and asks for the input and the output price.
  */
 export function pricingOf(d: Draft, refuse: (field: Field) => void): LlmBody['pricing'] {
   if (!d.prices) return null;
@@ -235,9 +260,15 @@ export function pricingOf(d: Draft, refuse: (field: Field) => void): LlmBody['pr
     if (value === null) refuse(field);
     return value ?? 0;
   };
+  const cachedPrice = (field: PriceField) =>
+    d[PRICE_FIELDS[field].key].trim() === '' ? null : price(field);
   const pair = (tier: Tier) => {
-    const [input, output] = PRICE_ROWS[tier];
-    return { inputUsdPerMTok: price(input), outputUsdPerMTok: price(output) };
+    const [input, output, cached] = PRICE_ROWS[tier];
+    return {
+      inputUsdPerMTok: price(input),
+      outputUsdPerMTok: price(output),
+      cachedInputUsdPerMTok: cachedPrice(cached),
+    };
   };
   return {
     ...pair('standard'),
@@ -335,6 +366,10 @@ export function refusal(field: Field): string {
     case 'price-fast-input':
     case 'price-fast-output':
       return $localize`:@@ai.settings.badFastPrice:Give the fast model's prices too, in US dollars per million tokens (0 to 10000).`;
+    case 'price-cached-input':
+    case 'price-strong-cached-input':
+    case 'price-fast-cached-input':
+      return $localize`:@@aiProvider.prices.badCached:Use a price in US dollars per million tokens (0 to 10000), or leave it empty.`;
   }
 }
 

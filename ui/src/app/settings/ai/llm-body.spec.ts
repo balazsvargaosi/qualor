@@ -274,6 +274,47 @@ describe('bodyFrom', () => {
     expect(bodyFrom(SAVED, LIMITS).provider).toMatchObject({ contextWindowTokens: null });
   });
 
+  it("saving sends cachedInputUsdPerMTok with every section's save, null when none is set (R49)", () => {
+    // Fictional prices, one pair with a cached input price, and the others without one.
+    const priced = {
+      ...SAVED,
+      pricing: {
+        inputUsdPerMTok: 3,
+        outputUsdPerMTok: 15,
+        cachedInputUsdPerMTok: 0.3,
+        strong: { inputUsdPerMTok: 15, outputUsdPerMTok: 75, cachedInputUsdPerMTok: null },
+        fast: null,
+      },
+    } as unknown as LlmSettings;
+    for (const change of [LIMITS, DATA]) {
+      expect(bodyFrom(priced, change).pricing).toEqual(priced.pricing);
+    }
+    // A stored pair the answer gives without the field (an older server) is sent with null: the
+    // input price, never left out.
+    const older = {
+      ...SAVED,
+      pricing: {
+        inputUsdPerMTok: 3,
+        outputUsdPerMTok: 15,
+        strong: { inputUsdPerMTok: 15, outputUsdPerMTok: 75 },
+        fast: null,
+      },
+    } as unknown as LlmSettings;
+    expect(bodyFrom(older, LIMITS).pricing).toEqual({
+      inputUsdPerMTok: 3,
+      outputUsdPerMTok: 15,
+      cachedInputUsdPerMTok: null,
+      strong: { inputUsdPerMTok: 15, outputUsdPerMTok: 75, cachedInputUsdPerMTok: null },
+      fast: null,
+    });
+    expect(bodyFrom(SAVED, LIMITS).pricing).toBeNull();
+    // The provider section's change is sent as it gives it.
+    const cleared = { ...priced.pricing!, cachedInputUsdPerMTok: null };
+    expect(
+      bodyFrom(priced, { section: 'provider', provider: null, pricing: cleared }).pricing,
+    ).toEqual(cleared);
+  });
+
   it("sends an Anthropic provider's context window, and null once the section clears it", () => {
     const anthropic = {
       ...ANTHROPIC,

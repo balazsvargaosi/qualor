@@ -42,9 +42,10 @@ const DEFAULT: Organization = {
   createdAt: '2026-09-01T00:00:00.000Z',
   updatedAt: '2026-09-01T00:00:00.000Z',
 };
-const PRICES = { inputUsdPerMTok: 0.3, outputUsdPerMTok: 1.2 };
-const STRONG_PRICES = { inputUsdPerMTok: 2, outputUsdPerMTok: 8 };
-const FAST_PRICES = { inputUsdPerMTok: 0.1, outputUsdPerMTok: 0.4 };
+// Fictional prices, as the server answers them: no cached input price (null, the input price).
+const PRICES = { inputUsdPerMTok: 0.3, outputUsdPerMTok: 1.2, cachedInputUsdPerMTok: null };
+const STRONG_PRICES = { inputUsdPerMTok: 2, outputUsdPerMTok: 8, cachedInputUsdPerMTok: null };
+const FAST_PRICES = { inputUsdPerMTok: 0.1, outputUsdPerMTok: 0.4, cachedInputUsdPerMTok: null };
 /** A provider with a model of each tier, and the prices of the three. */
 const THREE_MODELS = {
   ...CONFIGURED,
@@ -59,6 +60,16 @@ const ANTHROPIC = {
     kind: 'anthropic',
     baseUrl: 'https://api.anthropic.com',
     model: 'claude-sonnet-5-5',
+  },
+};
+/** The same, with a cached input price for the standard and the strong model, and none for the fast. */
+const CACHED_THREE = {
+  ...THREE_MODELS,
+  pricing: {
+    ...PRICES,
+    cachedInputUsdPerMTok: 0.03,
+    strong: { ...STRONG_PRICES, cachedInputUsdPerMTok: 0.2 },
+    fast: FAST_PRICES,
   },
 };
 const WORKSPACE = 'wrkspc_01AbCdEf';
@@ -181,6 +192,14 @@ const tones = (root: HTMLElement) =>
   [...root.querySelectorAll('#ai-test-models li')].map((li) => li.getAttribute('data-tone'));
 const priceIds = (root: HTMLElement) =>
   [...root.querySelectorAll('input[id^="ai-price-"]')].map((input) => input.id);
+/** The price fields of each row: its input, its output and its cached input (R49). */
+const STANDARD_IDS = ['ai-price-input', 'ai-price-output', 'ai-price-cached-input'];
+const STRONG_IDS = [
+  'ai-price-strong-input',
+  'ai-price-strong-output',
+  'ai-price-strong-cached-input',
+];
+const FAST_IDS = ['ai-price-fast-input', 'ai-price-fast-output', 'ai-price-fast-cached-input'];
 const labelOf = (root: HTMLElement, id: string) =>
   root.querySelector(`label[for="${id}"]`)?.textContent?.replace(/\s+/g, ' ').trim();
 const textOf = (root: HTMLElement, selector: string) =>
@@ -829,7 +848,7 @@ describe('ProviderSection: the models', () => {
     await pick(fixture, root, '#ai-tiers');
     expect(root.querySelector('#ai-strong-model')).toBeNull();
     // No tier has a model of its own then: only the standard prices.
-    expect(priceIds(root)).toEqual(['ai-price-input', 'ai-price-output']);
+    expect(priceIds(root)).toEqual(STANDARD_IDS);
     await pick(fixture, root, '#ai-tiers');
     expect(field(root, 'ai-strong-model').value).toBe('qwen3-max');
     expect(field(root, 'ai-fast-model').value).toBe('qwen2.5-small');
@@ -899,8 +918,8 @@ describe('ProviderSection: the prices', () => {
     expect(textOf(root, '#ai-prices-help')).toBe('US dollars per million tokens.');
     expect(
       [...root.querySelectorAll('.prices thead th')].map((th) => th.textContent?.trim()),
-    ).toEqual(['Model', 'Input', 'Output']);
-    expect(priceIds(root)).toEqual(['ai-price-input', 'ai-price-output']);
+    ).toEqual(['Model', 'Input', 'Output', 'Cached input']);
+    expect(priceIds(root)).toEqual(STANDARD_IDS);
   });
 
   it('shows a price row for a tier only while it has a model of its own', async () => {
@@ -908,28 +927,18 @@ describe('ProviderSection: the prices', () => {
     const { fixture, root } = await render();
     await pick(fixture, root, '#ai-prices');
     await pick(fixture, root, '#ai-tiers');
-    expect(priceIds(root)).toEqual(['ai-price-input', 'ai-price-output']);
+    expect(priceIds(root)).toEqual(STANDARD_IDS);
     await fill(fixture, root, '#ai-strong-model', 'qwen3-max');
-    expect(priceIds(root)).toEqual([
-      'ai-price-input',
-      'ai-price-output',
-      'ai-price-strong-input',
-      'ai-price-strong-output',
-    ]);
+    expect(priceIds(root)).toEqual([...STANDARD_IDS, ...STRONG_IDS]);
     await fill(fixture, root, '#ai-fast-model', 'qwen2.5-small');
-    expect(priceIds(root)).toHaveLength(6);
+    expect(priceIds(root)).toHaveLength(9);
     // The same model as Model is no model of its own: the standard prices are its prices.
     await fill(fixture, root, '#ai-fast-model', ' qwen2.5-coder ');
-    expect(priceIds(root)).toEqual([
-      'ai-price-input',
-      'ai-price-output',
-      'ai-price-strong-input',
-      'ai-price-strong-output',
-    ]);
+    expect(priceIds(root)).toEqual([...STANDARD_IDS, ...STRONG_IDS]);
     await fill(fixture, root, '#ai-strong-model', '');
     await fill(fixture, root, '#ai-model', 'qwen2.5-small');
     await fill(fixture, root, '#ai-fast-model', 'qwen2.5-small');
-    expect(priceIds(root)).toEqual(['ai-price-input', 'ai-price-output']);
+    expect(priceIds(root)).toEqual(STANDARD_IDS);
   });
 
   it('names each price after its model and the currency, as money fields', async () => {
@@ -941,14 +950,7 @@ describe('ProviderSection: the prices', () => {
     expect(labelOf(root, 'ai-price-fast-output')).toBe(
       'qwen2.5-small: output, US$ per million tokens',
     );
-    expect(priceIds(root)).toEqual([
-      'ai-price-input',
-      'ai-price-output',
-      'ai-price-strong-input',
-      'ai-price-strong-output',
-      'ai-price-fast-input',
-      'ai-price-fast-output',
-    ]);
+    expect(priceIds(root)).toEqual([...STANDARD_IDS, ...STRONG_IDS, ...FAST_IDS]);
     for (const id of priceIds(root)) {
       const input = field(root, id);
       expect([input.type, input.getAttribute('inputmode')]).toEqual(['text', 'decimal']);
@@ -962,11 +964,134 @@ describe('ProviderSection: the prices', () => {
     expect(priceIds(root).map((id) => [id, field(root, id).value])).toEqual([
       ['ai-price-input', '0.30'],
       ['ai-price-output', '1.20'],
+      ['ai-price-cached-input', ''],
       ['ai-price-strong-input', '2.00'],
       ['ai-price-strong-output', '8.00'],
+      ['ai-price-strong-cached-input', ''],
       ['ai-price-fast-input', '0.10'],
       ['ai-price-fast-output', '0.40'],
+      ['ai-price-fast-cached-input', ''],
     ]);
+  });
+
+  it('the prices table has a Cached input column, empty for the input price', async () => {
+    setup();
+    const { fixture, root } = await render();
+    await pick(fixture, root, '#ai-prices');
+    const cached = field(root, 'ai-price-cached-input');
+    expect(cached.value).toBe('');
+    expect(labelOf(root, 'ai-price-cached-input')).toBe(
+      'qwen2.5-coder: cached input, US$ per million tokens',
+    );
+    expect(cached.closest('td')?.getAttribute('data-label')).toBe('Cached input');
+    expect([cached.type, cached.getAttribute('inputmode')]).toEqual(['text', 'decimal']);
+    expect(cached.closest('q-number-field')?.querySelector('.pre')?.textContent).toBe('US$');
+    expect(textOf(root, '#ai-prices-cached-help')).toBe(
+      'Cached input is what the provider charges for input it read from its cache. Leave it empty to count that input at the input price.',
+    );
+    expect(cached.getAttribute('aria-describedby')).toBe('ai-prices-cached-help');
+  });
+
+  it('shows the stored cached input prices of the tiers, each in its row', async () => {
+    setup();
+    const { root } = await render({ settings: CACHED_THREE });
+    expect(labelOf(root, 'ai-price-strong-cached-input')).toBe(
+      'qwen3-max: cached input, US$ per million tokens',
+    );
+    expect(
+      ['ai-price-cached-input', 'ai-price-strong-cached-input', 'ai-price-fast-cached-input'].map(
+        (id) => field(root, id).value,
+      ),
+    ).toEqual(['0.03', '0.20', '']);
+  });
+
+  it('saving sends cachedInputUsdPerMTok, null when empty', async () => {
+    const server = setup();
+    const { fixture, root } = await render();
+    await pick(fixture, root, '#ai-prices');
+    await fill(fixture, root, '#ai-price-input', '0.3');
+    await fill(fixture, root, '#ai-price-output', '1.2');
+    await saveAndTest(fixture, root);
+    expect(puts(server)[0]?.pricing).toEqual({ ...PRICES, strong: null, fast: null });
+    expect(puts(server)[0]?.pricing).toHaveProperty('cachedInputUsdPerMTok', null);
+    await fill(fixture, root, '#ai-price-cached-input', '0.03');
+    await saveAndTest(fixture, root);
+    expect(puts(server)[1]?.pricing).toEqual({
+      ...PRICES,
+      cachedInputUsdPerMTok: 0.03,
+      strong: null,
+      fast: null,
+    });
+    // Emptied again, it is null: the input price.
+    await fill(fixture, root, '#ai-price-cached-input', '');
+    await saveAndTest(fixture, root);
+    expect(puts(server)[2]?.pricing).toHaveProperty('cachedInputUsdPerMTok', null);
+  });
+
+  it("saving sends each tier's own cached input price, and keeps a stored one through a save that does not touch it", async () => {
+    const server = setup();
+    const { fixture, root } = await render({ settings: CACHED_THREE });
+    await touch(fixture, root);
+    await saveAndTest(fixture, root);
+    expect(puts(server)[0]?.pricing).toEqual(CACHED_THREE.pricing);
+    await fill(fixture, root, '#ai-price-fast-cached-input', '0.01');
+    await fill(fixture, root, '#ai-price-strong-cached-input', '');
+    await saveAndTest(fixture, root);
+    expect(puts(server)[1]?.pricing).toEqual({
+      ...CACHED_THREE.pricing,
+      strong: { ...STRONG_PRICES, cachedInputUsdPerMTok: null },
+      fast: { ...FAST_PRICES, cachedInputUsdPerMTok: 0.01 },
+    });
+  });
+
+  it('refuses a cached input price that is not one, on its field, and sends nothing', async () => {
+    const server = setup();
+    const { fixture, root } = await render({ settings: THREE_MODELS });
+    for (const bad of ['cheap', '10001', '-1']) {
+      await fill(fixture, root, '#ai-price-strong-cached-input', bad);
+      await saveAndTest(fixture, root);
+      expect(puts(server), bad).toHaveLength(0);
+      const input = field(root, 'ai-price-strong-cached-input');
+      expect(input.getAttribute('aria-invalid'), bad).toBe('true');
+      expect(textOf(root, '#ai-price-strong-cached-input-error')).toBe(
+        'Use a price in US dollars per million tokens (0 to 10000), or leave it empty.',
+      );
+      expect(input.getAttribute('aria-describedby')).toBe(
+        'ai-price-strong-cached-input-error ai-prices-cached-help',
+      );
+      expect(document.activeElement).toBe(input);
+    }
+    // Only that field: the others are as they were.
+    expect(field(root, 'ai-price-strong-input').getAttribute('aria-invalid')).toBeNull();
+    await fill(fixture, root, '#ai-price-strong-cached-input', '0.2');
+    expect(root.querySelector('#ai-price-strong-cached-input-error')).toBeNull();
+  });
+
+  it('a cached input price alone is no price pair: the input and output prices are asked for', async () => {
+    const server = setup();
+    const { fixture, root } = await render();
+    await pick(fixture, root, '#ai-prices');
+    await fill(fixture, root, '#ai-price-cached-input', '0.03');
+    await saveAndTest(fixture, root);
+    expect(puts(server)).toHaveLength(0);
+    expect(field(root, 'ai-price-input').getAttribute('aria-invalid')).toBe('true');
+    expect(field(root, 'ai-price-cached-input').getAttribute('aria-invalid')).toBeNull();
+  });
+
+  it('marks the server’s refusal of a cached input price on its field', async () => {
+    const server = setup();
+    server.on('PUT', '/api/v0/system/llm', {
+      status: 422,
+      body: problem(422, 'VALIDATION_FAILED', [
+        { path: 'body.pricing.fast.cachedInputUsdPerMTok', message: 'server text' },
+      ]),
+    });
+    const { fixture, root } = await render({ settings: THREE_MODELS });
+    await touch(fixture, root);
+    await saveAndTest(fixture, root);
+    expect(field(root, 'ai-price-fast-cached-input').getAttribute('aria-invalid')).toBe('true');
+    expect(field(root, 'ai-price-fast-input').getAttribute('aria-invalid')).toBeNull();
+    expect(root.textContent).not.toContain('server text');
   });
 
   it('takes a price typed with a trailing point as that number', async () => {
@@ -979,6 +1104,7 @@ describe('ProviderSection: the prices', () => {
     expect(puts(server)[0]?.pricing).toEqual({
       inputUsdPerMTok: 5,
       outputUsdPerMTok: 0.5,
+      cachedInputUsdPerMTok: null,
       strong: null,
       fast: null,
     });
@@ -997,6 +1123,7 @@ describe('ProviderSection: the prices', () => {
     expect(puts(server)[0]?.pricing).toEqual({
       inputUsdPerMTok: 1000,
       outputUsdPerMTok: 0.075,
+      cachedInputUsdPerMTok: null,
       strong: null,
       fast: null,
     });
@@ -1051,10 +1178,13 @@ describe('ProviderSection: the prices', () => {
     expect(priceIds(root).map((id) => field(root, id).value)).toEqual([
       '0.30',
       '1.20',
+      '',
       '2.00',
       '8.00',
+      '',
       '0.10',
       '0.40',
+      '',
     ]);
     await pick(fixture, root, '#ai-prices');
     await saveAndTest(fixture, root);
