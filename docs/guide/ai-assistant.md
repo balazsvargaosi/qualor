@@ -115,7 +115,7 @@ you do:
 | Model | the model's name as the provider spells it: the **standard model**, which Explain, Suggest triage, Suggest a fix, the review's reviewers and the answers to replies use |
 | Strong model | under the switch **Use a stronger and a faster model for parts of AI review**, off by default: the model of the review's judge and of its second check of security findings. Empty: the model above ([Model tiers](#model-tiers)) |
 | Fast model | under the same switch: the model of the quality reviewer of a small review, 10 changed lines or fewer. Empty: the model above |
-| Prices | under the switch **Count costs with these models' prices**, off by default: an **Input** and an **Output** price for each model, in US dollars per million tokens ([Budgets and limits](#budgets-and-limits)) |
+| Prices | under the switch **Count costs with these models' prices**, off by default: an **Input**, an **Output** and an optional **Cached input** price for each model, in US dollars per million tokens ([Budgets and limits](#budgets-and-limits)) |
 
 **Connection options** is a fold that lists its values while it is closed. Most providers need
 none of them changed:
@@ -449,14 +449,22 @@ explanations, triage suggestions and fixes so far ("Explanations 12 · Triage 3 
 says "Budget reached for today" once it is. The page's **Assistant** section lists the limits.
 
 **Prices.** The estimated cost needs prices, in US dollars per million tokens. Switch on **Count
-costs with these models' prices** in the **Provider** section: it shows an **Input** and an
-**Output** price for the standard model and, for each tier that has a model of its own
-([Model tiers](#model-tiers)), for that model, each row named by its model. With prices entered, a
+costs with these models' prices** in the **Provider** section: it shows an **Input**, an
+**Output** and a **Cached input** price for the standard model and, for each tier that has a model
+of its own ([Model tiers](#model-tiers)), for that model, each row named by its model. "Cached input
+is what the provider charges for input it read from its cache. Leave it empty to count that input
+at the input price." With prices entered, a
 tier with its own model needs its prices too: saving without them is refused ("Give the strong
 model's prices too", "Give the fast model's prices too"), and so is, through the API, a pair of
 prices for a tier that has no model of its own ("Set the strong model first"). A call is costed at
 the prices of the model it went to. When a cost limit is set, Qualor turns what is left of it into
 tokens at the dearest price among your models, since the model of the next call is not known ahead.
+
+**Prompt caching.** AI review and its replies use the model provider's prompt cache. On Anthropic,
+Qualor marks each call's system prompt and the end of its conversation for caching, five minutes at
+a time. OpenAI caches by itself. Cached input is counted at **Cached input** in the prices, and at
+the input price when that is empty; Anthropic charges 1.25 times the input price for what it writes
+to the cache. A server that refuses the markers is asked again without them.
 
 The **AI review** group of **Limits** is not a budget of this assistant. Its switch **Cap the
 tokens an organization may give AI review**, with **Tokens per day, per organization** under it,

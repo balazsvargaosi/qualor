@@ -948,7 +948,8 @@ lists, is not reviewed.
 input count, Qualor counts a quarter of the bytes it sent, both in a review's ceiling and in today's
 figure. An output count that the provider does not report is left out of today's figure, so a provider
 that reports none makes it too low. A call the provider refused, did not take or could not be reached
-for is not counted.
+for is not counted. Cached input counts in full in every budget: caching lowers the cost, never
+what a budget allows.
 
 ## What your CI needs
 
