@@ -397,18 +397,19 @@ interface Outcome {
  * circuit is asked first (open: `CircuitOpenError`, nothing sent and no row) and told how the call
  * went. A review, or the answer to a reply, takes no slot of the organisation's `llm` requests: it
  * has a circuit of its own (R40, `reviewCircuitDeps`), shared with reviews and replies and not with
- * the explain, triage and fix queue, so it never holds them behind it, and they never hold it. The provider's key is taken out of what the model said before
- * it is returned or stored. A failure is thrown after it is recorded; a key that cannot be read is
- * thrown as the provider refusing it. A call that `deps.signal` gives up is cut at once and thrown
- * as `LlmCallAborted`, with no row: the provider gave no answer and failed at nothing, so the call
- * is charged to no budget and the circuit only hands its probe on. Every call is streamed, within
- * `reviewStreamLimits` (R35), so that a gateway that cuts a connection which stays idle does not cut
- * a long answer; a server that will not stream is asked again without it in the same call, which is
- * still one row, and the later calls of the model are not streamed (one log line says so). On
- * Anthropic every call marks its prompt for the provider's cache (R49, `markedForCache`), and a
- * server that refuses the markers is asked again without them in the same call, still one row. The
- * row's input is every prompt token, the cached ones among them; its cost prices what the cache
- * read and wrote apart (`costOf`), and its log line gives those two counts.
+ * the explain, triage and fix queue, so it never holds them behind it, and they never hold it. The
+ * provider's key is taken out of what the model said before it is returned or stored. A failure is
+ * thrown after it is recorded; a key that cannot be read is thrown as the provider refusing it. A
+ * call that `deps.signal` gives up is cut at once and thrown as `LlmCallAborted`, with no row: the
+ * provider gave no answer and failed at nothing, so the call is charged to no budget and the
+ * circuit only hands its probe on. Every call is streamed, within `reviewStreamLimits` (R35), so
+ * that a gateway that cuts a connection which stays idle does not cut a long answer; a server that
+ * will not stream is asked again without it in the same call, which is still one row, and the later
+ * calls of the model are not streamed (one log line says so). On Anthropic every call marks its
+ * prompt for the provider's cache (R49, `markedForCache`), and a server that refuses the markers is
+ * asked again without them in the same call, still one row. The row's input is every prompt token,
+ * the cached ones among them; its cost prices what the cache read and wrote apart (`costOf`), and
+ * its log line gives those two counts.
  */
 export function reviewSender(
   deps: ReviewSenderDeps,

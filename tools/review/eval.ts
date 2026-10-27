@@ -758,9 +758,9 @@ export interface EvalReport {
   /** The most input tokens one call sent. */
   maxCallInputTokens: number;
   /**
-   * The verifications (one conversation each): how many ran, how they ended among the findings
-   * the reviews kept, and how many found the review's tool calls used up (the floor, `TOOL_LIMITS.verifyCallsFloor`,
-   * gave them calls of their own).
+   * The verifications (one conversation each): how many ran, how they ended among the findings the
+   * reviews kept, and how many found the review's tool calls used up (the floor,
+   * `TOOL_LIMITS.verifyCallsFloor`, gave them calls of their own).
    */
   verification: {
     run: number;

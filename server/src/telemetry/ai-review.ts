@@ -32,7 +32,10 @@ export interface AiReviewUsage {
   commands30d: { review: number; fix: number; stop: number };
 }
 
-/** telemetry.md `assistant30d`: the Explain, Suggest triage and Suggest a fix people asked for in 30 days. */
+/**
+ * telemetry.md `assistant30d`: the Explain, Suggest triage and Suggest a fix people asked for in
+ * 30 days.
+ */
 export interface AssistantUsage {
   explain: number;
   triage: number;
