@@ -877,31 +877,34 @@ describe('the ai-review job (6I-3, R15)', () => {
         .where(eq(reviewRuns.id, run.id));
       return runOf(analysisId);
     };
-    const runA = await startedRun();
-    await h.ctx.db
-      .update(reviewRuns)
-      .set({ inputTokens: 80_000, outputTokens: 20_000 })
-      .where(eq(reviewRuns.id, runA.id));
-    const runB = await startedRun();
-    const settings = await readLlmSettings(h.ctx.db);
-    const left = (run: typeof runB) =>
-      reviewTokensLeft(h.ctx.db, {
-        run,
-        settings,
-        organizationId: h.organizationId,
-      } as unknown as Running);
-    expect(await left(runB)).toBe(200_000);
-    // A, beside nothing that runs, has all the day left (up to Tokens per review).
-    await h.ctx.db
-      .update(reviewRuns)
-      .set({ status: 'superseded', phase: null, finishedAt: new Date() })
-      .where(eq(reviewRuns.id, runB.id));
-    expect(await left(runA)).toBe(300_000);
-    // Neither is left running for the tests after this one.
-    await h.ctx.db
-      .update(reviewRuns)
-      .set({ status: 'superseded', phase: null, finishedAt: new Date() })
-      .where(eq(reviewRuns.id, runA.id));
+    try {
+      const runA = await startedRun();
+      await h.ctx.db
+        .update(reviewRuns)
+        .set({ inputTokens: 80_000, outputTokens: 20_000 })
+        .where(eq(reviewRuns.id, runA.id));
+      const runB = await startedRun();
+      const settings = await readLlmSettings(h.ctx.db);
+      const left = (run: typeof runB) =>
+        reviewTokensLeft(h.ctx.db, {
+          run,
+          settings,
+          organizationId: h.organizationId,
+        } as unknown as Running);
+      expect(await left(runB)).toBe(200_000);
+      // A, beside nothing that runs, has all the day left (up to Tokens per review).
+      await h.ctx.db
+        .update(reviewRuns)
+        .set({ status: 'superseded', phase: null, finishedAt: new Date() })
+        .where(eq(reviewRuns.id, runB.id));
+      expect(await left(runA)).toBe(300_000);
+    } finally {
+      // Nothing is left running to reserve for the tests after this one, even when one fails.
+      await h.ctx.db
+        .update(reviewRuns)
+        .set({ status: 'superseded', phase: null, finishedAt: new Date() })
+        .where(eq(reviewRuns.status, 'running'));
+    }
   });
 
   it('a merge request too large for Tokens per review is skipped as too large, and the summary says so', async () => {
