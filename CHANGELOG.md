@@ -176,6 +176,18 @@ All notable changes to Qualor are listed here, newest first. The format follows
   numbers and flags only, never names, addresses or models
   ([Telemetry](docs/guide/telemetry.md)).
 
+### Security
+
+- Node.js 22.23.4 (was 22.23.3) in all images; it fixes CVE-2026-111497, an out-of-bounds write
+  in its bundled Brotli decoder, and CVE-2026-105481, CVE-2026-105482, CVE-2026-106069,
+  CVE-2026-106072, CVE-2026-106073 and CVE-2026-106074.
+- `qualor/scanner-dotnet`: the .NET SDKs 8.0.427 and 10.0.403 (were 8.0.425 and 10.0.401), with
+  the runtimes 8.0.33 and 10.0.14, which fix CVE-2026-111497 in .NET's Brotli decoder too, and
+  CVE-2026-70197 and CVE-2026-114148 (10.0 also CVE-2026-102870).
+- `qualor/scanner` and `qualor/scanner-dotnet`: Debian's brotli 1.0.9-2+deb12u1 (was 1.0.9-2),
+  whose `libbrotli1` git's libcurl links, fixes CVE-2026-111497 there too (DLA-4855-1), with
+  Debian's current security updates of openssl, expat, pcre2, PHP 8.2 and ca-certificates.
+
 ## [0.11.0] - 2026-10-19
 
 ### Added

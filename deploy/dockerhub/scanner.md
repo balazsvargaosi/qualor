@@ -71,7 +71,7 @@ clang-tidy, scan in the job that built the project, with your own clang-tidy and
 ### What is inside
 
 - The `qualor` CLI (entrypoint `qualor`, default command `scan`), a single binary built with Bun.
-- Node.js 22.23.3 with npm and corepack, to run the project's own ESLint from its `node_modules`.
+- Node.js 22.23.4 with npm and corepack, to run the project's own ESLint from its `node_modules`.
 - SonarQube-compatible rules for JavaScript and TypeScript (eslint-plugin-sonarjs 2.0.4, LGPL-3.0):
   Qualor's own sonarjs pass in `/opt/qualor/sonarjs` runs eslint-plugin-sonarjs 2.0.4 on Qualor's
   own ESLint 9, alongside the project's own ESLint above. The C# ones, SonarAnalyzer.CSharp 9.32,

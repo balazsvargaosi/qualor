@@ -14,7 +14,7 @@ import { must, REPO_ROOT, run, SCANNER_IMAGE, type RunResult } from './stack';
 
 /** The same Node 22 image the Dockerfiles build with (pinned by digest). */
 export const NODE_IMAGE =
-  'node:22.23.3-bookworm@sha256:363e1587494626837fa7f9a23bdb453d13b0ff3c67c705c2805cfc69c2d2fad7';
+  'node:22.23.4-bookworm@sha256:63538dfe497cc29dfafdda25ada09b46db68a3f4cc205abf1f5d6bf0913f3384';
 /**
  * On every container and volume the deploy scripts create outside compose, so the CI jobs can
  * remove what a cancelled run leaves behind (compose labels the stacks itself).

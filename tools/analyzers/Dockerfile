@@ -11,7 +11,7 @@
 # pack (plan 6B-1).
 #   docker build -t qualor-analyzers tools/analyzers
 # Pinned by version and digest (multi-arch index); bump both together.
-FROM node:22.23.3-bookworm@sha256:363e1587494626837fa7f9a23bdb453d13b0ff3c67c705c2805cfc69c2d2fad7
+FROM node:22.23.4-bookworm@sha256:63538dfe497cc29dfafdda25ada09b46db68a3f4cc205abf1f5d6bf0913f3384
 RUN apt-get update \
   && apt-get install -y --no-install-recommends openjdk-17-jdk-headless unzip php8.2-cli \
   && rm -rf /var/lib/apt/lists/*
