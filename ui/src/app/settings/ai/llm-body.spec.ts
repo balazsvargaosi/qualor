@@ -281,7 +281,7 @@ describe('bodyFrom', () => {
       pricing: {
         inputUsdPerMTok: 3,
         outputUsdPerMTok: 15,
-        cachedInputUsdPerMTok: 0.3,
+        cachedInputUsdPerMTok: 0.4,
         strong: { inputUsdPerMTok: 15, outputUsdPerMTok: 75, cachedInputUsdPerMTok: null },
         fast: null,
       },

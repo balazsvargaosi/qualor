@@ -579,8 +579,8 @@ describe('the ai-review job (6I-3, R15)', () => {
         ...h.ctx.config,
         llmInternalHosts: parseInternalHosts(`${llm.host},${caching.host}`),
       };
-      // Fictional prices: 3 for input, 0.3 for cached input, 15 for output.
-      const prices = { inputUsdPerMTok: 3, outputUsdPerMTok: 15, cachedInputUsdPerMTok: 0.3 };
+      // Fictional prices: 3 for input, 0.4 for cached input, 15 for output.
+      const prices = { inputUsdPerMTok: 3, outputUsdPerMTok: 15, cachedInputUsdPerMTok: 0.4 };
       await switchReviewOn(h.ctx.db, {
         secretKey: h.ctx.config.secretKey,
         fake: caching,

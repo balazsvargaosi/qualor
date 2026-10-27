@@ -126,8 +126,8 @@ describe('LLM settings (llm.md §3)', () => {
       pricing: {
         inputUsdPerMTok: 3,
         outputUsdPerMTok: 15,
-        cachedInputUsdPerMTok: 0.3,
-        strong: { inputUsdPerMTok: 15, outputUsdPerMTok: 75, cachedInputUsdPerMTok: 1.5 },
+        cachedInputUsdPerMTok: 0.4,
+        strong: { inputUsdPerMTok: 15, outputUsdPerMTok: 75, cachedInputUsdPerMTok: 2 },
         fast: { inputUsdPerMTok: 1, outputUsdPerMTok: 5, cachedInputUsdPerMTok: null },
       },
     };
@@ -371,8 +371,8 @@ describe('LLM settings (llm.md §3)', () => {
 });
 
 describe('pricingFor', () => {
-  const standard = { inputUsdPerMTok: 3, outputUsdPerMTok: 15, cachedInputUsdPerMTok: 0.3 };
-  const strong = { inputUsdPerMTok: 15, outputUsdPerMTok: 75, cachedInputUsdPerMTok: 1.5 };
+  const standard = { inputUsdPerMTok: 3, outputUsdPerMTok: 15, cachedInputUsdPerMTok: 0.4 };
+  const strong = { inputUsdPerMTok: 15, outputUsdPerMTok: 75, cachedInputUsdPerMTok: 2 };
   const fast = { inputUsdPerMTok: 1, outputUsdPerMTok: 5, cachedInputUsdPerMTok: null };
   const pricing = { ...standard, strong, fast };
   const withModels = (strongModel: string | null, fastModel: string | null): StoredProvider => ({
@@ -411,12 +411,12 @@ describe('pricingFor', () => {
 
   it('carries the cached input price for each tier (R49), null where the pair has none', () => {
     const tiers = withModels('big', 'small');
-    expect(pricingFor(pricing, tiers, 'standard')?.cachedInputUsdPerMTok).toBe(0.3);
-    expect(pricingFor(pricing, tiers, 'strong')?.cachedInputUsdPerMTok).toBe(1.5);
+    expect(pricingFor(pricing, tiers, 'standard')?.cachedInputUsdPerMTok).toBe(0.4);
+    expect(pricingFor(pricing, tiers, 'strong')?.cachedInputUsdPerMTok).toBe(2);
     expect(pricingFor(pricing, tiers, 'fast')?.cachedInputUsdPerMTok).toBeNull();
     // A tier on the standard model has the standard model's cached price too.
-    expect(pricingFor(pricing, withModels(null, null), 'strong')?.cachedInputUsdPerMTok).toBe(0.3);
-    expect(pricingFor(pricing, withModels('m', null), 'strong')?.cachedInputUsdPerMTok).toBe(0.3);
+    expect(pricingFor(pricing, withModels(null, null), 'strong')?.cachedInputUsdPerMTok).toBe(0.4);
+    expect(pricingFor(pricing, withModels('m', null), 'strong')?.cachedInputUsdPerMTok).toBe(0.4);
   });
 
   it('is null without prices', () => {

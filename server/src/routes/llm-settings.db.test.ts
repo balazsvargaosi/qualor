@@ -1076,8 +1076,8 @@ describe('/system/llm (llm.md §3, §16)', () => {
       const pricing = {
         inputUsdPerMTok: 3,
         outputUsdPerMTok: 15,
-        cachedInputUsdPerMTok: 0.3,
-        strong: { inputUsdPerMTok: 15, outputUsdPerMTok: 75, cachedInputUsdPerMTok: 1.5 },
+        cachedInputUsdPerMTok: 0.4,
+        strong: { inputUsdPerMTok: 15, outputUsdPerMTok: 75, cachedInputUsdPerMTok: 2 },
         fast: { inputUsdPerMTok: 1, outputUsdPerMTok: 5, cachedInputUsdPerMTok: 0 },
       };
       const set = await put(body({ provider: provider(tiers), pricing }));

@@ -354,7 +354,7 @@ test('the AI provider page saves a Cached input price, and keeps it after a relo
     );
     await provider.getByLabel('fake-model: input, US$ per million tokens').fill('3');
     await provider.getByLabel('fake-model: output, US$ per million tokens').fill('15');
-    await cached.fill('0.3');
+    await cached.fill('0.4');
     const saved = page.waitForResponse(
       (r) => r.request().method() === 'PUT' && r.url().endsWith('/api/v0/system/llm'),
     );
@@ -363,13 +363,13 @@ test('the AI provider page saves a Cached input price, and keeps it after a relo
     expect(await pricingOf()).toMatchObject({
       inputUsdPerMTok: 3,
       outputUsdPerMTok: 15,
-      cachedInputUsdPerMTok: 0.3,
+      cachedInputUsdPerMTok: 0.4,
     });
 
     await page.reload();
     await expect(
       provider.getByLabel('fake-model: cached input, US$ per million tokens'),
-    ).toHaveValue('0.30');
+    ).toHaveValue('0.40');
     await expectAccessible(page);
   } finally {
     // Whatever failed above, the shared server keeps the prices it had.
