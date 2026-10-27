@@ -948,17 +948,44 @@ describe('the Anthropic adapter: the current models', () => {
         { message: 'Unknown field: messages.0.content.0.cache_control' },
       ],
       [
+        'a 400 that says the parameter is unknown',
+        400,
+        { message: 'Unknown parameter: messages.0.content.0.cache_control' },
+      ],
+      [
         'a 400 that names it as its param',
         400,
         { message: 'Extra inputs are not permitted', param: 'system.0.cache_control' },
       ],
-    ])('is read from %s, as a refusal of nothing else', async (_what, status, error) => {
+    ])(
+      'is read from %s, as a refusal of nothing else, and the pair is remembered',
+      async (_what, status, error) => {
+        fake.enqueue({
+          status,
+          body: { type: 'error', error: { type: 'invalid_request_error', ...error } },
+        });
+        expect((await converse(anthropic, fake.apiKey, start, http)).finishReason).toBe('stop');
+        expect([marksOf(0), marksOf(1)]).toEqual([2, 0]);
+        await converse(anthropic, fake.apiKey, start, http);
+        expect(marksOf(2)).toBe(0);
+      },
+    );
+
+    it('a placement refusal that names cache_control is asked again unmarked, and the next call is marked again', async () => {
       fake.enqueue({
-        status,
-        body: { type: 'error', error: { type: 'invalid_request_error', ...error } },
+        status: 400,
+        body: {
+          type: 'error',
+          error: {
+            type: 'invalid_request_error',
+            message: 'messages.0.content.0.text: cache_control cannot be set for empty text blocks',
+          },
+        },
       });
       expect((await converse(anthropic, fake.apiKey, start, http)).finishReason).toBe('stop');
       expect([marksOf(0), marksOf(1)]).toEqual([2, 0]);
+      await converse(anthropic, fake.apiKey, start, http);
+      expect(marksOf(2)).toBe(2);
     });
 
     it('a refusal that does not name cache_control keeps the markers, and is no refusal of them', async () => {

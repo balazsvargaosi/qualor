@@ -337,7 +337,7 @@ export function markedForCache(
 }
 
 /**
- * The models whose server refused a call's prompt-cache markers (`refusedCacheControl`): their
+ * The models whose server said it takes no prompt-cache markers (`cacheControlUnsupported`): their
  * later calls are sent without them. A process learns each of them once, and a restart learns it
  * again, as `streamed.ts` does for a server that will not stream.
  */
@@ -432,7 +432,8 @@ function toolCall(raw: unknown): LlmToolCall {
  * them (`refusedCacheControl`) is asked once more, in the same call, with the request as it is
  * without them, its system prompt the plain text, and so are the requests of the call that follow
  * (a call asks more than once when the room to think is refused: `askWithRoom`); the pair of that
- * base URL and that model is then remembered (`uncachedPairs`), and its later calls go without
+ * base URL and that model is then remembered (`uncachedPairs`) if the server said it takes no such
+ * field (`cacheControlUnsupported`; a refusal of where a marker was put is not remembered), and its later calls go without
  * markers at once. Each of the three refusals a call may meet (the stream, the markers, the room)
  * is asked again once, the next request without what was refused before: four requests at the most
  * for a call, and one once the pair is learned.
@@ -476,7 +477,7 @@ export async function anthropicConverse(
       } catch (error) {
         if (!(error instanceof LlmError && error.refusedCacheControl)) throw error;
         cached = false;
-        uncachedPairs.add(pair);
+        if (error.cacheControlUnsupported) uncachedPairs.add(pair);
         raw = await request(false);
       }
     } else {

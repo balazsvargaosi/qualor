@@ -202,7 +202,9 @@ export type LlmFailure = (typeof LLM_FAILURES)[number];
  * asked for a streamed answer and was refused (a 400) in words that name the stream: the server
  * does not stream, and the request is asked again without it. `refusedCacheControl` is a request
  * that carried prompt-cache markers and was refused (a 400 or a 422) in words or a `param` that name
- * `cache_control`: the server takes no markers, and the request is asked again without them.
+ * `cache_control`: the request is asked again without them. `cacheControlUnsupported` is that refusal
+ * saying also that the field itself is not taken (not only where a marker was put): the server takes
+ * no markers, and later calls to it go without them.
  */
 export interface LlmErrorOptions {
   status?: number | null;
@@ -213,6 +215,7 @@ export interface LlmErrorOptions {
   needsResponses?: boolean;
   refusedStream?: boolean;
   refusedCacheControl?: boolean;
+  cacheControlUnsupported?: boolean;
 }
 
 /**
@@ -228,6 +231,7 @@ export class LlmError extends Error {
   readonly needsResponses: boolean;
   readonly refusedStream: boolean;
   readonly refusedCacheControl: boolean;
+  readonly cacheControlUnsupported: boolean;
 
   constructor(
     readonly failure: LlmFailure,
@@ -244,6 +248,7 @@ export class LlmError extends Error {
     this.needsResponses = options.needsResponses ?? false;
     this.refusedStream = options.refusedStream ?? false;
     this.refusedCacheControl = options.refusedCacheControl ?? false;
+    this.cacheControlUnsupported = options.cacheControlUnsupported ?? false;
   }
 }
 

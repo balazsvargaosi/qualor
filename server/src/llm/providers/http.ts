@@ -455,7 +455,11 @@ function refusedBy(
     carriesCacheControl(request) &&
     refusesCacheControl(refused)
   ) {
-    return new LlmError('rejected', refusedText(status), { status, refusedCacheControl: true });
+    return new LlmError('rejected', refusedText(status), {
+      status,
+      refusedCacheControl: true,
+      cacheControlUnsupported: doesNotTakeCacheControl(refused),
+    });
   }
   // Before the refusal of the field: OpenAI names the parameter of a limit that is too large
   // too, and it is the value that is refused then, not the field.
@@ -620,6 +624,21 @@ function carriesCacheControl(body: unknown): boolean {
 function refusesCacheControl({ detail, message }: ErrorBody): boolean {
   const param = detail?.param;
   return (typeof param === 'string' && CACHE_CONTROL.test(param)) || CACHE_CONTROL.test(message);
+}
+
+/**
+ * Whether an error body that names `cache_control` also says the field itself is not taken
+ * ("Extra inputs are not permitted", "Unknown parameter", "unsupported", or an `unsupported_*`
+ * code), as opposed to a refusal of where a marker was put ("cannot be set for empty text blocks").
+ * Only the first is learned for good (`LlmError.cacheControlUnsupported`).
+ */
+function doesNotTakeCacheControl({ detail, message }: ErrorBody): boolean {
+  const code = detail?.code;
+  return (
+    NOT_SUPPORTED.test(message) ||
+    /\bunknown\b/i.test(message) ||
+    (typeof code === 'string' && code.startsWith('unsupported'))
+  );
 }
 
 /**
