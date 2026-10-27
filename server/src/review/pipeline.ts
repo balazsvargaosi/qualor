@@ -69,9 +69,9 @@ export { REVIEW_NOTES, type ReviewFinding, type ReviewNote } from './schemas';
  * even part, and the judge's data, with its share): every call sends it again, and a third leaves
  * room for a turn of tools, what the tools answer, and the wrap-up. No call may send more than the
  * model's context window less the room for its answer (`callInputCap`, R46), so the judge's first
- * message is sized within a third of its cap as well: the data the reviewers share in half of it,
- * as in half of its share, and the judge's data in the whole of it, cut further than its share
- * cuts it when it must (`judgeData`). A conversation that reached the window answers through its
+ * message is sized within a third of its cap as well: the data the reviewers share in half of what
+ * that third leaves after the judge's prompt, the findings in the other half, cut further than its
+ * share cuts them when they must (`judgeData`). A conversation that reached the window answers through its
  * wrap-up, and one the window had no room for adds nothing: the review notes either
  * (`context_window_reached`); a judge the window had no room for fails it (`window_full`).
  *
@@ -265,23 +265,29 @@ function roomIn(shape: ContextShape, tokens: number): number {
 }
 
 /**
- * The tokens of the window that the data the specialists share is sized in: half the judge's cap
- * (`callInputCap`), as half the judge's share is, since the judge, whose cap is the smallest of the
- * roles given this data, keeps the other half of its third for the findings (R46). `window`
- * Infinity: no window.
+ * The room of the data the specialists share in the model's context window (R46), for the
+ * instructions files and the slices as `roomIn` counts them: the judge, whose cap is the smallest
+ * of the roles given this data (`callInputCap`), sends it within a third of its cap, and keeps half
+ * of what that third leaves after its own prompt and the envelope for the findings; the data has
+ * the other half, less the lists. A reviewer's own third, of a larger cap and after a shorter
+ * prompt, is never the smaller once anything fits. `window` Infinity: no window.
  */
-const windowShare = (window: number): number => Math.floor(callInputCap(window, 'judge') / 2);
+function windowRoom(shape: ContextShape, window: number): number {
+  const judgeRoom =
+    firstMessageChars(callInputCap(window, 'judge')) - SYSTEM_PROMPTS.judge.length - ENVELOPE_CHARS;
+  return Math.floor((Math.floor(judgeRoom / 2) - listedDataChars(shape)) / JSON_ALLOWANCE);
+}
 
 /**
- * The room of the data the specialists share (`roomIn`): in a third of the smallest of a
- * specialist's part, half the judge's share and half the judge's cap in the model's context window
- * (`windowShare`).
+ * The room of the data the specialists share: the smallest of its room in a third of a
+ * specialist's part and half the judge's share (`roomIn`), and its room in the model's context
+ * window (`windowRoom`).
  */
 function dataRoom(shape: ContextShape, budget: number, window: number): number {
   const { specialists } = planReview(shape.reviewed);
   const part = Math.floor(shareOf(budget, STAGE_SHARES.specialists) / specialists.length);
   const judgeHalf = Math.floor(shareOf(budget, STAGE_SHARES.judge) / 2);
-  return roomIn(shape, Math.min(part, judgeHalf, windowShare(window)));
+  return Math.min(roomIn(shape, Math.min(part, judgeHalf)), windowRoom(shape, window));
 }
 
 /**
@@ -314,8 +320,7 @@ export function reviewFits(
   window: number = DEFAULT_CONTEXT_WINDOW_TOKENS,
 ): boolean {
   return (
-    dataRoom(shape, budget, window) > 0 &&
-    roomIn(shape, windowShare(window)) - instructionFloors(shape) > 0
+    dataRoom(shape, budget, window) > 0 && windowRoom(shape, window) - instructionFloors(shape) > 0
   );
 }
 
@@ -324,8 +329,8 @@ export function reviewFits(
  * this shape, on a model of `window` tokens (as `reviewFits` takes it): what buildReviewContext's
  * `limits` answers (the job passes it this, bound to the budget and the window). The data the
  * specialists share is sized so that a specialist's first message takes at most a third of its
- * part, half of the judge's third, and half of the judge's third of its cap in the window
- * (`dataRoom`). That
+ * part and half of the judge's third, and the judge's, within a third of its cap in the window,
+ * half of what its prompt leaves (`dataRoom`). That
  * room goes first to the
  * instructions files, which no tool can stand in for: each at least INSTRUCTIONS_MIN_CHARS (or all
  * of it, if shorter) even past that room, the long ones cut evenly when they do not all fit. The

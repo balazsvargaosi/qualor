@@ -949,15 +949,14 @@ describe('the ai-review job (6I-3, R15)', () => {
     expect(summary).not.toContain('token budget for today');
   });
 
-  it('a model with a small window: no call passes it', async () => {
-    // 40 000 tokens: about the least that this small change fits with room to read (a window of
-    // 32 000 fits none: the next test).
-    const window = 40_000;
+  it('a model with a 32 000-token window: no call passes it', async () => {
+    // A local model's window (Review Focus 4).
+    const window = 32_000;
     await reviewOn({ window });
-    // A file of about 12 000 tokens beside the change, as the window guesses them. The quality
+    // A file of about 13 000 tokens beside the change, as the window guesses them. The quality
     // reviewer reads it three times in one turn, which no call of its may send in this window; the
-    // judge reads it once, which fits the call that wraps up and leaves no room for another turn as
-    // large.
+    // judge reads 200 of its lines, which fit the call that wraps up and leave no room for another
+    // turn as large.
     const large = Array.from(
       { length: 400 },
       (_, i) => `export const large${i} = '${'1'.repeat(64)}';`,
@@ -966,11 +965,11 @@ describe('the ai-review job (6I-3, R15)', () => {
       ...CHANGE,
       { type: 'file', path: 'src/large.ts', text: `${large.join('\n')}\n` },
     ];
-    const reads = (count: number) =>
+    const reads = (count: number, to?: number) =>
       Array.from({ length: count }, (_, i) => ({
         id: `read-${i}`,
         name: 'read_file',
-        arguments: { path: 'src/large.ts' },
+        arguments: { path: 'src/large.ts', ...(to === undefined ? {} : { from: 1, to }) },
       }));
     const answers = reviewResponder(FOUND);
     const readsFirst: LlmResponder = (request) => {
@@ -981,7 +980,7 @@ describe('the ai-review job (6I-3, R15)', () => {
       }
       return {
         status: 200,
-        body: openAiToolCalls(reads(role === 'quality' ? 3 : 1), {
+        body: openAiToolCalls(role === 'quality' ? reads(3) : reads(1, 200), {
           usage: {
             prompt_tokens: REVIEW_CALL_USAGE.input,
             completion_tokens: REVIEW_CALL_USAGE.output,
@@ -1018,10 +1017,10 @@ describe('the ai-review job (6I-3, R15)', () => {
   });
 
   it('a merge request that cannot fit a small window is skipped budget_spent: window_too_small, and the summary says the window is the cause, not Tokens per review', async () => {
-    // A window of 32 000 tokens leaves a judge's call 15 616 of them, and the data the reviewers
-    // share half of a third of that: no room for a reviewer's prompt and this small change, though
+    // A window of 24 000 tokens, under the least that a change of one line needs (about 26 500):
+    // the judge's answer and its prompt leave no room in its third for this small change, though
     // Tokens per review holds it many times over.
-    await reviewOn({ window: 32_000 });
+    await reviewOn({ window: 24_000 });
     const mr = mergeRequest();
     const analysisId = await analysisOf(mr);
     await snapshotOf(analysisId, mr);
@@ -1050,7 +1049,7 @@ describe('the ai-review job (6I-3, R15)', () => {
     expect(summary).not.toContain('token budget for today');
 
     // Too large for Tokens per review as well, whatever the window: that is what it says then.
-    await reviewOn({ window: 32_000, budgets: { maxTokensPerReview: 1_000 } });
+    await reviewOn({ window: 24_000, budgets: { maxTokensPerReview: 1_000 } });
     const both = mergeRequest();
     const late = await analysisOf(both);
     await snapshotOf(late, both);
