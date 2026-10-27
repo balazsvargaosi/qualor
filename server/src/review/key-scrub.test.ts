@@ -140,6 +140,14 @@ describe('scrubText: a key that a JSON string spells another way', () => {
     }
   });
 
+  it('a key that the text escapes for JSON is replaced with its backslash, and the text stays valid JSON', () => {
+    // The text holds `\/abcdefgh/`, the key `/abcdefgh/` escaped once: the raw pass matches right
+    // after the backslash and leaves `\«redacted»`, which is no JSON.
+    const scrubbed = scrubText('{"t":"\\/abcdefgh/"}', '/abcdefgh/');
+    expect(() => JSON.parse(scrubbed)).not.toThrow();
+    expect(scrubbed).not.toContain('abcdefgh');
+  });
+
   it('catches a key split across escapes, in a mix of spellings', () => {
     expect(scrubText(answer(SLASH_KEY_MIXED), SLASH_KEY)).toBe(scrubbed);
   });

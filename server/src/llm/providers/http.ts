@@ -479,7 +479,7 @@ function refusedBy(
       needsResponses: true,
     });
   }
-  if (carriesTools(request) && refusesTools(refused)) {
+  if (carriesTools(request) && refusesTools(refused, config.model)) {
     return new LlmError(
       'rejected',
       `The provider refused the request (HTTP ${status}): the model or its server does not accept tools`,
@@ -546,7 +546,7 @@ interface ErrorBody {
 /**
  * What an error body holds, as the providers shape it. The error is at `error` (OpenAI, Anthropic,
  * Ollama's OpenAI endpoint), is `error` itself when that is a string (Ollama's own API), or is at
- * the top of the body (vLLM). A body that is not JSON holds nothing. Callers use only a yes or no
+ * the top of the body (vLLM), and in the first element when the body is a list (Gemini). A body that is not JSON holds nothing. Callers use only a yes or no
  * of it: nothing of the text is shown, stored or logged.
  */
 function errorOf(body: Buffer): ErrorBody {
@@ -556,7 +556,8 @@ function errorOf(body: Buffer): ErrorBody {
   } catch {
     return { detail: null, message: '' };
   }
-  const top = asRecord(parsed);
+  // Gemini's OpenAI endpoint wraps its error in a list: `[{"error":{"message":"…"}}]`.
+  const top = asRecord(Array.isArray(parsed) ? parsed[0] : parsed);
   const detail = asRecord(top?.error) ?? top;
   const message =
     typeof detail?.message === 'string'
@@ -591,10 +592,13 @@ function refusesStream({ detail, message }: ErrorBody): boolean {
  * or functions) and it says they are not supported (a phrase of that, or the code
  * `unsupported_parameter`). A refusal of a schema is not it, and neither is a request that is too
  * long, although OpenAI's message for that counts the tokens "in the functions". Only this yes or
- * no is used.
+ * no is used. The model's own id is taken out of the message first: a model named `my-tool-model`
+ * would make "model my-tool-model is not available" a refusal of tools.
  */
-function refusesTools({ detail, message }: ErrorBody): boolean {
+function refusesTools({ detail, message: asked }: ErrorBody, model: string): boolean {
   const code = detail?.code;
+  // The model's own id is no word of the refusal (`my-tool-model is not available`).
+  const message = model === '' ? asked : asked.split(model).join(' ');
   if (SCHEMA.test(message)) return false;
   const param = detail?.param;
   const aboutTools =

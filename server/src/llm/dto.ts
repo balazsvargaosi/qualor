@@ -1,5 +1,6 @@
 import {
   FIX_PROBLEMS,
+  isLlmFeature,
   LLM_FEATURES,
   TRIAGE_CONFIDENCES,
   TRIAGE_VERDICTS,
@@ -85,7 +86,7 @@ const isFixProblem = (value: string | undefined): value is FixProblem =>
 export function aiRequestDto(row: LlmRequestRow): AiRequestDto {
   // The record of a review call or of an answer to a reply (6I-3, 6I-4) is not an AI request:
   // `aiRequestFor` never returns one.
-  if (row.feature === 'review' || row.feature === 'review-reply') {
+  if (!isLlmFeature(row.feature)) {
     throw new Error('The record of a review call is not an AI request');
   }
   const [code, detail] = (row.errorCode ?? '').split(':');

@@ -2,8 +2,8 @@ import { randomBytes } from 'node:crypto';
 import {
   buildPrompt,
   checkFix,
+  isLlmFeature,
   llmIneligibility,
-  LLM_FEATURES,
   type LlmFeature,
   MAX_OUTPUT_TOKENS,
   parseAnswer,
@@ -222,8 +222,7 @@ export function costOf(
  * call of a review run or of an answer to a reply (6I-3, 6I-4), finished when it is written.
  */
 type SingleShotRow = LlmRequestRow & { feature: LlmFeature };
-const isSingleShot = (row: LlmRequestRow): row is SingleShotRow =>
-  (LLM_FEATURES as readonly string[]).includes(row.feature);
+const isSingleShot = (row: LlmRequestRow): row is SingleShotRow => isLlmFeature(row.feature);
 
 type Outcome =
   | {
@@ -591,7 +590,14 @@ async function runLlmJob(deps: LlmJobDeps, payload: LlmJobPayload): Promise<void
     .select()
     .from(llmRequests)
     .where(eq(llmRequests.id, payload.requestId));
-  if (!row || !isSingleShot(row) || row.status === 'succeeded' || row.status === 'failed') return;
+  if (!row || row.status === 'succeeded' || row.status === 'failed') return;
+  if (!isSingleShot(row)) {
+    deps.logger?.warn(
+      { requestId: row.id, feature: row.feature },
+      'AI request skipped: the record of a review call is not explain, triage or fix',
+    );
+    return;
+  }
   if (!deps.runtime.slots.tryTake(row.organizationId)) {
     // llm.md §12.3: one request per organisation per process; this one waits its turn.
     await enqueue(deps.db, {

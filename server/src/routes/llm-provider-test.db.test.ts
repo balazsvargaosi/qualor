@@ -1,5 +1,5 @@
 import { count, eq } from 'drizzle-orm';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ADMIN_PASSWORD,
   bearer,
@@ -27,7 +27,25 @@ import { encryptionKey, encryptSecret } from '../crypto/secrets';
 import { auditEvents, instanceSettings, llmRequests } from '../db/schema';
 import { testFingerprint } from '../llm/last-test';
 import { DEFAULT_LLM_SETTINGS, readLlmSettings, writeLlmSettings } from '../llm/settings';
+import type * as Providers from '../llm/providers';
 import { parseInternalHosts } from '../scm/url';
+
+/** What the next call of `converse` throws instead of asking the provider (a test sets it). */
+const converseThrows: { error: unknown } = { error: null };
+vi.mock('../llm/providers', async (importOriginal) => {
+  const actual = await importOriginal<typeof Providers>();
+  return {
+    ...actual,
+    converse: (...args: Parameters<typeof actual.converse>) => {
+      if (converseThrows.error !== null) {
+        const error = converseThrows.error;
+        converseThrows.error = null;
+        return Promise.reject(error);
+      }
+      return actual.converse(...args);
+    },
+  };
+});
 
 /** The call the model makes to the echo tool of the tool-calling check. */
 const ECHO_CALL = { id: 'call_1', name: 'echo', arguments: { text: 'ok' } };
@@ -405,6 +423,87 @@ describe('/system/llm (llm.md §3, §16)', () => {
         toolCalling: 'not_checked',
       });
       expect(fake.requests).toHaveLength(1);
+    });
+
+    // Characterisation tests (6I-3 Task 13, ledger line 313): they pin what the Test does today.
+    it('a second Test while the first checks tools waits its turn', async () => {
+      await useProvider('openai');
+      // Observed: it does not wait, it is refused with a 429 (RATE_LIMITED, Retry-After 5) at once;
+      // the first Test is not disturbed and the tool check is asked once.
+      fake.enqueue(plainOk('openai'), async () => {
+        await new Promise((r) => setTimeout(r, 700));
+        return toolAnswer('openai');
+      });
+      const first = Promise.resolve(check());
+      // The plain call is answered and the tool check is on its way.
+      for (let waited = 0; fake.requests.length < 2 && waited < 50; waited += 1) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      expect(fake.requests).toHaveLength(2);
+      const second = await check();
+      expect(second.statusCode).toBe(429);
+      expect(second.headers['retry-after']).toBe('5');
+      expect(second.json()).toMatchObject({
+        code: 'RATE_LIMITED',
+      });
+      const done = await first;
+      expect(done.statusCode).toBe(200);
+      expect(done.json()).toMatchObject({ ok: true, toolCalling: 'supported' });
+      expect(fake.requests).toHaveLength(2);
+      // Done: the next one runs (the second one took no token of the rate limit).
+      fake.enqueue(plainOk('openai'), toolAnswer('openai'));
+      expect((await check()).statusCode).toBe(200);
+    });
+
+    it('a non-LlmError from converse is a failed Test with no message of its', async () => {
+      await useProvider('openai');
+      // Observed: `checkToolCalling` rethrows what is not an LlmError, and nothing above catches it.
+      // The Test is a 500 for the whole answer (not one failed line), whose body holds nothing of
+      // the error; the plain test's passing result is not stored.
+      fake.enqueue(plainOk('openai'));
+      converseThrows.error = new TypeError('converse blew up: secret detail');
+      const res = await check();
+      expect(res.statusCode).toBe(500);
+      expect(res.body).not.toContain('secret detail');
+      expect(res.body).not.toContain(fake.apiKey);
+      expect(ctx.logs.join('\n')).not.toContain(fake.apiKey);
+      expect(converseThrows.error).toBeNull();
+    });
+
+    it('a 422 refusal of the Test is reported', async () => {
+      await useProvider('openai');
+      // A 422 of the plain call is asked again once without the room to think (the same as a 400
+      // is), and when that is refused too it is the plain test's failure: the provider's status, a
+      // fixed message and no tool check.
+      fake.enqueue(
+        refusal('openai', 422, 'Unprocessable'),
+        refusal('openai', 422, 'Unprocessable'),
+      );
+      const res = await check();
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({
+        ok: false,
+        problem: {
+          code: 'PROVIDER_REJECTED_REQUEST',
+          message: 'The provider refused the request (HTTP 422); check the base URL and model',
+          providerStatus: 422,
+        },
+        toolCalling: 'not_checked',
+      });
+      expect(res.body).not.toContain('Unprocessable');
+      expect(fake.requests).toHaveLength(2);
+    });
+
+    it('a Test logs no key', async () => {
+      await useProvider('openai');
+      // A whole Test, passing, with an error body that echoes the key in the tool check.
+      fake.enqueue(plainOk('openai'), refusal('openai', 400, `bad request ${fake.apiKey}`));
+      const res = await check();
+      expect(res.statusCode).toBe(200);
+      expect(res.body).not.toContain(fake.apiKey);
+      expect(ctx.logs.join('\n')).not.toContain(fake.apiKey);
+      // The logs are the ones the app writes: the request itself is in them.
+      expect(ctx.logs.some((line) => line.includes('/system/llm/test'))).toBe(true);
     });
 
     it('keeps the latency of the plain test, and writes no usage row and no audit row', async () => {

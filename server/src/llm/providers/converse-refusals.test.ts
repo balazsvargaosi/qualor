@@ -744,6 +744,32 @@ describe('converse: conversations with read-only tools (R5)', () => {
       );
     });
 
+    it("an error in Gemini's array form gives its message", async () => {
+      // Gemini's OpenAI endpoint wraps its error in a list: `[{"error":{"message":"x"}}]`.
+      const err = await refusal([
+        {
+          error: {
+            code: 400,
+            message: 'This model does not support tools',
+            status: 'INVALID_ARGUMENT',
+          },
+        },
+      ]);
+      expect(err).toMatchObject({ failure: 'rejected', status: 400, refusedTools: true });
+    });
+
+    it("a 'model my-tool-model is not available' refusal is not a refusal of tools", async () => {
+      // The model's own id names `tool`, and the message says it is not available.
+      fake.enqueue({ status: 404, body: errorBody('model my-tool-model is not available') });
+      const err = await converse(
+        { ...configFor(kind), model: 'my-tool-model' },
+        fake.apiKey,
+        start,
+        http,
+      ).catch((e: unknown) => e);
+      expect(err).toMatchObject({ failure: 'rejected', status: 404, refusedTools: false });
+    });
+
     it('is not flagged for a status that is not a refusal of the request, such as a 5xx', async () => {
       const err = await refusal(errorBody('tools are down'), 503);
       expect(err).toMatchObject({ failure: 'unavailable', refusedTools: false });

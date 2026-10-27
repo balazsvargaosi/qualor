@@ -2,6 +2,11 @@
 export const LLM_FEATURES = ['explain', 'triage', 'fix'] as const;
 export type LlmFeature = (typeof LLM_FEATURES)[number];
 
+/** Whether a request row’s feature is one of the three single-shot features (not `review` or `review-reply`). */
+export function isLlmFeature(feature: string): feature is LlmFeature {
+  return (LLM_FEATURES as readonly string[]).includes(feature);
+}
+
 export const PROMPT_VERSIONS = {
   explain: 'explain.v1',
   triage: 'triage.v1',

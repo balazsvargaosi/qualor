@@ -145,6 +145,29 @@ function scrubSpelled(text: string, key: string): string {
   return scrubbed + text.slice(copied);
 }
 
+/** Whether the text ends in an odd number of backslashes: the last one starts an escape. */
+function endsInOpenEscape(text: string): boolean {
+  let backslashes = 0;
+  while (text.charCodeAt(text.length - 1 - backslashes) === BACKSLASH) backslashes += 1;
+  return backslashes % 2 === 1;
+}
+
+/**
+ * `text` with each place that holds the key as it is replaced. A key whose first character makes
+ * an escape with a backslash before it (`\/key`) takes that backslash with it: left behind, it
+ * would turn the replacement into a bad escape, and the text into invalid JSON. Before any other
+ * character, a backslash is the text's own (the half of an escape is left as it is).
+ */
+function scrubRaw(text: string, key: string): string {
+  if (spelledAt(`\\${key.slice(0, 5)}`, 0).length === 1) return scrub(text, key);
+  const parts = text.split(key);
+  return parts
+    .map((part, index) =>
+      index < parts.length - 1 && endsInOpenEscape(part) ? part.slice(0, -1) : part,
+    )
+    .join(REDACTED);
+}
+
 /**
  * `text` without the key, however it is written: as it is, and with any of the escapes of a JSON
  * string for any of its characters (`\/`, `\"`, `\\`, `\b`, `\f`, `\n`, `\r`, `\t` and `\uXXXX`,
@@ -156,7 +179,7 @@ export function scrubText(text: string, key: string | null): string {
   if (key === null || key.length < MIN_SCRUBBED_KEY_LENGTH) return text;
   // As it is first: a key with a backslash in it can be in the text as it stands, and the escapes
   // would read its backslash and the character after it as something else.
-  const plain = scrub(text, key);
+  const plain = scrubRaw(text, key);
   // What shows of a key that has hidden characters of its own is what a comment gives away.
   const shown = HIDDEN.test(key) ? key.replace(HIDDEN_EVERYWHERE, '') : key;
   if (shown.length < MIN_SCRUBBED_KEY_LENGTH) return plain;

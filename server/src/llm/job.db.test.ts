@@ -1062,4 +1062,42 @@ describe('the llm worker (llm.md §9, §10, §14)', () => {
       expect(fake.requests).toHaveLength(0);
     },
   );
+
+  it.each(['review', 'review-reply'] as const)(
+    'a job for a %s row completes with a warning',
+    async (feature) => {
+      const [call] = await h.ctx.db
+        .insert(llmRequests)
+        .values({
+          organizationId: h.organizationId,
+          projectId,
+          issueId,
+          feature,
+          cacheKey: 'd'.repeat(64),
+          provider: 'openai',
+          providerHost: fake.host,
+          model: 'fake-model',
+          promptVersion: `${feature}.v1`,
+          status: 'queued',
+          inputSha256: 'b'.repeat(64),
+          inputBytes: 10,
+          fields: ['review'],
+        })
+        .returning();
+      await enqueue(h.ctx.db, {
+        queue: LLM_QUEUE,
+        payload: {
+          requestId: call!.id,
+          attempt: 0,
+          baseUrl: 'c'.repeat(64),
+        } satisfies LlmJobPayload,
+        maxAttempts: 1,
+      });
+      await runLlmJobs(h, llmJobDeps(h));
+      expect((await llmJobs()).map((j) => j.status)).toEqual(['succeeded']);
+      const line = h.ctx.logs.find((l) => l.includes('not explain, triage or fix'));
+      expect(line, logs()).toBeDefined();
+      expect(JSON.parse(line!)).toMatchObject({ level: 40, requestId: call!.id, feature });
+    },
+  );
 });
