@@ -51,6 +51,11 @@ const AI_SETTINGS_REMOVED = [
   'enables the organisation',
   'enabled the organisation',
   'The AI assistant is not enabled for this organisation',
+  // AI settings redesign (2026-10-26): organisations are allowed to use AI, never enabled.
+  'enabled organisations',
+  'enable organisations',
+  // AI settings redesign (2026-10-26): Remove the key is a button, not a box to check.
+  'check Remove the key',
   // AI settings redesign (2026-10-26): an organisation's excluded projects are "Never sent to the
   // provider".
   'Never send issues of these projects',
