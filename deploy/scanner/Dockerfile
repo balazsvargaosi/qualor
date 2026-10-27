@@ -18,7 +18,7 @@
 #   docker build -f deploy/scanner/Dockerfile -t qualor/scanner:dev .
 # Every base image is pinned by version and digest (multi-arch index); bump both together.
 
-FROM node:22.23.3-bookworm@sha256:363e1587494626837fa7f9a23bdb453d13b0ff3c67c705c2805cfc69c2d2fad7 AS cli
+FROM node:22.23.4-bookworm@sha256:63538dfe497cc29dfafdda25ada09b46db68a3f4cc205abf1f5d6bf0913f3384 AS cli
 ARG TARGETARCH
 WORKDIR /src
 RUN corepack enable && npm install -g bun@1.3.13
@@ -95,7 +95,7 @@ RUN mkdir -p /out \
   && /out/staticcheck -version | grep -F "staticcheck ${STATICCHECK_VERSION} " \
   && /out/gosec -version | grep -Fx "Version: ${GOSEC_VERSION}"
 
-FROM node:22.23.3-bookworm@sha256:363e1587494626837fa7f9a23bdb453d13b0ff3c67c705c2805cfc69c2d2fad7 AS tools
+FROM node:22.23.4-bookworm@sha256:63538dfe497cc29dfafdda25ada09b46db68a3f4cc205abf1f5d6bf0913f3384 AS tools
 RUN apt-get update && apt-get install -y --no-install-recommends unzip && rm -rf /var/lib/apt/lists/*
 COPY tools/analyzers/install.sh tools/analyzers/install-sonarjs.sh /tmp/
 RUN sh /tmp/install.sh
@@ -145,7 +145,7 @@ RUN QUALOR_RULES_REQUIRED="$QUALOR_RULES_REQUIRED" sh /tmp/install-qualor-rules.
 
 FROM eclipse-temurin:17.0.20_8-jre-noble@sha256:39d618b8fda3408cfe792db2b666c0e3db8ea4ae263ab4d0c3805933e5355f45 AS jre
 
-FROM node:22.23.3-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c
+FROM node:22.23.4-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d
 RUN apt-get update \
   && apt-get install -y --no-install-recommends git ca-certificates php8.2-cli libyaml-0-2 \
   && rm -rf /var/lib/apt/lists/* \

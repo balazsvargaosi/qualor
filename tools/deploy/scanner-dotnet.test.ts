@@ -37,8 +37,8 @@ function output(
   return [
     '== sdks',
     ...(o.sdks ?? [
-      '8.0.425 [/opt/qualor/share/dotnet/sdk]',
-      '10.0.401 [/opt/qualor/share/dotnet/sdk]',
+      '8.0.427 [/opt/qualor/share/dotnet/sdk]',
+      '10.0.403 [/opt/qualor/share/dotnet/sdk]',
     ]),
     '== analyzers',
     ...(o.analyzers ?? ROSLYNATOR),
@@ -46,8 +46,8 @@ function output(
     ...(o.sonar ?? SONAR),
     '== licenses',
     ...(o.licenses ?? [
-      'DOTNET-10.0.401-ThirdPartyNotices.txt',
-      'DOTNET-8.0.425-ThirdPartyNotices.txt',
+      'DOTNET-10.0.403-ThirdPartyNotices.txt',
+      'DOTNET-8.0.427-ThirdPartyNotices.txt',
       'DOTNET-LICENSE.txt',
       'GITLEAKS-LICENSE.txt',
       'ROSLYNATOR-LICENSE.txt',
@@ -101,7 +101,7 @@ describe('the qualor/scanner-dotnet content check (deploy/README.md)', () => {
     expect(
       imageProblems(
         output({
-          sdks: ['8.0.425 [/opt/qualor/share/dotnet/sdk]'],
+          sdks: ['8.0.427 [/opt/qualor/share/dotnet/sdk]'],
           analyzers: ROSLYNATOR.slice(1),
           licenses: ['DOTNET-LICENSE.txt'],
           version: 'grammars: java (ABI 14)',
@@ -109,10 +109,10 @@ describe('the qualor/scanner-dotnet content check (deploy/README.md)', () => {
         expected,
       ),
     ).toEqual([
-      'dotnet --list-sdks does not list 10.0.401',
+      'dotnet --list-sdks does not list 10.0.403',
       '/opt/qualor/dotnet/analyzers holds 7 Roslynator*.dll, not 8',
-      '/opt/qualor/licenses/ has no DOTNET-8.0.425-ThirdPartyNotices.txt',
-      '/opt/qualor/licenses/ has no DOTNET-10.0.401-ThirdPartyNotices.txt',
+      '/opt/qualor/licenses/ has no DOTNET-8.0.427-ThirdPartyNotices.txt',
+      '/opt/qualor/licenses/ has no DOTNET-10.0.403-ThirdPartyNotices.txt',
       '/opt/qualor/licenses/ has no ROSLYNATOR-LICENSE.txt',
       '/opt/qualor/licenses/ has no SONARANALYZER-CSHARP-LICENSE.txt',
       '/opt/qualor/licenses/ has no SONARANALYZER-CSHARP-THIRD-PARTY-NOTICES.txt',
@@ -123,8 +123,8 @@ describe('the qualor/scanner-dotnet content check (deploy/README.md)', () => {
     expect(
       imageProblems(output({ sdks: ['sh: 1: dotnet: not found'] }), expected).slice(0, 2),
     ).toEqual([
-      'dotnet --list-sdks does not list 8.0.425',
-      'dotnet --list-sdks does not list 10.0.401',
+      'dotnet --list-sdks does not list 8.0.427',
+      'dotnet --list-sdks does not list 10.0.403',
     ]);
     expect(imageProblems('', expected)).toContain('the probe printed no "== end" line');
   });
