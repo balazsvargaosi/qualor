@@ -236,6 +236,21 @@ describe('telemetry schema 2: AI review and the assistant (telemetry.md, R39)', 
     expect(payload.aiReview.provider).toBe('none');
   });
 
+  it('names the kind of a provider whose address does not parse, and counts none of its organisations', async () => {
+    const settings = await readLlmSettings(h.ctx.db);
+    const usage = await collectAiReviewUsage(h.ctx.db, {
+      ...settings,
+      provider: { ...provider(), baseUrl: 'not an address' },
+    });
+    // organizationReviewInactive says `no_provider`: nothing could be sent to it.
+    expect(usage).toMatchObject({
+      provider: 'openai_responses',
+      organizations: 0,
+      projects: 0,
+      tiers: { strong: true, fast: false },
+    });
+  });
+
   it('counts the assistant requests of 30 days by feature', async () => {
     await request('explain');
     await request('explain');

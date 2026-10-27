@@ -121,6 +121,7 @@ export async function collectAiReviewUsage(
           scmConnectionId: p.scm_connection_id,
         }).active,
     ).length,
+    // An address that does not parse still sends its kind; its organisations count 0 (no_provider).
     provider: providerToken(provider),
     tiers: {
       strong: provider !== null && ownModel(provider, 'strong') !== null,
