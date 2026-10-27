@@ -18,7 +18,8 @@ import { SessionStore } from '../auth/session';
 import { OrgContext } from '../org/org-context';
 import { LeaveConfirm } from '../shared/leave-confirm';
 import { unsavedChangesGuard } from '../shared/unsaved-changes';
-import { AiSettingsPage, instanceStatusLines } from './ai.page';
+import { AiSettingsPage } from './ai.page';
+import { instanceStatusLines } from './ai/instance-status';
 import type { LlmBody, LlmSettings } from './ai/llm-body';
 import { settingsRoutes } from './settings.routes';
 
