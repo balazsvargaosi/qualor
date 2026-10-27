@@ -74,9 +74,14 @@ function configured(over: Partial<LlmSettings> = {}): LlmSettings {
 /**
  * Answers `PUT /system/llm` as the server stores a body: its fields in place of the stored ones,
  * the provider and what organisations' admins own as they were; `GET` answers what is stored.
- * `hold` holds the first answer back until the returned function lets it go.
+ * `hold` holds the first answer back until the returned function lets it go; `failFirst` answers
+ * the first with a 500 and stores nothing of it.
  */
-function storeBodies(server: FakeServer, first: LlmSettings, hold = false): () => void {
+function storeBodies(
+  server: FakeServer,
+  first: LlmSettings,
+  { hold = false, failFirst = false } = {},
+): () => void {
   let settings = first;
   let release: () => void = () => undefined;
   const held = hold ? new Promise<void>((resolve) => (release = resolve)) : Promise.resolve();
@@ -84,7 +89,10 @@ function storeBodies(server: FakeServer, first: LlmSettings, hold = false): () =
   server.on('GET', '/api/v0/system/llm', () => ({ body: settings }));
   server.on('PUT', '/api/v0/system/llm', async (request) => {
     const body = request.body as LlmBody;
-    if (answered++ === 0) await held;
+    if (answered++ === 0) {
+      await held;
+      if (failFirst) return { status: 500, body: problem(500, 'INTERNAL') };
+    }
     settings = {
       ...settings,
       organizations: Object.fromEntries(
@@ -565,7 +573,7 @@ describe('AiSettingsPage: saving', () => {
 
   it('sends one save at a time, each built on the answer to the one before', async () => {
     const server = setup(CONFIGURED);
-    const release = storeBodies(server, CONFIGURED as LlmSettings, true);
+    const release = storeBodies(server, CONFIGURED as LlmSettings, { hold: true });
     const { fixture, root } = await render();
     await fill(fixture, root, 'ai-budget-explain', '300');
     await addPath(fixture, root, 'legacy/**');
@@ -584,6 +592,26 @@ describe('AiSettingsPage: saving', () => {
     });
     expect(footOf(root, 'limits')).toMatch(/^Saved at /);
     expect(footOf(root, 'data')).toMatch(/^Saved at /);
+  });
+
+  it('sends a later save after one that failed', async () => {
+    const server = setup(CONFIGURED);
+    storeBodies(server, CONFIGURED as LlmSettings, { failFirst: true });
+    const { fixture, root } = await render();
+    await fill(fixture, root, 'ai-budget-explain', '300');
+    await addPath(fixture, root, 'legacy/**');
+    await click(fixture, button(root.querySelector('section#limits')!, 'Save limits'));
+    expect(puts(server)).toHaveLength(1);
+    expect(root.querySelector('section#limits .foot-status.bad')).not.toBeNull();
+    await click(fixture, button(root.querySelector('section#data')!, 'Save data and privacy'));
+    expect(puts(server)).toHaveLength(2);
+    // Built on what is stored: the limits that failed are not in it.
+    expect(puts(server)[1]).toMatchObject({
+      budgets: { explainPerDay: 200 },
+      excludePaths: ['legacy/**'],
+    });
+    expect(footOf(root, 'data')).toMatch(/^Saved at /);
+    expect(field(root, 'ai-budget-explain').value).toBe('300');
   });
 
   it('sends a key typed with the provider’s save only, never with a later save', async () => {
