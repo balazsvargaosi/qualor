@@ -9773,7 +9773,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** The AI assistant settings (instance admins); never the API key */
+        /** The AI provider settings (instance admins); never the API key */
         get: {
             parameters: {
                 query?: never;
@@ -9908,7 +9908,7 @@ export interface paths {
                 };
             };
         };
-        /** Replace the AI assistant settings (instance admins); the API key is write-only, and a new base URL needs it again */
+        /** Replace the AI provider settings (instance admins); the API key is write-only, and a new base URL needs it again */
         put: {
             parameters: {
                 query?: never;
@@ -12683,7 +12683,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** The organisation's AI review settings and the data-sharing notice (org.ai.manage); `available` is false without a provider or an enabled organisation */
+        /** The organisation's AI review settings and the data-sharing notice (org.ai.manage); `available` is false without a provider or an organization that may use AI */
         get: {
             parameters: {
                 query?: never;

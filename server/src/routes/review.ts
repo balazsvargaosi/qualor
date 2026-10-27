@@ -316,7 +316,7 @@ export const reviewRoutes: FastifyPluginAsyncZod<{
       schema: {
         tags: ['ai'],
         summary:
-          "The organisation's AI review settings and the data-sharing notice (org.ai.manage); `available` is false without a provider or an enabled organisation",
+          "The organisation's AI review settings and the data-sharing notice (org.ai.manage); `available` is false without a provider or an organization that may use AI",
         params: idParams,
         response: { 200: organizationReviewSchema },
       },

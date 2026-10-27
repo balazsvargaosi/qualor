@@ -884,7 +884,7 @@ export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
     {
       schema: {
         tags: ['llm'],
-        summary: 'The AI assistant settings (instance admins); never the API key',
+        summary: 'The AI provider settings (instance admins); never the API key',
         response: { 200: settingsDto },
       },
     },
@@ -901,7 +901,7 @@ export const llmSettingsRoutes: FastifyPluginAsyncZod<{ deps: RouteDeps }> = asy
       schema: {
         tags: ['llm'],
         summary:
-          'Replace the AI assistant settings (instance admins); the API key is write-only, and a new base URL needs it again',
+          'Replace the AI provider settings (instance admins); the API key is write-only, and a new base URL needs it again',
         body: settingsBody,
         response: { 200: settingsDto },
       },

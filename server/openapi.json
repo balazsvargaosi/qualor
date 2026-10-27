@@ -19934,7 +19934,7 @@
     },
     "/api/v0/system/llm": {
       "get": {
-        "summary": "The AI assistant settings (instance admins); never the API key",
+        "summary": "The AI provider settings (instance admins); never the API key",
         "tags": [
           "llm"
         ],
@@ -20467,7 +20467,7 @@
         }
       },
       "put": {
-        "summary": "Replace the AI assistant settings (instance admins); the API key is write-only, and a new base URL needs it again",
+        "summary": "Replace the AI provider settings (instance admins); the API key is write-only, and a new base URL needs it again",
         "tags": [
           "llm"
         ],
@@ -27598,7 +27598,7 @@
     },
     "/api/v0/organizations/{id}/ai/review": {
       "get": {
-        "summary": "The organisation's AI review settings and the data-sharing notice (org.ai.manage); `available` is false without a provider or an enabled organisation",
+        "summary": "The organisation's AI review settings and the data-sharing notice (org.ai.manage); `available` is false without a provider or an organization that may use AI",
         "tags": [
           "ai"
         ],
