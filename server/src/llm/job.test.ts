@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { SCM_CIRCUIT_FAILURES } from '../scm/runtime';
-import { CACHE_WRITE_PRICE_FACTOR, costOf, createModelRuntimes, reviewCircuitDeps } from './job';
+import { costOf, createModelRuntimes, reviewCircuitDeps } from './job';
+import { CACHE_WRITE_PRICE_FACTOR } from './settings';
 
 describe('createModelRuntimes', () => {
   it('keeps the reviews’ circuit apart from the assistant’s', () => {

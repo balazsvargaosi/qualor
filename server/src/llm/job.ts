@@ -34,6 +34,7 @@ import {
 } from './providers';
 import { LLM_QUEUE } from './service';
 import {
+  CACHE_WRITE_PRICE_FACTOR,
   organizationSettings,
   pathExcluded,
   providerApiKey,
@@ -203,12 +204,6 @@ function scrubStrings<T>(value: T, key: string | null): T {
   }
   return value;
 }
-
-/**
- * R49: what a token written to the provider's prompt cache costs, as a multiple of the input price
- * (Anthropic's 5-minute cache, the one the markers ask for). OpenAI bills no write.
- */
-export const CACHE_WRITE_PRICE_FACTOR = 1.25;
 
 /**
  * llm.md §10.1: the estimated cost in micro-USD whenever prices are set and both token counts are

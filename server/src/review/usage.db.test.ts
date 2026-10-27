@@ -2068,7 +2068,7 @@ const port = 8080;
         ).toBe(0);
       });
 
-      it('turns the cost that is left into tokens at the dearer of the two prices', () => {
+      it('turns the cost that is left into tokens at the dearest price a token may cost', () => {
         // $3 left at the output price of 15 micro-USD a token (the dearer): 200 000 tokens.
         expect(remainingReviewTokens(priced, day(0, 0, 2_000_000), PRICING, SINGLE_MODEL)).toBe(
           200_000,
@@ -2077,7 +2077,7 @@ const port = 8080;
         expect(remainingReviewTokens(priced, day(0, 0, 4_500_000), PRICING, SINGLE_MODEL)).toBe(
           33_333,
         );
-        // Here the input price is the dearer: 1 000 000 / 20.
+        // Here a token written to the cache is the dearest: 20 × 1.25 = 25, and 1 000 000 / 25.
         expect(
           remainingReviewTokens(
             priced,
@@ -2085,7 +2085,16 @@ const port = 8080;
             { ...PRICING, inputUsdPerMTok: 20, outputUsdPerMTok: 5, cachedInputUsdPerMTok: null },
             SINGLE_MODEL,
           ),
-        ).toBe(50_000);
+        ).toBe(40_000);
+        // Or a token read from the cache, when that is priced above the others: 1 000 000 / 40.
+        expect(
+          remainingReviewTokens(
+            priced,
+            day(0, 0, 4_000_000),
+            { ...PRICING, cachedInputUsdPerMTok: 40 },
+            SINGLE_MODEL,
+          ),
+        ).toBe(25_000);
       });
 
       it('is the smallest of what the tokens and the cost leave', () => {
@@ -2114,12 +2123,12 @@ const port = 8080;
         expect(remainingReviewTokens(priced, day(0, 0, 2_000_000), pricing, SINGLE_MODEL)).toBe(
           200_000,
         );
-        // The dearest input price may be another tier's than the dearest output price.
+        // A tier whose cache write (500 × 1.25 = 625 a token) is dearer than every output price.
         const inputDear = {
           ...pricing,
           strong: { inputUsdPerMTok: 500, outputUsdPerMTok: 5, cachedInputUsdPerMTok: null },
         };
-        expect(remainingReviewTokens(priced, day(0, 0, 2_000_000), inputDear, tiers)).toBe(6_000);
+        expect(remainingReviewTokens(priced, day(0, 0, 2_000_000), inputDear, tiers)).toBe(4_800);
       });
 
       it('leaves the cost out when the review has no cost budget, or the prices are free or unset', () => {

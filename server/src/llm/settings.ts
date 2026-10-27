@@ -323,29 +323,38 @@ export function pricingFor(
 }
 
 /**
- * The dearest prices a call of the provider may be costed at: the highest input price and the
- * highest output price among the tiers' pairs (`pricingFor`), each from whichever tier has it. A
- * cost that is left to spend is turned into tokens at this price, since the cost of a call is not
+ * R49: what a token written to the provider's prompt cache costs, as a multiple of the input price
+ * (Anthropic's 5-minute cache, the one the markers ask for). OpenAI bills no write.
+ */
+export const CACHE_WRITE_PRICE_FACTOR = 1.25;
+
+/**
+ * The most that one token of a call of the provider may cost, in micro-USD (a price is dollars for
+ * a million tokens, which is micro-USD for a token): the highest, over every tier's pair
+ * (`pricingFor`), of the input price times CACHE_WRITE_PRICE_FACTOR (a token written to the cache),
+ * the cached input price (a token read from it; none counts as nothing) and the output price. A
+ * token of input at the plain input price is below the first. A cost that is left to spend is turned into tokens at this price, since the cost of a call is not
  * known before it is made and any tier's may be the next. Every tier counts, though two may name
  * the same model: a call is costed at the pair of its tier. A tier with no pair is left out, and
- * with no pair at all, or no prices, there is none. The cached input price is not part of it (R49):
- * an input read from the cache is counted at no more than the input price. A cache write costs
- * CACHE_WRITE_PRICE_FACTOR times the input price, which the dearer of the two covers whenever the
- * output price is at least that much.
+ * with no pair at all, or no prices, there is none. When every output price is at least
+ * CACHE_WRITE_PRICE_FACTOR times its input price and no cached price is above the output price,
+ * as it is for the mainstream prices, this is the dearest output price.
  */
-export function dearestPrice(
+export function dearestTokenPrice(
   pricing: StoredPricing,
   provider: Pick<StoredProvider, 'model' | 'strongModel' | 'fastModel'>,
-): Pick<PricePair, 'inputUsdPerMTok' | 'outputUsdPerMTok'> | null {
-  const pairs = MODEL_TIERS.flatMap((tier) => {
+): number | null {
+  const prices = MODEL_TIERS.flatMap((tier) => {
     const pair = pricingFor(pricing, provider, tier);
-    return pair === null ? [] : [pair];
+    return pair === null
+      ? []
+      : [
+          pair.inputUsdPerMTok * CACHE_WRITE_PRICE_FACTOR,
+          pair.cachedInputUsdPerMTok ?? 0,
+          pair.outputUsdPerMTok,
+        ];
   });
-  if (pairs.length === 0) return null;
-  return {
-    inputUsdPerMTok: Math.max(...pairs.map((pair) => pair.inputUsdPerMTok)),
-    outputUsdPerMTok: Math.max(...pairs.map((pair) => pair.outputUsdPerMTok)),
-  };
+  return prices.length === 0 ? null : Math.max(...prices);
 }
 
 /** llm.md §3.3: an organisation absent from the map is disabled. */

@@ -17,7 +17,7 @@ import {
 } from '../llm/providers';
 import { UTC_DAY_START } from '../llm/service';
 import {
-  dearestPrice,
+  dearestTokenPrice,
   providerApiKey,
   providerConfig,
   type PricePair,
@@ -271,11 +271,11 @@ export async function reservedReviewTokens(
  * The tokens one review may use now: the smallest of what one review may use, what the
  * organisation has left of its day, what its project has left of the day when the project has a
  * budget, and, when the review has a cost budget (`costPerDayUsd`) and there are prices, what the
- * cost left buys at the `dearestPrice` of the provider's models: the cost of a call is not known
- * before it is made and any model's may be the next, so the price that cannot overspend is the
- * dearest of them all, the dearer of its input and its output. Without a provider, as without
- * prices, nothing is priced. A cost budget at or past its limit leaves nothing. `usage` is the day
- * so far, as `reviewUsageToday` counts it for the organisation and for the project. `reserved` is
+ * cost left buys at the `dearestTokenPrice` of the provider's models: the cost of a call is not
+ * known before it is made and any model's may be the next, so the price that cannot overspend is the
+ * dearest a token may cost, of input written to the cache, input read from it and output. Without
+ * a provider, as without prices, nothing is priced. A cost budget at or past its limit leaves
+ * nothing. `usage` is the day so far, as `reviewUsageToday` counts it for the organisation and for the project. `reserved` is
  * what the other running reviews may still spend (`reservedReviewTokens`): the organisation's
  * tokens left, the project's and the tokens the cost buys each lose their part of it, and Tokens
  * per review never does. The answer to a
@@ -302,10 +302,8 @@ export function remainingReviewTokens(
     const costLeft =
       Math.round(budgets.costPerDayUsd * 1_000_000) - usage.organization.costMicroUsd;
     if (costLeft <= 0) return 0;
-    const dearest = provider === null ? null : dearestPrice(pricing, provider);
     // A price is in dollars for a million tokens, which is micro-USD for a token.
-    const perToken =
-      dearest === null ? 0 : Math.max(dearest.inputUsdPerMTok, dearest.outputUsdPerMTok);
+    const perToken = (provider === null ? null : dearestTokenPrice(pricing, provider)) ?? 0;
     if (perToken > 0) left.push(Math.floor(costLeft / perToken) - reserved.organization);
   }
   return Math.max(0, Math.min(...left));
