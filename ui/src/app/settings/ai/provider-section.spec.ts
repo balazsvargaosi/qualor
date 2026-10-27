@@ -611,7 +611,7 @@ describe('ProviderSection: the workspace ID', () => {
     const input = field(root, 'ai-workspace-id');
     expect(labelOf(root, 'ai-workspace-id')).toBe('Workspace ID');
     expect(textOf(root, '#ai-workspace-id-hint')).toBe(
-      'For an organisation-wide key that is not scoped to a workspace (wrkspc_…).',
+      'For an organization-wide key that is not scoped to a workspace (wrkspc_…).',
     );
     expect([input.type, input.maxLength, input.value, input.required]).toEqual([
       'text',

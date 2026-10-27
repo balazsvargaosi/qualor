@@ -477,7 +477,7 @@ describe('ProjectAiPanel', () => {
       expect(server.requestsTo('PUT', ROUTE)).toHaveLength(3);
       expect(fix.checked).toBe(true);
       expect(text(line(root, 'fixes')?.querySelector('[role="alert"]'))).toBe(
-        'This organisation already has 1 000 projects opted out. Switch one back on first.',
+        'This organization already has 1,000 projects opted out. Switch one back on first.',
       );
       expect(text(line(root, 'fixes')?.querySelector('[role="status"]'))).toBe('');
       expect(saved).toHaveBeenCalledTimes(2);
@@ -550,7 +550,7 @@ describe('ProjectAiPanel', () => {
       expect(fix.checked).toBe(true);
       expect(fix.getAttribute('aria-disabled')).toBeNull();
       expect(text(line(root, 'fixes')?.querySelector('[role="alert"]'))).toBe(
-        'This organisation already has 1 000 projects opted out. Switch one back on first.',
+        'This organization already has 1,000 projects opted out. Switch one back on first.',
       );
       expect(saved).not.toHaveBeenCalled();
       expect(document.activeElement).toBe(fix);

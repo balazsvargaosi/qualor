@@ -466,7 +466,7 @@ up to 1,000,000,000 tokens a day."
 Posting a suggestion to a merge request does not count again. The budgets are yours to set, and no
 edition caps them: the fix budget can go up to 100 000 a day, like the explanation and triage budgets.
 
-An organisation over a budget gets "The organisation's AI budget for today is used up" until the
+An organisation over a budget gets "The organization's AI budget for today is used up" until the
 next UTC midnight. A person over the hourly bound gets "You asked too often; try again in a few
 minutes".
 

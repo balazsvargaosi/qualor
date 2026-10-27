@@ -462,7 +462,7 @@ function askErrorText(err: unknown): string {
           return $localize`:@@ai.panel.error.notEligible:This issue cannot be sent to the AI assistant.`;
       }
     case 'AI_QUOTA_EXCEEDED':
-      return $localize`:@@ai.panel.error.quota:The organisation's AI budget for today is used up.`;
+      return $localize`:@@ai.panel.error.quota:The organization's AI budget for today is used up.`;
     case 'RATE_LIMITED':
       return $localize`:@@ai.panel.error.rateLimited:You asked too often; try again in a few minutes.`;
     default:

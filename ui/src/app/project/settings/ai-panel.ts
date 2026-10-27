@@ -353,7 +353,7 @@ export class ProjectAiPanel {
 /** Why the switch was refused, in the words the project's settings have always used. */
 function fixRefusal(err: unknown): string {
   if (err instanceof ApiError && err.code === 'AUTO_FIX_OPT_OUT_LIMIT_REACHED') {
-    return $localize`:@@autoFix.project.limit:This organisation already has 1 000 projects opted out. Switch one back on first.`;
+    return $localize`:@@autoFix.project.limit:This organization already has 1,000 projects opted out. Switch one back on first.`;
   }
   if (err instanceof ApiError && err.code === 'FEATURE_NOT_LICENSED') return autoFixNotLicensed();
   return problemMessage(err);

@@ -286,7 +286,7 @@ describe('AiPanel (llm.md §18)', () => {
     button(root, 'Suggest a fix').click();
     await settle(fixture);
     expect(root.querySelector('[role="alert"]')?.textContent).toContain(
-      "The organisation's AI budget for today is used up.",
+      "The organization's AI budget for today is used up.",
     );
   });
 
