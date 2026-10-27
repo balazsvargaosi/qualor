@@ -86,13 +86,14 @@ All notable changes to Qualor are listed here, newest first. The format follows
   as long as the provider's timeout or 5 minutes, whichever is longer, and 15 minutes in all; a
   server that refuses streaming is asked again without it, and the later calls of that model are
   not streamed until a restart. Explain, Suggest triage, Suggest a fix and the Test do not stream.
-- Read-only API fields for the AI settings pages. `GET /api/v0/system/llm` answers each
-  organisation's `reviewStatus` (`enabled`: its admins switched AI review on; `consentCurrent`:
-  their confirmation covers the provider as it is now) and `lastTest`, the outcome of the last
-  `POST /api/v0/system/llm/test`, kept until the provider's settings or its key change.
-  `GET /api/v0/organizations/{id}/ai/review` answers `providerTest`, whether that Test found the
-  provider's models able to call tools. A project's `aiReview` answers `reason`, why AI review does
-  not run for it (`no_provider`, `organization_disabled`, `review_disabled`, `consent_outdated`,
+- Read-only API fields for the AI settings pages. `GET /api/v0/system/llm` answers
+  `organizations[id].reviewStatus` (`enabled`: the organisation's admins switched AI review on;
+  `consentCurrent`: their confirmation covers the provider as it is now) and the top-level
+  `lastTest`, the outcome of the last `POST /api/v0/system/llm/test`, kept until the provider's
+  settings or its key change. `GET /api/v0/organizations/{id}/ai/review` answers `providerTest`,
+  whether that Test found the provider's models able to call tools. The project's `aiReview.reason`
+  (`GET /api/v0/projects` and `GET /api/v0/projects/{id}`) says why AI review does not run for it
+  (`no_provider`, `organization_disabled`, `review_disabled`, `consent_outdated`,
   `project_not_selected` or `not_mapped`; `null` while it runs). `PUT /api/v0/system/llm` accepts
   the `GET` answer put back and ignores `reviewStatus` and `lastTest`. See
   [the guide](docs/guide/ai-review.md#api).
