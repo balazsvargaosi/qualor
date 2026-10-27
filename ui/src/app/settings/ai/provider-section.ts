@@ -572,6 +572,9 @@ export class ProviderSection {
       }
       return next;
     }, 'url');
+    // Back at the saved address with nothing typed, the stored key is good there again: the
+    // request for it goes. A refusal of a key typed is about that key, and stays.
+    if (!this.addressChanged() && !this.keyTyped()) this.clearError('key');
   }
 
   protected setText(
@@ -905,7 +908,6 @@ export class ProviderSection {
         this.keySet() && !d.removeKey && this.addressChanged() && isHttpUrl(d.url.trim());
       return needsKey ? refusal('key') : null;
     }
-    if (d.removeKey) return keyAndRemove();
     return API_KEY.test(typed) ? null : keyFormat();
   }
 
@@ -1000,6 +1002,10 @@ export class ProviderSection {
   private edit(change: (d: Draft) => Draft, ...fields: Field[]): void {
     this.draft.update(change);
     this.saveError.set(null);
+    this.clearError(...fields);
+  }
+
+  private clearError(...fields: Field[]): void {
     if (fields.some((field) => this.errors()[field] !== undefined)) {
       this.errors.update((all) =>
         Object.fromEntries(Object.entries(all).filter(([key]) => !fields.includes(key as Field))),
@@ -1316,7 +1322,7 @@ function refusal(field: Field): string {
     case 'fast-model':
       return $localize`:@@ai.settings.badModel:Use the model's name as the provider spells it: letters, digits and . _ : / @ + - only.`;
     case 'key':
-      return $localize`:@@ai.settings.keyForNewUrl:Enter the API key again for a new address, or check Remove the key. The key is 1 to 4096 printable characters without spaces.`;
+      return $localize`:@@ai.settings.keyForNewUrl:Enter the API key again for a new address, or press Remove the key. The key is 1 to 4096 printable characters without spaces.`;
     case 'workspace-id':
       return $localize`:@@ai.settings.badWorkspaceId:Use the workspace ID as the console shows it: wrkspc_ and then letters and digits.`;
     case 'timeout':
@@ -1337,8 +1343,4 @@ function refusal(field: Field): string {
 
 function keyFormat(): string {
   return $localize`:@@ai.settings.keyFormat:This is not an API key: a key is 1 to 4096 printable characters without spaces.`;
-}
-
-function keyAndRemove(): string {
-  return $localize`:@@ai.settings.keyAndRemove:Type a new API key or check Remove the key, not both.`;
 }

@@ -63,26 +63,27 @@ export function llmProblemText(code: LlmErrorCode, providerStatus: number | null
 }
 
 /**
- * `llmProblemText` for the AI settings page, where the field a problem is about is on the page, below
- * the message: a key that is not scoped to a workspace is told where the workspace ID goes.
+ * `llmProblemText` for the AI provider page, where the field a problem is about is on the page,
+ * above the Test's result: a key that is not scoped to a workspace is told where the workspace ID
+ * goes.
  */
 export function settingsProblemText(
   code: LlmErrorCode,
   providerStatus: number | null = null,
 ): string {
   return code === 'PROVIDER_WORKSPACE_REQUIRED'
-    ? $localize`:@@ai.problem.workspaceRequired:This key is not scoped to a workspace: give its workspace ID below.`
+    ? $localize`:@@ai.problem.workspaceRequired:This key is not scoped to a workspace: give its workspace ID above.`
     : llmProblemText(code, providerStatus);
 }
 
 /**
  * What a Test suggests (its `hint`), in the page's own words (the server's text is never shown):
- * the AI settings page has the choice it names below the Test's result.
+ * the AI provider page has the choice it names in its Connection options.
  */
 export function testHintText(code: TestHintCode): string {
   switch (code) {
     case 'USE_RESPONSES_API':
-      return $localize`:@@ai.test.useResponses:This model takes tools only through the Responses API: choose Responses below.`;
+      return $localize`:@@ai.test.useResponses:This model takes tools only through the Responses API: choose Responses in Connection options.`;
   }
 }
 

@@ -491,6 +491,29 @@ describe('ProviderSection: the API key', () => {
     });
   });
 
+  it('drops the request for the key once the address is the saved one again', async () => {
+    const server = setup();
+    const { fixture, root } = await render();
+    await fill(fixture, root, '#ai-url', 'http://vllm:8000/v1');
+    await saveAndTest(fixture, root);
+    // Remove the key is a button: the words say to press it.
+    expect(textOf(root, '#ai-key-error')).toBe(
+      'Enter the API key again for a new address, or press Remove the key. The key is 1 to 4096 printable characters without spaces.',
+    );
+    await fill(fixture, root, '#ai-url', 'http://ollama:11434/v1/');
+    expect(root.querySelector('#ai-key-error')).toBeNull();
+    expect(root.querySelector('#ai-key')).toBeNull();
+    expect(textOf(root, '.foot-status')).toBe('No unsaved changes');
+    expect(puts(server)).toHaveLength(0);
+    // A key typed meanwhile keeps the refusal of its own: it is about the key, not the address.
+    await press(fixture, root, 'Replace the key');
+    await fill(fixture, root, '#ai-key', 'two words');
+    await saveAndTest(fixture, root);
+    await fill(fixture, root, '#ai-url', 'http://vllm:8000/v1');
+    await fill(fixture, root, '#ai-url', 'http://ollama:11434/v1');
+    expect(textOf(root, '#ai-key-error')).toContain('This is not an API key');
+  });
+
   it('maps the server’s refusal of the key to the key field, in the page’s words', async () => {
     const server = setup();
     server.on('PUT', '/api/v0/system/llm', {
@@ -1149,7 +1172,7 @@ describe('ProviderSection: the connection options', () => {
     await press(fixture, root, 'Test again');
     expect(openOptions(root).open).toBe(true);
     expect(textOf(root, '#ai-test-use-responses')).toBe(
-      'This model takes tools only through the Responses API: choose Responses below.',
+      'This model takes tools only through the Responses API: choose Responses in Connection options.',
     );
   });
 
@@ -1822,7 +1845,8 @@ describe('ProviderSection: Save and test', () => {
   });
 
   describe('the Responses hint', () => {
-    const HINT = 'This model takes tools only through the Responses API: choose Responses below.';
+    const HINT =
+      'This model takes tools only through the Responses API: choose Responses in Connection options.';
     const needsResponses = { code: 'USE_RESPONSES_API', message: 'server text' } as const;
 
     it('is said under the lines for a model that refused tools through Chat Completions, in the page’s words', async () => {
@@ -1885,7 +1909,7 @@ describe('ProviderSection: Save and test', () => {
   });
 
   describe('a key that is not scoped to a workspace', () => {
-    const WORDS = 'This key is not scoped to a workspace: give its workspace ID below.';
+    const WORDS = 'This key is not scoped to a workspace: give its workspace ID above.';
 
     it('is the line of each model the key was refused for, in the page’s words', async () => {
       const server = setup();
