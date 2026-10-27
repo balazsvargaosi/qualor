@@ -16,7 +16,7 @@ import { keepEdits } from '../../shared/drafts';
 import { isChecked } from '../../shared/forms';
 import { Icon } from '../../shared/icon';
 import { NumberField } from '../../shared/number-field';
-import { formatMoney, formatWhole, parseMoney, parseWhole } from '../../shared/numbers';
+import { formatAmount, formatWhole, parseMoney, parseWhole } from '../../shared/numbers';
 import { type FootOutcome, SectionFoot } from '../../shared/section-foot';
 import { TONE_CHIPS } from '../../shared/status-list';
 import type { LlmBody, LlmSettings } from './llm-body';
@@ -149,6 +149,8 @@ export class LimitsSection {
   private readonly savedAt = signal<Date | null>(null);
   /** The draft has taken settings once: later settings keep its edits. */
   private adopted = false;
+  /** The cost per day as last saved, which goes back as it is while its field is not edited. */
+  private savedCost: number | null = null;
 
   /** No prices are set: a cost limit would count nothing. */
   protected readonly noPrices = computed(() => this.settings().pricing === null);
@@ -265,7 +267,7 @@ export class LimitsSection {
   /** Save limits: the section's checks first (a refusal sends nothing), then the save. */
   protected async save(): Promise<void> {
     if (this.saving()) return;
-    const built = budgetsOf(this.draft());
+    const built = budgetsOf(this.draft(), { text: this.base().cost, value: this.savedCost });
     if ('errors' in built) {
       this.refuse(built.errors);
       return;
@@ -290,6 +292,7 @@ export class LimitsSection {
     const before = this.base();
     this.draft.update((now) => (this.adopted ? keepEdits(now, before, next) : next));
     this.base.set(next);
+    this.savedCost = settings.budgets.costPerDayUsd;
     this.adopted = true;
   }
 
@@ -298,6 +301,7 @@ export class LimitsSection {
     const next = draftOf(saved, this.locale);
     this.draft.update((now) => keepEdits(now, sent, next));
     this.base.set(next);
+    this.savedCost = saved.budgets.costPerDayUsd;
     this.errors.set({});
   }
 
@@ -333,7 +337,10 @@ export class LimitsSection {
   }
 }
 
-/** The stored limits as the section holds them, grouped as the locale writes numbers. */
+/**
+ * The stored limits as the section holds them, grouped as the locale writes numbers; the cost
+ * with every decimal it has, none rounded away.
+ */
 function draftOf(settings: LlmSettings | null, locale: string): Draft {
   const b = settings?.budgets;
   const whole = (n: number | null = null) => (n === null ? '' : formatWhole(n, locale));
@@ -346,14 +353,21 @@ function draftOf(settings: LlmSettings | null, locale: string): Draft {
     tokens: whole(b?.tokensPerDay),
     asks: whole(b?.perUserPerHour),
     costSet: cost !== null,
-    cost: cost === null ? '' : formatMoney(cost, locale),
+    cost: cost === null ? '' : formatAmount(cost, locale),
     capSet: cap !== null,
     cap: whole(cap),
   };
 }
 
-/** The draft's budgets as the body sends them (a limit switched off is null), or its refusals. */
-function budgetsOf(d: Draft): { budgets: Budgets } | { errors: Errors } {
+/**
+ * The draft's budgets as the body sends them (a limit switched off is null), or its refusals. The
+ * stored cost goes back as it is while its field still shows it: a cost of more decimals than
+ * the field takes (1.255) is not rounded by a save of another limit.
+ */
+function budgetsOf(
+  d: Draft,
+  storedCost: { text: string; value: number | null },
+): { budgets: Budgets } | { errors: Errors } {
   const errors: Errors = {};
   const read = (field: Field): number => {
     const { key, min, max } = LIMITS[field];
@@ -366,7 +380,11 @@ function budgetsOf(d: Draft): { budgets: Budgets } | { errors: Errors } {
     triagePerDay: read('budget-triage'),
     fixPerDay: read('budget-fix'),
     tokensPerDay: read('budget-tokens'),
-    costPerDayUsd: d.costSet ? read('budget-cost') : null,
+    costPerDayUsd: !d.costSet
+      ? null
+      : storedCost.value !== null && d.cost === storedCost.text
+        ? storedCost.value
+        : read('budget-cost'),
     perUserPerHour: read('budget-user'),
     reviewTokensPerOrganizationPerDay: d.capSet ? read('budget-review') : null,
   };

@@ -340,6 +340,25 @@ describe('LimitsSection: the cost', () => {
     expect(puts(server)).toEqual([]);
   });
 
+  it('sends a stored cost back as stored, its decimals all, unless its field is edited', async () => {
+    const server = setup();
+    const { fixture, root } = await render({
+      settings: { ...WITH_PRICES, budgets: { ...CONFIGURED.budgets, costPerDayUsd: 1.255 } },
+    });
+    expect(field(root, 'ai-budget-cost').value).toBe('1.255');
+    await fill(fixture, root, 'ai-budget-explain', '300');
+    expect(foot(root)).toBe('1 unsaved change');
+    await save(fixture, root);
+    expect(puts(server)).toEqual([
+      { ...CONFIGURED.budgets, explainPerDay: 300, costPerDayUsd: 1.255 },
+    ]);
+    expect(field(root, 'ai-budget-cost').value).toBe('1.255');
+    // Edited, it is the amount typed.
+    await fill(fixture, root, 'ai-budget-cost', '1.26');
+    await save(fixture, root);
+    expect(puts(server)[1]).toMatchObject({ costPerDayUsd: 1.26 });
+  });
+
   it('keeps a stored cost limit switchable off without prices', async () => {
     const server = setup();
     const { fixture, root } = await render({

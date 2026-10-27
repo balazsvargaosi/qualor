@@ -46,3 +46,14 @@ export function formatMoney(n: number, locale: string): string {
     maximumFractionDigits: 2,
   }).format(n);
 }
+
+/**
+ * A stored amount as the money field writes it, with every decimal it has past two ("1.255",
+ * "1.50"): nothing a server holds is rounded away on screen.
+ */
+export function formatAmount(n: number, locale: string): string {
+  return new Intl.NumberFormat(locale, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 20,
+  }).format(n);
+}

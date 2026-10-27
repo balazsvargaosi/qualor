@@ -1,4 +1,4 @@
-import { formatMoney, formatWhole, parseMoney, parseWhole } from './numbers';
+import { formatAmount, formatMoney, formatWhole, parseMoney, parseWhole } from './numbers';
 
 describe('parseWhole', () => {
   it('reads whole numbers written with spaces, grouped commas or underscores', () => {
@@ -49,6 +49,10 @@ describe('formatWhole and formatMoney', () => {
   it('groups as the locale writes numbers', () => {
     expect(formatWhole(2_000_000, 'en-US')).toBe('2,000,000');
     expect(formatMoney(1.5, 'en-US')).toBe('1.50');
+    // A stored amount keeps the decimals it has past two.
+    expect(formatAmount(1.5, 'en-US')).toBe('1.50');
+    expect(formatAmount(1.255, 'en-US')).toBe('1.255');
+    expect(formatAmount(1234.5, 'en-US')).toBe('1,234.50');
   });
 
   it('write what the parsers read back', () => {

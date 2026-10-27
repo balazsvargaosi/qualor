@@ -29,7 +29,7 @@ import { inputValue, isChecked } from '../../shared/forms';
 import { Icon } from '../../shared/icon';
 import type { IconName } from '../../shared/icons';
 import { NumberField } from '../../shared/number-field';
-import { formatWhole, parseMoney, parseWhole } from '../../shared/numbers';
+import { formatAmount, formatWhole, parseMoney, parseWhole } from '../../shared/numbers';
 import { type FootOutcome, SectionFoot } from '../../shared/section-foot';
 import { storedTestLine, testHintText, type TestLine, testLine } from '../ai-text';
 import {
@@ -1099,7 +1099,8 @@ export function defaultOutputLimitField(url: string): OutputLimit {
 function draftOf(settings: LlmSettings | null, locale: string): Draft {
   const p = settings?.provider ?? null;
   const pricing = settings?.pricing ?? null;
-  const price = (n: number | undefined) => (n === undefined ? '' : formatPrice(n, locale));
+  // As the money field writes it, without rounding a price of more decimals away.
+  const price = (n: number | undefined) => (n === undefined ? '' : formatAmount(n, locale));
   return {
     kind: p?.kind ?? '',
     url: p?.baseUrl ?? '',
@@ -1239,14 +1240,6 @@ function parsePrice(text: string): number | null {
   if (plain === '' || plain === '.' || !PRICE.test(plain)) return null;
   const n = Number(plain.replaceAll(',', ''));
   return Number.isFinite(n) && n <= MAX_PRICE ? n : null;
-}
-
-function formatPrice(n: number, locale: string): string {
-  // As the money field writes it, without rounding a price of more decimals away.
-  return new Intl.NumberFormat(locale, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 20,
-  }).format(n);
 }
 
 /** A value to compare: the number a text stands for, else the text. */
