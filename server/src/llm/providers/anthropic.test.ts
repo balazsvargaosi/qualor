@@ -337,7 +337,13 @@ describe('the Anthropic adapter: the current models', () => {
       ]);
       expect(messagesOf(2)[4]!.content).toEqual([
         { type: 'tool_result', tool_use_id: 'toolu_2', content: 'result of toolu_2' },
-        { type: 'tool_result', tool_use_id: 'toolu_3', content: 'result of toolu_3' },
+        // The last block of the last message carries the prompt-cache marker (R49).
+        {
+          type: 'tool_result',
+          tool_use_id: 'toolu_3',
+          content: 'result of toolu_3',
+          cache_control: { type: 'ephemeral' },
+        },
       ]);
     });
 
@@ -756,6 +762,227 @@ describe('the Anthropic adapter: the current models', () => {
       }
       expect(body(4)).not.toHaveProperty('tools');
       expect(body(4)).not.toHaveProperty('tool_choice');
+    });
+  });
+
+  describe('prompt caching (R49)', () => {
+    const MARK = { type: 'ephemeral' };
+    /** The `cache_control` keys of request `n`, anywhere in its body. */
+    const marksOf = (n: number) => fake.requests[n]!.body.match(/"cache_control"/g)?.length ?? 0;
+    /** A value without its `cache_control` keys, wherever they are. */
+    const stripped = (value: unknown): unknown => {
+      if (Array.isArray(value)) return value.map(stripped);
+      if (value === null || typeof value !== 'object') return value;
+      return Object.fromEntries(
+        Object.entries(value)
+          .filter(([key]) => key !== 'cache_control')
+          .map(([key, inner]) => [key, stripped(inner)]),
+      );
+    };
+    /** A turn of thinking and a call, which goes back as it came. */
+    const THOUGHT = [
+      anthropicThinking('sig-cache'),
+      toolUseBlock('toolu_1', 'read_file', { path: 'a.ts' }),
+    ];
+    const history: LlmMessage[] = [
+      { role: 'user', text: 'Review this change' },
+      {
+        role: 'assistant',
+        text: '',
+        toolCalls: [{ id: 'toolu_1', name: 'read_file', arguments: { path: 'a.ts' } }],
+        replay: { kind: 'anthropic', items: THOUGHT },
+      },
+      { role: 'tool', callId: 'toolu_1', name: 'read_file', text: 'const a = 1;' },
+    ];
+
+    it('a conversation call marks the last system block and the last block of the last message', async () => {
+      await converse(anthropic, fake.apiKey, start, http);
+      await converse(anthropic, fake.apiKey, { ...start, messages: history }, http);
+      for (const n of [0, 1]) {
+        expect(body(n).system, `request ${n}`).toEqual([
+          { type: 'text', text: 'S', cache_control: MARK },
+        ]);
+        expect(marksOf(n), `request ${n}`).toBe(2);
+        expect(body(n)).not.toHaveProperty('cache_control');
+        const last = messagesOf(n).at(-1)!;
+        expect(last.role).toBe('user');
+        expect(last.content.at(-1)).toMatchObject({ cache_control: MARK });
+      }
+      expect(messagesOf(0)[0]!.content).toEqual([
+        { type: 'text', text: 'Review this change', cache_control: MARK },
+      ]);
+      // The replayed turn goes back exactly as it came: its signed thinking carries no marker.
+      expect(messagesOf(1)[1]).toEqual({ role: 'assistant', content: THOUGHT });
+      expect(messagesOf(1)[0]!.content).toEqual([{ type: 'text', text: 'Review this change' }]);
+      expect(messagesOf(1)[2]!.content).toEqual([
+        {
+          type: 'tool_result',
+          tool_use_id: 'toolu_1',
+          content: 'const a = 1;',
+          cache_control: MARK,
+        },
+      ]);
+      // The tools carry none: the marker on the system block caches them with it.
+      expect(JSON.stringify(body(1).tools)).not.toContain('cache_control');
+    });
+
+    it('the next call’s body, markers stripped, starts with the previous call’s', async () => {
+      const turns = [
+        anthropicToolUse([{ id: 'toolu_1', name: 'read_file', input: { path: 'a.ts' } }], {
+          thinking: [anthropicThinking('sig-1')],
+        }),
+        anthropicToolUse(
+          [
+            { id: 'toolu_2', name: 'read_file', input: { path: 'b.ts' } },
+            { id: 'toolu_3', name: 'list_files', input: { dir: 'src' } },
+          ],
+          { text: 'Two more.', thinking: [anthropicRedactedThinking('data-2')] },
+        ),
+        anthropicAnswer('{"findings":[]}'),
+      ];
+      const messages: LlmMessage[] = [{ role: 'user', text: 'Review this change' }];
+      for (const answer of turns) {
+        fake.enqueue({ status: 200, body: answer });
+        const turn = await converse(anthropic, fake.apiKey, { ...start, messages }, http);
+        messages.push(
+          { role: 'assistant', text: turn.text, toolCalls: turn.toolCalls, replay: turn.replay },
+          ...turn.toolCalls.map((c): LlmMessage => ({
+            role: 'tool',
+            callId: c.id,
+            name: c.name,
+            text: `result of ${c.id}`,
+          })),
+        );
+      }
+      expect(fake.requests).toHaveLength(3);
+      for (const n of [1, 2]) {
+        const before = stripped(body(n - 1)) as { system: unknown; tools: unknown; messages: [] };
+        const after = stripped(body(n)) as { system: unknown; tools: unknown; messages: [] };
+        expect(JSON.stringify(after.system)).toBe(JSON.stringify(before.system));
+        expect(JSON.stringify(after.tools)).toBe(JSON.stringify(before.tools));
+        expect(JSON.stringify(after.messages.slice(0, before.messages.length))).toBe(
+          JSON.stringify(before.messages),
+        );
+        expect(after.messages.length).toBeGreaterThan(before.messages.length);
+      }
+    });
+
+    it('reads the cache usage, unstreamed and streamed (unstreamed here)', async () => {
+      const usage = {
+        input_tokens: 200,
+        cache_creation_input_tokens: 1_000,
+        cache_read_input_tokens: 8_000,
+        output_tokens: 50,
+      };
+      fake.enqueue({ status: 200, body: { ...(anthropicAnswer('{}') as object), usage } });
+      expect((await converse(anthropic, fake.apiKey, start, http)).usage).toEqual({
+        inputTokens: 9_200,
+        outputTokens: 50,
+        cacheReadTokens: 8_000,
+        cacheWriteTokens: 1_000,
+      });
+      // A count the provider did not give is left out, and an input it did not count is unknown
+      // whatever the cache counts say.
+      fake.enqueue(
+        {
+          status: 200,
+          body: {
+            ...(anthropicAnswer('{}') as object),
+            usage: { input_tokens: 200, cache_read_input_tokens: 8_000, output_tokens: 50 },
+          },
+        },
+        {
+          status: 200,
+          body: {
+            ...(anthropicAnswer('{}') as object),
+            usage: { input_tokens: null, cache_read_input_tokens: 8_000, output_tokens: 50 },
+          },
+        },
+      );
+      expect((await converse(anthropic, fake.apiKey, start, http)).usage).toEqual({
+        inputTokens: 8_200,
+        outputTokens: 50,
+        cacheReadTokens: 8_000,
+      });
+      expect((await converse(anthropic, fake.apiKey, start, http)).usage).toMatchObject({
+        inputTokens: null,
+        outputTokens: 50,
+      });
+    });
+
+    it('a refusal naming cache_control is asked once more without markers, and the pair is remembered', async () => {
+      const gateway = await createFakeLlm({ refuseCacheControl: true });
+      try {
+        const gatewayHttp = { internalHosts: parseInternalHosts(gateway.host), version: '0.0.0' };
+        const config = { ...anthropic, baseUrl: gateway.anthropicBaseUrl };
+        const sentMarks = () =>
+          gateway.requests.map((r) => r.body.match(/"cache_control"/g)?.length ?? 0);
+        expect((await converse(config, gateway.apiKey, start, gatewayHttp)).finishReason).toBe(
+          'stop',
+        );
+        expect(sentMarks()).toEqual([2, 0]);
+        // Else the same request, its system prompt the plain text it was before the markers.
+        expect(gateway.requests[1]!.json).toEqual(
+          stripped({ ...(gateway.requests[0]!.json as object), system: 'S' }),
+        );
+        // The second call to the pair has no marker, and is asked once.
+        await converse(config, gateway.apiKey, { ...start, messages: history }, gatewayHttp);
+        expect(sentMarks()).toEqual([2, 0, 0]);
+        // Another model of the same server is a pair of its own, and is asked with them first.
+        await converse({ ...config, model: 'claude-y' }, gateway.apiKey, start, gatewayHttp);
+        expect(sentMarks()).toEqual([2, 0, 0, 2, 0]);
+      } finally {
+        await gateway.close();
+      }
+    });
+
+    it.each([
+      [
+        'a 400 that names it in its words',
+        400,
+        { message: 'system.0.cache_control: Extra inputs are not permitted' },
+      ],
+      [
+        'a 422 that names it in its words',
+        422,
+        { message: 'Unknown field: messages.0.content.0.cache_control' },
+      ],
+      [
+        'a 400 that names it as its param',
+        400,
+        { message: 'Extra inputs are not permitted', param: 'system.0.cache_control' },
+      ],
+    ])('is read from %s, as a refusal of nothing else', async (_what, status, error) => {
+      fake.enqueue({
+        status,
+        body: { type: 'error', error: { type: 'invalid_request_error', ...error } },
+      });
+      expect((await converse(anthropic, fake.apiKey, start, http)).finishReason).toBe('stop');
+      expect([marksOf(0), marksOf(1)]).toEqual([2, 0]);
+    });
+
+    it('a refusal that does not name cache_control keeps the markers, and is no refusal of them', async () => {
+      fake.enqueue({
+        status: 400,
+        body: {
+          type: 'error',
+          error: { type: 'invalid_request_error', message: 'messages: too many' },
+        },
+      });
+      await expect(converse(anthropic, fake.apiKey, start, http)).rejects.toMatchObject({
+        failure: 'rejected',
+        refusedCacheControl: false,
+      });
+      expect(fake.requests).toHaveLength(1);
+      await converse(anthropic, fake.apiKey, start, http);
+      expect(marksOf(1)).toBe(2);
+    });
+
+    it('a single-shot call (anthropicMessages) carries no marker', async () => {
+      await callProvider(anthropic, fake.apiKey, call, http);
+      expect(marksOf(0)).toBe(0);
+      expect(body(0).system).toBe('S');
+      expect(body(0).messages).toEqual([{ role: 'user', content: 'U' }]);
     });
   });
 });

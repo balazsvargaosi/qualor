@@ -304,6 +304,18 @@ const NOTHING_FOUND: Readonly<Record<ReviewRole, string>> = {
 const ROLE_LINE = /^Qualor review: (quality|tests|security|performance|judge|verify)$/;
 
 /**
+ * The system prompt of an Anthropic request: its text, or the text of its blocks, as a conversation's
+ * call sends it with its prompt-cache marker (R49). Null for none.
+ */
+function anthropicSystem(system: unknown): string | null {
+  if (typeof system === 'string') return system;
+  if (!Array.isArray(system)) return null;
+  return (system as { type?: unknown; text?: unknown }[])
+    .map((block) => (block.type === 'text' && typeof block.text === 'string' ? block.text : ''))
+    .join('');
+}
+
+/**
  * The role a review call is made for: the first line of its system prompt, `Qualor review: <role>`
  * (prompts.ts), in either provider's shape. Null for any other call.
  */
@@ -314,7 +326,7 @@ export function reviewRoleOf(request: RecordedLlmRequest): ReviewRole | null {
   } | null;
   const system =
     request.path === '/v1/messages'
-      ? json?.system
+      ? anthropicSystem(json?.system)
       : json?.messages?.find((message) => message.role === 'system')?.content;
   if (typeof system !== 'string') return null;
   const role = ROLE_LINE.exec(system.split('\n', 1)[0] ?? '')?.[1];

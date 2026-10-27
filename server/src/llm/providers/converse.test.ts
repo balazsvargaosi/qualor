@@ -18,7 +18,16 @@ import {
   MAX_TOKEN_COUNT,
   type LlmConversation,
   type ProviderConfig,
+  type StreamLimits,
 } from './index';
+
+/** Stream limits a test does not run into. */
+const STREAM: StreamLimits = {
+  firstByteMs: 5_000,
+  idleMs: 5_000,
+  totalMs: 60_000,
+  maxStreamBytes: 16 * 1024 * 1024,
+};
 
 const readFile = {
   name: 'read_file',
@@ -55,6 +64,17 @@ interface OpenAiToolBody {
 interface AnthropicToolBody {
   content: { id?: unknown; name?: unknown; input?: unknown }[];
   stop_reason: string;
+}
+
+/**
+ * A chat completion whose usage says that none of its prompt was cached, as the recorded Responses
+ * answer says (`cached_tokens` 0), which the recorded chat completion does not: the two wires then
+ * read the same usage.
+ */
+function noneCached(body: unknown): unknown {
+  const usage = (body as { usage?: unknown }).usage;
+  if (typeof usage !== 'object' || usage === null) return body;
+  return { ...(body as object), usage: { ...usage, prompt_tokens_details: { cached_tokens: 0 } } };
 }
 
 describe('converse: conversations with read-only tools (R5)', () => {
@@ -344,7 +364,9 @@ describe('converse: conversations with read-only tools (R5)', () => {
     expect(request.json).toEqual({
       model: 'm-1',
       max_tokens: 50,
-      system: 'S',
+      // The system prompt as one block, and the last block of the last message, carry the
+      // prompt-cache markers (R49).
+      system: [{ type: 'text', text: 'S', cache_control: { type: 'ephemeral' } }],
       messages: [
         { role: 'user', content: [{ type: 'text', text: 'Review this change' }] },
         {
@@ -359,7 +381,12 @@ describe('converse: conversations with read-only tools (R5)', () => {
           role: 'user',
           content: [
             { type: 'tool_result', tool_use_id: 'toolu_1', content: 'const a = 1;' },
-            { type: 'tool_result', tool_use_id: 'toolu_2', content: 'a.ts\nb.ts' },
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_2',
+              content: 'a.ts\nb.ts',
+              cache_control: { type: 'ephemeral' },
+            },
           ],
         },
       ],
@@ -433,7 +460,11 @@ describe('converse: conversations with read-only tools (R5)', () => {
         ],
       },
       { role: 'assistant', content: [{ type: 'text', text: 'Done.' }] },
-      { role: 'user', content: [{ type: 'text', text: 'Thanks' }] },
+      // The last block of the last message carries the prompt-cache marker (R49).
+      {
+        role: 'user',
+        content: [{ type: 'text', text: 'Thanks', cache_control: { type: 'ephemeral' } }],
+      },
     ]);
   });
 
@@ -498,7 +529,8 @@ describe('converse: conversations with read-only tools (R5)', () => {
         content: [
           { type: 'tool_result', tool_use_id: 'toolu_a', content: 'A' },
           { type: 'tool_result', tool_use_id: 'toolu_b', content: 'B' },
-          { type: 'text', text: 'Answer now' },
+          // The last block of the last message carries the prompt-cache marker (R49).
+          { type: 'text', text: 'Answer now', cache_control: { type: 'ephemeral' } },
         ],
       },
     ]);
@@ -522,7 +554,8 @@ describe('converse: conversations with read-only tools (R5)', () => {
         role: 'user',
         content: [
           { type: 'text', text: 'Review this change' },
-          { type: 'text', text: 'Answer shorter' },
+          // The last block of the last message carries the prompt-cache marker (R49).
+          { type: 'text', text: 'Answer shorter', cache_control: { type: 'ephemeral' } },
         ],
       },
     ]);
@@ -619,10 +652,12 @@ describe('converse: conversations with read-only tools (R5)', () => {
     fake.enqueue(
       {
         status: 200,
-        body: openAiToolCalls(calls, {
-          text: 'Let me look.',
-          usage: { prompt_tokens: 120, completion_tokens: 34 },
-        }),
+        body: noneCached(
+          openAiToolCalls(calls, {
+            text: 'Let me look.',
+            usage: { prompt_tokens: 120, completion_tokens: 34 },
+          }),
+        ),
       },
       {
         status: 200,
@@ -645,7 +680,7 @@ describe('converse: conversations with read-only tools (R5)', () => {
         { id: 'call_1', name: 'read_file', arguments: { path: 'src/a.ts', from: 3 } },
         { id: 'call_2', name: 'list_files', arguments: '{"dir": "src"' },
       ],
-      usage: { inputTokens: 120, outputTokens: 34 },
+      usage: { inputTokens: 120, outputTokens: 34, cacheReadTokens: 0 },
       model: 'fake-openai-model',
     });
     expect(chat).not.toHaveProperty('replay');
@@ -701,9 +736,9 @@ describe('converse: conversations with read-only tools (R5)', () => {
     // Responses wire first.
     fake.enqueue(
       { status: 200, body: responsesBody() },
-      { status: 200, body: chatBody() },
+      { status: 200, body: noneCached(chatBody()) },
       { status: 200, body: responsesBody() },
-      { status: 200, body: chatBody() },
+      { status: 200, body: noneCached(chatBody()) },
     );
     const call = { system: 'S', user: 'U', maxOutputTokens: 50 };
     expect(await callProvider(responses, fake.apiKey, call, http)).toEqual(
@@ -882,6 +917,43 @@ describe('converse: conversations with read-only tools (R5)', () => {
       expect([d.usage, d.model]).toEqual([c.usage, c.model]);
     });
 
+    it('reads cached_tokens on Chat Completions and on the Responses API, and inputTokens stays the whole prompt (Chat Completions here)', async () => {
+      const usage = {
+        prompt_tokens: 10_000,
+        completion_tokens: 50,
+        total_tokens: 10_050,
+        prompt_tokens_details: { cached_tokens: 8_000, audio_tokens: 0 },
+      };
+      const body = { ...(openAiAnswer('{}') as object), usage };
+      const expected = { inputTokens: 10_000, outputTokens: 50, cacheReadTokens: 8_000 };
+      fake.enqueue({ status: 200, body }, { status: 200, body }, { status: 200, body });
+      expect((await converse(openai, fake.apiKey, start, http)).usage).toEqual(expected);
+      expect(
+        (await converse(openai, fake.apiKey, start, { ...http, stream: STREAM })).usage,
+      ).toEqual(expected);
+      const call = { system: 'S', user: 'U', maxOutputTokens: 50 };
+      expect((await callProvider(openai, fake.apiKey, call, http)).usage).toEqual(expected);
+      // OpenAI bills no write; and a cached count it did not give, or one past the prompt, is left out.
+      fake.enqueue(
+        { status: 200, body: { ...body, usage: { ...usage, prompt_tokens_details: {} } } },
+        {
+          status: 200,
+          body: { ...body, usage: { ...usage, prompt_tokens_details: { cached_tokens: 10_001 } } },
+        },
+        {
+          status: 200,
+          body: { ...body, usage: { ...usage, prompt_tokens_details: { cached_tokens: 0 } } },
+        },
+      );
+      const plain = { inputTokens: 10_000, outputTokens: 50 };
+      expect((await converse(openai, fake.apiKey, start, http)).usage).toEqual(plain);
+      expect((await converse(openai, fake.apiKey, start, http)).usage).toEqual(plain);
+      expect((await converse(openai, fake.apiKey, start, http)).usage).toEqual({
+        ...plain,
+        cacheReadTokens: 0,
+      });
+    });
+
     it('reads a missing usage, and one that is not an object, as unknown', async () => {
       const unknown = { inputTokens: null, outputTokens: null };
       fake.enqueue(
@@ -922,8 +994,16 @@ describe('converse: conversations with read-only tools (R5)', () => {
       expect(sent()).toEqual({
         model: 'm-1',
         max_tokens: 50,
-        system: 'S',
-        messages: [{ role: 'user', content: [{ type: 'text', text: 'Review this change' }] }],
+        // With the prompt-cache markers of every conversation's call (R49).
+        system: [{ type: 'text', text: 'S', cache_control: { type: 'ephemeral' } }],
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'Review this change', cache_control: { type: 'ephemeral' } },
+            ],
+          },
+        ],
       });
     });
   });

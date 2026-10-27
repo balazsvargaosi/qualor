@@ -447,6 +447,16 @@ function refusedBy(
   if (status === 400 && streamed(request) && refusesStream(refused)) {
     return new LlmError('rejected', refusedText(status), { status, refusedStream: true });
   }
+  // A server that takes no prompt-cache markers (an Anthropic-compatible gateway) is asked again
+  // without them. Before the other refusals, which may name the field the marker was put in: a
+  // `tool_result` block, the system prompt.
+  if (
+    ROOM_REFUSAL_STATUSES.has(status) &&
+    carriesCacheControl(request) &&
+    refusesCacheControl(refused)
+  ) {
+    return new LlmError('rejected', refusedText(status), { status, refusedCacheControl: true });
+  }
   // Before the refusal of the field: OpenAI names the parameter of a limit that is too large
   // too, and it is the value that is refused then, not the field.
   const limit = ROOM_REFUSAL_STATUSES.has(status) ? outputLimitRefusal(refused.message) : null;
@@ -584,6 +594,32 @@ function refusesStream({ detail, message }: ErrorBody): boolean {
   const param = detail?.param;
   if (typeof param === 'string' && STREAM_PARAMS.has(param)) return true;
   return STREAM_WORDS.test(message) && NOT_SUPPORTED.test(message);
+}
+
+/** The key of a prompt-cache marker (Anthropic's), as a refusal names it. */
+const CACHE_CONTROL = /\bcache_control\b/i;
+
+/**
+ * Whether the request body carries a prompt-cache marker: on a block of its system prompt, or on a
+ * block of one of its messages, the two places a conversation's call puts them (`markedForCache`).
+ */
+function carriesCacheControl(body: unknown): boolean {
+  const request = asRecord(body);
+  const marked = (blocks: unknown): boolean =>
+    Array.isArray(blocks) && blocks.some((block) => asRecord(block)?.cache_control !== undefined);
+  if (marked(request?.system)) return true;
+  const messages = request?.messages;
+  return Array.isArray(messages) && messages.some((message) => marked(asRecord(message)?.content));
+}
+
+/**
+ * Whether an error body says that the server takes no prompt-cache markers: its `param` or its
+ * message names `cache_control` ("system.0.cache_control: Extra inputs are not permitted"). Only
+ * this yes or no is used.
+ */
+function refusesCacheControl({ detail, message }: ErrorBody): boolean {
+  const param = detail?.param;
+  return (typeof param === 'string' && CACHE_CONTROL.test(param)) || CACHE_CONTROL.test(message);
 }
 
 /**

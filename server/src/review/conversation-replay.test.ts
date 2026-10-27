@@ -15,6 +15,17 @@ import { parseInternalHosts } from '../scm/url';
 import { CONVERSATION_LIMITS, runConversation, type ConversationInput } from './conversation';
 import { newNonce } from './envelope';
 
+/** A value without its prompt-cache markers (`cache_control`), wherever they are. */
+function withoutMarks(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutMarks);
+  if (value === null || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => key !== 'cache_control')
+      .map(([key, inner]) => [key, withoutMarks(inner)]),
+  );
+}
+
 type Kind = 'openai' | 'anthropic';
 /** The wires the loop is run over: the two kinds, and the Responses API of the OpenAI kind. */
 type Wire = Kind | 'responses';
@@ -184,7 +195,11 @@ describe('runConversation: the tool loop of a review (llm.md §2.5, review.md §
       enqueueAll();
       await run('anthropic');
       const bodies = fake.requests.map((request) => request.json as Record<string, unknown>);
-      const messages = fake.requests.map((request) => messagesOf(request).map((m) => m.json));
+      // The prompt-cache marker moves to the last block of each request (R49): the prefix is the
+      // same without it.
+      const messages = fake.requests.map((request) =>
+        messagesOf(request).map((m) => JSON.stringify(withoutMarks(JSON.parse(m.json)))),
+      );
       for (let n = 1; n < bodies.length; n += 1) {
         const before = messages[n - 1]!;
         // Everything the earlier request held is there again, as it was, and the new turn is added.

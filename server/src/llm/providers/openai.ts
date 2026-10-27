@@ -22,6 +22,7 @@ import {
   type LlmMessage,
   type LlmToolCall,
   type LlmTurn,
+  type LlmUsage,
   type ProviderConfig,
   type ProviderHttpOptions,
 } from './types';
@@ -44,10 +45,36 @@ const answerSchema = z.looseObject({
     .min(1),
   // Read through `tokenCount`: an odd count is unknown, never a reason to refuse the answer.
   usage: z
-    .looseObject({ prompt_tokens: z.unknown(), completion_tokens: z.unknown() })
+    .looseObject({
+      prompt_tokens: z.unknown(),
+      completion_tokens: z.unknown(),
+      prompt_tokens_details: z.unknown().optional(),
+    })
     .optional()
     .catch(undefined),
 });
+
+/**
+ * What a call used, as Chat Completions counts it (and the Responses API, read into this shape):
+ * `prompt_tokens` is every prompt token, the cached ones among them, and the cached part is
+ * `prompt_tokens_details.cached_tokens` (R49: OpenAI caches a prefix it has seen by itself, and
+ * bills no write). A cached count that is not given, or that is more than the prompt, is left out.
+ */
+function usageOf(usage: z.infer<typeof answerSchema>['usage']): LlmUsage {
+  const inputTokens = tokenCount(usage?.prompt_tokens);
+  const details = usage?.prompt_tokens_details;
+  const read =
+    typeof details === 'object' && details !== null
+      ? tokenCount((details as { cached_tokens?: unknown }).cached_tokens)
+      : null;
+  return {
+    inputTokens,
+    outputTokens: tokenCount(usage?.completion_tokens),
+    ...(read === null || inputTokens === null || read > inputTokens
+      ? {}
+      : { cacheReadTokens: read }),
+  };
+}
 
 /** R5: a call the model made; without an id or a function name it cannot be answered. */
 const toolCallSchema = z.looseObject({
@@ -97,10 +124,7 @@ export function readChoice(raw: unknown): { answer: LlmAnswer; toolCalls: readon
     answer: {
       text: text ?? '',
       finishReason: calls ? 'tool' : refusal ? 'refusal' : finish(choice.finish_reason),
-      usage: {
-        inputTokens: tokenCount(parsed.data.usage?.prompt_tokens),
-        outputTokens: tokenCount(parsed.data.usage?.completion_tokens),
-      },
+      usage: usageOf(parsed.data.usage),
       model: parsed.data.model ?? null,
     },
     toolCalls,

@@ -46,11 +46,27 @@ export interface LlmCall {
   reasoningAllowance?: number;
 }
 
+/**
+ * llm.md §10.1: what a call used, as the provider counted it. `inputTokens` is every prompt token,
+ * whatever the provider's cache did with it, so that every budget and the model's window count all
+ * of what was sent; the two cache counts are parts of it, which only the cost reads (`costOf`). A
+ * cache count the provider did not give is left out.
+ */
+export interface LlmUsage {
+  /** Every prompt token of the call, cached or not; null when the provider did not count them. */
+  inputTokens: number | null;
+  outputTokens: number | null;
+  /** Of inputTokens, read from the provider's cache: Anthropic cache_read_input_tokens, OpenAI cached_tokens. */
+  cacheReadTokens?: number | null;
+  /** Of inputTokens, written to the cache: Anthropic cache_creation_input_tokens. OpenAI bills none. */
+  cacheWriteTokens?: number | null;
+}
+
 /** llm.md §2.1 */
 export interface LlmAnswer {
   text: string;
   finishReason: FinishReason;
-  usage: { inputTokens: number | null; outputTokens: number | null };
+  usage: LlmUsage;
   model: string | null;
 }
 
@@ -184,7 +200,9 @@ export type LlmFailure = (typeof LLM_FAILURES)[number];
  * and, always with the first, a request to the Chat Completions API was refused in words that name
  * the Responses API, which is where the model takes its tools. `refusedStream` is a request that
  * asked for a streamed answer and was refused (a 400) in words that name the stream: the server
- * does not stream, and the request is asked again without it.
+ * does not stream, and the request is asked again without it. `refusedCacheControl` is a request
+ * that carried prompt-cache markers and was refused (a 400 or a 422) in words or a `param` that name
+ * `cache_control`: the server takes no markers, and the request is asked again without them.
  */
 export interface LlmErrorOptions {
   status?: number | null;
@@ -194,6 +212,7 @@ export interface LlmErrorOptions {
   refusedContext?: boolean;
   needsResponses?: boolean;
   refusedStream?: boolean;
+  refusedCacheControl?: boolean;
 }
 
 /**
@@ -208,6 +227,7 @@ export class LlmError extends Error {
   readonly refusedContext: boolean;
   readonly needsResponses: boolean;
   readonly refusedStream: boolean;
+  readonly refusedCacheControl: boolean;
 
   constructor(
     readonly failure: LlmFailure,
@@ -223,6 +243,7 @@ export class LlmError extends Error {
     this.refusedContext = options.refusedContext ?? false;
     this.needsResponses = options.needsResponses ?? false;
     this.refusedStream = options.refusedStream ?? false;
+    this.refusedCacheControl = options.refusedCacheControl ?? false;
   }
 }
 

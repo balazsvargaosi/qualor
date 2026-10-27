@@ -52,7 +52,11 @@ const responseSchema = z.looseObject({
   output: z.unknown().optional(),
   // Read through `tokenCount`: an odd count is unknown, never a reason to refuse the answer.
   usage: z
-    .looseObject({ input_tokens: z.unknown(), output_tokens: z.unknown() })
+    .looseObject({
+      input_tokens: z.unknown(),
+      output_tokens: z.unknown(),
+      input_tokens_details: z.unknown().optional(),
+    })
     .optional()
     .catch(undefined),
 });
@@ -135,12 +139,14 @@ function readResponse(raw: unknown): Read {
         finish_reason: cutOff ? 'length' : response.status === 'completed' ? 'stop' : null,
       },
     ],
+    // `input_tokens` holds the cached part, as `prompt_tokens` does: its details say how much (R49).
     usage:
       response.usage === undefined
         ? undefined
         : {
             prompt_tokens: response.usage.input_tokens,
             completion_tokens: response.usage.output_tokens,
+            prompt_tokens_details: response.usage.input_tokens_details,
           },
   });
   return {

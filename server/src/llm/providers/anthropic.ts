@@ -2,6 +2,7 @@ import type { FinishReason } from '@qualor/shared';
 import { z } from 'zod';
 import { asRecord, NOT_UNDERSTOOD, postJson } from './http';
 import { askWithRoom } from './output-room';
+import { pairOf, RememberedPairs } from './remembered-pairs';
 import { replayOf } from './replay';
 import type { SseEvent } from './sse';
 import {
@@ -22,6 +23,7 @@ import {
   type LlmMessage,
   type LlmToolCall,
   type LlmTurn,
+  type LlmUsage,
   type ProviderConfig,
   type ProviderHttpOptions,
 } from './types';
@@ -38,10 +40,40 @@ const answerSchema = z.looseObject({
   stop_reason: z.string().nullable().optional(),
   // Read through `tokenCount`: an odd count is unknown, never a reason to refuse the answer.
   usage: z
-    .looseObject({ input_tokens: z.unknown(), output_tokens: z.unknown() })
+    .looseObject({
+      input_tokens: z.unknown(),
+      output_tokens: z.unknown(),
+      cache_creation_input_tokens: z.unknown().optional(),
+      cache_read_input_tokens: z.unknown().optional(),
+    })
     .optional()
     .catch(undefined),
 });
+
+/**
+ * R49: the prompt-cache marker of a conversation's call, with the 5-minute TTL (the default one):
+ * the prefix up to and including the block that carries it is written to the cache, or read from
+ * it when an earlier call wrote it within the TTL.
+ */
+export const CACHE_MARK = { type: 'ephemeral' } as const;
+
+/**
+ * What a call used, as the Messages API counts it. With markers, its `input_tokens` is only what
+ * comes after the last block marked, and the cache's two counts are the rest of the prompt: every
+ * prompt token is the three together, which every budget counts (null when `input_tokens` is not
+ * counted, or the three pass the bound of a count). A cache count the API did not give is left out.
+ */
+function usageOf(usage: z.infer<typeof answerSchema>['usage']): LlmUsage {
+  const uncached = tokenCount(usage?.input_tokens);
+  const written = tokenCount(usage?.cache_creation_input_tokens);
+  const read = tokenCount(usage?.cache_read_input_tokens);
+  return {
+    inputTokens: uncached === null ? null : tokenCount(uncached + (written ?? 0) + (read ?? 0)),
+    outputTokens: tokenCount(usage?.output_tokens),
+    ...(read === null ? {} : { cacheReadTokens: read }),
+    ...(written === null ? {} : { cacheWriteTokens: written }),
+  };
+}
 
 /** R5: a call the model made; without an id or a name it cannot be answered. */
 const toolUseSchema = z.looseObject({
@@ -84,10 +116,7 @@ function readMessage(raw: unknown): {
 } {
   const parsed = answerSchema.safeParse(raw);
   if (!parsed.success) throw new LlmError('bad_answer', NOT_UNDERSTOOD);
-  const usage = {
-    inputTokens: tokenCount(parsed.data.usage?.input_tokens),
-    outputTokens: tokenCount(parsed.data.usage?.output_tokens),
-  };
+  const usage = usageOf(parsed.data.usage);
   const model = parsed.data.model ?? null;
   if (parsed.data.stop_reason === 'refusal') {
     return {
@@ -153,8 +182,9 @@ function stopBlock(parts: BlockParts): void {
 }
 
 /**
- * The counts of a `message_delta`'s usage that say something: a count it leaves null (the input's,
- * which `message_start` gave) keeps the one there was, and so does a usage that is none.
+ * The counts of a `message_delta`'s usage that say something: a count it leaves null or out (the
+ * input's and the cache's, which `message_start` gave) keeps the one there was, and so does a usage
+ * that is none.
  */
 function countsOf(usage: unknown): Record<string, unknown> {
   return Object.fromEntries(
@@ -246,7 +276,8 @@ const MESSAGES_STREAM: StreamWire = { fields: { stream: true }, assemble: assemb
 
 /**
  * llm.md §2.3: POST <baseUrl>/v1/messages with `x-api-key` and `anthropic-version`. No streaming,
- * tools, metadata, thinking or sampling parameter: the current models refuse a temperature, a
+ * tools, prompt-cache markers (R49: only a conversation's calls carry them), metadata, thinking or
+ * sampling parameter: the current models refuse a temperature, a
  * `top_p` and a `top_k`, think as their default says, and count that thinking in `max_tokens`, so
  * `max_tokens` is the answer's tokens and the reasoning allowance together, and the answer's alone
  * from a model that refuses that much (`askWithRoom`).
@@ -270,10 +301,47 @@ export async function anthropicMessages(
 }
 
 /** A message as the Messages API takes it. */
-interface WireMessage {
+export interface WireMessage {
   role: 'user' | 'assistant';
   content: unknown[];
 }
+
+/**
+ * R49: the system prompt and the messages of a conversation's call with its two prompt-cache
+ * markers, as copies: the system prompt as one text block that carries one, which caches the tools
+ * and the system prompt together (the API caches its prefix in that order), and the last content
+ * block of the last message, a user's `text` or `tool_result` block, which carries the other: it
+ * moves forward each turn, and the next call reads what this one wrote. An assistant message is
+ * never marked, so that a replayed turn (its thinking is signed) goes back exactly as it came. At
+ * most these 2 markers, and none at the top of the request, which some Anthropic-compatible
+ * gateways refuse. An empty system prompt is no block (the API refuses an empty text block), and
+ * then only the last message carries one. Nothing a model reads changes: only the markers are added.
+ */
+export function markedForCache(
+  system: string,
+  messages: readonly WireMessage[],
+): { system: unknown[]; messages: WireMessage[] } {
+  const marked = [...messages];
+  const last = marked.at(-1);
+  const block = asRecord(last?.content.at(-1));
+  if (last?.role === 'user' && block !== null) {
+    marked[marked.length - 1] = {
+      role: 'user',
+      content: [...last.content.slice(0, -1), { ...block, cache_control: CACHE_MARK }],
+    };
+  }
+  return {
+    system: system === '' ? [] : [{ type: 'text', text: system, cache_control: CACHE_MARK }],
+    messages: marked,
+  };
+}
+
+/**
+ * The models whose server refused a call's prompt-cache markers (`refusedCacheControl`): their
+ * later calls are sent without them. A process learns each of them once, and a restart learns it
+ * again, as `streamed.ts` does for a server that will not stream.
+ */
+const uncachedPairs = new RememberedPairs();
 
 /**
  * The text of an assistant message that would have nothing in it: the API refuses a message with
@@ -359,6 +427,15 @@ function toolCall(raw: unknown): LlmToolCall {
  * The request, the limits and the failures are those of `anthropicMessages`, but that the answer is
  * streamed when `http.stream` says so (`assembleMessage`); the `tool_use` blocks of the answer are
  * the turn's calls, in order, and a copy of its content is the turn's replay.
+ *
+ * R49: the request carries the two prompt-cache markers (`markedForCache`). A server that refuses
+ * them (`refusedCacheControl`) is asked once more, in the same call, with the request as it is
+ * without them, its system prompt the plain text, and so are the requests of the call that follow
+ * (a call asks more than once when the room to think is refused: `askWithRoom`); the pair of that
+ * base URL and that model is then remembered (`uncachedPairs`), and its later calls go without
+ * markers at once. Each of the three refusals a call may meet (the stream, the markers, the room)
+ * is asked again once, the next request without what was refused before: four requests at the most
+ * for a call, and one once the pair is learned.
  */
 export async function anthropicConverse(
   config: ProviderConfig,
@@ -367,26 +444,45 @@ export async function anthropicConverse(
   http: ProviderHttpOptions,
 ): Promise<LlmTurn> {
   const messages = wireMessages(conversation.messages);
+  const marked = markedForCache(conversation.system, messages);
   const tools = conversation.tools.map((tool) => ({
     name: tool.name,
     description: tool.description,
     input_schema: tool.parameters,
   }));
   const ask = answerAsker(config, http, MESSAGES_STREAM);
+  const pair = pairOf(config);
+  let cached = !uncachedPairs.has(pair);
   return await askWithRoom(config, conversation, async (maxTokens) => {
-    const body: Record<string, unknown> = {
-      model: config.model,
-      max_tokens: maxTokens,
-      system: conversation.system,
-      messages,
+    const bodyOf = (withMarks: boolean): Record<string, unknown> => {
+      const body: Record<string, unknown> = {
+        model: config.model,
+        max_tokens: maxTokens,
+        system: withMarks && marked.system.length > 0 ? marked.system : conversation.system,
+        messages: withMarks ? marked.messages : messages,
+      };
+      if (tools.length > 0) {
+        body.tools = tools;
+        body.tool_choice = { type: 'auto' };
+      }
+      return body;
     };
-    if (tools.length > 0) {
-      body.tools = tools;
-      body.tool_choice = { type: 'auto' };
+    const request = (withMarks: boolean) =>
+      ask({ path: '/v1/messages', headers: headers(config, apiKey), body: bodyOf(withMarks) });
+    let raw: unknown;
+    if (cached) {
+      try {
+        raw = await request(true);
+      } catch (error) {
+        if (!(error instanceof LlmError && error.refusedCacheControl)) throw error;
+        cached = false;
+        uncachedPairs.add(pair);
+        raw = await request(false);
+      }
+    } else {
+      raw = await request(false);
     }
-    const { answer, toolUse, content } = readMessage(
-      await ask({ path: '/v1/messages', headers: headers(config, apiKey), body }),
-    );
+    const { answer, toolUse, content } = readMessage(raw);
     const toolCalls = toolUse.map(toolCall);
     const replay = content === null ? undefined : replayOf('anthropic', content, toolUse);
     return { ...answer, toolCalls, ...(replay ? { replay } : {}) };

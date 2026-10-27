@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createServer, type IncomingHttpHeaders } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -569,6 +570,196 @@ function chatToolsProblem(models: readonly string[] | undefined, json: unknown):
   );
 }
 
+/** A value without its `cache_control` keys, wherever they are. */
+function withoutMarks(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutMarks);
+  if (value === null || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => key !== 'cache_control')
+      .map(([key, inner]) => [key, withoutMarks(inner)]),
+  );
+}
+
+const hasMark = (block: unknown): boolean =>
+  typeof block === 'object' && block !== null && 'cache_control' in block;
+
+/**
+ * Where a Messages request carries a prompt-cache marker first, as the API names a field (`system.0`,
+ * `messages.2.content.1`, `tools.0`, or the top of the request); null when it carries none.
+ */
+function cacheControlPath(json: unknown): string | null {
+  if (typeof json !== 'object' || json === null) return null;
+  const request = json as { system?: unknown; messages?: unknown; tools?: unknown };
+  if ('cache_control' in request) return '';
+  const markedIn = (blocks: unknown, at: string): string | null => {
+    const i = Array.isArray(blocks) ? (blocks as unknown[]).findIndex(hasMark) : -1;
+    return i === -1 ? null : `${at}.${i}`;
+  };
+  const inSystem = markedIn(request.system, 'system') ?? markedIn(request.tools, 'tools');
+  if (inSystem !== null) return inSystem;
+  const messages = Array.isArray(request.messages) ? (request.messages as unknown[]) : [];
+  for (const [i, message] of messages.entries()) {
+    const found = markedIn(
+      (message as { content?: unknown } | null)?.content,
+      `messages.${i}.content`,
+    );
+    if (found !== null) return found;
+  }
+  return null;
+}
+
+/**
+ * One part of a prompt, in the order a provider caches it: its text without markers, whether it is
+ * marked, and its type when it is a block of a run that counts as one position for the lookback
+ * (`tool_use`, `tool_result`).
+ */
+interface PromptPart {
+  text: string;
+  marked: boolean;
+  run?: string;
+}
+
+/**
+ * The parts of a request in the order its provider caches them: the tools, then the system prompt
+ * (one text block, whether it came as a string or as blocks), then every block of every message
+ * (Messages API) or every message or input item (the OpenAI wires).
+ */
+function promptParts(wire: Wire, json: unknown): PromptPart[] {
+  if (typeof json !== 'object' || json === null) return [];
+  const request = json as {
+    tools?: unknown;
+    system?: unknown;
+    instructions?: unknown;
+    messages?: unknown;
+    input?: unknown;
+  };
+  const part = (value: unknown, marked = false, run?: string): PromptPart => ({
+    text: JSON.stringify(withoutMarks(value)),
+    marked,
+    ...(run === undefined ? {} : { run }),
+  });
+  const list = (value: unknown): unknown[] => (Array.isArray(value) ? (value as unknown[]) : []);
+  const parts = list(request.tools).map((tool) => part(['tool', tool], hasMark(tool)));
+  if (wire !== 'anthropic') {
+    if (typeof request.instructions === 'string')
+      parts.push(part(['system', request.instructions]));
+    const items = wire === 'responses' ? request.input : request.messages;
+    return [...parts, ...list(items).map((item) => part(['item', item]))];
+  }
+  const system = request.system;
+  if (typeof system === 'string') parts.push(part(['system', { type: 'text', text: system }]));
+  for (const block of list(system)) parts.push(part(['system', block], hasMark(block)));
+  for (const [i, raw] of list(request.messages).entries()) {
+    const message = (raw ?? {}) as { role?: unknown; content?: unknown };
+    const blocks =
+      typeof message.content === 'string'
+        ? [{ type: 'text', text: message.content }]
+        : list(message.content);
+    for (const block of blocks) {
+      const type = (block as { type?: unknown } | null)?.type;
+      const run = type === 'tool_use' || type === 'tool_result' ? type : undefined;
+      parts.push(part(['message', i, message.role, block], hasMark(block), run));
+    }
+  }
+  return parts;
+}
+
+/**
+ * How far back from a marked block the Messages API looks for an entry an earlier call wrote, in
+ * positions: a run of `tool_use` blocks is one, and so is a run of `tool_result` blocks.
+ */
+const CACHE_LOOKBACK_POSITIONS = 20;
+
+/**
+ * A provider's prompt cache, for the fake: the prefixes it holds, each keyed by the model and the
+ * hash of the request's parts up to and including its last one, markers stripped.
+ * - The Messages API reads the longest prefix ending at or up to 20 positions before a marked part that
+ *   an earlier call wrote, and writes the prefix up to each marked part: a hit reads a quarter of
+ *   that prefix's characters (`cache_read_input_tokens`), and the call writes the rest up to its
+ *   last marker (`cache_creation_input_tokens`). A request without markers reads and writes nothing.
+ * - The OpenAI wires read the longest earlier request whose parts this one starts with, at a quarter
+ *   of its characters (`cached_tokens`), and keep every request; nothing is marked.
+ */
+function promptCache(): (wire: Wire, json: unknown) => { read: number; written: number } {
+  const held = new Set<string>();
+  return (wire, json) => {
+    const model = String((json as { model?: unknown } | null)?.model ?? '');
+    const parts = promptParts(wire, json);
+    const keys: string[] = [];
+    const chars: number[] = [];
+    const positions: number[] = [];
+    let hash = createHash('sha256').update(`${wire}\n${model}`).digest('hex');
+    let length = 0;
+    for (const [at, part] of parts.entries()) {
+      hash = createHash('sha256').update(`${hash}\n${part.text}`).digest('hex');
+      length += part.text.length;
+      keys.push(hash);
+      chars.push(length);
+      const sameRun = part.run !== undefined && parts[at - 1]?.run === part.run;
+      positions.push((positions.at(-1) ?? -1) + (sameRun ? 0 : 1));
+    }
+    const tokens = (at: number): number => (at < 0 ? 0 : Math.ceil((chars[at] ?? 0) / 4));
+    if (wire !== 'anthropic') {
+      let hit = -1;
+      for (const [at, key] of keys.entries()) if (held.has(key)) hit = at;
+      const last = keys.at(-1);
+      if (last !== undefined) held.add(last);
+      return { read: tokens(hit), written: 0 };
+    }
+    const marks = parts.flatMap((part, at) => (part.marked ? [at] : []));
+    let hit = -1;
+    for (const mark of marks) {
+      const from = positions[mark]! - CACHE_LOOKBACK_POSITIONS;
+      for (let at = mark; at >= 0 && positions[at]! >= from; at -= 1) {
+        if (held.has(keys[at]!)) {
+          hit = Math.max(hit, at);
+          break;
+        }
+      }
+    }
+    const last = marks.at(-1);
+    for (const mark of marks) held.add(keys[mark]!);
+    const read = tokens(hit);
+    return { read, written: last === undefined || last <= hit ? 0 : tokens(last) - read };
+  };
+}
+
+/** `body`'s usage with what the prompt cache did for the request, in the words of its API. */
+function withCacheUsage(
+  wire: Wire,
+  body: Record<string, unknown>,
+  { read, written }: { read: number; written: number },
+): Record<string, unknown> {
+  const usage = body.usage;
+  if (typeof usage !== 'object' || usage === null || Array.isArray(usage)) return body;
+  const counts = usage as Record<string, unknown>;
+  const atLeast = (value: unknown) => (typeof value === 'number' ? Math.max(value, read) : value);
+  if (wire === 'anthropic') {
+    return {
+      ...body,
+      usage: { ...counts, cache_creation_input_tokens: written, cache_read_input_tokens: read },
+    };
+  }
+  const [field, details] =
+    wire === 'responses'
+      ? (['input_tokens', 'input_tokens_details'] as const)
+      : (['prompt_tokens', 'prompt_tokens_details'] as const);
+  const before = counts[details];
+  return {
+    ...body,
+    usage: {
+      ...counts,
+      // The prompt's count holds the cached part.
+      [field]: atLeast(counts[field]),
+      [details]: {
+        ...(typeof before === 'object' && before !== null ? before : {}),
+        cached_tokens: read,
+      },
+    },
+  };
+}
+
 export interface FakeLlm {
   /** `http://127.0.0.1:<port>` */
   url: string;
@@ -616,6 +807,13 @@ export interface FakeLlm {
  * with a 400 in the words of a server that does not stream (`streamRefusal`), and takes no
  * scripted reply: the request asked again without the stream takes it. With `ignoreStream` it is
  * answered as a request that does not ask for a stream, whole, as JSON: a server that ignores it.
+ *
+ * R49: with `promptCache` the answers report what a provider's prompt cache did for the request
+ * (`promptCache`, `withCacheUsage`): Anthropic's `cache_read_input_tokens` and
+ * `cache_creation_input_tokens` (its `input_tokens` stays the scripted count, the uncached rest),
+ * OpenAI's `cached_tokens` (its prompt count raised to hold them). Without it nothing of a cache is
+ * reported. With `refuseCacheControl` it is an Anthropic-compatible gateway that takes no markers:
+ * a Messages request that carries one is refused with a 400 naming it, and takes no scripted reply.
  */
 export async function createFakeLlm(
   options: {
@@ -626,6 +824,8 @@ export async function createFakeLlm(
     toolsOnlyThroughResponses?: readonly string[];
     refuseStream?: boolean;
     ignoreStream?: boolean;
+    promptCache?: boolean;
+    refuseCacheControl?: boolean;
   } = {},
 ): Promise<FakeLlm> {
   const apiKey =
@@ -635,6 +835,7 @@ export async function createFakeLlm(
   const requests: RecordedLlmRequest[] = [];
   const abandoned: RecordedLlmRequest[] = [];
   const queue: (LlmReply | LlmResponder | { say: string })[] = [];
+  const cache = options.promptCache === true ? promptCache() : null;
 
   const shaped = (request: RecordedLlmRequest, text: string): LlmReply => ({
     status: 200,
@@ -694,9 +895,21 @@ export async function createFakeLlm(
          * A scripted or canned answer: to a request that streams, the events of its body, written
          * at once unless the reply has a delay (no timer to move for a test that fakes them).
          */
-        const answer = (reply: LlmReply): void => {
-          const own = reply.headers?.['content-type']?.startsWith('text/event-stream') === true;
-          if (!streamed || own || reply.status < 200 || reply.status >= 300) return send(reply);
+        const answer = (given: LlmReply): void => {
+          const own = given.headers?.['content-type']?.startsWith('text/event-stream') === true;
+          const ok = given.status >= 200 && given.status < 300;
+          const reply =
+            cache !== null && ok && !own && typeof given.body === 'object' && given.body !== null
+              ? {
+                  ...given,
+                  body: withCacheUsage(
+                    wire,
+                    given.body as Record<string, unknown>,
+                    cache(wire, json),
+                  ),
+                }
+              : given;
+          if (!streamed || own || !ok) return send(reply);
           const fault = reply.stream ?? {};
           const write = (): void => {
             if (res.destroyed) return;
@@ -763,6 +976,21 @@ export async function createFakeLlm(
         }
         if (streamed && options.refuseStream === true) {
           return send({ status: 400, body: streamRefusal(wire) });
+        }
+        const markedAt =
+          anthropic && options.refuseCacheControl === true ? cacheControlPath(json) : null;
+        if (markedAt !== null) {
+          const field = markedAt === '' ? 'cache_control' : `${markedAt}.cache_control`;
+          return send({
+            status: 400,
+            body: {
+              type: 'error',
+              error: {
+                type: 'invalid_request_error',
+                message: `${field}: Extra inputs are not permitted`,
+              },
+            },
+          });
         }
         const refused =
           wire === 'responses'

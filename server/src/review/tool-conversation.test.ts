@@ -282,6 +282,71 @@ describe('the most one call sends: the context window less the room for the answ
   });
 });
 
+describe('the prompt cache across reviews (R49)', () => {
+  let fake: FakeLlm;
+  beforeEach(async () => {
+    fake = await createFakeLlm({ promptCache: true });
+  });
+  afterEach(async () => {
+    await fake.close();
+  });
+
+  it('two reviews of a role send the same tools and system prompt, whatever their nonces, and the second reads them from the cache; the same nonce and data make the same request', async () => {
+    const config: ProviderConfig = {
+      kind: 'anthropic',
+      baseUrl: fake.anthropicBaseUrl,
+      model: 'm-cache',
+      auth: 'bearer',
+      jsonMode: 'json_object',
+      maxTokensField: 'max_tokens',
+      temperature: null,
+      api: 'chat_completions',
+      workspaceId: null,
+      timeoutSeconds: 5,
+    };
+    const http = { internalHosts: parseInternalHosts(fake.host), version: '0.0.0' };
+    const reader = memorySnapshot();
+    const policy = newToolPolicy({
+      excludePaths: [],
+      masked: new MaskedFiles(reader, { masker }),
+      masker,
+    });
+    const turns: LlmTurn[] = [];
+    const review = async (nonce: string, user: string) =>
+      await converseOverTools(callOf('security', { nonce, user }), {
+        reader,
+        policy,
+        send: async (conversation) => {
+          const answered = await converse(config, fake.apiKey, conversation, http);
+          turns.push(answered);
+          return answered;
+        },
+        shouldStop: () => Promise.resolve(false),
+      });
+    const nonce = newNonce();
+    await review(nonce, 'The data of one review');
+    await review(newNonce(), 'The data of another review');
+    await review(nonce, 'The data of one review');
+    const bodies = fake.requests.map((request) => request.json as Record<string, unknown>);
+    expect(bodies).toHaveLength(3);
+    // No clock, random id or set order reaches the prompt: the tools and the system prompt are the
+    // same text for every review of the role, and the nonce lives in the first message alone.
+    for (const field of ['tools', 'system', 'tool_choice', 'model']) {
+      expect(JSON.stringify(bodies[1]![field]), field).toBe(JSON.stringify(bodies[0]![field]));
+    }
+    expect(JSON.stringify(bodies[0]!.system)).not.toContain(nonce);
+    expect(fake.requests[2]!.body).toBe(fake.requests[0]!.body);
+    // The first review writes the prefix; the second reads the tools and the system prompt.
+    expect(turns.map((t) => t.usage.cacheReadTokens ?? 0)[0]).toBe(0);
+    expect(turns[1]!.usage.cacheReadTokens).toBeGreaterThan(0);
+    expect(turns[1]!.usage.cacheWriteTokens).toBeGreaterThan(0);
+    // And every budget counts all of the prompt, the part read from the cache included.
+    expect(turns[1]!.usage.inputTokens).toBe(
+      431 + turns[1]!.usage.cacheReadTokens! + turns[1]!.usage.cacheWriteTokens!,
+    );
+  });
+});
+
 describe('converseOverTools', () => {
   it("sends the role's prompt and limit with the review tools, and returns the answer", async () => {
     const reader = memorySnapshot();

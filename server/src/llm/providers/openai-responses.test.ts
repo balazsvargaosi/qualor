@@ -98,7 +98,7 @@ describe('the OpenAI Responses API wire', () => {
       expect(answer).toEqual({
         text: '{"a":1}',
         finishReason: 'stop',
-        usage: { inputTokens: 412, outputTokens: 96 },
+        usage: { inputTokens: 412, outputTokens: 96, cacheReadTokens: 0 },
         model: 'fake-openai-model',
       });
       const sent = fake.requests[0]!;
@@ -677,7 +677,7 @@ describe('the OpenAI Responses API wire', () => {
         text: '',
         finishReason: 'refusal',
         toolCalls: [],
-        usage: { inputTokens: 412, outputTokens: 96 },
+        usage: { inputTokens: 412, outputTokens: 96, cacheReadTokens: 0 },
         model: 'fake-openai-model',
       });
       fake.enqueue({ status: 200, body: responsesAnswer('', { refusal: 'No.' }) });
@@ -809,6 +809,43 @@ describe('the OpenAI Responses API wire', () => {
         fake.enqueue({ status: 200, body: answer }, { status: 200, body: answer });
         expect((await converse(responses, fake.apiKey, start, http)).usage).toEqual(expected);
         expect((await callProvider(responses, fake.apiKey, call, http)).usage).toEqual(expected);
+      });
+
+      it('reads cached_tokens on Chat Completions and on the Responses API, and inputTokens stays the whole prompt (the Responses API here)', async () => {
+        const usage = {
+          input_tokens: 10_000,
+          input_tokens_details: { cached_tokens: 8_000 },
+          output_tokens: 50,
+          output_tokens_details: { reasoning_tokens: 0 },
+          total_tokens: 10_050,
+        };
+        const answer = { ...(responsesAnswer('{}') as object), usage };
+        const expected = { inputTokens: 10_000, outputTokens: 50, cacheReadTokens: 8_000 };
+        fake.enqueue(
+          { status: 200, body: answer },
+          { status: 200, body: answer },
+          { status: 200, body: answer },
+        );
+        expect((await converse(responses, fake.apiKey, start, http)).usage).toEqual(expected);
+        const stream = {
+          firstByteMs: 5_000,
+          idleMs: 5_000,
+          totalMs: 60_000,
+          maxStreamBytes: 16 * 1024 * 1024,
+        };
+        expect((await converse(responses, fake.apiKey, start, { ...http, stream })).usage).toEqual(
+          expected,
+        );
+        expect((await callProvider(responses, fake.apiKey, call, http)).usage).toEqual(expected);
+        // A cached count it did not give is left out.
+        fake.enqueue({
+          status: 200,
+          body: { ...answer, usage: { ...usage, input_tokens_details: null } },
+        });
+        expect((await converse(responses, fake.apiKey, start, http)).usage).toEqual({
+          inputTokens: 10_000,
+          outputTokens: 50,
+        });
       });
 
       it('reads a missing usage, and one that is not an object, as unknown', async () => {

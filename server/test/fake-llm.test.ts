@@ -997,6 +997,169 @@ describe('fake LLM', () => {
     });
   });
 
+  describe('the prompt cache (R49), when it is asked to report one', () => {
+    let cached: FakeLlm;
+    beforeAll(async () => {
+      cached = await createFakeLlm({ promptCache: true });
+    });
+    afterAll(async () => {
+      await cached.close();
+    });
+    const MARK = { type: 'ephemeral' };
+    const TOOLS = [
+      { name: 'read_file', description: 'Read a file', input_schema: { type: 'object' } },
+    ];
+    const anthropicUsage = async (body: unknown) => {
+      const res = await fetch(`${cached.url}/v1/messages`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-api-key': cached.apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify(body),
+      });
+      expect(res.status).toBe(200);
+      return ((await res.json()) as { usage: Record<string, number> }).usage;
+    };
+    const messages = (marked: boolean, ...texts: string[]) =>
+      texts.map((text, i) => ({
+        role: i % 2 === 0 ? 'user' : 'assistant',
+        content: [
+          {
+            type: 'text',
+            text,
+            ...(marked && i === texts.length - 1 ? { cache_control: MARK } : {}),
+          },
+        ],
+      }));
+    const marked = (...texts: string[]) => ({
+      model: 'claude-cache',
+      max_tokens: 10,
+      system: [{ type: 'text', text: 'The system prompt.', cache_control: MARK }],
+      tools: TOOLS,
+      messages: messages(true, ...texts),
+    });
+    /** The same request without a marker: its system prompt as text. */
+    const unmarked = (...texts: string[]) => ({
+      ...marked(...texts),
+      system: 'The system prompt.',
+      messages: messages(false, ...texts),
+    });
+
+    it('an Anthropic call whose marked prefix an earlier call wrote reports reads', async () => {
+      const first = await anthropicUsage(marked('Review this change'));
+      expect(first).toMatchObject({ input_tokens: 431, cache_read_input_tokens: 0 });
+      expect(first.cache_creation_input_tokens).toBeGreaterThan(0);
+      // The next call extends it: it reads what the first wrote, and writes what it adds.
+      const next = await anthropicUsage(marked('Review this change', 'Reading.', 'const a = 1;'));
+      expect(next.cache_read_input_tokens).toBe(first.cache_creation_input_tokens);
+      expect(next.cache_creation_input_tokens).toBeGreaterThan(0);
+      // The same call again reads it all and writes nothing.
+      const again = await anthropicUsage(marked('Review this change'));
+      expect(again).toMatchObject({
+        cache_read_input_tokens: first.cache_creation_input_tokens,
+        cache_creation_input_tokens: 0,
+      });
+      // A call without markers reads and writes nothing, whatever its prefix.
+      expect(await anthropicUsage(unmarked('Review this change'))).toMatchObject({
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+      });
+      // Another model has a cache of its own.
+      const other = await anthropicUsage({
+        ...marked('Review this change'),
+        model: 'claude-other',
+      });
+      expect(other.cache_read_input_tokens).toBe(0);
+    });
+
+    it('an OpenAI call that extends an earlier call’s messages reports cached_tokens', async () => {
+      const ask = async (path: string, body: unknown) => {
+        const res = await fetch(`${cached.url}${path}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${cached.apiKey}` },
+          body: JSON.stringify(body),
+        });
+        expect(res.status).toBe(200);
+        return ((await res.json()) as { usage: Record<string, unknown> }).usage;
+      };
+      const chatOf = (...texts: string[]) => ({
+        model: 'gpt-cache',
+        messages: [
+          { role: 'system', content: 'The system prompt.' },
+          ...texts.map((content, i) => ({ role: i % 2 === 0 ? 'user' : 'assistant', content })),
+        ],
+      });
+      const cachedOf = (usage: Record<string, unknown>) =>
+        (usage.prompt_tokens_details as { cached_tokens: number }).cached_tokens;
+      const first = await ask('/v1/chat/completions', chatOf('Review this change'));
+      expect(cachedOf(first)).toBe(0);
+      const next = await ask(
+        '/v1/chat/completions',
+        chatOf('Review this change', 'Reading.', 'const a = 1;'),
+      );
+      expect(cachedOf(next)).toBeGreaterThan(0);
+      // The prompt's count holds the cached part.
+      expect(next.prompt_tokens as number).toBeGreaterThanOrEqual(cachedOf(next));
+      // One that does not extend an earlier conversation reads nothing.
+      expect(cachedOf(await ask('/v1/chat/completions', chatOf('Another change')))).toBe(0);
+
+      const responsesOf = (...texts: string[]) => ({
+        model: 'gpt-cache',
+        instructions: 'The system prompt.',
+        input: texts.map((text) => ({ role: 'user', content: [{ type: 'input_text', text }] })),
+      });
+      const details = (usage: Record<string, unknown>) =>
+        (usage.input_tokens_details as { cached_tokens: number }).cached_tokens;
+      expect(details(await ask('/v1/responses', responsesOf('Review this change')))).toBe(0);
+      const extended = await ask('/v1/responses', responsesOf('Review this change', 'More.'));
+      expect(details(extended)).toBeGreaterThan(0);
+      expect(extended.input_tokens as number).toBeGreaterThanOrEqual(details(extended));
+    });
+
+    it('reports no cache by default', async () => {
+      const res = await post(
+        '/v1/messages',
+        { 'x-api-key': fake.apiKey, 'anthropic-version': '2023-06-01' },
+        marked('Review this change'),
+      );
+      expect(((await res.json()) as { usage: unknown }).usage).toEqual({
+        input_tokens: 431,
+        output_tokens: 102,
+      });
+    });
+
+    it('refuses the markers when it is a gateway that takes none, and takes no scripted reply for it', async () => {
+      const gateway = await createFakeLlm({ refuseCacheControl: true });
+      try {
+        const ask = (body: unknown) =>
+          fetch(`${gateway.url}/v1/messages`, {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              'x-api-key': gateway.apiKey,
+              'anthropic-version': '2023-06-01',
+            },
+            body: JSON.stringify(body),
+          });
+        gateway.say('{"first":true}');
+        const refused = await ask(marked('Review this change'));
+        expect(refused.status).toBe(400);
+        expect(await refused.json()).toMatchObject({
+          error: { message: 'system.0.cache_control: Extra inputs are not permitted' },
+        });
+        const plain = await ask(unmarked('Review this change'));
+        expect(plain.status).toBe(200);
+        expect(((await plain.json()) as { content: { text: string }[] }).content[0]!.text).toBe(
+          '{"first":true}',
+        );
+      } finally {
+        await gateway.close();
+      }
+    });
+  });
+
   it('says {"ok": true} to a request without a data block', () => {
     const request = {
       method: 'POST',

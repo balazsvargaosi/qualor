@@ -569,6 +569,109 @@ describe('converse: a streamed answer is the answer that is not streamed (R35)',
     });
   });
 
+  describe('prompt caching (R49)', () => {
+    const MARK = { type: 'ephemeral' };
+    const marksOf = (request: RecordedLlmRequest) =>
+      request.body.match(/"cache_control"/g)?.length ?? 0;
+
+    it('a conversation call marks the last system block and the last block of the last message, streamed as unstreamed', async () => {
+      await converse(configs.anthropic, fake.apiKey, start, streamed);
+      await converse(configs.anthropic, fake.apiKey, start, http);
+      const [asStream, whole] = fake.requests;
+      expect(asStream!.json).toMatchObject({
+        stream: true,
+        system: [{ type: 'text', text: 'S', cache_control: MARK }],
+      });
+      expect([marksOf(asStream!), marksOf(whole!)]).toEqual([2, 2]);
+      expect(unstreamed(asStream!)).toEqual(whole!.json);
+      // OpenAI caches by itself: nothing is sent on either of its wires.
+      await converse(configs.chat, fake.apiKey, start, streamed);
+      await converse(configs.responses, fake.apiKey, start, streamed);
+      expect(fake.requests.slice(2).map(marksOf)).toEqual([0, 0]);
+    });
+
+    it('reads the cache usage, unstreamed and streamed (streamed here): message_start’s counts are kept through message_delta', async () => {
+      const usage = {
+        input_tokens: 200,
+        cache_creation_input_tokens: 1_000,
+        cache_read_input_tokens: 8_000,
+        output_tokens: 50,
+      };
+      const expected = {
+        inputTokens: 9_200,
+        outputTokens: 50,
+        cacheReadTokens: 8_000,
+        cacheWriteTokens: 1_000,
+      };
+      const { asStream, whole } = await bothWays('anthropic', () => ({
+        status: 200,
+        body: { ...(anthropicAnswer('{}') as object), usage },
+      }));
+      expect(asStream.usage).toEqual(expected);
+      expect(whole.usage).toEqual(expected);
+      // A message_delta that repeats the counts as null, as a stream may, keeps message_start's.
+      const event = (type: string, data: object) =>
+        `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
+      fake.enqueue({
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+        body: [
+          event('message_start', {
+            message: {
+              id: 'msg_1',
+              type: 'message',
+              role: 'assistant',
+              model: 'm',
+              content: [],
+              stop_reason: null,
+              usage: { ...usage, output_tokens: 1 },
+            },
+          }),
+          event('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
+          event('content_block_delta', { index: 0, delta: { type: 'text_delta', text: '{}' } }),
+          event('content_block_stop', { index: 0 }),
+          event('message_delta', {
+            delta: { stop_reason: 'end_turn' },
+            usage: {
+              input_tokens: null,
+              cache_creation_input_tokens: null,
+              cache_read_input_tokens: null,
+              output_tokens: 50,
+            },
+          }),
+          event('message_stop', {}),
+        ].join(''),
+      });
+      expect((await converse(configs.anthropic, fake.apiKey, start, streamed)).usage).toEqual(
+        expected,
+      );
+    });
+
+    it('a server that refuses the stream, the markers and the room is asked four times for a call, and once for the next', async () => {
+      await fake.close();
+      await fakeOf({ refuseStream: true, refuseCacheControl: true, outputCaps: { 'm-1': 1_200 } });
+      const conversation = { ...start, maxOutputTokens: 1_200, reasoningAllowance: 4_000 };
+      const asked = () =>
+        fake.requests.map((request) => {
+          const json = request.json as { stream?: unknown; max_tokens?: unknown };
+          return [json.stream ?? false, marksOf(request), json.max_tokens];
+        });
+      expect((await converse(configs.anthropic, fake.apiKey, conversation, streamed)).text).toBe(
+        '{"ok": true}',
+      );
+      // Each refusal is asked again once, the next one without what was refused before.
+      expect(asked()).toEqual([
+        [true, 2, 5_200],
+        [false, 2, 5_200],
+        [false, 0, 5_200],
+        [false, 0, 1_200],
+      ]);
+      // All three are remembered for the pair: the next call is one request.
+      await converse(configs.anthropic, fake.apiKey, conversation, streamed);
+      expect(asked().slice(4)).toEqual([[false, 0, 1_200]]);
+    });
+  });
+
   describe('a server that ignores the stream', () => {
     beforeEach(async () => {
       await fake.close();

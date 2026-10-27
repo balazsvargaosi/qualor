@@ -76,8 +76,9 @@ export const ROOM_REFUSAL_STATUSES: ReadonlySet<number> = new Set([400, 422]);
  * Whether the error of a call that asked for the room may be the room refused, whatever its words
  * say: a refusal (`rejected`, with a status of ROOM_REFUSAL_STATUSES) that is classified as nothing
  * else. A refusal of the workspace is a failure of its own (`workspace_required`); a refusal of
- * tools (`refusedTools`), the Responses hint among them (`needsResponses`), and one of the stream
- * (`refusedStream`) are something else, and so is every other failure.
+ * tools (`refusedTools`), the Responses hint among them (`needsResponses`), one of the stream
+ * (`refusedStream`) and one of the prompt-cache markers (`refusedCacheControl`) are something else,
+ * and so is every other failure.
  */
 function mayRefuseTheRoom(error: unknown): error is LlmError {
   return (
@@ -87,7 +88,8 @@ function mayRefuseTheRoom(error: unknown): error is LlmError {
     ROOM_REFUSAL_STATUSES.has(error.status) &&
     !error.refusedTools &&
     !error.needsResponses &&
-    !error.refusedStream
+    !error.refusedStream &&
+    !error.refusedCacheControl
   );
 }
 
