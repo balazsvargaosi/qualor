@@ -1,0 +1,54 @@
+/*
+ * The instance's limits (spec §3.4 M-I6, §7.3 rows 11–12): a section card of two groups, the
+ * assistant's budgets as a grid of number fields and AI review's cap under its switch. The switch,
+ * its dependent group, the requirement and the foot are the shared parts of styles.css.
+ */
+:host {
+  display: block;
+  min-width: 0;
+}
+section {
+  margin: 0;
+}
+.limit-group {
+  display: grid;
+  /* A definite column: a field or note in it never widens the card on a phone. */
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  padding: 18px 22px;
+  border-top: 1px solid var(--hairline);
+}
+.limit-group > h4 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 650;
+}
+.limit-group > .hint {
+  max-width: 72ch;
+  margin: 0;
+}
+.limit-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(17rem, 100%), 1fr));
+  gap: 16px 28px;
+}
+.limit {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  gap: 6px;
+}
+.limit > .lbl {
+  font-size: 13px;
+  font-weight: 650;
+}
+.limit > p,
+.fold-field > p {
+  margin: 0;
+}
+@media (max-width: 40rem) {
+  .limit-group {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+}

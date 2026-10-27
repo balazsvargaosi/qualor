@@ -1,0 +1,176 @@
+<section id="limits" class="card panel" aria-labelledby="ai-limits-heading">
+  <div class="panel-head">
+    <div class="sec-title">
+      <h3 id="ai-limits-heading" tabindex="-1">{{ texts.title }}</h3>
+      <p class="sec-purpose" i18n="@@aiProvider.limits.purpose">
+        What each allowed organization may spend per UTC day.
+      </p>
+    </div>
+    <div class="sec-chips">
+      <span class="badge {{ chip.badge }}"><q-icon [name]="chip.icon" />{{ texts.chip }}</span>
+    </div>
+  </div>
+
+  <!-- The assistant's budgets: the same for each allowed organization. -->
+  <div class="limit-group" role="group" aria-labelledby="ai-limits-assistant">
+    <h4 id="ai-limits-assistant" i18n="@@aiProvider.limits.assistant">
+      Explain, Suggest triage and Suggest a fix
+    </h4>
+    <p class="hint" i18n="@@aiProvider.limits.assistantHint">
+      The same for each allowed organization. Automatic fix suggestions count as fix suggestions.
+    </p>
+    <div class="limit-grid">
+      @for (f of grid(); track f.field) {
+        <div class="limit">
+          <label class="lbl" [for]="f.id" [class.changed]="f.changed">{{ f.label }}</label>
+          <div class="num-line">
+            <q-number-field
+              [inputId]="f.id"
+              [digits]="f.digits"
+              [unit]="f.unit"
+              [value]="f.value"
+              [invalid]="f.error !== null"
+              [describedBy]="f.describedBy"
+              (valueChange)="setText(f.key, f.field, $event)"
+            />
+          </div>
+          @if (f.error; as message) {
+            <p [id]="f.id + '-error'" class="field-error"><q-icon name="alert" />{{ message }}</p>
+          }
+          @if (f.hint; as hint) {
+            <p [id]="hint" class="hint" i18n="@@aiProvider.limits.asksHint">
+              The three features together.
+            </p>
+          }
+        </div>
+      }
+
+      <div class="limit">
+        <!-- The cost needs prices: without them the switch waits under the requirement, unless a
+             cost limit is stored, which can then be switched off. -->
+        @if (noPrices()) {
+          <p id="ai-budget-no-prices" class="req">
+            <q-icon name="alert" /><span
+              >{{ texts.noPrices }}
+              <a href="#ai-prices" (click)="toPrices($event)">{{ texts.pricesLink }}</a
+              >.</span
+            >
+          </p>
+        }
+        <div class="switch-row">
+          <input
+            id="ai-budget-cost-set"
+            class="switch"
+            type="checkbox"
+            role="switch"
+            aria-labelledby="ai-budget-cost-set-name"
+            [attr.aria-describedby]="costSwitchDescribedBy()"
+            [checked]="draft().costSet"
+            [disabled]="noPrices() && !draft().costSet"
+            (change)="setCostSet($event)"
+          />
+          <label for="ai-budget-cost-set"
+            ><span
+              id="ai-budget-cost-set-name"
+              class="sw-name"
+              [class.changed]="costChanged()"
+              i18n="@@aiProvider.limits.cost"
+              >Limit the cost</span
+            >&ngsp;<span
+              id="ai-budget-cost-set-help"
+              class="sw-help"
+              i18n="@@aiProvider.limits.costOff"
+              >Off: no cost limit. On: an amount in US$ per day.</span
+            ></label
+          >
+        </div>
+        @if (showCost()) {
+          <div class="dep">
+            <div class="fold-field">
+              <label class="lbl" for="ai-budget-cost">{{ texts.costField }}</label>
+              <div class="num-line">
+                <q-number-field
+                  inputId="ai-budget-cost"
+                  kind="money"
+                  [prefix]="texts.usd"
+                  [value]="draft().cost"
+                  [invalid]="errorOf('budget-cost') !== null"
+                  [describedBy]="costDescribedBy()"
+                  (valueChange)="setText('cost', 'budget-cost', $event)"
+                />
+              </div>
+              @if (errorOf('budget-cost'); as message) {
+                <p id="ai-budget-cost-error" class="field-error">
+                  <q-icon name="alert" />{{ message }}
+                </p>
+              }
+            </div>
+          </div>
+        }
+      </div>
+    </div>
+  </div>
+
+  <!-- AI review's cap: what an organization's admins may give it, at most. -->
+  <div class="limit-group" role="group" aria-labelledby="ai-limits-review">
+    <h4 id="ai-limits-review" i18n="@@aiProvider.limits.review">AI review</h4>
+    <p class="hint" i18n="@@aiProvider.limits.reviewHint">
+      Each organization's admin sets its own review budgets in Settings → AI, 2,000,000 tokens a day
+      by default. They are separate from the limits above.
+    </p>
+    <div class="switch-row">
+      <input
+        id="ai-budget-review-set"
+        class="switch"
+        type="checkbox"
+        role="switch"
+        aria-labelledby="ai-budget-review-set-name"
+        aria-describedby="ai-budget-review-set-help"
+        [checked]="draft().capSet"
+        (change)="setCapSet($event)"
+      />
+      <label for="ai-budget-review-set"
+        ><span
+          id="ai-budget-review-set-name"
+          class="sw-name"
+          [class.changed]="capChanged()"
+          i18n="@@aiProvider.limits.cap"
+          >Cap the tokens an organization may give AI review</span
+        >&ngsp;<span
+          id="ai-budget-review-set-help"
+          class="sw-help"
+          i18n="@@aiProvider.limits.capOff"
+          >Off: no cap, and organization admins may allow up to 1,000,000,000 tokens a day.</span
+        ></label
+      >
+    </div>
+    @if (showCap()) {
+      <div class="dep">
+        <div class="fold-field">
+          <label class="lbl" for="ai-budget-review">{{ texts.capField }}</label>
+          <div class="num-line">
+            <q-number-field
+              inputId="ai-budget-review"
+              [digits]="10"
+              [unit]="texts.tokens"
+              [value]="draft().cap"
+              [invalid]="errorOf('budget-review') !== null"
+              [describedBy]="capDescribedBy()"
+              (valueChange)="setText('cap', 'budget-review', $event)"
+            />
+          </div>
+          @if (errorOf('budget-review'); as message) {
+            <p id="ai-budget-review-error" class="field-error">
+              <q-icon name="alert" />{{ message }}
+            </p>
+          }
+          <p id="ai-budget-review-hint" class="hint" i18n="@@aiProvider.limits.capHint">
+            Organization admins can set less, never more.
+          </p>
+        </div>
+      </div>
+    }
+  </div>
+
+  <q-section-foot [outcome]="footOutcome()" [saveLabel]="texts.save" (save)="save()" />
+</section>
