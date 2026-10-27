@@ -249,4 +249,27 @@ describe('telemetry schema 2: AI review and the assistant (telemetry.md, R39)', 
     expect(payload.assistant30d).toEqual({ explain: 2, triage: 1, fix: 1 });
     expect(JSON.stringify(payload)).not.toMatch(NAMED);
   });
+
+  it('counts a status change whose reply then failed or was skipped, never as answered', async () => {
+    const usage = async () =>
+      (await collectAiReviewUsage(h.ctx.db, await readLlmSettings(h.ctx.db))).replies30d;
+    const before = await usage();
+    // The model decided and the status changed; posting the answer then failed, or its thread went.
+    await reply({
+      status: 'failed',
+      reason: 'internal',
+      outcome: 'false_positive',
+      verdict: 'false_positive',
+    });
+    await reply({
+      status: 'skipped',
+      reason: 'thread_gone',
+      outcome: 'wont_fix',
+      verdict: 'wont_fix',
+    });
+    expect(await usage()).toEqual({
+      answered: before.answered,
+      statusChanges: before.statusChanges + 2,
+    });
+  });
 });
