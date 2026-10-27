@@ -32,7 +32,7 @@ export interface AiReviewUsage {
   commands30d: { review: number; fix: number; stop: number };
 }
 
-/** telemetry.md `assistant30d`: the Explain, Suggest triage and Suggest a fix requests of 30 days. */
+/** telemetry.md `assistant30d`: the Explain, Suggest triage and Suggest a fix people asked for in 30 days. */
 export interface AssistantUsage {
   explain: number;
   triage: number;
@@ -149,7 +149,8 @@ export async function collectAssistantUsage(db: Db): Promise<AssistantUsage> {
              count(*) FILTER (WHERE feature = 'triage') AS triage,
              count(*) FILTER (WHERE feature = 'fix') AS fix
         FROM llm_requests
-       WHERE feature IN ('explain', 'triage', 'fix') AND created_at > now() - interval '30 days'`,
+       WHERE feature IN ('explain', 'triage', 'fix') AND user_id IS NOT NULL
+         AND created_at > now() - interval '30 days'`,
   );
   return { explain: row.explain, triage: row.triage, fix: row.fix };
 }

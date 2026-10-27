@@ -69,7 +69,7 @@ The whole report, as an example:
 | `scm` | `gitlab` and/or `github`, when a connection exists |
 | `features` | whether single sign-on, SCIM, the AI assistant and AI review are set up |
 | `aiReview` | how AI review is used: the organisations that have it on, and the projects it reviews; the kind of model provider (`anthropic`, `openai_chat_completions`, `openai_responses` or `none`), never its address or its models; whether a strong and a fast model are set; and, for the last 30 days, the reviews by how they ended (done, skipped, failed, or superseded by a newer push), the findings they raised, those placed on a changed line and those with a suggestion, the replies answered and the status changes they made, and the `qualor review`, `qualor fix` and `qualor stop` commands handled |
-| `assistant30d` | how many Explain, Suggest triage and Suggest a fix requests were made in the last 30 days |
+| `assistant30d` | how many Explain, Suggest triage and Suggest a fix requests people made in the last 30 days (automatic fix suggestions are not counted) |
 
 Servers before 0.12.0 send `schema` 1, without `aiReview`, `assistant30d` and the `aiReview` flag
 of `features`. A newer server also sends `schema` 1 on a day it cannot count its AI use.

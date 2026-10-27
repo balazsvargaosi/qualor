@@ -105,9 +105,15 @@ describe('telemetry schema 2: AI review and the assistant (telemetry.md, R39)', 
       finishedAt: NOW,
       ...over,
     });
-  const request = (feature: LlmRequestFeature, createdAt: SQL = NOW) =>
+  /** A request a person made; an automatic one (4E-3) has no user. */
+  const request = (
+    feature: LlmRequestFeature,
+    createdAt: SQL = NOW,
+    userId: string | null = h.ctx.adminId,
+  ) =>
     h.ctx.db.insert(llmRequests).values({
       organizationId: h.organizationId,
+      userId,
       projectId: p.id,
       feature,
       cacheKey: 'c'.repeat(64),
@@ -251,11 +257,12 @@ describe('telemetry schema 2: AI review and the assistant (telemetry.md, R39)', 
     });
   });
 
-  it('counts the assistant requests of 30 days by feature', async () => {
+  it('counts the assistant requests people made in 30 days by feature', async () => {
     await request('explain');
     await request('explain');
     await request('triage');
     await request('fix');
+    await request('fix', NOW, null); // an automatic fix suggestion, which no person made
     await request('explain', OLD);
     for (let i = 0; i < 3; i += 1) await request('review');
     await request('review-reply');
