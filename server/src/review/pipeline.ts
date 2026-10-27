@@ -510,13 +510,22 @@ const JUDGE_WINDOW_FULL = {
  */
 function judged(
   found: JudgeAnswer['findings'][number],
-  sources: ReadonlySet<string>,
+  sources: ReadonlyMap<string, { full: string; shown: string }>,
   priors: ReadonlySet<string>,
 ): JudgedFinding {
   const priorId = found.priorId ?? null;
+  const given = [...new Set(found.sources)].filter((id) => sources.has(id));
+  const first = given.length > 0 ? sources.get(given[0]!) : undefined;
+  // Under a small window the judge is shown cut bodies, and one kept "as it was given" carries the
+  // cut text: the body it was cut from is restored. A body the judge wrote itself is kept.
+  const cut =
+    first !== undefined &&
+    first.shown !== first.full &&
+    (found.body === first.shown || found.body === '…');
   return {
     ...reviewFindingOf(found),
-    sources: [...new Set(found.sources)].filter((id) => sources.has(id)),
+    ...(cut ? { body: first.full } : {}),
+    sources: given,
     priorId: priorId !== null && priors.has(priorId) ? priorId : null,
     verification: null,
   };
@@ -614,7 +623,13 @@ export async function runReviewPipeline(
   if (asked.kind === 'window_full') return JUDGE_WINDOW_FULL;
   if (asked.kind !== 'answer') return NOT_JUDGED;
   const answer = asked.value;
-  const sources = new Set(labelled.map((finding) => finding.id));
+  const shownBodies = new Map(judgeShown.specialistFindings.map((f) => [f.id, f.body]));
+  const sources = new Map(
+    labelled.map(({ id, finding }) => [
+      id,
+      { full: finding.body, shown: shownBodies.get(id) ?? finding.body },
+    ]),
+  );
   const shownPriorIds = judgeShown.priorFindings.map((finding) => finding.id);
   const openPriors = new Set(
     judgeShown.priorFindings.filter((finding) => finding.status === 'open').map((f) => f.id),

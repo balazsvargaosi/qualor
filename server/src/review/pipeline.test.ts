@@ -1092,7 +1092,47 @@ describe('runReviewPipeline', () => {
     expect(Math.max(...cut)).toBeLessThan(1_200);
   });
 
-  it("keeps the judge's first message within a third of its cap, whatever the findings: their bodies, then the prior ones', then the suggestions go, and no finding", async () => {
+  it('restores the body of a finding the judge kept with the cut text it was shown, and keeps one it wrote', async () => {
+    const full = (i: number) => `Body ${i}. ${'b'.repeat(1_150)}`;
+    const many = Array.from({ length: 30 }, (_, i) => found({ title: `F${i}`, body: full(i) }));
+    const run = async (judge: Record<string, unknown>) => {
+      const { deps, calls } = scripted({
+        quality: [answer({ findings: many })],
+        judge: [answer(judge)],
+      });
+      const outcome = await runReviewPipeline(
+        contextOf([change('src/cart.ts', 2)]),
+        10_000_000,
+        deps,
+        () => Promise.resolve(),
+        32_000,
+      );
+      return { outcome, calls };
+    };
+    const first = await run(judgeSays());
+    const shown = (
+      first.calls.find((c) => c.role === 'judge')?.data.specialistFindings as { body: string }[]
+    ).map((f) => f.body);
+    expect(shown[1]!.length).toBeLessThan(full(1).length);
+    const { outcome } = await run(
+      judgeSays({
+        findings: [
+          judgedAs({ title: 'F0', body: '…', sources: ['s1'] }),
+          judgedAs({ title: 'F1', body: shown[1], sources: ['s2'] }),
+          judgedAs({ title: 'F2', body: 'The judge wrote this itself.', sources: ['s3'] }),
+        ],
+      }),
+    );
+    expect(outcome.kind).toBe('reviewed');
+    if (outcome.kind !== 'reviewed') return;
+    expect(outcome.findings.map((f) => f.body)).toEqual([
+      full(0),
+      full(1),
+      'The judge wrote this itself.',
+    ]);
+  });
+
+  it("keeps the judge's first message within a third of its cap, whatever the findings:their bodies, then the prior ones', then the suggestions go, and no finding", async () => {
     // A re-review: 20 open prior findings, and 24 new ones with long bodies and suggestions (an
     // answer a reviewer's output limit holds).
     const lines = Array.from({ length: 8 }, (_, i) => `const value${i} = compute(${i});`);
