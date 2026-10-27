@@ -828,8 +828,8 @@ export class ProviderSection {
 
   /**
    * The section's change from the draft, without the key, and what a confirmation would name of
-   * it; or the refused fields, in the page's own words. The key field is looked at for its format,
-   * never taken.
+   * it; or the refused fields, in the page's own words. The key field is looked at (is it empty,
+   * is it a key), never taken.
    */
   private build(): { change: ProviderChange; consent: ConsentInput } | { errors: Errors } {
     const d = this.draft();
@@ -890,10 +890,18 @@ export class ProviderSection {
     };
   }
 
-  /** What is wrong with the key typed, if anything; the key itself is not kept. */
+  /**
+   * What is wrong with the key typed, if anything; the key itself is not kept. A new address of
+   * a provider with a stored key needs the key again, or Remove: the stored one is never sent
+   * there (an address that is none is refused on its own field).
+   */
   private keyProblem(d: Draft): string | null {
     const typed = this.keyField()?.nativeElement.value ?? '';
-    if (typed === '') return null;
+    if (typed === '') {
+      const needsKey =
+        this.keySet() && !d.removeKey && this.addressChanged() && isHttpUrl(d.url.trim());
+      return needsKey ? refusal('key') : null;
+    }
     if (d.removeKey) return keyAndRemove();
     return API_KEY.test(typed) ? null : keyFormat();
   }

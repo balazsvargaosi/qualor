@@ -471,7 +471,27 @@ describe('ProviderSection: the API key', () => {
     expect(field(root, 'ai-key').value).toBe(KEY);
   });
 
-  it('keeps the stored key when the field is empty, and maps a refused address to the key field', async () => {
+  it('asks for the key again on the page for a new address, and sends nothing without it', async () => {
+    const server = setup();
+    const { fixture, root } = await render();
+    await fill(fixture, root, '#ai-url', 'http://vllm:8000/v1');
+    await saveAndTest(fixture, root);
+    expect(puts(server)).toHaveLength(0);
+    expect(field(root, 'ai-key').getAttribute('aria-invalid')).toBe('true');
+    expect(textOf(root, '#ai-key-error')).toContain('Enter the API key again for a new address');
+    expect(field(root, 'ai-key').getAttribute('aria-describedby')).toBe('ai-key-error ai-key-hint');
+    expect(textOf(root, '.foot-status')).toBe('1 field needs attention: API key');
+    expect(document.activeElement).toBe(field(root, 'ai-key'));
+    // Remove the key instead: a local model at the new address needs none.
+    await press(fixture, root, 'Remove the key');
+    await saveAndTest(fixture, root);
+    expect(puts(server)[0]?.provider).toMatchObject({
+      baseUrl: 'http://vllm:8000/v1',
+      apiKey: null,
+    });
+  });
+
+  it('maps the server’s refusal of the key to the key field, in the page’s words', async () => {
     const server = setup();
     server.on('PUT', '/api/v0/system/llm', {
       status: 422,
@@ -480,12 +500,13 @@ describe('ProviderSection: the API key', () => {
       ]),
     });
     const { fixture, root } = await render();
-    await fill(fixture, root, '#ai-url', 'http://vllm:8000/v1');
+    await press(fixture, root, 'Replace the key');
+    await fill(fixture, root, '#ai-key', KEY);
     await saveAndTest(fixture, root);
-    expect(puts(server)[0]?.provider).not.toHaveProperty('apiKey');
+    expect(puts(server)[0]?.provider?.apiKey).toBe(KEY);
+    expect(field(root, 'ai-key').value).toBe('');
     expect(field(root, 'ai-key').getAttribute('aria-invalid')).toBe('true');
     expect(textOf(root, '#ai-key-error')).toContain('Enter the API key again for a new address');
-    expect(field(root, 'ai-key').getAttribute('aria-describedby')).toBe('ai-key-error ai-key-hint');
     expect(textOf(root, '.foot-status')).toBe('1 field needs attention: API key');
     expect(root.textContent).not.toContain('server text');
   });
@@ -1965,6 +1986,21 @@ describe('ProviderSection: before pausing AI review (Review Focus 3)', () => {
     await saveAndTest(fixture, root);
     expect(dialog(root).open).toBe(false);
     expect(puts(server)).toHaveLength(1);
+  });
+
+  it('asks for the key of a new address first, and nothing about pausing until it is typed', async () => {
+    const server = setup();
+    const { fixture, root } = await render({ settings: REVIEWED });
+    await fill(fixture, root, '#ai-url', 'http://ollama:11434/api/v1');
+    await saveAndTest(fixture, root);
+    expect(dialog(root).open).toBe(false);
+    expect(puts(server)).toHaveLength(0);
+    expect(field(root, 'ai-key').getAttribute('aria-invalid')).toBe('true');
+    expect(textOf(root, '#ai-key-error')).toContain('Enter the API key again for a new address');
+    expect(document.activeElement).toBe(field(root, 'ai-key'));
+    await fill(fixture, root, '#ai-key', KEY);
+    await saveAndTest(fixture, root);
+    expect(dialog(root).open).toBe(true);
   });
 
   it('asks nothing where review is paused already', async () => {
